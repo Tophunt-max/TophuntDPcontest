@@ -1,0 +1,18 @@
+{
+  "projects": {
+    "default": "tophuntdpcontest"
+  },
+  "targets": {
+    "tophuntdpcontest": {
+      "hosting": {
+        "main-app": [
+          "tophuntdpcontest"
+        ],
+        "admin-panel": [
+          "adminwen"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}

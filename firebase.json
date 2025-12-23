@@ -1,0 +1,41 @@
+{
+  "functions": {
+    "source": "functions",
+    "runtime": "nodejs20",
+    "region": "asia-south1"
+  },
+  "firestore": {
+    "database": "dpcontest",
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "hosting": [
+    {
+      "target": "main-app",
+      "public": "dist",
+      "ignore": [
+        "firebase.json",
+        "**/.*",
+        "**/node_modules/**"
+      ],
+      "rewrites": [
+        {
+          "source": "**",
+          "destination": "/index.html"
+        }
+      ]
+    },
+    {
+      "target": "admin-panel",
+      "public": "admin/.next",
+      "ignore": [
+        "firebase.json",
+        "**/.*",
+        "**/node_modules/**"
+      ],
+      "frameworksBackend": {
+        "source": "admin"
+      }
+    }
+  ]
+}

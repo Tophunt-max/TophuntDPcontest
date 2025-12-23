@@ -1,0 +1,180 @@
+
+import React, { useState } from "react";
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  ScrollView,
+  Platform,
+  KeyboardAvoidingView,
+  TextInput,
+  Switch
+} from "react-native";
+import { z } from 'zod';
+import { useLocalSearchParams, useRouter } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useThemeColor } from "@/hooks/use-theme-color";
+import { useColorScheme } from "@/hooks/use-color-scheme";
+import { Left_Arrow, CreateNewPwd_Dark, CreateNewPwd_Light, Eye_Open, Eye_Close } from "@/assets/svgs";
+import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
+import { useToast } from "@/src/components/toast/ToastProvider";
+import { getFunctions, httpsCallable } from 'firebase/functions';
+
+const passwordSchema = z.string().min(8, 'Password must be at least 8 characters long');
+
+export default function ResetPasswordScreen() {
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const { phoneNumber } = useLocalSearchParams<{ phoneNumber: string }>();
+  const colorScheme = useColorScheme();
+  const backgroundColor = useThemeColor({}, "background");
+  const textColor = useThemeColor({}, "text");
+  const { addToast } = useToast();
+  const functions = getFunctions();
+  
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [isPasswordVisible, setIsPasswordVisible] = useState(false);
+  const [rememberMe, setRememberMe] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const handleResetPassword = async () => {
+    try {
+      passwordSchema.parse(newPassword);
+      if (newPassword !== confirmPassword) {
+        addToast({ type: 'error', text: 'Passwords do not match.' });
+        return;
+      }
+
+      setLoading(true);
+      const updatePasswordWithPhone = httpsCallable(functions, 'updatePasswordWithPhone');
+      await updatePasswordWithPhone({ phone: phoneNumber, newPassword });
+      
+      router.push("/auth/forgot-password/success");
+
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        addToast({ type: 'error', text: error.errors[0].message });
+      } else {
+        addToast({ type: 'error', text: error.message });
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <KeyboardAvoidingView
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      style={{ flex: 1, backgroundColor }}
+    >
+      <ScrollView
+        contentContainerStyle={{
+          flexGrow: 1,
+          paddingTop: insets.top,
+          paddingBottom: insets.bottom,
+        }}
+      >
+        <View style={styles.container}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+            <Left_Arrow />
+          </TouchableOpacity>
+          <View style={styles.header}>
+            <Text style={[styles.title, { color: textColor }]}>Create New Password</Text>
+            {colorScheme === 'light' ? <CreateNewPwd_Light/> : <CreateNewPwd_Dark/>}
+          </View>
+
+          <View style={styles.inputContainer}>
+            <TextInput
+              style={[styles.input, { color: textColor, backgroundColor: useThemeColor({}, 'input') }]}
+              placeholder="New Password"
+              placeholderTextColor={useThemeColor({}, "textSecondary")}
+              secureTextEntry={!isPasswordVisible}
+              value={newPassword}
+              onChangeText={setNewPassword}
+            />
+            <TouchableOpacity style={styles.eyeIcon} onPress={() => setIsPasswordVisible(!isPasswordVisible)}>
+              {isPasswordVisible ? <Eye_Open /> : <Eye_Close />}
+            </TouchableOpacity>
+          </View>
+          <View style={styles.inputContainer}>
+            <TextInput
+              style={[styles.input, { color: textColor, backgroundColor: useThemeColor({}, 'input') }]}
+              placeholder="Confirm Password"
+              placeholderTextColor={useThemeColor({}, "textSecondary")}
+              secureTextEntry={!isPasswordVisible}
+              value={confirmPassword}
+              onChangeText={setConfirmPassword}
+            />
+             <TouchableOpacity style={styles.eyeIcon} onPress={() => setIsPasswordVisible(!isPasswordVisible)}>
+              {isPasswordVisible ? <Eye_Open /> : <Eye_Close />}
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.rememberMeContainer}>
+            <Switch
+              trackColor={{ false: "#767577", true: "#FF6347" }}
+              thumbColor={rememberMe ? "#f4f3f4" : "#f4f3f4"}
+              ios_backgroundColor="#3e3e3e"
+              onValueChange={setRememberMe}
+              value={rememberMe}
+            />
+            <Text style={{ color: textColor, marginLeft: 10 }}>Remember me</Text>
+          </View>
+
+          <PrimaryButton
+            title="Continue"
+            onPress={handleResetPassword}
+            loading={loading}
+            disabled={loading || !newPassword || !confirmPassword}
+          />
+        </View>
+      </ScrollView>
+    </KeyboardAvoidingView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    padding: 20,
+    alignItems: 'center'
+  },
+  backButton: {
+    alignSelf: "flex-start",
+    padding: 10,
+  },
+  header: {
+    alignItems: "center",
+    marginBottom: 30,
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: "bold",
+    marginBottom: 20,
+  },
+  inputContainer: {
+    width: '100%',
+    marginBottom: 20,
+    position: 'relative',
+    justifyContent: 'center'
+  },
+  input: {
+    width: '100%',
+    height: 50,
+    paddingHorizontal: 15,
+    borderRadius: 10,
+    fontSize: 16,
+  },
+  eyeIcon: {
+    position: 'absolute',
+    right: 15,
+  },
+  rememberMeContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+    marginBottom: 30,
+  }
+});
