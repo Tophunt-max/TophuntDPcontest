@@ -1,0 +1,42 @@
+name: Expo Web - Production Deployment
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'apps/expo/**'
+      - '.github/workflows/web-production.yml'
+
+jobs:
+  deploy_web_production:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: ./apps/expo
+        run: npm install
+
+      - name: Install Expo CLI
+        run: npm install -g expo-cli
+
+      - name: Build Expo Web
+        working-directory: ./apps/expo
+        run: npx expo export:web
+
+      - name: Deploy to Cloudflare Pages (Production)
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDEFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDEFLARE_ACCOUNT_ID }}
+          projectName: 'your-expo-web-project-name' # IMPORTANT: Change this
+          directory: 'apps/expo/dist'
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          branch: 'main'

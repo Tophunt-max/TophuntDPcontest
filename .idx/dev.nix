@@ -33,7 +33,7 @@
       enable = true;
       previews = {
         web = {
-          command = [ "npm" "run" "web" "--" "--port" "$PORT" ];
+          command = [ "npm" "run" "expo:web" "--" "--port" "$PORT" ];
           manager = "web";
         };
         android = {

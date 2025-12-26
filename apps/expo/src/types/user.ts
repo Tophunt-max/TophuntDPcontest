@@ -1,0 +1,64 @@
+ab step import { Timestamp } from 'firebase/firestore';
+
+export interface UserProfile {
+  uid: string;
+  username: string;
+  fullName: string;
+  email: string;
+  bio?: string;
+  profileImageUrl?: string;
+  website?: string;
+  isPrivate?: boolean;
+  occupation?: string;
+  gender?: string;
+  phone?: string;
+  facebook?: string;
+  twitter?: string;
+  instagram?: string;
+  // New Fields for Contest Platform
+  fishCoins: number; 
+  isAdmin: boolean;
+  stats: {
+    contestsJoined: number;
+    wins: number;
+    totalVotesReceived: number;
+  };
+  createdAt: Timestamp;
+}
+
+export interface UserStats {
+  postsCount: number;
+  followersCount: number;
+  followingCount: number;
+  likesCount?: number; 
+}
+
+export interface Post {
+  id: string;
+  userId: string;
+  mediaUrl: string;
+  thumbnailUrl?: string; 
+  mediaType: 'image' | 'video';
+  caption?: string;
+  createdAt: any; 
+  likesCount: number;
+  commentsCount: number;
+}
+
+export interface Highlight {
+  id: string;
+  title: string;
+  coverUrl: string;
+  stories: string[]; 
+}
+
+export interface CoinTransaction {
+  id: string;
+  userId: string;
+  amount: number; 
+  type: 'entry_fee' | 'win_reward' | 'bonus' | 'purchase';
+  contestId?: string;
+  battleId?: string;
+  description: string;
+  createdAt: Timestamp;
+}
