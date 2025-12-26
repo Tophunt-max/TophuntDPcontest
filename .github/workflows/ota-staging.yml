@@ -3,7 +3,7 @@ name: Expo OTA - Staging Update
 on:
   push:
     branches:
-      - develop
+      - dev
     paths:
       - 'apps/expo/**'
       - '.github/workflows/ota-staging.yml'
@@ -13,12 +13,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@vv3
+        uses: actions/checkout@v3
 
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '20'
+          node-version: '18'
 
       - name: Install dependencies
         working-directory: ./apps/expo
