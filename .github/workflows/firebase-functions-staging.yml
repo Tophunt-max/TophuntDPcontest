@@ -1,15 +1,15 @@
-name: Deploy Firebase Functions - Staging
+name: Firebase Functions - Staging Build & Test
 
 on:
   push:
     branches:
-      - develop
+      - dev
     paths:
       - 'apps/functions/**'
       - '.github/workflows/firebase-functions-staging.yml'
 
 jobs:
-  deploy_firebase_staging:
+  build_and_test_firebase_staging:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -18,7 +18,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '20'
+          node-version: '18'
 
       - name: Install Firebase CLI
         run: npm install -g firebase-tools
@@ -27,6 +27,13 @@ jobs:
         working-directory: ./apps/functions
         run: npm install
 
-      - name: Deploy to Firebase Staging
+      - name: Build Functions
         working-directory: ./apps/functions
-        run: firebase deploy --only functions --project ${{ secrets.FIREBASE_STAGING_PROJECT_ID }} --token ${{ secrets.FIREBASE_TOKEN }}
+        run: npm run build
+
+      - name: Run Tests (Optional)
+        # If you have a test script, you can add it here.
+        # Example:
+        # working-directory: ./apps/functions
+        # run: npm test
+        run: echo "Skipping tests, no test script found."

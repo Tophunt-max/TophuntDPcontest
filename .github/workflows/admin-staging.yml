@@ -3,7 +3,7 @@ name: Admin Panel - Staging Deployment
 on:
   push:
     branches:
-      - develop
+      - dev
     paths:
       - 'apps/admin/**'
       - '.github/workflows/admin-staging.yml'
@@ -18,7 +18,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '20'
+          node-version: '18'
 
       - name: Deploy to Vercel Preview (Staging)
         working-directory: ./apps/admin
