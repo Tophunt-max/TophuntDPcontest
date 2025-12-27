@@ -1,7 +1,7 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-  
+
     // --- HELPERS ---
     function isAdmin() {
       return request.auth != null && request.auth.token.role == 'admin';
@@ -15,10 +15,10 @@ service cloud.firestore {
 
     // --- USER PROFILES ---
     match /users/{userId} {
-      allow read: if true; 
+      allow read: if true;
       allow create: if request.auth.uid == request.resource.data.uid;
       allow update: if isOwner(userId);
-      allow write: if isAdmin();
+      allow write: if isAdmin(); // Consolidating write access to admin
 
       match /highlights/{highlightId} {
           allow read: if isAuthenticated();
@@ -26,15 +26,22 @@ service cloud.firestore {
       }
     }
 
-    // --- CONTESTS ---
+    // --- CONTESTS & BATTLES ---
     match /contests/{contestId} {
       allow read: if true;
       allow write: if isAdmin();
-      
-      match /participants/{participantId} {
-        allow read: if true;
-        allow write: if isAuthenticated();
-      }
+    }
+
+    match /entries/{entryId} {
+      allow read: if isAuthenticated();
+      // Only backend (admin) can write
+      allow write: if isAdmin();
+    }
+
+    match /battles/{battleId} {
+      allow read: if true;
+      // Only backend (admin) can write
+      allow write: if isAdmin();
     }
 
     // --- MESSAGING ---
@@ -51,15 +58,14 @@ service cloud.firestore {
     match /posts/{postId} {
       allow read: if true;
       allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
-      allow update, delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
-      allow delete: if isAdmin() || (request.auth != null && request.auth.token.role == 'moderator');
+      allow update, delete: if isAuthenticated() && resource.data.userId == request.auth.uid || isAdmin();
     }
 
     // --- STORIES ---
     match /stories/{storyId} {
       allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && (request.resource.data.userId == request.auth.uid || request.auth.token.role == 'admin');
-      allow delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || request.auth.token.role == 'admin');
+      allow create: if isAuthenticated() && (request.resource.data.userId == request.auth.uid || isAdmin());
+      allow delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
     }
 
     match /storyViews/{viewId} {
@@ -70,14 +76,21 @@ service cloud.firestore {
     // --- FOLLOW SYSTEM ---
     match /following/{userId}/userFollowing/{targetId} {
       allow read: if isAuthenticated();
-      allow write: if false; 
+      allow write: if false;
     }
     match /followers/{userId}/userFollowers/{followerId} {
       allow read: if isAuthenticated();
-      allow write: if false; 
+      allow write: if false;
     }
 
-    // --- CONFIG & ADMIN ---
+    // --- TRANSACTIONS ---
+    match /coin_transactions/{transactionId} {
+        allow read: if isOwner(resource.data.userId) || isAdmin();
+        // Only backend (admin) can write
+        allow write: if isAdmin();
+    }
+
+    // --- CONFIG & ADMIN --
     match /config/app_settings {
       allow read: if true;
       allow write: if isAdmin();
