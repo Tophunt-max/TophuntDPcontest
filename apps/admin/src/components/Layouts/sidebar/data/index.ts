@@ -1,0 +1,42 @@
+import * as Icons from "../icons";
+
+export const NAV_DATA = [
+  {
+    label: "MAIN MENU",
+    items: [
+      {
+        title: "User Management",
+        url: "/tables",
+        icon: Icons.User,
+        items: [],
+      },
+      {
+        title: "App Content",
+        icon: Icons.Table,
+        items: [
+          { title: "User Reports", url: "/reports" },
+          { title: "Support Tickets", url: "/support" },
+          { title: "Contests", url: "/contests" },
+        ]
+      },
+      {
+        title: "App Settings",
+        icon: Icons.Alphabet,
+        items: [
+          { title: "Global Config", url: "/app-settings" },
+          { title: "Splash Screen", url: "/app-settings/splash" },
+          { title: "Onboarding", url: "/app-settings/onboarding" },
+          { title: "Authentication", url: "/app-settings/auth" },
+          { title: "Android Settings", url: "/app-settings/android" },
+          { title: "iOS Settings", url: "/app-settings/ios" },
+        ],
+      },
+      {
+        title: "Admin Profile",
+        url: "/profile",
+        icon: Icons.User,
+        items: [],
+      },
+    ],
+  },
+];
