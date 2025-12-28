@@ -41,9 +41,9 @@ app-example
 # generated native folders
 /ios
 /android
-admin/
+
 .env
 functions/.env
 .env
 functions/.env
-admin/
+
