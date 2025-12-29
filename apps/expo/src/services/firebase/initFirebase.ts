@@ -12,8 +12,6 @@ import {
   getFirestore,
   Firestore,
   initializeFirestore,
-  persistentLocalCache,
-  memoryLocalCache
 } from "firebase/firestore";
 import { firebaseConfig } from "@/src/firebaseConfig";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -39,21 +37,27 @@ let firestore: Firestore;
 const DB_ID = "dpcontest";
 
 try {
-  // Try to get the specific database
+  // Try to get the specific database if it's already initialized
   firestore = getFirestore(app, DB_ID);
   console.log("[Firebase] Using existing Firestore instance:", DB_ID);
 } catch (e) {
   try {
     // If not initialized, initialize it
+    // Removing explicit cache config for now to avoid potential React Native compatibility issues
+    // or initialization errors with specific cache settings.
     firestore = initializeFirestore(app, {
       databaseId: DB_ID,
-      cache: persistentLocalCache({ tabManager: 'local' }),
     });
     console.log("[Firebase] Initialized Firestore with ID:", DB_ID);
   } catch (err) {
-    console.error("[Firebase] Firestore init failed:", err);
-    // Final fallback to default
-    firestore = getFirestore(app);
+    console.error("[Firebase] Named Firestore init failed, falling back to default:", err);
+    // Final fallback to default database
+    try {
+        firestore = getFirestore(app);
+    } catch (defaultErr) {
+        // If getFirestore(app) fails (not initialized), initialize default
+        firestore = initializeFirestore(app, {});
+    }
   }
 }
 

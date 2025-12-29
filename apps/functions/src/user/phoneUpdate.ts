@@ -4,7 +4,20 @@ import { db, admin } from "../utils/firebase";
 import twilio from "twilio";
 
 // Configure Twilio (Make sure these are in your .env)
-const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+// Lazy initialization to prevent deployment errors if env vars are missing locally
+let twilioClient: any = null;
+const getTwilioClient = () => {
+    if (!twilioClient) {
+        // Fallback or error if env vars missing, but only at runtime
+        const sid = process.env.TWILIO_ACCOUNT_SID;
+        const token = process.env.TWILIO_AUTH_TOKEN;
+        if (!sid || !token) {
+            throw new Error("Twilio credentials missing in environment variables.");
+        }
+        twilioClient = twilio(sid, token);
+    }
+    return twilioClient;
+};
 
 export const sendPhoneUpdateOtp = onCall({ region: "asia-south1", cors: true }, async (request) => {
     if (!request.auth) {
@@ -28,7 +41,7 @@ export const sendPhoneUpdateOtp = onCall({ region: "asia-south1", cors: true }, 
         });
 
         // Send SMS via Twilio
-        await twilioClient.messages.create({
+        await getTwilioClient().messages.create({
             body: `Your Instagram DP OTP for phone number update is: ${otp}. Valid for 10 minutes.`,
             from: process.env.TWILIO_PHONE_NUMBER,
             to: newPhone,

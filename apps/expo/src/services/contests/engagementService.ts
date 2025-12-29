@@ -1,4 +1,4 @@
-import { db } from '@/src/firebaseConfig';
+import { firestore } from '@/src/services/firebase/initFirebase';
 import { 
   doc, 
   setDoc, 
@@ -14,7 +14,7 @@ export const engagementService = {
    */
   toggleBookmark: async (battleId: string, userId: string) => {
     try {
-      const bookmarkRef = doc(db, `users/${userId}/bookmarks`, battleId);
+      const bookmarkRef = doc(firestore, `users/${userId}/bookmarks`, battleId);
       const docSnap = await getDoc(bookmarkRef);
 
       if (docSnap.exists()) {

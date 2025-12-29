@@ -1,6 +1,7 @@
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import * as admin from "firebase-admin";
 import { sendPushNotification } from "../notifications/sender";
+import { awardXp } from "../utils/gamification";
 
 /**
  * Scheduled function to check for ended contests and distribute rewards.
@@ -28,21 +29,20 @@ export const finalizeContests = onSchedule("every 1 hours", async (event) => {
 
       let winnerId = null;
       let loserId = null;
+      let loserId2 = null; // In case of tie/no win
       const votesA = battleData.userA.votes;
       const votesB = battleData.userB.votes;
 
-      if (votesA > votesB && votesA >= contestData.minimumVotes) {
+      if (votesA > votesB && votesA >= (contestData.minimumVotes || 0)) {
         winnerId = battleData.userA.userId;
         loserId = battleData.userB.userId;
-      } else if (votesB > votesA && votesB >= contestData.minimumVotes) {
+      } else if (votesB > votesA && votesB >= (contestData.minimumVotes || 0)) {
         winnerId = battleData.userB.userId;
         loserId = battleData.userA.userId;
       } else {
         // Tie or min votes not met
-        loserId = battleData.userA.userId; // Both lose
-        const loserB = battleData.userB.userId;
-        await sendPushNotification(loserId, "Contest Ended", `No winner in ${contestData.name} (Tied or Min votes not met).`, "contest_ended");
-        await sendPushNotification(loserB, "Contest Ended", `No winner in ${contestData.name} (Tied or Min votes not met).`, "contest_ended");
+        loserId = battleData.userA.userId;
+        loserId2 = battleData.userB.userId;
       }
 
       const batch = db.batch();
@@ -53,11 +53,14 @@ export const finalizeContests = onSchedule("every 1 hours", async (event) => {
 
       if (winnerId) {
         const totalPrize = (contestData.winningCoins || 0) + (contestData.fishCoinsReward || 0);
+        
+        // Update Winner Coins & Stats
         batch.update(db.collection("users").doc(winnerId), {
           fishCoins: admin.firestore.FieldValue.increment(totalPrize),
           "stats.wins": admin.firestore.FieldValue.increment(1)
         });
 
+        // Record Transaction
         const transRef = db.collection("coin_transactions").doc();
         batch.set(transRef, {
           userId: winnerId, amount: totalPrize, type: "win_reward", contestId, battleId: battleDoc.id, description: `Winner reward for ${contestData.name}`, createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -65,13 +68,24 @@ export const finalizeContests = onSchedule("every 1 hours", async (event) => {
 
         await batch.commit();
 
-        // NOTIFY WINNER & LOSER
+        // Gamification: Award XP
+        await awardXp(winnerId, 500, "battle_win");
+        if (loserId) await awardXp(loserId, 100, "battle_loss");
+
+        // NOTIFICATIONS
         await sendPushNotification(winnerId, "CONGRATULATIONS! 🎉", `You won the ${contestData.name} contest and earned ${totalPrize} coins!`, "contest_won");
         if (loserId) {
-          await sendPushNotification(loserId, "Battle Ended 🏁", `The results for ${contestData.name} are in. Better luck next time!`, "contest_lost");
+          await sendPushNotification(loserId, "Battle Ended 🏁", `The results for ${contestData.name} are in. Better luck next time! (+100 XP)`, "contest_lost");
         }
       } else {
         await batch.commit();
+        
+        // Award Participation XP even for ties
+        if (loserId) await awardXp(loserId, 50, "battle_tie");
+        if (loserId2) await awardXp(loserId2, 50, "battle_tie");
+
+        if (loserId) await sendPushNotification(loserId, "Contest Ended", `No winner in ${contestData.name}. (+50 XP)`, "contest_ended");
+        if (loserId2) await sendPushNotification(loserId2, "Contest Ended", `No winner in ${contestData.name}. (+50 XP)`, "contest_ended");
       }
     }
     console.log(`Finalized ${expiredBattlesSnap.size} battles.`);

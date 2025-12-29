@@ -9,7 +9,7 @@ import {
   limit, 
   Timestamp 
 } from 'firebase/firestore';
-import { db } from '@/src/firebaseConfig';
+import { firestore } from '@/src/services/firebase/initFirebase';
 import { Contest, Battle } from '@/src/types/contest';
 
 export const contestService = {
@@ -18,7 +18,7 @@ export const contestService = {
    */
   getLiveContests: async (type?: 'photo' | 'video'): Promise<Contest[]> => {
     try {
-      const contestsRef = collection(db, 'contests');
+      const contestsRef = collection(firestore, 'contests');
       let q = query(
         contestsRef, 
         where('status', '==', 'live'),
@@ -43,7 +43,7 @@ export const contestService = {
    */
   getActiveBattles: async (contestId?: string, limitCount: number = 20): Promise<Battle[]> => {
     try {
-      const battlesRef = collection(db, 'battles');
+      const battlesRef = collection(firestore, 'battles');
       let q = query(
         battlesRef, 
         where('status', '==', 'active'),
@@ -68,7 +68,7 @@ export const contestService = {
    */
   getContestById: async (contestId: string): Promise<Contest | null> => {
     try {
-      const docRef = doc(db, 'contests', contestId);
+      const docRef = doc(firestore, 'contests', contestId);
       const docSnap = await getDoc(docRef);
       if (docSnap.exists()) {
         return { id: docSnap.id, ...docSnap.data() } as Contest;

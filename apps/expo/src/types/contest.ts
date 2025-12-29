@@ -8,6 +8,7 @@ export interface Contest {
   name: string;
   type: MediaType;
   rules: string;
+  bannerUrl?: string; // Added optional bannerUrl
   entryFishCoins: number; // Total entry fee (e.g., 100)
   winningCoins: number;   // Main prize
   fishCoinsReward: number; // Bonus reward

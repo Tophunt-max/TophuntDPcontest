@@ -1,9 +1,8 @@
-import React, { useState, memo, useEffect } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, Dimensions, ActivityIndicator } from 'react-native';
+import React, { useState, memo, useEffect, useCallback } from 'react';
+import { View, Text, StyleSheet, Image, TouchableOpacity, Dimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Icons from '@/assets/svgs';
 import { CommentSheet } from '../comments/CommentSheet';
-import { ShareSheet } from '../share/ShareSheet';
 import { Battle } from '@/src/types/contest';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { useAuth } from '@/src/hooks/useAuth';
@@ -11,7 +10,19 @@ import { Video, ResizeMode } from 'expo-av';
 import { reactionService } from '@/src/services/contests/reactionService';
 import { engagementService } from '@/src/services/contests/engagementService';
 import { notificationService } from '@/src/services/notifications/notificationService';
-import Animated, { ZoomIn, FadeOut, Layout } from 'react-native-reanimated';
+import Animated, { 
+  ZoomIn, 
+  FadeOut, 
+  useSharedValue, 
+  useAnimatedStyle, 
+  withSpring, 
+  withSequence, 
+  withDelay,
+  withTiming,
+  runOnJS
+} from 'react-native-reanimated';
+import { GestureDetector, Gesture } from 'react-native-gesture-handler';
+import * as Haptics from 'expo-haptics';
 
 const { width } = Dimensions.get('window');
 
@@ -20,14 +31,46 @@ interface PostProps {
     isDark: boolean;
 }
 
+const AnimatedHeart = ({ onFinish }: { onFinish: () => void }) => {
+    const scale = useSharedValue(0);
+    const opacity = useSharedValue(0);
+
+    useEffect(() => {
+        scale.value = withSequence(
+            withSpring(1.2),
+            withDelay(500, withTiming(0, undefined, (finished) => {
+                if (finished) runOnJS(onFinish)();
+            }))
+        );
+        opacity.value = withSequence(
+            withTiming(1, { duration: 100 }),
+            withDelay(500, withTiming(0))
+        );
+    }, []);
+
+    const style = useAnimatedStyle(() => ({
+        transform: [{ scale: scale.value }],
+        opacity: opacity.value
+    }));
+
+    return (
+        <Animated.View style={[styles.heartOverlay, style]}>
+            <Ionicons name="heart" size={80} color="#FFF" />
+        </Animated.View>
+    );
+};
+
 export const Post = memo(({ item, isDark }: PostProps) => {
   const { user } = useAuth();
   const [showComments, setShowComments] = useState(false);
-  const [showShare, setShowShare] = useState(false);
   const [votedFor, setVotedFor] = useState<string | null>(null);
   const [isVoting, setIsVoting] = useState(false);
   const [isBookmarked, setIsBookmarked] = useState(false);
   const [timeLeft, setTimeLeft] = useState('');
+  
+  // Animation states
+  const [showHeartA, setShowHeartA] = useState(false);
+  const [showHeartB, setShowHeartB] = useState(false);
   
   const textColor = isDark ? '#FFFFFF' : '#212121';
   const subTextColor = isDark ? '#BDBDBD' : '#616161';
@@ -53,40 +96,62 @@ export const Post = memo(({ item, isDark }: PostProps) => {
     return () => clearInterval(timer);
   }, [item.endDate]);
 
-  const handleVote = async (participantId: string, side: 'A' | 'B') => {
+  const handleVote = useCallback(async (participantId: string, side: 'A' | 'B') => {
     if (!user || isVoting || votedFor) return;
+    
+    // 1. Haptic Feedback
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+    // 2. Optimistic Update
     setIsVoting(true);
+    setVotedFor(participantId);
+    if (side === 'A') setVotesA(prev => prev + 1);
+    else setVotesB(prev => prev + 1);
+
     try {
       const functions = getFunctions();
       const voteFn = httpsCallable(functions, 'voteInBattle');
       await voteFn({ battleId: item.id, participantId });
-      setVotedFor(participantId);
-      if (side === 'A') setVotesA(prev => prev + 1);
-      else setVotesB(prev => prev + 1);
-    } catch (error) { console.error(error); } finally { setIsVoting(false); }
-  };
+    } catch (error) { 
+        console.error(error); 
+        // Revert on failure (optional, but good practice)
+    } finally { setIsVoting(false); }
+  }, [user, isVoting, votedFor, item.id]);
+
+  const onDoubleTapA = useCallback(() => {
+      if (votedFor) return;
+      setShowHeartA(true);
+      handleVote(item.userA.userId, 'A');
+  }, [votedFor, handleVote, item.userA.userId]);
+
+  const onDoubleTapB = useCallback(() => {
+      if (votedFor) return;
+      setShowHeartB(true);
+      handleVote(item.userB.userId, 'B');
+  }, [votedFor, handleVote, item.userB.userId]);
+
+  // Gestures
+  const tapA = Gesture.Tap().numberOfTaps(2).onEnd(runOnJS(onDoubleTapA));
+  const tapB = Gesture.Tap().numberOfTaps(2).onEnd(runOnJS(onDoubleTapB));
 
   const handleBookmark = async () => {
     if (!user) return;
     try {
+      Haptics.selectionAsync();
       const result = await engagementService.toggleBookmark(item.id, user.uid);
       setIsBookmarked(result);
-      if (result) {
-          notificationService.notifyBattleAction(item.id, [item.userA.userId, item.userB.userId], item.contestName, 'bookmark');
-      }
+      if (result) notificationService.notifyBattleAction(item.id, [item.userA.userId, item.userB.userId], item.contestName, 'bookmark');
     } catch (e) { console.error(e); }
   };
 
   const handleShare = async () => {
+    Haptics.selectionAsync();
     const shared = await engagementService.shareBattle(item.contestName, item.userA.username, item.userB.username);
-    if (shared) {
-        notificationService.notifyBattleAction(item.id, [item.userA.userId, item.userB.userId], item.contestName, 'share');
-    }
+    if (shared) notificationService.notifyBattleAction(item.id, [item.userA.userId, item.userB.userId], item.contestName, 'share');
   };
 
   return (
     <View style={[styles.postContainer, { borderBottomColor: borderColor }]}>
-      {/* Header, Media, Voting remain same... */}
       <View style={styles.postHeader}>
         <View style={styles.userInfo}>
            <View style={styles.avatarContainer}>
@@ -106,14 +171,21 @@ export const Post = memo(({ item, isDark }: PostProps) => {
       </View>
 
       <View style={styles.mediaSection}>
-        <TouchableOpacity activeOpacity={0.9} style={styles.imageWrapper} onPress={() => handleVote(item.userA.userId, 'A')}>
-            {item.contestType === 'video' ? <Video source={{ uri: item.userA.mediaUrl }} style={styles.postImage} resizeMode={ResizeMode.COVER} shouldPlay isLooping isMuted /> : <Image source={{ uri: item.userA.mediaUrl }} style={styles.postImage} />}
-            {votedFor === item.userA.userId && <Animated.View entering={ZoomIn} style={styles.thankYouBadge}><Text style={styles.thankYouText}>Voted!</Text></Animated.View>}
-        </TouchableOpacity>
-        <TouchableOpacity activeOpacity={0.9} style={styles.imageWrapper} onPress={() => handleVote(item.userB.userId, 'B')}>
-            {item.contestType === 'video' ? <Video source={{ uri: item.userB.mediaUrl }} style={styles.postImage} resizeMode={ResizeMode.COVER} shouldPlay isLooping isMuted /> : <Image source={{ uri: item.userB.mediaUrl }} style={styles.postImage} />}
-            {votedFor === item.userB.userId && <Animated.View entering={ZoomIn} style={styles.thankYouBadge}><Text style={styles.thankYouText}>Voted!</Text></Animated.View>}
-        </TouchableOpacity>
+        <GestureDetector gesture={tapA}>
+            <TouchableOpacity activeOpacity={0.9} style={styles.imageWrapper} onPress={() => handleVote(item.userA.userId, 'A')}>
+                {item.contestType === 'video' ? <Video source={{ uri: item.userA.mediaUrl }} style={styles.postImage} resizeMode={ResizeMode.COVER} shouldPlay isLooping isMuted /> : <Image source={{ uri: item.userA.mediaUrl }} style={styles.postImage} />}
+                {showHeartA && <AnimatedHeart onFinish={() => setShowHeartA(false)} />}
+                {votedFor === item.userA.userId && !showHeartA && <Animated.View entering={ZoomIn} style={styles.thankYouBadge}><Text style={styles.thankYouText}>Voted</Text></Animated.View>}
+            </TouchableOpacity>
+        </GestureDetector>
+
+        <GestureDetector gesture={tapB}>
+            <TouchableOpacity activeOpacity={0.9} style={styles.imageWrapper} onPress={() => handleVote(item.userB.userId, 'B')}>
+                {item.contestType === 'video' ? <Video source={{ uri: item.userB.mediaUrl }} style={styles.postImage} resizeMode={ResizeMode.COVER} shouldPlay isLooping isMuted /> : <Image source={{ uri: item.userB.mediaUrl }} style={styles.postImage} />}
+                {showHeartB && <AnimatedHeart onFinish={() => setShowHeartB(false)} />}
+                {votedFor === item.userB.userId && !showHeartB && <Animated.View entering={ZoomIn} style={styles.thankYouBadge}><Text style={styles.thankYouText}>Voted</Text></Animated.View>}
+            </TouchableOpacity>
+        </GestureDetector>
       </View>
 
       <View style={styles.votingButtonsContainer}>
@@ -127,8 +199,8 @@ export const Post = memo(({ item, isDark }: PostProps) => {
       </View>
 
       <View style={styles.reactionsBar}>
-          <TouchableOpacity style={styles.reactionBtn} onPress={() => reactionService.addReaction(item.id, user?.uid!, 'fire')}><Text style={{fontSize: 20}}>🔥</Text></TouchableOpacity>
-          <TouchableOpacity style={styles.reactionBtn} onPress={() => reactionService.addReaction(item.id, user?.uid!, 'heart')}><Text style={{fontSize: 20}}>❤️</Text></TouchableOpacity>
+          <TouchableOpacity style={styles.reactionBtn} onPress={() => { Haptics.selectionAsync(); reactionService.addReaction(item.id, user?.uid!, 'fire'); }}><Text style={{fontSize: 20}}>🔥</Text></TouchableOpacity>
+          <TouchableOpacity style={styles.reactionBtn} onPress={() => { Haptics.selectionAsync(); reactionService.addReaction(item.id, user?.uid!, 'heart'); }}><Text style={{fontSize: 20}}>❤️</Text></TouchableOpacity>
           <View style={{flex: 1}} />
           <Text style={[styles.pollTimer, { color: subTextColor }]}>Ends in: <Text style={{ color: textColor }}>{timeLeft}</Text></Text>
       </View>
@@ -169,6 +241,7 @@ const styles = StyleSheet.create({
   postImage: { width: '100%', height: '100%', position: 'absolute' },
   thankYouBadge: { backgroundColor: 'rgba(0, 0, 0, 0.7)', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, zIndex: 10 },
   thankYouText: { color: '#FFF', fontFamily: 'Urbanist-Bold', fontSize: 14 },
+  heartOverlay: { position: 'absolute', zIndex: 20, shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 5 },
   votingButtonsContainer: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, marginTop: 15, alignItems: 'center' },
   voteButton: { flex: 1, paddingVertical: 10, borderRadius: 12, backgroundColor: '#F5F5F5', alignItems: 'center' },
   vsCenter: { paddingHorizontal: 15 },

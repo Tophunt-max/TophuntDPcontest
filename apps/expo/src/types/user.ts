@@ -1,4 +1,4 @@
-ab step import { Timestamp } from 'firebase/firestore';
+import { Timestamp } from 'firebase/firestore';
 
 export interface UserProfile {
   uid: string;
@@ -15,9 +15,14 @@ export interface UserProfile {
   facebook?: string;
   twitter?: string;
   instagram?: string;
-  // New Fields for Contest Platform
+  
+  // Contest Platform Fields
   fishCoins: number; 
   isAdmin: boolean;
+  xp?: number;
+  level?: number;
+  badges?: string[];
+  
   stats: {
     contestsJoined: number;
     wins: number;

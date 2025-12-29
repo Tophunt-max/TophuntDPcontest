@@ -1,4 +1,4 @@
-import { db } from '@/src/firebaseConfig';
+import { firestore } from '@/src/services/firebase/initFirebase';
 import { 
   doc, 
   updateDoc, 
@@ -17,7 +17,7 @@ export const reactionService = {
    */
   addReaction: async (battleId: string, userId: string, reactionType: string) => {
     try {
-      const reactionRef = doc(db, `battles/${battleId}/reactions`, `${userId}_${reactionType}`);
+      const reactionRef = doc(firestore, `battles/${battleId}/reactions`, `${userId}_${reactionType}`);
       
       // 1. Record individual reaction (to prevent spam if needed)
       await setDoc(reactionRef, {
@@ -27,7 +27,7 @@ export const reactionService = {
       });
 
       // 2. Increment counter in main battle document
-      const battleRef = doc(db, 'battles', battleId);
+      const battleRef = doc(firestore, 'battles', battleId);
       const fieldName = `reactions.${reactionType}`;
       
       await updateDoc(battleRef, {

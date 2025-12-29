@@ -1,10 +1,12 @@
 import { onDocumentCreated } from "firebase-functions/v2/firestore";
-import * as admin from "firebase-admin";
+import { db } from "../utils/firebase";
 import { getMessaging } from "firebase-admin/messaging";
 
-admin.initializeApp();
-
-export const sendChatNotification = onDocumentCreated('chats/{chatId}/messages/{messageId}', async (event) => {
+export const sendChatNotification = onDocumentCreated({
+    document: 'chats/{chatId}/messages/{messageId}',
+    database: 'dpcontest', 
+    region: 'asia-south1'
+}, async (event) => {
     const snap = event.data;
     if (!snap) {
         console.log("No data associated with the event");
@@ -14,7 +16,7 @@ export const sendChatNotification = onDocumentCreated('chats/{chatId}/messages/{
     const message = snap.data();
     const chatId = event.params.chatId;
 
-    const chatRef = admin.firestore().collection('chats').doc(chatId);
+    const chatRef = db.collection('chats').doc(chatId);
     const chatDoc = await chatRef.get();
     const chat = chatDoc.data();
 
@@ -25,7 +27,7 @@ export const sendChatNotification = onDocumentCreated('chats/{chatId}/messages/{
             return;
         }
 
-        const userRef = admin.firestore().collection('users').doc(recipientId);
+        const userRef = db.collection('users').doc(recipientId);
         const userDoc = await userRef.get();
         const userData = userDoc.data();
 

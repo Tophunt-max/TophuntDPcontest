@@ -1,25 +1,79 @@
 import React, { useEffect, useState } from 'react';
 import { View, StyleSheet, Image, Dimensions, Text } from 'react-native';
 import { useRouter } from 'expo-router';
-import { onAuthStateChanged } from 'firebase/auth';
+import { onAuthStateChanged, User } from 'firebase/auth';
 import { auth } from '../src/services/firebase/initFirebase';
-import { SplashAnimation } from '../components/SplashAnimation';
 import * as Font from 'expo-font';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getAppConfig, AppConfig } from '../src/services/appSettings';
+import Animated, { 
+  useSharedValue, 
+  useAnimatedStyle, 
+  withSpring, 
+  withRepeat, 
+  withSequence,
+  withTiming,
+  FadeIn,
+  Easing
+} from 'react-native-reanimated';
 
-const { width, height } = Dimensions.get('window');
+const { width } = Dimensions.get('window');
+
+// Loading Spinner Component (Round Round Spinner)
+const LoadingSpinner = () => {
+    const rotation = useSharedValue(0);
+
+    useEffect(() => {
+        rotation.value = withRepeat(withTiming(360, { duration: 1500, easing: Easing.linear }), -1);
+    }, []);
+
+    const animatedStyle = useAnimatedStyle(() => {
+        return {
+            transform: [{ rotate: `${rotation.value}deg` }],
+        };
+    });
+
+    return (
+        <Animated.View style={[styles.spinnerContainer, animatedStyle]}>
+            {[...Array(8)].map((_, i) => (
+                <View 
+                    key={i} 
+                    style={[
+                        styles.spinnerDot, 
+                        { 
+                            transform: [
+                                { rotate: `${i * 45}deg` },
+                                { translateY: -14 } // Distance from center
+                            ],
+                            opacity: 1 - (i * 0.1) // Fade trail effect
+                        }
+                    ]} 
+                />
+            ))}
+        </Animated.View>
+    );
+};
 
 export default function SplashScreen() {
   const router = useRouter();
   const [appIsReady, setAppIsReady] = useState(false);
-  const [config, setConfig] = useState<AppConfig | null>(null);
+  
+  // Animation Values
+  const logoScale = useSharedValue(0.8);
+  const logoOpacity = useSharedValue(0);
 
   useEffect(() => {
+    // 1. Start Animation immediately
+    logoOpacity.value = withTiming(1, { duration: 800 });
+    logoScale.value = withRepeat(
+        withSequence(withSpring(1.1), withSpring(1.0)),
+        -1, 
+        true
+    );
+
     async function prepare() {
       try {
         console.log("Preparing app...");
-        // 1. Load Fonts
+        // 2. Load Fonts
         await Font.loadAsync({
             'Urbanist-Regular': require('../assets/fonts/Urbanist-Regular.ttf'),
             'Urbanist-Bold': require('../assets/fonts/Urbanist-Bold.ttf'),
@@ -27,21 +81,10 @@ export default function SplashScreen() {
             'Urbanist-SemiBold': require('../assets/fonts/Urbanist-SemiBold.ttf'),
         });
         console.log("Fonts loaded");
-
-        // 2. Fetch Live Config with a shorter timeout
-        try {
-            const appConfig = await getAppConfig();
-            if (appConfig) {
-                setConfig(appConfig);
-                console.log("Config loaded");
-            }
-        } catch (e) {
-            console.warn('Config fetch skipped:', e);
-        }
-
       } catch (e) {
-        console.warn('General preparation error:', e);
+        console.warn('Error loading fonts:', e);
       } finally {
+        // 3. Mark app as ready to proceed to auth check
         setAppIsReady(true);
       }
     }
@@ -49,68 +92,61 @@ export default function SplashScreen() {
     prepare();
   }, []);
 
-
   useEffect(() => {
     if (!appIsReady) return;
 
-    let isMounted = true;
-    let authUnsubscribe: (() => void) | null = null;
+    // 4. Auth & Navigation Logic
+    const checkAuth = async () => {
+        const hasSeenOnboarding = await AsyncStorage.getItem('hasSeenOnboarding');
 
-    const checkAuthAndOnboarding = async () => {
-        try {
-            console.log("Checking auth...");
-            // Minimum wait for splash to be visible
-            await new Promise(resolve => setTimeout(resolve, 3000));
-            
-            if (!isMounted) return;
-
-            const hasSeenOnboarding = await AsyncStorage.getItem('hasSeenOnboarding');
-
-            authUnsubscribe = onAuthStateChanged(auth, (user) => {
-                console.log("Auth state changed, user:", user?.uid);
-                if (user) {
-                    router.replace('/home');
+        const unsubscribe = onAuthStateChanged(auth, (user: User | null) => {
+            if (user) {
+                // User is logged in -> Go to Home
+                console.log("User authenticated, navigating to Home");
+                router.replace('/home');
+            } else {
+                // User is NOT logged in
+                if (hasSeenOnboarding === 'true') {
+                    // If they have seen onboarding before, go to Login
+                    console.log("User not auth, seen onboarding -> Login");
+                    router.replace('/auth/login');
                 } else {
-                    if (hasSeenOnboarding === 'true') {
-                        router.replace('/auth/login');
-                    } else {
-                        router.replace('/onboarding');
-                    }
+                    // First time user -> Onboarding
+                    console.log("User not auth, new user -> Onboarding");
+                    router.replace('/onboarding');
                 }
-            });
+            }
+        });
 
-        } catch (e) {
-            console.error("Auth check error:", e);
-            router.replace('/onboarding');
-        }
+        return unsubscribe;
     };
 
-    checkAuthAndOnboarding();
-
-    return () => {
-        isMounted = false;
-        if (authUnsubscribe) authUnsubscribe();
-    };
-
+    checkAuth();
   }, [appIsReady]);
 
-  // Always render the splash UI while waiting for appIsReady or during the minimum timeout
+  const animatedLogoStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: logoScale.value }],
+    opacity: logoOpacity.value,
+  }));
+
   return (
     <View style={styles.container}>
-      {config?.splashImageUrl ? (
+      <Animated.View style={[styles.logoContainer, animatedLogoStyle]}>
           <Image 
-            source={{ uri: config.splashImageUrl }} 
-            style={styles.fullImage} 
-            resizeMode="cover"
+            source={require('../assets/images/icon.png')} 
+            style={styles.logo} 
+            resizeMode="contain"
           />
-      ) : (
-          <SplashAnimation />
-      )}
-      {!appIsReady && (
-          <View style={styles.loadingOverlay}>
-              <Text style={styles.loadingText}>Loading Assets...</Text>
-          </View>
-      )}
+      </Animated.View>
+
+      <Animated.View entering={FadeIn.delay(300)} style={styles.textContainer}>
+        <Text style={styles.appName}>TopHunt</Text>
+        <Text style={styles.tagline}>Compete. Vote. Win.</Text>
+      </Animated.View>
+
+      <View style={styles.loadingWrapper}>
+         <LoadingSpinner />
+      </View>
     </View>
   );
 }
@@ -118,24 +154,52 @@ export default function SplashScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff', 
+    backgroundColor: '#FFFFFF', 
     justifyContent: 'center',
     alignItems: 'center',
   },
-  fullImage: {
-      width: width,
-      height: height,
+  logoContainer: {
+      marginBottom: 30,
+      shadowColor: '#FF4D67',
+      shadowOffset: { width: 0, height: 10 },
+      shadowOpacity: 0.2,
+      shadowRadius: 20,
+      elevation: 10,
   },
-  loadingOverlay: {
-      position: 'absolute',
-      bottom: 50,
-      backgroundColor: 'rgba(255, 255, 255, 0.8)',
-      padding: 10,
-      borderRadius: 20,
+  logo: {
+      width: 140,
+      height: 140,
+      borderRadius: 30,
   },
-  loadingText: {
-      color: '#FF4D67',
+  textContainer: {
+      alignItems: 'center',
+  },
+  appName: {
+      fontSize: 36,
+      fontFamily: 'Urbanist-Bold',
+      color: '#212121',
+      marginBottom: 10,
+  },
+  tagline: {
+      fontSize: 18,
       fontFamily: 'Urbanist-Medium',
-      fontSize: 12,
+      color: '#9E9E9E',
+  },
+  loadingWrapper: {
+      position: 'absolute',
+      bottom: 80,
+  },
+  spinnerContainer: {
+      width: 40,
+      height: 40,
+      justifyContent: 'center',
+      alignItems: 'center',
+  },
+  spinnerDot: {
+      width: 6,
+      height: 6,
+      borderRadius: 3,
+      backgroundColor: '#FF4D67',
+      position: 'absolute',
   }
 });

@@ -1,5 +1,6 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
+import { awardXp } from "../utils/gamification";
 
 /**
  * Vote for a participant in a VS battle.
@@ -20,7 +21,7 @@ export const voteInBattle = onCall(async (request) => {
   const db = admin.firestore();
 
   try {
-    return await db.runTransaction(async (transaction) => {
+    await db.runTransaction(async (transaction) => {
       const battleRef = db.collection("battles").doc(battleId);
       const battleDoc = await transaction.get(battleRef);
 
@@ -33,13 +34,11 @@ export const voteInBattle = onCall(async (request) => {
         throw new HttpsError("failed-precondition", "This battle has already ended.");
       }
 
-      // Check if contest is still live
       if (battleData.endDate.toDate() < new Date()) {
         throw new HttpsError("failed-precondition", "The contest for this battle has expired.");
       }
 
       // 1. Check if user already voted in this battle
-      // Unique ID format: voterId_battleId
       const voteId = `${voterId}_${battleId}`;
       const voteRef = db.collection("votes").doc(voteId);
       const voteDoc = await transaction.get(voteRef);
@@ -79,14 +78,19 @@ export const voteInBattle = onCall(async (request) => {
 
       transaction.update(battleRef, updateData);
 
-      // 5. Update User's Stats (totalVotesReceived for the participant)
+      // 5. Update Participant's Stats
       const participantRef = db.collection("users").doc(participantId);
       transaction.update(participantRef, {
         "stats.totalVotesReceived": admin.firestore.FieldValue.increment(1)
       });
-
-      return { success: true, message: "Vote recorded successfully!" };
     });
+
+    // 6. Award XP to the Voter (Outside transaction to avoid locking issues)
+    // Award 10 XP for voting
+    awardXp(voterId, 10, "battle_vote").catch(err => console.error("XP Award Failed:", err));
+
+    return { success: true, message: "Vote recorded successfully!" };
+
   } catch (error) {
     console.error("Error in voteInBattle:", error);
     if (error instanceof HttpsError) throw error;
