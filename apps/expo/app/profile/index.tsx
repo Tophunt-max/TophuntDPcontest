@@ -33,7 +33,15 @@ const ProfilePage = () => {
   }, [authLoading, userIdParam, currentUser?.uid]);
 
   if (authLoading || (!targetId && !authLoading)) {
-    return <SafeAreaView style={styles.container}><ProfileHeaderSkeleton /></SafeAreaView>;
+    return (
+        <SafeAreaView style={styles.container}>
+            <ScrollView showsVerticalScrollIndicator={false}>
+                <ProfileHeaderSkeleton />
+                <PostGridSkeleton />
+            </ScrollView>
+            <BottomNav backgroundColor="#fff" isDark={false} />
+        </SafeAreaView>
+    );
   }
 
   if (!targetId) {
@@ -84,7 +92,15 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
   };
 
   if (profileLoading && !profile) {
-    return <SafeAreaView style={styles.container}><ProfileHeaderSkeleton /><PostGridSkeleton /></SafeAreaView>;
+    return (
+        <SafeAreaView style={styles.container}>
+            <ScrollView showsVerticalScrollIndicator={false}>
+                <ProfileHeaderSkeleton />
+                <PostGridSkeleton />
+            </ScrollView>
+            <BottomNav backgroundColor="#fff" isDark={false} />
+        </SafeAreaView>
+    );
   }
 
   if (isProfileError || !profile) {

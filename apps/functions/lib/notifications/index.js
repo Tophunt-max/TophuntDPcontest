@@ -6,8 +6,11 @@ const firebase_1 = require("../utils/firebase");
 const messaging_1 = require("firebase-admin/messaging");
 exports.sendChatNotification = (0, firestore_1.onDocumentCreated)({
     document: 'chats/{chatId}/messages/{messageId}',
-    database: 'dpcontest',
-    region: 'asia-south1'
+    region: 'us-central1',
+    // Removed database: 'dpcontest' to use default
+    maxInstances: 2,
+    cpu: 0.25,
+    memory: '256MiB'
 }, async (event) => {
     const snap = event.data;
     if (!snap) {

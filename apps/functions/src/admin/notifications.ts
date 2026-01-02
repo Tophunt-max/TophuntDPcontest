@@ -1,46 +1,68 @@
 import { onDocumentCreated } from "firebase-functions/v2/firestore";
-import { db, admin } from "../utils/firebase";
+// import * as admin from "firebase-admin";
+// import { db } from "../utils/firebase";
+import { sendPushNotification } from "../notifications/sender";
 
-// Trigger for new Reports
-export const onReportCreated = onDocumentCreated({
+// ------------------------------------------------------------------
+// 1. Trigger: When a Report is Created
+// ------------------------------------------------------------------
+export const onReportCreated = onDocumentCreated(
+  {
     document: "reports/{reportId}",
-    database: "dpcontest"
-}, async (event) => {
-    const reportData = event.data?.data();
+    region: "us-central1",
+    // Removed database: 'dpcontest'
+    maxInstances: 2,
+  },
+  async (event) => {
+    const snapshot = event.data;
+    if (!snapshot) return;
+
+    const reportData = snapshot.data();
     if (!reportData) return;
 
-    try {
-        await db.collection("admin_notifications").add({
-            title: "New User Report",
-            message: `User reported a ${reportData.type || 'post'}: ${reportData.reason}`,
-            link: "/reports",
-            isRead: false,
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-            type: "report"
-        });
-    } catch (error) {
-        console.error("Error creating report notification:", error);
-    }
-});
+    // Optional: Notify admins via Email or internal notification
+    // For now, we just log it. You could add email logic here.
+    console.log(`New Report Created: ${event.params.reportId}`, reportData);
 
-// Trigger for new Support Tickets
-export const onSupportTicketCreated = onDocumentCreated({
+    // If you want to notify admins via Push Notification:
+    // This assumes you have a way to identify admins (e.g., hardcoded IDs or a query)
+    /*
+    const admins = await db.collection("users").where("role", "==", "admin").get();
+    admins.forEach(adminDoc => {
+       sendPushNotification(adminDoc.id, "New Report Alert", `Type: ${reportData.type}`, "admin_alert");
+    });
+    */
+  }
+);
+
+// ------------------------------------------------------------------
+// 2. Trigger: When a Support Ticket is Created
+// ------------------------------------------------------------------
+export const onSupportTicketCreated = onDocumentCreated(
+  {
     document: "support_tickets/{ticketId}",
-    database: "dpcontest"
-}, async (event) => {
-    const ticketData = event.data?.data();
+    region: "us-central1",
+    // Removed database: 'dpcontest'
+    maxInstances: 2,
+  },
+  async (event) => {
+    const snapshot = event.data;
+    if (!snapshot) return;
+
+    const ticketData = snapshot.data();
     if (!ticketData) return;
 
-    try {
-        await db.collection("admin_notifications").add({
-            title: "New Support Query",
-            message: `User ${ticketData.username || 'unknown'} sent a support request: ${ticketData.subject}`,
-            link: "/support",
-            isRead: false,
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-            type: "support"
-        });
-    } catch (error) {
-        console.error("Error creating support notification:", error);
+    console.log(`New Support Ticket: ${event.params.ticketId}`, ticketData);
+
+    // Auto-reply to user acknowledging receipt
+    const userId = ticketData.userId;
+    if (userId) {
+      await sendPushNotification(
+        userId,
+        "Support Ticket Received",
+        "We have received your request and will get back to you soon.",
+        "support_auto_reply"
+      );
     }
-});
+  }
+);

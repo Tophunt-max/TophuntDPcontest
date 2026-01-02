@@ -3,6 +3,7 @@ import { getUserById, getUserPosts, getUserStories } from "@/components/Tables/f
 import { notFound } from "next/navigation";
 import { UserContentTabs } from "./_components/user-content";
 import { UserStatusActions } from "./_components/user-status-actions";
+import { WalletManagement } from "@/components/users/WalletManagement"; // Import the new component
 
 type Props = {
   params: Promise<{ id: string }>;
@@ -20,6 +21,7 @@ export default async function UserDetailsPage({ params }: Props) {
   ]);
 
   const avatarSrc = user.profileImageUrl || user.profilePicture || user.avatarUrl;
+  const walletBalance = user.fishCoins || 0; 
 
   return (
     <>
@@ -49,10 +51,17 @@ export default async function UserDetailsPage({ params }: Props) {
               <div><p className="text-xs font-semibold uppercase text-gray-400">Phone</p><p>{user.phone || "N/A"}</p></div>
               <div><p className="text-xs font-semibold uppercase text-gray-400">Gender</p><p className="capitalize">{user.gender || "N/A"}</p></div>
               <div><p className="text-xs font-semibold uppercase text-gray-400">Joined</p><p>{user.createdAt ? user.createdAt.split('T')[0] : "N/A"}</p></div>
+              <div><p className="text-xs font-semibold uppercase text-gray-400">Wallet Coins</p><p>{user.fishCoins || 0}</p></div>
+              <div><p className="text-xs font-semibold uppercase text-gray-400">Followers</p><p>{user.stats?.followersCount || 0}</p></div>
+              <div><p className="text-xs font-semibold uppercase text-gray-400">Following</p><p>{user.stats?.followingCount || 0}</p></div>
+              <div><p className="text-xs font-semibold uppercase text-gray-400">XP Level</p><p>{user.level || 0}</p></div>
+              <div><p className="text-xs font-semibold uppercase text-gray-400">Total Wins</p><p>{user.totalWins || 0}</p></div>
+              <div><p className="text-xs font-semibold uppercase text-gray-400">Total Joins</p><p>{user.totalJoins || 0}</p></div>
             </div>
 
             <UserStatusActions userId={id} initialIsBlocked={!!user.isBlocked} />
           </div>
+          <WalletManagement userId={id} initialBalance={walletBalance} />
         </div>
 
         <div className="lg:col-span-2">

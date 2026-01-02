@@ -38,7 +38,15 @@ const https_1 = require("firebase-functions/v2/https");
 const admin = __importStar(require("firebase-admin"));
 const logger = __importStar(require("firebase-functions/logger"));
 const firebase_1 = require("../utils/firebase");
-exports.createPost = (0, https_1.onCall)({ region: "asia-south1", cors: true }, async (request) => {
+const POST_CONFIG = {
+    region: "us-central1",
+    cpu: 1, // Increased to 1
+    concurrency: 80,
+    memory: "256MiB",
+    maxInstances: 2,
+    cors: true
+};
+exports.createPost = (0, https_1.onCall)(POST_CONFIG, async (request) => {
     if (!request.auth) {
         throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
     }
@@ -73,7 +81,7 @@ exports.createPost = (0, https_1.onCall)({ region: "asia-south1", cors: true }, 
         throw new https_1.HttpsError("internal", "Could not create post record.");
     }
 });
-exports.deleteUserPost = (0, https_1.onCall)({ region: "asia-south1", cors: true }, async (request) => {
+exports.deleteUserPost = (0, https_1.onCall)(POST_CONFIG, async (request) => {
     var _a, _b, _c;
     if (!request.auth) {
         throw new https_1.HttpsError("unauthenticated", "User must be logged in.");

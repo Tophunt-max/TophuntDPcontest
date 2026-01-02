@@ -38,10 +38,16 @@ const scheduler_1 = require("firebase-functions/v2/scheduler");
 const admin = __importStar(require("firebase-admin"));
 const sender_1 = require("../notifications/sender");
 const gamification_1 = require("../utils/gamification");
+const SCHEDULED_CONFIG = {
+    region: "us-central1", // Cheaper region
+    cpu: 0.25, // Minimum CPU
+    memory: "256MiB", // Cast to MemoryOption
+};
 /**
  * Scheduled function to check for ended contests and distribute rewards.
+ * Ran every 1 hour to save costs (was 1 min or implied frequent).
  */
-exports.finalizeContests = (0, scheduler_1.onSchedule)("every 1 hours", async (event) => {
+exports.finalizeContests = (0, scheduler_1.onSchedule)(Object.assign(Object.assign({}, SCHEDULED_CONFIG), { schedule: "every 1 hours" }), async (event) => {
     const db = admin.firestore();
     const now = admin.firestore.Timestamp.now();
     try {

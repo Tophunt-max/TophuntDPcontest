@@ -56,7 +56,15 @@ const getTwilioClient = () => {
     }
     return twilioClient;
 };
-exports.sendPhoneUpdateOtp = (0, https_1.onCall)({ region: "asia-south1", cors: true }, async (request) => {
+const PHONE_CONFIG = {
+    region: "us-central1",
+    cpu: 1, // Increased to 1
+    concurrency: 80,
+    memory: "256MiB",
+    maxInstances: 2,
+    cors: true
+};
+exports.sendPhoneUpdateOtp = (0, https_1.onCall)(PHONE_CONFIG, async (request) => {
     if (!request.auth) {
         throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
     }
@@ -86,7 +94,7 @@ exports.sendPhoneUpdateOtp = (0, https_1.onCall)({ region: "asia-south1", cors: 
         throw new https_1.HttpsError("internal", "Could not send SMS. " + error.message);
     }
 });
-exports.verifyPhoneUpdateOtp = (0, https_1.onCall)({ region: "asia-south1", cors: true }, async (request) => {
+exports.verifyPhoneUpdateOtp = (0, https_1.onCall)(PHONE_CONFIG, async (request) => {
     if (!request.auth) {
         throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
     }

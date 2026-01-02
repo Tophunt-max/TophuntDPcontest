@@ -2,8 +2,18 @@ import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 import * as logger from "firebase-functions/logger";
 import { db } from "../utils/firebase";
+import { MemoryOption } from "firebase-functions/v2/options";
 
-export const createPost = onCall({ region: "asia-south1", cors: true }, async (request) => {
+const POST_CONFIG = {
+    region: "us-central1",
+    cpu: 1, // Increased to 1
+    concurrency: 80,
+    memory: "256MiB" as MemoryOption,
+    maxInstances: 2,
+    cors: true
+};
+
+export const createPost = onCall(POST_CONFIG, async (request) => {
     if (!request.auth) {
         throw new HttpsError("unauthenticated", "User must be logged in.");
     }
@@ -45,7 +55,7 @@ export const createPost = onCall({ region: "asia-south1", cors: true }, async (r
     }
 });
 
-export const deleteUserPost = onCall({ region: "asia-south1", cors: true }, async (request) => {
+export const deleteUserPost = onCall(POST_CONFIG, async (request) => {
     if (!request.auth) {
         throw new HttpsError("unauthenticated", "User must be logged in.");
     }

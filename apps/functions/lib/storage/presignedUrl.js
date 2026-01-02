@@ -64,7 +64,15 @@ const getExtension = (mimeType) => {
         default: return "";
     }
 };
-exports.generatePresignedUrl = (0, https_1.onCall)({ region: "asia-south1", cors: true }, async (request) => {
+const STORAGE_CONFIG = {
+    region: "us-central1",
+    cpu: 1, // Increased to 1
+    concurrency: 80,
+    memory: "256MiB",
+    maxInstances: 2,
+    cors: true
+};
+exports.generatePresignedUrl = (0, https_1.onCall)(STORAGE_CONFIG, async (request) => {
     const { fileType, folder } = request.data;
     if (!fileType || !folder) {
         throw new https_1.HttpsError("invalid-argument", "fileType and folder are required.");

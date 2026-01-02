@@ -46,7 +46,15 @@ const transporter = nodemailer.createTransport({
         pass: process.env.EMAIL_PASS,
     },
 });
-exports.sendEmailUpdateOtp = (0, https_1.onCall)({ region: "asia-south1", cors: true }, async (request) => {
+const USER_CONFIG = {
+    region: "us-central1",
+    cpu: 1, // Increased to 1
+    concurrency: 80,
+    memory: "256MiB",
+    maxInstances: 2,
+    cors: true
+};
+exports.sendEmailUpdateOtp = (0, https_1.onCall)(USER_CONFIG, async (request) => {
     if (!request.auth) {
         throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
     }
@@ -79,7 +87,7 @@ exports.sendEmailUpdateOtp = (0, https_1.onCall)({ region: "asia-south1", cors: 
         throw new https_1.HttpsError("internal", "Could not send OTP. " + error.message);
     }
 });
-exports.verifyEmailUpdateOtp = (0, https_1.onCall)({ region: "asia-south1", cors: true }, async (request) => {
+exports.verifyEmailUpdateOtp = (0, https_1.onCall)(USER_CONFIG, async (request) => {
     if (!request.auth) {
         throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
     }

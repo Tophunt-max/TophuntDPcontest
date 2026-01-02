@@ -1,11 +1,15 @@
 import { onDocumentCreated } from "firebase-functions/v2/firestore";
 import { db } from "../utils/firebase";
 import { getMessaging } from "firebase-admin/messaging";
+import { MemoryOption } from "firebase-functions/v2/options";
 
 export const sendChatNotification = onDocumentCreated({
     document: 'chats/{chatId}/messages/{messageId}',
-    database: 'dpcontest', 
-    region: 'asia-south1'
+    region: 'us-central1',
+    // Removed database: 'dpcontest' to use default
+    maxInstances: 2,
+    cpu: 0.25,
+    memory: '256MiB' as MemoryOption
 }, async (event) => {
     const snap = event.data;
     if (!snap) {

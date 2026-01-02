@@ -57,7 +57,29 @@ export async function getUserById(id: string) {
   try {
     const doc = await db.collection("users").doc(id).get();
     if (!doc.exists) return null;
-    return { id: doc.id, ...serializeFirestoreData(doc.data()) };
+
+    const rawUserData = doc.data();
+    const userData = serializeFirestoreData(rawUserData);
+
+    // Ensure default values for fishCoins, level, and nested stats fields
+    const processedUserData = {
+      id: doc.id,
+      ...userData,
+      fishCoins: userData.fishCoins || 0,
+      level: userData.level || 0,
+      stats: {
+        postsCount: userData.stats?.postsCount || 0,
+        followersCount: userData.stats?.followersCount || 0,
+        followingCount: userData.stats?.followingCount || 0,
+        contestsJoined: userData.stats?.contestsJoined || 0,
+        wins: userData.stats?.wins || 0,
+        totalVotesReceived: userData.stats?.totalVotesReceived || 0,
+      },
+    };
+    
+    console.log("Processed User data from Firestore (with defaults):", processedUserData); // Log the data here
+
+    return processedUserData;
   } catch (error: any) {
     console.error("Error fetching user by id:", error.message);
     return null;

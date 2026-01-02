@@ -4,6 +4,7 @@ import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { v4 as uuidv4 } from "uuid";
 import * as dotenv from 'dotenv';
+import { MemoryOption } from "firebase-functions/v2/options";
 dotenv.config();
 
 const S3_BUCKET = process.env.S3_BUCKET;
@@ -33,7 +34,16 @@ const getExtension = (mimeType: string): string => {
     }
 };
 
-export const generatePresignedUrl = onCall({ region: "asia-south1", cors: true }, async (request) => {
+const STORAGE_CONFIG = {
+    region: "us-central1",
+    cpu: 1, // Increased to 1
+    concurrency: 80,
+    memory: "256MiB" as MemoryOption,
+    maxInstances: 2,
+    cors: true
+};
+
+export const generatePresignedUrl = onCall(STORAGE_CONFIG, async (request) => {
     const { fileType, folder } = request.data;
     
     if (!fileType || !folder) {

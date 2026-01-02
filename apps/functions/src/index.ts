@@ -1,30 +1,92 @@
+import { db, isAdmin } from "./utils/firebase";
+import { onCall, HttpsError } from "firebase-functions/v2/https";
+import { FieldValue } from "firebase-admin/firestore";
 import { setGlobalOptions } from "firebase-functions/v2";
 
+// Set global options to reduce resource usage for all functions
 setGlobalOptions({ 
-    region: "asia-south1",
-    maxInstances: 5, // Limit cost by capping instances
-    minInstances: 0, // No cost when idle
-    memory: "256MiB", // Lowest memory tier
-    timeoutSeconds: 60,
-    concurrency: 500 // HUGE SAVINGS: One instance handles 500 simultaneous requests
+    region: 'us-central1', 
+    cpu: 0.16, // Use significantly less CPU
+    memory: '256MiB',
+    maxInstances: 2,
+    concurrency: 1
 });
 
-export * from "./signup/checkEmailExists";
-export * from "./signup/checkPhoneExists";
-export * from "./signup/checkUniqueUsername";
-export * from "./signup/createUserRecord";
-export * from "./signup/createUser"; 
-export * from "./notifications/index";
-export * from "./stories/index";
-export * from "./posts/index";
-export * from "./storage/presignedUrl";
+// --- EXPORT ALL MODULES ---
+
+// 1. Auth & User Profile
+export * from "./auth/authHandler";
 export * from "./user/emailUpdate";
 export * from "./user/phoneUpdate";
 export * from "./user/toggleFollow";
-export * from "./contests/joinContest";
-export * from "./contests/vote";
-export * from "./contests/finalize";
-export * from "./wallet/topup";
+export * from "./user/rewards"; 
 
-// Optional: If you want to use the Merged approach, you would export ONE function here.
-// export * from "./universalRouter"; 
+// 2. Contests, Matches & Voting
+export * from "./contests/matchHandler";
+export * from "./contests/voting";
+export * from "./contests/cron";
+export * from "./contests/contestHandler"; 
+
+// 3. Posts & Stories
+export * from "./posts/index";
+export * from "./stories/index";
+
+// 4. Wallet & Payments
+export * from "./wallet/topup";
+export * from "./wallet/adminWalletManagement";
+
+// 5. Notifications & Messaging
+export * from "./notifications/index";
+export * from "./admin/notifications";
+
+// 6. Admin Tools
+export * from "./admin/index";
+
+// 7. Storage & Utilities
+export * from "./storage/presignedUrl";
+
+
+// --- INLINE FUNCTIONS (Existing in index.ts) ---
+
+/**
+ * ADMIN: Create a new Contest Template
+ */
+export const createContestTemplate = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Auth required.");
+  const isUserAdmin = await isAdmin(request.auth.uid);
+  if (!isUserAdmin) throw new HttpsError("permission-denied", "Admin only.");
+
+  const data = request.data;
+  const contestRef = db.collection("contests").doc();
+  await contestRef.set({
+    ...data,
+    status: "live", 
+    createdAt: FieldValue.serverTimestamp(),
+    createdBy: request.auth.uid,
+  });
+
+  return { success: true, contestId: contestRef.id };
+});
+
+/**
+ * ADMIN: God View Dashboard Stats
+ */
+export const getAdminStats = onCall(async (request) => {
+  if (!request.auth || !(await isAdmin(request.auth.uid))) {
+    throw new HttpsError("permission-denied", "Admin only.");
+  }
+
+  const usersCount = (await db.collection("users").count().get()).data().count;
+  const activeMatches = (await db.collection("contestMatches").where("status", "==", "active").count().get()).data().count;
+  const waitingMatches = (await db.collection("contestMatches").where("status", "==", "waiting_for_opponent").count().get()).data().count;
+  
+  const latestTransactions = await db.collection("coinTransactions")
+    .orderBy("timestamp", "desc")
+    .limit(10)
+    .get();
+
+  return {
+    stats: { usersCount, activeMatches, waitingMatches },
+    latestTransactions: latestTransactions.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+  };
+});

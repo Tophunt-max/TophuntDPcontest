@@ -39,11 +39,20 @@ const admin = __importStar(require("firebase-admin"));
 const firebase_1 = require("../utils/firebase");
 const sender_1 = require("../notifications/sender");
 const gamification_1 = require("../utils/gamification");
+const JOIN_CONFIG = {
+    region: "us-central1",
+    cpu: 1, // Increased to 1 to support concurrency
+    memory: "256MiB",
+    minInstances: 0,
+    maxInstances: 2,
+    concurrency: 80,
+    cors: true
+};
 /**
  * Join a contest and handle the VS pairing logic.
  * Coin deduction happens ONLY when a pair is formed.
  */
-exports.joinContest = (0, https_1.onCall)({ cors: true }, async (request) => {
+exports.joinContest = (0, https_1.onCall)(JOIN_CONFIG, async (request) => {
     // 1. Authenticate User
     if (!request.auth) {
         throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
@@ -55,14 +64,29 @@ exports.joinContest = (0, https_1.onCall)({ cors: true }, async (request) => {
     }
     try {
         // PRE-TRANSACTION: Check if user already joined (Query)
-        const existingEntryQuery = firebase_1.db.collection("entries")
+        const existingEntryQueryOld = firebase_1.db.collection("entries")
             .where("contestId", "==", contestId)
             .where("userId", "==", userId)
             .limit(1);
-        const existingEntrySnap = await existingEntryQuery.get();
-        if (!existingEntrySnap.empty) {
+        const existingEntryQueryA = firebase_1.db.collection("entries")
+            .where("contestId", "==", contestId)
+            .where("userId_A", "==", userId)
+            .limit(1);
+        const existingEntryQueryB = firebase_1.db.collection("entries")
+            .where("contestId", "==", contestId)
+            .where("userId_B", "==", userId)
+            .limit(1);
+
+        const [existingEntrySnapOld, existingEntrySnapA, existingEntrySnapB] = await Promise.all([
+            existingEntryQueryOld.get(),
+            existingEntryQueryA.get(),
+            existingEntryQueryB.get()
+        ]);
+
+        if (!existingEntrySnapOld.empty || !existingEntrySnapA.empty || !existingEntrySnapB.empty) {
             throw new https_1.HttpsError("already-exists", "You have already joined this contest.");
         }
+
         // PRE-TRANSACTION: Find a potential opponent (Query)
         const waitingQuery = firebase_1.db.collection("entries")
             .where("contestId", "==", contestId)
@@ -87,28 +111,44 @@ exports.joinContest = (0, https_1.onCall)({ cors: true }, async (request) => {
                 throw new https_1.HttpsError("failed-precondition", "Contest is not live.");
             }
             // 3. Re-verify opponent inside transaction
-            let opponentEntry = null;
+            let opponentEntryData = null;
+            let opponentEntryRef = null;
             if (potentialOpponentRef) {
                 const freshOpponentDoc = await transaction.get(potentialOpponentRef);
                 if (freshOpponentDoc.exists) {
                     const data = freshOpponentDoc.data();
+                    let normalizedData = data;
+                    // Normalize data to new format if it's an old entry (lacks userId_A but has userId)
+                    if (data && data.userId && !data.userId_A) {
+                        normalizedData = {
+                            ...data,
+                            userId_A: data.userId,
+                            username_A: data.username,
+                            userDisplayName_A: data.userDisplayName,
+                            mediaUrl_A: data.mediaUrl,
+                            caption_A: data.caption || "",
+                            // Ensure old fields are effectively ignored or removed if desired
+                            // For now, leaving them as is, but new code will use _A fields
+                        };
+                    }
                     // Ensure still waiting and not self (though self check covered by existingEntry check)
-                    if (data && data.status === "waiting" && data.userId !== userId) {
-                        opponentEntry = data;
+                    if (normalizedData && normalizedData.status === "waiting" && normalizedData.userId_A !== userId) {
+                        opponentEntryData = normalizedData;
+                        opponentEntryRef = freshOpponentDoc.ref;
                     }
                 }
             }
-            if (!opponentEntry) {
+            if (!opponentEntryData) {
                 // NO OPPONENT (or opponent taken/invalid): Create a waiting entry
                 const entryId = firebase_1.db.collection("entries").doc().id;
                 const newEntry = {
                     id: entryId,
                     contestId,
-                    userId,
-                    username,
-                    userDisplayName: displayName,
-                    mediaUrl,
-                    caption: caption || "",
+                    userId_A: userId,
+                    username_A: username,
+                    userDisplayName_A: displayName,
+                    mediaUrl_A: mediaUrl,
+                    caption_A: caption || "",
                     status: "waiting",
                     createdAt: admin.firestore.FieldValue.serverTimestamp(),
                 };
@@ -116,8 +156,8 @@ exports.joinContest = (0, https_1.onCall)({ cors: true }, async (request) => {
                 return { status: "waiting", message: "Joined! Waiting for an opponent." };
             }
             else {
-                // OPPONENT FOUND: Create Battle + Deduct Coins
-                const opponentId = opponentEntry.userId;
+                // OPPONENT FOUND: Update opponent's entry to be a paired battle entry
+                const opponentId = opponentEntryData.userId_A;
                 const userRef = firebase_1.db.collection("users").doc(userId);
                 const opponentRef = firebase_1.db.collection("users").doc(opponentId);
                 const [userDoc, opponentDoc] = await Promise.all([
@@ -129,22 +169,23 @@ exports.joinContest = (0, https_1.onCall)({ cors: true }, async (request) => {
                     throw new https_1.HttpsError("failed-precondition", "Insufficient Fish Coins.");
                 }
                 if ((((_b = opponentDoc.data()) === null || _b === void 0 ? void 0 : _b.fishCoins) || 0) < entryFeePerUser) {
-                    // Edge case: Opponent went broke while waiting.
+                    // Edge case: Opponent went broke while waiting. Current user still joins as waiting.
                     const entryId = firebase_1.db.collection("entries").doc().id;
                     const newEntry = {
                         id: entryId,
                         contestId,
-                        userId,
-                        username,
-                        userDisplayName: displayName,
-                        mediaUrl,
-                        caption: caption || "",
+                        userId_A: userId,
+                        username_A: username,
+                        userDisplayName_A: displayName,
+                        mediaUrl_A: mediaUrl,
+                        caption_A: caption || "",
                         status: "waiting",
                         createdAt: admin.firestore.FieldValue.serverTimestamp(),
                     };
                     transaction.set(firebase_1.db.collection("entries").doc(entryId), newEntry);
                     return { status: "waiting", message: "Joined! Waiting for an opponent (Opponent disqualified)." };
                 }
+                // Deduct Coins
                 transaction.update(userRef, {
                     fishCoins: admin.firestore.FieldValue.increment(-entryFeePerUser),
                     "stats.contestsJoined": admin.firestore.FieldValue.increment(1)
@@ -163,10 +204,10 @@ exports.joinContest = (0, https_1.onCall)({ cors: true }, async (request) => {
                     contestName: contestData.name,
                     contestType: contestData.type || 'photo',
                     userA: {
-                        userId: opponentId,
-                        username: opponentEntry.username,
-                        displayName: opponentEntry.userDisplayName,
-                        mediaUrl: opponentEntry.mediaUrl,
+                        userId: opponentEntryData.userId_A,
+                        username: opponentEntryData.username_A,
+                        displayName: opponentEntryData.userDisplayName_A,
+                        mediaUrl: opponentEntryData.mediaUrl_A,
                         votes: 0,
                     },
                     userB: {
@@ -182,20 +223,16 @@ exports.joinContest = (0, https_1.onCall)({ cors: true }, async (request) => {
                     createdAt: admin.firestore.FieldValue.serverTimestamp(),
                 };
                 transaction.set(firebase_1.db.collection("battles").doc(battleId), newBattle);
-                // Update Entries to 'paired'
-                transaction.update(firebase_1.db.collection("entries").doc(opponentEntry.id), { status: "paired", battleId });
-                const currentEntryId = firebase_1.db.collection("entries").doc().id;
-                transaction.set(firebase_1.db.collection("entries").doc(currentEntryId), {
-                    id: currentEntryId,
-                    contestId,
-                    userId,
-                    username,
-                    userDisplayName: displayName,
-                    mediaUrl,
-                    caption: caption || "",
+                // Update the existing opponent entry to reflect the pairing and add current user's data
+                transaction.update(opponentEntryRef, {
+                    userId_B: userId,
+                    username_B: username,
+                    userDisplayName_B: displayName,
+                    mediaUrl_B: mediaUrl,
+                    caption_B: caption || "",
                     status: "paired",
                     battleId,
-                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
                 });
                 // Transaction Records
                 const transARef = firebase_1.db.collection("coin_transactions").doc();
@@ -224,6 +261,10 @@ exports.joinContest = (0, https_1.onCall)({ cors: true }, async (request) => {
         }
         // Award XP for joining (50 XP)
         (0, gamification_1.awardXp)(userId, 50, "contest_join").catch(err => console.error("XP Award Failed:", err));
+        // Award XP to opponent as well if paired
+        if (result.status === "paired" && result.opponentId) {
+            (0, gamification_1.awardXp)(result.opponentId, 50, "contest_join").catch(err => console.error("XP Award Failed for opponent:", err));
+        }
         return result;
     }
     catch (error) {

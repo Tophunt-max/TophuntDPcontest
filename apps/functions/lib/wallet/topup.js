@@ -36,10 +36,19 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.topUpWallet = void 0;
 const https_1 = require("firebase-functions/v2/https");
 const admin = __importStar(require("firebase-admin"));
+const WALLET_CONFIG = {
+    region: "us-central1", // Cheaper region
+    cpu: 1, // Increased to 1
+    concurrency: 80,
+    memory: "256MiB",
+    minInstances: 0,
+    maxInstances: 2,
+    cors: true
+};
 /**
  * Top-up Fish Coins for a user after successful payment.
  */
-exports.topUpWallet = (0, https_1.onCall)(async (request) => {
+exports.topUpWallet = (0, https_1.onCall)(WALLET_CONFIG, async (request) => {
     if (!request.auth) {
         throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
     }

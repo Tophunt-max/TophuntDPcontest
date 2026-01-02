@@ -2,6 +2,7 @@ import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as logger from "firebase-functions/logger";
 import { db, admin } from "../utils/firebase";
 import * as nodemailer from "nodemailer";
+import { MemoryOption } from "firebase-functions/v2/options";
 
 // Configure your email transporter
 const transporter = nodemailer.createTransport({
@@ -12,7 +13,16 @@ const transporter = nodemailer.createTransport({
     },
 });
 
-export const sendEmailUpdateOtp = onCall({ region: "asia-south1", cors: true }, async (request) => {
+const USER_CONFIG = {
+    region: "us-central1",
+    cpu: 1, // Increased to 1
+    concurrency: 80,
+    memory: "256MiB" as MemoryOption,
+    maxInstances: 2,
+    cors: true
+};
+
+export const sendEmailUpdateOtp = onCall(USER_CONFIG, async (request) => {
     if (!request.auth) {
         throw new HttpsError("unauthenticated", "User must be logged in.");
     }
@@ -50,7 +60,7 @@ export const sendEmailUpdateOtp = onCall({ region: "asia-south1", cors: true }, 
     }
 });
 
-export const verifyEmailUpdateOtp = onCall({ region: "asia-south1", cors: true }, async (request) => {
+export const verifyEmailUpdateOtp = onCall(USER_CONFIG, async (request) => {
     if (!request.auth) {
         throw new HttpsError("unauthenticated", "User must be logged in.");
     }

@@ -3,16 +3,13 @@ import { View, Text, StyleSheet, Image, TouchableOpacity, Dimensions } from 'rea
 import { Ionicons } from '@expo/vector-icons';
 import * as Icons from '@/assets/svgs';
 import { CommentSheet } from '../comments/CommentSheet';
-import { Battle } from '@/src/types/contest';
-import { getFunctions, httpsCallable } from 'firebase/functions';
 import { useAuth } from '@/src/hooks/useAuth';
 import { Video, ResizeMode } from 'expo-av';
-import { reactionService } from '@/src/services/contests/reactionService';
-import { engagementService } from '@/src/services/contests/engagementService';
-import { notificationService } from '@/src/services/notifications/notificationService';
+import { contestService } from '@/src/services/contests/contestService';
+import { firestore } from '@/src/services/firebase/initFirebase';
+import { doc, onSnapshot } from 'firebase/firestore';
 import Animated, { 
   ZoomIn, 
-  FadeOut, 
   useSharedValue, 
   useAnimatedStyle, 
   withSpring, 
@@ -27,7 +24,7 @@ import * as Haptics from 'expo-haptics';
 const { width } = Dimensions.get('window');
 
 interface PostProps {
-    item: Battle;
+    item: any;
     isDark: boolean;
 }
 
@@ -65,10 +62,9 @@ export const Post = memo(({ item, isDark }: PostProps) => {
   const [showComments, setShowComments] = useState(false);
   const [votedFor, setVotedFor] = useState<string | null>(null);
   const [isVoting, setIsVoting] = useState(false);
-  const [isBookmarked, setIsBookmarked] = useState(false);
   const [timeLeft, setTimeLeft] = useState('');
+  const [deviceId, setDeviceId] = useState('temp-device-id'); 
   
-  // Animation states
   const [showHeartA, setShowHeartA] = useState(false);
   const [showHeartB, setShowHeartB] = useState(false);
   
@@ -80,10 +76,31 @@ export const Post = memo(({ item, isDark }: PostProps) => {
   const [votesA, setVotesA] = useState(item.userA.votes);
   const [votesB, setVotesB] = useState(item.userB.votes);
 
+  // REAL-TIME VOTE LISTENER
+  useEffect(() => {
+    if (!item.id) return;
+    
+    // Listen to this specific match document for real-time updates
+    const unsub = onSnapshot(doc(firestore, 'contestMatches', item.id), (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        setVotesA(data.userA.votes);
+        setVotesB(data.userB.votes);
+        
+        // If the match is completed, we could handle UI state here
+      }
+    }, (error) => {
+      console.error("Error listening to match updates:", error);
+    });
+
+    return () => unsub();
+  }, [item.id]);
+
   useEffect(() => {
     const timer = setInterval(() => {
+      if (!item.expiresAt) return;
       const now = new Date().getTime();
-      const end = item.endDate.toDate().getTime();
+      const end = item.expiresAt.toDate().getTime();
       const distance = end - now;
       if (distance < 0) { setTimeLeft('Ended'); clearInterval(timer); }
       else {
@@ -94,77 +111,58 @@ export const Post = memo(({ item, isDark }: PostProps) => {
       }
     }, 1000);
     return () => clearInterval(timer);
-  }, [item.endDate]);
+  }, [item.expiresAt]);
 
-  const handleVote = useCallback(async (participantId: string, side: 'A' | 'B') => {
+  const handleVote = useCallback(async (participantUid: string, side: 'A' | 'B') => {
     if (!user || isVoting || votedFor) return;
     
-    // 1. Haptic Feedback
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
-    // 2. Optimistic Update
     setIsVoting(true);
-    setVotedFor(participantId);
+    setVotedFor(participantUid);
+    
+    // Optimistic UI update (optional since onSnapshot will update it too)
     if (side === 'A') setVotesA(prev => prev + 1);
     else setVotesB(prev => prev + 1);
 
     try {
-      const functions = getFunctions();
-      const voteFn = httpsCallable(functions, 'voteInBattle');
-      await voteFn({ battleId: item.id, participantId });
+      await contestService.submitVote(item.id, participantUid, deviceId);
     } catch (error) { 
-        console.error(error); 
-        // Revert on failure (optional, but good practice)
+        console.error("Vote failed:", error); 
+        // Logic to revert state if needed
     } finally { setIsVoting(false); }
-  }, [user, isVoting, votedFor, item.id]);
+  }, [user, isVoting, votedFor, item.id, deviceId]);
 
   const onDoubleTapA = useCallback(() => {
       if (votedFor) return;
       setShowHeartA(true);
-      handleVote(item.userA.userId, 'A');
-  }, [votedFor, handleVote, item.userA.userId]);
+      handleVote(item.userA.uid, 'A');
+  }, [votedFor, handleVote, item.userA.uid]);
 
   const onDoubleTapB = useCallback(() => {
       if (votedFor) return;
       setShowHeartB(true);
-      handleVote(item.userB.userId, 'B');
-  }, [votedFor, handleVote, item.userB.userId]);
+      handleVote(item.userB.uid, 'B');
+  }, [votedFor, handleVote, item.userB.uid]);
 
-  // Gestures
   const tapA = Gesture.Tap().numberOfTaps(2).onEnd(runOnJS(onDoubleTapA));
   const tapB = Gesture.Tap().numberOfTaps(2).onEnd(runOnJS(onDoubleTapB));
-
-  const handleBookmark = async () => {
-    if (!user) return;
-    try {
-      Haptics.selectionAsync();
-      const result = await engagementService.toggleBookmark(item.id, user.uid);
-      setIsBookmarked(result);
-      if (result) notificationService.notifyBattleAction(item.id, [item.userA.userId, item.userB.userId], item.contestName, 'bookmark');
-    } catch (e) { console.error(e); }
-  };
-
-  const handleShare = async () => {
-    Haptics.selectionAsync();
-    const shared = await engagementService.shareBattle(item.contestName, item.userA.username, item.userB.username);
-    if (shared) notificationService.notifyBattleAction(item.id, [item.userA.userId, item.userB.userId], item.contestName, 'share');
-  };
 
   return (
     <View style={[styles.postContainer, { borderBottomColor: borderColor }]}>
       <View style={styles.postHeader}>
         <View style={styles.userInfo}>
            <View style={styles.avatarContainer}>
-              <Image source={{ uri: item.userA.profileImageUrl || 'https://ui-avatars.com/api/?name=A' }} style={styles.avatarMain} />
-              <Image source={{ uri: item.userB.profileImageUrl || 'https://ui-avatars.com/api/?name=B' }} style={[styles.avatarSub, { borderColor: isDark ? '#181A20' : '#fff' }]} />
+              <Image source={{ uri: item.userA.profilePic || 'https://ui-avatars.com/api/?name=A' }} style={styles.avatarMain} />
+              <Image source={{ uri: item.userB.profilePic || 'https://ui-avatars.com/api/?name=B' }} style={[styles.avatarSub, { borderColor: isDark ? '#181A20' : '#fff' }]} />
            </View>
            <View style={styles.nameContainer}>
                <Text style={[styles.username, { color: textColor }]} numberOfLines={1}>
-                   <Text style={{ fontFamily: 'Urbanist-Bold' }}>{item.userA.displayName}</Text>
+                   <Text style={{ fontFamily: 'Urbanist-Bold' }}>{item.userA.username}</Text>
                    <Text style={[styles.mentionText, { color: subTextColor }]}> VS </Text>
-                   <Text style={{ fontFamily: 'Urbanist-Bold' }}>{item.userB.displayName}</Text>
+                   <Text style={{ fontFamily: 'Urbanist-Bold' }}>{item.userB.username}</Text>
                </Text>
-               <Text style={[styles.timeText, { color: subTextColor }]}>{item.contestName}</Text> 
+               <Text style={[styles.timeText, { color: subTextColor }]}>{item.title}</Text> 
            </View>
         </View>
         <TouchableOpacity><Ionicons name="ellipsis-horizontal" size={24} color={textColor} /></TouchableOpacity>
@@ -172,37 +170,30 @@ export const Post = memo(({ item, isDark }: PostProps) => {
 
       <View style={styles.mediaSection}>
         <GestureDetector gesture={tapA}>
-            <TouchableOpacity activeOpacity={0.9} style={styles.imageWrapper} onPress={() => handleVote(item.userA.userId, 'A')}>
-                {item.contestType === 'video' ? <Video source={{ uri: item.userA.mediaUrl }} style={styles.postImage} resizeMode={ResizeMode.COVER} shouldPlay isLooping isMuted /> : <Image source={{ uri: item.userA.mediaUrl }} style={styles.postImage} />}
+            <TouchableOpacity activeOpacity={0.9} style={styles.imageWrapper} onPress={() => handleVote(item.userA.uid, 'A')}>
+                {item.type === 'video' ? <Video source={{ uri: item.userA.mediaUrl }} style={styles.postImage} resizeMode={ResizeMode.COVER} shouldPlay isLooping isMuted /> : <Image source={{ uri: item.userA.mediaUrl }} style={styles.postImage} />}
                 {showHeartA && <AnimatedHeart onFinish={() => setShowHeartA(false)} />}
-                {votedFor === item.userA.userId && !showHeartA && <Animated.View entering={ZoomIn} style={styles.thankYouBadge}><Text style={styles.thankYouText}>Voted</Text></Animated.View>}
+                {votedFor === item.userA.uid && !showHeartA && <Animated.View entering={ZoomIn} style={styles.thankYouBadge}><Text style={styles.thankYouText}>Voted</Text></Animated.View>}
             </TouchableOpacity>
         </GestureDetector>
 
         <GestureDetector gesture={tapB}>
-            <TouchableOpacity activeOpacity={0.9} style={styles.imageWrapper} onPress={() => handleVote(item.userB.userId, 'B')}>
-                {item.contestType === 'video' ? <Video source={{ uri: item.userB.mediaUrl }} style={styles.postImage} resizeMode={ResizeMode.COVER} shouldPlay isLooping isMuted /> : <Image source={{ uri: item.userB.mediaUrl }} style={styles.postImage} />}
+            <TouchableOpacity activeOpacity={0.9} style={styles.imageWrapper} onPress={() => handleVote(item.userB.uid, 'B')}>
+                {item.type === 'video' ? <Video source={{ uri: item.userB.mediaUrl }} style={styles.postImage} resizeMode={ResizeMode.COVER} shouldPlay isLooping isMuted /> : <Image source={{ uri: item.userB.mediaUrl }} style={styles.postImage} />}
                 {showHeartB && <AnimatedHeart onFinish={() => setShowHeartB(false)} />}
-                {votedFor === item.userB.userId && !showHeartB && <Animated.View entering={ZoomIn} style={styles.thankYouBadge}><Text style={styles.thankYouText}>Voted</Text></Animated.View>}
+                {votedFor === item.userB.uid && !showHeartB && <Animated.View entering={ZoomIn} style={styles.thankYouBadge}><Text style={styles.thankYouText}>Voted</Text></Animated.View>}
             </TouchableOpacity>
         </GestureDetector>
       </View>
 
       <View style={styles.votingButtonsContainer}>
-          <TouchableOpacity style={[styles.voteButton, votedFor === item.userA.userId && { backgroundColor: activePink }]} onPress={() => handleVote(item.userA.userId, 'A')} disabled={!!votedFor}>
-             <Text style={[styles.voteButtonText, { color: votedFor === item.userA.userId ? '#FFF' : textColor }]}>{votesA} Votes</Text>
+          <TouchableOpacity style={[styles.voteButton, votedFor === item.userA.uid && { backgroundColor: activePink }]} onPress={() => handleVote(item.userA.uid, 'A')} disabled={!!votedFor}>
+             <Text style={[styles.voteButtonText, { color: votedFor === item.userA.uid ? '#FFF' : textColor }]}>{votesA} Votes</Text>
           </TouchableOpacity>
           <View style={styles.vsCenter}><Text style={{fontFamily: 'Urbanist-Bold', color: activePink}}>VS</Text></View>
-          <TouchableOpacity style={[styles.voteButton, votedFor === item.userB.userId && { backgroundColor: activePink }]} onPress={() => handleVote(item.userB.userId, 'B')} disabled={!!votedFor}>
-             <Text style={[styles.voteButtonText, { color: votedFor === item.userB.userId ? '#FFF' : textColor }]}>{votesB} Votes</Text>
+          <TouchableOpacity style={[styles.voteButton, votedFor === item.userB.uid && { backgroundColor: activePink }]} onPress={() => handleVote(item.userB.uid, 'B')} disabled={!!votedFor}>
+             <Text style={[styles.voteButtonText, { color: votedFor === item.userB.uid ? '#FFF' : textColor }]}>{votesB} Votes</Text>
           </TouchableOpacity>
-      </View>
-
-      <View style={styles.reactionsBar}>
-          <TouchableOpacity style={styles.reactionBtn} onPress={() => { Haptics.selectionAsync(); reactionService.addReaction(item.id, user?.uid!, 'fire'); }}><Text style={{fontSize: 20}}>🔥</Text></TouchableOpacity>
-          <TouchableOpacity style={styles.reactionBtn} onPress={() => { Haptics.selectionAsync(); reactionService.addReaction(item.id, user?.uid!, 'heart'); }}><Text style={{fontSize: 20}}>❤️</Text></TouchableOpacity>
-          <View style={{flex: 1}} />
-          <Text style={[styles.pollTimer, { color: subTextColor }]}>Ends in: <Text style={{ color: textColor }}>{timeLeft}</Text></Text>
       </View>
 
       <View style={styles.actionBar}>
@@ -211,13 +202,11 @@ export const Post = memo(({ item, isDark }: PostProps) => {
                <Icons.ChatIcon_Light width={26} height={26} color={textColor} />
                <Text style={[styles.actionCount, { color: textColor }]}>Discuss</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.actionItem} onPress={handleShare}>
+            <TouchableOpacity style={styles.actionItem}>
                <Icons.Share_Icon width={26} height={26} color={textColor} />
             </TouchableOpacity>
         </View>
-        <TouchableOpacity onPress={handleBookmark}>
-            {isBookmarked ? <Icons.Bookmark_Filled width={26} height={26} color={activePink} /> : <Icons.Bookmark_Outline width={26} height={26} color={textColor} />}
-        </TouchableOpacity>
+        <Text style={[styles.pollTimer, { color: subTextColor }]}>Ends in: <Text style={{ color: textColor }}>{timeLeft}</Text></Text>
       </View>
 
       <CommentSheet postId={item.id} visible={showComments} onDismiss={() => setShowComments(false)} isDark={isDark} />
@@ -246,11 +235,9 @@ const styles = StyleSheet.create({
   voteButton: { flex: 1, paddingVertical: 10, borderRadius: 12, backgroundColor: '#F5F5F5', alignItems: 'center' },
   vsCenter: { paddingHorizontal: 15 },
   voteButtonText: { fontFamily: 'Urbanist-Bold', fontSize: 14 },
-  reactionsBar: { flexDirection: 'row', paddingHorizontal: 16, marginTop: 15, alignItems: 'center' },
-  reactionBtn: { marginRight: 15, backgroundColor: '#F5F5F5', padding: 8, borderRadius: 20 },
-  pollTimer: { fontFamily: 'Urbanist-Medium', fontSize: 12 },
   actionBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, marginTop: 15 },
   leftActions: { flexDirection: 'row', alignItems: 'center' },
   actionItem: { flexDirection: 'row', alignItems: 'center', marginRight: 20 },
-  actionCount: { fontFamily: 'Urbanist-Bold', fontSize: 13, marginLeft: 8 }
+  actionCount: { fontFamily: 'Urbanist-Bold', fontSize: 13, marginLeft: 8 },
+  pollTimer: { fontFamily: 'Urbanist-Medium', fontSize: 12 }
 });

@@ -34,7 +34,7 @@ import Menu_Dark from './menuDark.svg';
 import Menu_Light from './menuLight.svg';
 import Control from './control.svg';
 import Male_Svg from './male.svg';
-import Female_Svg from './female.svg';
+import Female_Svg from '././female.svg';
 import Birthday_Svg from './birthday.svg';
 import SoundIcon from './soundIcon.svg';
 import InstagramBg from './instagramBg.svg';
@@ -75,6 +75,7 @@ import Mention_Icon from './mention_icon.svg';
 import Highlight_Story_Icon from './highlight_story.svg';
 import Viewers_Icon from './viewers_icon.svg';
 import Delete_Icon from './delete_icon.svg';
+import Wallet_Icon from './wallet_icon.svg'; // NEW: Import Wallet Icon
 
 // Settings Icons
 import Settings_User from './settings/user.svg';
@@ -207,4 +208,5 @@ export {
   Highlight_Story_Icon,
   Viewers_Icon,
   Delete_Icon,
+  Wallet_Icon, // NEW: Export Wallet Icon
 };

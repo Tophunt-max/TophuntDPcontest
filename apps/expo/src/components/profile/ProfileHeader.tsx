@@ -1,392 +1,217 @@
-import React from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, Dimensions, ScrollView } from 'react-native';
-import { UserProfile } from '@/src/types/user';
-import { Colors } from '@/constants/theme';
-import { User_Plus, Settings_Icon, Pencil_Icon, Menu_Dark } from '@/assets/svgs';
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, Image, TouchableOpacity, Modal, Dimensions, ActivityIndicator } from 'react-native';
+import { UserProfile, Badge } from '@/src/types/user';
+import { Settings_Icon } from '@/assets/svgs';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
+import { equipBadgeService } from '@/src/services/users';
+import Animated, { useSharedValue, useAnimatedStyle, withSpring, withRepeat, withTiming, Easing } from 'react-native-reanimated';
+
+const { width } = Dimensions.get('window');
 
 type ProfileHeaderProps = {
   user: UserProfile;
   isOwnProfile: boolean;
   onToggleFollow: () => void;
   isFollowing?: boolean; 
+  onRefresh?: () => void;
 };
 
-const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onToggleFollow, isFollowing }) => {
+const calculateLevelInfo = (xp: number) => {
+    let level = 1;
+    let threshold = 500;
+    let accumulatedXp = 0;
+    while (xp >= accumulatedXp + threshold) {
+        accumulatedXp += threshold;
+        level++;
+        threshold += 500; 
+    }
+    const nextLevelThreshold = threshold;
+    const currentLevelProgress = xp - accumulatedXp;
+    const percentage = (currentLevelProgress / nextLevelThreshold) * 100;
+    return { level, progressXp: currentLevelProgress, nextLevelXp: nextLevelThreshold, percentage: Math.min(percentage, 100) };
+};
+
+const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onToggleFollow, isFollowing, onRefresh }) => {
   const router = useRouter();
+  const [claimModalVisible, setClaimModalVisible] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [canClaim, setCanClaim] = useState(false);
   
-  const avatarUri = user.profileImageUrl || (user as any).avatarUrl;
-  const defaultImage = require('@/assets/images/userLight.png');
-  const profileImage = avatarUri ? { uri: avatarUri } : defaultImage;
-
-  // Gamification Logic (Real Data)
   const xp = user.xp || 0;
-  const level = user.level || Math.floor(xp / 1000) + 1;
-  const progress = (xp % 1000) / 1000;
-  const nextLevelXp = (Math.floor(xp / 1000) + 1) * 1000;
+  const levelInfo = calculateLevelInfo(xp);
+  const equippedBadge = user.equippedBadge;
 
-  // Badges (Real Data or Default)
-  // If user has badges array, map them. Otherwise show placeholder/empty.
-  // For now, we will keep the static badges list but eventually this should come from user.badges
-  // Let's filter badges if user.badges exists, or show nothing if empty to be realistic
-  
-  const allBadges = [
-      { id: 'winner', icon: '🏆', name: 'Winner', color: '#FFD700' },
-      { id: 'hot', icon: '🔥', name: 'Hot', color: '#FF4500' },
-      { id: 'pro', icon: '📸', name: 'Pro', color: '#1E90FF' },
-      { id: 'star', icon: '⭐', name: 'Star', color: '#9370DB' },
-      { id: 'voter', icon: '🗳️', name: 'Voter', color: '#4CAF50' },
-  ];
+  // Animation shared values
+  const badgeScale = useSharedValue(0);
+  const claimBtnScale = useSharedValue(1);
 
-  // If user has badges (array of strings like ['winner', 'hot']), filter them
-  // If not, show empty list (no fake badges)
-  const userBadges = user.badges 
-      ? allBadges.filter(b => user.badges?.includes(b.id)) 
-      : []; 
-  
-  // Fallback for visual testing if you want to see something:
-  // const displayBadges = userBadges.length > 0 ? userBadges : [{ id: 'new', icon: '🌱', name: 'Newbie', color: '#888' }];
-  const displayBadges = userBadges;
+  useEffect(() => {
+    // Logic: If progress is >= 99% and there's an unclaimed badge for this level
+    // In a real app, you'd check if user.badges already contains this level's badge
+    const hasBadgeForCurrentLevel = user.badges?.some(b => b.level === levelInfo.level);
+    if (levelInfo.percentage >= 99 && !hasBadgeForCurrentLevel && isOwnProfile) {
+        setCanClaim(true);
+        claimBtnScale.value = withRepeat(withSpring(1.1), -1, true);
+    } else {
+        setCanClaim(false);
+    }
+  }, [levelInfo.percentage, user.badges]);
 
-  const formatFollowersCount = (count: number = 0): string => {
-    if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M`;
-    if (count >= 1000) return `${(count / 1000).toFixed(1)}K`;
-    return count.toString();
+  const animatedBadgeStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: badgeScale.value }]
+  }));
+
+  const animatedClaimBtnStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: claimBtnScale.value }]
+  }));
+
+  const handleClaim = () => {
+    setClaimModalVisible(true);
+    badgeScale.value = withSpring(1, { damping: 10, stiffness: 100 });
   };
 
-  const handleSettingsPress = () => {
-    router.push('/setting');
+  const confirmClaim = async () => {
+    setLoading(true);
+    // In reality, this would call a backend function to 'claim' and add to user.badges
+    // For now, we simulate equipping it
+    try {
+        const newBadge: Badge = { name: `Level ${levelInfo.level} Hero`, icon: '🏆', level: levelInfo.level };
+        await equipBadgeService(user.uid, newBadge);
+        setClaimModalVisible(false);
+        if (onRefresh) onRefresh();
+    } catch (error) {
+        console.error(error);
+    } finally {
+        setLoading(false);
+    }
   };
 
-  const handleEditProfilePress = () => {
-    router.push('/profile/manage');
-  };
+  const profileImage = user.profileImageUrl ? { uri: user.profileImageUrl } : require('@/assets/images/userLight.png');
 
   return (
     <View style={styles.container}>
-      {/* Top Bar */}
       <View style={styles.topBar}>
-        <View style={styles.topBarLeft}>
-           {!isOwnProfile && (
-             <TouchableOpacity style={styles.iconButton}>
-               <User_Plus width={24} height={24} />
-             </TouchableOpacity>
-           )}
-        </View>
-        
-        <Text style={styles.usernameText}>{user.username || 'username'}</Text>
-
+        <View style={styles.topBarLeft} />
+        <Text style={styles.usernameText}>@{user.username || 'username'}</Text>
         <View style={styles.topBarRight}>
-           {isOwnProfile && (
-             <TouchableOpacity style={styles.iconButton} onPress={handleSettingsPress}>
-               <Settings_Icon width={24} height={24} />
-             </TouchableOpacity>
-           )}
+           {isOwnProfile && <TouchableOpacity onPress={() => router.push('/setting')}><Settings_Icon width={24} height={24} /></TouchableOpacity>}
         </View>
       </View>
 
-      {/* Profile Picture with Level Ring */}
       <View style={styles.avatarWrapper}>
-        <View style={styles.avatarBorder}>
-          <Image
-            key={avatarUri} 
-            source={profileImage}
-            style={styles.avatarImage}
-            resizeMode="cover"
-          />
+        <View style={[styles.avatarBorder, equippedBadge && { borderColor: '#FFD700', borderWidth: 3 }]}>
+          <Image source={profileImage} style={styles.avatarImage} resizeMode="cover" />
         </View>
-        <View style={styles.levelBadge}>
-            <Text style={styles.levelText}>Lv. {level}</Text>
-        </View>
-        
-        {isOwnProfile && (
-          <TouchableOpacity 
-            style={styles.editBadge} 
-            onPress={handleEditProfilePress}
-            activeOpacity={0.7}
-          >
-            <Pencil_Icon width={14} height={14} fill="white" />
-          </TouchableOpacity>
+        {equippedBadge && (
+            <View style={styles.equippedBadgeIcon}>
+                <Text style={{fontSize: 20}}>{equippedBadge.icon}</Text>
+            </View>
         )}
+        <LinearGradient colors={['#FFD700', '#FFA500']} style={styles.levelBadge}>
+            <Text style={styles.levelText}>Lv. {levelInfo.level}</Text>
+        </LinearGradient>
       </View>
 
-      {/* User Info */}
       <View style={styles.infoSection}>
-        <Text style={styles.fullNameText}>{user.fullName || 'User Name'}</Text>
-        <Text style={styles.emailText}>{user.email}</Text>
+        <Text style={styles.fullNameText}>{user.fullName || user.username}</Text>
         {user.bio ? <Text style={styles.bioText}>{user.bio}</Text> : null}
       </View>
 
-      {/* XP Progress Bar */}
       <View style={styles.xpContainer}>
         <View style={styles.xpHeader}>
-            <Text style={styles.xpLabel}>Level {level}</Text>
-            <Text style={styles.xpValue}>{xp} / {nextLevelXp} XP</Text>
+            <Text style={styles.xpLabel}>Level {levelInfo.level} Progress</Text>
+            <Text style={styles.xpValue}>{Math.floor(levelInfo.progressXp)} / {levelInfo.nextLevelXp} XP</Text>
         </View>
-        <View style={styles.progressBarBg}>
-            <LinearGradient
-                colors={['#FF4D67', '#FF8A9B']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={[styles.progressBarFill, { width: `${Math.min(progress * 100, 100)}%` }]}
-            />
-        </View>
+        
+        {canClaim ? (
+            <Animated.View style={animatedClaimBtnStyle}>
+                <TouchableOpacity onPress={handleClaim}>
+                    <LinearGradient colors={['#FFD700', '#FF8C00']} style={styles.claimButton}>
+                        <Text style={styles.claimButtonText}>🎁 CLAIM LEVEL BADGE</Text>
+                    </LinearGradient>
+                </TouchableOpacity>
+            </Animated.View>
+        ) : (
+            <View style={styles.progressBarBg}>
+                <LinearGradient
+                    colors={['#FF4D67', '#FF8A9B']}
+                    start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                    style={[styles.progressBarFill, { width: `${levelInfo.percentage}%` }]}
+                />
+            </View>
+        )}
       </View>
 
-      {/* Badges Section */}
-      {displayBadges.length > 0 && (
-        <View style={styles.badgesContainer}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 20 }}>
-                {displayBadges.map((badge) => (
-                    <View key={badge.id} style={[styles.badgeItem, { backgroundColor: badge.color + '20' }]}>
-                        <Text style={styles.badgeIcon}>{badge.icon}</Text>
-                        <Text style={[styles.badgeName, { color: badge.color }]}>{badge.name}</Text>
-                    </View>
-                ))}
-            </ScrollView>
-        </View>
-      )}
+      {/* Badges Reveal Modal */}
+      <Modal visible={claimModalVisible} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+            <Animated.View style={[styles.badgeRevealCard, animatedBadgeStyle]}>
+                <Text style={styles.congratsText}>CONGRATULATIONS!</Text>
+                <Text style={styles.reachText}>You reached Level {levelInfo.level}</Text>
+                
+                <View style={styles.badgeCircle}>
+                    <Text style={styles.largeBadgeIcon}>🏆</Text>
+                </View>
 
-      {/* Stats Section */}
+                <Text style={styles.badgeNameText}>Level {levelInfo.level} Badge</Text>
+                <Text style={styles.badgeDescText}>This badge will now be shown on your profile ring.</Text>
+
+                <TouchableOpacity style={styles.confirmClaimBtn} onPress={confirmClaim} disabled={loading}>
+                    {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.confirmClaimBtnText}>CLAIM & EQUIP</Text>}
+                </TouchableOpacity>
+            </Animated.View>
+        </View>
+      </Modal>
+
       <View style={styles.statsRow}>
-        <View style={styles.statItem}>
-          <Text style={styles.statValue}>{(user as any).postsCount || 0}</Text>
-          <Text style={styles.statLabel}>Post</Text>
-        </View>
-        <View style={styles.statItem}>
-          <Text style={styles.statValue}>{formatFollowersCount((user as any).followersCount || 0)}</Text>
-          <Text style={styles.statLabel}>Followers</Text>
-        </View>
-        <View style={styles.statItem}>
-          <Text style={styles.statValue}>{(user as any).followingCount || 0}</Text>
-          <Text style={styles.statLabel}>Following</Text>
-        </View>
+        <View style={styles.statItem}><Text style={styles.statValue}>{(user as any).postsCount || 0}</Text><Text style={styles.statLabel}>Post</Text></View>
+        <View style={styles.statItem}><Text style={styles.statValue}>{(user as any).followersCount || 0}</Text><Text style={styles.statLabel}>Followers</Text></View>
+        <View style={styles.statItem}><Text style={styles.statValue}>{(user as any).followingCount || 0}</Text><Text style={styles.statLabel}>Following</Text></View>
       </View>
-
-      {/* Action Buttons */}
-      {!isOwnProfile && (
-        <View style={styles.actionRow}>
-          <TouchableOpacity 
-            style={[styles.mainButton, isFollowing ? styles.secondaryButton : styles.primaryButton]}
-            onPress={onToggleFollow}
-          >
-            <Text style={[styles.buttonText, isFollowing ? styles.textBlack : styles.textWhite]}>
-              {isFollowing ? 'Following' : 'Follow'}
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.mainButton, styles.secondaryButton]}>
-            <Text style={[styles.buttonText, styles.textBlack]}>Message</Text>
-          </TouchableOpacity>
-        </View>
-      )}
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {
-    backgroundColor: '#fff',
-    paddingBottom: 20,
-  },
-  topBar: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    height: 56,
-  },
+  container: { backgroundColor: '#fff', paddingBottom: 20 },
+  topBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, height: 56 },
   topBarLeft: { width: 40 },
   topBarRight: { width: 40, alignItems: 'flex-end' },
-  usernameText: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#000',
-    fontFamily: 'Urbanist-Bold',
-  },
-  iconButton: {
-    padding: 4,
-  },
-  avatarWrapper: {
-    alignSelf: 'center',
-    marginTop: 10,
-    position: 'relative',
-    marginBottom: 10,
-  },
-  avatarBorder: {
-    width: 110,
-    height: 110,
-    borderRadius: 55,
-    borderWidth: 1,
-    borderColor: '#eee',
-    padding: 3,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-  },
-  avatarImage: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    backgroundColor: '#f8f8f8',
-  },
-  editBadge: {
-    position: 'absolute',
-    bottom: 5,
-    right: 5,
-    backgroundColor: '#ff4466',
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#fff',
-    zIndex: 2,
-  },
-  levelBadge: {
-      position: 'absolute',
-      top: 0,
-      right: 0,
-      backgroundColor: '#FFD700',
-      paddingHorizontal: 8,
-      paddingVertical: 2,
-      borderRadius: 10,
-      borderWidth: 2,
-      borderColor: '#FFF',
-      zIndex: 2,
-  },
-  levelText: {
-      fontSize: 10,
-      fontWeight: 'bold',
-      color: '#856404',
-  },
-  infoSection: {
-    alignItems: 'center',
-    marginTop: 5,
-    paddingHorizontal: 20,
-  },
-  fullNameText: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: '#1a1a1a',
-    fontFamily: 'Urbanist-Bold',
-  },
-  emailText: {
-    fontSize: 14,
-    color: '#999',
-    marginTop: 2,
-    fontFamily: 'Urbanist-Medium',
-  },
-  bioText: {
-    fontSize: 14,
-    color: '#333',
-    textAlign: 'center',
-    marginTop: 8,
-    lineHeight: 20,
-    fontFamily: 'Urbanist-Regular',
-  },
+  usernameText: { fontSize: 18, fontFamily: 'Urbanist-Bold' },
+  avatarWrapper: { alignSelf: 'center', marginTop: 10, position: 'relative' },
+  avatarBorder: { width: 110, height: 110, borderRadius: 55, borderWidth: 1, borderColor: '#eee', padding: 3, backgroundColor: '#fff', justifyContent: 'center', alignItems: 'center' },
+  avatarImage: { width: 100, height: 100, borderRadius: 50 },
+  levelBadge: { position: 'absolute', bottom: 0, alignSelf: 'center', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10, borderWidth: 2, borderColor: '#FFF' },
+  levelText: { fontSize: 10, fontFamily: 'Urbanist-Bold', color: '#FFF' },
+  equippedBadgeIcon: { position: 'absolute', top: -5, left: -5, backgroundColor: '#FFF', borderRadius: 15, width: 30, height: 30, justifyContent: 'center', alignItems: 'center', elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 2 },
+  infoSection: { alignItems: 'center', marginTop: 15, paddingHorizontal: 20 },
+  fullNameText: { fontSize: 22, fontFamily: 'Urbanist-Bold' },
+  bioText: { fontSize: 14, color: '#666', textAlign: 'center', marginTop: 8, fontFamily: 'Urbanist-Regular' },
+  xpContainer: { marginTop: 20, paddingHorizontal: 30, width: '100%' },
+  xpHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
+  xpLabel: { fontSize: 12, fontFamily: 'Urbanist-Bold', color: '#FF4D67' },
+  xpValue: { fontSize: 12, color: '#888' },
+  progressBarBg: { height: 10, backgroundColor: '#F0F0F0', borderRadius: 5, overflow: 'hidden' },
+  progressBarFill: { height: '100%', borderRadius: 5 },
+  claimButton: { height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#FFA500', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 4 },
+  claimButtonText: { color: '#fff', fontFamily: 'Urbanist-Bold', fontSize: 14 },
+  statsRow: { flexDirection: 'row', justifyContent: 'space-around', marginTop: 25 },
+  statItem: { alignItems: 'center', flex: 1 },
+  statValue: { fontSize: 20, fontFamily: 'Urbanist-Bold' },
+  statLabel: { fontSize: 13, color: '#666', marginTop: 4, fontFamily: 'Urbanist-Medium' },
   
-  // XP Styles
-  xpContainer: {
-      marginTop: 20,
-      paddingHorizontal: 30,
-      width: '100%',
-  },
-  xpHeader: {
-      flexDirection: 'row',
-      justifyContent: 'space-between',
-      marginBottom: 6,
-  },
-  xpLabel: {
-      fontSize: 12,
-      fontWeight: 'bold',
-      color: '#FF4D67',
-  },
-  xpValue: {
-      fontSize: 12,
-      color: '#888',
-  },
-  progressBarBg: {
-      height: 8,
-      backgroundColor: '#F0F0F0',
-      borderRadius: 4,
-      overflow: 'hidden',
-  },
-  progressBarFill: {
-      height: '100%',
-      borderRadius: 4,
-  },
-
-  // Badges Styles
-  badgesContainer: {
-      marginTop: 20,
-      height: 40,
-  },
-  badgeItem: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      paddingHorizontal: 10,
-      paddingVertical: 4,
-      borderRadius: 20,
-      marginRight: 10,
-  },
-  badgeIcon: {
-      fontSize: 14,
-      marginRight: 5,
-  },
-  badgeName: {
-      fontSize: 12,
-      fontWeight: 'bold',
-  },
-
-  statsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    marginTop: 25,
-    paddingHorizontal: 10,
-  },
-  statItem: {
-    alignItems: 'center',
-    flex: 1,
-  },
-  statValue: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#000',
-    fontFamily: 'Urbanist-Bold',
-  },
-  statLabel: {
-    fontSize: 13,
-    color: '#666',
-    marginTop: 4,
-    fontFamily: 'Urbanist-Medium',
-  },
-  actionRow: {
-    flexDirection: 'row',
-    paddingHorizontal: 16,
-    marginTop: 20,
-    gap: 12,
-  },
-  mainButton: {
-    flex: 1,
-    height: 44,
-    borderRadius: 22,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  primaryButton: {
-    backgroundColor: '#ff4466',
-  },
-  secondaryButton: {
-    backgroundColor: '#f0f0f0',
-  },
-  buttonText: {
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  textWhite: { color: '#fff' },
-  textBlack: { color: '#000' },
+  // Reveal Modal
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', alignItems: 'center' },
+  badgeRevealCard: { width: width * 0.8, backgroundColor: '#fff', borderRadius: 30, padding: 30, alignItems: 'center' },
+  congratsText: { fontSize: 14, fontFamily: 'Urbanist-Bold', color: '#FFA500', letterSpacing: 2 },
+  reachText: { fontSize: 24, fontFamily: 'Urbanist-Bold', color: '#000', marginVertical: 10 },
+  badgeCircle: { width: 120, height: 120, borderRadius: 60, backgroundColor: '#FFF5E6', justifyContent: 'center', alignItems: 'center', marginVertical: 20, borderWidth: 5, borderColor: '#FFD700' },
+  largeBadgeIcon: { fontSize: 60 },
+  badgeNameText: { fontSize: 20, fontFamily: 'Urbanist-Bold', color: '#000' },
+  badgeDescText: { fontSize: 14, color: '#666', textAlign: 'center', marginTop: 10, lineHeight: 20 },
+  confirmClaimBtn: { marginTop: 30, backgroundColor: '#FF4D67', width: '100%', height: 50, borderRadius: 25, justifyContent: 'center', alignItems: 'center' },
+  confirmClaimBtnText: { color: '#fff', fontFamily: 'Urbanist-Bold', fontSize: 16 }
 });
 
 export default ProfileHeader;

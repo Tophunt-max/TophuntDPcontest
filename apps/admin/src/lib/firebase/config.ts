@@ -2,6 +2,7 @@ import { initializeApp, getApps, getApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
+import { getFunctions } from "firebase/functions";
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -15,8 +16,9 @@ const firebaseConfig = {
 
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 const auth = getAuth(app);
-// Connect to the specific database 'dpcontest'
-const db = getFirestore(app, "dpcontest");
+// Use default database (migrated from dpcontest)
+const db = getFirestore(app);
 const storage = getStorage(app);
+const functions = getFunctions(app, "us-central1");
 
-export { auth, db, storage };
+export { app, auth, db, storage, functions };

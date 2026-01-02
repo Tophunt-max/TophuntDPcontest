@@ -5,10 +5,12 @@ if (admin.apps.length === 0) {
   admin.initializeApp();
 }
 
-// Connect to the specific "dpcontest" database instance
-export const dpDb = getFirestore(admin.app(), "dpcontest");
-
-// Export db as dpDb to ensure all existing functions use the correct database
-export const db = dpDb;
+export const db = getFirestore();
 export const auth = admin.auth();
+
+export const isAdmin = async (uid: string) => {
+  const userDoc = await db.collection("users").doc(uid).get();
+  return userDoc.exists && userDoc.data()?.role === "admin";
+};
+
 export { admin };

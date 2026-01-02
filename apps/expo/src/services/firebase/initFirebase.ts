@@ -32,35 +32,28 @@ if (getApps().length === 0) {
   auth = getAuth(app);
 }
 
-// 3. Initialize Firestore (Named Database: dpcontest)
+// 3. Initialize Firestore (Default Database)
+// Migrated from "dpcontest" to default database
 let firestore: Firestore;
-const DB_ID = "dpcontest";
 
 try {
-  // Try to get the specific database if it's already initialized
-  firestore = getFirestore(app, DB_ID);
-  console.log("[Firebase] Using existing Firestore instance:", DB_ID);
+  // Use the default database
+  firestore = getFirestore(app);
+  console.log("[Firebase] Using default Firestore instance");
 } catch (e) {
   try {
-    // If not initialized, initialize it
-    // Removing explicit cache config for now to avoid potential React Native compatibility issues
-    // or initialization errors with specific cache settings.
-    firestore = initializeFirestore(app, {
-      databaseId: DB_ID,
-    });
-    console.log("[Firebase] Initialized Firestore with ID:", DB_ID);
+    // If not initialized, initialize default
+    firestore = initializeFirestore(app, {});
+    console.log("[Firebase] Initialized default Firestore");
   } catch (err) {
-    console.error("[Firebase] Named Firestore init failed, falling back to default:", err);
-    // Final fallback to default database
-    try {
-        firestore = getFirestore(app);
-    } catch (defaultErr) {
-        // If getFirestore(app) fails (not initialized), initialize default
-        firestore = initializeFirestore(app, {});
-    }
+    console.error("[Firebase] Firestore init failed:", err);
+    throw err;
   }
 }
 
-export const functions = getFunctions(app, "asia-south1");
+// Note: Cloud Functions region should ideally match your backend deployment (us-central1 now recommended)
+// Keeping asia-south1 if that's where your old functions are, but standardizing to us-central1 is better for cost.
+// If you updated functions to us-central1, change this too.
+export const functions = getFunctions(app, "us-central1"); 
 export { firestore, auth };
 export default app;

@@ -1,5 +1,11 @@
 import { Timestamp } from 'firebase/firestore';
 
+export interface Badge {
+  name: string;
+  icon: string;
+  level: number;
+}
+
 export interface UserProfile {
   uid: string;
   username: string;
@@ -21,7 +27,8 @@ export interface UserProfile {
   isAdmin: boolean;
   xp?: number;
   level?: number;
-  badges?: string[];
+  badges?: Badge[];
+  equippedBadge?: Badge;
   
   stats: {
     contestsJoined: number;

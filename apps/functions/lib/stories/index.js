@@ -41,7 +41,7 @@ const client_s3_1 = require("@aws-sdk/client-s3");
 const s3_request_presigner_1 = require("@aws-sdk/s3-request-presigner");
 const uuid_1 = require("uuid");
 const dotenv = __importStar(require("dotenv"));
-const firebase_1 = require("../utils/firebase");
+const firebase_1 = require("../utils/firebase"); // Changed dpDb to db
 dotenv.config();
 const S3_BUCKET = process.env.S3_BUCKET;
 const S3_REGION = process.env.S3_REGION;
@@ -70,7 +70,17 @@ const getExtension = (mimeType) => {
         default: return "";
     }
 };
-exports.generateStoryUploadUrl = (0, https_1.onCall)({ region: "asia-south1", cors: true }, async (request) => {
+const FUNCTION_CONFIG = {
+    region: "us-central1", // Optimized for free tier
+    cpu: 1, // Increased to 1
+    concurrency: 80,
+    memory: "256MiB",
+    timeoutSeconds: 60,
+    minInstances: 0,
+    maxInstances: 2,
+    cors: true
+};
+exports.generateStoryUploadUrl = (0, https_1.onCall)(FUNCTION_CONFIG, async (request) => {
     if (!request.auth) {
         throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
     }
@@ -112,19 +122,18 @@ exports.generateStoryUploadUrl = (0, https_1.onCall)({ region: "asia-south1", co
         throw new https_1.HttpsError("internal", "Could not generate upload URL.");
     }
 });
-exports.createStory = (0, https_1.onCall)({ region: "asia-south1", cors: true }, async (request) => {
-    var _a, _b;
-    const dbId = ((_a = firebase_1.dpDb._databaseId) === null || _a === void 0 ? void 0 : _a.database) || "dpcontest";
+exports.createStory = (0, https_1.onCall)(FUNCTION_CONFIG, async (request) => {
+    var _a;
+    // Removed dependency on dpDb specific property
     const { mediaUrl, mediaType, visibility = 'followers', overlayText = null, textPosition = null, mentions = [] } = request.data;
     logger.info("createStory started", {
-        uid: (_b = request.auth) === null || _b === void 0 ? void 0 : _b.uid,
+        uid: (_a = request.auth) === null || _a === void 0 ? void 0 : _a.uid,
         mediaUrl,
         mediaType,
         visibility,
         overlayText,
         textPosition,
-        mentions,
-        database: dbId
+        mentions
     });
     if (!request.auth) {
         logger.error("Authentication failed");
@@ -137,13 +146,13 @@ exports.createStory = (0, https_1.onCall)({ region: "asia-south1", cors: true },
     try {
         const userId = request.auth.uid;
         logger.info(`Fetching user document for userId: ${userId}`);
-        const userDoc = await firebase_1.dpDb.collection("users").doc(userId).get();
+        const userDoc = await firebase_1.db.collection("users").doc(userId).get();
         const userData = userDoc.data();
         logger.info("User data fetched:", userData);
         const mentionedUids = [];
         if (mentions && mentions.length > 0) {
             logger.info(`Processing mentions: ${mentions.join(', ')}`);
-            const usersRef = firebase_1.dpDb.collection("users");
+            const usersRef = firebase_1.db.collection("users");
             const batches = [];
             for (let i = 0; i < mentions.length; i += 10) {
                 const batch = mentions.slice(i, i + 10);
@@ -170,12 +179,12 @@ exports.createStory = (0, https_1.onCall)({ region: "asia-south1", cors: true },
             expiresAt: firebase_1.admin.firestore.Timestamp.fromDate(new Date(Date.now() + 24 * 60 * 60 * 1000)),
         };
         logger.info("Story data prepared for Firestore:", storyData);
-        const storyRef = await firebase_1.dpDb.collection("stories").add(storyData);
+        const storyRef = await firebase_1.db.collection("stories").add(storyData);
         if (mentionedUids.length > 0) {
             logger.info("Creating notifications for mentioned users.");
-            const batch = firebase_1.dpDb.batch();
+            const batch = firebase_1.db.batch();
             mentionedUids.forEach(uid => {
-                const notifRef = firebase_1.dpDb.collection("notifications").doc();
+                const notifRef = firebase_1.db.collection("notifications").doc();
                 batch.set(notifRef, {
                     recipientId: uid,
                     senderId: userId,
@@ -192,8 +201,7 @@ exports.createStory = (0, https_1.onCall)({ region: "asia-south1", cors: true },
         logger.info(`Story record created successfully with ID: ${storyRef.id}`);
         return {
             success: true,
-            storyId: storyRef.id,
-            database: dbId
+            storyId: storyRef.id
         };
     }
     catch (error) {
@@ -206,7 +214,7 @@ exports.createStory = (0, https_1.onCall)({ region: "asia-south1", cors: true },
         throw new https_1.HttpsError("internal", `Failed to save to database: ${error.message}`);
     }
 });
-exports.deleteStory = (0, https_1.onCall)({ region: "asia-south1", cors: true }, async (request) => {
+exports.deleteStory = (0, https_1.onCall)(FUNCTION_CONFIG, async (request) => {
     if (!request.auth) {
         throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
     }
@@ -215,7 +223,7 @@ exports.deleteStory = (0, https_1.onCall)({ region: "asia-south1", cors: true },
         throw new https_1.HttpsError("invalid-argument", "Story ID is required.");
     }
     try {
-        const storyRef = firebase_1.dpDb.collection("stories").doc(storyId);
+        const storyRef = firebase_1.db.collection("stories").doc(storyId);
         const storyDoc = await storyRef.get();
         if (!storyDoc.exists) {
             throw new https_1.HttpsError("not-found", "Story not found.");
@@ -255,18 +263,20 @@ exports.deleteStory = (0, https_1.onCall)({ region: "asia-south1", cors: true },
     }
 });
 exports.cleanupExpiredStories = functions.scheduler.onSchedule({
-    schedule: "every 24 hours",
-    region: "asia-south1"
+    schedule: "every 24 hours", // Daily cleanup is enough to save costs
+    region: "us-central1", // Move to cheaper region
+    cpu: 0.25,
+    memory: "256MiB",
 }, async (event) => {
     const now = firebase_1.admin.firestore.Timestamp.now();
-    const storiesRef = firebase_1.dpDb.collection("stories");
+    const storiesRef = firebase_1.db.collection("stories");
     const expiredStoriesQuery = storiesRef.where("expiresAt", "<=", now);
     const snapshot = await expiredStoriesQuery.get();
     if (snapshot.empty) {
         logger.info("No expired stories to delete.");
         return;
     }
-    const batch = firebase_1.dpDb.batch();
+    const batch = firebase_1.db.batch();
     snapshot.docs.forEach((doc) => {
         batch.delete(doc.ref);
         // Ideally we should also delete from S3 here, but batch doesn't support async/await well inside loop

@@ -37,11 +37,20 @@ exports.voteInBattle = void 0;
 const https_1 = require("firebase-functions/v2/https");
 const admin = __importStar(require("firebase-admin"));
 const gamification_1 = require("../utils/gamification");
+const VOTE_CONFIG = {
+    region: "us-central1",
+    cpu: 1, // Increased to 1
+    concurrency: 80, // High concurrency
+    memory: "256MiB",
+    minInstances: 0,
+    maxInstances: 2,
+    cors: true
+};
 /**
  * Vote for a participant in a VS battle.
  * Enforces one vote per user per battle.
  */
-exports.voteInBattle = (0, https_1.onCall)(async (request) => {
+exports.voteInBattle = (0, https_1.onCall)(VOTE_CONFIG, async (request) => {
     if (!request.auth) {
         throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
     }
@@ -88,6 +97,7 @@ exports.voteInBattle = (0, https_1.onCall)(async (request) => {
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
             });
             // 4. Update Vote Counts in Battle Document
+            // Using increment inside transaction is safe
             const updateData = {
                 totalVotes: admin.firestore.FieldValue.increment(1),
             };

@@ -33,16 +33,19 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.admin = exports.auth = exports.db = exports.dpDb = void 0;
+exports.admin = exports.isAdmin = exports.auth = exports.db = void 0;
 const admin = __importStar(require("firebase-admin"));
 exports.admin = admin;
 const firestore_1 = require("firebase-admin/firestore");
 if (admin.apps.length === 0) {
     admin.initializeApp();
 }
-// Connect to the specific "dpcontest" database instance
-exports.dpDb = (0, firestore_1.getFirestore)(admin.app(), "dpcontest");
-// Export db as dpDb to ensure all existing functions use the correct database
-exports.db = exports.dpDb;
+exports.db = (0, firestore_1.getFirestore)();
 exports.auth = admin.auth();
+const isAdmin = async (uid) => {
+    var _a;
+    const userDoc = await exports.db.collection("users").doc(uid).get();
+    return userDoc.exists && ((_a = userDoc.data()) === null || _a === void 0 ? void 0 : _a.role) === "admin";
+};
+exports.isAdmin = isAdmin;
 //# sourceMappingURL=firebase.js.map

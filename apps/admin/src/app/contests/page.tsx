@@ -1,10 +1,9 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import DefaultLayout from "@/components/Layouts/DefaultLayout";
 import Breadcrumb from "@/components/Breadcrumbs/Breadcrumb";
 import { db } from "@/lib/firebase/config";
-import { collection, query, orderBy, getDocs, deleteDoc, doc, Timestamp } from "firebase/firestore";
+import { collection, query, orderBy, getDocs, Timestamp } from "firebase/firestore";
 import Link from "next/link";
 
 interface Contest {
@@ -24,6 +23,11 @@ const Countdown = ({ endDate }: { endDate: Timestamp }) => {
     const [timeLeft, setTimeLeft] = useState("");
 
     useEffect(() => {
+        if (!endDate || typeof endDate.seconds === 'undefined') {
+            setTimeLeft("N/A");
+            return;
+        }
+
         const updateTimer = () => {
             const now = new Date().getTime();
             const distance = (endDate.seconds * 1000) - now;
@@ -76,8 +80,16 @@ const ContestsPage = () => {
   const handleDelete = async (id: string) => {
     if (confirm("Are you sure you want to delete this contest?")) {
       try {
-        await deleteDoc(doc(db, "contests", id));
-        setContests(contests.filter((c) => c.id !== id));
+        const res = await fetch(`/api/contests/${id}`, {
+          method: "DELETE",
+        });
+        
+        if (res.ok) {
+          setContests(contests.filter((c) => c.id !== id));
+        } else {
+          const err = await res.json();
+          alert(err.error || "Error deleting contest");
+        }
       } catch (error) {
         alert("Error deleting contest");
       }
@@ -85,7 +97,7 @@ const ContestsPage = () => {
   };
 
   const formatDate = (timestamp: Timestamp) => {
-    if (!timestamp) return "N/A";
+    if (!timestamp || typeof timestamp.seconds === 'undefined') return "N/A";
     return new Date(timestamp.seconds * 1000).toLocaleDateString("en-US", {
       month: "short",
       day: "numeric",
@@ -95,7 +107,7 @@ const ContestsPage = () => {
 
   const getStatusBadge = (status: string, endDate: Timestamp) => {
     const now = new Date();
-    const end = endDate ? new Date(endDate.seconds * 1000) : null;
+    const end = endDate && typeof endDate.seconds !== 'undefined' ? new Date(endDate.seconds * 1000) : null;
     
     let displayStatus = status;
     let colorClass = "bg-warning text-warning"; 
@@ -137,7 +149,7 @@ const ContestsPage = () => {
   }
 
   return (
-    <DefaultLayout>
+    <>
       <Breadcrumb pageName="Manage Contests" />
 
       <div className="mb-6 flex justify-end">
@@ -268,7 +280,7 @@ const ContestsPage = () => {
           </table>
         </div>
       </div>
-    </DefaultLayout>
+    </>
   );
 };
 

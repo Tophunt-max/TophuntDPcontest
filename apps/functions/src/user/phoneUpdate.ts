@@ -2,6 +2,7 @@ import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as logger from "firebase-functions/logger";
 import { db, admin } from "../utils/firebase";
 import twilio from "twilio";
+import { MemoryOption } from "firebase-functions/v2/options";
 
 // Configure Twilio (Make sure these are in your .env)
 // Lazy initialization to prevent deployment errors if env vars are missing locally
@@ -19,7 +20,16 @@ const getTwilioClient = () => {
     return twilioClient;
 };
 
-export const sendPhoneUpdateOtp = onCall({ region: "asia-south1", cors: true }, async (request) => {
+const PHONE_CONFIG = {
+    region: "us-central1",
+    cpu: 1, // Increased to 1
+    concurrency: 80,
+    memory: "256MiB" as MemoryOption,
+    maxInstances: 2,
+    cors: true
+};
+
+export const sendPhoneUpdateOtp = onCall(PHONE_CONFIG, async (request) => {
     if (!request.auth) {
         throw new HttpsError("unauthenticated", "User must be logged in.");
     }
@@ -54,7 +64,7 @@ export const sendPhoneUpdateOtp = onCall({ region: "asia-south1", cors: true }, 
     }
 });
 
-export const verifyPhoneUpdateOtp = onCall({ region: "asia-south1", cors: true }, async (request) => {
+export const verifyPhoneUpdateOtp = onCall(PHONE_CONFIG, async (request) => {
     if (!request.auth) {
         throw new HttpsError("unauthenticated", "User must be logged in.");
     }

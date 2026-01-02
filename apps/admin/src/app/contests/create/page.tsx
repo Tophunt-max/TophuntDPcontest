@@ -3,10 +3,12 @@
 import React, { useState } from "react";
 import DefaultLayout from "@/components/Layouts/DefaultLayout";
 import Breadcrumb from "@/components/Breadcrumbs/Breadcrumb";
-import { db } from "@/lib/firebase/config";
-import { collection, addDoc, Timestamp } from "firebase/firestore";
 import { useRouter } from "next/navigation";
 import { uploadToFirebaseStorage } from "@/lib/firebase-storage";
+import { getFunctions, httpsCallable } from "firebase/functions";
+import { app } from "@/lib/firebase/config";
+
+const functions = getFunctions(app);
 
 const CreateContest = () => {
   const router = useRouter();
@@ -15,16 +17,16 @@ const CreateContest = () => {
   const [bannerPreview, setBannerPreview] = useState<string | null>(null);
 
   const [formData, setFormData] = useState({
-    name: "",
+    title: "",
     type: "photo",
     description: "",
     rules: "",
-    entryFishCoins: 50,
-    winningCoins: 500,
-    fishCoinsReward: 0,
-    minimumVotes: 5,
-    joinDurationDays: 7,
-    voteDurationDays: 1,
+    totalEntryFee: 100, // Total fee (will be split 50/50 by users)
+    rewardCoins: 150, // What winner gets
+    rewardXP: 100,
+    minVotes: 5,
+    durationHours: 24,
+    autoCancelHours: 24,
   });
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -48,22 +50,11 @@ const CreateContest = () => {
         );
       }
 
-      const startDate = new Date();
-      
-      // End Date for the Contest (Join Window)
-      const endDate = new Date();
-      endDate.setDate(startDate.getDate() + formData.joinDurationDays);
-
-      const prizePool = formData.winningCoins + formData.fishCoinsReward;
-
-      await addDoc(collection(db, "contests"), {
+      // CALL CLOUD FUNCTION INSTEAD OF DIRECT WRITE
+      const createContestFn = httpsCallable(functions, 'createContestTemplate');
+      await createContestFn({
         ...formData,
-        bannerUrl, // Save the URL
-        prizePool,
-        startDate: Timestamp.fromDate(startDate),
-        endDate: Timestamp.fromDate(endDate),
-        status: "live",
-        createdAt: Timestamp.now(),
+        bannerUrl
       });
 
       router.push("/contests");
@@ -75,7 +66,7 @@ const CreateContest = () => {
     }
   };
 
-  const InputField = ({ label, type = "text", value, onChange, placeholder, required = false, className = "" }: any) => (
+  const InputField = ({ label, type = "text", value, onChange, placeholder, required = false, className = "", helpText = "" }: any) => (
     <div className={`mb-4.5 ${className}`}>
       <label className="mb-2.5 block text-black dark:text-white font-medium">
         {label} {required && <span className="text-meta-1">*</span>}
@@ -83,192 +74,96 @@ const CreateContest = () => {
       <input
         type={type}
         placeholder={placeholder}
-        className="w-full rounded border-[1.5px] border-stroke bg-transparent px-5 py-3 text-black outline-none transition focus:border-primary active:border-primary disabled:cursor-default disabled:bg-whiter dark:border-form-strokedark dark:bg-form-input dark:text-white dark:focus:border-primary"
+        className="w-full rounded border-[1.5px] border-stroke bg-transparent px-5 py-3 text-black outline-none transition focus:border-primary active:border-primary dark:border-form-strokedark dark:bg-form-input dark:text-white"
         value={value}
         onChange={onChange}
         required={required}
       />
+      {helpText && <p className="mt-1 text-xs text-gray-500">{helpText}</p>}
     </div>
   );
 
   return (
     <DefaultLayout>
-      <Breadcrumb pageName="Create Contest" />
+      <Breadcrumb pageName="Create Contest Template" />
 
       <div className="grid grid-cols-1 gap-9 sm:grid-cols-2">
         <div className="flex flex-col gap-9">
-          {/* Section 1: Basic Details */}
           <div className="rounded-sm border border-stroke bg-white shadow-default dark:border-strokedark dark:bg-boxdark">
             <div className="border-b border-stroke px-6.5 py-4 dark:border-strokedark">
-              <h3 className="font-medium text-black dark:text-white text-lg">
-                📝 Basic Details
-              </h3>
+              <h3 className="font-medium text-black dark:text-white text-lg">📝 Contest Details</h3>
             </div>
             <div className="p-6.5">
               <InputField 
-                label="Contest Name" 
-                placeholder="e.g. Best Sunset 2024" 
-                value={formData.name}
-                onChange={(e: any) => setFormData({ ...formData, name: e.target.value })}
+                label="Contest Title" 
+                placeholder="e.g. Urban Photography Challenge" 
+                value={formData.title}
+                onChange={(e: any) => setFormData({ ...formData, title: e.target.value })}
                 required
               />
 
-              {/* Banner Upload */}
               <div className="mb-4.5">
-                <label className="mb-2.5 block text-black dark:text-white font-medium">
-                    Contest Banner
-                </label>
-                <input 
-                    type="file" 
-                    accept="image/*"
-                    onChange={handleFileChange}
-                    className="w-full cursor-pointer rounded-lg border-[1.5px] border-stroke bg-transparent font-medium outline-none transition file:mr-5 file:border-collapse file:cursor-pointer file:border-0 file:border-r file:border-solid file:border-stroke file:bg-whiter file:px-5 file:py-3 file:hover:bg-primary file:hover:bg-opacity-10 focus:border-primary active:border-primary disabled:cursor-default disabled:bg-whiter dark:border-form-strokedark dark:bg-form-input dark:file:border-form-strokedark dark:file:bg-white/30 dark:file:text-white dark:focus:border-primary"
-                />
-                {bannerPreview && (
-                    <div className="mt-4">
-                        <img src={bannerPreview} alt="Preview" className="h-32 w-full object-cover rounded-md border border-stroke" />
-                    </div>
-                )}
+                <label className="mb-2.5 block text-black dark:text-white font-medium">Banner Image</label>
+                <input type="file" accept="image/*" onChange={handleFileChange} className="w-full cursor-pointer rounded-lg border-[1.5px] border-stroke bg-transparent font-medium" />
+                {bannerPreview && <img src={bannerPreview} className="mt-4 h-32 w-full object-cover rounded-md border" />}
               </div>
 
               <div className="mb-4.5">
-                <label className="mb-2.5 block text-black dark:text-white font-medium">
-                  Contest Type <span className="text-meta-1">*</span>
-                </label>
-                <div className="relative z-20 bg-transparent dark:bg-form-input">
-                  <select
-                    className="relative z-20 w-full appearance-none rounded border border-stroke bg-transparent px-5 py-3 outline-none transition focus:border-primary active:border-primary dark:border-form-strokedark dark:bg-form-input dark:focus:border-primary"
-                    value={formData.type}
-                    onChange={(e) => setFormData({ ...formData, type: e.target.value })}
-                  >
-                    <option value="photo">📸 Photo Contest</option>
-                    <option value="video">🎥 Video Contest</option>
-                  </select>
-                </div>
+                <label className="mb-2.5 block text-black dark:text-white font-medium">Type</label>
+                <select className="w-full rounded border border-stroke bg-transparent px-5 py-3" value={formData.type} onChange={(e) => setFormData({ ...formData, type: e.target.value })}>
+                  <option value="photo">📸 Photo</option>
+                  <option value="video">🎥 Video</option>
+                </select>
               </div>
 
-              <div className="mb-4.5">
-                <label className="mb-2.5 block text-black dark:text-white font-medium">
-                  Description / Theme
-                </label>
-                <textarea
-                  rows={3}
-                  placeholder="Describe what users should upload..."
-                  className="w-full rounded border-[1.5px] border-stroke bg-transparent px-5 py-3 text-black outline-none transition focus:border-primary active:border-primary dark:border-form-strokedark dark:bg-form-input dark:text-white dark:focus:border-primary"
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                ></textarea>
-              </div>
-            </div>
-          </div>
-
-          {/* Section 2: Timing Settings */}
-          <div className="rounded-sm border border-stroke bg-white shadow-default dark:border-strokedark dark:bg-boxdark">
-            <div className="border-b border-stroke px-6.5 py-4 dark:border-strokedark">
-              <h3 className="font-medium text-black dark:text-white text-lg">
-                ⏱️ Duration Settings
-              </h3>
-            </div>
-            <div className="p-6.5">
-                <div className="mb-4.5">
-                    <p className="text-sm text-gray-500 mb-3">
-                        These settings control how long the contest runs and how long individual battles last.
-                    </p>
-                </div>
-                <div className="flex gap-4">
-                    <InputField 
-                        label="Contest List (Days)" 
-                        type="number"
-                        placeholder="7"
-                        className="w-1/2"
-                        value={formData.joinDurationDays}
-                        onChange={(e: any) => setFormData({ ...formData, joinDurationDays: Number(e.target.value) })}
-                        required
-                    />
-                    <InputField 
-                        label="Vote Duration (Days)" 
-                        type="number"
-                        placeholder="1"
-                        className="w-1/2"
-                        value={formData.voteDurationDays}
-                        onChange={(e: any) => setFormData({ ...formData, voteDurationDays: Number(e.target.value) })}
-                        required
-                    />
-                </div>
+              <InputField label="Description" placeholder="Theme of the contest" value={formData.description} onChange={(e: any) => setFormData({ ...formData, description: e.target.value })} />
             </div>
           </div>
         </div>
 
         <div className="flex flex-col gap-9">
-          {/* Section 3: Economy & Rewards */}
           <div className="rounded-sm border border-stroke bg-white shadow-default dark:border-strokedark dark:bg-boxdark">
             <div className="border-b border-stroke px-6.5 py-4 dark:border-strokedark">
-              <h3 className="font-medium text-black dark:text-white text-lg">
-                💰 Economy & Rewards
-              </h3>
+              <h3 className="font-medium text-black dark:text-white text-lg">💰 Economy & Rules</h3>
             </div>
             <div className="p-6.5">
-                <div className="flex gap-4">
-                    <InputField 
-                        label="Entry Fee (Fish)" 
-                        type="number"
-                        placeholder="50"
-                        className="w-1/2"
-                        value={formData.entryFishCoins}
-                        onChange={(e: any) => setFormData({ ...formData, entryFishCoins: Number(e.target.value) })}
-                        required
-                    />
-                    <InputField 
-                        label="Win Prize (Coins)" 
-                        type="number"
-                        placeholder="500"
-                        className="w-1/2"
-                        value={formData.winningCoins}
-                        onChange={(e: any) => setFormData({ ...formData, winningCoins: Number(e.target.value) })}
-                        required
-                    />
-                </div>
+              <div className="flex gap-4">
+                <InputField label="Total Entry Fee (Split)" type="number" className="w-1/2" value={formData.totalEntryFee} onChange={(e: any) => setFormData({ ...formData, totalEntryFee: e.target.value })} required />
+                <InputField label="Winner Reward (Coins)" type="number" className="w-1/2" value={formData.rewardCoins} onChange={(e: any) => setFormData({ ...formData, rewardCoins: e.target.value })} required />
+              </div>
 
-                <div className="mb-4.5">
-                    <InputField 
-                        label="Min Votes to Win" 
-                        type="number"
-                        placeholder="5"
-                        value={formData.minimumVotes}
-                        onChange={(e: any) => setFormData({ ...formData, minimumVotes: Number(e.target.value) })}
-                    />
-                </div>
+              <div className="flex gap-4">
+                <InputField label="Winner XP" type="number" className="w-1/2" value={formData.rewardXP} onChange={(e: any) => setFormData({ ...formData, rewardXP: e.target.value })} />
+                <InputField label="Min Votes to Win" type="number" className="w-1/2" value={formData.minVotes} onChange={(e: any) => setFormData({ ...formData, minVotes: e.target.value })} />
+              </div>
 
-                <div className="mb-4.5">
-                    <label className="mb-2.5 block text-black dark:text-white font-medium">
-                    Rules
-                    </label>
-                    <textarea
-                    rows={4}
-                    placeholder="- No watermarks
-- High quality only
-- Original content"
-                    className="w-full rounded border-[1.5px] border-stroke bg-transparent px-5 py-3 text-black outline-none transition focus:border-primary active:border-primary dark:border-form-strokedark dark:bg-form-input dark:text-white dark:focus:border-primary"
-                    value={formData.rules}
-                    onChange={(e) => setFormData({ ...formData, rules: e.target.value })}
-                    required
-                    ></textarea>
-                </div>
+              <div className="flex gap-4">
+                <InputField 
+                    label="Duration (Hours)" 
+                    type="number" 
+                    className="w-1/2" 
+                    value={formData.durationHours} 
+                    onChange={(e: any) => setFormData({ ...formData, durationHours: e.target.value })} 
+                    helpText="Contest shuru hone ke baad kitni der chalega."
+                />
+                <InputField 
+                    label="Auto-cancel (Hours)" 
+                    type="number" 
+                    className="w-1/2" 
+                    value={formData.autoCancelHours} 
+                    onChange={(e: any) => setFormData({ ...formData, autoCancelHours: e.target.value })} 
+                    helpText="Agar required players nahi mile toh kab cancel hoga."
+                />
+              </div>
 
-                <button
-                    onClick={handleSubmit}
-                    disabled={loading}
-                    className="flex w-full justify-center rounded bg-primary p-3 font-medium text-white hover:bg-opacity-90 disabled:opacity-50"
-                >
-                    {loading ? (
-                         <span className="flex items-center gap-2">
-                             <span className="animate-spin h-4 w-4 border-2 border-white rounded-full border-t-transparent"></span>
-                             Creating...
-                         </span>
-                    ) : (
-                        "🚀 Launch Contest"
-                    )}
-                </button>
+              <div className="mb-4.5">
+                <label className="mb-2.5 block text-black dark:text-white font-medium">Rules</label>
+                <textarea rows={3} className="w-full rounded border border-stroke bg-transparent px-5 py-3" value={formData.rules} onChange={(e) => setFormData({ ...formData, rules: e.target.value })} />
+              </div>
+
+              <button onClick={handleSubmit} disabled={loading} className="w-full rounded bg-primary p-3 font-medium text-white hover:bg-opacity-90 disabled:opacity-50">
+                {loading ? "Launching..." : "🚀 Launch Contest Template"}
+              </button>
             </div>
           </div>
         </div>

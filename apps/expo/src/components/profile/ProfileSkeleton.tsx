@@ -1,8 +1,8 @@
 import React from 'react';
 import { View, StyleSheet, Dimensions } from 'react-native';
 
-const SkeletonPlaceholder = ({ height, width, borderRadius = 4 }: { height: number; width?: number | string; borderRadius?: number }) => (
-  <View style={[styles.skeleton, { height, width, borderRadius }]} />
+const SkeletonPlaceholder = ({ height, width, borderRadius = 4, style }: { height: number; width?: number | string; borderRadius?: number; style?: object }) => (
+  <View style={[styles.skeleton, { height, width, borderRadius }, style]} />
 );
 
 export const ProfileHeaderSkeleton = () => (
@@ -20,6 +20,20 @@ export const ProfileHeaderSkeleton = () => (
       <SkeletonPlaceholder height={50} width={80} />
       <SkeletonPlaceholder height={50} width={80} />
       <SkeletonPlaceholder height={50} width={80} />
+    </View>
+    {/* Placeholder for WalletCard */}
+    <SkeletonPlaceholder height={100} width="90%" borderRadius={8} style={{ marginTop: 20 }} />
+    {/* Placeholder for Highlights (e.g., a row of circles) */}
+    <View style={styles.highlightsContainer}>
+      {[...Array(4)].map((_, i) => (
+        <SkeletonPlaceholder key={i} height={60} width={60} borderRadius={30} style={{ marginHorizontal: 5 }} />
+      ))}
+    </View>
+    {/* Placeholder for ProfileTabs */}
+    <View style={styles.tabsContainer}>
+      <SkeletonPlaceholder height={30} width={80} borderRadius={15} />
+      <SkeletonPlaceholder height={30} width={80} borderRadius={15} />
+      <SkeletonPlaceholder height={30} width={80} borderRadius={15} />
     </View>
   </View>
 );
@@ -59,6 +73,19 @@ const styles = StyleSheet.create({
     justifyContent: 'space-around',
     width: '100%',
     marginTop: 16,
+  },
+  highlightsContainer: {
+    flexDirection: 'row',
+    marginTop: 20,
+    justifyContent: 'center',
+    width: '100%'
+  },
+  tabsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    width: '100%',
+    marginTop: 20,
+    paddingHorizontal: 20
   },
   gridContainer: {
     flexDirection: 'row',

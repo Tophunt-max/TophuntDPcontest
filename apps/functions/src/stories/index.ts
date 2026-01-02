@@ -5,7 +5,8 @@ import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { v4 as uuidv4 } from "uuid";
 import * as dotenv from 'dotenv';
-import { dpDb, admin } from "../utils/firebase";
+import { db, admin } from "../utils/firebase"; // Changed dpDb to db
+import { MemoryOption } from "firebase-functions/v2/options";
 
 dotenv.config();
 
@@ -41,7 +42,18 @@ const getExtension = (mimeType: string): string => {
     }
 };
 
-export const generateStoryUploadUrl = onCall({ region: "asia-south1", cors: true }, async (request) => {
+const FUNCTION_CONFIG = {
+    region: "us-central1", // Optimized for free tier
+    cpu: 1, // Increased to 1
+    concurrency: 80,
+    memory: "256MiB" as MemoryOption,
+    timeoutSeconds: 60,
+    minInstances: 0,
+    maxInstances: 2,
+    cors: true
+};
+
+export const generateStoryUploadUrl = onCall(FUNCTION_CONFIG, async (request) => {
     if (!request.auth) {
         throw new HttpsError("unauthenticated", "User must be logged in.");
     }
@@ -88,8 +100,8 @@ export const generateStoryUploadUrl = onCall({ region: "asia-south1", cors: true
     }
 });
 
-export const createStory = onCall({ region: "asia-south1", cors: true }, async (request) => {
-    const dbId = (dpDb as any)._databaseId?.database || "dpcontest";
+export const createStory = onCall(FUNCTION_CONFIG, async (request) => {
+    // Removed dependency on dpDb specific property
     const { 
         mediaUrl, 
         mediaType, 
@@ -106,8 +118,7 @@ export const createStory = onCall({ region: "asia-south1", cors: true }, async (
         visibility,
         overlayText,
         textPosition,
-        mentions,
-        database: dbId
+        mentions
     });
 
     if (!request.auth) {
@@ -123,14 +134,14 @@ export const createStory = onCall({ region: "asia-south1", cors: true }, async (
     try {
         const userId = request.auth.uid;
         logger.info(`Fetching user document for userId: ${userId}`);
-        const userDoc = await dpDb.collection("users").doc(userId).get();
+        const userDoc = await db.collection("users").doc(userId).get();
         const userData = userDoc.data();
         logger.info("User data fetched:", userData);
         
         const mentionedUids: string[] = [];
         if (mentions && mentions.length > 0) {
             logger.info(`Processing mentions: ${mentions.join(', ')}`);
-            const usersRef = dpDb.collection("users");
+            const usersRef = db.collection("users");
             const batches = [];
             for (let i = 0; i < mentions.length; i += 10) {
                 const batch = mentions.slice(i, i + 10);
@@ -162,13 +173,13 @@ export const createStory = onCall({ region: "asia-south1", cors: true }, async (
         };
         logger.info("Story data prepared for Firestore:", storyData);
 
-        const storyRef = await dpDb.collection("stories").add(storyData);
+        const storyRef = await db.collection("stories").add(storyData);
         
         if (mentionedUids.length > 0) {
             logger.info("Creating notifications for mentioned users.");
-            const batch = dpDb.batch();
+            const batch = db.batch();
             mentionedUids.forEach(uid => {
-                const notifRef = dpDb.collection("notifications").doc();
+                const notifRef = db.collection("notifications").doc();
                 batch.set(notifRef, {
                     recipientId: uid,
                     senderId: userId,
@@ -187,8 +198,7 @@ export const createStory = onCall({ region: "asia-south1", cors: true }, async (
 
         return { 
             success: true, 
-            storyId: storyRef.id,
-            database: dbId 
+            storyId: storyRef.id 
         };
     } catch (error: any) {
         logger.error("Error creating story record:", {
@@ -201,7 +211,7 @@ export const createStory = onCall({ region: "asia-south1", cors: true }, async (
     }
 });
 
-export const deleteStory = onCall({ region: "asia-south1", cors: true }, async (request) => {
+export const deleteStory = onCall(FUNCTION_CONFIG, async (request) => {
     if (!request.auth) {
         throw new HttpsError("unauthenticated", "User must be logged in.");
     }
@@ -212,7 +222,7 @@ export const deleteStory = onCall({ region: "asia-south1", cors: true }, async (
     }
 
     try {
-        const storyRef = dpDb.collection("stories").doc(storyId);
+        const storyRef = db.collection("stories").doc(storyId);
         const storyDoc = await storyRef.get();
 
         if (!storyDoc.exists) {
@@ -256,11 +266,13 @@ export const deleteStory = onCall({ region: "asia-south1", cors: true }, async (
 });
 
 export const cleanupExpiredStories = functions.scheduler.onSchedule({
-    schedule: "every 24 hours",
-    region: "asia-south1"
+    schedule: "every 24 hours", // Daily cleanup is enough to save costs
+    region: "us-central1", // Move to cheaper region
+    cpu: 0.25,
+    memory: "256MiB" as MemoryOption,
 }, async (event) => {
     const now = admin.firestore.Timestamp.now();
-    const storiesRef = dpDb.collection("stories");
+    const storiesRef = db.collection("stories");
     const expiredStoriesQuery = storiesRef.where("expiresAt", "<=", now);
 
     const snapshot = await expiredStoriesQuery.get();
@@ -270,7 +282,7 @@ export const cleanupExpiredStories = functions.scheduler.onSchedule({
         return;
     }
 
-    const batch = dpDb.batch();
+    const batch = db.batch();
     snapshot.docs.forEach((doc: any) => {
       batch.delete(doc.ref);
       // Ideally we should also delete from S3 here, but batch doesn't support async/await well inside loop

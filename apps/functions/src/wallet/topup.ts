@@ -1,10 +1,21 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
+import { MemoryOption } from "firebase-functions/v2/options";
+
+const WALLET_CONFIG = {
+  region: "us-central1", // Cheaper region
+  cpu: 1, // Increased to 1
+  concurrency: 80,
+  memory: "256MiB" as MemoryOption,
+  minInstances: 0,
+  maxInstances: 2,
+  cors: true
+};
 
 /**
  * Top-up Fish Coins for a user after successful payment.
  */
-export const topUpWallet = onCall(async (request) => {
+export const topUpWallet = onCall(WALLET_CONFIG, async (request) => {
   if (!request.auth) {
     throw new HttpsError("unauthenticated", "User must be logged in.");
   }

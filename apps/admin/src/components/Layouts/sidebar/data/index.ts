@@ -11,12 +11,23 @@ export const NAV_DATA = [
         items: [],
       },
       {
+        title: "Rewards Management",
+        url: "/rewards",
+        icon: Icons.Box,
+        items: [],
+      },
+      {
+        title: "Contests",
+        url: "/contests",
+        icon: Icons.Calendar,
+        items: [],
+      },
+      {
         title: "App Content",
         icon: Icons.Table,
         items: [
           { title: "User Reports", url: "/reports" },
           { title: "Support Tickets", url: "/support" },
-          { title: "Contests", url: "/contests" },
         ]
       },
       {
