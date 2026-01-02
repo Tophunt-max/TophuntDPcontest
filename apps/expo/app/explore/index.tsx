@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, SafeAreaView, useColorScheme, FlatList, Image, TouchableOpacity, ScrollView, ActivityIndicator, Dimensions, Platform } from 'react-native';
 import { BottomNav } from '@/src/components/home/BottomNav';
 import { Ionicons, FontAwesome5, MaterialCommunityIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, usePathname } from 'expo-router';
 import { contestService } from '@/src/services/contests/contestService';
 import { useAuth } from '@/src/hooks/useAuth';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -11,6 +11,7 @@ const { width } = Dimensions.get('window');
 
 export default function DiscoverScreen() {
   const router = useRouter();
+  const pathname = usePathname();
   const { user, loading: authLoading } = useAuth();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
@@ -28,18 +29,18 @@ export default function DiscoverScreen() {
   const [waitingMatches, setWaitingMatches] = useState<any[]>([]);
 
   useEffect(() => {
-    if (!authLoading && user) {
-      fetchExploreData();
-    } else if (!authLoading && !user) {
-        setLoading(false); 
+    // Fetch data regardless of auth state (public view)
+    if (!authLoading) {
+        fetchExploreData();
     }
-  }, [user, authLoading]);
+  }, [authLoading, user]);
 
   const fetchExploreData = async () => {
     setLoading(true);
     try {
       const [contests, waiting] = await Promise.all([
         contestService.getAvailableContests(),
+        // Pass user?.uid if available, otherwise undefined for public view
         contestService.getWaitingMatches(undefined, user?.uid)
       ]);
       setAvailableContests(contests);
@@ -51,14 +52,27 @@ export default function DiscoverScreen() {
     }
   };
 
+  const handleAction = (action: () => void) => {
+      if (!user) {
+          // Unauthenticated -> Redirect to Login with callback
+          const redirect = encodeURIComponent('/explore'); // Or current path
+          router.push(`/auth/login?redirect=${redirect}`);
+      } else {
+          // Authenticated -> Proceed
+          action();
+      }
+  };
+
   const renderContestTag = ({ item }: { item: any }) => {
     if (!item || !item.title) return null;
     return (
       <TouchableOpacity 
         style={styles.categoryCard}
-        onPress={() => router.push({ 
-          pathname: item.type === 'video' ? '/contest/video' : '/contest/photo', 
-          params: { contestId: item.id } 
+        onPress={() => handleAction(() => {
+            router.push({ 
+                pathname: item.type === 'video' ? '/contest/video' : '/contest/photo', 
+                params: { contestId: item.id } 
+            });
         })}
       >
         <LinearGradient
@@ -87,16 +101,16 @@ export default function DiscoverScreen() {
       <TouchableOpacity 
         style={[styles.versusCard, { backgroundColor: cardBg }]}
         activeOpacity={0.95}
-        onPress={() => {
-          if (isMyMatch) {
-            alert("This is your own contest! Wait for someone to join.");
-            return;
-          }
-          router.push({ 
-            pathname: item.type === 'video' ? '/contest/video' : '/contest/photo', 
-            params: { matchId: item.id, mode: 'join' } 
-          });
-        }}
+        onPress={() => handleAction(() => {
+            if (isMyMatch) {
+                alert("This is your own contest! Wait for someone to join.");
+                return;
+            }
+            router.push({ 
+                pathname: item.type === 'video' ? '/contest/video' : '/contest/photo', 
+                params: { matchId: item.id, mode: 'join' } 
+            });
+        })}
       >
         {/* Header: Title & Fee */}
         <View style={styles.vsHeader}>
@@ -159,12 +173,8 @@ export default function DiscoverScreen() {
         </TouchableOpacity>
       </View>
 
-      {authLoading || (loading && user) ? (
+      {loading ? (
         <ActivityIndicator size="large" color={primaryColor} style={{marginTop: 50}} />
-      ) : !user ? (
-          <View style={styles.emptyContainer}>
-             <Text style={{ color: subTextColor, fontFamily: 'Urbanist-Medium' }}>Please log in to explore contests.</Text>
-          </View>
       ) : (
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 100 }}>
           
@@ -172,7 +182,7 @@ export default function DiscoverScreen() {
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
                <Text style={[styles.sectionTitle, { color: textColor }]}>Create New</Text>
-               <TouchableOpacity onPress={() => router.push('/explore/leaderboard')}>
+               <TouchableOpacity onPress={() => handleAction(() => router.push('/explore/leaderboard'))}>
                   <Text style={{ color: accentColor, fontFamily: 'Urbanist-Bold' }}>Leaderboard</Text>
                </TouchableOpacity>
             </View>
@@ -205,7 +215,7 @@ export default function DiscoverScreen() {
                 <View style={styles.emptyContainer}>
                   <MaterialCommunityIcons name="sword-cross" size={48} color={subTextColor} style={{ marginBottom: 10, opacity: 0.5 }} />
                   <Text style={{ color: subTextColor, fontFamily: 'Urbanist-Medium' }}>No open battles.</Text>
-                  <Text style={{ color: primaryColor, fontFamily: 'Urbanist-Bold', marginTop: 5 }}>Start a fight!</Text>
+                  <Text style={{ color: primaryColor, fontFamily: 'Urbanist-Bold', marginTop: 5 }}>Be the first to start!</Text>
                 </View>
               }
             />
