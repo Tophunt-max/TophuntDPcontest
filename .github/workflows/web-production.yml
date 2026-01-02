@@ -30,6 +30,12 @@ jobs:
         working-directory: ./apps/expo
         run: npx expo export --platform web
 
+      - name: Debug dist folder
+        working-directory: ./apps/expo
+        run: |
+          ls -la
+          ls -la dist || echo "❌ dist folder NOT FOUND"
+
       - name: Deploy to Cloudflare Pages (Production)
         uses: cloudflare/pages-action@v1
         with:
