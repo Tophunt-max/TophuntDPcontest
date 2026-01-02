@@ -36,8 +36,10 @@ export default function CongratulationsScreen() {
 
         setStatusMessage("Creating your account securely...");
         
-        const createUser = httpsCallable(functions, 'createUser');
-        const result = await createUser({ 
+        // CHANGED: Call 'authHandler' with action 'create' instead of 'createUser'
+        const authHandler = httpsCallable(functions, 'authHandler');
+        const result = await authHandler({ 
+            action: 'create',
             ...signupData,
             platform: Platform.OS,
         });

@@ -155,8 +155,9 @@ const FillProfile: React.FC = () => {
         if (username.length >= 3) {
             setUsernameChecking(true);
             try {
-                const checkUniqueUsername = httpsCallable(functions, 'checkUniqueUsername');
-                const result = await checkUniqueUsername({ username });
+                // CHANGED: Call 'authHandler' with action 'check' and type 'username'
+                const authHandler = httpsCallable(functions, 'authHandler');
+                const result = await authHandler({ action: 'check', type: 'username', value: username });
                 if ((result.data as any).exists) {
                     setError("username", { type: "manual", message: "This username is already taken" });
                 } else {
@@ -180,8 +181,9 @@ const FillProfile: React.FC = () => {
         if (phone.length >= 10) {
             setPhoneChecking(true);
             try {
-                const checkPhoneExists = httpsCallable(functions, 'checkPhoneExists');
-                const result = await checkPhoneExists({ phone: countryCode + phone });
+                // CHANGED: Call 'authHandler' with action 'check' and type 'phone'
+                const authHandler = httpsCallable(functions, 'authHandler');
+                const result = await authHandler({ action: 'check', type: 'phone', value: countryCode + phone });
                 if ((result.data as any).exists) {
                     setError("phone", { type: "manual", message: "This phone number is already registered" });
                 } else {

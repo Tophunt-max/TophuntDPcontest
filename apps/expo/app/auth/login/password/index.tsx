@@ -11,14 +11,14 @@ import {
   Platform,
   ScrollView,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { signInWithEmailAndPassword } from "firebase/auth";
-import { auth } from "../../../../src/services/firebase/initFirebase"; // Corrected import path
+import { auth } from "../../../../src/services/firebase/initFirebase";
 import {
   Email_Icon,
   Facebook_Icon,
@@ -49,6 +49,9 @@ type LoginFormData = z.infer<typeof loginSchema>;
 
 export default function PasswordLoginScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams();
+  const redirect = params.redirect as string | undefined;
+
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const backgroundColor = useThemeColor({}, "background");
@@ -93,7 +96,6 @@ export default function PasswordLoginScreen() {
     setIsLoading(true);
     try {
       // Firebase Sign In
-      console.log(auth); // Added for debugging
       await signInWithEmailAndPassword(auth, data.email, data.password);
 
       // Handle "Remember Me"
@@ -104,7 +106,13 @@ export default function PasswordLoginScreen() {
       }
       
       addToast("Login successful!", "success");
-      router.replace("/home");
+      
+      // Handle Redirect
+      if (redirect) {
+        router.replace(decodeURIComponent(redirect) as any);
+      } else {
+        router.replace("/home");
+      }
     } catch (error: any) {
       console.error("Login error:", error);
       let errorMessage = "Something went wrong. Please try again.";
@@ -128,7 +136,12 @@ export default function PasswordLoginScreen() {
     // In a real app, integrate with Firebase Social Auth here
     console.log(`Continue with ${provider}`);
     addToast(`Logged in with ${provider}`, "success");
-    router.replace("/home");
+    // Handle Redirect
+    if (redirect) {
+      router.replace(decodeURIComponent(redirect) as any);
+    } else {
+      router.replace("/home");
+    }
   };
 
   return (

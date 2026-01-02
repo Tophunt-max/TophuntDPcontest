@@ -16,6 +16,67 @@ const AUTH_CONFIG = {
     cors: true,
 };
 
+// Common disposable email domains to block
+const DISPOSABLE_DOMAINS = new Set([
+  "yopmail.com", "mailinator.com", "temp-mail.org", "10minutemail.com",
+  "guerrillamail.com", "sharklasers.com", "maildrop.cc", "getnada.com",
+  "dispostable.com", "tempmail.com", "throwawaymail.com", "mail.tm",
+  "temp-mail.io", "yopmail.net", "cool.fr.nf", "jetable.org", "temporarily.de",
+  "tempmailo.com", "smailpro.com", "trashmail.com", "luxusmail.org"
+]);
+
+// Reserved usernames that cannot be claimed
+const RESERVED_USERNAMES = new Set([
+  "admin", "administrator", "root", "system", "support", "help", "info",
+  "contact", "webmaster", "security", "privacy", "policy", "terms",
+  "login", "logout", "signin", "signup", "register", "auth", "user",
+  "users", "profile", "settings", "config", "api", "dev", "test",
+  "null", "undefined", "true", "false", "void", "anon", "anonymous",
+  "official", "staff", "moderator"
+]);
+
+const USERNAME_REGEX = /^[a-zA-Z0-9_.]+$/;
+
+// Helper to normalize phone numbers (remove spaces, dashes, parens)
+function normalizePhoneNumber(phone: string | null | undefined): string | null {
+    if (!phone) return null;
+    // Remove spaces, dashes, parentheses
+    // Keep '+' at the start if present, and digits
+    // Regex: Replace anything that is NOT a digit or a '+' with empty string
+    return phone.replace(/[^\d+]/g, "").trim();
+}
+
+// Helper to check for disposable emails
+function isDisposableEmail(email: string): boolean {
+    if (!email) return false;
+    const domain = email.split('@')[1];
+    if (!domain) return false;
+    return DISPOSABLE_DOMAINS.has(domain.toLowerCase());
+}
+
+// Helper to validate username
+function validateUsername(username: string): string {
+    const lower = username.toLowerCase();
+    
+    if (lower.length < 3) {
+        throw new HttpsError("invalid-argument", "Username must be at least 3 characters long.");
+    }
+
+    if (lower.length > 30) {
+        throw new HttpsError("invalid-argument", "Username must be less than 30 characters long.");
+    }
+
+    if (!USERNAME_REGEX.test(username)) {
+        throw new HttpsError("invalid-argument", "Username can only contain letters, numbers, underscores, and dots.");
+    }
+
+    if (RESERVED_USERNAMES.has(lower)) {
+        throw new HttpsError("invalid-argument", "This username is reserved and cannot be used.");
+    }
+
+    return lower;
+}
+
 export const authHandler = onCall(AUTH_CONFIG, async (request) => {
     // 1. Basic validation
     if (!request.data || !request.data.action) {
@@ -38,12 +99,36 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
         );
       }
 
-      const value = request.data.value?.trim();
+      let value = request.data.value?.trim();
       if (!value) {
         throw new HttpsError(
           "invalid-argument",
           `Missing value for check type: ${type}`
         );
+      }
+
+      // IMPROVED: Normalize phone number before checking
+      if (type === "phone") {
+        const normalized = normalizePhoneNumber(value);
+        if (!normalized) {
+             throw new HttpsError("invalid-argument", "Invalid phone format");
+        }
+        value = normalized;
+      } else if (type === "username") {
+        // IMPROVED: Validate username
+        try {
+            value = validateUsername(value);
+        } catch (e: any) {
+            // For check action, if invalid format/reserved, consider it "exists" (unavailable) or throw error
+            // Throwing error is better so client knows WHY it's unavailable
+             throw e;
+        }
+      } else if (type === "email") {
+        value = value.toLowerCase();
+        // IMPROVED: Check for disposable email
+        if (isDisposableEmail(value)) {
+            throw new HttpsError("invalid-argument", "Temporary or disposable email addresses are not allowed.");
+        }
       }
 
       logger.info(`[authHandler] Checking ${type}: ${value}`);
@@ -90,6 +175,14 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
           "Email, password, and username are required for user creation."
         );
       }
+      
+      // IMPROVED: Check for disposable email
+      if (isDisposableEmail(email)) {
+          throw new HttpsError("invalid-argument", "Temporary or disposable email addresses are not allowed.");
+      }
+
+      // IMPROVED: Validate username
+      const validatedUsername = validateUsername(username);
 
       logger.info(`[authHandler] Creating user: ${email}`);
 
@@ -99,7 +192,7 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
         userRecord = await admin.auth().createUser({
           email,
           password,
-          displayName: username,
+          displayName: validatedUsername,
           photoURL: avatarUrl || null,
         });
       } catch (error: any) {
@@ -116,11 +209,11 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
       try {
         await createFirestoreProfile(uid, {
           email,
-          username,
+          username: validatedUsername,
           fullName,
           avatarUrl,
           dob,
-          phone,
+          phone, 
           occupation,
           gender,
           following,
@@ -165,13 +258,21 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
         following,
         platform,
       } = request.data;
+      
+      // IMPROVED: Check for disposable email
+      if (email && isDisposableEmail(email)) {
+           throw new HttpsError("invalid-argument", "Temporary or disposable email addresses are not allowed.");
+      }
+
+      // IMPROVED: Validate username
+      const validatedUsername = username ? validateUsername(username) : null;
 
       logger.info(`[authHandler] Creating profile for existing UID: ${uid}`);
 
       try {
         await createFirestoreProfile(uid, {
           email,
-          username,
+          username: validatedUsername,
           fullName,
           avatarUrl,
           dob,
@@ -199,6 +300,9 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
 async function createFirestoreProfile(uid: string, data: any) {
   const userRef = db.collection("users").doc(uid);
   
+  // Normalize phone before saving
+  const normalizedPhone = normalizePhoneNumber(data.phone);
+
   const profileData = {
     uid,
     email: data.email || null,
@@ -206,7 +310,7 @@ async function createFirestoreProfile(uid: string, data: any) {
     fullName: data.fullName || null,
     profileImageUrl: data.avatarUrl || null,
     dob: data.dob || null,
-    phone: data.phone || null,
+    phone: normalizedPhone,
     occupation: data.occupation || null,
     gender: data.gender || null,
     following: data.following || [],

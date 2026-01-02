@@ -95,33 +95,41 @@ export default function SplashScreen() {
   useEffect(() => {
     if (!appIsReady) return;
 
-    // 4. Auth & Navigation Logic
+    let unsubscribe: (() => void) | undefined;
+
     const checkAuth = async () => {
+        // Fetch local storage value first
         const hasSeenOnboarding = await AsyncStorage.getItem('hasSeenOnboarding');
 
-        const unsubscribe = onAuthStateChanged(auth, (user: User | null) => {
+        // Subscribe to auth state
+        unsubscribe = onAuthStateChanged(auth, (user: User | null) => {
+            console.log("Auth state changed. User:", user ? user.uid : "null");
+            
             if (user) {
                 // User is logged in -> Go to Home
-                console.log("User authenticated, navigating to Home");
+                console.log("Navigating to Home");
                 router.replace('/home');
             } else {
                 // User is NOT logged in
                 if (hasSeenOnboarding === 'true') {
                     // If they have seen onboarding before, go to Login
-                    console.log("User not auth, seen onboarding -> Login");
+                    console.log("Seen onboarding -> Login");
                     router.replace('/auth/login');
                 } else {
                     // First time user -> Onboarding
-                    console.log("User not auth, new user -> Onboarding");
+                    console.log("New user -> Onboarding");
                     router.replace('/onboarding');
                 }
             }
         });
-
-        return unsubscribe;
     };
 
     checkAuth();
+
+    // Cleanup subscription on unmount
+    return () => {
+        if (unsubscribe) unsubscribe();
+    };
   }, [appIsReady]);
 
   const animatedLogoStyle = useAnimatedStyle(() => ({

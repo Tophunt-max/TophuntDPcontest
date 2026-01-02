@@ -102,8 +102,9 @@ export default function SignupEntryScreen() {
         if (email.length > 5 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
             setEmailChecking(true);
             try {
-                const checkEmailExists = httpsCallable(functions, 'checkEmailExists');
-                const result = await checkEmailExists({ email });
+                // CHANGED: Call 'authHandler' with action 'check' and type 'email'
+                const authHandler = httpsCallable(functions, 'authHandler');
+                const result = await authHandler({ action: 'check', type: 'email', value: email });
                 if ((result.data as any).exists) {
                     setError("email", { type: "manual", message: "This email is already registered" });
                 } else {

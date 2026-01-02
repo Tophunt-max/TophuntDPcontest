@@ -8,7 +8,7 @@ import {
   Dimensions,
   Platform,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   Facebook_Icon,
@@ -25,6 +25,9 @@ const { width } = Dimensions.get("window");
 
 export default function LoginWelcomeScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams();
+  const redirect = params.redirect as string | undefined;
+
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const backgroundColor = useThemeColor({}, "background");
@@ -35,11 +38,21 @@ export default function LoginWelcomeScreen() {
     // In a real app, integrate with Firebase Social Auth here
     console.log(`Continue with ${provider}`);
     addToast(`Logged in with ${provider}`, "success");
-    router.replace("/home");
+    // Handle redirect for social login too if implemented
+    if (redirect) {
+        router.replace(decodeURIComponent(redirect) as any);
+    } else {
+        router.replace("/home");
+    }
   };
 
   const handlePasswordLogin = () => {
-    router.push("/auth/login/password");
+    // Pass the redirect param to the password screen
+    if (redirect) {
+        router.push(`/auth/login/password?redirect=${encodeURIComponent(redirect)}`);
+    } else {
+        router.push("/auth/login/password");
+    }
   };
 
   const handleSignUp = () => {

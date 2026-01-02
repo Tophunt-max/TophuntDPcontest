@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { View, StyleSheet, SafeAreaView, Text, Button, ActivityIndicator, ScrollView } from 'react-native';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter, useLocalSearchParams, usePathname } from 'expo-router';
 import { useAuth } from '@/src/services/auth';
 import { useProfile, useUserPosts, useToggleFollow } from '@/src/hooks/useProfileData';
 import ProfileHeader from '@/src/components/profile/ProfileHeader';
@@ -16,23 +16,35 @@ const ProfilePage = () => {
   const router = useRouter();
   const { user: currentUser, loading: authLoading } = useAuth();
   const params = useLocalSearchParams();
+  const pathname = usePathname();
   const userIdParam = params.userId as string | undefined;
   
   const [targetId, setTargetId] = useState<string | null>(null);
+  const [isRedirecting, setIsRedirecting] = useState(false);
 
   useEffect(() => {
     if (!authLoading) {
-      const id = userIdParam || currentUser?.uid;
-      if (id) {
-        setTargetId(id);
-        if (id !== currentUser?.uid) {
-            notificationService.notifyProfileVisit(id);
+        if (!currentUser) {
+            // Unauthenticated user -> Redirect to Login
+            setIsRedirecting(true);
+            const redirectPath = userIdParam ? `/profile?userId=${userIdParam}` : '/profile';
+            // Encode the redirect path
+            const encodedRedirect = encodeURIComponent(redirectPath);
+            router.replace(`/auth/login?redirect=${encodedRedirect}`);
+            return;
         }
-      }
-    }
-  }, [authLoading, userIdParam, currentUser?.uid]);
 
-  if (authLoading || (!targetId && !authLoading)) {
+        const id = userIdParam || currentUser?.uid;
+        if (id) {
+            setTargetId(id);
+            if (id !== currentUser?.uid) {
+                notificationService.notifyProfileVisit(id);
+            }
+        }
+    }
+  }, [authLoading, userIdParam, currentUser, router]);
+
+  if (authLoading || isRedirecting || (!targetId && !authLoading)) {
     return (
         <SafeAreaView style={styles.container}>
             <ScrollView showsVerticalScrollIndicator={false}>
