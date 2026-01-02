@@ -22,6 +22,9 @@ export interface UserProfile {
   twitter?: string;
   instagram?: string;
   
+  // Array of user IDs this user is following
+  following?: string[];
+
   // Contest Platform Fields
   fishCoins: number; 
   isAdmin: boolean;

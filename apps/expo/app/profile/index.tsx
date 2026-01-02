@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { View, StyleSheet, SafeAreaView, Text, Button, ActivityIndicator, ScrollView } from 'react-native';
 import { useRouter, useLocalSearchParams, usePathname } from 'expo-router';
 import { useAuth } from '@/src/services/auth';
@@ -83,6 +83,12 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
     refetch: refetchProfile 
   } = useProfile(targetUserId);
 
+  const { data: myProfile } = useProfile(currentUser?.uid || '');
+
+  const isFollowing = useMemo(() => {
+    return myProfile?.following?.includes(targetUserId) || false;
+  }, [myProfile, targetUserId]);
+
   const { 
     data: postsData, 
     isLoading: postsLoading, 
@@ -135,6 +141,7 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
               user={profile} 
               isOwnProfile={isOwnProfile}
               onToggleFollow={handleToggleFollow}
+              isFollowing={isFollowing}
             />
             {isOwnProfile && (
               <WalletCard 

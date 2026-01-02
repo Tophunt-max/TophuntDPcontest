@@ -11,6 +11,7 @@ on:
 jobs:
   deploy_web_production:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -18,25 +19,22 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '18'
+          node-version: 18
+          cache: npm
 
       - name: Install dependencies
         working-directory: ./apps/expo
-        run: npm install
-
-      - name: Install Expo CLI
-        run: npm install -g expo-cli
+        run: npm ci
 
       - name: Build Expo Web
         working-directory: ./apps/expo
-        run: npx expo export
+        run: npx expo export --platform web
 
       - name: Deploy to Cloudflare Pages (Production)
         uses: cloudflare/pages-action@v1
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          projectName: 'your-expo-web-production-project-name' # IMPORTANT: Change this
-          directory: 'apps/expo/dist'
-          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
-          branch: 'main'
+          projectName: tophuntdpcontest
+          directory: apps/expo/dist
+          branch: main

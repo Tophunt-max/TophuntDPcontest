@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, Modal, Dimensions, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, Image, TouchableOpacity, Modal, Dimensions, ActivityIndicator, Alert } from 'react-native';
 import { UserProfile, Badge } from '@/src/types/user';
-import { Settings_Icon } from '@/assets/svgs';
+import { Settings_Icon, ChatIcon_Light, ChatIcon_Dark } from '@/assets/svgs';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { equipBadgeService } from '@/src/services/users';
 import Animated, { useSharedValue, useAnimatedStyle, withSpring, withRepeat, withTiming, Easing } from 'react-native-reanimated';
+import { startChat } from '@/src/services/messages/messageService';
 
 const { width } = Dimensions.get('window');
 
@@ -37,6 +38,7 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
   const [claimModalVisible, setClaimModalVisible] = useState(false);
   const [loading, setLoading] = useState(false);
   const [canClaim, setCanClaim] = useState(false);
+  const [isStartingChat, setIsStartingChat] = useState(false);
   
   const xp = user.xp || 0;
   const levelInfo = calculateLevelInfo(xp);
@@ -82,8 +84,37 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
         if (onRefresh) onRefresh();
     } catch (error) {
         console.error(error);
+        Alert.alert('Error', 'Failed to claim badge. Please try again.');
     } finally {
         setLoading(false);
+    }
+  };
+
+  const handleMessagePress = async () => {
+    if (isStartingChat) return;
+    setIsStartingChat(true);
+    try {
+        // Add a timeout to prevent infinite loading
+        const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Request timed out')), 10000)
+        );
+
+        const chatPromise = startChat(user.uid, {
+            displayName: user.displayName || user.username,
+            photoURL: user.profileImageUrl
+        });
+
+        const chatId = await Promise.race([chatPromise, timeoutPromise]);
+        
+        setIsStartingChat(false);
+        router.push(`/messages/chat/${chatId}`);
+    } catch (error: any) {
+        console.error("Error starting chat:", error);
+        setIsStartingChat(false);
+        Alert.alert(
+            "Error", 
+            "Could not start chat. Please check your connection and try again.\n" + (error.message || "")
+        );
     }
   };
 
@@ -117,14 +148,50 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
         <Text style={styles.fullNameText}>{user.fullName || user.username}</Text>
         {user.bio ? <Text style={styles.bioText}>{user.bio}</Text> : null}
       </View>
+      
+      {/* ACTION BUTTONS (Edit Profile vs Follow/Message) */}
+      <View style={styles.actionButtonsContainer}>
+        {isOwnProfile ? (
+            <TouchableOpacity style={styles.editProfileButton} onPress={() => router.push('/profile/manage/edit')}>
+                <Text style={styles.editProfileText}>Edit Profile</Text>
+            </TouchableOpacity>
+        ) : (
+            <View style={styles.userActionButtons}>
+                <TouchableOpacity 
+                    style={[styles.followButton, isFollowing && styles.followingButton]} 
+                    onPress={onToggleFollow}
+                >
+                    <Text style={[styles.followButtonText, isFollowing && styles.followingButtonText]}>
+                        {isFollowing ? 'Following' : 'Follow'}
+                    </Text>
+                </TouchableOpacity>
+                
+                <TouchableOpacity 
+                    style={styles.messageButton} 
+                    onPress={handleMessagePress}
+                    disabled={isStartingChat}
+                >
+                    {isStartingChat ? <ActivityIndicator size="small" color="#333" /> : <Text style={styles.messageButtonText}>Message</Text>}
+                </TouchableOpacity>
+            </View>
+        )}
+      </View>
 
+      <View style={styles.statsRow}>
+        <View style={styles.statItem}><Text style={styles.statValue}>{(user as any).postsCount || 0}</Text><Text style={styles.statLabel}>Post</Text></View>
+        <View style={styles.statItem}><Text style={styles.statValue}>{(user as any).followersCount || 0}</Text><Text style={styles.statLabel}>Followers</Text></View>
+        <View style={styles.statItem}><Text style={styles.statValue}>{(user as any).followingCount || 0}</Text><Text style={styles.statLabel}>Following</Text></View>
+      </View>
+      
+      {/* XP/Level Bar only for own profile or visible to others? Usually self only or gamified public. 
+          Let's keep it visible as part of gamification */}
       <View style={styles.xpContainer}>
         <View style={styles.xpHeader}>
             <Text style={styles.xpLabel}>Level {levelInfo.level} Progress</Text>
             <Text style={styles.xpValue}>{Math.floor(levelInfo.progressXp)} / {levelInfo.nextLevelXp} XP</Text>
         </View>
         
-        {canClaim ? (
+        {canClaim && isOwnProfile ? (
             <Animated.View style={animatedClaimBtnStyle}>
                 <TouchableOpacity onPress={handleClaim}>
                     <LinearGradient colors={['#FFD700', '#FF8C00']} style={styles.claimButton}>
@@ -164,11 +231,6 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
         </View>
       </Modal>
 
-      <View style={styles.statsRow}>
-        <View style={styles.statItem}><Text style={styles.statValue}>{(user as any).postsCount || 0}</Text><Text style={styles.statLabel}>Post</Text></View>
-        <View style={styles.statItem}><Text style={styles.statValue}>{(user as any).followersCount || 0}</Text><Text style={styles.statLabel}>Followers</Text></View>
-        <View style={styles.statItem}><Text style={styles.statValue}>{(user as any).followingCount || 0}</Text><Text style={styles.statLabel}>Following</Text></View>
-      </View>
     </View>
   );
 };
@@ -188,6 +250,21 @@ const styles = StyleSheet.create({
   infoSection: { alignItems: 'center', marginTop: 15, paddingHorizontal: 20 },
   fullNameText: { fontSize: 22, fontFamily: 'Urbanist-Bold' },
   bioText: { fontSize: 14, color: '#666', textAlign: 'center', marginTop: 8, fontFamily: 'Urbanist-Regular' },
+  
+  // Action Buttons
+  actionButtonsContainer: { marginTop: 20, paddingHorizontal: 20, alignItems: 'center' },
+  editProfileButton: { paddingVertical: 10, paddingHorizontal: 24, borderRadius: 20, borderWidth: 1, borderColor: '#DDD', backgroundColor: '#FFF' },
+  editProfileText: { fontSize: 14, fontFamily: 'Urbanist-Bold', color: '#333' },
+  
+  userActionButtons: { flexDirection: 'row', gap: 12 },
+  followButton: { paddingVertical: 10, paddingHorizontal: 32, borderRadius: 24, backgroundColor: '#FF4D67' },
+  followingButton: { backgroundColor: '#FFF', borderWidth: 1, borderColor: '#DDD' },
+  followButtonText: { color: '#FFF', fontFamily: 'Urbanist-Bold', fontSize: 14 },
+  followingButtonText: { color: '#333' },
+  
+  messageButton: { paddingVertical: 10, paddingHorizontal: 32, borderRadius: 24, backgroundColor: '#F5F5F5' },
+  messageButtonText: { color: '#333', fontFamily: 'Urbanist-Bold', fontSize: 14 },
+
   xpContainer: { marginTop: 20, paddingHorizontal: 30, width: '100%' },
   xpHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
   xpLabel: { fontSize: 12, fontFamily: 'Urbanist-Bold', color: '#FF4D67' },
