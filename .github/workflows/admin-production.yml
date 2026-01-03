@@ -5,11 +5,12 @@ on:
     branches:
       - main
     paths:
-      - 'apps/admin/'
+      - 'apps/admin/**'
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
@@ -17,29 +18,17 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '20'
+          node-version: 20
 
       - name: Install Dependencies
+        working-directory: apps/admin
         run: npm install
 
-      - name: Deploy to Vercel
+      - name: Deploy to Vercel (Production)
         uses: vercel/actions/deploy@v2
         with:
           token: ${{ secrets.VERCEL_TOKEN }}
           org-id: ${{ secrets.VERCEL_ORG_ID }}
           project-id: ${{ secrets.VERCEL_PROJECT_ID }}
-          root-directory: apps/admin
-          env: |
-            NEXT_PUBLIC_API_KEY=${{ secrets.NEXT_PUBLIC_API_KEY }}
-            NEXT_PUBLIC_AUTH_DOMAIN=${{ secrets.NEXT_PUBLIC_AUTH_DOMAIN }}
-            NEXT_PUBLIC_PROJECT_ID=${{ secrets.NEXT_PUBLIC_PROJECT_ID }}
-            NEXT_PUBLIC_STORAGE_BUCKET=${{ secrets.NEXT_PUBLIC_STORAGE_BUCKET }}
-            NEXT_PUBLIC_MESSAGING_SENDER_ID=${{ secrets.NEXT_PUBLIC_MESSAGING_SENDER_ID }}
-            NEXT_PUBLIC_APP_ID=${{ secrets.NEXT_PUBLIC_APP_ID }}
-            NEXT_PUBLIC_MEASUREMENT_ID=${{ secrets.NEXT_PUBLIC_MEASUREMENT_ID }}
-            NEXT_PUBLIC_FIREBASE_SERVER_KEY=${{ secrets.NEXT_PUBLIC_FIREBASE_SERVER_KEY }}
-            NEXT_PUBLIC_FIREBASE_VAPID_KEY=${{ secrets.NEXT_PUBLIC_FIREBASE_VAPID_KEY }}
-            NEXT_PUBLIC_FIREBASE_DATABASE_URL=${{ secrets.NEXT_PUBLIC_FIREBASE_DATABASE_URL }}
-            NEXT_PUBLIC_FIREBASE_APP_NAME=${{ secrets.NEXT_PUBLIC_FIREBASE_APP_NAME }}
-
-        run: vercel deploy --prod --yes --cwd=apps/admin
+          working-directory: apps/admin
+          prod: true
