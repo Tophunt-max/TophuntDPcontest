@@ -1,53 +1,53 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { UserStats } from '../../types/user';
 import { LinearGradient } from 'expo-linear-gradient';
 
 interface WalletCardProps {
-  fishCoins: number;
-  stats: {
-    contestsJoined: number;
-    wins: number;
-  };
-  onPress?: () => void; // New Prop
+  Dpcoin: number;
+  stats: UserStats;
+  onPress?: () => void;
 }
 
-export const WalletCard = ({ fishCoins, stats, onPress }: WalletCardProps) => {
+export const WalletCard = ({ Dpcoin, stats, onPress }: WalletCardProps) => {
   return (
-    <TouchableOpacity activeOpacity={0.9} onPress={onPress} style={styles.container}>
+    <TouchableOpacity 
+      onPress={onPress}
+      activeOpacity={0.9}
+    >
       <LinearGradient
         colors={['#FF4D67', '#FF8A9B']}
         start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 0 }}
-        style={styles.card}
+        end={{ x: 1, y: 1 }}
+        style={styles.container}
       >
-        <View style={styles.topRow}>
+        <View style={styles.header}>
           <View>
-            <Text style={styles.label}>My Fish Coins</Text>
+            <Text style={styles.label}>Wallet Balance</Text>
             <View style={styles.coinRow}>
-              <Ionicons name="fish" size={24} color="white" />
-              <Text style={styles.coinValue}>{fishCoins || 0}</Text>
+              <Text style={styles.coinValue}>{Dpcoin || 0}</Text>
+              <Text style={styles.coinUnit}> Dpcoins</Text>
             </View>
           </View>
-          <View style={styles.topUpBtn}>
-            <Text style={styles.topUpText}>+ Top Up</Text>
+          <View style={styles.badge}>
+            <Text style={styles.badgeText}>Active</Text>
           </View>
         </View>
 
         <View style={styles.divider} />
 
-        <View style={styles.bottomRow}>
-          <View style={styles.statBox}>
-            <Text style={styles.statLabel}>Contests</Text>
-            <Text style={styles.statValue}>{stats.contestsJoined || 0}</Text>
-          </View>
-          <View style={styles.statBox}>
-            <Text style={styles.statLabel}>Total Wins</Text>
+        <View style={styles.statsRow}>
+          <View style={styles.statItem}>
             <Text style={styles.statValue}>{stats.wins || 0}</Text>
+            <Text style={styles.statLabel}>Wins</Text>
           </View>
-          <View style={styles.statBox}>
-            <Text style={styles.statLabel}>Status</Text>
-            <Text style={styles.statValue}>Pro</Text>
+          <View style={styles.statItem}>
+            <Text style={styles.statValue}>{stats.contestsJoined || 0}</Text>
+            <Text style={styles.statLabel}>Battles</Text>
+          </View>
+          <View style={styles.statItem}>
+            <Text style={styles.statValue}>{stats.totalVotesReceived || 0}</Text>
+            <Text style={styles.statLabel}>Votes</Text>
           </View>
         </View>
       </LinearGradient>
@@ -57,74 +57,77 @@ export const WalletCard = ({ fishCoins, stats, onPress }: WalletCardProps) => {
 
 const styles = StyleSheet.create({
   container: {
-    paddingHorizontal: 16,
-    marginTop: 20,
-    marginBottom: 10,
-  },
-  card: {
-    borderRadius: 24,
-    padding: 20,
-    elevation: 8,
+    margin: 16,
+    padding: 24,
+    borderRadius: 20,
+    elevation: 5,
     shadowColor: '#FF4D67',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
-    shadowRadius: 10,
+    shadowRadius: 8,
   },
-  topRow: {
+  header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
   },
   label: {
-    color: 'rgba(255,255,255,0.8)',
     fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.8)',
+    marginBottom: 4,
     fontFamily: 'Urbanist-Medium',
   },
   coinRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 5,
+    alignItems: 'baseline',
   },
   coinValue: {
-    color: 'white',
     fontSize: 32,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
     fontFamily: 'Urbanist-Bold',
-    marginLeft: 8,
   },
-  topUpBtn: {
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
+  coinUnit: {
+    fontSize: 16,
+    color: '#FFFFFF',
+    fontWeight: '600',
+    fontFamily: 'Urbanist-SemiBold',
+    marginLeft: 4,
+  },
+  badge: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
     borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.4)'
   },
-  topUpText: {
-    color: 'white',
+  badgeText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: 'bold',
     fontFamily: 'Urbanist-Bold',
-    fontSize: 14,
   },
   divider: {
     height: 1,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    marginVertical: 15,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    marginVertical: 20,
   },
-  bottomRow: {
+  statsRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    justifyContent: 'space-around',
   },
-  statBox: {
+  statItem: {
     alignItems: 'center',
   },
-  statLabel: {
-    color: 'rgba(255,255,255,0.7)',
-    fontSize: 12,
-    fontFamily: 'Urbanist-Medium',
-  },
   statValue: {
-    color: 'white',
-    fontSize: 16,
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
     fontFamily: 'Urbanist-Bold',
-    marginTop: 4,
+  },
+  statLabel: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.8)',
+    fontFamily: 'Urbanist-Medium',
+    marginTop: 2,
   },
 });

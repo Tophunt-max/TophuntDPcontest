@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react';
-import { getAuth, onAuthStateChanged, User, createUserWithEmailAndPassword } from 'firebase/auth';
+import { onAuthStateChanged, User, createUserWithEmailAndPassword, signOut as firebaseSignOut } from 'firebase/auth';
+import { auth } from './firebase/initFirebase';
 
 export const useAuth = () => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const auth = getAuth();
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setUser(user);
       setLoading(false);
@@ -19,11 +19,21 @@ export const useAuth = () => {
 };
 
 export const signupWithEmail = async (email: string, password: string) => {
-  const auth = getAuth();
   try {
     const userCredential = await createUserWithEmailAndPassword(auth, email, password);
     return userCredential.user;
   } catch (error: any) {
+    throw new Error(error.message);
+  }
+};
+
+export const signOut = async () => {
+  console.log("[AuthService] signOut called");
+  try {
+    await firebaseSignOut(auth);
+    console.log("[AuthService] firebaseSignOut successful");
+  } catch (error: any) {
+    console.error("[AuthService] firebaseSignOut error:", error);
     throw new Error(error.message);
   }
 };

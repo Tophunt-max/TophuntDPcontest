@@ -40,7 +40,7 @@ export function WalletManagement({ userId, initialBalance }: Props) {
 
       if (response.ok) {
         toast.success(data.message);
-        setCurrentBalance(data.newBalance); // Update the balance with the new value from the API
+        setCurrentBalance(data.newBalance); 
         setAmount(0);
       } else {
         toast.error(data.error || "An unexpected error occurred.");
@@ -71,9 +71,9 @@ export function WalletManagement({ userId, initialBalance }: Props) {
 
   return (
     <div className="rounded-[10px] bg-white p-6 shadow-1 dark:bg-gray-dark border border-stroke dark:border-dark-3 mt-6">
-      <h3 className="text-lg font-bold mb-4">Manage Wallet Coins</h3>
+      <h3 className="text-lg font-bold mb-4">Manage Wallet Dpcoins</h3>
       <div className="mb-4">
-        <p className="text-sm font-medium text-gray-700 dark:text-gray-200">Current Balance: <span className="font-bold text-primary">{currentBalance} 🐟</span></p>
+        <p className="text-sm font-medium text-gray-700 dark:text-gray-200">Current Balance: <span className="font-bold text-primary">{currentBalance} ⚡</span></p>
       </div>
       <div className="flex flex-col gap-4">
         <div>
@@ -96,14 +96,14 @@ export function WalletManagement({ userId, initialBalance }: Props) {
             disabled={loading}
             className="flex-1 justify-center rounded-md border border-primary py-2 px-4 text-sm font-medium text-primary hover:bg-primary hover:text-white focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 dark:hover:bg-primary dark:hover:text-white"
           >
-            {loading && transactionType === "add" ? "Adding..." : "Add Coins"}
+            {loading && transactionType === "add" ? "Adding..." : "Add Dpcoins"}
           </button>
           <button
             onClick={() => openConfirmModal("subtract")}
             disabled={loading}
             className="flex-1 justify-center rounded-md border border-danger py-2 px-4 text-sm font-medium text-danger hover:bg-danger hover:text-white focus:outline-none focus:ring-2 focus:ring-danger focus:ring-offset-2 dark:hover:bg-danger dark:hover:text-white"
           >
-            {loading && transactionType === "subtract" ? "Subtracting..." : "Subtract Coins"}
+            {loading && transactionType === "subtract" ? "Subtracting..." : "Subtract Dpcoins"}
           </button>
         </div>
       </div>
@@ -113,7 +113,7 @@ export function WalletManagement({ userId, initialBalance }: Props) {
           <div className="relative w-full max-w-md cursor-pointer rounded-lg bg-white p-4 text-center shadow-md dark:bg-gray-dark">
             <h3 className="mb-2 text-lg font-bold">Confirm Transaction</h3>
             <p className="mb-4 text-sm text-gray-700 dark:text-gray-200">
-              Are you sure you want to {transactionType} {amount} coins {transactionType === "add" ? "to" : "from"} the wallet?
+              Are you sure you want to {transactionType} {amount} Dpcoins {transactionType === "add" ? "to" : "from"} the wallet?
             </p>
             <div className="flex justify-center gap-4">
               <button

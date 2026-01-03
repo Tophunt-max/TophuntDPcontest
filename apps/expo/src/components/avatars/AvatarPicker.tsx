@@ -12,7 +12,7 @@ interface AvatarPickerProps {
 export const AvatarPicker: React.FC<AvatarPickerProps> = ({ uri, onPick, style }) => {
   const handlePick = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'],
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.8,

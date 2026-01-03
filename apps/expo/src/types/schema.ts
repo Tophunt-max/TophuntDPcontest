@@ -32,7 +32,7 @@ export interface UserProfile {
   };
 
   // Gamification & Wallet
-  fishCoins: number; // Virtual Currency
+  Dpcoin: number; // Virtual Currency
   xp: number;
   level: number;
   badges: string[]; // Array of badge IDs

@@ -24,7 +24,7 @@ export default function CoinStoreScreen() {
     setLoading(pkg.id);
     try {
       await walletService.purchaseCoins(pkg.coins, pkg.price);
-      Alert.alert("Success", `You purchased ${pkg.coins} Fish Coins!`);
+      Alert.alert("Success", `You purchased ${pkg.coins} Dpcoins!`);
       router.back();
     } catch (error: any) {
       Alert.alert("Failed", "Transaction failed. Please try again.");
@@ -46,9 +46,9 @@ export default function CoinStoreScreen() {
       )}
       
       <View style={styles.coinContainer}>
-        <Ionicons name="fish" size={32} color="#FF4D67" />
+        <Ionicons name="flash" size={32} color="#FF4D67" />
         <Text style={styles.coinText}>{item.coins}</Text>
-        <Text style={styles.coinLabel}>Coins</Text>
+        <Text style={styles.coinLabel}>Dpcoins</Text>
       </View>
 
       <TouchableOpacity style={styles.priceBtn}>
@@ -67,7 +67,7 @@ export default function CoinStoreScreen() {
         <TouchableOpacity onPress={() => router.back()}>
           <Ionicons name="close" size={28} color="black" />
         </TouchableOpacity>
-        <Text style={styles.title}>Coin Store</Text>
+        <Text style={styles.title}>Dpcoin Store</Text>
         <View style={{ width: 28 }} />
       </View>
 
@@ -80,7 +80,7 @@ export default function CoinStoreScreen() {
         >
           <Text style={styles.balanceLabel}>Current Balance</Text>
           <View style={{flexDirection: 'row', alignItems: 'center'}}>
-             <Ionicons name="fish" size={24} color="white" style={{marginRight: 8}} />
+             <Ionicons name="flash" size={24} color="white" style={{marginRight: 8}} />
              <Text style={styles.balanceValue}>Top up to join battles!</Text>
           </View>
         </LinearGradient>

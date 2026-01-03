@@ -83,7 +83,7 @@ async function awardReward(userId, action) {
         const data = userDoc.data() || {};
         const currentXp = data.xp || 0;
         const currentLevel = data.level || 1;
-        const currentCoins = data.fishCoins || 0;
+        const currentCoins = data.Dpcoin || data.fishCoins || data.coins || 0;
         const currentBadges = data.badges || [];
         const newXp = currentXp + xpAmount;
         const newCoins = currentCoins + coinAmount;
@@ -91,7 +91,7 @@ async function awardReward(userId, action) {
         const updates = {
             xp: newXp,
             level: newLevel,
-            fishCoins: newCoins,
+            Dpcoin: newCoins, // Renamed to Dpcoin
             updatedAt: firestore_1.FieldValue.serverTimestamp(),
         };
         if (newLevel > currentLevel) {
@@ -116,7 +116,7 @@ async function awardReward(userId, action) {
         }
     }
     if (coinAmount > 0) {
-        await (0, sender_1.sendPushNotification)(userId, "Reward Received! 🪙", `You earned ${coinAmount} fish coins!`, "reward_received");
+        await (0, sender_1.sendPushNotification)(userId, "Reward Received! 🪙", `You earned ${coinAmount} Dpcoins!`, "reward_received");
     }
 }
 /**

@@ -20,40 +20,33 @@ import { Platform } from "react-native";
 // 1. Initialize App
 const app: FirebaseApp = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
-// 2. Initialize Auth
+// 2. Initialize Auth with Persistence
 let auth: Auth;
-if (getApps().length === 0) {
-  const persistence = Platform.OS === 'web' 
-    ? [indexedDBLocalPersistence, browserLocalPersistence]
-    : getReactNativePersistence(AsyncStorage);
-
-  auth = initializeAuth(app, { persistence });
-} else {
-  auth = getAuth(app);
-}
-
-// 3. Initialize Firestore (Default Database)
-// Migrated from "dpcontest" to default database
-let firestore: Firestore;
-
 try {
-  // Use the default database
-  firestore = getFirestore(app);
-  console.log("[Firebase] Using default Firestore instance");
-} catch (e) {
-  try {
-    // If not initialized, initialize default
-    firestore = initializeFirestore(app, {});
-    console.log("[Firebase] Initialized default Firestore");
-  } catch (err) {
-    console.error("[Firebase] Firestore init failed:", err);
-    throw err;
+  if (Platform.OS === 'web') {
+    auth = initializeAuth(app, { 
+      persistence: [indexedDBLocalPersistence, browserLocalPersistence] 
+    });
+  } else {
+    auth = initializeAuth(app, { 
+      persistence: getReactNativePersistence(AsyncStorage) 
+    });
   }
+  console.log("[Firebase] Auth initialized with persistence.");
+} catch (e) {
+  // If already initialized, use getAuth
+  auth = getAuth(app);
+  console.log("[Firebase] Auth already initialized, using existing instance.");
 }
 
-// Note: Cloud Functions region should ideally match your backend deployment (us-central1 now recommended)
-// Keeping asia-south1 if that's where your old functions are, but standardizing to us-central1 is better for cost.
-// If you updated functions to us-central1, change this too.
+// 3. Initialize Firestore
+let firestore: Firestore;
+try {
+  firestore = getFirestore(app);
+} catch (e) {
+  firestore = initializeFirestore(app, {});
+}
+
 export const functions = getFunctions(app, "us-central1"); 
 export { firestore, auth };
 export default app;

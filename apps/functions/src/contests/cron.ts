@@ -34,69 +34,26 @@ export const resolveContests = onSchedule("every 10 minutes", async (event) => {
 });
 
 /**
- * MONTHLY HALL OF FAME
- * Runs on the 1st of every month to reward Top 3 players.
- */
-export const monthlyHallOfFame = onSchedule("0 0 1 * *", async (event) => {
-  const usersRef = db.collection("users");
-  
-  // Get Top 3 users by monthly wins
-  const snapshot = await usersRef
-    .orderBy("stats.monthlyWins", "desc")
-    .limit(3)
-    .get();
-
-  if (snapshot.empty) return;
-
-  const rewards = [1000, 500, 250]; 
-  const badges = ["Gold Hall of Fame", "Silver Hall of Fame", "Bronze Hall of Fame"];
-
-  for (let i = 0; i < snapshot.docs.length; i++) {
-    const userDoc = snapshot.docs[i];
-    const userId = userDoc.id;
-    const reward = rewards[i];
-    const badgeName = badges[i];
-
-    await db.runTransaction(async (transaction) => {
-      transaction.update(userDoc.ref, {
-        coins: FieldValue.increment(reward),
-        xp: FieldValue.increment(500),
-        badges: FieldValue.arrayUnion(badgeName),
-        "stats.monthlyWins": 0 // Reset for the new month
-      });
-
-      // Record Transaction
-      const transRef = db.collection("coinTransactions").doc();
-      transaction.set(transRef, {
-        uid: userId,
-        amount: reward,
-        type: "monthly_hall_of_fame_reward",
-        rank: i + 1,
-        timestamp: FieldValue.serverTimestamp()
-      });
-    });
-
-    // Send Winner Notification
-    await sendPushNotification(
-      userId,
-      "Monthly Hall of Fame! 🏆",
-      `Congratulations! You ranked #${i + 1} this month. You've earned ${reward} coins and the ${badgeName}!`,
-      "hall_of_fame"
-    );
-  }
-});
-
-/**
  * HELPER: Resolve a specific active match
  */
 async function resolveMatch(doc: admin.firestore.DocumentSnapshot) {
   const data = doc.data()!;
-  const { userA, userB, entryFee, title } = data;
+  const { userA, userB, entryFee, title, contestId } = data;
   const matchId = doc.id;
+
+  let rewardAmount = Number(entryFee || 0); 
+  try {
+    const contestDoc = await db.collection("contests").doc(contestId).get();
+    if (contestDoc.exists) {
+        const cData = contestDoc.data()!;
+        rewardAmount = Number(cData.rewardCoins || cData.winningCoins || rewardAmount);
+    }
+  } catch (err) {
+    console.error("Error fetching contest reward:", err);
+  }
 
   let winnerUid = "";
   let loserUid = "";
-  let rewardAmount = entryFee; // Winner takes all
 
   if (userA.votes > userB.votes) {
     winnerUid = userA.uid;
@@ -105,48 +62,55 @@ async function resolveMatch(doc: admin.firestore.DocumentSnapshot) {
     winnerUid = userB.uid;
     loserUid = userA.uid;
   } else {
-    // It's a tie
     await refundTieMatch(doc);
     return;
   }
 
   await db.runTransaction(async (transaction) => {
-    // 1. Mark match completed
+    const winnerRef = db.collection("users").doc(winnerUid);
+    const loserRef = db.collection("users").doc(loserUid);
+    
+    const winnerDoc = await transaction.get(winnerRef);
+
     transaction.update(doc.ref, {
       status: "completed",
       winnerUid,
+      rewardAmount,
       completedAt: FieldValue.serverTimestamp()
     });
 
-    // 2. Award winner
-    transaction.update(db.collection("users").doc(winnerUid), {
-      coins: FieldValue.increment(rewardAmount),
+    const winnerData = winnerDoc.data() || {};
+    let coinField = "Dpcoin";
+    if (winnerData.Dpcoin === undefined && winnerData.fishCoins !== undefined) coinField = "fishCoins";
+    else if (winnerData.Dpcoin === undefined && winnerData.coins !== undefined) coinField = "coins";
+
+    transaction.update(winnerRef, {
+      [coinField]: FieldValue.increment(rewardAmount),
       xp: FieldValue.increment(100),
       "stats.wins": FieldValue.increment(1),
       "stats.monthlyWins": FieldValue.increment(1)
     });
 
-    // 3. Loser still gets minor XP for participation
-    transaction.update(db.collection("users").doc(loserUid), {
+    transaction.update(loserRef, {
       xp: FieldValue.increment(20)
     });
 
-    // 4. Record Transaction
     const transRef = db.collection("coinTransactions").doc();
     transaction.set(transRef, {
       uid: winnerUid,
       amount: rewardAmount,
       type: "contest_win_reward",
       matchId,
-      timestamp: FieldValue.serverTimestamp()
+      contestId,
+      timestamp: FieldValue.serverTimestamp(),
+      description: `Victory reward for "${title}"`
     });
   });
 
-  // PUSH NOTIFICATIONS
   await sendPushNotification(
     winnerUid,
     "You Won! 🏆",
-    `Victory! You won the battle "${title}" and earned ${rewardAmount} coins!`,
+    `Victory! You won the battle "${title}" and earned ${rewardAmount} Dpcoins!`,
     "contest_win",
     { matchId }
   );
@@ -165,18 +129,29 @@ async function resolveMatch(doc: admin.firestore.DocumentSnapshot) {
  */
 async function refundMatch(doc: admin.firestore.DocumentSnapshot) {
   const data = doc.data()!;
-  const refundAmount = data.entryFee / 2;
+  const entryFee = Number(data.entryFee || 0);
+  const refundAmount = entryFee / 2;
   const userId = data.userA.uid;
 
+  if (refundAmount <= 0) return;
+
   await db.runTransaction(async (transaction) => {
+    const userRef = db.collection("users").doc(userId);
+    const userDoc = await transaction.get(userRef);
+    const userData = userDoc.data() || {};
+    
+    let coinField = "Dpcoin";
+    if (userData.Dpcoin === undefined && userData.fishCoins !== undefined) coinField = "fishCoins";
+    else if (userData.Dpcoin === undefined && userData.coins !== undefined) coinField = "coins";
+
     transaction.update(doc.ref, {
       status: "cancelled",
       cancelledReason: "No opponent joined",
       cancelledAt: FieldValue.serverTimestamp()
     });
 
-    transaction.update(db.collection("users").doc(userId), {
-      coins: FieldValue.increment(refundAmount)
+    transaction.update(userRef, {
+      [coinField]: FieldValue.increment(refundAmount)
     });
 
     const transRef = db.collection("coinTransactions").doc();
@@ -192,7 +167,7 @@ async function refundMatch(doc: admin.firestore.DocumentSnapshot) {
   await sendPushNotification(
     userId,
     "Contest Refunded",
-    `No opponent joined your "${data.title}" contest. ${refundAmount} coins have been returned.`,
+    `No opponent joined your "${data.title}" contest. ${refundAmount} Dpcoins have been returned.`,
     "contest_refund"
   );
 }
@@ -202,19 +177,85 @@ async function refundMatch(doc: admin.firestore.DocumentSnapshot) {
  */
 async function refundTieMatch(doc: admin.firestore.DocumentSnapshot) {
   const data = doc.data()!;
-  const refundAmount = data.entryFee / 2;
+  const refundAmount = Number(data.entryFee || 0) / 2;
   
+  if (refundAmount <= 0) return;
+
   await db.runTransaction(async (transaction) => {
+    const userARef = db.collection("users").doc(data.userA.uid);
+    const userBRef = db.collection("users").doc(data.userB.uid);
+    const [userADoc, userBDoc] = await Promise.all([transaction.get(userARef), transaction.get(userBRef)]);
+
+    const uA = userADoc.data() || {};
+    const uB = userBDoc.data() || {};
+
+    let fieldA = "Dpcoin";
+    if (uA.Dpcoin === undefined && uA.fishCoins !== undefined) fieldA = "fishCoins";
+    else if (uA.Dpcoin === undefined && uA.coins !== undefined) fieldA = "coins";
+
+    let fieldB = "Dpcoin";
+    if (uB.Dpcoin === undefined && uB.fishCoins !== undefined) fieldB = "fishCoins";
+    else if (uB.Dpcoin === undefined && uB.coins !== undefined) fieldB = "coins";
+
     transaction.update(doc.ref, { 
       status: "completed", 
       result: "tie", 
       completedAt: FieldValue.serverTimestamp() 
     });
 
-    transaction.update(db.collection("users").doc(data.userA.uid), { coins: FieldValue.increment(refundAmount) });
-    transaction.update(db.collection("users").doc(data.userB.uid), { coins: FieldValue.increment(refundAmount) });
+    transaction.update(userARef, { [fieldA]: FieldValue.increment(refundAmount) });
+    transaction.update(userBRef, { [fieldB]: FieldValue.increment(refundAmount) });
   });
 
   await sendPushNotification(data.userA.uid, "It's a Tie!", "The match ended in a tie. Entry fees refunded.", "contest_tie");
   await sendPushNotification(data.userB.uid, "It's a Tie!", "The match ended in a tie. Entry fees refunded.", "contest_tie");
 }
+
+/**
+ * MONTHLY HALL OF FAME
+ */
+export const monthlyHallOfFame = onSchedule("0 0 1 * *", async (event) => {
+  const usersRef = db.collection("users");
+  const snapshot = await usersRef.orderBy("stats.monthlyWins", "desc").limit(3).get();
+  if (snapshot.empty) return;
+
+  const rewards = [1000, 500, 250]; 
+  const badges = ["Gold Hall of Fame", "Silver Hall of Fame", "Bronze Hall of Fame"];
+
+  for (let i = 0; i < snapshot.docs.length; i++) {
+    const userDoc = snapshot.docs[i];
+    const userId = userDoc.id;
+    const reward = rewards[i];
+    const badgeName = badges[i];
+
+    await db.runTransaction(async (transaction) => {
+        const userData = (await transaction.get(userDoc.ref)).data() || {};
+        let coinField = "Dpcoin";
+        if (userData.Dpcoin === undefined && userData.fishCoins !== undefined) coinField = "fishCoins";
+        else if (userData.Dpcoin === undefined && userData.coins !== undefined) coinField = "coins";
+
+        transaction.update(userDoc.ref, {
+            [coinField]: FieldValue.increment(reward),
+            xp: FieldValue.increment(500),
+            badges: FieldValue.arrayUnion(badgeName),
+            "stats.monthlyWins": 0 
+        });
+
+        const transRef = db.collection("coinTransactions").doc();
+        transaction.set(transRef, {
+            uid: userId,
+            amount: reward,
+            type: "monthly_hall_of_fame_reward",
+            rank: i + 1,
+            timestamp: FieldValue.serverTimestamp()
+        });
+    });
+
+    await sendPushNotification(
+      userId,
+      "Monthly Hall of Fame! 🏆",
+      `Congratulations! You ranked #${i + 1} this month. You've earned ${reward} Dpcoins and the ${badgeName}!`,
+      "hall_of_fame"
+    );
+  }
+});

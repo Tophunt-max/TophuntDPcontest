@@ -10,15 +10,21 @@ service cloud.firestore {
       );
     }
 
-    // Users: Profiles are public, but sensitive data like coins/xp are read-only
+    // Users: Profiles are public, but sensitive data like Dpcoin/xp are read-only
     match /users/{userId} {
       allow read: if request.auth != null;
       allow create: if request.auth != null && request.auth.uid == userId;
       allow update: if request.auth != null && (
-        (request.auth.uid == userId && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['coins', 'xp', 'level', 'stats'])) ||
+        (request.auth.uid == userId && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['Dpcoin', 'xp', 'level', 'stats'])) ||
         isAdmin()
       );
       allow delete: if isAdmin();
+
+      // Highlights subcollection
+      match /highlights/{highlightId} {
+        allow read: if request.auth != null;
+        allow write: if request.auth != null && (request.auth.uid == userId || isAdmin());
+      }
     }
 
     // Contests
@@ -80,6 +86,11 @@ service cloud.firestore {
     match /posts/{postId} {
       allow read: if request.auth != null;
       allow write: if request.auth != null && (request.resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    // Highlights (Top-level, if any. Keeping it for backward compatibility)
+    match /highlights/{highlightId} {
+      allow read: if request.auth != null && resource.data.userId == request.auth.uid;
     }
 
     // Messaging

@@ -110,7 +110,7 @@ export async function awardReward(userId: string, action: 'daily_login' | 'conte
         const data = userDoc.data() || {};
         const currentXp = data.xp || 0;
         const currentLevel = data.level || 1;
-        const currentCoins = data.fishCoins || 0;
+        const currentCoins = data.Dpcoin || data.fishCoins || data.coins || 0;
         const currentBadges = data.badges || [];
 
         const newXp = currentXp + xpAmount;
@@ -120,7 +120,7 @@ export async function awardReward(userId: string, action: 'daily_login' | 'conte
         const updates: any = {
             xp: newXp,
             level: newLevel,
-            fishCoins: newCoins,
+            Dpcoin: newCoins, // Renamed to Dpcoin
             updatedAt: FieldValue.serverTimestamp(),
         };
 
@@ -160,7 +160,7 @@ export async function awardReward(userId: string, action: 'daily_login' | 'conte
     }
 
     if (coinAmount > 0) {
-        await sendPushNotification(userId, "Reward Received! 🪙", `You earned ${coinAmount} fish coins!`, "reward_received");
+        await sendPushNotification(userId, "Reward Received! 🪙", `You earned ${coinAmount} Dpcoins!`, "reward_received");
     }
 }
 

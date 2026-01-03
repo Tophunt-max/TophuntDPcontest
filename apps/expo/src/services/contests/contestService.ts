@@ -8,11 +8,9 @@ import {
   orderBy, 
   limit 
 } from 'firebase/firestore';
-import { firestore } from '@/src/services/firebase/initFirebase';
+import { firestore, functions } from '@/src/services/firebase/initFirebase';
 import { Contest } from '@/src/types/contest';
-import { getFunctions, httpsCallable } from 'firebase/functions';
-
-const functions = getFunctions();
+import { httpsCallable } from 'firebase/functions';
 
 export const contestService = {
   /**
@@ -21,7 +19,6 @@ export const contestService = {
   getAvailableContests: async (type?: 'photo' | 'video'): Promise<Contest[]> => {
     try {
       const contestsRef = collection(firestore, 'contests');
-      // Removed orderBy temporarily to avoid Index requirements while testing
       let q = query(
         contestsRef, 
         where('status', '==', 'live')
@@ -34,14 +31,10 @@ export const contestService = {
 
   /**
    * Fetch "Waiting for Opponent" matches
-   * Filtered to only show PUBLIC matches in Explore
    */
   getWaitingMatches: async (type?: 'photo' | 'video', currentUserUid?: string): Promise<any[]> => {
     try {
       const matchesRef = collection(firestore, 'contestMatches');
-      
-      // Removed .where('isPrivate', '==', false) because legacy/new documents might miss this field,
-      // and Firestore excludes documents where the field is missing.
       let q = query(
         matchesRef, 
         where('status', '==', 'waiting_for_opponent')
@@ -50,20 +43,13 @@ export const contestService = {
       const querySnapshot = await getDocs(q);
       let matches = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       
-      // Client-side filtering for private matches
-      // This allows matches with isPrivate=undefined to still show up (treating them as public)
       matches = matches.filter((m: any) => m.isPrivate !== true);
-
-      if (type) {
-        matches = matches.filter((m: any) => m.type === type);
-      }
+      if (type) matches = matches.filter((m: any) => m.type === type);
+      
       return matches;
     } catch (error) { console.error(error); throw error; }
   },
 
-  /**
-   * Fetch private challenges sent to the current user
-   */
   getMyChallenges: async (currentUserUid: string): Promise<any[]> => {
     try {
       const matchesRef = collection(firestore, 'contestMatches');
@@ -119,15 +105,31 @@ export const contestService = {
     mediaType: string, 
     caption: string, 
     deviceId: string,
-    invitedUid?: string // Added invitedUid for direct challenge
+    invitedUid?: string 
   }) => {
-    const fn = httpsCallable(functions, 'startContestMatch');
-    return await fn(data);
+    console.log("[ContestService] startMatch called", data);
+    try {
+      const fn = httpsCallable(functions, 'startContestMatch');
+      const result = await fn(data);
+      console.log("[ContestService] startMatch success", result);
+      return result;
+    } catch (error: any) {
+      console.error("[ContestService] startMatch error", error);
+      throw error;
+    }
   },
 
   joinMatch: async (data: any) => {
-    const fn = httpsCallable(functions, 'joinContestMatch');
-    return await fn(data);
+    console.log("[ContestService] joinMatch called", data);
+    try {
+      const fn = httpsCallable(functions, 'joinContestMatch');
+      const result = await fn(data);
+      console.log("[ContestService] joinMatch success", result);
+      return result;
+    } catch (error: any) {
+      console.error("[ContestService] joinMatch error", error);
+      throw error;
+    }
   },
 
   submitVote: async (matchId: string, votedForUid: string, deviceId: string) => {

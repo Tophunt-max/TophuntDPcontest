@@ -42,7 +42,7 @@ export const topUpWallet = onCall(WALLET_CONFIG, async (request) => {
 
       // Add Coins
       transaction.update(userRef, {
-        fishCoins: admin.firestore.FieldValue.increment(amount)
+        Dpcoin: admin.firestore.FieldValue.increment(amount)
       });
 
       // Log Payment

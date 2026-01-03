@@ -29,33 +29,51 @@ export const startContestMatch = onCall(async (request) => {
       const contestData = contestDoc.data()!;
       const userData = userDoc.data()!;
       
-      // Support both naming conventions
-      const totalFee = contestData.totalEntryFee || contestData.entryFishCoins || 0;
-      const entryFee = totalFee / 2;
+      // Calculate split entry fee (50% for each user)
+      const totalFee = Number(contestData.totalEntryFee || contestData.entryFishCoins || contestData.entryDpcoin || 0);
+      const entryFeePerUser = totalFee / 2;
 
-      if ((userData.coins || userData.fishCoins || 0) < entryFee) {
-        throw new HttpsError("failed-precondition", "Insufficient coins.");
+      const userBalance = Number(userData.Dpcoin || userData.fishCoins || userData.coins || 0);
+
+      if (userBalance < entryFeePerUser) {
+        throw new HttpsError("failed-precondition", `Insufficient balance. Required: ${entryFeePerUser}, Current: ${userBalance}`);
       }
 
-      // Deduct coins
-      const coinField = userData.coins !== undefined ? "coins" : "fishCoins";
+      // Determine which coin field to deduct from (prefer 'Dpcoin' if it exists, fallback to others)
+      let coinField = "Dpcoin";
+      if (userData.Dpcoin === undefined) {
+          if (userData.fishCoins !== undefined) coinField = "fishCoins";
+          else if (userData.coins !== undefined) coinField = "coins";
+      }
+      
       transaction.update(userRef, {
-        [coinField]: FieldValue.increment(-entryFee),
+        [coinField]: FieldValue.increment(-entryFeePerUser),
         xp: FieldValue.increment(10),
+      });
+
+      // Record transaction
+      const transRef = db.collection("coinTransactions").doc();
+      transaction.set(transRef, {
+        uid,
+        amount: -entryFeePerUser,
+        type: "contest_entry_fee",
+        contestId,
+        timestamp: FieldValue.serverTimestamp(),
+        description: `Entry fee (50% split) for ${contestData.title || 'contest'}`
       });
 
       const matchRef = db.collection("contestMatches").doc();
       const expiresAt = new Date();
       expiresAt.setHours(expiresAt.getHours() + (contestData.autoCancelHours || 24));
 
-      const isPrivate = !!invitedUid; // If invitedUid is present, it's a private challenge
+      const isPrivate = !!invitedUid;
 
       transaction.set(matchRef, {
         contestId,
         status: "waiting_for_opponent",
         type: contestData.type || 'photo',
         title: contestData.title || contestData.name || "Untitled Contest",
-        entryFee: totalFee,
+        entryFee: totalFee, // Store the FULL entry fee for reference
         isPrivate: isPrivate,
         invitedUid: invitedUid || null,
         userA: {
@@ -137,17 +155,39 @@ export const joinContestMatch = onCall(async (request) => {
       if (matchData.userA.uid === uid) throw new HttpsError("failed-precondition", "You cannot join your own match.");
 
       const userData = userDoc.data()!;
-      const entryFee = (matchData.entryFee || 0) / 2;
+      
+      // Calculate split entry fee (remaining 50% for User B)
+      const totalFee = Number(matchData.entryFee || 0);
+      const entryFeePerUser = totalFee / 2;
 
-      if ((userData.coins || userData.fishCoins || 0) < entryFee) {
-        throw new HttpsError("failed-precondition", "Insufficient coins.");
+      const userBalance = Number(userData.Dpcoin || userData.fishCoins || userData.coins || 0);
+
+      if (userBalance < entryFeePerUser) {
+        throw new HttpsError("failed-precondition", `Insufficient balance. Required: ${entryFeePerUser}, Current: ${userBalance}`);
       }
 
-      // Deduct coins
-      const coinField = userData.coins !== undefined ? "coins" : "fishCoins";
+      // Determine which coin field to deduct from
+      let coinField = "Dpcoin";
+      if (userData.Dpcoin === undefined) {
+          if (userData.fishCoins !== undefined) coinField = "fishCoins";
+          else if (userData.coins !== undefined) coinField = "coins";
+      }
+
       transaction.update(userRef, {
-        [coinField]: FieldValue.increment(-entryFee),
+        [coinField]: FieldValue.increment(-entryFeePerUser),
         xp: FieldValue.increment(10),
+      });
+
+      // Record transaction
+      const transRef = db.collection("coinTransactions").doc();
+      transaction.set(transRef, {
+        uid,
+        amount: -entryFeePerUser,
+        type: "contest_entry_fee",
+        matchId: matchId,
+        contestId: matchData.contestId,
+        timestamp: FieldValue.serverTimestamp(),
+        description: `Entry fee (50% split) for ${matchData.title || 'contest'}`
       });
 
       transaction.update(matchRef, {

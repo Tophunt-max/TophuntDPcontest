@@ -112,12 +112,21 @@ async function handleJoin(request: any) {
                     transaction.get(opponentRef)
                 ]);
 
-                const entryFeePerUser = (contestData.entryFishCoins || 0) / 2;
-                if ((userDoc.data()?.fishCoins || 0) < entryFeePerUser) {
-                    throw new HttpsError("failed-precondition", "Insufficient Fish Coins.");
+                const userData = userDoc.data();
+                const opponentData = opponentDoc.data();
+
+                // DEDUCTION LOGIC:
+                const totalFee = Number(contestData.totalEntryFee || contestData.entryFishCoins || contestData.entryDpcoin || 0);
+                const entryFeePerUser = totalFee / 2;
+
+                const userBalance = Number(userData?.Dpcoin || userData?.fishCoins || userData?.coins || 0);
+                const opponentBalance = Number(opponentData?.Dpcoin || opponentData?.fishCoins || opponentData?.coins || 0);
+
+                if (userBalance < entryFeePerUser) {
+                    throw new HttpsError("failed-precondition", "Insufficient Dpcoins to join.");
                 }
 
-                if ((opponentDoc.data()?.fishCoins || 0) < entryFeePerUser) {
+                if (opponentBalance < entryFeePerUser) {
                      const entryId = db.collection("entries").doc().id;
                      const newEntry = {
                         id: entryId, contestId, userId, username, userDisplayName: displayName,
@@ -125,16 +134,35 @@ async function handleJoin(request: any) {
                         createdAt: admin.firestore.FieldValue.serverTimestamp(),
                     };
                     transaction.set(db.collection("entries").doc(entryId), newEntry);
-                    return { status: "waiting", message: "Joined! Waiting for an opponent (Opponent invalid)." };
+                    return { status: "waiting", message: "Joined! Waiting for a new opponent." };
                 }
 
+                // Determine coin fields
+                let userCoinField = "Dpcoin";
+                if (userData?.Dpcoin === undefined && userData?.fishCoins !== undefined) userCoinField = "fishCoins";
+                else if (userData?.Dpcoin === undefined && userData?.coins !== undefined) userCoinField = "coins";
+
+                let opponentCoinField = "Dpcoin";
+                if (opponentData?.Dpcoin === undefined && opponentData?.fishCoins !== undefined) opponentCoinField = "fishCoins";
+                else if (opponentData?.Dpcoin === undefined && opponentData?.coins !== undefined) opponentCoinField = "coins";
+
                 transaction.update(userRef, { 
-                    fishCoins: admin.firestore.FieldValue.increment(-entryFeePerUser),
+                    [userCoinField]: admin.firestore.FieldValue.increment(-entryFeePerUser),
                     "stats.contestsJoined": admin.firestore.FieldValue.increment(1)
                 });
                 transaction.update(opponentRef, { 
-                    fishCoins: admin.firestore.FieldValue.increment(-entryFeePerUser),
+                    [opponentCoinField]: admin.firestore.FieldValue.increment(-entryFeePerUser),
                     "stats.contestsJoined": admin.firestore.FieldValue.increment(1)
+                });
+
+                // Record transactions
+                const transA = db.collection("coinTransactions").doc();
+                transaction.set(transA, {
+                    uid: userId, amount: -entryFeePerUser, type: "contest_entry_fee", contestId, timestamp: admin.firestore.FieldValue.serverTimestamp()
+                });
+                const transB = db.collection("coinTransactions").doc();
+                transaction.set(transB, {
+                    uid: opponentId, amount: -entryFeePerUser, type: "contest_entry_fee", contestId, timestamp: admin.firestore.FieldValue.serverTimestamp()
                 });
 
                 const voteDurationDays = contestData.voteDurationDays || 1;
@@ -149,6 +177,7 @@ async function handleJoin(request: any) {
                     userB: { userId: userId, username: username, displayName: displayName, mediaUrl: mediaUrl, votes: 0 },
                     totalVotes: 0,
                     status: "active",
+                    entryFee: totalFee, 
                     endDate: battleEndDate,
                     createdAt: admin.firestore.FieldValue.serverTimestamp(),
                 };

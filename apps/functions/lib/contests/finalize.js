@@ -39,13 +39,12 @@ const admin = __importStar(require("firebase-admin"));
 const sender_1 = require("../notifications/sender");
 const gamification_1 = require("../utils/gamification");
 const SCHEDULED_CONFIG = {
-    region: "us-central1", // Cheaper region
-    cpu: 0.25, // Minimum CPU
-    memory: "256MiB", // Cast to MemoryOption
+    region: "us-central1",
+    cpu: 0.25,
+    memory: "256MiB",
 };
 /**
  * Scheduled function to check for ended contests and distribute rewards.
- * Ran every 1 hour to save costs (was 1 min or implied frequent).
  */
 exports.finalizeContests = (0, scheduler_1.onSchedule)(Object.assign(Object.assign({}, SCHEDULED_CONFIG), { schedule: "every 1 hours" }), async (event) => {
     const db = admin.firestore();
@@ -67,19 +66,19 @@ exports.finalizeContests = (0, scheduler_1.onSchedule)(Object.assign(Object.assi
             const contestData = contestDoc.data();
             let winnerId = null;
             let loserId = null;
-            let loserId2 = null; // In case of tie/no win
+            let loserId2 = null;
             const votesA = battleData.userA.votes;
             const votesB = battleData.userB.votes;
-            if (votesA > votesB && votesA >= (contestData.minimumVotes || 0)) {
+            const minVotes = contestData.minimumVotes || contestData.minVotes || 0;
+            if (votesA > votesB && votesA >= minVotes) {
                 winnerId = battleData.userA.userId;
                 loserId = battleData.userB.userId;
             }
-            else if (votesB > votesA && votesB >= (contestData.minimumVotes || 0)) {
+            else if (votesB > votesA && votesB >= minVotes) {
                 winnerId = battleData.userB.userId;
                 loserId = battleData.userA.userId;
             }
             else {
-                // Tie or min votes not met
                 loserId = battleData.userA.userId;
                 loserId2 = battleData.userB.userId;
             }
@@ -89,16 +88,31 @@ exports.finalizeContests = (0, scheduler_1.onSchedule)(Object.assign(Object.assi
                 winnerId: winnerId || "none"
             });
             if (winnerId) {
-                const totalPrize = (contestData.winningCoins || 0) + (contestData.fishCoinsReward || 0);
+                // Use rewardCoins from template (Priority)
+                const totalPrize = Number(contestData.rewardCoins || contestData.winningCoins || contestData.fishCoinsReward || contestData.DpcoinReward || 0);
+                const winnerRef = db.collection("users").doc(winnerId);
+                const winnerDoc = await winnerRef.get();
+                const winnerData = winnerDoc.data() || {};
+                let coinField = "Dpcoin";
+                if (winnerData.Dpcoin === undefined && winnerData.fishCoins !== undefined)
+                    coinField = "fishCoins";
+                else if (winnerData.Dpcoin === undefined && winnerData.coins !== undefined)
+                    coinField = "coins";
                 // Update Winner Coins & Stats
-                batch.update(db.collection("users").doc(winnerId), {
-                    fishCoins: admin.firestore.FieldValue.increment(totalPrize),
+                batch.update(winnerRef, {
+                    [coinField]: admin.firestore.FieldValue.increment(totalPrize),
                     "stats.wins": admin.firestore.FieldValue.increment(1)
                 });
                 // Record Transaction
-                const transRef = db.collection("coin_transactions").doc();
+                const transRef = db.collection("coinTransactions").doc();
                 batch.set(transRef, {
-                    userId: winnerId, amount: totalPrize, type: "win_reward", contestId, battleId: battleDoc.id, description: `Winner reward for ${contestData.name}`, createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                    uid: winnerId,
+                    amount: totalPrize,
+                    type: "win_reward",
+                    contestId,
+                    battleId: battleDoc.id,
+                    description: `Winner reward for ${contestData.name}`,
+                    timestamp: admin.firestore.FieldValue.serverTimestamp(),
                 });
                 await batch.commit();
                 // Gamification: Award XP
@@ -106,25 +120,33 @@ exports.finalizeContests = (0, scheduler_1.onSchedule)(Object.assign(Object.assi
                 if (loserId)
                     await (0, gamification_1.awardXp)(loserId, 100, "battle_loss");
                 // NOTIFICATIONS
-                await (0, sender_1.sendPushNotification)(winnerId, "CONGRATULATIONS! 🎉", `You won the ${contestData.name} contest and earned ${totalPrize} coins!`, "contest_won");
+                await (0, sender_1.sendPushNotification)(winnerId, "CONGRATULATIONS! 🎉", `You won the ${contestData.name} contest and earned ${totalPrize} Dpcoins!`, "contest_won");
                 if (loserId) {
                     await (0, sender_1.sendPushNotification)(loserId, "Battle Ended 🏁", `The results for ${contestData.name} are in. Better luck next time! (+100 XP)`, "contest_lost");
                 }
             }
             else {
+                // No winner (Tie or Min votes not met)
+                const entryFee = Number(battleData.entryFee || 0);
+                if (entryFee > 0) {
+                    const refundAmount = entryFee / 2;
+                    const userARef = db.collection("users").doc(battleData.userA.userId);
+                    const userBRef = db.collection("users").doc(battleData.userB.userId);
+                    // Refund using Dpcoin logic or whatever exists
+                    batch.update(userARef, { Dpcoin: admin.firestore.FieldValue.increment(refundAmount) });
+                    batch.update(userBRef, { Dpcoin: admin.firestore.FieldValue.increment(refundAmount) });
+                }
                 await batch.commit();
-                // Award Participation XP even for ties
                 if (loserId)
                     await (0, gamification_1.awardXp)(loserId, 50, "battle_tie");
                 if (loserId2)
                     await (0, gamification_1.awardXp)(loserId2, 50, "battle_tie");
                 if (loserId)
-                    await (0, sender_1.sendPushNotification)(loserId, "Contest Ended", `No winner in ${contestData.name}. (+50 XP)`, "contest_ended");
+                    await (0, sender_1.sendPushNotification)(loserId, "Contest Ended", `No winner in ${contestData.name}. Fees refunded if applicable. (+50 XP)`, "contest_ended");
                 if (loserId2)
-                    await (0, sender_1.sendPushNotification)(loserId2, "Contest Ended", `No winner in ${contestData.name}. (+50 XP)`, "contest_ended");
+                    await (0, sender_1.sendPushNotification)(loserId2, "Contest Ended", `No winner in ${contestData.name}. Fees refunded if applicable. (+50 XP)`, "contest_ended");
             }
         }
-        console.log(`Finalized ${expiredBattlesSnap.size} battles.`);
     }
     catch (error) {
         console.error("Error finalizing:", error);

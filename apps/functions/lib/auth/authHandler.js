@@ -49,6 +49,56 @@ const AUTH_CONFIG = {
     timeoutSeconds: 60,
     cors: true,
 };
+// Common disposable email domains to block
+const DISPOSABLE_DOMAINS = new Set([
+    "yopmail.com", "mailinator.com", "temp-mail.org", "10minutemail.com",
+    "guerrillamail.com", "sharklasers.com", "maildrop.cc", "getnada.com",
+    "dispostable.com", "tempmail.com", "throwawaymail.com", "mail.tm",
+    "temp-mail.io", "yopmail.net", "cool.fr.nf", "jetable.org", "temporarily.de",
+    "tempmailo.com", "smailpro.com", "trashmail.com", "luxusmail.org"
+]);
+// Reserved usernames that cannot be claimed
+const RESERVED_USERNAMES = new Set([
+    "admin", "administrator", "root", "system", "support", "help", "info",
+    "contact", "webmaster", "security", "privacy", "policy", "terms",
+    "login", "logout", "signin", "signup", "register", "auth", "user",
+    "users", "profile", "settings", "config", "api", "dev", "test",
+    "null", "undefined", "true", "false", "void", "anon", "anonymous",
+    "official", "staff", "moderator"
+]);
+const USERNAME_REGEX = /^[a-zA-Z0-9_.]+$/;
+// Helper to normalize phone numbers (remove spaces, dashes, parens)
+function normalizePhoneNumber(phone) {
+    if (!phone)
+        return null;
+    return phone.replace(/[^\d+]/g, "").trim();
+}
+// Helper to check for disposable emails
+function isDisposableEmail(email) {
+    if (!email)
+        return false;
+    const domain = email.split('@')[1];
+    if (!domain)
+        return false;
+    return DISPOSABLE_DOMAINS.has(domain.toLowerCase());
+}
+// Helper to validate username
+function validateUsername(username) {
+    const lower = username.toLowerCase();
+    if (lower.length < 3) {
+        throw new https_1.HttpsError("invalid-argument", "Username must be at least 3 characters long.");
+    }
+    if (lower.length > 30) {
+        throw new https_1.HttpsError("invalid-argument", "Username must be less than 30 characters long.");
+    }
+    if (!USERNAME_REGEX.test(username)) {
+        throw new https_1.HttpsError("invalid-argument", "Username can only contain letters, numbers, underscores, and dots.");
+    }
+    if (RESERVED_USERNAMES.has(lower)) {
+        throw new https_1.HttpsError("invalid-argument", "This username is reserved and cannot be used.");
+    }
+    return lower;
+}
 exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
     var _a, _b;
     // 1. Basic validation
@@ -63,9 +113,30 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
         if (!type || !["email", "phone", "username"].includes(type)) {
             throw new https_1.HttpsError("invalid-argument", "For check action, 'type' must be 'email', 'phone', or 'username'.");
         }
-        const value = (_a = request.data.value) === null || _a === void 0 ? void 0 : _a.trim();
+        let value = (_a = request.data.value) === null || _a === void 0 ? void 0 : _a.trim();
         if (!value) {
             throw new https_1.HttpsError("invalid-argument", `Missing value for check type: ${type}`);
+        }
+        if (type === "phone") {
+            const normalized = normalizePhoneNumber(value);
+            if (!normalized) {
+                throw new https_1.HttpsError("invalid-argument", "Invalid phone format");
+            }
+            value = normalized;
+        }
+        else if (type === "username") {
+            try {
+                value = validateUsername(value);
+            }
+            catch (e) {
+                throw e;
+            }
+        }
+        else if (type === "email") {
+            value = value.toLowerCase();
+            if (isDisposableEmail(value)) {
+                throw new https_1.HttpsError("invalid-argument", "Temporary or disposable email addresses are not allowed.");
+            }
         }
         logger.info(`[authHandler] Checking ${type}: ${value}`);
         try {
@@ -90,6 +161,10 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
         if (!email || !password || !username) {
             throw new https_1.HttpsError("invalid-argument", "Email, password, and username are required for user creation.");
         }
+        if (isDisposableEmail(email)) {
+            throw new https_1.HttpsError("invalid-argument", "Temporary or disposable email addresses are not allowed.");
+        }
+        const validatedUsername = validateUsername(username);
         logger.info(`[authHandler] Creating user: ${email}`);
         // Create Auth User
         let userRecord;
@@ -97,7 +172,7 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
             userRecord = await admin.auth().createUser({
                 email,
                 password,
-                displayName: username,
+                displayName: validatedUsername,
                 photoURL: avatarUrl || null,
             });
         }
@@ -113,7 +188,7 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
         try {
             await createFirestoreProfile(uid, {
                 email,
-                username,
+                username: validatedUsername,
                 fullName,
                 avatarUrl,
                 dob,
@@ -128,7 +203,6 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
         }
         catch (error) {
             logger.error(`[authHandler] Firestore creation failed for ${uid}. Rolling back auth.`, error);
-            // Rollback Auth User if Firestore fails
             await admin.auth().deleteUser(uid).catch(() => { });
             throw new https_1.HttpsError("internal", "Failed to save user profile. Account creation cancelled.");
         }
@@ -142,11 +216,15 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
             throw new https_1.HttpsError("unauthenticated", "User must be authenticated or provide UID.");
         }
         const { email, username, fullName, avatarUrl, dob, phone, occupation, gender, following, platform, } = request.data;
+        if (email && isDisposableEmail(email)) {
+            throw new https_1.HttpsError("invalid-argument", "Temporary or disposable email addresses are not allowed.");
+        }
+        const validatedUsername = username ? validateUsername(username) : null;
         logger.info(`[authHandler] Creating profile for existing UID: ${uid}`);
         try {
             await createFirestoreProfile(uid, {
                 email,
-                username,
+                username: validatedUsername,
                 fullName,
                 avatarUrl,
                 dob,
@@ -163,14 +241,12 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
             throw new https_1.HttpsError("internal", "Could not create user record.");
         }
     }
-    // ---------------------------------------------------------
-    // INVALID ACTION
-    // ---------------------------------------------------------
     throw new https_1.HttpsError("invalid-argument", `Unknown action: ${action}`);
 });
 // Helper function to keep code DRY
 async function createFirestoreProfile(uid, data) {
     const userRef = firebase_1.db.collection("users").doc(uid);
+    const normalizedPhone = normalizePhoneNumber(data.phone);
     const profileData = {
         uid,
         email: data.email || null,
@@ -178,19 +254,20 @@ async function createFirestoreProfile(uid, data) {
         fullName: data.fullName || null,
         profileImageUrl: data.avatarUrl || null,
         dob: data.dob || null,
-        phone: data.phone || null,
+        phone: normalizedPhone,
         occupation: data.occupation || null,
         gender: data.gender || null,
         following: data.following || [],
         platform: data.platform || "unknown",
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        // Initialize gamification stats and other defaults
-        fishCoins: 0,
-        level: 0, // Initialize XP level
+        // Renamed to Dpcoin
+        Dpcoin: 0,
+        xp: 0,
+        level: 1,
         stats: {
-            followersCount: 0, // Initialize followers count
-            followingCount: 0, // Initialize following count
+            followersCount: 0,
+            followingCount: 0,
             wins: 0,
             totalVotesReceived: 0,
             contestsJoined: 0,

@@ -86,7 +86,7 @@ export default function BattleSetupScreen() {
 
   const pickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'],
       allowsEditing: true,
       quality: 0.8,
     });
@@ -114,11 +114,9 @@ export default function BattleSetupScreen() {
       return;
     }
 
-    // Backend uses totalEntryFee. Fallback to entryFishCoins for compatibility.
-    const totalEntryFee = selectedContest.totalEntryFee || selectedContest.entryFishCoins || 0;
+    const totalEntryFee = selectedContest.totalEntryFee || selectedContest.entryFishCoins || selectedContest.entryFee || 0;
     const fee = totalEntryFee / 2;
-    // Backend uses 'coins' field in user document.
-    const userCoins = profile?.coins || profile?.fishCoins || 0;
+    const userCoins = profile?.coins || profile?.Dpcoin || 0;
 
     if (userCoins < fee) {
         Alert.alert("Insufficient Coins", `You need ${fee} Coins. Current: ${userCoins}`);
@@ -133,7 +131,7 @@ export default function BattleSetupScreen() {
         mediaUrl: downloadUrl,
         mediaType: 'photo',
         caption: caption,
-        displayName: displayName, // Note: Backend currently fetches these from User Doc
+        displayName: displayName,
         username: username,
         deviceId: 'device-id' 
       };
@@ -152,7 +150,6 @@ export default function BattleSetupScreen() {
       setShowSuccessModal(true);
     } catch (error: any) {
       console.error("[BattleSetup] Action Error:", error);
-      // Detailed error if possible
       const msg = error.details || error.message || "Something went wrong on the server.";
       Alert.alert("Submission Failed", msg);
     } finally {
@@ -163,7 +160,7 @@ export default function BattleSetupScreen() {
   if (showSuccessModal) return (
     <SuccessModal 
         title="Battle Joined!"
-        subtitle={mode === 'join' ? "You are now LIVE in this battle!" : "Match created! Waiting for an opponent."}
+        subtitle={mode === 'join' || selectedContest?.isJoinMode ? "You are now LIVE in this battle!" : "Match created! Waiting for an opponent."}
         onGoHome={() => { setShowSuccessModal(false); router.replace('/home'); }} 
     />
   );
@@ -174,15 +171,21 @@ export default function BattleSetupScreen() {
 
   if (!selectedContest) return null;
 
-  const totalEntryFee = selectedContest.totalEntryFee || selectedContest.entryFishCoins || 0;
+  // Added check for entryFee as well
+  const totalEntryFee = selectedContest.totalEntryFee || selectedContest.entryFishCoins || selectedContest.entryFee || 0;
   const fee = totalEntryFee / 2;
   const winningReward = selectedContest.rewardCoins || selectedContest.winningCoins || 0;
+
+  // Identify if we are User B joining an existing match
+  const isJoinMode = selectedContest.isJoinMode || mode === 'join';
+  const opponent = isJoinMode ? selectedContest.userA : null;
+  const opponentPic = opponent?.profilePic || opponent?.profileImageUrl;
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]} edges={['top', 'bottom']}>
       <View style={styles.header}>
          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-            <Left_Arrow width={24} height={24} fill={textColor} />
+            <Left_Arrow width={24} height={24} color={textColor} />
          </TouchableOpacity>
          <View style={styles.avatarPlaceholder} />
       </View>
@@ -198,6 +201,7 @@ export default function BattleSetupScreen() {
           <Text style={styles.breakdownLabel}>Entry Fee Breakdown</Text>
           
           <View style={styles.playersContainer}>
+            {/* User Profile (Left) */}
             <View style={styles.playerItem}>
               <View style={[styles.playerAvatarCircle, { backgroundColor: '#E1F5FE' }]}>
                 {profile?.profileImageUrl ? (
@@ -221,11 +225,22 @@ export default function BattleSetupScreen() {
               <Text style={styles.vsText}>VS</Text>
             </View>
 
+            {/* Opponent Profile (Right) */}
             <View style={styles.playerItem}>
-              <View style={[styles.playerAvatarCircle, { backgroundColor: '#FFF5F5' }]}>
-                 <Text style={styles.questionMark}>?</Text>
+              <View style={[styles.playerAvatarCircle, { backgroundColor: opponent ? '#E1F5FE' : '#FFF5F5' }]}>
+                {opponentPic ? (
+                  <Image source={{ uri: opponentPic }} style={styles.avatarImg} />
+                ) : (
+                  opponent ? (
+                    <Ionicons name="person" size={36} color="#03A9F4" />
+                  ) : (
+                    <Text style={styles.questionMark}>?</Text>
+                  )
+                )}
               </View>
-              <Text style={[styles.playerName, { color: textColor }]} numberOfLines={1}>Opponent</Text>
+              <Text style={[styles.playerName, { color: textColor }]} numberOfLines={1}>
+                {opponent ? (opponent.displayName || opponent.username || "Opponent") : "Waiting..."}
+              </Text>
               <View style={styles.feeInfo}>
                 <Text style={styles.feeMinus}>-{fee}</Text>
                 <View style={styles.coinIconWrapper}>
@@ -241,6 +256,48 @@ export default function BattleSetupScreen() {
              <Text style={styles.winnerBannerText}>🏆 Winner Gets {winningReward} Coins!</Text>
           </View>
         </View>
+
+        {/* Comparison Preview (New for User B) */}
+        {isJoinMode && opponent && (
+          <View style={styles.matchupPreviewContainer}>
+            <Text style={[styles.sectionTitle, { color: textColor, textAlign: 'center' }]}>The Matchup</Text>
+            <View style={styles.previewRow}>
+              <View style={styles.previewBox}>
+                 <View style={styles.previewHeader}>
+                    <Image 
+                      source={opponentPic ? { uri: opponentPic } : require('@/assets/images/icon.png')} 
+                      style={styles.miniAvatar} 
+                    />
+                    <Text style={[styles.previewLabel, { color: textColor }]} numberOfLines={1}>
+                       {opponent.displayName || opponent.username || "Opponent"}
+                    </Text>
+                 </View>
+                 <Image source={{ uri: opponent.mediaUrl }} style={styles.previewImg} />
+              </View>
+
+              <View style={styles.vsSmallCircle}>
+                 <Text style={styles.vsSmallText}>VS</Text>
+              </View>
+
+              <View style={styles.previewBox}>
+                 <View style={styles.previewHeader}>
+                    <Image 
+                      source={profile?.profileImageUrl ? { uri: profile.profileImageUrl } : require('@/assets/images/icon.png')} 
+                      style={styles.miniAvatar} 
+                    />
+                    <Text style={[styles.previewLabel, { color: textColor }]} numberOfLines={1}>You</Text>
+                 </View>
+                 {media ? (
+                   <Image source={{ uri: media }} style={styles.previewImg} />
+                 ) : (
+                   <TouchableOpacity onPress={pickImage} style={[styles.previewImg, styles.emptyPreview]}>
+                      <Ionicons name="add" size={32} color="#9E9E9E" />
+                   </TouchableOpacity>
+                 )}
+              </View>
+            </View>
+          </View>
+        )}
 
         {/* User Info & Submission Section */}
         <View style={styles.formSection}>
@@ -468,6 +525,68 @@ const styles = StyleSheet.create({
     color: '#EAB308',
     fontFamily: 'Urbanist-Bold',
     fontSize: 15,
+  },
+  matchupPreviewContainer: {
+    width: '100%',
+    marginBottom: 25,
+  },
+  previewRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 15,
+  },
+  previewBox: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  previewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+    gap: 8,
+    width: '100%',
+    paddingHorizontal: 5,
+  },
+  miniAvatar: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#EEE',
+  },
+  previewLabel: {
+    fontSize: 14,
+    fontFamily: 'Urbanist-Bold',
+    flex: 1,
+  },
+  previewImg: {
+    width: '100%',
+    aspectRatio: 0.8,
+    borderRadius: 15,
+    backgroundColor: '#F5F5F5',
+  },
+  emptyPreview: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    borderStyle: 'dashed',
+  },
+  vsSmallCircle: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#FF4D67',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginHorizontal: 10,
+    zIndex: 2,
+    marginTop: 30, 
+  },
+  vsSmallText: {
+    color: '#FFF',
+    fontSize: 10,
+    fontFamily: 'Urbanist-Bold',
   },
   formSection: {
     width: '100%',

@@ -27,28 +27,45 @@ exports.startContestMatch = (0, https_1.onCall)(async (request) => {
                 throw new https_1.HttpsError("not-found", "User document not found.");
             const contestData = contestDoc.data();
             const userData = userDoc.data();
-            // Support both naming conventions
-            const totalFee = contestData.totalEntryFee || contestData.entryFishCoins || 0;
-            const entryFee = totalFee / 2;
-            if ((userData.coins || userData.fishCoins || 0) < entryFee) {
-                throw new https_1.HttpsError("failed-precondition", "Insufficient coins.");
+            // Calculate split entry fee (50% for each user)
+            const totalFee = Number(contestData.totalEntryFee || contestData.entryFishCoins || contestData.entryDpcoin || 0);
+            const entryFeePerUser = totalFee / 2;
+            const userBalance = Number(userData.Dpcoin || userData.fishCoins || userData.coins || 0);
+            if (userBalance < entryFeePerUser) {
+                throw new https_1.HttpsError("failed-precondition", `Insufficient balance. Required: ${entryFeePerUser}, Current: ${userBalance}`);
             }
-            // Deduct coins
-            const coinField = userData.coins !== undefined ? "coins" : "fishCoins";
+            // Determine which coin field to deduct from (prefer 'Dpcoin' if it exists, fallback to others)
+            let coinField = "Dpcoin";
+            if (userData.Dpcoin === undefined) {
+                if (userData.fishCoins !== undefined)
+                    coinField = "fishCoins";
+                else if (userData.coins !== undefined)
+                    coinField = "coins";
+            }
             transaction.update(userRef, {
-                [coinField]: firestore_1.FieldValue.increment(-entryFee),
+                [coinField]: firestore_1.FieldValue.increment(-entryFeePerUser),
                 xp: firestore_1.FieldValue.increment(10),
+            });
+            // Record transaction
+            const transRef = firebase_1.db.collection("coinTransactions").doc();
+            transaction.set(transRef, {
+                uid,
+                amount: -entryFeePerUser,
+                type: "contest_entry_fee",
+                contestId,
+                timestamp: firestore_1.FieldValue.serverTimestamp(),
+                description: `Entry fee (50% split) for ${contestData.title || 'contest'}`
             });
             const matchRef = firebase_1.db.collection("contestMatches").doc();
             const expiresAt = new Date();
             expiresAt.setHours(expiresAt.getHours() + (contestData.autoCancelHours || 24));
-            const isPrivate = !!invitedUid; // If invitedUid is present, it's a private challenge
+            const isPrivate = !!invitedUid;
             transaction.set(matchRef, {
                 contestId,
                 status: "waiting_for_opponent",
                 type: contestData.type || 'photo',
                 title: contestData.title || contestData.name || "Untitled Contest",
-                entryFee: totalFee,
+                entryFee: totalFee, // Store the FULL entry fee for reference
                 isPrivate: isPrivate,
                 invitedUid: invitedUid || null,
                 userA: {
@@ -127,15 +144,35 @@ exports.joinContestMatch = (0, https_1.onCall)(async (request) => {
             if (matchData.userA.uid === uid)
                 throw new https_1.HttpsError("failed-precondition", "You cannot join your own match.");
             const userData = userDoc.data();
-            const entryFee = (matchData.entryFee || 0) / 2;
-            if ((userData.coins || userData.fishCoins || 0) < entryFee) {
-                throw new https_1.HttpsError("failed-precondition", "Insufficient coins.");
+            // Calculate split entry fee (remaining 50% for User B)
+            const totalFee = Number(matchData.entryFee || 0);
+            const entryFeePerUser = totalFee / 2;
+            const userBalance = Number(userData.Dpcoin || userData.fishCoins || userData.coins || 0);
+            if (userBalance < entryFeePerUser) {
+                throw new https_1.HttpsError("failed-precondition", `Insufficient balance. Required: ${entryFeePerUser}, Current: ${userBalance}`);
             }
-            // Deduct coins
-            const coinField = userData.coins !== undefined ? "coins" : "fishCoins";
+            // Determine which coin field to deduct from
+            let coinField = "Dpcoin";
+            if (userData.Dpcoin === undefined) {
+                if (userData.fishCoins !== undefined)
+                    coinField = "fishCoins";
+                else if (userData.coins !== undefined)
+                    coinField = "coins";
+            }
             transaction.update(userRef, {
-                [coinField]: firestore_1.FieldValue.increment(-entryFee),
+                [coinField]: firestore_1.FieldValue.increment(-entryFeePerUser),
                 xp: firestore_1.FieldValue.increment(10),
+            });
+            // Record transaction
+            const transRef = firebase_1.db.collection("coinTransactions").doc();
+            transaction.set(transRef, {
+                uid,
+                amount: -entryFeePerUser,
+                type: "contest_entry_fee",
+                matchId: matchId,
+                contestId: matchData.contestId,
+                timestamp: firestore_1.FieldValue.serverTimestamp(),
+                description: `Entry fee (50% split) for ${matchData.title || 'contest'}`
             });
             transaction.update(matchRef, {
                 status: "active",

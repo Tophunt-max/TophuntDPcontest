@@ -67,7 +67,7 @@ export default function PhotoContestsScreen() {
         
         <View style={[styles.walletBadge, { backgroundColor: cardBg }]}>
            <Wallet_Icon width={20} height={20} />
-           <Text style={[styles.walletText, { color: textColor }]}>{profile?.fishCoins || profile?.coins || 0}</Text>
+           <Text style={[styles.walletText, { color: textColor }]}>{profile?.Dpcoin || profile?.coins || 0}</Text>
         </View>
       </View>
 

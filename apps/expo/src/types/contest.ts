@@ -11,7 +11,7 @@ export interface Contest {
   bannerUrl?: string; // Added optional bannerUrl
   entryFishCoins: number; // Total entry fee (e.g., 100)
   winningCoins: number;   // Main prize
-  fishCoinsReward: number; // Bonus reward
+  DpcoinReward: number; // Bonus reward
   minimumVotes: number;   // Eligibility for winning
   startDate: Timestamp;
   endDate: Timestamp;

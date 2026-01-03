@@ -40,9 +40,6 @@ const USERNAME_REGEX = /^[a-zA-Z0-9_.]+$/;
 // Helper to normalize phone numbers (remove spaces, dashes, parens)
 function normalizePhoneNumber(phone: string | null | undefined): string | null {
     if (!phone) return null;
-    // Remove spaces, dashes, parentheses
-    // Keep '+' at the start if present, and digits
-    // Regex: Replace anything that is NOT a digit or a '+' with empty string
     return phone.replace(/[^\d+]/g, "").trim();
 }
 
@@ -107,7 +104,6 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
         );
       }
 
-      // IMPROVED: Normalize phone number before checking
       if (type === "phone") {
         const normalized = normalizePhoneNumber(value);
         if (!normalized) {
@@ -115,17 +111,13 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
         }
         value = normalized;
       } else if (type === "username") {
-        // IMPROVED: Validate username
         try {
             value = validateUsername(value);
         } catch (e: any) {
-            // For check action, if invalid format/reserved, consider it "exists" (unavailable) or throw error
-            // Throwing error is better so client knows WHY it's unavailable
              throw e;
         }
       } else if (type === "email") {
         value = value.toLowerCase();
-        // IMPROVED: Check for disposable email
         if (isDisposableEmail(value)) {
             throw new HttpsError("invalid-argument", "Temporary or disposable email addresses are not allowed.");
         }
@@ -176,12 +168,10 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
         );
       }
       
-      // IMPROVED: Check for disposable email
       if (isDisposableEmail(email)) {
           throw new HttpsError("invalid-argument", "Temporary or disposable email addresses are not allowed.");
       }
 
-      // IMPROVED: Validate username
       const validatedUsername = validateUsername(username);
 
       logger.info(`[authHandler] Creating user: ${email}`);
@@ -227,7 +217,6 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
           `[authHandler] Firestore creation failed for ${uid}. Rolling back auth.`,
           error
         );
-        // Rollback Auth User if Firestore fails
         await admin.auth().deleteUser(uid).catch(() => {});
         throw new HttpsError(
           "internal",
@@ -259,12 +248,10 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
         platform,
       } = request.data;
       
-      // IMPROVED: Check for disposable email
       if (email && isDisposableEmail(email)) {
            throw new HttpsError("invalid-argument", "Temporary or disposable email addresses are not allowed.");
       }
 
-      // IMPROVED: Validate username
       const validatedUsername = username ? validateUsername(username) : null;
 
       logger.info(`[authHandler] Creating profile for existing UID: ${uid}`);
@@ -289,9 +276,6 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
       }
     }
 
-    // ---------------------------------------------------------
-    // INVALID ACTION
-    // ---------------------------------------------------------
     throw new HttpsError("invalid-argument", `Unknown action: ${action}`);
   }
 );
@@ -300,7 +284,6 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
 async function createFirestoreProfile(uid: string, data: any) {
   const userRef = db.collection("users").doc(uid);
   
-  // Normalize phone before saving
   const normalizedPhone = normalizePhoneNumber(data.phone);
 
   const profileData = {
@@ -317,12 +300,13 @@ async function createFirestoreProfile(uid: string, data: any) {
     platform: data.platform || "unknown",
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    // Initialize gamification stats and other defaults
-    fishCoins: 0,
-    level: 0, // Initialize XP level
+    // Renamed to Dpcoin
+    Dpcoin: 0, 
+    xp: 0,
+    level: 1, 
     stats: {
-       followersCount: 0, // Initialize followers count
-       followingCount: 0, // Initialize following count
+       followersCount: 0, 
+       followingCount: 0, 
        wins: 0,
        totalVotesReceived: 0,
        contestsJoined: 0,

@@ -36,11 +36,17 @@ exports.claimDailyReward = (0, https_1.onCall)(async (request) => {
         else {
             currentStreak += 1;
         }
-        // Base reward: 10 coins + (Streak * 2 bonus)
+        // Base reward: 10 Dpcoins + (Streak * 2 bonus)
         const coinReward = 10 + (currentStreak * 2);
         const xpReward = 50;
+        // Use Dpcoin field primarily
+        let coinField = "Dpcoin";
+        if (data.Dpcoin === undefined && data.fishCoins !== undefined)
+            coinField = "fishCoins";
+        else if (data.Dpcoin === undefined && data.coins !== undefined)
+            coinField = "coins";
         transaction.update(userRef, {
-            coins: firestore_1.FieldValue.increment(coinReward),
+            [coinField]: firestore_1.FieldValue.increment(coinReward),
             xp: firestore_1.FieldValue.increment(xpReward),
             streak: currentStreak,
             lastDailyClaim: firestore_1.FieldValue.serverTimestamp(),
@@ -52,7 +58,8 @@ exports.claimDailyReward = (0, https_1.onCall)(async (request) => {
             amount: coinReward,
             type: "daily_reward",
             streak: currentStreak,
-            timestamp: firestore_1.FieldValue.serverTimestamp()
+            timestamp: firestore_1.FieldValue.serverTimestamp(),
+            description: `Daily login reward (${currentStreak} day streak)`
         });
         return {
             success: true,
@@ -64,13 +71,11 @@ exports.claimDailyReward = (0, https_1.onCall)(async (request) => {
 });
 /**
  * Check Streaks & Send Reminders (Cron Job)
- * Runs daily to remind users whose streak is about to break
  */
 const scheduler_1 = require("firebase-functions/v2/scheduler");
 exports.streakReminder = (0, scheduler_1.onSchedule)("every 24 hours", async (event) => {
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
-    // Find users who claimed yesterday but NOT today yet
     const usersToRemind = await firebase_1.db.collection("users")
         .where("streak", ">", 0)
         .where("lastDailyClaim", "<=", firebase_1.admin.firestore.Timestamp.fromDate(yesterday))

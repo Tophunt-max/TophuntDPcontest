@@ -69,7 +69,7 @@ exports.adminManageWallet = (0, https_1.onCall)(ADMIN_WALLET_CONFIG, async (requ
             if (!userDoc.exists) {
                 throw new https_1.HttpsError("not-found", "User not found.");
             }
-            const currentCoins = ((_a = userDoc.data()) === null || _a === void 0 ? void 0 : _a.fishCoins) || 0;
+            const currentCoins = ((_a = userDoc.data()) === null || _a === void 0 ? void 0 : _a.Dpcoin) || 0;
             if (type === "add") {
                 newCoinBalance = currentCoins + amount;
             }
@@ -81,7 +81,7 @@ exports.adminManageWallet = (0, https_1.onCall)(ADMIN_WALLET_CONFIG, async (requ
             }
             // Update user's coin balance
             transaction.update(userRef, {
-                fishCoins: newCoinBalance,
+                Dpcoin: newCoinBalance,
             });
             // Log Transaction History
             const transRef = db.collection("coin_transactions").doc();

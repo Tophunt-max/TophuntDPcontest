@@ -8,8 +8,8 @@ import {
   ScrollView,
   Switch,
   useColorScheme,
-  Image,
-  Dimensions
+  Alert,
+  Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -31,6 +31,7 @@ import {
   Settings_Logout,
   Settings_Alert,
 } from "@/assets/svgs";
+import { signOut } from '../../src/services/auth';
 
 export default function SettingScreen() {
   const router = useRouter();
@@ -38,11 +39,47 @@ export default function SettingScreen() {
   const isDark = colorScheme === 'dark';
   const textColor = isDark ? '#fff' : '#212121';
   const backgroundColor = isDark ? '#181A20' : '#fff';
-  const arrowColor = isDark ? '#fff' : '#212121';
 
   const [isDarkMode, setIsDarkMode] = useState(isDark);
 
   const toggleDarkMode = () => setIsDarkMode(previousState => !previousState);
+
+  const performLogout = async () => {
+    console.log("[Settings] performLogout: Starting...");
+    try {
+      await signOut();
+      console.log("[Settings] performLogout: Sign out successful");
+      
+      // Clear navigation stack and go to login
+      router.replace('/auth/login');
+      
+    } catch (error) {
+      console.error("[Settings] performLogout: Error:", error);
+      if (Platform.OS === 'web') {
+        alert("Logout failed: " + error.message);
+      } else {
+        Alert.alert("Error", "Failed to logout. Please try again.");
+      }
+    }
+  };
+
+  const handleLogout = () => {
+    console.log("[Settings] handleLogout called");
+    
+    if (Platform.OS === 'web') {
+      // Direct logout for web to avoid window.confirm issues for now
+      performLogout();
+    } else {
+      Alert.alert(
+        "Logout",
+        "Are you sure you want to log out?",
+        [
+          { text: "Cancel", style: "cancel", onPress: () => console.log("[Settings] Logout cancelled") },
+          { text: "Logout", onPress: performLogout, style: "destructive" }
+        ]
+      );
+    }
+  };
 
   const renderHeader = () => (
     <View style={styles.header}>
@@ -54,7 +91,14 @@ export default function SettingScreen() {
   );
 
   const renderItem = ({ icon, label, onPress, rightElement, showArrow = true }) => (
-    <TouchableOpacity style={styles.itemContainer} onPress={onPress}>
+    <TouchableOpacity 
+      style={styles.itemContainer} 
+      onPress={() => {
+        console.log(`[Settings] Item pressed: ${label}`);
+        onPress();
+      }}
+      activeOpacity={0.7}
+    >
       <View style={styles.itemLeft}>
         <View style={styles.iconContainer}>
             {icon}
@@ -133,7 +177,7 @@ export default function SettingScreen() {
         })}
 
         {renderItem({
-          icon: <Settings_Help width={24} height={24} color={textColor} />, // Closest match to "Report a Problem" cloud icon in image
+          icon: <Settings_Help width={24} height={24} color={textColor} />,
           label: 'Report a Problem',
           onPress: () => {},
         })}
@@ -172,7 +216,7 @@ export default function SettingScreen() {
           icon: <Settings_Logout width={24} height={24} color={textColor} />,
           label: 'Logout',
           showArrow: false,
-          onPress: () => {},
+          onPress: handleLogout,
         })}
 
       </ScrollView>

@@ -26,7 +26,7 @@ export interface UserProfile {
   following?: string[];
 
   // Contest Platform Fields
-  fishCoins: number; 
+  Dpcoin: number; 
   isAdmin: boolean;
   xp?: number;
   level?: number;
