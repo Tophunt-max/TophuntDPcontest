@@ -13,7 +13,7 @@ export const NAV_DATA = [
       {
         title: "Rewards Management",
         url: "/rewards",
-        icon: Icons.Box,
+        icon: Icons.FourCircle,
         items: [],
       },
       {
