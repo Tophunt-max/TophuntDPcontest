@@ -16,7 +16,7 @@
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
-monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false
@@ -27,7 +27,7 @@ monochromeImage": "./assets/images/android-icon-monochrome.png"
       "favicon": "./assets/images/favicon.png"
     },
     "updates": {
-      "url": "https://u.expo.dev/tophuntdpcontest"
+      "url": "https://u.expo.dev/87588362-e95e-4054-a15d-0045f9426f8d"
     },
     "runtimeVersion": {
       "policy": "appVersion"
