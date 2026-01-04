@@ -16,8 +16,5 @@
       "channel": "production",
       "autoIncrement": true
     }
-  },
-  "updates": {
-    "url": "https://u.expo.dev/87588362-e95e-4054-a15d-0045f9426f8d"
   }
 }
