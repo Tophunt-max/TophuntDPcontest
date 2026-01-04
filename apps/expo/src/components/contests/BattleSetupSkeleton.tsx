@@ -8,15 +8,9 @@ const { width } = Dimensions.get('window');
 export const BattleSetupSkeleton = () => {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      {/* Header Skeleton */}
-      <View style={styles.header}>
-        <Skeleton width={34} height={34} borderRadius={17} />
-        <Skeleton width={40} height={40} borderRadius={20} />
-      </View>
-
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         {/* Title Skeleton */}
-        <Skeleton width={200} height={35} borderRadius={10} style={{ marginVertical: 15 }} />
+        <Skeleton width={200} height={35} borderRadius={10} style={{ marginVertical: 15, marginTop: 60 }} />
 
         {/* Breakdown Card Skeleton */}
         <View style={styles.breakdownCard}>
@@ -63,13 +57,6 @@ export const BattleSetupSkeleton = () => {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: 'transparent' },
-  header: { 
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20, 
-    paddingVertical: 10
-  },
   scrollContent: { paddingHorizontal: 20, alignItems: 'center', paddingBottom: 40 },
   breakdownCard: {
     width: '100%',

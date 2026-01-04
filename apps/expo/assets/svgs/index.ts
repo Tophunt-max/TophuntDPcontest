@@ -75,7 +75,8 @@ import Mention_Icon from './mention_icon.svg';
 import Highlight_Story_Icon from './highlight_story.svg';
 import Viewers_Icon from './viewers_icon.svg';
 import Delete_Icon from './delete_icon.svg';
-import Wallet_Icon from './wallet_icon.svg'; // NEW: Import Wallet Icon
+import Wallet_Icon from './wallet_icon.svg';
+import Wallet_Color from './wallet_color.svg';
 
 // Settings Icons
 import Settings_User from './settings/user.svg';
@@ -208,5 +209,6 @@ export {
   Highlight_Story_Icon,
   Viewers_Icon,
   Delete_Icon,
-  Wallet_Icon, // NEW: Export Wallet Icon
+  Wallet_Icon,
+  Wallet_Color
 };

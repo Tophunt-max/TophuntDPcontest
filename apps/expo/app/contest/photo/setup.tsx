@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   Dimensions,
   Platform,
   TextInput,
+  Modal
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -23,16 +24,33 @@ import { SuccessModal } from '@/src/components/forms/SuccessModal';
 import { RulesModal } from '@/src/components/modals/RulesModal';
 import { useProfile } from '@/src/hooks/useProfileData'; 
 import { useThemeColor } from '@/hooks/use-theme-color';
-import { Left_Arrow } from '@/assets/svgs'; 
+import { Left_Arrow, Wallet_Color } from '@/assets/svgs'; 
 import { BattleSetupSkeleton } from '@/src/components/contests/BattleSetupSkeleton';
+import { useToast } from '@/src/components/toast/ToastProvider';
+import Animated, { 
+  useSharedValue, 
+  useAnimatedStyle, 
+  withRepeat, 
+  withTiming, 
+  withSequence,
+  withDelay,
+  Easing,
+  runOnJS,
+  useDerivedValue,
+  interpolate
+} from 'react-native-reanimated';
+import ImageViewing from "react-native-image-viewing";
+import * as Haptics from 'expo-haptics';
 
 const PINK_ACCENT = '#FFB1BD';
+const PRIMARY_COLOR = '#FF4D67';
 
 export default function BattleSetupScreen() {
   const router = useRouter();
   const { contestId, matchId, mode } = useLocalSearchParams(); 
   const { user } = useAuth();
   const { data: profile } = useProfile(user?.uid || ''); 
+  const { addToast } = useToast();
   
   const backgroundColor = useThemeColor({}, 'background');
   const textColor = useThemeColor({}, 'text');
@@ -46,11 +64,25 @@ export default function BattleSetupScreen() {
   const [uploading, setUploading] = useState(false);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [showRulesModal, setShowRulesModal] = useState(false);
+  const [isImageViewVisible, setIsImageViewVisible] = useState(false);
 
   // New form state
   const [displayName, setDisplayName] = useState('');
   const [username, setUsername] = useState('');
   const [caption, setCaption] = useState('');
+  const [isReady, setIsReady] = useState(false);
+
+  // Glow Animation
+  const glowOpacity = useSharedValue(0);
+
+  // Coin Animation
+  const [showCoinAnimation, setShowCoinAnimation] = useState(false);
+  const coinTranslateY = useSharedValue(0);
+  const coinOpacity = useSharedValue(1);
+
+  // Refs for positions
+  const walletRef = useRef<View>(null);
+  const [walletPosition, setWalletPosition] = useState({ x: 0, y: 0, width: 0, height: 0 });
 
   useEffect(() => { 
     if (contestId) {
@@ -68,12 +100,48 @@ export default function BattleSetupScreen() {
     }
   }, [profile]);
 
+  // Check if form is ready
+  useEffect(() => {
+    const ready = !!(media && displayName.trim() && username.trim());
+    setIsReady(ready);
+    
+    if (ready) {
+      glowOpacity.value = withRepeat(
+        withSequence(
+          withTiming(0.6, { duration: 1000, easing: Easing.ease }),
+          withTiming(0, { duration: 1000, easing: Easing.ease })
+        ),
+        -1, 
+        true 
+      );
+    } else {
+        glowOpacity.value = withTiming(0);
+    }
+  }, [media, displayName, username]);
+
+  const animatedGlowStyle = useAnimatedStyle(() => {
+    return {
+      opacity: glowOpacity.value,
+      shadowOpacity: glowOpacity.value,
+    };
+  });
+
+  const animatedCoinStyle = useAnimatedStyle(() => {
+    return {
+        transform: [{ translateY: coinTranslateY.value }],
+        opacity: coinOpacity.value
+    }
+  });
+
   const fetchContestDetail = async (id: string) => {
     setLoading(true);
     try {
       const contest = await contestService.getContestById(id);
       setSelectedContest(contest);
-    } catch (error) { console.error(error); } finally { setLoading(false); }
+    } catch (error) { 
+      console.error(error); 
+      addToast("Failed to load contest details", 'error');
+    } finally { setLoading(false); }
   };
 
   const fetchMatchDetail = async (id: string) => {
@@ -81,7 +149,10 @@ export default function BattleSetupScreen() {
     try {
       const match = await contestService.getMatchById(id); 
       setSelectedContest({ ...match, isJoinMode: true });
-    } catch (error) { console.error(error); } finally { setLoading(false); }
+    } catch (error) { 
+      console.error(error);
+      addToast("Failed to load match details", 'error'); 
+    } finally { setLoading(false); }
   };
 
   const pickImage = async () => {
@@ -90,27 +161,40 @@ export default function BattleSetupScreen() {
       allowsEditing: true,
       quality: 0.8,
     });
-    if (!result.canceled) setMedia(result.assets[0].uri);
+    if (!result.canceled) {
+        setMedia(result.assets[0].uri);
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+  };
+
+  const startCoinAnimation = (callback: () => void) => {
+      setShowCoinAnimation(true);
+      coinTranslateY.value = 0;
+      coinOpacity.value = 1;
+
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+      // Animate up and fade out
+      coinTranslateY.value = withTiming(-600, { duration: 1000, easing: Easing.out(Easing.exp) });
+      coinOpacity.value = withTiming(0, { duration: 1000, easing: Easing.in(Easing.exp) }, (finished) => {
+          if (finished) {
+             runOnJS(callback)();
+          }
+      });
   };
 
   const handleAction = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
     if (!user) {
-      Alert.alert("Authentication Required", "Please log in to participate.");
+      addToast("Please log in to participate.", 'error');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       return;
     }
 
     if (!selectedContest) {
-      Alert.alert("Error", "No contest selected.");
-      return;
-    }
-
-    if (!media) {
-      Alert.alert("Hold on!", "Please upload a photo first.");
-      return;
-    }
-
-    if (!displayName.trim() || !username.trim()) {
-      Alert.alert("Required Fields", "Please provide your name and username.");
+      addToast("No contest selected.", 'error');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       return;
     }
 
@@ -118,44 +202,74 @@ export default function BattleSetupScreen() {
     const fee = totalEntryFee / 2;
     const userCoins = profile?.coins || profile?.Dpcoin || 0;
 
+    // Logic for "Get Coins" flow
     if (userCoins < fee) {
-        Alert.alert("Insufficient Coins", `You need ${fee} Coins. Current: ${userCoins}`);
-        return;
+      addToast(`Insufficient Coins. Redirecting to Wallet...`, 'info');
+      router.push('/wallet/store'); // Assuming this route exists
+      return;
     }
 
-    setUploading(true);
-    try {
-      const downloadUrl = await contestMediaService.uploadMedia(media, selectedContest.id || selectedContest.contestId, user.uid, 'photo');
+    if (!media) {
+      addToast("Please upload a photo first.", 'error');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      return;
+    }
+
+    if (!displayName.trim() || !username.trim()) {
+      addToast("Please provide your name and username.", 'error');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      return;
+    }
+
+    // Start Animation and then upload
+    startCoinAnimation(async () => {
+        setShowCoinAnimation(false);
+        setUploading(true);
+        try {
+            const downloadUrl = await contestMediaService.uploadMedia(media, selectedContest.id || selectedContest.contestId, user.uid, 'photo');
+            
+            const matchData = {
+              mediaUrl: downloadUrl,
+              mediaType: 'photo',
+              caption: caption,
+              displayName: displayName,
+              username: username,
+              deviceId: 'device-id' 
+            };
       
-      const matchData = {
-        mediaUrl: downloadUrl,
-        mediaType: 'photo',
-        caption: caption,
-        displayName: displayName,
-        username: username,
-        deviceId: 'device-id' 
-      };
-
-      if (selectedContest.isJoinMode || mode === 'join') {
-        await contestService.joinMatch({
-          matchId: matchId as string || selectedContest.id,
-          ...matchData
-        });
-      } else {
-        await contestService.startMatch({
-          contestId: selectedContest.id,
-          ...matchData
-        });
-      }
-      setShowSuccessModal(true);
-    } catch (error: any) {
-      console.error("[BattleSetup] Action Error:", error);
-      const msg = error.details || error.message || "Something went wrong on the server.";
-      Alert.alert("Submission Failed", msg);
-    } finally {
-      setUploading(false);
-    }
+            if (selectedContest.isJoinMode || mode === 'join') {
+              await contestService.joinMatch({
+                matchId: matchId as string || selectedContest.id,
+                ...matchData
+              });
+            } else {
+              await contestService.startMatch({
+                contestId: selectedContest.id,
+                ...matchData
+              });
+            }
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            setShowSuccessModal(true);
+          } catch (error: any) {
+            console.error("[BattleSetup] Action Error:", error);
+            const msg = error.details || error.message || "Something went wrong on the server.";
+            addToast(msg, 'error');
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          } finally {
+            setUploading(false);
+          }
+    });
   };
+
+  const navigateToWallet = () => {
+    router.push('/wallet/store');
+  }
+  
+  const measureWallet = () => {
+     walletRef.current?.measure((x, y, width, height, pageX, pageY) => {
+        setWalletPosition({ x: pageX, y: pageY, width, height });
+     });
+  }
 
   if (showSuccessModal) return (
     <SuccessModal 
@@ -175,6 +289,8 @@ export default function BattleSetupScreen() {
   const totalEntryFee = selectedContest.totalEntryFee || selectedContest.entryFishCoins || selectedContest.entryFee || 0;
   const fee = totalEntryFee / 2;
   const winningReward = selectedContest.rewardCoins || selectedContest.winningCoins || 0;
+  const userCoins = profile?.coins || profile?.Dpcoin || 0;
+  const hasInsufficientCoins = userCoins < fee;
 
   // Identify if we are User B joining an existing match
   const isJoinMode = selectedContest.isJoinMode || mode === 'join';
@@ -187,7 +303,15 @@ export default function BattleSetupScreen() {
          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
             <Left_Arrow width={24} height={24} color={textColor} />
          </TouchableOpacity>
-         <View style={styles.avatarPlaceholder} />
+         <TouchableOpacity 
+            ref={walletRef}
+            onLayout={measureWallet}
+            onPress={navigateToWallet} 
+            style={[styles.walletContainer, { backgroundColor: inputBg }]}
+         >
+            <Text style={[styles.walletText, { color: textColor }]}>{userCoins}</Text>
+            <Wallet_Color width={24} height={24} />
+         </TouchableOpacity>
       </View>
 
       <ScrollView 
@@ -214,9 +338,7 @@ export default function BattleSetupScreen() {
               <View style={styles.feeInfo}>
                 <Text style={styles.feeMinus}>-{fee}</Text>
                 <View style={styles.coinIconWrapper}>
-                   <View style={styles.coinIconOuter}>
-                      <View style={styles.coinIconInner} />
-                   </View>
+                   <Wallet_Color width={24} height={24} />
                 </View>
               </View>
             </View>
@@ -244,9 +366,7 @@ export default function BattleSetupScreen() {
               <View style={styles.feeInfo}>
                 <Text style={styles.feeMinus}>-{fee}</Text>
                 <View style={styles.coinIconWrapper}>
-                   <View style={styles.coinIconOuter}>
-                      <View style={styles.coinIconInner} />
-                   </View>
+                   <Wallet_Color width={24} height={24} />
                 </View>
               </View>
             </View>
@@ -288,7 +408,9 @@ export default function BattleSetupScreen() {
                     <Text style={[styles.previewLabel, { color: textColor }]} numberOfLines={1}>You</Text>
                  </View>
                  {media ? (
-                   <Image source={{ uri: media }} style={styles.previewImg} />
+                   <TouchableOpacity onPress={() => setIsImageViewVisible(true)}>
+                    <Image source={{ uri: media }} style={styles.previewImg} />
+                   </TouchableOpacity>
                  ) : (
                    <TouchableOpacity onPress={pickImage} style={[styles.previewImg, styles.emptyPreview]}>
                       <Ionicons name="add" size={32} color="#9E9E9E" />
@@ -317,9 +439,9 @@ export default function BattleSetupScreen() {
            <View style={styles.inputGroup}>
               <Text style={[styles.inputLabel, { color: textColor }]}>Username</Text>
               <TextInput 
-                style={[styles.input, { backgroundColor: inputBg, color: textColor, borderColor }]}
+                style={[styles.input, { backgroundColor: inputBg, color: '#888', borderColor }]}
                 value={username}
-                onChangeText={setUsername}
+                editable={false}
                 placeholder="username"
                 autoCapitalize="none"
                 placeholderTextColor="#9E9E9E"
@@ -330,7 +452,7 @@ export default function BattleSetupScreen() {
            
            <TouchableOpacity 
               activeOpacity={0.8}
-              onPress={pickImage}
+              onPress={media ? () => setIsImageViewVisible(true) : pickImage}
               style={[styles.uploadBox, { borderColor: '#E0E0E0' }]}
             >
               {media ? (
@@ -345,6 +467,13 @@ export default function BattleSetupScreen() {
                 </View>
               )}
            </TouchableOpacity>
+           
+           {/* Re-add Upload Button if media is present, to allow changing */}
+           {media && (
+               <TouchableOpacity onPress={pickImage} style={styles.changePhotoBtn}>
+                   <Text style={[styles.changePhotoText, { color: PRIMARY_COLOR }]}>Change Photo</Text>
+               </TouchableOpacity>
+           )}
 
            <View style={[styles.inputGroup, { marginTop: 20 }]}>
               <Text style={[styles.inputLabel, { color: textColor }]}>Caption (Optional)</Text>
@@ -363,18 +492,33 @@ export default function BattleSetupScreen() {
 
       {/* Sticky Bottom Actions */}
       <View style={[styles.footer, { backgroundColor }]}>
-        <TouchableOpacity 
-          activeOpacity={0.8}
-          onPress={handleAction}
-          disabled={uploading}
-          style={styles.joinButton}
-        >
-           {uploading ? (
-              <ActivityIndicator color="#FFF" />
-            ) : (
-              <Text style={styles.joinBtnText}>Pay {fee} Coins & Join</Text>
-            )}
-        </TouchableOpacity>
+        <View style={styles.buttonWrapper}>
+          <Animated.View style={[styles.glowBackground, animatedGlowStyle]} />
+          <TouchableOpacity 
+            activeOpacity={0.8}
+            onPress={handleAction}
+            disabled={uploading}
+            style={[
+              styles.joinButton,
+              hasInsufficientCoins ? { backgroundColor: '#FF9800' } : (isReady ? { backgroundColor: PRIMARY_COLOR } : { backgroundColor: PINK_ACCENT })
+            ]}
+          >
+             {uploading ? (
+                <ActivityIndicator color="#FFF" />
+              ) : (
+                <Text style={styles.joinBtnText}>
+                  {hasInsufficientCoins ? "Get Coins" : `Pay ${fee} Coins & Join`}
+                </Text>
+              )}
+          </TouchableOpacity>
+          {/* Coin Animation */}
+          {showCoinAnimation && (
+            <Animated.View style={[styles.flyingCoin, animatedCoinStyle]}>
+                <Wallet_Color width={32} height={32} />
+                <Text style={styles.flyingCoinText}>-{fee}</Text>
+            </Animated.View>
+          )}
+        </View>
 
         <TouchableOpacity onPress={() => setShowRulesModal(true)} style={styles.rulesContainer}>
           <Text style={styles.rulesLink}>By joining, you agree to the contest rules.</Text>
@@ -387,6 +531,16 @@ export default function BattleSetupScreen() {
         rules={selectedContest?.rules || "No rules specified for this contest."}
         title={selectedContest?.name || selectedContest?.title ? `${selectedContest.name || selectedContest.title} Rules` : "Contest Rules"}
       />
+      
+      {/* Full Screen Image Viewer */}
+      {media && (
+        <ImageViewing
+          images={[{ uri: media }]}
+          imageIndex={0}
+          visible={isImageViewVisible}
+          onRequestClose={() => setIsImageViewVisible(false)}
+        />
+      )}
     </SafeAreaView>
   );
 }
@@ -407,6 +561,18 @@ const styles = StyleSheet.create({
     height: 40,
     borderRadius: 20,
     backgroundColor: '#F5F5F5',
+  },
+  walletContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    gap: 8,
+  },
+  walletText: {
+    fontSize: 16,
+    fontFamily: 'Urbanist-Bold',
   },
   scrollContent: { paddingHorizontal: 20, alignItems: 'center', paddingBottom: 20 },
   title: { 
@@ -474,8 +640,6 @@ const styles = StyleSheet.create({
     fontFamily: 'Urbanist-Bold',
   },
   coinIconWrapper: {
-    width: 16,
-    height: 16,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -658,19 +822,44 @@ const styles = StyleSheet.create({
     height: '100%',
     resizeMode: 'cover',
   },
+  changePhotoBtn: {
+    marginTop: 10,
+    alignItems: 'center',
+  },
+  changePhotoText: {
+    fontSize: 14,
+    fontFamily: 'Urbanist-Bold',
+  },
   footer: {
     paddingHorizontal: 20,
     paddingTop: 10,
     paddingBottom: Platform.OS === 'ios' ? 0 : 20,
   },
+  buttonWrapper: {
+    position: 'relative',
+    width: '100%',
+    marginBottom: 12,
+  },
+  glowBackground: {
+    position: 'absolute',
+    top: -4,
+    left: -4,
+    right: -4,
+    bottom: -4,
+    backgroundColor: PRIMARY_COLOR,
+    borderRadius: 24,
+    shadowColor: PRIMARY_COLOR,
+    shadowOffset: { width: 0, height: 0 },
+    shadowRadius: 15,
+    elevation: 8,
+  },
   joinButton: {
     width: '100%',
     height: 60,
     borderRadius: 20,
-    backgroundColor: PINK_ACCENT,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 12,
+    zIndex: 10,
   },
   joinBtnText: {
     color: '#FFF',
@@ -687,4 +876,19 @@ const styles = StyleSheet.create({
     fontFamily: 'Urbanist-Medium',
     textDecorationLine: 'underline',
   },
+  flyingCoin: {
+      position: 'absolute',
+      top: 0,
+      left: '50%',
+      marginLeft: -16,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 5,
+      zIndex: 20,
+  },
+  flyingCoinText: {
+      color: '#FF4D67',
+      fontSize: 18,
+      fontFamily: 'Urbanist-Bold',
+  }
 });
