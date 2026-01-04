@@ -39,7 +39,7 @@ import Animated, {
   useDerivedValue,
   interpolate
 } from 'react-native-reanimated';
-import ImageViewing from "react-native-image-viewing";
+import ImageViewing from "react-native-image-viewing/dist/ImageViewing";
 import * as Haptics from 'expo-haptics';
 
 const PINK_ACCENT = '#FFB1BD';
