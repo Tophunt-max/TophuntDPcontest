@@ -19,16 +19,22 @@ jobs:
         uses: actions/setup-node@v3
         with:
           node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: apps/expo/package-lock.json
+
+      - name: Setup Expo
+        uses: expo/expo-github-action@v8
+        with:
+          expo-version: latest
+          eas-cache: true
+          token: ${{ secrets.EXPO_TOKEN }}
 
       - name: Install dependencies
         working-directory: ./apps/expo
         run: npm install
 
-      - name: Install EAS CLI
-        run: npm install -g eas-cli
-
       - name: Publish to Production Channel
         working-directory: ./apps/expo
-        run: eas update --branch production --auto
+        run: eas update --branch production --message "$(git log -1 --pretty=%B)" --non-interactive
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
