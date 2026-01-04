@@ -7,9 +7,11 @@ import {
   ScrollView,
   StyleSheet,
   ActivityIndicator,
-  Modal,
   Alert,
   TextInput,
+  Dimensions,
+  KeyboardAvoidingView,
+  Platform,
 } from "react-native";
 import { useRouter } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
@@ -21,18 +23,34 @@ import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Left_Arrow, Email_Icon } from "@/assets/svgs";
+import { Left_Arrow, Email_Icon, Add_Icon } from "@/assets/svgs";
 import { Ionicons } from "@expo/vector-icons";
 import { CountryPicker } from "react-native-country-codes-picker";
 import { doc, updateDoc } from "firebase/firestore";
 import { firestore, functions } from "@/src/services/firebase/initFirebase";
 import { httpsCallable } from "firebase/functions";
-import { useActionSheet } from '@expo/react-native-action-sheet'; // You might need to install this or implement a custom sheet
+import { ReanimatedBottomSheet } from "@/src/components/modals/ReanimatedBottomSheet";
+
+const { height: SCREEN_HEIGHT } = Dimensions.get('window');
+
+const DISPOSABLE_DOMAINS = [
+  'yopmail.com', 'tempmail.com', 'guerrillamail.com', '10minutemail.com', 
+  'mailinator.com', 'getnada.com', 'dispostable.com', 'throwawaymail.com'
+];
 
 const editProfileSchema = z.object({
   fullName: z.string().min(1, "Please fill in your full name"),
-  email: z.string().min(1, "Email is required").email("Invalid email address"),
-  phone: z.string().min(1, "Please fill in your phone number").min(10, "Phone number must be at least 10 digits"),
+  email: z.string()
+    .min(1, "Email is required")
+    .email("Invalid email address")
+    .refine((email) => {
+        const domain = email.split('@')[1];
+        return !DISPOSABLE_DOMAINS.includes(domain);
+    }, { message: "Temporary/Fake emails are not allowed" }),
+  phone: z.string()
+    .min(1, "Please fill in your phone number")
+    .length(10, "Phone number must be exactly 10 digits")
+    .regex(/^[0-9]+$/, "Phone number must contain only digits"),
   occupation: z.string().min(1, "Please select your occupation"),
   bio: z.string().max(150, "Bio must be less than 150 characters").optional(),
   facebook: z.string().optional(),
@@ -55,17 +73,14 @@ export default function EditProfileScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [localAvatarUri, setLocalAvatarUri] = useState<string | null>(null);
   
-  // Image Options Modal
   const [showImageOptions, setShowImageOptions] = useState(false);
 
-  // Email Update State
   const [showEmailOtpModal, setShowEmailOtpModal] = useState(false);
   const [newEmailToVerify, setNewEmailToVerify] = useState("");
   const [emailOtp, setEmailOtp] = useState("");
   const [isSendingEmailOtp, setIsSendingEmailOtp] = useState(false);
   const [isVerifyingEmailOtp, setIsVerifyingEmailOtp] = useState(false);
 
-  // Phone Update State
   const [showPhoneOtpModal, setShowPhoneOtpModal] = useState(false);
   const [newPhoneToVerify, setNewPhoneToVerify] = useState("");
   const [phoneOtp, setPhoneOtp] = useState("");
@@ -82,6 +97,7 @@ export default function EditProfileScreen() {
     reset
   } = useForm<EditProfileFormValues>({
     resolver: zodResolver(editProfileSchema),
+    mode: "onChange"
   });
 
   const currentEmail = profile?.email;
@@ -138,14 +154,21 @@ export default function EditProfileScreen() {
   };
 
   const handleSendEmailOtp = async () => {
+    const isValid = await trigger("email");
+    if (!isValid) return;
+
     if (!watchedEmail || watchedEmail === currentEmail) return;
+    
     setIsSendingEmailOtp(true);
     try {
+        console.log("Sending email OTP to:", watchedEmail);
         const sendEmailUpdateOtp = httpsCallable(functions, 'sendEmailUpdateOtp');
-        await sendEmailUpdateOtp({ newEmail: watchedEmail });
+        const result = await sendEmailUpdateOtp({ newEmail: watchedEmail });
+        console.log("OTP result:", result);
         setNewEmailToVerify(watchedEmail);
         setShowEmailOtpModal(true);
     } catch (error: any) {
+        console.error("Email OTP error:", error);
         Alert.alert("Error", error.message || "Failed to send OTP.");
     } finally {
         setIsSendingEmailOtp(false);
@@ -175,15 +198,22 @@ export default function EditProfileScreen() {
   };
 
   const handleSendPhoneOtp = async () => {
+    const isValid = await trigger("phone");
+    if (!isValid) return;
+
     const fullPhone = countryCode + watchedPhone;
     if (!watchedPhone || fullPhone === currentPhone) return;
+    
     setIsSendingPhoneOtp(true);
     try {
+        console.log("Sending phone OTP to:", fullPhone);
         const sendPhoneUpdateOtp = httpsCallable(functions, 'sendPhoneUpdateOtp');
-        await sendPhoneUpdateOtp({ newPhone: fullPhone });
+        const result = await sendPhoneUpdateOtp({ newPhone: fullPhone });
+        console.log("Phone OTP result:", result);
         setNewPhoneToVerify(fullPhone);
         setShowPhoneOtpModal(true);
     } catch (error: any) {
+        console.error("Phone OTP error:", error);
         Alert.alert("Error", error.message || "Failed to send SMS.");
     } finally {
         setIsSendingPhoneOtp(false);
@@ -239,19 +269,22 @@ export default function EditProfileScreen() {
 
       if (data.email !== currentEmail) {
           handleSendEmailOtp();
-          alertMsg = "Profile updated. An OTP has been sent to verify your new email.";
+          alertMsg = "Profile details updated. Please verify your new email to complete the change.";
           needsVerification = true;
-      }
-
-      if ((countryCode + data.phone) !== currentPhone) {
+      } else if ((countryCode + data.phone) !== currentPhone) {
           handleSendPhoneOtp();
-          alertMsg = needsVerification ? "Profile updated. OTPs sent to verify new email and phone." : "Profile updated. An OTP has been sent to verify your new phone number.";
+          alertMsg = "Profile details updated. Please verify your new phone number to complete the change.";
           needsVerification = true;
       }
 
-      Alert.alert("Success", alertMsg);
-      refetch();
-      if (!needsVerification) router.back();
+      if (!needsVerification) {
+          Alert.alert("Success", alertMsg);
+          refetch();
+          router.back();
+      } else {
+          Alert.alert("Action Required", alertMsg);
+          refetch();
+      }
     } catch (error) {
       console.error("Update error", error);
       Alert.alert("Error", "Something went wrong. Please try again.");
@@ -263,6 +296,9 @@ export default function EditProfileScreen() {
   if (profileLoading) {
     return <View style={styles.center}><ActivityIndicator size="large" color="#ff4466" /></View>;
   }
+
+  const isEmailChanged = watchedEmail !== currentEmail && watchedEmail?.length > 5;
+  const isPhoneChanged = (countryCode + watchedPhone) !== currentPhone && watchedPhone?.length === 10;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -282,7 +318,7 @@ export default function EditProfileScreen() {
                 style={styles.avatar} 
              />
             <View style={styles.editIconContainer}>
-                <Ionicons name="pencil" size={18} color="white" />
+                <Add_Icon width={16} height={16} color="white" />
             </View>
           </TouchableOpacity>
         </View>
@@ -310,15 +346,18 @@ export default function EditProfileScreen() {
             control={control}
             name="email"
             placeholder="Email"
-            rightIcon={isSendingEmailOtp ? <ActivityIndicator size="small" color="#ff4466" /> : <Email_Icon width={20} height={20} color="#9E9E9E" />}
+            rightIcon={
+                isSendingEmailOtp ? 
+                <View style={{ paddingRight: 10 }}><ActivityIndicator size="small" color="#ff4466" /></View> : 
+                isEmailChanged ?
+                <TouchableOpacity onPress={handleSendEmailOtp} style={styles.verifyBtnWrapper}>
+                    <Text style={styles.verifyBtnInline}>Verify</Text>
+                </TouchableOpacity> :
+                <View style={{ paddingRight: 10 }}><Email_Icon width={20} height={20} color="#9E9E9E" /></View>
+            }
             keyboardType="email-address"
             errorMessage={errors.email?.message}
             />
-            {watchedEmail !== currentEmail && watchedEmail?.length > 5 && (
-                <TouchableOpacity style={styles.verifyLink} onPress={handleSendEmailOtp}>
-                    <Text style={styles.verifyText}>Verify Email Change</Text>
-                </TouchableOpacity>
-            )}
         </View>
 
         <View>
@@ -335,15 +374,18 @@ export default function EditProfileScreen() {
                         containerStyle={{ flex: 1, marginBottom: 0 }}
                         keyboardType="phone-pad"
                         errorMessage={errors.phone?.message}
-                        rightIcon={isSendingPhoneOtp ? <ActivityIndicator size="small" color="#ff4466" /> : null}
+                        rightIcon={
+                            isSendingPhoneOtp ? 
+                            <View style={{ paddingRight: 10 }}><ActivityIndicator size="small" color="#ff4466" /></View> : 
+                            isPhoneChanged ?
+                            <TouchableOpacity onPress={handleSendPhoneOtp} style={styles.verifyBtnWrapper}>
+                                <Text style={styles.verifyBtnInline}>Verify</Text>
+                            </TouchableOpacity> :
+                            null
+                        }
                     />
                 </View>
             </View>
-            {(countryCode + watchedPhone) !== currentPhone && watchedPhone?.length >= 10 && (
-                <TouchableOpacity style={styles.verifyLink} onPress={handleSendPhoneOtp}>
-                    <Text style={styles.verifyText}>Verify Phone Change</Text>
-                </TouchableOpacity>
-            )}
         </View>
 
         <View style={{ marginBottom: 20 }}>
@@ -394,95 +436,101 @@ export default function EditProfileScreen() {
       />
 
       {/* Image Options Modal */}
-      <Modal transparent visible={showImageOptions} animationType="fade">
-        <TouchableOpacity style={styles.modalOverlay} onPress={() => setShowImageOptions(false)}>
-            <View style={styles.modalContent}>
-                <Text style={styles.modalTitle}>Change Profile Photo</Text>
-                
-                <TouchableOpacity style={styles.modalOption} onPress={() => pickImage(true)}>
-                    <Ionicons name="camera-outline" size={24} color="#000" />
-                    <Text style={[styles.modalOptionText, { marginLeft: 10 }]}>Take Photo</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity style={styles.modalOption} onPress={() => pickImage(false)}>
-                    <Ionicons name="image-outline" size={24} color="#000" />
-                    <Text style={[styles.modalOptionText, { marginLeft: 10 }]}>Choose from Library</Text>
-                </TouchableOpacity>
-
-                {localAvatarUri && (
-                  <TouchableOpacity style={[styles.modalOption, { borderBottomWidth: 0 }]} onPress={() => { setLocalAvatarUri(null); setShowImageOptions(false); }}>
-                      <Ionicons name="trash-outline" size={24} color="red" />
-                      <Text style={[styles.modalOptionText, { marginLeft: 10, color: 'red' }]}>Remove Photo</Text>
-                  </TouchableOpacity>
-                )}
-            </View>
+      <ReanimatedBottomSheet 
+        visible={showImageOptions} 
+        onClose={() => setShowImageOptions(false)}
+        title="Change Profile Photo"
+      >
+        <TouchableOpacity style={styles.modalOption} onPress={() => pickImage(true)}>
+            <Ionicons name="camera-outline" size={24} color="#000" />
+            <Text style={[styles.modalOptionText, { marginLeft: 12 }]}>Take Photo</Text>
         </TouchableOpacity>
-      </Modal>
+
+        <TouchableOpacity style={styles.modalOption} onPress={() => pickImage(false)}>
+            <Ionicons name="image-outline" size={24} color="#000" />
+            <Text style={[styles.modalOptionText, { marginLeft: 12 }]}>Choose from Library</Text>
+        </TouchableOpacity>
+
+        {localAvatarUri && (
+          <TouchableOpacity style={[styles.modalOption, { borderBottomWidth: 0 }]} onPress={() => { setLocalAvatarUri(null); setShowImageOptions(false); }}>
+              <Ionicons name="trash-outline" size={24} color="red" />
+              <Text style={[styles.modalOptionText, { marginLeft: 12, color: 'red' }]}>Remove Photo</Text>
+          </TouchableOpacity>
+        )}
+      </ReanimatedBottomSheet>
 
       {/* Email OTP Verification Modal */}
-      <Modal transparent visible={showEmailOtpModal} animationType="slide">
-          <View style={styles.modalOverlay}>
-              <View style={styles.otpModalContent}>
-                  <Text style={styles.modalTitle}>Verify New Email</Text>
-                  <Text style={styles.modalSubtitle}>Enter the 6-digit OTP sent to {newEmailToVerify}</Text>
-                  <TextInput
+      <ReanimatedBottomSheet 
+        visible={showEmailOtpModal} 
+        onClose={() => setShowEmailOtpModal(false)}
+        title="Verify New Email"
+      >
+          <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined}>
+            <View style={styles.otpModalBody}>
+                <Text style={styles.modalSubtitle}>Enter the 6-digit OTP sent to {newEmailToVerify}</Text>
+                <TextInput
                     style={styles.otpInput}
                     placeholder="000000"
                     keyboardType="number-pad"
                     maxLength={6}
                     value={emailOtp}
                     onChangeText={setEmailOtp}
-                  />
-                  <TouchableOpacity style={styles.verifyButton} onPress={handleVerifyEmailOtp} disabled={isVerifyingEmailOtp}>
-                      {isVerifyingEmailOtp ? <ActivityIndicator color="white" /> : <Text style={styles.verifyButtonText}>Verify & Update Email</Text>}
-                  </TouchableOpacity>
-                  <TouchableOpacity onPress={() => setShowEmailOtpModal(false)} style={styles.cancelButton}>
-                      <Text style={styles.cancelButtonText}>Cancel</Text>
-                  </TouchableOpacity>
-              </View>
-          </View>
-      </Modal>
+                    autoFocus
+                />
+                <TouchableOpacity style={styles.verifyButton} onPress={handleVerifyEmailOtp} disabled={isVerifyingEmailOtp}>
+                    {isVerifyingEmailOtp ? <ActivityIndicator color="white" /> : <Text style={styles.verifyButtonText}>Verify & Update Email</Text>}
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setShowEmailOtpModal(false)} style={styles.cancelButton}>
+                    <Text style={styles.cancelButtonText}>Cancel</Text>
+                </TouchableOpacity>
+            </View>
+          </KeyboardAvoidingView>
+      </ReanimatedBottomSheet>
 
       {/* Phone OTP Verification Modal */}
-      <Modal transparent visible={showPhoneOtpModal} animationType="slide">
-          <View style={styles.modalOverlay}>
-              <View style={styles.otpModalContent}>
-                  <Text style={styles.modalTitle}>Verify New Phone</Text>
-                  <Text style={styles.modalSubtitle}>Enter the 6-digit OTP sent via SMS to {newPhoneToVerify}</Text>
-                  <TextInput
+      <ReanimatedBottomSheet 
+        visible={showPhoneOtpModal} 
+        onClose={() => setShowPhoneOtpModal(false)}
+        title="Verify New Phone"
+      >
+          <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined}>
+            <View style={styles.otpModalBody}>
+                <Text style={styles.modalSubtitle}>Enter the 6-digit OTP sent via SMS to {newPhoneToVerify}</Text>
+                <TextInput
                     style={styles.otpInput}
                     placeholder="000000"
                     keyboardType="number-pad"
                     maxLength={6}
                     value={phoneOtp}
                     onChangeText={setPhoneOtp}
-                  />
-                  <TouchableOpacity style={styles.verifyButton} onPress={handleVerifyPhoneOtp} disabled={isVerifyingPhoneOtp}>
-                      {isVerifyingPhoneOtp ? <ActivityIndicator color="white" /> : <Text style={styles.verifyButtonText}>Verify & Update Phone</Text>}
-                  </TouchableOpacity>
-                  <TouchableOpacity onPress={() => setShowPhoneOtpModal(false)} style={styles.cancelButton}>
-                      <Text style={styles.cancelButtonText}>Cancel</Text>
-                  </TouchableOpacity>
-              </View>
-          </View>
-      </Modal>
+                    autoFocus
+                />
+                <TouchableOpacity style={styles.verifyButton} onPress={handleVerifyPhoneOtp} disabled={isVerifyingPhoneOtp}>
+                    {isVerifyingPhoneOtp ? <ActivityIndicator color="white" /> : <Text style={styles.verifyButtonText}>Verify & Update Phone</Text>}
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setShowPhoneOtpModal(false)} style={styles.cancelButton}>
+                    <Text style={styles.cancelButtonText}>Cancel</Text>
+                </TouchableOpacity>
+            </View>
+          </KeyboardAvoidingView>
+      </ReanimatedBottomSheet>
 
       {/* Occupation Modal */}
-      <Modal transparent visible={isOccupationPickerVisible} animationType="fade">
-        <TouchableOpacity style={styles.modalOverlay} onPress={() => setOccupationPickerVisibility(false)}>
-            <View style={[styles.modalContent, { maxHeight: '60%' }]}>
-                <Text style={styles.modalTitle}>Select Occupation</Text>
-                <ScrollView>
-                    {occupations.map((occ) => (
-                        <TouchableOpacity key={occ} style={styles.modalOption} onPress={() => { setValue('occupation', occ); setOccupationPickerVisibility(false); }}>
-                            <Text style={[styles.modalOptionText, selectedOccupation === occ && styles.selectedOptionText]}>{occ}</Text>
-                            {selectedOccupation === occ && <Ionicons name="checkmark" size={24} color="#ff4466" />}
-                        </TouchableOpacity>
-                    ))}
-                </ScrollView>
-            </View>
-        </TouchableOpacity>
-      </Modal>
+      <ReanimatedBottomSheet 
+        visible={isOccupationPickerVisible} 
+        onClose={() => setOccupationPickerVisibility(false)}
+        title="Select Occupation"
+        maxHeight={SCREEN_HEIGHT * 0.6}
+      >
+        <ScrollView style={{ maxHeight: SCREEN_HEIGHT * 0.5 }} showsVerticalScrollIndicator={false}>
+            {occupations.map((occ) => (
+                <TouchableOpacity key={occ} style={styles.modalOption} onPress={() => { setValue('occupation', occ); setOccupationPickerVisibility(false); }}>
+                    <Text style={[styles.modalOptionText, selectedOccupation === occ && styles.selectedOptionText, { flex: 1 }]}>{occ}</Text>
+                    {selectedOccupation === occ && <Ionicons name="checkmark" size={24} color="#ff4466" />}
+                </TouchableOpacity>
+            ))}
+        </ScrollView>
+      </ReanimatedBottomSheet>
     </SafeAreaView>
   );
 }
@@ -496,7 +544,7 @@ const styles = StyleSheet.create({
   avatarContainer: { alignItems: "center", marginVertical: 30 },
   avatarWrapper: { position: "relative" },
   avatar: { width: 120, height: 120, borderRadius: 60, backgroundColor: '#F5F5F5' },
-  editIconContainer: { position: 'absolute', bottom: 5, right: 5, backgroundColor: '#ff4466', borderRadius: 8, padding: 4, borderWidth: 2, borderColor: '#fff' },
+  editIconContainer: { position: 'absolute', bottom: 5, right: 5, backgroundColor: '#ff4466', borderRadius: 8, padding: 4, borderWidth: 2, borderColor: '#fff', width: 28, height: 28, justifyContent: 'center', alignItems: 'center' },
   sectionHeader: { fontSize: 18, fontFamily: "Urbanist-Bold", color: "#000", marginTop: 20, marginBottom: 10 },
   phoneInputRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 20, gap: 12 },
   flagButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FAFAFA', borderRadius: 12, paddingHorizontal: 12, height: 56 },
@@ -507,16 +555,15 @@ const styles = StyleSheet.create({
   dropdownText: { fontSize: 16, color: '#000', fontFamily: "Urbanist-Medium" },
   updateButton: { backgroundColor: "#ff4466", paddingVertical: 18, borderRadius: 30, marginTop: 20 },
   updateButtonText: { color: "white", textAlign: "center", fontSize: 16, fontWeight: "bold", fontFamily: "Urbanist-SemiBold" },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: '#fff', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 40, paddingHorizontal: 24, paddingTop: 24 },
-  otpModalContent: { backgroundColor: '#fff', borderRadius: 24, padding: 24, margin: 20, width: '90%', alignSelf: 'center', marginBottom: 'auto', marginTop: 'auto' },
-  modalTitle: { fontSize: 20, fontFamily: 'Urbanist-Bold', color: '#000', textAlign: 'center', marginBottom: 8 },
-  modalSubtitle: { fontSize: 14, color: '#666', textAlign: 'center', marginBottom: 20 },
   modalOption: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-start', paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#F5F5F5' },
   modalOptionText: { fontSize: 18, fontFamily: 'Urbanist-SemiBold', color: '#424242' },
   selectedOptionText: { color: '#ff4466', fontFamily: 'Urbanist-Bold' },
   verifyLink: { marginTop: -15, marginBottom: 15, alignSelf: 'flex-end' },
   verifyText: { color: '#ff4466', fontWeight: 'bold', fontSize: 12 },
+  verifyBtnWrapper: { paddingRight: 10, justifyContent: 'center' },
+  verifyBtnInline: { color: '#ff4466', fontFamily: 'Urbanist-Bold', fontSize: 14 },
+  modalSubtitle: { fontSize: 14, color: '#666', textAlign: 'center', marginBottom: 20 },
+  otpModalBody: { paddingBottom: 20 },
   otpInput: { borderBottomWidth: 2, borderBottomColor: '#ff4466', fontSize: 24, textAlign: 'center', marginVertical: 20, letterSpacing: 10, paddingVertical: 10 },
   verifyButton: { backgroundColor: '#ff4466', paddingVertical: 15, borderRadius: 30, alignItems: 'center' },
   verifyButtonText: { color: 'white', fontWeight: 'bold', fontSize: 16 },
