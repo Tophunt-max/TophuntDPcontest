@@ -10,6 +10,7 @@ import { useProfile } from '@/src/hooks/useProfileData';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { useToast } from '@/src/components/toast/ToastProvider';
+import { Colors } from '@/constants/theme';
 
 const { width } = Dimensions.get('window');
 const CARD_MARGIN = 16;
@@ -24,7 +25,7 @@ export default function DiscoverScreen() {
   const isDark = colorScheme === 'dark';
   
   // Refined Color Palette
-  const backgroundColor = isDark ? '#0F0F13' : '#F9F9FB'; 
+  const backgroundColor = isDark ? Colors.dark.background : Colors.light.background; 
   const cardBg = isDark ? '#1C1C1E' : '#FFFFFF';
   const textColor = isDark ? '#FFFFFF' : '#121212';
   const subTextColor = isDark ? '#A0A0A5' : '#8A8A8E';

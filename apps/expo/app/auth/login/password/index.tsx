@@ -38,6 +38,7 @@ import { useColorScheme } from "../../../../hooks/use-color-scheme";
 import { FormInput } from "@/src/components/inputs/FormInput";
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useToast } from "@/src/components/toast/ToastProvider";
+import { Colors } from '@/constants/theme';
 
 // Validation Schema
 const loginSchema = z.object({
@@ -54,8 +55,9 @@ export default function PasswordLoginScreen() {
 
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
-  const backgroundColor = useThemeColor({}, "background");
-  const textColor = useThemeColor({}, "text");
+  const isDark = colorScheme === 'dark';
+  const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
+  const textColor = isDark ? Colors.dark.text : Colors.light.text;
   const iconColor = useThemeColor({}, "icon");
   const { addToast } = useToast();
 
@@ -231,34 +233,34 @@ export default function PasswordLoginScreen() {
 
             {/* Divider */}
             <View style={styles.dividerContainer}>
-              <View style={styles.dividerLine} />
+              <View style={[styles.dividerLine, { backgroundColor: isDark ? '#35383F' : '#eee' }]} />
               <Text style={[styles.dividerText, { color: textColor }]}>
                 or continue with
               </Text>
-              <View style={styles.dividerLine} />
+              <View style={[styles.dividerLine, { backgroundColor: isDark ? '#35383F' : '#eee' }]} />
             </View>
 
             {/* Social Buttons */}
             <View style={styles.socialButtonsContainer}>
               <TouchableOpacity
-                style={styles.socialIcon}
+                style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]}
                 onPress={() => handleSocialLogin("Facebook")}
               >
                 <Facebook_Icon width={24} height={24} />
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={styles.socialIcon}
+                style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]}
                 onPress={() => handleSocialLogin("Google")}
               >
                 <Google_Icon width={24} height={24} />
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={styles.socialIcon}
+                style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]}
                 onPress={() => handleSocialLogin("Apple")}
               >
-                {colorScheme === "dark" ? (
+                {isDark ? (
                   <Apple_Light width={24} height={24} />
                 ) : (
                   <Apple_Dark width={24} height={24} />
@@ -268,7 +270,7 @@ export default function PasswordLoginScreen() {
 
             {/* Footer */}
             <View style={styles.footerContainer}>
-              <Text style={[styles.footerText, { color: 'gray' }]}>
+              <Text style={[styles.footerText, { color: isDark ? '#E0E0E0' : 'gray' }]}>
                 Don't have an account?{" "}
               </Text>
               <TouchableOpacity onPress={() => router.push("/auth/signup")}>
@@ -326,7 +328,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     marginRight: 12,
-    backgroundColor: 'transparent',
   },
   checkboxChecked: {
     backgroundColor: "#FF4D67",
@@ -354,7 +355,6 @@ const styles = StyleSheet.create({
   dividerLine: {
     flex: 1,
     height: 1,
-    backgroundColor: "#eee",
   },
   dividerText: {
     marginHorizontal: 16,
@@ -372,10 +372,8 @@ const styles = StyleSheet.create({
     height: 60,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: "#eee",
     justifyContent: "center",
     alignItems: "center",
-    backgroundColor: "#fff",
   },
   footerContainer: {
     flexDirection: "row",

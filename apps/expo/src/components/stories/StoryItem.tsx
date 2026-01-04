@@ -7,6 +7,7 @@ import AddIcon from '@/assets/svgs/add_Icon.svg';
 import { auth } from '@/src/services/firebase/initFirebase';
 import { useRouter } from 'expo-router';
 import { useColorScheme } from 'react-native';
+import { Colors } from '@/constants/theme';
 
 interface StoryItemProps {
   item?: UserStories;
@@ -18,6 +19,7 @@ export const StoryItem: React.FC<StoryItemProps> = ({ item, isCurrentUser, onPre
   const router = useRouter();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
+  const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
   
   const username = isCurrentUser ? 'Your story' : item?.username;
   const avatarUrl = item?.avatarUrl || (isCurrentUser ? auth.currentUser?.photoURL : null);
@@ -38,7 +40,7 @@ export const StoryItem: React.FC<StoryItemProps> = ({ item, isCurrentUser, onPre
           end={{ x: 1, y: 1 }}
           style={styles.ring}
         >
-          <View style={[styles.innerRing, isDark && styles.innerRingDark]}>
+          <View style={[styles.innerRing, { backgroundColor }]}>
             <Image source={{ uri: avatarUrl }} style={styles.avatar} />
           </View>
         </LinearGradient>
@@ -47,7 +49,7 @@ export const StoryItem: React.FC<StoryItemProps> = ({ item, isCurrentUser, onPre
       // Seen Story - Grey Ring
       return (
         <View style={[styles.ring, styles.seenRing, isDark && styles.seenRingDark]}>
-           <View style={[styles.innerRing, isDark && styles.innerRingDark]}>
+           <View style={[styles.innerRing, { backgroundColor }]}>
               <Image source={{ uri: avatarUrl }} style={styles.avatar} />
            </View>
         </View>
@@ -71,7 +73,7 @@ export const StoryItem: React.FC<StoryItemProps> = ({ item, isCurrentUser, onPre
         {renderAvatarRing()}
         
         {isCurrentUser && (
-          <TouchableOpacity style={[styles.addButton, isDark && styles.addButtonDark]} onPress={handleAddStory}>
+          <TouchableOpacity style={[styles.addButton, { backgroundColor, borderColor: backgroundColor }]} onPress={handleAddStory}>
             <AddIcon width={20} height={20} />
           </TouchableOpacity>
         )}
@@ -115,12 +117,8 @@ const styles = StyleSheet.create({
     width: 62,
     height: 62,
     borderRadius: 31,
-    backgroundColor: '#FFF',
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  innerRingDark: {
-      backgroundColor: '#181A20',
   },
   avatar: {
     width: 58,
@@ -147,15 +145,9 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: 0,
     right: 0,
-    backgroundColor: '#FFF',
     borderRadius: 12,
     padding: 2,
     zIndex: 10,
     borderWidth: 2,
-    borderColor: '#FFF',
-  },
-  addButtonDark: {
-      backgroundColor: '#181A20',
-      borderColor: '#181A20',
   }
 });

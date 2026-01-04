@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { View, StyleSheet, SafeAreaView, Text, Button, ActivityIndicator, ScrollView } from 'react-native';
+import { View, StyleSheet, SafeAreaView, Text, Button, ActivityIndicator, ScrollView, useColorScheme } from 'react-native';
 import { useRouter, useLocalSearchParams, usePathname } from 'expo-router';
 import { useAuth } from '@/src/services/auth';
 import { useProfile, useUserPosts, useToggleFollow } from '@/src/hooks/useProfileData';
@@ -11,6 +11,7 @@ import { ProfileHeaderSkeleton, PostGridSkeleton } from '@/src/components/profil
 import { WalletCard } from '@/src/components/profile/WalletCard';
 import { BottomNav } from '@/src/components/home/BottomNav';
 import { notificationService } from '@/src/services/notifications/notificationService';
+import { Colors } from '@/constants/theme';
 
 const ProfilePage = () => {
   const router = useRouter();
@@ -18,6 +19,9 @@ const ProfilePage = () => {
   const params = useLocalSearchParams();
   const pathname = usePathname();
   const userIdParam = params.userId as string | undefined;
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === 'dark';
+  const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
   
   const [targetId, setTargetId] = useState<string | null>(null);
   const [isRedirecting, setIsRedirecting] = useState(false);
@@ -46,21 +50,21 @@ const ProfilePage = () => {
 
   if (authLoading || isRedirecting || (!targetId && !authLoading)) {
     return (
-        <SafeAreaView style={styles.container}>
+        <SafeAreaView style={[styles.container, { backgroundColor }]}>
             <ScrollView showsVerticalScrollIndicator={false}>
                 <ProfileHeaderSkeleton />
                 <PostGridSkeleton />
             </ScrollView>
-            <BottomNav backgroundColor="#fff" isDark={false} />
+            <BottomNav backgroundColor={backgroundColor} isDark={isDark} />
         </SafeAreaView>
     );
   }
 
   if (!targetId) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={[styles.container, { backgroundColor }]}>
         <View style={styles.center}>
-          <Text style={styles.errorText}>User not found.</Text>
+          <Text style={[styles.errorText, { color: isDark ? '#fff' : '#000' }]}>User not found.</Text>
           <Button title="Go Home" onPress={() => router.replace('/home')} />
         </View>
       </SafeAreaView>
@@ -74,6 +78,9 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
   const router = useRouter();
   const { user: currentUser } = useAuth();
   const isOwnProfile = currentUser?.uid === targetUserId;
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === 'dark';
+  const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
 
   const { 
     data: profile, 
@@ -111,24 +118,24 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
 
   if (profileLoading && !profile) {
     return (
-        <SafeAreaView style={styles.container}>
+        <SafeAreaView style={[styles.container, { backgroundColor }]}>
             <ScrollView showsVerticalScrollIndicator={false}>
                 <ProfileHeaderSkeleton />
                 <PostGridSkeleton />
             </ScrollView>
-            <BottomNav backgroundColor="#fff" isDark={false} />
+            <BottomNav backgroundColor={backgroundColor} isDark={isDark} />
         </SafeAreaView>
     );
   }
 
   if (isProfileError || !profile) {
-    return <SafeAreaView style={styles.container}><View style={styles.center}><Text>Error loading profile.</Text></View></SafeAreaView>;
+    return <SafeAreaView style={[styles.container, { backgroundColor }]}><View style={styles.center}><Text style={{ color: isDark ? '#fff' : '#000' }}>Error loading profile.</Text></View></SafeAreaView>;
   }
 
   const posts = postsData?.pages.flatMap(page => page.posts) || [];
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={[styles.container, { backgroundColor }]}>
       <PostGrid
         posts={activeTab === 'posts' ? posts : []}
         onLoadMore={() => hasNextPage && fetchNextPage()}
@@ -159,13 +166,13 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
           </>
         }
       />
-      <BottomNav backgroundColor="#fff" isDark={false} />
+      <BottomNav backgroundColor={backgroundColor} isDark={isDark} />
     </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
+  container: { flex: 1 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
   errorText: { fontSize: 18, fontWeight: 'bold', marginBottom: 5, textAlign: 'center' },
   errorSubText: { fontSize: 14, color: 'gray', marginBottom: 20, textAlign: 'center' },

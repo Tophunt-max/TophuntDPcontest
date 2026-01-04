@@ -4,6 +4,7 @@ import { useRouter, usePathname } from 'expo-router';
 import * as Icons from '@/assets/svgs';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
+import { Colors } from '@/constants/theme';
 
 const { width, height } = Dimensions.get('window');
 
@@ -178,7 +179,7 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
                         styles.menuContainer,
                         { 
                             transform: [{ translateY: translateY }],
-                            backgroundColor: isDark ? '#1F222A' : 'white' 
+                            backgroundColor: isDark ? Colors.dark.background : Colors.light.background 
                         }
                     ]}
                     {...panResponder.panHandlers}

@@ -8,6 +8,7 @@ import { auth } from '@/src/services/firebase/initFirebase';
 import { StoriesSkeleton } from './StoriesSkeleton';
 import { useColorScheme } from 'react-native';
 import { onAuthStateChanged } from 'firebase/auth';
+import { Colors } from '@/constants/theme';
 
 export const StoriesBar: React.FC = () => {
   const router = useRouter();
@@ -63,7 +64,7 @@ export const StoriesBar: React.FC = () => {
   }
 
   return (
-    <View style={[styles.container, isDark && styles.containerDark]}>
+    <View style={[styles.container, { backgroundColor: isDark ? Colors.dark.background : Colors.light.background, borderBottomColor: isDark ? '#35383F' : '#DBDBDB' }]}>
       <FlatList
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -96,12 +97,6 @@ const styles = StyleSheet.create({
   container: {
     height: 100,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#DBDBDB',
-    backgroundColor: '#FFF',
-  },
-  containerDark: {
-    backgroundColor: '#181A20',
-    borderBottomColor: '#35383F',
   },
   listContent: {
     paddingHorizontal: 8,

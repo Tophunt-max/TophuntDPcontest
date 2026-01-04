@@ -1,4 +1,4 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import { ThemeProvider } from '@react-navigation/native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
@@ -8,6 +8,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { ToastProvider } from '@/src/components/toast/ToastProvider';
+import { lightTheme, darkTheme } from '@/constants/theme';
 
 const queryClient = new QueryClient();
 
@@ -19,7 +20,7 @@ export default function RootLayout() {
       <QueryClientProvider client={queryClient}>
         <PaperProvider>
           <ToastProvider>
-            <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+            <ThemeProvider value={colorScheme === 'dark' ? darkTheme : lightTheme}>
               <Stack screenOptions={{ headerShown: false }}>
                 <Stack.Screen name="index" />
                 <Stack.Screen name="splash" />

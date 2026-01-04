@@ -11,6 +11,7 @@ import {
     ChatIcon_Light, ChatIcon_Dark 
 } from '@/assets/svgs';
 import { useRouter } from 'expo-router';
+import { Colors } from '@/constants/theme';
 
 const HeaderComponent = () => {
   const router = useRouter();
@@ -25,7 +26,7 @@ const HeaderComponent = () => {
       style={[
         styles.container,
         { 
-            backgroundColor: isDark ? '#181A20' : '#fff',
+            backgroundColor: isDark ? Colors.dark.background : Colors.light.background,
             borderBottomColor: isDark ? '#35383F' : '#eaeaea',
             borderBottomWidth: StyleSheet.hairlineWidth,
         },

@@ -33,6 +33,7 @@ import { commentService, Comment } from '@/src/services/comments/commentService'
 import { useAuth } from '@/src/hooks/useAuth';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
+import { Colors } from '@/constants/theme';
 
 dayjs.extend(relativeTime);
 
@@ -56,11 +57,11 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark }: CommentShee
   const [comments, setComments] = useState<Comment[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  const backgroundColor = isDark ? '#1F222A' : '#FFFFFF';
-  const textColor = isDark ? '#FFFFFF' : '#212121';
+  const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
+  const textColor = isDark ? Colors.dark.text : Colors.light.text;
   const subTextColor = isDark ? '#BDBDBD' : '#616161';
   
-  const inputDefaultBg = isDark ? '#1F222A' : '#FFFFFF';
+  const inputDefaultBg = isDark ? Colors.dark.background : Colors.light.background;
   const inputFocusedBg = isDark ? '#35383F' : '#FFEBEE';
   const inputBorderDefault = isDark ? '#35383F' : '#EEEEEE';
   const inputBorderFocused = '#FF4D67';

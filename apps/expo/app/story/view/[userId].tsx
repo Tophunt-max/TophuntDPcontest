@@ -18,6 +18,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Keyboard,
+  useColorScheme
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -41,6 +42,7 @@ import {
     Viewers_Icon,
     Delete_Icon
 } from '@/assets/svgs';
+import { Colors } from '@/constants/theme';
 
 const { width, height } = Dimensions.get('window');
 const DEFAULT_STORY_DURATION = 5000;
@@ -50,6 +52,11 @@ export default function StoryView() {
   const { userId } = useLocalSearchParams<{ userId: string }>();
   const router = useRouter();
   const queryClient = useQueryClient();
+  const colorScheme = useColorScheme();
+  const isDarkTheme = colorScheme === 'dark';
+  const backgroundColorTheme = isDarkTheme ? Colors.dark.background : Colors.light.background;
+  const textColorTheme = isDarkTheme ? Colors.dark.text : Colors.light.text;
+
   const [currentStoryIndex, setCurrentStoryIndex] = useState(0);
   const [progress] = useState(new Animated.Value(0));
   const [isPaused, setIsPaused] = useState(false);
@@ -547,17 +554,17 @@ export default function StoryView() {
         {/* Highlights Modal */}
         <Modal visible={showHighlightModal} transparent animationType="none">
             <View style={styles.modalOverlay}>
-                <Animated.View style={[styles.highlightModal, { transform: [{ translateY: highlightTranslateY }] }]} {...highlightPanResponder.panHandlers}>
+                <Animated.View style={[styles.highlightModal, { backgroundColor: backgroundColorTheme, transform: [{ translateY: highlightTranslateY }] }]} {...highlightPanResponder.panHandlers}>
                     <View style={styles.modalHeader}>
-                        <View style={styles.sheetHandle} />
+                        <View style={[styles.sheetHandle, { backgroundColor: isDarkTheme ? '#35383F' : '#DDD' }]} />
                         <View style={styles.modalHeaderContent}>
-                            <Text style={styles.modalTitle}>Add to Highlights</Text>
-                            <Pressable onPress={() => toggleHighlightSheet(false)}><Ionicons name="close-circle" size={24} color="#666" /></Pressable>
+                            <Text style={[styles.modalTitle, { color: textColorTheme }]}>Add to Highlights</Text>
+                            <Pressable onPress={() => toggleHighlightSheet(false)}><Ionicons name="close-circle" size={24} color={isDarkTheme ? '#BDBDBD' : "#666"} /></Pressable>
                         </View>
                     </View>
-                    <View style={styles.newHighlightContainer}>
-                        <View style={styles.newHighlightCircle}><Ionicons name="add" size={30} color="#ff4466" /></View>
-                        <TextInput style={styles.highlightInput} placeholder="New Highlight" value={newHighlightName} onChangeText={setNewHighlightName} />
+                    <View style={[styles.newHighlightContainer, { borderBottomColor: isDarkTheme ? '#35383F' : '#EEE' }]}>
+                        <View style={[styles.newHighlightCircle, { backgroundColor: isDarkTheme ? '#2D1F22' : '#FFF0F3' }]}><Ionicons name="add" size={30} color="#ff4466" /></View>
+                        <TextInput style={[styles.highlightInput, { backgroundColor: isDarkTheme ? '#1F222A' : '#F5F5F5', color: textColorTheme }]} placeholder="New Highlight" placeholderTextColor={isDarkTheme ? '#BDBDBD' : '#999'} value={newHighlightName} onChangeText={setNewHighlightName} />
                         <TouchableOpacity style={[styles.addBtn, !newHighlightName.trim() && { opacity: 0.5 }]} onPress={handleCreateHighlight} disabled={isCreatingHighlight || !newHighlightName.trim()}>
                             {isCreatingHighlight ? <ActivityIndicator color="white" /> : <Text style={styles.addBtnText}>Add</Text>}
                         </TouchableOpacity>
@@ -565,7 +572,7 @@ export default function StoryView() {
                     <FlatList data={highlights} horizontal showsHorizontalScrollIndicator={false} keyExtractor={(item) => item.id} contentContainerStyle={{ paddingVertical: 20 }} renderItem={({ item }) => (
                         <TouchableOpacity style={styles.highlightItem} onPress={() => handleAddToHighlight(item.id)}>
                             <Image source={{ uri: item.coverImageUrl }} style={styles.highlightThumb} />
-                            <Text style={styles.highlightName} numberOfLines={1}>{item.name}</Text>
+                            <Text style={[styles.highlightName, { color: textColorTheme }]} numberOfLines={1}>{item.name}</Text>
                         </TouchableOpacity>
                     )} />
                 </Animated.View>
@@ -573,18 +580,18 @@ export default function StoryView() {
         </Modal>
 
         {/* Viewers Sheet */}
-        <Animated.View style={[styles.viewersSheet, { transform: [{ translateY: viewersTranslateY }] }]} {...sheetPanResponder.panHandlers}>
+        <Animated.View style={[styles.viewersSheet, { backgroundColor: backgroundColorTheme, transform: [{ translateY: viewersTranslateY }] }]} {...sheetPanResponder.panHandlers}>
             <View style={styles.sheetHeader}>
-                <View style={styles.sheetHandle} />
-                <Text style={styles.sheetTitle}>Viewers ({viewers.length})</Text>
-                <Pressable onPress={() => toggleViewers(false)} style={styles.sheetClose}><Ionicons name="close-circle" size={24} color="#666" /></Pressable>
+                <View style={[styles.sheetHandle, { backgroundColor: isDarkTheme ? '#35383F' : '#DDD' }]} />
+                <Text style={[styles.sheetTitle, { color: textColorTheme }]}>Viewers ({viewers.length})</Text>
+                <Pressable onPress={() => toggleViewers(false)} style={styles.sheetClose}><Ionicons name="close-circle" size={24} color={isDarkTheme ? '#BDBDBD' : "#666"} /></Pressable>
             </View>
             <FlatList data={viewers} keyExtractor={(item, index) => `${item.uid}_${index}`} renderItem={({ item }) => (
-                <View style={styles.viewerItem}>
+                <View style={[styles.viewerItem, { borderBottomColor: isDarkTheme ? '#35383F' : '#F0F0F0' }]}>
                     <Image source={{ uri: item.avatarUrl }} style={styles.viewerAvatar} />
                     <View style={{ flex: 1 }}>
-                        <Text style={styles.viewerName}>{item.username}</Text>
-                        <Text style={styles.viewTime}>{item.viewedAt ? new Date(item.viewedAt.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}</Text>
+                        <Text style={[styles.viewerName, { color: textColorTheme }]}>{item.username}</Text>
+                        <Text style={[styles.viewTime, { color: isDarkTheme ? '#BDBDBD' : '#666' }]}>{item.viewedAt ? new Date(item.viewedAt.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}</Text>
                     </View>
                     {item.reaction && <Text style={{ fontSize: 24 }}>{item.reaction}</Text>}
                 </View>
@@ -638,24 +645,24 @@ const styles = StyleSheet.create({
   miniReaction: { padding: 0 },
 
   // Sheet Styles
-  viewersSheet: { position: 'absolute', left: 0, right: 0, height: height * 0.6, backgroundColor: 'white', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, zIndex: 100 },
+  viewersSheet: { position: 'absolute', left: 0, right: 0, height: height * 0.6, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, zIndex: 100 },
   sheetHeader: { alignItems: 'center', marginBottom: 20 },
-  sheetHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: '#DDD', marginBottom: 10 },
-  sheetTitle: { fontSize: 18, fontFamily: 'Urbanist-Bold', color: '#000' },
+  sheetHandle: { width: 40, height: 4, borderRadius: 2, marginBottom: 10 },
+  sheetTitle: { fontSize: 18, fontFamily: 'Urbanist-Bold' },
   sheetClose: { position: 'absolute', right: 0, top: 0 },
-  viewerItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F0F0F0' },
+  viewerItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1 },
   viewerAvatar: { width: 45, height: 45, borderRadius: 22.5, marginRight: 12 },
-  viewerName: { fontSize: 16, fontFamily: 'Urbanist-SemiBold', color: '#000' },
-  viewTime: { fontSize: 12, color: '#666' },
+  viewerName: { fontSize: 16, fontFamily: 'Urbanist-SemiBold' },
+  viewTime: { fontSize: 12 },
   emptyText: { textAlign: 'center', color: '#999', marginTop: 50, fontFamily: 'Urbanist-Medium' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  highlightModal: { backgroundColor: 'white', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, minHeight: 300 },
+  highlightModal: { borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, minHeight: 300 },
   modalHeader: { alignItems: 'center', marginBottom: 20 },
   modalHeaderContent: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%' },
   modalTitle: { fontSize: 18, fontFamily: 'Urbanist-Bold' },
-  newHighlightContainer: { flexDirection: 'row', alignItems: 'center', gap: 12, borderBottomWidth: 1, borderBottomColor: '#EEE', paddingBottom: 15 },
-  newHighlightCircle: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#FFF0F3', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#ff4466' },
-  highlightInput: { flex: 1, height: 45, backgroundColor: '#F5F5F5', borderRadius: 10, paddingHorizontal: 15, fontFamily: 'Urbanist-Medium' },
+  newHighlightContainer: { flexDirection: 'row', alignItems: 'center', gap: 12, borderBottomWidth: 1, paddingBottom: 15 },
+  newHighlightCircle: { width: 60, height: 60, borderRadius: 30, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#ff4466' },
+  highlightInput: { flex: 1, height: 45, borderRadius: 10, paddingHorizontal: 15, fontFamily: 'Urbanist-Medium' },
   addBtn: { backgroundColor: '#ff4466', paddingHorizontal: 15, paddingVertical: 10, borderRadius: 10 },
   addBtnText: { color: 'white', fontFamily: 'Urbanist-Bold' },
   highlightItem: { alignItems: 'center', marginRight: 20, width: 70 },

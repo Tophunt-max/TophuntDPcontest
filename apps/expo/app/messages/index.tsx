@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   View,
@@ -14,6 +13,7 @@ import {
   Animated,
   Alert,
   RefreshControl,
+  useColorScheme
 } from 'react-native';
 import { collection, query, where, onSnapshot, orderBy, doc, deleteDoc } from 'firebase/firestore';
 import { firestore, auth } from '@/src/services/firebase/initFirebase';
@@ -22,6 +22,7 @@ import { useThemeColor } from '@/hooks/use-theme-color';
 import { ThemedView } from '@/components/themed-view';
 import { MessageSkeleton } from '@/src/components/messages/MessageSkeleton';
 import { Swipeable } from 'react-native-gesture-handler';
+import { Colors } from '@/constants/theme';
 
 // Import Icons from assets
 import { 
@@ -65,10 +66,10 @@ export default function MessagesScreen() {
   
   const currentUser = auth.currentUser;
   const router = useRouter();
-  
-  const themeBackgroundColor = useThemeColor({}, 'background');
-  const textColor = useThemeColor({}, 'text');
-  const isDark = themeBackgroundColor === '#151718';
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === 'dark';
+  const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
+  const textColor = isDark ? Colors.dark.text : Colors.light.text;
   
   const pinkPrimary = '#FF4D67';
   const focusAnim = useRef(new Animated.Value(0)).current;
@@ -199,7 +200,7 @@ export default function MessagesScreen() {
                 <Text style={{ color: '#ccc', fontSize: 10 }}>User</Text>
               </View>
             )}
-            {isOnline && <View style={styles.onlineIndicator} />}
+            {isOnline && <View style={[styles.onlineIndicator, { borderColor: backgroundColor }]} />}
           </View>
         </TouchableOpacity>
         <Text style={[styles.recentlyName, { color: textColor }]} numberOfLines={1}>
@@ -207,7 +208,7 @@ export default function MessagesScreen() {
         </Text>
       </View>
     );
-  }, [currentUser, router, textColor]);
+  }, [currentUser, router, textColor, backgroundColor]);
 
   const renderRightActions = (chatId: string) => (
     <TouchableOpacity
@@ -232,7 +233,7 @@ export default function MessagesScreen() {
         rightThreshold={40}
       >
         <TouchableOpacity
-          style={[styles.chatItem, { backgroundColor: themeBackgroundColor }]}
+          style={[styles.chatItem, { backgroundColor: backgroundColor }]}
           onPress={() => router.push(`/messages/chat/${item.id}`)}
         >
           <View>
@@ -243,7 +244,7 @@ export default function MessagesScreen() {
                  <Text style={{ color: '#ccc', fontSize: 12 }}>User</Text>
               </View>
             )}
-            {isOnline && <View style={[styles.onlineIndicator, styles.chatOnlineIndicator]} />}
+            {isOnline && <View style={[styles.onlineIndicator, styles.chatOnlineIndicator, { borderColor: backgroundColor }]} />}
           </View>
           
           <View style={styles.chatInfo}>
@@ -266,7 +267,7 @@ export default function MessagesScreen() {
         </TouchableOpacity>
       </Swipeable>
     );
-  }, [currentUser, router, textColor, themeBackgroundColor]);
+  }, [currentUser, router, textColor, backgroundColor]);
 
   const listHeaderComponent = useMemo(() => {
     const recentlyData = chats.slice(0, 8);
@@ -358,18 +359,18 @@ export default function MessagesScreen() {
   };
 
   return (
-    <ThemedView style={styles.container}>
+    <View style={[styles.container, { backgroundColor }]}>
       {/* Custom Header */}
       <View style={styles.topNav}>
         <View style={styles.leftHeader}>
           <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-            <Left_Arrow width={28} height={28} fill={textColor} />
+            <Left_Arrow width={28} height={28} color={textColor} />
           </TouchableOpacity>
           <Text style={[styles.headerTitle, { color: textColor }]}>Messages</Text>
         </View>
         <View style={styles.rightIcons}>
           <TouchableOpacity style={styles.navButton}>
-            <Add_Icon width={24} height={24} fill={textColor} />
+            <Add_Icon width={24} height={24} color={textColor} />
           </TouchableOpacity>
           <TouchableOpacity style={styles.navButton}>
             {isDark ? <Menu_Dark width={24} height={24} /> : <Menu_Light width={24} height={24} />}
@@ -402,7 +403,7 @@ export default function MessagesScreen() {
           contentContainerStyle={styles.flatListContent}
         />
       )}
-    </ThemedView>
+    </View>
   );
 }
 
@@ -492,7 +493,6 @@ const styles = StyleSheet.create({
     borderRadius: 7,
     backgroundColor: '#4CAF50',
     borderWidth: 2,
-    borderColor: 'white',
   },
   chatOnlineIndicator: {
     bottom: 2,

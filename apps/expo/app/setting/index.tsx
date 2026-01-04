@@ -32,13 +32,14 @@ import {
   Settings_Alert,
 } from "@/assets/svgs";
 import { signOut } from '../../src/services/auth';
+import { Colors } from '@/constants/theme';
 
 export default function SettingScreen() {
   const router = useRouter();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   const textColor = isDark ? '#fff' : '#212121';
-  const backgroundColor = isDark ? '#181A20' : '#fff';
+  const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
 
   const [isDarkMode, setIsDarkMode] = useState(isDark);
 

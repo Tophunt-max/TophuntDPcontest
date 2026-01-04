@@ -8,11 +8,12 @@ import { useQueryClient } from '@tanstack/react-query';
 import { PostSkeleton } from '@/src/components/home/PostSkeleton';
 import { StoriesSkeleton } from '@/src/components/stories/StoriesSkeleton';
 import { contestService } from '@/src/services/contests/contestService';
+import { Colors } from '@/constants/theme';
 
 export default function HomeScreen() {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
-  const backgroundColor = isDark ? '#181A20' : '#fff';
+  const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
   
   const [matches, setMatches] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, StyleSheet, Image, Dimensions, Text } from 'react-native';
+import { View, StyleSheet, Image, Dimensions, Text, useColorScheme } from 'react-native';
 import { useRouter } from 'expo-router';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { auth } from '../src/services/firebase/initFirebase';
@@ -15,6 +15,7 @@ import Animated, {
   FadeIn,
   Easing
 } from 'react-native-reanimated';
+import { Colors } from '@/constants/theme';
 
 const { width } = Dimensions.get('window');
 
@@ -56,6 +57,9 @@ const LoadingSpinner = () => {
 export default function SplashScreen() {
   const router = useRouter();
   const [appIsReady, setAppIsReady] = useState(false);
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === 'dark';
+  const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
   
   // Animation Values
   const logoScale = useSharedValue(0.8);
@@ -138,7 +142,7 @@ export default function SplashScreen() {
   }));
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor }]}>
       <Animated.View style={[styles.logoContainer, animatedLogoStyle]}>
           <Image 
             source={require('../assets/images/icon.png')} 
@@ -148,7 +152,7 @@ export default function SplashScreen() {
       </Animated.View>
 
       <Animated.View entering={FadeIn.delay(300)} style={styles.textContainer}>
-        <Text style={styles.appName}>TopHunt</Text>
+        <Text style={[styles.appName, { color: isDark ? '#fff' : '#212121' }]}>TopHunt</Text>
         <Text style={styles.tagline}>Compete. Vote. Win.</Text>
       </Animated.View>
 
@@ -162,7 +166,6 @@ export default function SplashScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFFFFF', 
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -185,7 +188,6 @@ const styles = StyleSheet.create({
   appName: {
       fontSize: 36,
       fontFamily: 'Urbanist-Bold',
-      color: '#212121',
       marginBottom: 10,
   },
   tagline: {

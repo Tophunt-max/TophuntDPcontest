@@ -15,7 +15,7 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
-import { useAuth } from "@/src/services/auth";
+import { useAuth } from "@/src/hooks/useAuth";
 import { useProfile } from "@/src/hooks/useProfileData";
 import { uploadToS3 } from "@/src/lib/uploadToS3";
 import { FormInput } from "@/src/components/inputs/FormInput";

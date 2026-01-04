@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, FlatList, Image, Dimensions, TouchableOpacity, 
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getAppConfig } from '../../src/services/appSettings';
+import { Colors } from '@/constants/theme';
 
 const { width } = Dimensions.get('window');
 
@@ -31,6 +32,8 @@ export default function OnboardingScreen() {
   const router = useRouter();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
+  const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
+  
   const [currentIndex, setCurrentIndex] = useState(0);
   const [onboardingData, setOnboardingData] = useState<any[]>(DEFAULT_ONBOARDING);
   const flatListRef = useRef<FlatList>(null);
@@ -84,13 +87,13 @@ export default function OnboardingScreen() {
       <Image source={item.image} style={styles.image} resizeMode="contain" />
       <View style={styles.textContainer}>
         <Text style={[styles.title, isDark && styles.textDark]}>{item.title}</Text>
-        <Text style={[styles.description, isDark && styles.textDark]}>{item.description}</Text>
+        <Text style={[styles.description, { color: isDark ? '#E0E0E0' : '#616161' }]}>{item.description}</Text>
       </View>
     </View>
   );
 
   return (
-    <View style={[styles.container, isDark && styles.containerDark]}>
+    <View style={[styles.container, { backgroundColor }]}>
       <FlatList
         ref={flatListRef}
         data={onboardingData}
@@ -123,7 +126,7 @@ export default function OnboardingScreen() {
                 <Text style={styles.nextButtonText}>{currentIndex === onboardingData.length - 1 ? 'Get Started' : 'Next'}</Text>
             </TouchableOpacity>
             
-            <TouchableOpacity style={styles.skipButton} onPress={handleFinishOnboarding}>
+            <TouchableOpacity style={[styles.skipButton, { backgroundColor: isDark ? '#35383F' : '#FEF1F3' }]} onPress={handleFinishOnboarding}>
                 <Text style={[styles.skipButtonText, isDark && styles.textDark]}>Skip</Text>
             </TouchableOpacity>
         </View>
@@ -133,13 +136,12 @@ export default function OnboardingScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
-  containerDark: { backgroundColor: '#181A20' },
+  container: { flex: 1 },
   itemContainer: { width: width, alignItems: 'center', paddingHorizontal: 20, paddingTop: 80 },
   image: { width: width * 0.8, height: width * 0.8, marginBottom: 40 },
   textContainer: { alignItems: 'center', paddingHorizontal: 10 },
   title: { fontSize: 28, fontFamily: 'Urbanist-Bold', textAlign: 'center', marginBottom: 16, color: '#212121' },
-  description: { fontSize: 16, fontFamily: 'Urbanist-Regular', textAlign: 'center', color: '#616161', lineHeight: 24 },
+  description: { fontSize: 16, fontFamily: 'Urbanist-Regular', textAlign: 'center', lineHeight: 24 },
   textDark: { color: '#fff' },
   footer: { paddingHorizontal: 24, paddingBottom: 40, alignItems: 'center' },
   pagination: { flexDirection: 'row', marginBottom: 40 },
@@ -150,6 +152,6 @@ const styles = StyleSheet.create({
   buttonContainer: { width: '100%' },
   nextButton: { backgroundColor: '#FF4D67', borderRadius: 100, height: 58, justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
   nextButtonText: { color: '#fff', fontSize: 16, fontFamily: 'Urbanist-Bold' },
-  skipButton: { height: 58, justifyContent: 'center', alignItems: 'center', borderRadius: 100, backgroundColor: '#FEF1F3', width: '100%' },
+  skipButton: { height: 58, justifyContent: 'center', alignItems: 'center', borderRadius: 100 },
   skipButtonText: { color: '#FF4D67', fontFamily: 'Urbanist-Bold', fontSize: 16 },
 });

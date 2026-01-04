@@ -20,6 +20,7 @@ import Images from "../../../assets/images";
 import { useThemeColor } from "../../../hooks/use-theme-color";
 import { useColorScheme } from "../../../hooks/use-color-scheme";
 import { useToast } from "../../../src/components/toast/ToastProvider";
+import { Colors } from "@/constants/theme";
 
 const { width } = Dimensions.get("window");
 
@@ -30,8 +31,9 @@ export default function LoginWelcomeScreen() {
 
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
-  const backgroundColor = useThemeColor({}, "background");
-  const textColor = useThemeColor({}, "text");
+  const isDark = colorScheme === 'dark';
+  const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
+  const textColor = isDark ? Colors.dark.text : Colors.light.text;
   const { addToast } = useToast();
 
   const handleSocialLogin = (provider: string) => {
@@ -80,38 +82,38 @@ export default function LoginWelcomeScreen() {
 
         <View style={styles.socialButtonsContainer}>
           <TouchableOpacity
-            style={styles.socialButton}
+            style={[styles.socialButton, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]}
             onPress={() => handleSocialLogin("Facebook")}
           >
             <Facebook_Icon width={24} height={24} />
-            <Text style={styles.socialButtonText}>Continue with Facebook</Text>
+            <Text style={[styles.socialButtonText, { color: textColor }]}>Continue with Facebook</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={styles.socialButton}
+            style={[styles.socialButton, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]}
             onPress={() => handleSocialLogin("Google")}
           >
             <Google_Icon width={24} height={24} />
-            <Text style={styles.socialButtonText}>Continue with Google</Text>
+            <Text style={[styles.socialButtonText, { color: textColor }]}>Continue with Google</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={styles.socialButton}
+            style={[styles.socialButton, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]}
             onPress={() => handleSocialLogin("Apple")}
           >
-            {colorScheme === "dark" ? (
+            {isDark ? (
               <Apple_Light width={24} height={24} />
             ) : (
               <Apple_Dark width={24} height={24} />
             )}
-            <Text style={styles.socialButtonText}>Continue with Apple</Text>
+            <Text style={[styles.socialButtonText, { color: textColor }]}>Continue with Apple</Text>
           </TouchableOpacity>
         </View>
 
         <View style={styles.dividerContainer}>
-          <View style={styles.dividerLine} />
+          <View style={[styles.dividerLine, { backgroundColor: isDark ? '#35383F' : '#eee' }]} />
           <Text style={[styles.dividerText, { color: textColor }]}>or</Text>
-          <View style={styles.dividerLine} />
+          <View style={[styles.dividerLine, { backgroundColor: isDark ? '#35383F' : '#eee' }]} />
         </View>
 
         <TouchableOpacity
@@ -122,7 +124,7 @@ export default function LoginWelcomeScreen() {
         </TouchableOpacity>
 
         <View style={styles.footerContainer}>
-          <Text style={[styles.footerText, { color: 'gray' }]}>
+          <Text style={[styles.footerText, { color: isDark ? '#E0E0E0' : 'gray' }]}>
             Don't have an account?{" "}
           </Text>
           <TouchableOpacity onPress={handleSignUp}>
@@ -166,9 +168,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: Platform.select({ ios: "#fff", android: "#fff", default: "#fff" }), 
     borderWidth: 1,
-    borderColor: "#eee",
     borderRadius: 16,
     paddingVertical: 16,
     paddingHorizontal: 20,
@@ -182,7 +182,6 @@ const styles = StyleSheet.create({
     marginLeft: 12,
     fontSize: 16,
     fontWeight: "600",
-    color: "#000",
   },
   dividerContainer: {
     flexDirection: "row",
@@ -193,7 +192,6 @@ const styles = StyleSheet.create({
   dividerLine: {
     flex: 1,
     height: 1,
-    backgroundColor: "#eee",
   },
   dividerText: {
     marginHorizontal: 16,

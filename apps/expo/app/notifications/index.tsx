@@ -7,6 +7,7 @@ import { notificationService, Notification } from '@/src/services/notifications/
 import { useAuth } from '@/src/hooks/useAuth';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
+import { Colors } from '@/constants/theme';
 
 dayjs.extend(relativeTime);
 
@@ -20,7 +21,7 @@ export default function NotificationsScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   
-  const backgroundColor = isDark ? '#181A20' : '#FFFFFF';
+  const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
   const textColor = isDark ? '#FFFFFF' : '#212121';
   const subTextColor = isDark ? '#BDBDBD' : '#616161';
 

@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert, ActivityIndicator, useColorScheme } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { walletService } from '@/src/services/wallet/walletService';
 import { useAuth } from '@/src/hooks/useAuth';
+import { Colors } from '@/constants/theme';
 
 const PACKAGES = [
   { id: '1', coins: 100, price: '$1.99', popular: false },
@@ -18,6 +19,10 @@ export default function CoinStoreScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const [loading, setLoading] = useState<string | null>(null);
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === 'dark';
+  const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
+  const textColor = isDark ? Colors.dark.text : Colors.light.text;
 
   const handlePurchase = async (pkg: any) => {
     if (!user) return;
@@ -35,7 +40,7 @@ export default function CoinStoreScreen() {
 
   const renderItem = ({ item }: { item: any }) => (
     <TouchableOpacity 
-      style={[styles.card, item.popular && styles.popularCard]}
+      style={[styles.card, { backgroundColor: isDark ? '#1F222A' : '#FFF', borderColor: item.popular ? '#FF4D67' : (isDark ? '#35383F' : '#EEE') }, item.popular && styles.popularCard]}
       onPress={() => handlePurchase(item)}
       disabled={!!loading}
     >
@@ -47,11 +52,11 @@ export default function CoinStoreScreen() {
       
       <View style={styles.coinContainer}>
         <Ionicons name="flash" size={32} color="#FF4D67" />
-        <Text style={styles.coinText}>{item.coins}</Text>
+        <Text style={[styles.coinText, { color: textColor }]}>{item.coins}</Text>
         <Text style={styles.coinLabel}>Dpcoins</Text>
       </View>
 
-      <TouchableOpacity style={styles.priceBtn}>
+      <TouchableOpacity style={[styles.priceBtn, { backgroundColor: isDark ? '#FF4D67' : '#181A20' }]}>
         {loading === item.id ? (
           <ActivityIndicator color="white" size="small" />
         ) : (
@@ -62,12 +67,12 @@ export default function CoinStoreScreen() {
   );
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={[styles.container, { backgroundColor }]}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()}>
-          <Ionicons name="close" size={28} color="black" />
+          <Ionicons name="close" size={28} color={textColor} />
         </TouchableOpacity>
-        <Text style={styles.title}>Dpcoin Store</Text>
+        <Text style={[styles.title, { color: textColor }]}>Dpcoin Store</Text>
         <View style={{ width: 28 }} />
       </View>
 
@@ -86,7 +91,7 @@ export default function CoinStoreScreen() {
         </LinearGradient>
       </View>
 
-      <Text style={styles.sectionTitle}>Select a Package</Text>
+      <Text style={[styles.sectionTitle, { color: textColor }]}>Select a Package</Text>
 
       <FlatList
         data={PACKAGES}
@@ -101,7 +106,7 @@ export default function CoinStoreScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#FAFAFA' },
+  container: { flex: 1 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16 },
   title: { fontSize: 20, fontFamily: 'Urbanist-Bold' },
   balanceContainer: { margin: 20, borderRadius: 20, overflow: 'hidden', elevation: 5 },
@@ -109,13 +114,13 @@ const styles = StyleSheet.create({
   balanceLabel: { color: 'white', fontSize: 14, fontFamily: 'Urbanist-Medium', marginBottom: 5 },
   balanceValue: { color: 'white', fontSize: 18, fontFamily: 'Urbanist-Bold' },
   sectionTitle: { fontSize: 18, fontFamily: 'Urbanist-Bold', marginLeft: 20, marginBottom: 15 },
-  card: { width: '47%', backgroundColor: 'white', borderRadius: 20, padding: 20, alignItems: 'center', marginBottom: 20, elevation: 2, borderWidth: 1, borderColor: '#EEE' },
-  popularCard: { borderColor: '#FF4D67', borderWidth: 2 },
+  card: { width: '47%', borderRadius: 20, padding: 20, alignItems: 'center', marginBottom: 20, elevation: 2, borderWidth: 1 },
+  popularCard: { borderWidth: 2 },
   badge: { position: 'absolute', top: -12, backgroundColor: '#FF4D67', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
   badgeText: { color: 'white', fontSize: 10, fontFamily: 'Urbanist-Bold' },
   coinContainer: { alignItems: 'center', marginBottom: 15, marginTop: 10 },
   coinText: { fontSize: 24, fontFamily: 'Urbanist-Bold', marginVertical: 5 },
   coinLabel: { color: '#999', fontSize: 12 },
-  priceBtn: { backgroundColor: '#181A20', width: '100%', paddingVertical: 12, borderRadius: 12, alignItems: 'center' },
+  priceBtn: { width: '100%', paddingVertical: 12, borderRadius: 12, alignItems: 'center' },
   priceText: { color: 'white', fontFamily: 'Urbanist-Bold' }
 });

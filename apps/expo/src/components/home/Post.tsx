@@ -20,6 +20,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
 import * as Haptics from 'expo-haptics';
+import { Colors } from '@/constants/theme';
 
 const { width } = Dimensions.get('window');
 
@@ -68,7 +69,8 @@ export const Post = memo(({ item, isDark }: PostProps) => {
   const [showHeartA, setShowHeartA] = useState(false);
   const [showHeartB, setShowHeartB] = useState(false);
   
-  const textColor = isDark ? '#FFFFFF' : '#212121';
+  const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
+  const textColor = isDark ? Colors.dark.text : Colors.light.text;
   const subTextColor = isDark ? '#BDBDBD' : '#616161';
   const borderColor = isDark ? '#35383F' : '#EEEEEE';
   const activePink = '#FF4D67';
@@ -154,7 +156,7 @@ export const Post = memo(({ item, isDark }: PostProps) => {
         <View style={styles.userInfo}>
            <View style={styles.avatarContainer}>
               <Image source={{ uri: item.userA.profilePic || 'https://ui-avatars.com/api/?name=A' }} style={styles.avatarMain} />
-              <Image source={{ uri: item.userB.profilePic || 'https://ui-avatars.com/api/?name=B' }} style={[styles.avatarSub, { borderColor: isDark ? '#181A20' : '#fff' }]} />
+              <Image source={{ uri: item.userB.profilePic || 'https://ui-avatars.com/api/?name=B' }} style={[styles.avatarSub, { borderColor: backgroundColor }]} />
            </View>
            <View style={styles.nameContainer}>
                <Text style={[styles.username, { color: textColor }]} numberOfLines={1}>
@@ -170,7 +172,7 @@ export const Post = memo(({ item, isDark }: PostProps) => {
 
       <View style={styles.mediaSection}>
         <GestureDetector gesture={tapA}>
-            <TouchableOpacity activeOpacity={0.9} style={styles.imageWrapper} onPress={() => handleVote(item.userA.uid, 'A')}>
+            <TouchableOpacity activeOpacity={0.9} style={[styles.imageWrapper, { backgroundColor: isDark ? '#1F222A' : '#EEE' }]} onPress={() => handleVote(item.userA.uid, 'A')}>
                 {item.type === 'video' ? <Video source={{ uri: item.userA.mediaUrl }} style={styles.postImage} resizeMode={ResizeMode.COVER} shouldPlay isLooping isMuted /> : <Image source={{ uri: item.userA.mediaUrl }} style={styles.postImage} />}
                 {showHeartA && <AnimatedHeart onFinish={() => setShowHeartA(false)} />}
                 {votedFor === item.userA.uid && !showHeartA && <Animated.View entering={ZoomIn} style={styles.thankYouBadge}><Text style={styles.thankYouText}>Voted</Text></Animated.View>}
@@ -178,7 +180,7 @@ export const Post = memo(({ item, isDark }: PostProps) => {
         </GestureDetector>
 
         <GestureDetector gesture={tapB}>
-            <TouchableOpacity activeOpacity={0.9} style={styles.imageWrapper} onPress={() => handleVote(item.userB.uid, 'B')}>
+            <TouchableOpacity activeOpacity={0.9} style={[styles.imageWrapper, { backgroundColor: isDark ? '#1F222A' : '#EEE' }]} onPress={() => handleVote(item.userB.uid, 'B')}>
                 {item.type === 'video' ? <Video source={{ uri: item.userB.mediaUrl }} style={styles.postImage} resizeMode={ResizeMode.COVER} shouldPlay isLooping isMuted /> : <Image source={{ uri: item.userB.mediaUrl }} style={styles.postImage} />}
                 {showHeartB && <AnimatedHeart onFinish={() => setShowHeartB(false)} />}
                 {votedFor === item.userB.uid && !showHeartB && <Animated.View entering={ZoomIn} style={styles.thankYouBadge}><Text style={styles.thankYouText}>Voted</Text></Animated.View>}
@@ -187,11 +189,11 @@ export const Post = memo(({ item, isDark }: PostProps) => {
       </View>
 
       <View style={styles.votingButtonsContainer}>
-          <TouchableOpacity style={[styles.voteButton, votedFor === item.userA.uid && { backgroundColor: activePink }]} onPress={() => handleVote(item.userA.uid, 'A')} disabled={!!votedFor}>
+          <TouchableOpacity style={[styles.voteButton, { backgroundColor: isDark ? '#1F222A' : '#F5F5F5' }, votedFor === item.userA.uid && { backgroundColor: activePink }]} onPress={() => handleVote(item.userA.uid, 'A')} disabled={!!votedFor}>
              <Text style={[styles.voteButtonText, { color: votedFor === item.userA.uid ? '#FFF' : textColor }]}>{votesA} Votes</Text>
           </TouchableOpacity>
           <View style={styles.vsCenter}><Text style={{fontFamily: 'Urbanist-Bold', color: activePink}}>VS</Text></View>
-          <TouchableOpacity style={[styles.voteButton, votedFor === item.userB.uid && { backgroundColor: activePink }]} onPress={() => handleVote(item.userB.uid, 'B')} disabled={!!votedFor}>
+          <TouchableOpacity style={[styles.voteButton, { backgroundColor: isDark ? '#1F222A' : '#F5F5F5' }, votedFor === item.userB.uid && { backgroundColor: activePink }]} onPress={() => handleVote(item.userB.uid, 'B')} disabled={!!votedFor}>
              <Text style={[styles.voteButtonText, { color: votedFor === item.userB.uid ? '#FFF' : textColor }]}>{votesB} Votes</Text>
           </TouchableOpacity>
       </View>
@@ -226,13 +228,13 @@ const styles = StyleSheet.create({
   mentionText: { fontFamily: 'Urbanist-Medium' },
   timeText: { fontFamily: 'Urbanist-Medium', fontSize: 12, marginTop: 1 },
   mediaSection: { flexDirection: 'row', paddingHorizontal: 16, justifyContent: 'space-between' },
-  imageWrapper: { width: (width - 42) / 2, height: ((width - 42) / 2) * 1.3, borderRadius: 20, overflow: 'hidden', position: 'relative', justifyContent: 'center', alignItems: 'center', backgroundColor: '#EEE' },
+  imageWrapper: { width: (width - 42) / 2, height: ((width - 42) / 2) * 1.3, borderRadius: 20, overflow: 'hidden', position: 'relative', justifyContent: 'center', alignItems: 'center' },
   postImage: { width: '100%', height: '100%', position: 'absolute' },
   thankYouBadge: { backgroundColor: 'rgba(0, 0, 0, 0.7)', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, zIndex: 10 },
   thankYouText: { color: '#FFF', fontFamily: 'Urbanist-Bold', fontSize: 14 },
   heartOverlay: { position: 'absolute', zIndex: 20, shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 5 },
   votingButtonsContainer: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, marginTop: 15, alignItems: 'center' },
-  voteButton: { flex: 1, paddingVertical: 10, borderRadius: 12, backgroundColor: '#F5F5F5', alignItems: 'center' },
+  voteButton: { flex: 1, paddingVertical: 10, borderRadius: 12, alignItems: 'center' },
   vsCenter: { paddingHorizontal: 15 },
   voteButtonText: { fontFamily: 'Urbanist-Bold', fontSize: 14 },
   actionBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, marginTop: 15 },

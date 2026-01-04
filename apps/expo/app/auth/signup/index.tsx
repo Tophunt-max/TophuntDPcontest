@@ -40,6 +40,7 @@ import { useToast } from "@/src/components/toast/ToastProvider";
 import PasswordStrength from "@/src/components/inputs/PasswordStrength";
 import { FacebookAuthProvider, signInWithCredential } from 'firebase/auth';
 import * as Facebook from 'expo-facebook';
+import { Colors } from '@/constants/theme';
 
 const signupSchema = z.object({
   email: z.string().min(1, "Please fill in your email").email("Invalid email"),
@@ -63,8 +64,9 @@ export default function SignupEntryScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
-  const backgroundColor = useThemeColor({}, "background");
-  const textColor = useThemeColor({}, "text");
+  const isDark = colorScheme === 'dark';
+  const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
+  const textColor = isDark ? Colors.dark.text : Colors.light.text;
   const { addToast } = useToast();
   
   const setMultiple = useSignupStore((state) => state.setMultiple);
@@ -244,25 +246,25 @@ export default function SignupEntryScreen() {
             />
 
             <View style={styles.dividerContainer}>
-              <View style={styles.dividerLine} />
-              <Text style={[styles.dividerText, { color: textColor }]}>or continue with</Text>
-              <View style={styles.dividerLine} />
+              <View style={[styles.dividerLine, { backgroundColor: isDark ? '#35383F' : '#eee' }]} />
+              <Text style={[styles.dividerText, { color: isDark ? '#BDBDBD' : "#616161" }]}>or continue with</Text>
+              <View style={[styles.dividerLine, { backgroundColor: isDark ? '#35383F' : '#eee' }]} />
             </View>
 
             <View style={styles.socialButtonsContainer}>
-              <TouchableOpacity style={styles.socialIcon} onPress={() => handleSocialLogin("Facebook")}>
+              <TouchableOpacity style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]} onPress={() => handleSocialLogin("Facebook")}>
                 <Facebook_Icon width={24} height={24} />
               </TouchableOpacity>
-              <TouchableOpacity style={styles.socialIcon} onPress={() => handleSocialLogin("Google")}>
+              <TouchableOpacity style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]} onPress={() => handleSocialLogin("Google")}>
                 <Google_Icon width={24} height={24} />
               </TouchableOpacity>
-              <TouchableOpacity style={styles.socialIcon} onPress={() => handleSocialLogin("Apple")}>
-                {colorScheme === "dark" ? <Apple_Light width={24} height={24} /> : <Apple_Dark width={24} height={24} />}
+              <TouchableOpacity style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]} onPress={() => handleSocialLogin("Apple")}>
+                {isDark ? <Apple_Light width={24} height={24} /> : <Apple_Dark width={24} height={24} />}
               </TouchableOpacity>
             </View>
 
             <View style={styles.footerContainer}>
-              <Text style={[styles.footerText, { color: 'gray' }]}>
+              <Text style={[styles.footerText, { color: isDark ? '#E0E0E0' : 'gray' }]}>
                 Already have an account?{" "}
               </Text>
               <TouchableOpacity onPress={() => router.push("/auth/login")}>
@@ -290,10 +292,10 @@ const styles = StyleSheet.create({
   linkText: { color: '#FF4D67', fontFamily: 'Urbanist-Bold', textDecorationLine: 'underline' },
   errorText: { color: 'red', marginTop: 5, fontSize: 12, fontFamily: 'Urbanist-Regular' },
   dividerContainer: { flexDirection: "row", alignItems: "center", width: "100%", marginBottom: 20 },
-  dividerLine: { flex: 1, height: 1, backgroundColor: "#eee" },
-  dividerText: { marginHorizontal: 12, fontSize: 14, fontFamily: 'Urbanist-SemiBold', color: "#616161" },
+  dividerLine: { flex: 1, height: 1 },
+  dividerText: { marginHorizontal: 12, fontSize: 14, fontFamily: 'Urbanist-SemiBold' },
   socialButtonsContainer: { flexDirection: "row", justifyContent: "center", gap: 16, marginBottom: 20 },
-  socialIcon: { width: 50, height: 50, borderRadius: 12, borderWidth: 1, borderColor: "#eee", justifyContent: "center", alignItems: "center", backgroundColor: "#fff" },
+  socialIcon: { width: 50, height: 50, borderRadius: 12, borderWidth: 1, justifyContent: "center", alignItems: "center" },
   footerContainer: { flexDirection: "row", justifyContent: "center", alignItems: "center", marginBottom: 10, paddingBottom: 20 },
   footerText: { fontSize: 14, fontFamily: 'Urbanist-Regular' },
   loginText: { fontSize: 14, fontFamily: 'Urbanist-Bold', color: "#FF4D67" },

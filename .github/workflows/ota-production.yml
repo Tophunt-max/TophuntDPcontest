@@ -1,7 +1,7 @@
 name: Expo OTA - Production Update
 
 on:
-  push
+  push:
     branches:
       - main
     paths:
