@@ -27,6 +27,7 @@ import { CountryPicker } from "react-native-country-codes-picker";
 import { doc, updateDoc } from "firebase/firestore";
 import { firestore, functions } from "@/src/services/firebase/initFirebase";
 import { httpsCallable } from "firebase/functions";
+import { useActionSheet } from '@expo/react-native-action-sheet'; // You might need to install this or implement a custom sheet
 
 const editProfileSchema = z.object({
   fullName: z.string().min(1, "Please fill in your full name"),
@@ -53,6 +54,9 @@ export default function EditProfileScreen() {
   const [countryCode, setCountryCode] = useState("+91");
   const [isLoading, setIsLoading] = useState(false);
   const [localAvatarUri, setLocalAvatarUri] = useState<string | null>(null);
+  
+  // Image Options Modal
+  const [showImageOptions, setShowImageOptions] = useState(false);
 
   // Email Update State
   const [showEmailOtpModal, setShowEmailOtpModal] = useState(false);
@@ -103,16 +107,33 @@ export default function EditProfileScreen() {
 
   const selectedOccupation = watch("occupation");
 
-  const pickAvatar = async () => {
-    const img = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.5,
-    });
+  const pickImage = async (useCamera: boolean) => {
+    setShowImageOptions(false);
     
-    if (!img.canceled && img.assets) {
-      setLocalAvatarUri(img.assets[0].uri);
+    let result;
+    if (useCamera) {
+        const permission = await ImagePicker.requestCameraPermissionsAsync();
+        if (permission.granted) {
+            result = await ImagePicker.launchCameraAsync({
+                allowsEditing: true,
+                aspect: [1, 1],
+                quality: 0.5,
+            });
+        } else {
+            Alert.alert("Permission Denied", "Camera permission is required to take a photo.");
+            return;
+        }
+    } else {
+        result = await ImagePicker.launchImageLibraryAsync({
+            mediaTypes: ['images'],
+            allowsEditing: true,
+            aspect: [1, 1],
+            quality: 0.5,
+        });
+    }
+
+    if (result && !result.canceled && result.assets) {
+        setLocalAvatarUri(result.assets[0].uri);
     }
   };
 
@@ -255,7 +276,7 @@ export default function EditProfileScreen() {
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <View style={styles.avatarContainer}>
-          <TouchableOpacity onPress={pickAvatar} style={styles.avatarWrapper}>
+          <TouchableOpacity onPress={() => setShowImageOptions(true)} style={styles.avatarWrapper}>
              <Image 
                 source={localAvatarUri ? { uri: localAvatarUri } : require('@/assets/images/userLight.png')} 
                 style={styles.avatar} 
@@ -372,6 +393,32 @@ export default function EditProfileScreen() {
         style={{ modal: { height: 500 } }}
       />
 
+      {/* Image Options Modal */}
+      <Modal transparent visible={showImageOptions} animationType="fade">
+        <TouchableOpacity style={styles.modalOverlay} onPress={() => setShowImageOptions(false)}>
+            <View style={styles.modalContent}>
+                <Text style={styles.modalTitle}>Change Profile Photo</Text>
+                
+                <TouchableOpacity style={styles.modalOption} onPress={() => pickImage(true)}>
+                    <Ionicons name="camera-outline" size={24} color="#000" />
+                    <Text style={[styles.modalOptionText, { marginLeft: 10 }]}>Take Photo</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity style={styles.modalOption} onPress={() => pickImage(false)}>
+                    <Ionicons name="image-outline" size={24} color="#000" />
+                    <Text style={[styles.modalOptionText, { marginLeft: 10 }]}>Choose from Library</Text>
+                </TouchableOpacity>
+
+                {localAvatarUri && (
+                  <TouchableOpacity style={[styles.modalOption, { borderBottomWidth: 0 }]} onPress={() => { setLocalAvatarUri(null); setShowImageOptions(false); }}>
+                      <Ionicons name="trash-outline" size={24} color="red" />
+                      <Text style={[styles.modalOptionText, { marginLeft: 10, color: 'red' }]}>Remove Photo</Text>
+                  </TouchableOpacity>
+                )}
+            </View>
+        </TouchableOpacity>
+      </Modal>
+
       {/* Email OTP Verification Modal */}
       <Modal transparent visible={showEmailOtpModal} animationType="slide">
           <View style={styles.modalOverlay}>
@@ -465,7 +512,7 @@ const styles = StyleSheet.create({
   otpModalContent: { backgroundColor: '#fff', borderRadius: 24, padding: 24, margin: 20, width: '90%', alignSelf: 'center', marginBottom: 'auto', marginTop: 'auto' },
   modalTitle: { fontSize: 20, fontFamily: 'Urbanist-Bold', color: '#000', textAlign: 'center', marginBottom: 8 },
   modalSubtitle: { fontSize: 14, color: '#666', textAlign: 'center', marginBottom: 20 },
-  modalOption: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#F5F5F5' },
+  modalOption: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-start', paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#F5F5F5' },
   modalOptionText: { fontSize: 18, fontFamily: 'Urbanist-SemiBold', color: '#424242' },
   selectedOptionText: { color: '#ff4466', fontFamily: 'Urbanist-Bold' },
   verifyLink: { marginTop: -15, marginBottom: 15, alignSelf: 'flex-end' },

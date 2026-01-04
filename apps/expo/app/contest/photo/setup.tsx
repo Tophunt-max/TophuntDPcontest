@@ -39,7 +39,7 @@ import Animated, {
   useDerivedValue,
   interpolate
 } from 'react-native-reanimated';
-import ImageViewing from "react-native-image-viewing/dist/ImageViewing";
+import { ImageViewer } from '@/src/components/ui/ImageViewer';
 import * as Haptics from 'expo-haptics';
 
 const PINK_ACCENT = '#FFB1BD';
@@ -534,7 +534,7 @@ export default function BattleSetupScreen() {
       
       {/* Full Screen Image Viewer */}
       {media && (
-        <ImageViewing
+        <ImageViewer
           images={[{ uri: media }]}
           imageIndex={0}
           visible={isImageViewVisible}
