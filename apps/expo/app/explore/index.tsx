@@ -11,6 +11,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { useToast } from '@/src/components/toast/ToastProvider';
 import { Colors } from '@/constants/theme';
+import FeaturedGrid from '@/src/components/home/FeaturedGrid';
 
 const { width } = Dimensions.get('window');
 const CARD_MARGIN = 16;
@@ -142,6 +143,11 @@ export default function DiscoverScreen() {
         <TouchableOpacity style={[styles.iconBtn, { backgroundColor: inputBg }]} onPress={() => handleAction(() => router.push('/explore/leaderboard'))}>
            <Ionicons name="trophy-outline" size={22} color={primaryColor} />
         </TouchableOpacity>
+      </View>
+
+      {/* Featured Grid added here */}
+      <View style={{ marginBottom: 20 }}>
+        <FeaturedGrid />
       </View>
 
       {/* Modern Search Bar */}

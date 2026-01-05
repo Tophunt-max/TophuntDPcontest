@@ -119,7 +119,7 @@ export const Post = memo(({ item, isDark }: PostProps) => {
         const hours = Math.floor((distance % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
         const minutes = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
         const seconds = Math.floor((distance % (1000 * 60)) / 1000);
-        timeLeft(`${hours}h ${minutes}m ${seconds}s`);
+        setTimeLeft(`${hours}h ${minutes}m ${seconds}s`);
       }
     }, 1000);
     return () => clearInterval(timer);
@@ -157,8 +157,8 @@ export const Post = memo(({ item, isDark }: PostProps) => {
       handleVote(item.userB.uid, 'B');
   }, [votedFor, handleVote, item.userB.uid]);
 
-  const tapA = Gesture.Tap().numberOfTaps(2).onEnd(runOnJS(onDoubleTapA));
-  const tapB = Gesture.Tap().numberOfTaps(2).onEnd(runOnJS(onDoubleTapB));
+  const tapA = Gesture.Tap().numberOfTaps(2).runOnJS(true).onEnd(onDoubleTapA);
+  const tapB = Gesture.Tap().numberOfTaps(2).runOnJS(true).onEnd(onDoubleTapB);
 
   return (
     <View style={[styles.postContainer, { borderBottomColor: borderColor }]}>
@@ -221,7 +221,7 @@ export const Post = memo(({ item, isDark }: PostProps) => {
         <Text style={[styles.pollTimer, { color: subTextColor }]}>Ends in: <Text style={{ color: textColor }}>{timeLeft}</Text></Text>
       </View>
 
-      <CommentSheet postId={item.id} visible={showComments} onDismiss={() => setShowComments(false)} isDark={isDark} />
+      <CommentSheet postId={item.id} visible={showComments} onDismiss={() => setShowComments(false)} isDark={isDark} isContestMatch={true} />
     </View>
   );
 });

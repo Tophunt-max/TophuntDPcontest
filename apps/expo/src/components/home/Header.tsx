@@ -3,20 +3,23 @@ import {
   View,
   StyleSheet,
   Pressable,
-  useColorScheme
+  useColorScheme,
+  Image
 } from "react-native";
 import { 
-    App_Logo, 
     HeartIcon_Light, HeartIcon_Dark,
     ChatIcon_Light, ChatIcon_Dark 
 } from '@/assets/svgs';
 import { useRouter } from 'expo-router';
 import { Colors } from '@/constants/theme';
+import { useAppConfig } from "@/src/services/appSettings";
+import images from "@/assets/images";
 
 const HeaderComponent = () => {
   const router = useRouter();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
+  const { config } = useAppConfig();
 
   const HeartIcon = isDark ? HeartIcon_Dark : HeartIcon_Light;
   const ChatIcon = isDark ? ChatIcon_Dark : ChatIcon_Light;
@@ -34,7 +37,11 @@ const HeaderComponent = () => {
     >
       {/* LEFT */}
       <View style={styles.left}>
-        <App_Logo width={115} height={32} />
+        <Image 
+          source={config?.headerLogoUrl ? { uri: config.headerLogoUrl } : images.tophuntLogo} 
+          style={{ width: 115, height: 32 }} 
+          resizeMode="contain" 
+        />
       </View>
 
       {/* RIGHT */}

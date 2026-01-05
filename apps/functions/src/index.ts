@@ -3,13 +3,14 @@ import { onCall, HttpsError } from "firebase-functions/v2/https";
 import { FieldValue } from "firebase-admin/firestore";
 import { setGlobalOptions } from "firebase-functions/v2";
 
-// Set global options to reduce resource usage for all functions
+// OPTIMIZED GLOBAL OPTIONS FOR QUOTA MANAGEMENT
+// Concurrency requires at least 1 CPU.
 setGlobalOptions({ 
     region: 'us-central1', 
-    cpu: 0.16, // Use significantly less CPU
-    memory: '256MiB',
-    maxInstances: 2,
-    concurrency: 1
+    cpu: 1, // Must be >= 1 for concurrency
+    memory: '256MiB', 
+    maxInstances: 1, // Strict limit to prevent quota explosion
+    concurrency: 80 // Allow up to 80 requests per instance
 });
 
 // --- EXPORT ALL MODULES ---

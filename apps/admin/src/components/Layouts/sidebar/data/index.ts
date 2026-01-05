@@ -26,6 +26,7 @@ export const NAV_DATA = [
         title: "App Content",
         icon: Icons.Table,
         items: [
+          { title: "Push Notifications", url: "/notifications" },
           { title: "User Reports", url: "/reports" },
           { title: "Support Tickets", url: "/support" },
         ]
@@ -35,9 +36,10 @@ export const NAV_DATA = [
         icon: Icons.Alphabet,
         items: [
           { title: "Global Config", url: "/app-settings" },
+          { title: "Banner Settings", url: "/app-settings/banners" },
+          { title: "Reward Settings", url: "/app-settings/rewards" },
           { title: "Legal Content", url: "/app-settings/legal" },
-          { title: "Splash Screen", url: "/app-settings/splash" },
-          { title: "Onboarding", url: "/app-settings/onboarding" },
+          { title: "App Design", url: "/app-settings/design" },
           { title: "Authentication", url: "/app-settings/auth" },
           { title: "Android Settings", url: "/app-settings/android" },
           { title: "iOS Settings", url: "/app-settings/ios" },

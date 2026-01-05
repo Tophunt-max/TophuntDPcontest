@@ -11,8 +11,12 @@ const DEFAULT_SETTINGS = {
     xpThreshold: 500,
     xpIncrement: 500,
     dailyLoginReward: 10,
+    dailyStreakBonus: 2,
     contestJoinReward: 50,
     matchWinReward: 100,
+    signupBonus: 100,
+    referralBonus: 50,
+    voteReward: 1,
     voteRewardXP: 10,
     contestJoinXP: 50,
     badges: [],
@@ -21,12 +25,15 @@ const DEFAULT_SETTINGS = {
  * Fetches gamification settings from Firestore.
  */
 async function getGamificationSettings() {
+    var _a, _b;
     try {
         const doc = await firebase_1.db.collection("settings").doc("gamification").get();
         if (!doc.exists)
             return DEFAULT_SETTINGS;
         const data = doc.data() || {};
-        return Object.assign(Object.assign(Object.assign({}, DEFAULT_SETTINGS), data), { badges: data.badges || [] });
+        return Object.assign(Object.assign(Object.assign({}, DEFAULT_SETTINGS), data), { 
+            // Map keys if they differ between DB and interface
+            dailyLoginReward: (_b = (_a = data.dailyLoginReward) !== null && _a !== void 0 ? _a : data.dailyBaseReward) !== null && _b !== void 0 ? _b : DEFAULT_SETTINGS.dailyLoginReward, badges: data.badges || [] });
     }
     catch (error) {
         console.error("Error fetching gamification settings:", error);
@@ -70,6 +77,7 @@ async function awardReward(userId, action) {
             break;
         case 'battle_vote':
             xpAmount = settings.voteRewardXP;
+            coinAmount = settings.voteReward; // Award coins for voting too
             break;
     }
     if (xpAmount <= 0 && coinAmount <= 0)
@@ -83,7 +91,13 @@ async function awardReward(userId, action) {
         const data = userDoc.data() || {};
         const currentXp = data.xp || 0;
         const currentLevel = data.level || 1;
-        const currentCoins = data.Dpcoin || data.fishCoins || data.coins || 0;
+        // Handle field name variations for coins
+        let coinField = "Dpcoin";
+        if (data.Dpcoin === undefined && data.fishCoins !== undefined)
+            coinField = "fishCoins";
+        else if (data.Dpcoin === undefined && data.coins !== undefined)
+            coinField = "coins";
+        const currentCoins = data[coinField] || 0;
         const currentBadges = data.badges || [];
         const newXp = currentXp + xpAmount;
         const newCoins = currentCoins + coinAmount;
@@ -91,16 +105,14 @@ async function awardReward(userId, action) {
         const updates = {
             xp: newXp,
             level: newLevel,
-            Dpcoin: newCoins, // Renamed to Dpcoin
+            [coinField]: newCoins,
             updatedAt: firestore_1.FieldValue.serverTimestamp(),
         };
         if (newLevel > currentLevel) {
             leveledUpTo = newLevel;
-            // Check for badge at this new level
             const badge = settings.badges.find(b => b.level === newLevel);
             if (badge) {
                 awardedBadge = badge;
-                // Add badge if not already owned
                 if (!currentBadges.some((b) => b.name === badge.name)) {
                     updates.badges = firestore_1.FieldValue.arrayUnion(badge);
                 }

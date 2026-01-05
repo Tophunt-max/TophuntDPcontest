@@ -31,6 +31,18 @@ service cloud.firestore {
         allow read: if request.auth != null;
         allow write: if request.auth != null && (request.auth.uid == userId || isAdmin());
       }
+
+      // Notifications subcollection (Added fix for permission-denied error)
+      match /notifications/{notificationId} {
+        // Owner can read their own notifications
+        allow read: if request.auth != null && (request.auth.uid == userId || isAdmin());
+        // Allow any auth user to create a notification (e.g. Profile Visits, Shares)
+        allow create: if request.auth != null;
+        // Owner can mark as read
+        allow update: if request.auth != null && (request.auth.uid == userId || isAdmin());
+        // Only admin can delete for now
+        allow delete: if isAdmin();
+      }
     }
 
     // Contests
@@ -43,6 +55,13 @@ service cloud.firestore {
     match /contestMatches/{matchId} {
       allow read: if request.auth != null;
       allow write: if isAdmin();
+      
+      // Comments for Contest Matches
+      match /comments/{commentId} {
+        allow read: if request.auth != null;
+        allow create: if request.auth != null;
+        allow update, delete: if request.auth != null && (resource.data.userId == request.auth.uid || isAdmin());
+      }
     }
 
     // Votes
@@ -51,7 +70,7 @@ service cloud.firestore {
       allow write: if false; // ONLY via Cloud Functions
     }
 
-    // Notifications
+    // Notifications (Root level - keeping for backward compatibility if needed)
     match /notifications/{notifId} {
       allow read: if request.auth != null && (resource.data.recipientUid == request.auth.uid || isAdmin());
       allow update: if request.auth != null && (
@@ -87,11 +106,24 @@ service cloud.firestore {
       allow read: if request.auth != null;
       allow write: if request.auth != null && (request.resource.data.userId == request.auth.uid || isAdmin());
     }
+
+    // Story Views
+    match /storyViews/{viewId} {
+      allow read: if request.auth != null && (resource.data.viewerUid == request.auth.uid || isAdmin());
+      allow write: if request.auth != null && (request.resource.data.viewerUid == request.auth.uid || isAdmin());
+    }
     
     // Posts
     match /posts/{postId} {
       allow read: if request.auth != null;
       allow write: if request.auth != null && (request.resource.data.userId == request.auth.uid || isAdmin());
+
+      // Comments for Posts
+      match /comments/{commentId} {
+        allow read: if request.auth != null;
+        allow create: if request.auth != null;
+        allow update, delete: if request.auth != null && (resource.data.userId == request.auth.uid || isAdmin());
+      }
     }
 
     // Highlights (Top-level, if any. Keeping it for backward compatibility)

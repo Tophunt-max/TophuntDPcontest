@@ -5,6 +5,7 @@ import * as Icons from '@/assets/svgs';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/theme';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const { width, height } = Dimensions.get('window');
 
@@ -17,6 +18,7 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
   const router = useRouter();
   const pathname = usePathname();
   const [showAddMenu, setShowAddMenu] = useState(false);
+  const insets = useSafeAreaInsets();
   
   const animation = useRef(new Animated.Value(0)).current;
   const panY = useRef(new Animated.Value(0)).current;
@@ -95,7 +97,7 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
         activeOpacity={0.7}
       >
         <View style={styles.iconWrapper}>
-            <CurrentIcon width={26} height={26} color={color} />
+            <CurrentIcon width={24} height={24} color={color} />
             {isActive && <View style={[styles.activeDot, { backgroundColor: activeColor }]} />}
         </View>
         <Text style={[styles.navLabel, { color, fontFamily: isActive ? 'Urbanist-Bold' : 'Urbanist-Medium' }]}>
@@ -124,6 +126,8 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
         { 
             backgroundColor,
             borderTopColor: isDark ? '#262A35' : '#F1F1F1',
+            paddingBottom: Math.max(insets.bottom, 10),
+            height: 60 + Math.max(insets.bottom, 10)
         },
         styles.shadow
     ]}>
@@ -146,7 +150,7 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
             activeOpacity={0.8}
         >
             <View style={styles.uploadButton}>
-                <Icons.Add_Icon width={24} height={24} color="#FFF" />
+                <Icons.Add_Icon width={22} height={22} color="#FFF" />
             </View>
         </TouchableOpacity>
 
@@ -236,9 +240,7 @@ const styles = StyleSheet.create({
       flexDirection: 'row',
       justifyContent: 'space-around',
       alignItems: 'center',
-      height: Platform.OS === 'ios' ? 88 : 70,
       borderTopWidth: 1,
-      paddingBottom: Platform.OS === 'ios' ? 25 : 0,
       paddingHorizontal: 10,
   },
   shadow: {
@@ -261,7 +263,6 @@ const styles = StyleSheet.create({
       alignItems: 'center',
       justifyContent: 'center',
       flex: 1,
-      paddingTop: 10,
   },
   iconWrapper: {
       alignItems: 'center',
@@ -278,7 +279,7 @@ const styles = StyleSheet.create({
   },
   navLabel: {
       fontSize: 10,
-      marginTop: 8,
+      marginTop: 4,
   },
   addTab: {
       flex: 1,
@@ -286,20 +287,18 @@ const styles = StyleSheet.create({
       justifyContent: 'center',
   },
   uploadButton: {
-      width: 52,
-      height: 52,
-      borderRadius: 16,
+      width: 48,
+      height: 48,
+      borderRadius: 14,
       backgroundColor: '#FF4D67',
       justifyContent: 'center',
       alignItems: 'center',
-      marginTop: -30,
+      marginTop: -25,
       shadowColor: "#FF4D67",
       shadowOffset: { width: 0, height: 6 },
       shadowOpacity: 0.4,
       shadowRadius: 8,
       elevation: 8,
-      borderWidth: 4,
-      borderColor: 'transparent',
   },
   modalContainer: {
     flex: 1,
@@ -313,7 +312,6 @@ const styles = StyleSheet.create({
     padding: 24,
     borderTopLeftRadius: 32,
     borderTopRightRadius: 32,
-    paddingBottom: Platform.OS === 'ios' ? 40 : 24,
   },
   dragHandleContainer: {
     alignItems: 'center',

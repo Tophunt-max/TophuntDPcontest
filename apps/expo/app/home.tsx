@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { View, StyleSheet, FlatList, SafeAreaView, useColorScheme, RefreshControl, ActivityIndicator, Text } from 'react-native';
+import { View, StyleSheet, FlatList, useColorScheme, RefreshControl, Text } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '@/src/components/home/Header';
 import { StoriesBar } from '@/src/components/stories/StoriesBar';
 import { Post } from '@/src/components/home/Post';
@@ -9,6 +10,7 @@ import { PostSkeleton } from '@/src/components/home/PostSkeleton';
 import { StoriesSkeleton } from '@/src/components/stories/StoriesSkeleton';
 import { contestService } from '@/src/services/contests/contestService';
 import { Colors } from '@/constants/theme';
+// Removed FeaturedGrid import
 
 export default function HomeScreen() {
   const colorScheme = useColorScheme();
@@ -26,7 +28,6 @@ export default function HomeScreen() {
     else setIsLoading(true);
     
     try {
-      // Fetch naye schema ke mutabiq Active Matches
       const data = await contestService.getActiveMatches();
       setMatches(data);
     } catch (error) {
@@ -50,10 +51,15 @@ export default function HomeScreen() {
     <Post item={item} isDark={isDark} />
   ), [isDark]);
 
-  const ListHeader = useMemo(() => isLoading ? <StoriesSkeleton /> : <StoriesBar />, [isLoading]);
+  const ListHeader = useMemo(() => (
+    <View>
+      {/* FeaturedGrid Removed from here */}
+      {isLoading ? <StoriesSkeleton isDark={isDark} /> : <StoriesBar />}
+    </View>
+  ), [isLoading, isDark]);
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor }]} edges={['top', 'left', 'right']}>
       <Header />
       <FlatList
         data={isLoading ? [1, 2, 3] : matches}
@@ -75,15 +81,23 @@ export default function HomeScreen() {
             </Text>
           </View>
         ) : null}
-        contentContainerStyle={{ paddingBottom: 20 }}
+        contentContainerStyle={{ paddingBottom: 100 }}
         showsVerticalScrollIndicator={false}
       />
-      <BottomNav backgroundColor={backgroundColor} isDark={isDark} />
+      <View style={styles.navContainer}>
+        <BottomNav backgroundColor={backgroundColor} isDark={isDark} />
+      </View>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  emptyContainer: { padding: 40, alignItems: 'center' }
+  emptyContainer: { padding: 40, alignItems: 'center' },
+  navContainer: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+  }
 });

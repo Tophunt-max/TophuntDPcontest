@@ -44,7 +44,7 @@ const AUTH_CONFIG = {
     cpu: 1,
     concurrency: 80, // Can handle many requests
     minInstances: 0,
-    maxInstances: 2,
+    maxInstances: 1, // REDUCED TO 1 to save quota
     memory: "256MiB",
     timeoutSeconds: 60,
     cors: true,
@@ -98,6 +98,14 @@ function validateUsername(username) {
         throw new https_1.HttpsError("invalid-argument", "This username is reserved and cannot be used.");
     }
     return lower;
+}
+/**
+ * Helper to get Reward Settings from DB
+ */
+async function getRewardSettings() {
+    var _a;
+    const configDoc = await firebase_1.db.collection("settings").doc("appConfig").get();
+    return ((_a = configDoc.data()) === null || _a === void 0 ? void 0 : _a.rewardSettings) || { signupBonus: 100 };
 }
 exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
     var _a, _b;
@@ -206,6 +214,8 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
         const uid = userRecord.uid;
         // Create Firestore Profile
         try {
+            const rewardSettings = await getRewardSettings();
+            const signupBonus = rewardSettings.signupBonus || 0;
             await createFirestoreProfile(uid, {
                 email,
                 username: validatedUsername,
@@ -218,7 +228,7 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
                 following,
                 platform,
                 coordinates // NEW
-            });
+            }, signupBonus);
             logger.info(`[authHandler] User created successfully: ${uid}`);
             return { status: "success", uid, message: "User created successfully" };
         }
@@ -244,6 +254,8 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
         const validatedUsername = username ? validateUsername(username) : null;
         logger.info(`[authHandler] Creating profile for existing UID: ${uid}`);
         try {
+            const rewardSettings = await getRewardSettings();
+            const signupBonus = rewardSettings.signupBonus || 0;
             await createFirestoreProfile(uid, {
                 email,
                 username: validatedUsername,
@@ -256,7 +268,7 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
                 following,
                 platform,
                 coordinates // NEW
-            });
+            }, signupBonus);
             return { status: "success", uid, message: "Profile created successfully" };
         }
         catch (error) {
@@ -359,7 +371,7 @@ exports.sendOtpToPhone = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
 /**
  * VERIFY OTP (Forgot Password)
  */
-exports.verifyOtp = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
+exports.verifyOtp = (0, https_1.onCall)(Object.assign(Object.assign({}, AUTH_CONFIG), { minInstances: 0, maxInstances: 1 }), async (request) => {
     const { phone, code } = request.data;
     if (!phone || !code)
         throw new https_1.HttpsError("invalid-argument", "Phone and code are required.");
@@ -383,7 +395,7 @@ exports.verifyOtp = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
 /**
  * UPDATE PASSWORD WITH PHONE (Forgot Password Final Step)
  */
-exports.updatePasswordWithPhone = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
+exports.updatePasswordWithPhone = (0, https_1.onCall)(Object.assign(Object.assign({}, AUTH_CONFIG), { minInstances: 0, maxInstances: 1 }), async (request) => {
     const { phone, newPassword } = request.data;
     if (!phone || !newPassword)
         throw new https_1.HttpsError("invalid-argument", "Phone and new password are required.");
@@ -416,7 +428,7 @@ exports.updatePasswordWithPhone = (0, https_1.onCall)(AUTH_CONFIG, async (reques
     }
 });
 // Helper function to keep code DRY
-async function createFirestoreProfile(uid, data) {
+async function createFirestoreProfile(uid, data, signupBonus = 0) {
     const userRef = firebase_1.db.collection("users").doc(uid);
     const normalizedPhone = normalizePhoneNumber(data.phone);
     const profileData = {
@@ -435,7 +447,7 @@ async function createFirestoreProfile(uid, data) {
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         signupCompleted: true, // Mark as completed
-        Dpcoin: 0,
+        Dpcoin: signupBonus, // Initial Bonus from Admin Config
         xp: 0,
         level: 1,
         stats: {
@@ -447,5 +459,15 @@ async function createFirestoreProfile(uid, data) {
         }
     };
     await userRef.set(profileData, { merge: true });
+    // Record Signup Bonus Transaction if > 0
+    if (signupBonus > 0) {
+        await firebase_1.db.collection("coinTransactions").add({
+            uid,
+            amount: signupBonus,
+            type: "signup_bonus",
+            timestamp: admin.firestore.FieldValue.serverTimestamp(),
+            description: "Welcome bonus for joining TopHunt!"
+        });
+    }
 }
 //# sourceMappingURL=authHandler.js.map

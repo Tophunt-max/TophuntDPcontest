@@ -4,12 +4,13 @@ exports.sendChatNotification = void 0;
 const firestore_1 = require("firebase-functions/v2/firestore");
 const firebase_1 = require("../utils/firebase");
 const messaging_1 = require("firebase-admin/messaging");
+// CPU must be >= 1 for concurrency, but since this is an event trigger (not HTTP),
+// we can use lower CPU and 1 instance.
 exports.sendChatNotification = (0, firestore_1.onDocumentCreated)({
     document: 'chats/{chatId}/messages/{messageId}',
     region: 'us-central1',
-    // Removed database: 'dpcontest' to use default
-    maxInstances: 2,
-    cpu: 0.25,
+    maxInstances: 1, // Single instance is fine for chats usually
+    cpu: 1, // INCREASED TO 1 to fix validation error (concurrency conflict)
     memory: '256MiB'
 }, async (event) => {
     const snap = event.data;

@@ -266,9 +266,9 @@ export const deleteStory = onCall(FUNCTION_CONFIG, async (request) => {
 });
 
 export const cleanupExpiredStories = functions.scheduler.onSchedule({
-    schedule: "every 24 hours", // Daily cleanup is enough to save costs
-    region: "us-central1", // Move to cheaper region
-    cpu: 0.25,
+    schedule: "every 24 hours", 
+    region: "us-central1", 
+    cpu: 1, // Increased to 1 to match global settings logic if needed
     memory: "256MiB" as MemoryOption,
 }, async (event) => {
     const now = admin.firestore.Timestamp.now();
@@ -285,8 +285,6 @@ export const cleanupExpiredStories = functions.scheduler.onSchedule({
     const batch = db.batch();
     snapshot.docs.forEach((doc: any) => {
       batch.delete(doc.ref);
-      // Ideally we should also delete from S3 here, but batch doesn't support async/await well inside loop
-      // For now we just clean DB. S3 lifecycle rules can handle file expiration.
     });
 
     await batch.commit();

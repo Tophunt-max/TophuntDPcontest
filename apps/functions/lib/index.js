@@ -19,13 +19,14 @@ const firebase_1 = require("./utils/firebase");
 const https_1 = require("firebase-functions/v2/https");
 const firestore_1 = require("firebase-admin/firestore");
 const v2_1 = require("firebase-functions/v2");
-// Set global options to reduce resource usage for all functions
+// OPTIMIZED GLOBAL OPTIONS FOR QUOTA MANAGEMENT
+// Concurrency requires at least 1 CPU.
 (0, v2_1.setGlobalOptions)({
     region: 'us-central1',
-    cpu: 0.16, // Use significantly less CPU
+    cpu: 1, // Must be >= 1 for concurrency
     memory: '256MiB',
-    maxInstances: 2,
-    concurrency: 1
+    maxInstances: 1, // Strict limit to prevent quota explosion
+    concurrency: 80 // Allow up to 80 requests per instance
 });
 // --- EXPORT ALL MODULES ---
 // 1. Auth & User Profile

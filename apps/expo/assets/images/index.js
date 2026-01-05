@@ -8,4 +8,5 @@ export default {
   music: require('./music.png'),
   musicTone: require('./musicTone.png'),
   liveBg: require('./liveBg.png'),
+  tophuntLogo: require('./Tophunt.png'),
 };

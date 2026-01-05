@@ -3,12 +3,13 @@ import { db } from "../utils/firebase";
 import { getMessaging } from "firebase-admin/messaging";
 import { MemoryOption } from "firebase-functions/v2/options";
 
+// CPU must be >= 1 for concurrency, but since this is an event trigger (not HTTP),
+// we can use lower CPU and 1 instance.
 export const sendChatNotification = onDocumentCreated({
     document: 'chats/{chatId}/messages/{messageId}',
     region: 'us-central1',
-    // Removed database: 'dpcontest' to use default
-    maxInstances: 2,
-    cpu: 0.25,
+    maxInstances: 1, // Single instance is fine for chats usually
+    cpu: 1, // INCREASED TO 1 to fix validation error (concurrency conflict)
     memory: '256MiB' as MemoryOption
 }, async (event) => {
     const snap = event.data;

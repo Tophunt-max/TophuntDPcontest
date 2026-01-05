@@ -154,7 +154,7 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
               <WalletCard 
                 Dpcoin={profile.Dpcoin || 0} 
                 stats={profile.stats || { contestsJoined: 0, wins: 0 }} 
-                onPress={() => router.push('/wallet/store')} // LINKED HERE
+                onPress={() => router.push('/wallet')}
               />
             )}
             <Highlights userId={targetUserId} />

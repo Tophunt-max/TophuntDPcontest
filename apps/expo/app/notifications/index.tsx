@@ -13,7 +13,7 @@ dayjs.extend(relativeTime);
 
 export default function NotificationsScreen() {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   
@@ -26,16 +26,26 @@ export default function NotificationsScreen() {
   const subTextColor = isDark ? '#BDBDBD' : '#616161';
 
   useEffect(() => {
-    if (!user?.uid) return;
+    // If auth is still loading, do nothing yet
+    if (authLoading) return;
+
+    // If auth finished and no user, stop loading (maybe redirect or show empty)
+    if (!user?.uid) {
+      setIsLoading(false);
+      return;
+    }
+
+    // Subscribe to notifications
     const unsubscribe = notificationService.subscribeToNotifications(user.uid, (data) => {
         setNotifications(data);
         setIsLoading(false);
     });
     return () => unsubscribe();
-  }, [user?.uid]);
+  }, [user?.uid, authLoading]);
 
   const onRefresh = async () => {
     setIsRefreshing(true);
+    // Re-trigger subscription or simple timeout as real-time listener handles updates
     setTimeout(() => setIsRefreshing(false), 1000);
   };
 
@@ -48,9 +58,17 @@ export default function NotificationsScreen() {
   };
 
   const renderItem = ({ item }: { item: Notification | any }) => {
+    // Reward and System types
+    const rewardTypes = ['signup_bonus', 'daily_reward', 'reward_received', 'level_up', 'badge_earned', 'contest_win_reward', 'monthly_hall_of_fame_reward'];
+    const isRewardType = rewardTypes.includes(item.type);
     const isContestType = item.type === 'battle_start' || item.type === 'contest_win';
     const isMessageType = item.type === 'message';
     const isProfileVisit = item.type === 'profile_visit';
+
+    // System icon fallback for rewards (Yellow/Gold coin icon style)
+    const defaultAvatar = isRewardType 
+      ? 'https://cdn-icons-png.flaticon.com/512/179/179386.png' 
+      : 'https://ui-avatars.com/api/?name=' + (item.senderName || item.title || 'S');
 
     return (
       <TouchableOpacity 
@@ -61,9 +79,13 @@ export default function NotificationsScreen() {
             else if (isProfileVisit || item.senderId) router.push({ pathname: '/profile', params: { userId: item.senderId } });
             else if (item.battleId) router.push('/home');
             else if (item.postId) router.push({ pathname: '/home', params: { postId: item.postId } });
+            else if (isRewardType) router.push('/home'); // Fallback to home or wallet
         }}
       >
-        <Image source={{ uri: item.senderAvatar || 'https://ui-avatars.com/api/?name=' + (item.senderName || 'S') }} style={styles.avatar} />
+        <Image 
+          source={{ uri: item.senderAvatar || defaultAvatar }} 
+          style={[styles.avatar, isRewardType && { backgroundColor: '#FFF9C4', padding: 2 }]} 
+        />
         
         <View style={styles.contentContainer}>
           <Text style={[styles.contentText, { color: textColor }]}>
@@ -75,7 +97,11 @@ export default function NotificationsScreen() {
             {item.type === 'message' && 'sent you a message.'}
             {item.type === 'profile_visit' && 'visited your profile.'}
             
-            {isContestType && item.body}
+            {/* For Rewards, Contest and Generic types, we show the body text */}
+            {(isRewardType || isContestType) && item.body}
+            
+            {/* Catch-all for any other body messages */}
+            {!['like', 'follow', 'comment', 'message', 'profile_visit'].includes(item.type) && !isRewardType && !isContestType && item.body}
 
             <Text style={[styles.timeText, { color: subTextColor }]}> {formatTime(item.createdAt)}</Text>
           </Text>
@@ -85,9 +111,16 @@ export default function NotificationsScreen() {
           <TouchableOpacity style={[styles.followButton, { backgroundColor: '#FF4D67' }]}>
             <Text style={styles.followButtonText}>Follow</Text>
           </TouchableOpacity>
-        ) : (isContestType || isMessageType || isProfileVisit) ? (
-          <View style={[styles.badge, isMessageType && { backgroundColor: '#2196F3' }, isProfileVisit && { backgroundColor: '#4CAF50' }]}>
-            <Text style={styles.badgeText}>{isMessageType ? 'MSG' : isProfileVisit ? 'EYE' : 'GO'}</Text>
+        ) : (isContestType || isMessageType || isProfileVisit || isRewardType) ? (
+          <View style={[
+            styles.badge, 
+            isMessageType && { backgroundColor: '#2196F3' }, 
+            isProfileVisit && { backgroundColor: '#4CAF50' },
+            isRewardType && { backgroundColor: '#FFB300' } // Gold/Coin color for rewards
+          ]}>
+            <Text style={styles.badgeText}>
+                {isMessageType ? 'MSG' : isProfileVisit ? 'EYE' : isRewardType ? 'COIN' : 'GO'}
+            </Text>
           </View>
         ) : (
           item.postImage && <Image source={{ uri: item.postImage }} style={styles.postImage} />
@@ -106,7 +139,7 @@ export default function NotificationsScreen() {
         <View style={{ width: 24 }} />
       </View>
 
-      {isLoading ? (
+      {isLoading || authLoading ? (
         <View style={{ marginTop: 20 }}>{[1, 2, 3, 4].map(i => <NotificationSkeleton key={i} isDark={isDark} />)}</View>
       ) : (
         <FlatList
@@ -116,6 +149,11 @@ export default function NotificationsScreen() {
             showsVerticalScrollIndicator={false}
             contentContainerStyle={styles.listContent}
             refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} tintColor="#FF4D67" />}
+            ListEmptyComponent={
+              <View style={{ flex: 1, alignItems: 'center', marginTop: 100 }}>
+                <Text style={{ color: subTextColor, fontFamily: 'Urbanist-Medium' }}>No notifications yet.</Text>
+              </View>
+            }
         />
       )}
     </SafeAreaView>
@@ -127,7 +165,7 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, height: 56 },
   backBtn: { padding: 4 },
   headerTitle: { fontFamily: 'Urbanist-Bold', fontSize: 20 },
-  listContent: { paddingHorizontal: 16, paddingTop: 10 },
+  listContent: { paddingHorizontal: 16, paddingTop: 10, paddingBottom: 40 },
   notificationItem: { flexDirection: 'row', alignItems: 'center', marginBottom: 20 },
   avatar: { width: 44, height: 44, borderRadius: 22 },
   contentContainer: { flex: 1, marginHorizontal: 12 },

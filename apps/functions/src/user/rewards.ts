@@ -1,7 +1,23 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
+import { onSchedule } from "firebase-functions/v2/scheduler";
 import { db, admin } from "../utils/firebase";
 import { FieldValue } from "firebase-admin/firestore";
 import { sendPushNotification } from "../notifications/sender";
+
+/**
+ * Helper to get Reward Settings from DB
+ */
+async function getRewardSettings() {
+  const configDoc = await db.collection("settings").doc("appConfig").get();
+  const config = configDoc.data()?.rewardSettings || {};
+  return {
+    signupBonus: config.signupBonus || 100,
+    referralBonus: config.referralBonus || 50,
+    dailyBaseReward: config.dailyBaseReward || 10,
+    dailyStreakBonus: config.dailyStreakBonus || 2,
+    voteReward: config.voteReward || 1
+  };
+}
 
 /**
  * Claim Daily Login Reward & Update Streaks
@@ -12,6 +28,7 @@ export const claimDailyReward = onCall(async (request) => {
 
   const uid = auth.uid;
   const userRef = db.collection("users").doc(uid);
+  const rewardSettings = await getRewardSettings();
 
   return await db.runTransaction(async (transaction) => {
     const userDoc = await transaction.get(userRef);
@@ -21,7 +38,6 @@ export const claimDailyReward = onCall(async (request) => {
     const now = new Date();
     const lastClaim = data.lastDailyClaim?.toDate();
 
-    // Check if already claimed today
     if (lastClaim && lastClaim.toDateString() === now.toDateString()) {
       throw new HttpsError("already-exists", "Daily reward already claimed today.");
     }
@@ -30,18 +46,16 @@ export const claimDailyReward = onCall(async (request) => {
     const yesterday = new Date();
     yesterday.setDate(now.getDate() - 1);
 
-    // Reset streak if last claim was not yesterday
     if (!lastClaim || lastClaim.toDateString() !== yesterday.toDateString()) {
       currentStreak = 1;
     } else {
       currentStreak += 1;
     }
 
-    // Base reward: 10 Dpcoins + (Streak * 2 bonus)
-    const coinReward = 10 + (currentStreak * 2);
+    // Dynamic Reward calculation
+    const coinReward = rewardSettings.dailyBaseReward + (currentStreak * rewardSettings.dailyStreakBonus);
     const xpReward = 50;
 
-    // Use Dpcoin field primarily
     let coinField = "Dpcoin";
     if (data.Dpcoin === undefined && data.fishCoins !== undefined) coinField = "fishCoins";
     else if (data.Dpcoin === undefined && data.coins !== undefined) coinField = "coins";
@@ -53,7 +67,6 @@ export const claimDailyReward = onCall(async (request) => {
       lastDailyClaim: FieldValue.serverTimestamp(),
     });
 
-    // Record Transaction
     const transRef = db.collection("coinTransactions").doc();
     transaction.set(transRef, {
       uid,
@@ -72,11 +85,6 @@ export const claimDailyReward = onCall(async (request) => {
     };
   });
 });
-
-/**
- * Check Streaks & Send Reminders (Cron Job)
- */
-import { onSchedule } from "firebase-functions/v2/scheduler";
 
 export const streakReminder = onSchedule("every 24 hours", async (event) => {
   const yesterday = new Date();

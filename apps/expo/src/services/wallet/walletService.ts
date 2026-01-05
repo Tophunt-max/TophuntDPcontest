@@ -1,4 +1,6 @@
 import { getFunctions, httpsCallable } from 'firebase/functions';
+import { firestore } from '../firebase/initFirebase';
+import { doc, updateDoc, increment, serverTimestamp } from 'firebase/firestore';
 
 export const walletService = {
   /**
@@ -23,5 +25,26 @@ export const walletService = {
       console.error("Purchase error:", error);
       throw error;
     }
+  },
+
+  /**
+   * Claim Daily Bonus
+   * Returns the amount claimed
+   */
+  claimDailyBonus: async (userId: string, dayIndex: number) => {
+    // In a real app, use a Cloud Function to prevent time-hack cheating.
+    // For this prototype, we update Firestore directly.
+    const rewards = [10, 15, 20, 25, 30, 50, 100];
+    const amount = rewards[dayIndex] || 10;
+
+    const userRef = doc(firestore, 'users', userId);
+    
+    await updateDoc(userRef, {
+        Dpcoin: increment(amount),
+        lastDailyBonus: serverTimestamp(),
+        dailyStreak: dayIndex + 1 // Increment streak
+    });
+
+    return amount;
   }
 };

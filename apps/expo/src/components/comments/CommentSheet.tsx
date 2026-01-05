@@ -11,6 +11,7 @@ import {
   Platform,
   Dimensions,
   Pressable,
+  ActivityIndicator,
 } from 'react-native';
 import { Portal } from 'react-native-paper';
 import Animated, {
@@ -45,9 +46,10 @@ interface CommentSheetProps {
   visible: boolean;
   onDismiss: () => void;
   isDark: boolean;
+  isContestMatch?: boolean;
 }
 
-export const CommentSheet = ({ postId, visible, onDismiss, isDark }: CommentSheetProps) => {
+export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatch = false }: CommentSheetProps) => {
   const { user } = useAuth();
   const translateY = useSharedValue(SHEET_HEIGHT);
   const opacity = useSharedValue(0);
@@ -56,6 +58,7 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark }: CommentShee
   const [commentText, setCommentText] = useState('');
   const [comments, setComments] = useState<Comment[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isPosting, setIsPosting] = useState(false);
 
   const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
   const textColor = isDark ? Colors.dark.text : Colors.light.text;
@@ -75,10 +78,11 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark }: CommentShee
       opacity.value = withTiming(1, { duration: 300 });
       
       setIsLoading(true);
+      const collectionName = isContestMatch ? 'contestMatches' : 'posts';
       const unsubscribe = commentService.subscribeToComments(postId, (data) => {
           setComments(data);
           setIsLoading(false);
-      });
+      }, collectionName);
       return () => unsubscribe();
     } else {
       translateY.value = withSpring(SHEET_HEIGHT, { damping: 20, stiffness: 90 }, (finished) => {
@@ -88,7 +92,7 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark }: CommentShee
       });
       opacity.value = withTiming(0, { duration: 300 });
     }
-  }, [visible, postId]);
+  }, [visible, postId, isContestMatch]);
 
   const closeSheet = useCallback(() => {
     translateY.value = withSpring(SHEET_HEIGHT, { damping: 20, stiffness: 90 }, (finished) => {
@@ -101,10 +105,12 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark }: CommentShee
   }, [onDismiss]);
 
   const handlePostComment = async () => {
-    if (!commentText.trim() || !user || !postId) return;
+    if (!commentText.trim() || !user || !postId || isPosting) return;
     
     const text = commentText.trim();
     setCommentText('');
+    setIsPosting(true);
+    const collectionName = isContestMatch ? 'contestMatches' : 'posts';
     
     try {
         await commentService.addComment(
@@ -112,20 +118,25 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark }: CommentShee
             user.uid,
             user.displayName || 'User',
             user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName || 'U'}`,
-            text
+            text,
+            collectionName
         );
     } catch (e) {
         console.error("Error posting comment:", e);
+    } finally {
+        setIsPosting(false);
     }
   };
 
   const gesture = Gesture.Pan()
     .onUpdate((event) => {
+      'worklet';
       if (event.translationY > 0) {
         translateY.value = event.translationY;
       }
     })
     .onEnd((event) => {
+      'worklet';
       if (event.translationY > 150 || event.velocityY > 500) {
         runOnJS(closeSheet)();
       } else {
@@ -238,11 +249,11 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark }: CommentShee
                 </View>
 
                 <TouchableOpacity 
-                    style={[styles.sendButton, { opacity: commentText.trim().length > 0 ? 1 : 0.5 }]} 
-                    disabled={commentText.trim().length === 0}
+                    style={[styles.sendButton, { opacity: (commentText.trim().length > 0 && !isPosting) ? 1 : 0.5 }]} 
+                    disabled={commentText.trim().length === 0 || isPosting}
                     onPress={handlePostComment}
                 >
-                  <Icons.Send_Icon width={28} height={28} color="#FF4D67" />
+                  {isPosting ? <ActivityIndicator size="small" color="#FF4D67" /> : <Icons.Send_Icon width={28} height={28} color="#FF4D67" />}
                 </TouchableOpacity>
               </View>
             </KeyboardAvoidingView>

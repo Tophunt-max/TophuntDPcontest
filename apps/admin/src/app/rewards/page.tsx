@@ -17,6 +17,10 @@ const RewardsManagement = () => {
     dailyLoginReward: 10,
     contestJoinReward: 50,
     matchWinReward: 100,
+    signupBonus: 100,
+    referralBonus: 50,
+    dailyStreakBonus: 2,
+    voteReward: 1,
     badges: [] as Badge[],
   });
   const [loading, setLoading] = useState(true);
@@ -97,36 +101,63 @@ const RewardsManagement = () => {
         <Breadcrumb pageName="Rewards Management" />
 
         <form onSubmit={handleSave} className="grid grid-cols-1 gap-8">
-          {/* XP & Coins Section */}
           <div className="grid grid-cols-1 gap-8 md:grid-cols-2">
+            {/* XP Section */}
             <div className="rounded-sm border border-stroke bg-white shadow-default dark:border-strokedark dark:bg-boxdark">
                 <div className="border-b border-stroke px-7 py-4 dark:border-strokedark">
-                    <h3 className="font-medium text-black dark:text-white">XP Level Thresholds</h3>
+                    <h3 className="font-medium text-black dark:text-white">XP & Level Configuration</h3>
                 </div>
                 <div className="p-7">
                     <div className="mb-4">
                         <label className="mb-3 block text-sm font-medium text-black dark:text-white">Base XP for Level 2</label>
                         <input className="w-full rounded border border-stroke bg-gray px-4.5 py-3 text-black dark:border-strokedark dark:bg-meta-4 dark:text-white" type="number" value={settings.xpThreshold} onChange={(e) => setSettings({ ...settings, xpThreshold: parseInt(e.target.value) })} />
                     </div>
-                    <div>
+                    <div className="mb-4">
                         <label className="mb-3 block text-sm font-medium text-black dark:text-white">XP Increment per Level</label>
                         <input className="w-full rounded border border-stroke bg-gray px-4.5 py-3 text-black dark:border-strokedark dark:bg-meta-4 dark:text-white" type="number" value={settings.xpIncrement} onChange={(e) => setSettings({ ...settings, xpIncrement: parseInt(e.target.value) })} />
+                    </div>
+                    <div className="mb-4">
+                        <label className="mb-3 block text-sm font-medium text-black dark:text-white">Daily Login XP</label>
+                        <input className="w-full rounded border border-stroke bg-gray px-4.5 py-3 text-black dark:border-strokedark dark:bg-meta-4 dark:text-white" type="number" value={10} disabled />
                     </div>
                 </div>
             </div>
 
+            {/* Main Coin Rewards Section */}
             <div className="rounded-sm border border-stroke bg-white shadow-default dark:border-strokedark dark:bg-boxdark">
                 <div className="border-b border-stroke px-7 py-4 dark:border-strokedark">
-                    <h3 className="font-medium text-black dark:text-white">Coin Rewards</h3>
+                    <h3 className="font-medium text-black dark:text-white">Coin Rewards (Core)</h3>
                 </div>
                 <div className="p-7">
-                    <div className="mb-4">
-                        <label className="mb-3 block text-sm font-medium text-black dark:text-white">Daily Login</label>
-                        <input className="w-full rounded border border-stroke bg-gray px-4.5 py-3 text-black dark:border-strokedark dark:bg-meta-4 dark:text-white" type="number" value={settings.dailyLoginReward} onChange={(e) => setSettings({ ...settings, dailyLoginReward: parseInt(e.target.value) })} />
+                    <div className="grid grid-cols-2 gap-4">
+                        <div className="mb-4">
+                            <label className="mb-3 block text-sm font-medium text-black dark:text-white">Sign-up Bonus</label>
+                            <input className="w-full rounded border border-stroke bg-gray px-4.5 py-3 text-black dark:border-strokedark dark:bg-meta-4 dark:text-white" type="number" value={settings.signupBonus} onChange={(e) => setSettings({ ...settings, signupBonus: parseInt(e.target.value) })} />
+                        </div>
+                        <div className="mb-4">
+                            <label className="mb-3 block text-sm font-medium text-black dark:text-white">Referral Bonus</label>
+                            <input className="w-full rounded border border-stroke bg-gray px-4.5 py-3 text-black dark:border-strokedark dark:bg-meta-4 dark:text-white" type="number" value={settings.referralBonus} onChange={(e) => setSettings({ ...settings, referralBonus: parseInt(e.target.value) })} />
+                        </div>
                     </div>
-                    <div>
-                        <label className="mb-3 block text-sm font-medium text-black dark:text-white">Contest Win</label>
-                        <input className="w-full rounded border border-stroke bg-gray px-4.5 py-3 text-black dark:border-strokedark dark:bg-meta-4 dark:text-white" type="number" value={settings.matchWinReward} onChange={(e) => setSettings({ ...settings, matchWinReward: parseInt(e.target.value) })} />
+                    <div className="grid grid-cols-2 gap-4">
+                        <div className="mb-4">
+                            <label className="mb-3 block text-sm font-medium text-black dark:text-white">Daily Reward (Base)</label>
+                            <input className="w-full rounded border border-stroke bg-gray px-4.5 py-3 text-black dark:border-strokedark dark:bg-meta-4 dark:text-white" type="number" value={settings.dailyLoginReward} onChange={(e) => setSettings({ ...settings, dailyLoginReward: parseInt(e.target.value) })} />
+                        </div>
+                        <div className="mb-4">
+                            <label className="mb-3 block text-sm font-medium text-black dark:text-white">Daily Streak Bonus</label>
+                            <input className="w-full rounded border border-stroke bg-gray px-4.5 py-3 text-black dark:border-strokedark dark:bg-meta-4 dark:text-white" type="number" value={settings.dailyStreakBonus} onChange={(e) => setSettings({ ...settings, dailyStreakBonus: parseInt(e.target.value) })} />
+                        </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                        <div className="mb-4">
+                            <label className="mb-3 block text-sm font-medium text-black dark:text-white">Contest Win Reward</label>
+                            <input className="w-full rounded border border-stroke bg-gray px-4.5 py-3 text-black dark:border-strokedark dark:bg-meta-4 dark:text-white" type="number" value={settings.matchWinReward} onChange={(e) => setSettings({ ...settings, matchWinReward: parseInt(e.target.value) })} />
+                        </div>
+                        <div className="mb-4">
+                            <label className="mb-3 block text-sm font-medium text-black dark:text-white">Vote Reward (Coins)</label>
+                            <input className="w-full rounded border border-stroke bg-gray px-4.5 py-3 text-black dark:border-strokedark dark:bg-meta-4 dark:text-white" type="number" value={settings.voteReward} onChange={(e) => setSettings({ ...settings, voteReward: parseInt(e.target.value) })} />
+                        </div>
                     </div>
                 </div>
             </div>

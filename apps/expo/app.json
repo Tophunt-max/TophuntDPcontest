@@ -32,7 +32,10 @@
       "favicon": "./assets/images/favicon.png"
     },
     "updates": {
-      "url": "https://u.expo.dev/87588362-e95e-4054-a15d-0045f9426f8d"
+      "enabled": true,
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0,
+      "url": "https://u.expo.dev/3591f0e2-84b0-4099-87ed-af6e4a5894b3"
     },
     "runtimeVersion": {
       "policy": "appVersion"
@@ -62,8 +65,7 @@
     "extra": {
       "eas": {
         "projectId": "3591f0e2-84b0-4099-87ed-af6e4a5894b3"
-      },
-      "router": {}
+      }
     },
     "owner": "bubun321uus-organization"
   }
