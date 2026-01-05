@@ -126,19 +126,38 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
       logger.info(`[authHandler] Checking ${type}: ${value}`);
 
       try {
-        const snapshot = await db
-          .collection("users")
-          .where(type, "==", value)
-          .limit(1)
-          .get();
+        let exists = false;
 
-        const exists = !snapshot.empty;
+        // Specialized check for Email using Admin Auth
+        if (type === "email") {
+          try {
+            await admin.auth().getUserByEmail(value);
+            exists = true;
+          } catch (error: any) {
+            if (error.code === 'auth/user-not-found') {
+              exists = false;
+            } else {
+              throw error;
+            }
+          }
+        }
+
+        // If not already found in Auth (or if checking phone/username), check Firestore
+        if (!exists) {
+          const snapshot = await db
+            .collection("users")
+            .where(type, "==", value)
+            .limit(1)
+            .get();
+          exists = !snapshot.empty;
+        }
+
         return { exists };
       } catch (error: any) {
         logger.error(`[authHandler] Check failed for ${type}:`, error);
         throw new HttpsError(
           "internal",
-          "Database error while checking uniqueness."
+          "Error while checking uniqueness."
         );
       }
     }

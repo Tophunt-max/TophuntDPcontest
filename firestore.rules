@@ -10,6 +10,12 @@ service cloud.firestore {
       );
     }
 
+    // NEW: Allow anyone to read app settings, but only admin can write
+    match /settings/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
     // Users: Profiles are public, but sensitive data like Dpcoin/xp are read-only
     match /users/{userId} {
       allow read: if request.auth != null;

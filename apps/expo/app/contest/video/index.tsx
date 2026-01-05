@@ -4,7 +4,7 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { Video, ResizeMode } from 'expo-av';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import { contestService } from '@/src/services/contests/contestService';
 import { contestMediaService } from '@/src/services/contests/uploadMedia';
 import { useAuth } from '@/src/hooks/useAuth';
@@ -35,6 +35,12 @@ export default function VideoContestScreen() {
   const inputBg = useThemeColor({ light: '#F9F9F9', dark: '#2A2D35' }, 'background');
   const borderColor = useThemeColor({ light: '#EEEEEE', dark: '#35383F' }, 'border');
   const subTextColor = useThemeColor({ light: '#9E9E9E', dark: '#E0E0E0' }, 'text');
+
+  const player = useVideoPlayer(media, (player) => {
+    player.loop = true;
+    player.play();
+    player.muted = true;
+  });
 
   useEffect(() => {
     if (contestId) {
@@ -154,7 +160,7 @@ export default function VideoContestScreen() {
           
           <TouchableOpacity style={[styles.mediaUpload, {backgroundColor: inputBg, borderColor}]} onPress={pickVideo}>
             {media ? (
-              <Video source={{ uri: media }} style={styles.previewVideo} resizeMode={ResizeMode.COVER} shouldPlay isLooping isMuted />
+              <VideoView player={player} style={styles.previewVideo} contentFit="cover" />
             ) : (
               <View style={styles.placeholder}>
                 <Ionicons name="videocam" size={40} color={BRAND_PRIMARY} />

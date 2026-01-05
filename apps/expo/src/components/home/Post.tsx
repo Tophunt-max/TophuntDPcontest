@@ -4,7 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Icons from '@/assets/svgs';
 import { CommentSheet } from '../comments/CommentSheet';
 import { useAuth } from '@/src/hooks/useAuth';
-import { Video, ResizeMode } from 'expo-av';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import { contestService } from '@/src/services/contests/contestService';
 import { firestore } from '@/src/services/firebase/initFirebase';
 import { doc, onSnapshot } from 'firebase/firestore';
@@ -58,6 +58,16 @@ const AnimatedHeart = ({ onFinish }: { onFinish: () => void }) => {
     );
 };
 
+const VideoPostItem = ({ mediaUrl }: { mediaUrl: string }) => {
+  const player = useVideoPlayer(mediaUrl, (player) => {
+    player.loop = true;
+    player.play();
+    player.muted = true;
+  });
+
+  return <VideoView player={player} style={styles.postImage} contentFit="cover" />;
+};
+
 export const Post = memo(({ item, isDark }: PostProps) => {
   const { user } = useAuth();
   const [showComments, setShowComments] = useState(false);
@@ -109,7 +119,7 @@ export const Post = memo(({ item, isDark }: PostProps) => {
         const hours = Math.floor((distance % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
         const minutes = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
         const seconds = Math.floor((distance % (1000 * 60)) / 1000);
-        setTimeLeft(`${hours}h ${minutes}m ${seconds}s`);
+        timeLeft(`${hours}h ${minutes}m ${seconds}s`);
       }
     }, 1000);
     return () => clearInterval(timer);
@@ -173,7 +183,7 @@ export const Post = memo(({ item, isDark }: PostProps) => {
       <View style={styles.mediaSection}>
         <GestureDetector gesture={tapA}>
             <TouchableOpacity activeOpacity={0.9} style={[styles.imageWrapper, { backgroundColor: isDark ? '#1F222A' : '#EEE' }]} onPress={() => handleVote(item.userA.uid, 'A')}>
-                {item.type === 'video' ? <Video source={{ uri: item.userA.mediaUrl }} style={styles.postImage} resizeMode={ResizeMode.COVER} shouldPlay isLooping isMuted /> : <Image source={{ uri: item.userA.mediaUrl }} style={styles.postImage} />}
+                {item.type === 'video' ? <VideoPostItem mediaUrl={item.userA.mediaUrl} /> : <Image source={{ uri: item.userA.mediaUrl }} style={styles.postImage} />}
                 {showHeartA && <AnimatedHeart onFinish={() => setShowHeartA(false)} />}
                 {votedFor === item.userA.uid && !showHeartA && <Animated.View entering={ZoomIn} style={styles.thankYouBadge}><Text style={styles.thankYouText}>Voted</Text></Animated.View>}
             </TouchableOpacity>
@@ -181,7 +191,7 @@ export const Post = memo(({ item, isDark }: PostProps) => {
 
         <GestureDetector gesture={tapB}>
             <TouchableOpacity activeOpacity={0.9} style={[styles.imageWrapper, { backgroundColor: isDark ? '#1F222A' : '#EEE' }]} onPress={() => handleVote(item.userB.uid, 'B')}>
-                {item.type === 'video' ? <Video source={{ uri: item.userB.mediaUrl }} style={styles.postImage} resizeMode={ResizeMode.COVER} shouldPlay isLooping isMuted /> : <Image source={{ uri: item.userB.mediaUrl }} style={styles.postImage} />}
+                {item.type === 'video' ? <VideoPostItem mediaUrl={item.userB.mediaUrl} /> : <Image source={{ uri: item.userB.mediaUrl }} style={styles.postImage} />}
                 {showHeartB && <AnimatedHeart onFinish={() => setShowHeartB(false)} />}
                 {votedFor === item.userB.uid && !showHeartB && <Animated.View entering={ZoomIn} style={styles.thankYouBadge}><Text style={styles.thankYouText}>Voted</Text></Animated.View>}
             </TouchableOpacity>

@@ -121,13 +121,13 @@ export default function SettingScreen() {
         {renderItem({
           icon: <Settings_User width={24} height={24} color={textColor} />,
           label: 'Manage Account',
-          onPress: () => {},
+          onPress: () => router.push('/profile/manage'),
         })}
 
         {renderItem({
           icon: <Settings_Lock width={24} height={24} color={textColor} />,
           label: 'Privacy',
-          onPress: () => {},
+          onPress: () => router.push('/legal/privacy'),
         })}
 
         {renderItem({
@@ -204,13 +204,13 @@ export default function SettingScreen() {
         {renderItem({
           icon: <Settings_Document width={24} height={24} color={textColor} />,
           label: 'Terms of Services',
-          onPress: () => {},
+          onPress: () => router.push('/legal/terms'),
         })}
 
         {renderItem({
           icon: <Settings_Alert width={24} height={24} color={textColor} />,
           label: 'Privacy Policy',
-          onPress: () => {},
+          onPress: () => router.push('/legal/privacy'),
         })}
 
         {renderItem({

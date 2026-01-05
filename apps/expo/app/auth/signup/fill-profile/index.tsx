@@ -28,7 +28,6 @@ import { httpsCallable } from "firebase/functions";
 import { functions } from "../../../../src/services/firebase/initFirebase";
 import Images from "@/assets/images";
 import Svg, { Circle } from 'react-native-svg';
-// Removed import for saveUserProfile
 
 const fillProfileSchema = z.object({
   avatarUrl: z.string().min(1, "Please upload a profile picture"),
@@ -111,7 +110,16 @@ const FillProfile: React.FC = () => {
   const [isGenderPickerVisible, setGenderPickerVisibility] = useState(false);
   const [isOccupationPickerVisible, setOccupationPickerVisibility] = useState(false);
   const [showCountryPicker, setShowCountryPicker] = useState(false);
-  const [countryCode, setCountryCode] = useState("+91");
+  
+  // Auth providers that lock email or phone
+  const isEmailLocked = signupData.authProvider === 'email' || signupData.authProvider === 'google' || signupData.authProvider === 'facebook' || signupData.authProvider === 'apple';
+  const isPhoneLocked = signupData.authProvider === 'phone';
+
+  // Parse phone number
+  const initialCountryCode = signupData.phone?.startsWith('+91') ? '+91' : '+91';
+  const initialPhone = signupData.phone?.startsWith('+91') ? signupData.phone.replace('+91', '') : (signupData.phone || '');
+
+  const [countryCode, setCountryCode] = useState(initialCountryCode);
   const [isLoading, setIsLoading] = useState(false);
   const [isUploading, setIsUploading] = useState(0);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -119,7 +127,6 @@ const FillProfile: React.FC = () => {
   
   const [usernameChecking, setUsernameChecking] = useState(false);
   const [phoneChecking, setPhoneChecking] = useState(false);
-  const [apiErrors, setApiErrors] = useState<{username?: string, phone?: string}>({});
 
   const {
     control,
@@ -137,7 +144,7 @@ const FillProfile: React.FC = () => {
       fullName: signupData.fullName || "",
       username: signupData.username || "",
       email: signupData.email || "",
-      phone: signupData.phone || "",
+      phone: initialPhone,
       occupation: signupData.occupation || "",
       gender: signupData.gender || "",
       dateOfBirth: signupData.dob ? new Date(signupData.dob) : undefined,
@@ -149,13 +156,34 @@ const FillProfile: React.FC = () => {
   const username = watch("username");
   const phone = watch("phone");
 
+  // Sync avatar if it changes in store (social login)
+  useEffect(() => {
+    if (signupData.avatarUrl && signupData.avatarUrl !== localAvatarUri) {
+        setLocalAvatarUri(signupData.avatarUrl);
+        setValue("avatarUrl", signupData.avatarUrl);
+    }
+  }, [signupData.avatarUrl]);
+
+  // Initial form sync
+  useEffect(() => {
+    if (signupData.fullName) setValue('fullName', signupData.fullName);
+    if (signupData.email) setValue('email', signupData.email);
+    if (signupData.phone) {
+        if (signupData.phone.startsWith('+91')) {
+            setCountryCode('+91');
+            setValue('phone', signupData.phone.replace('+91', ''));
+        } else {
+            setValue('phone', signupData.phone);
+        }
+    }
+  }, []);
+
   // Effect to check unique username
   useEffect(() => {
     const checkUsername = async () => {
         if (username.length >= 3) {
             setUsernameChecking(true);
             try {
-                // CHANGED: Call 'authHandler' with action 'check' and type 'username'
                 const authHandler = httpsCallable(functions, 'authHandler');
                 const result = await authHandler({ action: 'check', type: 'username', value: username });
                 if ((result.data as any).exists) {
@@ -171,17 +199,16 @@ const FillProfile: React.FC = () => {
         }
     };
 
-    const timer = setTimeout(checkUsername, 500); // Debounce
+    const timer = setTimeout(checkUsername, 500);
     return () => clearTimeout(timer);
   }, [username]);
 
   // Effect to check unique phone
   useEffect(() => {
     const checkPhone = async () => {
-        if (phone.length >= 10) {
+        if (phone.length >= 10 && !isPhoneLocked) {
             setPhoneChecking(true);
             try {
-                // CHANGED: Call 'authHandler' with action 'check' and type 'phone'
                 const authHandler = httpsCallable(functions, 'authHandler');
                 const result = await authHandler({ action: 'check', type: 'phone', value: countryCode + phone });
                 if ((result.data as any).exists) {
@@ -197,9 +224,9 @@ const FillProfile: React.FC = () => {
         }
     };
 
-    const timer = setTimeout(checkPhone, 500); // Debounce
+    const timer = setTimeout(checkPhone, 500);
     return () => clearTimeout(timer);
-  }, [phone, countryCode]);
+  }, [phone, countryCode, isPhoneLocked]);
 
   const pickAvatar = async () => {
     const img = await ImagePicker.launchImageLibraryAsync({
@@ -235,12 +262,12 @@ const FillProfile: React.FC = () => {
   };
 
   const onSubmit = async (data: FillProfileFormValues) => {
-    if (usernameChecking || phoneChecking) return; // Wait for async checks
+    if (usernameChecking || phoneChecking) return;
 
     setIsLoading(true);
     try {
       const userData = {
-        ...signupData, // Include email and password from previous step
+        ...signupData,
         avatarUrl: data.avatarUrl,
         fullName: data.fullName,
         username: data.username,
@@ -251,8 +278,7 @@ const FillProfile: React.FC = () => {
         dob: data.dateOfBirth?.toISOString(),
       };
       
-      // saveUserProfile(userData); // Removed saveUserProfile call
-      setMultiple(userData); // Update the store with all collected data
+      setMultiple(userData);
       router.push("/auth/signup/follow-someone");
     } catch (error) {
       console.error("Submission error", error);
@@ -323,17 +349,19 @@ const FillProfile: React.FC = () => {
           placeholder="Email"
           rightIcon={<Email_Icon width={20} height={20} color="#9E9E9E" />}
           keyboardType="email-address"
-          editable={false}
+          editable={!isEmailLocked}
+          style={isEmailLocked ? styles.readOnlyInput : null}
           errorMessage={errors.email?.message}
         />
 
         <View style={styles.phoneInputRow}>
              <TouchableOpacity
-               style={styles.flagButton}
-               onPress={() => setShowCountryPicker(true)}
+               style={[styles.flagButton, isPhoneLocked && styles.readOnlyInput]}
+               onPress={() => !isPhoneLocked && setShowCountryPicker(true)}
+               disabled={isPhoneLocked}
              >
                 <Text style={styles.flagText}>{countryCode}</Text>
-                <Ionicons name="chevron-down" size={12} color="#9E9E9E" style={{ marginLeft: 4 }} />
+                {!isPhoneLocked && <Ionicons name="chevron-down" size={12} color="#9E9E9E" style={{ marginLeft: 4 }} />}
              </TouchableOpacity>
 
              <View style={styles.phoneNumberInputWrapper}>
@@ -343,6 +371,8 @@ const FillProfile: React.FC = () => {
                     placeholder="Phone Number"
                     containerStyle={{ flex: 1, marginBottom: 0 }}
                     keyboardType="phone-pad"
+                    editable={!isPhoneLocked}
+                    style={isPhoneLocked ? styles.readOnlyInput : null}
                     errorMessage={errors.phone?.message}
                     rightIcon={phoneChecking ? <ActivityIndicator size="small" color="#ff4466" /> : null}
                  />
@@ -471,6 +501,7 @@ const styles = StyleSheet.create({
   modalOption: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#F5F5F5' },
   modalOptionText: { fontSize: 18, fontFamily: 'Urbanist-SemiBold', color: '#424242' },
   selectedOptionText: { color: '#ff4466', fontFamily: 'Urbanist-Bold' },
+  readOnlyInput: { opacity: 0.6, backgroundColor: '#f0f0f0' },
 });
 
 export default FillProfile;

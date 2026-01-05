@@ -11,42 +11,42 @@ import { getFunctions } from "firebase/functions";
 import { 
   getFirestore,
   Firestore,
-  initializeFirestore,
 } from "firebase/firestore";
 import { firebaseConfig } from "@/src/firebaseConfig";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Platform } from "react-native";
 
-// 1. Initialize App
+// Import Firebase Compat for legacy libraries (Like Recaptcha)
+import firebase from 'firebase/compat/app';
+import 'firebase/compat/auth';
+
+// 1. Initialize Modular App
 const app: FirebaseApp = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
-// 2. Initialize Auth with Persistence
+// 2. Initialize Compat App (Required for expo-firebase-recaptcha)
+if (!firebase.apps.length) {
+  firebase.initializeApp(firebaseConfig);
+}
+
+// 3. Initialize Auth with Persistence
 let auth: Auth;
-try {
-  if (Platform.OS === 'web') {
-    auth = initializeAuth(app, { 
-      persistence: [indexedDBLocalPersistence, browserLocalPersistence] 
-    });
-  } else {
-    auth = initializeAuth(app, { 
-      persistence: getReactNativePersistence(AsyncStorage) 
-    });
-  }
-  console.log("[Firebase] Auth initialized with persistence.");
-} catch (e) {
-  // If already initialized, use getAuth
-  auth = getAuth(app);
-  console.log("[Firebase] Auth already initialized, using existing instance.");
+if (getApps().length === 0) {
+    if (Platform.OS === 'web') {
+        auth = initializeAuth(app, { 
+            persistence: [indexedDBLocalPersistence, browserLocalPersistence] 
+        });
+    } else {
+        auth = initializeAuth(app, { 
+            persistence: getReactNativePersistence(AsyncStorage) 
+        });
+    }
+} else {
+    auth = getAuth(app);
 }
 
-// 3. Initialize Firestore
-let firestore: Firestore;
-try {
-  firestore = getFirestore(app);
-} catch (e) {
-  firestore = initializeFirestore(app, {});
-}
+// 4. Initialize Firestore
+const firestore: Firestore = getFirestore(app);
+const functions = getFunctions(app, "us-central1"); 
 
-export const functions = getFunctions(app, "us-central1"); 
-export { firestore, auth };
+export { firestore, auth, app, functions }; // Added "functions" to export
 export default app;

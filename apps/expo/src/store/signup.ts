@@ -12,6 +12,7 @@ interface SignupData {
   gender: string;
   following: string[];
   password?: string;
+  authProvider: 'email' | 'phone' | 'google' | 'facebook' | 'apple';
 }
 
 interface SignupStore {

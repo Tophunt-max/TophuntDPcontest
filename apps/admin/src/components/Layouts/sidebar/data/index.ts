@@ -35,6 +35,7 @@ export const NAV_DATA = [
         icon: Icons.Alphabet,
         items: [
           { title: "Global Config", url: "/app-settings" },
+          { title: "Legal Content", url: "/app-settings/legal" },
           { title: "Splash Screen", url: "/app-settings/splash" },
           { title: "Onboarding", url: "/app-settings/onboarding" },
           { title: "Authentication", url: "/app-settings/auth" },

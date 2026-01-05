@@ -35,12 +35,11 @@ import { FormInput } from "@/src/components/inputs/FormInput";
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useSignupStore } from "@/src/store/signup";
 import { httpsCallable } from "firebase/functions";
-import { functions, auth } from "../../../src/services/firebase/initFirebase";
+import { functions, auth, firestore as db } from "../../../src/services/firebase/initFirebase";
 import { useToast } from "@/src/components/toast/ToastProvider";
 import PasswordStrength from "@/src/components/inputs/PasswordStrength";
-import { FacebookAuthProvider, signInWithCredential } from 'firebase/auth';
-import * as Facebook from 'expo-facebook';
 import { Colors } from '@/constants/theme';
+import { doc, onSnapshot } from "firebase/firestore";
 
 const signupSchema = z.object({
   email: z.string().min(1, "Please fill in your email").email("Invalid email"),
@@ -73,8 +72,50 @@ export default function SignupEntryScreen() {
 
   const [isLoading, setIsLoading] = useState(false);
   const [emailChecking, setEmailChecking] = useState(false);
+  const [isEmailAlreadyExists, setIsEmailAlreadyExists] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showPasswordConfirmation, setShowPasswordConfirmation] = useState(false);
+  const [isConfigLoading, setIsConfigLoading] = useState(true);
+  const [config, setConfig] = useState({
+    googleLogin: true,
+    facebookLogin: true,
+    appleLogin: true,
+    emailSignup: true,
+    legalSettings: {
+        termsOfService: "/legal/terms",
+        privacyPolicy: "/legal/privacy"
+    }
+  });
+
+  // REAL-TIME Sync with Admin Settings
+  useEffect(() => {
+    const docRef = doc(db, "settings", "appConfig");
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data.authSettings) {
+          setConfig(prev => ({
+            ...prev,
+            googleLogin: data.authSettings.googleLogin ?? true,
+            facebookLogin: data.authSettings.facebookLogin ?? true,
+            appleLogin: data.authSettings.appleLogin ?? true,
+            emailSignup: data.authSettings.emailSignup ?? true,
+          }));
+          
+          if (data.authSettings.emailSignup === false) {
+              addToast("Email signup is currently disabled.", "info");
+              router.replace("/auth/login");
+          }
+        }
+      }
+      setIsConfigLoading(false);
+    }, (error) => {
+      console.error("Firestore Listen Error:", error);
+      setIsConfigLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   const {
     control,
@@ -104,47 +145,88 @@ export default function SignupEntryScreen() {
         if (email.length > 5 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
             setEmailChecking(true);
             try {
-                // CHANGED: Call 'authHandler' with action 'check' and type 'email'
                 const authHandler = httpsCallable(functions, 'authHandler');
                 const result = await authHandler({ action: 'check', type: 'email', value: email });
                 if ((result.data as any).exists) {
                     setError("email", { type: "manual", message: "This email is already registered" });
+                    setIsEmailAlreadyExists(true);
+                    addToast("This email is already in use.", "error");
                 } else {
                     clearErrors("email");
+                    setIsEmailAlreadyExists(false);
                 }
             } catch (error) {
                 console.error("Email check failed", error);
+                setIsEmailAlreadyExists(false);
             } finally {
                 setEmailChecking(false);
             }
+        } else {
+            setIsEmailAlreadyExists(false);
         }
     };
 
-    const timer = setTimeout(checkEmail, 500);
+    const timer = setTimeout(checkEmail, 800);
     return () => clearTimeout(timer);
   }, [email]);
 
   const onSignUp = async (data: SignupFormData) => {
     if (emailChecking) return;
+    
+    if (isEmailAlreadyExists) {
+        addToast("Cannot proceed: Email already exists.", "error");
+        setError("email", { type: "manual", message: "Email already registered" });
+        return;
+    }
+
+    if (!data.termsAccepted) {
+      addToast("You must accept the Terms and Privacy Policy", "info");
+      return;
+    }
 
     setIsLoading(true);
     try {
-      setMultiple({ email: data.email, password: data.password });
-      addToast("Email verified!", "success");
+      setMultiple({ 
+          email: data.email, 
+          password: data.password,
+          authProvider: 'email'
+      });
+      addToast("Email verified! Let's complete your profile.", "success");
       router.push("/auth/signup/fill-profile");
     } catch (error) {
       console.error("Signup error", error);
-      addToast("An error occurred during signup.", "error");
+      addToast("An error occurred during signup. Please try again.", "error");
     } finally {
       setIsLoading(false);
     }
   };
   
-  const handleSocialLogin = async (providerName: string) => {
-    setIsLoading(true);
-    addToast(`${providerName} login is not implemented yet.`, "info");
-    setIsLoading(false);
+  const handleOpenLegal = (route: string) => {
+    if (route.startsWith('http')) {
+        Linking.openURL(route).catch(err => {
+            console.error("Failed to open URL:", err);
+            addToast("Could not open the link.", "error");
+        });
+    } else {
+        router.push(route as any);
+    }
   };
+
+  const handleBack = () => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace("/auth/login"); // Fallback to login if no history
+    }
+  };
+
+  if (isConfigLoading) {
+    return (
+      <View style={[styles.container, { backgroundColor, justifyContent: 'center' }]}>
+        <ActivityIndicator size="large" color="#FF4D67" />
+      </View>
+    );
+  }
 
   return (
     <KeyboardAvoidingView
@@ -163,7 +245,7 @@ export default function SignupEntryScreen() {
           ]}
         >
           <View style={styles.header}>
-            <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+            <TouchableOpacity onPress={handleBack} style={styles.backButton}>
               <Left_Arrow width={24} height={24} color={textColor} />
             </TouchableOpacity>
           </View>
@@ -214,24 +296,33 @@ export default function SignupEntryScreen() {
             />
 
             <View style={styles.termsContainer}>
-              <TouchableOpacity
-                style={styles.checkboxContainer}
-                onPress={() => setValue('termsAccepted', !termsAccepted, { shouldValidate: true })}
-              >
-                <View style={[styles.checkbox, termsAccepted && styles.checkboxChecked]}>
-                  {termsAccepted && <Checkmark_Icon width={12} height={12} color="#fff" />}
-                </View>
+              <View style={styles.checkboxWrapper}>
+                <TouchableOpacity
+                  style={styles.checkboxContainer}
+                  onPress={() => {
+                    const newValue = !termsAccepted;
+                    setValue('termsAccepted', newValue, { shouldValidate: true });
+                    if (newValue) {
+                      addToast("Terms accepted", "success");
+                    }
+                  }}
+                >
+                  <View style={[styles.checkbox, termsAccepted && styles.checkboxChecked]}>
+                    {termsAccepted && <Checkmark_Icon width={12} height={12} color="#fff" />}
+                  </View>
+                </TouchableOpacity>
+                
                 <Text style={[styles.termsText, { color: textColor }]}>
                   I agree to the{" "}
-                  <Text style={styles.linkText} onPress={() => Linking.openURL('https://example.com/terms')}>
+                  <Text style={styles.linkText} onPress={() => handleOpenLegal('/legal/terms')}>
                     Terms of Service
                   </Text>{" "}
                   and{" "}
-                  <Text style={styles.linkText} onPress={() => Linking.openURL('https://example.com/privacy')}>
+                  <Text style={styles.linkText} onPress={() => handleOpenLegal('/legal/privacy')}>
                     Privacy Policy
                   </Text>.
                 </Text>
-              </TouchableOpacity>
+              </View>
               {errors.termsAccepted && (
                 <Text style={styles.errorText}>{errors.termsAccepted.message}</Text>
               )}
@@ -241,7 +332,7 @@ export default function SignupEntryScreen() {
               title="Sign up"
               onPress={handleSubmit(onSignUp)}
               isLoading={isLoading || emailChecking}
-              disabled={!termsAccepted}
+              disabled={!termsAccepted || isEmailAlreadyExists}
               style={{ marginBottom: 20 }}
             />
 
@@ -252,15 +343,21 @@ export default function SignupEntryScreen() {
             </View>
 
             <View style={styles.socialButtonsContainer}>
-              <TouchableOpacity style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]} onPress={() => handleSocialLogin("Facebook")}>
-                <Facebook_Icon width={24} height={24} />
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]} onPress={() => handleSocialLogin("Google")}>
-                <Google_Icon width={24} height={24} />
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]} onPress={() => handleSocialLogin("Apple")}>
-                {isDark ? <Apple_Light width={24} height={24} /> : <Apple_Dark width={24} height={24} />}
-              </TouchableOpacity>
+              {config.facebookLogin && (
+                <TouchableOpacity style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]} onPress={() => addToast("Facebook login coming soon!", "info")}>
+                    <Facebook_Icon width={24} height={24} />
+                </TouchableOpacity>
+              )}
+              {config.googleLogin && (
+                <TouchableOpacity style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]} onPress={() => addToast("Google login coming soon!", "info")}>
+                    <Google_Icon width={24} height={24} />
+                </TouchableOpacity>
+              )}
+              {config.appleLogin && (
+                <TouchableOpacity style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]} onPress={() => addToast("Apple login coming soon!", "info")}>
+                    {isDark ? <Apple_Light width={24} height={24} /> : <Apple_Dark width={24} height={24} />}
+                </TouchableOpacity>
+              )}
             </View>
 
             <View style={styles.footerContainer}>
@@ -285,8 +382,9 @@ const styles = StyleSheet.create({
   contentContainer: { flex: 1, paddingHorizontal: 24, paddingTop: 0, justifyContent: 'center' },
   title: { fontSize: 40, fontFamily: 'Urbanist-Bold', marginBottom: 30, lineHeight: 48, textAlign: 'center' },
   termsContainer: { alignItems: 'center', marginBottom: 20, marginTop: 8 },
-  checkboxContainer: { flexDirection: 'row', alignItems: 'flex-start', maxWidth: '90%' },
-  checkbox: { width: 20, height: 20, borderRadius: 6, borderWidth: 2, borderColor: '#FF4D67', justifyContent: 'center', alignItems: 'center', marginRight: 10, marginTop: 2 },
+  checkboxWrapper: { flexDirection: 'row', alignItems: 'flex-start', maxWidth: '90%' },
+  checkboxContainer: { paddingRight: 10, paddingTop: 2 },
+  checkbox: { width: 20, height: 20, borderRadius: 6, borderWidth: 2, borderColor: '#FF4D67', justifyContent: 'center', alignItems: 'center' },
   checkboxChecked: { backgroundColor: '#FF4D67' },
   termsText: { flexShrink: 1, fontSize: 14, fontFamily: 'Urbanist-Regular', lineHeight: 20 },
   linkText: { color: '#FF4D67', fontFamily: 'Urbanist-Bold', textDecorationLine: 'underline' },
