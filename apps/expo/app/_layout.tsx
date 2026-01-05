@@ -6,6 +6,22 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Provider as PaperProvider } from 'react-native-paper';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
+import dayjs from 'dayjs';
+import localeData from 'dayjs/plugin/localeData';
+import weekday from 'dayjs/plugin/weekday';
+import localizedFormat from 'dayjs/plugin/localizedFormat';
+import customParseFormat from 'dayjs/plugin/customParseFormat';
+import calendar from 'dayjs/plugin/calendar';
+import utc from 'dayjs/plugin/utc';
+
+// Initialize all dayjs plugins globally at the root
+dayjs.extend(localeData);
+dayjs.extend(weekday);
+dayjs.extend(localizedFormat);
+dayjs.extend(customParseFormat);
+dayjs.extend(calendar);
+dayjs.extend(utc);
+
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { ToastProvider } from '@/src/components/toast/ToastProvider';
 import { lightTheme, darkTheme } from '@/constants/theme';

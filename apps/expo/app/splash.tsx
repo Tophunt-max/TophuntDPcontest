@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { View, StyleSheet, Image, Dimensions, Text, useColorScheme } from 'react-native';
 import { useRouter } from 'expo-router';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { auth } from '../src/services/firebase/initFirebase';
+import { auth, firestore as db } from '../src/services/firebase/initFirebase';
 import * as Font from 'expo-font';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Animated, { 
@@ -16,10 +16,12 @@ import Animated, {
   Easing
 } from 'react-native-reanimated';
 import { Colors } from '@/constants/theme';
+import { getAppConfig } from '../src/services/appSettings';
+import { doc, getDoc } from 'firebase/firestore';
 
 const { width } = Dimensions.get('window');
 
-// Loading Spinner Component (Round Round Spinner)
+// Loading Spinner Component
 const LoadingSpinner = () => {
     const rotation = useSharedValue(0);
 
@@ -43,9 +45,9 @@ const LoadingSpinner = () => {
                         { 
                             transform: [
                                 { rotate: `${i * 45}deg` },
-                                { translateY: -14 } // Distance from center
+                                { translateY: -14 }
                             ],
-                            opacity: 1 - (i * 0.1) // Fade trail effect
+                            opacity: 1 - (i * 0.1)
                         }
                     ]} 
                 />
@@ -57,6 +59,7 @@ const LoadingSpinner = () => {
 export default function SplashScreen() {
   const router = useRouter();
   const [appIsReady, setAppIsReady] = useState(false);
+  const [splashImage, setSplashImage] = useState<string | null>(null);
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
@@ -76,7 +79,14 @@ export default function SplashScreen() {
 
     async function prepare() {
       try {
-        console.log("Preparing app...");
+        console.log("Preparing app components...");
+        
+        // Fetch Admin App Config (Splash Image, etc.)
+        const config = await getAppConfig();
+        if (config?.splashImageUrl) {
+            setSplashImage(config.splashImageUrl);
+        }
+
         // 2. Load Fonts
         await Font.loadAsync({
             'Urbanist-Regular': require('../assets/fonts/Urbanist-Regular.ttf'),
@@ -84,12 +94,15 @@ export default function SplashScreen() {
             'Urbanist-Medium': require('../assets/fonts/Urbanist-Medium.ttf'),
             'Urbanist-SemiBold': require('../assets/fonts/Urbanist-SemiBold.ttf'),
         });
-        console.log("Fonts loaded");
+        
+        console.log("Assets loaded successfully.");
       } catch (e) {
-        console.warn('Error loading fonts:', e);
+        console.warn('Splash Error:', e);
       } finally {
-        // 3. Mark app as ready to proceed to auth check
-        setAppIsReady(true);
+        // Wait a small bit so splash is not too abrupt
+        setTimeout(() => {
+            setAppIsReady(true);
+        }, 500);
       }
     }
 
@@ -101,36 +114,52 @@ export default function SplashScreen() {
 
     let unsubscribe: (() => void) | undefined;
 
-    const checkAuth = async () => {
-        // Fetch local storage value first
+    const performNavigationCheck = async () => {
         const hasSeenOnboarding = await AsyncStorage.getItem('hasSeenOnboarding');
 
-        // Subscribe to auth state
-        unsubscribe = onAuthStateChanged(auth, (user: User | null) => {
-            console.log("Auth state changed. User:", user ? user.uid : "null");
-            
+        unsubscribe = onAuthStateChanged(auth, async (user: User | null) => {
+            console.log("Auth state:", user ? "Logged in" : "Guest");
+
             if (user) {
-                // User is logged in -> Go to Home
-                console.log("Navigating to Home");
-                router.replace('/home');
+                try {
+                    // Check if user has a completed profile in Firestore
+                    const userDocRef = doc(db, "users", user.uid);
+                    const userSnap = await getDoc(userDocRef);
+                    
+                    if (userSnap.exists()) {
+                        const userData = userSnap.data();
+                        if (userData.signupCompleted === true || userData.username) {
+                            console.log("Profile complete -> Home");
+                            router.replace('/home');
+                        } else {
+                            console.log("Profile incomplete -> Fill Profile");
+                            router.replace('/auth/signup/fill-profile');
+                        }
+                    } else {
+                        // User exists in Auth but not in Firestore (maybe signup was interrupted)
+                        console.log("No Firestore record -> Fill Profile");
+                        router.replace('/auth/signup/fill-profile');
+                    }
+                } catch (error) {
+                    console.error("Navigation check failed:", error);
+                    // On error, try to go Home if logged in, better than getting stuck
+                    router.replace('/home');
+                }
             } else {
-                // User is NOT logged in
+                // Not logged in
                 if (hasSeenOnboarding === 'true') {
-                    // If they have seen onboarding before, go to Login
-                    console.log("Seen onboarding -> Login");
+                    console.log("Returning guest -> Login");
                     router.replace('/auth/login');
                 } else {
-                    // First time user -> Onboarding
-                    console.log("New user -> Onboarding");
+                    console.log("First time user -> Onboarding");
                     router.replace('/onboarding');
                 }
             }
         });
     };
 
-    checkAuth();
+    performNavigationCheck();
 
-    // Cleanup subscription on unmount
     return () => {
         if (unsubscribe) unsubscribe();
     };
@@ -145,7 +174,7 @@ export default function SplashScreen() {
     <View style={[styles.container, { backgroundColor }]}>
       <Animated.View style={[styles.logoContainer, animatedLogoStyle]}>
           <Image 
-            source={require('../assets/images/icon.png')} 
+            source={splashImage ? { uri: splashImage } : require('../assets/images/splesh.png')} 
             style={styles.logo} 
             resizeMode="contain"
           />

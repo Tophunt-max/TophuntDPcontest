@@ -178,6 +178,7 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
         gender,
         following,
         platform,
+        coordinates, // NEW
       } = request.data;
 
       if (!email || !password || !username) {
@@ -226,7 +227,8 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
           occupation,
           gender,
           following,
-          platform
+          platform,
+          coordinates // NEW
         });
         
         logger.info(`[authHandler] User created successfully: ${uid}`);
@@ -245,7 +247,7 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
     }
 
     // ---------------------------------------------------------
-    // ACTION: CREATE PROFILE (Firestore Only - for Social Auth)
+    // ACTION: CREATE PROFILE (Firestore Only - for Social Auth or Phone Auth)
     // ---------------------------------------------------------
     if (action === "createProfile") {
       const uid = request.auth?.uid || request.data.uid;
@@ -265,6 +267,7 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
         gender,
         following,
         platform,
+        coordinates, // NEW
       } = request.data;
       
       if (email && isDisposableEmail(email)) {
@@ -286,9 +289,10 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
           occupation,
           gender,
           following,
-          platform
+          platform,
+          coordinates // NEW
         });
-        return { success: true };
+        return { status: "success", uid, message: "Profile created successfully" };
       } catch (error) {
         logger.error("[authHandler] Error creating user profile:", error);
         throw new HttpsError("internal", "Could not create user record.");
@@ -298,6 +302,171 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
     throw new HttpsError("invalid-argument", `Unknown action: ${action}`);
   }
 );
+
+/**
+ * GET USER BY IDENTIFIER (Email or Phone)
+ * Used in Forgot Password flow to verify user exists and get their basic info
+ */
+export const getUserByIdentifier = onCall(AUTH_CONFIG, async (request) => {
+    const { identifier, type } = request.data;
+
+    if (!identifier || !type) {
+        throw new HttpsError("invalid-argument", "Identifier and type are required.");
+    }
+
+    let queryField = type === 'email' ? 'email' : 'phone';
+    let value = identifier;
+
+    if (type === 'phone') {
+        const normalized = normalizePhoneNumber(identifier);
+        if (!normalized) throw new HttpsError("invalid-argument", "Invalid phone format.");
+        value = normalized;
+    } else {
+        value = identifier.toLowerCase();
+    }
+
+    try {
+        const snapshot = await db.collection("users")
+            .where(queryField, "==", value)
+            .limit(1)
+            .get();
+
+        if (snapshot.empty) {
+            return { found: false };
+        }
+
+        const userDoc = snapshot.docs[0];
+        const userData = userDoc.data();
+
+        return {
+            found: true,
+            user: {
+                uid: userDoc.id,
+                name: userData.fullName || userData.username,
+                avatar: userData.profileImageUrl || null
+            }
+        };
+    } catch (error: any) {
+        logger.error("[getUserByIdentifier] Error:", error);
+        throw new HttpsError("internal", "Error searching for user.");
+    }
+});
+
+/**
+ * SEND OTP TO PHONE (Forgot Password)
+ */
+export const sendOtpToPhone = onCall(AUTH_CONFIG, async (request) => {
+    const { phone } = request.data;
+    if (!phone) throw new HttpsError("invalid-argument", "Phone number is required.");
+
+    const normalizedPhone = normalizePhoneNumber(phone);
+    if (!normalizedPhone) throw new HttpsError("invalid-argument", "Invalid phone format.");
+
+    // Generate 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = admin.firestore.Timestamp.fromMillis(Date.now() + 10 * 60 * 1000); // 10 mins
+
+    try {
+        // Store OTP in a secure collection
+        await db.collection("passwordResetOtps").doc(normalizedPhone).set({
+            otp,
+            expiresAt,
+            createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+
+        // Send SMS via Twilio
+        try {
+            const sid = process.env.TWILIO_ACCOUNT_SID;
+            const token = process.env.TWILIO_AUTH_TOKEN;
+            const from = process.env.TWILIO_PHONE_NUMBER;
+
+            if (sid && token && from) {
+                const client = require("twilio")(sid, token);
+                await client.messages.create({
+                    body: `Your Password Reset OTP is: ${otp}. Valid for 10 minutes.`,
+                    from: from,
+                    to: normalizedPhone,
+                });
+            } else {
+                logger.warn("Twilio credentials missing. OTP generated but not sent: ", otp);
+            }
+        } catch (smsError) {
+            logger.error("SMS Sending failed:", smsError);
+        }
+
+        return { success: true };
+    } catch (error: any) {
+        throw new HttpsError("internal", error.message);
+    }
+});
+
+/**
+ * VERIFY OTP (Forgot Password)
+ */
+export const verifyOtp = onCall(AUTH_CONFIG, async (request) => {
+    const { phone, code } = request.data;
+    if (!phone || !code) throw new HttpsError("invalid-argument", "Phone and code are required.");
+
+    const normalizedPhone = normalizePhoneNumber(phone);
+    if (!normalizedPhone) throw new HttpsError("invalid-argument", "Invalid phone format.");
+
+    const otpDoc = await db.collection("passwordResetOtps").doc(normalizedPhone).get();
+
+    if (!otpDoc.exists) {
+        throw new HttpsError("not-found", "No OTP request found for this phone.");
+    }
+
+    const data = otpDoc.data();
+    if (data?.otp !== code) {
+        throw new HttpsError("invalid-argument", "Invalid OTP code.");
+    }
+
+    if (data?.expiresAt.toMillis() < Date.now()) {
+        throw new HttpsError("deadline-exceeded", "OTP has expired.");
+    }
+
+    // Success - OTP verified
+    return { success: true };
+});
+
+/**
+ * UPDATE PASSWORD WITH PHONE (Forgot Password Final Step)
+ */
+export const updatePasswordWithPhone = onCall(AUTH_CONFIG, async (request) => {
+    const { phone, newPassword } = request.data;
+    if (!phone || !newPassword) throw new HttpsError("invalid-argument", "Phone and new password are required.");
+
+    const normalizedPhone = normalizePhoneNumber(phone);
+    if (!normalizedPhone) throw new HttpsError("invalid-argument", "Invalid phone format.");
+
+    // 1. Verify OTP was indeed verified
+    const otpDoc = await db.collection("passwordResetOtps").doc(normalizedPhone).get();
+    if (!otpDoc.exists) {
+        throw new HttpsError("permission-denied", "OTP verification required.");
+    }
+
+    try {
+        // 2. Find the user by phone
+        const userSnapshot = await db.collection("users").where("phone", "==", normalizedPhone).limit(1).get();
+        if (userSnapshot.empty) {
+            throw new HttpsError("not-found", "User not found.");
+        }
+        const uid = userSnapshot.docs[0].id;
+
+        // 3. Update Auth Password
+        await admin.auth().updateUser(uid, {
+            password: newPassword
+        });
+
+        // 4. Clean up OTP doc
+        await db.collection("passwordResetOtps").doc(normalizedPhone).delete();
+
+        return { success: true };
+    } catch (error: any) {
+        logger.error("Update password failed:", error);
+        throw new HttpsError("internal", error.message);
+    }
+});
 
 // Helper function to keep code DRY
 async function createFirestoreProfile(uid: string, data: any) {
@@ -317,9 +486,10 @@ async function createFirestoreProfile(uid: string, data: any) {
     gender: data.gender || null,
     following: data.following || [],
     platform: data.platform || "unknown",
+    coordinates: data.coordinates || null, // ADDED
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    // Renamed to Dpcoin
+    signupCompleted: true, // Mark as completed
     Dpcoin: 0, 
     xp: 0,
     level: 1, 

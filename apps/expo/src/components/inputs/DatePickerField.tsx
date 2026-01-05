@@ -1,15 +1,27 @@
 import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Modal } from 'react-native';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  Modal,
+  Dimensions,
+  Platform,
+  Pressable,
+} from 'react-native';
 import { Control, Controller, FieldValues, Path } from 'react-hook-form';
 import DateTimePicker from 'react-native-ui-datepicker';
 import dayjs from 'dayjs';
 import { Ionicons } from '@expo/vector-icons';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 interface DatePickerFieldProps<T extends FieldValues> {
   control: Control<T>;
   name: Path<T>;
   placeholder: string;
   containerStyle?: any;
+  errorMessage?: string;
 }
 
 export const DatePickerField = <T extends FieldValues>({
@@ -17,59 +29,110 @@ export const DatePickerField = <T extends FieldValues>({
   name,
   placeholder,
   containerStyle,
+  errorMessage,
 }: DatePickerFieldProps<T>) => {
   const [isDatePickerVisible, setDatePickerVisibility] = useState(false);
+
+  const getDefaultDate = () => {
+    const d = new Date();
+    d.setFullYear(d.getFullYear() - 18);
+    return d;
+  };
 
   return (
     <View style={[styles.container, containerStyle]}>
       <Controller
         control={control}
         name={name}
-        render={({ field: { onChange, value }, fieldState: { error } }) => (
-          <>
-            <TouchableOpacity
-              onPress={() => setDatePickerVisibility(true)}
-              style={[
-                styles.inputWrapper,
-                { borderColor: error ? 'red' : 'transparent', borderWidth: error ? 1 : 0 }
-              ]}
-            >
-              <Text style={[styles.text, !value && styles.placeholder]}>
-                {value ? dayjs(value).format('DD/MM/YYYY') : placeholder}
-              </Text>
-              <Ionicons name="calendar-outline" size={20} color="#9E9E9E" />
-            </TouchableOpacity>
-
-            <Modal
-              visible={isDatePickerVisible}
-              transparent={true}
-              animationType="fade"
-              onRequestClose={() => setDatePickerVisibility(false)}
-            >
-              <View style={styles.modalOverlay}>
-                <View style={styles.modalContent}>
-                  <DateTimePicker
-                    mode="single"
-                    date={value}
-                    onChange={(params) => {
-                      onChange(params.date);
-                      setDatePickerVisibility(false);
-                    }}
-                    selectedItemColor="#ff4466"
-                  />
-                  <TouchableOpacity
-                    onPress={() => setDatePickerVisibility(false)}
-                    style={styles.closeButton}
-                  >
-                    <Text style={styles.closeButtonText}>Close</Text>
-                  </TouchableOpacity>
+        render={({ field: { onChange, value }, fieldState: { error } }) => {
+          const hasError = !!(error || errorMessage);
+          
+          return (
+            <>
+              <TouchableOpacity
+                onPress={() => setDatePickerVisibility(true)}
+                activeOpacity={0.7}
+                style={[
+                  styles.inputWrapper,
+                  isDatePickerVisible && styles.focusedInput,
+                  hasError && styles.errorInput
+                ]}
+              >
+                <View style={styles.contentRow}>
+                   <View style={styles.textContainer}>
+                      <Text style={[styles.label, (value || isDatePickerVisible) && styles.labelActive]}>
+                        {placeholder}
+                      </Text>
+                      <Text style={[styles.text, !value && styles.placeholder]}>
+                        {value ? dayjs(value).format('DD MMM, YYYY') : "Select Birthday"}
+                      </Text>
+                   </View>
+                   <View style={[styles.iconCircle, isDatePickerVisible && styles.iconCircleActive]}>
+                      <Ionicons 
+                        name="calendar" 
+                        size={18} 
+                        color={isDatePickerVisible ? '#fff' : '#9E9E9E'} 
+                      />
+                   </View>
                 </View>
-              </View>
-            </Modal>
-            
-            {error && <Text style={styles.errorText}>{error.message}</Text>}
-          </>
-        )}
+              </TouchableOpacity>
+
+              <Modal
+                visible={isDatePickerVisible}
+                transparent={true}
+                animationType="fade"
+                onRequestClose={() => setDatePickerVisibility(false)}
+              >
+                <View style={styles.modalOverlay}>
+                  <Pressable style={styles.backdrop} onPress={() => setDatePickerVisibility(false)} />
+                  
+                  <View style={styles.centeredPopup}>
+                    <View style={styles.popupHeader}>
+                      <Text style={styles.popupTitle}>{placeholder}</Text>
+                      <TouchableOpacity 
+                        onPress={() => setDatePickerVisibility(false)}
+                        style={styles.closeBtn}
+                      >
+                        <Ionicons name="close" size={20} color="#212121" />
+                      </TouchableOpacity>
+                    </View>
+
+                    <View style={styles.pickerWrapper}>
+                      <DateTimePicker
+                        mode="single"
+                        date={value ? new Date(value) : getDefaultDate()}
+                        onChange={(params) => {
+                          if (params.date) {
+                            onChange(new Date(params.date as any));
+                            // Auto close after selection with a small delay for feedback
+                            setTimeout(() => {
+                                setDatePickerVisibility(false);
+                            }, 300);
+                          }
+                        }}
+                        selectedItemColor="#ff4466"
+                        calendarTextStyle={styles.calendarText}
+                        headerTextStyle={styles.calendarHeader}
+                        weekdayTextStyle={styles.weekdayText}
+                        headerButtonStyle={styles.headerButton}
+                        controlsProps={{
+                          prevIcon: <Ionicons name="chevron-back" size={16} color="#212121" />,
+                          nextIcon: <Ionicons name="chevron-forward" size={16} color="#212121" />,
+                        }}
+                      />
+                    </View>
+                  </View>
+                </View>
+              </Modal>
+              
+              {hasError && (
+                <Text style={styles.errorText}>
+                  {error?.message || errorMessage}
+                </Text>
+              )}
+            </>
+          );
+        }}
       />
     </View>
   );
@@ -77,52 +140,130 @@ export const DatePickerField = <T extends FieldValues>({
 
 const styles = StyleSheet.create({
   container: {
-    marginBottom: 20,
+    marginBottom: 16,
     width: '100%',
   },
   inputWrapper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    height: 56,
+    height: 54,
     borderRadius: 12,
     paddingHorizontal: 16,
     backgroundColor: '#FAFAFA',
+    borderWidth: 1,
+    borderColor: '#eee',
+    justifyContent: 'center',
+  },
+  focusedInput: {
+    borderColor: '#ff4466',
+    backgroundColor: '#FFF9FA',
+  },
+  errorInput: {
+    borderColor: '#FF5252',
+    backgroundColor: '#FFF8F8',
+  },
+  contentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  textContainer: {
+    flex: 1,
+  },
+  label: {
+    fontSize: 9,
+    fontFamily: 'Urbanist-Bold',
+    color: '#ff4466',
+    marginBottom: -3,
+    opacity: 0,
+  },
+  labelActive: {
+    opacity: 1,
   },
   text: {
-    fontSize: 16,
-    color: '#000',
+    fontSize: 14,
+    color: '#212121',
+    fontFamily: 'Urbanist-SemiBold',
   },
   placeholder: {
     color: '#9E9E9E',
   },
+  iconCircle: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#F5F5F5',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  iconCircleActive: {
+    backgroundColor: '#ff4466',
+  },
   errorText: {
-    color: 'red',
-    fontSize: 12,
+    color: '#FF5252',
+    fontSize: 11,
     marginTop: 4,
     marginLeft: 4,
+    fontFamily: 'Urbanist-Medium',
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 20,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    padding: 24,
   },
-  modalContent: {
+  backdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  centeredPopup: {
     backgroundColor: 'white',
     borderRadius: 20,
-    padding: 20,
-    width: '100%',
-    maxWidth: 400,
+    width: Platform.OS === 'web' ? 320 : SCREEN_WIDTH - 64,
+    maxWidth: 350,
+    overflow: 'hidden',
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
   },
-  closeButton: {
-    marginTop: 10,
+  popupHeader: {
+    flexDirection: 'row',
     alignItems: 'center',
-    padding: 10,
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 8,
   },
-  closeButtonText: {
-    color: '#ff4466',
-    fontWeight: 'bold',
+  popupTitle: {
+    fontSize: 16,
+    fontFamily: 'Urbanist-Bold',
+    color: '#212121',
+  },
+  closeBtn: {
+    padding: 4,
+  },
+  pickerWrapper: {
+    paddingHorizontal: 8,
+    paddingBottom: 16,
+  },
+  calendarText: {
+    fontFamily: 'Urbanist-Medium',
+    color: '#212121',
+    fontSize: 12,
+  },
+  calendarHeader: {
+    fontFamily: 'Urbanist-Bold',
+    color: '#212121',
+    fontSize: 14,
+  },
+  weekdayText: {
+    fontFamily: 'Urbanist-Bold',
+    color: '#9E9E9E',
+    fontSize: 10,
+  },
+  headerButton: {
+    backgroundColor: '#F5F5F5',
+    borderRadius: 6,
+    padding: 4,
   }
 });

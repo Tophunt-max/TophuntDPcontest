@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from "react";
 import {
   View,
@@ -9,7 +8,6 @@ import {
   Platform,
   KeyboardAvoidingView,
   TextInput,
-  Alert,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -17,7 +15,8 @@ import { useThemeColor } from "@/hooks/use-theme-color";
 import { Left_Arrow } from "@/assets/svgs";
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useToast } from "@/src/components/toast/ToastProvider";
-import { getFunctions, httpsCallable } from 'firebase/functions';
+import { httpsCallable } from 'firebase/functions';
+import { functions } from "@/src/services/firebase/initFirebase";
 
 const RESEND_TIME = 60;
 
@@ -28,7 +27,6 @@ export default function OtpVerificationScreen() {
   const backgroundColor = useThemeColor({}, "background");
   const textColor = useThemeColor({}, "text");
   const { addToast } = useToast();
-  const functions = getFunctions();
 
   const [otp, setOtp] = useState<string[]>(Array(4).fill(""));
   const [timer, setTimer] = useState(RESEND_TIME);
@@ -91,7 +89,6 @@ export default function OtpVerificationScreen() {
   
   const formattedPhoneNumber = `+${phoneNumber?.substring(0, 2)}******${phoneNumber?.substring(phoneNumber.length - 2)}`;
 
-
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -144,7 +141,7 @@ export default function OtpVerificationScreen() {
           <PrimaryButton
             title="Verify"
             onPress={handleVerify}
-            loading={loading}
+            isLoading={loading}
             disabled={loading || otp.join("").length !== 4}
           />
         </View>

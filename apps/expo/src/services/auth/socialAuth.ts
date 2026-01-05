@@ -6,7 +6,7 @@ import {
   getAuth,
 } from "firebase/auth";
 import app, { firestore as db } from "../firebase/initFirebase";
-import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
+import { doc, getDoc, collection, query, where, getDocs, limit } from "firebase/firestore";
 import { useSignupStore } from "../../store/signup";
 
 export const SocialAuthService = {
@@ -18,25 +18,46 @@ export const SocialAuthService = {
       const userCredential = await signInWithPopup(auth, provider);
       const user = userCredential.user;
 
-      const userDocRef = doc(db, "users", user.uid);
-      const userDoc = await getDoc(userDocRef);
-      
       const signupStore = useSignupStore.getState();
 
-      if (!userDoc.exists()) {
-        // NEW USER: Auto-fill from social profile
-        const newUserData = {
-          fullName: user.displayName || "",
-          email: user.email || "",
-          avatarUrl: user.photoURL || "",
-          uid: user.uid,
-          createdAt: serverTimestamp(),
-          signupCompleted: false,
-          authProvider: providerName.toLowerCase(),
-        };
-        await setDoc(userDocRef, newUserData);
+      // 1. Check by UID first
+      const userDocRef = doc(db, "users", user.uid);
+      const userDocSnap = await getDoc(userDocRef);
+      
+      let userData = null;
+      if (userDocSnap.exists()) {
+          userData = userDocSnap.data();
+      } else if (user.email) {
+          // 2. Check by Email field (in case they have a different UID but same email)
+          const q = query(collection(db, "users"), where("email", "==", user.email), limit(1));
+          const querySnapshot = await getDocs(q);
+          if (!querySnapshot.empty) {
+              userData = querySnapshot.docs[0].data();
+          }
+      }
 
-        // Update Signup Store for Fill Profile page
+      if (userData) {
+        // EXISTING USER
+        if (userData.signupCompleted === true || userData.username) {
+          addToast("Welcome back!", "success");
+          router.replace("/home");
+        } else {
+          // Incomplete Profile
+          signupStore.setMultiple({
+            ...userData,
+            fullName: userData.fullName || user.displayName || "",
+            email: userData.email || user.email || "",
+            avatarUrl: userData.avatarUrl || user.photoURL || "",
+            authProvider: (userData.authProvider || providerName.toLowerCase()) as any
+          });
+          addToast("Please complete your profile.", "info");
+          router.replace("/auth/signup/fill-profile");
+        }
+      } else {
+        // NEW USER: Don't create doc yet, just save to store and redirect
+        console.log("New Social User detected:", user.email || user.uid);
+        
+        signupStore.reset();
         signupStore.setMultiple({
             fullName: user.displayName || "",
             email: user.email || "",
@@ -44,24 +65,8 @@ export const SocialAuthService = {
             authProvider: providerName.toLowerCase() as any
         });
 
-        addToast(`Welcome ${user.displayName || 'User'}!`, "success");
+        addToast(`Welcome! Let's complete your profile.`, "success");
         router.replace("/auth/signup/fill-profile");
-      } else {
-        // RETURNING USER
-        const userData = userDoc.data();
-        if (userData.signupCompleted) {
-          addToast("Welcome back!", "success");
-          router.replace("/home");
-        } else {
-          // Sync store with existing data if profile not completed
-          signupStore.setMultiple({
-            fullName: userData.fullName || user.displayName || "",
-            email: userData.email || user.email || "",
-            avatarUrl: userData.avatarUrl || user.photoURL || "",
-            authProvider: (userData.authProvider || providerName.toLowerCase()) as any
-          });
-          router.replace("/auth/signup/fill-profile");
-        }
       }
       return user;
     } catch (error: any) {

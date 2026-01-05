@@ -16,7 +16,7 @@ import {
   Apple_Dark,
   Connect_Light,
   Connect_Dark,
-  Sms_Icon,
+  Phone_Color,
 } from "../../../assets/svgs";
 import { useColorScheme } from "../../../hooks/use-color-scheme";
 import { useToast } from "../../../src/components/toast/ToastProvider";
@@ -195,7 +195,7 @@ export default function LoginWelcomeScreen() {
               onPress={() => handleSocialLogin("Phone")}
               disabled={loading !== null}
             >
-              <Sms_Icon width={24} height={24} fill={textColor} />
+              <Phone_Color width={24} height={24} />
               <Text style={[styles.socialButtonText, { color: textColor, fontFamily: 'Urbanist-Medium' }]}>Continue with Phone</Text>
             </TouchableOpacity>
           )}

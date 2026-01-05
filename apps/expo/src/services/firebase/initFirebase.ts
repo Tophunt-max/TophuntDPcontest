@@ -16,7 +16,7 @@ import { firebaseConfig } from "@/src/firebaseConfig";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Platform } from "react-native";
 
-// Import Firebase Compat for legacy libraries (Like Recaptcha)
+// Import Firebase Compat for legacy libraries (Like expo-firebase-recaptcha)
 import firebase from 'firebase/compat/app';
 import 'firebase/compat/auth';
 
@@ -48,5 +48,5 @@ if (getApps().length === 0) {
 const firestore: Firestore = getFirestore(app);
 const functions = getFunctions(app, "us-central1"); 
 
-export { firestore, auth, app, functions }; // Added "functions" to export
+export { firestore, auth, app, functions };
 export default app;

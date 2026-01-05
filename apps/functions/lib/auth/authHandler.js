@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.authHandler = void 0;
+exports.updatePasswordWithPhone = exports.verifyOtp = exports.sendOtpToPhone = exports.getUserByIdentifier = exports.authHandler = void 0;
 const https_1 = require("firebase-functions/v2/https");
 const admin = __importStar(require("firebase-admin"));
 const logger = __importStar(require("firebase-functions/logger"));
@@ -140,24 +140,44 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
         }
         logger.info(`[authHandler] Checking ${type}: ${value}`);
         try {
-            const snapshot = await firebase_1.db
-                .collection("users")
-                .where(type, "==", value)
-                .limit(1)
-                .get();
-            const exists = !snapshot.empty;
+            let exists = false;
+            // Specialized check for Email using Admin Auth
+            if (type === "email") {
+                try {
+                    await admin.auth().getUserByEmail(value);
+                    exists = true;
+                }
+                catch (error) {
+                    if (error.code === 'auth/user-not-found') {
+                        exists = false;
+                    }
+                    else {
+                        throw error;
+                    }
+                }
+            }
+            // If not already found in Auth (or if checking phone/username), check Firestore
+            if (!exists) {
+                const snapshot = await firebase_1.db
+                    .collection("users")
+                    .where(type, "==", value)
+                    .limit(1)
+                    .get();
+                exists = !snapshot.empty;
+            }
             return { exists };
         }
         catch (error) {
             logger.error(`[authHandler] Check failed for ${type}:`, error);
-            throw new https_1.HttpsError("internal", "Database error while checking uniqueness.");
+            throw new https_1.HttpsError("internal", "Error while checking uniqueness.");
         }
     }
     // ---------------------------------------------------------
     // ACTION: CREATE USER (Auth + Profile)
     // ---------------------------------------------------------
     if (action === "create") {
-        const { email, password, username, fullName, avatarUrl, dob, phone, occupation, gender, following, platform, } = request.data;
+        const { email, password, username, fullName, avatarUrl, dob, phone, occupation, gender, following, platform, coordinates, // NEW
+         } = request.data;
         if (!email || !password || !username) {
             throw new https_1.HttpsError("invalid-argument", "Email, password, and username are required for user creation.");
         }
@@ -196,7 +216,8 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
                 occupation,
                 gender,
                 following,
-                platform
+                platform,
+                coordinates // NEW
             });
             logger.info(`[authHandler] User created successfully: ${uid}`);
             return { status: "success", uid, message: "User created successfully" };
@@ -208,14 +229,15 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
         }
     }
     // ---------------------------------------------------------
-    // ACTION: CREATE PROFILE (Firestore Only - for Social Auth)
+    // ACTION: CREATE PROFILE (Firestore Only - for Social Auth or Phone Auth)
     // ---------------------------------------------------------
     if (action === "createProfile") {
         const uid = ((_b = request.auth) === null || _b === void 0 ? void 0 : _b.uid) || request.data.uid;
         if (!uid) {
             throw new https_1.HttpsError("unauthenticated", "User must be authenticated or provide UID.");
         }
-        const { email, username, fullName, avatarUrl, dob, phone, occupation, gender, following, platform, } = request.data;
+        const { email, username, fullName, avatarUrl, dob, phone, occupation, gender, following, platform, coordinates, // NEW
+         } = request.data;
         if (email && isDisposableEmail(email)) {
             throw new https_1.HttpsError("invalid-argument", "Temporary or disposable email addresses are not allowed.");
         }
@@ -232,9 +254,10 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
                 occupation,
                 gender,
                 following,
-                platform
+                platform,
+                coordinates // NEW
             });
-            return { success: true };
+            return { status: "success", uid, message: "Profile created successfully" };
         }
         catch (error) {
             logger.error("[authHandler] Error creating user profile:", error);
@@ -242,6 +265,155 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
         }
     }
     throw new https_1.HttpsError("invalid-argument", `Unknown action: ${action}`);
+});
+/**
+ * GET USER BY IDENTIFIER (Email or Phone)
+ * Used in Forgot Password flow to verify user exists and get their basic info
+ */
+exports.getUserByIdentifier = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
+    const { identifier, type } = request.data;
+    if (!identifier || !type) {
+        throw new https_1.HttpsError("invalid-argument", "Identifier and type are required.");
+    }
+    let queryField = type === 'email' ? 'email' : 'phone';
+    let value = identifier;
+    if (type === 'phone') {
+        const normalized = normalizePhoneNumber(identifier);
+        if (!normalized)
+            throw new https_1.HttpsError("invalid-argument", "Invalid phone format.");
+        value = normalized;
+    }
+    else {
+        value = identifier.toLowerCase();
+    }
+    try {
+        const snapshot = await firebase_1.db.collection("users")
+            .where(queryField, "==", value)
+            .limit(1)
+            .get();
+        if (snapshot.empty) {
+            return { found: false };
+        }
+        const userDoc = snapshot.docs[0];
+        const userData = userDoc.data();
+        return {
+            found: true,
+            user: {
+                uid: userDoc.id,
+                name: userData.fullName || userData.username,
+                avatar: userData.profileImageUrl || null
+            }
+        };
+    }
+    catch (error) {
+        logger.error("[getUserByIdentifier] Error:", error);
+        throw new https_1.HttpsError("internal", "Error searching for user.");
+    }
+});
+/**
+ * SEND OTP TO PHONE (Forgot Password)
+ */
+exports.sendOtpToPhone = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
+    const { phone } = request.data;
+    if (!phone)
+        throw new https_1.HttpsError("invalid-argument", "Phone number is required.");
+    const normalizedPhone = normalizePhoneNumber(phone);
+    if (!normalizedPhone)
+        throw new https_1.HttpsError("invalid-argument", "Invalid phone format.");
+    // Generate 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = admin.firestore.Timestamp.fromMillis(Date.now() + 10 * 60 * 1000); // 10 mins
+    try {
+        // Store OTP in a secure collection
+        await firebase_1.db.collection("passwordResetOtps").doc(normalizedPhone).set({
+            otp,
+            expiresAt,
+            createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+        // Send SMS via Twilio
+        try {
+            const sid = process.env.TWILIO_ACCOUNT_SID;
+            const token = process.env.TWILIO_AUTH_TOKEN;
+            const from = process.env.TWILIO_PHONE_NUMBER;
+            if (sid && token && from) {
+                const client = require("twilio")(sid, token);
+                await client.messages.create({
+                    body: `Your Password Reset OTP is: ${otp}. Valid for 10 minutes.`,
+                    from: from,
+                    to: normalizedPhone,
+                });
+            }
+            else {
+                logger.warn("Twilio credentials missing. OTP generated but not sent: ", otp);
+            }
+        }
+        catch (smsError) {
+            logger.error("SMS Sending failed:", smsError);
+        }
+        return { success: true };
+    }
+    catch (error) {
+        throw new https_1.HttpsError("internal", error.message);
+    }
+});
+/**
+ * VERIFY OTP (Forgot Password)
+ */
+exports.verifyOtp = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
+    const { phone, code } = request.data;
+    if (!phone || !code)
+        throw new https_1.HttpsError("invalid-argument", "Phone and code are required.");
+    const normalizedPhone = normalizePhoneNumber(phone);
+    if (!normalizedPhone)
+        throw new https_1.HttpsError("invalid-argument", "Invalid phone format.");
+    const otpDoc = await firebase_1.db.collection("passwordResetOtps").doc(normalizedPhone).get();
+    if (!otpDoc.exists) {
+        throw new https_1.HttpsError("not-found", "No OTP request found for this phone.");
+    }
+    const data = otpDoc.data();
+    if ((data === null || data === void 0 ? void 0 : data.otp) !== code) {
+        throw new https_1.HttpsError("invalid-argument", "Invalid OTP code.");
+    }
+    if ((data === null || data === void 0 ? void 0 : data.expiresAt.toMillis()) < Date.now()) {
+        throw new https_1.HttpsError("deadline-exceeded", "OTP has expired.");
+    }
+    // Success - OTP verified
+    return { success: true };
+});
+/**
+ * UPDATE PASSWORD WITH PHONE (Forgot Password Final Step)
+ */
+exports.updatePasswordWithPhone = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
+    const { phone, newPassword } = request.data;
+    if (!phone || !newPassword)
+        throw new https_1.HttpsError("invalid-argument", "Phone and new password are required.");
+    const normalizedPhone = normalizePhoneNumber(phone);
+    if (!normalizedPhone)
+        throw new https_1.HttpsError("invalid-argument", "Invalid phone format.");
+    // 1. Verify OTP was indeed verified
+    const otpDoc = await firebase_1.db.collection("passwordResetOtps").doc(normalizedPhone).get();
+    if (!otpDoc.exists) {
+        throw new https_1.HttpsError("permission-denied", "OTP verification required.");
+    }
+    try {
+        // 2. Find the user by phone
+        const userSnapshot = await firebase_1.db.collection("users").where("phone", "==", normalizedPhone).limit(1).get();
+        if (userSnapshot.empty) {
+            throw new https_1.HttpsError("not-found", "User not found.");
+        }
+        const uid = userSnapshot.docs[0].id;
+        // 3. Update Auth Password
+        await admin.auth().updateUser(uid, {
+            password: newPassword
+        });
+        // 4. Clean up OTP doc
+        await firebase_1.db.collection("passwordResetOtps").doc(normalizedPhone).delete();
+        return { success: true };
+    }
+    catch (error) {
+        logger.error("Update password failed:", error);
+        throw new https_1.HttpsError("internal", error.message);
+    }
 });
 // Helper function to keep code DRY
 async function createFirestoreProfile(uid, data) {
@@ -259,9 +431,10 @@ async function createFirestoreProfile(uid, data) {
         gender: data.gender || null,
         following: data.following || [],
         platform: data.platform || "unknown",
+        coordinates: data.coordinates || null, // ADDED
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        // Renamed to Dpcoin
+        signupCompleted: true, // Mark as completed
         Dpcoin: 0,
         xp: 0,
         level: 1,

@@ -23,6 +23,7 @@ import ForgotPassword_Dark from './forgotPasswordDark.svg';
 import ForgotPassword_Light from './forgotPasswordLight.svg';
 import Email_Icon from './email.svg';
 import Sms_Icon from './sms.svg';
+import Phone_Color from './phone_color.svg';
 import NewPassWordLight from './createNewPwdLight.svg';
 import NewPassWordDark from './createNewPwdDark.svg';
 import Connect_Light from './connectLight.svg';
@@ -132,6 +133,7 @@ export {
   ForgotPassword_Light,
   Email_Icon,
   Sms_Icon,
+  Phone_Color,
   NewPassWordLight,
   NewPassWordDark,
   Connect_Light,

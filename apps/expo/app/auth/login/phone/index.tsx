@@ -9,12 +9,12 @@ import {
   Platform,
   ScrollView,
   TextInput,
+  Alert,
 } from "react-native";
-import { useRouter, useLocalSearchParams } from "expo-router";
+import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   Left_Arrow,
-  Sms_Icon,
 } from "../../../../assets/svgs";
 import { useColorScheme } from "../../../../hooks/use-color-scheme";
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
@@ -24,7 +24,7 @@ import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
 import { auth, firestore as db } from "../../../../src/services/firebase/initFirebase";
 import { PhoneAuthProvider, signInWithCredential } from "firebase/auth";
 import { firebaseConfig } from "@/src/firebaseConfig";
-import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
+import { doc, getDoc, collection, query, where, getDocs, limit } from "firebase/firestore";
 import { useSignupStore } from "../../../../src/store/signup";
 import { CountryPicker } from "react-native-country-codes-picker";
 import { Ionicons } from "@expo/vector-icons";
@@ -37,7 +37,7 @@ export default function PhoneLoginScreen() {
   const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
   const textColor = isDark ? Colors.dark.text : Colors.light.text;
   const { addToast } = useToast();
-  const { setMultiple } = useSignupStore();
+  const { setMultiple, reset } = useSignupStore();
 
   const [phoneNumber, setPhoneNumber] = useState("");
   const [countryCode, setCountryCode] = useState("+91");
@@ -49,15 +49,15 @@ export default function PhoneLoginScreen() {
   const recaptchaVerifier = useRef(null);
 
   const handleSendOTP = async () => {
-    if (!phoneNumber || phoneNumber.length !== 10) {
-      addToast("Please enter exactly 10 digits", "error");
+    if (!phoneNumber || phoneNumber.length < 8) {
+      addToast("Please enter a valid phone number", "error");
       return;
     }
 
     setIsLoading(true);
     try {
-      const phoneProvider = new PhoneAuthProvider(auth);
       const fullPhoneNumber = countryCode + phoneNumber;
+      const phoneProvider = new PhoneAuthProvider(auth);
       const id = await phoneProvider.verifyPhoneNumber(
         fullPhoneNumber,
         recaptchaVerifier.current!
@@ -66,19 +66,15 @@ export default function PhoneLoginScreen() {
       addToast("OTP sent successfully", "success");
     } catch (error: any) {
       console.error("Phone Auth Error:", error);
-      if (error.code === 'auth/captcha-check-failed') {
-        addToast("Domain not authorized in Firebase Console", "error");
-      } else {
-        addToast(error.message || "Failed to send OTP", "error");
-      }
+      addToast(error.message || "Failed to send OTP", "error");
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleVerifyOTP = async () => {
-    if (!verificationCode) {
-      addToast("Please enter the verification code", "error");
+    if (!verificationCode || verificationCode.length < 6) {
+      addToast("Please enter a 6-digit verification code", "error");
       return;
     }
 
@@ -88,44 +84,55 @@ export default function PhoneLoginScreen() {
         verificationId,
         verificationCode
       );
+      
       const userCredential = await signInWithCredential(auth, credential);
       const user = userCredential.user;
 
-      // Check if user document exists in Firestore
+      // Normalize phone number for consistent checking
+      const fullPhone = user.phoneNumber || (countryCode + phoneNumber);
+      const normalizedPhone = fullPhone.replace(/[^\d+]/g, "");
+
+      // 1. Check by UID first (most reliable)
       const userDocRef = doc(db, "users", user.uid);
-      const userDoc = await getDoc(userDocRef);
-
-      if (!userDoc.exists()) {
-        // NEW USER: Create basic record and redirect to Fill Profile
-        await setDoc(userDocRef, {
-          phoneNumber: user.phoneNumber,
-          uid: user.uid,
-          createdAt: serverTimestamp(),
-          signupCompleted: false,
-          authProvider: "phone",
-        });
-        
-        // Save data to signup store
-        setMultiple({
-            phone: user.phoneNumber || "",
-            authProvider: 'phone'
-        });
-
-        addToast("OTP Verified! Let's complete your profile.", "success");
-        router.replace("/auth/signup/fill-profile");
+      const userDocSnap = await getDoc(userDocRef);
+      
+      let userData = null;
+      if (userDocSnap.exists()) {
+          userData = userDocSnap.data();
       } else {
-        const userData = userDoc.data();
-        if (userData.signupCompleted) {
+          // 2. If not found by UID, check by 'phone' field (for email users who linked phone)
+          const q = query(collection(db, "users"), where("phone", "==", normalizedPhone), limit(1));
+          const querySnapshot = await getDocs(q);
+          if (!querySnapshot.empty) {
+              userData = querySnapshot.docs[0].data();
+          }
+      }
+
+      if (userData) {
+        // Check if profile is actually complete (has username or flag)
+        if (userData.signupCompleted === true || userData.username) {
           addToast("Welcome back!", "success");
           router.replace("/home");
         } else {
+          // Found user but profile incomplete
           setMultiple({
-            phone: user.phoneNumber || "",
+            ...userData,
+            phone: normalizedPhone,
             authProvider: 'phone'
           });
           addToast("Please complete your profile.", "info");
           router.replace("/auth/signup/fill-profile");
         }
+      } else {
+        // NEW USER - Absolutely no record found
+        console.log("New User detected:", normalizedPhone);
+        reset();
+        setMultiple({
+            phone: normalizedPhone,
+            authProvider: 'phone'
+        });
+        addToast("OTP Verified! Let's create your profile.", "success");
+        router.replace("/auth/signup/fill-profile");
       }
     } catch (error: any) {
       console.error("Verification Error:", error);
@@ -214,7 +221,6 @@ export default function PhoneLoginScreen() {
                     onFocus={() => setIsFocused(true)}
                     onBlur={() => setIsFocused(false)}
                     underlineColorAndroid="transparent"
-                    maxLength={10}
                   />
                 </View>
               </View>

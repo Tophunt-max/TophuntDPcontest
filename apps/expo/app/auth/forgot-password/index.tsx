@@ -18,11 +18,10 @@ import { Left_Arrow, ForgotPassword_Light, ForgotPassword_Dark, Sms_Icon, Email_
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useToast } from "@/src/components/toast/ToastProvider";
 import { sendPasswordResetEmail } from "firebase/auth";
-import { auth } from "../../../src/firebaseConfig";
-import { getFunctions, httpsCallable } from 'firebase/functions';
+import { auth, functions } from "@/src/services/firebase/initFirebase";
+import { httpsCallable } from 'firebase/functions';
 import { FormInput } from "@/src/components/inputs/FormInput";
 import { useForm } from "react-hook-form";
-import { functions } from "@/src/services/firebase/initFirebase";
 
 export default function ForgotPasswordScreen() {
   const router = useRouter();

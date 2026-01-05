@@ -26,14 +26,14 @@ export default function SuccessScreen() {
     >
       <View style={styles.content}>
         <Success />
-        <Text style={[styles.title, { color: textColor }]}>Congratulations!</Text>
+        <Text style={[styles.title, { color: textColor }]}>Email Sent!</Text>
         <Text style={[styles.subtitle, { color: textColor }]}>
-          Your account is ready to use
+          Please check your email. A password reset link has been sent to your inbox.
         </Text>
       </View>
       <PrimaryButton
-        title="Go to Homepage"
-        onPress={() => router.replace("/home")}
+        title="Back to Login"
+        onPress={() => router.replace("/auth/login")}
       />
     </View>
   );
@@ -42,7 +42,7 @@ export default function SuccessScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    padding: 20,
+    padding: 24,
     justifyContent: "center",
   },
   content: {
@@ -52,11 +52,16 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 24,
-    fontWeight: "bold",
-    marginTop: 20,
+    fontFamily: "Urbanist-Bold",
+    marginTop: 24,
+    textAlign: "center",
   },
   subtitle: {
     fontSize: 16,
-    marginTop: 10,
+    fontFamily: "Urbanist-Medium",
+    marginTop: 12,
+    textAlign: "center",
+    lineHeight: 24,
+    opacity: 0.7,
   },
 });

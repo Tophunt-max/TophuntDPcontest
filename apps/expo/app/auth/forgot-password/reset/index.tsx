@@ -1,4 +1,3 @@
-
 import React, { useState } from "react";
 import {
   View,
@@ -16,10 +15,11 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColor } from "@/hooks/use-theme-color";
 import { useColorScheme } from "@/hooks/use-color-scheme";
-import { Left_Arrow, CreateNewPwd_Dark, CreateNewPwd_Light, Eye_Open, Eye_Close } from "@/assets/svgs";
+import { Left_Arrow, NewPassWordDark, NewPassWordLight, Eye_Open, Eye_Close } from "@/assets/svgs";
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useToast } from "@/src/components/toast/ToastProvider";
-import { getFunctions, httpsCallable } from 'firebase/functions';
+import { httpsCallable } from 'firebase/functions';
+import { functions } from "@/src/services/firebase/initFirebase";
 
 const passwordSchema = z.string().min(8, 'Password must be at least 8 characters long');
 
@@ -31,7 +31,6 @@ export default function ResetPasswordScreen() {
   const backgroundColor = useThemeColor({}, "background");
   const textColor = useThemeColor({}, "text");
   const { addToast } = useToast();
-  const functions = getFunctions();
   
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -57,7 +56,7 @@ export default function ResetPasswordScreen() {
       if (error instanceof z.ZodError) {
         addToast({ type: 'error', text: error.errors[0].message });
       } else {
-        addToast({ type: 'error', text: error.message });
+        addToast({ type: 'error', text: error.message || "An error occurred" });
       }
     } finally {
       setLoading(false);
@@ -82,7 +81,7 @@ export default function ResetPasswordScreen() {
           </TouchableOpacity>
           <View style={styles.header}>
             <Text style={[styles.title, { color: textColor }]}>Create New Password</Text>
-            {colorScheme === 'light' ? <CreateNewPwd_Light/> : <CreateNewPwd_Dark/>}
+            {colorScheme === 'light' ? <NewPassWordLight/> : <NewPassWordDark/>}
           </View>
 
           <View style={styles.inputContainer}>
@@ -126,7 +125,7 @@ export default function ResetPasswordScreen() {
           <PrimaryButton
             title="Continue"
             onPress={handleResetPassword}
-            loading={loading}
+            isLoading={loading}
             disabled={loading || !newPassword || !confirmPassword}
           />
         </View>

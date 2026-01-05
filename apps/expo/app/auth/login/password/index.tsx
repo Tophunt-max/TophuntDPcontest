@@ -18,13 +18,8 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { signInWithEmailAndPassword } from "firebase/auth";
-import { auth } from "../../../../src/services/firebase/initFirebase";
+import { auth, firestore as db } from "../../../../src/services/firebase/initFirebase";
 import {
-  Email_Icon,
-  Facebook_Icon,
-  Google_Icon,
-  Apple_Light,
-  Apple_Dark,
   Left_Arrow,
   New_Email_Icon,
   Lock_Icon,
@@ -32,13 +27,14 @@ import {
   Eye_Close,
   Checkmark_Icon,
 } from "../../../../assets/svgs";
-import { Ionicons } from "@expo/vector-icons";
-import { useThemeColor } from "../../../../hooks/use-theme-color";
+import { doc, getDoc, collection, query, where, getDocs, limit } from "firebase/firestore";
+import { useSignupStore } from "../../../../src/store/signup";
 import { useColorScheme } from "../../../../hooks/use-color-scheme";
 import { FormInput } from "@/src/components/inputs/FormInput";
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useToast } from "@/src/components/toast/ToastProvider";
 import { Colors } from '@/constants/theme';
+import { SocialAuthService } from "../../../../src/services/auth/socialAuth";
 
 // Validation Schema
 const loginSchema = z.object({
@@ -58,8 +54,8 @@ export default function PasswordLoginScreen() {
   const isDark = colorScheme === 'dark';
   const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
   const textColor = isDark ? Colors.dark.text : Colors.light.text;
-  const iconColor = useThemeColor({}, "icon");
   const { addToast } = useToast();
+  const signupStore = useSignupStore();
 
   const [isLoading, setIsLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -79,7 +75,6 @@ export default function PasswordLoginScreen() {
   });
 
   useEffect(() => {
-    // Load saved email if "Remember Me" was checked previously
     const loadRememberedUser = async () => {
       try {
         const savedEmail = await AsyncStorage.getItem("remembered_email");
@@ -97,52 +92,77 @@ export default function PasswordLoginScreen() {
   const onSignIn = async (data: LoginFormData) => {
     setIsLoading(true);
     try {
-      // Firebase Sign In
-      await signInWithEmailAndPassword(auth, data.email, data.password);
+      // 1. Firebase Sign In
+      const userCredential = await signInWithEmailAndPassword(auth, data.email, data.password);
+      const user = userCredential.user;
 
-      // Handle "Remember Me"
+      // 2. Handle "Remember Me"
       if (rememberMe) {
         await AsyncStorage.setItem("remembered_email", data.email);
       } else {
         await AsyncStorage.removeItem("remembered_email");
       }
+
+      // 3. Check Profile Status
+      const userDocRef = doc(db, "users", user.uid);
+      const userDocSnap = await getDoc(userDocRef);
       
-      addToast("Login successful!", "success");
-      
-      // Handle Redirect
-      if (redirect) {
-        router.replace(decodeURIComponent(redirect) as any);
+      let userData = null;
+      if (userDocSnap.exists()) {
+          userData = userDocSnap.data();
       } else {
-        router.replace("/home");
+          // Check by email field (just in case)
+          const q = query(collection(db, "users"), where("email", "==", data.email), limit(1));
+          const querySnapshot = await getDocs(q);
+          if (!querySnapshot.empty) {
+              userData = querySnapshot.docs[0].data();
+          }
       }
+
+      if (userData && (userData.signupCompleted === true || userData.username)) {
+          addToast("Login successful!", "success");
+          if (redirect) {
+            router.replace(decodeURIComponent(redirect) as any);
+          } else {
+            router.replace("/home");
+          }
+      } else {
+          // Profile Incomplete or User Record missing
+          signupStore.reset();
+          signupStore.setMultiple({
+              ...userData,
+              email: data.email,
+              authProvider: 'email'
+          });
+          addToast("Please complete your profile.", "info");
+          router.replace("/auth/signup/fill-profile");
+      }
+
     } catch (error: any) {
       console.error("Login error:", error);
       let errorMessage = "Something went wrong. Please try again.";
-      if (error.code === 'auth/invalid-credential') {
+      if (error.code === 'auth/invalid-credential' || error.code === 'auth/wrong-password') {
         errorMessage = "Invalid email or password.";
       } else if (error.code === 'auth/user-not-found') {
         errorMessage = "No account found with this email.";
-      } else if (error.code === 'auth/wrong-password') {
-        errorMessage = "Incorrect password.";
       }
-      
-      // Show both Alert and Toast
-      Alert.alert("Login Failed", errorMessage);
       addToast(errorMessage, "error");
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleSocialLogin = (provider: string) => {
-    // In a real app, integrate with Firebase Social Auth here
-    console.log(`Continue with ${provider}`);
-    addToast(`Logged in with ${provider}`, "success");
-    // Handle Redirect
-    if (redirect) {
-      router.replace(decodeURIComponent(redirect) as any);
-    } else {
-      router.replace("/home");
+  const handleSocialLogin = async (provider: string) => {
+    try {
+        if (provider === "Google") {
+            await SocialAuthService.googleLogin(router, addToast);
+        } else if (provider === "Facebook") {
+            await SocialAuthService.facebookLogin(router, addToast);
+        } else if (provider === "Apple") {
+            await SocialAuthService.appleLogin(router, addToast);
+        }
+    } catch (error) {
+        // Handled in service
     }
   };
 
@@ -169,7 +189,7 @@ export default function PasswordLoginScreen() {
           </View>
 
           <View style={styles.contentContainer}>
-            <Text style={[styles.title, { color: textColor }]}>
+            <Text style={[styles.title, { color: textColor, fontFamily: 'Urbanist-Bold' }]}>
               Login to Your Account
             </Text>
 
@@ -210,7 +230,7 @@ export default function PasswordLoginScreen() {
                     <Checkmark_Icon width={14} height={14} color="#fff" />
                   )}
                 </View>
-                <Text style={[styles.rememberMeText, { color: textColor }]}>
+                <Text style={[styles.rememberMeText, { color: textColor, fontFamily: 'Urbanist-SemiBold' }]}>
                   Remember Me
                 </Text>
               </TouchableOpacity>
@@ -230,53 +250,6 @@ export default function PasswordLoginScreen() {
             >
               <Text style={styles.forgotPasswordText}>Forgot the password?</Text>
             </TouchableOpacity>
-
-            {/* Divider */}
-            <View style={styles.dividerContainer}>
-              <View style={[styles.dividerLine, { backgroundColor: isDark ? '#35383F' : '#eee' }]} />
-              <Text style={[styles.dividerText, { color: textColor }]}>
-                or continue with
-              </Text>
-              <View style={[styles.dividerLine, { backgroundColor: isDark ? '#35383F' : '#eee' }]} />
-            </View>
-
-            {/* Social Buttons */}
-            <View style={styles.socialButtonsContainer}>
-              <TouchableOpacity
-                style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]}
-                onPress={() => handleSocialLogin("Facebook")}
-              >
-                <Facebook_Icon width={24} height={24} />
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]}
-                onPress={() => handleSocialLogin("Google")}
-              >
-                <Google_Icon width={24} height={24} />
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]}
-                onPress={() => handleSocialLogin("Apple")}
-              >
-                {isDark ? (
-                  <Apple_Light width={24} height={24} />
-                ) : (
-                  <Apple_Dark width={24} height={24} />
-                )}
-              </TouchableOpacity>
-            </View>
-
-            {/* Footer */}
-            <View style={styles.footerContainer}>
-              <Text style={[styles.footerText, { color: isDark ? '#E0E0E0' : 'gray' }]}>
-                Don't have an account?{" "}
-              </Text>
-              <TouchableOpacity onPress={() => router.push("/auth/signup")}>
-                <Text style={styles.signupText}>Sign up</Text>
-              </TouchableOpacity>
-            </View>
           </View>
         </View>
       </ScrollView>
@@ -305,7 +278,6 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 32,
-    fontWeight: "bold",
     marginBottom: 40,
   },
   rememberMeContainer: {
@@ -334,7 +306,6 @@ const styles = StyleSheet.create({
   },
   rememberMeText: {
     fontSize: 16,
-    fontWeight: "600",
   },
   forgotPasswordButton: {
     alignItems: "center",

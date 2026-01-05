@@ -15,8 +15,8 @@ import { Success } from "@/assets/svgs";
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSignupStore } from "@/src/store/signup";
 import { httpsCallable } from "firebase/functions";
-import { functions } from "@/src/services/firebase/initFirebase";
-import { getAuth, signInWithEmailAndPassword } from "firebase/auth";
+import { functions, auth } from "@/src/services/firebase/initFirebase";
+import { signInWithEmailAndPassword } from "firebase/auth";
 
 const { width } = Dimensions.get('window');
 
@@ -30,34 +30,55 @@ export default function CongratulationsScreen() {
   useEffect(() => {
     const finalizeSignup = async () => {
       try {
-        if (!signupData.email || !signupData.password || !signupData.username) {
-            throw new Error("Missing user data. Please restart the signup process.");
+        console.log("Finalizing signup for provider:", signupData.authProvider);
+
+        if (signupData.authProvider === 'email') {
+            if (!signupData.email || !signupData.password || !signupData.username) {
+                throw new Error("Missing user data. Please restart the signup process.");
+            }
+            
+            setStatusMessage("Creating your account securely...");
+            const authHandler = httpsCallable(functions, 'authHandler');
+            const result = await authHandler({ 
+                action: 'create',
+                ...signupData,
+                platform: Platform.OS,
+            });
+
+            const data = result.data as any;
+            if (data.status !== 'success') {
+                throw new Error(data.message || "An unknown error occurred on the server.");
+            }
+
+            // Automatically sign the user in
+            setStatusMessage("Signing you in...");
+            await signInWithEmailAndPassword(auth, signupData.email, signupData.password);
+        } else {
+            // For Phone, Google, Facebook - User is already authenticated in Auth
+            // We only need to create the Firestore profile
+            if (!signupData.username) {
+                throw new Error("Username is required to complete your profile.");
+            }
+
+            setStatusMessage("Saving your profile details...");
+            const authHandler = httpsCallable(functions, 'authHandler');
+            
+            // For phone login, the user is already signed in at the start of the flow
+            const result = await authHandler({ 
+                action: 'createProfile',
+                ...signupData,
+                platform: Platform.OS,
+                uid: auth.currentUser?.uid // Ensure we have the UID
+            });
+
+            const data = result.data as any;
+            if (data.status !== 'success') {
+                throw new Error(data.message || "Failed to save profile.");
+            }
         }
 
-        setStatusMessage("Creating your account securely...");
-        
-        // CHANGED: Call 'authHandler' with action 'create' instead of 'createUser'
-        const authHandler = httpsCallable(functions, 'authHandler');
-        const result = await authHandler({ 
-            action: 'create',
-            ...signupData,
-            platform: Platform.OS,
-        });
-
-        if ((result.data as any).status !== 'success') {
-            throw new Error((result.data as any).message || "An unknown error occurred on the server.");
-        }
-
-        console.log("User account created successfully with UID:", (result.data as any).uid);
-
-        // Automatically sign the user in
-        setStatusMessage("Signing you in...");
-        const auth = getAuth();
-        await signInWithEmailAndPassword(auth, signupData.email, signupData.password);
-        console.log("User signed in successfully.");
-
+        console.log("Signup finalized successfully.");
         await AsyncStorage.setItem('hasSeenOnboarding', 'true');
-        
         resetStore();
 
       } catch (error: any) {
