@@ -43,23 +43,39 @@ const DEFAULT_SETTINGS: GamificationSettings = {
     badges: [],
 };
 
+// Define a cache object
+let settingsCache: GamificationSettings | null = null;
+let cacheTimestamp = 0;
+const CACHE_DURATION = 10 * 60 * 1000; // 10 minutes in milliseconds
+
 /**
- * Fetches gamification settings from Firestore.
+ * Fetches gamification settings from Firestore, with caching.
  */
 export async function getGamificationSettings(): Promise<GamificationSettings> {
+    const now = Date.now();
+    if (settingsCache && (now - cacheTimestamp) < CACHE_DURATION) {
+        return settingsCache;
+    }
+
     try {
         const doc = await db.collection("settings").doc("gamification").get();
-        if (!doc.exists) return DEFAULT_SETTINGS;
-        const data = doc.data() || {};
-        return { 
-            ...DEFAULT_SETTINGS, 
-            ...data,
-            // Map keys if they differ between DB and interface
-            dailyLoginReward: data.dailyLoginReward ?? data.dailyBaseReward ?? DEFAULT_SETTINGS.dailyLoginReward,
-            badges: data.badges || []
-        } as GamificationSettings;
+        if (!doc.exists) {
+            settingsCache = DEFAULT_SETTINGS;
+        } else {
+            const data = doc.data() || {};
+            settingsCache = { 
+                ...DEFAULT_SETTINGS, 
+                ...data,
+                // Map keys if they differ between DB and interface
+                dailyLoginReward: data.dailyLoginReward ?? data.dailyBaseReward ?? DEFAULT_SETTINGS.dailyLoginReward,
+                badges: data.badges || []
+            } as GamificationSettings;
+        }
+        cacheTimestamp = now;
+        return settingsCache;
     } catch (error) {
         console.error("Error fetching gamification settings:", error);
+        // Return default settings but don't cache on error
         return DEFAULT_SETTINGS;
     }
 }

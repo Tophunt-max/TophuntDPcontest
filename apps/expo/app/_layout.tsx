@@ -1,3 +1,4 @@
+
 import { ThemeProvider } from '@react-navigation/native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -29,6 +30,8 @@ import { ToastProvider } from '@/src/components/toast/ToastProvider';
 import { lightTheme, darkTheme } from '@/constants/theme';
 import '@/src/services/firebase/initFirebase'; // Import to initialize Firebase
 import { useAppConfig } from '@/src/services/appSettings';
+import { useAuth } from '@/src/hooks/useAuth'; // Import useAuth hook
+import { registerForPushNotificationsAsync, useNotificationObserver } from '@/src/services/notifications/pushNotificationService'; // Import notification service
 
 const queryClient = new QueryClient();
 
@@ -59,6 +62,33 @@ function MaintenanceGuard({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+// Main Root Layout Component
+function RootLayoutNav() {
+  const { user, loading } = useAuth(); // Get user auth state
+  
+  // Hook to handle notification listeners
+  useNotificationObserver();
+
+  useEffect(() => {
+    // Register for push notifications only when user is logged in
+    if (user && !loading) {
+      registerForPushNotificationsAsync();
+    }
+  }, [user, loading]); // Rerun effect when user or loading state changes
+
+  return (
+    <MaintenanceGuard>
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="index" />
+        <Stack.Screen name="splash" />
+        <Stack.Screen name="home" />
+        <Stack.Screen name="maintenance" options={{ gestureEnabled: false }} />
+      </Stack>
+    </MaintenanceGuard>
+  );
+}
+
+
 export default function RootLayout() {
   const colorScheme = useColorScheme();
 
@@ -69,14 +99,7 @@ export default function RootLayout() {
           <PaperProvider>
             <ToastProvider>
               <ThemeProvider value={colorScheme === 'dark' ? darkTheme : lightTheme}>
-                <MaintenanceGuard>
-                  <Stack screenOptions={{ headerShown: false }}>
-                    <Stack.Screen name="index" />
-                    <Stack.Screen name="splash" />
-                    <Stack.Screen name="home" />
-                    <Stack.Screen name="maintenance" options={{ gestureEnabled: false }} />
-                  </Stack>
-                </MaintenanceGuard>
+                <RootLayoutNav />
                 <StatusBar style="auto" />
               </ThemeProvider>
             </ToastProvider>

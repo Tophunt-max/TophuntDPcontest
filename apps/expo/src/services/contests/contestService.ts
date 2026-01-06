@@ -76,7 +76,14 @@ export const contestService = {
         limit(limitCount)
       );
       const querySnapshot = await getDocs(activeQuery);
-      let allMatches = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      let allMatches = querySnapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          ...data,
+          contestEndDate: data.contestEndDate ? data.contestEndDate.toDate() : null
+        };
+      });
 
       if (!currentUserUid) return allMatches;
 
@@ -132,9 +139,36 @@ export const contestService = {
     }
   },
 
-  submitVote: async (matchId: string, votedForUid: string, deviceId: string) => {
-    const fn = httpsCallable(functions, 'submitVote');
-    return await fn({ matchId, votedForUid, deviceId });
+  voteOnMatch: async (matchId: string, votedFor: 'userA' | 'userB', userId: string) => {
+    try {
+      const fn = httpsCallable(functions, 'voteOnContest');
+      const result = await fn({ matchId, votedFor, userId });
+      return result;
+    } catch (error) {
+      console.error("Error submitting vote:", error);
+      throw error;
+    }
+  },
+
+  likeContest: async (contestId: string) => {
+    try {
+      const fn = httpsCallable(functions, 'likeContest');
+      return await fn({ contestId });
+    } catch (error) { console.error("Error liking contest:", error); throw error; }
+  },
+
+  commentOnContest: async (contestId: string, text: string) => {
+    try {
+      const fn = httpsCallable(functions, 'commentOnContest');
+      return await fn({ contestId, text });
+    } catch (error) { console.error("Error commenting on contest:", error); throw error; }
+  },
+
+  shareContest: async (contestId: string) => {
+    try {
+      const fn = httpsCallable(functions, 'shareContest');
+      return await fn({ contestId });
+    } catch (error) { console.error("Error sharing contest:", error); throw error; }
   },
 
   getContestById: async (id: string) => {
@@ -145,6 +179,7 @@ export const contestService = {
 
   getMatchById: async (id: string) => {
     const docRef = doc(firestore, 'contestMatches', id);
+
     const snap = await getDoc(docRef);
     return snap.exists() ? { id: snap.id, ...snap.data() } : null;
   }

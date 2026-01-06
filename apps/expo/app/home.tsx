@@ -3,7 +3,7 @@ import { View, StyleSheet, FlatList, useColorScheme, RefreshControl, Text } from
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '@/src/components/home/Header';
 import { StoriesBar } from '@/src/components/stories/StoriesBar';
-import { Post } from '@/src/components/home/Post';
+import { PostCard } from '@/src/components/home/PostCard';
 import { BottomNav } from '@/src/components/home/BottomNav';
 import { useQueryClient } from '@tanstack/react-query';
 import { PostSkeleton } from '@/src/components/home/PostSkeleton';
@@ -48,7 +48,7 @@ export default function HomeScreen() {
   }, [queryClient]);
 
   const renderItem = useCallback(({ item }: { item: any }) => (
-    <Post item={item} isDark={isDark} />
+    <PostCard item={item} isDark={isDark} />
   ), [isDark]);
 
   const ListHeader = useMemo(() => (

@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, Image, TouchableOpacity, Modal, Dimensions, ActivityIndicator, Alert, useColorScheme } from 'react-native';
 import { UserProfile, Badge } from '@/src/types/user';
@@ -126,6 +127,13 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
 
   const profileImage = user.profileImageUrl ? { uri: user.profileImageUrl } : require('@/assets/images/userLight.png');
 
+  const navigateToConnections = (type: 'followers' | 'following') => {
+    router.push({
+      pathname: '/profile/connections',
+      params: { userId: user.uid, type },
+    });
+  };
+
   return (
     <View style={[styles.container, { backgroundColor }]}>
       <View style={styles.topBar}>
@@ -185,8 +193,16 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
 
       <View style={styles.statsRow}>
         <View style={styles.statItem}><Text style={[styles.statValue, { color: textColor }]}>{(user as any).postsCount || 0}</Text><Text style={[styles.statLabel, { color: isDark ? '#BDBDBD' : '#666' }]}>Post</Text></View>
-        <View style={styles.statItem}><Text style={[styles.statValue, { color: textColor }]}>{(user as any).followersCount || 0}</Text><Text style={[styles.statLabel, { color: isDark ? '#BDBDBD' : '#666' }]}>Followers</Text></View>
-        <View style={styles.statItem}><Text style={[styles.statValue, { color: textColor }]}>{(user as any).followingCount || 0}</Text><Text style={[styles.statLabel, { color: isDark ? '#BDBDBD' : '#666' }]}>Following</Text></View>
+        
+        <TouchableOpacity style={styles.statItem} onPress={() => navigateToConnections('followers')}>
+          <Text style={[styles.statValue, { color: textColor }]}>{(user as any).followersCount || 0}</Text>
+          <Text style={[styles.statLabel, { color: isDark ? '#BDBDBD' : '#666' }]}>Followers</Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity style={styles.statItem} onPress={() => navigateToConnections('following')}>
+          <Text style={[styles.statValue, { color: textColor }]}>{(user as any).followingCount || 0}</Text>
+          <Text style={[styles.statLabel, { color: isDark ? '#BDBDBD' : '#666' }]}>Following</Text>
+        </TouchableOpacity>
       </View>
       
       {/* XP/Level Bar */}

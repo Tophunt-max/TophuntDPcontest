@@ -40,6 +40,7 @@ __exportStar(require("./contests/matchHandler"), exports);
 __exportStar(require("./contests/voting"), exports);
 __exportStar(require("./contests/cron"), exports);
 __exportStar(require("./contests/contestHandler"), exports);
+__exportStar(require("./contests/engagement"), exports); // <-- ADDED THIS LINE
 // 3. Posts & Stories
 __exportStar(require("./posts/index"), exports);
 __exportStar(require("./stories/index"), exports);

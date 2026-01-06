@@ -27,6 +27,7 @@ export * from "./contests/matchHandler";
 export * from "./contests/voting";
 export * from "./contests/cron";
 export * from "./contests/contestHandler"; 
+export * from "./contests/engagement"; // <-- ADDED THIS LINE
 
 // 3. Posts & Stories
 export * from "./posts/index";
