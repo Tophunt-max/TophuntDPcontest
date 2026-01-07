@@ -18,8 +18,7 @@ import { useColorScheme } from "@/hooks/use-color-scheme";
 import { Left_Arrow, NewPassWordDark, NewPassWordLight, Eye_Open, Eye_Close } from "@/assets/svgs";
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useToast } from "@/src/components/toast/ToastProvider";
-import { httpsCallable } from 'firebase/functions';
-import { functions } from "@/src/services/firebase/initFirebase";
+import { callApi } from '@/src/services/api'; // Consolidated API used
 
 const passwordSchema = z.string().min(8, 'Password must be at least 8 characters long');
 
@@ -47,8 +46,8 @@ export default function ResetPasswordScreen() {
       }
 
       setLoading(true);
-      const updatePasswordWithPhone = httpsCallable(functions, 'updatePasswordWithPhone');
-      await updatePasswordWithPhone({ phone: phoneNumber, newPassword });
+      // Using callApi with 'updatePasswordWithPhone' action
+      await callApi('updatePasswordWithPhone', { phone: phoneNumber, newPassword });
       
       router.push("/auth/forgot-password/success");
 

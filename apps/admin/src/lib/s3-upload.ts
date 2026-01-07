@@ -1,22 +1,22 @@
-import { getFunctions, httpsCallable } from "firebase/functions";
-import { getApp } from "firebase/app";
+import { callApi } from "@/services/firebase/functions"; // Use centralized callApi helper
 
 /**
  * Modern S3 Upload helper for Admin panel.
- * Uses the generic 'generatePresignedUrl' Cloud Function.
+ * Uses the consolidated API with 'getPresignedUrl' action.
  */
 export async function uploadPhotoToS3(file: File, folder: string = "admin-uploads") {
-  const app = getApp();
-  const functions = getFunctions(app, "asia-south1");
-  const getPresignedUrl = httpsCallable(functions, "generatePresignedUrl");
-
   try {
-    // 1. Get Presigned URL with folder context
-    const result: any = await getPresignedUrl({ 
+    // 1. Get Presigned URL using the new consolidated API
+    const result: any = await callApi('getPresignedUrl', { 
       fileType: file.type, 
       folder: folder 
     });
-    const { uploadUrl, publicUrl } = result.data;
+    
+    const { uploadUrl, publicUrl } = result;
+
+    if (!uploadUrl) {
+        throw new Error("No upload URL received from server.");
+    }
 
     // 2. Upload file to S3
     const uploadResponse = await fetch(uploadUrl, {

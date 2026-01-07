@@ -11,7 +11,7 @@ const SCHEDULED_CONFIG = {
 };
 
 /**
- * Scheduled function to check for ended contests and distribute rewards.
+ * Scheduled function to check for ended contest matches and distribute rewards.
  */
 export const finalizeContests = onSchedule({
     ...SCHEDULED_CONFIG,
@@ -21,62 +21,74 @@ export const finalizeContests = onSchedule({
   const now = admin.firestore.Timestamp.now();
 
   try {
-    const expiredBattlesSnap = await db.collection("battles")
+    // We check 'contestMatches' which are active and expired
+    const expiredMatchesSnap = await db.collection("contestMatches")
       .where("status", "==", "active")
-      .where("endDate", "<=", now)
+      .where("expiresAt", "<=", now)
       .limit(50)
       .get();
 
-    if (expiredBattlesSnap.empty) return;
+    if (expiredMatchesSnap.empty) {
+        // Also check for 'waiting' matches that never found an opponent
+        const stalledMatchesSnap = await db.collection("contestMatches")
+            .where("status", "==", "waiting_for_opponent")
+            .where("expiresAt", "<=", now)
+            .limit(20)
+            .get();
+        
+        for (const stalledDoc of stalledMatchesSnap.docs) {
+            const data = stalledDoc.data();
+            const refundAmount = Number(data.entryFee || 0) / 2;
+            const uid = data.userA.uid;
 
-    for (const battleDoc of expiredBattlesSnap.docs) {
-      const battleData = battleDoc.data();
-      const contestId = battleData.contestId;
+            // Refund Dpcoin to User A
+            await db.collection("users").doc(uid).update({
+                Dpcoin: admin.firestore.FieldValue.increment(refundAmount)
+            });
+            await db.collection("contestMatches").doc(stalledDoc.id).update({ status: "cancelled" });
+            await sendPushNotification(uid, "Match Cancelled", "No opponent found. Your Dpcoins have been refunded.", "match_cancelled");
+        }
+        return;
+    }
 
+    for (const matchDoc of expiredMatchesSnap.docs) {
+      const matchData = matchDoc.data();
+      const contestId = matchData.contestId;
+
+      // Get contest template for reward info
       const contestDoc = await db.collection("contests").doc(contestId).get();
       if (!contestDoc.exists) continue;
       const contestData = contestDoc.data()!;
 
       let winnerId = null;
       let loserId = null;
-      let loserId2 = null; 
-      const votesA = battleData.userA.votes;
-      const votesB = battleData.userB.votes;
-
-      const minVotes = contestData.minimumVotes || contestData.minVotes || 0;
+      
+      const votesA = matchData.userA.votes || 0;
+      const votesB = matchData.userB.votes || 0;
+      const minVotes = contestData.minVotes || 0;
 
       if (votesA > votesB && votesA >= minVotes) {
-        winnerId = battleData.userA.userId;
-        loserId = battleData.userB.userId;
+        winnerId = matchData.userA.uid;
+        loserId = matchData.userB.uid;
       } else if (votesB > votesA && votesB >= minVotes) {
-        winnerId = battleData.userB.userId;
-        loserId = battleData.userA.userId;
-      } else {
-        loserId = battleData.userA.userId;
-        loserId2 = battleData.userB.userId;
+        winnerId = matchData.userB.uid;
+        loserId = matchData.userA.uid;
       }
 
       const batch = db.batch();
-      batch.update(db.collection("battles").doc(battleDoc.id), { 
+      batch.update(db.collection("contestMatches").doc(matchDoc.id), { 
         status: "ended", 
         winnerId: winnerId || "none" 
       });
 
       if (winnerId) {
-        // Use rewardCoins from template (Priority)
-        const totalPrize = Number(contestData.rewardCoins || contestData.winningCoins || contestData.fishCoinsReward || contestData.DpcoinReward || 0);
+        // Reward is Dpcoin
+        const totalPrize = Number(contestData.rewardCoins || contestData.winningCoins || 0);
         
         const winnerRef = db.collection("users").doc(winnerId);
-        const winnerDoc = await winnerRef.get();
-        const winnerData = winnerDoc.data() || {};
         
-        let coinField = "Dpcoin";
-        if (winnerData.Dpcoin === undefined && winnerData.fishCoins !== undefined) coinField = "fishCoins";
-        else if (winnerData.Dpcoin === undefined && winnerData.coins !== undefined) coinField = "coins";
-
-        // Update Winner Coins & Stats
         batch.update(winnerRef, {
-          [coinField]: admin.firestore.FieldValue.increment(totalPrize),
+          Dpcoin: admin.firestore.FieldValue.increment(totalPrize),
           "stats.wins": admin.firestore.FieldValue.increment(1)
         });
 
@@ -87,45 +99,36 @@ export const finalizeContests = onSchedule({
           amount: totalPrize, 
           type: "win_reward", 
           contestId, 
-          battleId: battleDoc.id, 
-          description: `Winner reward for ${contestData.name}`, 
+          matchId: matchDoc.id, 
+          description: `Winner reward for ${contestData.title || 'Contest'}`, 
           timestamp: admin.firestore.FieldValue.serverTimestamp(),
         });
 
         await batch.commit();
 
-        // Gamification: Award XP
+        // Gamification
         await awardXp(winnerId, 500, "battle_win");
         if (loserId) await awardXp(loserId, 100, "battle_loss");
 
-        // NOTIFICATIONS
-        await sendPushNotification(winnerId, "CONGRATULATIONS! 🎉", `You won the ${contestData.name} contest and earned ${totalPrize} Dpcoins!`, "contest_won");
+        // Notifications
+        await sendPushNotification(winnerId, "CONGRATULATIONS! 🎉", `You won the battle and earned ${totalPrize} Dpcoins!`, "contest_won");
         if (loserId) {
-          await sendPushNotification(loserId, "Battle Ended 🏁", `The results for ${contestData.name} are in. Better luck next time! (+100 XP)`, "contest_lost");
+          await sendPushNotification(loserId, "Battle Ended 🏁", `The results are in. Better luck next time!`, "contest_lost");
         }
       } else {
-        // No winner (Tie or Min votes not met)
-        const entryFee = Number(battleData.entryFee || 0);
-        if (entryFee > 0) {
-            const refundAmount = entryFee / 2;
-            const userARef = db.collection("users").doc(battleData.userA.userId);
-            const userBRef = db.collection("users").doc(battleData.userB.userId);
-            
-            // Refund using Dpcoin logic or whatever exists
-            batch.update(userARef, { Dpcoin: admin.firestore.FieldValue.increment(refundAmount) });
-            batch.update(userBRef, { Dpcoin: admin.firestore.FieldValue.increment(refundAmount) });
+        // Tie or Min votes not met - Refund partial entry fee
+        const entryFeePerUser = Number(matchData.entryFee || 0) / 2;
+        if (entryFeePerUser > 0) {
+            batch.update(db.collection("users").doc(matchData.userA.uid), { Dpcoin: admin.firestore.FieldValue.increment(entryFeePerUser) });
+            batch.update(db.collection("users").doc(matchData.userB.uid), { Dpcoin: admin.firestore.FieldValue.increment(entryFeePerUser) });
         }
-
         await batch.commit();
         
-        if (loserId) await awardXp(loserId, 50, "battle_tie");
-        if (loserId2) await awardXp(loserId2, 50, "battle_tie");
-
-        if (loserId) await sendPushNotification(loserId, "Contest Ended", `No winner in ${contestData.name}. Fees refunded if applicable. (+50 XP)`, "contest_ended");
-        if (loserId2) await sendPushNotification(loserId2, "Contest Ended", `No winner in ${contestData.name}. Fees refunded if applicable. (+50 XP)`, "contest_ended");
+        await sendPushNotification(matchData.userA.uid, "Contest Ended", "No winner declared. Entry fees refunded.", "contest_ended");
+        await sendPushNotification(matchData.userB.uid, "Contest Ended", "No winner declared. Entry fees refunded.", "contest_ended");
       }
     }
   } catch (error) {
-    console.error("Error finalizing:", error);
+    console.error("Error finalizing contest matches:", error);
   }
 });

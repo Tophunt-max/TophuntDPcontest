@@ -34,8 +34,8 @@ export const createPost = onCall(POST_CONFIG, async (request) => {
             mediaType,
             caption: caption || "",
             location: location || "",
-            likesCount: 0,
-            commentsCount: 0,
+            likeCount: 0,
+            commentCount: 0,
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         };

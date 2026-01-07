@@ -5,6 +5,10 @@ const https_1 = require("firebase-functions/v2/https");
 const firebase_1 = require("../utils/firebase");
 const firestore_1 = require("firebase-admin/firestore");
 const sender_1 = require("../notifications/sender");
+// Helper function to generate a unique short Join ID
+const generateJoinId = () => {
+    return "JN-" + Math.random().toString(36).substring(2, 8).toUpperCase();
+};
 /**
  * Start a new contest match (User A)
  */
@@ -14,7 +18,6 @@ exports.startContestMatch = (0, https_1.onCall)(async (request) => {
         throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
     const { contestId, mediaUrl, mediaType, caption, deviceId, invitedUid } = request.data;
     const uid = auth.uid;
-    console.log(`[startContestMatch] User ${uid} starting match for contest ${contestId}`);
     try {
         const result = await firebase_1.db.runTransaction(async (transaction) => {
             const contestRef = firebase_1.db.collection("contests").doc(contestId);
@@ -22,28 +25,20 @@ exports.startContestMatch = (0, https_1.onCall)(async (request) => {
             const contestDoc = await transaction.get(contestRef);
             const userDoc = await transaction.get(userRef);
             if (!contestDoc.exists)
-                throw new https_1.HttpsError("not-found", "Contest not found.");
+                throw new https_1.HttpsError("not-found", "Contest template not found.");
             if (!userDoc.exists)
                 throw new https_1.HttpsError("not-found", "User document not found.");
             const contestData = contestDoc.data();
             const userData = userDoc.data();
             // Calculate split entry fee (50% for each user)
-            const totalFee = Number(contestData.totalEntryFee || contestData.entryFishCoins || contestData.entryDpcoin || 0);
+            const totalFee = Number(contestData.totalEntryFee || contestData.entryDpcoin || 0);
             const entryFeePerUser = totalFee / 2;
-            const userBalance = Number(userData.Dpcoin || userData.fishCoins || userData.coins || 0);
+            const userBalance = Number(userData.Dpcoin || 0);
             if (userBalance < entryFeePerUser) {
-                throw new https_1.HttpsError("failed-precondition", `Insufficient balance. Required: ${entryFeePerUser}, Current: ${userBalance}`);
-            }
-            // Determine which coin field to deduct from (prefer 'Dpcoin' if it exists, fallback to others)
-            let coinField = "Dpcoin";
-            if (userData.Dpcoin === undefined) {
-                if (userData.fishCoins !== undefined)
-                    coinField = "fishCoins";
-                else if (userData.coins !== undefined)
-                    coinField = "coins";
+                throw new https_1.HttpsError("failed-precondition", `Insufficient Dpcoin. Required: ${entryFeePerUser}, Current: ${userBalance}`);
             }
             transaction.update(userRef, {
-                [coinField]: firestore_1.FieldValue.increment(-entryFeePerUser),
+                Dpcoin: firestore_1.FieldValue.increment(-entryFeePerUser),
                 xp: firestore_1.FieldValue.increment(10),
             });
             // Record transaction
@@ -57,19 +52,24 @@ exports.startContestMatch = (0, https_1.onCall)(async (request) => {
                 description: `Entry fee (50% split) for ${contestData.title || 'contest'}`
             });
             const matchRef = firebase_1.db.collection("contestMatches").doc();
+            const joinIdA = generateJoinId();
             const expiresAt = new Date();
             expiresAt.setHours(expiresAt.getHours() + (contestData.autoCancelHours || 24));
-            const isPrivate = !!invitedUid;
             transaction.set(matchRef, {
+                id: matchRef.id,
                 contestId,
                 status: "waiting_for_opponent",
                 type: contestData.type || 'photo',
                 title: contestData.title || contestData.name || "Untitled Contest",
-                entryFee: totalFee, // Store the FULL entry fee for reference
-                isPrivate: isPrivate,
+                entryFee: totalFee,
+                isPrivate: !!invitedUid,
                 invitedUid: invitedUid || null,
+                joinIdA: joinIdA,
+                joinIdB: null,
+                joinIds: [joinIdA],
                 userA: {
                     uid,
+                    joinId: joinIdA,
                     username: userData.username || "Anonymous",
                     profilePic: userData.profileImageUrl || userData.profilePic || "",
                     mediaUrl,
@@ -81,17 +81,21 @@ exports.startContestMatch = (0, https_1.onCall)(async (request) => {
                 },
                 userB: null,
                 totalVotes: 0,
+                likeCount: 0,
+                commentCount: 0,
+                shareCount: 0,
                 createdAt: firestore_1.FieldValue.serverTimestamp(),
                 expiresAt: firebase_1.admin.firestore.Timestamp.fromDate(expiresAt),
             });
             return {
                 matchId: matchRef.id,
+                joinId: joinIdA,
                 username: userData.username,
                 profilePic: userData.profileImageUrl || userData.profilePic,
                 contestTitle: contestData.title || contestData.name
             };
         });
-        // AUTO-CREATE STORY (User A started a match)
+        // AUTO-CREATE STORY
         try {
             await firebase_1.db.collection("stories").add({
                 userId: uid,
@@ -109,7 +113,7 @@ exports.startContestMatch = (0, https_1.onCall)(async (request) => {
         catch (e) {
             console.error("Story creation failed:", e);
         }
-        return { matchId: result.matchId };
+        return { matchId: result.matchId, joinId: result.joinId };
     }
     catch (error) {
         console.error("[startContestMatch] Error:", error);
@@ -127,7 +131,6 @@ exports.joinContestMatch = (0, https_1.onCall)(async (request) => {
         throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
     const { matchId, mediaUrl, mediaType, caption, deviceId } = request.data;
     const uid = auth.uid;
-    console.log(`[joinContestMatch] User ${uid} joining match ${matchId}`);
     try {
         const result = await firebase_1.db.runTransaction(async (transaction) => {
             const matchRef = firebase_1.db.collection("contestMatches").doc(matchId);
@@ -144,23 +147,14 @@ exports.joinContestMatch = (0, https_1.onCall)(async (request) => {
             if (matchData.userA.uid === uid)
                 throw new https_1.HttpsError("failed-precondition", "You cannot join your own match.");
             const userData = userDoc.data();
-            // Calculate split entry fee (remaining 50% for User B)
-            const totalFee = Number(matchData.entryFee || 0);
-            const entryFeePerUser = totalFee / 2;
-            const userBalance = Number(userData.Dpcoin || userData.fishCoins || userData.coins || 0);
+            const entryFeePerUser = Number(matchData.entryFee || 0) / 2;
+            const userBalance = Number(userData.Dpcoin || 0);
             if (userBalance < entryFeePerUser) {
-                throw new https_1.HttpsError("failed-precondition", `Insufficient balance. Required: ${entryFeePerUser}, Current: ${userBalance}`);
+                throw new https_1.HttpsError("failed-precondition", `Insufficient Dpcoin. Required: ${entryFeePerUser}, Current: ${userBalance}`);
             }
-            // Determine which coin field to deduct from
-            let coinField = "Dpcoin";
-            if (userData.Dpcoin === undefined) {
-                if (userData.fishCoins !== undefined)
-                    coinField = "fishCoins";
-                else if (userData.coins !== undefined)
-                    coinField = "coins";
-            }
+            const joinIdB = generateJoinId();
             transaction.update(userRef, {
-                [coinField]: firestore_1.FieldValue.increment(-entryFeePerUser),
+                Dpcoin: firestore_1.FieldValue.increment(-entryFeePerUser),
                 xp: firestore_1.FieldValue.increment(10),
             });
             // Record transaction
@@ -176,8 +170,11 @@ exports.joinContestMatch = (0, https_1.onCall)(async (request) => {
             });
             transaction.update(matchRef, {
                 status: "active",
+                joinIdB: joinIdB,
+                joinIds: [matchData.joinIdA, joinIdB],
                 userB: {
                     uid,
+                    joinId: joinIdB,
                     username: userData.username || "Anonymous",
                     profilePic: userData.profileImageUrl || userData.profilePic || "",
                     mediaUrl,
@@ -193,10 +190,11 @@ exports.joinContestMatch = (0, https_1.onCall)(async (request) => {
                 userAId: matchData.userA.uid,
                 userBName: userData.username,
                 userBPic: userData.profileImageUrl || userData.profilePic,
-                matchTitle: matchData.title
+                matchTitle: matchData.title,
+                joinId: joinIdB
             };
         });
-        // AUTO-CREATE STORY (User B joined - Match is now LIVE)
+        // AUTO-CREATE STORY
         try {
             await firebase_1.db.collection("stories").add({
                 userId: uid,
@@ -215,7 +213,7 @@ exports.joinContestMatch = (0, https_1.onCall)(async (request) => {
             console.error("Story creation failed:", e);
         }
         await (0, sender_1.sendPushNotification)(result.userAId, "Match Live! 🚀", `${result.userBName} has joined your battle "${result.matchTitle}". Voting is now open!`, "match_active", { matchId });
-        return { status: "active" };
+        return { status: "active", joinId: result.joinId };
     }
     catch (error) {
         console.error("[joinContestMatch] Error:", error);

@@ -5,7 +5,6 @@ import {
   Image,
   ScrollView,
   StyleSheet,
-  Platform,
   ActivityIndicator,
 } from "react-native";
 import React, { useState, useEffect } from "react";
@@ -23,12 +22,11 @@ import { Left_Arrow, Email_Icon, Pencil_Icon } from "@/assets/svgs";
 import { Ionicons } from "@expo/vector-icons";
 import { DatePickerField } from "@/src/components/inputs/DatePickerField";
 import { CountryPicker } from "react-native-country-codes-picker";
-import { httpsCallable } from "firebase/functions";
-import { functions } from "../../../../src/services/firebase/initFirebase";
 import { useToast } from "@/src/components/toast/ToastProvider";
 import Images from "@/assets/images";
 import Svg, { Circle } from 'react-native-svg';
 import { ReanimatedBottomSheet } from "@/src/components/modals/ReanimatedBottomSheet";
+import { callApi } from "@/src/services/api"; // Centralized API Caller
 
 const fillProfileSchema = z.object({
   avatarUrl: z.string().min(1, "Please upload a profile picture"),
@@ -118,15 +116,15 @@ const FillProfile: React.FC = () => {
     })();
   }, []);
 
-  // USERNAME CHECK
+  // USERNAME CHECK (Using New API Router)
   useEffect(() => {
     const checkUsername = async () => {
         if (username && username.length >= 3) {
             setUsernameChecking(true);
             try {
-                const authHandler = httpsCallable(functions, 'authHandler');
-                const result = await authHandler({ action: 'check', type: 'username', value: username });
-                if ((result.data as any).exists) {
+                // Purana: authHandler call ko callApi se replace kiya
+                const result = await callApi('check', { type: 'username', value: username });
+                if (result.exists) {
                     setError("username", { type: "manual", message: "This username is taken. Try another!" });
                 } else { clearErrors("username"); }
             } catch (e) {} finally { setUsernameChecking(false); }
@@ -136,15 +134,14 @@ const FillProfile: React.FC = () => {
     return () => clearTimeout(timer);
   }, [username]);
 
-  // PHONE CHECK (IMPROVED)
+  // PHONE CHECK (Using New API Router)
   useEffect(() => {
     const checkPhone = async () => {
         if (phone && phone.length === 10 && !isPhoneLocked) {
             setPhoneChecking(true);
             try {
-                const authHandler = httpsCallable(functions, 'authHandler');
-                const result = await authHandler({ action: 'check', type: 'phone', value: countryCode + phone });
-                if ((result.data as any).exists) {
+                const result = await callApi('check', { type: 'phone', value: countryCode + phone });
+                if (result.exists) {
                     setError("phone", { type: "manual", message: "This phone number is already registered!" });
                 } else { clearErrors("phone"); }
             } catch (e) {} finally { setPhoneChecking(false); }

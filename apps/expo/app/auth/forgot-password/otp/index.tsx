@@ -15,8 +15,7 @@ import { useThemeColor } from "@/hooks/use-theme-color";
 import { Left_Arrow } from "@/assets/svgs";
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useToast } from "@/src/components/toast/ToastProvider";
-import { httpsCallable } from 'firebase/functions';
-import { functions } from "@/src/services/firebase/initFirebase";
+import { callApi } from "@/src/services/api"; // Consolidated API used
 
 const RESEND_TIME = 60;
 
@@ -59,8 +58,8 @@ export default function OtpVerificationScreen() {
     }
     setLoading(true);
     try {
-      const verifyOtp = httpsCallable(functions, 'verifyOtp');
-      await verifyOtp({ phone: phoneNumber, code });
+      // Using callApi with 'verifyOtp' action
+      await callApi('verifyOtp', { phone: phoneNumber, code });
       router.push({
         pathname: "/auth/forgot-password/reset",
         params: { phoneNumber },
@@ -76,8 +75,8 @@ export default function OtpVerificationScreen() {
     if (timer > 0) return;
     setResending(true);
     try {
-      const resendOtp = httpsCallable(functions, 'resendOtp');
-      await resendOtp({ phone: phoneNumber });
+      // Using callApi with 'sendOtpToPhone' action
+      await callApi('sendOtpToPhone', { phone: phoneNumber });
       setTimer(RESEND_TIME);
       addToast({ type: "success", text: "OTP has been resent." });
     } catch (error: any) {

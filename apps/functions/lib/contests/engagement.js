@@ -6,96 +6,100 @@ const firebase_1 = require("../utils/firebase");
 const firestore_1 = require("firebase-admin/firestore");
 const gamification_1 = require("../utils/gamification");
 /**
- * Toggles a like on a contest.
+ * Toggles a like on a contest MATCH (Battle)
+ * Engagement is joint for the match.
  */
 exports.likeContest = (0, https_1.onCall)(async (request) => {
     const { auth } = request;
-    if (!auth) {
+    if (!auth)
         throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
-    }
-    const { contestId } = request.data;
-    if (!contestId) {
-        throw new https_1.HttpsError("invalid-argument", "Missing contestId.");
-    }
+    const { matchId } = request.data;
+    if (!matchId)
+        throw new https_1.HttpsError("invalid-argument", "Missing matchId.");
     const likerUid = auth.uid;
-    const contestRef = firebase_1.db.collection("contests").doc(contestId);
-    const likeRef = contestRef.collection("likes").doc(likerUid);
+    const matchRef = firebase_1.db.collection("contestMatches").doc(matchId);
+    const likeRef = matchRef.collection("likes").doc(likerUid);
     let isLiking = false;
-    await firebase_1.db.runTransaction(async (transaction) => {
-        const contestDoc = await transaction.get(contestRef);
-        const likeDoc = await transaction.get(likeRef);
-        if (!contestDoc.exists) {
-            throw new https_1.HttpsError("not-found", "Contest not found.");
-        }
-        if (likeDoc.exists) {
-            // Unlike functionality
-            transaction.update(contestRef, { likeCount: firestore_1.FieldValue.increment(-1) });
-            transaction.delete(likeRef);
-            isLiking = false;
-        }
-        else {
-            // Like functionality
-            transaction.update(contestRef, { likeCount: firestore_1.FieldValue.increment(1) });
-            transaction.set(likeRef, {
-                userId: likerUid,
-                timestamp: firestore_1.FieldValue.serverTimestamp(),
-            });
-            isLiking = true;
-        }
-    });
-    if (isLiking) {
-        await (0, gamification_1.awardXp)(likerUid, 2, "liked_a_contest");
+    try {
+        await firebase_1.db.runTransaction(async (transaction) => {
+            const matchDoc = await transaction.get(matchRef);
+            const likeDoc = await transaction.get(likeRef);
+            if (!matchDoc.exists)
+                throw new https_1.HttpsError("not-found", "Match not found.");
+            if (likeDoc.exists) {
+                transaction.update(matchRef, { likeCount: firestore_1.FieldValue.increment(-1) });
+                transaction.delete(likeRef);
+                isLiking = false;
+            }
+            else {
+                transaction.update(matchRef, { likeCount: firestore_1.FieldValue.increment(1) });
+                transaction.set(likeRef, { userId: likerUid, timestamp: firestore_1.FieldValue.serverTimestamp() });
+                isLiking = true;
+            }
+        });
+        if (isLiking)
+            await (0, gamification_1.awardXp)(likerUid, 2, "liked_a_battle");
+        return { success: true, action: isLiking ? 'liked' : 'unliked' };
     }
-    return { success: true, action: isLiking ? 'liked' : 'unliked' };
+    catch (error) {
+        console.error("Error in likeContest:", error);
+        throw new https_1.HttpsError("internal", error.message);
+    }
 });
 /**
- * Adds a comment to a contest.
+ * Adds a comment to a contest MATCH (Battle)
+ * Engagement is joint for the match.
  */
 exports.commentOnContest = (0, https_1.onCall)(async (request) => {
     const { auth } = request;
-    if (!auth) {
+    if (!auth)
         throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
-    }
-    const { contestId, text } = request.data;
-    if (!contestId || !text || text.trim() === '') {
-        throw new https_1.HttpsError("invalid-argument", "Missing contestId or text.");
-    }
+    const { matchId, text } = request.data;
+    if (!matchId || !text)
+        throw new https_1.HttpsError("invalid-argument", "Missing matchId or text.");
     const commenterUid = auth.uid;
-    const contestRef = firebase_1.db.collection("contests").doc(contestId);
-    const commentRef = contestRef.collection("comments").doc();
-    await firebase_1.db.runTransaction(async (transaction) => {
-        const contestDoc = await transaction.get(contestRef);
-        if (!contestDoc.exists) {
-            throw new https_1.HttpsError("not-found", "Contest not found.");
-        }
-        transaction.update(contestRef, { commentCount: firestore_1.FieldValue.increment(1) });
-        transaction.set(commentRef, {
-            userId: commenterUid,
-            text: text,
-            timestamp: firestore_1.FieldValue.serverTimestamp(),
+    const matchRef = firebase_1.db.collection("contestMatches").doc(matchId);
+    const commentRef = matchRef.collection("comments").doc();
+    try {
+        await firebase_1.db.runTransaction(async (transaction) => {
+            const matchDoc = await transaction.get(matchRef);
+            if (!matchDoc.exists)
+                throw new https_1.HttpsError("not-found", "Match not found.");
+            transaction.update(matchRef, { commentCount: firestore_1.FieldValue.increment(1) });
+            transaction.set(commentRef, {
+                userId: commenterUid,
+                text: text,
+                timestamp: firestore_1.FieldValue.serverTimestamp(),
+            });
         });
-    });
-    await (0, gamification_1.awardXp)(commenterUid, 3, "commented_on_a_contest");
-    return { success: true, commentId: commentRef.id };
+        await (0, gamification_1.awardXp)(commenterUid, 3, "commented_on_a_battle");
+        return { success: true, commentId: commentRef.id };
+    }
+    catch (error) {
+        console.error("Error in commentOnContest:", error);
+        throw new https_1.HttpsError("internal", error.message);
+    }
 });
 /**
- * Increments the share count of a contest.
+ * Increments the share count of a contest MATCH (Battle)
  */
 exports.shareContest = (0, https_1.onCall)(async (request) => {
     const { auth } = request;
-    if (!auth) {
+    if (!auth)
         throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
-    }
-    const { contestId } = request.data;
-    if (!contestId) {
-        throw new https_1.HttpsError("invalid-argument", "Missing contestId.");
-    }
+    const { matchId } = request.data;
+    if (!matchId)
+        throw new https_1.HttpsError("invalid-argument", "Missing matchId.");
     const sharerUid = auth.uid;
-    const contestRef = firebase_1.db.collection("contests").doc(contestId);
-    await contestRef.update({
-        shareCount: firestore_1.FieldValue.increment(1)
-    });
-    await (0, gamification_1.awardXp)(sharerUid, 4, "shared_a_contest");
-    return { success: true };
+    const matchRef = firebase_1.db.collection("contestMatches").doc(matchId);
+    try {
+        await matchRef.update({ shareCount: firestore_1.FieldValue.increment(1) });
+        await (0, gamification_1.awardXp)(sharerUid, 4, "shared_a_battle");
+        return { success: true };
+    }
+    catch (error) {
+        console.error("Error in shareContest:", error);
+        throw new https_1.HttpsError("internal", error.message);
+    }
 });
 //# sourceMappingURL=engagement.js.map

@@ -15,9 +15,9 @@ import {
   updateDoc,
   deleteDoc
 } from 'firebase/firestore';
-import { httpsCallable } from 'firebase/functions';
-import { firestore as db, auth, functions } from '../firebase/initFirebase';
+import { firestore as db, auth } from '../firebase/initFirebase';
 import { Story, UserStories } from '@/src/types/stories';
+import { callApi } from '../api'; // Naya centralized API caller
 
 // Cache for user profile data to avoid repeated fetches
 const userProfileCache: Record<string, { username: string, avatarUrl: string, timestamp: number }> = {};
@@ -34,7 +34,6 @@ export const fetchStories = async (): Promise<UserStories[]> => {
     const storiesRef = collection(db, 'stories');
     
     // 1. Get the latest stories first. 
-    // We use a broader query and filter in memory to avoid index requirements while debugging.
     const q = query(
       storiesRef, 
       orderBy('createdAt', 'desc'),
@@ -56,7 +55,6 @@ export const fetchStories = async (): Promise<UserStories[]> => {
       const data = doc.data();
       const expiresAt = data.expiresAt;
       
-      // Manual expiration check (24h)
       const isActive = expiresAt ? expiresAt.seconds > nowSeconds : (data.createdAt?.seconds + 86400) > nowSeconds;
 
       if (isActive) {
@@ -71,7 +69,6 @@ export const fetchStories = async (): Promise<UserStories[]> => {
 
     console.log("[fetchStories] Active unique users with stories:", uniqueUserIds.size);
 
-    // 2. Fetch User Profile Data (with basic caching)
     const userDataMap: Record<string, { username: string, avatarUrl: string }> = {};
     const uidsToFetch = Array.from(uniqueUserIds).filter(uid => {
         const cached = userProfileCache[uid];
@@ -105,7 +102,6 @@ export const fetchStories = async (): Promise<UserStories[]> => {
         }));
     }
 
-    // 3. Group and sort stories
     const groupedStories: Record<string, Story[]> = {};
     rawStories.forEach((story) => {
       if (!groupedStories[story.userId]) {
@@ -117,7 +113,6 @@ export const fetchStories = async (): Promise<UserStories[]> => {
     const userStoriesList: UserStories[] = [];
     for (const userId in groupedStories) {
       const userStories = groupedStories[userId];
-      // Sort stories for this user: oldest first (for playback)
       userStories.sort((a, b) => (a.createdAt as any)?.seconds - (b.createdAt as any)?.seconds);
 
       userStoriesList.push({
@@ -125,11 +120,10 @@ export const fetchStories = async (): Promise<UserStories[]> => {
         username: userDataMap[userId]?.username || 'User',
         avatarUrl: userDataMap[userId]?.avatarUrl || `https://ui-avatars.com/api/?name=U`,
         stories: userStories,
-        hasUnseen: true // Simplified for now
+        hasUnseen: true 
       });
     }
 
-    // Move current user to front if they have stories
     const currentUserIndex = userStoriesList.findIndex(us => us.userId === user.uid);
     if (currentUserIndex > -1) {
         const [currentUserStory] = userStoriesList.splice(currentUserIndex, 1);
@@ -156,10 +150,10 @@ export const createStoryRecord = async (
   const user = auth.currentUser;
   if (!user) throw new Error('User not authenticated');
 
-  const createStoryFn = httpsCallable(functions, 'createStory');
-
   try {
-    const result = await createStoryFn({ 
+    // Purana: httpsCallable(functions, 'createStory')
+    // Ab: 'createStory' action in API router
+    const data: any = await callApi('createStory', { 
         mediaUrl, 
         mediaType, 
         visibility,
@@ -167,7 +161,6 @@ export const createStoryRecord = async (
         textPosition,
         mentions
     });
-    const data = result.data as any;
     
     if (data && data.success) {
       return data.storyId;
@@ -175,7 +168,7 @@ export const createStoryRecord = async (
       throw new Error(data?.message || "Failed to create story record on server.");
     }
   } catch (error: any) {
-    throw new Error(`Cloud Function Error: ${error.message}`);
+    throw new Error(`API Error: ${error.message}`);
   }
 };
 
@@ -183,9 +176,10 @@ export const deleteStory = async (storyId: string) => {
     const user = auth.currentUser;
     if (!user) throw new Error('Unauthenticated');
     
-    const deleteStoryFn = httpsCallable(functions, 'deleteStory');
     try {
-        await deleteStoryFn({ storyId });
+        // Purana: httpsCallable(functions, 'deleteStory')
+        // Ab: 'deleteStory' action in API router
+        await callApi('deleteStory', { storyId });
     } catch (error: any) {
         console.warn("Cloud delete failed, trying client side:", error);
         await deleteDoc(doc(db, 'stories', storyId));
@@ -366,7 +360,6 @@ export const searchUsers = async (searchTerm: string) => {
     }
 };
 
-// New function to fetch a specific user's stories by ID
 export const fetchUserStoriesByUserId = async (userId: string): Promise<UserStories | null> => {
     try {
         const userDoc = await getDoc(doc(db, 'users', userId));
@@ -401,7 +394,7 @@ export const fetchUserStoriesByUserId = async (userId: string): Promise<UserStor
             userId,
             username: userData?.username || userData?.fullName || 'User',
             avatarUrl: userData?.profileImageUrl || `https://ui-avatars.com/api/?name=${userData?.username || 'U'}`,
-            stories: stories.reverse(), // Newest last for playback
+            stories: stories.reverse(), 
             hasUnseen: true
         };
 
@@ -411,7 +404,6 @@ export const fetchUserStoriesByUserId = async (userId: string): Promise<UserStor
     }
 };
 
-// Existing function to fetch a specific user's stories by username, now using fetchUserStoriesByUserId
 export const fetchUserStoriesByUsername = async (username: string): Promise<UserStories | null> => {
     try {
         const usersRef = collection(db, 'users');

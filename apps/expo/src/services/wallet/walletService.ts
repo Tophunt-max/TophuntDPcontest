@@ -1,6 +1,6 @@
-import { getFunctions, httpsCallable } from 'firebase/functions';
 import { firestore } from '../firebase/initFirebase';
 import { doc, updateDoc, increment, serverTimestamp } from 'firebase/firestore';
+import { callApi } from '../api'; // Naya centralized API caller
 
 export const walletService = {
   /**
@@ -8,19 +8,15 @@ export const walletService = {
    */
   purchaseCoins: async (amount: number, price: string) => {
     try {
-      // Here you would normally integrate Stripe/Razorpay
-      // For now, we simulate a successful payment ID
+      // Mock payment ID
       const mockPaymentId = `pay_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-      const functions = getFunctions();
-      const topUpFn = httpsCallable(functions, 'topUpWallet');
-      
-      const result: any = await topUpFn({
+      // Purana: httpsCallable(functions, 'topUpWallet')
+      // Ab: Central API call ('topup' action as defined in main.ts)
+      return await callApi('topup', {
         amount,
         paymentId: mockPaymentId
       });
-
-      return result.data;
     } catch (error) {
       console.error("Purchase error:", error);
       throw error;
@@ -29,22 +25,15 @@ export const walletService = {
 
   /**
    * Claim Daily Bonus
-   * Returns the amount claimed
    */
   claimDailyBonus: async (userId: string, dayIndex: number) => {
-    // In a real app, use a Cloud Function to prevent time-hack cheating.
-    // For this prototype, we update Firestore directly.
-    const rewards = [10, 15, 20, 25, 30, 50, 100];
-    const amount = rewards[dayIndex] || 10;
-
-    const userRef = doc(firestore, 'users', userId);
-    
-    await updateDoc(userRef, {
-        Dpcoin: increment(amount),
-        lastDailyBonus: serverTimestamp(),
-        dailyStreak: dayIndex + 1 // Increment streak
-    });
-
-    return amount;
+    try {
+        // Backend router mein 'claimDailyReward' action hai
+        return await callApi('claimDailyReward', { dayIndex });
+    } catch (error) {
+        console.error("Error claiming daily bonus:", error);
+        // Fallback or handle error
+        throw error;
+    }
   }
 };

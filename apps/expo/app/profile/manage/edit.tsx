@@ -27,8 +27,8 @@ import { Left_Arrow, Email_Icon, Add_Icon } from "@/assets/svgs";
 import { Ionicons } from "@expo/vector-icons";
 import { CountryPicker } from "react-native-country-codes-picker";
 import { doc, updateDoc } from "firebase/firestore";
-import { firestore, functions } from "@/src/services/firebase/initFirebase";
-import { httpsCallable } from "firebase/functions";
+import { firestore } from "@/src/services/firebase/initFirebase";
+import { callApi } from "@/src/services/api"; // Centralized API Caller
 import { ReanimatedBottomSheet } from "@/src/components/modals/ReanimatedBottomSheet";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -161,14 +161,11 @@ export default function EditProfileScreen() {
     
     setIsSendingEmailOtp(true);
     try {
-        console.log("Sending email OTP to:", watchedEmail);
-        const sendEmailUpdateOtp = httpsCallable(functions, 'sendEmailUpdateOtp');
-        const result = await sendEmailUpdateOtp({ newEmail: watchedEmail });
-        console.log("OTP result:", result);
+        // Using callApi with 'sendEmailOtp' action
+        await callApi('sendEmailOtp', { newEmail: watchedEmail });
         setNewEmailToVerify(watchedEmail);
         setShowEmailOtpModal(true);
     } catch (error: any) {
-        console.error("Email OTP error:", error);
         Alert.alert("Error", error.message || "Failed to send OTP.");
     } finally {
         setIsSendingEmailOtp(false);
@@ -182,9 +179,9 @@ export default function EditProfileScreen() {
       }
       setIsVerifyingEmailOtp(true);
       try {
-          const verifyEmailUpdateOtp = httpsCallable(functions, 'verifyEmailUpdateOtp');
-          const result = await verifyEmailUpdateOtp({ otp: emailOtp });
-          if ((result.data as any).success) {
+          // Using callApi with 'verifyEmailOtp' action
+          const result: any = await callApi('verifyEmailOtp', { otp: emailOtp });
+          if (result.success) {
               Alert.alert("Success", "Email updated successfully!");
               setShowEmailOtpModal(false);
               setEmailOtp("");
@@ -206,14 +203,11 @@ export default function EditProfileScreen() {
     
     setIsSendingPhoneOtp(true);
     try {
-        console.log("Sending phone OTP to:", fullPhone);
-        const sendPhoneUpdateOtp = httpsCallable(functions, 'sendPhoneUpdateOtp');
-        const result = await sendPhoneUpdateOtp({ newPhone: fullPhone });
-        console.log("Phone OTP result:", result);
+        // Using callApi with 'sendPhoneOtp' action
+        await callApi('sendPhoneOtp', { newPhone: fullPhone });
         setNewPhoneToVerify(fullPhone);
         setShowPhoneOtpModal(true);
     } catch (error: any) {
-        console.error("Phone OTP error:", error);
         Alert.alert("Error", error.message || "Failed to send SMS.");
     } finally {
         setIsSendingPhoneOtp(false);
@@ -227,9 +221,9 @@ export default function EditProfileScreen() {
       }
       setIsVerifyingPhoneOtp(true);
       try {
-          const verifyPhoneUpdateOtp = httpsCallable(functions, 'verifyPhoneUpdateOtp');
-          const result = await verifyPhoneUpdateOtp({ otp: phoneOtp });
-          if ((result.data as any).success) {
+          // Using callApi with 'verifyPhoneOtp' action
+          const result: any = await callApi('verifyPhoneOtp', { otp: phoneOtp });
+          if (result.success) {
               Alert.alert("Success", "Phone number updated successfully!");
               setShowPhoneOtpModal(false);
               setPhoneOtp("");

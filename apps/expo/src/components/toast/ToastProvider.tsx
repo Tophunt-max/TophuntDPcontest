@@ -1,6 +1,7 @@
+import React, { createContext, useContext, useState, useCallback, ReactNode, useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, Animated, Platform, Dimensions } from 'react-native';
 
-import React, { createContext, useContext, useState, useCallback, ReactNode } from 'react';
-import { View, Text, StyleSheet, Animated, Platform } from 'react-native';
+const { width } = Dimensions.get('window');
 
 interface ToastMessage {
   id: number;
@@ -13,7 +14,6 @@ interface AddToastOptions {
     type?: 'success' | 'error' | 'info';
 }
 
-// Support both string and object options for flexibility
 type AddToastArg = string | AddToastOptions;
 
 interface ToastContextType {
@@ -30,11 +30,7 @@ export const useToast = () => {
   return context;
 };
 
-interface ToastProviderProps {
-    children: ReactNode;
-}
-
-export const ToastProvider: React.FC<ToastProviderProps> = ({ children }) => {
+export const ToastProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
   const addToast = useCallback((arg: AddToastArg, typeArg?: 'success' | 'error' | 'info') => {
@@ -51,22 +47,19 @@ export const ToastProvider: React.FC<ToastProviderProps> = ({ children }) => {
     }
 
     setToasts(currentToasts => [...currentToasts, { id, message, type }]);
-    setTimeout(() => {
-      removeToast(id);
-    }, 3000);
   }, []);
 
-  const removeToast = (id: number) => {
+  const removeToast = useCallback((id: number) => {
     setToasts(currentToasts => currentToasts.filter(toast => toast.id !== id));
-  };
+  }, []);
 
   return (
     <ToastContext.Provider value={{ addToast }}>
-      <View style={styles.rootContainer}>
+      <View style={{ flex: 1 }}>
         {children}
         <View style={styles.container} pointerEvents="box-none">
           {toasts.map(toast => (
-            <Toast key={toast.id} message={toast.message} type={toast.type} onHide={() => removeToast(toast.id)} />
+            <ToastItem key={toast.id} toast={toast} onHide={() => removeToast(toast.id)} />
           ))}
         </View>
       </View>
@@ -74,74 +67,108 @@ export const ToastProvider: React.FC<ToastProviderProps> = ({ children }) => {
   );
 };
 
-interface ToastProps {
-  message: string;
-  type: 'success' | 'error' | 'info';
-  onHide: () => void;
-}
+const ToastItem: React.FC<{ toast: ToastMessage; onHide: () => void }> = ({ toast, onHide }) => {
+    const fadeAnim = useRef(new Animated.Value(0)).current;
+    const slideAnim = useRef(new Animated.Value(-100)).current;
+    const rotateAnim = useRef(new Animated.Value(0)).current;
 
-const Toast: React.FC<ToastProps> = ({ message, type, onHide }) => {
-    const [fadeAnim] = useState(new Animated.Value(0));
-  
-    React.useEffect(() => {
-      Animated.timing(fadeAnim, {
-        toValue: 1,
-        duration: 300,
-        useNativeDriver: true,
-      }).start(() => {
-        setTimeout(() => {
-            Animated.timing(fadeAnim, {
-                toValue: 0,
-                duration: 300,
-                useNativeDriver: true
-            }).start(onHide);
-        }, 2400)
-      });
-    }, [fadeAnim, onHide]);
-  
-    const backgroundColor = {
-      success: '#4CAF50',
-      error: '#F44336',
-      info: '#2196F3',
-    }[type];
-  
+    useEffect(() => {
+        // Entrance animation: Pop and Slide
+        Animated.parallel([
+            Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: true }),
+            Animated.spring(slideAnim, { toValue: 0, tension: 50, friction: 7, useNativeDriver: true }),
+            Animated.sequence([
+                Animated.timing(rotateAnim, { toValue: 1, duration: 100, useNativeDriver: true }),
+                Animated.timing(rotateAnim, { toValue: -1, duration: 200, useNativeDriver: true }),
+                Animated.timing(rotateAnim, { toValue: 0, duration: 100, useNativeDriver: true }),
+            ])
+        ]).start();
+
+        const timer = setTimeout(() => {
+            Animated.parallel([
+                Animated.timing(fadeAnim, { toValue: 0, duration: 400, useNativeDriver: true }),
+                Animated.timing(slideAnim, { toValue: -100, duration: 400, useNativeDriver: true })
+            ]).start(onHide);
+        }, 2800);
+
+        return () => clearTimeout(timer);
+    }, []);
+
+    const rotation = rotateAnim.interpolate({
+        inputRange: [-1, 1],
+        outputRange: ['-5deg', '5deg']
+    });
+
+    const getColors = () => {
+        switch (toast.type) {
+            case 'success': return ['#FF4D67', '#FF8A4D']; // Success with gradient feel
+            case 'error': return ['#FF5252', '#FF1744'];
+            default: return ['#448AFF', '#2979FF'];
+        }
+    };
+
+    const colors = getColors();
+
     return (
-      <Animated.View style={[styles.toast, { backgroundColor, opacity: fadeAnim }]}>
-        <Text style={styles.message}>{message}</Text>
-      </Animated.View>
+        <Animated.View 
+            style={[
+                styles.toast, 
+                { 
+                    opacity: fadeAnim, 
+                    transform: [
+                        { translateY: slideAnim },
+                        { rotate: rotation }
+                    ],
+                    backgroundColor: colors[0]
+                }
+            ]}
+        >
+            <View style={styles.content}>
+                <Text style={styles.emoji}>{toast.type === 'success' ? '🔥' : toast.type === 'error' ? '💀' : '✨'}</Text>
+                <Text style={styles.message}>{toast.message}</Text>
+            </View>
+        </Animated.View>
     );
-  };
-  
+};
 
 const styles = StyleSheet.create({
-  rootContainer: {
-    flex: 1,
-  },
   container: {
     position: 'absolute',
-    top: Platform.OS === 'web' ? 20 : 50,
+    top: Platform.OS === 'ios' ? 60 : 40,
     left: 0,
     right: 0,
     alignItems: 'center',
     zIndex: 9999,
   },
   toast: {
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 12,
-    marginVertical: 5,
-    minWidth: 200,
-    maxWidth: '80%',
-    elevation: 5,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 20,
+    marginVertical: 6,
+    width: width * 0.85,
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.3)',
+    elevation: 10,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+  },
+  content: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emoji: {
+    fontSize: 20,
+    marginRight: 10,
   },
   message: {
     color: 'white',
-    fontSize: 16,
+    fontSize: 15,
+    fontFamily: Platform.OS === 'ios' ? 'System' : 'Roboto',
+    fontWeight: 'bold',
     textAlign: 'center',
-    fontWeight: '500',
+    flexShrink: 1,
   },
 });

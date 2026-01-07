@@ -32,6 +32,12 @@ service cloud.firestore {
         allow write: if request.auth != null && (request.auth.uid == userId || isAdmin());
       }
 
+      // Bookmarks subcollection
+      match /bookmarks/{bookmarkId} {
+        allow read: if request.auth != null && (request.auth.uid == userId || isAdmin());
+        allow write: if request.auth != null && request.auth.uid == userId;
+      }
+
       // Notifications subcollection (Added fix for permission-denied error)
       match /notifications/{notificationId} {
         // Owner can read their own notifications

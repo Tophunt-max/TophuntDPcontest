@@ -1,5 +1,5 @@
-import { httpsCallable } from 'firebase/functions';
-import { functions, auth } from '../firebase/initFirebase';
+import { auth } from '../firebase/initFirebase';
+import { callApi } from '../api'; // Naya centralized API caller
 
 export interface CreatePostParams {
   mediaUrl: string;
@@ -12,11 +12,10 @@ export const createPost = async (params: CreatePostParams) => {
   const user = auth.currentUser;
   if (!user) throw new Error('User not authenticated');
 
-  const createPostFn = httpsCallable(functions, 'createPost');
-
   try {
-    const result = await createPostFn(params);
-    return result.data as { success: boolean; postId: string };
+    // Purana: httpsCallable(functions, 'createPost')
+    // Ab: 'createPost' action in API router
+    return await callApi('createPost', params);
   } catch (error: any) {
     console.error("createPost Error:", error);
     throw error;
@@ -27,11 +26,10 @@ export const deletePost = async (postId: string) => {
   const user = auth.currentUser;
   if (!user) throw new Error('User not authenticated');
 
-  const deletePostFn = httpsCallable(functions, 'deleteUserPost');
-
   try {
-    const result = await deletePostFn({ postId });
-    return result.data as { success: boolean; message: string };
+    // Purana: httpsCallable(functions, 'deleteUserPost')
+    // Ab: 'deletePost' action in API router
+    return await callApi('deletePost', { postId });
   } catch (error: any) {
     console.error("deletePost Error:", error);
     throw error;

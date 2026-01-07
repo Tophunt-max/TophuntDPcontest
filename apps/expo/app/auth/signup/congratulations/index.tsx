@@ -14,8 +14,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Success } from "@/assets/svgs";
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSignupStore } from "@/src/store/signup";
-import { httpsCallable } from "firebase/functions";
-import { functions, auth } from "@/src/services/firebase/initFirebase";
+import { auth } from "@/src/services/firebase/initFirebase";
+import { callApi } from "@/src/services/api"; // Consolidated API used
 import { signInWithEmailAndPassword } from "firebase/auth";
 
 const { width } = Dimensions.get('window');
@@ -38,42 +38,33 @@ export default function CongratulationsScreen() {
             }
             
             setStatusMessage("Creating your account securely...");
-            const authHandler = httpsCallable(functions, 'authHandler');
-            const result = await authHandler({ 
-                action: 'create',
+            // Using Consolidated API for Account Creation
+            const result: any = await callApi('create', { 
                 ...signupData,
                 platform: Platform.OS,
             });
 
-            const data = result.data as any;
-            if (data.status !== 'success') {
-                throw new Error(data.message || "An unknown error occurred on the server.");
+            if (result.status !== 'success') {
+                throw new Error(result.message || "An unknown error occurred on the server.");
             }
 
-            // Automatically sign the user in
             setStatusMessage("Signing you in...");
             await signInWithEmailAndPassword(auth, signupData.email, signupData.password);
         } else {
-            // For Phone, Google, Facebook - User is already authenticated in Auth
-            // We only need to create the Firestore profile
             if (!signupData.username) {
                 throw new Error("Username is required to complete your profile.");
             }
 
             setStatusMessage("Saving your profile details...");
-            const authHandler = httpsCallable(functions, 'authHandler');
-            
-            // For phone login, the user is already signed in at the start of the flow
-            const result = await authHandler({ 
-                action: 'createProfile',
+            // Using Consolidated API for Profile Creation
+            const result: any = await callApi('createProfile', { 
                 ...signupData,
                 platform: Platform.OS,
-                uid: auth.currentUser?.uid // Ensure we have the UID
+                uid: auth.currentUser?.uid
             });
 
-            const data = result.data as any;
-            if (data.status !== 'success') {
-                throw new Error(data.message || "Failed to save profile.");
+            if (result.status !== 'success') {
+                throw new Error(result.message || "Failed to save profile.");
             }
         }
 

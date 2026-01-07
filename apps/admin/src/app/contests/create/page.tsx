@@ -5,10 +5,7 @@ import DefaultLayout from "@/components/Layouts/DefaultLayout";
 import Breadcrumb from "@/components/Breadcrumbs/Breadcrumb";
 import { useRouter } from "next/navigation";
 import { uploadToFirebaseStorage } from "@/lib/firebase-storage";
-import { getFunctions, httpsCallable } from "firebase/functions";
-import { app } from "@/lib/firebase/config";
-
-const functions = getFunctions(app);
+import { callApi } from "@/services/firebase/functions"; // Using our new API helper
 
 const CreateContest = () => {
   const router = useRouter();
@@ -21,8 +18,8 @@ const CreateContest = () => {
     type: "photo",
     description: "",
     rules: "",
-    totalEntryFee: 100, // Total fee (will be split 50/50 by users)
-    rewardCoins: 150, // What winner gets
+    totalEntryFee: 100, 
+    rewardCoins: 150, 
     rewardXP: 100,
     minVotes: 5,
     durationHours: 24,
@@ -50,9 +47,8 @@ const CreateContest = () => {
         );
       }
 
-      // CALL CLOUD FUNCTION INSTEAD OF DIRECT WRITE
-      const createContestFn = httpsCallable(functions, 'createContestTemplate');
-      await createContestFn({
+      // Logic changed to use consolidated API router with 'createContestTemplate' action
+      await callApi('createContestTemplate', {
         ...formData,
         bannerUrl
       });
@@ -110,7 +106,7 @@ const CreateContest = () => {
 
               <div className="mb-4.5">
                 <label className="mb-2.5 block text-black dark:text-white font-medium">Type</label>
-                <select className="w-full rounded border border-stroke bg-transparent px-5 py-3" value={formData.type} onChange={(e) => setFormData({ ...formData, type: e.target.value })}>
+                <select className="w-full rounded border border-stroke bg-transparent px-5 py-3" value={formData.type} onChange={(e: any) => setFormData({ ...formData, type: e.target.value })}>
                   <option value="photo">📸 Photo</option>
                   <option value="video">🎥 Video</option>
                 </select>
@@ -158,7 +154,7 @@ const CreateContest = () => {
 
               <div className="mb-4.5">
                 <label className="mb-2.5 block text-black dark:text-white font-medium">Rules</label>
-                <textarea rows={3} className="w-full rounded border border-stroke bg-transparent px-5 py-3" value={formData.rules} onChange={(e) => setFormData({ ...formData, rules: e.target.value })} />
+                <textarea rows={3} className="w-full rounded border border-stroke bg-transparent px-5 py-3" value={formData.rules} onChange={(e: any) => setFormData({ ...formData, rules: e.target.value })} />
               </div>
 
               <button onClick={handleSubmit} disabled={loading} className="w-full rounded bg-primary p-3 font-medium text-white hover:bg-opacity-90 disabled:opacity-50">

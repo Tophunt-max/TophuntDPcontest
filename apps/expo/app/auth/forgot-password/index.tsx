@@ -18,8 +18,8 @@ import { Left_Arrow, ForgotPassword_Light, ForgotPassword_Dark, Sms_Icon, Email_
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useToast } from "@/src/components/toast/ToastProvider";
 import { sendPasswordResetEmail } from "firebase/auth";
-import { auth, functions } from "@/src/services/firebase/initFirebase";
-import { httpsCallable } from 'firebase/functions';
+import { auth } from "@/src/services/firebase/initFirebase";
+import { callApi } from '@/src/services/api'; // Consolidated API used
 import { FormInput } from "@/src/components/inputs/FormInput";
 import { useForm } from "react-hook-form";
 
@@ -45,17 +45,14 @@ export default function ForgotPasswordScreen() {
   const email = watch("email");
   const phoneNumber = watch("phoneNumber");
 
-  // This function is triggered when user presses continue
-  // It first checks if user exists in DB, then sends the reset link/OTP
   const handleContinue = async (data: any) => {
     setLoading(true);
     setUserInfo(null); 
-    clearErrors(); // Clear any previous manual errors
+    clearErrors(); 
 
     const identifier = activeTab === "email" ? data.email : data.phoneNumber;
     const fieldName = activeTab === "email" ? "email" : "phoneNumber";
 
-    // Basic validation just in case
     if (!identifier) {
         setError(fieldName, { type: 'required', message: 'This field is required' });
         setLoading(false);
@@ -63,15 +60,13 @@ export default function ForgotPasswordScreen() {
     }
     
     try {
-        // 1. Check if user exists and get info
-        const getUser = httpsCallable(functions, 'getUserByIdentifier');
-        const result: any = await getUser({ 
+        // 1. Check if user exists using Consolidated API
+        const result: any = await callApi('getUserByIdentifier', { 
             identifier: identifier, 
             type: activeTab === 'email' ? 'email' : 'phone' 
         });
 
-        if (!result.data.found) {
-            // Client-side error on the specific input field
+        if (!result.found) {
             setError(fieldName, { 
                 type: "manual", 
                 message: "User not found. Please check your details." 
@@ -80,21 +75,17 @@ export default function ForgotPasswordScreen() {
             return;
         }
 
-        // User found! Show their info briefly or proceed
-        const user = result.data.user;
+        const user = result.user;
         setUserInfo(user);
-        // addToast(`Found account for ${user.name}`, "success");
 
         // 2. Proceed with Sending Link/OTP
         if (activeTab === "email") {
             await sendPasswordResetEmail(auth, data.email);
             addToast("Password reset link sent to your email", "success");
-            // Navigate to success screen
             router.push("/auth/forgot-password/success");
         } else {
-            const sendOtp = httpsCallable(functions, 'sendOtpToPhone');
-            await sendOtp({ phone: data.phoneNumber });
-            // Navigate to OTP screen
+            // Using Consolidated API for OTP
+            await callApi('sendOtpToPhone', { phone: data.phoneNumber });
             router.push({
                 pathname: "/auth/forgot-password/otp",
                 params: { phoneNumber: data.phoneNumber },
@@ -103,7 +94,6 @@ export default function ForgotPasswordScreen() {
 
     } catch (error: any) {
         console.error("Forgot Password Error:", error);
-        // If specific error codes, map them to fields, otherwise general toast
         addToast(error.message || "An error occurred", "error");
     } finally {
         setLoading(false);
@@ -124,7 +114,6 @@ export default function ForgotPasswordScreen() {
         }}
         showsVerticalScrollIndicator={false}
       >
-        {/* Header */}
         <View style={styles.header}>
             <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
               <Left_Arrow width={24} height={24} color="#000" />
@@ -145,7 +134,6 @@ export default function ForgotPasswordScreen() {
             Select which contact details should we use to reset your password
         </Text>
 
-        {/* Custom Tab Switcher */}
         <View style={styles.tabContainer}>
             <TouchableOpacity 
                 style={[styles.tabButton, activeTab === "email" && styles.activeTabButton]} 
@@ -161,7 +149,6 @@ export default function ForgotPasswordScreen() {
             </TouchableOpacity>
         </View>
 
-        {/* Input Content */}
         <View style={styles.inputContainer}>
             {activeTab === "email" ? (
                 <FormInput

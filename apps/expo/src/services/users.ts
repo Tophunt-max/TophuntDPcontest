@@ -1,10 +1,7 @@
 import { collection, doc, getDocs, limit, query, updateDoc, where, getDoc } from "firebase/firestore";
 import { firestore as db } from "../services/firebase/initFirebase";
-import { getFunctions, httpsCallable } from "firebase/functions";
-import { app } from "../firebaseConfig";
+import { callApi } from "./api"; // Naya centralized API caller
 import { Badge } from "../types/user";
-
-const functions = getFunctions(app);
 
 /**
  * Calculates distance between two coordinates in km (Haversine formula)
@@ -74,11 +71,11 @@ export async function fetchSuggestedUsers(currentUserCoords?: { lat: number, lng
 
 export const toggleFollowService = async (targetUserId: string) => {
   try {
-    const toggleFollowFunction = httpsCallable(functions, 'toggleFollow');
-    const result = await toggleFollowFunction({ targetUserId });
-    return result.data;
+    // Purana: httpsCallable(functions, 'toggleFollow') tha
+    // Ab: Central API caller use hoga
+    return await callApi('toggleFollow', { targetUserId });
   } catch (error) {
-    console.error("Error calling toggleFollow function:", error);
+    console.error("Error calling toggleFollow service:", error);
     throw error;
   }
 };

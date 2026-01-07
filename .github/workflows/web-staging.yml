@@ -1,0 +1,46 @@
+name: Expo Web - STAGING Deployment
+
+on:
+  push:
+    branches:
+      - staging
+    paths:
+      - 'apps/expo/**'
+      - '.github/workflows/web-staging.yml'
+
+jobs:
+  deploy_web_staging:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        working-directory: ./apps/expo
+        run: npm ci
+
+      - name: Build Expo Web (STAGING)
+        working-directory: ./apps/expo
+        run: npx expo export --platform web
+
+      - name: Debug dist folder
+        working-directory: ./apps/expo
+        run: |
+          ls -la
+          ls -la dist || echo "❌ dist folder NOT FOUND"
+
+      - name: Deploy to Cloudflare Pages (STAGING)
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: tophuntdpcontest
+          directory: apps/expo/dist
+          branch: staging

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { View, StyleSheet, SafeAreaView, Text, Button, ActivityIndicator, ScrollView, useColorScheme } from 'react-native';
 import { useRouter, useLocalSearchParams, usePathname } from 'expo-router';
 import { useAuth } from '@/src/services/auth';
-import { useProfile, useUserPosts, useToggleFollow } from '@/src/hooks/useProfileData';
+import { useProfile, useUserPosts, useToggleFollow, useUserBookmarks } from '@/src/hooks/useProfileData';
 import ProfileHeader from '@/src/components/profile/ProfileHeader';
 import Highlights from '@/src/components/profile/Highlights';
 import ProfileTabs from '@/src/components/profile/ProfileTabs';
@@ -12,12 +12,12 @@ import { WalletCard } from '@/src/components/profile/WalletCard';
 import { BottomNav } from '@/src/components/home/BottomNav';
 import { notificationService } from '@/src/services/notifications/notificationService';
 import { Colors } from '@/constants/theme';
+import { PostCard } from '@/src/components/home/PostCard';
 
 const ProfilePage = () => {
   const router = useRouter();
   const { user: currentUser, loading: authLoading } = useAuth();
   const params = useLocalSearchParams();
-  const pathname = usePathname();
   const userIdParam = params.userId as string | undefined;
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
@@ -29,10 +29,8 @@ const ProfilePage = () => {
   useEffect(() => {
     if (!authLoading) {
         if (!currentUser) {
-            // Unauthenticated user -> Redirect to Login
             setIsRedirecting(true);
             const redirectPath = userIdParam ? `/profile?userId=${userIdParam}` : '/profile';
-            // Encode the redirect path
             const encodedRedirect = encodeURIComponent(redirectPath);
             router.replace(`/auth/login?redirect=${encodedRedirect}`);
             return;
@@ -80,13 +78,11 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
   const isOwnProfile = currentUser?.uid === targetUserId;
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
-  const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
+  const backgroundColor = isDark ? Colors.dark.text : Colors.light.background; // Fixed text color variable used for background issue
 
   const { 
     data: profile, 
     isLoading: profileLoading, 
-    isError: isProfileError, 
-    error: profileError,
     refetch: refetchProfile 
   } = useProfile(targetUserId);
 
@@ -104,6 +100,8 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
     refetch: refetchPosts, 
     isRefetching 
   } = useUserPosts(targetUserId);
+
+  const { data: bookmarks, isLoading: bookmarksLoading, refetch: refetchBookmarks } = useUserBookmarks(targetUserId);
   
   const { mutate: toggleFollow } = useToggleFollow();
   const [activeTab, setActiveTab] = useState<'posts' | 'reels' | 'tags'>('posts');
@@ -113,47 +111,43 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
   };
 
   const handleRefresh = async () => {
-    await Promise.all([refetchProfile(), refetchPosts()]);
+    await Promise.all([refetchProfile(), refetchPosts(), refetchBookmarks()]);
   };
 
   if (profileLoading && !profile) {
     return (
-        <SafeAreaView style={[styles.container, { backgroundColor }]}>
+        <SafeAreaView style={[styles.container, { backgroundColor: isDark ? Colors.dark.background : Colors.light.background }]}>
             <ScrollView showsVerticalScrollIndicator={false}>
                 <ProfileHeaderSkeleton />
                 <PostGridSkeleton />
             </ScrollView>
-            <BottomNav backgroundColor={backgroundColor} isDark={isDark} />
+            <BottomNav backgroundColor={isDark ? Colors.dark.background : Colors.light.background} isDark={isDark} />
         </SafeAreaView>
     );
-  }
-
-  if (isProfileError || !profile) {
-    return <SafeAreaView style={[styles.container, { backgroundColor }]}><View style={styles.center}><Text style={{ color: isDark ? '#fff' : '#000' }}>Error loading profile.</Text></View></SafeAreaView>;
   }
 
   const posts = postsData?.pages.flatMap(page => page.posts) || [];
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: isDark ? Colors.dark.background : Colors.light.background }]}>
       <PostGrid
         posts={activeTab === 'posts' ? posts : []}
         onLoadMore={() => hasNextPage && fetchNextPage()}
-        isLoading={postsLoading}
+        isLoading={postsLoading || (activeTab === 'tags' && bookmarksLoading)}
         refreshing={isRefetching}
         onRefresh={handleRefresh}
         ListHeaderComponent={
           <>
             <ProfileHeader 
-              user={profile} 
+              user={profile!} 
               isOwnProfile={isOwnProfile}
               onToggleFollow={handleToggleFollow}
               isFollowing={isFollowing}
             />
             {isOwnProfile && (
               <WalletCard 
-                Dpcoin={profile.Dpcoin || 0} 
-                stats={profile.stats || { contestsJoined: 0, wins: 0 }} 
+                Dpcoin={profile?.Dpcoin || 0} 
+                stats={profile?.stats || { contestsJoined: 0, wins: 0 }} 
                 onPress={() => router.push('/wallet')}
               />
             )}
@@ -161,12 +155,24 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
             <ProfileTabs 
               activeTab={activeTab} 
               onChangeTab={setActiveTab} 
-              isPrivate={profile.isPrivate} 
+              isPrivate={profile?.isPrivate} 
             />
+            {activeTab === 'tags' && (
+              <View style={{ paddingBottom: 20 }}>
+                {bookmarks?.map((match: any) => (
+                  <PostCard key={match.id} item={match} isDark={isDark} />
+                ))}
+                {(!bookmarks || bookmarks.length === 0) && !bookmarksLoading && (
+                  <View style={{ alignItems: 'center', marginTop: 40 }}>
+                    <Text style={{ color: isDark ? '#FFF' : '#616161', fontFamily: 'Urbanist-Medium' }}>No bookmarked battles yet.</Text>
+                  </View>
+                )}
+              </View>
+            )}
           </>
         }
       />
-      <BottomNav backgroundColor={backgroundColor} isDark={isDark} />
+      <BottomNav backgroundColor={isDark ? Colors.dark.background : Colors.light.background} isDark={isDark} />
     </SafeAreaView>
   );
 };

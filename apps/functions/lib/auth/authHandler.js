@@ -33,11 +33,12 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.updatePasswordWithPhone = exports.verifyOtp = exports.sendOtpToPhone = exports.getUserByIdentifier = exports.authHandler = void 0;
+exports.authHandler = void 0;
 const https_1 = require("firebase-functions/v2/https");
 const admin = __importStar(require("firebase-admin"));
 const logger = __importStar(require("firebase-functions/logger"));
 const firebase_1 = require("../utils/firebase");
+const nodemailer = __importStar(require("nodemailer"));
 // CPU must be >= 1 for concurrency
 const AUTH_CONFIG = {
     region: "us-central1",
@@ -49,6 +50,14 @@ const AUTH_CONFIG = {
     timeoutSeconds: 60,
     cors: true,
 };
+// Configure Email Transporter (For Email Update)
+const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
+    },
+});
 // Common disposable email domains to block
 const DISPOSABLE_DOMAINS = new Set([
     "yopmail.com", "mailinator.com", "temp-mail.org", "10minutemail.com",
@@ -107,243 +116,154 @@ async function getRewardSettings() {
     const configDoc = await firebase_1.db.collection("settings").doc("appConfig").get();
     return ((_a = configDoc.data()) === null || _a === void 0 ? void 0 : _a.rewardSettings) || { signupBonus: 100 };
 }
+/**
+ * Master Auth Handler that processes all Auth and Account-related actions.
+ */
 exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
-    var _a, _b;
-    // 1. Basic validation
+    var _a, _b, _c;
     if (!request.data || !request.data.action) {
-        throw new https_1.HttpsError("invalid-argument", "Request must specify an 'action' ('check', 'create', 'createProfile').");
+        throw new https_1.HttpsError("invalid-argument", "Request must specify an 'action'.");
     }
-    const { action, type } = request.data;
-    // ---------------------------------------------------------
-    // ACTION: CHECK (email, phone, username)
-    // ---------------------------------------------------------
-    if (action === "check") {
-        if (!type || !["email", "phone", "username"].includes(type)) {
-            throw new https_1.HttpsError("invalid-argument", "For check action, 'type' must be 'email', 'phone', or 'username'.");
-        }
-        let value = (_a = request.data.value) === null || _a === void 0 ? void 0 : _a.trim();
-        if (!value) {
-            throw new https_1.HttpsError("invalid-argument", `Missing value for check type: ${type}`);
-        }
-        if (type === "phone") {
-            const normalized = normalizePhoneNumber(value);
-            if (!normalized) {
-                throw new https_1.HttpsError("invalid-argument", "Invalid phone format");
+    const { action } = request.data;
+    const uid = (_a = request.auth) === null || _a === void 0 ? void 0 : _a.uid;
+    switch (action) {
+        // ---------------------------------------------------------
+        // ACTION: CHECK (email, phone, username)
+        // ---------------------------------------------------------
+        case "check": {
+            const { type } = request.data;
+            if (!type || !["email", "phone", "username"].includes(type)) {
+                throw new https_1.HttpsError("invalid-argument", "Type must be 'email', 'phone', or 'username'.");
             }
-            value = normalized;
-        }
-        else if (type === "username") {
-            try {
+            let value = (_b = request.data.value) === null || _b === void 0 ? void 0 : _b.trim();
+            if (!value)
+                throw new https_1.HttpsError("invalid-argument", `Missing value for ${type}`);
+            if (type === "phone") {
+                value = normalizePhoneNumber(value);
+                if (!value)
+                    throw new https_1.HttpsError("invalid-argument", "Invalid phone format");
+            }
+            else if (type === "username") {
                 value = validateUsername(value);
             }
-            catch (e) {
-                throw e;
+            else if (type === "email") {
+                value = value.toLowerCase();
+                if (isDisposableEmail(value))
+                    throw new https_1.HttpsError("invalid-argument", "Disposable email blocked.");
             }
-        }
-        else if (type === "email") {
-            value = value.toLowerCase();
-            if (isDisposableEmail(value)) {
-                throw new https_1.HttpsError("invalid-argument", "Temporary or disposable email addresses are not allowed.");
-            }
-        }
-        logger.info(`[authHandler] Checking ${type}: ${value}`);
-        try {
             let exists = false;
-            // Specialized check for Email using Admin Auth
             if (type === "email") {
                 try {
                     await admin.auth().getUserByEmail(value);
                     exists = true;
                 }
                 catch (error) {
-                    if (error.code === 'auth/user-not-found') {
-                        exists = false;
-                    }
-                    else {
+                    if (error.code !== 'auth/user-not-found')
                         throw error;
-                    }
                 }
             }
-            // If not already found in Auth (or if checking phone/username), check Firestore
             if (!exists) {
-                const snapshot = await firebase_1.db
-                    .collection("users")
-                    .where(type, "==", value)
-                    .limit(1)
-                    .get();
+                const snapshot = await firebase_1.db.collection("users").where(type, "==", value).limit(1).get();
                 exists = !snapshot.empty;
             }
             return { exists };
         }
-        catch (error) {
-            logger.error(`[authHandler] Check failed for ${type}:`, error);
-            throw new https_1.HttpsError("internal", "Error while checking uniqueness.");
+        // ---------------------------------------------------------
+        // ACTION: CREATE USER (Auth + Profile)
+        // ---------------------------------------------------------
+        case "create": {
+            const { email, password, username, fullName, avatarUrl, dob, phone, occupation, gender, following, platform, coordinates } = request.data;
+            if (!email || !password || !username)
+                throw new https_1.HttpsError("invalid-argument", "Email, password, and username are required.");
+            if (isDisposableEmail(email))
+                throw new https_1.HttpsError("invalid-argument", "Disposable email blocked.");
+            const validatedUsername = validateUsername(username);
+            let userRecord;
+            try {
+                userRecord = await admin.auth().createUser({
+                    email,
+                    password,
+                    displayName: validatedUsername,
+                    photoURL: avatarUrl || null,
+                });
+            }
+            catch (error) {
+                if (error.code === "auth/email-already-exists")
+                    throw new https_1.HttpsError("already-exists", "Email already registered.");
+                throw new https_1.HttpsError("internal", "Auth creation failed.");
+            }
+            const newUid = userRecord.uid;
+            try {
+                const rewardSettings = await getRewardSettings();
+                await createFirestoreProfile(newUid, { email, username: validatedUsername, fullName, avatarUrl, dob, phone, occupation, gender, following, platform, coordinates }, rewardSettings.signupBonus || 0);
+                return { status: "success", uid: newUid, message: "User created successfully" };
+            }
+            catch (error) {
+                await admin.auth().deleteUser(newUid).catch(() => { });
+                throw new https_1.HttpsError("internal", "Firestore profile creation failed.");
+            }
         }
-    }
-    // ---------------------------------------------------------
-    // ACTION: CREATE USER (Auth + Profile)
-    // ---------------------------------------------------------
-    if (action === "create") {
-        const { email, password, username, fullName, avatarUrl, dob, phone, occupation, gender, following, platform, coordinates, // NEW
-         } = request.data;
-        if (!email || !password || !username) {
-            throw new https_1.HttpsError("invalid-argument", "Email, password, and username are required for user creation.");
+        // ---------------------------------------------------------
+        // ACTION: CREATE PROFILE (Firestore Only)
+        // ---------------------------------------------------------
+        case "createProfile": {
+            const profileUid = ((_c = request.auth) === null || _c === void 0 ? void 0 : _c.uid) || request.data.uid;
+            if (!profileUid)
+                throw new https_1.HttpsError("unauthenticated", "User must be authenticated.");
+            const { email } = request.data;
+            if (email && isDisposableEmail(email))
+                throw new https_1.HttpsError("invalid-argument", "Disposable email blocked.");
+            const rewardSettings = await getRewardSettings();
+            await createFirestoreProfile(profileUid, request.data, rewardSettings.signupBonus || 0);
+            return { status: "success", uid: profileUid, message: "Profile created successfully" };
         }
-        if (isDisposableEmail(email)) {
-            throw new https_1.HttpsError("invalid-argument", "Temporary or disposable email addresses are not allowed.");
+        // ---------------------------------------------------------
+        // ACTION: GET USER BY IDENTIFIER
+        // ---------------------------------------------------------
+        case "getUserByIdentifier": {
+            const { identifier, type } = request.data;
+            if (!identifier || !type)
+                throw new https_1.HttpsError("invalid-argument", "Identifier and type are required.");
+            let queryField = type === 'email' ? 'email' : 'phone';
+            let value = identifier;
+            if (type === 'phone') {
+                value = normalizePhoneNumber(identifier);
+                if (!value)
+                    throw new https_1.HttpsError("invalid-argument", "Invalid phone format.");
+            }
+            else {
+                value = identifier.toLowerCase();
+            }
+            const snapshot = await firebase_1.db.collection("users").where(queryField, "==", value).limit(1).get();
+            if (snapshot.empty)
+                return { found: false };
+            const userData = snapshot.docs[0].data();
+            return {
+                found: true,
+                user: {
+                    uid: snapshot.docs[0].id,
+                    name: userData.fullName || userData.username,
+                    avatar: userData.profileImageUrl || null
+                }
+            };
         }
-        const validatedUsername = validateUsername(username);
-        logger.info(`[authHandler] Creating user: ${email}`);
-        // Create Auth User
-        let userRecord;
-        try {
-            userRecord = await admin.auth().createUser({
-                email,
-                password,
-                displayName: validatedUsername,
-                photoURL: avatarUrl || null,
+        // ---------------------------------------------------------
+        // ACTION: SEND OTP TO PHONE (Forgot Password)
+        // ---------------------------------------------------------
+        case "sendOtpToPhone": {
+            const { phone } = request.data;
+            if (!phone)
+                throw new https_1.HttpsError("invalid-argument", "Phone number is required.");
+            const normalizedPhone = normalizePhoneNumber(phone);
+            if (!normalizedPhone)
+                throw new https_1.HttpsError("invalid-argument", "Invalid phone format.");
+            const otp = Math.floor(100000 + Math.random() * 900000).toString();
+            const expiresAt = admin.firestore.Timestamp.fromMillis(Date.now() + 10 * 60 * 1000);
+            await firebase_1.db.collection("passwordResetOtps").doc(normalizedPhone).set({
+                otp,
+                expiresAt,
+                createdAt: admin.firestore.FieldValue.serverTimestamp()
             });
-        }
-        catch (error) {
-            if (error.code === "auth/email-already-exists") {
-                throw new https_1.HttpsError("already-exists", "This email is already registered.");
-            }
-            logger.error("[authHandler] Auth creation failed:", error);
-            throw new https_1.HttpsError("internal", "Could not create user account.");
-        }
-        const uid = userRecord.uid;
-        // Create Firestore Profile
-        try {
-            const rewardSettings = await getRewardSettings();
-            const signupBonus = rewardSettings.signupBonus || 0;
-            await createFirestoreProfile(uid, {
-                email,
-                username: validatedUsername,
-                fullName,
-                avatarUrl,
-                dob,
-                phone,
-                occupation,
-                gender,
-                following,
-                platform,
-                coordinates // NEW
-            }, signupBonus);
-            logger.info(`[authHandler] User created successfully: ${uid}`);
-            return { status: "success", uid, message: "User created successfully" };
-        }
-        catch (error) {
-            logger.error(`[authHandler] Firestore creation failed for ${uid}. Rolling back auth.`, error);
-            await admin.auth().deleteUser(uid).catch(() => { });
-            throw new https_1.HttpsError("internal", "Failed to save user profile. Account creation cancelled.");
-        }
-    }
-    // ---------------------------------------------------------
-    // ACTION: CREATE PROFILE (Firestore Only - for Social Auth or Phone Auth)
-    // ---------------------------------------------------------
-    if (action === "createProfile") {
-        const uid = ((_b = request.auth) === null || _b === void 0 ? void 0 : _b.uid) || request.data.uid;
-        if (!uid) {
-            throw new https_1.HttpsError("unauthenticated", "User must be authenticated or provide UID.");
-        }
-        const { email, username, fullName, avatarUrl, dob, phone, occupation, gender, following, platform, coordinates, // NEW
-         } = request.data;
-        if (email && isDisposableEmail(email)) {
-            throw new https_1.HttpsError("invalid-argument", "Temporary or disposable email addresses are not allowed.");
-        }
-        const validatedUsername = username ? validateUsername(username) : null;
-        logger.info(`[authHandler] Creating profile for existing UID: ${uid}`);
-        try {
-            const rewardSettings = await getRewardSettings();
-            const signupBonus = rewardSettings.signupBonus || 0;
-            await createFirestoreProfile(uid, {
-                email,
-                username: validatedUsername,
-                fullName,
-                avatarUrl,
-                dob,
-                phone,
-                occupation,
-                gender,
-                following,
-                platform,
-                coordinates // NEW
-            }, signupBonus);
-            return { status: "success", uid, message: "Profile created successfully" };
-        }
-        catch (error) {
-            logger.error("[authHandler] Error creating user profile:", error);
-            throw new https_1.HttpsError("internal", "Could not create user record.");
-        }
-    }
-    throw new https_1.HttpsError("invalid-argument", `Unknown action: ${action}`);
-});
-/**
- * GET USER BY IDENTIFIER (Email or Phone)
- * Used in Forgot Password flow to verify user exists and get their basic info
- */
-exports.getUserByIdentifier = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
-    const { identifier, type } = request.data;
-    if (!identifier || !type) {
-        throw new https_1.HttpsError("invalid-argument", "Identifier and type are required.");
-    }
-    let queryField = type === 'email' ? 'email' : 'phone';
-    let value = identifier;
-    if (type === 'phone') {
-        const normalized = normalizePhoneNumber(identifier);
-        if (!normalized)
-            throw new https_1.HttpsError("invalid-argument", "Invalid phone format.");
-        value = normalized;
-    }
-    else {
-        value = identifier.toLowerCase();
-    }
-    try {
-        const snapshot = await firebase_1.db.collection("users")
-            .where(queryField, "==", value)
-            .limit(1)
-            .get();
-        if (snapshot.empty) {
-            return { found: false };
-        }
-        const userDoc = snapshot.docs[0];
-        const userData = userDoc.data();
-        return {
-            found: true,
-            user: {
-                uid: userDoc.id,
-                name: userData.fullName || userData.username,
-                avatar: userData.profileImageUrl || null
-            }
-        };
-    }
-    catch (error) {
-        logger.error("[getUserByIdentifier] Error:", error);
-        throw new https_1.HttpsError("internal", "Error searching for user.");
-    }
-});
-/**
- * SEND OTP TO PHONE (Forgot Password)
- */
-exports.sendOtpToPhone = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
-    const { phone } = request.data;
-    if (!phone)
-        throw new https_1.HttpsError("invalid-argument", "Phone number is required.");
-    const normalizedPhone = normalizePhoneNumber(phone);
-    if (!normalizedPhone)
-        throw new https_1.HttpsError("invalid-argument", "Invalid phone format.");
-    // Generate 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = admin.firestore.Timestamp.fromMillis(Date.now() + 10 * 60 * 1000); // 10 mins
-    try {
-        // Store OTP in a secure collection
-        await firebase_1.db.collection("passwordResetOtps").doc(normalizedPhone).set({
-            otp,
-            expiresAt,
-            createdAt: admin.firestore.FieldValue.serverTimestamp()
-        });
-        // Send SMS via Twilio
-        try {
             const sid = process.env.TWILIO_ACCOUNT_SID;
             const token = process.env.TWILIO_AUTH_TOKEN;
             const from = process.env.TWILIO_PHONE_NUMBER;
@@ -358,76 +278,150 @@ exports.sendOtpToPhone = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
             else {
                 logger.warn("Twilio credentials missing. OTP generated but not sent: ", otp);
             }
+            return { success: true };
         }
-        catch (smsError) {
-            logger.error("SMS Sending failed:", smsError);
+        // ---------------------------------------------------------
+        // ACTION: VERIFY OTP (Forgot Password)
+        // ---------------------------------------------------------
+        case "verifyOtp": {
+            const { phone, code } = request.data;
+            if (!phone || !code)
+                throw new https_1.HttpsError("invalid-argument", "Phone and code are required.");
+            const normalizedPhone = normalizePhoneNumber(phone);
+            if (!normalizedPhone)
+                throw new https_1.HttpsError("invalid-argument", "Invalid phone format.");
+            const otpDoc = await firebase_1.db.collection("passwordResetOtps").doc(normalizedPhone).get();
+            if (!otpDoc.exists)
+                throw new https_1.HttpsError("not-found", "No OTP found.");
+            const data = otpDoc.data();
+            if ((data === null || data === void 0 ? void 0 : data.otp) !== code)
+                throw new https_1.HttpsError("invalid-argument", "Invalid OTP.");
+            if ((data === null || data === void 0 ? void 0 : data.expiresAt.toMillis()) < Date.now())
+                throw new https_1.HttpsError("deadline-exceeded", "OTP expired.");
+            return { success: true };
         }
-        return { success: true };
-    }
-    catch (error) {
-        throw new https_1.HttpsError("internal", error.message);
+        // ---------------------------------------------------------
+        // ACTION: UPDATE PASSWORD WITH PHONE (Forgot Password)
+        // ---------------------------------------------------------
+        case "updatePasswordWithPhone": {
+            const { phone, newPassword } = request.data;
+            if (!phone || !newPassword)
+                throw new https_1.HttpsError("invalid-argument", "Phone and password required.");
+            const normalizedPhone = normalizePhoneNumber(phone);
+            if (!normalizedPhone)
+                throw new https_1.HttpsError("invalid-argument", "Invalid phone format.");
+            const otpDoc = await firebase_1.db.collection("passwordResetOtps").doc(normalizedPhone).get();
+            if (!otpDoc.exists)
+                throw new https_1.HttpsError("permission-denied", "OTP verification required.");
+            const userSnapshot = await firebase_1.db.collection("users").where("phone", "==", normalizedPhone).limit(1).get();
+            if (userSnapshot.empty)
+                throw new https_1.HttpsError("not-found", "User not found.");
+            const passUid = userSnapshot.docs[0].id;
+            await admin.auth().updateUser(passUid, { password: newPassword });
+            await firebase_1.db.collection("passwordResetOtps").doc(normalizedPhone).delete();
+            return { success: true };
+        }
+        // ---------------------------------------------------------
+        // ACTION: SEND EMAIL UPDATE OTP
+        // ---------------------------------------------------------
+        case "sendEmailOtp": {
+            if (!uid)
+                throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
+            const { newEmail } = request.data;
+            if (!newEmail)
+                throw new https_1.HttpsError("invalid-argument", "New email is required.");
+            const otp = Math.floor(100000 + Math.random() * 900000).toString();
+            const expiresAt = Date.now() + 10 * 60 * 1000;
+            await firebase_1.db.collection("emailUpdateOtps").doc(uid).set({ newEmail, otp, expiresAt });
+            const mailOptions = {
+                from: `"TopHunt" <${process.env.EMAIL_USER}>`,
+                to: newEmail,
+                subject: "Verify your new email address",
+                text: `Your OTP for email update is: ${otp}. It will expire in 10 minutes.`,
+                html: `<h3>Email Verification</h3><p>Your OTP for updating your email address is: <b>${otp}</b></p>`,
+            };
+            await transporter.sendMail(mailOptions);
+            return { success: true };
+        }
+        // ---------------------------------------------------------
+        // ACTION: VERIFY EMAIL UPDATE OTP
+        // ---------------------------------------------------------
+        case "verifyEmailOtp": {
+            if (!uid)
+                throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
+            const { otp } = request.data;
+            if (!otp)
+                throw new https_1.HttpsError("invalid-argument", "OTP is required.");
+            const otpDocRef = firebase_1.db.collection("emailUpdateOtps").doc(uid);
+            const otpDoc = await otpDocRef.get();
+            if (!otpDoc.exists)
+                throw new https_1.HttpsError("not-found", "No OTP request found.");
+            const data = otpDoc.data();
+            if ((data === null || data === void 0 ? void 0 : data.otp) !== otp)
+                throw new https_1.HttpsError("invalid-argument", "Incorrect OTP.");
+            if (Date.now() > (data === null || data === void 0 ? void 0 : data.expiresAt))
+                throw new https_1.HttpsError("deadline-exceeded", "OTP expired.");
+            const newEmail = data === null || data === void 0 ? void 0 : data.newEmail;
+            await admin.auth().updateUser(uid, { email: newEmail });
+            await firebase_1.db.collection("users").doc(uid).update({ email: newEmail, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+            await otpDocRef.delete();
+            return { success: true, email: newEmail };
+        }
+        // ---------------------------------------------------------
+        // ACTION: SEND PHONE UPDATE OTP
+        // ---------------------------------------------------------
+        case "sendPhoneOtp": {
+            if (!uid)
+                throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
+            const { newPhone } = request.data;
+            if (!newPhone)
+                throw new https_1.HttpsError("invalid-argument", "New phone number is required.");
+            const otp = Math.floor(100000 + Math.random() * 900000).toString();
+            const expiresAt = Date.now() + 10 * 60 * 1000;
+            await firebase_1.db.collection("phoneUpdateOtps").doc(uid).set({ newPhone, otp, expiresAt });
+            const sid = process.env.TWILIO_ACCOUNT_SID;
+            const token = process.env.TWILIO_AUTH_TOKEN;
+            const from = process.env.TWILIO_PHONE_NUMBER;
+            if (sid && token && from) {
+                const client = require("twilio")(sid, token);
+                await client.messages.create({
+                    body: `Your TopHunt OTP for phone number update is: ${otp}.`,
+                    from: from,
+                    to: newPhone,
+                });
+            }
+            else {
+                logger.warn("Twilio credentials missing. OTP: ", otp);
+            }
+            return { success: true };
+        }
+        // ---------------------------------------------------------
+        // ACTION: VERIFY PHONE UPDATE OTP
+        // ---------------------------------------------------------
+        case "verifyPhoneOtp": {
+            if (!uid)
+                throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
+            const { otp } = request.data;
+            if (!otp)
+                throw new https_1.HttpsError("invalid-argument", "OTP is required.");
+            const otpDocRef = firebase_1.db.collection("phoneUpdateOtps").doc(uid);
+            const otpDoc = await otpDocRef.get();
+            if (!otpDoc.exists)
+                throw new https_1.HttpsError("not-found", "No OTP request found.");
+            const data = otpDoc.data();
+            if ((data === null || data === void 0 ? void 0 : data.otp) !== otp)
+                throw new https_1.HttpsError("invalid-argument", "Incorrect OTP.");
+            if (Date.now() > (data === null || data === void 0 ? void 0 : data.expiresAt))
+                throw new https_1.HttpsError("deadline-exceeded", "OTP expired.");
+            const newPhone = data === null || data === void 0 ? void 0 : data.newPhone;
+            await firebase_1.db.collection("users").doc(uid).update({ phone: newPhone, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+            await otpDocRef.delete();
+            return { success: true, phone: newPhone };
+        }
+        default:
+            throw new https_1.HttpsError("invalid-argument", `Unknown action: ${action}`);
     }
 });
-/**
- * VERIFY OTP (Forgot Password)
- */
-exports.verifyOtp = (0, https_1.onCall)(Object.assign(Object.assign({}, AUTH_CONFIG), { minInstances: 0, maxInstances: 1 }), async (request) => {
-    const { phone, code } = request.data;
-    if (!phone || !code)
-        throw new https_1.HttpsError("invalid-argument", "Phone and code are required.");
-    const normalizedPhone = normalizePhoneNumber(phone);
-    if (!normalizedPhone)
-        throw new https_1.HttpsError("invalid-argument", "Invalid phone format.");
-    const otpDoc = await firebase_1.db.collection("passwordResetOtps").doc(normalizedPhone).get();
-    if (!otpDoc.exists) {
-        throw new https_1.HttpsError("not-found", "No OTP request found for this phone.");
-    }
-    const data = otpDoc.data();
-    if ((data === null || data === void 0 ? void 0 : data.otp) !== code) {
-        throw new https_1.HttpsError("invalid-argument", "Invalid OTP code.");
-    }
-    if ((data === null || data === void 0 ? void 0 : data.expiresAt.toMillis()) < Date.now()) {
-        throw new https_1.HttpsError("deadline-exceeded", "OTP has expired.");
-    }
-    // Success - OTP verified
-    return { success: true };
-});
-/**
- * UPDATE PASSWORD WITH PHONE (Forgot Password Final Step)
- */
-exports.updatePasswordWithPhone = (0, https_1.onCall)(Object.assign(Object.assign({}, AUTH_CONFIG), { minInstances: 0, maxInstances: 1 }), async (request) => {
-    const { phone, newPassword } = request.data;
-    if (!phone || !newPassword)
-        throw new https_1.HttpsError("invalid-argument", "Phone and new password are required.");
-    const normalizedPhone = normalizePhoneNumber(phone);
-    if (!normalizedPhone)
-        throw new https_1.HttpsError("invalid-argument", "Invalid phone format.");
-    // 1. Verify OTP was indeed verified
-    const otpDoc = await firebase_1.db.collection("passwordResetOtps").doc(normalizedPhone).get();
-    if (!otpDoc.exists) {
-        throw new https_1.HttpsError("permission-denied", "OTP verification required.");
-    }
-    try {
-        // 2. Find the user by phone
-        const userSnapshot = await firebase_1.db.collection("users").where("phone", "==", normalizedPhone).limit(1).get();
-        if (userSnapshot.empty) {
-            throw new https_1.HttpsError("not-found", "User not found.");
-        }
-        const uid = userSnapshot.docs[0].id;
-        // 3. Update Auth Password
-        await admin.auth().updateUser(uid, {
-            password: newPassword
-        });
-        // 4. Clean up OTP doc
-        await firebase_1.db.collection("passwordResetOtps").doc(normalizedPhone).delete();
-        return { success: true };
-    }
-    catch (error) {
-        logger.error("Update password failed:", error);
-        throw new https_1.HttpsError("internal", error.message);
-    }
-});
-// Helper function to keep code DRY
 async function createFirestoreProfile(uid, data, signupBonus = 0) {
     const userRef = firebase_1.db.collection("users").doc(uid);
     const normalizedPhone = normalizePhoneNumber(data.phone);
@@ -443,11 +437,11 @@ async function createFirestoreProfile(uid, data, signupBonus = 0) {
         gender: data.gender || null,
         following: data.following || [],
         platform: data.platform || "unknown",
-        coordinates: data.coordinates || null, // ADDED
+        coordinates: data.coordinates || null,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        signupCompleted: true, // Mark as completed
-        Dpcoin: signupBonus, // Initial Bonus from Admin Config
+        signupCompleted: true,
+        Dpcoin: signupBonus,
         xp: 0,
         level: 1,
         stats: {
@@ -459,7 +453,6 @@ async function createFirestoreProfile(uid, data, signupBonus = 0) {
         }
     };
     await userRef.set(profileData, { merge: true });
-    // Record Signup Bonus Transaction if > 0
     if (signupBonus > 0) {
         await firebase_1.db.collection("coinTransactions").add({
             uid,

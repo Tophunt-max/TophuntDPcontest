@@ -1,6 +1,5 @@
 // src/lib/uploadToS3.ts
-import { functions } from "../services/firebase/initFirebase";
-import { httpsCallable } from "firebase/functions";
+import { callApi } from "../services/api";
 
 /**
  * Uploads a file to S3 using a pre-signed URL.
@@ -17,18 +16,18 @@ export async function uploadToS3(
 ) {
   console.log(`[S3Upload] Starting...`, { uri, fileType, folder });
   
-  const getPresignedUrl = httpsCallable(functions, "generatePresignedUrl");
   let result: any;
   try {
       console.log(`[S3Upload] Requesting presigned URL...`);
-      result = await getPresignedUrl({ fileType, folder });
-      console.log(`[S3Upload] Presigned URL response received:`, result.data);
+      // Calling the consolidated API with the 'getPresignedUrl' action
+      result = await callApi('getPresignedUrl', { fileType, folder });
+      console.log(`[S3Upload] Presigned URL response received:`, result);
   } catch (err: any) {
       console.error("[S3Upload] Failed to get presigned URL:", err);
       throw new Error(`Failed to initialize upload: ${err.message}`);
   }
   
-  const { uploadUrl, publicUrl } = result.data;
+  const { uploadUrl, publicUrl } = result;
   if (!uploadUrl) {
       throw new Error("Cloud Function did not return an upload URL.");
   }

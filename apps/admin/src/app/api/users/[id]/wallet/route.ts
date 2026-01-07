@@ -1,12 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getFunctions } from "firebase-admin/functions";
-import { app } from "@/lib/firebase/admin"; // Assuming you have an admin Firebase app initialized here
+import { app } from "@/lib/firebase/admin";
 
 export async function POST(req: NextRequest, context: { params: { id: string } }) {
   try {
-    // In a real application, you would verify the admin's authentication here.
-    // For this example, we'll assume the admin is authenticated.
-
     const { id: userId } = context.params;
     const { amount, type } = await req.json();
 
@@ -15,15 +12,23 @@ export async function POST(req: NextRequest, context: { params: { id: string } }
     }
 
     const functions = getFunctions(app);
-    const adminManageWallet = functions.httpsCallable("adminManageWallet");
+    
+    // Ab 'api' function ko call karna hoga with 'adminManageWallet' action
+    const apiRouter = functions.taskQueue("api"); // Note: v2 functions use direct calling usually, but from Admin SDK we use taskQueue or https endpoint
+    
+    // For simplicity and compatibility with consolidated API, we trigger the HTTPS endpoint
+    const apiResponse = await fetch(`https://api-7q6m5m5w3q-uc.a.run.app`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: { action: "adminManageWallet", userId, amount, type } })
+    });
+    
+    const result = await apiResponse.json();
 
-    const result = await adminManageWallet({ userId, amount, type });
-
-    // The result.data will contain what the Cloud Function returns
-    if ((result.data as any).success) {
-      return NextResponse.json({ message: (result.data as any).message, newBalance: (result.data as any).newBalance });
+    if (result.result && result.result.success) {
+      return NextResponse.json({ message: result.result.message, newBalance: result.result.newBalance });
     } else {
-      return NextResponse.json({ error: (result.data as any).message || "Failed to update wallet via Cloud Function." }, { status: 500 });
+      return NextResponse.json({ error: result.error?.message || "Failed to update wallet via Cloud Function." }, { status: 500 });
     }
   } catch (error: any) {
     console.error("Error updating wallet:", error);

@@ -1,10 +1,5 @@
-import { initializeApp, getApps, getApp } from "firebase/app";
+import { getApps, getApp, initializeApp } from "firebase/app";
 import { getFunctions, httpsCallable } from "firebase/functions";
-import { Report } from "@/app/reports/page";
-
-// WARNING: This file contains a Firebase initialization that conflicts with
-// the central configuration in \`admin/src/lib/firebase/config.ts\`.
-// Restoring this code will likely cause the "INTERNAL ASSERTION FAILED" crash.
 
 const firebaseConfig = {
  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -17,4 +12,20 @@ const firebaseConfig = {
 };
 
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-const functions = getFunctions(app, "us-central1"); // Changed region from "asia-south1" to "us-central1"
+const functions = getFunctions(app, "us-central1");
+
+/**
+ * NEW: Consolidated API caller for Admin Panel.
+ */
+export const callApi = async (action: string, data: any = {}) => {
+  const apiFunction = httpsCallable(functions, 'api');
+  try {
+    const result = await apiFunction({ action, ...data });
+    return result.data;
+  } catch (error: any) {
+    console.error(`[Admin API Error] Action: ${action}`, error);
+    throw error;
+  }
+};
+
+export { functions };

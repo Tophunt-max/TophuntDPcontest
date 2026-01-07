@@ -1,13 +1,11 @@
-
 import { useState, useEffect, useRef } from 'react';
 import { Platform } from 'react-native';
 import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
 import { doc, setDoc } from 'firebase/firestore';
-import { router } from 'expo-router'; // expo-router se router import karein
+import { router } from 'expo-router';
 import { auth, firestore } from '../../firebaseConfig';
 
-// (Baki ka code same rahega...)
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -29,7 +27,7 @@ export async function registerForPushNotificationsAsync() {
     }
 
     if (finalStatus !== 'granted') {
-      alert('Failed to get push token for push notification!');
+      console.log('Failed to get push token for push notification!');
       return;
     }
 
@@ -84,6 +82,9 @@ export const useNotificationObserver = () => {
   const responseListener = useRef<Notifications.Subscription>();
 
   useEffect(() => {
+    // Web check: Web par notification listeners kaam nahi karte is tarah se
+    if (Platform.OS === 'web') return;
+
     // 1. Jab app foreground mein ho aur notification aaye
     notificationListener.current = Notifications.addNotificationReceivedListener(notification => {
       setNotification(notification);
@@ -93,16 +94,15 @@ export const useNotificationObserver = () => {
     // 2. Jab user notification par tap kare
     responseListener.current = Notifications.addNotificationResponseReceivedListener(response => {
       console.log('Notification Response Received:', response);
-      // User ko notification page par navigate karein
       router.push('/notifications');
     });
 
     // Cleanup
     return () => {
-      if (notificationListener.current) {
+      if (notificationListener.current && Notifications.removeNotificationSubscription) {
         Notifications.removeNotificationSubscription(notificationListener.current);
       }
-      if (responseListener.current) {
+      if (responseListener.current && Notifications.removeNotificationSubscription) {
         Notifications.removeNotificationSubscription(responseListener.current);
       }
     };

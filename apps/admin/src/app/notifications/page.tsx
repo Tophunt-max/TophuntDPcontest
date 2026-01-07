@@ -5,8 +5,7 @@ import DefaultLayout from "@/components/Layouts/DefaultLayout";
 import Breadcrumb from "@/components/Breadcrumbs/Breadcrumb";
 import { toast } from "react-hot-toast";
 import InputGroup from "@/components/FormElements/InputGroup";
-import { getFunctions, httpsCallable } from "firebase/functions";
-import { app } from "@/lib/firebase/config";
+import { callApi } from "@/services/firebase/functions"; // Using our new API helper
 
 const BroadcastPage = () => {
   const [title, setTitle] = useState("");
@@ -26,23 +25,21 @@ const BroadcastPage = () => {
 
     setSending(true);
     try {
-      const functions = getFunctions(app);
-      const sendBroadcast = httpsCallable(functions, "sendBroadcastNotification");
-      
-      const result: any = await sendBroadcast({
+      // Logic changed to use consolidated API router
+      const result: any = await callApi("sendBroadcastNotification", {
         title,
         body,
         imageUrl: imageUrl || null,
         targetPage: "/home"
       });
 
-      if (result.data.success) {
-        toast.success(`Successfully sent to ${result.data.sentCount} users!`);
+      if (result.success) {
+        toast.success(`Successfully sent to ${result.sentCount} users!`);
         setTitle("");
         setBody("");
         setImageUrl("");
       } else {
-        toast.error(result.data.message || "Something went wrong.");
+        toast.error(result.message || "Something went wrong.");
       }
     } catch (error: any) {
       console.error(error);

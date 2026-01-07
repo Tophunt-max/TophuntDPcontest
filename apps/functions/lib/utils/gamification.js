@@ -21,22 +21,36 @@ const DEFAULT_SETTINGS = {
     contestJoinXP: 50,
     badges: [],
 };
+// Define a cache object
+let settingsCache = null;
+let cacheTimestamp = 0;
+const CACHE_DURATION = 10 * 60 * 1000; // 10 minutes in milliseconds
 /**
- * Fetches gamification settings from Firestore.
+ * Fetches gamification settings from Firestore, with caching.
  */
 async function getGamificationSettings() {
     var _a, _b;
+    const now = Date.now();
+    if (settingsCache && (now - cacheTimestamp) < CACHE_DURATION) {
+        return settingsCache;
+    }
     try {
         const doc = await firebase_1.db.collection("settings").doc("gamification").get();
-        if (!doc.exists)
-            return DEFAULT_SETTINGS;
-        const data = doc.data() || {};
-        return Object.assign(Object.assign(Object.assign({}, DEFAULT_SETTINGS), data), { 
-            // Map keys if they differ between DB and interface
-            dailyLoginReward: (_b = (_a = data.dailyLoginReward) !== null && _a !== void 0 ? _a : data.dailyBaseReward) !== null && _b !== void 0 ? _b : DEFAULT_SETTINGS.dailyLoginReward, badges: data.badges || [] });
+        if (!doc.exists) {
+            settingsCache = DEFAULT_SETTINGS;
+        }
+        else {
+            const data = doc.data() || {};
+            settingsCache = Object.assign(Object.assign(Object.assign({}, DEFAULT_SETTINGS), data), { 
+                // Map keys if they differ between DB and interface
+                dailyLoginReward: (_b = (_a = data.dailyLoginReward) !== null && _a !== void 0 ? _a : data.dailyBaseReward) !== null && _b !== void 0 ? _b : DEFAULT_SETTINGS.dailyLoginReward, badges: data.badges || [] });
+        }
+        cacheTimestamp = now;
+        return settingsCache;
     }
     catch (error) {
         console.error("Error fetching gamification settings:", error);
+        // Return default settings but don't cache on error
         return DEFAULT_SETTINGS;
     }
 }

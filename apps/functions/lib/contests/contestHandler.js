@@ -182,23 +182,42 @@ async function handleJoin(request) {
                     uid: opponentId, amount: -entryFeePerUser, type: "contest_entry_fee", contestId, timestamp: admin.firestore.FieldValue.serverTimestamp()
                 });
                 const voteDurationDays = contestData.voteDurationDays || 1;
-                const battleEndDate = admin.firestore.Timestamp.fromMillis(Date.now() + (voteDurationDays * 24 * 60 * 60 * 1000));
-                const battleId = firebase_1.db.collection("battles").doc().id;
-                const newBattle = {
-                    id: battleId,
+                const expiresAt = admin.firestore.Timestamp.fromMillis(Date.now() + (voteDurationDays * 24 * 60 * 60 * 1000));
+                const matchId = firebase_1.db.collection("contestMatches").doc().id;
+                const newMatch = {
+                    id: matchId,
                     contestId,
-                    contestName: contestData.name,
-                    contestType: contestData.type || 'photo',
-                    userA: { userId: opponentId, username: opponentEntry.username, displayName: opponentEntry.userDisplayName, mediaUrl: opponentEntry.mediaUrl, votes: 0 },
-                    userB: { userId: userId, username: username, displayName: displayName, mediaUrl: mediaUrl, votes: 0 },
+                    title: contestData.name,
+                    type: contestData.type || 'photo',
+                    userA: {
+                        uid: opponentId,
+                        username: opponentEntry.username,
+                        displayName: opponentEntry.userDisplayName,
+                        mediaUrl: opponentEntry.mediaUrl,
+                        votes: 0,
+                        profilePic: (opponentData === null || opponentData === void 0 ? void 0 : opponentData.profilePic) || ""
+                    },
+                    userB: {
+                        uid: userId,
+                        username: username,
+                        displayName: displayName,
+                        mediaUrl: mediaUrl,
+                        votes: 0,
+                        profilePic: (userData === null || userData === void 0 ? void 0 : userData.profilePic) || ""
+                    },
+                    joinIdA: opponentEntry.username,
+                    joinIdB: username,
                     totalVotes: 0,
+                    likeCount: 0,
+                    commentCount: 0,
+                    shareCount: 0,
                     status: "active",
                     entryFee: totalFee,
-                    endDate: battleEndDate,
+                    expiresAt: expiresAt,
                     createdAt: admin.firestore.FieldValue.serverTimestamp(),
                 };
-                transaction.set(firebase_1.db.collection("battles").doc(battleId), newBattle);
-                transaction.update(firebase_1.db.collection("entries").doc(opponentEntry.id), { status: "paired", battleId });
+                transaction.set(firebase_1.db.collection("contestMatches").doc(matchId), newMatch);
+                transaction.update(firebase_1.db.collection("entries").doc(opponentEntry.id), { status: "paired", battleId: matchId });
                 const currentEntryId = firebase_1.db.collection("entries").doc().id;
                 transaction.set(firebase_1.db.collection("entries").doc(currentEntryId), {
                     id: currentEntryId,
@@ -209,12 +228,12 @@ async function handleJoin(request) {
                     mediaUrl,
                     caption: caption || "",
                     status: "paired",
-                    battleId,
+                    battleId: matchId,
                     createdAt: admin.firestore.FieldValue.serverTimestamp(),
                 });
                 return {
                     status: "paired",
-                    battleId,
+                    battleId: matchId,
                     message: "Battle started!",
                     opponentId,
                     contestName: contestData.name
@@ -250,33 +269,33 @@ async function handleVote(request) {
     }
     try {
         await firebase_1.db.runTransaction(async (transaction) => {
-            const battleRef = firebase_1.db.collection("battles").doc(battleId);
-            const battleDoc = await transaction.get(battleRef);
-            if (!battleDoc.exists)
+            const matchRef = firebase_1.db.collection("contestMatches").doc(battleId);
+            const matchDoc = await transaction.get(matchRef);
+            if (!matchDoc.exists)
                 throw new https_1.HttpsError("not-found", "Battle not found.");
-            const battleData = battleDoc.data();
-            if (battleData.status !== "active")
+            const matchData = matchDoc.data();
+            if (matchData.status !== "active")
                 throw new https_1.HttpsError("failed-precondition", "Battle ended.");
-            if (battleData.endDate.toDate() < new Date())
+            if (matchData.expiresAt.toDate() < new Date())
                 throw new https_1.HttpsError("failed-precondition", "Contest expired.");
             const voteId = `${voterId}_${battleId}`;
             const voteRef = firebase_1.db.collection("votes").doc(voteId);
             const voteDoc = await transaction.get(voteRef);
             if (voteDoc.exists)
                 throw new https_1.HttpsError("already-exists", "Already voted.");
-            const isUserA = battleData.userA.userId === participantId;
-            const isUserB = battleData.userB.userId === participantId;
+            const isUserA = matchData.userA.uid === participantId;
+            const isUserB = matchData.userB.uid === participantId;
             if (!isUserA && !isUserB)
                 throw new https_1.HttpsError("invalid-argument", "Invalid participant.");
             transaction.set(voteRef, {
-                id: voteId, battleId, voterId, votedFor: participantId, contestId: battleData.contestId, createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                id: voteId, battleId, voterId, votedFor: participantId, contestId: matchData.contestId, createdAt: admin.firestore.FieldValue.serverTimestamp(),
             });
             const updateData = { totalVotes: admin.firestore.FieldValue.increment(1) };
             if (isUserA)
                 updateData["userA.votes"] = admin.firestore.FieldValue.increment(1);
             else
                 updateData["userB.votes"] = admin.firestore.FieldValue.increment(1);
-            transaction.update(battleRef, updateData);
+            transaction.update(matchRef, updateData);
             const participantRef = firebase_1.db.collection("users").doc(participantId);
             transaction.update(participantRef, { "stats.totalVotesReceived": admin.firestore.FieldValue.increment(1) });
         });

@@ -1,4 +1,3 @@
-
 import { ThemeProvider } from '@react-navigation/native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -31,7 +30,7 @@ import { lightTheme, darkTheme } from '@/constants/theme';
 import '@/src/services/firebase/initFirebase'; // Import to initialize Firebase
 import { useAppConfig } from '@/src/services/appSettings';
 import { useAuth } from '@/src/hooks/useAuth'; // Import useAuth hook
-import { registerForPushNotificationsAsync, useNotificationObserver } from '@/src/services/notifications/pushNotificationService'; // Import notification service
+import { registerForPushNotificationsAsync, useNotificationObserver } from '@/src/services/notifications/pushNotificationService';
 
 const queryClient = new QueryClient();
 
@@ -48,12 +47,10 @@ function MaintenanceGuard({ children }: { children: React.ReactNode }) {
 
     if (config?.maintenanceMode) {
       if (!isMaintenancePage) {
-        // Redirect to maintenance screen if mode is ON
         router.replace('/maintenance');
       }
     } else {
       if (isMaintenancePage) {
-        // Redirect back to root if mode is OFF
         router.replace('/');
       }
     }
@@ -65,16 +62,38 @@ function MaintenanceGuard({ children }: { children: React.ReactNode }) {
 // Main Root Layout Component
 function RootLayoutNav() {
   const { user, loading } = useAuth(); // Get user auth state
+  const segments = useSegments();
+  const router = useRouter();
   
   // Hook to handle notification listeners
   useNotificationObserver();
+
+  useEffect(() => {
+    if (loading) return;
+
+    const inAuthGroup = segments[0] === 'auth';
+    const inOnboarding = segments[0] === 'onboarding';
+    const inSplash = segments[0] === 'splash';
+
+    if (!user) {
+      // Agar user login nahi hai aur kisi protected page par jane ki koshish kar raha hai
+      if (!inAuthGroup && !inOnboarding && !inSplash && segments.length > 0) {
+        router.replace('/auth/login');
+      }
+    } else {
+      // Agar user login hai lekin auth pages par hai, toh home par bhej do
+      if (inAuthGroup || inOnboarding || inSplash) {
+        router.replace('/home');
+      }
+    }
+  }, [user, loading, segments]);
 
   useEffect(() => {
     // Register for push notifications only when user is logged in
     if (user && !loading) {
       registerForPushNotificationsAsync();
     }
-  }, [user, loading]); // Rerun effect when user or loading state changes
+  }, [user, loading]);
 
   return (
     <MaintenanceGuard>

@@ -12,10 +12,10 @@ import {
   limit, 
   startAfter,
 } from 'firebase/firestore';
-import { firestore, functions } from '../services/firebase/initFirebase'; 
-import { httpsCallable } from 'firebase/functions';
+import { firestore } from '../services/firebase/initFirebase'; 
 import { UserProfile, Post } from '../types/user';
 import { useAuth } from '../services/auth'; 
+import { callApi } from '../services/api'; // Naya centralized API caller
 
 export const useProfile = (userId: string) => {
   const { user: currentUser } = useAuth(); 
@@ -104,6 +104,35 @@ export const useUserPosts = (userId: string) => {
   });
 };
 
+export const useUserBookmarks = (userId: string) => {
+  return useQuery({
+    queryKey: ['userBookmarks', userId],
+    queryFn: async () => {
+      try {
+        const bookmarksRef = collection(firestore, `users/${userId}/bookmarks`);
+        const snapshot = await getDocs(bookmarksRef);
+        const matchIds = snapshot.docs.map(doc => doc.id);
+        
+        if (matchIds.length === 0) return [];
+
+        const matches: any[] = [];
+        // Firestore 'in' queries are limited to 10 items. For simple bookmarks we'll fetch them one by one or in batches.
+        // For now, let's fetch individual docs.
+        const promises = matchIds.map(id => getDoc(doc(firestore, 'contestMatches', id)));
+        const snaps = await Promise.all(promises);
+        
+        return snaps
+            .filter(s => s.exists())
+            .map(s => ({ id: s.id, ...s.data() }));
+      } catch (err) {
+        console.error("Error fetching bookmarks:", err);
+        return [];
+      }
+    },
+    enabled: !!userId,
+  });
+};
+
 export const useToggleFollow = () => {
   const queryClient = useQueryClient();
   const { user } = useAuth();
@@ -111,8 +140,7 @@ export const useToggleFollow = () => {
   return useMutation({
     mutationFn: async (targetUserId: string) => {
       if (!user) throw new Error("Authentication required");
-      const toggleFollowFn = httpsCallable(functions, 'toggleFollow');
-      return toggleFollowFn({ targetUserId });
+      return await callApi('toggleFollow', { targetUserId });
     },
     onSuccess: (_, targetUserId) => {
       queryClient.invalidateQueries({ queryKey: ['profile', targetUserId] });

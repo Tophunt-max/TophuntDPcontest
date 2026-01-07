@@ -34,8 +34,8 @@ import { useColorScheme } from "@/hooks/use-color-scheme";
 import { FormInput } from "@/src/components/inputs/FormInput";
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useSignupStore } from "@/src/store/signup";
-import { httpsCallable } from "firebase/functions";
-import { functions, auth, firestore as db } from "../../../src/services/firebase/initFirebase";
+import { auth, firestore as db } from "../../../src/services/firebase/initFirebase";
+import { callApi } from "@/src/services/api"; // Updated to use centralized API
 import { useToast } from "@/src/components/toast/ToastProvider";
 import PasswordStrength from "@/src/components/inputs/PasswordStrength";
 import { Colors } from '@/constants/theme';
@@ -139,15 +139,15 @@ export default function SignupEntryScreen() {
   const password = watch("password");
   const termsAccepted = watch("termsAccepted");
 
-  // Real-time Email Uniqueness Check
+  // Real-time Email Uniqueness Check (USING CALL API)
   useEffect(() => {
     const checkEmail = async () => {
         if (email.length > 5 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
             setEmailChecking(true);
             try {
-                const authHandler = httpsCallable(functions, 'authHandler');
-                const result = await authHandler({ action: 'check', type: 'email', value: email });
-                if ((result.data as any).exists) {
+                // FIXED: Now using callApi instead of authHandler directly
+                const result: any = await callApi('check', { action: 'check', type: 'email', value: email });
+                if (result.exists) {
                     setError("email", { type: "manual", message: "This email is already registered" });
                     setIsEmailAlreadyExists(true);
                     addToast("This email is already in use.", "error");

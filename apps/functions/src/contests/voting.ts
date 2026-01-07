@@ -4,7 +4,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { awardXp } from "../utils/gamification";
 
 /**
- * Submit a vote for a participant in a match
+ * Submit a vote for a participant in a contest match
  */
 export const submitVote = onCall(async (request) => {
   const { auth } = request;
@@ -15,45 +15,60 @@ export const submitVote = onCall(async (request) => {
   const { matchId, votedForUid, deviceId } = request.data;
 
   if (!matchId || !votedForUid || !deviceId) {
-    throw new HttpsError("invalid-argument", "Missing required fields.");
+    throw new HttpsError("invalid-argument", "Missing matchId, votedForUid, or deviceId.");
   }
 
   const voterUid = auth.uid;
   const matchRef = db.collection("contestMatches").doc(matchId);
   const voteRef = db.collection("votes").doc(`${matchId}_${voterUid}`);
 
-  await db.runTransaction(async (transaction) => {
-    const matchDoc = await transaction.get(matchRef);
-    const voteDoc = await transaction.get(voteRef);
+  try {
+    await db.runTransaction(async (transaction) => {
+      const matchDoc = await transaction.get(matchRef);
+      const voteDoc = await transaction.get(voteRef);
 
-    if (!matchDoc.exists) throw new HttpsError("not-found", "Match not found.");
-    if (voteDoc.exists) throw new HttpsError("already-exists", "Already voted.");
+      if (!matchDoc.exists) throw new HttpsError("not-found", "Match not found.");
+      if (voteDoc.exists) throw new HttpsError("already-exists", "You have already voted in this match.");
 
-    const matchData = matchDoc.data()!;
-    if (matchData.status !== "active") throw new HttpsError("failed-precondition", "Battle is not active.");
+      const matchData = matchDoc.data()!;
+      if (matchData.status !== "active") throw new HttpsError("failed-precondition", "Battle is not active.");
 
-    if (voterUid === matchData.userA.uid || voterUid === matchData.userB.uid) {
-      throw new HttpsError("failed-precondition", "Participants cannot vote.");
-    }
+      if (voterUid === matchData.userA.uid || (matchData.userB && voterUid === matchData.userB.uid)) {
+        throw new HttpsError("failed-precondition", "Participants cannot vote in their own match.");
+      }
 
-    // Update match
-    const voteField = votedForUid === matchData.userA.uid ? "userA.votes" : "userB.votes";
-    transaction.update(matchRef, {
-      [voteField]: FieldValue.increment(1),
-      totalVotes: FieldValue.increment(1)
+      // Update match votes based on participant UID
+      let updateData: any = {
+        totalVotes: FieldValue.increment(1)
+      };
+
+      if (votedForUid === matchData.userA.uid) {
+        updateData["userA.votes"] = FieldValue.increment(1);
+      } else if (matchData.userB && votedForUid === matchData.userB.uid) {
+        updateData["userB.votes"] = FieldValue.increment(1);
+      } else {
+        throw new HttpsError("invalid-argument", "Invalid participant UID for this match.");
+      }
+
+      transaction.update(matchRef, updateData);
+
+      // Record the vote to prevent double voting
+      transaction.set(voteRef, {
+        matchId,
+        voterUid,
+        votedForUid,
+        deviceId,
+        timestamp: FieldValue.serverTimestamp()
+      });
     });
 
-    transaction.set(voteRef, {
-      matchId,
-      voterUid,
-      votedForUid,
-      deviceId,
-      timestamp: FieldValue.serverTimestamp()
-    });
-  });
+    // Award XP for voting
+    await awardXp(voterUid, 5, "voted_in_contest");
 
-  // Award XP for voting (using the separate utility)
-  await awardXp(voterUid, 5, "voted_in_contest");
-
-  return { success: true };
+    return { success: true };
+  } catch (error: any) {
+    console.error("Error in submitVote:", error);
+    if (error instanceof HttpsError) throw error;
+    throw new HttpsError("internal", error.message || "Voting failed.");
+  }
 });
