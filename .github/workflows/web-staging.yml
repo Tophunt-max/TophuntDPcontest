@@ -1,5 +1,4 @@
 name: Expo Web - STAGING Deployment
-
 on:
   push:
     branches:

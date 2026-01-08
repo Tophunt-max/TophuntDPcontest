@@ -1,5 +1,4 @@
 name: Expo Web - Production Deployment
-
 on:
   push:
     branches:
