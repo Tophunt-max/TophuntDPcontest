@@ -4,8 +4,12 @@ import { onSchedule } from "firebase-functions/v2/scheduler";
 import { masterApiRouter } from "./api/main";
 import { scheduledTasks } from "./scheduled";
 
-// Import Auth Handler (Merged Version)
+// Handlers
 import { authHandler } from "./auth/authHandler";
+import * as notificationTriggers from "./notifications/triggers";
+
+// Contest Handlers
+import { resolveContests, monthlyHallOfFame } from "./contests/cron";
 
 // GLOBAL SETTINGS
 setGlobalOptions({
@@ -17,13 +21,12 @@ setGlobalOptions({
 });
 
 /**
- * AUTH SYSTEM (Merged into one function)
+ * AUTH SYSTEM - Production Instance
  */
 export { authHandler };
 
 /**
- * MASTER API FUNCTION:
- * Auth ke ilawa baaki sabhi actions ke liye.
+ * MASTER API FUNCTION
  */
 export const api = onCall(async (request) => {
   return await masterApiRouter(request);
@@ -35,3 +38,23 @@ export const api = onCall(async (request) => {
 export const scheduled = onSchedule("every 10 minutes", async (event) => {
     await scheduledTasks(event);
 });
+
+// Contest Scheduled Tasks
+export const resolveContestsTask = resolveContests;
+export const monthlyHallOfFameTask = monthlyHallOfFame;
+
+/**
+ * NOTIFICATION TRIGGERS
+ */
+export const onPostLike = notificationTriggers.onPostLike;
+export const onPostComment = notificationTriggers.onPostComment;
+export const onMatchLike = notificationTriggers.onMatchLike;
+export const onMatchComment = notificationTriggers.onMatchComment;
+export const onCommentLike = notificationTriggers.onCommentLike;
+export const onMatchCreated = notificationTriggers.onMatchCreated;
+export const onMatchStatusUpdate = notificationTriggers.onMatchStatusUpdate;
+export const onCoinTransaction = notificationTriggers.onCoinTransaction;
+export const onUserFollow = notificationTriggers.onUserFollow;
+export const onShare = notificationTriggers.onShare;
+export const onProfileVisit = notificationTriggers.onProfileVisit;
+export const onUserLevelUp = notificationTriggers.onUserLevelUp;

@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Provider as PaperProvider } from 'react-native-paper';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import * as Notifications from 'expo-notifications';
 
 import dayjs from 'dayjs';
 import localeData from 'dayjs/plugin/localeData';
@@ -30,7 +31,7 @@ import { lightTheme, darkTheme } from '@/constants/theme';
 import '@/src/services/firebase/initFirebase'; // Import to initialize Firebase
 import { useAppConfig } from '@/src/services/appSettings';
 import { useAuth } from '@/src/hooks/useAuth'; // Import useAuth hook
-import { registerForPushNotificationsAsync, useNotificationObserver } from '@/src/services/notifications/pushNotificationService';
+import { notificationService } from '@/src/services/notifications/notificationService';
 
 const queryClient = new QueryClient();
 
@@ -66,7 +67,57 @@ function RootLayoutNav() {
   const router = useRouter();
   
   // Hook to handle notification listeners
-  useNotificationObserver();
+  useEffect(() => {
+    const subscription = Notifications.addNotificationResponseReceivedListener(response => {
+      const data = response.notification.request.content.data;
+      console.log("Notification Clicked Data:", data);
+
+      // 1. Check for Direct URL (Sent from Admin Panel)
+      if (data?.url) {
+          // Remove leading slash if present to avoid double slash issues if needed, 
+          // but router.push works well with absolute paths too.
+          try {
+             router.push(data.url);
+          } catch (e) {
+             console.error("Navigation failed", e);
+             router.push('/notifications');
+          }
+          return;
+      }
+
+      // 2. Handle Specific Types based on targetId
+      if (data?.targetId) {
+          switch (data.type) {
+              case 'follow':
+                  router.push(`/profile/view/${data.targetId}`); // Assuming you have a user view page
+                  break;
+              case 'like':
+              case 'comment':
+                  // Redirect to Post Details (Check if it's a post or contest match)
+                  // For now, assuming post
+                  router.push(`/home`); // Ideally: /post/${data.targetId}
+                  break;
+              case 'contest':
+                  router.push(`/contest/${data.targetId}`); // Assuming contest detail page exists
+                  break;
+              default:
+                  router.push('/notifications');
+          }
+      } else {
+          router.push('/notifications');
+      }
+    });
+
+    // Also handle foreground notifications if needed
+    const foregroundSubscription = Notifications.addNotificationReceivedListener(notification => {
+        // You can show a toast here if you want custom UI instead of system alert
+    });
+
+    return () => {
+        subscription.remove();
+        foregroundSubscription.remove();
+    };
+  }, []);
 
   useEffect(() => {
     if (loading) return;
@@ -91,7 +142,7 @@ function RootLayoutNav() {
   useEffect(() => {
     // Register for push notifications only when user is logged in
     if (user && !loading) {
-      registerForPushNotificationsAsync();
+      notificationService.registerForPushNotificationsAsync(user.uid);
     }
   }, [user, loading]);
 
@@ -102,6 +153,7 @@ function RootLayoutNav() {
         <Stack.Screen name="splash" />
         <Stack.Screen name="home" />
         <Stack.Screen name="maintenance" options={{ gestureEnabled: false }} />
+        <Stack.Screen name="notifications/index" options={{ presentation: 'modal', title: 'Notifications' }} />
       </Stack>
     </MaintenanceGuard>
   );

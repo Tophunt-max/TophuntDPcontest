@@ -38,17 +38,25 @@ service cloud.firestore {
         allow write: if request.auth != null && request.auth.uid == userId;
       }
 
-      // Notifications subcollection (Added fix for permission-denied error)
+      // Old Notifications subcollection (Keeping for compatibility)
       match /notifications/{notificationId} {
-        // Owner can read their own notifications
         allow read: if request.auth != null && (request.auth.uid == userId || isAdmin());
-        // Allow any auth user to create a notification (e.g. Profile Visits, Shares)
         allow create: if request.auth != null;
-        // Owner can mark as read
         allow update: if request.auth != null && (request.auth.uid == userId || isAdmin());
-        // Only admin can delete for now
         allow delete: if isAdmin();
       }
+    }
+
+    // NEW Instagram-style Notifications System (Requirement 3 & 8)
+    // Structure: notifications/{userId}/items/{notificationId}
+    match /notifications/{userId}/items/{notificationId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      // Clients CANNOT create notifications (Requirement 8)
+      allow create: if false; 
+      // Clients CAN mark as read (Requirement 5 - Batch Write)
+      allow update: if request.auth != null && request.auth.uid == userId 
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+      allow delete: if isAdmin();
     }
 
     // Contests
@@ -76,7 +84,7 @@ service cloud.firestore {
       allow write: if false; // ONLY via Cloud Functions
     }
 
-    // Notifications (Root level - keeping for backward compatibility if needed)
+    // Root level Notifications (Keeping for backward compatibility)
     match /notifications/{notifId} {
       allow read: if request.auth != null && (resource.data.recipientUid == request.auth.uid || isAdmin());
       allow update: if request.auth != null && (

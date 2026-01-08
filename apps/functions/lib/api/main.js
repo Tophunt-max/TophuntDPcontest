@@ -48,7 +48,7 @@ const userSocial = __importStar(require("../user/toggleFollow"));
 const walletTopup = __importStar(require("../wallet/topup"));
 const walletAdmin = __importStar(require("../wallet/adminWalletManagement"));
 const adminTools = __importStar(require("../admin/index"));
-const notifSender = __importStar(require("../notifications/sender"));
+const notifUtils = __importStar(require("../notifications/utils"));
 const storage = __importStar(require("../storage/presignedUrl"));
 // Special logic
 const firebase_1 = require("../utils/firebase");
@@ -62,7 +62,6 @@ const masterApiRouter = async (request) => {
     }
     firebase_functions_1.logger.info(`[Action Called]: ${action} by UID: ${uid || 'Guest'}`);
     switch (action) {
-        // Auth aur User Email/Phone Update ab authHandler se handle hote hain.
         // ================= CONTESTS & MATCHES =================
         case "join":
         case "vote":
@@ -95,7 +94,6 @@ const masterApiRouter = async (request) => {
             return await userSocial.toggleFollow.run(request);
         case "claimDailyReward":
             return await userRewards.claimDailyReward.run(request);
-        // sendEmailOtp, verifyEmailOtp, sendPhoneOtp, verifyPhoneOtp are now in authHandler
         // ================= WALLET =================
         case "topup":
             return await walletTopup.topUpWallet.run(request);
@@ -108,8 +106,30 @@ const masterApiRouter = async (request) => {
             return await adminTools.deletePost.run(request);
         case "unblockUser":
             return await adminTools.unblockUser.run(request);
-        case "sendBroadcastNotification":
-            return await notifSender.sendBroadcastNotification.run(request);
+        case "sendBroadcastNotification": {
+            // Admin check
+            if (!uid || !(await (0, firebase_1.isAdmin)(uid)))
+                throw new https_1.HttpsError("permission-denied", "Admin only.");
+            const { title, body, imageUrl, data } = request.data;
+            const sentCount = await notifUtils.sendBroadcastToAllUsers(title, body, imageUrl, data || {});
+            return { success: true, sentCount };
+        }
+        case "sendIndividualNotification": {
+            if (!uid || !(await (0, firebase_1.isAdmin)(uid)))
+                throw new https_1.HttpsError("permission-denied", "Admin only.");
+            const { userId, title, body, imageUrl, data } = request.data;
+            if (!userId)
+                throw new https_1.HttpsError("invalid-argument", "User ID is required");
+            await notifUtils.createNotification(userId, {
+                title,
+                body,
+                type: "admin",
+                targetId: "individual_msg",
+                image: imageUrl,
+                data: data || {}
+            });
+            return { success: true };
+        }
         // Admin: Contest Creation logic
         case "createContestTemplate":
             if (!uid || !(await (0, firebase_1.isAdmin)(uid)))
@@ -121,11 +141,38 @@ const masterApiRouter = async (request) => {
         case "getAdminStats":
             if (!uid || !(await (0, firebase_1.isAdmin)(uid)))
                 throw new https_1.HttpsError("permission-denied", "Admin only.");
-            const usersCount = (await firebase_1.db.collection("users").count().get()).data().count;
-            const activeMatches = (await firebase_1.db.collection("contestMatches").where("status", "==", "active").count().get()).data().count;
-            const waitingMatches = (await firebase_1.db.collection("contestMatches").where("status", "==", "waiting_for_opponent").count().get()).data().count;
+            const usersCountDoc = await firebase_1.db.collection("users").count().get();
+            const usersCount = usersCountDoc.data().count;
+            const activeMatchesDoc = await firebase_1.db.collection("contestMatches").where("status", "==", "active").count().get();
+            const activeMatches = activeMatchesDoc.data().count;
+            const waitingMatchesDoc = await firebase_1.db.collection("contestMatches").where("status", "==", "waiting_for_opponent").count().get();
+            const waitingMatches = waitingMatchesDoc.data().count;
             const latestTransactions = await firebase_1.db.collection("coinTransactions").orderBy("timestamp", "desc").limit(10).get();
             return { stats: { usersCount, activeMatches, waitingMatches }, latestTransactions: latestTransactions.docs.map(doc => (Object.assign({ id: doc.id }, doc.data()))) };
+        // Admin: Search Users (Simple Prefix Search)
+        case "searchUsers": {
+            if (!uid || !(await (0, firebase_1.isAdmin)(uid)))
+                throw new https_1.HttpsError("permission-denied", "Admin only.");
+            const { query } = request.data;
+            if (!query || query.length < 2)
+                return { users: [] };
+            const term = query.toLowerCase();
+            // Note: Firestore doesn't support native partial matching without 3rd party like Algolia.
+            // We'll do a simple >= prefix search on 'username'
+            // Ensure you have an index on 'username' if not already there.
+            const usersSnapshot = await firebase_1.db.collection("users")
+                .where("username", ">=", term)
+                .where("username", "<=", term + '\uf8ff')
+                .limit(10)
+                .get();
+            const users = usersSnapshot.docs.map(doc => ({
+                id: doc.id,
+                username: doc.data().username || "Unknown",
+                email: doc.data().email || "",
+                avatar: doc.data().profileImage || ""
+            }));
+            return { users };
+        }
         // ================= STORAGE =================
         case "getPresignedUrl":
             return await storage.generatePresignedUrl.run(request);

@@ -4,16 +4,16 @@ import {
   StyleSheet,
   Pressable,
   useColorScheme,
-  Image
+  Image,
 } from "react-native";
 import { 
-    HeartIcon_Light, HeartIcon_Dark,
     ChatIcon_Light, ChatIcon_Dark 
 } from '@/assets/svgs';
 import { useRouter } from 'expo-router';
 import { Colors } from '@/constants/theme';
 import { useAppConfig } from "@/src/services/appSettings";
 import images from "@/assets/images";
+import { HeartNotificationIcon } from "../notifications/HeartNotificationIcon";
 
 const HeaderComponent = () => {
   const router = useRouter();
@@ -21,7 +21,6 @@ const HeaderComponent = () => {
   const isDark = colorScheme === 'dark';
   const { config } = useAppConfig();
 
-  const HeartIcon = isDark ? HeartIcon_Dark : HeartIcon_Light;
   const ChatIcon = isDark ? ChatIcon_Dark : ChatIcon_Light;
 
   return (
@@ -46,13 +45,9 @@ const HeaderComponent = () => {
 
       {/* RIGHT */}
       <View style={styles.right}>
-        <Pressable 
-            hitSlop={10} 
-            style={styles.iconBtn}
-            onPress={() => router.push('/notifications')}
-        >
-          <HeartIcon width={24} height={24} />
-        </Pressable>
+        <View style={styles.iconBtn}>
+           <HeartNotificationIcon />
+        </View>
 
         <Pressable 
             hitSlop={10} 

@@ -1,7 +1,7 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { logger } from "firebase-functions";
-import { sendPushNotification } from "../notifications/sender"; // Import sender
+import { createNotification } from "../notifications/utils"; 
 import { MemoryOption } from "firebase-functions/v2/options";
 
 // Initialize Firestore
@@ -9,7 +9,7 @@ const db = getFirestore();
 
 const FOLLOW_CONFIG = {
     region: "us-central1",
-    cpu: 1, // Increased to 1
+    cpu: 1,
     concurrency: 80,
     memory: "256MiB" as MemoryOption,
     maxInstances: 2,
@@ -17,7 +17,6 @@ const FOLLOW_CONFIG = {
 };
 
 export const toggleFollow = onCall(FOLLOW_CONFIG, async (request) => {
-  // 1. Check for authentication
   if (!request.auth) {
     throw new HttpsError("unauthenticated", "You must be logged in to follow a user.");
   }
@@ -25,7 +24,6 @@ export const toggleFollow = onCall(FOLLOW_CONFIG, async (request) => {
   const followerId = request.auth.uid;
   const { targetUserId } = request.data;
 
-  // 2. Validate input
   if (!targetUserId) {
     throw new HttpsError("invalid-argument", "The function must be called with a 'targetUserId'.");
   }
@@ -34,42 +32,37 @@ export const toggleFollow = onCall(FOLLOW_CONFIG, async (request) => {
     throw new HttpsError("invalid-argument", "You cannot follow yourself.");
   }
 
-  // 3. Create document references
   const followerRef = db.collection("users").doc(followerId);
   const targetRef = db.collection("users").doc(targetUserId);
 
   let isFollowing = false;
   let followerName = "Someone";
+  let followerAvatar = "";
 
   try {
-    // 4. Run as a transaction to ensure atomicity
     await db.runTransaction(async (transaction) => {
       const followerDoc = await transaction.get(followerRef);
-
-      if (!followerDoc.exists) {
-        throw new HttpsError("not-found", "Your user profile could not be found.");
-      }
-      
       const targetDoc = await transaction.get(targetRef);
 
-      if (!targetDoc.exists) {
-        throw new HttpsError("not-found", "The target user profile could not be found.");
+      if (!followerDoc.exists || !targetDoc.exists) {
+        throw new HttpsError("not-found", "User profile not found.");
       }
 
       const followerData = followerDoc.data();
-      followerName = followerData?.username || "Someone";
+      followerName = followerData?.username || followerData?.fullName || "Someone";
+      followerAvatar = followerData?.profileImageUrl || "";
+      
       const isCurrentlyFollowing = followerData?.following?.includes(targetUserId);
 
-      // 5. Perform the follow or unfollow operation
       if (isCurrentlyFollowing) {
-        // Unfollow
+        // Unfollow logic
         transaction.update(followerRef, { following: FieldValue.arrayRemove(targetUserId) });
         transaction.update(targetRef, { followers: FieldValue.arrayRemove(followerId) });
         transaction.update(targetRef, { followersCount: FieldValue.increment(-1) });
         transaction.update(followerRef, { followingCount: FieldValue.increment(-1) });
         isFollowing = false;
       } else {
-        // Follow
+        // Follow logic
         transaction.update(followerRef, { following: FieldValue.arrayUnion(targetUserId) });
         transaction.update(targetRef, { followers: FieldValue.arrayUnion(followerId) });
         transaction.update(targetRef, { followersCount: FieldValue.increment(1) });
@@ -78,27 +71,25 @@ export const toggleFollow = onCall(FOLLOW_CONFIG, async (request) => {
       }
     });
 
-    logger.info(`User ${followerId} successfully updated follow status for ${targetUserId}.`);
-
-    // 6. Send Notification if followed (Outside Transaction)
+    // Send Notification only on Follow
     if (isFollowing) {
-      await sendPushNotification(
+      await createNotification(
         targetUserId,
-        "New Follower! 👤",
-        `${followerName} started following you.`,
-        "new_follower",
-        { followerId: followerId }
+        {
+            title: "New Follower! 👤",
+            body: `${followerName} started following you.`,
+            type: "follow",
+            targetId: followerId, // Clicking notif goes to follower profile
+            image: followerAvatar
+        }
       );
     }
 
-    return { success: true, message: "Follow status updated.", isFollowing };
+    return { success: true, isFollowing };
 
-  } catch (error) {
-    logger.error(`Error in toggleFollow for user ${followerId} and target ${targetUserId}:`, error);
-    // Re-throw as an HttpsError to be sent to the client
-    if (error instanceof HttpsError) {
-      throw error;
-    }
+  } catch (error: any) {
+    logger.error("Error in toggleFollow:", error);
+    if (error instanceof HttpsError) throw error;
     throw new HttpsError("internal", "An unexpected error occurred.");
   }
 });

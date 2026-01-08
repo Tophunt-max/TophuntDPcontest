@@ -5,7 +5,7 @@ import { functions } from './firebase/initFirebase';
  * Ye hamara Central API Caller hai.
  */
 export const callApi = async (action: string, data: any = {}) => {
-  // List of actions that belong to the authHandler
+  // Actions that belong to the authHandler
   const authActions = [
     'check', 
     'create', 
@@ -20,10 +20,20 @@ export const callApi = async (action: string, data: any = {}) => {
     'verifyPhoneOtp'
   ];
 
+  // Actions that belong to the notificationHandler
+  const notificationActions = [
+    'sendNotification',
+    'markAsRead',
+    'getNotificationsCount',
+    'broadcast'
+  ];
+
   let functionName = 'api';
   
   if (authActions.includes(action)) {
     functionName = 'authHandler';
+  } else if (notificationActions.includes(action)) {
+    functionName = 'notificationHandler';
   }
 
   const apiFunction = httpsCallable(functions, functionName);

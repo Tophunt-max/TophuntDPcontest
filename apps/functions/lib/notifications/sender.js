@@ -34,136 +34,113 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.sendBroadcastNotification = exports.sendPushNotification = void 0;
-const https_1 = require("firebase-functions/v2/https");
+const admin = __importStar(require("firebase-admin"));
 const firebase_1 = require("../utils/firebase");
-const logger = __importStar(require("firebase-functions/logger"));
-/**
- * Sends a push notification to a specific user.
- * Separate helper function to be reused internally.
- */
 const sendPushNotification = async (userId, title, body, type, data = {}) => {
-    // 1. SAVE TO FIRESTORE
-    const notifRef = firebase_1.db.collection("notifications").doc();
-    await notifRef.set({
-        recipientUid: userId,
-        type,
-        title,
-        body,
-        data,
-        read: false,
-        createdAt: firebase_1.admin.firestore.FieldValue.serverTimestamp(),
-    });
-    // 2. SEND FCM PUSH
     try {
         const userDoc = await firebase_1.db.collection("users").doc(userId).get();
-        const userData = userDoc.data();
-        // Support both field names
-        const fcmToken = (userData === null || userData === void 0 ? void 0 : userData.fcmToken) || (userData === null || userData === void 0 ? void 0 : userData.pushToken);
-        if (!fcmToken) {
-            logger.warn(`No FCM token found for user ${userId}. Skipping push.`);
+        if (!userDoc.exists)
             return;
-        }
+        const userData = userDoc.data();
+        // Support both array and map for tokens, prioritizing array for now
+        const tokens = (userData === null || userData === void 0 ? void 0 : userData.fcmTokens) || [];
+        if (!tokens.length)
+            return;
         const message = {
-            notification: { title, body },
-            data: Object.assign(Object.assign({}, data), { click_action: "FLUTTER_NOTIFICATION_CLICK", type }),
-            token: fcmToken,
+            tokens: tokens,
+            notification: {
+                title,
+                body,
+            },
+            data: Object.assign({ type }, data),
+            android: {
+                notification: {
+                    icon: "ic_notification",
+                    color: "#FF4D67",
+                },
+            },
+            webpush: {
+                headers: {
+                    Urgency: "high",
+                },
+                notification: {
+                    icon: "/icons/icon-192x192.png",
+                    badge: "/icons/badge-72x72.png",
+                },
+                fcmOptions: {
+                    link: data.url || "/",
+                }
+            },
+            apns: {
+                payload: {
+                    aps: {
+                        alert: {
+                            title,
+                            body,
+                        },
+                        badge: 1,
+                        sound: "default",
+                    },
+                },
+            },
         };
-        await firebase_1.admin.messaging().send(message);
-        logger.info(`Push sent successfully to ${userId}`);
+        const response = await admin.messaging().sendEachForMulticast(message);
+        if (response.failureCount > 0) {
+            const failedTokens = [];
+            response.responses.forEach((resp, idx) => {
+                if (!resp.success) {
+                    // @ts-ignore: errorInfo exists on failure
+                    const error = resp.error;
+                    if ((error === null || error === void 0 ? void 0 : error.code) === 'messaging/invalid-registration-token' ||
+                        (error === null || error === void 0 ? void 0 : error.code) === 'messaging/registration-token-not-registered') {
+                        failedTokens.push(tokens[idx]);
+                    }
+                }
+            });
+            if (failedTokens.length > 0) {
+                await firebase_1.db.collection("users").doc(userId).update({
+                    fcmTokens: admin.firestore.FieldValue.arrayRemove(...failedTokens)
+                });
+            }
+        }
     }
     catch (error) {
-        logger.error(`FCM Error for user ${userId}:`, error);
-        // Do not throw here, so other notifications can proceed
+        console.error("Error sending push notification:", error);
     }
 };
 exports.sendPushNotification = sendPushNotification;
-/**
- * Send a broadcast notification to all users or selected segments.
- * Callable from Admin Panel.
- */
-exports.sendBroadcastNotification = (0, https_1.onCall)({
-    region: 'us-central1',
-    memory: '512MiB', // Increased memory for batch processing
-    maxInstances: 1,
-    timeoutSeconds: 300 // Increased timeout for long running broadcast
-}, async (request) => {
-    // 1. Ensure caller is authenticated
-    if (!request.auth) {
-        throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
-    }
-    // 2. Check Admin Permissions
-    // NOTE: If you get permission-denied, ensure your user has custom claim { admin: true }
-    // For debugging, we are logging the token claims
-    logger.info("Broadcast requester claims:", request.auth.token);
-    // Uncomment this strict check for production
-    // if (request.auth.token.admin !== true) {
-    //     throw new HttpsError("permission-denied", "Only administrators can send broadcasts.");
-    // }
-    const { title, body, imageUrl, targetPage } = request.data;
-    if (!title || !body) {
-        throw new https_1.HttpsError("invalid-argument", "Title and Body are required.");
-    }
-    logger.info(`Starting broadcast: ${title}`);
-    try {
-        // 2. Fetch all users with push tokens
-        // Optimisation: Only fetch ID and token
-        const usersSnap = await firebase_1.db.collection("users")
-            .where("fcmToken", "!=", null)
-            .select("fcmToken")
-            .get();
-        // Also try fetching 'pushToken' field if needed (or combine results)
-        // For simplicity we assume 'fcmToken' is the standard now.
-        if (usersSnap.empty) {
-            return { sentCount: 0, message: "No users with push tokens found." };
-        }
-        const notificationData = {
-            click_action: "FLUTTER_NOTIFICATION_CLICK",
-            type: "broadcast",
-            imageUrl: imageUrl || "",
-            targetPage: targetPage || "/home"
-        };
-        const batchSize = 100; // FCM batch limit is 500, keeping safe 100
-        let sentCount = 0;
-        const messages = [];
-        // Prepare all messages
-        usersSnap.docs.forEach(doc => {
-            const token = doc.data().fcmToken;
-            if (token) {
-                messages.push({
-                    notification: { title, body },
-                    data: notificationData,
-                    token: token
-                });
-            }
-        });
-        // Send in batches
-        for (let i = 0; i < messages.length; i += batchSize) {
-            const chunk = messages.slice(i, i + batchSize);
-            const response = await firebase_1.admin.messaging().sendEach(chunk); // New API
-            sentCount += response.successCount;
-            if (response.failureCount > 0) {
-                logger.warn(`Batch ${i} had ${response.failureCount} failures.`);
-                response.responses.forEach((resp, idx) => {
-                    if (!resp.success) {
-                        logger.error(`Error sending to token:`, resp.error);
-                    }
-                });
-            }
-        }
-        // 4. Save broadcast log for history
-        await firebase_1.db.collection("broadcastHistory").add({
+const sendBroadcastNotification = async (title, body, data = {}) => {
+    // This is a heavy operation. For production, consider using Topic Messaging or Batched processing.
+    // For this implementation, we will use topic 'all_users' if clients subscribe to it,
+    // OR fetch all users with tokens (expensive).
+    // Requirement says "Secure Admin Notification System".
+    // Best practice: Send to a topic "all_users".
+    const message = {
+        topic: 'all_users',
+        notification: {
             title,
-            body,
-            imageUrl: imageUrl || null,
-            sentCount,
-            adminId: request.auth.uid,
-            timestamp: firebase_1.admin.firestore.FieldValue.serverTimestamp()
-        });
-        return { success: true, sentCount };
+            body
+        },
+        data: Object.assign({ type: 'admin' }, data),
+        android: {
+            notification: {
+                icon: "ic_notification",
+                color: "#FF4D67",
+            },
+        },
+        webpush: {
+            notification: {
+                icon: "/icons/icon-192x192.png",
+            }
+        }
+    };
+    try {
+        await admin.messaging().send(message);
     }
     catch (error) {
-        logger.error("Broadcast failed:", error);
-        throw new https_1.HttpsError("internal", error.message);
+        console.error("Error sending broadcast:", error);
+        // Fallback or detailed error handling
     }
-});
+};
+exports.sendBroadcastNotification = sendBroadcastNotification;
 //# sourceMappingURL=sender.js.map

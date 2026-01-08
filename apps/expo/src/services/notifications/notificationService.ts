@@ -1,166 +1,157 @@
 import * as Notifications from 'expo-notifications';
-import * as Device from 'expo-device';
-import Constants from 'expo-constants';
 import { Platform } from 'react-native';
+import { firestore as db } from '../firebase/initFirebase';
 import { 
-  doc, 
-  setDoc, 
-  collection, 
-  addDoc, 
-  serverTimestamp, 
-  query, 
-  where, 
-  getDocs, 
-  limit, 
-  Timestamp,
-  onSnapshot,
-  orderBy
+    collection, doc, updateDoc, arrayUnion, 
+    query, orderBy, limit, onSnapshot, 
+    where, writeBatch, Timestamp, Unsubscribe 
 } from 'firebase/firestore';
-import { firestore, auth } from '@/src/services/firebase/initFirebase';
+import { getApp } from 'firebase/app';
+import Constants from 'expo-constants';
 
-// Notification Type Definition
-export interface Notification {
-  id: string;
-  type: 'like' | 'follow' | 'comment' | 'message' | 'battle_start' | 'contest_win' | 'profile_visit' | 'share' | 'bookmark';
-  senderName: string;
-  senderAvatar: string;
-  createdAt: any;
-  postImage?: string;
-  commentText?: string;
-  battleId?: string;
-  chatId?: string;
-  title?: string;
-  body?: string;
+// Configure notifications handler
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+  }),
+});
+
+export interface NotificationItem {
+    id: string;
+    title: string;
+    body: string;
+    type: "like" | "comment" | "follow" | "contest" | "admin";
+    read: boolean;
+    targetId?: string;
+    image?: string;
+    createdAt: Timestamp;
 }
 
-/**
- * Enhanced registerForPushNotificationsAsync
- */
-export async function registerForPushNotificationsAsync() {
-  let token;
-
-  if (Platform.OS === 'android') {
-    await Notifications.setNotificationChannelAsync('default', {
-      name: 'default',
-      importance: Notifications.AndroidImportance.MAX,
-      vibrationPattern: [0, 250, 250, 250],
-      lightColor: '#FF231F7C',
-    });
-  }
-
-  if (Device.isDevice) {
-    const { status: existingStatus } = await Notifications.getPermissionsAsync();
-    let finalStatus = existingStatus;
-    if (existingStatus !== 'granted') {
-      const { status } = await Notifications.requestPermissionsAsync();
-      finalStatus = status;
-    }
-    if (finalStatus !== 'granted') {
-      console.warn('Failed to get push token for push notification!');
-      return;
-    }
+class NotificationService {
     
-    try {
-      const projectId = 
-        Constants?.expoConfig?.extra?.eas?.projectId ?? 
-        Constants?.easConfig?.projectId;
-      
-      if (!projectId) {
-        throw new Error('Project ID not found');
-      }
+    // 1. Register for Push Notifications
+    async registerForPushNotificationsAsync(userId: string) {
+        if (!userId) return;
 
-      token = (await Notifications.getExpoPushTokenAsync({
-        projectId,
-      })).data;
-    } catch (e) {
-      console.error('Error getting push token:', e);
+        let token;
+        
+        if (Platform.OS === 'android') {
+            await Notifications.setNotificationChannelAsync('default', {
+                name: 'default',
+                importance: Notifications.AndroidImportance.MAX,
+                vibrationPattern: [0, 250, 250, 250],
+                lightColor: '#FF231F7C',
+            });
+        }
+
+        if (Platform.OS === 'web') {
+            try {
+                // Dynamic import to avoid breaking native bundle
+                const { getMessaging, getToken } = await import('firebase/messaging');
+                const messaging = getMessaging(getApp());
+                
+                token = await getToken(messaging, { 
+                    vapidKey: process.env.EXPO_PUBLIC_VAPID_KEY || "YOUR_VAPID_KEY_HERE"
+                });
+            } catch (e) {
+                console.log("Web Push Error:", e);
+            }
+        } else {
+            const { status: existingStatus } = await Notifications.getPermissionsAsync();
+            let finalStatus = existingStatus;
+            
+            if (existingStatus !== 'granted') {
+                const { status } = await Notifications.requestPermissionsAsync();
+                finalStatus = status;
+            }
+            
+            if (finalStatus !== 'granted') {
+                return;
+            }
+
+            // Get Device Token
+            try {
+                // For Development (Expo Go), use Expo Push Token (won't work with Firebase Admin direct FCM send without config)
+                // For Production (Native Build), use Device Push Token (FCM for Android, APNs for iOS)
+                
+                // NOTE: Your backend (apps/functions/src/notifications/sender.ts) uses admin.messaging().sendEachForMulticast()
+                // This expects valid FCM tokens (or APNs tokens if configured in Firebase Console).
+                
+                // Using getDevicePushTokenAsync gets the native token.
+                // For Android, this is the FCM token directly if google-services.json is set up correctly in EAS.
+                // For iOS, this is the APNs token. Firebase Admin can send to APNs token IF it is configured in Firebase Console.
+                
+                const tokenData = await Notifications.getDevicePushTokenAsync();
+                token = tokenData.data;
+                console.log("Device Push Token:", token);
+            } catch (e) {
+                console.log("Error getting device token:", e);
+            }
+        }
+
+        if (token) {
+            await this.saveTokenToDatabase(userId, token);
+        }
     }
-  } else {
-    console.warn('Must use physical device for Push Notifications');
-  }
 
-  if (token) {
-    const userId = auth.currentUser?.uid;
-    if (userId) {
-        const userDocRef = doc(firestore, 'users', userId);
-        await setDoc(userDocRef, { pushToken: token }, { merge: true });
+    async saveTokenToDatabase(userId: string, token: string) {
+        const userRef = doc(db, "users", userId);
+        // Using arrayUnion to avoid duplicates
+        await updateDoc(userRef, {
+            fcmTokens: arrayUnion(token)
+        });
     }
-  }
 
-  return token;
+    // 2. Real-time Unread Count
+    subscribeToUnreadCount(userId: string, callback: (count: number) => void): Unsubscribe {
+        const q = query(
+            collection(db, "notifications", userId, "items"),
+            where("read", "==", false)
+        );
+
+        return onSnapshot(q, (snapshot) => {
+            callback(snapshot.size);
+        });
+    }
+
+    // 3. Fetch Notifications (Real-time List)
+    subscribeToNotifications(userId: string, limitCount: number = 50, callback: (items: NotificationItem[]) => void): Unsubscribe {
+        const q = query(
+            collection(db, "notifications", userId, "items"),
+            orderBy("createdAt", "desc"),
+            limit(limitCount)
+        );
+
+        return onSnapshot(q, (snapshot) => {
+            const items = snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            } as NotificationItem));
+            callback(items);
+        });
+    }
+
+    // 4. Mark as Read
+    async markAsRead(userId: string, notificationIds: string[]) {
+        if (notificationIds.length === 0) return;
+
+        // Process in chunks of 500 (Firestore batch limit)
+        const chunks = [];
+        for (let i = 0; i < notificationIds.length; i += 500) {
+            chunks.push(notificationIds.slice(i, i + 500));
+        }
+
+        for (const chunk of chunks) {
+            const batch = writeBatch(db);
+            chunk.forEach(id => {
+                const ref = doc(db, "notifications", userId, "items", id);
+                batch.update(ref, { read: true });
+            });
+            await batch.commit();
+        }
+    }
 }
 
-/**
- * NAYA LOGIC (Additional Functions)
- */
-export const notificationService = {
-  // Track profile visit and notify the target user
-  notifyProfileVisit: async (targetUserId: string) => {
-    const currentUser = auth.currentUser;
-    if (!currentUser || currentUser.uid === targetUserId) return;
-
-    try {
-      const notificationsRef = collection(firestore, `users/${targetUserId}/notifications`);
-      const oneDayAgo = new Date();
-      oneDayAgo.setDate(oneDayAgo.getDate() - 1);
-      
-      const q = query(
-        notificationsRef,
-        where('type', '==', 'profile_visit'),
-        where('senderId', '==', currentUser.uid),
-        where('createdAt', '>', Timestamp.fromDate(oneDayAgo)),
-        limit(1)
-      );
-
-      const existingSnap = await getDocs(q);
-      if (!existingSnap.empty) return; 
-
-      await addDoc(notificationsRef, {
-        type: 'profile_visit',
-        senderId: currentUser.uid,
-        senderName: currentUser.displayName || 'Someone',
-        senderAvatar: currentUser.photoURL || `https://ui-avatars.com/api/?name=${currentUser.displayName}`,
-        createdAt: serverTimestamp(),
-        read: false
-      });
-    } catch (error) {
-      console.error("Error notifying profile visit:", error);
-    }
-  },
-
-  // NEW: Notify Battle Actions (Share/Bookmark)
-  notifyBattleAction: async (battleId: string, participantIds: string[], contestName: string, actionType: 'share' | 'bookmark') => {
-    const currentUser = auth.currentUser;
-    if (!currentUser) return;
-
-    for (const targetId of participantIds) {
-      if (targetId === currentUser.uid) continue; 
-      try {
-        await addDoc(collection(firestore, `users/${targetId}/notifications`), {
-          type: actionType,
-          senderId: currentUser.uid,
-          senderName: currentUser.displayName || 'Someone',
-          senderAvatar: currentUser.photoURL || `https://ui-avatars.com/api/?name=${currentUser.displayName}`,
-          battleId,
-          title: actionType === 'share' ? 'Battle Shared! 🚀' : 'Battle Bookmarked! 📌',
-          body: `${currentUser.displayName || 'Someone'} ${actionType === 'share' ? 'shared' : 'bookmarked'} your battle in ${contestName}.`,
-          createdAt: serverTimestamp(),
-          read: false
-        });
-      } catch (e) { console.error(e); }
-    }
-  },
-
-  // Real-time subscription to notifications
-  subscribeToNotifications: (userId: string, callback: (data: any[]) => void) => {
-    const q = query(
-      collection(firestore, `users/${userId}/notifications`),
-      orderBy('createdAt', 'desc'),
-      limit(50)
-    );
-    return onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      callback(data);
-    });
-  }
-};
+export const notificationService = new NotificationService();

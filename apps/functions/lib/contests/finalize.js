@@ -36,7 +36,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.finalizeContests = void 0;
 const scheduler_1 = require("firebase-functions/v2/scheduler");
 const admin = __importStar(require("firebase-admin"));
-const sender_1 = require("../notifications/sender");
+const utils_1 = require("../notifications/utils");
 const gamification_1 = require("../utils/gamification");
 const SCHEDULED_CONFIG = {
     region: "us-central1",
@@ -72,14 +72,18 @@ exports.finalizeContests = (0, scheduler_1.onSchedule)(Object.assign(Object.assi
                     Dpcoin: admin.firestore.FieldValue.increment(refundAmount)
                 });
                 await db.collection("contestMatches").doc(stalledDoc.id).update({ status: "cancelled" });
-                await (0, sender_1.sendPushNotification)(uid, "Match Cancelled", "No opponent found. Your Dpcoins have been refunded.", "match_cancelled");
+                await (0, utils_1.createNotification)(uid, {
+                    title: "Match Cancelled",
+                    body: "No opponent found. Your Dpcoins have been refunded.",
+                    type: "contest",
+                    targetId: stalledDoc.id
+                });
             }
             return;
         }
         for (const matchDoc of expiredMatchesSnap.docs) {
             const matchData = matchDoc.data();
             const contestId = matchData.contestId;
-            // Get contest template for reward info
             const contestDoc = await db.collection("contests").doc(contestId).get();
             if (!contestDoc.exists)
                 continue;
@@ -103,14 +107,12 @@ exports.finalizeContests = (0, scheduler_1.onSchedule)(Object.assign(Object.assi
                 winnerId: winnerId || "none"
             });
             if (winnerId) {
-                // Reward is Dpcoin
                 const totalPrize = Number(contestData.rewardCoins || contestData.winningCoins || 0);
                 const winnerRef = db.collection("users").doc(winnerId);
                 batch.update(winnerRef, {
                     Dpcoin: admin.firestore.FieldValue.increment(totalPrize),
                     "stats.wins": admin.firestore.FieldValue.increment(1)
                 });
-                // Record Transaction
                 const transRef = db.collection("coinTransactions").doc();
                 batch.set(transRef, {
                     uid: winnerId,
@@ -122,26 +124,47 @@ exports.finalizeContests = (0, scheduler_1.onSchedule)(Object.assign(Object.assi
                     timestamp: admin.firestore.FieldValue.serverTimestamp(),
                 });
                 await batch.commit();
-                // Gamification
                 await (0, gamification_1.awardXp)(winnerId, 500, "battle_win");
                 if (loserId)
                     await (0, gamification_1.awardXp)(loserId, 100, "battle_loss");
                 // Notifications
-                await (0, sender_1.sendPushNotification)(winnerId, "CONGRATULATIONS! 🎉", `You won the battle and earned ${totalPrize} Dpcoins!`, "contest_won");
+                await (0, utils_1.createNotification)(winnerId, {
+                    title: "CONGRATULATIONS! 🎉",
+                    body: `You won the battle and earned ${totalPrize} Dpcoins!`,
+                    type: "contest",
+                    targetId: matchDoc.id,
+                    image: matchData.userA.uid === winnerId ? matchData.userA.mediaUrl : matchData.userB.mediaUrl
+                });
                 if (loserId) {
-                    await (0, sender_1.sendPushNotification)(loserId, "Battle Ended 🏁", `The results are in. Better luck next time!`, "contest_lost");
+                    await (0, utils_1.createNotification)(loserId, {
+                        title: "Battle Ended 🏁",
+                        body: `The results are in. Better luck next time!`,
+                        type: "contest",
+                        targetId: matchDoc.id,
+                        image: matchData.userA.uid === loserId ? matchData.userA.mediaUrl : matchData.userB.mediaUrl
+                    });
                 }
             }
             else {
-                // Tie or Min votes not met - Refund partial entry fee
+                // Refund
                 const entryFeePerUser = Number(matchData.entryFee || 0) / 2;
                 if (entryFeePerUser > 0) {
                     batch.update(db.collection("users").doc(matchData.userA.uid), { Dpcoin: admin.firestore.FieldValue.increment(entryFeePerUser) });
                     batch.update(db.collection("users").doc(matchData.userB.uid), { Dpcoin: admin.firestore.FieldValue.increment(entryFeePerUser) });
                 }
                 await batch.commit();
-                await (0, sender_1.sendPushNotification)(matchData.userA.uid, "Contest Ended", "No winner declared. Entry fees refunded.", "contest_ended");
-                await (0, sender_1.sendPushNotification)(matchData.userB.uid, "Contest Ended", "No winner declared. Entry fees refunded.", "contest_ended");
+                await (0, utils_1.createNotification)(matchData.userA.uid, {
+                    title: "Contest Ended",
+                    body: "No winner declared. Entry fees refunded.",
+                    type: "contest",
+                    targetId: matchDoc.id
+                });
+                await (0, utils_1.createNotification)(matchData.userB.uid, {
+                    title: "Contest Ended",
+                    body: "No winner declared. Entry fees refunded.",
+                    type: "contest",
+                    targetId: matchDoc.id
+                });
             }
         }
     }
