@@ -1,6 +1,12 @@
 // src/store/signup.ts
 import { create } from "zustand";
 
+export interface PhotoDerivatives {
+  small: string;
+  medium: string;
+  full: string;
+}
+
 interface SignupData {
   fullName: string;
   username: string;
@@ -9,6 +15,7 @@ interface SignupData {
   phone: string;
   occupation: string;
   avatarUrl: string | null;
+  photoDerivatives?: PhotoDerivatives | null; // Added for optimized images
   gender: string;
   following: string[];
   password?: string;

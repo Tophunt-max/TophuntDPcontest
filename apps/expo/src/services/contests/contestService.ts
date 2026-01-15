@@ -11,6 +11,9 @@ import {
 import { firestore } from '@/src/services/firebase/initFirebase';
 import { Contest } from '@/src/types/contest';
 import { callApi } from '../api'; 
+import { getOptimizedMediaUrl } from '../../utils/media';
+import { prefetchMedia, getCachedMedia } from '../media/MediaCacheService';
+import { Image } from 'expo-image';
 
 export const contestService = {
   /**
@@ -52,7 +55,23 @@ export const contestService = {
         limit(limitCount)
       );
       const querySnapshot = await getDocs(activeQuery);
-      return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const matches = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+      // Prefetch media for each match
+      matches.forEach((match: any) => {
+        if (match.userA?.mediaUrl) {
+            const urlA = getOptimizedMediaUrl(match.userA.mediaUrl);
+            if (match.type === 'video') prefetchMedia(urlA);
+            else Image.prefetch(urlA);
+        }
+        if (match.userB?.mediaUrl) {
+            const urlB = getOptimizedMediaUrl(match.userB.mediaUrl);
+            if (match.type === 'video') prefetchMedia(urlB);
+            else Image.prefetch(urlB);
+        }
+      });
+
+      return matches;
     } catch (error) { console.error("Error fetching active matches:", error); return []; }
   },
 
@@ -88,6 +107,7 @@ export const contestService = {
    */
   commentOnMatch: async (matchId: string, text: string) => {
     try {
+      // @ts-ignore
       return await callApi('commentContest', { matchId, text });
     } catch (error) { console.error("Error commenting on match:", error); throw error; }
   },

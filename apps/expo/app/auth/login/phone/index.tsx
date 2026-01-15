@@ -9,7 +9,6 @@ import {
   Platform,
   ScrollView,
   TextInput,
-  Alert,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -88,50 +87,56 @@ export default function PhoneLoginScreen() {
       const userCredential = await signInWithCredential(auth, credential);
       const user = userCredential.user;
 
-      // Normalize phone number for consistent checking
+      // 1. Normalize Phone Number for searching
       const fullPhone = user.phoneNumber || (countryCode + phoneNumber);
+      // Clean up number to only + and digits for strict match
       const normalizedPhone = fullPhone.replace(/[^\d+]/g, "");
+      
+      console.log("Verifying normalized phone:", normalizedPhone);
 
-      // 1. Check by UID first (most reliable)
+      // 2. SEARCH LOGIC: Try to find existing user
+      let existingUserDoc = null;
+      
+      // A. Try direct UID match first
       const userDocRef = doc(db, "users", user.uid);
       const userDocSnap = await getDoc(userDocRef);
       
-      let userData = null;
       if (userDocSnap.exists()) {
-          userData = userDocSnap.data();
+          existingUserDoc = userDocSnap.data();
       } else {
-          // 2. If not found by UID, check by 'phone' field (for email users who linked phone)
-          const q = query(collection(db, "users"), where("phone", "==", normalizedPhone), limit(1));
+          // B. Try searching by phone field (for robustness)
+          const q = query(
+              collection(db, "users"), 
+              where("phone", "==", normalizedPhone), 
+              limit(1)
+          );
           const querySnapshot = await getDocs(q);
           if (!querySnapshot.empty) {
-              userData = querySnapshot.docs[0].data();
+              existingUserDoc = querySnapshot.docs[0].data();
           }
       }
 
-      if (userData) {
-        // Check if profile is actually complete (has username or flag)
-        if (userData.signupCompleted === true || userData.username) {
-          addToast("Welcome back!", "success");
-          router.replace("/home");
-        } else {
-          // Found user but profile incomplete
-          setMultiple({
-            ...userData,
-            phone: normalizedPhone,
-            authProvider: 'phone'
-          });
-          addToast("Please complete your profile.", "info");
-          router.replace("/auth/signup/fill-profile");
-        }
+      // 3. DECISION LOGIC
+      if (existingUserDoc && (existingUserDoc.signupCompleted || existingUserDoc.username)) {
+        // REGISTERED USER FOUND
+        addToast("Welcome back!", "success");
+        router.replace("/home");
       } else {
-        // NEW USER - Absolutely no record found
-        console.log("New User detected:", normalizedPhone);
-        reset();
-        setMultiple({
+        // NEW USER OR INCOMPLETE PROFILE
+        console.log("No complete profile found, redirecting to Fill Profile");
+        
+        // Prepare signup data (preserving any partially saved data if found)
+        const profileData = {
+            ...(existingUserDoc || {}),
+            uid: user.uid,
             phone: normalizedPhone,
             authProvider: 'phone'
-        });
-        addToast("OTP Verified! Let's create your profile.", "success");
+        };
+
+        reset(); // Clear store
+        setMultiple(profileData); // Populate store with found data
+        
+        addToast("OTP Verified! Please complete your profile.", "success");
         router.replace("/auth/signup/fill-profile");
       }
     } catch (error: any) {

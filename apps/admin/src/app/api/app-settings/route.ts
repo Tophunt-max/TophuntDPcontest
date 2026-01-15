@@ -1,11 +1,12 @@
 import { db } from "@/lib/firebase/admin";
 import { NextResponse } from "next/server";
 
+export const revalidate = 300; // Revalidate every 5 minutes
+
 export async function GET() {
   try {
     const doc = await db.collection("settings").doc("appConfig").get();
     
-    // Determine the host for dynamic URLs
     const host = process.env.NEXT_PUBLIC_APP_URL || "https://tophuntdpcontest.web.app";
 
     const defaultSettings = { 
@@ -37,22 +38,17 @@ export async function GET() {
       }
     };
 
-    if (!doc.exists) {
-      return NextResponse.json(defaultSettings);
-    }
-
-    const data = doc.data() || {};
-    // Merge with defaults to ensure all fields exist
+    const data = doc.exists ? (doc.data() || {}) : {};
+    
     return NextResponse.json({
       ...defaultSettings,
       ...data,
-      authSettings: {
-        ...defaultSettings.authSettings,
-        ...(data.authSettings || {})
-      },
-      legalSettings: {
-        ...defaultSettings.legalSettings,
-        ...(data.legalSettings || {})
+      authSettings: { ...defaultSettings.authSettings, ...(data.authSettings || {}) },
+      legalSettings: { ...defaultSettings.legalSettings, ...(data.legalSettings || {}) }
+    }, {
+      headers: {
+        'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600',
+        'X-Content-Type-Options': 'nosniff'
       }
     });
   } catch (error) {

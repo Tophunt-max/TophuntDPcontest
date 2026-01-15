@@ -9,9 +9,11 @@ import {
     doc, 
     updateDoc, 
     increment,
-    deleteDoc
+    deleteDoc,
+    getDoc
 } from 'firebase/firestore';
 import { firestore } from '../firebase/initFirebase';
+import { callApi } from '../api';
 
 export interface Comment {
   id: string;
@@ -25,7 +27,6 @@ export interface Comment {
 }
 
 export const commentService = {
-  // Add a new comment
   addComment: async (postId: string, userId: string, username: string, userAvatar: string, text: string, collectionName: string = 'posts') => {
     const commentData = {
       postId,
@@ -37,19 +38,38 @@ export const commentService = {
       likes: 0
     };
 
-    // 1. Add comment to subcollection
     const commentRef = await addDoc(collection(firestore, collectionName, postId, 'comments'), commentData);
 
-    // 2. Increment comment count in post/match document
     const ref = doc(firestore, collectionName, postId);
     await updateDoc(ref, {
       commentCount: increment(1)
     });
 
+    // --- NOTIFICATION LOGIC ---
+    try {
+        const postDoc = await getDoc(ref);
+        if (postDoc.exists()) {
+            const postData = postDoc.data();
+            if (postData.userId !== userId) {
+                await callApi('notificationApi', {
+                    type: 'COMMENT',
+                    data: {
+                        targetId: postId,
+                        authorId: postData.userId,
+                        commenterId: userId,
+                        text: text,
+                        image: postData.mediaUrl || null
+                    }
+                });
+            }
+        }
+    } catch (e) {
+        console.warn("Notification failed, but comment was saved:", e);
+    }
+
     return commentRef.id;
   },
 
-  // Subscribe to comments for a specific post/match
   subscribeToComments: (postId: string, callback: (comments: Comment[]) => void, collectionName: string = 'posts') => {
     const q = query(
       collection(firestore, collectionName, postId, 'comments'),
@@ -65,11 +85,8 @@ export const commentService = {
     });
   },
 
-  // Delete a comment
   deleteComment: async (postId: string, commentId: string, collectionName: string = 'posts') => {
     await deleteDoc(doc(firestore, collectionName, postId, 'comments', commentId));
-    
-    // Decrement count
     const ref = doc(firestore, collectionName, postId);
     await updateDoc(ref, {
       commentCount: increment(-1)

@@ -21,16 +21,72 @@ export const contestHandler = onCall(CONTEST_CONFIG, async (request) => {
     }
 
     const { action } = request.data;
-    if (!action || !["join", "vote"].includes(action)) {
-        throw new HttpsError("invalid-argument", "Invalid action. Use 'join' or 'vote'.");
+    if (!action) {
+        throw new HttpsError("invalid-argument", "Action specify karna zaroori hai.");
     }
 
-    if (action === "join") {
-        return handleJoin(request);
-    } else {
-        return handleVote(request);
+    switch (action) {
+        case "join":
+            return handleJoin(request);
+        case "vote":
+            return handleVote(request);
+        case "createContestTemplate":
+            return createContestTemplate(request);
+        default:
+            throw new HttpsError("invalid-argument", `Action '${action}' not supported in contestHandler.`);
     }
 });
+
+/**
+ * ADMIN ONLY: Create a new contest template
+ */
+async function createContestTemplate(request: any) {
+    // Basic admin check (this can be expanded based on your custom claims)
+    const uid = request.auth.uid;
+    const userDoc = await db.collection("users").doc(uid).get();
+    if (!userDoc.exists || userDoc.data()?.role !== "admin") {
+        throw new HttpsError("permission-denied", "Only admins can create contest templates.");
+    }
+
+    const { 
+        title, type, description, rules, 
+        totalEntryFee, rewardCoins, rewardXP, 
+        minVotes, durationHours, autoCancelHours, bannerUrl 
+    } = request.data;
+
+    if (!title || !type) {
+        throw new HttpsError("invalid-argument", "Title and Type are required.");
+    }
+
+    try {
+        const templateId = db.collection("contests").doc().id;
+        const newTemplate = {
+            id: templateId,
+            name: title,
+            type,
+            description: description || "",
+            rules: rules || "",
+            totalEntryFee: Number(totalEntryFee) || 0,
+            rewardCoins: Number(rewardCoins) || 0,
+            rewardXP: Number(rewardXP) || 0,
+            minVotes: Number(minVotes) || 5,
+            durationHours: Number(durationHours) || 24,
+            autoCancelHours: Number(autoCancelHours) || 24,
+            bannerUrl: bannerUrl || "",
+            status: "live", // Templates are live by default in this system
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            createdBy: uid
+        };
+
+        await db.collection("contests").doc(templateId).set(newTemplate);
+
+        return { success: true, id: templateId, message: "Contest template created successfully." };
+    } catch (error: any) {
+        console.error("Error creating contest template:", error);
+        throw new HttpsError("internal", error.message || "Failed to create contest template.");
+    }
+}
 
 // --- JOIN LOGIC ---
 async function handleJoin(request: any) {

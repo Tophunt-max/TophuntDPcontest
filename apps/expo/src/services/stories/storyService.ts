@@ -10,413 +10,288 @@ import {
   getDoc,
   orderBy,
   limit,
-  addDoc,
-  documentId,
   updateDoc,
-  deleteDoc
+  deleteDoc,
+  startAfter,
+  QueryDocumentSnapshot,
+  addDoc,
+  increment
 } from 'firebase/firestore';
-import { firestore as db, auth } from '../firebase/initFirebase';
+import { firestore as db, auth } from '../firebase/initFirebase'; // FIXED: Importing firestore alias
 import { Story, UserStories } from '@/src/types/stories';
-import { callApi } from '../api'; // Naya centralized API caller
+import { callApi } from '../api'; 
+import { Image } from 'expo-image';
+import { StatusMediaService } from '../media/StatusMediaService';
+import { prefetchMedia } from '../media/MediaCacheService';
+import { getOptimizedMediaUrl } from '../../utils/media';
 
-// Cache for user profile data to avoid repeated fetches
-const userProfileCache: Record<string, { username: string, avatarUrl: string, timestamp: number }> = {};
-const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+const STORY_LIMIT = 20;
 
-export const fetchStories = async (): Promise<UserStories[]> => {
+/**
+ * 1. UNIFIED STORY FETCHING
+ * Fetches stories from the unified 'stories' collection.
+ */
+export const fetchStories = async (lastVisible?: QueryDocumentSnapshot): Promise<{ userStories: UserStories[], lastDoc: QueryDocumentSnapshot | null }> => {
   try {
     const user = auth.currentUser;
-    if (!user) return [];
+    if (!user) return { userStories: [], lastDoc: null };
 
-    console.log("[fetchStories] Started for:", user.uid);
+    // Safety check for firestore instance
+    if (!db) {
+        console.error("[fetchStories] Firestore instance 'db' is undefined");
+        return { userStories: [], lastDoc: null };
+    }
 
     const now = Timestamp.now();
     const storiesRef = collection(db, 'stories');
     
-    // 1. Get the latest stories first. 
-    const q = query(
+    let q = query(
       storiesRef, 
-      orderBy('createdAt', 'desc'),
-      limit(100)
+      where('expiresAt', '>', now),
+      orderBy('expiresAt', 'desc'),
+      limit(STORY_LIMIT)
     );
 
-    const querySnapshot = await getDocs(q);
-    console.log("[fetchStories] Fetched docs count:", querySnapshot.size);
-
-    if (querySnapshot.empty) {
-        return [];
+    if (lastVisible) {
+      q = query(q, startAfter(lastVisible));
     }
 
-    const rawStories: any[] = [];
-    const uniqueUserIds = new Set<string>();
-    const nowSeconds = now.seconds;
+    const querySnapshot = await getDocs(q);
+    if (querySnapshot.empty) return { userStories: [], lastDoc: null };
 
-    querySnapshot.forEach((doc) => {
-      const data = doc.data();
-      const expiresAt = data.expiresAt;
+    const rawStories: Story[] = [];
+    querySnapshot.forEach((docSnap) => {
+      const data = docSnap.data();
+      const storyData = { id: docSnap.id, ...data } as Story;
+      rawStories.push(storyData);
       
-      const isActive = expiresAt ? expiresAt.seconds > nowSeconds : (data.createdAt?.seconds + 86400) > nowSeconds;
-
-      if (isActive) {
-        rawStories.push({ 
-          id: doc.id, 
-          ...data,
-          seen: false 
-        });
-        uniqueUserIds.add(data.userId);
+      // Prefetching for performance
+      if (storyData.mediaUrl) {
+          const optimizedUrl = getOptimizedMediaUrl(storyData.mediaUrl);
+          if (storyData.mediaType === 'image') {
+              Image.prefetch(optimizedUrl);
+          } else {
+              prefetchMedia(optimizedUrl);
+          }
       }
     });
 
-    console.log("[fetchStories] Active unique users with stories:", uniqueUserIds.size);
-
-    const userDataMap: Record<string, { username: string, avatarUrl: string }> = {};
-    const uidsToFetch = Array.from(uniqueUserIds).filter(uid => {
-        const cached = userProfileCache[uid];
-        if (cached && (Date.now() - cached.timestamp < CACHE_DURATION)) {
-            userDataMap[uid] = { username: cached.username, avatarUrl: cached.avatarUrl };
-            return false;
-        }
-        return true;
-    });
-
-    if (uidsToFetch.length > 0) {
-        await Promise.all(uidsToFetch.map(async (uid) => {
-            try {
-                const uDoc = await getDoc(doc(db, 'users', uid));
-                if (uDoc.exists()) {
-                    const d = uDoc.data();
-                    const info = {
-                        username: d?.username || d?.fullName || 'User',
-                        avatarUrl: d?.profileImageUrl || `https://ui-avatars.com/api/?name=${d?.username || 'U'}`,
-                        timestamp: Date.now()
-                    };
-                    userProfileCache[uid] = info;
-                    userDataMap[uid] = { username: info.username, avatarUrl: info.avatarUrl };
-                } else {
-                    userDataMap[uid] = { username: 'User', avatarUrl: 'https://ui-avatars.com/api/?name=U' };
-                }
-            } catch (e) {
-                console.error(`Error fetching user profile for ${uid}:`, e);
-                userDataMap[uid] = { username: 'User', avatarUrl: 'https://ui-avatars.com/api/?name=U' };
-            }
-        }));
-    }
-
+    // Group stories by user
     const groupedStories: Record<string, Story[]> = {};
     rawStories.forEach((story) => {
       if (!groupedStories[story.userId]) {
         groupedStories[story.userId] = [];
       }
-      groupedStories[story.userId].push(story as Story);
+      groupedStories[story.userId].push(story);
     });
 
-    const userStoriesList: UserStories[] = [];
-    for (const userId in groupedStories) {
-      const userStories = groupedStories[userId];
-      userStories.sort((a, b) => (a.createdAt as any)?.seconds - (b.createdAt as any)?.seconds);
+    const userStoriesList: UserStories[] = Object.keys(groupedStories).map(userId => ({
+      userId,
+      username: groupedStories[userId][0].username,
+      avatarUrl: groupedStories[userId][0].avatarUrl,
+      stories: groupedStories[userId].sort((a, b) => a.createdAt.seconds - b.createdAt.seconds),
+      hasUnseen: true 
+    }));
 
-      userStoriesList.push({
-        userId,
-        username: userDataMap[userId]?.username || 'User',
-        avatarUrl: userDataMap[userId]?.avatarUrl || `https://ui-avatars.com/api/?name=U`,
-        stories: userStories,
-        hasUnseen: true 
-      });
-    }
+    // Put current user stories at the beginning
+    const sortedList = userStoriesList.sort((a, b) => {
+        if (a.userId === user.uid) return -1;
+        if (b.userId === user.uid) return 1;
+        return 0;
+    });
 
-    const currentUserIndex = userStoriesList.findIndex(us => us.userId === user.uid);
-    if (currentUserIndex > -1) {
-        const [currentUserStory] = userStoriesList.splice(currentUserIndex, 1);
-        userStoriesList.unshift(currentUserStory);
-    }
-
-    console.log("[fetchStories] Finished. Returning list of size:", userStoriesList.length);
-    return userStoriesList;
+    return { 
+        userStories: sortedList, 
+        lastDoc: querySnapshot.docs[querySnapshot.docs.length - 1] 
+    };
 
   } catch (error) {
-    console.error("[fetchStories] Fatal error:", error);
-    return [];
+    console.error("[fetchStories] Error:", error);
+    return { userStories: [], lastDoc: null };
   }
 };
 
-export const createStoryRecord = async (
-    mediaUrl: string, 
-    mediaType: 'image' | 'video', 
-    visibility: 'public' | 'followers' = 'followers',
+/**
+ * 2. UNIFIED STORY CREATION (OPTIMIZED)
+ */
+export const createStoryRecordOptimized = async (
+    uri: string,
+    fileType: 'image' | 'video',
     overlayText?: string | null,
     textPosition?: { x: number, y: number } | null,
-    mentions?: string[]
+    mentions?: string[],
+    onProgress?: (progress: number) => void
 ) => {
   const user = auth.currentUser;
-  if (!user) throw new Error('User not authenticated');
+  if (!user) throw new Error("Unauthenticated");
 
   try {
-    // Purana: httpsCallable(functions, 'createStory')
-    // Ab: 'createStory' action in API router
-    const data: any = await callApi('createStory', { 
-        mediaUrl, 
-        mediaType, 
-        visibility,
+    const uploadResult = await StatusMediaService.uploadStatus(
+      uri, 
+      user.uid, 
+      fileType === 'video',
+      onProgress
+    );
+
+    const response = await callApi('storyHandler', { 
+        action: 'create',
+        mediaUrl: uploadResult.mediaUrl, 
+        type: fileType,
+        storyId: uploadResult.statusId,
+        objectKey: uploadResult.objectKey,
         overlayText,
         textPosition,
         mentions
     });
-    
-    if (data && data.success) {
-      return data.storyId;
-    } else {
-      throw new Error(data?.message || "Failed to create story record on server.");
-    }
+
+    return response.storyId;
   } catch (error: any) {
-    throw new Error(`API Error: ${error.message}`);
+    console.error("[createStoryRecordOptimized] Error:", error);
+    throw error;
+  }
+};
+
+export const createStoryRecord = createStoryRecordOptimized;
+
+/**
+ * 3. STORY ENGAGEMENT (VIEW / DELETE)
+ */
+export const markStoryAsSeen = async (storyId: string) => {
+  const user = auth.currentUser;
+  if (!user || !db) return;
+  
+  try {
+    const viewRef = doc(db, 'storyViews', storyId, 'users', user.uid);
+    const viewDoc = await getDoc(viewRef);
+    
+    if (!viewDoc.exists()) {
+        await setDoc(viewRef, { 
+            viewedAt: serverTimestamp(),
+            uid: user.uid,
+            username: user.displayName || 'User',
+            avatarUrl: user.photoURL || null
+        });
+        callApi('storyHandler', { action: 'view', storyId }).catch(() => {});
+    }
+  } catch (error) {
+    console.error("markStoryAsSeen error:", error);
   }
 };
 
 export const deleteStory = async (storyId: string) => {
-    const user = auth.currentUser;
-    if (!user) throw new Error('Unauthenticated');
-    
+    if (!db) return;
     try {
-        // Purana: httpsCallable(functions, 'deleteStory')
-        // Ab: 'deleteStory' action in API router
-        await callApi('deleteStory', { storyId });
-    } catch (error: any) {
-        console.warn("Cloud delete failed, trying client side:", error);
+        await callApi('storyHandler', { action: 'delete', storyId });
+        await deleteDoc(doc(db, 'stories', storyId));
+    } catch (error) {
+        console.error("deleteStory error:", error);
         await deleteDoc(doc(db, 'stories', storyId));
     }
 };
 
-export const markStoryAsSeen = async (storyId: string) => {
-  const user = auth.currentUser;
-  if (!user) return;
-
-  try {
-    const viewRef = doc(db, 'storyViews', `${storyId}_${user.uid}`);
-    await setDoc(viewRef, {
-      viewerUid: user.uid,
-      storyId,
-      viewedAt: serverTimestamp()
-    }, { merge: true });
-  } catch (err) {
-    console.error("markStoryAsSeen error:", err);
-  }
-};
-
 export const fetchStoryViewers = async (storyId: string) => {
+    if (!db) return { viewers: [] };
     try {
-        const viewsRef = collection(db, 'storyViews');
-        const q = query(viewsRef, where('storyId', '==', storyId));
+        const viewersRef = collection(db, 'storyViews', storyId, 'users');
+        const q = query(viewersRef, orderBy('viewedAt', 'desc'), limit(50));
         const snapshot = await getDocs(q);
         
-        const viewers = await Promise.all(snapshot.docs.map(async (vDoc) => {
-            const data = vDoc.data();
-            const userDoc = await getDoc(doc(db, 'users', data.viewerUid));
-            const userData = userDoc.data();
-            return {
-                uid: data.viewerUid,
-                username: userData?.username || 'Unknown',
-                avatarUrl: userData?.profileImageUrl || `https://ui-avatars.com/api/?name=${userData?.username || 'U'}`,
-                viewedAt: data.viewedAt,
-                reaction: data.reaction || null
-            };
+        const viewers = snapshot.docs.map(docSnap => ({
+            uid: docSnap.id,
+            ...docSnap.data()
         }));
         
-        return viewers;
+        return { viewers };
     } catch (error) {
         console.error("fetchStoryViewers error:", error);
-        return [];
+        return { viewers: [] };
     }
 };
 
-export const createHighlight = async (name: string, coverImageUrl: string, storyIds: string[]) => {
+export const reactToStory = async (storyId: string, emoji: string) => {
     const user = auth.currentUser;
-    if (!user) throw new Error('Unauthenticated');
-
-    const highlightsRef = collection(db, 'users', user.uid, 'highlights');
-    return await addDoc(highlightsRef, {
-        name,
-        coverImageUrl,
-        storyIds,
-        createdAt: serverTimestamp(),
-    });
+    if (!user || !db) return;
+    try {
+        const viewRef = doc(db, 'storyViews', storyId, 'users', user.uid);
+        await setDoc(viewRef, { reaction: emoji, reactedAt: serverTimestamp() }, { merge: true });
+    } catch (err) {
+        console.error("reactToStory error:", err);
+    }
 };
 
+/**
+ * 4. HIGHLIGHTS MANAGEMENT
+ */
 export const fetchUserHighlights = async (userId: string) => {
+    if (!db) return [];
     try {
         const highlightsRef = collection(db, 'users', userId, 'highlights');
         const q = query(highlightsRef, orderBy('createdAt', 'desc'));
         const snapshot = await getDocs(q);
-        
-        return snapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data()
-        }));
+        return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (error) {
         console.error("fetchUserHighlights error:", error);
         return [];
     }
 };
 
+export const createHighlight = async (name: string, coverImageUrl: string, storyIds: string[]) => {
+    const user = auth.currentUser;
+    if (!user || !db) throw new Error('Unauthenticated');
+    const highlightsRef = collection(db, 'users', user.uid, 'highlights');
+    return await addDoc(highlightsRef, { 
+        name, 
+        coverImageUrl, 
+        storyIds, 
+        createdAt: serverTimestamp() 
+    });
+};
+
 export const addStoryToHighlight = async (highlightId: string, storyId: string) => {
     const user = auth.currentUser;
-    if (!user) return;
-
-    const highlightRef = doc(db, 'users', user.uid, 'highlights', highlightId);
-    const highlightDoc = await getDoc(highlightRef);
-    if (highlightDoc.exists()) {
-        const storyIds = highlightDoc.data().storyIds || [];
-        if (!storyIds.includes(storyId)) {
-            await setDoc(highlightRef, { 
-                storyIds: [...storyIds, storyId] 
-            }, { merge: true });
-        }
-    }
-};
-
-export const fetchHighlightStories = async (userId: string, highlightId: string): Promise<UserStories | null> => {
+    if (!user || !db) return;
     try {
-        const highlightRef = doc(db, 'users', userId, 'highlights', highlightId);
+        const highlightRef = doc(db, 'users', user.uid, 'highlights', highlightId);
         const highlightDoc = await getDoc(highlightRef);
-        
-        if (!highlightDoc.exists()) return null;
-        
-        const highlightData = highlightDoc.data();
-        const storyIds = highlightData.storyIds || [];
-        
-        if (storyIds.length === 0) return null;
-
-        const storiesRef = collection(db, 'stories');
-        const q = query(storiesRef, where(documentId(), 'in', storyIds.slice(0, 10))); 
-        const storiesSnapshot = await getDocs(q);
-        
-        const rawStories: any[] = [];
-        storiesSnapshot.forEach(doc => {
-            rawStories.push({
-                id: doc.id,
-                ...doc.data(),
-                seen: true
-            });
-        });
-
-        const userDoc = await getDoc(doc(db, 'users', userId));
-        const userData = userDoc.data();
-
-        return {
-            userId,
-            username: userData?.username || highlightData.name,
-            avatarUrl: userData?.profileImageUrl || highlightData.coverImageUrl,
-            stories: rawStories.sort((a, b) => (a.createdAt as any)?.seconds - (b.createdAt as any)?.seconds),
-            hasUnseen: false
-        };
+        if (highlightDoc.exists()) {
+            const storyIds = highlightDoc.data().storyIds || [];
+            if (!storyIds.includes(storyId)) {
+                await updateDoc(highlightRef, { storyIds: [...storyIds, storyId] });
+            }
+        }
     } catch (error) {
-        console.error("fetchHighlightStories error:", error);
-        return null;
+        console.error("addStoryToHighlight error:", error);
     }
 };
 
-export const reactToStory = async (storyId: string, emoji: string) => {
-    const user = auth.currentUser;
-    if (!user) return;
-
+export const fetchStoriesByIds = async (storyIds: string[]) => {
+    if (!storyIds || storyIds.length === 0 || !db) return [];
     try {
-        const viewRef = doc(db, 'storyViews', `${storyId}_${user.uid}`);
-        await updateDoc(viewRef, {
-            reaction: emoji,
-            reactedAt: serverTimestamp()
+        const validStories: Story[] = [];
+        const promises = storyIds.map(id => getDoc(doc(db, 'stories', id)));
+        const snapshots = await Promise.all(promises);
+        snapshots.forEach(snap => {
+            if (snap.exists()) {
+                validStories.push({ id: snap.id, ...snap.data() } as Story);
+            }
         });
-    } catch (err) {
-        const viewRef = doc(db, 'storyViews', `${storyId}_${user.uid}`);
-        await setDoc(viewRef, {
-            viewerUid: user.uid,
-            storyId,
-            viewedAt: serverTimestamp(),
-            reaction: emoji,
-            reactedAt: serverTimestamp()
-        });
-    }
-};
-
-export const searchUsers = async (searchTerm: string) => {
-    try {
-        if (!searchTerm || searchTerm.length < 2) return [];
-        
-        const usersRef = collection(db, 'users');
-        const q = query(
-            usersRef, 
-            where('username', '>=', searchTerm.toLowerCase()),
-            where('username', '<=', searchTerm.toLowerCase() + '\uf8ff'),
-            limit(5)
-        );
-        
-        const snapshot = await getDocs(q);
-        return snapshot.docs.map(doc => ({
-            id: doc.id,
-            username: doc.data().username,
-            avatarUrl: doc.data().profileImageUrl
-        }));
+        return validStories;
     } catch (error) {
-        console.error("searchUsers error:", error);
+        console.error("fetchStoriesByIds error:", error);
         return [];
     }
 };
 
-export const fetchUserStoriesByUserId = async (userId: string): Promise<UserStories | null> => {
+export const fetchHighlightStories = async (userId: string, highlightId: string) => {
+    if (!db) return [];
     try {
-        const userDoc = await getDoc(doc(db, 'users', userId));
-        if (!userDoc.exists()) return null;
-        const userData = userDoc.data();
-
-        const now = Timestamp.now();
-        const storiesRef = collection(db, 'stories');
-        const q = query(
-            storiesRef,
-            where('userId', '==', userId),
-            orderBy('createdAt', 'desc'),
-            limit(50)
-        );
-        const storiesSnapshot = await getDocs(q);
-
-        if (storiesSnapshot.empty) return null;
-
-        const stories: Story[] = [];
-        const nowSeconds = now.seconds;
-
-        storiesSnapshot.forEach(doc => {
-            const data = doc.data();
-            if (data.expiresAt && data.expiresAt.seconds > nowSeconds) {
-                stories.push({ id: doc.id, ...data, seen: false } as Story);
-            }
-        });
-
-        if (stories.length === 0) return null;
-
-        return {
-            userId,
-            username: userData?.username || userData?.fullName || 'User',
-            avatarUrl: userData?.profileImageUrl || `https://ui-avatars.com/api/?name=${userData?.username || 'U'}`,
-            stories: stories.reverse(), 
-            hasUnseen: true
-        };
-
+        const highlightRef = doc(db, 'users', userId, 'highlights', highlightId);
+        const highlightDoc = await getDoc(highlightRef);
+        if (!highlightDoc.exists()) return [];
+        const storyIds = highlightDoc.data().storyIds || [];
+        return await fetchStoriesByIds(storyIds);
     } catch (error) {
-        console.error("fetchUserStoriesByUserId error:", error);
-        return null;
-    }
-};
-
-export const fetchUserStoriesByUsername = async (username: string): Promise<UserStories | null> => {
-    try {
-        const usersRef = collection(db, 'users');
-        const userQuery = query(usersRef, where('username', '==', username.toLowerCase()), limit(1));
-        const userSnapshot = await getDocs(userQuery);
-
-        if (userSnapshot.empty) return null;
-
-        const userId = userSnapshot.docs[0].id;
-        return await fetchUserStoriesByUserId(userId);
-
-    } catch (error) {
-        console.error("fetchUserStoriesByUsername error:", error);
-        return null;
+         console.error("fetchHighlightStories error:", error);
+         return [];
     }
 };

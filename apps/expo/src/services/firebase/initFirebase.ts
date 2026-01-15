@@ -12,6 +12,7 @@ import {
   getFirestore,
   Firestore,
 } from "firebase/firestore";
+import { getDatabase } from "firebase/database"; // ADDED: Realtime Database
 import { firebaseConfig } from "@/src/firebaseConfig";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Platform } from "react-native";
@@ -44,9 +45,10 @@ if (getApps().length === 0) {
     auth = getAuth(app);
 }
 
-// 4. Initialize Firestore
+// 4. Initialize Services
 const firestore: Firestore = getFirestore(app);
+const database = getDatabase(app); // ADDED: Realtime Database instance
 const functions = getFunctions(app, "us-central1"); 
 
-export { firestore, auth, app, functions };
+export { firestore, auth, app, functions, database }; // Exported database
 export default app;

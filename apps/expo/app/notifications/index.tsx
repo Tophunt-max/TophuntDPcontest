@@ -1,10 +1,12 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, FlatList, StyleSheet, RefreshControl, Text, Image, useColorScheme } from 'react-native';
+import { View, FlatList, StyleSheet, RefreshControl, Text, useColorScheme } from 'react-native';
+import { Image } from 'expo-image';
 import { Stack } from 'expo-router';
 import { useAuth } from '@/src/hooks/useAuth';
 import { notificationService, NotificationItem } from '@/src/services/notifications/notificationService';
 import { Colors } from '@/constants/theme';
 import { NotificationSkeleton } from '@/src/components/notifications/NotificationSkeleton';
+import { getOptimizedMediaUrl } from '@/src/utils/media';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 
@@ -21,14 +23,12 @@ export default function NotificationsScreen() {
     const loadNotifications = useCallback(() => {
         if (!user?.uid) return;
 
-        // No need to set loading true here if it's already loaded once, 
-        // to avoid flickering on refresh.
         const unsubscribe = notificationService.subscribeToNotifications(user.uid, 50, (items) => {
             setNotifications(items);
             setLoading(false);
             setRefreshing(false);
             
-            // Mark unread as read (Requirement: Mark when screen opens)
+            // Mark unread as read
             const unreadIds = items.filter(n => !n.read).map(n => n.id);
             if (unreadIds.length > 0) {
                 notificationService.markAsRead(user.uid, unreadIds);
@@ -50,9 +50,6 @@ export default function NotificationsScreen() {
 
     const onRefresh = () => {
         setRefreshing(true);
-        // The listener is already active, so we just simulate refresh 
-        // or re-trigger if needed. But with onSnapshot, it's auto-updating.
-        // We can just timeout to stop spinner.
         setTimeout(() => setRefreshing(false), 1000);
     };
 
@@ -60,15 +57,19 @@ export default function NotificationsScreen() {
         const isRead = item.read;
         const backgroundColor = isRead 
             ? (isDark ? Colors.dark.background : Colors.light.background)
-            : (isDark ? '#2A2A2A' : '#E8F1FF');
+            : (isDark ? '#2A2A2A' : '#F0F5FF');
+
+        const imageUri = getOptimizedMediaUrl(item.image || '');
 
         return (
             <View style={[styles.itemContainer, { backgroundColor }]}>
                 <View style={styles.avatarContainer}>
                     <Image 
-                        source={item.image ? { uri: item.image } : require('@/assets/images/icon.png')} 
+                        source={item.image ? { uri: imageUri } : require('@/assets/images/icon.png')} 
                         style={styles.avatar} 
-                        resizeMode="cover"
+                        contentFit="cover"
+                        cachePolicy="memory-disk"
+                        transition={200}
                     />
                 </View>
                 <View style={styles.textContainer}>
@@ -80,7 +81,12 @@ export default function NotificationsScreen() {
                     </Text>
                 </View>
                 {item.type !== 'follow' && item.type !== 'admin' && item.image && (
-                     <Image source={{ uri: item.image }} style={styles.postThumb} />
+                     <Image 
+                        source={{ uri: imageUri }} 
+                        style={styles.postThumb} 
+                        contentFit="cover"
+                        cachePolicy="memory-disk"
+                     />
                 )}
             </View>
         );
@@ -99,14 +105,7 @@ export default function NotificationsScreen() {
             
             {loading && notifications.length === 0 ? (
                 <View style={{ padding: 0 }}>
-                    <NotificationSkeleton isDark={isDark} /> 
-                    <NotificationSkeleton isDark={isDark} />
-                    <NotificationSkeleton isDark={isDark} />
-                    <NotificationSkeleton isDark={isDark} />
-                    <NotificationSkeleton isDark={isDark} />
-                    <NotificationSkeleton isDark={isDark} />
-                    <NotificationSkeleton isDark={isDark} />
-                    <NotificationSkeleton isDark={isDark} />
+                    {[1,2,3,4,5,6,7,8].map(i => <NotificationSkeleton key={i} isDark={isDark} />)}
                 </View>
             ) : (
                 <FlatList
@@ -136,8 +135,6 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         padding: 14,
         alignItems: 'center',
-        // borderBottomWidth: StyleSheet.hairlineWidth,
-        // borderBottomColor: '#333',
     },
     avatarContainer: {
         marginRight: 12,

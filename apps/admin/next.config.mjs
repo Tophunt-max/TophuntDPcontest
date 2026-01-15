@@ -6,6 +6,7 @@ const nextConfig = {
   },
   images: {
     remotePatterns: [
+      { protocol: "https", hostname: "media.tophunt.in" },
       { protocol: "https", hostname: "*.amazonaws.com" },
       { protocol: "https", hostname: "firebasestorage.googleapis.com" },
       { protocol: "https", hostname: "*.firebasestorage.googleapis.com" },

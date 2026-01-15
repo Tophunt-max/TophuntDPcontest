@@ -8,6 +8,9 @@ import { auth } from '@/src/services/firebase/initFirebase';
 import { useRouter } from 'expo-router';
 import { useColorScheme } from 'react-native';
 import { Colors } from '@/constants/theme';
+import { getOptimizedMediaUrl } from '@/src/utils/media';
+
+const DEFAULT_AVATAR = "https://ui-avatars.com/api/?background=random&color=fff&name=";
 
 interface StoryItemProps {
   item?: UserStories;
@@ -22,7 +25,11 @@ export const StoryItem: React.FC<StoryItemProps> = ({ item, isCurrentUser, onPre
   const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
   
   const username = isCurrentUser ? 'Your story' : item?.username;
-  const avatarUrl = item?.avatarUrl || (isCurrentUser ? auth.currentUser?.photoURL : null);
+  
+  // Logic to get the best possible avatar URL
+  const rawAvatarUrl = item?.avatarUrl || (isCurrentUser ? auth.currentUser?.photoURL : null);
+  const avatarUrl = getOptimizedMediaUrl(rawAvatarUrl || `${DEFAULT_AVATAR}${encodeURIComponent(username || 'U')}`);
+
   const hasUnseen = item?.hasUnseen;
   const hasStories = !!item && item.stories.length > 0;
 
@@ -41,7 +48,12 @@ export const StoryItem: React.FC<StoryItemProps> = ({ item, isCurrentUser, onPre
           style={styles.ring}
         >
           <View style={[styles.innerRing, { backgroundColor }]}>
-            <Image source={{ uri: avatarUrl }} style={styles.avatar} />
+            <Image 
+                source={{ uri: avatarUrl }} 
+                style={styles.avatar}
+                placeholder="|rF?hV%2WCj[ayj[a|j[az_NaeWBj@ayfRayfQfQM{M|azj[azf6fQfQfQIpWXofj[ayj[j[fQayWCoeoeaya}j[ayfQa{oLj?j[WVj[ayayj[fQoff7azayj[ayj[j[ayofayayayj[fQj[ayayj[ayfjj[j[ayjuayj["
+                cachePolicy="memory-disk"
+            />
           </View>
         </LinearGradient>
       );
@@ -50,7 +62,12 @@ export const StoryItem: React.FC<StoryItemProps> = ({ item, isCurrentUser, onPre
       return (
         <View style={[styles.ring, styles.seenRing, isDark && styles.seenRingDark]}>
            <View style={[styles.innerRing, { backgroundColor }]}>
-              <Image source={{ uri: avatarUrl }} style={styles.avatar} />
+              <Image 
+                source={{ uri: avatarUrl }} 
+                style={styles.avatar} 
+                placeholder="|rF?hV%2WCj[ayj[a|j[az_NaeWBj@ayfRayfQfQM{M|azj[azf6fQfQfQIpWXofj[ayj[j[fQayWCoeoeaya}j[ayfQa{oLj?j[WVj[ayayj[fQoff7azayj[ayj[j[ayofayayayj[fQj[ayayj[ayfjj[j[ayjuayj["
+                cachePolicy="memory-disk"
+              />
            </View>
         </View>
       );
@@ -59,8 +76,10 @@ export const StoryItem: React.FC<StoryItemProps> = ({ item, isCurrentUser, onPre
       return (
         <View style={styles.ring}>
            <Image 
-             source={{ uri: avatarUrl || 'https://ui-avatars.com/api/?name=U' }} 
+             source={{ uri: avatarUrl }} 
              style={styles.avatarNoRing} 
+             placeholder="|rF?hV%2WCj[ayj[a|j[az_NaeWBj@ayfRayfQfQM{M|azj[azf6fQfQfQIpWXofj[ayj[j[fQayWCoeoeaya}j[ayfQa{oLj?j[WVj[ayayj[fQoff7azayj[ayj[j[ayofayayayj[fQj[ayayj[ayfjj[j[ayjuayj["
+             cachePolicy="memory-disk"
            />
         </View>
       );
@@ -124,13 +143,13 @@ const styles = StyleSheet.create({
     width: 58,
     height: 58,
     borderRadius: 29,
-    backgroundColor: '#EEE',
+    backgroundColor: '#F5F5F5',
   },
   avatarNoRing: {
     width: 64,
     height: 64,
     borderRadius: 32,
-    backgroundColor: '#EEE',
+    backgroundColor: '#F5F5F5',
   },
   username: {
     fontSize: 12,

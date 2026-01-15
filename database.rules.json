@@ -1,0 +1,27 @@
+{
+  "rules": {
+    ".read": "auth != null",
+    ".write": "auth != null",
+    "presence": {
+      "$uid": {
+        ".write": "auth.uid == $uid"
+      }
+    },
+    "status": {
+      "$chatId": {
+        "$uid": {
+          ".write": "auth.uid == $uid"
+        }
+      }
+    },
+    "calls": {
+      "$chatId": {
+        ".write": "auth != null"
+      }
+    },
+    "battles": {
+        ".read": "auth != null",
+        ".write": "false"
+    }
+  }
+}

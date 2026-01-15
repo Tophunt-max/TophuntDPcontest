@@ -43,10 +43,10 @@ const nodemailer = __importStar(require("nodemailer"));
 const AUTH_CONFIG = {
     region: "us-central1",
     cpu: 1,
-    concurrency: 80, // Can handle many requests
+    concurrency: 80,
     minInstances: 0,
-    maxInstances: 1, // REDUCED TO 1 to save quota
-    memory: "256MiB",
+    maxInstances: 1,
+    memory: "512MiB",
     timeoutSeconds: 60,
     cors: true,
 };
@@ -127,9 +127,6 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
     const { action } = request.data;
     const uid = (_a = request.auth) === null || _a === void 0 ? void 0 : _a.uid;
     switch (action) {
-        // ---------------------------------------------------------
-        // ACTION: CHECK (email, phone, username)
-        // ---------------------------------------------------------
         case "check": {
             const { type } = request.data;
             if (!type || !["email", "phone", "username"].includes(type)) {
@@ -168,9 +165,6 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
             }
             return { exists };
         }
-        // ---------------------------------------------------------
-        // ACTION: CREATE USER (Auth + Profile)
-        // ---------------------------------------------------------
         case "create": {
             const { email, password, username, fullName, avatarUrl, dob, phone, occupation, gender, following, platform, coordinates } = request.data;
             if (!email || !password || !username)
@@ -203,23 +197,17 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
                 throw new https_1.HttpsError("internal", "Firestore profile creation failed.");
             }
         }
-        // ---------------------------------------------------------
-        // ACTION: CREATE PROFILE (Firestore Only)
-        // ---------------------------------------------------------
         case "createProfile": {
             const profileUid = ((_c = request.auth) === null || _c === void 0 ? void 0 : _c.uid) || request.data.uid;
             if (!profileUid)
                 throw new https_1.HttpsError("unauthenticated", "User must be authenticated.");
-            const { email } = request.data;
+            const { email, avatarUrl } = request.data;
             if (email && isDisposableEmail(email))
                 throw new https_1.HttpsError("invalid-argument", "Disposable email blocked.");
             const rewardSettings = await getRewardSettings();
-            await createFirestoreProfile(profileUid, request.data, rewardSettings.signupBonus || 0);
+            await createFirestoreProfile(profileUid, Object.assign(Object.assign({}, request.data), { avatarUrl }), rewardSettings.signupBonus || 0);
             return { status: "success", uid: profileUid, message: "Profile created successfully" };
         }
-        // ---------------------------------------------------------
-        // ACTION: GET USER BY IDENTIFIER
-        // ---------------------------------------------------------
         case "getUserByIdentifier": {
             const { identifier, type } = request.data;
             if (!identifier || !type)
@@ -247,9 +235,6 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
                 }
             };
         }
-        // ---------------------------------------------------------
-        // ACTION: SEND OTP TO PHONE (Forgot Password)
-        // ---------------------------------------------------------
         case "sendOtpToPhone": {
             const { phone } = request.data;
             if (!phone)
@@ -280,9 +265,6 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
             }
             return { success: true };
         }
-        // ---------------------------------------------------------
-        // ACTION: VERIFY OTP (Forgot Password)
-        // ---------------------------------------------------------
         case "verifyOtp": {
             const { phone, code } = request.data;
             if (!phone || !code)
@@ -300,9 +282,6 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
                 throw new https_1.HttpsError("deadline-exceeded", "OTP expired.");
             return { success: true };
         }
-        // ---------------------------------------------------------
-        // ACTION: UPDATE PASSWORD WITH PHONE (Forgot Password)
-        // ---------------------------------------------------------
         case "updatePasswordWithPhone": {
             const { phone, newPassword } = request.data;
             if (!phone || !newPassword)
@@ -321,9 +300,6 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
             await firebase_1.db.collection("passwordResetOtps").doc(normalizedPhone).delete();
             return { success: true };
         }
-        // ---------------------------------------------------------
-        // ACTION: SEND EMAIL UPDATE OTP
-        // ---------------------------------------------------------
         case "sendEmailOtp": {
             if (!uid)
                 throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
@@ -343,9 +319,6 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
             await transporter.sendMail(mailOptions);
             return { success: true };
         }
-        // ---------------------------------------------------------
-        // ACTION: VERIFY EMAIL UPDATE OTP
-        // ---------------------------------------------------------
         case "verifyEmailOtp": {
             if (!uid)
                 throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
@@ -367,9 +340,6 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
             await otpDocRef.delete();
             return { success: true, email: newEmail };
         }
-        // ---------------------------------------------------------
-        // ACTION: SEND PHONE UPDATE OTP
-        // ---------------------------------------------------------
         case "sendPhoneOtp": {
             if (!uid)
                 throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
@@ -395,9 +365,6 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
             }
             return { success: true };
         }
-        // ---------------------------------------------------------
-        // ACTION: VERIFY PHONE UPDATE OTP
-        // ---------------------------------------------------------
         case "verifyPhoneOtp": {
             if (!uid)
                 throw new https_1.HttpsError("unauthenticated", "User must be logged in.");

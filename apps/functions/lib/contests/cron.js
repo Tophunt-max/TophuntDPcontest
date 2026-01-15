@@ -4,7 +4,9 @@ exports.monthlyHallOfFame = exports.resolveContests = void 0;
 const scheduler_1 = require("firebase-functions/v2/scheduler");
 const firebase_1 = require("../utils/firebase");
 const firestore_1 = require("firebase-admin/firestore");
-const sender_1 = require("../notifications/sender");
+// Removed unused import
+// import { sendPushNotification } from "../notifications/sender";
+const utils_1 = require("../notifications/utils"); // Import unified notification utility
 /**
  * AUTOMATED MATCH RESOLVER
  * Runs every 10 minutes to check for finished matches.
@@ -29,7 +31,51 @@ exports.resolveContests = (0, scheduler_1.onSchedule)("every 10 minutes", async 
     for (const doc of waitingMatches.docs) {
         await refundMatch(doc);
     }
+    // 3. (NEW) Send "Ending Soon" Notifications for matches expiring in < 60 minutes
+    const oneHourLater = new Date(Date.now() + 60 * 60 * 1000);
+    const endingMatches = await firebase_1.db.collection("contestMatches")
+        .where("status", "==", "active")
+        .where("expiresAt", ">", now)
+        .where("expiresAt", "<=", firebase_1.admin.firestore.Timestamp.fromDate(oneHourLater))
+        .where("endingSoonNotified", "==", false) // Prevents duplicate notifications
+        .limit(50)
+        .get();
+    for (const doc of endingMatches.docs) {
+        await notifyEndingMatch(doc);
+    }
 });
+/**
+ * HELPER: Send "Ending Soon" Notification
+ */
+async function notifyEndingMatch(doc) {
+    const data = doc.data();
+    const matchId = doc.id;
+    const { userA, userB, title } = data; // Assuming data structure stores user objects or IDs
+    // IDs (adjust depending on if userA is object or ID)
+    const creatorId = userA.uid || userA;
+    const opponentId = userB.uid || userB;
+    const message = `⏳ Hurry! The battle "${title || 'Match'}" ends in less than an hour. Get more votes!`;
+    // Notify Creator
+    if (creatorId) {
+        await (0, utils_1.createNotification)(creatorId, {
+            title: "Battle Ending Soon!",
+            body: message,
+            type: "contest-ending",
+            targetId: matchId
+        });
+    }
+    // Notify Opponent
+    if (opponentId) {
+        await (0, utils_1.createNotification)(opponentId, {
+            title: "Battle Ending Soon!",
+            body: message,
+            type: "contest-ending",
+            targetId: matchId
+        });
+    }
+    // Mark as notified so we don't spam
+    await doc.ref.update({ endingSoonNotified: true });
+}
 /**
  * HELPER: Resolve a specific active match
  */
@@ -98,8 +144,18 @@ async function resolveMatch(doc) {
             description: `Victory reward for "${title}"`
         });
     });
-    await (0, sender_1.sendPushNotification)(winnerUid, "You Won! 🏆", `Victory! You won the battle "${title}" and earned ${rewardAmount} Dpcoins!`, "contest_win", { matchId });
-    await (0, sender_1.sendPushNotification)(loserUid, "Battle Ended", `The battle "${title}" has concluded. You played well!`, "contest_loss", { matchId });
+    await (0, utils_1.createNotification)(winnerUid, {
+        title: "You Won! 🏆",
+        body: `Victory! You won the battle "${title}" and earned ${rewardAmount} Dpcoins!`,
+        type: "contest-win",
+        targetId: matchId
+    });
+    await (0, utils_1.createNotification)(loserUid, {
+        title: "Battle Ended",
+        body: `The battle "${title}" has concluded. You played well!`,
+        type: "contest-loss",
+        targetId: matchId
+    });
 }
 /**
  * HELPER: Refund User A if match never started
@@ -137,7 +193,12 @@ async function refundMatch(doc) {
             timestamp: firestore_1.FieldValue.serverTimestamp()
         });
     });
-    await (0, sender_1.sendPushNotification)(userId, "Contest Refunded", `No opponent joined your "${data.title}" contest. ${refundAmount} Dpcoins have been returned.`, "contest_refund");
+    await (0, utils_1.createNotification)(userId, {
+        title: "Contest Refunded",
+        body: `No opponent joined your "${data.title}" contest. ${refundAmount} Dpcoins have been returned.`,
+        type: "contest-refund",
+        targetId: "wallet"
+    });
 }
 /**
  * HELPER: Handle Ties
@@ -171,8 +232,18 @@ async function refundTieMatch(doc) {
         transaction.update(userARef, { [fieldA]: firestore_1.FieldValue.increment(refundAmount) });
         transaction.update(userBRef, { [fieldB]: firestore_1.FieldValue.increment(refundAmount) });
     });
-    await (0, sender_1.sendPushNotification)(data.userA.uid, "It's a Tie!", "The match ended in a tie. Entry fees refunded.", "contest_tie");
-    await (0, sender_1.sendPushNotification)(data.userB.uid, "It's a Tie!", "The match ended in a tie. Entry fees refunded.", "contest_tie");
+    await (0, utils_1.createNotification)(data.userA.uid, {
+        title: "It's a Tie!",
+        body: "The match ended in a tie. Entry fees refunded.",
+        type: "contest-tie",
+        targetId: "wallet"
+    });
+    await (0, utils_1.createNotification)(data.userB.uid, {
+        title: "It's a Tie!",
+        body: "The match ended in a tie. Entry fees refunded.",
+        type: "contest-tie",
+        targetId: "wallet"
+    });
 }
 /**
  * MONTHLY HALL OF FAME
@@ -211,7 +282,12 @@ exports.monthlyHallOfFame = (0, scheduler_1.onSchedule)("0 0 1 * *", async (even
                 timestamp: firestore_1.FieldValue.serverTimestamp()
             });
         });
-        await (0, sender_1.sendPushNotification)(userId, "Monthly Hall of Fame! 🏆", `Congratulations! You ranked #${i + 1} this month. You've earned ${reward} Dpcoins and the ${badgeName}!`, "hall_of_fame");
+        await (0, utils_1.createNotification)(userId, {
+            title: "Monthly Hall of Fame! 🏆",
+            body: `Congratulations! You ranked #${i + 1} this month. You've earned ${reward} Dpcoins and the ${badgeName}!`,
+            type: "hall-of-fame",
+            targetId: "profile"
+        });
     }
 });
 //# sourceMappingURL=cron.js.map

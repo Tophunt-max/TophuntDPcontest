@@ -2,12 +2,38 @@ import { db } from "../utils/firebase";
 import { FieldValue } from "firebase-admin/firestore";
 import { sendPushNotification } from "./sender";
 
+export type NotificationType = 
+    | "like" 
+    | "comment" 
+    | "follow" 
+    | "contest" 
+    | "admin"
+    | "system"
+    // Extended types for compatibility
+    | "reply"
+    | "comment-like"
+    | "contest-invite"
+    | "contest-start"
+    | "contest-watch"
+    | "contest-win"
+    | "contest-end"
+    | "contest-ending"
+    | "contest-loss"
+    | "contest-refund"
+    | "contest-tie"
+    | "hall-of-fame"
+    | "wallet"
+    | "milestone"
+    | "share"
+    | "profile-visit"
+    | "level-up";
+
 export const createNotification = async (
   recipientId: string,
   notification: {
     title: string;
     body: string;
-    type: "like" | "comment" | "follow" | "contest" | "admin";
+    type: NotificationType;
     targetId: string;
     image?: string;
     data?: Record<string, string>;
@@ -28,7 +54,7 @@ export const createNotification = async (
         recipientId,
         notification.title,
         notification.body,
-        notification.type,
+        notification.type, // Type is now compatible
         { 
             targetId: notification.targetId, 
             image: notification.image || "",

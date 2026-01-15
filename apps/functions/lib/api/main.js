@@ -36,11 +36,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.masterApiRouter = void 0;
 const https_1 = require("firebase-functions/v2/https");
 const firebase_functions_1 = require("firebase-functions");
-// Sabhi purane modules ko import kar rahe hain (Auth aur Update actions ko chhod kar)
+// Imports
 const contests = __importStar(require("../contests/contestHandler"));
 const engagement = __importStar(require("../contests/engagement"));
 const matches = __importStar(require("../contests/matchHandler"));
-const voting = __importStar(require("../contests/voting"));
 const posts = __importStar(require("../posts/index"));
 const stories = __importStar(require("../stories/index"));
 const userRewards = __importStar(require("../user/rewards"));
@@ -48,137 +47,94 @@ const userSocial = __importStar(require("../user/toggleFollow"));
 const walletTopup = __importStar(require("../wallet/topup"));
 const walletAdmin = __importStar(require("../wallet/adminWalletManagement"));
 const adminTools = __importStar(require("../admin/index"));
-const notifUtils = __importStar(require("../notifications/utils"));
-const storage = __importStar(require("../storage/presignedUrl"));
-// Special logic
-const firebase_1 = require("../utils/firebase");
-const firestore_1 = require("firebase-admin/firestore");
+const storageApi_1 = require("./storageApi"); // UPDATED IMPORT
+const notificationApi_1 = require("./notificationApi");
 const masterApiRouter = async (request) => {
     var _a;
     const { action } = request.data;
     const uid = (_a = request.auth) === null || _a === void 0 ? void 0 : _a.uid;
-    if (!action) {
+    if (!action)
         throw new https_1.HttpsError("invalid-argument", "Action specify karna zaroori hai.");
-    }
     firebase_functions_1.logger.info(`[Action Called]: ${action} by UID: ${uid || 'Guest'}`);
+    let response;
     switch (action) {
         // ================= CONTESTS & MATCHES =================
         case "join":
         case "vote":
-            return await contests.contestHandler.run(request);
+        case "createContestTemplate": // ADDED
+            response = await contests.contestHandler.run(request);
+            break;
         case "likeContest":
-            return await engagement.likeContest.run(request);
+            response = await engagement.likeContest.run(request);
+            if (uid && request.data.matchId) {
+                await (0, notificationApi_1.notificationApiRouter)(Object.assign(Object.assign({}, request), { data: { type: "LIKE", data: { targetId: request.data.matchId, targetType: "match", likerId: uid, authorId: response.authorId } } }));
+            }
+            break;
         case "commentContest":
-            return await engagement.commentOnContest.run(request);
-        case "shareContest":
-            return await engagement.shareContest.run(request);
+            response = await engagement.commentOnContest.run(request);
+            if (uid && request.data.matchId) {
+                await (0, notificationApi_1.notificationApiRouter)(Object.assign(Object.assign({}, request), { data: { type: "COMMENT", data: { targetId: request.data.matchId, commenterId: uid, text: request.data.text, authorId: response.authorId } } }));
+            }
+            break;
         case "startMatch":
-            return await matches.startContestMatch.run(request);
+            response = await matches.startContestMatch.run(request);
+            if (uid && request.data.opponentId) {
+                await (0, notificationApi_1.notificationApiRouter)(Object.assign(Object.assign({}, request), { data: { type: "BATTLE", data: { action: "CHALLENGE", matchId: response.matchId, senderId: uid, receiverId: request.data.opponentId } } }));
+            }
+            break;
         case "joinMatch":
-            return await matches.joinContestMatch.run(request);
-        case "submitVote":
-            return await voting.submitVote.run(request);
-        // ================= POSTS & STORIES =================
-        case "createPost":
-            return await posts.createPost.run(request);
-        case "deletePost":
-            return await posts.deleteUserPost.run(request);
-        case "createStory":
-            return await stories.createStory.run(request);
-        case "deleteStory":
-            return await stories.deleteStory.run(request);
-        case "getStoryUrl":
-            return await stories.generateStoryUploadUrl.run(request);
+            response = await matches.joinContestMatch.run(request);
+            if (uid && response.creatorId) {
+                await (0, notificationApi_1.notificationApiRouter)(Object.assign(Object.assign({}, request), { data: { type: "BATTLE", data: { action: "ACCEPTED", matchId: request.data.matchId, senderId: uid, receiverId: response.creatorId } } }));
+            }
+            break;
         // ================= USER & SOCIAL =================
         case "toggleFollow":
-            return await userSocial.toggleFollow.run(request);
+            response = await userSocial.toggleFollow.run(request);
+            if (response.isFollowing && uid && request.data.targetUserId) {
+                await (0, notificationApi_1.notificationApiRouter)(Object.assign(Object.assign({}, request), { data: { type: "FOLLOW", data: { targetUserId: request.data.targetUserId, followerId: uid } } }));
+            }
+            break;
         case "claimDailyReward":
-            return await userRewards.claimDailyReward.run(request);
+            response = await userRewards.claimDailyReward.run(request);
+            if (uid) {
+                await (0, notificationApi_1.notificationApiRouter)(Object.assign(Object.assign({}, request), { data: { type: "WALLET", data: { userId: uid, amount: response.rewardAmount, transactionType: "daily_reward" } } }));
+            }
+            break;
         // ================= WALLET =================
         case "topup":
-            return await walletTopup.topUpWallet.run(request);
-        case "adminManageWallet":
-            return await walletAdmin.adminManageWallet.run(request);
-        // ================= ADMIN TOOLS =================
-        case "setAdminRole":
-            return await adminTools.setAdminRole.run(request);
-        case "adminDeletePost":
-            return await adminTools.deletePost.run(request);
-        case "unblockUser":
-            return await adminTools.unblockUser.run(request);
-        case "sendBroadcastNotification": {
-            // Admin check
-            if (!uid || !(await (0, firebase_1.isAdmin)(uid)))
-                throw new https_1.HttpsError("permission-denied", "Admin only.");
-            const { title, body, imageUrl, data } = request.data;
-            const sentCount = await notifUtils.sendBroadcastToAllUsers(title, body, imageUrl, data || {});
-            return { success: true, sentCount };
-        }
-        case "sendIndividualNotification": {
-            if (!uid || !(await (0, firebase_1.isAdmin)(uid)))
-                throw new https_1.HttpsError("permission-denied", "Admin only.");
-            const { userId, title, body, imageUrl, data } = request.data;
-            if (!userId)
-                throw new https_1.HttpsError("invalid-argument", "User ID is required");
-            await notifUtils.createNotification(userId, {
-                title,
-                body,
-                type: "admin",
-                targetId: "individual_msg",
-                image: imageUrl,
-                data: data || {}
-            });
-            return { success: true };
-        }
-        // Admin: Contest Creation logic
-        case "createContestTemplate":
-            if (!uid || !(await (0, firebase_1.isAdmin)(uid)))
-                throw new https_1.HttpsError("permission-denied", "Admin only.");
-            const contestRef = firebase_1.db.collection("contests").doc();
-            await contestRef.set(Object.assign(Object.assign({}, request.data), { status: "live", createdAt: firestore_1.FieldValue.serverTimestamp(), createdBy: uid }));
-            return { success: true, contestId: contestRef.id };
-        // Admin: Dashboard Stats logic
-        case "getAdminStats":
-            if (!uid || !(await (0, firebase_1.isAdmin)(uid)))
-                throw new https_1.HttpsError("permission-denied", "Admin only.");
-            const usersCountDoc = await firebase_1.db.collection("users").count().get();
-            const usersCount = usersCountDoc.data().count;
-            const activeMatchesDoc = await firebase_1.db.collection("contestMatches").where("status", "==", "active").count().get();
-            const activeMatches = activeMatchesDoc.data().count;
-            const waitingMatchesDoc = await firebase_1.db.collection("contestMatches").where("status", "==", "waiting_for_opponent").count().get();
-            const waitingMatches = waitingMatchesDoc.data().count;
-            const latestTransactions = await firebase_1.db.collection("coinTransactions").orderBy("timestamp", "desc").limit(10).get();
-            return { stats: { usersCount, activeMatches, waitingMatches }, latestTransactions: latestTransactions.docs.map(doc => (Object.assign({ id: doc.id }, doc.data()))) };
-        // Admin: Search Users (Simple Prefix Search)
-        case "searchUsers": {
-            if (!uid || !(await (0, firebase_1.isAdmin)(uid)))
-                throw new https_1.HttpsError("permission-denied", "Admin only.");
-            const { query } = request.data;
-            if (!query || query.length < 2)
-                return { users: [] };
-            const term = query.toLowerCase();
-            // Note: Firestore doesn't support native partial matching without 3rd party like Algolia.
-            // We'll do a simple >= prefix search on 'username'
-            // Ensure you have an index on 'username' if not already there.
-            const usersSnapshot = await firebase_1.db.collection("users")
-                .where("username", ">=", term)
-                .where("username", "<=", term + '\uf8ff')
-                .limit(10)
-                .get();
-            const users = usersSnapshot.docs.map(doc => ({
-                id: doc.id,
-                username: doc.data().username || "Unknown",
-                email: doc.data().email || "",
-                avatar: doc.data().profileImage || ""
-            }));
-            return { users };
-        }
-        // ================= STORAGE =================
+            response = await walletTopup.topUpWallet.run(request);
+            if (uid) {
+                await (0, notificationApi_1.notificationApiRouter)(Object.assign(Object.assign({}, request), { data: { type: "WALLET", data: { userId: uid, amount: request.data.amount, transactionType: "topup" } } }));
+            }
+            break;
+        // ================= STORAGE (UPDATED) =================
+        case "uploadDirect": // ADDED
         case "getPresignedUrl":
-            return await storage.generatePresignedUrl.run(request);
+        case "getUploadUrl":
+        case "deleteFile":
+        case "startMultipart":
+        case "getPartUrls":
+        case "completeMultipart":
+        case "finalizeUpload":
+            return await (0, storageApi_1.storageApi)(request);
+        // ================= FALLBACK =================
         default:
+            const actions = {
+                "createPost": posts.createPost,
+                "deletePost": posts.deleteUserPost,
+                "storyHandler": stories.storyHandler,
+                "setAdminRole": adminTools.setAdminRole,
+                "adminDeletePost": adminTools.deletePost,
+                "unblockUser": adminTools.unblockUser,
+                "adminManageWallet": walletAdmin.adminManageWallet
+            };
+            if (actions[action]) {
+                return await actions[action].run(request);
+            }
             throw new https_1.HttpsError("invalid-argument", `Action '${action}' nahi mila.`);
     }
+    return response;
 };
 exports.masterApiRouter = masterApiRouter;
 //# sourceMappingURL=main.js.map

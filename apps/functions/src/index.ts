@@ -1,60 +1,36 @@
-import { setGlobalOptions } from "firebase-functions/v2";
 import { onCall } from "firebase-functions/v2/https";
-import { onSchedule } from "firebase-functions/v2/scheduler";
+import * as admin from "firebase-admin";
 import { masterApiRouter } from "./api/main";
-import { scheduledTasks } from "./scheduled";
-
-// Handlers
 import { authHandler } from "./auth/authHandler";
-import * as notificationTriggers from "./notifications/triggers";
+import { syncUserProfileUpdates } from "./user/syncProfile";
+import { notificationApiRouter } from "./api/notificationApi";
+import { onStoryViewCreated } from "./stories/triggers/viewAggregation";
+import { storyHandler } from "./stories/index";
+import * as notifications from "./notifications/index"; // Unified notifications
 
-// Contest Handlers
-import { resolveContests, monthlyHallOfFame } from "./contests/cron";
+if (admin.apps.length === 0) {
+    admin.initializeApp();
+}
 
-// GLOBAL SETTINGS
-setGlobalOptions({
-  region: "us-central1",
-  cpu: 1,
-  memory: "256MiB",
-  maxInstances: 2,
-  concurrency: 80,
-});
+// REST API via Callable
+export const api = onCall({
+    region: "us-central1",
+    memory: "512MiB",
+    timeoutSeconds: 60,
+    cors: true,
+}, masterApiRouter);
 
-/**
- * AUTH SYSTEM - Production Instance
- */
-export { authHandler };
+// Exporting Unified Services
+export { 
+    authHandler, 
+    syncUserProfileUpdates, 
+    onStoryViewCreated,
+    storyHandler,
+    notifications // This now includes ALL triggers (Social + Chat + Calls)
+};
 
-/**
- * MASTER API FUNCTION
- */
-export const api = onCall(async (request) => {
-  return await masterApiRouter(request);
-});
-
-/**
- * BACKGROUND TASKS
- */
-export const scheduled = onSchedule("every 10 minutes", async (event) => {
-    await scheduledTasks(event);
-});
-
-// Contest Scheduled Tasks
-export const resolveContestsTask = resolveContests;
-export const monthlyHallOfFameTask = monthlyHallOfFame;
-
-/**
- * NOTIFICATION TRIGGERS
- */
-export const onPostLike = notificationTriggers.onPostLike;
-export const onPostComment = notificationTriggers.onPostComment;
-export const onMatchLike = notificationTriggers.onMatchLike;
-export const onMatchComment = notificationTriggers.onMatchComment;
-export const onCommentLike = notificationTriggers.onCommentLike;
-export const onMatchCreated = notificationTriggers.onMatchCreated;
-export const onMatchStatusUpdate = notificationTriggers.onMatchStatusUpdate;
-export const onCoinTransaction = notificationTriggers.onCoinTransaction;
-export const onUserFollow = notificationTriggers.onUserFollow;
-export const onShare = notificationTriggers.onShare;
-export const onProfileVisit = notificationTriggers.onProfileVisit;
-export const onUserLevelUp = notificationTriggers.onUserLevelUp;
+export const notificationApi = onCall({
+    region: "us-central1",
+    memory: "256MiB",
+    cors: true
+}, notificationApiRouter);

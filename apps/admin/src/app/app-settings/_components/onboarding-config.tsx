@@ -3,7 +3,7 @@
 import Image from "next/image";
 import InputGroup from "@/components/FormElements/InputGroup";
 import { ShowcaseSection } from "@/components/Layouts/showcase-section";
-import { uploadToFirebaseStorage } from "@/lib/firebase-storage";
+import { uploadToR2 } from "@/lib/r2-upload";
 import { useState } from "react";
 
 export function OnboardingForm({ settings, setSettings }: any) {
@@ -15,7 +15,7 @@ export function OnboardingForm({ settings, setSettings }: any) {
 
     setUploading(index);
     try {
-      const url = await uploadToFirebaseStorage(file, `app/onboarding_${index}_${Date.now()}.png`);
+      const url = await uploadToR2(file, "app/onboarding");
       const newOnboarding = [...settings.onboarding];
       newOnboarding[index] = { ...newOnboarding[index], imageUrl: url };
       setSettings({ ...settings, onboarding: newOnboarding });

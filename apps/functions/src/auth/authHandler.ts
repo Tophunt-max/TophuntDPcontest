@@ -9,10 +9,10 @@ import * as nodemailer from "nodemailer";
 const AUTH_CONFIG = {
     region: "us-central1",
     cpu: 1, 
-    concurrency: 80, // Can handle many requests
+    concurrency: 80, 
     minInstances: 0,
-    maxInstances: 1, // REDUCED TO 1 to save quota
-    memory: "256MiB" as MemoryOption,
+    maxInstances: 1, 
+    memory: "512MiB" as MemoryOption,
     timeoutSeconds: 60,
     cors: true,
 };
@@ -104,9 +104,6 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
     const uid = request.auth?.uid;
 
     switch (action) {
-        // ---------------------------------------------------------
-        // ACTION: CHECK (email, phone, username)
-        // ---------------------------------------------------------
         case "check": {
             const { type } = request.data;
             if (!type || !["email", "phone", "username"].includes(type)) {
@@ -143,9 +140,6 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
             return { exists };
         }
 
-        // ---------------------------------------------------------
-        // ACTION: CREATE USER (Auth + Profile)
-        // ---------------------------------------------------------
         case "create": {
             const { email, password, username, fullName, avatarUrl, dob, phone, occupation, gender, following, platform, coordinates } = request.data;
             if (!email || !password || !username) throw new HttpsError("invalid-argument", "Email, password, and username are required.");
@@ -153,6 +147,7 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
 
             const validatedUsername = validateUsername(username);
             let userRecord;
+
             try {
                 userRecord = await admin.auth().createUser({
                     email,
@@ -166,6 +161,7 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
             }
 
             const newUid = userRecord.uid;
+
             try {
                 const rewardSettings = await getRewardSettings();
                 await createFirestoreProfile(newUid, { email, username: validatedUsername, fullName, avatarUrl, dob, phone, occupation, gender, following, platform, coordinates }, rewardSettings.signupBonus || 0);
@@ -176,23 +172,17 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
             }
         }
 
-        // ---------------------------------------------------------
-        // ACTION: CREATE PROFILE (Firestore Only)
-        // ---------------------------------------------------------
         case "createProfile": {
             const profileUid = request.auth?.uid || request.data.uid;
             if (!profileUid) throw new HttpsError("unauthenticated", "User must be authenticated.");
-            const { email } = request.data;
+            const { email, avatarUrl } = request.data;
             if (email && isDisposableEmail(email)) throw new HttpsError("invalid-argument", "Disposable email blocked.");
-
+            
             const rewardSettings = await getRewardSettings();
-            await createFirestoreProfile(profileUid, request.data, rewardSettings.signupBonus || 0);
+            await createFirestoreProfile(profileUid, { ...request.data, avatarUrl }, rewardSettings.signupBonus || 0);
             return { status: "success", uid: profileUid, message: "Profile created successfully" };
         }
 
-        // ---------------------------------------------------------
-        // ACTION: GET USER BY IDENTIFIER
-        // ---------------------------------------------------------
         case "getUserByIdentifier": {
             const { identifier, type } = request.data;
             if (!identifier || !type) throw new HttpsError("invalid-argument", "Identifier and type are required.");
@@ -221,9 +211,6 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
             };
         }
 
-        // ---------------------------------------------------------
-        // ACTION: SEND OTP TO PHONE (Forgot Password)
-        // ---------------------------------------------------------
         case "sendOtpToPhone": {
             const { phone } = request.data;
             if (!phone) throw new HttpsError("invalid-argument", "Phone number is required.");
@@ -258,9 +245,6 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
             return { success: true };
         }
 
-        // ---------------------------------------------------------
-        // ACTION: VERIFY OTP (Forgot Password)
-        // ---------------------------------------------------------
         case "verifyOtp": {
             const { phone, code } = request.data;
             if (!phone || !code) throw new HttpsError("invalid-argument", "Phone and code are required.");
@@ -278,9 +262,6 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
             return { success: true };
         }
 
-        // ---------------------------------------------------------
-        // ACTION: UPDATE PASSWORD WITH PHONE (Forgot Password)
-        // ---------------------------------------------------------
         case "updatePasswordWithPhone": {
             const { phone, newPassword } = request.data;
             if (!phone || !newPassword) throw new HttpsError("invalid-argument", "Phone and password required.");
@@ -301,9 +282,6 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
             return { success: true };
         }
 
-        // ---------------------------------------------------------
-        // ACTION: SEND EMAIL UPDATE OTP
-        // ---------------------------------------------------------
         case "sendEmailOtp": {
             if (!uid) throw new HttpsError("unauthenticated", "User must be logged in.");
             const { newEmail } = request.data;
@@ -326,9 +304,6 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
             return { success: true };
         }
 
-        // ---------------------------------------------------------
-        // ACTION: VERIFY EMAIL UPDATE OTP
-        // ---------------------------------------------------------
         case "verifyEmailOtp": {
             if (!uid) throw new HttpsError("unauthenticated", "User must be logged in.");
             const { otp } = request.data;
@@ -350,9 +325,6 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
             return { success: true, email: newEmail };
         }
 
-        // ---------------------------------------------------------
-        // ACTION: SEND PHONE UPDATE OTP
-        // ---------------------------------------------------------
         case "sendPhoneOtp": {
             if (!uid) throw new HttpsError("unauthenticated", "User must be logged in.");
             const { newPhone } = request.data;
@@ -380,9 +352,6 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
             return { success: true };
         }
 
-        // ---------------------------------------------------------
-        // ACTION: VERIFY PHONE UPDATE OTP
-        // ---------------------------------------------------------
         case "verifyPhoneOtp": {
             if (!uid) throw new HttpsError("unauthenticated", "User must be logged in.");
             const { otp } = request.data;

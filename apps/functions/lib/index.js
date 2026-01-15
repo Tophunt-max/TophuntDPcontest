@@ -33,41 +33,31 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.onMatchComment = exports.onMatchLike = exports.onPostComment = exports.onPostLike = exports.scheduled = exports.api = exports.authHandler = void 0;
-const v2_1 = require("firebase-functions/v2");
+exports.notificationApi = exports.storyHandler = exports.onStoryViewCreated = exports.syncUserProfileUpdates = exports.authHandler = exports.api = void 0;
 const https_1 = require("firebase-functions/v2/https");
-const scheduler_1 = require("firebase-functions/v2/scheduler");
+const admin = __importStar(require("firebase-admin"));
 const main_1 = require("./api/main");
-const scheduled_1 = require("./scheduled");
-// Handlers
 const authHandler_1 = require("./auth/authHandler");
 Object.defineProperty(exports, "authHandler", { enumerable: true, get: function () { return authHandler_1.authHandler; } });
-const notificationTriggers = __importStar(require("./notifications/triggers"));
-// GLOBAL SETTINGS
-(0, v2_1.setGlobalOptions)({
+const syncProfile_1 = require("./user/syncProfile");
+Object.defineProperty(exports, "syncUserProfileUpdates", { enumerable: true, get: function () { return syncProfile_1.syncUserProfileUpdates; } });
+const notificationApi_1 = require("./api/notificationApi");
+const viewAggregation_1 = require("./stories/triggers/viewAggregation");
+Object.defineProperty(exports, "onStoryViewCreated", { enumerable: true, get: function () { return viewAggregation_1.onStoryViewCreated; } });
+const index_1 = require("./stories/index"); // Import the unified handler
+Object.defineProperty(exports, "storyHandler", { enumerable: true, get: function () { return index_1.storyHandler; } });
+if (admin.apps.length === 0) {
+    admin.initializeApp();
+}
+exports.api = (0, https_1.onCall)({
     region: "us-central1",
-    cpu: 1,
+    memory: "512MiB",
+    timeoutSeconds: 60,
+    cors: true,
+}, main_1.masterApiRouter);
+exports.notificationApi = (0, https_1.onCall)({
+    region: "us-central1",
     memory: "256MiB",
-    maxInstances: 2,
-    concurrency: 80,
-});
-/**
- * MASTER API FUNCTION
- */
-exports.api = (0, https_1.onCall)(async (request) => {
-    return await (0, main_1.masterApiRouter)(request);
-});
-/**
- * BACKGROUND TASKS
- */
-exports.scheduled = (0, scheduler_1.onSchedule)("every 10 minutes", async (event) => {
-    await (0, scheduled_1.scheduledTasks)(event);
-});
-/**
- * NOTIFICATION TRIGGERS
- */
-exports.onPostLike = notificationTriggers.onPostLike;
-exports.onPostComment = notificationTriggers.onPostComment;
-exports.onMatchLike = notificationTriggers.onMatchLike;
-exports.onMatchComment = notificationTriggers.onMatchComment;
+    cors: true
+}, notificationApi_1.notificationApiRouter);
 //# sourceMappingURL=index.js.map

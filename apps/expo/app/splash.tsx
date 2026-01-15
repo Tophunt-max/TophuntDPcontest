@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { View, StyleSheet, Image, Dimensions, Text, useColorScheme } from 'react-native';
+import { View, StyleSheet, Dimensions, Text, useColorScheme } from 'react-native';
+import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { auth, firestore as db } from '../src/services/firebase/initFirebase';
+import { auth, db } from '../src/services/firebase/initFirebase';
 import * as Font from 'expo-font';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Animated, { 
@@ -176,7 +177,8 @@ export default function SplashScreen() {
           <Image 
             source={splashImage ? { uri: splashImage } : require('../assets/images/splesh.png')} 
             style={styles.logo} 
-            resizeMode="contain"
+            contentFit="contain"
+            cachePolicy="disk"
           />
       </Animated.View>
 

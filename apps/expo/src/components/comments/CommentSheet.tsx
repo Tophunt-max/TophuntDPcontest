@@ -3,7 +3,6 @@ import {
   View,
   Text,
   StyleSheet,
-  Image,
   TextInput,
   TouchableOpacity,
   FlatList,
@@ -13,6 +12,7 @@ import {
   Pressable,
   ActivityIndicator,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { Portal } from 'react-native-paper';
 import Animated, {
   useSharedValue,
@@ -32,6 +32,7 @@ import * as Icons from '@/assets/svgs';
 import { CommentSkeleton } from './CommentSkeleton';
 import { commentService, Comment } from '@/src/services/comments/commentService';
 import { useAuth } from '@/src/hooks/useAuth';
+import { getOptimizedMediaUrl } from '@/src/utils/media';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import { Colors } from '@/constants/theme';
@@ -40,6 +41,8 @@ dayjs.extend(relativeTime);
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SHEET_HEIGHT = SCREEN_HEIGHT * 0.75;
+const DEFAULT_AVATAR = "https://ui-avatars.com/api/?background=random&color=fff&name=";
+const blurhash = '|rF?hV%2WCj[ayj[a|j[az_NaeWBj@ayfRayfQfQM{M|azj[azf6fQfQfQIpWXofj[ayj[j[fQayWCoeoeaya}j[ayfQa{oLj?j[WVj[ayayj[fQoff7azayj[ayj[j[ayofayayayj[fQj[ayayj[ayfjj[j[ayjuayj[';
 
 interface CommentSheetProps {
   postId: string;
@@ -117,7 +120,7 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
             postId,
             user.uid,
             user.displayName || 'User',
-            user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName || 'U'}`,
+            user.photoURL || `${DEFAULT_AVATAR}${encodeURIComponent(user.displayName || 'U')}`,
             text,
             collectionName
         );
@@ -160,28 +163,40 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
 
   if (!shouldRender && !visible) return null;
 
-  const renderComment = ({ item }: { item: Comment }) => (
-    <View style={styles.commentItem}>
-      <Image source={{ uri: item.userAvatar }} style={styles.commentAvatar} />
-      <View style={styles.commentContent}>
-        <View style={styles.commentHeader}>
-          <Text style={[styles.commentUser, { color: textColor }]}>
-            {item.username} <Text style={[styles.commentTime, { color: subTextColor }]}>{formatTime(item.createdAt)}</Text>
-          </Text>
-        </View>
-        <Text style={[styles.commentText, { color: textColor }]}>{item.text}</Text>
-        <View style={styles.commentFooter}>
-          <TouchableOpacity>
-            <Text style={[styles.replyText, { color: subTextColor }]}>Reply</Text>
+  const renderComment = ({ item }: { item: Comment }) => {
+    const rawAvatarUrl = item.userAvatar || `${DEFAULT_AVATAR}${encodeURIComponent(item.username || 'U')}`;
+    const avatarUrl = getOptimizedMediaUrl(rawAvatarUrl);
+
+    return (
+        <View style={styles.commentItem}>
+          <Image 
+            source={{ uri: avatarUrl }} 
+            style={styles.commentAvatar}
+            contentFit="cover"
+            cachePolicy="memory-disk"
+            placeholder={blurhash}
+            transition={200}
+          />
+          <View style={styles.commentContent}>
+            <View style={styles.commentHeader}>
+              <Text style={[styles.commentUser, { color: textColor }]}>
+                {item.username} <Text style={[styles.commentTime, { color: subTextColor }]}>{formatTime(item.createdAt)}</Text>
+              </Text>
+            </View>
+            <Text style={[styles.commentText, { color: textColor }]}>{item.text}</Text>
+            <View style={styles.commentFooter}>
+              <TouchableOpacity>
+                <Text style={[styles.replyText, { color: subTextColor }]}>Reply</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+          <TouchableOpacity style={styles.heartButton}>
+            <HeartIcon width={18} height={18} color={subTextColor} />
+            <Text style={[styles.commentLikes, { color: subTextColor }]}>{item.likes || 0}</Text>
           </TouchableOpacity>
         </View>
-      </View>
-      <TouchableOpacity style={styles.heartButton}>
-        <HeartIcon width={18} height={18} color={subTextColor} />
-        <Text style={[styles.commentLikes, { color: subTextColor }]}>{item.likes || 0}</Text>
-      </TouchableOpacity>
-    </View>
-  );
+    );
+  };
 
   return (
     <Portal>
@@ -223,7 +238,13 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
               keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
             >
               <View style={[styles.inputArea, { backgroundColor, borderTopColor: isDark ? '#35383F' : '#EEEEEE' }]}>
-                <Image source={{ uri: user?.photoURL || 'https://ui-avatars.com/api/?name=' + (user?.displayName || 'Me') }} style={styles.myAvatar} />
+                <Image 
+                    source={{ uri: getOptimizedMediaUrl(user?.photoURL || `${DEFAULT_AVATAR}${encodeURIComponent(user?.displayName || 'Me')}`) }} 
+                    style={styles.myAvatar} 
+                    contentFit="cover"
+                    cachePolicy="memory-disk"
+                    transition={200}
+                />
                 
                 <View style={[
                   styles.inputBoxWrapper, 
@@ -311,6 +332,7 @@ const styles = StyleSheet.create({
     height: 36,
     borderRadius: 18,
     marginRight: 12,
+    backgroundColor: '#F5F5F5',
   },
   commentContent: {
     flex: 1,
@@ -365,6 +387,7 @@ const styles = StyleSheet.create({
     height: 40,
     borderRadius: 20,
     marginRight: 12,
+    backgroundColor: '#F5F5F5',
   },
   inputBoxWrapper: {
     flex: 1,

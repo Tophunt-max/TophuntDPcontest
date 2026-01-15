@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { ShowcaseSection } from "@/components/Layouts/showcase-section";
-import { uploadToFirebaseStorage } from "@/lib/firebase-storage";
+import { uploadToR2 } from "@/lib/r2-upload";
 import { useState } from "react";
 
 export function HeaderLogoForm({ settings, setSettings }: any) {
@@ -14,7 +14,7 @@ export function HeaderLogoForm({ settings, setSettings }: any) {
 
     setUploading(true);
     try {
-      const url = await uploadToFirebaseStorage(file, `app/header_logo_${Date.now()}.png`);
+      const url = await uploadToR2(file, "app/logo");
       setSettings({ ...settings, headerLogoUrl: url });
       alert("Header logo updated!");
     } catch (err) {

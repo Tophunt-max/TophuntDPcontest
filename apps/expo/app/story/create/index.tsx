@@ -20,8 +20,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Image } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { Ionicons } from '@expo/vector-icons';
-import { uploadToS3 } from '@/src/lib/uploadToS3';
-import { createStoryRecord, searchUsers } from '@/src/services/stories/storyService';
+import { createStoryRecordOptimized, searchUsers } from '@/src/services/stories/storyService';
 import { useQueryClient } from '@tanstack/react-query';
 import Svg, { Circle } from 'react-native-svg';
 import { auth } from '@/src/services/firebase/initFirebase';
@@ -238,33 +237,36 @@ export default function AddStoryScreen() {
     setIsUploading(true);
     setUploadProgress(0);
     try {
-      const fileType = media.type === 'video' ? 'video/mp4' : 'image/jpeg';
-      console.log(`Starting upload to S3 for story... folder: stories, function: generateStoryUploadUrl`);
-      const mediaUrl = await uploadToS3(media.uri, fileType, "stories", "generateStoryUploadUrl", (p) => {
-        console.log("Upload Progress:", p);
-        setUploadProgress(p);
-      });
-      
-      console.log("S3 Upload Success, creating story record:", mediaUrl);
+      console.log(`Starting optimized upload to R2...`);
       const textPos = { x: textX.value / width, y: textY.value / height };
       
-      const storyId = await createStoryRecord(
-          mediaUrl as string, 
+      // Use the new Optimized Service for one-shot upload & record creation
+      await createStoryRecordOptimized(
+          media.uri, 
           media.type, 
-          visibility, 
           storyText || null,
           storyText ? textPos : null,
-          mentions
+          mentions,
+          (progress) => {
+            if (typeof setUploadProgress === 'function') {
+                setUploadProgress(progress / 100); // Normalize 0-100 to 0-1
+            }
+          }
       ); 
       
-      console.log("Story Record Created:", storyId);
+      console.log("Story Created Successfully");
       await queryClient.invalidateQueries({ queryKey: ['stories'] });
-      router.replace('/home');
+      
+      // Navigate Home immediately after successful creation
+      if (router.canGoBack()) {
+        router.dismissAll();
+      }
+      router.replace('/home'); 
+
     } catch (error: any) {
       console.error("Story Creation Error:", error);
       Alert.alert("Upload Failed", error.message);
-    } finally {
-      setIsUploading(false);
+      setIsUploading(false); // Stop loading only on error
     }
   };
 
@@ -311,7 +313,7 @@ export default function AddStoryScreen() {
           )}
 
           <TouchableOpacity onPress={handleUpload} disabled={!media} style={[styles.nextButton, !media && styles.disabledButton]}>
-            <Text style={[styles.nextButtonText, !media && styles.disabledText]}>Next</Text>
+            <Text style={[styles.nextButtonText, !media && styles.disabledText]}>Share</Text>
           </TouchableOpacity>
         </SafeAreaView>
       )}

@@ -4,25 +4,53 @@ import { firestore as db } from '../firebase/initFirebase';
 import { 
     collection, doc, updateDoc, arrayUnion, 
     query, orderBy, limit, onSnapshot, 
-    where, writeBatch, Timestamp, Unsubscribe 
+    where, writeBatch, Timestamp, Unsubscribe,
+    addDoc, serverTimestamp 
 } from 'firebase/firestore';
 import { getApp } from 'firebase/app';
-import Constants from 'expo-constants';
 
 // Configure notifications handler
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-  }),
+  handleNotification: async (notification) => {
+    const data = notification.request.content.data;
+    const isCall = data?.type === 'call';
+    
+    return {
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: true,
+      priority: isCall ? Notifications.AndroidNotificationPriority.MAX : Notifications.AndroidNotificationPriority.DEFAULT,
+    };
+  },
 });
+
+/**
+ * Register Call Categories for Interactive Notifications
+ * Works on iOS and Android to show Accept/Decline buttons.
+ * Note: Web does not support interactive notification buttons.
+ */
+export async function registerNotificationCategories() {
+    if (Platform.OS === 'web') return;
+
+    await Notifications.setNotificationCategoryAsync('incoming_call', [
+        {
+            identifier: 'ACCEPT_CALL',
+            buttonTitle: 'Accept ✅',
+            options: { opensAppToForeground: true },
+        },
+        {
+            identifier: 'DECLINE_CALL',
+            buttonTitle: 'Decline ❌',
+            options: { opensAppToForeground: false, isDestructive: true },
+        },
+    ]);
+}
 
 export interface NotificationItem {
     id: string;
     title: string;
     body: string;
-    type: "like" | "comment" | "follow" | "contest" | "admin";
+    type: "like" | "comment" | "follow" | "contest" | "admin" | "message" | "call" | "profile_visit";
     read: boolean;
     targetId?: string;
     image?: string;
@@ -31,7 +59,6 @@ export interface NotificationItem {
 
 class NotificationService {
     
-    // 1. Register for Push Notifications
     async registerForPushNotificationsAsync(userId: string) {
         if (!userId) return;
 
@@ -39,25 +66,34 @@ class NotificationService {
         
         if (Platform.OS === 'android') {
             await Notifications.setNotificationChannelAsync('default', {
-                name: 'default',
+                name: 'Default',
                 importance: Notifications.AndroidImportance.MAX,
                 vibrationPattern: [0, 250, 250, 250],
                 lightColor: '#FF231F7C',
             });
+
+            await Notifications.setNotificationChannelAsync('calls', {
+                name: 'Calls',
+                importance: Notifications.AndroidImportance.MAX,
+                vibrationPattern: [0, 500, 500, 500],
+                lightColor: '#FF4D67',
+                sound: 'default', 
+                enableVibration: true,
+                lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+            });
         }
+
+        // Always try to register categories on native platforms
+        await registerNotificationCategories();
 
         if (Platform.OS === 'web') {
             try {
-                // Dynamic import to avoid breaking native bundle
                 const { getMessaging, getToken } = await import('firebase/messaging');
                 const messaging = getMessaging(getApp());
-                
                 token = await getToken(messaging, { 
-                    vapidKey: process.env.EXPO_PUBLIC_VAPID_KEY || "YOUR_VAPID_KEY_HERE"
+                    vapidKey: process.env.EXPO_PUBLIC_VAPID_KEY || ""
                 });
-            } catch (e) {
-                console.log("Web Push Error:", e);
-            }
+            } catch (e) { console.log("Web Push Error:", e); }
         } else {
             const { status: existingStatus } = await Notifications.getPermissionsAsync();
             let finalStatus = existingStatus;
@@ -67,28 +103,12 @@ class NotificationService {
                 finalStatus = status;
             }
             
-            if (finalStatus !== 'granted') {
-                return;
-            }
+            if (finalStatus !== 'granted') return;
 
-            // Get Device Token
             try {
-                // For Development (Expo Go), use Expo Push Token (won't work with Firebase Admin direct FCM send without config)
-                // For Production (Native Build), use Device Push Token (FCM for Android, APNs for iOS)
-                
-                // NOTE: Your backend (apps/functions/src/notifications/sender.ts) uses admin.messaging().sendEachForMulticast()
-                // This expects valid FCM tokens (or APNs tokens if configured in Firebase Console).
-                
-                // Using getDevicePushTokenAsync gets the native token.
-                // For Android, this is the FCM token directly if google-services.json is set up correctly in EAS.
-                // For iOS, this is the APNs token. Firebase Admin can send to APNs token IF it is configured in Firebase Console.
-                
                 const tokenData = await Notifications.getDevicePushTokenAsync();
                 token = tokenData.data;
-                console.log("Device Push Token:", token);
-            } catch (e) {
-                console.log("Error getting device token:", e);
-            }
+            } catch (e) { console.log("Error getting device token:", e); }
         }
 
         if (token) {
@@ -98,25 +118,41 @@ class NotificationService {
 
     async saveTokenToDatabase(userId: string, token: string) {
         const userRef = doc(db, "users", userId);
-        // Using arrayUnion to avoid duplicates
         await updateDoc(userRef, {
             fcmTokens: arrayUnion(token)
         });
     }
 
-    // 2. Real-time Unread Count
+    async notifyProfileVisit(targetUserId: string) {
+        try {
+            const { auth } = await import('../firebase/initFirebase');
+            const currentUser = auth.currentUser;
+            if (!currentUser || currentUser.uid === targetUserId) return;
+
+            const notificationsRef = collection(db, "notifications", targetUserId, "items");
+            await addDoc(notificationsRef, {
+                title: "Profile Visited",
+                body: `${currentUser.displayName || 'Someone'} viewed your profile`,
+                type: "profile_visit",
+                read: false,
+                targetId: currentUser.uid,
+                createdAt: serverTimestamp()
+            });
+        } catch (error) {
+            console.error("Error notifying profile visit:", error);
+        }
+    }
+
     subscribeToUnreadCount(userId: string, callback: (count: number) => void): Unsubscribe {
         const q = query(
             collection(db, "notifications", userId, "items"),
             where("read", "==", false)
         );
-
         return onSnapshot(q, (snapshot) => {
             callback(snapshot.size);
         });
     }
 
-    // 3. Fetch Notifications (Real-time List)
     subscribeToNotifications(userId: string, limitCount: number = 50, callback: (items: NotificationItem[]) => void): Unsubscribe {
         const q = query(
             collection(db, "notifications", userId, "items"),
@@ -133,24 +169,14 @@ class NotificationService {
         });
     }
 
-    // 4. Mark as Read
     async markAsRead(userId: string, notificationIds: string[]) {
         if (notificationIds.length === 0) return;
-
-        // Process in chunks of 500 (Firestore batch limit)
-        const chunks = [];
-        for (let i = 0; i < notificationIds.length; i += 500) {
-            chunks.push(notificationIds.slice(i, i + 500));
-        }
-
-        for (const chunk of chunks) {
-            const batch = writeBatch(db);
-            chunk.forEach(id => {
-                const ref = doc(db, "notifications", userId, "items", id);
-                batch.update(ref, { read: true });
-            });
-            await batch.commit();
-        }
+        const batch = writeBatch(db);
+        notificationIds.forEach(id => {
+            const ref = doc(db, "notifications", userId, "items", id);
+            batch.update(ref, { read: true });
+        });
+        await batch.commit();
     }
 }
 

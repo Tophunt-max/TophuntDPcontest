@@ -2,7 +2,6 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     
-    // Function to check if user is admin
     function isAdmin() {
       return request.auth != null && (
         request.auth.token.role == 'admin' || 
@@ -10,13 +9,11 @@ service cloud.firestore {
       );
     }
 
-    // NEW: Allow anyone to read app settings, but only admin can write
     match /settings/{docId} {
       allow read: if true;
       allow write: if isAdmin();
     }
 
-    // Users: Profiles are public, but sensitive data like Dpcoin/xp are read-only
     match /users/{userId} {
       allow read: if request.auth != null;
       allow create: if request.auth != null && request.auth.uid == userId;
@@ -26,19 +23,14 @@ service cloud.firestore {
       );
       allow delete: if isAdmin();
 
-      // Highlights subcollection
       match /highlights/{highlightId} {
         allow read: if request.auth != null;
         allow write: if request.auth != null && (request.auth.uid == userId || isAdmin());
       }
-
-      // Bookmarks subcollection
       match /bookmarks/{bookmarkId} {
         allow read: if request.auth != null && (request.auth.uid == userId || isAdmin());
         allow write: if request.auth != null && request.auth.uid == userId;
       }
-
-      // Old Notifications subcollection (Keeping for compatibility)
       match /notifications/{notificationId} {
         allow read: if request.auth != null && (request.auth.uid == userId || isAdmin());
         allow create: if request.auth != null;
@@ -47,30 +39,27 @@ service cloud.firestore {
       }
     }
 
-    // NEW Instagram-style Notifications System (Requirement 3 & 8)
-    // Structure: notifications/{userId}/items/{notificationId}
     match /notifications/{userId}/items/{notificationId} {
       allow read: if request.auth != null && request.auth.uid == userId;
-      // Clients CANNOT create notifications (Requirement 8)
       allow create: if false; 
-      // Clients CAN mark as read (Requirement 5 - Batch Write)
       allow update: if request.auth != null && request.auth.uid == userId 
                     && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
       allow delete: if isAdmin();
     }
 
-    // Contests
     match /contests/{contestId} {
       allow read: if request.auth != null;
       allow write: if isAdmin();
     }
 
-    // Contest Matches
+    match /battles/{battleId} {
+      allow read: if request.auth != null;
+      allow write: if isAdmin();
+    }
+
     match /contestMatches/{matchId} {
       allow read: if request.auth != null;
       allow write: if isAdmin();
-      
-      // Comments for Contest Matches
       match /comments/{commentId} {
         allow read: if request.auth != null;
         allow create: if request.auth != null;
@@ -78,61 +67,39 @@ service cloud.firestore {
       }
     }
 
-    // Votes
     match /votes/{voteId} {
       allow read: if request.auth != null;
-      allow write: if false; // ONLY via Cloud Functions
+      allow write: if false;
     }
 
-    // Root level Notifications (Keeping for backward compatibility)
-    match /notifications/{notifId} {
-      allow read: if request.auth != null && (resource.data.recipientUid == request.auth.uid || isAdmin());
-      allow update: if request.auth != null && (
-        (resource.data.recipientUid == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read'])) ||
-        isAdmin()
-      );
-      allow create, delete: if isAdmin();
-    }
-
-    // Admin Notifications
-    match /admin_notifications/{notifId} {
-      allow read, write: if isAdmin();
-    }
-
-    // Reports & Support Tickets
-    match /reports/{reportId} {
-      allow read, write: if isAdmin();
-    }
-    
-    match /support_tickets/{ticketId} {
-      allow read: if request.auth != null && (resource.data.uid == request.auth.uid || isAdmin());
-      allow write: if isAdmin();
-    }
-
-    // Transactions: Read-only for the owner
     match /coinTransactions/{transId} {
       allow read: if request.auth != null && (resource.data.uid == request.auth.uid || isAdmin());
       allow write: if isAdmin();
     }
 
-    // Stories
     match /stories/{storyId} {
       allow read: if request.auth != null;
-      allow write: if request.auth != null && (request.resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if request.auth != null && (request.resource.data.userId == request.auth.uid || isAdmin());
+      allow update: if request.auth != null && (
+        request.auth.uid == resource.data.userId || 
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewsCount']) ||
+        isAdmin()
+      );
+      allow delete: if request.auth != null && (resource.data.userId == request.auth.uid || isAdmin());
     }
 
-    // Story Views
-    match /storyViews/{viewId} {
-      allow read: if request.auth != null && (resource.data.viewerUid == request.auth.uid || isAdmin());
-      allow write: if request.auth != null && (request.resource.data.viewerUid == request.auth.uid || isAdmin());
+    // STORY VIEWS RULES
+    match /storyViews/{storyId} {
+      allow read: if request.auth != null;
+      match /users/{viewerId} {
+        allow read: if request.auth != null;
+        allow write: if request.auth != null && request.auth.uid == viewerId;
+      }
     }
-    
-    // Posts
+
     match /posts/{postId} {
       allow read: if request.auth != null;
       allow write: if request.auth != null && (request.resource.data.userId == request.auth.uid || isAdmin());
-
-      // Comments for Posts
       match /comments/{commentId} {
         allow read: if request.auth != null;
         allow create: if request.auth != null;
@@ -140,22 +107,23 @@ service cloud.firestore {
       }
     }
 
-    // Highlights (Top-level, if any. Keeping it for backward compatibility)
-    match /highlights/{highlightId} {
-      allow read: if request.auth != null && resource.data.userId == request.auth.uid;
-    }
-
-    // Messaging
     match /chats/{chatId} {
-      allow read: if request.auth != null && request.auth.uid in resource.data.users;
-      allow create: if request.auth != null && request.auth.uid in request.resource.data.users;
-      allow update: if request.auth != null && request.auth.uid in resource.data.users;
+      allow read, update: if request.auth != null && (
+        request.auth.uid in resource.data.participants || 
+        request.auth.uid in resource.data.users
+      );
+      allow create: if request.auth != null;
       
       match /messages/{messageId} {
-        allow read: if request.auth != null && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.users;
-        allow create: if request.auth != null && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.users;
-        allow update: if request.auth != null && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.users;
+        allow read, create: if request.auth != null;
+        allow update: if request.auth != null && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']);
+        allow delete: if request.auth != null && (resource.data.senderId == request.auth.uid);
       }
+    }
+
+    match /reports/{reportId} {
+      allow create: if request.auth != null;
+      allow read, write: if isAdmin();
     }
   }
 }

@@ -18,6 +18,7 @@ import { useThemeColor } from '@/hooks/use-theme-color';
 import { PhotoContestSkeleton } from '@/src/components/contests/PhotoContestSkeleton';
 import { Wallet_Icon, Left_Arrow } from '@/assets/svgs'; 
 import { LinearGradient } from 'expo-linear-gradient';
+import { getOptimizedMediaUrl } from '@/src/utils/media';
 
 const BRAND_PRIMARY = '#FF4D67'; 
 
@@ -88,6 +89,9 @@ export default function PhotoContestsScreen() {
           }
           renderItem={({ item }) => {
             const displayFee = item.entryFishCoins || 0;
+            // Optimized CDN URL for contest banners
+            const bannerUri = getOptimizedMediaUrl(item.bannerUrl || 'https://via.placeholder.com/400x200');
+
             return (
               <TouchableOpacity 
                 activeOpacity={0.9}
@@ -95,7 +99,7 @@ export default function PhotoContestsScreen() {
                 onPress={() => navigateToSetup(item)}
               >
                 <ImageBackground 
-                  source={{ uri: item.bannerUrl || 'https://via.placeholder.com/400x200' }} 
+                  source={{ uri: bannerUri }} 
                   style={styles.cardBanner}
                   imageStyle={{ borderRadius: 15 }}
                 >

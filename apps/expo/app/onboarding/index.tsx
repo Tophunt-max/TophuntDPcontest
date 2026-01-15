@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, Image, Dimensions, TouchableOpacity, useColorScheme } from 'react-native';
+import { View, Text, StyleSheet, FlatList, Dimensions, TouchableOpacity, useColorScheme } from 'react-native';
+import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getAppConfig } from '../../src/services/appSettings';
@@ -84,7 +85,12 @@ export default function OnboardingScreen() {
 
   const renderItem = ({ item }: { item: any }) => (
     <View style={styles.itemContainer}>
-      <Image source={item.image} style={styles.image} resizeMode="contain" />
+      <Image 
+        source={item.image} 
+        style={styles.image} 
+        contentFit="contain" 
+        cachePolicy="disk"
+      />
       <View style={styles.textContainer}>
         <Text style={[styles.title, isDark && styles.textDark]}>{item.title}</Text>
         <Text style={[styles.description, { color: isDark ? '#E0E0E0' : '#616161' }]}>{item.description}</Text>

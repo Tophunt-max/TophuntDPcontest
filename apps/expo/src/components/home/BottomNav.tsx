@@ -26,17 +26,27 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
   const activeColor = '#FF4D67';
   const inactiveColor = isDark ? '#757575' : '#9E9E9E';
 
-  const handlePress = (path: string) => {
-    if (Platform.OS !== 'web') {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  const triggerHaptic = (style = Haptics.ImpactFeedbackStyle.Medium) => {
+    try {
+        Haptics.impactAsync(style);
+        // Fallback specifically for web browsers that might not respond to expo-haptics
+        if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.vibrate) {
+            navigator.vibrate(15);
+        }
+    } catch (error) {
+        console.log('Haptic failed', error);
     }
-    router.push(path);
+  };
+
+  const handlePress = (path: string) => {
+    triggerHaptic();
+    if (pathname !== path) {
+      router.push(path);
+    }
   };
 
   const closeMenu = () => {
-    if (Platform.OS !== 'web') {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    }
+    triggerHaptic(Haptics.ImpactFeedbackStyle.Light);
     Animated.timing(animation, {
         toValue: 0,
         duration: 250,
@@ -49,9 +59,7 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
 
   const openMenu = () => {
     setShowAddMenu(true);
-    if (Platform.OS !== 'web') {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    }
+    triggerHaptic(Haptics.ImpactFeedbackStyle.Medium);
     Animated.spring(animation, {
         toValue: 1,
         friction: 8,
@@ -201,7 +209,11 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
 
                     <TouchableOpacity 
                         style={styles.menuItem} 
-                        onPress={() => { closeMenu(); setTimeout(() => router.push('/contest/photo'), 300); }}
+                        onPress={() => { 
+                            triggerHaptic(Haptics.ImpactFeedbackStyle.Medium);
+                            closeMenu(); 
+                            setTimeout(() => router.push('/contest/photo'), 300); 
+                        }}
                     >
                         <View style={[styles.menuIcon, { backgroundColor: '#E8F5E9' }]}>
                             <Ionicons name="image" size={24} color="#4CAF50" />
@@ -211,7 +223,11 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
 
                     <TouchableOpacity 
                         style={styles.menuItem} 
-                        onPress={() => { closeMenu(); setTimeout(() => router.push('/contest/video'), 300); }}
+                        onPress={() => { 
+                            triggerHaptic(Haptics.ImpactFeedbackStyle.Medium);
+                            closeMenu(); 
+                            setTimeout(() => router.push('/contest/video'), 300); 
+                        }}
                     >
                         <View style={[styles.menuIcon, { backgroundColor: '#E3F2FD' }]}>
                             <Ionicons name="videocam" size={24} color="#2196F3" />
@@ -221,7 +237,11 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
 
                     <TouchableOpacity 
                         style={styles.menuItem} 
-                        onPress={() => { closeMenu(); setTimeout(() => router.push('/story/create'), 300); }}
+                        onPress={() => { 
+                            triggerHaptic(Haptics.ImpactFeedbackStyle.Medium);
+                            closeMenu(); 
+                            setTimeout(() => router.push('/story/create'), 300); 
+                        }}
                     >
                         <View style={[styles.menuIcon, { backgroundColor: '#FFF3E0' }]}>
                             <Ionicons name="star" size={24} color="#FF9800" />

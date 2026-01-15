@@ -1,7 +1,6 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
-import { getStorage } from "firebase/storage";
 import { getFunctions } from "firebase/functions";
 
 const firebaseConfig = {
@@ -18,7 +17,7 @@ const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 const auth = getAuth(app);
 // Use default database (migrated from dpcontest)
 const db = getFirestore(app);
-const storage = getStorage(app);
+// Storage Removed: We use Cloudflare R2 via Cloud Functions now.
 const functions = getFunctions(app, "us-central1");
 
-export { app, auth, db, storage, functions };
+export { app, auth, db, functions };

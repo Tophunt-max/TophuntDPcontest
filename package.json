@@ -18,6 +18,7 @@
         "firebase-tools": "^13.0.0"
     },
     "dependencies": {
+        "@aws-sdk/client-s3": "^3.966.0",
         "react-native-image-viewing": "^0.2.2"
     }
 }

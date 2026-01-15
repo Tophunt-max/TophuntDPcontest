@@ -4,35 +4,61 @@ import {
   updateDoc, 
   increment, 
   setDoc, 
-  collection, 
-  serverTimestamp 
+  serverTimestamp,
+  getDoc
 } from 'firebase/firestore';
+import { callApi } from '../api';
 
 export const reactionService = {
-  /**
-   * Add a quick reaction to a battle
-   * @param battleId - ID of the battle
-   * @param userId - ID of the user
-   * @param reactionType - 'fire' | 'heart' | 'laugh'
-   */
   addReaction: async (battleId: string, userId: string, reactionType: string) => {
     try {
-      const reactionRef = doc(firestore, `battles/${battleId}/reactions`, `${userId}_${reactionType}`);
+      const reactionRef = doc(firestore, `contestMatches/${battleId}/likes`, `${userId}`);
       
-      // 1. Record individual reaction (to prevent spam if needed)
       await setDoc(reactionRef, {
         userId,
         type: reactionType,
         createdAt: serverTimestamp(),
       });
 
-      // 2. Increment counter in main battle document
-      const battleRef = doc(firestore, 'battles', battleId);
-      const fieldName = `reactions.${reactionType}`;
+      const battleRef = doc(firestore, 'contestMatches', battleId);
       
       await updateDoc(battleRef, {
-        [fieldName]: increment(1)
+        likesCount: increment(1)
       });
+
+      // --- NOTIFICATION LOGIC ---
+      try {
+          const battleDoc = await getDoc(battleRef);
+          if (battleDoc.exists()) {
+              const battleData = battleDoc.data();
+              // Notify Battle Creator
+              if (battleData.creatorId !== userId) {
+                  await callApi('notificationApi', {
+                      type: 'LIKE',
+                      data: {
+                          targetId: battleId,
+                          targetType: 'match',
+                          likerId: userId,
+                          authorId: battleData.creatorId
+                      }
+                  });
+              }
+              // Notify Opponent
+              if (battleData.opponentId && battleData.opponentId !== userId) {
+                  await callApi('notificationApi', {
+                      type: 'LIKE',
+                      data: {
+                          targetId: battleId,
+                          targetType: 'match',
+                          likerId: userId,
+                          authorId: battleData.opponentId
+                      }
+                  });
+              }
+          }
+      } catch (e) {
+          console.warn("Battle notification failed:", e);
+      }
       
       return true;
     } catch (error) {

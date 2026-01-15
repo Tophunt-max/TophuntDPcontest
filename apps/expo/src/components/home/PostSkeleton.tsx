@@ -20,8 +20,8 @@ export const PostSkeleton = ({ isDark }: { isDark: boolean }) => {
 
       {/* Media Skeleton */}
       <View style={styles.media}>
-        <Skeleton width={(width - 42) / 2} height={(width - 42) / 2} borderRadius={20} style={{ backgroundColor: skeletonColor }} />
-        <Skeleton width={(width - 42) / 2} height={(width - 42) / 2} borderRadius={20} style={{ backgroundColor: skeletonColor }} />
+        <Skeleton width={(width - 42) / 2} height={250} borderRadius={20} style={{ backgroundColor: skeletonColor }} />
+        <Skeleton width={(width - 42) / 2} height={250} borderRadius={20} style={{ backgroundColor: skeletonColor }} />
       </View>
 
       {/* Voting Buttons Skeleton */}
@@ -56,12 +56,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
+    gap: 10,
   },
   voting: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
     marginTop: 20,
+    gap: 10,
   },
   split: {
     paddingHorizontal: 16,

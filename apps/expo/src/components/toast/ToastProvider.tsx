@@ -1,5 +1,10 @@
-import React, { createContext, useContext, useState, useCallback, ReactNode, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Animated, Platform, Dimensions } from 'react-native';
+import React, { createContext, useContext, useState, useCallback, ReactNode, useEffect } from 'react';
+import { View, Text, StyleSheet, Platform, Dimensions } from 'react-native';
+import Animated, { 
+    FadeInUp, 
+    FadeOutUp, 
+    runOnJS 
+} from 'react-native-reanimated';
 
 const { width } = Dimensions.get('window');
 
@@ -33,6 +38,10 @@ export const useToast = () => {
 export const ToastProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
+  const removeToast = useCallback((id: number) => {
+    setToasts(currentToasts => currentToasts.filter(toast => toast.id !== id));
+  }, []);
+
   const addToast = useCallback((arg: AddToastArg, typeArg?: 'success' | 'error' | 'info') => {
     const id = Date.now();
     let message = '';
@@ -46,12 +55,20 @@ export const ToastProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         type = arg.type || typeArg || 'info';
     }
 
-    setToasts(currentToasts => [...currentToasts, { id, message, type }]);
-  }, []);
+    // Limit to 3 toasts max to prevent stacking lag
+    setToasts(currentToasts => {
+        const newToasts = [...currentToasts, { id, message, type }];
+        if (newToasts.length > 3) {
+            return newToasts.slice(newToasts.length - 3);
+        }
+        return newToasts;
+    });
 
-  const removeToast = useCallback((id: number) => {
-    setToasts(currentToasts => currentToasts.filter(toast => toast.id !== id));
-  }, []);
+    // Auto remove after 2000ms (faster dismissal)
+    setTimeout(() => {
+        removeToast(id);
+    }, 2000);
+  }, [removeToast]);
 
   return (
     <ToastContext.Provider value={{ addToast }}>
@@ -59,7 +76,7 @@ export const ToastProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         {children}
         <View style={styles.container} pointerEvents="box-none">
           {toasts.map(toast => (
-            <ToastItem key={toast.id} toast={toast} onHide={() => removeToast(toast.id)} />
+            <ToastItem key={toast.id} toast={toast} />
           ))}
         </View>
       </View>
@@ -67,60 +84,24 @@ export const ToastProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   );
 };
 
-const ToastItem: React.FC<{ toast: ToastMessage; onHide: () => void }> = ({ toast, onHide }) => {
-    const fadeAnim = useRef(new Animated.Value(0)).current;
-    const slideAnim = useRef(new Animated.Value(-100)).current;
-    const rotateAnim = useRef(new Animated.Value(0)).current;
-
-    useEffect(() => {
-        // Entrance animation: Pop and Slide
-        Animated.parallel([
-            Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: true }),
-            Animated.spring(slideAnim, { toValue: 0, tension: 50, friction: 7, useNativeDriver: true }),
-            Animated.sequence([
-                Animated.timing(rotateAnim, { toValue: 1, duration: 100, useNativeDriver: true }),
-                Animated.timing(rotateAnim, { toValue: -1, duration: 200, useNativeDriver: true }),
-                Animated.timing(rotateAnim, { toValue: 0, duration: 100, useNativeDriver: true }),
-            ])
-        ]).start();
-
-        const timer = setTimeout(() => {
-            Animated.parallel([
-                Animated.timing(fadeAnim, { toValue: 0, duration: 400, useNativeDriver: true }),
-                Animated.timing(slideAnim, { toValue: -100, duration: 400, useNativeDriver: true })
-            ]).start(onHide);
-        }, 2800);
-
-        return () => clearTimeout(timer);
-    }, []);
-
-    const rotation = rotateAnim.interpolate({
-        inputRange: [-1, 1],
-        outputRange: ['-5deg', '5deg']
-    });
-
+const ToastItem = React.memo(({ toast }: { toast: ToastMessage }) => {
     const getColors = () => {
         switch (toast.type) {
-            case 'success': return ['#FF4D67', '#FF8A4D']; // Success with gradient feel
-            case 'error': return ['#FF5252', '#FF1744'];
-            default: return ['#448AFF', '#2979FF'];
+            case 'success': return '#FF4D67'; 
+            case 'error': return '#FF5252';
+            default: return '#448AFF';
         }
     };
 
-    const colors = getColors();
+    const bgColor = getColors();
 
     return (
         <Animated.View 
+            entering={FadeInUp.duration(300).springify()}
+            exiting={FadeOutUp.duration(200)}
             style={[
                 styles.toast, 
-                { 
-                    opacity: fadeAnim, 
-                    transform: [
-                        { translateY: slideAnim },
-                        { rotate: rotation }
-                    ],
-                    backgroundColor: colors[0]
-                }
+                { backgroundColor: bgColor }
             ]}
         >
             <View style={styles.content}>
@@ -129,30 +110,31 @@ const ToastItem: React.FC<{ toast: ToastMessage; onHide: () => void }> = ({ toas
             </View>
         </Animated.View>
     );
-};
+});
 
 const styles = StyleSheet.create({
   container: {
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 60 : 40,
+    top: Platform.OS === 'ios' ? 50 : 30, // Slightly higher
     left: 0,
     right: 0,
     alignItems: 'center',
     zIndex: 9999,
   },
   toast: {
-    paddingVertical: 14,
-    paddingHorizontal: 20,
-    borderRadius: 20,
-    marginVertical: 6,
-    width: width * 0.85,
-    borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.3)',
-    elevation: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 25,
+    marginVertical: 4,
+    maxWidth: width * 0.9,
+    minWidth: width * 0.4,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.4)',
+    elevation: 8,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 5 },
-    shadowOpacity: 0.3,
-    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
   },
   content: {
     flexDirection: 'row',
@@ -160,15 +142,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   emoji: {
-    fontSize: 20,
-    marginRight: 10,
+    fontSize: 18,
+    marginRight: 8,
   },
   message: {
     color: 'white',
-    fontSize: 15,
+    fontSize: 14,
     fontFamily: Platform.OS === 'ios' ? 'System' : 'Roboto',
-    fontWeight: 'bold',
+    fontWeight: '700',
     textAlign: 'center',
-    flexShrink: 1,
   },
 });

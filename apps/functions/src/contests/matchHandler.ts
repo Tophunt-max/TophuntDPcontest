@@ -32,9 +32,9 @@ export const startContestMatch = onCall(async (request) => {
       const contestData = contestDoc.data()!;
       const userData = userDoc.data()!;
       
-      // Calculate split entry fee (50% for each user)
+      // Calculate split entry fee (50% for each user) - Rounding up to prevent odd-coin leakage
       const totalFee = Number(contestData.totalEntryFee || contestData.entryDpcoin || 0);
-      const entryFeePerUser = totalFee / 2;
+      const entryFeePerUser = Math.ceil(totalFee / 2);
 
       const userBalance = Number(userData.Dpcoin || 0);
 
@@ -153,11 +153,23 @@ export const joinContestMatch = onCall(async (request) => {
       if (!userDoc.exists) throw new HttpsError("not-found", "User document not found.");
 
       const matchData = matchDoc.data()!;
+      
+      // 1. Validation Checks
       if (matchData.status !== "waiting_for_opponent") throw new HttpsError("failed-precondition", "Match unavailable.");
       if (matchData.userA.uid === uid) throw new HttpsError("failed-precondition", "You cannot join your own match.");
+      
+      // Anti-Cheat: Device ID Check
+      if (deviceId && matchData.userA.deviceId === deviceId) {
+          throw new HttpsError("permission-denied", "Multi-account detected. You cannot join matches from the same device.");
+      }
+
+      // Expiry Check
+      if (matchData.expiresAt && matchData.expiresAt.toMillis() < Date.now()) {
+          throw new HttpsError("failed-precondition", "This match has expired.");
+      }
 
       const userData = userDoc.data()!;
-      const entryFeePerUser = Number(matchData.entryFee || 0) / 2;
+      const entryFeePerUser = Math.ceil(Number(matchData.entryFee || 0) / 2);
       const userBalance = Number(userData.Dpcoin || 0);
 
       if (userBalance < entryFeePerUser) {

@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { ShowcaseSection } from "@/components/Layouts/showcase-section";
-import { uploadToFirebaseStorage } from "@/lib/firebase-storage";
+import { uploadToR2 } from "@/lib/r2-upload";
 import { useState } from "react";
 
 export function SplashScreenForm({ settings, setSettings }: any) {
@@ -14,7 +14,7 @@ export function SplashScreenForm({ settings, setSettings }: any) {
 
     setUploading(true);
     try {
-      const url = await uploadToFirebaseStorage(file, `app/splash_${Date.now()}.png`);
+      const url = await uploadToR2(file, "app/splash");
       setSettings({ ...settings, splashImageUrl: url });
       alert("Splash image updated!");
     } catch (err) {

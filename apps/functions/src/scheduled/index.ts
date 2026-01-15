@@ -6,11 +6,6 @@ import { FieldValue } from "firebase-admin/firestore";
 // =================================================================================================
 // 🔥 ✅ [COST OPTIMIZATION] CONSOLIDATED CRON JOBS
 // =================================================================================================
-// Instead of deploying multiple scheduled functions (e.g., one for contests, one for stories),
-// we use a single function that runs frequently. Inside this function, we act as a "router"
-// to decide which tasks to run, potentially based on the time. This keeps only ONE cron
-// instance active, saving significant quota and instance hours.
-// =================================================================================================
 
 /**
  * Resolves contests that have ended.
@@ -33,13 +28,12 @@ const resolveEndedContests = async () => {
 
         if (battleData.userA.votes > battleData.userB.votes) {
             winnerId = battleData.userA.userId;
-        } else if (battleData.userB.votes > battleData.userA.votes) {
+        } else if (battleData.userB.votes > battleData.userA.userId) {
             winnerId = battleData.userB.userId;
         }
         
         batch.update(battleDoc.ref, { status: "ended", winnerId });
         
-        // In a real app, you would also distribute prizes here.
         if (winnerId) {
             const winnerRef = db.collection("users").doc(winnerId);
             batch.update(winnerRef, { "stats.wins": FieldValue.increment(1) });
@@ -70,21 +64,13 @@ const cleanupExpiredStories = async () => {
     logger.info(`[Scheduled] Cleaned up ${expiredStories.size} stories.`);
 };
 
-
 // Master handler for all scheduled tasks
 export const scheduledTasks = async (event: ScheduledEvent) => {
     logger.info("[Scheduled] Master task handler running.");
     
-    // We can run tasks sequentially
+    // Run DB tasks
     await resolveEndedContests();
     await cleanupExpiredStories();
-
-    // Future tasks can be added here and controlled with simple if-statements
-    // For example, run a specific task only once per hour:
-    // const minute = new Date(event.scheduleTime).getMinutes();
-    // if (minute < 10) {
-    //   await runHourlyTask();
-    // }
 
     logger.info("[Scheduled] Master task handler finished.");
 };

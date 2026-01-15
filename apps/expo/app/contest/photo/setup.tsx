@@ -4,7 +4,6 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  Image,
   ActivityIndicator,
   Alert,
   ScrollView,
@@ -13,6 +12,7 @@ import {
   TextInput,
   Modal
 } from 'react-native';
+import { Image } from 'expo-image';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -41,6 +41,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { ImageViewer } from '@/src/components/ui/ImageViewer';
 import * as Haptics from 'expo-haptics';
+import { getOptimizedMediaUrl } from '@/src/utils/media';
 
 const PINK_ACCENT = '#FFB1BD';
 const PRIMARY_COLOR = '#FF4D67';
@@ -295,7 +296,7 @@ export default function BattleSetupScreen() {
   // Identify if we are User B joining an existing match
   const isJoinMode = selectedContest.isJoinMode || mode === 'join';
   const opponent = isJoinMode ? selectedContest.userA : null;
-  const opponentPic = opponent?.profilePic || opponent?.profileImageUrl;
+  const opponentPic = getOptimizedMediaUrl(opponent?.profilePic || opponent?.profileImageUrl || '');
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]} edges={['top', 'bottom']}>
@@ -329,7 +330,13 @@ export default function BattleSetupScreen() {
             <View style={styles.playerItem}>
               <View style={[styles.playerAvatarCircle, { backgroundColor: '#E1F5FE' }]}>
                 {profile?.profileImageUrl ? (
-                  <Image source={{ uri: profile.profileImageUrl }} style={styles.avatarImg} />
+                  <Image 
+                    source={{ uri: getOptimizedMediaUrl(profile.profileImageUrl) }} 
+                    style={styles.avatarImg} 
+                    contentFit="cover"
+                    cachePolicy="memory-disk"
+                    transition={200}
+                  />
                 ) : (
                   <Ionicons name="person" size={36} color="#03A9F4" />
                 )}
@@ -351,7 +358,13 @@ export default function BattleSetupScreen() {
             <View style={styles.playerItem}>
               <View style={[styles.playerAvatarCircle, { backgroundColor: opponent ? '#E1F5FE' : '#FFF5F5' }]}>
                 {opponentPic ? (
-                  <Image source={{ uri: opponentPic }} style={styles.avatarImg} />
+                  <Image 
+                    source={{ uri: opponentPic }} 
+                    style={styles.avatarImg} 
+                    contentFit="cover"
+                    cachePolicy="memory-disk"
+                    transition={200}
+                  />
                 ) : (
                   opponent ? (
                     <Ionicons name="person" size={36} color="#03A9F4" />
@@ -387,12 +400,20 @@ export default function BattleSetupScreen() {
                     <Image 
                       source={opponentPic ? { uri: opponentPic } : require('@/assets/images/icon.png')} 
                       style={styles.miniAvatar} 
+                      contentFit="cover"
+                      cachePolicy="memory-disk"
                     />
                     <Text style={[styles.previewLabel, { color: textColor }]} numberOfLines={1}>
                        {opponent.displayName || opponent.username || "Opponent"}
                     </Text>
                  </View>
-                 <Image source={{ uri: opponent.mediaUrl }} style={styles.previewImg} />
+                 <Image 
+                    source={{ uri: getOptimizedMediaUrl(opponent.mediaUrl) }} 
+                    style={styles.previewImg} 
+                    contentFit="cover"
+                    cachePolicy="memory-disk"
+                    transition={200}
+                 />
               </View>
 
               <View style={styles.vsSmallCircle}>
@@ -402,14 +423,16 @@ export default function BattleSetupScreen() {
               <View style={styles.previewBox}>
                  <View style={styles.previewHeader}>
                     <Image 
-                      source={profile?.profileImageUrl ? { uri: profile.profileImageUrl } : require('@/assets/images/icon.png')} 
+                      source={profile?.profileImageUrl ? { uri: getOptimizedMediaUrl(profile.profileImageUrl) } : require('@/assets/images/icon.png')} 
                       style={styles.miniAvatar} 
+                      contentFit="cover"
+                      cachePolicy="memory-disk"
                     />
                     <Text style={[styles.previewLabel, { color: textColor }]} numberOfLines={1}>You</Text>
                  </View>
                  {media ? (
                    <TouchableOpacity onPress={() => setIsImageViewVisible(true)}>
-                    <Image source={{ uri: media }} style={styles.previewImg} />
+                    <Image source={{ uri: media }} style={styles.previewImg} contentFit="cover" />
                    </TouchableOpacity>
                  ) : (
                    <TouchableOpacity onPress={pickImage} style={[styles.previewImg, styles.emptyPreview]}>
@@ -456,7 +479,7 @@ export default function BattleSetupScreen() {
               style={[styles.uploadBox, { borderColor: '#E0E0E0' }]}
             >
               {media ? (
-                <Image source={{ uri: media }} style={styles.previewImage} />
+                <Image source={{ uri: media }} style={styles.previewImage} contentFit="cover" />
               ) : (
                 <View style={styles.uploadPlaceholder}>
                   <View style={styles.uploadCircleInner}>
@@ -468,7 +491,6 @@ export default function BattleSetupScreen() {
               )}
            </TouchableOpacity>
            
-           {/* Re-add Upload Button if media is present, to allow changing */}
            {media && (
                <TouchableOpacity onPress={pickImage} style={styles.changePhotoBtn}>
                    <Text style={[styles.changePhotoText, { color: PRIMARY_COLOR }]}>Change Photo</Text>
@@ -620,7 +642,6 @@ const styles = StyleSheet.create({
   avatarImg: {
     width: '100%',
     height: '100%',
-    resizeMode: 'cover',
   },
   playerName: {
     fontSize: 16,
@@ -642,22 +663,6 @@ const styles = StyleSheet.create({
   coinIconWrapper: {
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  coinIconOuter: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    backgroundColor: '#FFD700',
-    borderWidth: 1,
-    borderColor: '#DAA520',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  coinIconInner: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: 'rgba(255,255,255,0.5)',
   },
   vsCircle: {
     width: 44,
@@ -820,7 +825,6 @@ const styles = StyleSheet.create({
   previewImage: {
     width: '100%',
     height: '100%',
-    resizeMode: 'cover',
   },
   changePhotoBtn: {
     marginTop: 10,

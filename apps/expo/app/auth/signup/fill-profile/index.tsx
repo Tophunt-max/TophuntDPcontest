@@ -12,7 +12,7 @@ import { router } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
 import * as Location from 'expo-location';
 import { useSignupStore } from "../../../../src/store/signup";
-import { uploadToS3 } from "../../../../src/lib/uploadToS3";
+import { uploadAvatar } from "@/src/services/r2/uploadAvatar"; 
 import { FormInput } from "@/src/components/inputs/FormInput";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -26,7 +26,7 @@ import { useToast } from "@/src/components/toast/ToastProvider";
 import Images from "@/assets/images";
 import Svg, { Circle } from 'react-native-svg';
 import { ReanimatedBottomSheet } from "@/src/components/modals/ReanimatedBottomSheet";
-import { callApi } from "@/src/services/api"; // Centralized API Caller
+import { callApi } from "@/src/services/api";
 
 const fillProfileSchema = z.object({
   avatarUrl: z.string().min(1, "Please upload a profile picture"),
@@ -103,7 +103,6 @@ const FillProfile: React.FC = () => {
   const username = watch("username");
   const phone = watch("phone");
 
-  // SILENT LOCATION
   useEffect(() => {
     (async () => {
         try {
@@ -116,13 +115,11 @@ const FillProfile: React.FC = () => {
     })();
   }, []);
 
-  // USERNAME CHECK (Using New API Router)
   useEffect(() => {
     const checkUsername = async () => {
         if (username && username.length >= 3) {
             setUsernameChecking(true);
             try {
-                // Purana: authHandler call ko callApi se replace kiya
                 const result = await callApi('check', { type: 'username', value: username });
                 if (result.exists) {
                     setError("username", { type: "manual", message: "This username is taken. Try another!" });
@@ -134,7 +131,6 @@ const FillProfile: React.FC = () => {
     return () => clearTimeout(timer);
   }, [username]);
 
-  // PHONE CHECK (Using New API Router)
   useEffect(() => {
     const checkPhone = async () => {
         if (phone && phone.length === 10 && !isPhoneLocked) {
@@ -152,18 +148,28 @@ const FillProfile: React.FC = () => {
   }, [phone, countryCode, isPhoneLocked]);
 
   const pickAvatar = async () => {
-    const img = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, aspect: [1, 1], quality: 0.5 });
+    const img = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, aspect: [1, 1], quality: 0.8 });
     if (!img.canceled && img.assets) {
       const selectedImage = img.assets[0];
       setLocalAvatarUri(selectedImage.uri);
       setIsUploading(true);
       setUploadProgress(0);
       try {
-         const s3Url = await uploadToS3(selectedImage.uri, "image/jpeg", "avatars", (p) => setUploadProgress(p));
-         setValue("avatarUrl", s3Url as string);
-         setField("avatarUrl", s3Url as string);
+         // uploadAvatar now returns teeno sizes
+         const derivatives = await uploadAvatar(selectedImage.uri);
+         
+         // avatarUrl ko medium set kar dete hain preview ke liye
+         setValue("avatarUrl", derivatives.medium);
+         
+         // Store derivatives for Firestore later
+         setField("photoDerivatives", derivatives);
+         setField("avatarUrl", derivatives.medium);
+         
          trigger("avatarUrl");
-      } catch (e) { addToast("Upload failed", "error"); } finally { setIsUploading(false); }
+      } catch (e) { 
+          console.error(e);
+          addToast("Upload failed", "error"); 
+      } finally { setIsUploading(false); }
     }
   };
 
@@ -171,7 +177,17 @@ const FillProfile: React.FC = () => {
     if (usernameChecking || phoneChecking) return;
     setIsLoading(true);
     try {
-      setMultiple({ ...signupData, avatarUrl: data.avatarUrl, fullName: data.fullName, username: data.username, email: data.email, phone: countryCode + data.phone, occupation: data.occupation, gender: data.gender, dob: data.dateOfBirth instanceof Date ? data.dateOfBirth.toISOString() : data.dateOfBirth });
+      setMultiple({ 
+          ...signupData, 
+          avatarUrl: data.avatarUrl, 
+          fullName: data.fullName, 
+          username: data.username, 
+          email: data.email, 
+          phone: countryCode + data.phone, 
+          occupation: data.occupation, 
+          gender: data.gender, 
+          dob: data.dateOfBirth instanceof Date ? data.dateOfBirth.toISOString() : data.dateOfBirth 
+      });
       router.push("/auth/signup/follow-someone");
     } catch (e) { addToast("Error saving", "error"); } finally { setIsLoading(false); }
   };

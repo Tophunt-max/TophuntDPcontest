@@ -1,5 +1,6 @@
 import React, { useState, memo, useEffect, useCallback, useRef } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, Dimensions, Alert, Pressable } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Dimensions, Alert, Pressable } from 'react-native';
+import { Image } from 'expo-image';
 import { CommentSheet } from '../comments/CommentSheet';
 import { ShareSheet } from '../share/ShareSheet';
 import { useAuth } from '@/src/hooks/useAuth';
@@ -18,7 +19,8 @@ import Animated, {
   withSpring, 
   withSequence, 
   withDelay,
-  runOnJS
+  runOnJS,
+  withTiming
 } from 'react-native-reanimated';
 import { 
   HeartIcon_Light, 
@@ -28,17 +30,23 @@ import {
   Bookmark_Outline, 
   Bookmark_Filled 
 } from '@/assets/svgs';
+import { PostSkeleton } from './PostSkeleton';
+import { getCachedMedia } from '@/src/services/media/MediaCacheService';
+import { getOptimizedMediaUrl } from '@/src/utils/media';
 
 const { width } = Dimensions.get('window');
 
 interface PostCardProps {
-    item: any;
+    item?: any;
     isDark: boolean;
+    loading?: boolean;
 }
 
 const AnimatedLinearGradient = Animated.createAnimatedComponent(LinearGradient);
+const blurhash =
+  '|rF?hV%2WCj[ayj[a|j[az_NaeWBj@ayfRayfQfQM{M|azj[azf6fQfQfQIpWXofj[ayj[j[fQayWCoeoeaya}j[ayfQa{oLj?j[WVj[ayayj[fQoff7azayj[ayj[j[ayofayayayj[fQj[ayayj[ayfjj[j[ayjuayj[';
 
-export const PostCard = memo(({ item, isDark }: PostCardProps) => {
+const PostCardContent = memo(({ item, isDark }: { item: any; isDark: boolean }) => {
   const { user } = useAuth();
   const { addToast } = useToast();
   const [showComments, setShowComments] = useState(false);
@@ -58,6 +66,9 @@ export const PostCard = memo(({ item, isDark }: PostCardProps) => {
   const [commentCount, setCommentCount] = useState(item.commentCount || 0);
   const [shareCount, setShareCount] = useState(item.shareCount || 0);
   const [progressA, setProgressA] = useState(0.5);
+
+  const [mediaA, setMediaA] = useState<string | null>(null);
+  const [mediaB, setMediaB] = useState<string | null>(null);
 
   // Animation values
   const heartScale = useSharedValue(0);
@@ -93,6 +104,22 @@ export const PostCard = memo(({ item, isDark }: PostCardProps) => {
         checkBookmark();
     }
 
+    // Load cached media
+    const loadMedia = async () => {
+        const urlA = getOptimizedMediaUrl(item.userA.mediaUrl);
+        const urlB = getOptimizedMediaUrl(item.userB.mediaUrl);
+        
+        // Use local cache for main images if possible
+        const [cachedA, cachedB] = await Promise.all([
+            getCachedMedia(urlA),
+            getCachedMedia(urlB)
+        ]);
+        
+        setMediaA(cachedA);
+        setMediaB(cachedB);
+    };
+    loadMedia();
+
     return () => unsub();
   }, [item.id, user]);
 
@@ -109,9 +136,10 @@ export const PostCard = memo(({ item, isDark }: PostCardProps) => {
     if (now - lastTap.current < 300) {
       if (!isHeartAnimating.current) {
         isHeartAnimating.current = true;
+        // Updated animation sequence for faster, snappier feel
         heartScale.value = withSequence(
-            withSpring(1.5, { damping: 10, stiffness: 100 }),
-            withDelay(300, withSpring(0, {}, (finished) => {
+            withSpring(1.2, { damping: 15, stiffness: 400 }), // Faster pop
+            withDelay(100, withTiming(0, { duration: 150 }, (finished) => { // Faster exit
                 if (finished) runOnJS(() => { isHeartAnimating.current = false; })();
             }))
         );
@@ -209,8 +237,9 @@ export const PostCard = memo(({ item, isDark }: PostCardProps) => {
   const isALeading = votesA > votesB;
   const isBLeading = votesB > votesA;
 
-  const picA = item.userA.profilePic || item.userA.profileImageUrl || `https://ui-avatars.com/api/?name=${nameA}&background=random`;
-  const picB = item.userB?.profilePic || item.userB?.profileImageUrl || `https://ui-avatars.com/api/?name=${nameB}&background=random`;
+  // Optimized Profile Pics using CDN
+  const picA = getOptimizedMediaUrl(item.userA.profilePic || item.userA.profileImageUrl || `https://ui-avatars.com/api/?name=${nameA}&background=random`);
+  const picB = getOptimizedMediaUrl(item.userB?.profilePic || item.userB?.profileImageUrl || `https://ui-avatars.com/api/?name=${nameB}&background=random`);
 
   return (
     <View style={[styles.postContainer, { backgroundColor: cardColor }]}>
@@ -228,11 +257,23 @@ export const PostCard = memo(({ item, isDark }: PostCardProps) => {
         <View style={styles.userInfo}>
            <View style={styles.avatarContainer}>
               <View style={[styles.avatarWrapper, isALeading && styles.leadingAvatar, { zIndex: 2 }]}>
-                <Image source={{ uri: picA }} style={styles.avatarImage} />
+                <Image 
+                  source={{ uri: picA }} 
+                  style={styles.avatarImage} 
+                  contentFit="cover"
+                  transition={200}
+                  cachePolicy="memory-disk"
+                />
               </View>
               {item.userB && (
                 <View style={[styles.avatarWrapper, isBLeading && styles.leadingAvatar, { marginLeft: -15, zIndex: 1 }]}>
-                  <Image source={{ uri: picB }} style={styles.avatarImage} />
+                  <Image 
+                    source={{ uri: picB }} 
+                    style={styles.avatarImage} 
+                    contentFit="cover"
+                    transition={200}
+                    cachePolicy="memory-disk"
+                  />
                 </View>
               )}
            </View>
@@ -254,11 +295,25 @@ export const PostCard = memo(({ item, isDark }: PostCardProps) => {
 
       <Pressable onPress={handleDoubleTap} style={styles.mediaSection}>
         <View style={styles.imageWrapper}>
-            <Image source={{ uri: item.userA.mediaUrl }} style={[styles.postImage, isALeading && styles.leadingImage]} />
+            <Image 
+              source={{ uri: mediaA || getOptimizedMediaUrl(item.userA.mediaUrl) }} 
+              style={[styles.postImage, isALeading && styles.leadingImage]} 
+              contentFit="cover"
+              transition={200}
+              placeholder={blurhash}
+              cachePolicy="memory-disk"
+            />
             {isALeading && <View style={styles.crownContainer}><Text style={{fontSize: 20}}>👑</Text></View>}
         </View>
         <View style={styles.imageWrapper}>
-            <Image source={{ uri: item.userB.mediaUrl }} style={[styles.postImage, isBLeading && styles.leadingImage]} />
+            <Image 
+              source={{ uri: mediaB || getOptimizedMediaUrl(item.userB.mediaUrl) }} 
+              style={[styles.postImage, isBLeading && styles.leadingImage]} 
+              contentFit="cover"
+              transition={200}
+              placeholder={blurhash}
+              cachePolicy="memory-disk"
+            />
             {isBLeading && <View style={styles.crownContainer}><Text style={{fontSize: 20}}>👑</Text></View>}
         </View>
         
@@ -320,6 +375,13 @@ export const PostCard = memo(({ item, isDark }: PostCardProps) => {
   );
 });
 
+export const PostCard = memo(({ item, isDark, loading }: PostCardProps) => {
+    if (loading || !item) {
+        return <PostSkeleton isDark={isDark} />;
+    }
+    return <PostCardContent item={item} isDark={isDark} />;
+});
+
 const styles = StyleSheet.create({
   postContainer: { borderRadius: 24, marginHorizontal: 8, marginBottom: 20, elevation: 3, paddingBottom: 10, position: 'relative' },
   confetti: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 100 },
@@ -327,7 +389,7 @@ const styles = StyleSheet.create({
   userInfo: { flexDirection: 'row', alignItems: 'center', flex: 1 },
   avatarContainer: { flexDirection: 'row', alignItems: 'center' },
   avatarWrapper: { width: 38, height: 38, borderRadius: 19, borderWidth: 2, borderColor: '#FFF', overflow: 'hidden', backgroundColor: '#EEE' },
-  avatarImage: { width: '100%', height: '100%', resizeMode: 'cover' },
+  avatarImage: { width: '100%', height: '100%' },
   leadingAvatar: { borderColor: '#FFD700', borderWidth: 2.5 },
   nameContainer: { marginLeft: 10, flex: 1 },
   username: { fontSize: 16 },

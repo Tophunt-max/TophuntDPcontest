@@ -17,7 +17,6 @@ import customParseFormat from 'dayjs/plugin/customParseFormat';
 import calendar from 'dayjs/plugin/calendar';
 import utc from 'dayjs/plugin/utc';
 
-// Initialize all dayjs plugins globally at the root
 dayjs.extend(localeData);
 dayjs.extend(weekday);
 dayjs.extend(localizedFormat);
@@ -28,14 +27,15 @@ dayjs.extend(utc);
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { ToastProvider } from '@/src/components/toast/ToastProvider';
 import { lightTheme, darkTheme } from '@/constants/theme';
-import '@/src/services/firebase/initFirebase'; // Import to initialize Firebase
+import '@/src/services/firebase/initFirebase'; 
 import { useAppConfig } from '@/src/services/appSettings';
-import { useAuth } from '@/src/hooks/useAuth'; // Import useAuth hook
+import { useAuth } from '@/src/hooks/useAuth'; 
 import { notificationService } from '@/src/services/notifications/notificationService';
+import { updateUserPresence } from '@/src/services/messages/messageService';
+import { respondToCall, declineCall } from '@/src/services/calls/callService';
 
 const queryClient = new QueryClient();
 
-// Component to handle maintenance redirect logic
 function MaintenanceGuard({ children }: { children: React.ReactNode }) {
   const { config, loading } = useAppConfig();
   const segments = useSegments();
@@ -43,74 +43,70 @@ function MaintenanceGuard({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (loading) return;
-
     const isMaintenancePage = segments[0] === 'maintenance';
-
     if (config?.maintenanceMode) {
-      if (!isMaintenancePage) {
-        router.replace('/maintenance');
-      }
+      if (!isMaintenancePage) router.replace('/maintenance');
     } else {
-      if (isMaintenancePage) {
-        router.replace('/');
-      }
+      if (isMaintenancePage) router.replace('/');
     }
   }, [config?.maintenanceMode, loading, segments]);
 
   return <>{children}</>;
 }
 
-// Main Root Layout Component
 function RootLayoutNav() {
-  const { user, loading } = useAuth(); // Get user auth state
+  const { user, loading } = useAuth();
   const segments = useSegments();
   const router = useRouter();
   
-  // Hook to handle notification listeners
+  useEffect(() => {
+    if (user && !loading) {
+      updateUserPresence();
+    }
+  }, [user, loading]);
+
+  // 2. Notification Listeners (Including Call Actions)
   useEffect(() => {
     const subscription = Notifications.addNotificationResponseReceivedListener(response => {
-      const data = response.notification.request.content.data;
-      console.log("Notification Clicked Data:", data);
+      const { actionIdentifier, notification } = response;
+      const data = notification.request.content.data;
 
-      // 1. Check for Direct URL (Sent from Admin Panel)
-      if (data?.url) {
-          // Remove leading slash if present to avoid double slash issues if needed, 
-          // but router.push works well with absolute paths too.
-          try {
-             router.push(data.url);
-          } catch (e) {
-             console.error("Navigation failed", e);
-             router.push('/notifications');
+      // --- NEW: INTERACTIVE CALL ACTIONS ---
+      if (data.type === 'call' && data.chatId) {
+          if (actionIdentifier === 'ACCEPT_CALL') {
+              respondToCall(data.chatId, { sdp: 'init' });
+              router.push(`/messages/chat/${data.chatId}`);
+              return;
+          } else if (actionIdentifier === 'DECLINE_CALL') {
+              declineCall(data.chatId);
+              return;
           }
-          return;
       }
 
-      // 2. Handle Specific Types based on targetId
+      // --- REDIRECTION LOGIC ---
+      if (data?.url) {
+          try { router.push(data.url); } catch (e) { router.push('/notifications'); }
+          return;
+      }
+      if (data?.chatId) {
+          router.push(`/messages/chat/${data.chatId}`);
+          return;
+      }
       if (data?.targetId) {
           switch (data.type) {
-              case 'follow':
-                  router.push(`/profile/view/${data.targetId}`); // Assuming you have a user view page
-                  break;
+              case 'follow': router.push(`/profile/view/${data.targetId}`); break;
               case 'like':
-              case 'comment':
-                  // Redirect to Post Details (Check if it's a post or contest match)
-                  // For now, assuming post
-                  router.push(`/home`); // Ideally: /post/${data.targetId}
-                  break;
-              case 'contest':
-                  router.push(`/contest/${data.targetId}`); // Assuming contest detail page exists
-                  break;
-              default:
-                  router.push('/notifications');
+              case 'comment': router.push(`/home`); break;
+              case 'contest': router.push(`/contest/${data.targetId}`); break;
+              default: router.push('/notifications');
           }
       } else {
           router.push('/notifications');
       }
     });
 
-    // Also handle foreground notifications if needed
     const foregroundSubscription = Notifications.addNotificationReceivedListener(notification => {
-        // You can show a toast here if you want custom UI instead of system alert
+        // Handle foreground notifications
     });
 
     return () => {
@@ -121,18 +117,15 @@ function RootLayoutNav() {
 
   useEffect(() => {
     if (loading) return;
-
     const inAuthGroup = segments[0] === 'auth';
     const inOnboarding = segments[0] === 'onboarding';
     const inSplash = segments[0] === 'splash';
 
     if (!user) {
-      // Agar user login nahi hai aur kisi protected page par jane ki koshish kar raha hai
       if (!inAuthGroup && !inOnboarding && !inSplash && segments.length > 0) {
         router.replace('/auth/login');
       }
     } else {
-      // Agar user login hai lekin auth pages par hai, toh home par bhej do
       if (inAuthGroup || inOnboarding || inSplash) {
         router.replace('/home');
       }
@@ -140,7 +133,6 @@ function RootLayoutNav() {
   }, [user, loading, segments]);
 
   useEffect(() => {
-    // Register for push notifications only when user is logged in
     if (user && !loading) {
       notificationService.registerForPushNotificationsAsync(user.uid);
     }
@@ -159,10 +151,8 @@ function RootLayoutNav() {
   );
 }
 
-
 export default function RootLayout() {
   const colorScheme = useColorScheme();
-
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>

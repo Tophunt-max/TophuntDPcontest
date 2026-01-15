@@ -78,7 +78,7 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
   const isOwnProfile = currentUser?.uid === targetUserId;
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
-  const backgroundColor = isDark ? Colors.dark.text : Colors.light.background; // Fixed text color variable used for background issue
+  const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
 
   const { 
     data: profile, 
@@ -116,12 +116,12 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
 
   if (profileLoading && !profile) {
     return (
-        <SafeAreaView style={[styles.container, { backgroundColor: isDark ? Colors.dark.background : Colors.light.background }]}>
+        <SafeAreaView style={[styles.container, { backgroundColor }]}>
             <ScrollView showsVerticalScrollIndicator={false}>
                 <ProfileHeaderSkeleton />
                 <PostGridSkeleton />
             </ScrollView>
-            <BottomNav backgroundColor={isDark ? Colors.dark.background : Colors.light.background} isDark={isDark} />
+            <BottomNav backgroundColor={backgroundColor} isDark={isDark} />
         </SafeAreaView>
     );
   }
@@ -129,7 +129,7 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
   const posts = postsData?.pages.flatMap(page => page.posts) || [];
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: isDark ? Colors.dark.background : Colors.light.background }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor }]}>
       <PostGrid
         posts={activeTab === 'posts' ? posts : []}
         onLoadMore={() => hasNextPage && fetchNextPage()}
@@ -143,6 +143,7 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
               isOwnProfile={isOwnProfile}
               onToggleFollow={handleToggleFollow}
               isFollowing={isFollowing}
+              onRefresh={handleRefresh}
             />
             {isOwnProfile && (
               <WalletCard 
@@ -172,7 +173,7 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
           </>
         }
       />
-      <BottomNav backgroundColor={isDark ? Colors.dark.background : Colors.light.background} isDark={isDark} />
+      <BottomNav backgroundColor={backgroundColor} isDark={isDark} />
     </SafeAreaView>
   );
 };

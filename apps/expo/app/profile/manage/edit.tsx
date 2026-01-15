@@ -13,11 +13,11 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter, useNavigation } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
 import { useAuth } from "@/src/hooks/useAuth";
 import { useProfile } from "@/src/hooks/useProfileData";
-import { uploadToS3 } from "@/src/lib/uploadToS3";
+import { uploadAvatar } from "@/src/services/r2/uploadAvatar"; 
 import { FormInput } from "@/src/components/inputs/FormInput";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -27,9 +27,11 @@ import { Left_Arrow, Email_Icon, Add_Icon } from "@/assets/svgs";
 import { Ionicons } from "@expo/vector-icons";
 import { CountryPicker } from "react-native-country-codes-picker";
 import { doc, updateDoc } from "firebase/firestore";
-import { firestore } from "@/src/services/firebase/initFirebase";
-import { callApi } from "@/src/services/api"; // Centralized API Caller
+import { updateProfile } from "firebase/auth";
+import { firestore, auth } from "@/src/services/firebase/initFirebase";
+import { callApi } from "@/src/services/api";
 import { ReanimatedBottomSheet } from "@/src/components/modals/ReanimatedBottomSheet";
+import { useQueryClient } from "@tanstack/react-query";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -64,14 +66,17 @@ const occupations = ["Student", "Engineer", "Doctor", "Artist", "Teacher", "Deve
 
 export default function EditProfileScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
+  const queryClient = useQueryClient();
   const { user: authUser } = useAuth();
-  const { data: profile, isLoading: profileLoading, refetch } = useProfile(authUser?.uid || '');
+  const { data: profile, isLoading: profileLoading } = useProfile(authUser?.uid || '');
   
   const [isOccupationPickerVisible, setOccupationPickerVisibility] = useState(false);
   const [showCountryPicker, setShowCountryPicker] = useState(false);
   const [countryCode, setCountryCode] = useState("+91");
   const [isLoading, setIsLoading] = useState(false);
   const [localAvatarUri, setLocalAvatarUri] = useState<string | null>(null);
+  const [isImageUploading, setIsImageUploading] = useState(false); 
   
   const [showImageOptions, setShowImageOptions] = useState(false);
 
@@ -117,11 +122,21 @@ export default function EditProfileScreen() {
         twitter: (profile as any).twitter || "",
         instagram: (profile as any).instagram || "",
       });
-      setLocalAvatarUri(profile.profileImageUrl || null);
+      if (profile.profileImageUrl) {
+        setLocalAvatarUri(profile.profileImageUrl);
+      }
     }
-  }, [profile, reset]);
+  }, [profile, reset, countryCode]);
 
   const selectedOccupation = watch("occupation");
+
+  const handleBack = () => {
+    if (navigation.canGoBack()) {
+      router.back();
+    } else {
+      router.replace("/profile");
+    }
+  };
 
   const pickImage = async (useCamera: boolean) => {
     setShowImageOptions(false);
@@ -133,7 +148,7 @@ export default function EditProfileScreen() {
             result = await ImagePicker.launchCameraAsync({
                 allowsEditing: true,
                 aspect: [1, 1],
-                quality: 0.5,
+                quality: 1, 
             });
         } else {
             Alert.alert("Permission Denied", "Camera permission is required to take a photo.");
@@ -144,7 +159,7 @@ export default function EditProfileScreen() {
             mediaTypes: ['images'],
             allowsEditing: true,
             aspect: [1, 1],
-            quality: 0.5,
+            quality: 1,
         });
     }
 
@@ -161,7 +176,6 @@ export default function EditProfileScreen() {
     
     setIsSendingEmailOtp(true);
     try {
-        // Using callApi with 'sendEmailOtp' action
         await callApi('sendEmailOtp', { newEmail: watchedEmail });
         setNewEmailToVerify(watchedEmail);
         setShowEmailOtpModal(true);
@@ -179,13 +193,16 @@ export default function EditProfileScreen() {
       }
       setIsVerifyingEmailOtp(true);
       try {
-          // Using callApi with 'verifyEmailOtp' action
           const result: any = await callApi('verifyEmailOtp', { otp: emailOtp });
           if (result.success) {
-              Alert.alert("Success", "Email updated successfully!");
+              Alert.alert("Success", "Email updated successfully!", [
+                  { text: "OK", onPress: () => {
+                      queryClient.invalidateQueries({ queryKey: ['profile', authUser?.uid] });
+                      router.replace("/profile");
+                  }}
+              ]);
               setShowEmailOtpModal(false);
               setEmailOtp("");
-              refetch();
           }
       } catch (error: any) {
           Alert.alert("Error", error.message || "Invalid OTP.");
@@ -203,7 +220,6 @@ export default function EditProfileScreen() {
     
     setIsSendingPhoneOtp(true);
     try {
-        // Using callApi with 'sendPhoneOtp' action
         await callApi('sendPhoneOtp', { newPhone: fullPhone });
         setNewPhoneToVerify(fullPhone);
         setShowPhoneOtpModal(true);
@@ -221,13 +237,16 @@ export default function EditProfileScreen() {
       }
       setIsVerifyingPhoneOtp(true);
       try {
-          // Using callApi with 'verifyPhoneOtp' action
           const result: any = await callApi('verifyPhoneOtp', { otp: phoneOtp });
           if (result.success) {
-              Alert.alert("Success", "Phone number updated successfully!");
+              Alert.alert("Success", "Phone number updated successfully!", [
+                  { text: "OK", onPress: () => {
+                    queryClient.invalidateQueries({ queryKey: ['profile', authUser?.uid] });
+                    router.replace("/profile");
+                  }}
+              ]);
               setShowPhoneOtpModal(false);
               setPhoneOtp("");
-              refetch();
           }
       } catch (error: any) {
           Alert.alert("Error", error.message || "Invalid OTP.");
@@ -240,23 +259,59 @@ export default function EditProfileScreen() {
     if (!authUser) return;
     setIsLoading(true);
     try {
-      let finalAvatarUrl = profile?.profileImageUrl;
+      let photoDerivatives = null;
 
-      if (localAvatarUri && localAvatarUri !== profile?.profileImageUrl) {
-        finalAvatarUrl = await uploadToS3(localAvatarUri, "image/jpeg", "avatars") as string;
+      // Check if image changed and is local
+      if (localAvatarUri && localAvatarUri !== profile?.profileImageUrl && !localAvatarUri.startsWith('http')) {
+        console.log("[EditProfile] Optimizing and uploading new images...");
+        setIsImageUploading(true);
+        
+        try {
+            photoDerivatives = await uploadAvatar(localAvatarUri);
+            console.log("[EditProfile] Multi-size upload successful");
+        } catch (uploadError: any) {
+            console.error("Image upload failed:", uploadError);
+            Alert.alert("Upload Failed", "Could not upload profile picture. Please try again.");
+            setIsLoading(false);
+            setIsImageUploading(false);
+            return;
+        }
+        setIsImageUploading(false);
       }
 
       const userRef = doc(firestore, "users", authUser.uid);
-      await updateDoc(userRef, {
+      
+      const updateData: any = {
         fullName: data.fullName,
         occupation: data.occupation,
         bio: data.bio || "",
         facebook: data.facebook || "",
         twitter: data.twitter || "",
         instagram: data.instagram || "",
-        profileImageUrl: finalAvatarUrl,
         updatedAt: new Date(),
-      });
+      };
+
+      if (photoDerivatives) {
+          updateData.profileImageUrl = photoDerivatives.medium; // Use medium as main URL
+          updateData.photoDerivatives = photoDerivatives;      // Save all versions
+          
+          // SYNC TO AUTH: This ensures new comments/stories pick up the new photo
+          try {
+              if (auth.currentUser) {
+                  await updateProfile(auth.currentUser, {
+                      photoURL: photoDerivatives.medium,
+                      displayName: data.fullName
+                  });
+                  console.log("[EditProfile] Firebase Auth profile synced");
+              }
+          } catch (authErr) {
+              console.error("Auth sync error:", authErr);
+          }
+      }
+
+      await updateDoc(userRef, updateData);
+      
+      await queryClient.invalidateQueries({ queryKey: ['profile', authUser.uid] });
 
       let alertMsg = "Profile updated successfully!";
       let needsVerification = false;
@@ -272,16 +327,17 @@ export default function EditProfileScreen() {
       }
 
       if (!needsVerification) {
-          Alert.alert("Success", alertMsg);
-          refetch();
-          router.back();
+          Alert.alert("Success", alertMsg, [
+              { text: "OK", onPress: () => {
+                  router.replace("/profile");
+              }}
+          ]);
       } else {
           Alert.alert("Action Required", alertMsg);
-          refetch();
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Update error", error);
-      Alert.alert("Error", "Something went wrong. Please try again.");
+      Alert.alert("Error", "Something went wrong: " + error.message);
     } finally {
       setIsLoading(false);
     }
@@ -297,7 +353,7 @@ export default function EditProfileScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity onPress={handleBack}>
           <Left_Arrow width={24} height={24} color="#000" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Edit Profile</Text>
@@ -417,8 +473,8 @@ export default function EditProfileScreen() {
           errorMessage={errors.instagram?.message}
         />
 
-        <TouchableOpacity onPress={handleSubmit(onSubmit)} style={styles.updateButton} disabled={isLoading || isSendingEmailOtp || isSendingPhoneOtp}>
-          {isLoading ? <ActivityIndicator color="white" /> : <Text style={styles.updateButtonText}>Update</Text>}
+        <TouchableOpacity onPress={handleSubmit(onSubmit)} style={styles.updateButton} disabled={isLoading || isImageUploading || isSendingEmailOtp || isSendingPhoneOtp}>
+          {(isLoading || isImageUploading) ? <ActivityIndicator color="white" /> : <Text style={styles.updateButtonText}>Update</Text>}
         </TouchableOpacity>
       </ScrollView>
 

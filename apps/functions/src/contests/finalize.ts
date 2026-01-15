@@ -1,7 +1,6 @@
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import * as admin from "firebase-admin";
 import { createNotification } from "../notifications/utils";
-import { awardXp } from "../utils/gamification";
 import { MemoryOption } from "firebase-functions/v2/options";
 
 const SCHEDULED_CONFIG = {
@@ -15,56 +14,67 @@ const SCHEDULED_CONFIG = {
  */
 export const finalizeContests = onSchedule({
     ...SCHEDULED_CONFIG,
-    schedule: "every 1 hours"
+    schedule: "every 30 minutes" // Checked more frequently
 }, async (event) => {
   const db = admin.firestore();
   const now = admin.firestore.Timestamp.now();
 
   try {
-    // We check 'contestMatches' which are active and expired
+    // 1. REFUND STALLED MATCHES (Waiting for opponent for too long)
+    const stalledMatchesSnap = await db.collection("contestMatches")
+        .where("status", "==", "waiting_for_opponent")
+        .where("expiresAt", "<=", now)
+        .limit(20)
+        .get();
+    
+    for (const stalledDoc of stalledMatchesSnap.docs) {
+        const data = stalledDoc.data();
+        // Use a precise refund amount based on what was likely charged (ceiling of half)
+        const totalEntryFee = Number(data.entryFee || 0);
+        const refundAmount = Math.ceil(totalEntryFee / 2); 
+        const uid = data.userA.uid;
+
+        const batch = db.batch();
+        batch.update(db.collection("users").doc(uid), {
+            Dpcoin: admin.firestore.FieldValue.increment(refundAmount)
+        });
+        batch.update(db.collection("contestMatches").doc(stalledDoc.id), { status: "cancelled" });
+        
+        // Record refund transaction
+        const transRef = db.collection("coinTransactions").doc();
+        batch.set(transRef, {
+            uid, amount: refundAmount, type: "contest_refund", matchId: stalledDoc.id,
+            description: "Refund: No opponent found.", timestamp: admin.firestore.FieldValue.serverTimestamp()
+        });
+
+        await batch.commit();
+        await createNotification(uid, {
+            title: "Match Cancelled",
+            body: "No opponent found. Your Dpcoins have been refunded.",
+            type: "contest",
+            targetId: stalledDoc.id
+        });
+    }
+
+    // 2. FINALIZE ACTIVE MATCHES
     const expiredMatchesSnap = await db.collection("contestMatches")
       .where("status", "==", "active")
       .where("expiresAt", "<=", now)
-      .limit(50)
+      .limit(30)
       .get();
-
-    if (expiredMatchesSnap.empty) {
-        // Also check for 'waiting' matches that never found an opponent
-        const stalledMatchesSnap = await db.collection("contestMatches")
-            .where("status", "==", "waiting_for_opponent")
-            .where("expiresAt", "<=", now)
-            .limit(20)
-            .get();
-        
-        for (const stalledDoc of stalledMatchesSnap.docs) {
-            const data = stalledDoc.data();
-            const refundAmount = Number(data.entryFee || 0) / 2;
-            const uid = data.userA.uid;
-
-            // Refund Dpcoin to User A
-            await db.collection("users").doc(uid).update({
-                Dpcoin: admin.firestore.FieldValue.increment(refundAmount)
-            });
-            await db.collection("contestMatches").doc(stalledDoc.id).update({ status: "cancelled" });
-            
-            await createNotification(uid, {
-                title: "Match Cancelled",
-                body: "No opponent found. Your Dpcoins have been refunded.",
-                type: "contest",
-                targetId: stalledDoc.id
-            });
-        }
-        return;
-    }
 
     for (const matchDoc of expiredMatchesSnap.docs) {
       const matchData = matchDoc.data();
       const contestId = matchData.contestId;
 
       const contestDoc = await db.collection("contests").doc(contestId).get();
-      if (!contestDoc.exists) continue;
+      if (!contestDoc.exists) {
+          // If contest template deleted, just end the match to stop the loop
+          await db.collection("contestMatches").doc(matchDoc.id).update({ status: "ended", winnerId: "none" });
+          continue;
+      }
+      
       const contestData = contestDoc.data()!;
-
       let winnerId = null;
       let loserId = null;
       
@@ -72,6 +82,7 @@ export const finalizeContests = onSchedule({
       const votesB = matchData.userB.votes || 0;
       const minVotes = contestData.minVotes || 0;
 
+      // Determine Winner
       if (votesA > votesB && votesA >= minVotes) {
         winnerId = matchData.userA.uid;
         loserId = matchData.userB.uid;
@@ -81,43 +92,43 @@ export const finalizeContests = onSchedule({
       }
 
       const batch = db.batch();
-      batch.update(db.collection("contestMatches").doc(matchDoc.id), { 
-        status: "ended", 
-        winnerId: winnerId || "none" 
-      });
+      const matchRef = db.collection("contestMatches").doc(matchDoc.id);
 
       if (winnerId) {
+        // --- CASE 1: WE HAVE A WINNER ---
         const totalPrize = Number(contestData.rewardCoins || contestData.winningCoins || 0);
         
-        const winnerRef = db.collection("users").doc(winnerId);
+        batch.update(matchRef, { status: "ended", winnerId: winnerId });
         
-        batch.update(winnerRef, {
+        // Update Winner
+        batch.update(db.collection("users").doc(winnerId), {
           Dpcoin: admin.firestore.FieldValue.increment(totalPrize),
-          "stats.wins": admin.firestore.FieldValue.increment(1)
+          "stats.wins": admin.firestore.FieldValue.increment(1),
+          xp: admin.firestore.FieldValue.increment(500) // XP inside batch
         });
+
+        // Update Loser (XP only)
+        if (loserId) {
+            batch.update(db.collection("users").doc(loserId), {
+                xp: admin.firestore.FieldValue.increment(100)
+            });
+        }
 
         const transRef = db.collection("coinTransactions").doc();
         batch.set(transRef, {
-          uid: winnerId, 
-          amount: totalPrize, 
-          type: "win_reward", 
-          contestId, 
-          matchId: matchDoc.id, 
+          uid: winnerId, amount: totalPrize, type: "win_reward", 
+          contestId, matchId: matchDoc.id, 
           description: `Winner reward for ${contestData.title || 'Contest'}`, 
           timestamp: admin.firestore.FieldValue.serverTimestamp(),
         });
 
         await batch.commit();
 
-        await awardXp(winnerId, 500, "battle_win");
-        if (loserId) await awardXp(loserId, 100, "battle_loss");
-
         // Notifications
         await createNotification(winnerId, {
             title: "CONGRATULATIONS! 🎉",
             body: `You won the battle and earned ${totalPrize} Dpcoins!`,
-            type: "contest",
-            targetId: matchDoc.id,
+            type: "contest", targetId: matchDoc.id,
             image: matchData.userA.uid === winnerId ? matchData.userA.mediaUrl : matchData.userB.mediaUrl
         });
         
@@ -125,32 +136,38 @@ export const finalizeContests = onSchedule({
             await createNotification(loserId, {
                 title: "Battle Ended 🏁",
                 body: `The results are in. Better luck next time!`,
-                type: "contest",
-                targetId: matchDoc.id,
+                type: "contest", targetId: matchDoc.id,
                 image: matchData.userA.uid === loserId ? matchData.userA.mediaUrl : matchData.userB.mediaUrl
             });
         }
       } else {
-        // Refund
-        const entryFeePerUser = Number(matchData.entryFee || 0) / 2;
-        if (entryFeePerUser > 0) {
-            batch.update(db.collection("users").doc(matchData.userA.uid), { Dpcoin: admin.firestore.FieldValue.increment(entryFeePerUser) });
-            batch.update(db.collection("users").doc(matchData.userB.uid), { Dpcoin: admin.firestore.FieldValue.increment(entryFeePerUser) });
+        // --- CASE 2: DRAW OR MIN VOTES NOT MET ---
+        // Precise refund logic
+        const totalEntryFee = Number(matchData.entryFee || 0);
+        const refundAmount = Math.ceil(totalEntryFee / 2); 
+
+        batch.update(matchRef, { status: "ended", winnerId: "draw" });
+        
+        if (refundAmount > 0) {
+            batch.update(db.collection("users").doc(matchData.userA.uid), { 
+                Dpcoin: admin.firestore.FieldValue.increment(refundAmount) 
+            });
+            batch.update(db.collection("users").doc(matchData.userB.uid), { 
+                Dpcoin: admin.firestore.FieldValue.increment(refundAmount) 
+            });
         }
         await batch.commit();
         
+        const drawMsg = votesA === votesB ? "It was a draw!" : "Minimum votes not met.";
+        
         await createNotification(matchData.userA.uid, {
-            title: "Contest Ended",
-            body: "No winner declared. Entry fees refunded.",
-            type: "contest",
-            targetId: matchDoc.id
+            title: "Contest Ended", body: `${drawMsg} Entry fees refunded.`,
+            type: "contest", targetId: matchDoc.id
         });
         
         await createNotification(matchData.userB.uid, {
-            title: "Contest Ended",
-            body: "No winner declared. Entry fees refunded.",
-            type: "contest",
-            targetId: matchDoc.id
+            title: "Contest Ended", body: `${drawMsg} Entry fees refunded.`,
+            type: "contest", targetId: matchDoc.id
         });
       }
     }

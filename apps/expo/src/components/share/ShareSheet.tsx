@@ -3,7 +3,6 @@ import {
   View,
   Text,
   StyleSheet,
-  Image,
   TextInput,
   TouchableOpacity,
   Dimensions,
@@ -12,6 +11,7 @@ import {
   ScrollView,
   Share as RNShare
 } from 'react-native';
+import { Image } from 'expo-image';
 import { Portal } from 'react-native-paper';
 import { Ionicons } from '@expo/vector-icons';
 import Animated, {
@@ -33,6 +33,7 @@ import { fetchSuggestedUsers } from '@/src/services/users';
 import { contestService } from '@/src/services/contests/contestService';
 import { useToast } from '../toast/ToastProvider';
 import * as Clipboard from 'expo-clipboard';
+import { getOptimizedMediaUrl } from '@/src/utils/media';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SHEET_HEIGHT = SCREEN_HEIGHT * 0.75;
@@ -90,7 +91,6 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId }: ShareSheetPr
   const handleShareSuccess = async () => {
     try {
       await contestService.shareMatch(matchId);
-      // We don't add toast here because the action might close the modal
     } catch (e) {
       console.error("Failed to increment share count:", e);
     }
@@ -194,7 +194,13 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId }: ShareSheetPr
                     {filteredUsers.length > 0 ? filteredUsers.map(user => (
                         <TouchableOpacity key={user.id} style={styles.userItem} onPress={() => onShareAction(user.name)}>
                             <View style={styles.userAvatarWrapper}>
-                                <Image source={{ uri: user.avatar }} style={styles.userAvatar} />
+                                <Image 
+                                    source={{ uri: getOptimizedMediaUrl(user.avatar) }} 
+                                    style={styles.userAvatar} 
+                                    contentFit="cover"
+                                    cachePolicy="memory-disk"
+                                    transition={200}
+                                />
                             </View>
                             <Text style={[styles.userName, { color: textColor }]} numberOfLines={1}>{user.name.split(' ')[0]}</Text>
                         </TouchableOpacity>

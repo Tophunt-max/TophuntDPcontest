@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useState } from "react";
-import { uploadToFirebaseStorage } from "@/lib/firebase-storage";
+import { uploadToR2 } from "@/lib/r2-upload";
 import InputGroup from "@/components/FormElements/InputGroup";
 import { ShowcaseSection } from "@/components/Layouts/showcase-section";
 
@@ -16,7 +16,7 @@ export function BannerConfigForm({ banners, setBanners }: any) {
 
     setUploading(true);
     try {
-      const url = await uploadToFirebaseStorage(file, `app/banners/banner_${Date.now()}.png`);
+      const url = await uploadToR2(file, "app/banners");
       setNewBanner({ ...newBanner, imageUrl: url });
     } catch (err) {
       alert("Upload failed");

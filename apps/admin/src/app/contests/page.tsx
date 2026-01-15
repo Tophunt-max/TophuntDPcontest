@@ -6,6 +6,12 @@ import { db } from "@/lib/firebase/config";
 import { collection, query, orderBy, getDocs, Timestamp } from "firebase/firestore";
 import Link from "next/link";
 
+// Helper for Admin CDN display
+const getAdminCdnUrl = (url?: string) => {
+    if (!url) return "";
+    return url.replace('upload.tophunt.in', 'stream.tophunt.in').replace('media.tophunt.in', 'stream.tophunt.in');
+};
+
 interface Contest {
   id: string;
   name: string;
@@ -215,7 +221,11 @@ const ContestsPage = () => {
                       <div className="flex items-center gap-4">
                           {contest.bannerUrl ? (
                               <div className="h-12 w-12 rounded-md overflow-hidden flex-shrink-0 border border-stroke">
-                                  <img src={contest.bannerUrl} alt="Banner" className="h-full w-full object-cover" />
+                                  <img 
+                                    src={getAdminCdnUrl(contest.bannerUrl)} 
+                                    alt="Banner" 
+                                    className="h-full w-full object-cover" 
+                                  />
                               </div>
                           ) : (
                               <div className="h-12 w-12 rounded-md bg-gray-2 flex items-center justify-center text-xl flex-shrink-0">

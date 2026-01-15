@@ -1,33 +1,85 @@
 import React from 'react';
-import { View, StyleSheet, ScrollView } from 'react-native';
-import { Skeleton } from '../ui/Skeleton';
+import { View, StyleSheet, Animated } from 'react-native';
 
-export const StoriesSkeleton = ({ isDark }: { isDark: boolean }) => {
-  const skeletonColor = isDark ? '#35383F' : '#E0E0E0'; // Deeper colors
+interface StoriesSkeletonProps {
+  isDark?: boolean;
+}
+
+export const StoriesSkeleton: React.FC<StoriesSkeletonProps> = ({ isDark = false }) => {
+  const pulseAnim = React.useRef(new Animated.Value(0.3)).current;
+
+  React.useEffect(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, {
+          toValue: 1,
+          duration: 1000,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnim, {
+          toValue: 0.3,
+          duration: 1000,
+          useNativeDriver: true,
+        }),
+      ])
+    ).start();
+  }, [pulseAnim]);
+
+  const SkeletonItem = () => (
+      <View style={styles.storyContainer}>
+         <Animated.View 
+            style={[
+                styles.storyCircle, 
+                { 
+                    backgroundColor: isDark ? '#333' : '#E0E0E0',
+                    opacity: pulseAnim 
+                }
+            ]} 
+         />
+         <Animated.View 
+            style={[
+                styles.storyText, 
+                { 
+                    backgroundColor: isDark ? '#333' : '#E0E0E0', 
+                    opacity: pulseAnim 
+                }
+            ]} 
+         />
+      </View>
+  );
 
   return (
-    <ScrollView 
-        horizontal 
-        showsHorizontalScrollIndicator={false} 
-        contentContainerStyle={styles.container}
-    >
-      {[1, 2, 3, 4, 5, 6].map((i) => (
-        <View key={i} style={styles.storyItem}>
-          <Skeleton width={70} height={70} borderRadius={35} style={{ backgroundColor: skeletonColor }} />
-          <Skeleton width={50} height={10} borderRadius={4} style={{ backgroundColor: skeletonColor, marginTop: 8 }} />
-        </View>
-      ))}
-    </ScrollView>
+    <View style={styles.container}>
+       {[1, 2, 3, 4, 5].map((key) => (
+           <SkeletonItem key={key} />
+       ))}
+    </View>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
-    paddingLeft: 16,
+    flexDirection: 'row',
     paddingVertical: 10,
+    paddingHorizontal: 16,
+    marginBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(0,0,0,0.05)',
   },
-  storyItem: {
+  storyContainer: {
     alignItems: 'center',
-    marginRight: 15,
+    marginRight: 16,
+    width: 72,
   },
+  storyCircle: {
+      width: 72,
+      height: 72,
+      borderRadius: 36,
+      marginBottom: 6,
+  },
+  storyText: {
+    width: 60,
+    height: 10,
+    borderRadius: 5,
+  }
 });

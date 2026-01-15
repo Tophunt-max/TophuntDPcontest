@@ -4,8 +4,8 @@ import React, { useState } from "react";
 import DefaultLayout from "@/components/Layouts/DefaultLayout";
 import Breadcrumb from "@/components/Breadcrumbs/Breadcrumb";
 import { useRouter } from "next/navigation";
-import { uploadToFirebaseStorage } from "@/lib/firebase-storage";
-import { callApi } from "@/services/firebase/functions"; // Using our new API helper
+import { uploadToR2 } from "@/lib/r2-upload";
+import { callApi } from "@/services/firebase/functions"; 
 
 const CreateContest = () => {
   const router = useRouter();
@@ -41,15 +41,19 @@ const CreateContest = () => {
     try {
       let bannerUrl = "";
       if (bannerFile) {
-        bannerUrl = await uploadToFirebaseStorage(
-          bannerFile, 
-          `contests/banners/${Date.now()}_${bannerFile.name}`
-        );
+        // Updated folder to 'contests' to be under admin/contests/
+        bannerUrl = await uploadToR2(bannerFile, "contests");
       }
 
-      // Logic changed to use consolidated API router with 'createContestTemplate' action
       await callApi('createContestTemplate', {
         ...formData,
+        // Ensure numbers are numbers
+        totalEntryFee: Number(formData.totalEntryFee),
+        rewardCoins: Number(formData.rewardCoins),
+        rewardXP: Number(formData.rewardXP),
+        minVotes: Number(formData.minVotes),
+        durationHours: Number(formData.durationHours),
+        autoCancelHours: Number(formData.autoCancelHours),
         bannerUrl
       });
 

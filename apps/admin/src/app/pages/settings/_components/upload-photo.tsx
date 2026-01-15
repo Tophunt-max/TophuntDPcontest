@@ -5,7 +5,7 @@ import { ShowcaseSection } from "@/components/Layouts/showcase-section";
 import { useAuth } from "@/components/Auth/AuthProvider";
 import { useState } from "react";
 import { updateProfile } from "firebase/auth";
-import { uploadPhotoToS3 } from "@/lib/s3-upload";
+import { uploadToR2 } from "@/lib/r2-upload";
 
 export function UploadPhotoForm() {
   const { user } = useAuth();
@@ -27,10 +27,13 @@ export function UploadPhotoForm() {
     
     setLoading(true);
     try {
-      const publicUrl = await uploadPhotoToS3(file);
+      // Using Cloudflare Worker for upload
+      const publicUrl = await uploadToR2(file, 'profiles', user.uid);
+      
       await updateProfile(user, { photoURL: publicUrl });
       alert("Profile photo updated successfully!");
-      setPreview(null); setFile(null);
+      setPreview(null); 
+      setFile(null);
     } catch (error: any) {
       alert("Error: " + error.message);
     } finally {

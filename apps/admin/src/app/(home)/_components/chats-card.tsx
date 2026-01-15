@@ -15,63 +15,70 @@ export async function ChatsCard() {
       </h2>
 
       <ul>
-        {data.map((chat, key) => (
-          <li key={key}>
-            <Link
-              href="/"
-              className="flex items-center gap-4.5 px-7.5 py-3 outline-none hover:bg-gray-2 focus-visible:bg-gray-2 dark:hover:bg-dark-2 dark:focus-visible:bg-dark-2"
-            >
-              <div className="relative shrink-0">
-                <Image
-                  src={chat.profile}
-                  width={56}
-                  height={56}
-                  className="size-14 rounded-full object-cover"
-                  alt={"Avatar for " + chat.name}
-                />
+        {data.map((chat, key) => {
+          // FIX: Ensure lastMessage content is a string and not an object
+          const lastMsgContent = typeof chat.lastMessage?.content === 'string' 
+            ? chat.lastMessage.content 
+            : JSON.stringify(chat.lastMessage?.content || "No message content");
 
-                <span
-                  className={cn(
-                    "absolute bottom-0 right-0 size-3.5 rounded-full ring-2 ring-white dark:ring-dark-2",
-                    chat.isActive ? "bg-green" : "bg-orange-light",
-                  )}
-                />
-              </div>
+          return (
+            <li key={key}>
+              <Link
+                href="/"
+                className="flex items-center gap-4.5 px-7.5 py-3 outline-none hover:bg-gray-4 focus-visible:bg-gray-2 dark:hover:bg-dark-2 dark:focus-visible:bg-dark-2"
+              >
+                <div className="relative shrink-0">
+                  <Image
+                    src={chat.profile || "/images/user/user-01.png"}
+                    width={56}
+                    height={56}
+                    className="size-14 rounded-full object-cover"
+                    alt={"Avatar for " + (chat.name || "User")}
+                  />
 
-              <div className="relative flex-grow">
-                <h3 className="font-medium text-dark dark:text-white">
-                  {chat.name}
-                </h3>
-
-                <div className="flex flex-wrap items-center gap-2">
                   <span
                     className={cn(
-                      "truncate text-sm font-medium dark:text-dark-5 xl:max-w-[8rem]",
-                      chat.unreadCount && "text-dark-4 dark:text-dark-6",
+                      "absolute bottom-0 right-0 size-3.5 rounded-full ring-2 ring-white dark:ring-dark-2",
+                      chat.isActive ? "bg-green" : "bg-orange-light",
                     )}
-                  >
-                    {chat.lastMessage.content}
-                  </span>
-
-                  <DotIcon />
-
-                  <time
-                    className="text-xs"
-                    dateTime={chat.lastMessage.timestamp}
-                  >
-                    {formatMessageTime(chat.lastMessage.timestamp)}
-                  </time>
+                  />
                 </div>
 
-                {!!chat.unreadCount && (
-                  <div className="pointer-events-none absolute right-0 top-1/2 aspect-square max-w-fit -translate-y-1/2 select-none rounded-full bg-primary px-2 py-0.5 text-sm font-medium text-white">
-                    {chat.unreadCount}
+                <div className="relative flex-grow">
+                  <h3 className="font-medium text-dark dark:text-white">
+                    {chat.name}
+                  </h3>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span
+                      className={cn(
+                        "truncate text-sm font-medium dark:text-dark-5 xl:max-w-[8rem]",
+                        chat.unreadCount ? "text-dark dark:text-white" : "text-dark-4 dark:text-dark-6",
+                      )}
+                    >
+                      {lastMsgContent}
+                    </span>
+
+                    <DotIcon />
+
+                    <time
+                      className="text-xs"
+                      dateTime={chat.lastMessage?.timestamp}
+                    >
+                      {formatMessageTime(chat.lastMessage?.timestamp)}
+                    </time>
                   </div>
-                )}
-              </div>
-            </Link>
-          </li>
-        ))}
+
+                  {!!chat.unreadCount && (
+                    <div className="pointer-events-none absolute right-0 top-1/2 aspect-square max-w-fit -translate-y-1/2 select-none rounded-full bg-primary px-2 py-0.5 text-sm font-medium text-white">
+                      {chat.unreadCount}
+                    </div>
+                  )}
+                </div>
+              </Link>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

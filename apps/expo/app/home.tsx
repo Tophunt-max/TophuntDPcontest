@@ -47,9 +47,10 @@ export default function HomeScreen() {
     await loadMatches(true);
   }, [queryClient]);
 
-  const renderItem = useCallback(({ item }: { item: any }) => (
-    <PostCard item={item} isDark={isDark} />
-  ), [isDark]);
+  const renderItem = useCallback(({ item }: { item: any }) => {
+    if (isLoading) return <PostSkeleton isDark={isDark} />;
+    return <PostCard item={item} isDark={isDark} />;
+  }, [isDark, isLoading]);
 
   const ListHeader = useMemo(() => (
     <View>
@@ -63,7 +64,7 @@ export default function HomeScreen() {
       <Header />
       <FlatList
         data={isLoading ? [1, 2, 3] : matches}
-        renderItem={({ item }) => isLoading ? <PostSkeleton isDark={isDark} /> : renderItem({ item })}
+        renderItem={renderItem}
         keyExtractor={(item, index) => (isLoading ? index.toString() : item.id)}
         refreshControl={
             <RefreshControl 
