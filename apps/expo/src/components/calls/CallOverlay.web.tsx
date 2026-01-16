@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Modal, Dimensions, Platform } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Modal, Dimensions } from 'react-native';
 import { useAuth } from '@/src/hooks/useAuth';
 import { database } from '@/src/services/firebase/initFirebase';
-import { ref, onValue, off } from 'firebase/database';
+import { ref, onValue } from 'firebase/database';
 import { 
   endCall, 
   declineCall, 
@@ -11,18 +11,6 @@ import {
   listenForIceCandidates,
   updateCallOffer 
 } from '@/src/services/calls/callService';
-import { Audio } from 'expo-av';
-import { CameraView, useCameraPermissions } from 'expo-camera';
-
-// WebRTC Imports
-import {
-  RTCPeerConnection,
-  RTCIceCandidate,
-  RTCSessionDescription,
-  RTCView,
-  mediaDevices,
-  MediaStream,
-} from 'react-native-webrtc';
 
 // Import Custom SVGs from the message directory
 import { 
@@ -33,8 +21,6 @@ import {
   Speaker_Icon,
   User_Placeholder 
 } from '@/assets/svgs/message';
-
-const { width, height } = Dimensions.get('window');
 
 const RINGTONE_URL = 'https://assets.mixkit.co/active_storage/sfx/1359/1359-preview.mp3'; 
 const DIAL_TONE_URL = 'https://www.soundjay.com/phone/phone-calling-1.mp3';
@@ -51,19 +37,21 @@ export default function CallOverlay({ chatId }: { chatId: string }) {
   const { user } = useAuth();
   const [activeCall, setActiveCall] = useState<any>(null);
   const [isVisible, setIsVisible] = useState(false);
-  const [permission, requestPermission] = useCameraPermissions();
   const [isMuted, setIsMuted] = useState(false);
-  const [isSpeakerOn, setIsSpeakerOn] = useState(false);
   const [timer, setTimer] = useState(0);
   
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   
   const pc = useRef<RTCPeerConnection | null>(null);
-  const soundRef = useRef<Audio.Sound | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const isHandlingCall = useRef(false);
   const iceCandidatesQueue = useRef<any[]>([]);
+
+  // Web Video Elements
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement>(null);
 
   const formatTime = (secs: number) => {
     const mins = Math.floor(secs / 60);
@@ -71,56 +59,25 @@ export default function CallOverlay({ chatId }: { chatId: string }) {
     return `${mins < 10 ? '0' : ''}${mins}:${s < 10 ? '0' : ''}${s}`;
   };
 
-  const setupAudioMode = async (speaker: boolean) => {
-    try {
-        await Audio.setAudioModeAsync({
-            allowsRecordingIOS: true,
-            playsInSilentModeIOS: true,
-            staysActiveInBackground: true,
-            playThroughEarpieceAndroid: !speaker,
-        });
-    } catch (e) {
-        console.error("[WebRTC] Audio mode error:", e);
+  const playSound = (type: 'ring' | 'dial') => {
+    if (audioRef.current) {
+        audioRef.current.pause();
+    }
+    const audio = new Audio(type === 'ring' ? RINGTONE_URL : DIAL_TONE_URL);
+    audio.loop = true;
+    audio.play().catch(e => console.warn("Autoplay prevented:", e));
+    audioRef.current = audio;
+  };
+
+  const stopSound = () => {
+    if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
     }
   };
 
-  const playSound = async (type: 'ring' | 'dial') => {
-    try {
-      await setupAudioMode(false);
-      if (soundRef.current) {
-          await soundRef.current.unloadAsync();
-      }
-      const { sound } = await Audio.Sound.createAsync(
-        { uri: type === 'ring' ? RINGTONE_URL : DIAL_TONE_URL },
-        { shouldPlay: true, isLooping: true, volume: 1.0 }
-      );
-      soundRef.current = sound;
-      await sound.playAsync();
-    } catch (error) {
-        console.error("[WebRTC] Play sound error:", error);
-    }
-  };
-
-  const stopSound = async () => {
-    try {
-      if (soundRef.current) {
-        await soundRef.current.stopAsync();
-        await soundRef.current.unloadAsync();
-        soundRef.current = null;
-      }
-    } catch (error) {
-        console.error("[WebRTC] Stop sound error:", error);
-    }
-  };
-
-  const toggleSpeaker = async () => {
-      const newState = !isSpeakerOn;
-      setIsSpeakerOn(newState);
-      await setupAudioMode(newState);
-  };
-
-  const cleanupWebRTC = async () => {
-    console.log("[WebRTC] Cleaning up...");
+  const cleanupWebRTC = () => {
+    console.log("[WebRTC Web] Cleaning up...");
     if (pc.current) {
         pc.current.close();
         pc.current = null;
@@ -136,46 +93,39 @@ export default function CallOverlay({ chatId }: { chatId: string }) {
 
   const setupMedia = async (isVideo: boolean) => {
     try {
-        console.log("[WebRTC] Setting up media. Video:", isVideo);
-        const stream = await mediaDevices.getUserMedia({
+        console.log("[WebRTC Web] Setting up media. Video:", isVideo);
+        const stream = await navigator.mediaDevices.getUserMedia({
             audio: true,
-            video: isVideo ? {
-                facingMode: 'user',
-                width: 640,
-                height: 480,
-                frameRate: 30
-            } : false
+            video: isVideo
         });
         setLocalStream(stream);
+        if (localVideoRef.current) {
+            localVideoRef.current.srcObject = stream;
+        }
         return stream;
     } catch (e) {
-        console.error("[WebRTC] Failed to get user media:", e);
+        console.error("[WebRTC Web] Failed to get user media:", e);
         return null;
     }
   };
 
   const createPeerConnection = (chatId: string) => {
-    console.log("[WebRTC] Creating RTCPeerConnection");
+    console.log("[WebRTC Web] Creating RTCPeerConnection");
     const peerConnection = new RTCPeerConnection(configuration);
 
     peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
-            console.log("[WebRTC] Generated ICE Candidate");
             sendIceCandidate(chatId, event.candidate.toJSON());
         }
     };
 
     peerConnection.ontrack = (event) => {
-        console.log("[WebRTC] Received remote track");
+        console.log("[WebRTC Web] Received remote track");
         if (event.streams && event.streams[0]) {
             setRemoteStream(event.streams[0]);
-        }
-    };
-
-    peerConnection.oniceconnectionstatechange = () => {
-        console.log("[WebRTC] ICE Connection State:", peerConnection.iceConnectionState);
-        if (peerConnection.iceConnectionState === 'failed') {
-            peerConnection.restartIce();
+            if (remoteVideoRef.current) {
+                remoteVideoRef.current.srcObject = event.streams[0];
+            }
         }
     };
 
@@ -198,7 +148,6 @@ export default function CallOverlay({ chatId }: { chatId: string }) {
       }
 
       if (isCaller) {
-          console.log("[WebRTC] Creating Offer");
           const offer = await peerConnection.createOffer();
           await peerConnection.setLocalDescription(offer);
           await updateCallOffer(chatId, offer);
@@ -208,11 +157,9 @@ export default function CallOverlay({ chatId }: { chatId: string }) {
       const unsubIce = listenForIceCandidates(chatId, otherUserId, (candidate) => {
           if (candidate) {
               if (peerConnection.remoteDescription) {
-                console.log("[WebRTC] Adding remote ICE candidate");
                 peerConnection.addIceCandidate(new RTCIceCandidate(candidate))
-                    .catch(e => console.error("[WebRTC] Error adding ICE candidate", e));
+                    .catch(e => console.error("[WebRTC Web] Error adding ICE candidate", e));
               } else {
-                console.log("[WebRTC] Queueing ICE candidate (no remote desc yet)");
                 iceCandidatesQueue.current.push(candidate);
               }
           }
@@ -223,29 +170,26 @@ export default function CallOverlay({ chatId }: { chatId: string }) {
 
   const processQueuedCandidates = () => {
       if (pc.current && pc.current.remoteDescription) {
-          console.log("[WebRTC] Processing queued candidates:", iceCandidatesQueue.current.length);
           while (iceCandidatesQueue.current.length > 0) {
               const candidate = iceCandidatesQueue.current.shift();
               pc.current.addIceCandidate(new RTCIceCandidate(candidate))
-                .catch(e => console.error("[WebRTC] Error adding queued ICE candidate", e));
+                .catch(e => console.error("[WebRTC Web] Error adding queued ICE candidate", e));
           }
       }
   };
 
   const handleAnswer = async (callData: any) => {
       if (!pc.current || !callData.answer || pc.current.remoteDescription) return;
-      console.log("[WebRTC] Setting remote description (Answer)");
       try {
           await pc.current.setRemoteDescription(new RTCSessionDescription(callData.answer));
           processQueuedCandidates();
       } catch (e) {
-          console.error("[WebRTC] Error setting remote description:", e);
+          console.error("[WebRTC Web] Error setting remote description:", e);
       }
   };
 
   const acceptCall = async () => {
       if (!activeCall || !pc.current) return;
-      console.log("[WebRTC] Accepting Call");
       try {
           await pc.current.setRemoteDescription(new RTCSessionDescription(activeCall.offer));
           processQueuedCandidates();
@@ -253,7 +197,7 @@ export default function CallOverlay({ chatId }: { chatId: string }) {
           await pc.current.setLocalDescription(answer);
           await respondToCall(chatId, answer);
       } catch (e) {
-          console.error("[WebRTC] Error accepting call:", e);
+          console.error("[WebRTC Web] Error accepting call:", e);
       }
   };
 
@@ -270,10 +214,6 @@ export default function CallOverlay({ chatId }: { chatId: string }) {
         setActiveCall(data);
         setIsVisible(true);
         
-        if (data.type === 'video' && !permission?.granted) {
-            requestPermission();
-        }
-
         if (!isHandlingCall.current) {
             iceUnsubscribe = await startCallHandling(data);
         }
@@ -286,7 +226,6 @@ export default function CallOverlay({ chatId }: { chatId: string }) {
             if (data.answer && data.callerId === user.uid) {
                 handleAnswer(data);
             }
-            if (data.type === 'video' && !isSpeakerOn) toggleSpeaker();
             
             if (!timerRef.current) {
                 timerRef.current = setInterval(() => {
@@ -304,7 +243,6 @@ export default function CallOverlay({ chatId }: { chatId: string }) {
             }
             setTimer(0);
             setIsMuted(false);
-            setIsSpeakerOn(false);
             cleanupWebRTC();
             if (iceUnsubscribe) iceUnsubscribe();
         }
@@ -318,9 +256,8 @@ export default function CallOverlay({ chatId }: { chatId: string }) {
         if (timerRef.current) clearInterval(timerRef.current);
         if (iceUnsubscribe) iceUnsubscribe();
     };
-  }, [chatId, user, permission]);
+  }, [chatId, user]);
 
-  // Handle Mute Toggle
   useEffect(() => {
       if (localStream) {
           localStream.getAudioTracks().forEach(track => {
@@ -339,29 +276,29 @@ export default function CallOverlay({ chatId }: { chatId: string }) {
     <Modal visible={isVisible} transparent animationType="fade">
       <View style={[styles.container, isVideo && styles.videoBg]}>
         
-        {/* VIDEO CALL UI */}
         {isVideo && (
             <View style={StyleSheet.absoluteFill}>
-                {remoteStream ? (
-                    <RTCView 
-                        streamURL={remoteStream.toURL()} 
-                        style={styles.remoteVideo} 
-                        objectFit="cover"
-                    />
-                ) : (
-                    <View style={styles.videoPlaceholder}>
-                        <User_Placeholder width={100} height={100} />
-                        <Text style={styles.videoPlaceholderText}>Connecting video...</Text>
-                    </View>
-                )}
-                {localStream && (
-                    <RTCView 
-                        streamURL={localStream.toURL()} 
-                        style={styles.localVideo} 
-                        objectFit="cover"
-                        zOrder={1}
-                    />
-                )}
+                <video 
+                    ref={remoteVideoRef}
+                    autoPlay 
+                    playsInline 
+                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                />
+                <video 
+                    ref={localVideoRef}
+                    autoPlay 
+                    playsInline 
+                    muted
+                    style={{ 
+                        width: 150, 
+                        height: 200, 
+                        position: 'absolute', 
+                        top: 20, 
+                        right: 20, 
+                        borderRadius: 10,
+                        border: '2px solid white'
+                    }}
+                />
             </View>
         )}
 
@@ -390,11 +327,6 @@ export default function CallOverlay({ chatId }: { chatId: string }) {
                       <TouchableOpacity style={[styles.roundBtn, isMuted && styles.activeBtn]} onPress={() => setIsMuted(!isMuted)}>
                           <Mute_Icon width={32} height={32} />
                           <Text style={styles.btnLabel}>{isMuted ? "Unmute" : "Mute"}</Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity style={[styles.roundBtn, isSpeakerOn && styles.activeBtn]} onPress={toggleSpeaker}>
-                          <Speaker_Icon width={32} height={32} />
-                          <Text style={styles.btnLabel}>Speaker</Text>
                       </TouchableOpacity>
                   </View>
               )}
@@ -425,20 +357,16 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#1F222A', paddingVertical: 80, justifyContent: 'space-between' },
   videoBg: { backgroundColor: 'black' },
   header: { alignItems: 'center', marginTop: 20, zIndex: 10 },
-  callType: { color: '#FF4D67', fontSize: 13, fontWeight: '800', letterSpacing: 2, fontFamily: 'Urbanist-Bold' },
-  status: { color: 'white', fontSize: 20, marginTop: 8, fontFamily: 'Urbanist-Bold' },
+  callType: { color: '#FF4D67', fontSize: 13, fontWeight: '800', letterSpacing: 2 },
+  status: { color: 'white', fontSize: 20, marginTop: 8 },
   userContainer: { alignItems: 'center', flex: 1, justifyContent: 'center' },
   avatarPlaceholder: { width: 140, height: 140, borderRadius: 70, backgroundColor: '#35383F', justifyContent: 'center', alignItems: 'center', marginBottom: 20 },
-  username: { color: 'white', fontSize: 28, fontWeight: '700', fontFamily: 'Urbanist-Bold', textShadowColor: 'rgba(0,0,0,0.5)', textShadowOffset: {width: 0, height: 2}, textShadowRadius: 4 },
+  username: { color: 'white', fontSize: 28, fontWeight: '700' },
   controls: { width: '100%', paddingHorizontal: 40, paddingBottom: 40, alignItems: 'center', zIndex: 10 },
   actionRow: { flexDirection: 'row', justifyContent: 'space-between', width: '100%' },
   btnAction: { width: 64, height: 64, borderRadius: 32, justifyContent: 'center', alignItems: 'center' },
   extraControls: { flexDirection: 'row', justifyContent: 'space-around', width: '100%', marginBottom: 40 },
   roundBtn: { width: 60, height: 60, borderRadius: 30, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center' },
   activeBtn: { backgroundColor: '#FF4D67' },
-  btnLabel: { color: 'white', fontSize: 11, marginTop: 4, fontFamily: 'Urbanist-Medium' },
-  remoteVideo: { flex: 1, backgroundColor: '#000' },
-  localVideo: { width: 100, height: 150, position: 'absolute', top: 120, right: 20, borderRadius: 10, overflow: 'hidden', backgroundColor: '#35383F' },
-  videoPlaceholder: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#1F222A' },
-  videoPlaceholderText: { color: 'white', marginTop: 10, fontFamily: 'Urbanist-Medium' }
+  btnLabel: { color: 'white', fontSize: 11, marginTop: 4 },
 });
