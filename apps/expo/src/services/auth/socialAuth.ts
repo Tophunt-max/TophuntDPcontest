@@ -15,6 +15,8 @@ export const SocialAuthService = {
       const auth = getAuth(app);
       console.log(`Starting ${providerName} login...`);
       
+      // NOTE: signInWithPopup only works on Web. 
+      // For Native (iOS/Android), consider using expo-auth-session or native SDKs.
       const userCredential = await signInWithPopup(auth, provider);
       const user = userCredential.user;
 
@@ -24,27 +26,32 @@ export const SocialAuthService = {
       const userDocRef = doc(db, "users", user.uid);
       const userDocSnap = await getDoc(userDocRef);
       
-      let userData = null;
+      let userData: any = null;
       if (userDocSnap.exists()) {
           userData = userDocSnap.data();
+          userData.uid = user.uid; // Ensure UID is attached
       } else if (user.email) {
           // 2. Check by Email field (in case they have a different UID but same email)
           const q = query(collection(db, "users"), where("email", "==", user.email), limit(1));
           const querySnapshot = await getDocs(q);
           if (!querySnapshot.empty) {
               userData = querySnapshot.docs[0].data();
+              userData.uid = querySnapshot.docs[0].id; // The existing UID in Firestore
           }
       }
 
       if (userData) {
-        // EXISTING USER
+        // EXISTING USER FOUND
         if (userData.signupCompleted === true || userData.username) {
+          console.log("Existing user found, redirecting to home");
           addToast("Welcome back!", "success");
           router.replace("/home");
         } else {
           // Incomplete Profile
+          console.log("Incomplete profile found, updating store");
           signupStore.setMultiple({
             ...userData,
+            uid: userData.uid || user.uid,
             fullName: userData.fullName || user.displayName || "",
             email: userData.email || user.email || "",
             avatarUrl: userData.avatarUrl || user.photoURL || "",
@@ -54,11 +61,12 @@ export const SocialAuthService = {
           router.replace("/auth/signup/fill-profile");
         }
       } else {
-        // NEW USER: Don't create doc yet, just save to store and redirect
+        // NEW USER: Just save to store and redirect
         console.log("New Social User detected:", user.email || user.uid);
         
         signupStore.reset();
         signupStore.setMultiple({
+            uid: user.uid,
             fullName: user.displayName || "",
             email: user.email || "",
             avatarUrl: user.photoURL || "",

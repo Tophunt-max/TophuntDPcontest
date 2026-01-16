@@ -56,11 +56,16 @@ export default function CongratulationsScreen() {
             }
 
             setStatusMessage("Saving your profile details...");
+            // FIX: Use the UID from store if we found an existing one during search, otherwise use current session UID
+            const targetUid = signupData.uid || auth.currentUser?.uid;
+
+            console.log("Targeting UID for profile creation/update:", targetUid);
+
             // Using Consolidated API for Profile Creation
             const result: any = await callApi('createProfile', { 
                 ...signupData,
                 platform: Platform.OS,
-                uid: auth.currentUser?.uid
+                uid: targetUid
             });
 
             if (result.status !== 'success') {

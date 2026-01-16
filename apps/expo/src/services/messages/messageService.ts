@@ -20,6 +20,7 @@ import {
 import { ref, set, onValue, onDisconnect, serverTimestamp as rtdbTimestamp } from 'firebase/database';
 import { firestore, auth, database } from '@/src/services/firebase/initFirebase';
 import { MessageType } from '@/src/types/schema';
+import { Platform } from 'react-native';
 
 const CLOUDFLARE_UPLOAD_URL = 'https://upload.tophunt.in/upload-message-media';
 
@@ -33,6 +34,7 @@ export const startChat = async (otherUserId: string, otherUserData: { displayNam
     const chatsRef = collection(firestore, 'chats');
     
     // Check if a chat already exists between these two specific participants
+    // We search for chats where the current user is a participant
     const q = query(
       chatsRef, 
       where('participants', 'array-contains', currentUser.uid)
@@ -40,6 +42,7 @@ export const startChat = async (otherUserId: string, otherUserData: { displayNam
 
     const querySnapshot = await getDocs(q);
     
+    // Manually find the chat that ALSO contains otherUserId (since Firestore doesn't support multiple array-contains)
     const existingChat = querySnapshot.docs.find(doc => {
         const data = doc.data();
         return data.participants && data.participants.includes(otherUserId);
@@ -208,7 +211,6 @@ export const markChatAsRead = async (chatId: string) => {
         const messagesRef = collection(firestore, 'chats', chatId, 'messages');
         
         // FIX: Firestore doesn't allow multiple '!=' filters.
-        // We only filter by status != 'seen' and then filter by senderId in JS.
         const q = query(
             messagesRef, 
             where('status', '!=', 'seen'), 
@@ -223,7 +225,6 @@ export const markChatAsRead = async (chatId: string) => {
 
         snapshot.docs.forEach((document) => { 
             const data = document.data();
-            // Filter by senderId here (only mark other people's messages as seen)
             if (data.senderId !== user.uid) {
                 batch.update(document.ref, { status: 'seen' }); 
                 hasUpdates = true;
@@ -282,11 +283,22 @@ export const uploadAndSendMedia = async (chatId: string, fileUri: string, type: 
         if (!user) throw new Error('User not authenticated');
 
         const formData = new FormData();
-        formData.append('file', { 
-            uri: fileUri, 
-            type: type === 'voice_note' ? 'audio/m4a' : 'video/mp4', 
-            name: 'file' 
-        } as any);
+        
+        // --- NEW: PLATFORM SPECIFIC MEDIA HANDLING ---
+        if (Platform.OS === 'web') {
+            // Convert Web URI to actual Blob object
+            const response = await fetch(fileUri);
+            const blob = await response.blob();
+            formData.append('file', blob, 'file');
+        } else {
+            // Use standard Native URI object
+            formData.append('file', { 
+                uri: fileUri, 
+                type: type === 'voice_note' ? 'audio/m4a' : 'image/jpeg', 
+                name: 'file' 
+            } as any);
+        }
+
         formData.append('userId', user.uid);
         formData.append('chatId', chatId);
         formData.append('type', type);
@@ -303,7 +315,7 @@ export const uploadAndSendMedia = async (chatId: string, fileUri: string, type: 
             return result.url;
         }
         throw new Error(result.error || 'Upload failed');
-    } catch (error) {
+    } catch (error: any) {
         console.error("[uploadAndSendMedia] Error:", error);
         throw error;
     }

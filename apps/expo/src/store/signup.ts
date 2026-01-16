@@ -8,6 +8,7 @@ export interface PhotoDerivatives {
 }
 
 interface SignupData {
+  uid?: string; // Unique ID for the user
   fullName: string;
   username: string;
   dob: string;
@@ -20,6 +21,10 @@ interface SignupData {
   following: string[];
   password?: string;
   authProvider: 'email' | 'phone' | 'google' | 'facebook' | 'apple';
+  coordinates?: {
+    lat: number;
+    lng: number;
+  };
 }
 
 interface SignupStore {

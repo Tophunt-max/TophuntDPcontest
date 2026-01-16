@@ -23,10 +23,11 @@ import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
 import { auth, firestore as db } from "../../../../src/services/firebase/initFirebase";
 import { PhoneAuthProvider, signInWithCredential } from "firebase/auth";
 import { firebaseConfig } from "@/src/firebaseConfig";
-import { doc, getDoc, collection, query, where, getDocs, limit } from "firebase/firestore";
+import { doc, getDoc } from "firebase/firestore";
 import { useSignupStore } from "../../../../src/store/signup";
 import { CountryPicker } from "react-native-country-codes-picker";
 import { Ionicons } from "@expo/vector-icons";
+import { callApi } from "@/src/services/api"; // Added callApi for robust search
 
 export default function PhoneLoginScreen() {
   const router = useRouter();
@@ -87,32 +88,44 @@ export default function PhoneLoginScreen() {
       const userCredential = await signInWithCredential(auth, credential);
       const user = userCredential.user;
 
-      // 1. Normalize Phone Number for searching
+      // 1. Normalize Phone Number for searching via Backend
       const fullPhone = user.phoneNumber || (countryCode + phoneNumber);
-      // Clean up number to only + and digits for strict match
-      const normalizedPhone = fullPhone.replace(/[^\d+]/g, "");
       
-      console.log("Verifying normalized phone:", normalizedPhone);
+      console.log("Verifying user session...");
 
-      // 2. SEARCH LOGIC: Try to find existing user
-      let existingUserDoc = null;
-      
-      // A. Try direct UID match first
-      const userDocRef = doc(db, "users", user.uid);
-      const userDocSnap = await getDoc(userDocRef);
-      
-      if (userDocSnap.exists()) {
-          existingUserDoc = userDocSnap.data();
-      } else {
-          // B. Try searching by phone field (for robustness)
-          const q = query(
-              collection(db, "users"), 
-              where("phone", "==", normalizedPhone), 
-              limit(1)
-          );
-          const querySnapshot = await getDocs(q);
-          if (!querySnapshot.empty) {
-              existingUserDoc = querySnapshot.docs[0].data();
+      // 2. SEARCH LOGIC: Use Centralized API (Backend) to find user
+      // Backend is more robust as it handles normalization and multiple formats
+      let existingUserDoc: any = null;
+      let existingUid: string | null = null;
+
+      try {
+          const result = await callApi('getUserByIdentifier', { 
+              identifier: fullPhone, 
+              type: 'phone' 
+          });
+
+          if (result.found) {
+              existingUserDoc = result.user; // Note: result.user from backend contains some fields
+              existingUid = result.user.uid;
+              console.log("Existing user found by backend. UID:", existingUid);
+              
+              // Fetch full profile data from Firestore to be sure
+              const fullDoc = await getDoc(doc(db, "users", existingUid!));
+              if (fullDoc.exists()) {
+                  existingUserDoc = fullDoc.data();
+              }
+          }
+      } catch (e) {
+          console.warn("Backend search failed, falling back to session UID check", e);
+      }
+
+      // If not found by phone, check current session UID (just in case)
+      if (!existingUserDoc) {
+          const sessionDoc = await getDoc(doc(db, "users", user.uid));
+          if (sessionDoc.exists()) {
+              existingUserDoc = sessionDoc.data();
+              existingUid = user.uid;
+              console.log("Found user by session UID:", existingUid);
           }
       }
 
@@ -125,16 +138,16 @@ export default function PhoneLoginScreen() {
         // NEW USER OR INCOMPLETE PROFILE
         console.log("No complete profile found, redirecting to Fill Profile");
         
-        // Prepare signup data (preserving any partially saved data if found)
+        // Prepare signup data
         const profileData = {
             ...(existingUserDoc || {}),
-            uid: user.uid,
-            phone: normalizedPhone,
-            authProvider: 'phone'
+            uid: existingUid || user.uid, // CRITICAL: Use existing UID if found
+            phone: fullPhone,
+            authProvider: 'phone' as const
         };
 
         reset(); // Clear store
-        setMultiple(profileData); // Populate store with found data
+        setMultiple(profileData); // Populate store
         
         addToast("OTP Verified! Please complete your profile.", "success");
         router.replace("/auth/signup/fill-profile");
