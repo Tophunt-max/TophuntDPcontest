@@ -39,22 +39,24 @@ const logger = __importStar(require("firebase-functions/logger"));
 const firebase_1 = require("../utils/firebase");
 const firestore_1 = require("firebase-admin/firestore");
 /**
- * Unified Story Handler (Replaces legacy Status & Stories logic)
+ * UNIFIED STORY HANDLER
  * Action: create | view | delete
+ * This handles all story life-cycle events in one scalable function.
  */
 exports.storyHandler = (0, https_1.onCall)({
+    region: "us-central1",
     memory: "256MiB",
+    maxInstances: 10, // Optimized for quota limits
     timeoutSeconds: 60,
     cors: true,
 }, async (request) => {
     var _a, _b;
-    if (!request.data || !request.data.action) {
-        throw new https_1.HttpsError("invalid-argument", "Action is required.");
-    }
     const { action } = request.data;
     const uid = (_a = request.auth) === null || _a === void 0 ? void 0 : _a.uid;
     if (!uid)
         throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
+    if (!action)
+        throw new https_1.HttpsError("invalid-argument", "Action is required.");
     switch (action) {
         case "create": {
             const { mediaUrl, type, storyId, objectKey, overlayText, textPosition, mentions } = request.data;
@@ -80,10 +82,8 @@ exports.storyHandler = (0, https_1.onCall)({
                     textPosition: textPosition || null,
                     mentions: mentions || []
                 };
-                // Unified collection: 'stories'
                 const finalId = storyId || firebase_1.db.collection("stories").doc().id;
                 await firebase_1.db.collection("stories").doc(finalId).set(storyData);
-                logger.info(`Unified Story created: ${finalId} by ${uid}`);
                 return { success: true, storyId: finalId };
             }
             catch (error) {
@@ -96,12 +96,20 @@ exports.storyHandler = (0, https_1.onCall)({
             if (!storyId)
                 throw new https_1.HttpsError("invalid-argument", "storyId is required.");
             try {
+                // 1. Log view record (Sub-collection)
+                const viewRef = firebase_1.db.collection("stories").doc(storyId).collection("views").doc(uid);
+                await viewRef.set({
+                    viewerId: uid,
+                    viewedAt: firebase_1.admin.firestore.FieldValue.serverTimestamp()
+                });
+                // 2. Increment Counter Atomically
                 await firebase_1.db.collection("stories").doc(storyId).update({
                     viewsCount: firebase_1.admin.firestore.FieldValue.increment(1)
                 });
                 return { success: true };
             }
             catch (e) {
+                logger.error("View log failed", e);
                 return { success: false };
             }
         }
@@ -114,6 +122,7 @@ exports.storyHandler = (0, https_1.onCall)({
                 const doc = await storyRef.get();
                 if (!doc.exists)
                     throw new https_1.HttpsError("not-found", "Story not found.");
+                // Permission check: Owner or Admin
                 if (((_b = doc.data()) === null || _b === void 0 ? void 0 : _b.userId) !== uid) {
                     const adminDoc = await firebase_1.db.collection("admins").doc(uid).get();
                     if (!adminDoc.exists)
@@ -127,7 +136,7 @@ exports.storyHandler = (0, https_1.onCall)({
             }
         }
         default:
-            throw new https_1.HttpsError("invalid-argument", "Invalid action.");
+            throw new https_1.HttpsError("invalid-argument", `Invalid action: ${action}`);
     }
 });
 //# sourceMappingURL=index.js.map

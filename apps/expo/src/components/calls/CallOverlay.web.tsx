@@ -9,7 +9,8 @@ import {
   respondToCall, 
   sendIceCandidate, 
   listenForIceCandidates,
-  updateCallOffer 
+  updateCallOffer,
+  getIceServers
 } from '@/src/services/calls/callService';
 
 // Import Custom SVGs from the message directory
@@ -25,26 +26,20 @@ import {
 const RINGTONE_URL = 'https://assets.mixkit.co/active_storage/sfx/1359/1359-preview.mp3'; 
 const DIAL_TONE_URL = 'https://www.soundjay.com/phone/phone-calling-1.mp3';
 
-const configuration = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-  ],
-};
-
 export default function CallOverlay({ chatId }: { chatId: string }) {
   const { user } = useAuth();
   const [activeCall, setActiveCall] = useState<any>(null);
   const [isVisible, setIsVisible] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [timer, setTimer] = useState(0);
+  const [isAudioUnlocked, setIsAudioUnlocked] = useState(false);
   
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   
   const pc = useRef<RTCPeerConnection | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioPlayingType = useRef<'ring' | 'dial' | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const isHandlingCall = useRef(false);
   const iceCandidatesQueue = useRef<any[]>([]);
@@ -53,6 +48,29 @@ export default function CallOverlay({ chatId }: { chatId: string }) {
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
 
+  // Helper to unlock audio on first interaction
+  useEffect(() => {
+    const unlockAudio = () => {
+        if (!isAudioUnlocked) {
+            const silentAudio = new Audio();
+            silentAudio.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==';
+            silentAudio.play().then(() => {
+                setIsAudioUnlocked(true);
+                console.log("[WebRTC Web] Audio unlocked via user interaction");
+                window.removeEventListener('click', unlockAudio);
+                window.removeEventListener('touchstart', unlockAudio);
+            }).catch(e => console.log("Unlock failed", e));
+        }
+    };
+
+    window.addEventListener('click', unlockAudio);
+    window.addEventListener('touchstart', unlockAudio);
+    return () => {
+        window.removeEventListener('click', unlockAudio);
+        window.removeEventListener('touchstart', unlockAudio);
+    };
+  }, [isAudioUnlocked]);
+
   const formatTime = (secs: number) => {
     const mins = Math.floor(secs / 60);
     const s = secs % 60;
@@ -60,19 +78,40 @@ export default function CallOverlay({ chatId }: { chatId: string }) {
   };
 
   const playSound = (type: 'ring' | 'dial') => {
-    if (audioRef.current) {
-        audioRef.current.pause();
+    // Agar wahi sound pehle se baj raha hai toh kuch na karein
+    if (audioPlayingType.current === type) return;
+    
+    stopSound();
+    
+    // Sirf tab bajayein agar audio unlocked ho
+    if (!isAudioUnlocked) {
+        console.warn("[WebRTC Web] Waiting for user interaction to play sound...");
+        return;
     }
+
     const audio = new Audio(type === 'ring' ? RINGTONE_URL : DIAL_TONE_URL);
     audio.loop = true;
-    audio.play().catch(e => console.warn("Autoplay prevented:", e));
-    audioRef.current = audio;
+    
+    const playPromise = audio.play();
+    if (playPromise !== undefined) {
+        playPromise.then(() => {
+            audioRef.current = audio;
+            audioPlayingType.current = type;
+        }).catch(error => {
+            console.warn("[WebRTC Web] Autoplay prevented or interrupted:", error.message);
+        });
+    }
   };
 
   const stopSound = () => {
     if (audioRef.current) {
-        audioRef.current.pause();
+        const audio = audioRef.current;
+        // Pause safely
+        audio.pause();
+        audio.src = "";
+        audio.load();
         audioRef.current = null;
+        audioPlayingType.current = null;
     }
   };
 
@@ -94,24 +133,34 @@ export default function CallOverlay({ chatId }: { chatId: string }) {
   const setupMedia = async (isVideo: boolean) => {
     try {
         console.log("[WebRTC Web] Setting up media. Video:", isVideo);
-        const stream = await navigator.mediaDevices.getUserMedia({
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            console.error("[WebRTC Web] getUserMedia is not supported");
+            return null;
+        }
+
+        const constraints = {
             audio: true,
-            video: isVideo
-        });
+            video: isVideo ? { facingMode: 'user' } : false
+        };
+
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
         setLocalStream(stream);
         if (localVideoRef.current) {
             localVideoRef.current.srcObject = stream;
         }
         return stream;
-    } catch (e) {
-        console.error("[WebRTC Web] Failed to get user media:", e);
+    } catch (e: any) {
+        console.error("[WebRTC Web] Failed to get user media:", e.name, e.message);
+        if (e.name === 'NotAllowedError') {
+            alert("Please allow Camera & Microphone access to use calls.");
+        }
         return null;
     }
   };
 
-  const createPeerConnection = (chatId: string) => {
-    console.log("[WebRTC Web] Creating RTCPeerConnection");
-    const peerConnection = new RTCPeerConnection(configuration);
+  const createPeerConnection = async (chatId: string) => {
+    const iceServers = await getIceServers();
+    const peerConnection = new RTCPeerConnection({ iceServers });
 
     peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
@@ -138,7 +187,7 @@ export default function CallOverlay({ chatId }: { chatId: string }) {
       isHandlingCall.current = true;
 
       const isCaller = callData.callerId === user?.uid;
-      const peerConnection = createPeerConnection(chatId);
+      const peerConnection = await createPeerConnection(chatId);
       const stream = await setupMedia(callData.type === 'video');
 
       if (stream) {
@@ -191,6 +240,8 @@ export default function CallOverlay({ chatId }: { chatId: string }) {
   const acceptCall = async () => {
       if (!activeCall || !pc.current) return;
       try {
+          // After clicking accept, audio is definitely allowed
+          setIsAudioUnlocked(true);
           await pc.current.setRemoteDescription(new RTCSessionDescription(activeCall.offer));
           processQueuedCandidates();
           const answer = await pc.current.createAnswer();
@@ -220,7 +271,10 @@ export default function CallOverlay({ chatId }: { chatId: string }) {
 
         if (data.status === 'initiating') {
             const isIncoming = data.receiverId === user.uid;
-            playSound(isIncoming ? 'ring' : 'dial');
+            // Play sound if audio is unlocked
+            if (isAudioUnlocked) {
+                playSound(isIncoming ? 'ring' : 'dial');
+            }
         } else if (data.status === 'connected') {
             stopSound();
             if (data.answer && data.callerId === user.uid) {
@@ -256,7 +310,7 @@ export default function CallOverlay({ chatId }: { chatId: string }) {
         if (timerRef.current) clearInterval(timerRef.current);
         if (iceUnsubscribe) iceUnsubscribe();
     };
-  }, [chatId, user]);
+  }, [chatId, user, isAudioUnlocked]); // isAudioUnlocked added here
 
   useEffect(() => {
       if (localStream) {
@@ -303,6 +357,12 @@ export default function CallOverlay({ chatId }: { chatId: string }) {
         )}
 
         <View style={[StyleSheet.absoluteFill, isVideo && { backgroundColor: 'rgba(0,0,0,0.2)' }]}>
+            {!isAudioUnlocked && isIncoming && (
+                <View style={styles.overlayMessage}>
+                    <Text style={styles.overlayText}>Click anywhere to enable ringtone</Text>
+                </View>
+            )}
+
             <View style={styles.header}>
                <Text style={styles.callType}>{isVideo ? 'VIDEO' : 'AUDIO'} CALL</Text>
                <Text style={styles.status}>
@@ -369,4 +429,6 @@ const styles = StyleSheet.create({
   roundBtn: { width: 60, height: 60, borderRadius: 30, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center' },
   activeBtn: { backgroundColor: '#FF4D67' },
   btnLabel: { color: 'white', fontSize: 11, marginTop: 4 },
+  overlayMessage: { backgroundColor: 'rgba(255,77,103,0.8)', padding: 10, position: 'absolute', top: 0, width: '100%', alignItems: 'center' },
+  overlayText: { color: 'white', fontWeight: 'bold' }
 });

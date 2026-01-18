@@ -6,81 +6,90 @@ import {
   getAuth,
 } from "firebase/auth";
 import app, { firestore as db } from "../firebase/initFirebase";
-import { doc, getDoc, collection, query, where, getDocs, limit } from "firebase/firestore";
+import { doc, getDoc, collection, query, where, getDocs, limit, setDoc, serverTimestamp } from "firebase/firestore";
 import { useSignupStore } from "../../store/signup";
 
 export const SocialAuthService = {
   handleSocialLogin: async (router: any, addToast: any, providerName: string, provider: any) => {
     try {
       const auth = getAuth(app);
-      console.log(`Starting ${providerName} login...`);
+      console.log(`[SocialAuth] Starting ${providerName} login...`);
       
-      // NOTE: signInWithPopup only works on Web. 
-      // For Native (iOS/Android), consider using expo-auth-session or native SDKs.
       const userCredential = await signInWithPopup(auth, provider);
       const user = userCredential.user;
 
       const signupStore = useSignupStore.getState();
 
-      // 1. Check by UID first
-      const userDocRef = doc(db, "users", user.uid);
-      const userDocSnap = await getDoc(userDocRef);
-      
-      let userData: any = null;
-      if (userDocSnap.exists()) {
-          userData = userDocSnap.data();
-          userData.uid = user.uid; // Ensure UID is attached
-      } else if (user.email) {
-          // 2. Check by Email field (in case they have a different UID but same email)
-          const q = query(collection(db, "users"), where("email", "==", user.email), limit(1));
+      let existingData: any = null;
+      let existingDocId: string | null = null;
+
+      // 1. SEARCH LOGIC: Always check by EMAIL first for consistency
+      if (user.email) {
+          const q = query(collection(db, "users"), where("email", "==", user.email.toLowerCase()), limit(1));
           const querySnapshot = await getDocs(q);
           if (!querySnapshot.empty) {
-              userData = querySnapshot.docs[0].data();
-              userData.uid = querySnapshot.docs[0].id; // The existing UID in Firestore
+              existingData = querySnapshot.docs[0].data();
+              existingDocId = querySnapshot.docs[0].id;
+              console.log("[SocialAuth] Found existing user by email:", existingDocId);
           }
       }
 
-      if (userData) {
-        // EXISTING USER FOUND
-        if (userData.signupCompleted === true || userData.username) {
-          console.log("Existing user found, redirecting to home");
-          addToast("Welcome back!", "success");
-          router.replace("/home");
-        } else {
-          // Incomplete Profile
-          console.log("Incomplete profile found, updating store");
-          signupStore.setMultiple({
-            ...userData,
-            uid: userData.uid || user.uid,
-            fullName: userData.fullName || user.displayName || "",
-            email: userData.email || user.email || "",
-            avatarUrl: userData.avatarUrl || user.photoURL || "",
-            authProvider: (userData.authProvider || providerName.toLowerCase()) as any
-          });
-          addToast("Please complete your profile.", "info");
-          router.replace("/auth/signup/fill-profile");
+      // 2. FALLBACK: Check by UID if email search failed
+      if (!existingData) {
+          const userDocSnap = await getDoc(doc(db, "users", user.uid));
+          if (userDocSnap.exists()) {
+              existingData = userDocSnap.data();
+              existingDocId = user.uid;
+              console.log("[SocialAuth] Found existing user by session UID.");
+          }
+      }
+
+      // 3. DECISION & MIGRATION LOGIC
+      if (existingData && (existingData.signupCompleted === true || existingData.username)) {
+        
+        // --- DATA MIGRATION CHECK ---
+        if (existingDocId !== user.uid) {
+            console.log("[SocialAuth] Migration needed! Cloning data to new UID:", user.uid);
+            
+            // Sync data to new UID document immediately
+            const newDocRef = doc(db, "users", user.uid);
+            await setDoc(newDocRef, {
+                ...existingData,
+                uid: user.uid,
+                email: user.email?.toLowerCase(),
+                updatedAt: serverTimestamp(),
+                signupCompleted: true,
+                migratedFrom: existingDocId
+            }, { merge: true });
+
+            console.log("[SocialAuth] Migration complete.");
         }
+
+        addToast("Welcome back!", "success");
+        router.replace("/home");
+
       } else {
-        // NEW USER: Just save to store and redirect
-        console.log("New Social User detected:", user.email || user.uid);
+        // TRULY NEW USER OR INCOMPLETE PROFILE
+        console.log("[SocialAuth] New user or incomplete profile. Moving to Fill Profile.");
         
         signupStore.reset();
         signupStore.setMultiple({
             uid: user.uid,
-            fullName: user.displayName || "",
-            email: user.email || "",
-            avatarUrl: user.photoURL || "",
-            authProvider: providerName.toLowerCase() as any
+            fullName: existingData?.fullName || user.displayName || "",
+            email: (existingData?.email || user.email || "").toLowerCase(),
+            avatarUrl: existingData?.profileImageUrl || existingData?.avatarUrl || user.photoURL || "",
+            authProvider: providerName.toLowerCase() as any,
+            ...(existingData || {}) 
         });
 
-        addToast(`Welcome! Let's complete your profile.`, "success");
+        addToast(`Please complete your profile.`, "info");
         router.replace("/auth/signup/fill-profile");
       }
       return user;
     } catch (error: any) {
       console.error(`${providerName} Error:`, error);
       let msg = error.message;
-      if (error.code === 'auth/popup-closed-by-user') msg = "Popup closed.";
+      if (error.code === 'auth/popup-closed-by-user') msg = "Login cancelled.";
       addToast(msg, "error");
       throw error;
     }

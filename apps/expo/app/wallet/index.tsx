@@ -1,16 +1,17 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, useColorScheme, Alert, Share, Modal, ActivityIndicator, Dimensions } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, useColorScheme, Alert, Share, Modal, ActivityIndicator, Dimensions, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
-import Animated, { FadeInDown, FadeInRight } from 'react-native-reanimated';
+import Animated, { FadeInDown, FadeInRight, FadeInUp, useSharedValue, useAnimatedStyle, withSpring, withTiming, withSequence, runOnJS } from 'react-native-reanimated';
 
 import { useAuth } from '@/src/services/auth';
 import { Colors } from '@/constants/theme';
 import { useProfile } from '@/src/hooks/useProfileData';
 import { walletService } from '@/src/services/wallet/walletService';
+import { useToast } from '@/src/components/toast/ToastProvider';
 
 const { width, height } = Dimensions.get('window');
 
@@ -37,6 +38,7 @@ export default function WalletScreen() {
   const { user } = useAuth();
   const { data: profile, refetch: refetchProfile } = useProfile(user?.uid || '');
   const colorScheme = useColorScheme();
+  const { addToast } = useToast();
   const isDark = colorScheme === 'dark';
   
   // Theme Colors
@@ -55,7 +57,30 @@ export default function WalletScreen() {
   const [isWatchingAd, setIsWatchingAd] = useState(false);
   const [adTimer, setAdTimer] = useState(5);
 
-  // Filter Logic
+  // Coin Animation State
+  const [animatingCoins, setAnimatingCoins] = useState<any[]>([]);
+  const balanceScale = useSharedValue(1);
+
+  const balanceAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: balanceScale.value }]
+  }));
+
+  const triggerBalancePop = () => {
+    balanceScale.value = withSequence(
+      withSpring(1.2),
+      withSpring(1)
+    );
+  };
+
+  const spawnCoinAnimation = (startX: number, startY: number) => {
+    const id = Math.random().toString();
+    setAnimatingCoins(prev => [...prev, { id, startX, startY }]);
+  };
+
+  const removeCoin = (id: string) => {
+    setAnimatingCoins(prev => prev.filter(c => c.id !== id));
+  };
+
   const filteredTransactions = MOCK_TRANSACTIONS.filter(t => {
     if (activeFilter === 'All') return true;
     if (activeFilter === 'Income') return t.amount > 0;
@@ -63,24 +88,35 @@ export default function WalletScreen() {
     return true;
   });
 
-  const handleClaimBonus = async () => {
+  const handleClaimBonus = async (event: any, index: number) => {
     if (claimedToday) {
-        Alert.alert("Come back tomorrow", "You have already claimed your daily reward.");
+        addToast({ text: "Come back tomorrow!", type: "info" });
         return;
     }
     if (!user) return;
 
+    // Get touch coordinates for animation source
+    const { pageX, pageY } = event.nativeEvent;
+    
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
     try {
-        const amount = await walletService.claimDailyBonus(user.uid, currentDay);
+        const amount = await walletService.claimDailyBonus(user.uid, index);
+        
+        // Start animation
+        spawnCoinAnimation(pageX, pageY);
+        
         setClaimedToday(true);
-        Alert.alert("🎉 Bonus Claimed!", `You received ${amount} Dpcoins.`);
         refetchProfile();
         if(currentDay < 6) setCurrentDay(currentDay + 1);
+        
+        setTimeout(() => {
+          addToast({ text: `🎉 Received ${amount} Dpcoins!`, type: "success" });
+        }, 800);
+        
     } catch (error) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        Alert.alert("Error", "Could not claim bonus.");
+        addToast({ text: "Could not claim bonus.", type: "error" });
     }
   };
 
@@ -91,7 +127,7 @@ export default function WalletScreen() {
         message: 'Join me on Tophunt and earn free Dpcoins! Use my invite code: ' + (user?.uid?.substring(0, 6) || 'TOPHUNT'),
       });
     } catch (error) {
-      Alert.alert('Error', 'Could not open share dialog');
+      addToast({ text: 'Could not open share dialog', type: "error" });
     }
   };
 
@@ -114,8 +150,7 @@ export default function WalletScreen() {
   const finishAd = () => {
     setIsWatchingAd(false);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    Alert.alert("Reward Earned! 🪙", "You watched the ad and earned 5 Dpcoins!");
-    // In a real app, you would call walletService.addCoins(5) here
+    addToast({ text: "Reward Earned! +5 Dpcoins 🪙", type: "success" });
   };
 
   const handleTaskAction = (task: any) => {
@@ -125,10 +160,9 @@ export default function WalletScreen() {
     } else if (task.action === 'Watch') {
         simulateWatchAd();
     } else if (task.action === 'Vote') {
-        // Navigate to Battles or Home
-        router.push('/'); 
+        router.push('/home'); 
     } else {
-        Alert.alert(task.title, `This action will open the ${task.action.toLowerCase()} flow.`);
+        addToast({ text: `Opening ${task.action}...`, type: "info" });
     }
   };
 
@@ -167,33 +201,25 @@ export default function WalletScreen() {
     
     return (
         <View key={index} style={styles.dayWrapper}>
-            {/* Connecting Line */}
-            {index < DAILY_REWARDS.length - 1 && (
-                <View style={[
-                    styles.connectorLine, 
-                    { backgroundColor: index < currentDay ? '#4CAF50' : (isDark ? '#333' : '#E0E0E0') } 
-                ]} />
-            )}
-            
             <TouchableOpacity 
                 style={[
                     styles.dayCard, 
-                    { backgroundColor: isDark ? '#2A2D35' : '#FFF' },
-                    isReady && { borderColor: primaryColor, borderWidth: 1.5, shadowColor: primaryColor, shadowOpacity: 0.3, elevation: 4 },
-                    isClaimed && { borderColor: '#4CAF50', borderWidth: 1 }
+                    { backgroundColor: isDark ? '#1F222A' : '#FFF' },
+                    isReady && { borderColor: primaryColor, borderWidth: 1.5, backgroundColor: isDark ? '#2A1D20' : '#FFF0F3' },
+                    isClaimed && { opacity: 0.6 }
                 ]}
-                onPress={isReady ? handleClaimBonus : undefined}
+                onPress={(e) => isReady ? handleClaimBonus(e, index) : undefined}
                 disabled={!isReady}
                 activeOpacity={0.7}
             >
-                <Text style={[styles.dayText, { color: subTextColor }]}>Day {index + 1}</Text>
+                <Text style={[styles.dayText, { color: isReady ? primaryColor : subTextColor }]}>Day {index + 1}</Text>
                 {isClaimed ? (
                     <View style={styles.checkCircle}>
                         <Ionicons name="checkmark" size={12} color="white" />
                     </View>
                 ) : (
                     <View style={styles.coinIconWrapper}>
-                        <Ionicons name="gift" size={20} color={isReady ? primaryColor : (isDark ? '#555' : '#CCC')} />
+                        <Ionicons name="gift" size={24} color={isReady ? primaryColor : (isDark ? '#333' : '#CCC')} />
                     </View>
                 )}
                 <Text style={[
@@ -276,14 +302,13 @@ export default function WalletScreen() {
                 </View>
 
                 {/* Balance Card */}
-                <Animated.View entering={FadeInDown.duration(600)} style={styles.balanceContainer}>
+                <Animated.View entering={FadeInDown.duration(600)} style={[styles.balanceContainer, balanceAnimatedStyle]}>
                     <LinearGradient
                         colors={['#FF4D67', '#FF8A9B']}
                         start={{ x: 0, y: 0 }}
                         end={{ x: 1, y: 1 }}
                         style={styles.gradient}
                     >
-                        {/* Background Decoration */}
                         <View style={styles.cardCircle1} />
                         <View style={styles.cardCircle2} />
 
@@ -314,17 +339,25 @@ export default function WalletScreen() {
                 </Animated.View>
 
                 {/* Daily Bonus Section */}
-                <View style={styles.sectionHeader}>
-                    <View>
-                        <Text style={[styles.sectionTitle, { color: textColor }]}>Daily Check-in</Text>
-                        <Text style={[styles.sectionSubtitle, { color: subTextColor }]}>Earn rewards everyday!</Text>
+                <Animated.View entering={FadeInUp.delay(200).duration(600)} style={styles.bonusWrapper}>
+                    <View style={styles.sectionHeader}>
+                        <View>
+                            <Text style={[styles.sectionTitle, { color: textColor }]}>Daily Check-in</Text>
+                            <Text style={[styles.sectionSubtitle, { color: subTextColor }]}>Earn rewards everyday!</Text>
+                        </View>
+                        <TouchableOpacity style={styles.historyBtn}>
+                             <Text style={{ color: primaryColor, fontFamily: 'Urbanist-Bold' }}>Rewards</Text>
+                        </TouchableOpacity>
                     </View>
-                </View>
-                <View style={styles.dailyScrollWrapper}>
-                    <View style={styles.dailyContainer}>
+                    
+                    <ScrollView 
+                        horizontal 
+                        showsHorizontalScrollIndicator={false}
+                        contentContainerStyle={styles.dailyScrollContent}
+                    >
                         {DAILY_REWARDS.map((amount, index) => renderDailyItem(amount, index))}
-                    </View>
-                </View>
+                    </ScrollView>
+                </Animated.View>
 
                 {/* Daily Tasks Section */}
                 <View style={[styles.sectionHeader, { marginTop: 25 }]}>
@@ -382,6 +415,19 @@ export default function WalletScreen() {
         }
       />
 
+      {/* Coin Animations Layer */}
+      {animatingCoins.map(coin => (
+        <CoinAnimation 
+          key={coin.id} 
+          startX={coin.startX} 
+          startY={coin.startY} 
+          onFinished={() => {
+            removeCoin(coin.id);
+            triggerBalancePop();
+          }} 
+        />
+      ))}
+
       {/* Fake Ad Modal */}
       <Modal visible={isWatchingAd} transparent animationType="fade">
         <View style={styles.adModalContainer}>
@@ -402,6 +448,53 @@ export default function WalletScreen() {
   );
 }
 
+// Separate component for the flying coin animation
+const CoinAnimation = ({ startX, startY, onFinished }: { startX: number, startY: number, onFinished: () => void }) => {
+  const progress = useSharedValue(0);
+  
+  // Destination is the top balance card area roughly
+  const destX = width / 2;
+  const destY = 150; 
+
+  useEffect(() => {
+    progress.value = withTiming(1, { duration: 800 }, (finished) => {
+      if (finished) {
+        runOnJS(onFinished)();
+      }
+    });
+  }, []);
+
+  const animatedStyle = useAnimatedStyle(() => {
+    const translateX = startX + (destX - startX) * progress.value;
+    const translateY = startY + (destY - startY) * progress.value - (Math.sin(progress.value * Math.PI) * 100); // Add arc
+    const scale = 1 + (Math.sin(progress.value * Math.PI) * 0.5);
+    const opacity = 1 - (progress.value > 0.8 ? (progress.value - 0.8) * 5 : 0);
+
+    return {
+      position: 'absolute',
+      left: 0,
+      top: 0,
+      transform: [
+        { translateX: translateX - 15 },
+        { translateY: translateY - 15 },
+        { scale }
+      ],
+      opacity
+    };
+  });
+
+  return (
+    <Animated.View style={[animatedStyle, { zIndex: 9999 }]}>
+      <LinearGradient
+        colors={['#FFD700', '#FFA500']}
+        style={styles.floatingCoin}
+      >
+        <Ionicons name="logo-bitcoin" size={20} color="#FFF" />
+      </LinearGradient>
+    </Animated.View>
+  );
+};
+
 const styles = StyleSheet.create({
   container: { flex: 1 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 10, marginBottom: 10 },
@@ -409,7 +502,7 @@ const styles = StyleSheet.create({
   title: { fontSize: 20, fontFamily: 'Urbanist-Bold' },
   
   // Balance Card
-  balanceContainer: { marginHorizontal: 20, marginBottom: 25, borderRadius: 28, overflow: 'hidden', elevation: 10, shadowColor: '#FF4D67', shadowOpacity: 0.4, shadowRadius: 15, shadowOffset: { width: 0, height: 8 } },
+  balanceContainer: { marginHorizontal: 20, marginBottom: 20, borderRadius: 28, overflow: 'hidden', elevation: 10, shadowColor: '#FF4D67', shadowOpacity: 0.4, shadowRadius: 15, shadowOffset: { width: 0, height: 8 } },
   gradient: { padding: 25, position: 'relative' },
   cardCircle1: { position: 'absolute', top: -50, right: -50, width: 150, height: 150, borderRadius: 75, backgroundColor: 'rgba(255,255,255,0.1)' },
   cardCircle2: { position: 'absolute', bottom: -30, left: -30, width: 100, height: 100, borderRadius: 50, backgroundColor: 'rgba(255,255,255,0.1)' },
@@ -429,16 +522,16 @@ const styles = StyleSheet.create({
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, marginBottom: 15 },
   sectionTitle: { fontSize: 18, fontFamily: 'Urbanist-Bold' },
   sectionSubtitle: { fontSize: 13, fontFamily: 'Urbanist-Medium', marginTop: 2 },
+  historyBtn: { padding: 4 },
   
   // Daily Bonus
-  dailyScrollWrapper: { paddingHorizontal: 20, marginBottom: 5 },
-  dailyContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  dayWrapper: { alignItems: 'center', width: (width - 40) / 7 },
-  connectorLine: { position: 'absolute', top: 25, right: -((width - 40) / 14), width: (width - 40) / 7, height: 3, zIndex: -1 },
-  dayCard: { width: 44, height: 60, borderRadius: 22, alignItems: 'center', justifyContent: 'center', elevation: 2, paddingVertical: 5, marginBottom: 5, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 3, shadowOffset: {width: 0, height: 2} },
-  dayText: { fontSize: 9, fontFamily: 'Urbanist-Bold', marginBottom: 4 },
-  dayAmount: { fontSize: 11, fontFamily: 'Urbanist-Bold' },
-  checkCircle: { width: 20, height: 20, borderRadius: 10, backgroundColor: '#4CAF50', justifyContent: 'center', alignItems: 'center', marginBottom: 2 },
+  bonusWrapper: { marginTop: 10 },
+  dailyScrollContent: { paddingHorizontal: 15, paddingBottom: 5 },
+  dayWrapper: { alignItems: 'center', marginHorizontal: 5 },
+  dayCard: { width: 75, height: 100, borderRadius: 20, alignItems: 'center', justifyContent: 'center', elevation: 2, paddingVertical: 10, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 5, shadowOffset: {width: 0, height: 2}, borderWidth: 1, borderColor: 'transparent' },
+  dayText: { fontSize: 12, fontFamily: 'Urbanist-Bold', marginBottom: 8 },
+  dayAmount: { fontSize: 14, fontFamily: 'Urbanist-Bold', marginTop: 8 },
+  checkCircle: { width: 24, height: 24, borderRadius: 12, backgroundColor: '#4CAF50', justifyContent: 'center', alignItems: 'center', marginBottom: 2 },
   coinIconWrapper: { marginBottom: 2 },
 
   // Tasks
@@ -484,4 +577,19 @@ const styles = StyleSheet.create({
   adSubtitle: { fontSize: 14, fontFamily: 'Urbanist-Medium', textAlign: 'center' },
   adProgressBar: { width: '100%', height: 6, backgroundColor: '#E0E0E0', borderRadius: 3, marginTop: 10, overflow: 'hidden' },
   adProgressFill: { height: '100%', backgroundColor: '#FF4D67' },
+
+  // Floating Animation Styles
+  floatingCoin: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#FFA500',
+    shadowOpacity: 0.5,
+    shadowRadius: 5,
+    elevation: 5,
+    borderWidth: 1,
+    borderColor: '#FFF'
+  }
 });

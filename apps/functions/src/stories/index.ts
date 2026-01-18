@@ -4,22 +4,22 @@ import { db, admin } from "../utils/firebase";
 import { Timestamp } from "firebase-admin/firestore";
 
 /**
- * Unified Story Handler (Replaces legacy Status & Stories logic)
+ * UNIFIED STORY HANDLER
  * Action: create | view | delete
+ * This handles all story life-cycle events in one scalable function.
  */
 export const storyHandler = onCall({
+    region: "us-central1",
     memory: "256MiB",
+    maxInstances: 10, // Optimized for quota limits
     timeoutSeconds: 60,
     cors: true,
 }, async (request) => {
-    if (!request.data || !request.data.action) {
-        throw new HttpsError("invalid-argument", "Action is required.");
-    }
-
     const { action } = request.data;
     const uid = request.auth?.uid;
 
     if (!uid) throw new HttpsError("unauthenticated", "User must be logged in.");
+    if (!action) throw new HttpsError("invalid-argument", "Action is required.");
 
     switch (action) {
         case "create": {
@@ -49,11 +49,9 @@ export const storyHandler = onCall({
                     mentions: mentions || []
                 };
 
-                // Unified collection: 'stories'
                 const finalId = storyId || db.collection("stories").doc().id;
                 await db.collection("stories").doc(finalId).set(storyData);
                 
-                logger.info(`Unified Story created: ${finalId} by ${uid}`);
                 return { success: true, storyId: finalId };
             } catch (error) {
                 logger.error("Error creating story:", error);
@@ -66,11 +64,23 @@ export const storyHandler = onCall({
             if (!storyId) throw new HttpsError("invalid-argument", "storyId is required.");
             
             try {
+                // 1. Log view record (Sub-collection)
+                const viewRef = db.collection("stories").doc(storyId).collection("views").doc(uid);
+                await viewRef.set({
+                    viewerId: uid,
+                    viewedAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+
+                // 2. Increment Counter Atomically
                 await db.collection("stories").doc(storyId).update({
                     viewsCount: admin.firestore.FieldValue.increment(1)
                 });
+                
                 return { success: true };
-            } catch (e) { return { success: false }; }
+            } catch (e) { 
+                logger.error("View log failed", e);
+                return { success: false }; 
+            }
         }
 
         case "delete": {
@@ -82,6 +92,7 @@ export const storyHandler = onCall({
                 const doc = await storyRef.get();
                 if (!doc.exists) throw new HttpsError("not-found", "Story not found.");
                 
+                // Permission check: Owner or Admin
                 if (doc.data()?.userId !== uid) {
                     const adminDoc = await db.collection("admins").doc(uid).get();
                     if (!adminDoc.exists) throw new HttpsError("permission-denied", "Access denied.");
@@ -95,6 +106,6 @@ export const storyHandler = onCall({
         }
 
         default:
-            throw new HttpsError("invalid-argument", "Invalid action.");
+            throw new HttpsError("invalid-argument", `Invalid action: ${action}`);
     }
 });

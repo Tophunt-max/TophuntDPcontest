@@ -163,10 +163,10 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
         </TouchableOpacity>
 
         <NavItem 
-            icon={Icons.Inbox_Light} 
-            activeIcon={Icons.Inbox_Dark} 
-            label="Inbox" 
-            path="/inbox" 
+            icon={Icons.Video_Light} 
+            activeIcon={Icons.Video_Dark} 
+            label="Video" 
+            path="/video-feed" 
         />
         <NavItem 
             icon={Icons.Profile_Light} 
@@ -216,7 +216,7 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
                         }}
                     >
                         <View style={[styles.menuIcon, { backgroundColor: '#E8F5E9' }]}>
-                            <Ionicons name="image" size={24} color="#4CAF50" />
+                            <Icons.Photo_Contest width={24} height={24} color="#4CAF50" />
                         </View>
                         <Text style={[styles.menuText, { color: isDark ? 'white' : 'black' }]}>Photo Contest</Text>
                     </TouchableOpacity>
@@ -230,7 +230,7 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
                         }}
                     >
                         <View style={[styles.menuIcon, { backgroundColor: '#E3F2FD' }]}>
-                            <Ionicons name="videocam" size={24} color="#2196F3" />
+                            <Icons.Video_Contest width={24} height={24} color="#2196F3" />
                         </View>
                         <Text style={[styles.menuText, { color: isDark ? 'white' : 'black' }]}>Video Contest</Text>
                     </TouchableOpacity>
@@ -244,7 +244,7 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
                         }}
                     >
                         <View style={[styles.menuIcon, { backgroundColor: '#FFF3E0' }]}>
-                            <Ionicons name="star" size={24} color="#FF9800" />
+                            <Icons.Create_Story width={24} height={24} color="#FF9800" />
                         </View>
                         <Text style={[styles.menuText, { color: isDark ? 'white' : 'black' }]}>Create Story</Text>
                     </TouchableOpacity>

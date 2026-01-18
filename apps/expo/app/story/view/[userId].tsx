@@ -23,7 +23,6 @@ import {
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Image } from 'expo-image';
-import { Ionicons } from '@expo/vector-icons';
 import {
     fetchStories,
     markStoryAsSeen,
@@ -36,7 +35,9 @@ import { auth } from '@/src/services/firebase/initFirebase';
 import {
     Highlight_Story_Icon,
     Viewers_Icon,
-    Delete_Icon
+    Delete_Icon,
+    Close_Icon,
+    Heart_Outline
 } from '@/assets/svgs';
 import { Colors } from '@/constants/theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -299,7 +300,7 @@ export default function StoryView() {
             <Image source={{ uri: currentUserStories.avatarUrl }} style={styles.avatar} />
             <Text style={styles.username}>{currentUserStories.username}</Text>
             <TouchableOpacity onPress={() => router.back()} style={styles.closeButton}>
-              <Ionicons name="close" size={30} color="white" />
+              <Close_Icon width={30} height={30} color="white" />
             </TouchableOpacity>
           </View>
         </View>
@@ -331,7 +332,7 @@ export default function StoryView() {
                 onChangeText={setReplyText} 
               />
               <TouchableOpacity>
-                <Ionicons name="heart-outline" size={28} color="white" />
+                <Heart_Outline width={28} height={28} color="white" />
               </TouchableOpacity>
             </View>
           )}

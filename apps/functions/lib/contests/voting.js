@@ -7,6 +7,7 @@ const firestore_1 = require("firebase-admin/firestore");
 const gamification_1 = require("../utils/gamification");
 /**
  * Submit a vote for a participant in a contest match
+ * Logic: 1 vote per account, max 5 votes per Device ID for the same match.
  */
 exports.submitVote = (0, https_1.onCall)(async (request) => {
     const { auth } = request;
@@ -20,21 +21,34 @@ exports.submitVote = (0, https_1.onCall)(async (request) => {
     const voterUid = auth.uid;
     const matchRef = firebase_1.db.collection("contestMatches").doc(matchId);
     const voteRef = firebase_1.db.collection("votes").doc(`${matchId}_${voterUid}`);
+    // Reference to track votes per device for this specific match
+    const deviceCounterRef = firebase_1.db.collection("contestMatches").doc(matchId)
+        .collection("deviceVoteCounts").doc(deviceId);
     try {
         await firebase_1.db.runTransaction(async (transaction) => {
+            var _a;
+            // 1. Get Match Data
             const matchDoc = await transaction.get(matchRef);
-            const voteDoc = await transaction.get(voteRef);
             if (!matchDoc.exists)
                 throw new https_1.HttpsError("not-found", "Match not found.");
-            if (voteDoc.exists)
-                throw new https_1.HttpsError("already-exists", "You have already voted in this match.");
             const matchData = matchDoc.data();
             if (matchData.status !== "active")
                 throw new https_1.HttpsError("failed-precondition", "Battle is not active.");
+            // 2. Check if this specific ACCOUNT has already voted
+            const voteDoc = await transaction.get(voteRef);
+            if (voteDoc.exists)
+                throw new https_1.HttpsError("already-exists", "You have already voted in this match.");
+            // 3. ANTI-CHEAT: Check if this DEVICE has already voted 5 times
+            const deviceDoc = await transaction.get(deviceCounterRef);
+            const deviceVoteCount = deviceDoc.exists ? (((_a = deviceDoc.data()) === null || _a === void 0 ? void 0 : _a.count) || 0) : 0;
+            if (deviceVoteCount >= 5) {
+                throw new https_1.HttpsError("resource-exhausted", "Device limit reached! Maximum 5 votes allowed per device for this match.");
+            }
+            // 4. Participants cannot vote for themselves
             if (voterUid === matchData.userA.uid || (matchData.userB && voterUid === matchData.userB.uid)) {
                 throw new https_1.HttpsError("failed-precondition", "Participants cannot vote in their own match.");
             }
-            // Update match votes based on participant UID
+            // 5. Calculate vote updates
             let updateData = {
                 totalVotes: firestore_1.FieldValue.increment(1)
             };
@@ -47,8 +61,17 @@ exports.submitVote = (0, https_1.onCall)(async (request) => {
             else {
                 throw new https_1.HttpsError("invalid-argument", "Invalid participant UID for this match.");
             }
+            // --- ATOMIC UPDATES ---
+            // Update Match Votes
             transaction.update(matchRef, updateData);
-            // Record the vote to prevent double voting
+            // Update/Create Device Counter
+            if (deviceDoc.exists) {
+                transaction.update(deviceCounterRef, { count: firestore_1.FieldValue.increment(1) });
+            }
+            else {
+                transaction.set(deviceCounterRef, { count: 1, matchId, deviceId, updatedAt: firestore_1.FieldValue.serverTimestamp() });
+            }
+            // Record Account Vote
             transaction.set(voteRef, {
                 matchId,
                 voterUid,

@@ -9,7 +9,8 @@ import {
   respondToCall, 
   sendIceCandidate, 
   listenForIceCandidates,
-  updateCallOffer 
+  updateCallOffer,
+  getIceServers
 } from '@/src/services/calls/callService';
 import { Audio } from 'expo-av';
 import { useCameraPermissions } from 'expo-camera';
@@ -38,14 +39,6 @@ const { width, height } = Dimensions.get('window');
 
 const RINGTONE_URL = 'https://assets.mixkit.co/active_storage/sfx/1359/1359-preview.mp3'; 
 const DIAL_TONE_URL = 'https://www.soundjay.com/phone/phone-calling-1.mp3';
-
-const configuration = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-  ],
-};
 
 export default function CallOverlay({ chatId }: { chatId: string }) {
   const { user } = useAuth();
@@ -154,9 +147,12 @@ export default function CallOverlay({ chatId }: { chatId: string }) {
     }
   };
 
-  const createPeerConnection = (chatId: string) => {
-    console.log("[WebRTC] Creating RTCPeerConnection");
-    const peerConnection = new RTCPeerConnection(configuration);
+  const createPeerConnection = async (chatId: string) => {
+    console.log("[WebRTC] Fetching ICE Servers...");
+    const iceServers = await getIceServers();
+    
+    console.log("[WebRTC] Creating RTCPeerConnection with TURN");
+    const peerConnection = new RTCPeerConnection({ iceServers });
 
     peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
@@ -188,7 +184,7 @@ export default function CallOverlay({ chatId }: { chatId: string }) {
       isHandlingCall.current = true;
 
       const isCaller = callData.callerId === user?.uid;
-      const peerConnection = createPeerConnection(chatId);
+      const peerConnection = await createPeerConnection(chatId);
       const stream = await setupMedia(callData.type === 'video');
 
       if (stream) {

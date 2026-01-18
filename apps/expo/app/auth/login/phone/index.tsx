@@ -23,11 +23,10 @@ import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
 import { auth, firestore as db } from "../../../../src/services/firebase/initFirebase";
 import { PhoneAuthProvider, signInWithCredential } from "firebase/auth";
 import { firebaseConfig } from "@/src/firebaseConfig";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, getDoc, collection, query, where, getDocs, setDoc, serverTimestamp } from "firebase/firestore";
 import { useSignupStore } from "../../../../src/store/signup";
 import { CountryPicker } from "react-native-country-codes-picker";
 import { Ionicons } from "@expo/vector-icons";
-import { callApi } from "@/src/services/api"; // Added callApi for robust search
 
 export default function PhoneLoginScreen() {
   const router = useRouter();
@@ -46,7 +45,7 @@ export default function PhoneLoginScreen() {
   const [verificationCode, setVerificationCode] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
-  const recaptchaVerifier = useRef(null);
+  const recaptchaVerifier = useRef<any>(null);
 
   const handleSendOTP = async () => {
     if (!phoneNumber || phoneNumber.length < 8) {
@@ -88,67 +87,62 @@ export default function PhoneLoginScreen() {
       const userCredential = await signInWithCredential(auth, credential);
       const user = userCredential.user;
 
-      // 1. Normalize Phone Number for searching via Backend
+      // 1. Normalize Phone Number for searching (EXTREME FLEXIBILITY)
       const fullPhone = user.phoneNumber || (countryCode + phoneNumber);
+      const cleanedPhone = fullPhone.replace(/[^\d+]/g, ''); 
+      const last10Digits = cleanedPhone.slice(-10);
       
-      console.log("Verifying user session...");
-
-      // 2. SEARCH LOGIC: Use Centralized API (Backend) to find user
-      // Backend is more robust as it handles normalization and multiple formats
-      let existingUserDoc: any = null;
-      let existingUid: string | null = null;
-
-      try {
-          const result = await callApi('getUserByIdentifier', { 
-              identifier: fullPhone, 
-              type: 'phone' 
-          });
-
-          if (result.found) {
-              existingUserDoc = result.user; // Note: result.user from backend contains some fields
-              existingUid = result.user.uid;
-              console.log("Existing user found by backend. UID:", existingUid);
-              
-              // Fetch full profile data from Firestore to be sure
-              const fullDoc = await getDoc(doc(db, "users", existingUid!));
-              if (fullDoc.exists()) {
-                  existingUserDoc = fullDoc.data();
-              }
-          }
-      } catch (e) {
-          console.warn("Backend search failed, falling back to session UID check", e);
+      // Variations: [+91987..., 91987..., 987...]
+      const searchVariations = [cleanedPhone, last10Digits];
+      if (cleanedPhone.startsWith('+')) {
+          searchVariations.push(cleanedPhone.substring(1));
       }
+      
+      console.log("[Auth] Searching for profile with variations:", searchVariations);
 
-      // If not found by phone, check current session UID (just in case)
-      if (!existingUserDoc) {
-          const sessionDoc = await getDoc(doc(db, "users", user.uid));
-          if (sessionDoc.exists()) {
-              existingUserDoc = sessionDoc.data();
-              existingUid = user.uid;
-              console.log("Found user by session UID:", existingUid);
-          }
+      let existingData: any = null;
+      let existingDocId: string | null = null;
+
+      // 2. SEARCH LOGIC: Check by phone variations (Fixes Duplicate Account Bug)
+      const usersRef = collection(db, "users");
+      const q = query(usersRef, where("phone", "in", searchVariations));
+      const querySnapshot = await getDocs(q);
+
+      if (!querySnapshot.empty) {
+        existingData = querySnapshot.docs[0].data();
+        existingDocId = querySnapshot.docs[0].id;
+        console.log("[Auth] Found existing user ID:", existingDocId);
       }
 
       // 3. DECISION LOGIC
-      if (existingUserDoc && (existingUserDoc.signupCompleted || existingUserDoc.username)) {
-        // REGISTERED USER FOUND
+      if (existingData && (existingData.signupCompleted === true || existingData.username)) {
+        
+        // --- DATA MIGRATION CHECK ---
+        if (existingDocId !== user.uid) {
+            console.log("[Migration] Copying data to new session UID:", user.uid);
+            const newDocRef = doc(db, "users", user.uid);
+            await setDoc(newDocRef, {
+                ...existingData,
+                uid: user.uid,
+                updatedAt: serverTimestamp(),
+                signupCompleted: true,
+                migratedFrom: existingDocId
+            }, { merge: true });
+        }
+
         addToast("Welcome back!", "success");
         router.replace("/home");
+
       } else {
         // NEW USER OR INCOMPLETE PROFILE
-        console.log("No complete profile found, redirecting to Fill Profile");
-        
-        // Prepare signup data
-        const profileData = {
-            ...(existingUserDoc || {}),
-            uid: existingUid || user.uid, // CRITICAL: Use existing UID if found
-            phone: fullPhone,
-            authProvider: 'phone' as const
-        };
-
-        reset(); // Clear store
-        setMultiple(profileData); // Populate store
-        
+        console.log("[Auth] No complete profile. Redirecting to Fill Profile.");
+        reset(); 
+        setMultiple({
+            uid: user.uid,
+            phone: cleanedPhone,
+            authProvider: 'phone',
+            ...(existingData || {}) 
+        });
         addToast("OTP Verified! Please complete your profile.", "success");
         router.replace("/auth/signup/fill-profile");
       }
@@ -198,11 +192,7 @@ export default function PhoneLoginScreen() {
         >
           {/* Header */}
           <View style={styles.header}>
-            <TouchableOpacity 
-              onPress={handleBack} 
-              style={styles.backButton}
-              hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
-            >
+            <TouchableOpacity onPress={handleBack} style={styles.backButton}>
               <Left_Arrow width={24} height={24} color={textColor} />
             </TouchableOpacity>
           </View>
@@ -228,7 +218,7 @@ export default function PhoneLoginScreen() {
                   <Ionicons name="chevron-down" size={12} color={isDark ? '#fff' : '#9E9E9E'} style={{ marginLeft: 4 }} />
                 </TouchableOpacity>
 
-                <View style={[inputContainerStyle, { flex: 1 }]}>
+                <View style={[styles.inputContainer, { flex: 1, backgroundColor: isFocused ? (isDark ? '#262933' : '#FFEBEE') : (isDark ? '#1F222A' : '#FAFAFA'), borderColor: isFocused ? '#FF4D67' : (isDark ? '#35383F' : '#eee'), borderWidth: 1 }]}>
                   <TextInput
                     style={[styles.input, { color: textColor, fontFamily: 'Urbanist-Medium' }]}
                     placeholder="Phone Number"
@@ -243,7 +233,7 @@ export default function PhoneLoginScreen() {
                 </View>
               </View>
             ) : (
-              <View style={inputContainerStyle}>
+              <View style={[styles.inputContainer, { backgroundColor: isFocused ? (isDark ? '#262933' : '#FFEBEE') : (isDark ? '#1F222A' : '#FAFAFA'), borderColor: isFocused ? '#FF4D67' : (isDark ? '#35383F' : '#eee'), borderWidth: 1 }]}>
                 <TextInput
                   style={[styles.input, { color: textColor, textAlign: 'center', fontSize: 24, letterSpacing: 8, fontFamily: 'Urbanist-Bold' }]}
                   placeholder="000000"
@@ -269,10 +259,7 @@ export default function PhoneLoginScreen() {
             </View>
 
             {verificationId && (
-              <TouchableOpacity 
-                onPress={() => setVerificationId("")}
-                style={styles.resendButton}
-              >
+              <TouchableOpacity onPress={() => setVerificationId("")} style={styles.resendButton}>
                 <Text style={styles.resendText}>Change Phone Number</Text>
               </TouchableOpacity>
             )}

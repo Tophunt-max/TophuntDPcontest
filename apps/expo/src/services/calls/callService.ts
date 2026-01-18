@@ -2,6 +2,7 @@ import { ref, set, onValue, push, onDisconnect, remove, update, off, get } from 
 import { database, auth } from '@/src/services/firebase/initFirebase';
 import { sendMessage } from '../messages/messageService';
 import { MessageType } from '@/src/types/schema';
+import { callApi } from '../api';
 
 /**
  * PRODUCTION CALL SIGNALING SERVICE
@@ -18,6 +19,18 @@ export interface CallSession {
   answer?: any;
   createdAt: number;
 }
+
+export const getIceServers = async () => {
+    try {
+        const result = await callApi('getCallCredentials');
+        if (result && result.iceServers) {
+            return result.iceServers;
+        }
+    } catch (error) {
+        console.error("Failed to get Cloudflare TURN credentials, falling back to STUN:", error);
+    }
+    return [{ urls: 'stun:stun.l.google.com:19302' }];
+};
 
 export const initiateCall = async (chatId: string, receiverId: string, type: 'audio' | 'video') => {
   const user = auth.currentUser;

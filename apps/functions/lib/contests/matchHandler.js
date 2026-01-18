@@ -30,9 +30,9 @@ exports.startContestMatch = (0, https_1.onCall)(async (request) => {
                 throw new https_1.HttpsError("not-found", "User document not found.");
             const contestData = contestDoc.data();
             const userData = userDoc.data();
-            // Calculate split entry fee (50% for each user)
+            // Calculate split entry fee (50% for each user) - Rounding up to prevent odd-coin leakage
             const totalFee = Number(contestData.totalEntryFee || contestData.entryDpcoin || 0);
-            const entryFeePerUser = totalFee / 2;
+            const entryFeePerUser = Math.ceil(totalFee / 2);
             const userBalance = Number(userData.Dpcoin || 0);
             if (userBalance < entryFeePerUser) {
                 throw new https_1.HttpsError("failed-precondition", `Insufficient Dpcoin. Required: ${entryFeePerUser}, Current: ${userBalance}`);
@@ -142,12 +142,21 @@ exports.joinContestMatch = (0, https_1.onCall)(async (request) => {
             if (!userDoc.exists)
                 throw new https_1.HttpsError("not-found", "User document not found.");
             const matchData = matchDoc.data();
+            // 1. Validation Checks
             if (matchData.status !== "waiting_for_opponent")
                 throw new https_1.HttpsError("failed-precondition", "Match unavailable.");
             if (matchData.userA.uid === uid)
                 throw new https_1.HttpsError("failed-precondition", "You cannot join your own match.");
+            // Anti-Cheat: Device ID Check
+            if (deviceId && matchData.userA.deviceId === deviceId) {
+                throw new https_1.HttpsError("permission-denied", "Multi-account detected. You cannot join matches from the same device.");
+            }
+            // Expiry Check
+            if (matchData.expiresAt && matchData.expiresAt.toMillis() < Date.now()) {
+                throw new https_1.HttpsError("failed-precondition", "This match has expired.");
+            }
             const userData = userDoc.data();
-            const entryFeePerUser = Number(matchData.entryFee || 0) / 2;
+            const entryFeePerUser = Math.ceil(Number(matchData.entryFee || 0) / 2);
             const userBalance = Number(userData.Dpcoin || 0);
             if (userBalance < entryFeePerUser) {
                 throw new https_1.HttpsError("failed-precondition", `Insufficient Dpcoin. Required: ${entryFeePerUser}, Current: ${userBalance}`);

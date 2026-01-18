@@ -3,16 +3,18 @@ import * as admin from "firebase-admin";
 import { masterApiRouter } from "./api/main";
 import { authHandler } from "./auth/authHandler";
 import { syncUserProfileUpdates } from "./user/syncProfile";
-import { notificationApiRouter } from "./api/notificationApi";
-import { onStoryViewCreated } from "./stories/triggers/viewAggregation";
 import { storyHandler } from "./stories/index";
-import * as notifications from "./notifications/index"; // Unified notifications
+import { notify } from "./notifications/index";
+import { adminHandler } from "./admin/index";
+import { contestHandler } from "./contests/handler"; // Unified Contest Handler
 
 if (admin.apps.length === 0) {
     admin.initializeApp();
 }
 
-// REST API via Callable
+/**
+ * MAIN API GATEWAY
+ */
 export const api = onCall({
     region: "us-central1",
     memory: "512MiB",
@@ -20,17 +22,14 @@ export const api = onCall({
     cors: true,
 }, masterApiRouter);
 
-// Exporting Unified Services
+/**
+ * UNIFIED SERVICES
+ */
 export { 
+    notify, 
+    storyHandler, 
     authHandler, 
-    syncUserProfileUpdates, 
-    onStoryViewCreated,
-    storyHandler,
-    notifications // This now includes ALL triggers (Social + Chat + Calls)
+    adminHandler, 
+    contestHandler, // Single Contest Entry
+    syncUserProfileUpdates 
 };
-
-export const notificationApi = onCall({
-    region: "us-central1",
-    memory: "256MiB",
-    cors: true
-}, notificationApiRouter);

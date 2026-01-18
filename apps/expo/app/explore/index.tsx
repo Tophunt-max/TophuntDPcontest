@@ -2,7 +2,6 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { View, Text, StyleSheet, SafeAreaView, useColorScheme, FlatList, TouchableOpacity, ScrollView, ActivityIndicator, Dimensions, TextInput, RefreshControl } from 'react-native';
 import { Image } from 'expo-image';
 import { BottomNav } from '@/src/components/home/BottomNav';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { firestore } from '@/src/services/firebase/initFirebase';
@@ -15,6 +14,18 @@ import { useToast } from '@/src/components/toast/ToastProvider';
 import { Colors } from '@/constants/theme';
 import FeaturedGrid from '@/src/components/home/FeaturedGrid';
 import { getOptimizedMediaUrl } from '@/src/utils/media';
+import {
+    Trophy_Icon,
+    Search_Icon_New,
+    Close_Circle_Icon,
+    Camera_Icon,
+    Video_Icon,
+    People_Icon,
+    Movie_Icon,
+    Image_Icon,
+    Add_Icon,
+    Refresh_Icon
+} from '@/assets/svgs';
 
 const { width } = Dimensions.get('window');
 const CARD_MARGIN = 16;
@@ -161,7 +172,7 @@ export default function DiscoverScreen() {
             <Text style={[styles.headerTitle, { color: textColor }]}>Explore Arena</Text>
         </View>
         <TouchableOpacity style={[styles.iconBtn, { backgroundColor: inputBg }]} onPress={() => handleAction(() => router.push('/explore/leaderboard'))}>
-           <Ionicons name="trophy-outline" size={22} color={primaryColor} />
+           <Trophy_Icon width={22} height={22} color={primaryColor} />
         </TouchableOpacity>
       </View>
 
@@ -170,7 +181,7 @@ export default function DiscoverScreen() {
       </View>
 
       <View style={[styles.searchBox, { backgroundColor: isDark ? '#1C1C1E' : '#FFF', borderColor: isDark ? 'transparent' : '#F0F0F0', borderWidth: 1 }]}>
-          <Ionicons name="search" size={20} color={activeTab === 'users' ? usersColor : (activeTab === 'video' ? secondaryColor : primaryColor)} style={{ marginRight: 10 }} />
+          <Search_Icon_New width={20} height={20} color={activeTab === 'users' ? usersColor : (activeTab === 'video' ? secondaryColor : primaryColor)} style={{ marginRight: 10 }} />
           <TextInput 
               style={[styles.searchInput, { color: textColor }]}
               placeholder={`Search ${activeTab === 'users' ? 'people' : activeTab + ' contests'}...`}
@@ -181,7 +192,7 @@ export default function DiscoverScreen() {
           />
           {searchQuery.length > 0 && (
               <TouchableOpacity onPress={() => setSearchQuery('')}>
-                  <Ionicons name="close-circle" size={18} color={subTextColor} />
+                  <Close_Circle_Icon width={18} height={18} color={subTextColor} />
               </TouchableOpacity>
           )}
       </View>
@@ -196,7 +207,7 @@ export default function DiscoverScreen() {
                 onPress={() => handleTabChange('photo')}
                 activeOpacity={0.8}
             >
-                <Ionicons name="camera" size={16} color={activeTab === 'photo' ? '#FFF' : subTextColor} style={{ marginRight: 6 }} />
+                <Camera_Icon width={16} height={16} color={activeTab === 'photo' ? '#FFF' : subTextColor} style={{ marginRight: 6 }} />
                 <Text style={[styles.pillText, { color: activeTab === 'photo' ? '#FFF' : subTextColor }]}>Photos</Text>
             </TouchableOpacity>
             
@@ -205,7 +216,7 @@ export default function DiscoverScreen() {
                 onPress={() => handleTabChange('video')}
                 activeOpacity={0.8}
             >
-                <Ionicons name="videocam" size={16} color={activeTab === 'video' ? '#FFF' : subTextColor} style={{ marginRight: 6 }} />
+                <Video_Icon width={16} height={16} color={activeTab === 'video' ? '#FFF' : subTextColor} style={{ marginRight: 6 }} />
                 <Text style={[styles.pillText, { color: activeTab === 'video' ? '#FFF' : subTextColor }]}>Videos</Text>
             </TouchableOpacity>
 
@@ -214,7 +225,7 @@ export default function DiscoverScreen() {
                 onPress={() => handleTabChange('users')}
                 activeOpacity={0.8}
             >
-                <Ionicons name="people" size={16} color={activeTab === 'users' ? '#FFF' : subTextColor} style={{ marginRight: 6 }} />
+                <People_Icon width={16} height={16} color={activeTab === 'users' ? '#FFF' : subTextColor} style={{ marginRight: 6 }} />
                 <Text style={[styles.pillText, { color: activeTab === 'users' ? '#FFF' : subTextColor }]}>People</Text>
             </TouchableOpacity>
         </View>
@@ -239,14 +250,18 @@ export default function DiscoverScreen() {
             start={{x: 0, y: 0}} end={{x: 1, y: 1}}
             style={styles.templateImage}
          >
-             <MaterialCommunityIcons name={(item.type || '').toLowerCase() === 'video' ? 'movie-open-star' : 'image-filter-hdr'} size={32} color="rgba(255,255,255,0.8)" />
+             {(item.type || '').toLowerCase() === 'video' ? (
+                 <Movie_Icon width={32} height={32} color="rgba(255,255,255,0.8)" />
+             ) : (
+                 <Image_Icon width={32} height={32} color="rgba(255,255,255,0.8)" />
+             )}
          </LinearGradient>
          <View style={styles.templateInfo}>
              <Text style={[styles.templateTitle, { color: textColor }]} numberOfLines={1}>{item.title}</Text>
              <Text style={[styles.templateSubtitle, { color: subTextColor }]}>Start a Match</Text>
          </View>
          <View style={styles.templateAction}>
-             <Ionicons name="add" size={20} color="#FFF" />
+             <Add_Icon width={20} height={20} color="#FFF" />
          </View>
       </TouchableOpacity>
     );
@@ -316,7 +331,7 @@ export default function DiscoverScreen() {
                 })}
              >
                  <View style={styles.joinCircle}>
-                    <Ionicons name="add" size={32} color={isDark ? '#555' : '#CCC'} />
+                    <Add_Icon width={32} height={32} color={isDark ? '#555' : '#CCC'} />
                  </View>
                  <Text style={[styles.joinText, { color: subTextColor }]}>{isMyMatch ? 'Waiting...' : 'Tap to Join'}</Text>
                  { !isMyMatch && <Text style={[styles.entryFeeText, { color: primaryColor }]}>Pay {entryFee} 🪙</Text> }
@@ -408,7 +423,7 @@ export default function DiscoverScreen() {
                             </View>
                             {filteredUsers.length === 0 ? (
                                 <View style={styles.emptyState}>
-                                    <Ionicons name="people-outline" size={48} color={subTextColor} />
+                                    <People_Icon width={48} height={48} color={subTextColor} />
                                     <Text style={{ color: subTextColor, textAlign:'center', marginTop: 10 }}>No users found for "{searchQuery}"</Text>
                                 </View>
                             ) : (
@@ -443,14 +458,14 @@ export default function DiscoverScreen() {
                                     </View>
                                 </View>
                                 <TouchableOpacity onPress={onRefresh}>
-                                    <Ionicons name="refresh" size={20} color={subTextColor} />
+                                    <Refresh_Icon width={20} height={20} color={subTextColor} />
                                 </TouchableOpacity>
                             </View>
 
                             <View style={{ paddingHorizontal: CARD_MARGIN }}>
                                 {filteredMatches.length === 0 ? (
                                     <View style={[styles.emptyState, { borderColor }]}>
-                                        <MaterialCommunityIcons name="sword-cross" size={48} color={subTextColor} style={{opacity: 0.5}} />
+                                        <People_Icon width={48} height={48} color={subTextColor} style={{opacity: 0.5}} />
                                         <Text style={[styles.emptyText, { color: subTextColor }]}>No active battles found.</Text>
                                         <TouchableOpacity onPress={() => handleAction(() => router.push('/explore/leaderboard'))}>
                                             <Text style={{color: primaryColor, fontWeight: 'bold', marginTop: 10}}>Check Leaderboard</Text>

@@ -1,8 +1,6 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
-import { onSchedule } from "firebase-functions/v2/scheduler";
 import { db, admin } from "../utils/firebase";
 import { FieldValue } from "firebase-admin/firestore";
-import { sendPushNotification } from "../notifications/sender";
 
 /**
  * Helper to get Reward Settings from DB
@@ -15,7 +13,7 @@ async function getRewardSettings() {
     referralBonus: config.referralBonus || 50,
     dailyBaseReward: config.dailyBaseReward || 10,
     dailyStreakBonus: config.dailyStreakBonus || 2,
-    maxDailyReward: config.maxDailyReward || 40, // Added CAP to prevent economy crash
+    maxDailyReward: config.maxDailyReward || 40,
     voteReward: config.voteReward || 1
   };
 }
@@ -40,7 +38,6 @@ export const claimDailyReward = onCall(async (request) => {
       const now = admin.firestore.Timestamp.now();
       const lastClaimTimestamp = data.lastDailyClaim;
 
-      // Timezone-safe check (Check if last claim was less than 20 hours ago to prevent double claim)
       if (lastClaimTimestamp) {
           const lastClaimDate = lastClaimTimestamp.toDate();
           const currentDate = now.toDate();
@@ -59,19 +56,17 @@ export const claimDailyReward = onCall(async (request) => {
           const yesterday = new Date();
           yesterday.setUTCDate(yesterday.getUTCDate() - 1);
 
-          // If last claim was exactly yesterday (UTC), increment streak
           if (lastClaimDate.getUTCFullYear() === yesterday.getUTCFullYear() &&
               lastClaimDate.getUTCMonth() === yesterday.getUTCMonth() &&
               lastClaimDate.getUTCDate() === yesterday.getUTCDate()) {
               currentStreak += 1;
           } else {
-              currentStreak = 1; // Streak broken
+              currentStreak = 1;
           }
       } else {
-          currentStreak = 1; // First time claim
+          currentStreak = 1;
       }
 
-      // Calculate Reward with CAP
       let coinReward = rewardSettings.dailyBaseReward + (currentStreak * rewardSettings.dailyStreakBonus);
       if (coinReward > rewardSettings.maxDailyReward) {
           coinReward = rewardSettings.maxDailyReward;
@@ -80,13 +75,12 @@ export const claimDailyReward = onCall(async (request) => {
       const xpReward = 50;
 
       transaction.update(userRef, {
-        Dpcoin: FieldValue.increment(coinReward), // Standardized field
+        Dpcoin: FieldValue.increment(coinReward),
         xp: FieldValue.increment(xpReward),
         streak: currentStreak,
         lastDailyClaim: now,
       });
 
-      // Record transaction
       const transRef = db.collection("coinTransactions").doc();
       transaction.set(transRef, {
         uid,
@@ -114,26 +108,45 @@ export const claimDailyReward = onCall(async (request) => {
 });
 
 /**
- * Reminds users who haven't claimed their reward today
+ * Lucky Spin Reward Handler
  */
-export const streakReminder = onSchedule("every 24 hours", async (event) => {
-  const now = new Date();
-  const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+export const luckySpin = onCall(async (request) => {
+  const { auth } = request;
+  const { amount } = request.data;
   
-  // Find users whose last claim was BEFORE today (UTC)
-  const usersToRemind = await db.collection("users")
-    .where("streak", ">", 0)
-    .where("lastDailyClaim", "<", admin.firestore.Timestamp.fromDate(startOfDay))
-    .limit(100)
-    .get();
+  if (!auth) throw new HttpsError("unauthenticated", "User must be logged in.");
+  if (amount === undefined) throw new HttpsError("invalid-argument", "Amount is required.");
 
-  for (const doc of usersToRemind.docs) {
-    const data = doc.data();
-    await sendPushNotification(
-      doc.id,
-      "Don't break your streak! 🔥",
-      `Come back and claim your daily reward to keep your ${data.streak} day streak alive!`,
-      "streak_reminder"
-    );
+  const uid = auth.uid;
+  const userRef = db.collection("users").doc(uid);
+
+  try {
+    await db.runTransaction(async (transaction) => {
+      const userDoc = await transaction.get(userRef);
+      if (!userDoc.exists) throw new HttpsError("not-found", "User not found.");
+
+      const now = admin.firestore.Timestamp.now();
+      
+      // Update User Balance
+      transaction.update(userRef, {
+        Dpcoin: FieldValue.increment(amount),
+        lastSpinAt: now
+      });
+
+      // Record transaction
+      const transRef = db.collection("coinTransactions").doc();
+      transaction.set(transRef, {
+        uid,
+        amount,
+        type: "lucky_spin",
+        timestamp: now,
+        description: `Lucky spin reward`
+      });
+    });
+
+    return { success: true, amount };
+  } catch (error: any) {
+      console.error("luckySpin Error:", error);
+      throw new HttpsError("internal", error.message);
   }
 });

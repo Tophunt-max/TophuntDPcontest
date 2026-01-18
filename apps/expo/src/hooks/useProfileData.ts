@@ -2,8 +2,6 @@ import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tansta
 import { 
   doc, 
   getDoc, 
-  setDoc,
-  serverTimestamp,
   collection, 
   getDocs, 
   query, 
@@ -15,17 +13,17 @@ import {
 import { firestore } from '../services/firebase/initFirebase'; 
 import { UserProfile, Post } from '../types/user';
 import { useAuth } from '../services/auth'; 
-import { callApi } from '../services/api'; // Naya centralized API caller
+import { callApi } from '../services/api'; 
 
 export const useProfile = (userId: string) => {
   const { user: currentUser } = useAuth(); 
 
   return useQuery({
     queryKey: ['profile', userId],
-    queryFn: async (): Promise<UserProfile> => {
+    queryFn: async (): Promise<UserProfile | null> => {
       console.log("[useProfile] Fetching for:", userId);
       
-      if (!userId) throw new Error("No User ID");
+      if (!userId) return null;
 
       const docRef = doc(firestore, 'users', userId);
       
@@ -36,32 +34,15 @@ export const useProfile = (userId: string) => {
           return { uid: docSnap.id, ...docSnap.data() } as UserProfile;
         }
 
-        if (currentUser && currentUser.uid === userId) {
-          const newProfile: Omit<UserProfile, 'createdAt' | 'updatedAt'> = {
-            uid: currentUser.uid,
-            email: currentUser.email || '',
-            username: currentUser.displayName?.replace(/\s+/g, '').toLowerCase() || `user_${userId.slice(0, 5)}`,
-            fullName: currentUser.displayName || 'New User',
-            profileImageUrl: currentUser.photoURL || '',
-            bio: 'Hi there! I am new here.',
-            isPrivate: false,
-          };
+        // REMOVED AUTO-CREATE LOGIC
+        // Hooks should not perform write operations during a read query.
+        // This was causing duplicate "New User" accounts to be created 
+        // before the migration logic could finish.
 
-          await setDoc(docRef, {
-            ...newProfile,
-            postsCount: 0,
-            followersCount: 0,
-            followingCount: 0,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          }, { merge: true });
-
-          return { ...newProfile, uid: userId } as UserProfile;
-        }
-
-        throw new Error("User profile not found");
+        console.warn(`[useProfile] No document found for UID: ${userId}`);
+        return null; 
       } catch (err: any) {
-        console.error("[useProfile] Error:", err);
+        console.error("[useProfile] Firestore Error:", err);
         throw err;
       }
     },
@@ -116,8 +97,6 @@ export const useUserBookmarks = (userId: string) => {
         if (matchIds.length === 0) return [];
 
         const matches: any[] = [];
-        // Firestore 'in' queries are limited to 10 items. For simple bookmarks we'll fetch them one by one or in batches.
-        // For now, let's fetch individual docs.
         const promises = matchIds.map(id => getDoc(doc(firestore, 'contestMatches', id)));
         const snaps = await Promise.all(promises);
         

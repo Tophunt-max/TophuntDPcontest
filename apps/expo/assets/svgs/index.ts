@@ -3,6 +3,8 @@ import Home_Light from './homeLight.svg';
 import Home_Dark from './homeDark.svg';
 import Inbox_Light from './inboxLight.svg';
 import Inbox_Dark from './inboxDark.svg';
+import Video_Light from './video_light.svg';
+import Video_Dark from './video_dark.svg';
 import Discover_Dark from './discoverDark.svg';
 import Discover_Light from './discoverLight.svg';
 import Profile_Light from './profileLight.svg';
@@ -78,6 +80,21 @@ import Viewers_Icon from './viewers_icon.svg';
 import Delete_Icon from './delete_icon.svg';
 import Wallet_Icon from './wallet_icon.svg';
 import Wallet_Color from './wallet_color.svg';
+import Close_Icon from './close_icon.svg';
+import Heart_Outline from './heart_outline.svg';
+import Trophy_Icon from './trophy_icon.svg';
+import Camera_Icon from './camera_icon.svg';
+import Video_Icon from './video_icon.svg';
+import People_Icon from './people_icon.svg';
+import Movie_Icon from './movie_icon.svg';
+import Image_Icon from './image_icon.svg';
+import Search_Icon_New from './search_icon_new.svg';
+import Refresh_Icon from './refresh_icon.svg';
+
+// Custom icons
+import Photo_Contest from './photo_contest.svg';
+import Video_Contest from './video_contest.svg';
+import Create_Story from './create_story.svg';
 
 // Settings Icons
 import Settings_User from './settings/user.svg';
@@ -113,11 +130,13 @@ import About_Bio from './about/bio.svg';
 export {
   Home_Light,
   Inbox_Light,
+  Video_Light,
   Discover_Light,
   Add_Icon,
   Profile_Light,
   Home_Dark,
   Inbox_Dark,
+  Video_Dark,
   Discover_Dark,
   Profile_Dark,
   Left_Arrow,
@@ -212,5 +231,18 @@ export {
   Viewers_Icon,
   Delete_Icon,
   Wallet_Icon,
-  Wallet_Color
+  Wallet_Color,
+  Photo_Contest,
+  Video_Contest,
+  Create_Story,
+  Close_Icon,
+  Heart_Outline,
+  Trophy_Icon,
+  Camera_Icon,
+  Video_Icon,
+  People_Icon,
+  Movie_Icon,
+  Image_Icon,
+  Search_Icon_New,
+  Refresh_Icon
 };
