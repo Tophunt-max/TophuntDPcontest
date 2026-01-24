@@ -47,10 +47,27 @@ const RESERVED_USERNAMES = new Set([
 
 const USERNAME_REGEX = /^[a-zA-Z0-9_.]+$/;
 
-// Helper to normalize phone numbers (remove spaces, dashes, parens)
+/**
+ * PRODUCTION-GRADE PHONE NORMALIZATION (E.164 Format)
+ * Ensures phone hamesha '+919876543210' format mein rahe.
+ */
 function normalizePhoneNumber(phone: string | null | undefined): string | null {
     if (!phone) return null;
-    return phone.replace(/[^\d+]/g, "").trim();
+    // 1. Remove all non-digit characters except '+'
+    let cleaned = phone.replace(/[^\d+]/g, "").trim();
+    
+    // 2. If it starts with '00', replace with '+'
+    if (cleaned.startsWith("00")) {
+        cleaned = "+" + cleaned.substring(2);
+    }
+    
+    // 3. If it doesn't start with '+', add it (Assuming country code is already there)
+    // Most Firebase Auth numbers come with '+'. If not, we fix it for DB consistency.
+    if (!cleaned.startsWith("+") && cleaned.length > 5) {
+        cleaned = "+" + cleaned;
+    }
+    
+    return cleaned;
 }
 
 // Helper to check for disposable emails
@@ -63,7 +80,7 @@ function isDisposableEmail(email: string): boolean {
 
 // Helper to validate username
 function validateUsername(username: string): string {
-    const lower = username.toLowerCase();
+    const lower = username.toLowerCase().trim();
     
     if (lower.length < 3) {
         throw new HttpsError("invalid-argument", "Username must be at least 3 characters long.");
@@ -73,7 +90,7 @@ function validateUsername(username: string): string {
         throw new HttpsError("invalid-argument", "Username must be less than 30 characters long.");
     }
 
-    if (!USERNAME_REGEX.test(username)) {
+    if (!USERNAME_REGEX.test(lower)) {
         throw new HttpsError("invalid-argument", "Username can only contain letters, numbers, underscores, and dots.");
     }
 
@@ -93,6 +110,18 @@ async function getRewardSettings() {
 }
 
 /**
+ * Helper to get User IP safely from Callable Request
+ */
+function getClientIp(request: any): string {
+    const headers = request.rawRequest?.headers;
+    const xForwardedFor = headers?.['x-forwarded-for'] as string;
+    if (xForwardedFor) {
+        return xForwardedFor.split(',')[0].trim();
+    }
+    return request.rawRequest?.socket?.remoteAddress || 'unknown';
+}
+
+/**
  * Master Auth Handler that processes all Auth and Account-related actions.
  */
 export const authHandler = onCall(AUTH_CONFIG, async (request) => {
@@ -102,6 +131,7 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
 
     const { action } = request.data;
     const uid = request.auth?.uid;
+    const clientIp = getClientIp(request);
 
     switch (action) {
         case "check": {
@@ -124,24 +154,42 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
             }
 
             let exists = false;
+            let existingUid = null;
+
             if (type === "email") {
                 try {
-                    await admin.auth().getUserByEmail(value);
+                    const userRecord = await admin.auth().getUserByEmail(value);
                     exists = true;
+                    existingUid = userRecord.uid;
                 } catch (error: any) {
                     if (error.code !== 'auth/user-not-found') throw error;
+                }
+            } else if (type === "phone") {
+                try {
+                    const userRecord = await admin.auth().getUserByPhoneNumber(value!);
+                    exists = true;
+                    existingUid = userRecord.uid;
+                } catch (error: any) {
+                    if (error.code !== 'auth/user-not-found') throw error;
+                }
+            } else if (type === "username") {
+                const usernameDoc = await db.collection("usernames").doc(value).get();
+                if (usernameDoc.exists) {
+                    exists = true;
+                    existingUid = usernameDoc.data()?.uid;
                 }
             }
 
             if (!exists) {
                 const snapshot = await db.collection("users").where(type, "==", value).limit(1).get();
                 exists = !snapshot.empty;
+                if (exists) existingUid = snapshot.docs[0].id;
             }
-            return { exists };
+            return { exists, uid: existingUid };
         }
 
         case "create": {
-            const { email, password, username, fullName, avatarUrl, dob, phone, occupation, gender, following, platform, coordinates } = request.data;
+            const { email, password, username, fullName, avatarUrl, dob, phone, occupation, gender, following, platform, coordinates, deviceInfo } = request.data;
             if (!email || !password || !username) throw new HttpsError("invalid-argument", "Email, password, and username are required.");
             if (isDisposableEmail(email)) throw new HttpsError("invalid-argument", "Disposable email blocked.");
 
@@ -150,7 +198,7 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
 
             try {
                 userRecord = await admin.auth().createUser({
-                    email,
+                    email: email.toLowerCase(),
                     password,
                     displayName: validatedUsername,
                     photoURL: avatarUrl || null,
@@ -164,11 +212,15 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
 
             try {
                 const rewardSettings = await getRewardSettings();
-                await createFirestoreProfile(newUid, { email, username: validatedUsername, fullName, avatarUrl, dob, phone, occupation, gender, following, platform, coordinates }, rewardSettings.signupBonus || 0);
+                await createFirestoreProfile(newUid, { 
+                    email, username: validatedUsername, fullName, avatarUrl, dob, phone, occupation, gender, following, platform, coordinates, deviceInfo,
+                    signupIp: clientIp,
+                    lastIp: clientIp
+                }, rewardSettings.signupBonus || 0);
                 return { status: "success", uid: newUid, message: "User created successfully" };
-            } catch (error) {
+            } catch (error: any) {
                 await admin.auth().deleteUser(newUid).catch(() => {});
-                throw new HttpsError("internal", "Firestore profile creation failed.");
+                throw new HttpsError("internal", error.message || "Firestore profile creation failed.");
             }
         }
 
@@ -179,7 +231,7 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
             if (email && isDisposableEmail(email)) throw new HttpsError("invalid-argument", "Disposable email blocked.");
             
             const rewardSettings = await getRewardSettings();
-            await createFirestoreProfile(profileUid, { ...request.data, avatarUrl }, rewardSettings.signupBonus || 0);
+            await createFirestoreProfile(profileUid, { ...request.data, avatarUrl, lastIp: clientIp }, rewardSettings.signupBonus || 0);
             return { status: "success", uid: profileUid, message: "Profile created successfully" };
         }
 
@@ -187,14 +239,14 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
             const { identifier, type } = request.data;
             if (!identifier || !type) throw new HttpsError("invalid-argument", "Identifier and type are required.");
 
-            let queryField = type === 'email' ? 'email' : 'phone';
-            let value = identifier;
+            let queryField = type; 
+            let value = identifier.trim();
 
             if (type === 'phone') {
                 value = normalizePhoneNumber(identifier);
                 if (!value) throw new HttpsError("invalid-argument", "Invalid phone format.");
-            } else {
-                value = identifier.toLowerCase();
+            } else if (type === 'email' || type === 'username') {
+                value = value.toLowerCase();
             }
 
             const snapshot = await db.collection("users").where(queryField, "==", value).limit(1).get();
@@ -221,7 +273,7 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
             const otp = Math.floor(100000 + Math.random() * 900000).toString();
             const expiresAt = admin.firestore.Timestamp.fromMillis(Date.now() + 10 * 60 * 1000);
 
-            await db.collection("passwordResetOtps").doc(normalizedPhone).set({
+            await db.collection("passwordResetOtps").doc(normalizedPhone!).set({
                 otp,
                 expiresAt,
                 createdAt: admin.firestore.FieldValue.serverTimestamp()
@@ -379,45 +431,65 @@ export const authHandler = onCall(AUTH_CONFIG, async (request) => {
 
 async function createFirestoreProfile(uid: string, data: any, signupBonus: number = 0) {
   const userRef = db.collection("users").doc(uid);
+  const username = data.username ? data.username.toLowerCase().trim() : null;
   const normalizedPhone = normalizePhoneNumber(data.phone);
 
-  const profileData = {
-    uid,
-    email: data.email || null,
-    username: data.username ? data.username.toLowerCase() : null,
-    fullName: data.fullName || null,
-    profileImageUrl: data.avatarUrl || null,
-    dob: data.dob || null,
-    phone: normalizedPhone,
-    occupation: data.occupation || null,
-    gender: data.gender || null,
-    following: data.following || [],
-    platform: data.platform || "unknown",
-    coordinates: data.coordinates || null,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    signupCompleted: true,
-    Dpcoin: signupBonus,
-    xp: 0,
-    level: 1, 
-    stats: {
-       followersCount: 0, 
-       followingCount: 0, 
-       wins: 0,
-       totalVotesReceived: 0,
-       contestsJoined: 0,
+  // Use a transaction to ensure username uniqueness (Atomic Write)
+  return db.runTransaction(async (transaction) => {
+    if (username) {
+      const usernameRef = db.collection("usernames").doc(username);
+      const usernameDoc = await transaction.get(usernameRef);
+      if (usernameDoc.exists && usernameDoc.data()?.uid !== uid) {
+          throw new Error("This username is already taken by another user.");
+      }
+      transaction.set(usernameRef, { uid, createdAt: admin.firestore.FieldValue.serverTimestamp() });
     }
-  };
 
-  await userRef.set(profileData, { merge: true });
+    const existingDoc = await transaction.get(userRef);
+    const existingData = existingDoc.exists ? existingDoc.data() : null;
 
-  if (signupBonus > 0) {
-    await db.collection("coinTransactions").add({
-        uid,
-        amount: signupBonus,
-        type: "signup_bonus",
-        timestamp: admin.firestore.FieldValue.serverTimestamp(),
-        description: "Welcome bonus for joining TopHunt!"
-    });
-  }
+    const profileData = {
+      uid,
+      email: data.email ? data.email.toLowerCase() : (existingData?.email || null),
+      username: username || (existingData?.username || null),
+      fullName: data.fullName || existingData?.fullName || null,
+      profileImageUrl: data.avatarUrl || existingData?.profileImageUrl || null,
+      dob: data.dob || existingData?.dob || null,
+      phone: normalizedPhone || existingData?.phone || null,
+      occupation: data.occupation || existingData?.occupation || null,
+      gender: data.gender || existingData?.gender || null,
+      following: data.following || existingData?.following || [],
+      platform: data.platform || existingData?.platform || "unknown",
+      coordinates: data.coordinates || existingData?.coordinates || null,
+      deviceInfo: data.deviceInfo || existingData?.deviceInfo || null,
+      signupIp: data.signupIp || existingData?.signupIp || null,
+      lastIp: data.lastIp || existingData?.lastIp || null,
+      createdAt: existingData?.createdAt || admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      signupCompleted: true,
+      Dpcoin: existingData?.Dpcoin ?? signupBonus,
+      xp: existingData?.xp ?? 0,
+      level: existingData?.level ?? 1, 
+      stats: existingData?.stats || {
+         followersCount: 0, 
+         followingCount: 0, 
+         wins: 0,
+         totalVotesReceived: 0,
+         contestsJoined: 0,
+      }
+    };
+
+    transaction.set(userRef, profileData, { merge: true });
+
+    if (signupBonus > 0 && !existingData) {
+      const transactionRef = db.collection("coinTransactions").doc();
+      transaction.set(transactionRef, {
+          uid,
+          amount: signupBonus,
+          type: "signup_bonus",
+          timestamp: admin.firestore.FieldValue.serverTimestamp(),
+          description: "Welcome bonus for joining TopHunt!"
+      });
+    }
+  });
 }

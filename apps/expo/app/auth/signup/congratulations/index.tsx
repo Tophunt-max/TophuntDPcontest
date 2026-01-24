@@ -14,9 +14,11 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Success } from "@/assets/svgs";
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSignupStore } from "@/src/store/signup";
-import { auth } from "@/src/services/firebase/initFirebase";
-import { callApi } from "@/src/services/api"; // Consolidated API used
+import { auth, firestore as db } from "@/src/services/firebase/initFirebase";
+import { callApi } from "@/src/services/api"; 
 import { signInWithEmailAndPassword } from "firebase/auth";
+import { uploadAvatar } from "@/src/services/r2/uploadAvatar";
+import { doc, updateDoc } from "firebase/firestore";
 
 const { width } = Dimensions.get('window');
 
@@ -31,22 +33,25 @@ export default function CongratulationsScreen() {
     const finalizeSignup = async () => {
       try {
         console.log("Finalizing signup for provider:", signupData.authProvider);
+        let finalUid = "";
 
+        // 1. CREATE USER ACCOUNT / SAVE PROFILE
         if (signupData.authProvider === 'email') {
             if (!signupData.email || !signupData.password || !signupData.username) {
                 throw new Error("Missing user data. Please restart the signup process.");
             }
             
             setStatusMessage("Creating your account securely...");
-            // Using Consolidated API for Account Creation
             const result: any = await callApi('create', { 
                 ...signupData,
+                avatarUrl: null,
                 platform: Platform.OS,
             });
 
             if (result.status !== 'success') {
                 throw new Error(result.message || "An unknown error occurred on the server.");
             }
+            finalUid = result.uid;
 
             setStatusMessage("Signing you in...");
             await signInWithEmailAndPassword(auth, signupData.email, signupData.password);
@@ -54,16 +59,14 @@ export default function CongratulationsScreen() {
             if (!signupData.username) {
                 throw new Error("Username is required to complete your profile.");
             }
-
             setStatusMessage("Saving your profile details...");
-            // FIX: Use the UID from store if we found an existing one during search, otherwise use current session UID
             const targetUid = signupData.uid || auth.currentUser?.uid;
+            
+            if (!targetUid) throw new Error("Authentication failed. Please login again.");
 
-            console.log("Targeting UID for profile creation/update:", targetUid);
-
-            // Using Consolidated API for Profile Creation
             const result: any = await callApi('createProfile', { 
                 ...signupData,
+                avatarUrl: null,
                 platform: Platform.OS,
                 uid: targetUid
             });
@@ -71,11 +74,42 @@ export default function CongratulationsScreen() {
             if (result.status !== 'success') {
                 throw new Error(result.message || "Failed to save profile.");
             }
+            finalUid = targetUid;
         }
+
+        // 2. UPLOAD AVATAR
+        if (signupData.avatarUrl && signupData.avatarUrl.startsWith('file://')) {
+            try {
+                setStatusMessage("Optimizing and uploading profile picture...");
+                const derivatives = await uploadAvatar(signupData.avatarUrl);
+                
+                setStatusMessage("Finalizing profile...");
+                await callApi('createProfile', {
+                    uid: finalUid,
+                    avatarUrl: derivatives.medium,
+                    photoDerivatives: derivatives
+                });
+            } catch (uploadError) {
+                console.warn("Avatar upload failed:", uploadError);
+            }
+        }
+
+        // 3. CRITICAL FIX: Explicitly mark signup as completed in Firestore
+        // This ensures the RootLayout guard sees the user as 'complete'
+        setStatusMessage("Completing setup...");
+        const userRef = doc(db, "users", finalUid);
+        await updateDoc(userRef, {
+            signupCompleted: true,
+            lastLogin: new Date().toISOString()
+        });
 
         console.log("Signup finalized successfully.");
         await AsyncStorage.setItem('hasSeenOnboarding', 'true');
-        resetStore();
+        
+        // Give Firestore a moment to sync before we let the user click "Go Home"
+        setTimeout(() => {
+            setIsLoading(false);
+        }, 1500);
 
       } catch (error: any) {
         console.error("Failed to finalize signup", error);
@@ -87,7 +121,6 @@ export default function CongratulationsScreen() {
                 { text: "Retry", onPress: () => finalizeSignup() }
             ]
         );
-      } finally {
         setIsLoading(false);
       }
     };
@@ -96,6 +129,7 @@ export default function CongratulationsScreen() {
   }, []);
 
   const handleGoHome = () => {
+    resetStore();
     router.replace("/home");
   };
 

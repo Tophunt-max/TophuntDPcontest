@@ -3,6 +3,7 @@ import { View, StyleSheet, Text, TouchableOpacity, useColorScheme, Dimensions } 
 import { useRouter } from 'expo-router';
 import { Colors } from '@/constants/theme';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 
 const { width } = Dimensions.get('window');
 
@@ -11,135 +12,100 @@ export default function FeaturedGrid() {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
 
-  const cardBg = isDark ? '#1F222A' : '#F5F5F5';
-  const textColor = isDark ? '#FFF' : '#212121';
+  const textColor = '#FFF';
 
   return (
     <View style={styles.container}>
-      {/* Big Card - Contest */}
+      {/* Featured Card - Leaderboard (Redesigned as the main focus) */}
       <TouchableOpacity 
-        style={[styles.bigCard, { backgroundColor: '#FF4D67' }]}
+        style={styles.featuredCard}
         activeOpacity={0.8}
-        onPress={() => router.push('/contests' as any)}
+        onPress={() => router.push('/explore/leaderboard')}
       >
-        <View style={styles.textWrapper}>
-            <Text style={styles.bigTitle}>Mega Contest</Text>
-            <Text style={styles.subTitle}>Win 10,000 Coins!</Text>
-            <View style={styles.btn}>
-                <Text style={styles.btnText}>Join Now</Text>
+        <LinearGradient
+            colors={['#FF4D67', '#FF8A9B']}
+            start={{x: 0, y: 0}}
+            end={{x: 1, y: 0}}
+            style={styles.gradient}
+        >
+            <View style={styles.contentWrapper}>
+                <View style={styles.textContainer}>
+                    <Text style={styles.featuredTitle}>Arena Leaderboard</Text>
+                    <Text style={styles.featuredSub}>Check out the top Hunters and current rankings</Text>
+                </View>
+                <View style={styles.actionButton}>
+                    <Text style={styles.btnText}>View Rankings</Text>
+                    <Ionicons name="arrow-forward" size={16} color="#FF4D67" />
+                </View>
             </View>
-        </View>
-        <Ionicons name="trophy" size={60} color="rgba(255,255,255,0.3)" style={styles.iconBig} />
+            <Ionicons name="podium" size={80} color="rgba(255,255,255,0.2)" style={styles.bgIcon} />
+        </LinearGradient>
       </TouchableOpacity>
-
-      <View style={styles.rightCol}>
-        {/* Top Small Card - Leaderboard */}
-        <TouchableOpacity 
-            style={[styles.smallCard, { backgroundColor: '#4CAF50' }]}
-            activeOpacity={0.8}
-            onPress={() => router.push('/explore/leaderboard')}
-        >
-             <View>
-                <Text style={styles.smallTitle}>Leaderboard</Text>
-                <Text style={styles.smallSub}>Top Hunters</Text>
-             </View>
-             <Ionicons name="podium" size={32} color="rgba(255,255,255,0.3)" style={styles.iconSmall} />
-        </TouchableOpacity>
-
-        {/* Bottom Small Card - Rewards */}
-        <TouchableOpacity 
-            style={[styles.smallCard, { backgroundColor: '#FFB300' }]}
-            activeOpacity={0.8}
-            onPress={() => router.push('/wallet/store' as any)}
-        >
-             <View>
-                <Text style={styles.smallTitle}>Rewards</Text>
-                <Text style={styles.smallSub}>Claim Daily</Text>
-             </View>
-             <Ionicons name="gift" size={32} color="rgba(255,255,255,0.3)" style={styles.iconSmall} />
-        </TouchableOpacity>
-      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    flexDirection: 'row',
     paddingHorizontal: 16,
-    gap: 12,
     marginBottom: 20,
     marginTop: 10,
-    height: 150,
   },
-  bigCard: {
-    flex: 1.4,
-    borderRadius: 16,
-    padding: 16,
-    justifyContent: 'space-between',
+  featuredCard: {
+    height: 120,
+    borderRadius: 24,
     overflow: 'hidden',
-    position: 'relative',
+    shadowColor: "#FF4D67",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 5,
   },
-  rightCol: {
+  gradient: {
     flex: 1,
-    flexDirection: 'column',
-    gap: 10,
+    padding: 20,
+    justifyContent: 'center',
   },
-  smallCard: {
-    flex: 1,
-    borderRadius: 16,
-    padding: 12,
+  contentWrapper: {
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
-    overflow: 'hidden',
-    position: 'relative',
-  },
-  textWrapper: {
+    alignItems: 'center',
     zIndex: 2,
   },
-  bigTitle: {
+  textContainer: {
+    flex: 1,
+    marginRight: 10,
+  },
+  featuredTitle: {
     color: '#FFF',
     fontFamily: 'Urbanist-Bold',
-    fontSize: 20,
-    lineHeight: 24,
+    fontSize: 22,
+    marginBottom: 4,
   },
-  subTitle: {
-    color: 'rgba(255,255,255,0.9)',
+  featuredSub: {
+    color: 'rgba(255,255,255,0.85)',
     fontFamily: 'Urbanist-Medium',
-    fontSize: 12,
-    marginBottom: 10,
+    fontSize: 13,
+    lineHeight: 18,
   },
-  btn: {
+  actionButton: {
     backgroundColor: '#FFF',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 100,
-    alignSelf: 'flex-start',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
   btnText: {
     color: '#FF4D67',
     fontFamily: 'Urbanist-Bold',
-    fontSize: 12,
-  },
-  smallTitle: {
-    color: '#FFF',
-    fontFamily: 'Urbanist-Bold',
     fontSize: 14,
   },
-  smallSub: {
-    color: 'rgba(255,255,255,0.9)',
-    fontFamily: 'Urbanist-Regular',
-    fontSize: 10,
-  },
-  iconBig: {
+  bgIcon: {
     position: 'absolute',
     right: -10,
-    bottom: -10,
-  },
-  iconSmall: {
-    position: 'absolute',
-    right: -5,
-    bottom: -5,
+    bottom: -20,
+    zIndex: 1,
   }
 });

@@ -23,7 +23,7 @@ import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
 import { auth, firestore as db } from "../../../../src/services/firebase/initFirebase";
 import { PhoneAuthProvider, signInWithCredential } from "firebase/auth";
 import { firebaseConfig } from "@/src/firebaseConfig";
-import { doc, getDoc, collection, query, where, getDocs, setDoc, serverTimestamp } from "firebase/firestore";
+import { doc, getDoc, collection, query, where, getDocs, limit } from "firebase/firestore";
 import { useSignupStore } from "../../../../src/store/signup";
 import { CountryPicker } from "react-native-country-codes-picker";
 import { Ionicons } from "@expo/vector-icons";
@@ -87,61 +87,36 @@ export default function PhoneLoginScreen() {
       const userCredential = await signInWithCredential(auth, credential);
       const user = userCredential.user;
 
-      // 1. Normalize Phone Number for searching (EXTREME FLEXIBILITY)
-      const fullPhone = user.phoneNumber || (countryCode + phoneNumber);
-      const cleanedPhone = fullPhone.replace(/[^\d+]/g, ''); 
-      const last10Digits = cleanedPhone.slice(-10);
+      // 1. Check if profile exists with this UID
+      const userDocRef = doc(db, "users", user.uid);
+      const userDocSnap = await getDoc(userDocRef);
       
-      // Variations: [+91987..., 91987..., 987...]
-      const searchVariations = [cleanedPhone, last10Digits];
-      if (cleanedPhone.startsWith('+')) {
-          searchVariations.push(cleanedPhone.substring(1));
-      }
-      
-      console.log("[Auth] Searching for profile with variations:", searchVariations);
+      let userData = userDocSnap.exists() ? userDocSnap.data() : null;
 
-      let existingData: any = null;
-      let existingDocId: string | null = null;
-
-      // 2. SEARCH LOGIC: Check by phone variations (Fixes Duplicate Account Bug)
-      const usersRef = collection(db, "users");
-      const q = query(usersRef, where("phone", "in", searchVariations));
-      const querySnapshot = await getDocs(q);
-
-      if (!querySnapshot.empty) {
-        existingData = querySnapshot.docs[0].data();
-        existingDocId = querySnapshot.docs[0].id;
-        console.log("[Auth] Found existing user ID:", existingDocId);
+      // 2. Fallback: Check if this phone number exists in any other user document
+      if (!userData) {
+          const cleanedPhone = (user.phoneNumber || (countryCode + phoneNumber)).replace(/[^\d+]/g, '');
+          const q = query(collection(db, "users"), where("phone", "==", cleanedPhone), limit(1));
+          const querySnapshot = await getDocs(q);
+          
+          if (!querySnapshot.empty) {
+              userData = querySnapshot.docs[0].data();
+          }
       }
 
       // 3. DECISION LOGIC
-      if (existingData && (existingData.signupCompleted === true || existingData.username)) {
-        
-        // --- DATA MIGRATION CHECK ---
-        if (existingDocId !== user.uid) {
-            console.log("[Migration] Copying data to new session UID:", user.uid);
-            const newDocRef = doc(db, "users", user.uid);
-            await setDoc(newDocRef, {
-                ...existingData,
-                uid: user.uid,
-                updatedAt: serverTimestamp(),
-                signupCompleted: true,
-                migratedFrom: existingDocId
-            }, { merge: true });
-        }
-
+      if (userData && userData.signupCompleted) {
         addToast("Welcome back!", "success");
         router.replace("/home");
-
       } else {
-        // NEW USER OR INCOMPLETE PROFILE
-        console.log("[Auth] No complete profile. Redirecting to Fill Profile.");
+        // Truly NEW USER or incomplete profile
         reset(); 
         setMultiple({
             uid: user.uid,
-            phone: cleanedPhone,
+            phone: user.phoneNumber || (countryCode + phoneNumber),
             authProvider: 'phone',
-            ...(existingData || {}) 
+            fullName: userData?.fullName || "",
+            email: userData?.email || "",
         });
         addToast("OTP Verified! Please complete your profile.", "success");
         router.replace("/auth/signup/fill-profile");
@@ -165,15 +140,6 @@ export default function PhoneLoginScreen() {
         }
     }
   };
-
-  const inputContainerStyle = [
-    styles.inputContainer,
-    {
-      backgroundColor: isFocused ? (isDark ? '#262933' : '#FFEBEE') : (isDark ? '#1F222A' : '#FAFAFA'),
-      borderColor: isFocused ? '#FF4D67' : (isDark ? '#35383F' : '#eee'),
-      borderWidth: 1,
-    }
-  ];
 
   return (
     <KeyboardAvoidingView

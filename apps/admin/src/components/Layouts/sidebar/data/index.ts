@@ -18,9 +18,12 @@ export const NAV_DATA = [
       },
       {
         title: "Contests",
-        url: "/contests",
         icon: Icons.Calendar,
-        items: [],
+        items: [
+          { title: "Manage Contests", url: "/contests" },
+          { title: "Vote Monitoring", url: "/contests/monitoring" },
+          { title: "Prize Claims", url: "/contests/prizes" },
+        ],
       },
       {
         title: "App Content",

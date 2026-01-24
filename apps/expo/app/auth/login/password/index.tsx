@@ -17,7 +17,7 @@ import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { signInWithEmailAndPassword } from "firebase/auth";
+import { signInWithEmailAndPassword, linkWithCredential } from "firebase/auth";
 import { auth, firestore as db } from "../../../../src/services/firebase/initFirebase";
 import {
   Left_Arrow,
@@ -69,7 +69,7 @@ export default function PasswordLoginScreen() {
   } = useForm<LoginFormData>({
     resolver: zodResolver(loginSchema),
     defaultValues: {
-      email: "",
+      email: (params.email as string) || "",
       password: "",
     },
   });
@@ -77,17 +77,21 @@ export default function PasswordLoginScreen() {
   useEffect(() => {
     const loadRememberedUser = async () => {
       try {
-        const savedEmail = await AsyncStorage.getItem("remembered_email");
-        if (savedEmail) {
-          setValue("email", savedEmail);
-          setRememberMe(true);
+        if (params.email) {
+          setValue("email", params.email as string);
+        } else {
+          const savedEmail = await AsyncStorage.getItem("remembered_email");
+          if (savedEmail) {
+            setValue("email", savedEmail);
+            setRememberMe(true);
+          }
         }
       } catch (error) {
         console.log("Error loading remembered user:", error);
       }
     };
     loadRememberedUser();
-  }, [setValue]);
+  }, [setValue, params.email]);
 
   const onSignIn = async (data: LoginFormData) => {
     setIsLoading(true);
@@ -95,6 +99,22 @@ export default function PasswordLoginScreen() {
       // 1. Firebase Sign In
       const userCredential = await signInWithEmailAndPassword(auth, data.email, data.password);
       const user = userCredential.user;
+
+      // --- PRODUCTION: Account Linking Logic ---
+      const pendingCred = SocialAuthService.getPendingCredential();
+      if (pendingCred) {
+        try {
+          await linkWithCredential(user, pendingCred);
+          addToast("Account linked successfully!", "success");
+          SocialAuthService.clearPendingCredential();
+        } catch (linkError: any) {
+          console.error("Linking error:", linkError);
+          // Don't block login if linking fails, but inform user
+          if (linkError.code === 'auth/credential-already-in-use') {
+            addToast("This social account is already linked to another user.", "error");
+          }
+        }
+      }
 
       // 2. Handle "Remember Me"
       if (rememberMe) {
@@ -112,7 +132,7 @@ export default function PasswordLoginScreen() {
           userData = userDocSnap.data();
       } else {
           // Check by email field (just in case)
-          const q = query(collection(db, "users"), where("email", "==", data.email), limit(1));
+          const q = query(collection(db, "users"), where("email", "==", data.email.toLowerCase()), limit(1));
           const querySnapshot = await getDocs(q);
           if (!querySnapshot.empty) {
               userData = querySnapshot.docs[0].data();
@@ -131,6 +151,7 @@ export default function PasswordLoginScreen() {
           signupStore.reset();
           signupStore.setMultiple({
               ...userData,
+              uid: user.uid,
               email: data.email,
               authProvider: 'email'
           });

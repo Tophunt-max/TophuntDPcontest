@@ -43,145 +43,154 @@ const SCHEDULED_CONFIG = {
     memory: "256MiB",
 };
 /**
- * Scheduled function to check for ended contest matches and distribute rewards.
+ * PRODUCTION-GRADE CONTEST FINALIZER
+ * Checks for ended contest matches, determines winners, distributes rewards and updates user stats.
  */
-exports.finalizeContests = (0, scheduler_1.onSchedule)(Object.assign(Object.assign({}, SCHEDULED_CONFIG), { schedule: "every 30 minutes" // Checked more frequently
+exports.finalizeContests = (0, scheduler_1.onSchedule)(Object.assign(Object.assign({}, SCHEDULED_CONFIG), { schedule: "every 15 minutes" // Updated to 15m for faster resolution
  }), async (event) => {
     const db = admin.firestore();
     const now = admin.firestore.Timestamp.now();
     try {
-        // 1. REFUND STALLED MATCHES (Waiting for opponent for too long)
+        // 0. EXPIRE CONTEST TEMPLATES
+        const expiredTemplatesSnap = await db.collection("contests")
+            .where("status", "==", "live")
+            .where("expiresAt", "<=", now)
+            .limit(20)
+            .get();
+        for (const templateDoc of expiredTemplatesSnap.docs) {
+            await templateDoc.ref.update({ status: "expired", updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+            console.log(`Contest Template ${templateDoc.id} expired.`);
+        }
+        // 1. REFUND STALLED MATCHES (Waiting for too long)
         const stalledMatchesSnap = await db.collection("contestMatches")
             .where("status", "==", "waiting_for_opponent")
             .where("expiresAt", "<=", now)
             .limit(20)
             .get();
         for (const stalledDoc of stalledMatchesSnap.docs) {
-            const data = stalledDoc.data();
-            // Use a precise refund amount based on what was likely charged (ceiling of half)
-            const totalEntryFee = Number(data.entryFee || 0);
-            const refundAmount = Math.ceil(totalEntryFee / 2);
-            const uid = data.userA.uid;
-            const batch = db.batch();
-            batch.update(db.collection("users").doc(uid), {
-                Dpcoin: admin.firestore.FieldValue.increment(refundAmount)
-            });
-            batch.update(db.collection("contestMatches").doc(stalledDoc.id), { status: "cancelled" });
-            // Record refund transaction
-            const transRef = db.collection("coinTransactions").doc();
-            batch.set(transRef, {
-                uid, amount: refundAmount, type: "contest_refund", matchId: stalledDoc.id,
-                description: "Refund: No opponent found.", timestamp: admin.firestore.FieldValue.serverTimestamp()
-            });
-            await batch.commit();
-            await (0, utils_1.createNotification)(uid, {
-                title: "Match Cancelled",
-                body: "No opponent found. Your Dpcoins have been refunded.",
-                type: "contest",
-                targetId: stalledDoc.id
-            });
+            try {
+                const data = stalledDoc.data();
+                const refundAmount = Math.ceil(Number(data.entryFee || 0) / 2);
+                const uid = data.userA.uid;
+                await db.runTransaction(async (transaction) => {
+                    const userRef = db.collection("users").doc(uid);
+                    transaction.update(userRef, {
+                        Dpcoin: admin.firestore.FieldValue.increment(refundAmount)
+                    });
+                    transaction.update(stalledDoc.ref, { status: "cancelled", updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+                    const transRef = db.collection("coinTransactions").doc();
+                    transaction.set(transRef, {
+                        uid, amount: refundAmount, type: "contest_refund", matchId: stalledDoc.id,
+                        description: "Refund: No opponent found.", timestamp: admin.firestore.FieldValue.serverTimestamp()
+                    });
+                });
+                await (0, utils_1.createNotification)(uid, {
+                    title: "Match Cancelled",
+                    body: "No opponent found. Your Dpcoins have been refunded.",
+                    type: "contest",
+                    targetId: stalledDoc.id
+                });
+            }
+            catch (e) {
+                console.error(`Error refunding stalled match ${stalledDoc.id}:`, e);
+            }
         }
-        // 2. FINALIZE ACTIVE MATCHES
+        // 2. FINALIZE ACTIVE MATCHES (Battle Ended)
+        // IMPORTANT: We now check 'endDate' instead of 'expiresAt' for active matches
         const expiredMatchesSnap = await db.collection("contestMatches")
             .where("status", "==", "active")
-            .where("expiresAt", "<=", now)
+            .where("endDate", "<=", now)
             .limit(30)
             .get();
         for (const matchDoc of expiredMatchesSnap.docs) {
-            const matchData = matchDoc.data();
-            const contestId = matchData.contestId;
-            const contestDoc = await db.collection("contests").doc(contestId).get();
-            if (!contestDoc.exists) {
-                // If contest template deleted, just end the match to stop the loop
-                await db.collection("contestMatches").doc(matchDoc.id).update({ status: "ended", winnerId: "none" });
-                continue;
-            }
-            const contestData = contestDoc.data();
-            let winnerId = null;
-            let loserId = null;
-            const votesA = matchData.userA.votes || 0;
-            const votesB = matchData.userB.votes || 0;
-            const minVotes = contestData.minVotes || 0;
-            // Determine Winner
-            if (votesA > votesB && votesA >= minVotes) {
-                winnerId = matchData.userA.uid;
-                loserId = matchData.userB.uid;
-            }
-            else if (votesB > votesA && votesB >= minVotes) {
-                winnerId = matchData.userB.uid;
-                loserId = matchData.userA.uid;
-            }
-            const batch = db.batch();
-            const matchRef = db.collection("contestMatches").doc(matchDoc.id);
-            if (winnerId) {
-                // --- CASE 1: WE HAVE A WINNER ---
-                const totalPrize = Number(contestData.rewardCoins || contestData.winningCoins || 0);
-                batch.update(matchRef, { status: "ended", winnerId: winnerId });
-                // Update Winner
-                batch.update(db.collection("users").doc(winnerId), {
-                    Dpcoin: admin.firestore.FieldValue.increment(totalPrize),
-                    "stats.wins": admin.firestore.FieldValue.increment(1),
-                    xp: admin.firestore.FieldValue.increment(500) // XP inside batch
-                });
-                // Update Loser (XP only)
-                if (loserId) {
-                    batch.update(db.collection("users").doc(loserId), {
-                        xp: admin.firestore.FieldValue.increment(100)
-                    });
+            try {
+                const matchData = matchDoc.data();
+                const contestId = matchData.contestId;
+                const contestDoc = await db.collection("contests").doc(contestId).get();
+                if (!contestDoc.exists) {
+                    await matchDoc.ref.update({ status: "ended", winnerId: "none", updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+                    continue;
                 }
-                const transRef = db.collection("coinTransactions").doc();
-                batch.set(transRef, {
-                    uid: winnerId, amount: totalPrize, type: "win_reward",
-                    contestId, matchId: matchDoc.id,
-                    description: `Winner reward for ${contestData.title || 'Contest'}`,
-                    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                const contestData = contestDoc.data();
+                const votesA = matchData.userA.votes || 0;
+                const votesB = matchData.userB.votes || 0;
+                const minVotes = contestData.minVotes || 0;
+                let winnerId = null;
+                let loserId = null;
+                if (votesA > votesB && votesA >= minVotes) {
+                    winnerId = matchData.userA.uid;
+                    loserId = matchData.userB.uid;
+                }
+                else if (votesB > votesA && votesB >= minVotes) {
+                    winnerId = matchData.userB.uid;
+                    loserId = matchData.userA.uid;
+                }
+                await db.runTransaction(async (transaction) => {
+                    const userARef = db.collection("users").doc(matchData.userA.uid);
+                    const userBRef = db.collection("users").doc(matchData.userB.uid);
+                    // Update Stats for both (Always update total votes received)
+                    transaction.update(userARef, { "stats.totalVotesReceived": admin.firestore.FieldValue.increment(votesA) });
+                    transaction.update(userBRef, { "stats.totalVotesReceived": admin.firestore.FieldValue.increment(votesB) });
+                    if (winnerId) {
+                        const totalPrize = Number(contestData.rewardCoins || contestData.winningCoins || 0);
+                        const winnerRef = db.collection("users").doc(winnerId);
+                        const loserRef = db.collection("users").doc(loserId);
+                        transaction.update(matchDoc.ref, { status: "ended", winnerId: winnerId, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+                        transaction.update(winnerRef, {
+                            Dpcoin: admin.firestore.FieldValue.increment(totalPrize),
+                            "stats.wins": admin.firestore.FieldValue.increment(1),
+                            xp: admin.firestore.FieldValue.increment(500)
+                        });
+                        transaction.update(loserRef, { xp: admin.firestore.FieldValue.increment(100) });
+                        const transRef = db.collection("coinTransactions").doc();
+                        transaction.set(transRef, {
+                            uid: winnerId, amount: totalPrize, type: "win_reward",
+                            contestId, matchId: matchDoc.id,
+                            description: `Winner reward for ${contestData.title || 'Contest'}`,
+                            timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                        });
+                    }
+                    else {
+                        // DRAW OR MIN VOTES NOT MET
+                        const refundAmount = Math.ceil(Number(matchData.entryFee || 0) / 2);
+                        transaction.update(matchDoc.ref, { status: "ended", winnerId: "draw", updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+                        if (refundAmount > 0) {
+                            transaction.update(userARef, { Dpcoin: admin.firestore.FieldValue.increment(refundAmount) });
+                            transaction.update(userBRef, { Dpcoin: admin.firestore.FieldValue.increment(refundAmount) });
+                        }
+                    }
                 });
-                await batch.commit();
-                // Notifications
-                await (0, utils_1.createNotification)(winnerId, {
-                    title: "CONGRATULATIONS! 🎉",
-                    body: `You won the battle and earned ${totalPrize} Dpcoins!`,
-                    type: "contest", targetId: matchDoc.id,
-                    image: matchData.userA.uid === winnerId ? matchData.userA.mediaUrl : matchData.userB.mediaUrl
-                });
-                if (loserId) {
-                    await (0, utils_1.createNotification)(loserId, {
-                        title: "Battle Ended 🏁",
-                        body: `The results are in. Better luck next time!`,
+                // Notifications after successful transaction
+                if (winnerId) {
+                    await (0, utils_1.createNotification)(winnerId, {
+                        title: "CONGRATULATIONS! 🎉",
+                        body: `You won the battle and earned Dpcoins!`,
                         type: "contest", targetId: matchDoc.id,
-                        image: matchData.userA.uid === loserId ? matchData.userA.mediaUrl : matchData.userB.mediaUrl
+                        image: matchData.userA.uid === winnerId ? matchData.userA.mediaUrl : matchData.userB.mediaUrl
+                    });
+                    if (loserId) {
+                        await (0, utils_1.createNotification)(loserId, {
+                            title: "Battle Ended 🏁",
+                            body: `The results are in. Better luck next time!`,
+                            type: "contest", targetId: matchDoc.id,
+                            image: matchData.userA.uid === loserId ? matchData.userA.mediaUrl : matchData.userB.mediaUrl
+                        });
+                    }
+                }
+                else {
+                    const drawMsg = votesA === votesB ? "It was a draw!" : "Minimum votes not met.";
+                    [matchData.userA.uid, matchData.userB.uid].forEach(async (id) => {
+                        await (0, utils_1.createNotification)(id, { title: "Contest Ended", body: `${drawMsg} Entry fees refunded.`, type: "contest", targetId: matchDoc.id });
                     });
                 }
             }
-            else {
-                // --- CASE 2: DRAW OR MIN VOTES NOT MET ---
-                // Precise refund logic
-                const totalEntryFee = Number(matchData.entryFee || 0);
-                const refundAmount = Math.ceil(totalEntryFee / 2);
-                batch.update(matchRef, { status: "ended", winnerId: "draw" });
-                if (refundAmount > 0) {
-                    batch.update(db.collection("users").doc(matchData.userA.uid), {
-                        Dpcoin: admin.firestore.FieldValue.increment(refundAmount)
-                    });
-                    batch.update(db.collection("users").doc(matchData.userB.uid), {
-                        Dpcoin: admin.firestore.FieldValue.increment(refundAmount)
-                    });
-                }
-                await batch.commit();
-                const drawMsg = votesA === votesB ? "It was a draw!" : "Minimum votes not met.";
-                await (0, utils_1.createNotification)(matchData.userA.uid, {
-                    title: "Contest Ended", body: `${drawMsg} Entry fees refunded.`,
-                    type: "contest", targetId: matchDoc.id
-                });
-                await (0, utils_1.createNotification)(matchData.userB.uid, {
-                    title: "Contest Ended", body: `${drawMsg} Entry fees refunded.`,
-                    type: "contest", targetId: matchDoc.id
-                });
+            catch (e) {
+                console.error(`Error finalizing match ${matchDoc.id}:`, e);
             }
         }
     }
     catch (error) {
-        console.error("Error finalizing contest matches:", error);
+        console.error("Master error in finalizeContests:", error);
     }
 });
 //# sourceMappingURL=finalize.js.map

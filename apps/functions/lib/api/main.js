@@ -73,7 +73,8 @@ const masterApiRouter = async (request) => {
                 "likeContest": "like",
                 "commentContest": "comment",
                 "startMatch": "startMatch",
-                "joinMatch": "joinMatch"
+                "joinMatch": "joinMatch",
+                "contest_createTemplate": "createTemplate"
             };
             if (contestActionMap[action]) {
                 request.data.action = contestActionMap[action];
@@ -133,6 +134,8 @@ const masterApiRouter = async (request) => {
                 return await userSocial.toggleFollow.run(request);
             case "claimDailyReward":
                 return await userRewards.claimDailyReward.run(request);
+            case "luckySpin":
+                return await userRewards.luckySpin.run(request);
             case "topup":
                 return await walletTopup.topUpWallet.run(request);
             case "createPost":

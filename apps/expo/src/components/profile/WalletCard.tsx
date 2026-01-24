@@ -7,64 +7,79 @@ interface WalletCardProps {
   Dpcoin: number;
   stats: UserStats;
   onPress?: () => void;
+  onStatPress?: (type: 'wins' | 'battles' | 'votes') => void;
 }
 
-export const WalletCard = ({ Dpcoin, stats, onPress }: WalletCardProps) => {
+export const WalletCard = ({ Dpcoin, stats, onPress, onStatPress }: WalletCardProps) => {
   return (
-    <TouchableOpacity 
-      onPress={onPress}
-      activeOpacity={0.9}
-    >
+    <View style={styles.outerContainer}>
       <LinearGradient
         colors={['#FF4D67', '#FF8A9B']}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={styles.container}
       >
-        <View style={styles.header}>
+        <TouchableOpacity onPress={onPress} activeOpacity={0.8} style={styles.header}>
           <View>
             <Text style={styles.label}>Wallet Balance</Text>
-            <View style={styles.coinRow}>
+            <div style={{ flexDirection: 'row', alignItems: 'baseline' }}>
               <Text style={styles.coinValue}>{Dpcoin || 0}</Text>
               <Text style={styles.coinUnit}> Dpcoins</Text>
-            </View>
+            </div>
           </View>
           <View style={styles.badge}>
             <Text style={styles.badgeText}>Active</Text>
           </View>
-        </View>
+        </TouchableOpacity>
 
         <View style={styles.divider} />
 
         <View style={styles.statsRow}>
-          <View style={styles.statItem}>
+          <TouchableOpacity 
+            style={styles.statItem} 
+            onPress={() => onStatPress?.('wins')}
+            activeOpacity={0.7}
+          >
             <Text style={styles.statValue}>{stats.wins || 0}</Text>
             <Text style={styles.statLabel}>Wins</Text>
-          </View>
-          <View style={styles.statItem}>
+          </TouchableOpacity>
+          
+          <TouchableOpacity 
+            style={styles.statItem} 
+            onPress={() => onStatPress?.('battles')}
+            activeOpacity={0.7}
+          >
             <Text style={styles.statValue}>{stats.contestsJoined || 0}</Text>
             <Text style={styles.statLabel}>Battles</Text>
-          </View>
-          <View style={styles.statItem}>
+          </TouchableOpacity>
+          
+          <TouchableOpacity 
+            style={styles.statItem} 
+            onPress={() => onStatPress?.('votes')}
+            activeOpacity={0.7}
+          >
             <Text style={styles.statValue}>{stats.totalVotesReceived || 0}</Text>
             <Text style={styles.statLabel}>Votes</Text>
-          </View>
+          </TouchableOpacity>
         </View>
       </LinearGradient>
-    </TouchableOpacity>
+    </View>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {
+  outerContainer: {
     margin: 16,
-    padding: 24,
-    borderRadius: 20,
-    elevation: 5,
+    borderRadius: 24,
+    overflow: 'hidden',
+    elevation: 8,
     shadowColor: '#FF4D67',
-    shadowOffset: { width: 0, height: 4 },
+    shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.3,
-    shadowRadius: 8,
+    shadowRadius: 12,
+  },
+  container: {
+    padding: 24,
   },
   header: {
     flexDirection: 'row',
@@ -77,12 +92,8 @@ const styles = StyleSheet.create({
     marginBottom: 4,
     fontFamily: 'Urbanist-Medium',
   },
-  coinRow: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-  },
   coinValue: {
-    fontSize: 32,
+    fontSize: 36,
     fontWeight: 'bold',
     color: '#FFFFFF',
     fontFamily: 'Urbanist-Bold',
@@ -117,15 +128,18 @@ const styles = StyleSheet.create({
   },
   statItem: {
     alignItems: 'center',
+    paddingVertical: 5,
+    paddingHorizontal: 15,
+    borderRadius: 12,
   },
   statValue: {
-    fontSize: 20,
+    fontSize: 22,
     fontWeight: 'bold',
     color: '#FFFFFF',
     fontFamily: 'Urbanist-Bold',
   },
   statLabel: {
-    fontSize: 12,
+    fontSize: 13,
     color: 'rgba(255, 255, 255, 0.8)',
     fontFamily: 'Urbanist-Medium',
     marginTop: 2,

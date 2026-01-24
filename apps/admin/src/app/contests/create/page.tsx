@@ -7,30 +7,61 @@ import { useRouter } from "next/navigation";
 import { uploadToR2 } from "@/lib/r2-upload";
 import { callApi } from "@/services/firebase/functions"; 
 
+const InputField = ({ label, type = "text", value, onChange, placeholder, required = false, className = "", helpText = "" }: any) => (
+  <div className={`mb-4.5 ${className}`}>
+    <label className="mb-2.5 block text-black dark:text-white font-medium">
+      {label} {required && <span className="text-meta-1">*</span>}
+    </label>
+    <input
+      type={type}
+      placeholder={placeholder}
+      className="w-full rounded border-[1.5px] border-stroke bg-transparent px-5 py-3 text-black outline-none transition focus:border-primary active:border-primary dark:border-form-strokedark dark:bg-form-input dark:text-white"
+      value={value}
+      onChange={onChange}
+      required={required}
+    />
+    {helpText && <p className="mt-1 text-xs text-gray-500">{helpText}</p>}
+  </div>
+);
+
 const CreateContest = () => {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [bannerFile, setBannerFile] = useState<File | null>(null);
   const [bannerPreview, setBannerPreview] = useState<string | null>(null);
+  const [productFile, setProductFile] = useState<File | null>(null);
+  const [productPreview, setProductPreview] = useState<string | null>(null);
 
   const [formData, setFormData] = useState({
     title: "",
     type: "photo",
+    rewardType: "coin", 
+    prizeDescription: "", 
     description: "",
     rules: "",
-    totalEntryFee: 100, 
-    rewardCoins: 150, 
+    entryFee: 100, 
+    winnerReward: 150, 
     rewardXP: 100,
     minVotes: 5,
-    durationHours: 24,
+    maxParticipants: 100,
+    templateDurationHours: 48,
+    battleDurationHours: 24,
     autoCancelHours: 24,
   });
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleBannerChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
       setBannerFile(file);
       setBannerPreview(URL.createObjectURL(file));
+    }
+  };
+
+  const handleProductImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      setProductFile(file);
+      setProductPreview(URL.createObjectURL(file));
     }
   };
 
@@ -41,20 +72,27 @@ const CreateContest = () => {
     try {
       let bannerUrl = "";
       if (bannerFile) {
-        // Updated folder to 'contests' to be under admin/contests/
         bannerUrl = await uploadToR2(bannerFile, "contests");
       }
 
-      await callApi('createContestTemplate', {
+      let productImageUrl = "";
+      if (productFile) {
+        productImageUrl = await uploadToR2(productFile, "contest-prizes");
+      }
+
+      await callApi('contest_createTemplate', {
         ...formData,
-        // Ensure numbers are numbers
-        totalEntryFee: Number(formData.totalEntryFee),
-        rewardCoins: Number(formData.rewardCoins),
+        entryFee: Number(formData.entryFee),
+        winnerReward: Number(formData.winnerReward),
         rewardXP: Number(formData.rewardXP),
         minVotes: Number(formData.minVotes),
-        durationHours: Number(formData.durationHours),
+        maxParticipants: Number(formData.maxParticipants),
+        templateDurationHours: Number(formData.templateDurationHours),
+        battleDurationHours: Number(formData.battleDurationHours),
         autoCancelHours: Number(formData.autoCancelHours),
-        bannerUrl
+        bannerUrl,
+        productImageUrl,
+        joinedCount: 0
       });
 
       router.push("/contests");
@@ -65,23 +103,6 @@ const CreateContest = () => {
       setLoading(false);
     }
   };
-
-  const InputField = ({ label, type = "text", value, onChange, placeholder, required = false, className = "", helpText = "" }: any) => (
-    <div className={`mb-4.5 ${className}`}>
-      <label className="mb-2.5 block text-black dark:text-white font-medium">
-        {label} {required && <span className="text-meta-1">*</span>}
-      </label>
-      <input
-        type={type}
-        placeholder={placeholder}
-        className="w-full rounded border-[1.5px] border-stroke bg-transparent px-5 py-3 text-black outline-none transition focus:border-primary active:border-primary dark:border-form-strokedark dark:bg-form-input dark:text-white"
-        value={value}
-        onChange={onChange}
-        required={required}
-      />
-      {helpText && <p className="mt-1 text-xs text-gray-500">{helpText}</p>}
-    </div>
-  );
 
   return (
     <DefaultLayout>
@@ -104,17 +125,44 @@ const CreateContest = () => {
 
               <div className="mb-4.5">
                 <label className="mb-2.5 block text-black dark:text-white font-medium">Banner Image</label>
-                <input type="file" accept="image/*" onChange={handleFileChange} className="w-full cursor-pointer rounded-lg border-[1.5px] border-stroke bg-transparent font-medium" />
+                <input type="file" accept="image/*" onChange={handleBannerChange} className="w-full cursor-pointer rounded-lg border-[1.5px] border-stroke bg-transparent font-medium" />
                 {bannerPreview && <img src={bannerPreview} className="mt-4 h-32 w-full object-cover rounded-md border" />}
               </div>
 
-              <div className="mb-4.5">
-                <label className="mb-2.5 block text-black dark:text-white font-medium">Type</label>
-                <select className="w-full rounded border border-stroke bg-transparent px-5 py-3" value={formData.type} onChange={(e: any) => setFormData({ ...formData, type: e.target.value })}>
-                  <option value="photo">📸 Photo</option>
-                  <option value="video">🎥 Video</option>
-                </select>
+              <div className="flex gap-4">
+                  <div className="mb-4.5 w-1/2">
+                    <label className="mb-2.5 block text-black dark:text-white font-medium">Format</label>
+                    <select className="w-full rounded border border-stroke bg-transparent px-5 py-3" value={formData.type} onChange={(e: any) => setFormData({ ...formData, type: e.target.value })}>
+                      <option value="photo">📸 Photo</option>
+                      <option value="video">🎥 Video</option>
+                    </select>
+                  </div>
+                  <div className="mb-4.5 w-1/2">
+                    <label className="mb-2.5 block text-black dark:text-white font-medium">Reward Type</label>
+                    <select className="w-full rounded border border-stroke bg-transparent px-5 py-3" value={formData.rewardType} onChange={(e: any) => setFormData({ ...formData, rewardType: e.target.value })}>
+                      <option value="coin">💰 Coins Only</option>
+                      <option value="product">🎁 Product Only</option>
+                      <option value="both">💎 Both (Coin + Product)</option>
+                    </select>
+                  </div>
               </div>
+
+              { (formData.rewardType === 'product' || formData.rewardType === 'both') && (
+                  <>
+                    <InputField 
+                        label="Prize Name" 
+                        placeholder="e.g. Sony WH-1000XM5 Headphones" 
+                        value={formData.prizeDescription}
+                        onChange={(e: any) => setFormData({ ...formData, prizeDescription: e.target.value })}
+                        required
+                    />
+                    <div className="mb-4.5">
+                        <label className="mb-2.5 block text-black dark:text-white font-medium">Product Image</label>
+                        <input type="file" accept="image/*" onChange={handleProductImageChange} className="w-full cursor-pointer rounded-lg border-[1.5px] border-stroke bg-transparent font-medium" />
+                        {productPreview && <img src={productPreview} className="mt-4 h-24 w-24 object-cover rounded-md border" />}
+                    </div>
+                  </>
+              )}
 
               <InputField label="Description" placeholder="Theme of the contest" value={formData.description} onChange={(e: any) => setFormData({ ...formData, description: e.target.value })} />
             </div>
@@ -128,8 +176,15 @@ const CreateContest = () => {
             </div>
             <div className="p-6.5">
               <div className="flex gap-4">
-                <InputField label="Total Entry Fee (Split)" type="number" className="w-1/2" value={formData.totalEntryFee} onChange={(e: any) => setFormData({ ...formData, totalEntryFee: e.target.value })} required />
-                <InputField label="Winner Reward (Coins)" type="number" className="w-1/2" value={formData.rewardCoins} onChange={(e: any) => setFormData({ ...formData, rewardCoins: e.target.value })} required />
+                <InputField label="Entry Fee (Coins)" type="number" className="w-1/2" value={formData.entryFee} onChange={(e: any) => setFormData({ ...formData, entryFee: e.target.value })} required />
+                <InputField 
+                    label={formData.rewardType === 'product' ? "Bonus Coins (Optional)" : "Winner Reward (Coins)"} 
+                    type="number" 
+                    className="w-1/2" 
+                    value={formData.winnerReward} 
+                    onChange={(e: any) => setFormData({ ...formData, winnerReward: e.target.value })} 
+                    required 
+                />
               </div>
 
               <div className="flex gap-4">
@@ -137,23 +192,14 @@ const CreateContest = () => {
                 <InputField label="Min Votes to Win" type="number" className="w-1/2" value={formData.minVotes} onChange={(e: any) => setFormData({ ...formData, minVotes: e.target.value })} />
               </div>
 
+              <div className="mb-4.5 flex gap-4">
+                <InputField label="Max Participants" type="number" className="w-1/2" value={formData.maxParticipants} onChange={(e: any) => setFormData({ ...formData, maxParticipants: e.target.value })} />
+                <InputField label="Template Duration (H)" type="number" className="w-1/2" value={formData.templateDurationHours} onChange={(e: any) => setFormData({ ...formData, templateDurationHours: e.target.value })} />
+              </div>
+
               <div className="flex gap-4">
-                <InputField 
-                    label="Duration (Hours)" 
-                    type="number" 
-                    className="w-1/2" 
-                    value={formData.durationHours} 
-                    onChange={(e: any) => setFormData({ ...formData, durationHours: e.target.value })} 
-                    helpText="Contest shuru hone ke baad kitni der chalega."
-                />
-                <InputField 
-                    label="Auto-cancel (Hours)" 
-                    type="number" 
-                    className="w-1/2" 
-                    value={formData.autoCancelHours} 
-                    onChange={(e: any) => setFormData({ ...formData, autoCancelHours: e.target.value })} 
-                    helpText="Agar required players nahi mile toh kab cancel hoga."
-                />
+                <InputField label="Battle Duration (H)" type="number" className="w-1/2" value={formData.battleDurationHours} onChange={(e: any) => setFormData({ ...formData, battleDurationHours: e.target.value })} />
+                <InputField label="Auto-cancel (H)" type="number" className="w-1/2" value={formData.autoCancelHours} onChange={(e: any) => setFormData({ ...formData, autoCancelHours: e.target.value })} />
               </div>
 
               <div className="mb-4.5">
@@ -161,7 +207,7 @@ const CreateContest = () => {
                 <textarea rows={3} className="w-full rounded border border-stroke bg-transparent px-5 py-3" value={formData.rules} onChange={(e: any) => setFormData({ ...formData, rules: e.target.value })} />
               </div>
 
-              <button onClick={handleSubmit} disabled={loading} className="w-full rounded bg-primary p-3 font-medium text-white hover:bg-opacity-90 disabled:opacity-50">
+              <button onClick={handleSubmit} disabled={loading} className="w-full rounded bg-primary p-3 font-medium text-white hover:bg-opacity-90 disabled:opacity-50 transition-all">
                 {loading ? "Launching..." : "🚀 Launch Contest Template"}
               </button>
             </div>

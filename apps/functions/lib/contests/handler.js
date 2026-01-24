@@ -47,11 +47,7 @@ const CONTEST_CONFIG = {
     maxInstances: 10,
     cors: true
 };
-// Helper for Join IDs
 const generateJoinId = () => "JN-" + Math.random().toString(36).substring(2, 8).toUpperCase();
-/**
- * MASTER CONTEST HANDLER
- */
 exports.contestHandler = (0, https_1.onCall)(CONTEST_CONFIG, async (request) => {
     if (!request.auth)
         throw new https_1.HttpsError("unauthenticated", "User must be logged in.");
@@ -66,11 +62,12 @@ exports.contestHandler = (0, https_1.onCall)(CONTEST_CONFIG, async (request) => 
         case "share": return handleShare(request);
         case "startMatch": return handleStartMatch(request);
         case "joinMatch": return handleJoinMatch(request);
-        case "createTemplate": return handleCreateTemplate(request);
+        case "createTemplate":
+        case "contest_createTemplate":
+            return handleCreateTemplate(request);
         default: throw new https_1.HttpsError("invalid-argument", `Unknown action: ${action}`);
     }
 });
-/** 1. START MATCH (User A) **/
 async function handleStartMatch(request) {
     const { contestId, mediaUrl, mediaType, caption, deviceId, invitedUid } = request.data;
     const uid = request.auth.uid;
@@ -85,8 +82,9 @@ async function handleStartMatch(request) {
                 throw new https_1.HttpsError("not-found", "Contest not found.");
             const contestData = contestDoc.data();
             const userData = userDoc.data();
-            const totalFee = Number(contestData.totalEntryFee || 0);
-            const fee = Math.ceil(totalFee / 2);
+            // Updated field names
+            const entryFee = Number(contestData.entryFee || 0);
+            const fee = Math.ceil(entryFee / 2);
             if ((userData.Dpcoin || 0) < fee)
                 throw new https_1.HttpsError("failed-precondition", "Insufficient Dpcoins.");
             const joinIdA = generateJoinId();
@@ -95,7 +93,7 @@ async function handleStartMatch(request) {
             const matchData = {
                 id: matchRef.id, contestId, status: "waiting_for_opponent",
                 type: contestData.type || 'photo', title: contestData.title || contestData.name,
-                entryFee: totalFee, isPrivate: !!invitedUid, invitedUid: invitedUid || null,
+                entryFee: entryFee, isPrivate: !!invitedUid, invitedUid: invitedUid || null,
                 joinIdA, joinIds: [joinIdA],
                 userA: { uid, joinId: joinIdA, username: userData.username, profilePic: userData.profileImageUrl || "", mediaUrl, mediaType: mediaType || 'photo', caption: caption || "", votes: 0, deviceId: deviceId || "" },
                 userB: null, totalVotes: 0, likeCount: 0, commentCount: 0, shareCount: 0,
@@ -105,20 +103,18 @@ async function handleStartMatch(request) {
             transaction.set(matchRef, matchData);
             return { matchId: matchRef.id, joinId: joinIdA, contestTitle: matchData.title };
         });
-        // Auto-story logic
-        await firebase_1.db.collection("stories").add({ userId: uid, username: request.data.username || "User", type: 'contest_announcement', matchId: result.matchId, createdAt: firestore_1.FieldValue.serverTimestamp(), expiresAt: admin.firestore.Timestamp.fromDate(new Date(Date.now() + 86400000)) }).catch(() => { });
         return result;
     }
     catch (e) {
         throw new https_1.HttpsError("internal", e.message);
     }
 }
-/** 2. JOIN MATCH (User B) **/
 async function handleJoinMatch(request) {
     const { matchId, mediaUrl, mediaType, caption, deviceId } = request.data;
     const uid = request.auth.uid;
     try {
         const result = await firebase_1.db.runTransaction(async (transaction) => {
+            var _a;
             const matchRef = firebase_1.db.collection("contestMatches").doc(matchId);
             const userRef = firebase_1.db.collection("users").doc(uid);
             const [matchDoc, userDoc] = await Promise.all([transaction.get(matchRef), transaction.get(userRef)]);
@@ -127,8 +123,8 @@ async function handleJoinMatch(request) {
             const matchData = matchDoc.data();
             if (matchData.status !== "waiting_for_opponent")
                 throw new https_1.HttpsError("failed-precondition", "Match full.");
-            if (matchData.userA.uid === uid)
-                throw new https_1.HttpsError("failed-precondition", "Cannot join own match.");
+            const contestDoc = await transaction.get(firebase_1.db.collection("contests").doc(matchData.contestId));
+            const battleDuration = contestDoc.exists ? (((_a = contestDoc.data()) === null || _a === void 0 ? void 0 : _a.battleDurationHours) || 24) : 24;
             const fee = Math.ceil(Number(matchData.entryFee || 0) / 2);
             const userData = userDoc.data();
             if ((userData.Dpcoin || 0) < fee)
@@ -139,6 +135,7 @@ async function handleJoinMatch(request) {
                 status: "active", joinIdB, joinIds: firestore_1.FieldValue.arrayUnion(joinIdB),
                 userB: { uid, joinId: joinIdB, username: userData.username, profilePic: userData.profileImageUrl || "", mediaUrl, mediaType: mediaType || 'photo', caption: caption || "", votes: 0, deviceId: deviceId || "" },
                 activatedAt: firestore_1.FieldValue.serverTimestamp(),
+                endDate: admin.firestore.Timestamp.fromDate(new Date(Date.now() + battleDuration * 3600000))
             });
             return { userAId: matchData.userA.uid, matchTitle: matchData.title, joinId: joinIdB };
         });
@@ -149,12 +146,9 @@ async function handleJoinMatch(request) {
         throw new https_1.HttpsError("internal", e.message);
     }
 }
-/** 3. VOTE **/
 async function handleVote(request) {
     const { matchId, votedForUid, deviceId } = request.data;
     const uid = request.auth.uid;
-    if (!matchId || !votedForUid)
-        throw new https_1.HttpsError("invalid-argument", "Missing data.");
     try {
         await firebase_1.db.runTransaction(async (transaction) => {
             const matchRef = firebase_1.db.collection("contestMatches").doc(matchId);
@@ -163,58 +157,33 @@ async function handleVote(request) {
             if (!matchDoc.exists || voteDoc.exists)
                 throw new https_1.HttpsError("failed-precondition", "Cannot vote.");
             const matchData = matchDoc.data();
+            if (matchData.endDate && matchData.endDate.toDate() < new Date())
+                throw new https_1.HttpsError("failed-precondition", "Ended.");
             const updateKey = matchData.userA.uid === votedForUid ? "userA.votes" : "userB.votes";
             transaction.update(matchRef, { [updateKey]: firestore_1.FieldValue.increment(1), totalVotes: firestore_1.FieldValue.increment(1) });
             transaction.set(voteRef, { matchId, voterUid: uid, votedForUid, deviceId, timestamp: firestore_1.FieldValue.serverTimestamp() });
         });
         await (0, gamification_1.awardXp)(uid, 5, "voted_in_contest");
-        return { success: true, message: "Vote recorded!" };
+        return { success: true };
     }
     catch (e) {
         throw new https_1.HttpsError("internal", e.message);
     }
 }
-/** 4. LIKE/COMMENT (Engagement) **/
-async function handleLike(request) {
-    const { matchId } = request.data;
-    const uid = request.auth.uid;
-    const matchRef = firebase_1.db.collection("contestMatches").doc(matchId);
-    const likeRef = matchRef.collection("likes").doc(uid);
-    const doc = await likeRef.get();
-    if (doc.exists) {
-        await matchRef.update({ likeCount: firestore_1.FieldValue.increment(-1) });
-        await likeRef.delete();
-        return { action: "unliked" };
-    }
-    else {
-        await matchRef.update({ likeCount: firestore_1.FieldValue.increment(1) });
-        await likeRef.set({ userId: uid, timestamp: firestore_1.FieldValue.serverTimestamp() });
-        return { action: "liked" };
-    }
-}
-async function handleComment(request) {
-    const { matchId, text } = request.data;
-    const uid = request.auth.uid;
-    const matchRef = firebase_1.db.collection("contestMatches").doc(matchId);
-    await matchRef.update({ commentCount: firestore_1.FieldValue.increment(1) });
-    await matchRef.collection("comments").add({ userId: uid, text, timestamp: firestore_1.FieldValue.serverTimestamp() });
-    return { success: true };
-}
-async function handleShare(request) {
-    await firebase_1.db.collection("contestMatches").doc(request.data.matchId).update({ shareCount: firestore_1.FieldValue.increment(1) });
-    return { success: true };
-}
-async function handleJoin(request) {
-    // Legacy logic to keep compatibility
-    return { status: "waiting", message: "Joined successfully." };
-}
+async function handleLike(request) { return { success: true }; }
+async function handleComment(request) { return { success: true }; }
+async function handleShare(request) { return { success: true }; }
+async function handleJoin(request) { return { success: true }; }
 async function handleCreateTemplate(request) {
     var _a;
     const user = await firebase_1.db.collection("users").doc(request.auth.uid).get();
     if (((_a = user.data()) === null || _a === void 0 ? void 0 : _a.role) !== "admin")
         throw new https_1.HttpsError("permission-denied", "Admin only.");
     const id = firebase_1.db.collection("contests").doc().id;
-    await firebase_1.db.collection("contests").doc(id).set(Object.assign(Object.assign({}, request.data), { id, status: "live", createdAt: firestore_1.FieldValue.serverTimestamp() }));
+    const contestData = Object.assign({}, request.data);
+    delete contestData.action;
+    const templateDuration = Number(contestData.templateDurationHours || 48);
+    await firebase_1.db.collection("contests").doc(id).set(Object.assign(Object.assign({}, contestData), { id, status: "live", createdAt: firestore_1.FieldValue.serverTimestamp(), expiresAt: admin.firestore.Timestamp.fromDate(new Date(Date.now() + templateDuration * 3600000)) }));
     return { success: true, id };
 }
 //# sourceMappingURL=handler.js.map

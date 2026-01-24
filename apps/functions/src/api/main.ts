@@ -14,6 +14,8 @@ import * as posts from "../posts/index";
 import * as userRewards from "../user/rewards";
 import * as userSocial from "../user/toggleFollow";
 import * as walletTopup from "../wallet/topup";
+import { reportContent } from "../user/reporting";
+import { claimPrize } from "../user/prizes";
 
 /**
  * MASTER API ROUTER
@@ -43,7 +45,8 @@ export const masterApiRouter = async (request: CallableRequest) => {
                 "likeContest": "like",
                 "commentContest": "comment",
                 "startMatch": "startMatch",
-                "joinMatch": "joinMatch"
+                "joinMatch": "joinMatch",
+                "contest_createTemplate": "createTemplate"
             };
             if (contestActionMap[action]) {
                 request.data.action = contestActionMap[action];
@@ -120,6 +123,12 @@ export const masterApiRouter = async (request: CallableRequest) => {
                 return await (posts.createPost as any).run(request);
             case "deletePost":
                 return await (posts.deleteUserPost as any).run(request);
+            
+            case "reportContent":
+                return await reportContent(request);
+
+            case "claimPrize":
+                return await claimPrize(request);
 
             // Storage is handled via Cloudflare Workers now
             case "getUploadUrl":

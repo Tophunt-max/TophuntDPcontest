@@ -8,7 +8,7 @@ export interface PhotoDerivatives {
 }
 
 interface SignupData {
-  uid?: string; // Unique ID for the user
+  uid?: string;
   fullName: string;
   username: string;
   dob: string;
@@ -16,7 +16,7 @@ interface SignupData {
   phone: string;
   occupation: string;
   avatarUrl: string | null;
-  photoDerivatives?: PhotoDerivatives | null; // Added for optimized images
+  photoDerivatives?: PhotoDerivatives | null;
   gender: string;
   following: string[];
   password?: string;
@@ -24,6 +24,14 @@ interface SignupData {
   coordinates?: {
     lat: number;
     lng: number;
+  };
+  // PRODUCTION ADDITIONS
+  deviceInfo?: {
+    brand: string | null;
+    model: string | null;
+    osName: string | null;
+    osVersion: string | null;
+    deviceId: string | null;
   };
 }
 

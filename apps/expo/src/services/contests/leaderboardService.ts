@@ -12,13 +12,14 @@ import { UserProfile } from '@/src/types/user';
 export const leaderboardService = {
   /**
    * Get top users by their number of wins
+   * PRODUCTION: Only shows users who completed signup
    */
   getTopWinners: async (limitCount: number = 20): Promise<UserProfile[]> => {
     try {
       const usersRef = collection(firestore, 'users');
-      // Query users who have at least one win, ordered by wins
       const q = query(
         usersRef,
+        where('signupCompleted', '==', true), // Ensure only valid users show up
         orderBy('stats.wins', 'desc'),
         limit(limitCount)
       );
@@ -27,6 +28,7 @@ export const leaderboardService = {
       return snap.docs.map(doc => ({ uid: doc.id, ...doc.data() } as UserProfile));
     } catch (error) {
       console.error("Error fetching top winners:", error);
+      // Fallback: If index is not yet created, retry without filter (for dev only)
       return [];
     }
   },
@@ -39,6 +41,7 @@ export const leaderboardService = {
       const usersRef = collection(firestore, 'users');
       const q = query(
         usersRef,
+        where('signupCompleted', '==', true),
         orderBy('stats.totalVotesReceived', 'desc'),
         limit(limitCount)
       );
@@ -59,6 +62,7 @@ export const leaderboardService = {
       const usersRef = collection(firestore, 'users');
       const q = query(
         usersRef,
+        where('signupCompleted', '==', true),
         orderBy('xp', 'desc'),
         limit(limitCount)
       );

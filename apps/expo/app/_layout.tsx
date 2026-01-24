@@ -65,13 +65,12 @@ function RootLayoutNav() {
     }
   }, [user, loading]);
 
-  // 2. Notification Listeners (Including Call Actions)
+  // Notification Listeners
   useEffect(() => {
     const subscription = Notifications.addNotificationResponseReceivedListener(response => {
       const { actionIdentifier, notification } = response;
       const data = notification.request.content.data;
 
-      // --- NEW: INTERACTIVE CALL ACTIONS ---
       if (data.type === 'call' && data.chatId) {
           if (actionIdentifier === 'ACCEPT_CALL') {
               respondToCall(data.chatId, { sdp: 'init' });
@@ -83,7 +82,6 @@ function RootLayoutNav() {
           }
       }
 
-      // --- REDIRECTION LOGIC ---
       if (data?.url) {
           try { router.push(data.url); } catch (e) { router.push('/notifications'); }
           return;
@@ -105,35 +103,52 @@ function RootLayoutNav() {
       }
     });
 
-    const foregroundSubscription = Notifications.addNotificationReceivedListener(notification => {
-        // Handle foreground notifications
-    });
-
     return () => {
         subscription.remove();
-        foregroundSubscription.remove();
     };
   }, []);
 
+  // AUTH & PROFILE GUARD LOGIC (FIXED)
   useEffect(() => {
     if (loading) return;
+
     const inAuthGroup = segments[0] === 'auth';
     const inOnboarding = segments[0] === 'onboarding';
     const inSplash = segments[0] === 'splash';
+    const inMaintenance = segments[0] === 'maintenance';
 
     if (!user) {
-      if (!inAuthGroup && !inOnboarding && !inSplash && segments.length > 0) {
+      // USER IS LOGGED OUT
+      // If user is on a protected page, force redirect to login
+      if (!inAuthGroup && !inOnboarding && !inSplash && !inMaintenance && segments.length > 0) {
+        console.log("[Guard] Logged out detected, redirecting to login");
         router.replace('/auth/login');
       }
     } else {
-      if (inAuthGroup || inOnboarding || inSplash) {
-        router.replace('/home');
+      // USER IS LOGGED IN
+      const isProfileComplete = user.signupCompleted === true;
+      const inSignupFlow = segments[1] === 'signup';
+      const isCongratulationsPage = segments[2] === 'congratulations';
+
+      if (!isProfileComplete) {
+        // Logged in but profile NOT complete: Force signup flow
+        // But DON'T redirect if they are already in the signup steps
+        if (!inSignupFlow) {
+           console.log("[Guard] Profile incomplete, forcing signup flow");
+           router.replace('/auth/signup/fill-profile');
+        }
+      } else {
+        // Profile IS complete: Don't let them stay in login/signup pages
+        if (inAuthGroup || inOnboarding || inSplash || (inSignupFlow && !isCongratulationsPage)) {
+          console.log("[Guard] Profile complete, redirecting to home");
+          router.replace('/home');
+        }
       }
     }
   }, [user, loading, segments]);
 
   useEffect(() => {
-    if (user && !loading) {
+    if (user && !loading && user.signupCompleted) {
       notificationService.registerForPushNotificationsAsync(user.uid);
     }
   }, [user, loading]);

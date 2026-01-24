@@ -1,6 +1,6 @@
 import { db } from "../utils/firebase";
 import { FieldValue } from "firebase-admin/firestore";
-import { sendPushNotification } from "./sender";
+import { sendPushNotification, sendBroadcastNotification } from "./sender";
 
 export type NotificationType = 
     | "like" 
@@ -9,7 +9,6 @@ export type NotificationType =
     | "contest" 
     | "admin"
     | "system"
-    // Extended types for compatibility
     | "reply"
     | "comment-like"
     | "contest-invite"
@@ -42,19 +41,32 @@ export const createNotification = async (
   if (!recipientId) return;
 
   try {
-      // Create Firestore Notification
-      await db.collection("notifications").doc(recipientId).collection("items").add({
+      // 1. Create Firestore Notification Item
+      const notificationRef = db.collection("notifications").doc(recipientId).collection("items").doc();
+      
+      const batch = db.batch();
+      batch.set(notificationRef, {
         ...notification,
+        id: notificationRef.id,
         read: false,
         createdAt: FieldValue.serverTimestamp(),
       });
 
-      // Send Push
+      // 2. Increment Unread Counter (Production Grade Experience)
+      const userRef = db.collection("users").doc(recipientId);
+      batch.update(userRef, {
+        unreadNotificationsCount: FieldValue.increment(1),
+        updatedAt: FieldValue.serverTimestamp()
+      });
+
+      await batch.commit();
+
+      // 3. Send Push Notification
       await sendPushNotification(
         recipientId,
         notification.title,
         notification.body,
-        notification.type, // Type is now compatible
+        notification.type,
         { 
             targetId: notification.targetId, 
             image: notification.image || "",
@@ -67,35 +79,31 @@ export const createNotification = async (
   }
 };
 
+/**
+ * PRODUCTION BROADCAST: Using FCM Topics for infinite scalability.
+ */
 export const sendBroadcastToAllUsers = async (
     title: string,
     body: string,
     imageUrl?: string,
     data?: Record<string, string>
 ) => {
-    let sentCount = 0;
     try {
-        const usersSnapshot = await db.collection("users").get();
-        
-        // Parallel execution for better performance
-        const promises = usersSnapshot.docs.map(async (doc) => {
-            const userId = doc.id;
-            // Skip users without tokens if optimization needed, but createNotification handles checks
-            await createNotification(userId, {
-                title,
-                body,
-                type: "admin",
-                targetId: "broadcast",
-                image: imageUrl,
-                data
-            });
-            return true;
+        // For production, we use the Topic system because looping through all users
+        // is slow and expensive (O(N) vs O(1) FCM request).
+        await sendBroadcastNotification(title, body, {
+            ...data,
+            image: imageUrl || "",
+            targetId: "broadcast"
         });
-
-        const results = await Promise.all(promises);
-        sentCount = results.length;
+        
+        // Note: Broadcasts to Topics don't usually create individual Firestore notifications
+        // because it would be too many writes. If you NEED it in their "In-App" Inbox,
+        // it's better to show a separate "Global Announcements" section.
+        
+        return true;
     } catch (error) {
         console.error("Error in broadcast:", error);
+        return false;
     }
-    return sentCount;
 };

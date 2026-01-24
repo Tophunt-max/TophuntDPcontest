@@ -33,11 +33,8 @@ import Animated, {
   withRepeat, 
   withTiming, 
   withSequence,
-  withDelay,
   Easing,
-  runOnJS,
-  useDerivedValue,
-  interpolate
+  runOnJS
 } from 'react-native-reanimated';
 import { ImageViewer } from '@/src/components/ui/ImageViewer';
 import * as Haptics from 'expo-haptics';
@@ -67,72 +64,40 @@ export default function BattleSetupScreen() {
   const [showRulesModal, setShowRulesModal] = useState(false);
   const [isImageViewVisible, setIsImageViewVisible] = useState(false);
 
-  // New form state
   const [displayName, setDisplayName] = useState('');
   const [username, setUsername] = useState('');
   const [caption, setCaption] = useState('');
   const [isReady, setIsReady] = useState(false);
 
-  // Glow Animation
   const glowOpacity = useSharedValue(0);
-
-  // Coin Animation
   const [showCoinAnimation, setShowCoinAnimation] = useState(false);
   const coinTranslateY = useSharedValue(0);
   const coinOpacity = useSharedValue(1);
 
-  // Refs for positions
-  const walletRef = useRef<View>(null);
-  const [walletPosition, setWalletPosition] = useState({ x: 0, y: 0, width: 0, height: 0 });
-
   useEffect(() => { 
-    if (contestId) {
-      fetchContestDetail(contestId as string);
-    } else if (matchId) {
-       fetchMatchDetail(matchId as string);
-    }
+    if (contestId) fetchContestDetail(contestId as string);
+    else if (matchId) fetchMatchDetail(matchId as string);
   }, [contestId, matchId]);
 
-  // Autofill user info
   useEffect(() => {
     if (profile) {
-      setDisplayName(profile.displayName || '');
+      setDisplayName(profile.fullName || profile.displayName || '');
       setUsername(profile.username || '');
     }
   }, [profile]);
 
-  // Check if form is ready
   useEffect(() => {
     const ready = !!(media && displayName.trim() && username.trim());
     setIsReady(ready);
-    
     if (ready) {
-      glowOpacity.value = withRepeat(
-        withSequence(
-          withTiming(0.6, { duration: 1000, easing: Easing.ease }),
-          withTiming(0, { duration: 1000, easing: Easing.ease })
-        ),
-        -1, 
-        true 
-      );
+      glowOpacity.value = withRepeat(withSequence(withTiming(0.6, { duration: 1000 }), withTiming(0, { duration: 1000 })), -1, true);
     } else {
         glowOpacity.value = withTiming(0);
     }
   }, [media, displayName, username]);
 
-  const animatedGlowStyle = useAnimatedStyle(() => {
-    return {
-      opacity: glowOpacity.value,
-      shadowOpacity: glowOpacity.value,
-    };
-  });
-
-  const animatedCoinStyle = useAnimatedStyle(() => {
-    return {
-        transform: [{ translateY: coinTranslateY.value }],
-        opacity: coinOpacity.value
-    }
-  });
+  const animatedGlowStyle = useAnimatedStyle(() => ({ opacity: glowOpacity.value, shadowOpacity: glowOpacity.value }));
+  const animatedCoinStyle = useAnimatedStyle(() => ({ transform: [{ translateY: coinTranslateY.value }], opacity: coinOpacity.value }));
 
   const fetchContestDetail = async (id: string) => {
     setLoading(true);
@@ -140,7 +105,6 @@ export default function BattleSetupScreen() {
       const contest = await contestService.getContestById(id);
       setSelectedContest(contest);
     } catch (error) { 
-      console.error(error); 
       addToast("Failed to load contest details", 'error');
     } finally { setLoading(false); }
   };
@@ -151,17 +115,12 @@ export default function BattleSetupScreen() {
       const match = await contestService.getMatchById(id); 
       setSelectedContest({ ...match, isJoinMode: true });
     } catch (error) { 
-      console.error(error);
       addToast("Failed to load match details", 'error'); 
     } finally { setLoading(false); }
   };
 
   const pickImage = async () => {
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      allowsEditing: true,
-      quality: 0.8,
-    });
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, quality: 0.8 });
     if (!result.canceled) {
         setMedia(result.assets[0].uri);
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -170,332 +129,90 @@ export default function BattleSetupScreen() {
 
   const startCoinAnimation = (callback: () => void) => {
       setShowCoinAnimation(true);
-      coinTranslateY.value = 0;
-      coinOpacity.value = 1;
-
+      coinTranslateY.value = 0; coinOpacity.value = 1;
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-
-      // Animate up and fade out
       coinTranslateY.value = withTiming(-600, { duration: 1000, easing: Easing.out(Easing.exp) });
-      coinOpacity.value = withTiming(0, { duration: 1000, easing: Easing.in(Easing.exp) }, (finished) => {
-          if (finished) {
-             runOnJS(callback)();
-          }
-      });
+      coinOpacity.value = withTiming(0, { duration: 1000 }, (f) => { if (f) runOnJS(callback)(); });
   };
 
   const handleAction = async () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (!user || !selectedContest || !media || !displayName.trim()) return;
+    
+    const fee = (selectedContest.entryFee || selectedContest.entryFishCoins || 0) / 2;
+    if ((profile?.Dpcoin || 0) < fee) { router.push('/wallet/store'); return; }
 
-    if (!user) {
-      addToast("Please log in to participate.", 'error');
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      return;
-    }
-
-    if (!selectedContest) {
-      addToast("No contest selected.", 'error');
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      return;
-    }
-
-    const totalEntryFee = selectedContest.totalEntryFee || selectedContest.entryFishCoins || selectedContest.entryFee || 0;
-    const fee = totalEntryFee / 2;
-    const userCoins = profile?.coins || profile?.Dpcoin || 0;
-
-    // Logic for "Get Coins" flow
-    if (userCoins < fee) {
-      addToast(`Insufficient Coins. Redirecting to Wallet...`, 'info');
-      router.push('/wallet/store'); // Assuming this route exists
-      return;
-    }
-
-    if (!media) {
-      addToast("Please upload a photo first.", 'error');
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      return;
-    }
-
-    if (!displayName.trim() || !username.trim()) {
-      addToast("Please provide your name and username.", 'error');
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      return;
-    }
-
-    // Start Animation and then upload
     startCoinAnimation(async () => {
-        setShowCoinAnimation(false);
-        setUploading(true);
+        setShowCoinAnimation(false); setUploading(true);
         try {
             const downloadUrl = await contestMediaService.uploadMedia(media, selectedContest.id || selectedContest.contestId, user.uid, 'photo');
-            
-            const matchData = {
-              mediaUrl: downloadUrl,
-              mediaType: 'photo',
-              caption: caption,
-              displayName: displayName,
-              username: username,
-              deviceId: 'device-id' 
-            };
-      
+            const matchData = { mediaUrl: downloadUrl, mediaType: 'photo', caption, displayName, username, deviceId: 'device-id' };
             if (selectedContest.isJoinMode || mode === 'join') {
-              await contestService.joinMatch({
-                matchId: matchId as string || selectedContest.id,
-                ...matchData
-              });
+              await contestService.joinMatch({ matchId: (matchId as string) || selectedContest.id, ...matchData });
             } else {
-              await contestService.startMatch({
-                contestId: selectedContest.id,
-                ...matchData
-              });
+              await contestService.startMatch({ contestId: selectedContest.id, ...matchData });
             }
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
             setShowSuccessModal(true);
           } catch (error: any) {
-            console.error("[BattleSetup] Action Error:", error);
-            const msg = error.details || error.message || "Something went wrong on the server.";
-            addToast(msg, 'error');
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-          } finally {
-            setUploading(false);
-          }
+            addToast(error.message || "Failed to join", 'error');
+          } finally { setUploading(false); }
     });
   };
 
-  const navigateToWallet = () => {
-    router.push('/wallet/store');
-  }
-  
-  const measureWallet = () => {
-     walletRef.current?.measure((x, y, width, height, pageX, pageY) => {
-        setWalletPosition({ x: pageX, y: pageY, width, height });
-     });
-  }
-
-  if (showSuccessModal) return (
-    <SuccessModal 
-        title="Battle Joined!"
-        subtitle={mode === 'join' || selectedContest?.isJoinMode ? "You are now LIVE in this battle!" : "Match created! Waiting for an opponent."}
-        onGoHome={() => { setShowSuccessModal(false); router.replace('/home'); }} 
-    />
-  );
-
-  if (loading) {
-    return <BattleSetupSkeleton />;
-  }
-
+  if (showSuccessModal) return <SuccessModal title="Battle Joined!" subtitle={mode === 'join' || selectedContest?.isJoinMode ? "You are now LIVE!" : "Match created!"} onGoHome={() => { setShowSuccessModal(false); router.replace('/home'); }} />;
+  if (loading) return <BattleSetupSkeleton />;
   if (!selectedContest) return null;
 
-  // Added check for entryFee as well
-  const totalEntryFee = selectedContest.totalEntryFee || selectedContest.entryFishCoins || selectedContest.entryFee || 0;
-  const fee = totalEntryFee / 2;
-  const winningReward = selectedContest.rewardCoins || selectedContest.winningCoins || 0;
-  const userCoins = profile?.coins || profile?.Dpcoin || 0;
-  const hasInsufficientCoins = userCoins < fee;
+  const fee = (selectedContest.entryFee || selectedContest.entryFishCoins || 0) / 2;
+  const userCoins = profile?.Dpcoin || 0;
+  
+  const coinReward = selectedContest.winnerReward || selectedContest.rewardCoins || selectedContest.winningCoins || 0;
+  const prizeName = selectedContest.prizeDescription || null;
+  const rewardType = selectedContest.rewardType || 'coin';
 
-  // Identify if we are User B joining an existing match
   const isJoinMode = selectedContest.isJoinMode || mode === 'join';
   const opponent = isJoinMode ? selectedContest.userA : null;
-  const opponentPic = getOptimizedMediaUrl(opponent?.profilePic || opponent?.profileImageUrl || '');
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]} edges={['top', 'bottom']}>
       <View style={styles.header}>
-         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-            <Left_Arrow width={24} height={24} color={textColor} />
-         </TouchableOpacity>
-         <TouchableOpacity 
-            ref={walletRef}
-            onLayout={measureWallet}
-            onPress={navigateToWallet} 
-            style={[styles.walletContainer, { backgroundColor: inputBg }]}
-         >
-            <Text style={[styles.walletText, { color: textColor }]}>{userCoins}</Text>
-            <Wallet_Color width={24} height={24} />
-         </TouchableOpacity>
+         <TouchableOpacity onPress={() => router.back()}><Left_Arrow width={24} height={24} color={textColor} /></TouchableOpacity>
+         <TouchableOpacity onPress={() => router.push('/wallet/store')} style={[styles.walletContainer, { backgroundColor: inputBg }]}><Text style={[styles.walletText, { color: textColor }]}>{userCoins}</Text><Wallet_Color width={24} height={24} /></TouchableOpacity>
       </View>
 
-      <ScrollView 
-        contentContainerStyle={styles.scrollContent} 
-        showsVerticalScrollIndicator={false}
-      >
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <Text style={[styles.title, { color: textColor }]}>Battle Setup</Text>
 
-        {/* Entry Fee Breakdown Card */}
         <View style={[styles.breakdownCard, { backgroundColor: cardBg, borderColor }]}>
           <Text style={styles.breakdownLabel}>Entry Fee Breakdown</Text>
-          
           <View style={styles.playersContainer}>
-            {/* User Profile (Left) */}
             <View style={styles.playerItem}>
-              <View style={[styles.playerAvatarCircle, { backgroundColor: '#E1F5FE' }]}>
-                {profile?.profileImageUrl ? (
-                  <Image 
-                    source={{ uri: getOptimizedMediaUrl(profile.profileImageUrl) }} 
-                    style={styles.avatarImg} 
-                    contentFit="cover"
-                    cachePolicy="memory-disk"
-                    transition={200}
-                  />
-                ) : (
-                  <Ionicons name="person" size={36} color="#03A9F4" />
-                )}
-              </View>
-              <Text style={[styles.playerName, { color: textColor }]} numberOfLines={1}>You</Text>
-              <View style={styles.feeInfo}>
-                <Text style={styles.feeMinus}>-{fee}</Text>
-                <View style={styles.coinIconWrapper}>
-                   <Wallet_Color width={24} height={24} />
-                </View>
-              </View>
+              <View style={styles.playerAvatarCircle}>{profile?.profileImageUrl ? <Image source={{ uri: getOptimizedMediaUrl(profile.profileImageUrl) }} style={styles.avatarImg} /> : <Ionicons name="person" size={36} color="#03A9F4" />}</View>
+              <Text style={[styles.playerName, { color: textColor }]}>You</Text>
+              <View style={styles.feeInfo}><Text style={styles.feeMinus}>-{fee}</Text><Wallet_Color width={18} height={18} /></View>
             </View>
-
-            <View style={styles.vsCircle}>
-              <Text style={styles.vsText}>VS</Text>
-            </View>
-
-            {/* Opponent Profile (Right) */}
+            <View style={styles.vsCircle}><Text style={styles.vsText}>VS</Text></View>
             <View style={styles.playerItem}>
-              <View style={[styles.playerAvatarCircle, { backgroundColor: opponent ? '#E1F5FE' : '#FFF5F5' }]}>
-                {opponentPic ? (
-                  <Image 
-                    source={{ uri: opponentPic }} 
-                    style={styles.avatarImg} 
-                    contentFit="cover"
-                    cachePolicy="memory-disk"
-                    transition={200}
-                  />
-                ) : (
-                  opponent ? (
-                    <Ionicons name="person" size={36} color="#03A9F4" />
-                  ) : (
-                    <Text style={styles.questionMark}>?</Text>
-                  )
-                )}
-              </View>
-              <Text style={[styles.playerName, { color: textColor }]} numberOfLines={1}>
-                {opponent ? (opponent.displayName || opponent.username || "Opponent") : "Waiting..."}
-              </Text>
-              <View style={styles.feeInfo}>
-                <Text style={styles.feeMinus}>-{fee}</Text>
-                <View style={styles.coinIconWrapper}>
-                   <Wallet_Color width={24} height={24} />
-                </View>
-              </View>
+              <View style={styles.playerAvatarCircle}>{opponent?.profilePic ? <Image source={{ uri: getOptimizedMediaUrl(opponent.profilePic) }} style={styles.avatarImg} /> : <Text style={styles.questionMark}>?</Text>}</View>
+              <Text style={[styles.playerName, { color: textColor }]}>{opponent?.username || "Waiting..."}</Text>
+              <View style={styles.feeInfo}><Text style={styles.feeMinus}>-{fee}</Text><Wallet_Color width={18} height={18} /></View>
             </View>
           </View>
 
           <View style={styles.winnerBanner}>
-             <Text style={styles.winnerBannerText}>🏆 Winner Gets {winningReward} Coins!</Text>
+             <Text style={styles.winnerBannerText}>
+                🏆 Winner Gets: {rewardType === 'product' ? prizeName : (rewardType === 'both' ? `${prizeName} + ${coinReward} Coins` : `${coinReward} Coins`)}
+             </Text>
           </View>
         </View>
 
-        {/* Comparison Preview (New for User B) */}
-        {isJoinMode && opponent && (
-          <View style={styles.matchupPreviewContainer}>
-            <Text style={[styles.sectionTitle, { color: textColor, textAlign: 'center' }]}>The Matchup</Text>
-            <View style={styles.previewRow}>
-              <View style={styles.previewBox}>
-                 <View style={styles.previewHeader}>
-                    <Image 
-                      source={opponentPic ? { uri: opponentPic } : require('@/assets/images/icon.png')} 
-                      style={styles.miniAvatar} 
-                      contentFit="cover"
-                      cachePolicy="memory-disk"
-                    />
-                    <Text style={[styles.previewLabel, { color: textColor }]} numberOfLines={1}>
-                       {opponent.displayName || opponent.username || "Opponent"}
-                    </Text>
-                 </View>
-                 <Image 
-                    source={{ uri: getOptimizedMediaUrl(opponent.mediaUrl) }} 
-                    style={styles.previewImg} 
-                    contentFit="cover"
-                    cachePolicy="memory-disk"
-                    transition={200}
-                 />
-              </View>
-
-              <View style={styles.vsSmallCircle}>
-                 <Text style={styles.vsSmallText}>VS</Text>
-              </View>
-
-              <View style={styles.previewBox}>
-                 <View style={styles.previewHeader}>
-                    <Image 
-                      source={profile?.profileImageUrl ? { uri: getOptimizedMediaUrl(profile.profileImageUrl) } : require('@/assets/images/icon.png')} 
-                      style={styles.miniAvatar} 
-                      contentFit="cover"
-                      cachePolicy="memory-disk"
-                    />
-                    <Text style={[styles.previewLabel, { color: textColor }]} numberOfLines={1}>You</Text>
-                 </View>
-                 {media ? (
-                   <TouchableOpacity onPress={() => setIsImageViewVisible(true)}>
-                    <Image source={{ uri: media }} style={styles.previewImg} contentFit="cover" />
-                   </TouchableOpacity>
-                 ) : (
-                   <TouchableOpacity onPress={pickImage} style={[styles.previewImg, styles.emptyPreview]}>
-                      <Ionicons name="add" size={32} color="#9E9E9E" />
-                   </TouchableOpacity>
-                 )}
-              </View>
-            </View>
-          </View>
-        )}
-
-        {/* User Info & Submission Section */}
         <View style={styles.formSection}>
            <Text style={[styles.sectionTitle, { color: textColor }]}>Your Information</Text>
+           <View style={styles.inputGroup}><Text style={[styles.inputLabel, { color: textColor }]}>Display Name</Text><TextInput style={[styles.input, { backgroundColor: inputBg, color: textColor, borderColor }]} value={displayName} onChangeText={setDisplayName} placeholder="Your Full Name" /></View>
+           <View style={styles.inputGroup}><Text style={[styles.inputLabel, { color: textColor }]}>Username</Text><TextInput style={[styles.input, { backgroundColor: inputBg, color: '#888', borderColor }]} value={username} editable={false} /></View>
            
-           <View style={styles.inputGroup}>
-              <Text style={[styles.inputLabel, { color: textColor }]}>Display Name</Text>
-              <TextInput 
-                style={[styles.input, { backgroundColor: inputBg, color: textColor, borderColor }]}
-                value={displayName}
-                onChangeText={setDisplayName}
-                placeholder="Your name"
-                placeholderTextColor="#9E9E9E"
-              />
-           </View>
-
-           <View style={styles.inputGroup}>
-              <Text style={[styles.inputLabel, { color: textColor }]}>Username</Text>
-              <TextInput 
-                style={[styles.input, { backgroundColor: inputBg, color: '#888', borderColor }]}
-                value={username}
-                editable={false}
-                placeholder="username"
-                autoCapitalize="none"
-                placeholderTextColor="#9E9E9E"
-              />
-           </View>
-
            <Text style={[styles.sectionTitle, { color: textColor, marginTop: 10 }]}>Your Submission</Text>
-           
-           <TouchableOpacity 
-              activeOpacity={0.8}
-              onPress={media ? () => setIsImageViewVisible(true) : pickImage}
-              style={[styles.uploadBox, { borderColor: '#E0E0E0' }]}
-            >
-              {media ? (
-                <Image source={{ uri: media }} style={styles.previewImage} contentFit="cover" />
-              ) : (
-                <View style={styles.uploadPlaceholder}>
-                  <View style={styles.uploadCircleInner}>
-                     <Ionicons name="camera" size={24} color="#9E9E9E" />
-                  </View>
-                  <Text style={[styles.uploadText, { color: textColor }]}>Tap to Upload Photo</Text>
-                  <Text style={styles.uploadSubtext}>Supports JPG, PNG · Max 10MB</Text>
-                </View>
-              )}
-           </TouchableOpacity>
-           
-           {media && (
-               <TouchableOpacity onPress={pickImage} style={styles.changePhotoBtn}>
-                   <Text style={[styles.changePhotoText, { color: PRIMARY_COLOR }]}>Change Photo</Text>
-               </TouchableOpacity>
-           )}
+           <TouchableOpacity onPress={media ? () => setIsImageViewVisible(true) : pickImage} style={styles.uploadBox}>{media ? <Image source={{ uri: media }} style={styles.previewImage} /> : <View style={styles.uploadPlaceholder}><Ionicons name="camera" size={24} color="#9E9E9E" /><Text style={[styles.uploadText, { color: textColor }]}>Tap to Upload Photo</Text></View>}</TouchableOpacity>
+           {media && <TouchableOpacity onPress={pickImage} style={styles.changePhotoBtn}><Text style={{ color: PRIMARY_COLOR, fontFamily: 'Urbanist-Bold' }}>Change Photo</Text></TouchableOpacity>}
 
            <View style={[styles.inputGroup, { marginTop: 20 }]}>
               <Text style={[styles.inputLabel, { color: textColor }]}>Caption (Optional)</Text>
@@ -512,387 +229,58 @@ export default function BattleSetupScreen() {
         </View>
       </ScrollView>
 
-      {/* Sticky Bottom Actions */}
       <View style={[styles.footer, { backgroundColor }]}>
         <View style={styles.buttonWrapper}>
           <Animated.View style={[styles.glowBackground, animatedGlowStyle]} />
-          <TouchableOpacity 
-            activeOpacity={0.8}
-            onPress={handleAction}
-            disabled={uploading}
-            style={[
-              styles.joinButton,
-              hasInsufficientCoins ? { backgroundColor: '#FF9800' } : (isReady ? { backgroundColor: PRIMARY_COLOR } : { backgroundColor: PINK_ACCENT })
-            ]}
-          >
-             {uploading ? (
-                <ActivityIndicator color="#FFF" />
-              ) : (
-                <Text style={styles.joinBtnText}>
-                  {hasInsufficientCoins ? "Get Coins" : `Pay ${fee} Coins & Join`}
-                </Text>
-              )}
+          <TouchableOpacity onPress={handleAction} disabled={uploading} style={[styles.joinButton, { backgroundColor: (userCoins < fee) ? '#FF9800' : (isReady ? PRIMARY_COLOR : PINK_ACCENT) }]}>
+             {uploading ? <ActivityIndicator color="#FFF" /> : <Text style={styles.joinBtnText}>{(userCoins < fee) ? "Get Coins" : `Pay ${fee} Coins & Join`}</Text>}
           </TouchableOpacity>
-          {/* Coin Animation */}
-          {showCoinAnimation && (
-            <Animated.View style={[styles.flyingCoin, animatedCoinStyle]}>
-                <Wallet_Color width={32} height={32} />
-                <Text style={styles.flyingCoinText}>-{fee}</Text>
-            </Animated.View>
-          )}
         </View>
-
-        <TouchableOpacity onPress={() => setShowRulesModal(true)} style={styles.rulesContainer}>
-          <Text style={styles.rulesLink}>By joining, you agree to the contest rules.</Text>
-        </TouchableOpacity>
+        <TouchableOpacity onPress={() => setShowRulesModal(true)} style={styles.rulesContainer}><Text style={styles.rulesLink}>By joining, you agree to the contest rules.</Text></TouchableOpacity>
       </View>
-
-      <RulesModal 
-        isVisible={showRulesModal}
-        onClose={() => setShowRulesModal(false)}
-        rules={selectedContest?.rules || "No rules specified for this contest."}
-        title={selectedContest?.name || selectedContest?.title ? `${selectedContest.name || selectedContest.title} Rules` : "Contest Rules"}
-      />
-      
-      {/* Full Screen Image Viewer */}
-      {media && (
-        <ImageViewer
-          images={[{ uri: media }]}
-          imageIndex={0}
-          visible={isImageViewVisible}
-          onRequestClose={() => setIsImageViewVisible(false)}
-        />
-      )}
+      <RulesModal isVisible={showRulesModal} onClose={() => setShowRulesModal(false)} rules={selectedContest?.rules || "No rules specified."} title="Contest Rules" />
+      {media && <ImageViewer images={[{ uri: media }]} imageIndex={0} visible={isImageViewVisible} onRequestClose={() => setIsImageViewVisible(false)} />}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  loadingCenter: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  header: { 
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20, 
-    paddingVertical: 10
-  },
-  backBtn: { padding: 5 },
-  avatarPlaceholder: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#F5F5F5',
-  },
-  walletContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-    gap: 8,
-  },
-  walletText: {
-    fontSize: 16,
-    fontFamily: 'Urbanist-Bold',
-  },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 10 },
+  walletContainer: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, gap: 8 },
+  walletText: { fontSize: 16, fontFamily: 'Urbanist-Bold' },
   scrollContent: { paddingHorizontal: 20, alignItems: 'center', paddingBottom: 20 },
-  title: { 
-    fontSize: 28, 
-    fontFamily: 'Urbanist-Bold', 
-    marginVertical: 15, 
-    textAlign: 'center',
-    letterSpacing: 1
-  },
-  breakdownCard: {
-    width: '100%',
-    borderRadius: 25,
-    borderWidth: 1,
-    padding: 20,
-    alignItems: 'center',
-    marginBottom: 25,
-  },
-  breakdownLabel: {
-    fontSize: 16,
-    fontFamily: 'Urbanist-Medium',
-    color: '#9E9E9E',
-    marginBottom: 20,
-  },
-  playersContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    width: '100%',
-    paddingHorizontal: 10,
-    marginBottom: 20,
-  },
-  playerItem: {
-    alignItems: 'center',
-    flex: 1,
-  },
-  playerAvatarCircle: {
-    width: 70,
-    height: 70,
-    borderRadius: 35,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 8,
-    overflow: 'hidden',
-  },
-  avatarImg: {
-    width: '100%',
-    height: '100%',
-  },
-  playerName: {
-    fontSize: 16,
-    fontFamily: 'Urbanist-Bold',
-    marginBottom: 4,
-    width: 80,
-    textAlign: 'center',
-  },
-  feeInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  feeMinus: {
-    fontSize: 14,
-    color: '#FF4D67',
-    fontFamily: 'Urbanist-Bold',
-  },
-  coinIconWrapper: {
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  vsCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#FF758C',
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 1,
-  },
-  vsText: {
-    color: '#FFF',
-    fontSize: 16,
-    fontFamily: 'Urbanist-Bold',
-  },
-  questionMark: {
-    fontSize: 32,
-    color: '#FF4D67',
-    fontFamily: 'Urbanist-Bold',
-  },
-  winnerBanner: {
-    backgroundColor: '#FEF9C3',
-    width: '100%',
-    paddingVertical: 12,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  winnerBannerText: {
-    color: '#EAB308',
-    fontFamily: 'Urbanist-Bold',
-    fontSize: 15,
-  },
-  matchupPreviewContainer: {
-    width: '100%',
-    marginBottom: 25,
-  },
-  previewRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 15,
-  },
-  previewBox: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  previewHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 10,
-    gap: 8,
-    width: '100%',
-    paddingHorizontal: 5,
-  },
-  miniAvatar: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: '#EEE',
-  },
-  previewLabel: {
-    fontSize: 14,
-    fontFamily: 'Urbanist-Bold',
-    flex: 1,
-  },
-  previewImg: {
-    width: '100%',
-    aspectRatio: 0.8,
-    borderRadius: 15,
-    backgroundColor: '#F5F5F5',
-  },
-  emptyPreview: {
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E0E0E0',
-    borderStyle: 'dashed',
-  },
-  vsSmallCircle: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: '#FF4D67',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginHorizontal: 10,
-    zIndex: 2,
-    marginTop: 30, 
-  },
-  vsSmallText: {
-    color: '#FFF',
-    fontSize: 10,
-    fontFamily: 'Urbanist-Bold',
-  },
-  formSection: {
-    width: '100%',
-    marginBottom: 20,
-  },
-  sectionTitle: {
-    fontSize: 20,
-    fontFamily: 'Urbanist-Bold',
-    marginBottom: 15,
-  },
-  inputGroup: {
-    width: '100%',
-    marginBottom: 15,
-  },
-  inputLabel: {
-    fontSize: 14,
-    fontFamily: 'Urbanist-Bold',
-    marginBottom: 8,
-    marginLeft: 4,
-  },
-  input: {
-    width: '100%',
-    height: 56,
-    borderRadius: 16,
-    paddingHorizontal: 16,
-    fontSize: 16,
-    fontFamily: 'Urbanist-Medium',
-    borderWidth: 1,
-  },
-  textArea: {
-    height: 100,
-    paddingTop: 16,
-    textAlignVertical: 'top',
-  },
-  uploadBox: {
-    width: '100%',
-    aspectRatio: 1.5,
-    borderRadius: 20,
-    borderWidth: 2,
-    borderStyle: 'dashed',
-    justifyContent: 'center',
-    alignItems: 'center',
-    overflow: 'hidden',
-  },
-  uploadPlaceholder: {
-    alignItems: 'center',
-  },
-  uploadCircleInner: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: '#F5F5F5',
-    marginBottom: 15,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  uploadText: {
-    fontSize: 18,
-    fontFamily: 'Urbanist-Bold',
-    marginBottom: 5,
-  },
-  uploadSubtext: {
-    fontSize: 12,
-    color: '#9E9E9E',
-    fontFamily: 'Urbanist-Medium',
-  },
-  previewImage: {
-    width: '100%',
-    height: '100%',
-  },
-  changePhotoBtn: {
-    marginTop: 10,
-    alignItems: 'center',
-  },
-  changePhotoText: {
-    fontSize: 14,
-    fontFamily: 'Urbanist-Bold',
-  },
-  footer: {
-    paddingHorizontal: 20,
-    paddingTop: 10,
-    paddingBottom: Platform.OS === 'ios' ? 0 : 20,
-  },
-  buttonWrapper: {
-    position: 'relative',
-    width: '100%',
-    marginBottom: 12,
-  },
-  glowBackground: {
-    position: 'absolute',
-    top: -4,
-    left: -4,
-    right: -4,
-    bottom: -4,
-    backgroundColor: PRIMARY_COLOR,
-    borderRadius: 24,
-    shadowColor: PRIMARY_COLOR,
-    shadowOffset: { width: 0, height: 0 },
-    shadowRadius: 15,
-    elevation: 8,
-  },
-  joinButton: {
-    width: '100%',
-    height: 60,
-    borderRadius: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 10,
-  },
-  joinBtnText: {
-    color: '#FFF',
-    fontSize: 18,
-    fontFamily: 'Urbanist-Bold',
-  },
-  rulesContainer: {
-    alignItems: 'center',
-    marginBottom: 5,
-  },
-  rulesLink: {
-    color: '#9E9E9E',
-    fontSize: 12,
-    fontFamily: 'Urbanist-Medium',
-    textDecorationLine: 'underline',
-  },
-  flyingCoin: {
-      position: 'absolute',
-      top: 0,
-      left: '50%',
-      marginLeft: -16,
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 5,
-      zIndex: 20,
-  },
-  flyingCoinText: {
-      color: '#FF4D67',
-      fontSize: 18,
-      fontFamily: 'Urbanist-Bold',
-  }
+  title: { fontSize: 28, fontFamily: 'Urbanist-Bold', marginVertical: 15 },
+  breakdownCard: { width: '100%', borderRadius: 25, borderWidth: 1, padding: 20, alignItems: 'center', marginBottom: 25 },
+  breakdownLabel: { fontSize: 16, fontFamily: 'Urbanist-Medium', color: '#9E9E9E', marginBottom: 20 },
+  playersContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', width: '100%', marginBottom: 20 },
+  playerItem: { alignItems: 'center', flex: 1 },
+  playerAvatarCircle: { width: 70, height: 70, borderRadius: 35, backgroundColor: '#E1F5FE', justifyContent: 'center', alignItems: 'center', marginBottom: 8, overflow: 'hidden' },
+  avatarImg: { width: '100%', height: '100%' },
+  playerName: { fontSize: 14, fontFamily: 'Urbanist-Bold', marginBottom: 4 },
+  feeInfo: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  feeMinus: { fontSize: 14, color: '#FF4D67', fontFamily: 'Urbanist-Bold' },
+  vsCircle: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#FF758C', justifyContent: 'center', alignItems: 'center' },
+  vsText: { color: '#FFF', fontSize: 16, fontFamily: 'Urbanist-Bold' },
+  questionMark: { fontSize: 32, color: '#FF4D67', fontFamily: 'Urbanist-Bold' },
+  winnerBanner: { backgroundColor: '#FEF9C3', width: '100%', paddingVertical: 12, borderRadius: 12, alignItems: 'center' },
+  winnerBannerText: { color: '#EAB308', fontFamily: 'Urbanist-Bold', fontSize: 14, textAlign: 'center', paddingHorizontal: 10 },
+  formSection: { width: '100%', marginBottom: 20 },
+  sectionTitle: { fontSize: 20, fontFamily: 'Urbanist-Bold', marginBottom: 15 },
+  inputGroup: { width: '100%', marginBottom: 15 },
+  inputLabel: { fontSize: 14, fontFamily: 'Urbanist-Bold', marginBottom: 8, marginLeft: 4 },
+  input: { width: '100%', height: 56, borderRadius: 16, paddingHorizontal: 16, fontSize: 16, fontFamily: 'Urbanist-Medium', borderWidth: 1 },
+  textArea: { height: 100, paddingTop: 16, textAlignVertical: 'top' },
+  uploadBox: { width: '100%', aspectRatio: 1.5, borderRadius: 20, borderWidth: 2, borderStyle: 'dashed', borderColor: '#E0E0E0', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' },
+  uploadPlaceholder: { alignItems: 'center' },
+  uploadText: { fontSize: 16, fontFamily: 'Urbanist-Bold', marginTop: 10 },
+  previewImage: { width: '100%', height: '100%' },
+  changePhotoBtn: { marginTop: 10, alignItems: 'center' },
+  footer: { paddingHorizontal: 20, paddingVertical: 15 },
+  buttonWrapper: { position: 'relative', width: '100%' },
+  glowBackground: { position: 'absolute', top: -4, left: -4, right: -4, bottom: -4, backgroundColor: PRIMARY_COLOR, borderRadius: 24 },
+  joinButton: { width: '100%', height: 60, borderRadius: 20, justifyContent: 'center', alignItems: 'center', zIndex: 10 },
+  joinBtnText: { color: '#FFF', fontSize: 18, fontFamily: 'Urbanist-Bold' },
+  rulesContainer: { alignItems: 'center', marginTop: 10 },
+  rulesLink: { color: '#9E9E9E', fontSize: 12, textDecorationLine: 'underline' }
 });

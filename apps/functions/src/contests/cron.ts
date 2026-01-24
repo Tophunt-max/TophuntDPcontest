@@ -2,11 +2,11 @@ import { onSchedule } from "firebase-functions/v2/scheduler";
 import { db, admin } from "../utils/firebase";
 import { FieldValue } from "firebase-admin/firestore";
 import { createNotification } from "../notifications/utils";
+import { sendPushNotification } from "../notifications/sender";
 
 /**
  * CONTEST MAINTENANCE CRON
  * Runs every 15 minutes to handle non-financial tasks like notifications.
- * Financial resolution is now safely handled by finalize.ts only.
  */
 export const contestMaintenance = onSchedule("every 15 minutes", async (event) => {
   const now = admin.firestore.Timestamp.now();
@@ -15,8 +15,8 @@ export const contestMaintenance = onSchedule("every 15 minutes", async (event) =
   const oneHourLater = new Date(Date.now() + 60 * 60 * 1000);
   const endingMatches = await db.collection("contestMatches")
       .where("status", "==", "active")
-      .where("expiresAt", ">", now)
-      .where("expiresAt", "<=", admin.firestore.Timestamp.fromDate(oneHourLater))
+      .where("endDate", ">", now)
+      .where("endDate", "<=", admin.firestore.Timestamp.fromDate(oneHourLater))
       .where("endingSoonNotified", "==", false)
       .limit(50)
       .get();
@@ -39,6 +39,7 @@ async function notifyEndingMatch(doc: admin.firestore.DocumentSnapshot) {
 
     const message = `⏳ Hurry! The battle "${title || 'Match'}" ends soon. Get more votes to win!`;
 
+    // 1. In-App Notifications
     if (creatorId) {
         await createNotification(creatorId, {
             title: "Battle Ending Soon!",
@@ -46,6 +47,8 @@ async function notifyEndingMatch(doc: admin.firestore.DocumentSnapshot) {
             type: "contest-ending",
             targetId: matchId
         });
+        // 2. REAL PUSH NOTIFICATION
+        await sendPushNotification(creatorId, "Battle Ending Soon! ⏳", message, "match_ending", { matchId });
     }
 
     if (opponentId) {
@@ -55,6 +58,8 @@ async function notifyEndingMatch(doc: admin.firestore.DocumentSnapshot) {
             type: "contest-ending",
             targetId: matchId
         });
+        // 2. REAL PUSH NOTIFICATION
+        await sendPushNotification(opponentId, "Battle Ending Soon! ⏳", message, "match_ending", { matchId });
     }
 
     await doc.ref.update({ endingSoonNotified: true });
@@ -62,7 +67,6 @@ async function notifyEndingMatch(doc: admin.firestore.DocumentSnapshot) {
 
 /**
  * MONTHLY HALL OF FAME
- * Rewards the top 3 players of the month.
  */
 export const monthlyHallOfFame = onSchedule("0 0 1 * *", async (event) => {
   const usersRef = db.collection("users");
@@ -97,11 +101,16 @@ export const monthlyHallOfFame = onSchedule("0 0 1 * *", async (event) => {
         });
     });
 
+    const congratMsg = `Congratulations! You ranked #${i + 1} this month. You've earned ${reward} Dpcoins and the ${badgeName}!`;
+    
     await createNotification(userId, {
         title: "Monthly Hall of Fame! 🏆",
-        body: `Congratulations! You ranked #${i + 1} this month. You've earned ${reward} Dpcoins and the ${badgeName}!`,
+        body: congratMsg,
         type: "hall-of-fame",
         targetId: "profile"
     });
+
+    // PUSH NOTIFICATION
+    await sendPushNotification(userId, "Monthly Hall of Fame! 🏆", congratMsg, "hall_of_fame", { rank: (i+1).toString() });
   }
 });
