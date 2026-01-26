@@ -6,7 +6,8 @@ import { syncUserProfileUpdates } from "./user/syncProfile";
 import { storyHandler } from "./stories/index";
 import { notify } from "./notifications/index";
 import { adminHandler } from "./admin/index";
-import { contestHandler } from "./contests/handler"; // Unified Contest Handler
+import { contestHandler } from "./contests/handler";
+import { contestMaintenance, monthlyHallOfFame } from "./contests/cron";
 
 if (admin.apps.length === 0) {
     admin.initializeApp();
@@ -30,6 +31,8 @@ export {
     storyHandler, 
     authHandler, 
     adminHandler, 
-    contestHandler, // Single Contest Entry
-    syncUserProfileUpdates 
+    contestHandler,
+    syncUserProfileUpdates,
+    contestMaintenance,
+    monthlyHallOfFame
 };

@@ -4,6 +4,7 @@ import { db } from "../utils/firebase";
 import { FieldValue } from "firebase-admin/firestore";
 import { sendPushNotification, sendBroadcastNotification } from "../notifications/sender";
 import { awardXp } from "../utils/gamification";
+import { createNotification } from "../notifications/utils";
 
 const CONTEST_CONFIG = {
     region: "us-central1",
@@ -116,7 +117,6 @@ async function handleJoinMatch(request: any) {
             const matchData = matchDoc.data()!;
             if (matchData.status !== "waiting_for_opponent") throw new HttpsError("failed-precondition", "Match full.");
 
-            // 1. Participant Limit Check for second player
             const contestRef = db.collection("contests").doc(matchData.contestId);
             const contestDoc = await transaction.get(contestRef);
             if (contestDoc.exists) {
@@ -161,20 +161,29 @@ async function handleVote(request: any) {
     if (uid === votedForUid) throw new HttpsError("permission-denied", "You cannot vote for yourself.");
 
     try {
+        let voterName = "Someone";
+        let targetUid = votedForUid;
+        
         await db.runTransaction(async (transaction) => {
             const matchRef = db.collection("contestMatches").doc(matchId);
             const voteDocId = `${matchId}_${uid}`;
             const voteRef = db.collection("votes").doc(voteDocId);
             const deviceMatchVoteRef = db.collection("deviceMatchVotes").doc(`${matchId}_${deviceId || 'unknown'}`);
+            const voterUserRef = db.collection("users").doc(uid);
             
-            const [matchDoc, voteDoc, deviceMatchVoteDoc] = await Promise.all([
+            const [matchDoc, voteDoc, deviceMatchVoteDoc, voterDoc] = await Promise.all([
                 transaction.get(matchRef),
                 transaction.get(voteRef),
-                deviceId ? transaction.get(deviceMatchVoteRef) : Promise.resolve(null)
+                deviceId ? transaction.get(deviceMatchVoteRef) : Promise.resolve(null),
+                transaction.get(voterUserRef)
             ]);
 
             if (!matchDoc.exists) throw new HttpsError("not-found", "Match not found.");
             if (voteDoc.exists) throw new HttpsError("already-exists", "You have already voted.");
+
+            if (voterDoc.exists) {
+                voterName = voterDoc.data()?.username || voterDoc.data()?.displayName || "Someone";
+            }
 
             const matchData = matchDoc.data()!;
             if (matchData.endDate && matchData.endDate.toDate() < new Date()) throw new HttpsError("failed-precondition", "Ended.");
@@ -191,6 +200,19 @@ async function handleVote(request: any) {
             transaction.set(voteRef, { matchId, voterUid: uid, votedForUid, deviceId: deviceId || null, ip: clientIp, timestamp: FieldValue.serverTimestamp() });
         });
 
+        // 1. Create In-App Notification
+        await createNotification(targetUid, {
+            title: "New Vote! 🗳️",
+            body: `${voterName} voted for you in a battle!`,
+            type: "vote" as any,
+            targetId: matchId,
+            image: "", // Could add match image here
+            data: { matchId, voterUid: uid, voterName }
+        });
+
+        // 2. Send Push Notification
+        await sendPushNotification(targetUid, "New Vote! 🗳️", `${voterName} voted for you in a battle!`, "vote", { matchId });
+
         await awardXp(uid, 5, "voted_in_contest");
         return { success: true };
     } catch (e: any) {
@@ -199,9 +221,43 @@ async function handleVote(request: any) {
     }
 }
 
-async function handleLike(request: any) { return { success: true }; }
-async function handleComment(request: any) { return { success: true }; }
-async function handleShare(request: any) { return { success: true }; }
+async function handleLike(request: any) {
+    const { matchId } = request.data;
+    const uid = request.auth.uid;
+    if (!matchId) throw new HttpsError("invalid-argument", "Missing matchId.");
+
+    try {
+        const likeRef = db.collection("contestMatches").doc(matchId).collection("likes").doc(uid);
+        const matchRef = db.collection("contestMatches").doc(matchId);
+        
+        const likeDoc = await likeRef.get();
+        if (likeDoc.exists) {
+            await likeRef.delete();
+            await matchRef.update({ likeCount: FieldValue.increment(-1) });
+            return { liked: false };
+        } else {
+            await likeRef.set({ uid, timestamp: FieldValue.serverTimestamp() });
+            await matchRef.update({ likeCount: FieldValue.increment(1) });
+            return { liked: true };
+        }
+    } catch (e: any) { throw new HttpsError("internal", e.message); }
+}
+
+async function handleComment(request: any) { 
+    const { matchId } = request.data;
+    if (!matchId) throw new HttpsError("invalid-argument", "Missing matchId.");
+    return { success: true }; 
+}
+
+async function handleShare(request: any) {
+    const { matchId } = request.data;
+    if (!matchId) throw new HttpsError("invalid-argument", "Missing matchId.");
+    try {
+        await db.collection("contestMatches").doc(matchId).update({ shareCount: FieldValue.increment(1) });
+        return { success: true };
+    } catch (e: any) { throw new HttpsError("internal", e.message); }
+}
+
 async function handleJoin(request: any) { return { success: true }; }
 
 async function handleCreateTemplate(request: any) {

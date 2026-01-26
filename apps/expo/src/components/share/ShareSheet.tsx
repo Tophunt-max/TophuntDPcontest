@@ -9,7 +9,8 @@ import {
   Pressable,
   Platform,
   ScrollView,
-  Share as RNShare
+  Share as RNShare,
+  Linking
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Portal } from 'react-native-paper';
@@ -58,6 +59,7 @@ interface ShareSheetProps {
 export const ShareSheet = ({ visible, onDismiss, isDark, matchId }: ShareSheetProps) => {
   const translateY = useSharedValue(SHEET_HEIGHT);
   const opacity = useSharedValue(0);
+  const [shouldRender, setShouldRender] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [users, setUsers] = useState<any[]>([]);
   const { addToast } = useToast();
@@ -70,11 +72,14 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId }: ShareSheetPr
 
   useEffect(() => {
     if (visible) {
+      setShouldRender(true);
       translateY.value = withSpring(0, { damping: 20, stiffness: 90 });
       opacity.value = withTiming(1, { duration: 300 });
       loadUsers();
-    } else {
-      translateY.value = withSpring(SHEET_HEIGHT);
+    } else if (shouldRender) {
+      translateY.value = withSpring(SHEET_HEIGHT, { damping: 20, stiffness: 90 }, (finished) => {
+          if (finished) runOnJS(setShouldRender)(false);
+      });
       opacity.value = withTiming(0, { duration: 300 });
     }
   }, [visible]);
@@ -96,6 +101,52 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId }: ShareSheetPr
     }
   };
 
+  const onShareToPlatform = async (platformId: string, platformName: string) => {
+    const shareUrl = `https://tophunt.app/battle/${matchId}`;
+    const text = `Check out this battle on TopHunt! 🏆`;
+    const fullMessage = `${text}\n\n${shareUrl}`;
+    
+    let url = '';
+    
+    switch(platformId) {
+      case 'wa':
+        url = `whatsapp://send?text=${encodeURIComponent(fullMessage)}`;
+        if (Platform.OS === 'web') url = `https://wa.me/?text=${encodeURIComponent(fullMessage)}`;
+        break;
+      case 'fb':
+        url = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(shareUrl)}`;
+        break;
+      case 'tw':
+        url = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(shareUrl)}`;
+        break;
+      case 'tg':
+        url = `https://t.me/share/url?url=${encodeURIComponent(shareUrl)}&text=${encodeURIComponent(text)}`;
+        break;
+      case 'ms':
+        url = Platform.OS === 'ios' ? `fb-messenger://share?link=${encodeURIComponent(shareUrl)}` : `https://www.facebook.com/dialog/send?link=${encodeURIComponent(shareUrl)}&app_id=YOUR_APP_ID&redirect_uri=${encodeURIComponent(shareUrl)}`;
+        break;
+      default:
+        onCopyLink();
+        return;
+    }
+
+    try {
+        if (url) {
+            const canOpen = await Linking.canOpenURL(url);
+            if (canOpen || Platform.OS === 'web') {
+                await Linking.openURL(url);
+                await handleShareSuccess();
+                addToast(`Opening ${platformName}...`, 'success');
+                closeSheet();
+            } else {
+                onShareAction('System');
+            }
+        }
+    } catch (e) {
+        onShareAction('System');
+    }
+  };
+
   const onShareAction = async (platformName: string) => {
     try {
       const shareUrl = `https://tophunt.app/battle/${matchId}`;
@@ -103,32 +154,36 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId }: ShareSheetPr
       
       const result = await RNShare.share({
         message,
-        url: shareUrl,
+        url: Platform.OS === 'ios' ? shareUrl : undefined,
         title: 'Share Battle'
       });
 
-      if (result.action === RNShare.sharedAction) {
-        await handleShareSuccess();
-        addToast(`Shared to ${platformName}! 🔥`, 'success');
-        closeSheet();
-      }
+      await handleShareSuccess();
+      addToast(`Shared! 🔥`, 'success');
+      closeSheet();
     } catch (error: any) {
-      addToast(error.message, 'error');
+      onCopyLink();
+      console.log("Native share failed, falling back to copy link", error);
     }
   };
 
   const onCopyLink = async () => {
-    const shareUrl = `https://tophunt.app/battle/${matchId}`;
-    await Clipboard.setStringAsync(shareUrl);
-    await handleShareSuccess();
-    addToast("Link copied to clipboard! 📋", 'success');
-    closeSheet();
+    try {
+        const shareUrl = `https://tophunt.app/battle/${matchId}`;
+        await Clipboard.setStringAsync(shareUrl);
+        await handleShareSuccess();
+        addToast("Link copied to clipboard! 📋", 'success');
+        closeSheet();
+    } catch (e) {
+        addToast("Failed to copy link", 'error');
+    }
   };
 
   const closeSheet = useCallback(() => {
     translateY.value = withSpring(SHEET_HEIGHT, { damping: 20, stiffness: 90 }, (finished) => {
       if (finished) {
         runOnJS(onDismiss)();
+        runOnJS(setShouldRender)(false);
       }
     });
     opacity.value = withTiming(0, { duration: 300 });
@@ -136,11 +191,13 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId }: ShareSheetPr
 
   const gesture = Gesture.Pan()
     .onUpdate((event) => {
+      'worklet';
       if (event.translationY > 0) {
         translateY.value = event.translationY;
       }
     })
     .onEnd((event) => {
+      'worklet';
       if (event.translationY > 150 || event.velocityY > 500) {
         runOnJS(closeSheet)();
       } else {
@@ -156,11 +213,11 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId }: ShareSheetPr
     opacity: interpolate(translateY.value, [0, SHEET_HEIGHT], [0.5, 0], Extrapolation.CLAMP),
   }));
 
-  if (!visible && translateY.value === SHEET_HEIGHT) return null;
+  if (!shouldRender) return null;
 
   const filteredUsers = users.filter(u => 
-    u.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
-    u.username.toLowerCase().includes(searchQuery.toLowerCase())
+    (u.name || '').toLowerCase().includes(searchQuery.toLowerCase()) || 
+    (u.username || '').toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   return (
@@ -192,17 +249,17 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId }: ShareSheetPr
             <View style={{ height: 110 }}>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.userListHorizontal}>
                     {filteredUsers.length > 0 ? filteredUsers.map(user => (
-                        <TouchableOpacity key={user.id} style={styles.userItem} onPress={() => onShareAction(user.name)}>
+                        <TouchableOpacity key={user.id} style={styles.userItem} onPress={() => onShareAction(user.name || 'Friend')}>
                             <View style={styles.userAvatarWrapper}>
                                 <Image 
-                                    source={{ uri: getOptimizedMediaUrl(user.avatar) }} 
+                                    source={{ uri: getOptimizedMediaUrl(user.avatar || user.profileImageUrl) }} 
                                     style={styles.userAvatar} 
                                     contentFit="cover"
                                     cachePolicy="memory-disk"
                                     transition={200}
                                 />
                             </View>
-                            <Text style={[styles.userName, { color: textColor }]} numberOfLines={1}>{user.name.split(' ')[0]}</Text>
+                            <Text style={[styles.userName, { color: textColor }]} numberOfLines={1}>{(user.name || user.username || 'User').split(' ')[0]}</Text>
                         </TouchableOpacity>
                     )) : (
                         [1,2,3,4,5,6].map(i => (
@@ -220,7 +277,7 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId }: ShareSheetPr
                     {SOCIAL_PLATFORMS.map(platform => {
                         const SocialIcon = platform.icon;
                         return (
-                            <TouchableOpacity key={platform.id} style={styles.socialItem} onPress={() => onShareAction(platform.name)}>
+                            <TouchableOpacity key={platform.id} style={styles.socialItem} onPress={() => onShareToPlatform(platform.id, platform.name)}>
                                 <View style={[styles.socialIconCircle, { backgroundColor: platform.color }]}>
                                     <SocialIcon width={28} height={28} color={platform.id === 'sc' ? '#000' : '#FFF'} />
                                 </View>

@@ -38,12 +38,14 @@ export const masterApiRouter = async (request: CallableRequest) => {
         }
 
         // Contest Handlers
-        if (action.startsWith("contest_") || ["join", "vote", "likeContest", "commentContest", "startMatch", "joinMatch"].includes(action)) {
+        if (action.startsWith("contest_") || ["join", "vote", "likeContest", "commentContest", "shareContest", "startMatch", "joinMatch", "submitVote"].includes(action)) {
             const contestActionMap: Record<string, string> = {
                 "join": "join",
                 "vote": "vote",
+                "submitVote": "vote",
                 "likeContest": "like",
                 "commentContest": "comment",
+                "shareContest": "share",
                 "startMatch": "startMatch",
                 "joinMatch": "joinMatch",
                 "contest_createTemplate": "createTemplate"

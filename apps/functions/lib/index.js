@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.syncUserProfileUpdates = exports.contestHandler = exports.adminHandler = exports.authHandler = exports.storyHandler = exports.notify = exports.api = void 0;
+exports.monthlyHallOfFame = exports.contestMaintenance = exports.syncUserProfileUpdates = exports.contestHandler = exports.adminHandler = exports.authHandler = exports.storyHandler = exports.notify = exports.api = void 0;
 const https_1 = require("firebase-functions/v2/https");
 const admin = __importStar(require("firebase-admin"));
 const main_1 = require("./api/main");
@@ -47,8 +47,11 @@ const index_2 = require("./notifications/index");
 Object.defineProperty(exports, "notify", { enumerable: true, get: function () { return index_2.notify; } });
 const index_3 = require("./admin/index");
 Object.defineProperty(exports, "adminHandler", { enumerable: true, get: function () { return index_3.adminHandler; } });
-const handler_1 = require("./contests/handler"); // Unified Contest Handler
+const handler_1 = require("./contests/handler");
 Object.defineProperty(exports, "contestHandler", { enumerable: true, get: function () { return handler_1.contestHandler; } });
+const cron_1 = require("./contests/cron");
+Object.defineProperty(exports, "contestMaintenance", { enumerable: true, get: function () { return cron_1.contestMaintenance; } });
+Object.defineProperty(exports, "monthlyHallOfFame", { enumerable: true, get: function () { return cron_1.monthlyHallOfFame; } });
 if (admin.apps.length === 0) {
     admin.initializeApp();
 }

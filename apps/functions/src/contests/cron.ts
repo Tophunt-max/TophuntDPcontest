@@ -6,24 +6,43 @@ import { sendPushNotification } from "../notifications/sender";
 
 /**
  * CONTEST MAINTENANCE CRON
- * Runs every 15 minutes to handle non-financial tasks like notifications.
+ * Runs every 5 minutes to handle expiration and notifications.
  */
-export const contestMaintenance = onSchedule("every 15 minutes", async (event) => {
-  const now = admin.firestore.Timestamp.now();
+export const contestMaintenance = onSchedule({
+    schedule: "every 5 minutes",
+    region: "us-central1"
+}, async (event) => {
+    const now = admin.firestore.Timestamp.now();
 
-  // 1. Send "Ending Soon" Notifications for matches expiring in < 60 minutes
-  const oneHourLater = new Date(Date.now() + 60 * 60 * 1000);
-  const endingMatches = await db.collection("contestMatches")
-      .where("status", "==", "active")
-      .where("endDate", ">", now)
-      .where("endDate", "<=", admin.firestore.Timestamp.fromDate(oneHourLater))
-      .where("endingSoonNotified", "==", false)
-      .limit(50)
-      .get();
+    // 1. AUTO-ARCHIVE EXPIRED CONTEST TEMPLATES
+    const expiredTemplates = await db.collection("contests")
+        .where("status", "==", "live")
+        .where("expiresAt", "<", now)
+        .limit(20)
+        .get();
 
-  for (const doc of endingMatches.docs) {
-      await notifyEndingMatch(doc);
-  }
+    for (const doc of expiredTemplates.docs) {
+        // Change status to 'ended' so it disappears from mobile app but remains in DB for Admin
+        await doc.ref.update({ 
+            status: "ended", 
+            archivedAt: FieldValue.serverTimestamp() 
+        });
+        console.log(`Archived expired contest template: ${doc.id}`);
+    }
+
+    // 2. Send "Ending Soon" Notifications for active matches expiring in < 60 minutes
+    const oneHourLater = new Date(Date.now() + 60 * 60 * 1000);
+    const endingMatches = await db.collection("contestMatches")
+        .where("status", "==", "active")
+        .where("endDate", ">", now)
+        .where("endDate", "<=", admin.firestore.Timestamp.fromDate(oneHourLater))
+        .where("endingSoonNotified", "==", false)
+        .limit(50)
+        .get();
+
+    for (const doc of endingMatches.docs) {
+        await notifyEndingMatch(doc);
+    }
 });
 
 /**
@@ -39,7 +58,6 @@ async function notifyEndingMatch(doc: admin.firestore.DocumentSnapshot) {
 
     const message = `⏳ Hurry! The battle "${title || 'Match'}" ends soon. Get more votes to win!`;
 
-    // 1. In-App Notifications
     if (creatorId) {
         await createNotification(creatorId, {
             title: "Battle Ending Soon!",
@@ -47,7 +65,6 @@ async function notifyEndingMatch(doc: admin.firestore.DocumentSnapshot) {
             type: "contest-ending",
             targetId: matchId
         });
-        // 2. REAL PUSH NOTIFICATION
         await sendPushNotification(creatorId, "Battle Ending Soon! ⏳", message, "match_ending", { matchId });
     }
 
@@ -58,7 +75,6 @@ async function notifyEndingMatch(doc: admin.firestore.DocumentSnapshot) {
             type: "contest-ending",
             targetId: matchId
         });
-        // 2. REAL PUSH NOTIFICATION
         await sendPushNotification(opponentId, "Battle Ending Soon! ⏳", message, "match_ending", { matchId });
     }
 
@@ -110,7 +126,6 @@ export const monthlyHallOfFame = onSchedule("0 0 1 * *", async (event) => {
         targetId: "profile"
     });
 
-    // PUSH NOTIFICATION
     await sendPushNotification(userId, "Monthly Hall of Fame! 🏆", congratMsg, "hall_of_fame", { rank: (i+1).toString() });
   }
 });

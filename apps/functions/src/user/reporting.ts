@@ -64,7 +64,21 @@ export const reportContent = async (request: any) => {
             // Log for Admin
             console.log(`Content ${targetId} (${targetType}) auto-hidden after ${reportCount} reports.`);
             
-            // Optional: Notify Admins via a specific channel/FCM if needed
+            // Send notification to the owner
+            const ownerId = targetType === "users" ? targetId : targetData?.userId;
+            if (ownerId) {
+                const contentType = targetType === "users" ? "profile" : 
+                                  targetType === "stories" ? "story" :
+                                  targetType === "posts" ? "post" : "content";
+                
+                await sendPushNotification(
+                    ownerId,
+                    "Content Hidden",
+                    `Your ${contentType} has been hidden due to multiple reports.`,
+                    "content_hidden",
+                    { targetId, targetType }
+                );
+            }
         }
 
         return { success: true, message: "Report submitted successfully." };

@@ -48,6 +48,8 @@ const posts = __importStar(require("../posts/index"));
 const userRewards = __importStar(require("../user/rewards"));
 const userSocial = __importStar(require("../user/toggleFollow"));
 const walletTopup = __importStar(require("../wallet/topup"));
+const reporting_1 = require("../user/reporting");
+const prizes_1 = require("../user/prizes");
 /**
  * MASTER API ROUTER
  * This is the single entry point for all app actions.
@@ -66,12 +68,14 @@ const masterApiRouter = async (request) => {
             return await (0, index_3.getCallCredentials)(request);
         }
         // Contest Handlers
-        if (action.startsWith("contest_") || ["join", "vote", "likeContest", "commentContest", "startMatch", "joinMatch"].includes(action)) {
+        if (action.startsWith("contest_") || ["join", "vote", "likeContest", "commentContest", "shareContest", "startMatch", "joinMatch", "submitVote"].includes(action)) {
             const contestActionMap = {
                 "join": "join",
                 "vote": "vote",
+                "submitVote": "vote",
                 "likeContest": "like",
                 "commentContest": "comment",
+                "shareContest": "share",
                 "startMatch": "startMatch",
                 "joinMatch": "joinMatch",
                 "contest_createTemplate": "createTemplate"
@@ -142,6 +146,10 @@ const masterApiRouter = async (request) => {
                 return await posts.createPost.run(request);
             case "deletePost":
                 return await posts.deleteUserPost.run(request);
+            case "reportContent":
+                return await (0, reporting_1.reportContent)(request);
+            case "claimPrize":
+                return await (0, prizes_1.claimPrize)(request);
             // Storage is handled via Cloudflare Workers now
             case "getUploadUrl":
             case "finalizeUpload":

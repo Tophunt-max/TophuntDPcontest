@@ -5,19 +5,36 @@ const scheduler_1 = require("firebase-functions/v2/scheduler");
 const firebase_1 = require("../utils/firebase");
 const firestore_1 = require("firebase-admin/firestore");
 const utils_1 = require("../notifications/utils");
+const sender_1 = require("../notifications/sender");
 /**
  * CONTEST MAINTENANCE CRON
- * Runs every 15 minutes to handle non-financial tasks like notifications.
- * Financial resolution is now safely handled by finalize.ts only.
+ * Runs every 5 minutes to handle expiration and notifications.
  */
-exports.contestMaintenance = (0, scheduler_1.onSchedule)("every 15 minutes", async (event) => {
+exports.contestMaintenance = (0, scheduler_1.onSchedule)({
+    schedule: "every 5 minutes",
+    region: "us-central1"
+}, async (event) => {
     const now = firebase_1.admin.firestore.Timestamp.now();
-    // 1. Send "Ending Soon" Notifications for matches expiring in < 60 minutes
+    // 1. AUTO-ARCHIVE EXPIRED CONTEST TEMPLATES
+    const expiredTemplates = await firebase_1.db.collection("contests")
+        .where("status", "==", "live")
+        .where("expiresAt", "<", now)
+        .limit(20)
+        .get();
+    for (const doc of expiredTemplates.docs) {
+        // Change status to 'ended' so it disappears from mobile app but remains in DB for Admin
+        await doc.ref.update({
+            status: "ended",
+            archivedAt: firestore_1.FieldValue.serverTimestamp()
+        });
+        console.log(`Archived expired contest template: ${doc.id}`);
+    }
+    // 2. Send "Ending Soon" Notifications for active matches expiring in < 60 minutes
     const oneHourLater = new Date(Date.now() + 60 * 60 * 1000);
     const endingMatches = await firebase_1.db.collection("contestMatches")
         .where("status", "==", "active")
-        .where("expiresAt", ">", now)
-        .where("expiresAt", "<=", firebase_1.admin.firestore.Timestamp.fromDate(oneHourLater))
+        .where("endDate", ">", now)
+        .where("endDate", "<=", firebase_1.admin.firestore.Timestamp.fromDate(oneHourLater))
         .where("endingSoonNotified", "==", false)
         .limit(50)
         .get();
@@ -42,6 +59,7 @@ async function notifyEndingMatch(doc) {
             type: "contest-ending",
             targetId: matchId
         });
+        await (0, sender_1.sendPushNotification)(creatorId, "Battle Ending Soon! ⏳", message, "match_ending", { matchId });
     }
     if (opponentId) {
         await (0, utils_1.createNotification)(opponentId, {
@@ -50,12 +68,12 @@ async function notifyEndingMatch(doc) {
             type: "contest-ending",
             targetId: matchId
         });
+        await (0, sender_1.sendPushNotification)(opponentId, "Battle Ending Soon! ⏳", message, "match_ending", { matchId });
     }
     await doc.ref.update({ endingSoonNotified: true });
 }
 /**
  * MONTHLY HALL OF FAME
- * Rewards the top 3 players of the month.
  */
 exports.monthlyHallOfFame = (0, scheduler_1.onSchedule)("0 0 1 * *", async (event) => {
     const usersRef = firebase_1.db.collection("users");
@@ -86,12 +104,14 @@ exports.monthlyHallOfFame = (0, scheduler_1.onSchedule)("0 0 1 * *", async (even
                 description: `Monthly Hall of Fame Rank #${i + 1} reward`
             });
         });
+        const congratMsg = `Congratulations! You ranked #${i + 1} this month. You've earned ${reward} Dpcoins and the ${badgeName}!`;
         await (0, utils_1.createNotification)(userId, {
             title: "Monthly Hall of Fame! 🏆",
-            body: `Congratulations! You ranked #${i + 1} this month. You've earned ${reward} Dpcoins and the ${badgeName}!`,
+            body: congratMsg,
             type: "hall-of-fame",
             targetId: "profile"
         });
+        await (0, sender_1.sendPushNotification)(userId, "Monthly Hall of Fame! 🏆", congratMsg, "hall_of_fame", { rank: (i + 1).toString() });
     }
 });
 //# sourceMappingURL=cron.js.map

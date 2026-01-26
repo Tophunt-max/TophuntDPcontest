@@ -131,6 +131,18 @@ async function getRewardSettings() {
     return ((_a = configDoc.data()) === null || _a === void 0 ? void 0 : _a.rewardSettings) || { signupBonus: 100 };
 }
 /**
+ * Helper to get User IP safely from Callable Request
+ */
+function getClientIp(request) {
+    var _a, _b, _c;
+    const headers = (_a = request.rawRequest) === null || _a === void 0 ? void 0 : _a.headers;
+    const xForwardedFor = headers === null || headers === void 0 ? void 0 : headers['x-forwarded-for'];
+    if (xForwardedFor) {
+        return xForwardedFor.split(',')[0].trim();
+    }
+    return ((_c = (_b = request.rawRequest) === null || _b === void 0 ? void 0 : _b.socket) === null || _c === void 0 ? void 0 : _c.remoteAddress) || 'unknown';
+}
+/**
  * Master Auth Handler that processes all Auth and Account-related actions.
  */
 exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
@@ -140,6 +152,7 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
     }
     const { action } = request.data;
     const uid = (_a = request.auth) === null || _a === void 0 ? void 0 : _a.uid;
+    const clientIp = getClientIp(request);
     switch (action) {
         case "check": {
             const { type } = request.data;
@@ -202,7 +215,7 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
             return { exists, uid: existingUid };
         }
         case "create": {
-            const { email, password, username, fullName, avatarUrl, dob, phone, occupation, gender, following, platform, coordinates } = request.data;
+            const { email, password, username, fullName, avatarUrl, dob, phone, occupation, gender, following, platform, coordinates, deviceInfo } = request.data;
             if (!email || !password || !username)
                 throw new https_1.HttpsError("invalid-argument", "Email, password, and username are required.");
             if (isDisposableEmail(email))
@@ -225,7 +238,11 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
             const newUid = userRecord.uid;
             try {
                 const rewardSettings = await getRewardSettings();
-                await createFirestoreProfile(newUid, { email, username: validatedUsername, fullName, avatarUrl, dob, phone, occupation, gender, following, platform, coordinates }, rewardSettings.signupBonus || 0);
+                await createFirestoreProfile(newUid, {
+                    email, username: validatedUsername, fullName, avatarUrl, dob, phone, occupation, gender, following, platform, coordinates, deviceInfo,
+                    signupIp: clientIp,
+                    lastIp: clientIp
+                }, rewardSettings.signupBonus || 0);
                 return { status: "success", uid: newUid, message: "User created successfully" };
             }
             catch (error) {
@@ -241,7 +258,7 @@ exports.authHandler = (0, https_1.onCall)(AUTH_CONFIG, async (request) => {
             if (email && isDisposableEmail(email))
                 throw new https_1.HttpsError("invalid-argument", "Disposable email blocked.");
             const rewardSettings = await getRewardSettings();
-            await createFirestoreProfile(profileUid, Object.assign(Object.assign({}, request.data), { avatarUrl }), rewardSettings.signupBonus || 0);
+            await createFirestoreProfile(profileUid, Object.assign(Object.assign({}, request.data), { avatarUrl, lastIp: clientIp }), rewardSettings.signupBonus || 0);
             return { status: "success", uid: profileUid, message: "Profile created successfully" };
         }
         case "getUserByIdentifier": {
@@ -455,6 +472,9 @@ async function createFirestoreProfile(uid, data, signupBonus = 0) {
             following: data.following || (existingData === null || existingData === void 0 ? void 0 : existingData.following) || [],
             platform: data.platform || (existingData === null || existingData === void 0 ? void 0 : existingData.platform) || "unknown",
             coordinates: data.coordinates || (existingData === null || existingData === void 0 ? void 0 : existingData.coordinates) || null,
+            deviceInfo: data.deviceInfo || (existingData === null || existingData === void 0 ? void 0 : existingData.deviceInfo) || null,
+            signupIp: data.signupIp || (existingData === null || existingData === void 0 ? void 0 : existingData.signupIp) || null,
+            lastIp: data.lastIp || (existingData === null || existingData === void 0 ? void 0 : existingData.lastIp) || null,
             createdAt: (existingData === null || existingData === void 0 ? void 0 : existingData.createdAt) || admin.firestore.FieldValue.serverTimestamp(),
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
             signupCompleted: true,

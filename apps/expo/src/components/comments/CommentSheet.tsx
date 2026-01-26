@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef, memo } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   Dimensions,
   Pressable,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Portal } from 'react-native-paper';
@@ -36,11 +37,12 @@ import { getOptimizedMediaUrl } from '@/src/utils/media';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import { Colors } from '@/constants/theme';
+import { useRouter } from 'expo-router';
 
 dayjs.extend(relativeTime);
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
-const SHEET_HEIGHT = SCREEN_HEIGHT * 0.75;
+const SHEET_HEIGHT = SCREEN_HEIGHT * 0.8;
 const DEFAULT_AVATAR = "https://ui-avatars.com/api/?background=random&color=fff&name=";
 const blurhash = '|rF?hV%2WCj[ayj[a|j[az_NaeWBj@ayfRayfQfQM{M|azj[azf6fQfQfQIpWXofj[ayj[j[fQayWCoeoeaya}j[ayfQa{oLj?j[WVj[ayayj[fQoff7azayj[ayj[j[ayofayayayj[fQj[ayayj[ayfjj[j[ayjuayj[';
 
@@ -52,8 +54,118 @@ interface CommentSheetProps {
   isContestMatch?: boolean;
 }
 
+const CommentItem = memo(({ 
+    item, 
+    onReply, 
+    onDelete, 
+    onReport, 
+    onNavigate, 
+    currentUserId, 
+    isDark, 
+    postId, 
+    collectionName 
+}: { 
+    item: Comment; 
+    onReply: (c: Comment) => void; 
+    onDelete: (c: Comment) => void;
+    onReport: (c: Comment) => void;
+    onNavigate: (id: string) => void;
+    currentUserId?: string;
+    isDark: boolean;
+    postId: string;
+    collectionName: string;
+}) => {
+    const [isLiked, setIsLiked] = useState(false);
+    const [likes, setLikes] = useState(item.likes || 0);
+    const textColor = isDark ? Colors.dark.text : Colors.light.text;
+    const subTextColor = isDark ? '#BDBDBD' : '#616161';
+    
+    useEffect(() => {
+        if (currentUserId) {
+            commentService.checkIfLiked(postId, item.id, currentUserId, collectionName)
+                .then(setIsLiked);
+        }
+        setLikes(item.likes || 0);
+    }, [item.id, currentUserId, item.likes]);
+
+    const handleLike = async () => {
+        if (!currentUserId) return;
+        try {
+            const newStatus = !isLiked;
+            setIsLiked(newStatus);
+            setLikes(prev => newStatus ? prev + 1 : Math.max(0, prev - 1));
+            await commentService.toggleLikeComment(postId, item.id, currentUserId, collectionName);
+        } catch (e) {
+            setIsLiked(!isLiked);
+            setLikes(item.likes || 0);
+        }
+    };
+
+    const formatTime = (timestamp: any) => {
+        if (!timestamp) return 'now';
+        const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+        return dayjs(date).fromNow(true);
+    };
+
+    const rawAvatarUrl = item.userAvatar || `${DEFAULT_AVATAR}${encodeURIComponent(item.username || 'U')}`;
+    const avatarUrl = getOptimizedMediaUrl(rawAvatarUrl);
+
+    return (
+        <View style={[styles.commentItem, item.replyTo ? styles.replyItem : null]}>
+          <TouchableOpacity onPress={() => onNavigate(item.userId)}>
+            <Image 
+                source={{ uri: avatarUrl }} 
+                style={styles.commentAvatar}
+                contentFit="cover"
+                cachePolicy="memory-disk"
+                placeholder={blurhash}
+                transition={200}
+            />
+          </TouchableOpacity>
+          <View style={styles.commentContent}>
+            <TouchableOpacity style={styles.commentHeader} onPress={() => onNavigate(item.userId)}>
+              <Text style={[styles.commentUser, { color: textColor }]}>
+                {item.username} <Text style={[styles.commentTime, { color: subTextColor }]}>{formatTime(item.createdAt)}</Text>
+              </Text>
+            </TouchableOpacity>
+            <Text style={[styles.commentText, { color: textColor }]}>
+                {item.replyToUser && (
+                    <Text 
+                        style={{ color: '#FF4D67', fontFamily: 'Urbanist-Bold' }}
+                        onPress={() => item.replyTo && onNavigate(item.userId)}
+                    >
+                        @{item.replyToUser}{' '}
+                    </Text>
+                )}
+                {item.text.replace(`@${item.replyToUser} `, '')}
+            </Text>
+            <View style={styles.commentFooter}>
+              <TouchableOpacity onPress={() => onReply(item)} style={{ marginRight: 15 }}>
+                <Text style={[styles.footerBtnText, { color: subTextColor }]}>Reply</Text>
+              </TouchableOpacity>
+              
+              {currentUserId === item.userId ? (
+                  <TouchableOpacity onPress={() => onDelete(item)}>
+                    <Text style={[styles.footerBtnText, { color: '#FF4D67' }]}>Delete</Text>
+                  </TouchableOpacity>
+              ) : (
+                  <TouchableOpacity onPress={() => onReport(item)}>
+                    <Text style={[styles.footerBtnText, { color: subTextColor }]}>Report</Text>
+                  </TouchableOpacity>
+              )}
+            </View>
+          </View>
+          <TouchableOpacity style={styles.heartButton} onPress={handleLike}>
+            {isLiked ? <Icons.HeartIcon_Filled width={18} height={18} color="#FF4D67" /> : <Icons.HeartIcon_Light width={18} height={18} color={subTextColor} />}
+            <Text style={[styles.commentLikes, { color: subTextColor }]}>{likes}</Text>
+          </TouchableOpacity>
+        </View>
+    );
+});
+
 export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatch = false }: CommentSheetProps) => {
   const { user } = useAuth();
+  const router = useRouter();
   const translateY = useSharedValue(SHEET_HEIGHT);
   const opacity = useSharedValue(0);
   const [shouldRender, setShouldRender] = useState(false);
@@ -62,7 +174,10 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
   const [comments, setComments] = useState<Comment[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isPosting, setIsPosting] = useState(false);
+  const [replyTo, setReplyTo] = useState<{ id: string, username: string } | null>(null);
+  const inputRef = useRef<TextInput>(null);
 
+  const collectionName = isContestMatch ? 'contestMatches' : 'posts';
   const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
   const textColor = isDark ? Colors.dark.text : Colors.light.text;
   const subTextColor = isDark ? '#BDBDBD' : '#616161';
@@ -72,8 +187,6 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
   const inputBorderDefault = isDark ? '#35383F' : '#EEEEEE';
   const inputBorderFocused = '#FF4D67';
 
-  const HeartIcon = isDark ? Icons.HeartIcon_Dark : Icons.HeartIcon_Light;
-
   useEffect(() => {
     if (visible && postId) {
       setShouldRender(true);
@@ -81,13 +194,12 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
       opacity.value = withTiming(1, { duration: 300 });
       
       setIsLoading(true);
-      const collectionName = isContestMatch ? 'contestMatches' : 'posts';
       const unsubscribe = commentService.subscribeToComments(postId, (data) => {
           setComments(data);
           setIsLoading(false);
       }, collectionName);
       return () => unsubscribe();
-    } else {
+    } else if (!visible && shouldRender) {
       translateY.value = withSpring(SHEET_HEIGHT, { damping: 20, stiffness: 90 }, (finished) => {
           if (finished) {
               runOnJS(setShouldRender)(false);
@@ -95,7 +207,7 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
       });
       opacity.value = withTiming(0, { duration: 300 });
     }
-  }, [visible, postId, isContestMatch]);
+  }, [visible, postId, collectionName]);
 
   const closeSheet = useCallback(() => {
     translateY.value = withSpring(SHEET_HEIGHT, { damping: 20, stiffness: 90 }, (finished) => {
@@ -107,28 +219,52 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
     opacity.value = withTiming(0, { duration: 300 });
   }, [onDismiss]);
 
+  const navigateToProfile = (userId: string) => {
+      closeSheet();
+      router.push(`/profile?userId=${userId}`);
+  };
+
   const handlePostComment = async () => {
     if (!commentText.trim() || !user || !postId || isPosting) return;
     
     const text = commentText.trim();
     setCommentText('');
     setIsPosting(true);
-    const collectionName = isContestMatch ? 'contestMatches' : 'posts';
     
     try {
         await commentService.addComment(
             postId,
             user.uid,
-            user.displayName || 'User',
-            user.photoURL || `${DEFAULT_AVATAR}${encodeURIComponent(user.displayName || 'U')}`,
+            user.displayName || user.username || 'User',
+            user.photoURL || user.profileImageUrl || `${DEFAULT_AVATAR}${encodeURIComponent(user.displayName || 'U')}`,
             text,
-            collectionName
+            collectionName,
+            replyTo?.id,
+            replyTo?.username
         );
+        setReplyTo(null);
     } catch (e) {
         console.error("Error posting comment:", e);
     } finally {
         setIsPosting(false);
     }
+  };
+
+  const handleDelete = (comment: Comment) => {
+      Alert.alert("Delete Comment", "Are you sure you want to delete this comment?", [
+          { text: "Cancel", style: "cancel" },
+          { text: "Delete", style: "destructive", onPress: async () => {
+              try {
+                  await commentService.deleteComment(postId, comment.id, collectionName);
+              } catch (e) {
+                  console.error(e);
+              }
+          }}
+      ]);
+  };
+
+  const handleReport = (comment: Comment) => {
+      Alert.alert("Report Comment", "Thank you for letting us know. We will review this comment.", [{ text: "OK" }]);
   };
 
   const gesture = Gesture.Pan()
@@ -155,48 +291,7 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
     opacity: interpolate(translateY.value, [0, SHEET_HEIGHT], [0.5, 0], Extrapolation.CLAMP),
   }));
 
-  const formatTime = (timestamp: any) => {
-      if (!timestamp) return 'now';
-      const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
-      return dayjs(date).fromNow(true);
-  };
-
-  if (!shouldRender && !visible) return null;
-
-  const renderComment = ({ item }: { item: Comment }) => {
-    const rawAvatarUrl = item.userAvatar || `${DEFAULT_AVATAR}${encodeURIComponent(item.username || 'U')}`;
-    const avatarUrl = getOptimizedMediaUrl(rawAvatarUrl);
-
-    return (
-        <View style={styles.commentItem}>
-          <Image 
-            source={{ uri: avatarUrl }} 
-            style={styles.commentAvatar}
-            contentFit="cover"
-            cachePolicy="memory-disk"
-            placeholder={blurhash}
-            transition={200}
-          />
-          <View style={styles.commentContent}>
-            <View style={styles.commentHeader}>
-              <Text style={[styles.commentUser, { color: textColor }]}>
-                {item.username} <Text style={[styles.commentTime, { color: subTextColor }]}>{formatTime(item.createdAt)}</Text>
-              </Text>
-            </View>
-            <Text style={[styles.commentText, { color: textColor }]}>{item.text}</Text>
-            <View style={styles.commentFooter}>
-              <TouchableOpacity>
-                <Text style={[styles.replyText, { color: subTextColor }]}>Reply</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-          <TouchableOpacity style={styles.heartButton}>
-            <HeartIcon width={18} height={18} color={subTextColor} />
-            <Text style={[styles.commentLikes, { color: subTextColor }]}>{item.likes || 0}</Text>
-          </TouchableOpacity>
-        </View>
-    );
-  };
+  if (!shouldRender) return null;
 
   return (
     <Portal>
@@ -206,7 +301,7 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
         </Animated.View>
 
         <GestureDetector gesture={gesture}>
-          <Animated.View style={[styles.sheetContainer, animatedStyle, { backgroundColor }]}>
+          <Animated.View style={[styles.sheetContainer, animatedStyle, { backgroundColor, height: SHEET_HEIGHT }]}>
             <View style={styles.header}>
               <View style={[styles.handle, { backgroundColor: isDark ? '#35383F' : '#E0E0E0' }]} />
               <Text style={[styles.headerTitle, { color: textColor }]}>Comments</Text>
@@ -220,7 +315,19 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
             ) : (
                 <FlatList
                     data={comments}
-                    renderItem={renderComment}
+                    renderItem={({ item }) => (
+                        <CommentItem 
+                            item={item} 
+                            onReply={setReplyTo} 
+                            onDelete={handleDelete}
+                            onReport={handleReport}
+                            onNavigate={navigateToProfile}
+                            currentUserId={user?.uid}
+                            isDark={isDark}
+                            postId={postId}
+                            collectionName={collectionName}
+                        />
+                    )}
                     keyExtractor={(item) => item.id}
                     contentContainerStyle={styles.listContent}
                     showsVerticalScrollIndicator={false}
@@ -237,9 +344,19 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
               behavior={Platform.OS === 'ios' ? 'padding' : undefined}
               keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
             >
+              {replyTo && (
+                  <View style={[styles.replyInfo, { backgroundColor: isDark ? '#2A2D35' : '#F5F5F5' }]}>
+                      <Text style={[styles.replyInfoText, { color: subTextColor }]}>
+                          Replying to <Text style={{ fontFamily: 'Urbanist-Bold', color: '#FF4D67' }}>@{replyTo.username}</Text>
+                      </Text>
+                      <TouchableOpacity onPress={() => { setReplyTo(null); setCommentText(''); }}>
+                          <Icons.Close_Icon width={20} height={20} color={subTextColor} />
+                      </TouchableOpacity>
+                  </View>
+              )}
               <View style={[styles.inputArea, { backgroundColor, borderTopColor: isDark ? '#35383F' : '#EEEEEE' }]}>
                 <Image 
-                    source={{ uri: getOptimizedMediaUrl(user?.photoURL || `${DEFAULT_AVATAR}${encodeURIComponent(user?.displayName || 'Me')}`) }} 
+                    source={{ uri: getOptimizedMediaUrl(user?.photoURL || user?.profileImageUrl || `${DEFAULT_AVATAR}${encodeURIComponent(user?.displayName || 'Me')}`) }} 
                     style={styles.myAvatar} 
                     contentFit="cover"
                     cachePolicy="memory-disk"
@@ -254,6 +371,7 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
                   }
                 ]}>
                   <TextInput
+                    ref={inputRef}
                     placeholder="Add a comment..."
                     placeholderTextColor={subTextColor}
                     style={[
@@ -288,31 +406,31 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
 const styles = StyleSheet.create({
   backdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#000',
+    backgroundColor: 'rgba(0,0,0,0.5)',
   },
   sheetContainer: {
     position: 'absolute',
     bottom: 0,
     left: 0,
     right: 0,
-    height: SHEET_HEIGHT,
-    borderTopLeftRadius: 25,
-    borderTopRightRadius: 25,
+    borderTopLeftRadius: 30,
+    borderTopRightRadius: 30,
     elevation: 5,
+    overflow: 'hidden',
   },
   header: {
     alignItems: 'center',
     paddingTop: 12,
   },
   handle: {
-    width: 36,
-    height: 4,
-    borderRadius: 2,
+    width: 40,
+    height: 5,
+    borderRadius: 2.5,
     marginBottom: 16,
   },
   headerTitle: {
     fontFamily: 'Urbanist-Bold',
-    fontSize: 16,
+    fontSize: 18,
     marginBottom: 12,
   },
   divider: {
@@ -326,6 +444,10 @@ const styles = StyleSheet.create({
   commentItem: {
     flexDirection: 'row',
     marginBottom: 20,
+  },
+  replyItem: {
+    marginLeft: 40,
+    marginBottom: 15,
   },
   commentAvatar: {
     width: 36,
@@ -357,7 +479,12 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   commentFooter: {
+    flexDirection: 'row',
     marginTop: 4,
+  },
+  footerBtnText: {
+    fontFamily: 'Urbanist-Bold',
+    fontSize: 12,
   },
   replyText: {
     fontFamily: 'Urbanist-Bold',
@@ -373,6 +500,19 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontFamily: 'Urbanist-Medium',
     marginTop: 2,
+  },
+  replyInfo: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      paddingHorizontal: 16,
+      paddingVertical: 8,
+      borderTopWidth: 1,
+      borderTopColor: 'rgba(0,0,0,0.05)',
+  },
+  replyInfoText: {
+      fontFamily: 'Urbanist-Medium',
+      fontSize: 12,
   },
   inputArea: {
     flexDirection: 'row',

@@ -1,7 +1,7 @@
 import { ThemeProvider } from '@react-navigation/native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import 'react-native-reanimated';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Provider as PaperProvider } from 'react-native-paper';
@@ -58,6 +58,12 @@ function RootLayoutNav() {
   const { user, loading } = useAuth();
   const segments = useSegments();
   const router = useRouter();
+  const isMounted = useRef(false);
+
+  useEffect(() => {
+    isMounted.current = true;
+    return () => { isMounted.current = false; };
+  }, []);
   
   useEffect(() => {
     if (user && !loading) {
@@ -110,17 +116,18 @@ function RootLayoutNav() {
 
   // AUTH & PROFILE GUARD LOGIC (FIXED)
   useEffect(() => {
-    if (loading) return;
+    if (loading || !isMounted.current) return;
 
     const inAuthGroup = segments[0] === 'auth';
     const inOnboarding = segments[0] === 'onboarding';
     const inSplash = segments[0] === 'splash';
     const inMaintenance = segments[0] === 'maintenance';
+    const isRoot = segments.length === 0 || (segments.length === 1 && segments[0] === 'index');
 
     if (!user) {
       // USER IS LOGGED OUT
       // If user is on a protected page, force redirect to login
-      if (!inAuthGroup && !inOnboarding && !inSplash && !inMaintenance && segments.length > 0) {
+      if (!inAuthGroup && !inOnboarding && !inSplash && !inMaintenance && !isRoot) {
         console.log("[Guard] Logged out detected, redirecting to login");
         router.replace('/auth/login');
       }
@@ -132,8 +139,8 @@ function RootLayoutNav() {
 
       if (!isProfileComplete) {
         // Logged in but profile NOT complete: Force signup flow
-        // But DON'T redirect if they are already in the signup steps
-        if (!inSignupFlow) {
+        // But DON'T redirect if they are already in the signup steps or onboarding
+        if (!inSignupFlow && !inOnboarding && !inSplash && !inMaintenance) {
            console.log("[Guard] Profile incomplete, forcing signup flow");
            router.replace('/auth/signup/fill-profile');
         }
