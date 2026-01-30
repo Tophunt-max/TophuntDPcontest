@@ -30,7 +30,8 @@ import {
   ChatIcon_Light, 
   Share_Icon, 
   Bookmark_Outline, 
-  Bookmark_Filled 
+  Bookmark_Filled,
+  Trophy_Icon
 } from '@/assets/svgs';
 import { PostSkeleton } from './PostSkeleton';
 import { getCachedMedia } from '@/src/services/media/MediaCacheService';
@@ -256,7 +257,7 @@ const PostCardContent = memo(({ item, isDark }: { item: any; isDark: boolean }) 
 
   const isALeading = votesA > votesB;
   const isBLeading = votesB > votesA;
-  const isEnded = matchData.status === 'ended';
+  const isEnded = matchData.status === 'ended' || timeRemaining === 'Ended';
 
   const picA = getOptimizedMediaUrl(item.userA.profilePic || item.userA.profileImageUrl || `https://ui-avatars.com/api/?name=${nameA}&background=random`);
   const picB = getOptimizedMediaUrl(item.userB?.profilePic || item.userB?.profileImageUrl || `https://ui-avatars.com/api/?name=${nameB}&background=random`);
@@ -354,7 +355,7 @@ const PostCardContent = memo(({ item, isDark }: { item: any; isDark: boolean }) 
           <View style={styles.resultContainer}>
               <TouchableOpacity style={styles.resultButton} onPress={() => setShowWinner(true)}>
                   <LinearGradient colors={['#FFD700', '#FFA500']} start={{x:0, y:0}} end={{x:1, y:0}} style={styles.resultGradient}>
-                      <Icons.Trophy_Icon width={20} height={20} color="#FFF" />
+                      <Trophy_Icon width={20} height={20} color="#FFF" />
                       <Text style={styles.resultButtonText}>VIEW WINNER & RESULTS</Text>
                   </LinearGradient>
               </TouchableOpacity>

@@ -1,0 +1,17 @@
+name = "chat-worker"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+[durable_objects]
+bindings = [
+  { name = "CHAT_ROOM", class_name = "ChatRoom" }
+]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "bubun"
+database_id = "804e1640-b8f2-4cab-8c2d-f6c9a1b6bf9c"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ChatRoom"]

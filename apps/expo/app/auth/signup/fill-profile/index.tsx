@@ -26,7 +26,9 @@ import { CountryPicker } from "react-native-country-codes-picker";
 import { useToast } from "@/src/components/toast/ToastProvider";
 import Images from "@/assets/images";
 import { ReanimatedBottomSheet } from "@/src/components/modals/ReanimatedBottomSheet";
-import { callApi } from "@/src/services/api";
+import { useAuth } from "@/src/hooks/useAuth";
+import { doc, getDoc } from "firebase/firestore";
+import { firestore as db } from "@/src/services/firebase/initFirebase";
 
 const fillProfileSchema = z.object({
   avatarUrl: z.string().optional().nullable(),
@@ -48,22 +50,19 @@ const occupations = ["Student", "Engineer", "Doctor", "Artist", "Teacher", "Deve
 
 const FillProfile: React.FC = () => {
   const { data: signupData, setMultiple, setField } = useSignupStore();
+  const { user } = useAuth();
   const { addToast } = useToast();
   
   const [isGenderPickerVisible, setGenderPickerVisibility] = useState(false);
   const [isOccupationPickerVisible, setOccupationPickerVisibility] = useState(false);
   const [showCountryPicker, setShowCountryPicker] = useState(false);
-  
-  const isEmailLocked = (signupData.authProvider === 'google' || signupData.authProvider === 'facebook' || signupData.authProvider === 'apple') && !!signupData.email;
-  const isPhoneLocked = signupData.authProvider === 'phone' && !!signupData.phone;
+  const [isLoading, setIsLoading] = useState(false);
+  const [isDataFetching, setIsDataFetching] = useState(false);
 
   const [countryCode, setCountryCode] = useState('+91');
-  const [isLoading, setIsLoading] = useState(false);
   const [localAvatarUri, setLocalAvatarUri] = useState<string | null>(signupData.avatarUrl || null);
-  
-  const [usernameChecking, setUsernameChecking] = useState(false);
 
-  const { control, handleSubmit, setValue, watch, trigger, setError, clearErrors, formState: { errors } } = useForm<FillProfileFormValues>({
+  const { control, handleSubmit, setValue, watch, trigger, formState: { errors } } = useForm<FillProfileFormValues>({
     resolver: zodResolver(fillProfileSchema),
     defaultValues: {
       avatarUrl: signupData.avatarUrl || "",
@@ -79,7 +78,53 @@ const FillProfile: React.FC = () => {
 
   const selectedOccupation = watch("occupation");
   const selectedGender = watch("gender");
-  const username = watch("username");
+  
+  const isEmailLocked = (signupData.authProvider === 'google' || signupData.authProvider === 'facebook' || signupData.authProvider === 'apple') && !!signupData.email;
+  const isPhoneLocked = signupData.authProvider === 'phone' && !!signupData.phone;
+
+  // Recovery: If store is empty, try fetching from Firestore
+  useEffect(() => {
+    const recoverData = async () => {
+        if (user?.uid && !signupData.email && !signupData.fullName) {
+            setIsDataFetching(true);
+            try {
+                const docSnap = await getDoc(doc(db, "users", user.uid));
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    const recovered = {
+                        fullName: data.fullName || "",
+                        username: data.username || "",
+                        email: data.email || user.email || "",
+                        phone: data.phoneNumber || user.phoneNumber || "",
+                        avatarUrl: data.avatarUrl || user.photoURL || "",
+                        gender: data.gender || "",
+                        occupation: data.occupation || "",
+                        dob: data.dob || ""
+                    };
+                    setMultiple(recovered);
+                    
+                    // Update form values
+                    setValue("fullName", recovered.fullName);
+                    setValue("username", recovered.username);
+                    setValue("email", recovered.email);
+                    setValue("phone", recovered.phone.replace(/^\+\d{2,3}/, ''));
+                    setValue("gender", recovered.gender);
+                    setValue("occupation", recovered.occupation);
+                    if (recovered.dob) setValue("dateOfBirth", new Date(recovered.dob));
+                    if (recovered.avatarUrl) {
+                        setValue("avatarUrl", recovered.avatarUrl);
+                        setLocalAvatarUri(recovered.avatarUrl);
+                    }
+                }
+            } catch (e) {
+                console.error("Data recovery failed:", e);
+            } finally {
+                setIsDataFetching(false);
+            }
+        }
+    };
+    recoverData();
+  }, [user]);
 
   useEffect(() => {
     (async () => {
@@ -90,7 +135,6 @@ const FillProfile: React.FC = () => {
                 setMultiple({ coordinates: { lat: location.coords.latitude, lng: location.coords.longitude } });
             }
             
-            // Capture Device Tracking Info
             const deviceInfo = {
               brand: Device.brand,
               model: Device.modelName,
@@ -103,17 +147,6 @@ const FillProfile: React.FC = () => {
         } catch (e) {}
     })();
   }, []);
-
-  useEffect(() => {
-    if (signupData.fullName) setValue("fullName", signupData.fullName);
-    if (signupData.email) setValue("email", signupData.email);
-    if (signupData.phone) setValue("phone", signupData.phone.replace(/^\+\d{2,3}/, ''));
-    if (signupData.username) setValue("username", signupData.username);
-    if (signupData.avatarUrl) {
-        setValue("avatarUrl", signupData.avatarUrl);
-        setLocalAvatarUri(signupData.avatarUrl);
-    }
-  }, [signupData]);
 
   const pickAvatar = async () => {
     const img = await ImagePicker.launchImageLibraryAsync({ 
@@ -153,6 +186,15 @@ const FillProfile: React.FC = () => {
         setIsLoading(false); 
     }
   };
+
+  if (isDataFetching) {
+    return (
+        <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+            <ActivityIndicator size="large" color="#ff4466" />
+            <Text style={{ marginTop: 10, fontFamily: 'Urbanist-Medium' }}>Loading your profile...</Text>
+        </View>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>

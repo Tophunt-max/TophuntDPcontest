@@ -1,0 +1,9 @@
+{
+  "name": "chat-worker",
+  "version": "1.0.0",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240101.0",
+    "typescript": "^5.0.0",
+    "wrangler": "^3.0.0"
+  }
+}

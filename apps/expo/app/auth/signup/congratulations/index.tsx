@@ -18,7 +18,7 @@ import { auth, firestore as db } from "@/src/services/firebase/initFirebase";
 import { callApi } from "@/src/services/api"; 
 import { signInWithEmailAndPassword } from "firebase/auth";
 import { uploadAvatar } from "@/src/services/r2/uploadAvatar";
-import { doc, updateDoc } from "firebase/firestore";
+import { doc, updateDoc, getDoc } from "firebase/firestore";
 
 const { width } = Dimensions.get('window');
 
@@ -27,16 +27,17 @@ export default function CongratulationsScreen() {
   const insets = useSafeAreaInsets();
   const { data: signupData, reset: resetStore } = useSignupStore();
   const [isLoading, setIsLoading] = useState(true);
+  const [isFinishing, setIsFinishing] = useState(false);
   const [statusMessage, setStatusMessage] = useState("Finalizing your account...");
 
   useEffect(() => {
     const finalizeSignup = async () => {
       try {
         console.log("Finalizing signup for provider:", signupData.authProvider);
-        let finalUid = "";
+        let finalUid = signupData.uid || auth.currentUser?.uid;
 
         // 1. CREATE USER ACCOUNT / SAVE PROFILE
-        if (signupData.authProvider === 'email') {
+        if (signupData.authProvider === 'email' && !auth.currentUser) {
             if (!signupData.email || !signupData.password || !signupData.username) {
                 throw new Error("Missing user data. Please restart the signup process.");
             }
@@ -57,24 +58,25 @@ export default function CongratulationsScreen() {
             await signInWithEmailAndPassword(auth, signupData.email, signupData.password);
         } else {
             if (!signupData.username) {
-                throw new Error("Username is required to complete your profile.");
+                // Check if user already has a username in auth (social login)
+                if (!auth.currentUser?.displayName && !signupData.username) {
+                  throw new Error("Username is required to complete your profile.");
+                }
             }
             setStatusMessage("Saving your profile details...");
-            const targetUid = signupData.uid || auth.currentUser?.uid;
             
-            if (!targetUid) throw new Error("Authentication failed. Please login again.");
+            if (!finalUid) throw new Error("Authentication failed. Please login again.");
 
             const result: any = await callApi('createProfile', { 
                 ...signupData,
-                avatarUrl: null,
+                avatarUrl: signupData.avatarUrl?.startsWith('http') ? signupData.avatarUrl : null,
                 platform: Platform.OS,
-                uid: targetUid
+                uid: finalUid
             });
 
             if (result.status !== 'success') {
                 throw new Error(result.message || "Failed to save profile.");
             }
-            finalUid = targetUid;
         }
 
         // 2. UPLOAD AVATAR
@@ -94,10 +96,9 @@ export default function CongratulationsScreen() {
             }
         }
 
-        // 3. CRITICAL FIX: Explicitly mark signup as completed in Firestore
-        // This ensures the RootLayout guard sees the user as 'complete'
+        // 3. CRITICAL: Explicitly mark signup as completed in Firestore
         setStatusMessage("Completing setup...");
-        const userRef = doc(db, "users", finalUid);
+        const userRef = doc(db, "users", finalUid!);
         await updateDoc(userRef, {
             signupCompleted: true,
             lastLogin: new Date().toISOString()
@@ -106,10 +107,10 @@ export default function CongratulationsScreen() {
         console.log("Signup finalized successfully.");
         await AsyncStorage.setItem('hasSeenOnboarding', 'true');
         
-        // Give Firestore a moment to sync before we let the user click "Go Home"
+        // Give time for Firestore listeners to sync
         setTimeout(() => {
             setIsLoading(false);
-        }, 1500);
+        }, 2000);
 
       } catch (error: any) {
         console.error("Failed to finalize signup", error);
@@ -128,9 +129,15 @@ export default function CongratulationsScreen() {
     finalizeSignup();
   }, []);
 
-  const handleGoHome = () => {
-    resetStore();
-    router.replace("/home");
+  const handleGoHome = async () => {
+    setIsFinishing(true);
+    try {
+      // Small delay to ensure Auth state is synced
+      resetStore();
+      router.replace("/home");
+    } catch (e) {
+      setIsFinishing(false);
+    }
   };
 
   if (isLoading) {
@@ -151,8 +158,12 @@ export default function CongratulationsScreen() {
               </View>
               <Text style={styles.title}>Congratulations!</Text>
               <Text style={styles.subtitle}>Your account is ready to use</Text>
-              <TouchableOpacity style={styles.button} onPress={handleGoHome}>
-                  <Text style={styles.buttonText}>Go to Homepage</Text>
+              <TouchableOpacity 
+                style={[styles.button, isFinishing && { opacity: 0.7 }]} 
+                onPress={handleGoHome}
+                disabled={isFinishing}
+              >
+                  {isFinishing ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Go to Homepage</Text>}
               </TouchableOpacity>
           </View>
       </View>

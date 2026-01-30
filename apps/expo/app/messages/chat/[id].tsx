@@ -1,23 +1,19 @@
-import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { 
   GiftedChat, 
   IMessage, 
   BubbleProps, 
 } from 'react-native-gifted-chat';
-import { firestore, database } from '@/src/services/firebase/initFirebase';
-import { collection, query, orderBy, onSnapshot, doc } from 'firebase/firestore';
-import { ref, onValue } from 'firebase/database';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { View, Text, ActivityIndicator, StyleSheet, TouchableOpacity, Platform, Modal, Pressable } from 'react-native';
+import { View, Text, ActivityIndicator, StyleSheet, TouchableOpacity, Platform, Modal, Pressable, Alert } from 'react-native';
 import { Image } from 'expo-image';
 import { useAuth } from '@/src/hooks/useAuth';
 import ChatHeader from '@/components/chat/ChatHeader';
 import { Audio } from 'expo-av';
 import * as ImagePicker from 'expo-image-picker';
 import * as Clipboard from 'expo-clipboard';
-import { sendMessage, uploadAndSendMedia, setTypingStatus, markChatAsRead, unblockUser, deleteMessage, blockUser, reportTarget } from '@/src/services/messages/messageService';
+import { realtimeService, RealtimeMessage } from '@/src/services/messages/realtimeService';
 import CallOverlay from '@/src/components/calls/CallOverlay';
-import { initiateCall } from '@/src/services/calls/callService';
 import AudioPlayer from '@/src/components/messages/AudioPlayer';
 import { Ionicons } from '@expo/vector-icons';
 import { ChatInput } from '@/src/components/messages/ChatInput';
@@ -27,117 +23,210 @@ import { MessageOptionsPopup } from '@/src/components/messages/MessageOptionsPop
 import { Checkmark_Single, Checkmark_Double } from '@/assets/svgs/message';
 import { Bubble } from 'react-native-gifted-chat';
 
+const CHAT_WORKER_API = 'https://chat.tophunt.in';
 const EMOJIS = ['❤️', '🙌', '🔥', '😂', '😮', '😢', '😡', '👍'];
 
 export default function ChatScreen() {
-  const { user: firebaseUser, loading: authLoading } = useAuth();
+  const { user: currentUser, loading: authLoading } = useAuth();
   const { id: chatId } = useLocalSearchParams();
   const router = useRouter();
+
+  // --- UI & Content State ---
   const [messages, setMessages] = useState<IMessage[]>([]);
   const [isLoadingMessages, setIsLoadingMessages] = useState(true);
   const [isTyping, setIsTyping] = useState(false);
   const [otherUserStatus, setOtherUserStatus] = useState<string>('offline');
-  const [isRecording, setIsRecording] = useState(false);
-  const [recording, setRecording] = useState<Audio.Recording | null>(null);
-  const [meteringData, setMeteringData] = useState<number[]>([]);
   const [recipient, setRecipient] = useState({ name: 'User', avatar: '', uid: '' });
-  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [inputText, setInputText] = useState(''); 
-  const [blockedStatus, setBlockedStatus] = useState<{[key: string]: boolean}>({});
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [selectedMessage, setSelectedMessage] = useState<IMessage | null>(null);
   const [isActionModalVisible, setIsActionModalVisible] = useState(false);
-  
   const [isSearchVisible, setIsSearchVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isOptionsVisible, setIsOptionsVisible] = useState(false);
+  const [blockedStatus, setBlockedStatus] = useState<{[key: string]: boolean}>({});
 
-  // Responsive Width for Web Popups
-  const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 0);
+  // --- Recording State ---
+  const [isRecording, setIsRecording] = useState(false);
+  const [recording, setRecording] = useState<Audio.Recording | null>(null);
+  const [meteringData, setMeteringData] = useState<number[]>([]);
 
-  useEffect(() => {
-    if (Platform.OS === 'web') {
-        const handleResize = () => setWindowWidth(window.innerWidth);
-        window.addEventListener('resize', handleResize);
-        return () => window.removeEventListener('resize', handleResize);
-    }
-  }, []);
+  // 1. Fetch History & Chat Metadata
+  const fetchInitialData = useCallback(async () => {
+    try {
+      // Fetch Chat Metadata
+      const chatListRes = await fetch(`${CHAT_WORKER_API}/chats?userId=${currentUser?.uid}`);
+      const chats = await chatListRes.json();
+      const currentChat = chats.find((c: any) => c.id === chatId);
+      
+      if (currentChat) {
+          const pData = JSON.parse(currentChat.participants_data);
+          const pIds = JSON.parse(currentChat.participants);
+          const otherId = pIds.find((id: string) => id !== currentUser?.uid);
+          const otherData = pData[otherId] || {};
+          
+          setRecipient({ 
+            uid: String(otherId), 
+            name: String(otherData.displayName || 'User'), 
+            avatar: String(otherData.photoURL || ''), 
+          });
+          setBlockedStatus(JSON.parse(currentChat.blocked_status || '{}'));
+      }
 
-  const currentUser = firebaseUser;
+      // Fetch Message History
+      const msgRes = await fetch(`${CHAT_WORKER_API}/history?chatId=${chatId}`);
+      const historyData = await msgRes.json();
+      
+      const mappedMessages = historyData.map((msg: any) => ({
+        _id: String(msg.id),
+        text: msg.type === 'text' ? String(msg.content || '') : '',
+        createdAt: new Date(msg.created_at),
+        user: { _id: String(msg.sender_id) },
+        image: msg.type === 'image' ? String(msg.content) : undefined,
+        audio: msg.type === 'voice_note' ? String(msg.content) : undefined,
+        received: msg.status === 'delivered' || msg.status === 'seen',
+        sent: true,
+        seen: msg.status === 'seen'
+      })).reverse();
 
-  useEffect(() => {
-    if (chatId && currentUser && messages.length > 0) markChatAsRead(chatId as string);
-  }, [chatId, currentUser, messages.length]);
-
-  useEffect(() => {
-    return () => { if (chatId) setTypingStatus(chatId as string, false); };
-  }, [chatId]);
-
-  useEffect(() => {
-    if (authLoading || !currentUser || !chatId) return;
-    
-    const chatRef = doc(firestore, 'chats', chatId as string);
-    const unsubscribeChat = onSnapshot(chatRef, (snapshot) => {
-        if (snapshot.exists()) {
-            const data = snapshot.data();
-            setBlockedStatus(data.blockedStatus || {});
-            const otherUserId = data.participants.find((uid: string) => uid !== currentUser.uid);
-            const otherUserData = data.participantsData?.[otherUserId] || {};
-            setRecipient({ uid: String(otherUserId), name: String(otherUserData.displayName || 'User'), avatar: String(otherUserData.photoURL || ''), });
-            onValue(ref(database, `presence/${otherUserId}/state`), (snap) => setOtherUserStatus(String(snap.val() || 'offline')));
-            onValue(ref(database, `status/${chatId}/${otherUserId}/typing`), (snap) => setIsTyping(!!snap.val()));
-        }
-    });
-
-    const messagesRef = collection(firestore, 'chats', chatId as string, 'messages');
-    const q = query(messagesRef, orderBy('createdAt', 'desc'));
-    const unsubscribeMessages = onSnapshot(q, (snapshot) => {
-      const loadedMessages = snapshot.docs.map(doc => {
-        const data = doc.data();
-        const isMe = data.senderId === currentUser?.uid;
-        
-        let displayTitle = '';
-        if (data.type === 'video_call') displayTitle = isMe ? 'Outgoing Video Call' : 'Incoming Video Call';
-        else if (data.type === 'voice_call') displayTitle = isMe ? 'Outgoing Voice Call' : 'Incoming Voice Call';
-        else if (data.metadata?.isMissedCall) displayTitle = isMe ? 'Cancelled Call' : 'Missed Call';
-
-        let msgTime = data.createdAt?.toMillis ? data.createdAt.toMillis() : (data.createdAt instanceof Date ? data.createdAt.getTime() : Date.now());
-
-        const isText = data.type === 'text';
-        const isImage = data.type === 'image';
-        const isVoice = data.type === 'voice_note';
-        const isVideoMsg = data.type === 'video_message';
-
-        return {
-          _id: String(doc.id),
-          text: displayTitle || (isText ? String(data.content || '') : ''),
-          createdAt: msgTime,
-          user: { _id: String(data.senderId) },
-          image: isImage ? String(data.content) : undefined,
-          audio: isVoice ? String(data.content) : undefined,
-          video: isVideoMsg ? String(data.content) : undefined,
-          system: !!displayTitle,
-          received: true, sent: true, seen: data.status === 'seen'
-        } as IMessage;
-      });
-      setMessages(loadedMessages);
+      setMessages(mappedMessages);
+    } catch (error) {
+      console.error("[ChatScreen] Error loading data:", error);
+    } finally {
       setIsLoadingMessages(false);
+    }
+  }, [chatId, currentUser]);
+
+  // 2. WebSocket Connection Logic
+  useEffect(() => {
+    if (!chatId || !currentUser) return;
+
+    fetchInitialData();
+    realtimeService.connect(chatId as string);
+
+    const unsubscribe = realtimeService.subscribe((data: RealtimeMessage) => {
+      switch (data.type) {
+        case 'text':
+        case 'image':
+        case 'voice_note':
+          if (data.from === currentUser.uid) return;
+          realtimeService.send({ type: 'delivered', messageId: data.id, chatId: chatId as string });
+
+          const newMsg: IMessage = {
+            _id: data.id || Math.random().toString(),
+            text: data.type === 'text' ? data.text : '',
+            image: data.type === 'image' ? data.text : undefined,
+            audio: data.type === 'voice_note' ? data.text : undefined,
+            createdAt: data.timestamp ? new Date(data.timestamp) : new Date(),
+            user: { _id: String(data.from) },
+          };
+          setMessages(prev => GiftedChat.append(prev, [newMsg]));
+          break;
+
+        case 'status-update':
+          setMessages(prev => prev.map(m => m._id === data.messageId ? { ...m, received: true } : m));
+          break;
+
+        case 'messages-seen':
+          setMessages(prev => prev.map(m => ({ ...m, seen: true, received: true })));
+          break;
+
+        case 'typing':
+          if (data.from !== currentUser.uid) setIsTyping(!!data.isTyping);
+          break;
+
+        case 'presence':
+          if (data.from !== currentUser.uid) setOtherUserStatus(data.status || 'offline');
+          break;
+      }
     });
 
-    return () => { unsubscribeChat(); unsubscribeMessages(); };
-  }, [chatId, currentUser, authLoading]);
+    realtimeService.send({ type: 'mark-seen', chatId: chatId as string });
 
-  const filteredMessages = useMemo(() => {
-    if (!searchQuery.trim()) return messages;
-    return messages.filter(msg => 
-      msg.text?.toLowerCase().includes(searchQuery.toLowerCase())
-    );
-  }, [messages, searchQuery]);
+    return () => {
+      unsubscribe();
+      realtimeService.disconnect();
+    };
+  }, [chatId, currentUser, fetchInitialData]);
+
+  // --- BLOCK & REPORT HANDLERS ---
+  const handleBlockUser = async () => {
+    if (chatId && currentUser) {
+      const isCurrentlyBlocked = !!blockedStatus[currentUser.uid];
+      try {
+        const res = await fetch(`${CHAT_WORKER_API}/block`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            chatId: chatId as string, 
+            userId: currentUser.uid, 
+            block: !isCurrentlyBlocked 
+          })
+        });
+        if (res.ok) {
+          setBlockedStatus(prev => ({ ...prev, [currentUser.uid]: !isCurrentlyBlocked }));
+          setIsOptionsVisible(false);
+          Alert.alert("Success", isCurrentlyBlocked ? "User unblocked" : "User blocked");
+        }
+      } catch (e) {
+        Alert.alert("Error", "Could not update block status");
+      }
+    }
+  };
+
+  const handleReportUser = async () => {
+    try {
+      await fetch(`${CHAT_WORKER_API}/report`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          chatId: chatId as string, 
+          reporterId: currentUser?.uid, 
+          targetId: recipient.uid 
+        })
+      });
+      setIsOptionsVisible(false);
+      Alert.alert("Success", "User reported successfully.");
+    } catch (e) {
+      Alert.alert("Error", "Could not send report");
+    }
+  };
 
   const amIBlocked = useMemo(() => recipient.uid ? !!blockedStatus[recipient.uid] : false, [blockedStatus, recipient.uid]);
   const didIBlock = useMemo(() => currentUser ? !!blockedStatus[currentUser.uid] : false, [blockedStatus, currentUser]);
 
+  // 3. Messaging Handlers
+  const onSend = useCallback((msgs: IMessage[] = []) => {
+    if (!currentUser || !chatId || didIBlock || amIBlocked) return;
+    const msg = msgs[0];
+    
+    realtimeService.send({
+      type: 'text',
+      text: msg.text,
+      recipientId: recipient.uid,
+      senderName: currentUser.displayName || 'User',
+      chatId: chatId as string
+    });
+
+    setMessages(prev => GiftedChat.append(prev, msgs));
+    setInputText('');
+    realtimeService.send({ type: 'typing', isTyping: false, chatId: chatId as string });
+  }, [chatId, currentUser, recipient.uid, didIBlock, amIBlocked]);
+
+  const handleTyping = (text: string) => {
+    setInputText(text);
+    if (!didIBlock && !amIBlocked) {
+      realtimeService.send({ 
+        type: 'typing', 
+        isTyping: text.length > 0, 
+        chatId: chatId as string 
+      });
+    }
+  };
+
+  // 4. Media Handlers
   const startRecording = useCallback(async () => {
-    if (amIBlocked || didIBlock) return;
+    if (didIBlock || amIBlocked) return;
     try {
       const permission = await Audio.requestPermissionsAsync();
       if (permission.status === 'granted') {
@@ -147,47 +236,40 @@ export default function ChatScreen() {
         setMeteringData([]);
         setIsRecording(true);
         recording.setOnRecordingStatusUpdate((s) => { if (s.metering !== undefined) setMeteringData(prev => [...prev, s.metering!]); });
-        await recording.setProgressUpdateInterval(100);
       }
-    } catch (err) {}
-  }, [amIBlocked, didIBlock]);
+    } catch (err) { console.error("Recording failed", err); }
+  }, [didIBlock, amIBlocked]);
 
   const stopRecording = useCallback(async () => {
     setIsRecording(false);
     if (!recording) return;
     await recording.stopAndUnloadAsync();
     const uri = recording.getURI();
-    if (uri && chatId) await uploadAndSendMedia(chatId as string, uri, 'voice_note');
+    if (uri && chatId) {
+        realtimeService.send({ 
+            type: 'voice_note', 
+            text: uri, 
+            recipientId: recipient.uid, 
+            chatId: chatId as string 
+        });
+    }
     setRecording(null);
-    setMeteringData([]);
-  }, [recording, chatId]);
-
-  const onSend = useCallback(async (msgs: IMessage[] = []) => {
-    const text = msgs[0]?.text;
-    if (!currentUser || !chatId || amIBlocked || didIBlock || !text?.trim()) return;
-    setInputText(''); 
-    await sendMessage(chatId as string, text.trim(), 'text');
-    setTypingStatus(chatId as string, false);
-  }, [chatId, currentUser, amIBlocked, didIBlock]);
-
-  const handleMsgAction = useCallback((msg: IMessage) => { 
-    setSelectedMessage(msg); 
-    setIsActionModalVisible(true); 
-  }, []);
-
-  const toggleEmojiPicker = useCallback(() => {
-    setShowEmojiPicker(prev => !prev);
-  }, []);
+  }, [recording, chatId, recipient.uid]);
 
   const handleGalleryPress = useCallback(async () => {
+    if (didIBlock || amIBlocked) return;
     const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.5 });
     if (!res.canceled && res.assets[0].uri && chatId) {
-      await uploadAndSendMedia(chatId as string, res.assets[0].uri, 'image');
+        // R2 Upload and send via WS logic
     }
-  }, [chatId]);
+  }, [chatId, didIBlock, amIBlocked]);
 
+  // 5. Custom Renders
   const renderBubble = useCallback((props: BubbleProps<IMessage>) => (
-    <TouchableOpacity activeOpacity={0.8} onLongPress={() => handleMsgAction(props.currentMessage!)} onPress={() => Platform.OS === 'web' && handleMsgAction(props.currentMessage!)}>
+    <TouchableOpacity 
+        activeOpacity={0.8} 
+        onLongPress={() => { setSelectedMessage(props.currentMessage!); setIsActionModalVisible(true); }}
+    >
         <Bubble 
           {...props} 
           renderTime={() => null} 
@@ -195,76 +277,38 @@ export default function ChatScreen() {
             right: { backgroundColor: '#FF4D67', borderRadius: 20, borderBottomRightRadius: 5, padding: props.currentMessage?.image ? 0 : 5, marginVertical: 4, overflow: 'hidden' }, 
             left: { backgroundColor: '#F3F3F5', borderRadius: 20, borderBottomLeftRadius: 5, padding: props.currentMessage?.image ? 0 : 5, marginVertical: 4, overflow: 'hidden' } 
           }} 
-          textStyle={{ right: { color: '#fff', fontSize: 16, fontFamily: 'Urbanist-Medium' }, left: { color: '#000', fontSize: 16, fontFamily: 'Urbanist-Medium' } }} 
-          renderTicks={() => props.currentMessage?.user._id === currentUser?.uid && (props.currentMessage?.seen ? <Checkmark_Double width={16} height={16} color="#34B7F1" style={{ marginLeft: 4 }} /> : <Checkmark_Single width={16} height={16} color="rgba(255,255,255,0.6)" style={{ marginLeft: 4 }} />)} 
+          textStyle={{ 
+            right: { color: '#fff', fontSize: 16, fontFamily: 'Urbanist-Medium' }, 
+            left: { color: '#000', fontSize: 16, fontFamily: 'Urbanist-Medium' } 
+          }} 
+          renderTicks={() => props.currentMessage?.user._id === currentUser?.uid && (
+              props.currentMessage.seen ? <Checkmark_Double width={16} height={16} color="#34B7F1" style={{ marginLeft: 4 }} /> 
+              : <Checkmark_Double width={16} height={16} color="rgba(255,255,255,0.6)" style={{ marginLeft: 4 }} />
+          )} 
         />
-        <View style={{ paddingHorizontal: 12, paddingBottom: 5 }}><Text style={{ fontSize: 10, color: props.currentMessage?.user._id === currentUser?.uid ? 'rgba(255,255,255,0.7)' : '#9E9E9E', textAlign: props.currentMessage?.user._id === currentUser?.uid ? 'right' : 'left' }}>{String(new Date(props.currentMessage?.createdAt!).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }))}</Text></View>
+        <View style={{ paddingHorizontal: 12, paddingBottom: 5 }}>
+            <Text style={{ fontSize: 10, color: props.currentMessage?.user._id === currentUser?.uid ? 'rgba(255,255,255,0.7)' : '#9E9E9E', textAlign: props.currentMessage?.user._id === currentUser?.uid ? 'right' : 'left' }}>
+                {new Date(props.currentMessage?.createdAt!).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}
+            </Text>
+        </View>
     </TouchableOpacity>
-  ), [currentUser, handleMsgAction]);
+  ), [currentUser?.uid]);
 
-  const renderMessageImage = useCallback((props: any) => (
-      <View style={{ padding: 2 }}>
-          <Image 
-            source={{ uri: props.currentMessage.image }} 
-            style={{ width: 200, height: 200, borderRadius: 15 }} 
-            contentFit="cover"
-            cachePolicy="memory-disk"
-          />
-      </View>
-  ), []);
-
-  const renderDay = useCallback((props: any) => props.currentMessage?.createdAt && <View style={{ alignItems: 'center', marginVertical: 10 }}><Text style={{ color: '#9E9E9E', fontSize: 12, fontFamily: 'Urbanist-Medium' }}>{String(new Date(props.currentMessage.createdAt).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }))}</Text></View>, []);
-
-  const renderInputToolbar = useCallback((props: any) => {
-    if (didIBlock) return <View style={styles.blockedBar}><Text style={styles.blockedText}>You blocked this user. Unblock to send messages.</Text><TouchableOpacity onPress={() => unblockUser(chatId as string, recipient.uid)}><Text style={{ color: '#FF4D67', fontWeight: 'bold', marginTop: 5 }}>Unblock</Text></TouchableOpacity></View>;
-    if (amIBlocked) return <View style={styles.blockedBar}><Text style={styles.blockedText}>You cannot reply to this conversation.</Text></View>;
-    
-    return (
-      <ChatInput 
-        {...props}
-        isRecording={isRecording}
-        meteringData={meteringData}
-        onEmojiPress={toggleEmojiPicker}
-        onGalleryPress={handleGalleryPress}
-        onMicPressIn={startRecording}
-        onMicPressOut={stopRecording}
-        chatId={chatId as string}
-        setTypingStatus={setTypingStatus}
-      />
-    );
-  }, [didIBlock, amIBlocked, chatId, isRecording, meteringData, toggleEmojiPicker, handleGalleryPress, startRecording, stopRecording, recipient.uid]);
-
-  const handleBlockUser = useCallback(async () => {
-    if (chatId && recipient.uid) {
-        if (didIBlock) await unblockUser(chatId as string, recipient.uid);
-        else await blockUser(chatId as string, recipient.uid);
-    }
-  }, [chatId, recipient.uid, didIBlock]);
-
-  const handleReportUser = useCallback(async () => {
-    if (recipient.uid) {
-        await reportTarget('user', recipient.uid, 'Reported from Chat');
-        alert("User reported successfully.");
-    }
-  }, [recipient.uid]);
-
-  const handleUnsendMessage = useCallback(async () => {
-    if (selectedMessage && chatId) {
-        await deleteMessage(chatId as string, String(selectedMessage._id));
-        setSelectedMessage(null);
-    }
-  }, [selectedMessage, chatId]);
+  const filteredMessages = useMemo(() => {
+    if (!searchQuery.trim()) return messages;
+    return messages.filter(msg => msg.text?.toLowerCase().includes(searchQuery.toLowerCase()));
+  }, [messages, searchQuery]);
 
   if (authLoading || isLoadingMessages) return <View style={styles.centered}><ActivityIndicator size="large" color="#FF4D67" /></View>;
 
   return (
     <View style={{ flex: 1, backgroundColor: '#FFFFFF' }}>
       <ChatHeader 
-        recipientName={String(recipient.name)} 
-        recipientAvatar={String(recipient.avatar)} 
-        status={isTyping ? 'typing...' : String(otherUserStatus)} 
-        onAudioCall={() => !amIBlocked && !didIBlock && initiateCall(chatId as string, recipient.uid, 'audio')} 
-        onVideoCall={() => !amIBlocked && !didIBlock && initiateCall(chatId as string, recipient.uid, 'video')} 
+        recipientName={recipient.name} 
+        recipientAvatar={recipient.avatar} 
+        status={isTyping ? 'typing...' : otherUserStatus} 
+        onAudioCall={() => !didIBlock && !amIBlocked && realtimeService.send({ type: 'call-request', callType: 'audio', chatId: chatId as string })} 
+        onVideoCall={() => !didIBlock && !amIBlocked && realtimeService.send({ type: 'call-request', callType: 'video', chatId: chatId as string })} 
         onSearchPress={() => setIsSearchVisible(!isSearchVisible)} 
         onOptionsPress={() => setIsOptionsVisible(true)} 
       />
@@ -280,7 +324,7 @@ export default function ChatScreen() {
       <ChatOptionsPopup 
         isVisible={isOptionsVisible}
         onClose={() => setIsOptionsVisible(false)}
-        onBlock={handleBlockUser}
+        onBlock={handleBlockUser} 
         onReport={handleReportUser}
         onViewProfile={() => router.push(`/profile/${recipient.uid}`)}
         isBlocked={didIBlock}
@@ -289,24 +333,40 @@ export default function ChatScreen() {
       <MessageOptionsPopup 
         isVisible={isActionModalVisible}
         onClose={() => setIsActionModalVisible(false)}
-        onDelete={handleUnsendMessage}
-        onCopy={() => { Clipboard.setStringAsync(String(selectedMessage?.text || '')); }}
+        onDelete={() => {}} 
+        onCopy={() => { Clipboard.setStringAsync(selectedMessage?.text || ''); setIsActionModalVisible(false); }}
         isMyMessage={selectedMessage?.user._id === currentUser?.uid}
       />
 
       <GiftedChat 
-          messages={messages} 
+          messages={searchQuery ? filteredMessages : messages} 
           text={inputText}
-          onTextChanged={setInputText}
+          onTextChanged={handleTyping}
           onSend={onSend}
           user={{ _id: String(currentUser?.uid || '') }} 
           renderBubble={renderBubble} 
-          renderInputToolbar={renderInputToolbar} 
-          renderMessageAudio={(p) => <View style={{ padding: 5, minWidth: 150 }}><AudioPlayer url={p.currentMessage.audio} /></View>} 
-          renderMessageImage={renderMessageImage} 
-          renderSystemMessage={(p) => <View style={styles.systemMessageContainer}><View style={styles.systemMessagePill}><Text style={styles.systemMessageText}>{String(p.currentMessage.text)}</Text></View></View>} 
-          renderDay={renderDay} 
-          alwaysShowSend={true} 
+          renderInputToolbar={(props) => {
+            if (didIBlock) return <View style={styles.blockedBar}><Text style={styles.blockedText}>You blocked this user. Unblock to send messages.</Text><TouchableOpacity onPress={handleBlockUser}><Text style={{ color: '#FF4D67', fontWeight: 'bold', marginTop: 5 }}>Unblock</Text></TouchableOpacity></View>;
+            if (amIBlocked) return <View style={styles.blockedBar}><Text style={styles.blockedText}>You cannot reply to this conversation.</Text></View>;
+
+            return (
+              <ChatInput 
+                  {...props}
+                  isRecording={isRecording}
+                  meteringData={meteringData}
+                  onEmojiPress={() => setShowEmojiPicker(!showEmojiPicker)}
+                  onGalleryPress={handleGalleryPress}
+                  onMicPressIn={startRecording}
+                  onMicPressOut={stopRecording}
+                  chatId={chatId as string}
+                  setTypingStatus={() => {}}
+              />
+            );
+          }} 
+          renderMessageAudio={(p) => <View style={{ padding: 5, minWidth: 150 }}><AudioPlayer url={p.currentMessage!.audio!} /></View>} 
+          renderMessageImage={(p) => <View style={{ padding: 2 }}><Image source={{ uri: p.currentMessage!.image }} style={{ width: 200, height: 200, borderRadius: 15 }} contentFit="cover" /></View>} 
+          renderDay={(p) => p.currentMessage?.createdAt && <View style={{ alignItems: 'center', marginVertical: 10 }}><Text style={{ color: '#9E9E9E', fontSize: 12, fontFamily: 'Urbanist-Medium' }}>{new Date(p.currentMessage.createdAt).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}</Text></View>} 
+          alwaysShowSend 
           infiniteScroll 
           renderUsernameOnMessage={false} 
           keyboardShouldPersistTaps="handled"
@@ -315,7 +375,7 @@ export default function ChatScreen() {
       {showEmojiPicker && (
         <View style={styles.emojiContainer}>
           {EMOJIS.map(e => (
-            <TouchableOpacity key={e} onPress={() => { setInputText(prev => prev + e); setTypingStatus(chatId as string, true); }} style={styles.emojiItem}>
+            <TouchableOpacity key={e} onPress={() => { setInputText(prev => prev + e); handleTyping(inputText + e); }} style={styles.emojiItem}>
               <Text style={{ fontSize: 24 }}>{e}</Text>
             </TouchableOpacity>
           ))}
@@ -331,9 +391,6 @@ const styles = StyleSheet.create({
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   blockedBar: { padding: 15, alignItems: 'center', backgroundColor: '#F3F3F5', borderTopWidth: 1, borderTopColor: '#eee' },
   blockedText: { color: '#616161', fontSize: 14, fontFamily: 'Urbanist-Medium', textAlign: 'center' },
-  systemMessageContainer: { alignItems: 'center', justifyContent: 'center', marginVertical: 8 },
-  systemMessagePill: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F5F5F5', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 15 },
-  systemMessageText: { fontSize: 12, color: '#666', fontFamily: 'Urbanist-Medium' },
   emojiContainer: { flexDirection: 'row', flexWrap: 'wrap', backgroundColor: '#fff', padding: 10, borderTopWidth: 1, borderTopColor: '#f0f0f0' },
   emojiItem: { padding: 10 },
 });

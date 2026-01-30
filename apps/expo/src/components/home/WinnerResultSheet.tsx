@@ -49,22 +49,7 @@ export const WinnerResultSheet = ({ visible, onDismiss, match, isDark }: WinnerR
       });
       opacity.value = withTiming(0, { duration: 300 });
     }
-  }, [visible]);
-
-  if (!shouldRender || !match) return null;
-
-  const winner = match.winnerId === match.userA.uid ? match.userA : match.userB;
-  const winnerName = winner.displayName || winner.username || "Winner";
-  const rewardText = match.rewardType === 'product' ? match.prizeDescription : 
-                    match.rewardType === 'both' ? `${match.prizeDescription} + ${match.winnerReward} Dpcoins` :
-                    `${match.winnerReward} Dpcoins`;
-
-  const handleShare = async () => {
-      try {
-          const message = `🎉 Check out the winner of this battle! ${winnerName} won ${rewardText} on TopHunt! 🏆\n\nhttps://tophunt.app/battle/${match.id}`;
-          await RNShare.share({ message });
-      } catch (e) {}
-  };
+  }, [visible, shouldRender]);
 
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: translateY.value }, { scale: scale.value }],
@@ -74,6 +59,37 @@ export const WinnerResultSheet = ({ visible, onDismiss, match, isDark }: WinnerR
   const backdropStyle = useAnimatedStyle(() => ({
     opacity: interpolate(translateY.value, [SCREEN_HEIGHT, 0], [0, 0.7], Extrapolation.CLAMP),
   }));
+
+  if (!shouldRender || !match) return null;
+
+  const winner = match.winnerId === match.userA?.uid ? match.userA : match.userB;
+  const winnerName = winner?.displayName || winner?.username || "Winner";
+  
+  // FIXED REWARD TEXT LOGIC
+  const coinReward = match.winnerReward !== undefined ? match.winnerReward : 0;
+  const prizeDescription = match.prizeDescription || "";
+  const rewardType = match.rewardType || 'coin';
+
+  let rewardText = "";
+  if (rewardType === 'product') {
+    rewardText = prizeDescription;
+  } else if (rewardType === 'both') {
+    rewardText = `${prizeDescription} + ${coinReward} Dpcoins`;
+  } else {
+    rewardText = `${coinReward} Dpcoins`;
+  }
+
+  const handleShare = async () => {
+      try {
+          const message = `🎉 Check out the winner of this battle! ${winnerName} won ${rewardText} on TopHunt! 🏆\n\nDownload Tophunt now!`;
+          await RNShare.share({ 
+              title: 'TopHunt Winner',
+              message: message 
+          });
+      } catch (e) {
+          console.error("Share failed:", e);
+      }
+  };
 
   return (
     <Portal>
@@ -95,7 +111,7 @@ export const WinnerResultSheet = ({ visible, onDismiss, match, isDark }: WinnerR
 
                 <View style={styles.content}>
                     <View style={styles.imageContainer}>
-                        <Image source={{ uri: winner.mediaUrl }} style={styles.winnerImage} contentFit="cover" transition={300} />
+                        <Image source={{ uri: winner?.mediaUrl }} style={styles.winnerImage} contentFit="cover" transition={300} />
                         <View style={styles.crownContainer}>
                             <Text style={{ fontSize: 30 }}>👑</Text>
                         </View>

@@ -114,7 +114,7 @@ function RootLayoutNav() {
     };
   }, []);
 
-  // AUTH & PROFILE GUARD LOGIC (FIXED)
+  // AUTH & PROFILE GUARD LOGIC
   useEffect(() => {
     if (loading || !isMounted.current) return;
 
@@ -125,30 +125,28 @@ function RootLayoutNav() {
     const isRoot = segments.length === 0 || (segments.length === 1 && segments[0] === 'index');
 
     if (!user) {
-      // USER IS LOGGED OUT
-      // If user is on a protected page, force redirect to login
       if (!inAuthGroup && !inOnboarding && !inSplash && !inMaintenance && !isRoot) {
-        console.log("[Guard] Logged out detected, redirecting to login");
+        console.log("[Guard] Logged out, redirecting to login");
         router.replace('/auth/login');
       }
     } else {
-      // USER IS LOGGED IN
       const isProfileComplete = user.signupCompleted === true;
       const inSignupFlow = segments[1] === 'signup';
       const isCongratulationsPage = segments[2] === 'congratulations';
 
       if (!isProfileComplete) {
-        // Logged in but profile NOT complete: Force signup flow
-        // But DON'T redirect if they are already in the signup steps or onboarding
+        // Logged in but profile NOT complete
+        // Skip redirect if already in the signup process or onboarding
         if (!inSignupFlow && !inOnboarding && !inSplash && !inMaintenance) {
            console.log("[Guard] Profile incomplete, forcing signup flow");
            router.replace('/auth/signup/fill-profile');
         }
       } else {
         // Profile IS complete: Don't let them stay in login/signup pages
-        if (inAuthGroup || inOnboarding || inSplash || (inSignupFlow && !isCongratulationsPage)) {
-          console.log("[Guard] Profile complete, redirecting to home");
-          router.replace('/home');
+        // EXCEPTION: Let them stay on 'congratulations' page so they can click the button
+        if (inAuthGroup && !isCongratulationsPage) {
+           console.log("[Guard] Profile complete, redirecting to home");
+           router.replace('/home');
         }
       }
     }
