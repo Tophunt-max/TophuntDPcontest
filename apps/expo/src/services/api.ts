@@ -30,7 +30,6 @@ export const callApi = async (action: string, data: any = {}) => {
 
   let functionName = 'api';
   
-  // Explicitly route statusHandler/storyHandler calls to the separate storyHandler function
   if (action === 'statusHandler' || action === 'storyHandler') {
     functionName = 'storyHandler';
   } else if (authActions.includes(action)) {
@@ -42,15 +41,12 @@ export const callApi = async (action: string, data: any = {}) => {
   const apiFunction = httpsCallable(functions, functionName);
   
   try {
-    let payload = { action, ...data };
-
-    // FIX: For storyHandler, ensure we don't overwrite the internal action if it's already there
-    if (functionName === 'storyHandler') {
-        // If action is storyHandler, we use the action provided inside data
-        // If data doesn't have an action, we use 'action' (which is probably 'storyHandler', which is wrong for the sub-logic)
-        // But storyService calls callApi('storyHandler', { action: 'create', ... })
-        payload = { ...data }; 
-    }
+    // FIX: Action field handling to avoid duplicates and ensure consistency
+    // If 'action' is passed as the first argument, we use it.
+    // If 'data' already contains an 'action', it might be a nested call or legacy.
+    // We prioritize the 'action' argument.
+    const { action: dataAction, ...restData } = data;
+    const payload = { action: action, ...restData };
 
     const result = await apiFunction(payload);
     return result.data;

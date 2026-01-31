@@ -18,7 +18,7 @@ import { auth, firestore as db } from "@/src/services/firebase/initFirebase";
 import { callApi } from "@/src/services/api"; 
 import { signInWithEmailAndPassword } from "firebase/auth";
 import { uploadAvatar } from "@/src/services/r2/uploadAvatar";
-import { doc, updateDoc, getDoc } from "firebase/firestore";
+import { doc, getDoc } from "firebase/firestore";
 
 const { width } = Dimensions.get('window');
 
@@ -31,6 +31,8 @@ export default function CongratulationsScreen() {
   const [statusMessage, setStatusMessage] = useState("Finalizing your account...");
 
   useEffect(() => {
+    let isMounted = true;
+
     const finalizeSignup = async () => {
       try {
         console.log("Finalizing signup for provider:", signupData.authProvider);
@@ -57,16 +59,11 @@ export default function CongratulationsScreen() {
             setStatusMessage("Signing you in...");
             await signInWithEmailAndPassword(auth, signupData.email, signupData.password);
         } else {
-            if (!signupData.username) {
-                // Check if user already has a username in auth (social login)
-                if (!auth.currentUser?.displayName && !signupData.username) {
-                  throw new Error("Username is required to complete your profile.");
-                }
-            }
             setStatusMessage("Saving your profile details...");
             
             if (!finalUid) throw new Error("Authentication failed. Please login again.");
 
+            // Backend mark as signupCompleted: true during this call
             const result: any = await callApi('createProfile', { 
                 ...signupData,
                 avatarUrl: signupData.avatarUrl?.startsWith('http') ? signupData.avatarUrl : null,
@@ -96,45 +93,48 @@ export default function CongratulationsScreen() {
             }
         }
 
-        // 3. CRITICAL: Explicitly mark signup as completed in Firestore
         setStatusMessage("Completing setup...");
-        const userRef = doc(db, "users", finalUid!);
-        await updateDoc(userRef, {
-            signupCompleted: true,
-            lastLogin: new Date().toISOString()
-        });
-
-        console.log("Signup finalized successfully.");
         await AsyncStorage.setItem('hasSeenOnboarding', 'true');
         
-        // Give time for Firestore listeners to sync
-        setTimeout(() => {
-            setIsLoading(false);
-        }, 2000);
+        console.log("Signup finalized successfully.");
+        
+        // GIVE FIRESTORE TIME TO SYNC ACROSS ALL NODES
+        if (isMounted) {
+            setTimeout(() => {
+                setIsLoading(false);
+            }, 2500); 
+        }
 
       } catch (error: any) {
         console.error("Failed to finalize signup", error);
-        Alert.alert(
-            "Signup Failed", 
-            error.message || "Could not complete the process. Please try again.",
-            [
-                { text: "Go to Login", onPress: () => router.replace("/auth/login") },
-                { text: "Retry", onPress: () => finalizeSignup() }
-            ]
-        );
-        setIsLoading(false);
+        if (isMounted) {
+            Alert.alert(
+                "Signup Failed", 
+                error.message || "Could not complete the process.",
+                [
+                    { text: "Go to Login", onPress: () => router.replace("/auth/login") },
+                    { text: "Retry", onPress: () => finalizeSignup() }
+                ]
+            );
+            setIsLoading(false);
+        }
       }
     };
 
     finalizeSignup();
+    return () => { isMounted = false; };
   }, []);
 
   const handleGoHome = async () => {
     setIsFinishing(true);
     try {
-      // Small delay to ensure Auth state is synced
+      // PRE-EMPTIVE STORE RESET
       resetStore();
-      router.replace("/home");
+      
+      // CRITICAL FIX: Force a small wait so the local cache of auth state is solid
+      setTimeout(() => {
+          router.replace("/home");
+      }, 500);
     } catch (e) {
       setIsFinishing(false);
     }

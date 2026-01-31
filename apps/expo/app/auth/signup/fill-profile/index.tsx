@@ -29,6 +29,7 @@ import { ReanimatedBottomSheet } from "@/src/components/modals/ReanimatedBottomS
 import { useAuth } from "@/src/hooks/useAuth";
 import { doc, getDoc } from "firebase/firestore";
 import { firestore as db } from "@/src/services/firebase/initFirebase";
+import { callApi } from "@/src/services/api";
 
 const fillProfileSchema = z.object({
   avatarUrl: z.string().optional().nullable(),
@@ -59,10 +60,14 @@ const FillProfile: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isDataFetching, setIsDataFetching] = useState(false);
 
+  // New States for Username Check
+  const [usernameChecking, setUsernameChecking] = useState(false);
+  const [isUsernameTaken, setIsUsernameTaken] = useState(false);
+
   const [countryCode, setCountryCode] = useState('+91');
   const [localAvatarUri, setLocalAvatarUri] = useState<string | null>(signupData.avatarUrl || null);
 
-  const { control, handleSubmit, setValue, watch, trigger, formState: { errors } } = useForm<FillProfileFormValues>({
+  const { control, handleSubmit, setValue, watch, trigger, setError, clearErrors, formState: { errors } } = useForm<FillProfileFormValues>({
     resolver: zodResolver(fillProfileSchema),
     defaultValues: {
       avatarUrl: signupData.avatarUrl || "",
@@ -78,11 +83,40 @@ const FillProfile: React.FC = () => {
 
   const selectedOccupation = watch("occupation");
   const selectedGender = watch("gender");
+  const username = watch("username");
   
   const isEmailLocked = (signupData.authProvider === 'google' || signupData.authProvider === 'facebook' || signupData.authProvider === 'apple') && !!signupData.email;
   const isPhoneLocked = signupData.authProvider === 'phone' && !!signupData.phone;
 
-  // Recovery: If store is empty, try fetching from Firestore
+  // Real-time Username Availability Check
+  useEffect(() => {
+    const checkUsername = async () => {
+        if (username?.length >= 3 && /^[a-zA-Z0-9_.]+$/.test(username)) {
+            // Only check if it's different from what we might have already
+            if (username === signupData.username && !isUsernameTaken) return;
+
+            setUsernameChecking(true);
+            try {
+                const result: any = await callApi('check', { type: 'username', value: username });
+                if (result.exists && result.uid !== user?.uid) {
+                    setError("username", { type: "manual", message: "Username already taken" });
+                    setIsUsernameTaken(true);
+                } else {
+                    clearErrors("username");
+                    setIsUsernameTaken(false);
+                }
+            } catch (error) {
+                console.error("Username check failed", error);
+            } finally {
+                setUsernameChecking(false);
+            }
+        }
+    };
+
+    const timer = setTimeout(checkUsername, 800);
+    return () => clearTimeout(timer);
+  }, [username]);
+
   useEffect(() => {
     const recoverData = async () => {
         if (user?.uid && !signupData.email && !signupData.fullName) {
@@ -95,15 +129,14 @@ const FillProfile: React.FC = () => {
                         fullName: data.fullName || "",
                         username: data.username || "",
                         email: data.email || user.email || "",
-                        phone: data.phoneNumber || user.phoneNumber || "",
-                        avatarUrl: data.avatarUrl || user.photoURL || "",
+                        phone: data.phone || user.phoneNumber || "",
+                        avatarUrl: data.profileImageUrl || user.photoURL || "",
                         gender: data.gender || "",
                         occupation: data.occupation || "",
                         dob: data.dob || ""
                     };
                     setMultiple(recovered);
                     
-                    // Update form values
                     setValue("fullName", recovered.fullName);
                     setValue("username", recovered.username);
                     setValue("email", recovered.email);
@@ -165,6 +198,11 @@ const FillProfile: React.FC = () => {
   };
 
   const onSubmit = async (data: FillProfileFormValues) => {
+    if (usernameChecking || isUsernameTaken) {
+        addToast("Please fix username errors", "info");
+        return;
+    }
+
     setIsLoading(true);
     try {
       const finalPhone = data.phone ? (countryCode + data.phone) : (signupData.phone || "");
@@ -217,7 +255,14 @@ const FillProfile: React.FC = () => {
         </View>
 
         <FormInput control={control} name="fullName" placeholder="Full Name" errorMessage={errors.fullName?.message} />
-        <FormInput control={control} name="username" placeholder="Username" errorMessage={errors.username?.message} />
+        <FormInput 
+            control={control} 
+            name="username" 
+            placeholder="Username" 
+            errorMessage={errors.username?.message}
+            rightIcon={usernameChecking ? <ActivityIndicator size="small" color="#ff4466" /> : null}
+            autoCapitalize="none"
+        />
         <FormInput control={control} name="email" placeholder="Email" rightIcon={<Email_Icon width={20} height={20} color="#9E9E9E" />} editable={!isEmailLocked} style={isEmailLocked ? styles.readOnlyInput : null} errorMessage={errors.email?.message} />
 
         <View style={styles.phoneInputRow}>
@@ -249,7 +294,7 @@ const FillProfile: React.FC = () => {
 
         <DatePickerField control={control} name="dateOfBirth" placeholder="Date of Birth" errorMessage={errors.dateOfBirth?.message} />
 
-        <TouchableOpacity onPress={handleSubmit(onSubmit)} style={styles.continueButton} disabled={isLoading}>
+        <TouchableOpacity onPress={handleSubmit(onSubmit)} style={[styles.continueButton, (usernameChecking || isUsernameTaken) && { opacity: 0.6 }]} disabled={isLoading || usernameChecking || isUsernameTaken}>
           {isLoading ? <ActivityIndicator color="white" /> : <Text style={styles.continueButtonText}>Continue</Text>}
         </TouchableOpacity>
       </ScrollView>

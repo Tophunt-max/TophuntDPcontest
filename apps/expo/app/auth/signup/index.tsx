@@ -35,7 +35,7 @@ import { FormInput } from "@/src/components/inputs/FormInput";
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useSignupStore } from "@/src/store/signup";
 import { auth, firestore as db } from "../../../src/services/firebase/initFirebase";
-import { callApi } from "@/src/services/api"; // Updated to use centralized API
+import { callApi } from "@/src/services/api"; 
 import { useToast } from "@/src/components/toast/ToastProvider";
 import PasswordStrength from "@/src/components/inputs/PasswordStrength";
 import { Colors } from '@/constants/theme';
@@ -87,7 +87,6 @@ export default function SignupEntryScreen() {
     }
   });
 
-  // REAL-TIME Sync with Admin Settings
   useEffect(() => {
     const docRef = doc(db, "settings", "appConfig");
     const unsubscribe = onSnapshot(docRef, (docSnap) => {
@@ -139,18 +138,16 @@ export default function SignupEntryScreen() {
   const password = watch("password");
   const termsAccepted = watch("termsAccepted");
 
-  // Real-time Email Uniqueness Check (USING CALL API)
+  // Real-time Email Uniqueness Check
   useEffect(() => {
     const checkEmail = async () => {
         if (email.length > 5 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
             setEmailChecking(true);
             try {
-                // FIXED: Now using callApi instead of authHandler directly
-                const result: any = await callApi('check', { action: 'check', type: 'email', value: email });
+                const result: any = await callApi('check', { type: 'email', value: email });
                 if (result.exists) {
                     setError("email", { type: "manual", message: "This email is already registered" });
                     setIsEmailAlreadyExists(true);
-                    addToast("This email is already in use.", "error");
                 } else {
                     clearErrors("email");
                     setIsEmailAlreadyExists(false);
@@ -163,6 +160,7 @@ export default function SignupEntryScreen() {
             }
         } else {
             setIsEmailAlreadyExists(false);
+            clearErrors("email");
         }
     };
 
@@ -174,7 +172,7 @@ export default function SignupEntryScreen() {
     if (emailChecking) return;
     
     if (isEmailAlreadyExists) {
-        addToast("Cannot proceed: Email already exists.", "error");
+        addToast("This email is already in use.", "error");
         setError("email", { type: "manual", message: "Email already registered" });
         return;
     }
@@ -191,11 +189,11 @@ export default function SignupEntryScreen() {
           password: data.password,
           authProvider: 'email'
       });
-      addToast("Email verified! Let's complete your profile.", "success");
+      addToast("Email verified!", "success");
       router.push("/auth/signup/fill-profile");
     } catch (error) {
       console.error("Signup error", error);
-      addToast("An error occurred during signup. Please try again.", "error");
+      addToast("An error occurred. Please try again.", "error");
     } finally {
       setIsLoading(false);
     }
@@ -216,7 +214,7 @@ export default function SignupEntryScreen() {
     if (router.canGoBack()) {
       router.back();
     } else {
-      router.replace("/auth/login"); // Fallback to login if no history
+      router.replace("/auth/login");
     }
   };
 
@@ -302,9 +300,6 @@ export default function SignupEntryScreen() {
                   onPress={() => {
                     const newValue = !termsAccepted;
                     setValue('termsAccepted', newValue, { shouldValidate: true });
-                    if (newValue) {
-                      addToast("Terms accepted", "success");
-                    }
                   }}
                 >
                   <View style={[styles.checkbox, termsAccepted && styles.checkboxChecked]}>

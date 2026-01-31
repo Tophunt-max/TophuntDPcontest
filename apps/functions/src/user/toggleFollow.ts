@@ -40,7 +40,7 @@ export const toggleFollow = onCall(FOLLOW_CONFIG, async (request) => {
   let followerAvatar = "";
 
   try {
-    await db.runTransaction(async (transaction) => {
+    const result = await db.runTransaction(async (transaction) => {
       const followerDoc = await transaction.get(followerRef);
       const targetDoc = await transaction.get(targetRef);
 
@@ -49,6 +49,8 @@ export const toggleFollow = onCall(FOLLOW_CONFIG, async (request) => {
       }
 
       const followerData = followerDoc.data();
+      const targetData = targetDoc.data();
+      
       followerName = followerData?.username || followerData?.fullName || "Someone";
       followerAvatar = followerData?.profileImageUrl || "";
       
@@ -56,20 +58,29 @@ export const toggleFollow = onCall(FOLLOW_CONFIG, async (request) => {
 
       if (isCurrentlyFollowing) {
         // Unfollow logic
-        transaction.update(followerRef, { following: FieldValue.arrayRemove(targetUserId) });
-        transaction.update(targetRef, { followers: FieldValue.arrayRemove(followerId) });
-        transaction.update(targetRef, { followersCount: FieldValue.increment(-1) });
-        transaction.update(followerRef, { followingCount: FieldValue.increment(-1) });
+        transaction.update(followerRef, { 
+            following: FieldValue.arrayRemove(targetUserId),
+            "stats.followingCount": FieldValue.increment(-1)
+        });
+        transaction.update(targetRef, { 
+            "stats.followersCount": FieldValue.increment(-1) 
+        });
         isFollowing = false;
       } else {
         // Follow logic
-        transaction.update(followerRef, { following: FieldValue.arrayUnion(targetUserId) });
-        transaction.update(targetRef, { followers: FieldValue.arrayUnion(followerId) });
-        transaction.update(targetRef, { followersCount: FieldValue.increment(1) });
-        transaction.update(followerRef, { followingCount: FieldValue.increment(1) });
+        transaction.update(followerRef, { 
+            following: FieldValue.arrayUnion(targetUserId),
+            "stats.followingCount": FieldValue.increment(1)
+        });
+        transaction.update(targetRef, { 
+            "stats.followersCount": FieldValue.increment(1) 
+        });
         isFollowing = true;
       }
+      return { isFollowing };
     });
+
+    isFollowing = result.isFollowing;
 
     // Send Notification only on Follow
     if (isFollowing) {
@@ -90,6 +101,6 @@ export const toggleFollow = onCall(FOLLOW_CONFIG, async (request) => {
   } catch (error: any) {
     logger.error("Error in toggleFollow:", error);
     if (error instanceof HttpsError) throw error;
-    throw new HttpsError("internal", "An unexpected error occurred.");
+    throw new HttpsError("internal", error.message || "An unexpected error occurred.");
   }
 });

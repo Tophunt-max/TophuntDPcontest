@@ -71,7 +71,7 @@ function RootLayoutNav() {
     }
   }, [user, loading]);
 
-  // Notification Listeners
+  // Notification Listeners (DO NOT REMOVE)
   useEffect(() => {
     const subscription = Notifications.addNotificationResponseReceivedListener(response => {
       const { actionIdentifier, notification } = response;
@@ -114,7 +114,7 @@ function RootLayoutNav() {
     };
   }, []);
 
-  // AUTH & PROFILE GUARD LOGIC
+  // AUTH & PROFILE GUARD LOGIC (BUG FIX)
   useEffect(() => {
     if (loading || !isMounted.current) return;
 
@@ -131,19 +131,17 @@ function RootLayoutNav() {
       }
     } else {
       const isProfileComplete = user.signupCompleted === true;
-      const inSignupFlow = segments[1] === 'signup';
+      const inSignupFlow = segments[0] === 'auth' && segments[1] === 'signup';
       const isCongratulationsPage = segments[2] === 'congratulations';
 
       if (!isProfileComplete) {
-        // Logged in but profile NOT complete
-        // Skip redirect if already in the signup process or onboarding
-        if (!inSignupFlow && !inOnboarding && !inSplash && !inMaintenance) {
+        // FIXED: Agar user signup process ke andar hai (congratulations tak), toh force redirect mat karo
+        if (!inSignupFlow && !inOnboarding && !inSplash && !inMaintenance && !isCongratulationsPage) {
            console.log("[Guard] Profile incomplete, forcing signup flow");
            router.replace('/auth/signup/fill-profile');
         }
       } else {
-        // Profile IS complete: Don't let them stay in login/signup pages
-        // EXCEPTION: Let them stay on 'congratulations' page so they can click the button
+        // Profile complete hai, toh auth pages se bahar nikalo (except congratulations)
         if (inAuthGroup && !isCongratulationsPage) {
            console.log("[Guard] Profile complete, redirecting to home");
            router.replace('/home');
