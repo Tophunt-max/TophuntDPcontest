@@ -22,8 +22,7 @@ import { useColorScheme } from "../../../hooks/use-color-scheme";
 import { useToast } from "../../../src/components/toast/ToastProvider";
 import { Colors } from "@/constants/theme";
 import { SocialAuthService } from "../../../src/services/auth/socialAuth";
-import { doc, onSnapshot } from "firebase/firestore";
-import { firestore as db } from "../../../src/services/firebase/initFirebase";
+import { readApi, poll } from "../../../src/services/api";
 
 const { width } = Dimensions.get("window");
 
@@ -57,31 +56,25 @@ export default function LoginWelcomeScreen() {
     passwordLogin: true
   });
 
-  // REAL-TIME Sync with Admin Settings
+  // Sync with Admin Settings (polling the Worker /read/app-config).
   useEffect(() => {
-    console.log("Listening for Auth Settings changes...");
-    const docRef = doc(db, "settings", "appConfig");
-    
-    const unsubscribe = onSnapshot(docRef, (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        console.log("New Auth Settings received:", data.authSettings);
-        if (data.authSettings) {
+    const unsubscribe = poll<any>(
+      () => readApi("/read/app-config"),
+      (data) => {
+        if (data?.authSettings) {
+          const a = data.authSettings;
           setConfig({
-            googleLogin: data.authSettings.googleLogin ?? true,
-            facebookLogin: data.authSettings.facebookLogin ?? true,
-            appleLogin: data.authSettings.appleLogin ?? true,
-            phoneLogin: data.authSettings.phoneLogin ?? true,
-            passwordLogin: data.authSettings.passwordLogin ?? true,
+            googleLogin: a.googleLogin ?? true,
+            facebookLogin: a.facebookLogin ?? true,
+            appleLogin: a.appleLogin ?? true,
+            phoneLogin: a.phoneLogin ?? true,
+            passwordLogin: a.passwordLogin ?? true,
           });
         }
-      }
-      setIsConfigLoading(false);
-    }, (error) => {
-      console.error("Firestore Listen Error:", error);
-      setIsConfigLoading(false);
-    });
-
+        setIsConfigLoading(false);
+      },
+      30000,
+    );
     return () => unsubscribe();
   }, []);
 

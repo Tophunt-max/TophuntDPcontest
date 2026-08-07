@@ -5,8 +5,8 @@ import {
   signInWithPopup,
   getAuth,
 } from "firebase/auth";
-import app, { firestore as db } from "../firebase/initFirebase";
-import { doc, getDoc, collection, query, where, getDocs, limit } from "firebase/firestore";
+import app from "../firebase/initFirebase";
+import { readApi } from "../api";
 import { useSignupStore } from "../../store/signup";
 
 export const SocialAuthService = {
@@ -20,21 +20,8 @@ export const SocialAuthService = {
 
       const signupStore = useSignupStore.getState();
 
-      // 1. Check by UID first
-      const userDocRef = doc(db, "users", user.uid);
-      const userDocSnap = await getDoc(userDocRef);
-      
-      let userData = null;
-      if (userDocSnap.exists()) {
-          userData = userDocSnap.data();
-      } else if (user.email) {
-          // 2. Check by Email field (in case they have a different UID but same email)
-          const q = query(collection(db, "users"), where("email", "==", user.email), limit(1));
-          const querySnapshot = await getDocs(q);
-          if (!querySnapshot.empty) {
-              userData = querySnapshot.docs[0].data();
-          }
-      }
+      // Look up the user's profile in D1 (via the Worker), keyed by uid.
+      const userData: any = await readApi(`/read/users/${user.uid}`).catch(() => null);
 
       if (userData) {
         // EXISTING USER

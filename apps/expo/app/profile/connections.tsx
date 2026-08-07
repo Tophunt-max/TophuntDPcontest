@@ -2,8 +2,7 @@
 import React, { useState, useEffect, useLayoutEffect } from 'react';
 import { View, Text, StyleSheet, useColorScheme, FlatList, Image, TouchableOpacity, ActivityIndicator, Dimensions, TextInput } from 'react-native';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
-import { doc, getDoc, collection, getDocs, query, where } from "firebase/firestore";
-import { firestore } from "../../src/services/firebase/initFirebase";
+import { readApi } from "@/src/services/api";
 import { Ionicons } from '@expo/vector-icons';
 import { toggleFollowService } from '@/src/services/users';
 import { useAuth } from '@/src/hooks/useAuth';
@@ -77,24 +76,9 @@ export default function ConnectionsScreen() {
     if (!userId || !type) { setLoading(false); return; }
     setLoading(true);
     try {
-        const userRef = doc(firestore, "users", userId);
-        const userSnap = await getDoc(userRef);
-        if (userSnap.exists()) {
-          const userIds = type === 'followers' ? (userSnap.data().followers || []) : (userSnap.data().following || []);
-          if (userIds.length > 0) {
-            const usersQuery = query(collection(firestore, "users"), where("__name__", "in", userIds));
-            const querySnapshot = await getDocs(usersQuery);
-            const fetchedUsers = querySnapshot.docs.map(d => ({ 
-                id: d.id, 
-                username: d.data().username,
-                fullName: d.data().fullName,
-                profileImageUrl: d.data().profileImageUrl,
-            } as User));
-            setUsers(fetchedUsers);
-          } else {
-            setUsers([]);
-          }
-        }
+        // Followers/following now come from the Worker (D1).
+        const fetchedUsers = (await readApi(`/read/users/${userId}/${type}`)) as User[];
+        setUsers(fetchedUsers || []);
     } catch (error) {
       console.error("Connections error:", error);
       addToast("Failed to load connections", "error");

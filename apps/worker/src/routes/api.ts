@@ -490,13 +490,201 @@ apiRoute.post("/", async (c) => {
       return c.json({ success: true });
     }
 
+    // ================= CONTEST-MATCH ENGAGEMENT =================
+    case "likeContest": {
+      const { matchId } = body;
+      if (!matchId) throw httpsError("invalid-argument", "matchId is required.");
+      const existing = await db
+        .select()
+        .from(schema.matchLikes)
+        .where(and(eq(schema.matchLikes.matchId, matchId), eq(schema.matchLikes.userId, uid)))
+        .get();
+      if (existing) {
+        await db.delete(schema.matchLikes).where(and(eq(schema.matchLikes.matchId, matchId), eq(schema.matchLikes.userId, uid)));
+        await db.update(schema.contestMatches).set({ likeCount: sql`MAX(${schema.contestMatches.likeCount} - 1, 0)` }).where(eq(schema.contestMatches.id, matchId));
+        return c.json({ success: true, liked: false });
+      }
+      await db.insert(schema.matchLikes).values({ matchId, userId: uid, createdAt: now() });
+      await db.update(schema.contestMatches).set({ likeCount: sql`${schema.contestMatches.likeCount} + 1` }).where(eq(schema.contestMatches.id, matchId));
+      // notify participants (except the liker)
+      const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, matchId)).get();
+      const me = await db.select({ username: schema.users.username }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+      for (const p of [match?.userA as any, match?.userB as any]) {
+        if (p?.uid && p.uid !== uid) {
+          await createNotification(env, p.uid, { title: "New Like ❤️", body: `${me?.username || "Someone"} liked your battle "${match?.title}".`, type: "match_like", targetId: matchId });
+        }
+      }
+      return c.json({ success: true, liked: true });
+    }
+
+    case "commentContest": {
+      const { matchId, text } = body;
+      if (!matchId || !text) throw httpsError("invalid-argument", "matchId and text are required.");
+      const commentId = newId();
+      const ts = now();
+      await db.insert(schema.matchComments).values({ id: commentId, matchId, userId: uid, text, createdAt: ts });
+      await db.update(schema.contestMatches).set({ commentCount: sql`${schema.contestMatches.commentCount} + 1` }).where(eq(schema.contestMatches.id, matchId));
+      const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, matchId)).get();
+      const me = await db.select({ username: schema.users.username }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+      for (const p of [match?.userA as any, match?.userB as any]) {
+        if (p?.uid && p.uid !== uid) {
+          await createNotification(env, p.uid, { title: "New Comment 💬", body: `${me?.username || "Someone"} commented on "${match?.title}".`, type: "match_comment", targetId: matchId });
+        }
+      }
+      return c.json({ success: true, commentId });
+    }
+
+    case "shareContest": {
+      const { matchId } = body;
+      if (!matchId) throw httpsError("invalid-argument", "matchId is required.");
+      await db.update(schema.contestMatches).set({ shareCount: sql`${schema.contestMatches.shareCount} + 1` }).where(eq(schema.contestMatches.id, matchId));
+      await db.insert(schema.shares).values({ id: newId(), userId: uid, targetType: "match", targetId: matchId, createdAt: now() });
+      return c.json({ success: true });
+    }
+
+    case "reactToMatch": {
+      const { matchId, type } = body;
+      if (!matchId || !type) throw httpsError("invalid-argument", "matchId and type are required.");
+      const ins = await db
+        .insert(schema.matchReactions)
+        .values({ matchId, userId: uid, type, createdAt: now() })
+        .onConflictDoNothing()
+        .run();
+      if (ins.meta.changes === 0) return c.json({ success: true, alreadyReacted: true });
+      await env.DB.prepare(
+        `UPDATE contest_matches
+            SET reactions = json_set(COALESCE(reactions, '{}'), '$.' || ?, COALESCE(json_extract(reactions, '$.' || ?), 0) + 1)
+          WHERE id = ?`,
+      ).bind(type, type, matchId).run();
+      return c.json({ success: true });
+    }
+
+    case "toggleBookmark": {
+      const { matchId } = body;
+      if (!matchId) throw httpsError("invalid-argument", "matchId is required.");
+      const existing = await db
+        .select()
+        .from(schema.bookmarks)
+        .where(and(eq(schema.bookmarks.userId, uid), eq(schema.bookmarks.matchId, matchId)))
+        .get();
+      if (existing) {
+        await db.delete(schema.bookmarks).where(and(eq(schema.bookmarks.userId, uid), eq(schema.bookmarks.matchId, matchId)));
+        return c.json({ success: true, bookmarked: false });
+      }
+      await db.insert(schema.bookmarks).values({ userId: uid, matchId, createdAt: now() });
+      return c.json({ success: true, bookmarked: true });
+    }
+
+    // ================= GENERIC COMMENTS (posts or matches) =================
+    case "addComment": {
+      const { targetType, targetId, text } = body;
+      if (!targetId || !text) throw httpsError("invalid-argument", "targetId and text are required.");
+      const commentId = newId();
+      const ts = now();
+      if (targetType === "matches" || targetType === "contestMatches") {
+        await db.insert(schema.matchComments).values({ id: commentId, matchId: targetId, userId: uid, text, createdAt: ts });
+        await db.update(schema.contestMatches).set({ commentCount: sql`${schema.contestMatches.commentCount} + 1` }).where(eq(schema.contestMatches.id, targetId));
+      } else {
+        await db.insert(schema.postComments).values({ id: commentId, postId: targetId, userId: uid, text, createdAt: ts });
+        await db.update(schema.posts).set({ commentCount: sql`${schema.posts.commentCount} + 1` }).where(eq(schema.posts.id, targetId));
+        const post = await db.select({ userId: schema.posts.userId }).from(schema.posts).where(eq(schema.posts.id, targetId)).get();
+        const me = await db.select({ username: schema.users.username }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+        if (post?.userId && post.userId !== uid) {
+          await createNotification(env, post.userId, { title: "New Comment 💬", body: `${me?.username || "Someone"} commented on your post.`, type: "comment", targetId });
+        }
+      }
+      return c.json({ success: true, commentId });
+    }
+
+    case "deleteComment": {
+      const { targetType, targetId, commentId } = body;
+      if (!commentId) throw httpsError("invalid-argument", "commentId is required.");
+      if (targetType === "matches" || targetType === "contestMatches") {
+        const row = await db.select().from(schema.matchComments).where(eq(schema.matchComments.id, commentId)).get();
+        if (!row) throw httpsError("not-found", "Comment not found.");
+        if (row.userId !== uid && !(await isAdmin(c as any))) throw httpsError("permission-denied", "Not allowed.");
+        await db.delete(schema.matchComments).where(eq(schema.matchComments.id, commentId));
+        await db.update(schema.contestMatches).set({ commentCount: sql`MAX(${schema.contestMatches.commentCount} - 1, 0)` }).where(eq(schema.contestMatches.id, row.matchId));
+      } else {
+        const row = await db.select().from(schema.postComments).where(eq(schema.postComments.id, commentId)).get();
+        if (!row) throw httpsError("not-found", "Comment not found.");
+        if (row.userId !== uid && !(await isAdmin(c as any))) throw httpsError("permission-denied", "Not allowed.");
+        await db.delete(schema.postComments).where(eq(schema.postComments.id, commentId));
+        await db.update(schema.posts).set({ commentCount: sql`MAX(${schema.posts.commentCount} - 1, 0)` }).where(eq(schema.posts.id, row.postId));
+      }
+      return c.json({ success: true });
+    }
+
+    // ================= PROFILE =================
+    case "updateProfile":
+    case "completeSignup": {
+      const fields = action === "completeSignup" ? { signupCompleted: true } : body;
+      const set: Record<string, any> = { updatedAt: now() };
+      const extraPatch: Record<string, any> = {};
+      const COLUMN_KEYS = new Set([
+        "fullName", "username", "dob", "phone", "occupation", "gender", "coordinates",
+        "bio", "isPrivate", "authProvider", "platform", "equippedBadge", "signupCompleted",
+      ]);
+      for (const [k, v] of Object.entries(fields)) {
+        if (k === "action" || k === "uid" || v === undefined) continue;
+        if (k === "avatarUrl" || k === "profileImageUrl") set.profileImageUrl = v;
+        else if (k === "username") set.username = String(v).toLowerCase();
+        else if (COLUMN_KEYS.has(k)) set[k] = v;
+        else extraPatch[k] = v;
+      }
+      if (Object.keys(extraPatch).length) {
+        const cur = await db.select({ extra: schema.users.extra }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+        set.extra = { ...((cur?.extra as any) || {}), ...extraPatch };
+      }
+      const upd = await db.update(schema.users).set(set).where(eq(schema.users.uid, uid)).run();
+      if (upd.meta.changes === 0) {
+        // profile row doesn't exist yet — create it
+        await db.insert(schema.users).values({
+          uid,
+          email: c.get("user").email ?? null,
+          createdAt: now(),
+          updatedAt: now(),
+          ...set,
+        } as any).onConflictDoUpdate({ target: schema.users.uid, set });
+      }
+      return c.json({ success: true });
+    }
+
+    // ================= STORIES (views / reactions / highlights) =================
+    case "viewStory": {
+      const { storyId } = body;
+      if (!storyId) throw httpsError("invalid-argument", "storyId is required.");
+      await db.insert(schema.storyViews).values({ storyId, viewerId: uid, createdAt: now() }).onConflictDoNothing();
+      return c.json({ success: true });
+    }
+    case "reactToStory": {
+      const { storyId, emoji } = body;
+      if (!storyId) throw httpsError("invalid-argument", "storyId is required.");
+      await db
+        .insert(schema.storyViews)
+        .values({ storyId, viewerId: uid, reaction: emoji, createdAt: now() })
+        .onConflictDoUpdate({ target: [schema.storyViews.storyId, schema.storyViews.viewerId], set: { reaction: emoji } });
+      return c.json({ success: true });
+    }
+    case "createHighlight": {
+      const { name, coverImageUrl, storyIds } = body;
+      const id = newId();
+      await db.insert(schema.highlights).values({ id, userId: uid, name, coverImageUrl, storyIds: storyIds || [], createdAt: now() });
+      return c.json({ success: true, highlightId: id });
+    }
+    case "addStoryToHighlight": {
+      const { highlightId, storyId } = body;
+      if (!highlightId || !storyId) throw httpsError("invalid-argument", "highlightId and storyId are required.");
+      const h = await db.select().from(schema.highlights).where(eq(schema.highlights.id, highlightId)).get();
+      if (!h) throw httpsError("not-found", "Highlight not found.");
+      if (h.userId !== uid) throw httpsError("permission-denied", "Not allowed.");
+      const ids = new Set<string>((h.storyIds as string[]) || []);
+      ids.add(storyId);
+      await db.update(schema.highlights).set({ storyIds: [...ids] }).where(eq(schema.highlights.id, highlightId));
+      return c.json({ success: true });
+    }
+
     // ================= NOT YET PORTED =================
-    // These need extra D1 tables / source not yet reviewed. Kept explicit so
-    // the client gets a clear signal rather than a silent wrong result.
-    case "likeContest":
-    case "commentContest":
-    case "shareContest":
-      return notPorted(action, "contests/engagement.ts (needs match_likes/match_comments tables)");
     case "adminManageWallet": {
       if (!(await isAdmin(c as any))) throw httpsError("permission-denied", "Admin only.");
       const { userId, amount, type } = body;

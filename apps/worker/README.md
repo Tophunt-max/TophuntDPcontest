@@ -94,7 +94,21 @@ cleanup).
   the admin env). No more Firebase Admin SDK / Firestore in those routes, and the
   hardcoded Cloud Function `run.app` wallet URL is gone.
 
-**Remaining (small):** the leftover `likeContest`/`commentContest`/`shareContest`
-engagement actions still need `match_likes`/`match_comments` D1 tables, and a few
-non-realtime screen reads (bookmarks initial state, some profile hooks) can be
-moved to `/read/*` endpoints as they surface.
+**Phase 4 — DONE (full cutover):** every remaining Firestore usage in the Expo
+app is migrated.
+- New D1 tables: `match_likes`, `match_comments`, `match_reactions`, `bookmarks`,
+  `highlights`; new columns on `users` (bio, is_private, auth_provider, extra),
+  `contest_matches` (reactions), `story_views` (reaction). See
+  `migrations/0001_phase4.sql`.
+- New `/api` actions: likeContest, commentContest, shareContest, reactToMatch,
+  toggleBookmark, addComment, deleteComment, updateProfile, completeSignup,
+  viewStory, reactToStory, createHighlight, addStoryToHighlight.
+- New `/read` endpoints: leaderboard, users/search, users/:id/posts,
+  users/:id/bookmarks, users/:id/(followers|following), comments, stories/feed,
+  users/:id/stories, stories/:id/viewers, users/:id/highlights,
+  highlights/:id/stories. `/read/matches/:id` returns isLiked/isBookmarked.
+- Rewired client: commentService, engagementService, reactionService,
+  leaderboardService, storyService, walletService, saveUserProfile, socialAuth,
+  useProfileData, and the auth (login/signup/password/phone), profile
+  (connections/edit) and splash screens. No runtime Firestore calls remain in the
+  app; **Firebase is used only for Authentication** (+ Timestamp type imports).

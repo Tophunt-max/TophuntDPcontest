@@ -18,7 +18,8 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { signInWithEmailAndPassword } from "firebase/auth";
-import { auth, firestore as db } from "../../../../src/services/firebase/initFirebase";
+import { auth } from "../../../../src/services/firebase/initFirebase";
+import { readApi } from "../../../../src/services/api";
 import {
   Left_Arrow,
   New_Email_Icon,
@@ -27,7 +28,6 @@ import {
   Eye_Close,
   Checkmark_Icon,
 } from "../../../../assets/svgs";
-import { doc, getDoc, collection, query, where, getDocs, limit } from "firebase/firestore";
 import { useSignupStore } from "../../../../src/store/signup";
 import { useColorScheme } from "../../../../hooks/use-color-scheme";
 import { FormInput } from "@/src/components/inputs/FormInput";
@@ -103,21 +103,8 @@ export default function PasswordLoginScreen() {
         await AsyncStorage.removeItem("remembered_email");
       }
 
-      // 3. Check Profile Status
-      const userDocRef = doc(db, "users", user.uid);
-      const userDocSnap = await getDoc(userDocRef);
-      
-      let userData = null;
-      if (userDocSnap.exists()) {
-          userData = userDocSnap.data();
-      } else {
-          // Check by email field (just in case)
-          const q = query(collection(db, "users"), where("email", "==", data.email), limit(1));
-          const querySnapshot = await getDocs(q);
-          if (!querySnapshot.empty) {
-              userData = querySnapshot.docs[0].data();
-          }
-      }
+      // 3. Check Profile Status (from the Worker / D1)
+      const userData: any = await readApi(`/read/users/${user.uid}`).catch(() => null);
 
       if (userData && (userData.signupCompleted === true || userData.username)) {
           addToast("Login successful!", "success");

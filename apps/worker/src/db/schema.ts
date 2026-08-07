@@ -28,6 +28,11 @@ export const users = sqliteTable(
     role: text("role").default("user"), // 'user' | 'admin'
     status: text("status").default("active"),
     isBlocked: integer("is_blocked", { mode: "boolean" }).default(false),
+    bio: text("bio"),
+    isPrivate: integer("is_private", { mode: "boolean" }).default(false),
+    authProvider: text("auth_provider"),
+    // Any profile fields without a dedicated column (facebook/twitter/instagram, etc.)
+    extra: text("extra", { mode: "json" }),
 
     // currency + gamification
     dpcoin: real("dpcoin").default(0), // primary currency (was Dpcoin)
@@ -121,6 +126,8 @@ export const contestMatches = sqliteTable(
     shareCount: integer("share_count").default(0),
     winnerUid: text("winner_uid"),
     rewardAmount: real("reward_amount").default(0),
+    // { fire: n, heart: n, laugh: n } quick-reaction counters
+    reactions: text("reactions", { mode: "json" }),
     endingSoonNotified: integer("ending_soon_notified", { mode: "boolean" }).default(false),
     createdAt: integer("created_at").notNull(),
     activatedAt: integer("activated_at"),
@@ -271,9 +278,77 @@ export const storyViews = sqliteTable(
   {
     storyId: text("story_id").notNull(),
     viewerId: text("viewer_id").notNull(),
+    reaction: text("reaction"),
     createdAt: integer("created_at").notNull(),
   },
   (t) => ({ pk: primaryKey({ columns: [t.storyId, t.viewerId] }) }),
+);
+
+// ---------------------------------------------------------------------------
+// contest-match engagement (were contestMatches/{id}/likes|comments|reactions)
+// ---------------------------------------------------------------------------
+export const matchLikes = sqliteTable(
+  "match_likes",
+  {
+    matchId: text("match_id").notNull(),
+    userId: text("user_id").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.matchId, t.userId] }) }),
+);
+
+export const matchComments = sqliteTable(
+  "match_comments",
+  {
+    id: text("id").primaryKey(),
+    matchId: text("match_id").notNull(),
+    userId: text("user_id").notNull(),
+    text: text("text"),
+    parentId: text("parent_id"),
+    likeCount: integer("like_count").default(0),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({ matchIdx: index("idx_match_comments_match").on(t.matchId) }),
+);
+
+export const matchReactions = sqliteTable(
+  "match_reactions",
+  {
+    matchId: text("match_id").notNull(),
+    userId: text("user_id").notNull(),
+    type: text("type").notNull(), // fire | heart | laugh
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.matchId, t.userId, t.type] }) }),
+);
+
+// ---------------------------------------------------------------------------
+// bookmarks (was users/{uid}/bookmarks/{matchId})
+// ---------------------------------------------------------------------------
+export const bookmarks = sqliteTable(
+  "bookmarks",
+  {
+    userId: text("user_id").notNull(),
+    matchId: text("match_id").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.userId, t.matchId] }) }),
+);
+
+// ---------------------------------------------------------------------------
+// highlights (was users/{uid}/highlights/{id})
+// ---------------------------------------------------------------------------
+export const highlights = sqliteTable(
+  "highlights",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    name: text("name"),
+    coverImageUrl: text("cover_image_url"),
+    storyIds: text("story_ids", { mode: "json" }).$type<string[]>(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({ userIdx: index("idx_highlights_user").on(t.userId) }),
 );
 
 // ---------------------------------------------------------------------------
