@@ -10,8 +10,8 @@ export interface Env {
   CACHE_KV: KVNamespace;
   REALTIME: DurableObjectNamespace;
   // Per-match vote aggregator (SQLite-backed DO) — keeps the high-frequency
-  // vote write path off D1's single writer.
-  VOTE_COUNTER: DurableObjectNamespace;
+  // vote write path off D1's single writer. Typed for native RPC calls.
+  VOTE_COUNTER: DurableObjectNamespace<import("./voteCounter").VoteCounter>;
 
   // --- Plain vars ---
   FIREBASE_PROJECT_ID: string;

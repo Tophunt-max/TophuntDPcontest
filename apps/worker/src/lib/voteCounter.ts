@@ -1,15 +1,12 @@
 /**
  * Thin client for the VoteCounter Durable Object (one instance per matchId).
+ * Uses native Durable Object RPC — plain method calls on the stub, no URLs.
  * Routes/cron call these instead of touching the vote counters in D1 directly.
  */
 import type { Env } from "../types";
+import type { VoteTally } from "../voteCounter";
 
-export interface VoteTally {
-  alreadyVoted: boolean;
-  votesA: number;
-  votesB: number;
-  total: number;
-}
+export type { VoteTally } from "../voteCounter";
 
 function stub(env: Env, matchId: string) {
   const id = env.VOTE_COUNTER.idFromName(matchId);
@@ -22,11 +19,7 @@ export async function castVote(
   matchId: string,
   p: { voterUid: string; votedForUid: string; deviceId?: string | null; uidA: string; uidB: string },
 ): Promise<VoteTally> {
-  const res = await stub(env, matchId).fetch("https://do.internal/vote", {
-    method: "POST",
-    body: JSON.stringify({ matchId, ...p }),
-  });
-  return res.json<VoteTally>();
+  return stub(env, matchId).vote({ matchId, ...p });
 }
 
 /**
@@ -41,12 +34,7 @@ export async function bumpEngagement(
   name: string,
   delta: number,
 ): Promise<Record<string, number>> {
-  const res = await stub(env, matchId).fetch("https://do.internal/engagement", {
-    method: "POST",
-    body: JSON.stringify({ matchId, name, delta }),
-  });
-  const data = await res.json<{ counters: Record<string, number> }>();
-  return data.counters;
+  return stub(env, matchId).engagement(matchId, name, delta);
 }
 
 /**
@@ -60,9 +48,5 @@ export async function finalizeVotes(
   uidA: string,
   uidB: string,
 ): Promise<{ votesA: number; votesB: number; total: number }> {
-  const res = await stub(env, matchId).fetch("https://do.internal/flush", {
-    method: "POST",
-    body: JSON.stringify({ matchId, uidA, uidB }),
-  });
-  return res.json<{ votesA: number; votesB: number; total: number }>();
+  return stub(env, matchId).flushTally(matchId, uidA, uidB);
 }

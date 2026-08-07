@@ -5,6 +5,10 @@
  *   - engagement counters (likes, comments, shares, reactions)
  *   - batched vote XP for voters
  *
+ * Callers talk to it via native Durable Object RPC — plain method calls on the
+ * stub (stub.vote(...), stub.engagement(...)) — so there are no fake internal
+ * URLs or fetch() plumbing.
+ *
  * Why this exists
  * ---------------
  * D1 has a single writer for the whole database. The naive path updated the
@@ -32,6 +36,7 @@
  * The Worker verifies auth / status / participant rules BEFORE calling this DO,
  * so — like RealtimeHub — the DO trusts its caller.
  */
+import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./types";
 
 /** How long events accumulate in the DO before being batch-written to D1. */
@@ -41,7 +46,7 @@ const VOTE_XP = 5;
 /** Max uids per IN(...) chunk when batching XP updates. */
 const XP_CHUNK = 40;
 
-interface VotePayload {
+export interface VoteInput {
   matchId: string;
   voterUid: string;
   votedForUid: string;
@@ -50,30 +55,27 @@ interface VotePayload {
   uidB?: string | null;
 }
 
-interface EngagementPayload {
-  matchId: string;
-  name: string; // "like" | "comment" | "share" | "react:<type>"
-  delta: number;
-}
-
-interface TallyResult {
+export interface VoteTally {
   alreadyVoted: boolean;
   votesA: number;
   votesB: number;
   total: number;
 }
 
-export class VoteCounter {
-  private state: DurableObjectState;
-  private env: Env;
+export interface VoteTotals {
+  votesA: number;
+  votesB: number;
+  total: number;
+}
+
+export class VoteCounter extends DurableObject<Env> {
   private sql: SqlStorage;
   private voteSeedPromise: Promise<void> | null = null;
   private engSeedPromise: Promise<void> | null = null;
 
-  constructor(state: DurableObjectState, env: Env) {
-    this.state = state;
-    this.env = env;
-    this.sql = state.storage.sql;
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    this.sql = ctx.storage.sql;
     // Local (DO-owned) SQLite schema. Idempotent, cheap.
     this.sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);`);
     this.sql.exec(
@@ -102,38 +104,10 @@ export class VoteCounter {
     );
   }
 
-  // --------------------------------------------------------------------- HTTP
-  async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    const body = await request.json<any>().catch(() => ({}));
+  // ============================ RPC methods ================================
 
-    if (url.pathname === "/vote") {
-      return Response.json(await this.handleVote(body as VotePayload));
-    }
-
-    if (url.pathname === "/engagement") {
-      return Response.json(await this.handleEngagement(body as EngagementPayload));
-    }
-
-    // Force a synchronous flush and return the authoritative vote tally. Used by
-    // the cron resolver right before it decides a winner.
-    if (url.pathname === "/flush") {
-      await this.ensureVoteSeeded(body.matchId, body.uidA ?? null, body.uidB ?? null);
-      await this.flush();
-      return Response.json(this.voteTally());
-    }
-
-    // Read-only current vote tally (seeds if needed).
-    if (url.pathname === "/tally") {
-      await this.ensureVoteSeeded(body.matchId, body.uidA ?? null, body.uidB ?? null);
-      return Response.json(this.voteTally());
-    }
-
-    return new Response("not found", { status: 404 });
-  }
-
-  // -------------------------------------------------------------------- voting
-  private async handleVote(p: VotePayload): Promise<TallyResult> {
+  /** Cast a vote. Dedup + tally are authoritative inside the DO. */
+  async vote(p: VoteInput): Promise<VoteTally> {
     await this.ensureVoteSeeded(p.matchId, p.uidA ?? null, p.uidB ?? null);
 
     const existing = this.sql
@@ -160,22 +134,39 @@ export class VoteCounter {
     return { alreadyVoted: false, ...this.voteTally() };
   }
 
-  // ---------------------------------------------------------------- engagement
-  private async handleEngagement(
-    p: EngagementPayload,
-  ): Promise<{ counters: Record<string, number> }> {
-    await this.ensureEngagementSeeded(p.matchId);
-    const delta = Number(p.delta) || 0;
-    // Clamp at 0 so an unlike can never drive a counter negative.
+  /**
+   * Bump an engagement counter. `name` is "like" | "comment" | "share" |
+   * "react:<type>"; `delta` may be negative (clamped at 0). Returns counters.
+   */
+  async engagement(
+    matchId: string,
+    name: string,
+    delta: number,
+  ): Promise<Record<string, number>> {
+    await this.ensureEngagementSeeded(matchId);
+    const d = Number(delta) || 0;
     this.sql.exec(
       `INSERT INTO counters (name, value) VALUES (?, MAX(?, 0))
          ON CONFLICT(name) DO UPDATE SET value = MAX(value + ?, 0)`,
-      p.name,
-      delta,
-      delta,
+      name,
+      d,
+      d,
     );
     await this.scheduleFlush();
-    return { counters: this.counterMap() };
+    return this.counterMap();
+  }
+
+  /** Force a synchronous flush to D1 and return the authoritative vote tally. */
+  async flushTally(matchId: string, uidA?: string | null, uidB?: string | null): Promise<VoteTotals> {
+    await this.ensureVoteSeeded(matchId, uidA ?? null, uidB ?? null);
+    await this.flush();
+    return this.voteTally();
+  }
+
+  /** Read-only current vote tally (seeds if needed). */
+  async tally(matchId: string, uidA?: string | null, uidB?: string | null): Promise<VoteTotals> {
+    await this.ensureVoteSeeded(matchId, uidA ?? null, uidB ?? null);
+    return this.voteTally();
   }
 
   // --------------------------------------------------------------------- seed
@@ -290,8 +281,8 @@ export class VoteCounter {
 
   // -------------------------------------------------------------------- flush
   private async scheduleFlush(): Promise<void> {
-    const existing = await this.state.storage.getAlarm();
-    if (existing == null) await this.state.storage.setAlarm(Date.now() + FLUSH_MS);
+    const existing = await this.ctx.storage.getAlarm();
+    if (existing == null) await this.ctx.storage.setAlarm(Date.now() + FLUSH_MS);
   }
 
   /** Alarm handler — batch-write accumulated state into D1. */
@@ -391,7 +382,7 @@ export class VoteCounter {
     } catch (e) {
       console.error("[VoteCounter] flush failed", matchId, e);
       // Leave rows unflushed and reschedule so the next window retries.
-      await this.state.storage.setAlarm(Date.now() + FLUSH_MS);
+      await this.ctx.storage.setAlarm(Date.now() + FLUSH_MS);
     }
   }
 
