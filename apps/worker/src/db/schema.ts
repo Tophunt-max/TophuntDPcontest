@@ -6,7 +6,7 @@
  * Timestamps are stored as INTEGER epoch-millis for easy comparison in cron
  * jobs (expiresAt, createdAt, etc.).
  */
-import { sqliteTable, text, integer, real, index, primaryKey } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, index, uniqueIndex, primaryKey } from "drizzle-orm/sqlite-core";
 
 // ---------------------------------------------------------------------------
 // users  (was: users/{uid})
@@ -472,11 +472,18 @@ export const blogPosts = sqliteTable(
     tags: text("tags", { mode: "json" }).$type<string[]>().default([]),
     author: text("author").default("TopHunt"),
     status: text("status").default("published"), // 'published' | 'draft'
+    // SEO (must never be missing — populated from source or derived from content):
+    metaTitle: text("meta_title"),
+    metaDescription: text("meta_description"),
+    canonicalUrl: text("canonical_url"), // the original tophunt.in permalink
     // Provenance for imports + dedup:
     source: text("source").default("admin"), // 'admin' | 'archive'
     originalUrl: text("original_url"), // original tophunt.in permalink (import dedup key)
+    contentHash: text("content_hash"), // sha256 of normalized text (dedup)
     viewCount: integer("view_count").default(0),
-    publishedAt: integer("published_at"), // epoch ms (original post date if known)
+    // Original publish date if it could be confidently determined; otherwise
+    // NULL (we never fall back to the Wayback capture date).
+    publishedAt: integer("published_at"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
@@ -485,6 +492,30 @@ export const blogPosts = sqliteTable(
     statusPublishedIdx: index("idx_blog_status_published").on(t.status, t.publishedAt),
     categoryIdx: index("idx_blog_category").on(t.category),
     originalUrlIdx: index("idx_blog_original_url").on(t.originalUrl),
+    contentHashIdx: index("idx_blog_content_hash").on(t.contentHash),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// blog_import_log  (per-URL state for the resumable Wayback archive importer)
+// ---------------------------------------------------------------------------
+export const blogImportLog = sqliteTable(
+  "blog_import_log",
+  {
+    id: text("id").primaryKey(),
+    url: text("url").notNull(), // canonical original tophunt.in URL (unique)
+    status: text("status").notNull().default("pending"), // pending|imported|updated|skipped|duplicate|failed
+    error: text("error"),
+    postId: text("post_id"),
+    imagesTotal: integer("images_total").default(0),
+    imagesMissing: integer("images_missing").default(0),
+    attempts: integer("attempts").default(0),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => ({
+    urlIdx: uniqueIndex("idx_blog_import_url").on(t.url),
+    statusIdx: index("idx_blog_import_status").on(t.status),
   }),
 );
 

@@ -99,7 +99,14 @@ const mapBlogPost = (r: any, opts: { withContent?: boolean } = {}) => ({
   viewCount: r.viewCount ?? 0,
   publishedAt: r.publishedAt ?? r.createdAt,
   createdAt: r.createdAt,
-  ...(opts.withContent ? { content: r.content } : {}),
+  ...(opts.withContent
+    ? {
+        content: r.content,
+        metaTitle: r.metaTitle || r.title,
+        metaDescription: r.metaDescription || r.excerpt,
+        canonicalUrl: r.canonicalUrl,
+      }
+    : {}),
 });
 
 // ================= CONTESTS =================

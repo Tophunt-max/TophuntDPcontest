@@ -113,15 +113,26 @@ const BlogPage = () => {
           onChange={(e) => setSearch(e.target.value)}
           className="w-full rounded border-[1.5px] border-stroke bg-transparent px-5 py-3 text-black outline-none focus:border-primary dark:border-form-strokedark dark:bg-form-input dark:text-white sm:max-w-xs"
         />
-        <Link
-          href="/blog/create"
-          className="inline-flex items-center justify-center gap-2.5 rounded-md bg-primary py-3 px-8 text-center font-medium text-white transition-all duration-300 hover:bg-opacity-90"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-            <path fillRule="evenodd" d="M12 3.75a.75.75 0 0 1 .75.75v6.75h6.75a.75.75 0 0 1 0 1.5h-6.75v6.75a.75.75 0 0 1-1.5 0v-6.75H4.5a.75.75 0 0 1 0-1.5h6.75V4.5a.75.75 0 0 1 .75-.75Z" clipRule="evenodd" />
-          </svg>
-          New Post
-        </Link>
+        <div className="flex gap-3">
+          <Link
+            href="/blog/import"
+            className="inline-flex items-center justify-center gap-2 rounded-md border border-primary py-3 px-6 text-center font-medium text-primary transition-all duration-300 hover:bg-primary hover:text-white"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-5 w-5">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+            </svg>
+            Import from Archive
+          </Link>
+          <Link
+            href="/blog/create"
+            className="inline-flex items-center justify-center gap-2.5 rounded-md bg-primary py-3 px-8 text-center font-medium text-white transition-all duration-300 hover:bg-opacity-90"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+              <path fillRule="evenodd" d="M12 3.75a.75.75 0 0 1 .75.75v6.75h6.75a.75.75 0 0 1 0 1.5h-6.75v6.75a.75.75 0 0 1-1.5 0v-6.75H4.5a.75.75 0 0 1 0-1.5h6.75V4.5a.75.75 0 0 1 .75-.75Z" clipRule="evenodd" />
+            </svg>
+            New Post
+          </Link>
+        </div>
       </div>
 
       <div className="rounded-sm border border-stroke bg-white px-5 pt-6 pb-2.5 shadow-default dark:border-strokedark dark:bg-boxdark sm:px-7.5 xl:pb-1">

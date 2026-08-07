@@ -248,8 +248,72 @@ adminRoute.get("/blog/stats", async (c) => {
   return c.json({ total, published, drafts: total - published, imported });
 });
 
-// Bulk upsert used by the Wayback archive importer. Body: { posts: [...] }.
-// Dedups by originalUrl (preferred) or slug so re-running the import is safe.
+const PROGRESS_KEY = "blog:import:progress";
+
+/** sha256 hex of a string (used for content-hash dedup + image keys). */
+async function sha256Hex(input: string | ArrayBuffer): Promise<string> {
+  const data = typeof input === "string" ? new TextEncoder().encode(input) : new Uint8Array(input);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+const IMG_EXT: Record<string, string> = {
+  "image/jpeg": ".jpg",
+  "image/jpg": ".jpg",
+  "image/png": ".png",
+  "image/gif": ".gif",
+  "image/webp": ".webp",
+  "image/svg+xml": ".svg",
+  "image/avif": ".avif",
+};
+
+/**
+ * Fetch a single (Wayback-hosted) TopHunt image and store the ORIGINAL bytes in
+ * R2, returning the permanent public R2 URL. De-duplicated by content hash so
+ * the same image is never uploaded twice. Only image content-types are stored.
+ */
+adminRoute.post("/media/fetch-to-r2", async (c) => {
+  const { url, folder } = await c.req.json<any>();
+  if (!url || typeof url !== "string") throw httpsError("invalid-argument", "url is required.");
+  const baseFolder = (folder || "blog/imported").replace(/[^a-z0-9/_-]/gi, "");
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: { "User-Agent": "TopHuntArchiveImporter/1.0 (+https://tophunt.in)" },
+      redirect: "follow",
+    });
+  } catch (e: any) {
+    throw httpsError("internal", `Failed to fetch image: ${e.message}`);
+  }
+  if (!res.ok) throw httpsError("not-found", `Image fetch returned ${res.status}`);
+
+  const ct = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+  if (!ct.startsWith("image/")) throw httpsError("invalid-argument", `Not an image (content-type: ${ct || "unknown"}).`);
+
+  const buf = await res.arrayBuffer();
+  if (buf.byteLength < 100) throw httpsError("invalid-argument", "Image too small / empty.");
+
+  const hash = await sha256Hex(buf);
+  const ext = IMG_EXT[ct] || ".img";
+  const key = `${baseFolder}/${hash}${ext}`;
+  const publicUrl = `${c.env.R2_PUBLIC_BASE_URL.replace(/\/$/, "")}/${key}`;
+
+  // Skip re-upload if we already have this exact image.
+  const existing = await c.env.MEDIA.head(key);
+  if (!existing) {
+    await c.env.MEDIA.put(key, buf, { httpMetadata: { contentType: ct } });
+  }
+  return c.json({ url: publicUrl, hash, key, cached: !!existing, bytes: buf.byteLength });
+});
+
+/**
+ * Bulk upsert used by the Wayback archive importer. Body: { posts: [...] }.
+ * Each write (post + its import-log row) is committed atomically via db.batch.
+ * De-duplicates by canonical originalUrl first, then by content hash (a
+ * different URL with identical content is recorded as a duplicate and skipped).
+ * publishedAt is stored ONLY when the importer determined it confidently.
+ */
 adminRoute.post("/blog/import", async (c) => {
   const db = getDb(c.env);
   const body = await c.req.json<any>();
@@ -259,56 +323,199 @@ adminRoute.post("/blog/import", async (c) => {
   }
   let created = 0,
     updated = 0,
-    skipped = 0;
+    skipped = 0,
+    duplicates = 0;
+
+  const logRow = (url: string, status: string, extra: any = {}) => {
+    const ts = now();
+    return db
+      .insert(schema.blogImportLog)
+      .values({
+        id: newId(),
+        url,
+        status,
+        error: extra.error || null,
+        postId: extra.postId || null,
+        imagesTotal: extra.imagesTotal ?? 0,
+        imagesMissing: extra.imagesMissing ?? 0,
+        attempts: 1,
+        createdAt: ts,
+        updatedAt: ts,
+      })
+      .onConflictDoUpdate({
+        target: schema.blogImportLog.url,
+        set: {
+          status,
+          error: extra.error || null,
+          postId: extra.postId || null,
+          imagesTotal: extra.imagesTotal ?? 0,
+          imagesMissing: extra.imagesMissing ?? 0,
+          attempts: sql`${schema.blogImportLog.attempts} + 1`,
+          updatedAt: ts,
+        },
+      });
+  };
+
   for (const p of posts) {
-    if (!p || !p.title) {
+    const canonical = (p?.originalUrl || p?.canonicalUrl || "").trim();
+    // Validate: must have title + non-trivial content.
+    if (!p || !p.title || !p.content || String(p.content).trim().length < 40) {
       skipped++;
+      if (canonical) await logRow(canonical, "skipped", { error: "empty or invalid page" }).run();
       continue;
     }
-    // Find an existing row by originalUrl first, then by slug.
+
+    // Dedup by canonical URL.
     let existing: any = null;
-    if (p.originalUrl) {
+    if (canonical) {
       existing = await db
         .select({ id: schema.blogPosts.id })
         .from(schema.blogPosts)
-        .where(eq(schema.blogPosts.originalUrl, p.originalUrl))
+        .where(eq(schema.blogPosts.originalUrl, canonical))
         .get();
     }
-    const baseSlug = slugify(p.slug || p.title);
-    if (!existing) {
-      existing = await db
-        .select({ id: schema.blogPosts.id })
+    // Dedup by content hash (a different URL with identical content).
+    if (!existing && p.contentHash) {
+      const dup = await db
+        .select({ id: schema.blogPosts.id, originalUrl: schema.blogPosts.originalUrl })
         .from(schema.blogPosts)
-        .where(eq(schema.blogPosts.slug, baseSlug))
+        .where(eq(schema.blogPosts.contentHash, p.contentHash))
         .get();
+      if (dup && dup.originalUrl !== canonical) {
+        duplicates++;
+        if (canonical) await logRow(canonical, "duplicate", { postId: dup.id }).run();
+        continue;
+      }
     }
 
     const ts = now();
+    const title = String(p.title).slice(0, 500);
+    const excerpt = p.excerpt ? String(p.excerpt).slice(0, 500) : null;
+    // SEO must never be missing.
+    const metaTitle = (p.metaTitle || title).slice(0, 160);
+    const metaDescription = (p.metaDescription || excerpt || String(p.content).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 155)).slice(0, 300);
     const values = {
-      title: String(p.title).slice(0, 500),
-      excerpt: p.excerpt ? String(p.excerpt).slice(0, 500) : null,
-      content: p.content || null,
+      title,
+      excerpt,
+      content: p.content,
       coverImageUrl: p.coverImageUrl || null,
       category: p.category || null,
       tags: Array.isArray(p.tags) ? p.tags : [],
       author: p.author || "TopHunt",
       status: p.status || "published",
+      metaTitle,
+      metaDescription,
+      canonicalUrl: canonical || null,
       source: "archive",
-      originalUrl: p.originalUrl || null,
-      publishedAt: typeof p.publishedAt === "number" ? p.publishedAt : ts,
+      originalUrl: canonical || null,
+      contentHash: p.contentHash || null,
+      publishedAt: typeof p.publishedAt === "number" ? p.publishedAt : null,
       updatedAt: ts,
     };
+    const logExtra = { imagesTotal: p.imagesTotal ?? 0, imagesMissing: p.imagesMissing ?? 0 };
 
     if (existing) {
-      await db.update(schema.blogPosts).set(values).where(eq(schema.blogPosts.id, existing.id));
+      await db.batch([
+        db.update(schema.blogPosts).set(values).where(eq(schema.blogPosts.id, existing.id)),
+        logRow(canonical, "updated", { postId: existing.id, ...logExtra }),
+      ]);
       updated++;
     } else {
-      const slug = await uniqueBlogSlug(db, baseSlug);
-      await db.insert(schema.blogPosts).values({ id: newId(), slug, createdAt: ts, viewCount: 0, ...values });
+      const id = newId();
+      const slug = await uniqueBlogSlug(db, slugify(p.slug || title));
+      await db.batch([
+        db.insert(schema.blogPosts).values({ id, slug, createdAt: ts, viewCount: 0, ...values }),
+        logRow(canonical, "imported", { postId: id, ...logExtra }),
+      ]);
       created++;
     }
   }
-  return c.json({ success: true, created, updated, skipped, received: posts.length });
+  return c.json({ success: true, created, updated, skipped, duplicates, received: posts.length });
+});
+
+// ---- Import job progress (fed by the importer, read by the dashboard) ----
+adminRoute.post("/blog/import/progress", async (c) => {
+  const body = await c.req.json<any>();
+  await c.env.CACHE_KV.put(PROGRESS_KEY, JSON.stringify({ ...body, updatedAt: now() }), {
+    expirationTtl: 86400,
+  });
+  return c.json({ ok: true });
+});
+
+adminRoute.get("/blog/import/progress", async (c) => {
+  const raw = await c.env.CACHE_KV.get(PROGRESS_KEY, "json");
+  return c.json(raw || null);
+});
+
+// URLs already handled (so the importer can resume and skip them).
+adminRoute.get("/blog/import/done-urls", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db
+    .select({ url: schema.blogImportLog.url })
+    .from(schema.blogImportLog)
+    .where(sql`${schema.blogImportLog.status} IN ('imported','updated','duplicate','skipped')`)
+    .all();
+  return c.json({ urls: rows.map((r) => r.url) });
+});
+
+// Import log rows (optionally filtered by ?status=).
+adminRoute.get("/blog/import/log", async (c) => {
+  const db = getDb(c.env);
+  const status = c.req.query("status");
+  const limit = Math.min(parseInt(c.req.query("limit") || "200", 10), 1000);
+  const conds: any[] = [];
+  if (status) conds.push(eq(schema.blogImportLog.status, status));
+  const rows = await db
+    .select()
+    .from(schema.blogImportLog)
+    .where(conds.length ? and(...conds) : (undefined as any))
+    .orderBy(desc(schema.blogImportLog.updatedAt))
+    .limit(limit)
+    .all();
+  return c.json(rows);
+});
+
+// Import-log breakdown by status (dashboard counters).
+adminRoute.get("/blog/import/summary", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db
+    .select({ status: schema.blogImportLog.status, n: count() })
+    .from(schema.blogImportLog)
+    .groupBy(schema.blogImportLog.status)
+    .all();
+  const byStatus: Record<string, number> = {};
+  let missingImages = 0;
+  for (const r of rows) byStatus[r.status] = r.n;
+  const mi = await db.select({ v: sql<number>`COALESCE(SUM(${schema.blogImportLog.imagesMissing}),0)` }).from(schema.blogImportLog).get();
+  missingImages = mi?.v ?? 0;
+  return c.json({ byStatus, missingImages });
+});
+
+// Mark failed rows as pending so the next importer run retries them.
+adminRoute.post("/blog/import/retry-failed", async (c) => {
+  const db = getDb(c.env);
+  const res = await db
+    .update(schema.blogImportLog)
+    .set({ status: "pending", updatedAt: now() })
+    .where(eq(schema.blogImportLog.status, "failed"))
+    .run();
+  return c.json({ ok: true, requeued: (res as any)?.meta?.changes ?? undefined });
+});
+
+// Record a failed URL (importer reports parse/network failures here).
+adminRoute.post("/blog/import/fail", async (c) => {
+  const db = getDb(c.env);
+  const { url, error } = await c.req.json<any>();
+  if (!url) throw httpsError("invalid-argument", "url is required.");
+  const ts = now();
+  await db
+    .insert(schema.blogImportLog)
+    .values({ id: newId(), url, status: "failed", error: (error || "").slice(0, 500), attempts: 1, createdAt: ts, updatedAt: ts })
+    .onConflictDoUpdate({
+      target: schema.blogImportLog.url,
+      set: { status: "failed", error: (error || "").slice(0, 500), attempts: sql`${schema.blogImportLog.attempts} + 1`, updatedAt: ts },
+    });
+  return c.json({ ok: true });
 });
 
 // Create a single post (admin panel form).
