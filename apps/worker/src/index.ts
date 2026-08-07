@@ -31,6 +31,35 @@ export { VoteCounter } from "./voteCounter";
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
+// Observability + security headers. Runs first; skips WebSocket upgrades whose
+// 101 response is immutable. Emits one structured JSON log line per request and
+// tags every response (and error) with a correlation request-id.
+app.use("*", async (c, next) => {
+  if (c.req.header("Upgrade") === "websocket") return next();
+  const requestId = crypto.randomUUID();
+  c.set("requestId", requestId);
+  const start = Date.now();
+  await next();
+  const ms = Date.now() - start;
+  // Security headers (helmet-style).
+  c.header("X-Request-Id", requestId);
+  c.header("X-Content-Type-Options", "nosniff");
+  c.header("X-Frame-Options", "DENY");
+  c.header("Referrer-Policy", "no-referrer");
+  c.header("Cross-Origin-Resource-Policy", "same-site");
+  const path = new URL(c.req.url).pathname;
+  console.log(
+    JSON.stringify({
+      level: "info",
+      requestId,
+      method: c.req.method,
+      path,
+      status: c.res.status,
+      ms,
+    }),
+  );
+});
+
 app.use("*", async (c, next) => {
   // WebSocket upgrades must not be wrapped by CORS (immutable 101 response).
   if (c.req.header("Upgrade") === "websocket") return next();
@@ -94,13 +123,22 @@ app.route("/api", apiRoute);
 app.route("/read", readRoute);
 app.route("/admin", adminRoute);
 
-// Central error handler — preserves HttpsError-style codes for the client.
+// Central error handler — preserves HttpsError-style codes for the client and
+// attaches the request-id so support can correlate a user report to a log line.
 app.onError((err, c) => {
+  const requestId = c.get("requestId");
   if (err instanceof ApiError) {
-    return c.json(errorBody(err), err.status);
+    return c.json({ ...errorBody(err), requestId }, err.status);
   }
-  console.error("[unhandled]", err);
-  return c.json(errorBody(new ApiError("internal", "Internal server error.")), 500);
+  console.error(
+    JSON.stringify({
+      level: "error",
+      requestId,
+      message: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+    }),
+  );
+  return c.json({ ...errorBody(new ApiError("internal", "Internal server error.")), requestId }, 500);
 });
 
 app.notFound((c) => c.json(errorBody(new ApiError("not-found", "Route not found.")), 404));

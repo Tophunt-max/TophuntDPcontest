@@ -53,4 +53,5 @@ export interface AuthUser {
 /** Hono context variables. */
 export type Variables = {
   user: AuthUser;
+  requestId: string;
 };
