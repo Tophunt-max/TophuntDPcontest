@@ -27,7 +27,7 @@ wrangler r2 bucket create tophunt-media
 wrangler kv namespace create OTP_KV    # paste id into wrangler.toml
 wrangler kv namespace create CACHE_KV  # paste id into wrangler.toml
 
-# 2. Apply the schema
+# 2. Apply the schema (also runs automatically on deploy — see below)
 wrangler d1 migrations apply tophunt-db --remote
 
 # 3. Secrets (see .dev.vars.example for the full list)
@@ -42,9 +42,30 @@ wrangler secret put TWILIO_PHONE_NUMBER
 wrangler secret put RESEND_API_KEY
 wrangler secret put EMAIL_FROM
 
-# 4. Deploy
-wrangler deploy
+# 4. Deploy (migrations run automatically first — see "Auto migrations")
+npm run deploy
 ```
+
+## Auto migrations
+
+D1 migrations are applied **automatically** — you never run them by hand in
+normal operation. `wrangler d1 migrations apply` records applied migrations in
+the remote `d1_migrations` table, so only new files in `migrations/` are run and
+it is safe to invoke on every deploy.
+
+Wired in three places:
+
+- **CI/CD** — `.github/workflows/worker-production.yml` runs
+  `wrangler d1 migrations apply --remote` then `wrangler deploy` on every push to
+  `main` that touches `apps/worker/**`. Requires repo secrets
+  `CLOUDFLARE_API_TOKEN` (scopes: Workers Scripts:Edit, D1:Edit, Account
+  Settings:Read) and `CLOUDFLARE_ACCOUNT_ID`.
+- **`npm run deploy`** — a `predeploy` script applies remote migrations before
+  `wrangler deploy`, so manual deploys stay in sync too.
+- **`npm run dev`** — a `predev` script applies migrations to the local D1 DB.
+
+To add a schema change: drop a new `migrations/NNNN_name.sql` file (and update
+`src/db/schema.ts`). It ships and applies on the next deploy — no extra steps.
 
 Point `R2_PUBLIC_BASE_URL` (wrangler.toml `[vars]`) at your R2 public bucket / custom domain,
 then set the deployed Worker URL in the clients:
