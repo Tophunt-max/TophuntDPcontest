@@ -15,8 +15,9 @@ import { httpsError } from "../lib/http";
 import { verifyIdToken, bearerToken } from "../lib/firebaseAuth";
 import { isAdmin } from "../middleware/auth";
 import { getAppConfig, getGamificationSettings, invalidateSetting } from "../lib/settings";
-import { deleteAuthUser, updateAuthUser } from "../lib/firebaseAdmin";
-import { now } from "../lib/ids";
+import { deleteAuthUser, updateAuthUser, setCustomClaims, getUserByEmail } from "../lib/firebaseAdmin";
+import { createNotification } from "../lib/notify";
+import { newId, now } from "../lib/ids";
 
 export const adminRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -313,5 +314,58 @@ adminRoute.get("/notifications", async (c) => {
 adminRoute.post("/notifications/read", async (c) => {
   const db = getDb(c.env);
   await db.update(schema.adminNotifications).set({ isRead: true }).where(eq(schema.adminNotifications.isRead, false));
+  return c.json({ success: true });
+});
+
+
+// ======================= OPS (used by admin CLI scripts) =======================
+// Make/unmake a user admin: sets the Firebase custom claim (Identity Toolkit)
+// AND the D1 users.role, keyed by email or uid.
+adminRoute.post("/set-role", async (c) => {
+  const db = getDb(c.env);
+  const { email, userId, makeAdmin } = await c.req.json<any>();
+  let uid = userId as string | undefined;
+  if (!uid && email) {
+    uid = (await getUserByEmail(c.env, email)) || undefined;
+  }
+  if (!uid) throw httpsError("not-found", "User not found (provide a valid email or userId).");
+  const role = makeAdmin === false ? "user" : "admin";
+  await setCustomClaims(c.env, uid, { role });
+  await db.update(schema.users).set({ role, updatedAt: now() }).where(eq(schema.users.uid, uid));
+  return c.json({ success: true, uid, role });
+});
+
+// Create a contest template (used by seed-contests).
+adminRoute.post("/contests", async (c) => {
+  const db = getDb(c.env);
+  const b = await c.req.json<any>();
+  const id = newId();
+  await db.insert(schema.contests).values({
+    id,
+    title: b.title || b.name || null,
+    type: b.type || "photo",
+    status: b.status || "live",
+    totalEntryFee: Number(b.totalEntryFee ?? b.entryFishCoins ?? 0),
+    rewardCoins: Number(b.rewardCoins ?? b.prizePool ?? 0),
+    voteDurationDays: Number(b.voteDurationDays ?? (b.durationHours ? Math.ceil(b.durationHours / 24) : 1)),
+    autoCancelHours: Number(b.autoCancelHours ?? 24),
+    minVotes: Number(b.minVotes ?? 0),
+    extra: b,
+    createdBy: "admin-script",
+    createdAt: now(),
+  });
+  return c.json({ success: true, contestId: id });
+});
+
+// Send a notification to a user (used by test-notification).
+adminRoute.post("/notify", async (c) => {
+  const { userId, title, body, type } = await c.req.json<any>();
+  if (!userId) throw httpsError("invalid-argument", "userId is required.");
+  await createNotification(c.env, userId, {
+    title: title || "Test Notification",
+    body: body || "Hello from the Worker.",
+    type: type || "system",
+    targetId: "admin-test",
+  });
   return c.json({ success: true });
 });

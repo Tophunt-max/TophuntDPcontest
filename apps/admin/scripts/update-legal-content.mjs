@@ -1,35 +1,6 @@
-
-const admin = require('firebase-admin');
-const { getFirestore } = require('firebase-admin/firestore');
-const dotenv = require('dotenv');
-const path = require('path');
-
-// Load environment variables
-const envPath = path.join(__dirname, '..', '.env.local');
-dotenv.config({ path: envPath });
-
-const projectId = process.env.FIREBASE_PROJECT_ID;
-const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n');
-
-if (!projectId || !clientEmail || !privateKey) {
-    console.error("Missing environment variables in .env.local");
-    process.exit(1);
-}
-
-try {
-  admin.initializeApp({
-    credential: admin.credential.cert({
-      projectId,
-      clientEmail,
-      privateKey,
-    }),
-  });
-} catch (error) {
-  console.error("Firebase Admin SDK initialization error:", error);
-}
-
-const db = getFirestore();
+// Update Privacy Policy + Terms of Service in D1 settings/appConfig (via Worker).
+// Usage: node scripts/update-legal-content.mjs
+import { adminApi } from "./lib/worker.mjs";
 
 const privacyPolicy = `**Last Updated:** October 2023
 
@@ -52,7 +23,7 @@ Welcome to TopHunt DP Contest. We value your privacy and are committed to protec
 
 **4. Data Sharing and Disclosure**
 *   **Public Profile:** Your username, profile picture, and contest entries are visible to other users.
-*   **Service Providers:** We share data with trusted partners like Google Firebase (for authentication/database), AWS (for secure media storage), and SMS gateways for phone verification.
+*   **Service Providers:** We share data with trusted partners like Google Firebase (for authentication), Cloudflare (for database and secure media storage), and SMS gateways for phone verification.
 *   **Legal Requirements:** We may disclose information if required by law or to protect the safety of our community.
 
 **5. Data Security**
@@ -105,17 +76,11 @@ We reserve the right to suspend or terminate your account at our sole discretion
 **9. Limitation of Liability**
 TopHunt is provided "as is." We are not liable for any damages resulting from your use of the app, contest outcomes, or the conduct of other users.`;
 
-async function updateLegalContent() {
-  console.log("Updating legal content in Firestore...");
-  const docRef = db.collection('settings').doc('appConfig');
-  await docRef.set({
-    legalContent: {
-      privacyPolicy,
-      termsOfService
-    },
-    updatedAt: admin.firestore.FieldValue.serverTimestamp()
-  }, { merge: true });
-  console.log("Successfully updated Privacy Policy and Terms of Service!");
+try {
+  await adminApi("/app-settings", { method: "POST", body: { legalContent: { privacyPolicy, termsOfService } } });
+  console.log("Successfully updated Privacy Policy and Terms of Service in D1!");
+  process.exit(0);
+} catch (e) {
+  console.error("Error updating legal content:", e.message);
+  process.exit(1);
 }
-
-updateLegalContent().then(() => process.exit());
