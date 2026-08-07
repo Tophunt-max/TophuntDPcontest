@@ -41,9 +41,19 @@ id = "6cb310c6c19542b6ad4f87221b3650a2"
 name = "REALTIME"
 class_name = "RealtimeHub"
 
+# Per-match vote aggregator (SQLite-backed). Counts votes in the DO and
+# batch-flushes to D1, keeping the hot vote path off D1's single writer.
+[[durable_objects.bindings]]
+name = "VOTE_COUNTER"
+class_name = "VoteCounter"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["RealtimeHub"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["VoteCounter"]
 
 # ---------------------------------------------------------------------------
 # Scheduled tasks (replace Firebase onSchedule functions)

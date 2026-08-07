@@ -9,6 +9,9 @@ export interface Env {
   OTP_KV: KVNamespace;
   CACHE_KV: KVNamespace;
   REALTIME: DurableObjectNamespace;
+  // Per-match vote aggregator (SQLite-backed DO) — keeps the high-frequency
+  // vote write path off D1's single writer.
+  VOTE_COUNTER: DurableObjectNamespace;
 
   // --- Plain vars ---
   FIREBASE_PROJECT_ID: string;

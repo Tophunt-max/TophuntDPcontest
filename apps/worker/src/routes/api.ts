@@ -18,6 +18,7 @@ import { awardXp, awardReward } from "../lib/gamification";
 import { createNotification, sendBroadcastToAllUsers, sendPushNotification } from "../lib/notify";
 import { setCustomClaims } from "../lib/firebaseAdmin";
 import { publish, publishMany } from "../lib/publish";
+import { castVote } from "../lib/voteCounter";
 import { newId, now, generateJoinId } from "../lib/ids";
 
 export const apiRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -172,30 +173,30 @@ apiRoute.post("/", async (c) => {
       if (uid === userA?.uid || (userB && uid === userB.uid))
         throw httpsError("failed-precondition", "Participants cannot vote in their own match.");
 
-      // dedup insert (PK = matchId_voterUid)
-      const voteInsert = await db
-        .insert(schema.votes)
-        .values({ id: `${matchId}_${uid}`, matchId, voterUid: uid, votedForUid, deviceId, createdAt: now() })
-        .onConflictDoNothing()
-        .run();
-      if (voteInsert.meta.changes === 0) throw httpsError("already-exists", "You have already voted in this match.");
+      // validate the vote target is a participant
+      if (votedForUid !== userA?.uid && !(userB && votedForUid === userB.uid))
+        throw httpsError("invalid-argument", "Invalid participant UID for this match.");
 
-      // atomic per-participant increment via json_set
-      let target: "user_a" | "user_b";
-      if (votedForUid === userA?.uid) target = "user_a";
-      else if (userB && votedForUid === userB.uid) target = "user_b";
-      else throw httpsError("invalid-argument", "Invalid participant UID for this match.");
-
-      const col = target === "user_a" ? "user_a" : "user_b";
-      await env.DB.prepare(
-        `UPDATE contest_matches
-           SET ${col} = json_set(${col}, '$.votes', COALESCE(json_extract(${col}, '$.votes'),0) + 1),
-               total_votes = total_votes + 1
-         WHERE id = ?`,
-      ).bind(matchId).run();
+      // Dedup + tally happen inside the per-match VoteCounter Durable Object,
+      // which batch-flushes counts to D1 — this keeps the hot vote path off
+      // D1's single writer even under viral load.
+      const tally = await castVote(env, matchId, {
+        voterUid: uid,
+        votedForUid,
+        deviceId,
+        uidA: userA?.uid,
+        uidB: userB?.uid ?? userA?.uid,
+      });
+      if (tally.alreadyVoted) throw httpsError("already-exists", "You have already voted in this match.");
 
       await awardXp(env, uid, 5);
-      await publish(env, `match:${matchId}`, { type: "vote", votedForUid });
+      await publish(env, `match:${matchId}`, {
+        type: "vote",
+        votedForUid,
+        votesA: tally.votesA,
+        votesB: tally.votesB,
+        totalVotes: tally.total,
+      });
       return c.json({ success: true });
     }
 

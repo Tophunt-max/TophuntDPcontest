@@ -26,6 +26,8 @@ import { resolveContests, monthlyHallOfFame } from "./cron";
 
 // Durable Object for real-time WebSocket push.
 export { RealtimeHub } from "./realtime";
+// Durable Object for production-safe vote aggregation (one per match).
+export { VoteCounter } from "./voteCounter";
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 

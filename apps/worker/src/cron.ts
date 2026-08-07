@@ -11,6 +11,7 @@ import { and, eq, lte, gt, desc, sql } from "drizzle-orm";
 import type { Env } from "./types";
 import { getDb, schema } from "./db";
 import { createNotification } from "./lib/notify";
+import { finalizeVotes } from "./lib/voteCounter";
 import { newId, now } from "./lib/ids";
 
 type Match = typeof schema.contestMatches.$inferSelect;
@@ -27,8 +28,18 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
     if (contest?.reward) rewardAmount = Number(contest.reward);
   }
 
-  const votesA = Number(userA.votes || 0);
-  const votesB = Number(userB.votes || 0);
+  // Ask the per-match VoteCounter DO for the authoritative tally (it also
+  // flushes any in-flight votes to D1). Fall back to the last-flushed values
+  // stored in the match JSON if the DO is unreachable.
+  let votesA = Number(userA.votes || 0);
+  let votesB = Number(userB.votes || 0);
+  try {
+    const t = await finalizeVotes(env, match.id, userA.uid, userB.uid);
+    votesA = t.votesA;
+    votesB = t.votesB;
+  } catch (e) {
+    console.error("[resolveMatch] vote finalize failed, using D1 snapshot", match.id, e);
+  }
 
   // Tie -> refund both
   if (votesA === votesB) {
