@@ -108,22 +108,61 @@ readRoute.get("/matches", optionalAuth, async (c) => {
   const db = getDb(c.env);
   const status = c.req.query("status") || "active";
   const type = c.req.query("type");
+  // sort=recent (default, keyset by createdAt) | hot (engagement-ranked, offset)
+  const sort = c.req.query("sort") === "hot" ? "hot" : "recent";
   const limit = Math.min(parseInt(c.req.query("limit") || "30", 10), 100);
-  // Feed is read-heavy and tolerates slight staleness — cache 15s in KV.
-  const cacheKey = `cache:matches:${status}:${type || "all"}:${limit}`;
+  const cursorRaw = c.req.query("cursor");
+
+  // Cache each page for 15s. nextCursor is returned via the X-Next-Cursor
+  // header (response body stays a plain array — non-breaking).
+  const cacheKey = `cache:matches:${status}:${type || "all"}:${sort}:${limit}:${cursorRaw || "0"}`;
   const cached = await cacheGet(c.env, cacheKey);
-  if (cached) return c.json(cached);
-  const rows = await db
-    .select()
-    .from(schema.contestMatches)
-    .where(eq(schema.contestMatches.status, status))
-    .orderBy(desc(schema.contestMatches.createdAt))
-    .limit(limit)
-    .all();
-  let matches = rows.map(mapMatch);
-  if (type) matches = matches.filter((m) => m.type === type);
-  matches = matches.map((m) => enrichMatchMedia(c.env, m));
-  await cachePut(c.env, cacheKey, matches, 15);
+  if (cached) {
+    if (cached.nextCursor != null) c.header("X-Next-Cursor", String(cached.nextCursor));
+    return c.json(cached.matches);
+  }
+
+  const conds = [eq(schema.contestMatches.status, status)];
+  if (type) conds.push(eq(schema.contestMatches.type, type));
+
+  let matches: any[];
+  let nextCursor: number | null = null;
+
+  if (sort === "hot") {
+    // Engagement-weighted ranking; paginate by numeric offset.
+    const offset = cursorRaw ? Math.max(parseInt(cursorRaw, 10), 0) : 0;
+    const score = sql`(
+      ${schema.contestMatches.totalVotes}
+      + ${schema.contestMatches.likeCount}
+      + ${schema.contestMatches.commentCount} * 2
+      + ${schema.contestMatches.shareCount} * 3
+    )`;
+    const rows = await db
+      .select()
+      .from(schema.contestMatches)
+      .where(and(...conds))
+      .orderBy(desc(score), desc(schema.contestMatches.createdAt))
+      .limit(limit)
+      .offset(offset)
+      .all();
+    matches = rows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m));
+    nextCursor = rows.length === limit ? offset + limit : null;
+  } else {
+    // Keyset pagination by createdAt — stable and index-friendly.
+    if (cursorRaw) conds.push(lt(schema.contestMatches.createdAt, parseInt(cursorRaw, 10)));
+    const rows = await db
+      .select()
+      .from(schema.contestMatches)
+      .where(and(...conds))
+      .orderBy(desc(schema.contestMatches.createdAt))
+      .limit(limit)
+      .all();
+    matches = rows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m));
+    nextCursor = rows.length === limit ? rows[rows.length - 1].createdAt : null;
+  }
+
+  if (nextCursor != null) c.header("X-Next-Cursor", String(nextCursor));
+  await cachePut(c.env, cacheKey, { matches, nextCursor }, 15);
   return c.json(matches);
 });
 

@@ -68,6 +68,7 @@ app.use("*", async (c, next) => {
     origin: origins.length === 1 && origins[0] === "*" ? "*" : origins,
     allowMethods: ["GET", "POST", "OPTIONS"],
     allowHeaders: ["Content-Type", "Authorization"],
+    exposeHeaders: ["X-Next-Cursor", "X-Request-Id"],
     maxAge: 86400,
   });
   return mw(c, next);
