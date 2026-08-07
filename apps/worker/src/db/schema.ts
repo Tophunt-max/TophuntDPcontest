@@ -317,6 +317,7 @@ export const messages = sqliteTable(
     chatId: text("chat_id").notNull(),
     senderId: text("sender_id").notNull(),
     text: text("text"),
+    read: integer("read", { mode: "boolean" }).default(false),
     createdAt: integer("created_at").notNull(),
   },
   (t) => ({ chatIdx: index("idx_messages_chat").on(t.chatId, t.createdAt) }),

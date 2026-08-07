@@ -33,6 +33,10 @@ export interface Env {
   // as Resend). RESEND_API_KEY + EMAIL_FROM are used by lib/email.ts.
   RESEND_API_KEY: string;
   EMAIL_FROM: string;
+
+  // Shared secret for server-to-server admin calls (the admin Next.js API
+  // routes proxy to /admin/* with this in the X-Admin-Secret header).
+  ADMIN_PROXY_SECRET: string;
 }
 
 /** Authenticated user context attached by the auth middleware. */

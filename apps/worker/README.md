@@ -77,10 +77,24 @@ cleanup).
 - `adminManageWallet` — source `wallet/adminWalletManagement.ts` not yet reviewed.
 - legacy `join` / `vote` — old `entries`/`battles` matchmaking flow.
 
-**Still on Firebase / needs a decision** (Phase 3):
-- Client **direct Firestore reads & realtime `onSnapshot`** (feeds, chat,
-  notifications, `settings/appConfig`) — need GET read endpoints on the Worker
-  and a realtime strategy (polling / SSE / Durable Objects).
-- Admin **Next.js API routes** (`apps/admin/src/app/api/*`) still use the
-  Firebase Admin SDK against Firestore; migrate them to the Worker/D1. The
-  `users/[id]/wallet` route has a hardcoded Cloud Function `run.app` URL to repoint.
+**Phase 3 — DONE:**
+- **Read endpoints** (`/read/*`) replace the client's direct Firestore reads and
+  `onSnapshot` listeners: contests, matches, notifications (+ unread count),
+  app-config, suggested users, user profile, chats and chat messages.
+- **Realtime = polling.** The Expo client `poll()` helper (in
+  `services/api.ts`) replaces `onSnapshot` with the same unsubscribe ergonomics.
+  Rewired: contestService, notificationService, appSettings, users,
+  messageService, the messages list + chat screens, PostCard live votes, and the
+  legal pages. (Upgrade path: SSE or Durable Objects for push-style realtime.)
+- **Former direct writes** are now Worker actions: `markNotificationsRead`,
+  `registerFcmToken`, `equipBadge`, `startChat`, `sendMessage`, `markChatRead`,
+  `deleteChat`.
+- **Admin Next.js API routes** now proxy to the Worker `/admin/*` (D1) using a
+  server-to-server `X-Admin-Secret` (set `WORKER_URL` + `ADMIN_PROXY_SECRET` in
+  the admin env). No more Firebase Admin SDK / Firestore in those routes, and the
+  hardcoded Cloud Function `run.app` wallet URL is gone.
+
+**Remaining (small):** the leftover `likeContest`/`commentContest`/`shareContest`
+engagement actions still need `match_likes`/`match_comments` D1 tables, and a few
+non-realtime screen reads (bookmarks initial state, some profile hooks) can be
+moved to `/read/*` endpoints as they surface.

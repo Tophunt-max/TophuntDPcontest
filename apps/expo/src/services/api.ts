@@ -36,6 +36,62 @@ class ApiCallError extends Error {
   }
 }
 
+/** GET a /read endpoint on the Worker, attaching the ID token if present. */
+export const readApi = async (path: string, params?: Record<string, any>) => {
+  const url = new URL(`${API_BASE_URL}${path}`);
+  if (params) {
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
+    }
+  }
+  const headers: Record<string, string> = {};
+  const currentUser = auth.currentUser;
+  if (currentUser) {
+    try {
+      headers['Authorization'] = `Bearer ${await currentUser.getIdToken()}`;
+    } catch {
+      /* proceed without token */
+    }
+  }
+  const res = await fetch(url.toString(), { headers });
+  const json = await res.json().catch(() => null);
+  if (!res.ok) {
+    const status = (json?.error?.status || 'INTERNAL').toLowerCase().replace(/_/g, '-');
+    throw new ApiCallError(`functions/${status}`, json?.error?.message || 'Request failed');
+  }
+  return json;
+};
+
+/**
+ * Realtime-by-polling. Replaces Firestore onSnapshot: repeatedly calls `fetcher`
+ * and invokes `callback` with the result. Returns an unsubscribe function with
+ * the same ergonomics as a Firestore listener.
+ */
+export const poll = <T>(
+  fetcher: () => Promise<T>,
+  callback: (data: T) => void,
+  intervalMs = 5000,
+): (() => void) => {
+  let active = true;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const tick = async () => {
+    if (!active) return;
+    try {
+      const data = await fetcher();
+      if (active) callback(data);
+    } catch (e) {
+      console.warn('[poll] fetch failed', e);
+    } finally {
+      if (active) timer = setTimeout(tick, intervalMs);
+    }
+  };
+  tick();
+  return () => {
+    active = false;
+    if (timer) clearTimeout(timer);
+  };
+};
+
 export const callApi = async (action: string, data: any = {}) => {
   const path = AUTH_ACTIONS.has(action) ? '/auth' : '/api';
 

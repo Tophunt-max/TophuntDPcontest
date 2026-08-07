@@ -4,8 +4,7 @@ import { useRouter } from 'expo-router';
 import { Left_Arrow } from '@/assets/svgs';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from 'react-native';
-import { doc, onSnapshot } from 'firebase/firestore';
-import { firestore as db } from '@/src/services/firebase/initFirebase';
+import { readApi, poll } from '@/src/services/api';
 
 export default function TermsOfServiceScreen() {
   const router = useRouter();
@@ -19,20 +18,14 @@ export default function TermsOfServiceScreen() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const docRef = doc(db, "settings", "appConfig");
-    const unsubscribe = onSnapshot(docRef, (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        if (data.legalContent && data.legalContent.termsOfService) {
-          setContent(data.legalContent.termsOfService);
-        }
-      }
-      setLoading(false);
-    }, (error) => {
-      console.error("Error fetching terms of service:", error);
-      setLoading(false);
-    });
-
+    const unsubscribe = poll<any>(
+      () => readApi("/read/app-config"),
+      (data) => {
+        if (data?.legalContent?.termsOfService) setContent(data.legalContent.termsOfService);
+        setLoading(false);
+      },
+      60000,
+    );
     return () => unsubscribe();
   }, []);
 

@@ -1,6 +1,5 @@
-import { doc, onSnapshot, getDocFromServer, getDocFromCache } from "firebase/firestore";
-import { firestore } from "./firebase/initFirebase";
 import { useState, useEffect } from "react";
+import { readApi, poll } from "./api";
 
 export interface AppConfig {
   appName: string;
@@ -13,55 +12,37 @@ export interface AppConfig {
     description: string;
     imageUrl: string;
   }[];
+  legalSettings?: {
+    termsOfService?: string;
+    privacyPolicy?: string;
+  };
+  [key: string]: any;
 }
 
-// For Real-time updates (Used in Header)
+// Real-time updates via polling (was Firestore onSnapshot on settings/appConfig).
 export function useAppConfig() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const docRef = doc(firestore, "settings", "appConfig");
-    
-    const unsubscribe = onSnapshot(docRef, (docSnap) => {
-      if (docSnap.exists()) {
-        setConfig(docSnap.data() as AppConfig);
-      }
-      setLoading(false);
-    }, (error) => {
-      console.error("Error listening to app config:", error);
-      setLoading(false);
-    });
-
+    const unsubscribe = poll<AppConfig>(
+      () => readApi("/read/app-config"),
+      (data) => {
+        if (data) setConfig(data);
+        setLoading(false);
+      },
+      30000,
+    );
     return () => unsubscribe();
   }, []);
 
   return { config, loading };
 }
 
-// For One-time fetch (Used in Splash and Onboarding)
+// One-time fetch (used in splash / onboarding).
 export async function getAppConfig(): Promise<AppConfig | null> {
   try {
-    const docRef = doc(firestore, "settings", "appConfig");
-    
-    try {
-        const docSnap = await getDocFromServer(docRef);
-        if (docSnap.exists()) {
-            return docSnap.data() as AppConfig;
-        }
-    } catch (serverError) {
-        console.warn("Server fetch failed, trying cache:", serverError);
-        try {
-            const cacheSnap = await getDocFromCache(docRef);
-            if (cacheSnap.exists()) {
-                return cacheSnap.data() as AppConfig;
-            }
-        } catch (cacheError) {
-            console.error("Cache fetch also failed:", cacheError);
-        }
-    }
-
-    return null;
+    return (await readApi("/read/app-config")) as AppConfig;
   } catch (error) {
     console.error("Error in getAppConfig:", error);
     return null;

@@ -7,7 +7,7 @@
  * count to prevent double-spend / races.
  */
 import { Hono } from "hono";
-import { eq, and, desc, sql, count, like, gte } from "drizzle-orm";
+import { eq, and, desc, sql, count, like, gte, inArray } from "drizzle-orm";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
@@ -407,6 +407,89 @@ apiRoute.post("/", async (c) => {
       return c.json({ users: rows });
     }
 
+    // ================= NOTIFICATIONS / TOKENS / BADGE =================
+    case "markNotificationsRead": {
+      const ids: string[] = body.notificationIds || [];
+      if (!ids.length) return c.json({ success: true });
+      await db
+        .update(schema.notifications)
+        .set({ read: true })
+        .where(and(eq(schema.notifications.recipientId, uid), inArray(schema.notifications.id, ids)));
+      return c.json({ success: true });
+    }
+
+    case "registerFcmToken": {
+      const { token } = body;
+      if (!token) throw httpsError("invalid-argument", "token is required.");
+      const user = await db.select({ fcmTokens: schema.users.fcmTokens }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+      const tokens = new Set<string>(((user?.fcmTokens as string[]) || []));
+      tokens.add(token);
+      await db.update(schema.users).set({ fcmTokens: [...tokens], updatedAt: now() }).where(eq(schema.users.uid, uid));
+      return c.json({ success: true });
+    }
+
+    case "equipBadge": {
+      // badge can be an object or null (unequip)
+      await db.update(schema.users).set({ equippedBadge: body.badge ?? null, updatedAt: now() }).where(eq(schema.users.uid, uid));
+      return c.json({ success: true });
+    }
+
+    // ================= CHAT =================
+    case "startChat": {
+      const { otherUserId, otherUserData } = body;
+      if (!otherUserId) throw httpsError("invalid-argument", "otherUserId is required.");
+      // find an existing chat containing both users
+      const existing = await env.DB.prepare(
+        `SELECT id FROM chats
+          WHERE EXISTS (SELECT 1 FROM json_each(chats.users) WHERE json_each.value = ?)
+            AND EXISTS (SELECT 1 FROM json_each(chats.users) WHERE json_each.value = ?)
+          LIMIT 1`,
+      ).bind(uid, otherUserId).first<{ id: string }>();
+      if (existing?.id) return c.json({ chatId: existing.id });
+
+      const me = await db.select({ username: schema.users.username, avatar: schema.users.profileImageUrl }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+      const ts = now();
+      const chatId = newId();
+      await db.insert(schema.chats).values({
+        id: chatId,
+        users: [uid, otherUserId],
+        usersData: [
+          { uid, displayName: me?.username || null, photoURL: me?.avatar || null },
+          { uid: otherUserId, ...(otherUserData || {}) },
+        ] as any,
+        lastMessage: { text: "Say hi!", createdAt: ts } as any,
+        createdAt: ts,
+        updatedAt: ts,
+      });
+      return c.json({ chatId });
+    }
+
+    case "sendMessage": {
+      const { chatId, text } = body;
+      if (!chatId || !text) throw httpsError("invalid-argument", "chatId and text are required.");
+      const ts = now();
+      await db.insert(schema.messages).values({ id: newId(), chatId, senderId: uid, text, read: false, createdAt: ts });
+      await db.update(schema.chats).set({ lastMessage: { text, createdAt: ts, senderId: uid } as any, updatedAt: ts }).where(eq(schema.chats.id, chatId));
+      return c.json({ success: true });
+    }
+
+    case "markChatRead": {
+      const { chatId } = body;
+      if (!chatId) throw httpsError("invalid-argument", "chatId is required.");
+      await env.DB.prepare(
+        `UPDATE messages SET read = 1 WHERE chat_id = ? AND sender_id != ? AND read = 0`,
+      ).bind(chatId, uid).run();
+      return c.json({ success: true });
+    }
+
+    case "deleteChat": {
+      const { chatId } = body;
+      if (!chatId) throw httpsError("invalid-argument", "chatId is required.");
+      await db.delete(schema.messages).where(eq(schema.messages.chatId, chatId));
+      await db.delete(schema.chats).where(eq(schema.chats.id, chatId));
+      return c.json({ success: true });
+    }
+
     // ================= NOT YET PORTED =================
     // These need extra D1 tables / source not yet reviewed. Kept explicit so
     // the client gets a clear signal rather than a silent wrong result.
@@ -414,8 +497,25 @@ apiRoute.post("/", async (c) => {
     case "commentContest":
     case "shareContest":
       return notPorted(action, "contests/engagement.ts (needs match_likes/match_comments tables)");
-    case "adminManageWallet":
-      return notPorted(action, "wallet/adminWalletManagement.ts");
+    case "adminManageWallet": {
+      if (!(await isAdmin(c as any))) throw httpsError("permission-denied", "Admin only.");
+      const { userId, amount, type } = body;
+      if (!userId || typeof amount !== "number" || !["add", "subtract"].includes(type))
+        throw httpsError("invalid-argument", "Invalid request parameters.");
+      const delta = type === "add" ? amount : -amount;
+      const upd = await db
+        .update(schema.users)
+        .set({ dpcoin: sql`MAX(${schema.users.dpcoin} + ${delta}, 0)`, updatedAt: now() })
+        .where(eq(schema.users.uid, userId))
+        .run();
+      if (upd.meta.changes === 0) throw httpsError("not-found", "User not found.");
+      await db.insert(schema.coinTransactions).values({
+        id: newId(), uid: userId, amount: delta, type: "admin_adjustment",
+        description: `Admin ${type} ${amount} Dpcoin`, createdAt: now(),
+      });
+      const u = await db.select({ balance: schema.users.dpcoin }).from(schema.users).where(eq(schema.users.uid, userId)).get();
+      return c.json({ success: true, message: "Wallet updated successfully", newBalance: u?.balance ?? 0 });
+    }
     case "join":
     case "vote":
       return notPorted(action, "contests/contestHandler.ts (legacy entries/battles matchmaking)");

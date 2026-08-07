@@ -19,6 +19,8 @@ import type { Env, Variables } from "./types";
 import { ApiError, errorBody } from "./lib/http";
 import { authRoute } from "./routes/auth";
 import { apiRoute } from "./routes/api";
+import { readRoute } from "./routes/read";
+import { adminRoute } from "./routes/admin";
 import { resolveContests, monthlyHallOfFame } from "./cron";
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -39,6 +41,8 @@ app.get("/health", (c) => c.json({ ok: true, ts: Date.now() }));
 
 app.route("/auth", authRoute);
 app.route("/api", apiRoute);
+app.route("/read", readRoute);
+app.route("/admin", adminRoute);
 
 // Central error handler — preserves HttpsError-style codes for the client.
 app.onError((err, c) => {

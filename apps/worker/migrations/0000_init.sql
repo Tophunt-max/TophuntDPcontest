@@ -217,6 +217,7 @@ CREATE TABLE IF NOT EXISTS messages (
   chat_id TEXT NOT NULL,
   sender_id TEXT NOT NULL,
   text TEXT,
+  read INTEGER DEFAULT 0,
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages (chat_id, created_at);

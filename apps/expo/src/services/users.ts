@@ -1,11 +1,7 @@
-import { collection, doc, getDocs, limit, query, updateDoc, where, getDoc } from "firebase/firestore";
-import { firestore as db } from "../services/firebase/initFirebase";
-import { callApi } from "./api"; // Naya centralized API caller
+import { callApi, readApi } from "./api";
 import { Badge } from "../types/user";
 
-/**
- * Calculates distance between two coordinates in km (Haversine formula)
- */
+/** Haversine distance in km. */
 function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number) {
   const R = 6371;
   const dLat = deg2rad(lat2 - lat1);
@@ -17,52 +13,38 @@ function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: numbe
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
 }
-
 function deg2rad(deg: number) {
   return deg * (Math.PI / 180);
 }
 
-export async function fetchSuggestedUsers(currentUserCoords?: { lat: number, lng: number }) {
+export async function fetchSuggestedUsers(currentUserCoords?: { lat: number; lng: number }) {
   try {
-    console.log("Algorithm: Fetching suggested users...");
-    
-    // FETCH ANY USERS (to ensure list is not empty during testing)
-    const q = query(collection(db, "users"), limit(50));
-    const snap = await getDocs(q);
-    
-    if (snap.empty) {
-        console.log("Firestore users collection is EMPTY.");
-        return [];
-    }
+    // Reads users from the Worker (D1) instead of Firestore.
+    const raw: any[] = (await readApi("/read/users/suggested", { limit: 50 })) || [];
+    if (!raw.length) return [];
 
-    let users = snap.docs.map((d) => {
-      const data = d.data();
-      return { 
-        id: d.id, 
-        name: data.fullName || data.username || "User",
-        username: data.username || "user",
-        avatar: data.profileImageUrl || `https://ui-avatars.com/api/?name=${data.fullName || data.username || "User"}&background=random`,
-        coords: data.coordinates || null,
-      };
-    });
+    let users = raw.map((data) => ({
+      id: data.id,
+      name: data.fullName || data.username || "User",
+      username: data.username || "user",
+      avatar:
+        data.profileImageUrl ||
+        `https://ui-avatars.com/api/?name=${data.fullName || data.username || "User"}&background=random`,
+      coords: data.coordinates || null,
+    }));
 
-    // Proximity Sorting Algorithm
+    // Proximity sorting (unchanged, done client-side).
     if (currentUserCoords && currentUserCoords.lat && currentUserCoords.lng) {
-      console.log("Sorting users by proximity to current user...");
       users = users.sort((a, b) => {
         if (!a.coords) return 1;
         if (!b.coords) return -1;
-        
         const distA = calculateDistance(currentUserCoords.lat, currentUserCoords.lng, a.coords.lat, a.coords.lng);
         const distB = calculateDistance(currentUserCoords.lat, currentUserCoords.lng, b.coords.lat, b.coords.lng);
-        
         return distA - distB;
       });
     }
 
-    console.log(`Fetched and sorted ${users.length} users.`);
     return users.slice(0, 20);
-
   } catch (error) {
     console.error("Critical error in fetchSuggestedUsers:", error);
     return [];
@@ -71,22 +53,19 @@ export async function fetchSuggestedUsers(currentUserCoords?: { lat: number, lng
 
 export const toggleFollowService = async (targetUserId: string) => {
   try {
-    // Purana: httpsCallable(functions, 'toggleFollow') tha
-    // Ab: Central API caller use hoga
-    return await callApi('toggleFollow', { targetUserId });
+    return await callApi("toggleFollow", { targetUserId });
   } catch (error) {
     console.error("Error calling toggleFollow service:", error);
     throw error;
   }
 };
 
-export const equipBadgeService = async (userId: string, badge: Badge | null) => {
-    try {
-        const userRef = doc(db, "users", userId);
-        await updateDoc(userRef, { equippedBadge: badge });
-        return { success: true };
-    } catch (error) {
-        console.error("Error equipping badge:", error);
-        throw error;
-    }
+export const equipBadgeService = async (_userId: string, badge: Badge | null) => {
+  try {
+    // Was updateDoc(users/{uid}, { equippedBadge }); now a Worker action.
+    return await callApi("equipBadge", { badge });
+  } catch (error) {
+    console.error("Error equipping badge:", error);
+    throw error;
+  }
 };
