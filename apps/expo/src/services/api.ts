@@ -10,7 +10,7 @@ import { auth } from './firebase/initFirebase';
  * (e.g. https://tophunt-api.<subdomain>.workers.dev).
  */
 export const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_URL || 'https://tophunt-api.workers.dev';
+  process.env.EXPO_PUBLIC_API_URL || 'https://tophunt-api.weadown-in.workers.dev';
 
 // Actions handled by the /auth route (was the `authHandler` callable).
 const AUTH_ACTIONS = new Set([
