@@ -1,22 +1,13 @@
-import { firestore } from '../firebase/initFirebase';
-import { doc, updateDoc, increment, serverTimestamp } from 'firebase/firestore';
-import { callApi } from '../api'; // Naya centralized API caller
+import { callApi } from '../api';
 
 export const walletService = {
   /**
-   * Purchase coins (Mock Payment)
+   * Purchase coins (mock payment) — credited via the Worker /api `topup`.
    */
-  purchaseCoins: async (amount: number, price: string) => {
+  purchaseCoins: async (amount: number, _price: string) => {
     try {
-      // Mock payment ID
       const mockPaymentId = `pay_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-      // Purana: httpsCallable(functions, 'topUpWallet')
-      // Ab: Central API call ('topup' action as defined in main.ts)
-      return await callApi('topup', {
-        amount,
-        paymentId: mockPaymentId
-      });
+      return await callApi('topup', { amount, paymentId: mockPaymentId });
     } catch (error) {
       console.error("Purchase error:", error);
       throw error;
@@ -24,16 +15,14 @@ export const walletService = {
   },
 
   /**
-   * Claim Daily Bonus
+   * Claim daily bonus — handled by the Worker /api `claimDailyReward`.
    */
-  claimDailyBonus: async (userId: string, dayIndex: number) => {
+  claimDailyBonus: async (_userId: string, dayIndex: number) => {
     try {
-        // Backend router mein 'claimDailyReward' action hai
-        return await callApi('claimDailyReward', { dayIndex });
+      return await callApi('claimDailyReward', { dayIndex });
     } catch (error) {
-        console.error("Error claiming daily bonus:", error);
-        // Fallback or handle error
-        throw error;
+      console.error("Error claiming daily bonus:", error);
+      throw error;
     }
-  }
+  },
 };

@@ -1,5 +1,5 @@
-import { db } from "@/lib/firebase/admin";
 import { NextResponse } from "next/server";
+import { workerAdmin, forward } from "@/lib/worker";
 
 export async function DELETE(
   request: Request,
@@ -7,14 +7,11 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-
     if (!id) {
       return NextResponse.json({ error: "Contest ID is required" }, { status: 400 });
     }
-
-    await db.collection("contests").doc(id).delete();
-
-    return NextResponse.json({ message: "Contest deleted successfully" });
+    const { data, status } = await forward(await workerAdmin(`/contests/${id}`, { method: "DELETE" }));
+    return NextResponse.json(data, { status });
   } catch (error: any) {
     console.error("Error deleting contest:", error);
     return NextResponse.json({ error: error.message || "Failed to delete contest" }, { status: 500 });

@@ -1,0 +1,63 @@
+name = "tophunt-api"
+main = "src/index.ts"
+compatibility_date = "2024-11-27"
+compatibility_flags = ["nodejs_compat"]
+
+# ---------------------------------------------------------------------------
+# D1 database (replaces Firestore)
+# Create with:  wrangler d1 create tophunt-db
+# then paste the returned database_id below.
+# ---------------------------------------------------------------------------
+[[d1_databases]]
+binding = "DB"
+database_name = "tophunt-db"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+# ---------------------------------------------------------------------------
+# R2 bucket (replaces AWS S3 for media)
+# Create with:  wrangler r2 bucket create tophunt-media
+# ---------------------------------------------------------------------------
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "tophunt-media"
+
+# ---------------------------------------------------------------------------
+# KV namespaces (OTPs, settings cache, JWKS cache)
+# Create with:  wrangler kv namespace create OTP_KV   (repeat for each)
+# ---------------------------------------------------------------------------
+[[kv_namespaces]]
+binding = "OTP_KV"
+id = "REPLACE_WITH_OTP_KV_ID"
+
+[[kv_namespaces]]
+binding = "CACHE_KV"
+id = "REPLACE_WITH_CACHE_KV_ID"
+
+# ---------------------------------------------------------------------------
+# Durable Object for real-time WebSocket push (chat, notifications, live votes)
+# ---------------------------------------------------------------------------
+[[durable_objects.bindings]]
+name = "REALTIME"
+class_name = "RealtimeHub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RealtimeHub"]
+
+# ---------------------------------------------------------------------------
+# Scheduled tasks (replace Firebase onSchedule functions)
+#   */10 * * * *  -> resolveContests + expired story cleanup (was `scheduled`/`resolveContestsTask`)
+#   0 0 1 * *     -> monthlyHallOfFame
+# ---------------------------------------------------------------------------
+[triggers]
+crons = ["*/10 * * * *", "0 0 1 * *"]
+
+# ---------------------------------------------------------------------------
+# Non-secret vars. Secrets (service account, R2 keys, Twilio, email) are set
+# via `wrangler secret put <NAME>` — see apps/worker/.dev.vars.example
+# ---------------------------------------------------------------------------
+[vars]
+FIREBASE_PROJECT_ID = "tophuntdpcontest"
+R2_PUBLIC_BASE_URL = "https://media.tophuntdpcontest.com"
+ALLOWED_ORIGINS = "*"

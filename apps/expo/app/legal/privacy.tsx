@@ -4,8 +4,7 @@ import { useRouter } from 'expo-router';
 import { Left_Arrow } from '@/assets/svgs';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from 'react-native';
-import { doc, onSnapshot } from 'firebase/firestore';
-import { firestore as db } from '@/src/services/firebase/initFirebase';
+import { readApi, poll } from '@/src/services/api';
 
 export default function PrivacyPolicyScreen() {
   const router = useRouter();
@@ -19,20 +18,14 @@ export default function PrivacyPolicyScreen() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const docRef = doc(db, "settings", "appConfig");
-    const unsubscribe = onSnapshot(docRef, (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        if (data.legalContent && data.legalContent.privacyPolicy) {
-          setContent(data.legalContent.privacyPolicy);
-        }
-      }
-      setLoading(false);
-    }, (error) => {
-      console.error("Error fetching privacy policy:", error);
-      setLoading(false);
-    });
-
+    const unsubscribe = poll<any>(
+      () => readApi("/read/app-config"),
+      (data) => {
+        if (data?.legalContent?.privacyPolicy) setContent(data.legalContent.privacyPolicy);
+        setLoading(false);
+      },
+      60000,
+    );
     return () => unsubscribe();
   }, []);
 

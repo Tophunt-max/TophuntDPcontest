@@ -1,8 +1,8 @@
 
 import React, { useState, useCallback, useEffect } from 'react';
 import { GiftedChat, IMessage, BubbleProps, TimeProps, InputToolbarProps, Bubble } from 'react-native-gifted-chat';
-import { firestore } from '@/src/services/firebase/initFirebase';
-import { collection, query, where, orderBy, onSnapshot, addDoc, doc, updateDoc, writeBatch, arrayUnion } from 'firebase/firestore';
+import { readApi, callApi } from '@/src/services/api';
+import { live } from '@/src/services/realtime';
 import { useLocalSearchParams } from 'expo-router';
 import { View, Text, ActivityIndicator, StyleSheet, TouchableOpacity } from 'react-native';
 import { useAuth } from '@/src/hooks/useAuth';
@@ -30,83 +30,45 @@ export default function ChatScreen() {
       return;
     }
 
-    console.log(`[ChatScreen] Subscribing to chat: ${chatId}`);
-    const messagesRef = collection(firestore, 'chats', chatId as string, 'messages');
-    const q = query(messagesRef, orderBy('createdAt', 'desc'));
+    // Instant push via the chat's WebSocket channel (polling is only a fallback).
+    const unsubscribe = live<any[]>(
+      `chat:${chatId}`,
+      () => readApi(`/read/chats/${chatId}/messages`),
+      (rows) => {
+        // Server returns oldest-first; GiftedChat wants newest-first.
+        const loaded = (rows || [])
+          .map((m) => ({
+            _id: m.id,
+            text: m.text,
+            createdAt: new Date(m.createdAt),
+            user: { _id: m.senderId },
+            sent: true,
+            received: !!m.read,
+          } as IMessage))
+          .reverse();
+        setMessages(loaded);
+        setIsLoadingMessages(false);
+      },
+      { filter: (e) => e.type === 'message' },
+    );
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      console.log(`[ChatScreen] Received ${snapshot.docs.length} messages.`);
-      const loadedMessages = snapshot.docs.map(doc => {
-        const data = doc.data();
-        return {
-          _id: doc.id,
-          text: data.text,
-          createdAt: data.createdAt.toDate(),
-          user: data.user,
-          sent: true,
-          received: true,
-          readBy: data.readBy
-        } as IMessage;
-      });
-      setMessages(loadedMessages);
-      setIsLoadingMessages(false);
-    }, (error) => {
-      console.error("[ChatScreen] Error fetching messages:", error);
-      setIsLoadingMessages(false);
-    });
-    
-    const unreadQuery = query(messagesRef, where('user._id', '!=', currentUser.uid));
-    const unsubscribeRead = onSnapshot(unreadQuery, (snapshot) => {
-        const batch = writeBatch(firestore);
-        let hasUpdates = false;
-        snapshot.docs.forEach(document => {
-            const message = document.data();
-            if (!message.readBy || !message.readBy.includes(currentUser.uid)) {
-                const messageRef = doc(firestore, 'chats', chatId as string, 'messages', document.id);
-                batch.update(messageRef, {
-                    readBy: arrayUnion(currentUser.uid)
-                });
-                hasUpdates = true;
-            }
-        });
-        if (hasUpdates) {
-            batch.commit();
-            console.log("[ChatScreen] Marked messages as read.");
-        }
-    });
+    // Mark incoming messages as read (best-effort).
+    callApi('markChatRead', { chatId }).catch(() => {});
 
     return () => {
-      console.log(`[ChatScreen] Unsubscribing from chat: ${chatId}`);
       unsubscribe();
-      unsubscribeRead();
-    }
+    };
   }, [chatId, currentUser, authLoading]);
 
   const onSend = useCallback(async (newMessages: IMessage[] = []) => {
     if (!currentUser || !chatId) return;
     setMessages(previousMessages => GiftedChat.append(previousMessages, newMessages));
-    
-    const { _id, createdAt, text, user } = newMessages[0];
+    const { text } = newMessages[0];
     try {
-      await addDoc(collection(firestore, 'chats', chatId as string, 'messages'), {
-          _id,
-          createdAt,
-          text,
-          user,
-          readBy: [currentUser!.uid]
-      });
-      console.log("[ChatScreen] Message sent and added to Firestore.");
-      
-      await updateDoc(doc(firestore, 'chats', chatId as string), {
-          lastMessage: text,
-          lastMessageTime: createdAt,
-          users: arrayUnion(currentUser!.uid)
-      });
-      console.log("[ChatScreen] Chat document updated with last message.");
+      await callApi('sendMessage', { chatId, text });
     } catch (error) {
       console.error("[ChatScreen] Error sending message:", error);
     }
-
   }, [chatId, currentUser]);
 
   const renderBubble = (props: BubbleProps<IMessage>) => {

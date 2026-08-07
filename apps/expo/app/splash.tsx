@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { View, StyleSheet, Image, Dimensions, Text, useColorScheme } from 'react-native';
 import { useRouter } from 'expo-router';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { auth, firestore as db } from '../src/services/firebase/initFirebase';
+import { auth } from '../src/services/firebase/initFirebase';
 import * as Font from 'expo-font';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Animated, { 
@@ -17,7 +17,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Colors } from '@/constants/theme';
 import { getAppConfig } from '../src/services/appSettings';
-import { doc, getDoc } from 'firebase/firestore';
+import { readApi } from '../src/services/api';
 
 const { width } = Dimensions.get('window');
 
@@ -122,12 +122,10 @@ export default function SplashScreen() {
 
             if (user) {
                 try {
-                    // Check if user has a completed profile in Firestore
-                    const userDocRef = doc(db, "users", user.uid);
-                    const userSnap = await getDoc(userDocRef);
-                    
-                    if (userSnap.exists()) {
-                        const userData = userSnap.data();
+                    // Check if the user has a completed profile in D1 (via the Worker)
+                    const userData: any = await readApi(`/read/users/${user.uid}`).catch(() => null);
+
+                    if (userData) {
                         if (userData.signupCompleted === true || userData.username) {
                             console.log("Profile complete -> Home");
                             router.replace('/home');
@@ -136,8 +134,8 @@ export default function SplashScreen() {
                             router.replace('/auth/signup/fill-profile');
                         }
                     } else {
-                        // User exists in Auth but not in Firestore (maybe signup was interrupted)
-                        console.log("No Firestore record -> Fill Profile");
+                        // Authenticated but no profile row (signup interrupted)
+                        console.log("No profile record -> Fill Profile");
                         router.replace('/auth/signup/fill-profile');
                     }
                 } catch (error) {

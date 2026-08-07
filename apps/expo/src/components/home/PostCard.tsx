@@ -4,8 +4,8 @@ import { CommentSheet } from '../comments/CommentSheet';
 import { ShareSheet } from '../share/ShareSheet';
 import { useAuth } from '@/src/hooks/useAuth';
 import { contestService } from '@/src/services/contests/contestService';
-import { firestore } from '@/src/services/firebase/initFirebase';
-import { doc, onSnapshot, getDoc } from 'firebase/firestore';
+import { readApi } from '@/src/services/api';
+import { live } from '@/src/services/realtime';
 import { Colors } from '@/constants/theme';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useToast } from '../toast/ToastProvider';
@@ -67,32 +67,24 @@ export const PostCard = memo(({ item, isDark }: PostCardProps) => {
 
   useEffect(() => {
     if (!item.id) return;
-    const unsub = onSnapshot(doc(firestore, 'contestMatches', item.id), (snapshot) => {
-      if (snapshot.exists()) {
-        const data = snapshot.data();
-        setVotesA(data.userA.votes || 0);
+    // Instant push via the match's WebSocket channel (live vote/like counts).
+    const unsub = live<any>(
+      `match:${item.id}`,
+      () => readApi(`/read/matches/${item.id}`),
+      (data) => {
+        if (!data) return;
+        setVotesA(data.userA?.votes || 0);
         setVotesB(data.userB?.votes || 0);
         setLikeCount(data.likeCount || 0);
         setCommentCount(data.commentCount || 0);
         setShareCount(data.shareCount || 0);
-        
-        const total = (data.userA.votes || 0) + (data.userB?.votes || 0);
-        const newProgress = total > 0 ? (data.userA.votes || 0) / total : 0.5;
+
+        const total = (data.userA?.votes || 0) + (data.userB?.votes || 0);
+        const newProgress = total > 0 ? (data.userA?.votes || 0) / total : 0.5;
         setProgressA(newProgress);
         barProgress.value = withSpring(newProgress, { damping: 15, stiffness: 100 });
-      }
-    });
-
-    // Check if initially bookmarked
-    if (user) {
-        const checkBookmark = async () => {
-            const bookmarkRef = doc(firestore, `users/${user.uid}/bookmarks`, item.id);
-            const snap = await getDoc(bookmarkRef);
-            if (snap.exists()) setIsBookmarked(true);
-        };
-        checkBookmark();
-    }
-
+      },
+    );
     return () => unsub();
   }, [item.id, user]);
 

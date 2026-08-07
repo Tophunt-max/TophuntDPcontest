@@ -1,29 +1,19 @@
-import { doc, setDoc, updateDoc, serverTimestamp } from "firebase/firestore";
-import { auth, firestore as db } from "../firebase/initFirebase";
+import { auth } from "../firebase/initFirebase";
+import { callApi } from "../api";
 
+/**
+ * Persist the current user's profile fields. Was a Firestore setDoc(merge);
+ * now the Worker /api `updateProfile` action (merges into D1, unknown fields
+ * go into the users.extra JSON column).
+ */
 export const saveUserProfile = async (data: any) => {
   const user = auth.currentUser;
-
   if (!user) throw new Error("No authenticated user found");
-
-  const userRef = doc(db, "users", user.uid);
-
-  // Merge with existing data
-  await setDoc(userRef, {
-    ...data,
-    updatedAt: serverTimestamp(),
-  }, { merge: true });
+  await callApi("updateProfile", data);
 };
 
 export const completeSignup = async () => {
-    const user = auth.currentUser;
-  
-    if (!user) throw new Error("No authenticated user found");
-  
-    const userRef = doc(db, "users", user.uid);
-    
-    await updateDoc(userRef, {
-        signupCompleted: true,
-        updatedAt: serverTimestamp(),
-    });
-}
+  const user = auth.currentUser;
+  if (!user) throw new Error("No authenticated user found");
+  await callApi("completeSignup", {});
+};

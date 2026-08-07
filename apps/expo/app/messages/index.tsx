@@ -15,8 +15,9 @@ import {
   RefreshControl,
   useColorScheme
 } from 'react-native';
-import { collection, query, where, onSnapshot, orderBy, doc, deleteDoc } from 'firebase/firestore';
-import { firestore, auth } from '@/src/services/firebase/initFirebase';
+import { auth } from '@/src/services/firebase/initFirebase';
+import { readApi, callApi } from '@/src/services/api';
+import { live } from '@/src/services/realtime';
 import { useRouter } from 'expo-router';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { ThemedView } from '@/components/themed-view';
@@ -99,26 +100,17 @@ export default function MessagesScreen() {
       return;
     }
 
-    const chatsRef = collection(firestore, 'chats');
-    const q = query(
-      chatsRef,
-      where('users', 'array-contains', currentUser.uid),
-      orderBy('lastMessage.createdAt', 'desc')
+    // Instant push via the user's WebSocket channel (chat-list bumps).
+    const unsubscribe = live<ChatItemType[]>(
+      `user:${currentUser.uid}`,
+      () => readApi('/read/chats'),
+      (chatsData) => {
+        setChats(chatsData || []);
+        setLoading(false);
+        setRefreshing(false);
+      },
+      { filter: (e) => e.type === 'chat_update' },
     );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const chatsData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...(doc.data() as any),
-      }));
-      setChats(chatsData);
-      setLoading(false);
-      setRefreshing(false);
-    }, (err) => {
-      console.error("Firestore Messages Error:", err);
-      setLoading(false);
-      setRefreshing(false);
-    });
 
     return unsubscribe;
   }, [currentUser]);
@@ -148,7 +140,8 @@ export default function MessagesScreen() {
           style: "destructive", 
           onPress: async () => {
             try {
-              await deleteDoc(doc(firestore, "chats", chatId));
+              await callApi('deleteChat', { chatId });
+              setChats((prev) => prev.filter((c) => c.id !== chatId));
             } catch (error) {
               console.error("Error deleting chat:", error);
             }

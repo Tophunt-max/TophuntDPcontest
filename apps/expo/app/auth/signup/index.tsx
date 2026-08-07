@@ -34,12 +34,11 @@ import { useColorScheme } from "@/hooks/use-color-scheme";
 import { FormInput } from "@/src/components/inputs/FormInput";
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useSignupStore } from "@/src/store/signup";
-import { auth, firestore as db } from "../../../src/services/firebase/initFirebase";
-import { callApi } from "@/src/services/api"; // Updated to use centralized API
+import { auth } from "../../../src/services/firebase/initFirebase";
+import { callApi, readApi, poll } from "@/src/services/api"; // Centralized Worker API
 import { useToast } from "@/src/components/toast/ToastProvider";
 import PasswordStrength from "@/src/components/inputs/PasswordStrength";
 import { Colors } from '@/constants/theme';
-import { doc, onSnapshot } from "firebase/firestore";
 
 const signupSchema = z.object({
   email: z.string().min(1, "Please fill in your email").email("Invalid email"),
@@ -87,33 +86,29 @@ export default function SignupEntryScreen() {
     }
   });
 
-  // REAL-TIME Sync with Admin Settings
+  // Sync with Admin Settings (polling the Worker /read/app-config).
   useEffect(() => {
-    const docRef = doc(db, "settings", "appConfig");
-    const unsubscribe = onSnapshot(docRef, (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        if (data.authSettings) {
+    const unsubscribe = poll<any>(
+      () => readApi("/read/app-config"),
+      (data) => {
+        if (data?.authSettings) {
+          const a = data.authSettings;
           setConfig(prev => ({
             ...prev,
-            googleLogin: data.authSettings.googleLogin ?? true,
-            facebookLogin: data.authSettings.facebookLogin ?? true,
-            appleLogin: data.authSettings.appleLogin ?? true,
-            emailSignup: data.authSettings.emailSignup ?? true,
+            googleLogin: a.googleLogin ?? true,
+            facebookLogin: a.facebookLogin ?? true,
+            appleLogin: a.appleLogin ?? true,
+            emailSignup: a.emailSignup ?? true,
           }));
-          
-          if (data.authSettings.emailSignup === false) {
-              addToast("Email signup is currently disabled.", "info");
-              router.replace("/auth/login");
+          if (a.emailSignup === false) {
+            addToast("Email signup is currently disabled.", "info");
+            router.replace("/auth/login");
           }
         }
-      }
-      setIsConfigLoading(false);
-    }, (error) => {
-      console.error("Firestore Listen Error:", error);
-      setIsConfigLoading(false);
-    });
-
+        setIsConfigLoading(false);
+      },
+      30000,
+    );
     return () => unsubscribe();
   }, []);
 

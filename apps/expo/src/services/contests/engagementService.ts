@@ -1,34 +1,15 @@
-import { firestore } from '@/src/services/firebase/initFirebase';
-import { 
-  doc, 
-  setDoc, 
-  deleteDoc, 
-  getDoc,
-  serverTimestamp 
-} from 'firebase/firestore';
 import { Share, Alert, Platform } from 'react-native';
+import { callApi } from '../api';
 
 export const engagementService = {
   /**
-   * Bookmark or Unbookmark a battle
+   * Bookmark / unbookmark a battle. Returns the new bookmarked state.
+   * (Was users/{uid}/bookmarks/{battleId} in Firestore; now a Worker action.)
    */
-  toggleBookmark: async (battleId: string, userId: string) => {
+  toggleBookmark: async (battleId: string, _userId?: string) => {
     try {
-      const bookmarkRef = doc(firestore, `users/${userId}/bookmarks`, battleId);
-      const docSnap = await getDoc(bookmarkRef);
-
-      if (docSnap.exists()) {
-        // Remove bookmark
-        await deleteDoc(bookmarkRef);
-        return false; // Not bookmarked anymore
-      } else {
-        // Add bookmark
-        await setDoc(bookmarkRef, {
-          battleId,
-          savedAt: serverTimestamp(),
-        });
-        return true; // Bookmarked
-      }
+      const res: any = await callApi('toggleBookmark', { matchId: battleId });
+      return res.bookmarked;
     } catch (error) {
       console.error("Error toggling bookmark:", error);
       throw error;
@@ -36,12 +17,13 @@ export const engagementService = {
   },
 
   /**
-   * Share a battle link or message
+   * Share a battle link/message via the native share sheet, and record the
+   * share on the server for the share counter.
    */
-  shareBattle: async (contestName: string, userA: string, userB: string) => {
+  shareBattle: async (contestName: string, userA: string, userB: string, battleId?: string) => {
     try {
       const message = `Check out this VS Battle on our App! 🏆\n\n${userA} VS ${userB}\nContest: ${contestName}\n\nDownload the app to vote and earn coins!`;
-      
+
       const result = await Share.share({
         message,
         title: `VS Battle: ${contestName}`,
@@ -49,6 +31,7 @@ export const engagementService = {
       });
 
       if (result.action === Share.sharedAction) {
+        if (battleId) callApi('shareContest', { matchId: battleId }).catch(() => {});
         return true;
       }
       return false;
@@ -56,5 +39,5 @@ export const engagementService = {
       Alert.alert("Error", error.message);
       return false;
     }
-  }
+  },
 };

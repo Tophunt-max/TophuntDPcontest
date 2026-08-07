@@ -26,9 +26,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Left_Arrow, Email_Icon, Add_Icon } from "@/assets/svgs";
 import { Ionicons } from "@expo/vector-icons";
 import { CountryPicker } from "react-native-country-codes-picker";
-import { doc, updateDoc } from "firebase/firestore";
-import { firestore } from "@/src/services/firebase/initFirebase";
-import { callApi } from "@/src/services/api"; // Centralized API Caller
+import { callApi } from "@/src/services/api"; // Centralized Worker API Caller
 import { ReanimatedBottomSheet } from "@/src/components/modals/ReanimatedBottomSheet";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -246,8 +244,7 @@ export default function EditProfileScreen() {
         finalAvatarUrl = await uploadToS3(localAvatarUri, "image/jpeg", "avatars") as string;
       }
 
-      const userRef = doc(firestore, "users", authUser.uid);
-      await updateDoc(userRef, {
+      await callApi('updateProfile', {
         fullName: data.fullName,
         occupation: data.occupation,
         bio: data.bio || "",
@@ -255,7 +252,6 @@ export default function EditProfileScreen() {
         twitter: data.twitter || "",
         instagram: data.instagram || "",
         profileImageUrl: finalAvatarUrl,
-        updatedAt: new Date(),
       });
 
       let alertMsg = "Profile updated successfully!";

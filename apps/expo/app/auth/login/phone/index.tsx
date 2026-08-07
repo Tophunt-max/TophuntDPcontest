@@ -21,10 +21,10 @@ import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useToast } from "@/src/components/toast/ToastProvider";
 import { Colors } from '@/constants/theme';
 import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
-import { auth, firestore as db } from "../../../../src/services/firebase/initFirebase";
+import { auth } from "../../../../src/services/firebase/initFirebase";
 import { PhoneAuthProvider, signInWithCredential } from "firebase/auth";
 import { firebaseConfig } from "@/src/firebaseConfig";
-import { doc, getDoc, collection, query, where, getDocs, limit } from "firebase/firestore";
+import { readApi } from "../../../../src/services/api";
 import { useSignupStore } from "../../../../src/store/signup";
 import { CountryPicker } from "react-native-country-codes-picker";
 import { Ionicons } from "@expo/vector-icons";
@@ -92,21 +92,8 @@ export default function PhoneLoginScreen() {
       const fullPhone = user.phoneNumber || (countryCode + phoneNumber);
       const normalizedPhone = fullPhone.replace(/[^\d+]/g, "");
 
-      // 1. Check by UID first (most reliable)
-      const userDocRef = doc(db, "users", user.uid);
-      const userDocSnap = await getDoc(userDocRef);
-      
-      let userData = null;
-      if (userDocSnap.exists()) {
-          userData = userDocSnap.data();
-      } else {
-          // 2. If not found by UID, check by 'phone' field (for email users who linked phone)
-          const q = query(collection(db, "users"), where("phone", "==", normalizedPhone), limit(1));
-          const querySnapshot = await getDocs(q);
-          if (!querySnapshot.empty) {
-              userData = querySnapshot.docs[0].data();
-          }
-      }
+      // Look up the profile in D1 (via the Worker), keyed by uid.
+      const userData: any = await readApi(`/read/users/${user.uid}`).catch(() => null);
 
       if (userData) {
         // Check if profile is actually complete (has username or flag)
