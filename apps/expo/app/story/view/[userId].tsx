@@ -36,7 +36,7 @@ import {
     createStoryRecord,
     deleteStory 
 } from '@/src/services/stories/storyService';
-import { auth, firestore as db } from '@/src/services/firebase/initFirebase';
+import { auth } from '@/src/services/firebase/initFirebase';
 import { 
     Highlight_Story_Icon,
     Viewers_Icon,

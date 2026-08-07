@@ -9,38 +9,39 @@ import {
 import { cn } from "@/lib/utils";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { db } from "@/lib/firebase/config";
-import { collection, query, orderBy, limit, onSnapshot, updateDoc, doc } from "firebase/firestore";
 
 export function Notification() {
   const [isOpen, setIsOpen] = useState(false);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
 
+  // Admin activity feed now comes from the Worker (D1) via /api/admin-notifications.
   useEffect(() => {
-    const q = query(
-      collection(db, "admin_notifications"), 
-      orderBy("createdAt", "desc"), 
-      limit(10)
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setNotifications(docs);
-      setUnreadCount(docs.filter((n: any) => !n.isRead).length);
-    }, (error) => {
-      console.error("Notification listener error:", error);
-    });
-
-    return () => unsubscribe();
+    let active = true;
+    const load = async () => {
+      try {
+        const res = await fetch("/api/admin-notifications", { cache: "no-store" });
+        const docs = await res.json();
+        if (!active || !Array.isArray(docs)) return;
+        setNotifications(docs);
+        setUnreadCount(docs.filter((n: any) => !n.isRead).length);
+      } catch (error) {
+        console.error("Notification fetch error:", error);
+      }
+    };
+    load();
+    const timer = setInterval(load, 20000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
   }, []);
 
   const markAllAsRead = async () => {
     try {
-      const unread = notifications.filter(n => !n.isRead);
-      await Promise.all(unread.map(n => 
-        updateDoc(doc(db, "admin_notifications", n.id), { isRead: true })
-      ));
+      await fetch("/api/admin-notifications", { method: "POST" });
+      setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
+      setUnreadCount(0);
     } catch (e) {
       console.error("Error marking as read:", e);
     }
@@ -85,7 +86,7 @@ export function Notification() {
                   </p>
 
                   <p className="text-xs text-gray-500">
-                    {notification.createdAt?.toDate ? notification.createdAt.toDate().toLocaleTimeString() : "Just now"}
+                    {notification.createdAt ? new Date(notification.createdAt).toLocaleTimeString() : "Just now"}
                   </p>
                 </Link>
               </li>

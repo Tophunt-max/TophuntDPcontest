@@ -1,6 +1,5 @@
 import { getApps, getApp, initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
-import { getFunctions } from "firebase/functions";
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -13,7 +12,6 @@ const firebaseConfig = {
 };
 
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-const functions = getFunctions(app, "us-central1");
 
 /**
  * Consolidated API caller for the Admin Panel — now targets the Cloudflare
@@ -78,4 +76,3 @@ export const callApi = async (action: string, data: any = {}) => {
   }
 };
 
-export { functions };

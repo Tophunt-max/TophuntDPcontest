@@ -698,6 +698,26 @@ apiRoute.post("/", async (c) => {
       return c.json({ success: true });
     }
 
+    // ================= REPORTS / SUPPORT (also feed admin panel) =================
+    case "createReport": {
+      const { targetType, targetId, reason } = body;
+      const id = newId();
+      const ts = now();
+      await db.insert(schema.reports).values({ id, reporterId: uid, targetType: targetType || null, targetId: targetId || null, reason: reason || null, status: "open", createdAt: ts });
+      await db.insert(schema.adminNotifications).values({ id: newId(), title: "New Report", message: `A ${targetType || "content"} was reported.`, link: "/reports", isRead: false, createdAt: ts });
+      return c.json({ success: true, reportId: id });
+    }
+    case "createSupportTicket": {
+      const { subject, message } = body;
+      if (!subject) throw httpsError("invalid-argument", "subject is required.");
+      const id = newId();
+      const ts = now();
+      const me = await db.select({ username: schema.users.username }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+      await db.insert(schema.supportTickets).values({ id, userId: uid, subject, message: message || null, status: "open", createdAt: ts, updatedAt: ts });
+      await db.insert(schema.adminNotifications).values({ id: newId(), title: "New Support Ticket", message: `${me?.username || "A user"}: ${subject}`, link: "/support", isRead: false, createdAt: ts });
+      return c.json({ success: true, ticketId: id });
+    }
+
     // ================= NOT YET PORTED =================
     case "adminManageWallet": {
       if (!(await isAdmin(c as any))) throw httpsError("permission-denied", "Admin only.");

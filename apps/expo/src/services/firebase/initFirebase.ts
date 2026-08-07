@@ -7,11 +7,6 @@ import {
   Auth,
   getAuth,
 } from "firebase/auth";
-import { getFunctions } from "firebase/functions";
-import { 
-  getFirestore,
-  Firestore,
-} from "firebase/firestore";
 import { firebaseConfig } from "@/src/firebaseConfig";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Platform } from "react-native";
@@ -44,9 +39,7 @@ if (getApps().length === 0) {
     auth = getAuth(app);
 }
 
-// 4. Initialize Firestore
-const firestore: Firestore = getFirestore(app);
-const functions = getFunctions(app, "us-central1"); 
-
-export { firestore, auth, app, functions };
+// Firebase is used ONLY for Authentication. Data/storage/functions are on
+// Cloudflare (Worker + D1 + R2) and accessed via services/api + services/realtime.
+export { auth, app };
 export default app;

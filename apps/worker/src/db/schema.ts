@@ -441,6 +441,22 @@ export const supportTickets = sqliteTable("support_tickets", {
 });
 
 // ---------------------------------------------------------------------------
+// admin_notifications  (admin panel activity feed: new reports/support tickets)
+// ---------------------------------------------------------------------------
+export const adminNotifications = sqliteTable(
+  "admin_notifications",
+  {
+    id: text("id").primaryKey(),
+    title: text("title"),
+    message: text("message"),
+    link: text("link"),
+    isRead: integer("is_read", { mode: "boolean" }).default(false),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({ createdIdx: index("idx_admin_notif_created").on(t.createdAt) }),
+);
+
+// ---------------------------------------------------------------------------
 // settings  (was: settings/{docId}: appConfig, gamification)
 // ---------------------------------------------------------------------------
 export const settings = sqliteTable("settings", {

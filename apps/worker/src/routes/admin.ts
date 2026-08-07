@@ -8,7 +8,7 @@
  * the admin panel keep its existing route URLs while the data moves to D1.
  */
 import { Hono } from "hono";
-import { and, eq, desc, sql } from "drizzle-orm";
+import { and, eq, desc, sql, count, ne } from "drizzle-orm";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
@@ -174,4 +174,144 @@ adminRoute.post("/users/:id/wallet", async (c) => {
   });
   const user = await db.select({ balance: schema.users.dpcoin }).from(schema.users).where(eq(schema.users.uid, userId)).get();
   return c.json({ message: "Wallet updated successfully", newBalance: user?.balance ?? 0 });
+});
+
+
+// ======================= DASHBOARD =======================
+adminRoute.get("/overview", async (c) => {
+  const db = getDb(c.env);
+  const users = (await db.select({ v: count() }).from(schema.users).get())?.v ?? 0;
+  const posts = (await db.select({ v: count() }).from(schema.posts).get())?.v ?? 0;
+  const reports = (await db.select({ v: count() }).from(schema.reports).get())?.v ?? 0;
+  const support =
+    (await db.select({ v: count() }).from(schema.supportTickets).where(ne(schema.supportTickets.status, "resolved")).get())?.v ?? 0;
+  return c.json({ users, posts, reports, support });
+});
+
+adminRoute.get("/device-stats", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db.select({ platform: schema.users.platform }).from(schema.users).limit(1000).all();
+  let web = 0, mobile = 0, other = 0;
+  for (const r of rows) {
+    const p = (r.platform || "").toLowerCase();
+    if (p === "web") web++;
+    else if (p === "android" || p === "ios") mobile++;
+    else other++;
+  }
+  return c.json({ web, mobile, other });
+});
+
+adminRoute.get("/user-growth", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db.select({ createdAt: schema.users.createdAt }).from(schema.users).orderBy(desc(schema.users.createdAt)).limit(1000).all();
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const currentMonth = new Date().getMonth();
+  const order: string[] = [];
+  const map: Record<string, number> = {};
+  for (let i = 6; i >= 0; i--) {
+    const m = (currentMonth - i + 12) % 12;
+    order.push(months[m]);
+    map[months[m]] = 0;
+  }
+  for (const r of rows) {
+    if (!r.createdAt) continue;
+    const name = months[new Date(r.createdAt).getMonth()];
+    if (map[name] !== undefined) map[name]++;
+  }
+  return c.json({ categories: order, data: order.map((m) => map[m]) });
+});
+
+adminRoute.get("/recent-tickets", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db.select().from(schema.supportTickets).orderBy(desc(schema.supportTickets.createdAt)).limit(5).all();
+  return c.json(rows.map((t) => ({ ...t, createdAt: new Date(t.createdAt).toISOString() })));
+});
+
+// ======================= TABLES =======================
+function adminUser(u: any) {
+  return {
+    id: u.uid,
+    ...u,
+    Dpcoin: u.dpcoin ?? 0,
+    level: u.level ?? 0,
+    createdAt: u.createdAt ? new Date(u.createdAt).toISOString() : null,
+    stats: {
+      postsCount: u.postsCount ?? 0,
+      followersCount: u.followersCount ?? 0,
+      followingCount: u.followingCount ?? 0,
+      contestsJoined: u.contestsJoined ?? 0,
+      wins: u.wins ?? 0,
+      totalVotesReceived: u.totalVotesReceived ?? 0,
+    },
+  };
+}
+const iso = (r: any) => ({ ...r, createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null });
+
+adminRoute.get("/users", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db.select().from(schema.users).limit(100).all();
+  return c.json(rows.map(adminUser));
+});
+
+adminRoute.get("/users/:id/posts", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db.select().from(schema.posts).where(eq(schema.posts.userId, c.req.param("id"))).all();
+  return c.json(rows.map(iso));
+});
+
+adminRoute.get("/users/:id/stories", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db.select().from(schema.stories).where(eq(schema.stories.userId, c.req.param("id"))).all();
+  return c.json(rows.map(iso));
+});
+
+adminRoute.get("/users/:id", async (c) => {
+  const db = getDb(c.env);
+  const u = await db.select().from(schema.users).where(eq(schema.users.uid, c.req.param("id"))).get();
+  return c.json(u ? adminUser(u) : null);
+});
+
+adminRoute.get("/posts", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db.select().from(schema.posts).orderBy(desc(schema.posts.createdAt)).limit(100).all();
+  return c.json(rows.map(iso));
+});
+
+adminRoute.get("/stories", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db.select().from(schema.stories).orderBy(desc(schema.stories.createdAt)).limit(100).all();
+  return c.json(rows.map(iso));
+});
+
+adminRoute.get("/contests", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db.select().from(schema.contests).orderBy(desc(schema.contests.createdAt)).all();
+  return c.json(
+    rows.map((r) => ({
+      id: r.id,
+      ...(r.extra as any || {}),
+      name: r.title,
+      type: r.type,
+      status: r.status,
+      entryFishCoins: r.totalEntryFee,
+      prizePool: r.rewardCoins,
+      minVotes: r.minVotes,
+      createdAt: r.createdAt,
+      // voteDurationDays used to derive an end date for the list UI
+      endDate: r.createdAt ? r.createdAt + (r.voteDurationDays || 1) * 86400000 : null,
+    })),
+  );
+});
+
+// ======================= ADMIN NOTIFICATIONS =======================
+adminRoute.get("/notifications", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db.select().from(schema.adminNotifications).orderBy(desc(schema.adminNotifications.createdAt)).limit(10).all();
+  return c.json(rows.map((n) => ({ ...n, isRead: !!n.isRead })));
+});
+
+adminRoute.post("/notifications/read", async (c) => {
+  const db = getDb(c.env);
+  await db.update(schema.adminNotifications).set({ isRead: true }).where(eq(schema.adminNotifications.isRead, false));
+  return c.json({ success: true });
 });

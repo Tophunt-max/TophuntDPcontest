@@ -2,8 +2,6 @@
 
 import React, { useEffect, useState } from "react";
 import Breadcrumb from "@/components/Breadcrumbs/Breadcrumb";
-import { db } from "@/lib/firebase/config";
-import { collection, query, orderBy, getDocs, Timestamp } from "firebase/firestore";
 import Link from "next/link";
 
 interface Contest {
@@ -12,25 +10,25 @@ interface Contest {
   type: 'photo' | 'video';
   entryFishCoins: number;
   prizePool: number;
-  startDate: Timestamp;
-  endDate: Timestamp;
+  startDate: number;
+  endDate: number; // epoch ms
   status: string;
-  createdAt: Timestamp;
+  createdAt: number; // epoch ms
   bannerUrl?: string; // Optional banner
 }
 
-const Countdown = ({ endDate }: { endDate: Timestamp }) => {
+const Countdown = ({ endDate }: { endDate: number }) => {
     const [timeLeft, setTimeLeft] = useState("");
 
     useEffect(() => {
-        if (!endDate || typeof endDate.seconds === 'undefined') {
+        if (!endDate) {
             setTimeLeft("N/A");
             return;
         }
 
         const updateTimer = () => {
             const now = new Date().getTime();
-            const distance = (endDate.seconds * 1000) - now;
+            const distance = endDate - now;
 
             if (distance < 0) {
                 setTimeLeft("Ended");
@@ -63,13 +61,9 @@ const ContestsPage = () => {
 
   const fetchContests = async () => {
     try {
-      const q = query(collection(db, "contests"), orderBy("createdAt", "desc"));
-      const querySnapshot = await getDocs(q);
-      const data = querySnapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      })) as Contest[];
-      setContests(data);
+      const res = await fetch("/api/contests", { cache: "no-store" });
+      const data = (await res.json()) as Contest[];
+      setContests(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error("Error fetching contests:", error);
     } finally {
@@ -96,18 +90,18 @@ const ContestsPage = () => {
     }
   };
 
-  const formatDate = (timestamp: Timestamp) => {
-    if (!timestamp || typeof timestamp.seconds === 'undefined') return "N/A";
-    return new Date(timestamp.seconds * 1000).toLocaleDateString("en-US", {
+  const formatDate = (timestamp: number) => {
+    if (!timestamp) return "N/A";
+    return new Date(timestamp).toLocaleDateString("en-US", {
       month: "short",
       day: "numeric",
       year: "numeric",
     });
   };
 
-  const getStatusBadge = (status: string, endDate: Timestamp) => {
+  const getStatusBadge = (status: string, endDate: number) => {
     const now = new Date();
-    const end = endDate && typeof endDate.seconds !== 'undefined' ? new Date(endDate.seconds * 1000) : null;
+    const end = endDate ? new Date(endDate) : null;
     
     let displayStatus = status;
     let colorClass = "bg-warning text-warning"; 

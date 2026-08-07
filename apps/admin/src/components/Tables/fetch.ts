@@ -1,109 +1,43 @@
 import * as logos from "@/assets/logos";
-import { db } from "@/lib/firebase/admin";
+import { workerAdmin, forward } from "@/lib/worker";
 
-function serializeFirestoreData(data: any) {
-  if (!data) return data;
-  const serialized = { ...data };
-  for (const key in serialized) {
-    if (serialized[key] && typeof serialized[key].toDate === "function") {
-      serialized[key] = serialized[key].toDate().toISOString();
-    } else if (serialized[key] && typeof serialized[key] === "object" && !Array.isArray(serialized[key])) {
-      serialized[key] = serializeFirestoreData(serialized[key]);
-    }
+// Admin tables now read from the Cloudflare Worker (D1), not Firestore.
+
+async function get<T>(path: string, fallback: T): Promise<T> {
+  try {
+    const { data, status } = await forward(await workerAdmin(path));
+    if (status >= 400) return fallback;
+    return data as T;
+  } catch {
+    return fallback;
   }
-  return serialized;
 }
 
 export async function getUsers() {
-  try {
-    const usersSnapshot = await db.collection("users").limit(100).get();
-    return usersSnapshot.docs.map(doc => ({
-      id: doc.id,
-      ...serializeFirestoreData(doc.data())
-    }));
-  } catch (error: any) {
-    console.error("Error fetching users:", error.message);
-    return [];
-  }
+  return get<any[]>("/users", []);
 }
 
 export async function getPosts() {
-    try {
-      const snapshot = await db.collection("posts").orderBy("createdAt", "desc").limit(100).get();
-      return snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...serializeFirestoreData(doc.data())
-      }));
-    } catch (error: any) {
-      console.error("Error fetching posts:", error.message);
-      return [];
-    }
+  return get<any[]>("/posts", []);
 }
 
 export async function getStories() {
-    try {
-      const snapshot = await db.collection("stories").orderBy("createdAt", "desc").limit(100).get();
-      return snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...serializeFirestoreData(doc.data())
-      }));
-    } catch (error: any) {
-      console.error("Error fetching stories:", error.message);
-      return [];
-    }
+  return get<any[]>("/stories", []);
 }
 
 export async function getUserById(id: string) {
-  try {
-    const doc = await db.collection("users").doc(id).get();
-    if (!doc.exists) return null;
-
-    const rawUserData = doc.data();
-    const userData = serializeFirestoreData(rawUserData);
-
-    // Ensure default values for Dpcoin, level, and nested stats fields
-    const processedUserData = {
-      id: doc.id,
-      ...userData,
-      Dpcoin: userData.Dpcoin || userData.fishCoins || userData.coins || 0,
-      level: userData.level || 0,
-      stats: {
-        postsCount: userData.stats?.postsCount || 0,
-        followersCount: userData.stats?.followersCount || 0,
-        followingCount: userData.stats?.followingCount || 0,
-        contestsJoined: userData.stats?.contestsJoined || 0,
-        wins: userData.stats?.wins || 0,
-        totalVotesReceived: userData.stats?.totalVotesReceived || 0,
-      },
-    };
-    
-    return processedUserData;
-  } catch (error: any) {
-    console.error("Error fetching user by id:", error.message);
-    return null;
-  }
+  return get<any | null>(`/users/${id}`, null);
 }
 
 export async function getUserPosts(uid: string) {
-  try {
-    const snapshot = await db.collection("posts").where("uid", "==", uid).get();
-    return snapshot.docs.map(doc => ({ id: doc.id, ...serializeFirestoreData(doc.data()) }));
-  } catch (error: any) {
-    console.error("Error fetching user posts:", error.message);
-    return [];
-  }
+  return get<any[]>(`/users/${uid}/posts`, []);
 }
 
 export async function getUserStories(uid: string) {
-  try {
-    const snapshot = await db.collection("stories").where("uid", "==", uid).get();
-    return snapshot.docs.map(doc => ({ id: doc.id, ...serializeFirestoreData(doc.data()) }));
-  } catch (error: any) {
-    console.error("Error fetching user stories:", error.message);
-    return [];
-  }
+  return get<any[]>(`/users/${uid}/stories`, []);
 }
 
+// --- static demo data (unchanged, no backend) ---
 export async function getTopProducts() {
   return [
     {
