@@ -11,7 +11,7 @@ compatibility_flags = ["nodejs_compat"]
 [[d1_databases]]
 binding = "DB"
 database_name = "tophunt-db"
-database_id = "7d99d922-deb4-4d89-887e-f29310f459fe"
+database_id = "932ccd0f-190a-46df-bdf6-685926f524ff"
 migrations_dir = "migrations"
 
 # ---------------------------------------------------------------------------
@@ -37,11 +37,11 @@ bucket_name = "tophunt-media"
 # ---------------------------------------------------------------------------
 [[kv_namespaces]]
 binding = "OTP_KV"
-id = "a5f6ea13304241ef89ae6e03992b4e74"
+id = "216735e0c3fa4bf6a66cc50daee45ac8"
 
 [[kv_namespaces]]
 binding = "CACHE_KV"
-id = "6cb310c6c19542b6ad4f87221b3650a2"
+id = "ea266f67c04a4287aee037a102c0c2e1"
 
 # ---------------------------------------------------------------------------
 # Durable Object for real-time WebSocket push (chat, notifications, live votes)
