@@ -57,6 +57,8 @@ export interface VoteInput {
 
 export interface VoteTally {
   alreadyVoted: boolean;
+  /** True when this device already voted in the match (multi-account abuse). */
+  deviceUsed: boolean;
   votesA: number;
   votesB: number;
   total: number;
@@ -114,7 +116,18 @@ export class VoteCounter extends DurableObject<Env> {
       .exec("SELECT 1 FROM voters WHERE voter_uid = ? LIMIT 1", p.voterUid)
       .toArray();
     if (existing.length > 0) {
-      return { alreadyVoted: true, ...this.voteTally() };
+      return { alreadyVoted: true, deviceUsed: false, ...this.voteTally() };
+    }
+
+    // Anti-fraud: a single device may vote only once per match — blocks
+    // multi-account vote stuffing from the same phone.
+    if (p.deviceId) {
+      const dev = this.sql
+        .exec("SELECT 1 FROM voters WHERE device_id = ? LIMIT 1", p.deviceId)
+        .toArray();
+      if (dev.length > 0) {
+        return { alreadyVoted: false, deviceUsed: true, ...this.voteTally() };
+      }
     }
 
     const ts = Date.now();
@@ -131,7 +144,7 @@ export class VoteCounter extends DurableObject<Env> {
     );
 
     await this.scheduleFlush();
-    return { alreadyVoted: false, ...this.voteTally() };
+    return { alreadyVoted: false, deviceUsed: false, ...this.voteTally() };
   }
 
   /**

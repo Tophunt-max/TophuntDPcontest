@@ -20,6 +20,7 @@ import { setCustomClaims } from "../lib/firebaseAdmin";
 import { publish, publishMany } from "../lib/publish";
 import { castVote, bumpEngagement } from "../lib/voteCounter";
 import { rateLimit } from "../lib/rateLimit";
+import { enforceIdempotency } from "../lib/idempotency";
 import { newId, now, generateJoinId } from "../lib/ids";
 
 export const apiRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -41,6 +42,10 @@ apiRoute.post("/", async (c) => {
   const env = c.env;
   const db = getDb(env);
   const uid = c.get("user").uid;
+
+  // Idempotency guard — only enforced when the client opts in with a key
+  // (safe for retries on critical writes like purchases/joins/claims).
+  if (body.idempotencyKey) await enforceIdempotency(env, uid, String(body.idempotencyKey));
 
   switch (action) {
     // ================= STORAGE (R2) =================
@@ -193,6 +198,7 @@ apiRoute.post("/", async (c) => {
         uidB: userB?.uid ?? userA?.uid,
       });
       if (tally.alreadyVoted) throw httpsError("already-exists", "You have already voted in this match.");
+      if (tally.deviceUsed) throw httpsError("failed-precondition", "This device has already voted in this match.");
 
       // Vote XP (+5) is batched into the DO's flush — no per-vote users write.
       await publish(env, `match:${matchId}`, {

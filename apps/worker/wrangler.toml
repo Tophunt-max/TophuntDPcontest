@@ -15,6 +15,15 @@ database_id = "7d99d922-deb4-4d89-887e-f29310f459fe"
 migrations_dir = "migrations"
 
 # ---------------------------------------------------------------------------
+# Backups: D1 "Time Travel" gives automatic point-in-time recovery for the
+# last 30 days — no setup required. Useful ops commands:
+#   Inspect current bookmark:   wrangler d1 time-travel info tophunt-db
+#   Restore to a timestamp:     wrangler d1 time-travel restore tophunt-db --timestamp=<ISO8601>
+#   Export a full snapshot:     wrangler d1 export tophunt-db --output=backup.sql --remote
+# Recommendation: run a weekly `d1 export` to R2/off-site for long-term backups.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
 # R2 bucket (replaces AWS S3 for media)
 # Create with:  wrangler r2 bucket create tophunt-media
 # ---------------------------------------------------------------------------
