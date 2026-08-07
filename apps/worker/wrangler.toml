@@ -35,6 +35,17 @@ binding = "CACHE_KV"
 id = "REPLACE_WITH_CACHE_KV_ID"
 
 # ---------------------------------------------------------------------------
+# Durable Object for real-time WebSocket push (chat, notifications, live votes)
+# ---------------------------------------------------------------------------
+[[durable_objects.bindings]]
+name = "REALTIME"
+class_name = "RealtimeHub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RealtimeHub"]
+
+# ---------------------------------------------------------------------------
 # Scheduled tasks (replace Firebase onSchedule functions)
 #   */10 * * * *  -> resolveContests + expired story cleanup (was `scheduled`/`resolveContestsTask`)
 #   0 0 1 * *     -> monthlyHallOfFame

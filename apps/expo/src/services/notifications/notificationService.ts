@@ -1,7 +1,8 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import { getApp } from 'firebase/app';
-import { callApi, readApi, poll } from '../api';
+import { callApi, readApi } from '../api';
+import { live } from '../realtime';
 
 // Configure notifications handler
 Notifications.setNotificationHandler({
@@ -76,21 +77,23 @@ class NotificationService {
         await callApi('registerFcmToken', { token });
     }
 
-    // 2. Real-time unread count (polling replaces onSnapshot)
-    subscribeToUnreadCount(_userId: string, callback: (count: number) => void): () => void {
-        return poll(
+    // 2. Real-time unread count — instant via the user's WebSocket channel.
+    subscribeToUnreadCount(userId: string, callback: (count: number) => void): () => void {
+        return live(
+            `user:${userId}`,
             () => readApi('/read/notifications/unread-count'),
             (res: any) => callback(res?.count ?? 0),
-            15000,
+            { filter: (e) => e.type === 'notification' },
         );
     }
 
-    // 3. Notifications list (polling replaces onSnapshot)
-    subscribeToNotifications(_userId: string, limitCount: number = 50, callback: (items: NotificationItem[]) => void): () => void {
-        return poll(
+    // 3. Notifications list — instant via the user's WebSocket channel.
+    subscribeToNotifications(userId: string, limitCount: number = 50, callback: (items: NotificationItem[]) => void): () => void {
+        return live(
+            `user:${userId}`,
             () => readApi('/read/notifications', { limit: limitCount }),
             (items: NotificationItem[]) => callback(items || []),
-            10000,
+            { filter: (e) => e.type === 'notification' },
         );
     }
 

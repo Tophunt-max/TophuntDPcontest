@@ -112,3 +112,24 @@ app is migrated.
   useProfileData, and the auth (login/signup/password/phone), profile
   (connections/edit) and splash screens. No runtime Firestore calls remain in the
   app; **Firebase is used only for Authentication** (+ Timestamp type imports).
+
+**Phase 5 — DONE (instant push / real-time):** replaces polling with WebSockets
+backed by a Durable Object.
+- `RealtimeHub` Durable Object (WebSocket **Hibernation API** — idle sockets cost
+  nothing) with one instance per channel: `user:<uid>` (notifications +
+  chat-list), `chat:<chatId>` (messages), `match:<id>` (live vote/like/comment
+  /reaction counts). Binding `REALTIME`, migration tag `v1`
+  (`new_sqlite_classes`) — applied automatically on `wrangler deploy`.
+- `GET /ws?channel=&token=` verifies the Firebase ID token (query param, since
+  browsers/RN can't set WS headers), authorizes the channel (user must match /
+  be a chat member), then forwards the upgrade to the channel's DO. CORS skips
+  WS upgrades.
+- Mutation handlers `publish()` events: sendMessage -> chat + participants'
+  user channels; createNotification -> recipient's user channel;
+  submitVote/likeContest/commentContest/shareContest/reactToMatch -> match.
+- Expo client `services/realtime.ts`: ref-counted, auto-reconnecting (exp.
+  backoff) WebSocket manager with heartbeat, plus a `live()` helper (drop-in for
+  `poll()`) that refetches instantly on each event and keeps a slow 30s poll ONLY
+  as a safety net. Wired into notifications, the chat thread, the messages list,
+  and PostCard live counts. No new secrets needed — the WS URL is derived from
+  the API URL (http→ws).

@@ -21,11 +21,17 @@ import { authRoute } from "./routes/auth";
 import { apiRoute } from "./routes/api";
 import { readRoute } from "./routes/read";
 import { adminRoute } from "./routes/admin";
+import { verifyIdToken } from "./lib/firebaseAuth";
 import { resolveContests, monthlyHallOfFame } from "./cron";
+
+// Durable Object for real-time WebSocket push.
+export { RealtimeHub } from "./realtime";
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 app.use("*", async (c, next) => {
+  // WebSocket upgrades must not be wrapped by CORS (immutable 101 response).
+  if (c.req.header("Upgrade") === "websocket") return next();
   const origins = (c.env.ALLOWED_ORIGINS || "*").split(",").map((s) => s.trim());
   const mw = cors({
     origin: origins.length === 1 && origins[0] === "*" ? "*" : origins,
@@ -38,6 +44,48 @@ app.use("*", async (c, next) => {
 
 app.get("/", (c) => c.json({ service: "tophunt-api", status: "ok" }));
 app.get("/health", (c) => c.json({ ok: true, ts: Date.now() }));
+
+/**
+ * Real-time WebSocket endpoint.
+ *   /ws?channel=user:<uid>|chat:<id>|match:<id>&token=<firebaseIdToken>
+ * Browsers/React Native can't set WS headers, so the ID token comes as a query
+ * param. We verify it + authorize the channel, then forward the upgrade to the
+ * channel's RealtimeHub Durable Object.
+ */
+app.get("/ws", async (c) => {
+  if (c.req.header("Upgrade") !== "websocket") {
+    return c.text("Expected a WebSocket upgrade.", 426);
+  }
+  const channel = c.req.query("channel");
+  const token = c.req.query("token");
+  if (!channel || !token) return c.text("Missing channel or token.", 400);
+
+  let user;
+  try {
+    user = await verifyIdToken(token, c.env);
+  } catch {
+    return c.text("Unauthorized.", 401);
+  }
+
+  const [kind, ref] = channel.split(":");
+  if (kind === "user") {
+    if (ref !== user.uid) return c.text("Forbidden.", 403);
+  } else if (kind === "chat") {
+    const member = await c.env.DB.prepare(
+      `SELECT 1 FROM chats WHERE id = ?
+         AND EXISTS (SELECT 1 FROM json_each(chats.users) WHERE json_each.value = ?)`,
+    )
+      .bind(ref, user.uid)
+      .first();
+    if (!member) return c.text("Forbidden.", 403);
+  } else if (kind !== "match") {
+    return c.text("Unknown channel.", 400);
+  }
+
+  const id = c.env.REALTIME.idFromName(channel);
+  const stub = c.env.REALTIME.get(id);
+  return stub.fetch(c.req.raw);
+});
 
 app.route("/auth", authRoute);
 app.route("/api", apiRoute);

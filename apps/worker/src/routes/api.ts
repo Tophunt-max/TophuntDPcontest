@@ -17,6 +17,7 @@ import { deleteByPublicUrl } from "../lib/r2";
 import { awardXp, awardReward } from "../lib/gamification";
 import { createNotification, sendBroadcastToAllUsers, sendPushNotification } from "../lib/notify";
 import { setCustomClaims } from "../lib/firebaseAdmin";
+import { publish, publishMany } from "../lib/publish";
 import { newId, now, generateJoinId } from "../lib/ids";
 
 export const apiRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -194,6 +195,7 @@ apiRoute.post("/", async (c) => {
       ).bind(matchId).run();
 
       await awardXp(env, uid, 5);
+      await publish(env, `match:${matchId}`, { type: "vote", votedForUid });
       return c.json({ success: true });
     }
 
@@ -468,8 +470,15 @@ apiRoute.post("/", async (c) => {
       const { chatId, text } = body;
       if (!chatId || !text) throw httpsError("invalid-argument", "chatId and text are required.");
       const ts = now();
-      await db.insert(schema.messages).values({ id: newId(), chatId, senderId: uid, text, read: false, createdAt: ts });
+      const messageId = newId();
+      await db.insert(schema.messages).values({ id: messageId, chatId, senderId: uid, text, read: false, createdAt: ts });
       await db.update(schema.chats).set({ lastMessage: { text, createdAt: ts, senderId: uid } as any, updatedAt: ts }).where(eq(schema.chats.id, chatId));
+      // Instant push: to the chat room + each participant's user channel (chat-list bump).
+      const chat = await db.select({ users: schema.chats.users }).from(schema.chats).where(eq(schema.chats.id, chatId)).get();
+      const msg = { id: messageId, chatId, senderId: uid, text, createdAt: ts };
+      await publish(env, `chat:${chatId}`, { type: "message", message: msg });
+      const members = ((chat?.users as string[]) || []).filter((u) => u !== uid);
+      await publishMany(env, members.map((u) => `user:${u}`), { type: "chat_update", chatId, message: msg });
       return c.json({ success: true });
     }
 
@@ -502,10 +511,12 @@ apiRoute.post("/", async (c) => {
       if (existing) {
         await db.delete(schema.matchLikes).where(and(eq(schema.matchLikes.matchId, matchId), eq(schema.matchLikes.userId, uid)));
         await db.update(schema.contestMatches).set({ likeCount: sql`MAX(${schema.contestMatches.likeCount} - 1, 0)` }).where(eq(schema.contestMatches.id, matchId));
+        await publish(env, `match:${matchId}`, { type: "like", liked: false });
         return c.json({ success: true, liked: false });
       }
       await db.insert(schema.matchLikes).values({ matchId, userId: uid, createdAt: now() });
       await db.update(schema.contestMatches).set({ likeCount: sql`${schema.contestMatches.likeCount} + 1` }).where(eq(schema.contestMatches.id, matchId));
+      await publish(env, `match:${matchId}`, { type: "like", liked: true });
       // notify participants (except the liker)
       const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, matchId)).get();
       const me = await db.select({ username: schema.users.username }).from(schema.users).where(eq(schema.users.uid, uid)).get();
@@ -524,6 +535,7 @@ apiRoute.post("/", async (c) => {
       const ts = now();
       await db.insert(schema.matchComments).values({ id: commentId, matchId, userId: uid, text, createdAt: ts });
       await db.update(schema.contestMatches).set({ commentCount: sql`${schema.contestMatches.commentCount} + 1` }).where(eq(schema.contestMatches.id, matchId));
+      await publish(env, `match:${matchId}`, { type: "comment", commentId });
       const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, matchId)).get();
       const me = await db.select({ username: schema.users.username }).from(schema.users).where(eq(schema.users.uid, uid)).get();
       for (const p of [match?.userA as any, match?.userB as any]) {
@@ -539,6 +551,7 @@ apiRoute.post("/", async (c) => {
       if (!matchId) throw httpsError("invalid-argument", "matchId is required.");
       await db.update(schema.contestMatches).set({ shareCount: sql`${schema.contestMatches.shareCount} + 1` }).where(eq(schema.contestMatches.id, matchId));
       await db.insert(schema.shares).values({ id: newId(), userId: uid, targetType: "match", targetId: matchId, createdAt: now() });
+      await publish(env, `match:${matchId}`, { type: "share" });
       return c.json({ success: true });
     }
 
@@ -556,6 +569,7 @@ apiRoute.post("/", async (c) => {
             SET reactions = json_set(COALESCE(reactions, '{}'), '$.' || ?, COALESCE(json_extract(reactions, '$.' || ?), 0) + 1)
           WHERE id = ?`,
       ).bind(type, type, matchId).run();
+      await publish(env, `match:${matchId}`, { type: "reaction", reactionType: type });
       return c.json({ success: true });
     }
 

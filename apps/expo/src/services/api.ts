@@ -9,7 +9,7 @@ import { auth } from './firebase/initFirebase';
  * Set EXPO_PUBLIC_API_URL to the deployed Worker URL
  * (e.g. https://tophunt-api.<subdomain>.workers.dev).
  */
-const API_BASE_URL =
+export const API_BASE_URL =
   process.env.EXPO_PUBLIC_API_URL || 'https://tophunt-api.workers.dev';
 
 // Actions handled by the /auth route (was the `authHandler` callable).

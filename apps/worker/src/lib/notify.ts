@@ -12,6 +12,7 @@ import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { newId, now } from "./ids";
 import { sendFcmToToken } from "./firebaseAdmin";
+import { publish } from "./publish";
 
 export async function sendPushNotification(
   env: Env,
@@ -65,8 +66,9 @@ export async function createNotification(
   if (!recipientId) return;
   try {
     const db = getDb(env);
+    const notifId = newId();
     await db.insert(schema.notifications).values({
-      id: newId(),
+      id: notifId,
       recipientId,
       title: n.title,
       body: n.body,
@@ -76,6 +78,12 @@ export async function createNotification(
       data: n.data ?? null,
       read: false,
       createdAt: now(),
+    });
+
+    // Instant push to the recipient's live WebSocket (in-app real-time).
+    await publish(env, `user:${recipientId}`, {
+      type: "notification",
+      notification: { id: notifId, title: n.title, body: n.body, notifType: n.type, targetId: n.targetId, image: n.image ?? null },
     });
 
     await sendPushNotification(env, recipientId, n.title, n.body, n.type, {

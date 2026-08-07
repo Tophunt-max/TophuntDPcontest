@@ -8,6 +8,7 @@ export interface Env {
   MEDIA: R2Bucket;
   OTP_KV: KVNamespace;
   CACHE_KV: KVNamespace;
+  REALTIME: DurableObjectNamespace;
 
   // --- Plain vars ---
   FIREBASE_PROJECT_ID: string;

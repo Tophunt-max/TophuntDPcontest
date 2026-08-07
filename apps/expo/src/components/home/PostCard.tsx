@@ -4,7 +4,8 @@ import { CommentSheet } from '../comments/CommentSheet';
 import { ShareSheet } from '../share/ShareSheet';
 import { useAuth } from '@/src/hooks/useAuth';
 import { contestService } from '@/src/services/contests/contestService';
-import { readApi, poll } from '@/src/services/api';
+import { readApi } from '@/src/services/api';
+import { live } from '@/src/services/realtime';
 import { Colors } from '@/constants/theme';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useToast } from '../toast/ToastProvider';
@@ -66,8 +67,9 @@ export const PostCard = memo(({ item, isDark }: PostCardProps) => {
 
   useEffect(() => {
     if (!item.id) return;
-    // Polling replaces the Firestore onSnapshot listener for live vote counts.
-    const unsub = poll<any>(
+    // Instant push via the match's WebSocket channel (live vote/like counts).
+    const unsub = live<any>(
+      `match:${item.id}`,
       () => readApi(`/read/matches/${item.id}`),
       (data) => {
         if (!data) return;
@@ -82,7 +84,6 @@ export const PostCard = memo(({ item, isDark }: PostCardProps) => {
         setProgressA(newProgress);
         barProgress.value = withSpring(newProgress, { damping: 15, stiffness: 100 });
       },
-      5000,
     );
     return () => unsub();
   }, [item.id, user]);

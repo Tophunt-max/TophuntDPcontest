@@ -1,7 +1,8 @@
 
 import React, { useState, useCallback, useEffect } from 'react';
 import { GiftedChat, IMessage, BubbleProps, TimeProps, InputToolbarProps, Bubble } from 'react-native-gifted-chat';
-import { readApi, poll, callApi } from '@/src/services/api';
+import { readApi, callApi } from '@/src/services/api';
+import { live } from '@/src/services/realtime';
 import { useLocalSearchParams } from 'expo-router';
 import { View, Text, ActivityIndicator, StyleSheet, TouchableOpacity } from 'react-native';
 import { useAuth } from '@/src/hooks/useAuth';
@@ -29,8 +30,9 @@ export default function ChatScreen() {
       return;
     }
 
-    // Polling replaces the Firestore onSnapshot listener.
-    const unsubscribe = poll<any[]>(
+    // Instant push via the chat's WebSocket channel (polling is only a fallback).
+    const unsubscribe = live<any[]>(
+      `chat:${chatId}`,
       () => readApi(`/read/chats/${chatId}/messages`),
       (rows) => {
         // Server returns oldest-first; GiftedChat wants newest-first.
@@ -47,7 +49,7 @@ export default function ChatScreen() {
         setMessages(loaded);
         setIsLoadingMessages(false);
       },
-      4000,
+      { filter: (e) => e.type === 'message' },
     );
 
     // Mark incoming messages as read (best-effort).

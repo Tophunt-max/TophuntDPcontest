@@ -16,7 +16,8 @@ import {
   useColorScheme
 } from 'react-native';
 import { auth } from '@/src/services/firebase/initFirebase';
-import { readApi, poll, callApi } from '@/src/services/api';
+import { readApi, callApi } from '@/src/services/api';
+import { live } from '@/src/services/realtime';
 import { useRouter } from 'expo-router';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { ThemedView } from '@/components/themed-view';
@@ -99,15 +100,16 @@ export default function MessagesScreen() {
       return;
     }
 
-    // Polling replaces the Firestore onSnapshot listener.
-    const unsubscribe = poll<ChatItemType[]>(
+    // Instant push via the user's WebSocket channel (chat-list bumps).
+    const unsubscribe = live<ChatItemType[]>(
+      `user:${currentUser.uid}`,
       () => readApi('/read/chats'),
       (chatsData) => {
         setChats(chatsData || []);
         setLoading(false);
         setRefreshing(false);
       },
-      8000,
+      { filter: (e) => e.type === 'chat_update' },
     );
 
     return unsubscribe;
