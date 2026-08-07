@@ -1,6 +1,14 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 /** @type {import("next").NextConfig} */
 const nextConfig = {
-  outputFileTracingRoot: '../../',
+  // Trace from the admin app dir (it is self-contained with its own
+  // package-lock.json + node_modules). This keeps the Next standalone output
+  // layout in sync with how the OpenNext adapter resolves the monorepo root.
+  outputFileTracingRoot: __dirname,
   typescript: {
     ignoreBuildErrors: true,
   },
@@ -19,3 +27,7 @@ const nextConfig = {
 };
 
 export default nextConfig;
+
+// Enable Cloudflare bindings during local `next dev` when using the OpenNext adapter.
+import { initOpenNextCloudflareForDev } from "@opennextjs/cloudflare";
+initOpenNextCloudflareForDev();
