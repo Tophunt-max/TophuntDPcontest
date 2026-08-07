@@ -11,6 +11,7 @@ import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
 import { requireAuth, optionalAuth } from "../middleware/auth";
 import { getAppConfig } from "../lib/settings";
+import { enrichMatchMedia, avatarUrl, thumbUrl, optimizedUrl } from "../lib/media";
 
 export const readRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -121,6 +122,7 @@ readRoute.get("/matches", optionalAuth, async (c) => {
     .all();
   let matches = rows.map(mapMatch);
   if (type) matches = matches.filter((m) => m.type === type);
+  matches = matches.map((m) => enrichMatchMedia(c.env, m));
   await cachePut(c.env, cacheKey, matches, 15);
   return c.json(matches);
 });
@@ -138,7 +140,7 @@ readRoute.get("/matches/:id", optionalAuth, async (c) => {
     out.isLiked = !!liked;
     out.isBookmarked = !!bookmarked;
   }
-  return c.json(out);
+  return c.json(enrichMatchMedia(c.env, out));
 });
 
 // ================= LEADERBOARD =================
@@ -169,8 +171,9 @@ readRoute.get("/leaderboard", optionalAuth, async (c) => {
     .orderBy(desc(orderCol))
     .limit(limit)
     .all();
-  await cachePut(c.env, cacheKey, rows, 30);
-  return c.json(rows);
+  const enriched = rows.map((r: any) => ({ ...r, profileImageUrlThumb: avatarUrl(c.env, r.profileImageUrl) }));
+  await cachePut(c.env, cacheKey, enriched, 30);
+  return c.json(enriched);
 });
 
 // ================= APP CONFIG =================
@@ -248,6 +251,7 @@ readRoute.get("/users/:id", optionalAuth, async (c) => {
   if (safe.extra && typeof safe.extra === "object") {
     Object.assign(safe, safe.extra);
   }
+  safe.profileImageUrlThumb = avatarUrl(c.env, safe.profileImageUrl);
   return c.json(safe);
 });
 
@@ -415,7 +419,12 @@ readRoute.get("/stories/feed", requireAuth, async (c) => {
 
   const grouped: Record<string, any[]> = {};
   for (const s of rows) {
-    (grouped[s.userId] ||= []).push({ ...s, seen: false });
+    (grouped[s.userId] ||= []).push({
+      ...s,
+      seen: false,
+      mediaUrlThumb: thumbUrl(c.env, (s as any).mediaUrl),
+      mediaUrlOptimized: optimizedUrl(c.env, (s as any).mediaUrl),
+    });
   }
   const list = Object.keys(grouped).map((userId) => ({
     userId,
