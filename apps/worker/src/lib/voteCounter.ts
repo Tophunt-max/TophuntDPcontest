@@ -30,6 +30,26 @@ export async function castVote(
 }
 
 /**
+ * Bump a match engagement counter (like / comment / share / reaction) inside
+ * the per-match DO instead of updating the hot contest_matches row directly.
+ * `name` is "like" | "comment" | "share" | "react:<type>". `delta` may be -1
+ * (e.g. unlike); the DO clamps counters at 0. Returns the current counters.
+ */
+export async function bumpEngagement(
+  env: Env,
+  matchId: string,
+  name: string,
+  delta: number,
+): Promise<Record<string, number>> {
+  const res = await stub(env, matchId).fetch("https://do.internal/engagement", {
+    method: "POST",
+    body: JSON.stringify({ matchId, name, delta }),
+  });
+  const data = await res.json<{ counters: Record<string, number> }>();
+  return data.counters;
+}
+
+/**
  * Flush the DO's accumulated votes to D1 and return the authoritative tally.
  * Called by the cron resolver before it decides a winner. Best-effort: on
  * failure the caller falls back to the last-flushed values already in D1.

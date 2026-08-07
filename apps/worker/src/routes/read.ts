@@ -14,6 +14,22 @@ import { getAppConfig } from "../lib/settings";
 
 export const readRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
+// --- short-lived KV cache for hot read endpoints (fail-open) ---------------
+async function cacheGet(env: Env, key: string): Promise<any | null> {
+  try {
+    return await env.CACHE_KV.get(key, "json");
+  } catch {
+    return null;
+  }
+}
+async function cachePut(env: Env, key: string, data: any, ttlSec: number): Promise<void> {
+  try {
+    await env.CACHE_KV.put(key, JSON.stringify(data), { expirationTtl: ttlSec });
+  } catch {
+    /* ignore KV blips */
+  }
+}
+
 // --- mappers ---------------------------------------------------------------
 const mapContest = (r: any) => ({
   id: r.id,
@@ -92,6 +108,10 @@ readRoute.get("/matches", optionalAuth, async (c) => {
   const status = c.req.query("status") || "active";
   const type = c.req.query("type");
   const limit = Math.min(parseInt(c.req.query("limit") || "30", 10), 100);
+  // Feed is read-heavy and tolerates slight staleness — cache 15s in KV.
+  const cacheKey = `cache:matches:${status}:${type || "all"}:${limit}`;
+  const cached = await cacheGet(c.env, cacheKey);
+  if (cached) return c.json(cached);
   const rows = await db
     .select()
     .from(schema.contestMatches)
@@ -101,6 +121,7 @@ readRoute.get("/matches", optionalAuth, async (c) => {
     .all();
   let matches = rows.map(mapMatch);
   if (type) matches = matches.filter((m) => m.type === type);
+  await cachePut(c.env, cacheKey, matches, 15);
   return c.json(matches);
 });
 
@@ -125,6 +146,10 @@ readRoute.get("/leaderboard", optionalAuth, async (c) => {
   const db = getDb(c.env);
   const by = c.req.query("by") || "wins"; // wins | votes | xp
   const limit = Math.min(parseInt(c.req.query("limit") || "20", 10), 100);
+  // Leaderboard changes slowly (on match resolution) — cache 30s in KV.
+  const cacheKey = `cache:leaderboard:${by}:${limit}`;
+  const cached = await cacheGet(c.env, cacheKey);
+  if (cached) return c.json(cached);
   const orderCol =
     by === "votes" ? schema.users.totalVotesReceived : by === "xp" ? schema.users.xp : schema.users.wins;
   const rows = await db
@@ -144,6 +169,7 @@ readRoute.get("/leaderboard", optionalAuth, async (c) => {
     .orderBy(desc(orderCol))
     .limit(limit)
     .all();
+  await cachePut(c.env, cacheKey, rows, 30);
   return c.json(rows);
 });
 

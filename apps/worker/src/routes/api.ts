@@ -14,11 +14,12 @@ import { httpsError } from "../lib/http";
 import { requireAuth, isAdmin } from "../middleware/auth";
 import { presignUpload } from "../lib/r2";
 import { deleteByPublicUrl } from "../lib/r2";
-import { awardXp, awardReward } from "../lib/gamification";
+import { awardReward } from "../lib/gamification";
 import { createNotification, sendBroadcastToAllUsers, sendPushNotification } from "../lib/notify";
 import { setCustomClaims } from "../lib/firebaseAdmin";
 import { publish, publishMany } from "../lib/publish";
-import { castVote } from "../lib/voteCounter";
+import { castVote, bumpEngagement } from "../lib/voteCounter";
+import { rateLimit } from "../lib/rateLimit";
 import { newId, now, generateJoinId } from "../lib/ids";
 
 export const apiRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -152,10 +153,12 @@ apiRoute.post("/", async (c) => {
         contestTitle: match.title || "Contest", createdAt: ts, expiresAt: ts + 24 * 60 * 60 * 1000,
       }).catch(() => {});
 
-      await sendPushNotification(
-        env, userA.uid, "Match Live! 🚀",
-        `${user.username} has joined your battle "${match.title}". Voting is now open!`,
-        "match_active", { matchId },
+      c.executionCtx.waitUntil(
+        sendPushNotification(
+          env, userA.uid, "Match Live! 🚀",
+          `${user.username} has joined your battle "${match.title}". Voting is now open!`,
+          "match_active", { matchId },
+        ),
       );
 
       return c.json({ status: "active", joinId: joinIdB });
@@ -165,6 +168,8 @@ apiRoute.post("/", async (c) => {
       const { matchId, votedForUid, deviceId } = body;
       if (!matchId || !votedForUid || !deviceId)
         throw httpsError("invalid-argument", "Missing matchId, votedForUid, or deviceId.");
+      // Throttle abusive vote bursts (per user): max 60 / minute.
+      await rateLimit(env, `vote:${uid}`, 60, 60);
       const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, matchId)).get();
       if (!match) throw httpsError("not-found", "Match not found.");
       if (match.status !== "active") throw httpsError("failed-precondition", "Battle is not active.");
@@ -189,7 +194,7 @@ apiRoute.post("/", async (c) => {
       });
       if (tally.alreadyVoted) throw httpsError("already-exists", "You have already voted in this match.");
 
-      await awardXp(env, uid, 5);
+      // Vote XP (+5) is batched into the DO's flush — no per-vote users write.
       await publish(env, `match:${matchId}`, {
         type: "vote",
         votedForUid,
@@ -279,11 +284,13 @@ apiRoute.post("/", async (c) => {
       await db.update(schema.users).set({ followingCount: sql`${schema.users.followingCount} + 1` }).where(eq(schema.users.uid, uid));
       await db.update(schema.users).set({ followersCount: sql`${schema.users.followersCount} + 1` }).where(eq(schema.users.uid, targetUserId));
       const me = await db.select({ username: schema.users.username, fullName: schema.users.fullName, avatar: schema.users.profileImageUrl }).from(schema.users).where(eq(schema.users.uid, uid)).get();
-      await createNotification(env, targetUserId, {
-        title: "New Follower! 👤",
-        body: `${me?.username || me?.fullName || "Someone"} started following you.`,
-        type: "follow", targetId: uid, image: me?.avatar || undefined,
-      });
+      c.executionCtx.waitUntil(
+        createNotification(env, targetUserId, {
+          title: "New Follower! 👤",
+          body: `${me?.username || me?.fullName || "Someone"} started following you.`,
+          type: "follow", targetId: uid, image: me?.avatar || undefined,
+        }),
+      );
       return c.json({ success: true, isFollowing: true });
     }
 
@@ -504,6 +511,7 @@ apiRoute.post("/", async (c) => {
     case "likeContest": {
       const { matchId } = body;
       if (!matchId) throw httpsError("invalid-argument", "matchId is required.");
+      await rateLimit(env, `like:${uid}`, 120, 60);
       const existing = await db
         .select()
         .from(schema.matchLikes)
@@ -511,48 +519,58 @@ apiRoute.post("/", async (c) => {
         .get();
       if (existing) {
         await db.delete(schema.matchLikes).where(and(eq(schema.matchLikes.matchId, matchId), eq(schema.matchLikes.userId, uid)));
-        await db.update(schema.contestMatches).set({ likeCount: sql`MAX(${schema.contestMatches.likeCount} - 1, 0)` }).where(eq(schema.contestMatches.id, matchId));
-        await publish(env, `match:${matchId}`, { type: "like", liked: false });
+        // Counter update goes through the per-match DO (batched to D1).
+        const counters = await bumpEngagement(env, matchId, "like", -1);
+        await publish(env, `match:${matchId}`, { type: "like", liked: false, likeCount: counters.like ?? 0 });
         return c.json({ success: true, liked: false });
       }
       await db.insert(schema.matchLikes).values({ matchId, userId: uid, createdAt: now() });
-      await db.update(schema.contestMatches).set({ likeCount: sql`${schema.contestMatches.likeCount} + 1` }).where(eq(schema.contestMatches.id, matchId));
-      await publish(env, `match:${matchId}`, { type: "like", liked: true });
-      // notify participants (except the liker)
-      const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, matchId)).get();
-      const me = await db.select({ username: schema.users.username }).from(schema.users).where(eq(schema.users.uid, uid)).get();
-      for (const p of [match?.userA as any, match?.userB as any]) {
-        if (p?.uid && p.uid !== uid) {
-          await createNotification(env, p.uid, { title: "New Like ❤️", body: `${me?.username || "Someone"} liked your battle "${match?.title}".`, type: "match_like", targetId: matchId });
-        }
-      }
+      const counters = await bumpEngagement(env, matchId, "like", 1);
+      await publish(env, `match:${matchId}`, { type: "like", liked: true, likeCount: counters.like ?? 0 });
+      // Notify participants off the request path (fire-and-forget).
+      c.executionCtx.waitUntil(
+        (async () => {
+          const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, matchId)).get();
+          const me = await db.select({ username: schema.users.username }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+          for (const p of [match?.userA as any, match?.userB as any]) {
+            if (p?.uid && p.uid !== uid) {
+              await createNotification(env, p.uid, { title: "New Like ❤️", body: `${me?.username || "Someone"} liked your battle "${match?.title}".`, type: "match_like", targetId: matchId });
+            }
+          }
+        })(),
+      );
       return c.json({ success: true, liked: true });
     }
 
     case "commentContest": {
       const { matchId, text } = body;
       if (!matchId || !text) throw httpsError("invalid-argument", "matchId and text are required.");
+      await rateLimit(env, `comment:${uid}`, 30, 60);
       const commentId = newId();
       const ts = now();
       await db.insert(schema.matchComments).values({ id: commentId, matchId, userId: uid, text, createdAt: ts });
-      await db.update(schema.contestMatches).set({ commentCount: sql`${schema.contestMatches.commentCount} + 1` }).where(eq(schema.contestMatches.id, matchId));
+      await bumpEngagement(env, matchId, "comment", 1);
       await publish(env, `match:${matchId}`, { type: "comment", commentId });
-      const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, matchId)).get();
-      const me = await db.select({ username: schema.users.username }).from(schema.users).where(eq(schema.users.uid, uid)).get();
-      for (const p of [match?.userA as any, match?.userB as any]) {
-        if (p?.uid && p.uid !== uid) {
-          await createNotification(env, p.uid, { title: "New Comment 💬", body: `${me?.username || "Someone"} commented on "${match?.title}".`, type: "match_comment", targetId: matchId });
-        }
-      }
+      c.executionCtx.waitUntil(
+        (async () => {
+          const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, matchId)).get();
+          const me = await db.select({ username: schema.users.username }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+          for (const p of [match?.userA as any, match?.userB as any]) {
+            if (p?.uid && p.uid !== uid) {
+              await createNotification(env, p.uid, { title: "New Comment 💬", body: `${me?.username || "Someone"} commented on "${match?.title}".`, type: "match_comment", targetId: matchId });
+            }
+          }
+        })(),
+      );
       return c.json({ success: true, commentId });
     }
 
     case "shareContest": {
       const { matchId } = body;
       if (!matchId) throw httpsError("invalid-argument", "matchId is required.");
-      await db.update(schema.contestMatches).set({ shareCount: sql`${schema.contestMatches.shareCount} + 1` }).where(eq(schema.contestMatches.id, matchId));
       await db.insert(schema.shares).values({ id: newId(), userId: uid, targetType: "match", targetId: matchId, createdAt: now() });
-      await publish(env, `match:${matchId}`, { type: "share" });
+      const counters = await bumpEngagement(env, matchId, "share", 1);
+      await publish(env, `match:${matchId}`, { type: "share", shareCount: counters.share ?? 0 });
       return c.json({ success: true });
     }
 
@@ -565,12 +583,9 @@ apiRoute.post("/", async (c) => {
         .onConflictDoNothing()
         .run();
       if (ins.meta.changes === 0) return c.json({ success: true, alreadyReacted: true });
-      await env.DB.prepare(
-        `UPDATE contest_matches
-            SET reactions = json_set(COALESCE(reactions, '{}'), '$.' || ?, COALESCE(json_extract(reactions, '$.' || ?), 0) + 1)
-          WHERE id = ?`,
-      ).bind(type, type, matchId).run();
-      await publish(env, `match:${matchId}`, { type: "reaction", reactionType: type });
+      // Reaction counter goes through the per-match DO (batched to D1 reactions JSON).
+      const counters = await bumpEngagement(env, matchId, `react:${type}`, 1);
+      await publish(env, `match:${matchId}`, { type: "reaction", reactionType: type, count: counters[`react:${type}`] ?? 0 });
       return c.json({ success: true });
     }
 
@@ -598,15 +613,19 @@ apiRoute.post("/", async (c) => {
       const ts = now();
       if (targetType === "matches" || targetType === "contestMatches") {
         await db.insert(schema.matchComments).values({ id: commentId, matchId: targetId, userId: uid, text, createdAt: ts });
-        await db.update(schema.contestMatches).set({ commentCount: sql`${schema.contestMatches.commentCount} + 1` }).where(eq(schema.contestMatches.id, targetId));
+        await bumpEngagement(env, targetId, "comment", 1);
       } else {
         await db.insert(schema.postComments).values({ id: commentId, postId: targetId, userId: uid, text, createdAt: ts });
         await db.update(schema.posts).set({ commentCount: sql`${schema.posts.commentCount} + 1` }).where(eq(schema.posts.id, targetId));
-        const post = await db.select({ userId: schema.posts.userId }).from(schema.posts).where(eq(schema.posts.id, targetId)).get();
-        const me = await db.select({ username: schema.users.username }).from(schema.users).where(eq(schema.users.uid, uid)).get();
-        if (post?.userId && post.userId !== uid) {
-          await createNotification(env, post.userId, { title: "New Comment 💬", body: `${me?.username || "Someone"} commented on your post.`, type: "comment", targetId });
-        }
+        c.executionCtx.waitUntil(
+          (async () => {
+            const post = await db.select({ userId: schema.posts.userId }).from(schema.posts).where(eq(schema.posts.id, targetId)).get();
+            const me = await db.select({ username: schema.users.username }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+            if (post?.userId && post.userId !== uid) {
+              await createNotification(env, post.userId, { title: "New Comment 💬", body: `${me?.username || "Someone"} commented on your post.`, type: "comment", targetId });
+            }
+          })(),
+        );
       }
       return c.json({ success: true, commentId });
     }
@@ -619,7 +638,7 @@ apiRoute.post("/", async (c) => {
         if (!row) throw httpsError("not-found", "Comment not found.");
         if (row.userId !== uid && !(await isAdmin(c as any))) throw httpsError("permission-denied", "Not allowed.");
         await db.delete(schema.matchComments).where(eq(schema.matchComments.id, commentId));
-        await db.update(schema.contestMatches).set({ commentCount: sql`MAX(${schema.contestMatches.commentCount} - 1, 0)` }).where(eq(schema.contestMatches.id, row.matchId));
+        await bumpEngagement(env, row.matchId, "comment", -1);
       } else {
         const row = await db.select().from(schema.postComments).where(eq(schema.postComments.id, commentId)).get();
         if (!row) throw httpsError("not-found", "Comment not found.");

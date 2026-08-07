@@ -12,6 +12,7 @@ export type ErrorCode =
   | "not-found"
   | "already-exists"
   | "failed-precondition"
+  | "resource-exhausted"
   | "deadline-exceeded"
   | "internal";
 
@@ -23,6 +24,7 @@ const CODE_TO_STATUS: Record<ErrorCode, number> = {
   "not-found": 404,
   "already-exists": 409,
   "failed-precondition": 412,
+  "resource-exhausted": 429,
   "deadline-exceeded": 504,
   internal: 500,
 };
