@@ -87,6 +87,21 @@ const mapNotification = (r: any) => ({
   createdAt: r.createdAt, // epoch ms
 });
 
+const mapBlogPost = (r: any, opts: { withContent?: boolean } = {}) => ({
+  id: r.id,
+  slug: r.slug,
+  title: r.title,
+  excerpt: r.excerpt,
+  coverImageUrl: r.coverImageUrl,
+  category: r.category,
+  tags: r.tags || [],
+  author: r.author,
+  viewCount: r.viewCount ?? 0,
+  publishedAt: r.publishedAt ?? r.createdAt,
+  createdAt: r.createdAt,
+  ...(opts.withContent ? { content: r.content } : {}),
+});
+
 // ================= CONTESTS =================
 readRoute.get("/contests", optionalAuth, async (c) => {
   const db = getDb(c.env);
@@ -548,4 +563,71 @@ readRoute.get("/highlights/:id/stories", optionalAuth, async (c) => {
     stories: rows.map((s) => ({ ...s, seen: true })).sort((a, b) => a.createdAt - b.createdAt),
     hasUnseen: false,
   });
+});
+
+
+// ================= BLOG =================
+// Public list of published posts. Cursor-paginated by publishedAt (epoch ms),
+// with optional ?category= and ?q= (title search). Cached briefly in KV.
+readRoute.get("/blog", async (c) => {
+  const db = getDb(c.env);
+  const limit = Math.min(parseInt(c.req.query("limit") || "12", 10), 50);
+  const cursor = c.req.query("cursor") ? parseInt(c.req.query("cursor")!, 10) : null;
+  const category = c.req.query("category") || null;
+  const q = (c.req.query("q") || "").trim().toLowerCase();
+
+  const conds = [eq(schema.blogPosts.status, "published")];
+  if (cursor) conds.push(lt(schema.blogPosts.publishedAt, cursor));
+  if (category) conds.push(eq(schema.blogPosts.category, category));
+  if (q.length >= 2) conds.push(like(sql`lower(${schema.blogPosts.title})`, `%${q}%`));
+
+  // Only cache the default first page (no cursor/filters) — it's the hot path.
+  const cacheable = !cursor && !category && !q;
+  const cacheKey = `cache:blog:list:${limit}`;
+  if (cacheable) {
+    const cached = await cacheGet(c.env, cacheKey);
+    if (cached) return c.json(cached);
+  }
+
+  const rows = await db
+    .select()
+    .from(schema.blogPosts)
+    .where(and(...conds))
+    .orderBy(desc(schema.blogPosts.publishedAt))
+    .limit(limit)
+    .all();
+
+  const nextCursor = rows.length === limit ? rows[rows.length - 1].publishedAt : null;
+  const payload = { posts: rows.map((r) => mapBlogPost(r)), nextCursor };
+  if (cacheable) await cachePut(c.env, cacheKey, payload, 30);
+  return c.json(payload);
+});
+
+// Distinct categories with post counts — for the blog filter UI.
+readRoute.get("/blog/categories", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db
+    .select({ category: schema.blogPosts.category, count: sql<number>`count(*)` })
+    .from(schema.blogPosts)
+    .where(and(eq(schema.blogPosts.status, "published"), sql`${schema.blogPosts.category} IS NOT NULL`))
+    .groupBy(schema.blogPosts.category)
+    .orderBy(desc(sql`count(*)`))
+    .all();
+  return c.json(rows.filter((r) => r.category));
+});
+
+// Single post by slug (falls back to id). Increments view count fire-and-forget.
+readRoute.get("/blog/:slug", async (c) => {
+  const db = getDb(c.env);
+  const key = c.req.param("slug");
+  let row = await db.select().from(schema.blogPosts).where(eq(schema.blogPosts.slug, key)).get();
+  if (!row) row = await db.select().from(schema.blogPosts).where(eq(schema.blogPosts.id, key)).get();
+  if (!row || row.status !== "published") return c.json(null);
+  // Best-effort view counter (don't block the response on it).
+  db.update(schema.blogPosts)
+    .set({ viewCount: sql`${schema.blogPosts.viewCount} + 1` })
+    .where(eq(schema.blogPosts.id, row.id))
+    .run()
+    .catch(() => {});
+  return c.json(mapBlogPost(row, { withContent: true }));
 });

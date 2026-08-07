@@ -23,6 +23,12 @@ export const NAV_DATA = [
         items: [],
       },
       {
+        title: "Blog",
+        url: "/blog",
+        icon: Icons.Blog,
+        items: [],
+      },
+      {
         title: "App Content",
         icon: Icons.Table,
         items: [

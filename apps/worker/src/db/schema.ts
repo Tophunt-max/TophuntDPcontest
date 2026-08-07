@@ -457,6 +457,38 @@ export const adminNotifications = sqliteTable(
 );
 
 // ---------------------------------------------------------------------------
+// blog_posts  (editorial blog + imported tophunt.in archive posts)
+// ---------------------------------------------------------------------------
+export const blogPosts = sqliteTable(
+  "blog_posts",
+  {
+    id: text("id").primaryKey(),
+    slug: text("slug").notNull(), // URL permalink (unique via index below)
+    title: text("title").notNull(),
+    excerpt: text("excerpt"), // short summary for list cards
+    content: text("content"), // full HTML body
+    coverImageUrl: text("cover_image_url"), // featured image (Wayback URL or R2)
+    category: text("category"),
+    tags: text("tags", { mode: "json" }).$type<string[]>().default([]),
+    author: text("author").default("TopHunt"),
+    status: text("status").default("published"), // 'published' | 'draft'
+    // Provenance for imports + dedup:
+    source: text("source").default("admin"), // 'admin' | 'archive'
+    originalUrl: text("original_url"), // original tophunt.in permalink (import dedup key)
+    viewCount: integer("view_count").default(0),
+    publishedAt: integer("published_at"), // epoch ms (original post date if known)
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => ({
+    slugIdx: index("idx_blog_slug").on(t.slug),
+    statusPublishedIdx: index("idx_blog_status_published").on(t.status, t.publishedAt),
+    categoryIdx: index("idx_blog_category").on(t.category),
+    originalUrlIdx: index("idx_blog_original_url").on(t.originalUrl),
+  }),
+);
+
+// ---------------------------------------------------------------------------
 // settings  (was: settings/{docId}: appConfig, gamification)
 // ---------------------------------------------------------------------------
 export const settings = sqliteTable("settings", {

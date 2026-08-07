@@ -8,7 +8,7 @@
  * the admin panel keep its existing route URLs while the data moves to D1.
  */
 import { Hono } from "hono";
-import { and, eq, desc, sql, count, ne } from "drizzle-orm";
+import { and, eq, desc, sql, count, ne, like } from "drizzle-orm";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
@@ -177,6 +177,205 @@ adminRoute.post("/users/:id/wallet", async (c) => {
   return c.json({ message: "Wallet updated successfully", newBalance: user?.balance ?? 0 });
 });
 
+
+// ======================= BLOG =======================
+/** URL-safe slug from a title (keeps unicode letters, e.g. Hindi). */
+function slugify(input: string): string {
+  return (input || "")
+    .toString()
+    .normalize("NFKC")
+    .toLowerCase()
+    .trim()
+    .replace(/['"]/g, "")
+    .replace(/[^\p{L}\p{N}]+/gu, "-") // non letters/numbers -> hyphen
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120) || "post";
+}
+
+/** Ensure the slug is unique in blog_posts (ignoring an optional current id). */
+async function uniqueBlogSlug(db: any, base: string, ignoreId?: string): Promise<string> {
+  let slug = base;
+  for (let i = 2; i < 500; i++) {
+    const existing = await db
+      .select({ id: schema.blogPosts.id })
+      .from(schema.blogPosts)
+      .where(eq(schema.blogPosts.slug, slug))
+      .get();
+    if (!existing || existing.id === ignoreId) return slug;
+    slug = `${base}-${i}`;
+  }
+  return `${base}-${Date.now()}`;
+}
+
+// List posts (any status) for the admin table. Optional ?q= title search.
+adminRoute.get("/blog", async (c) => {
+  const db = getDb(c.env);
+  const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 200);
+  const q = (c.req.query("q") || "").trim().toLowerCase();
+  const conds: any[] = [];
+  if (q.length >= 2) conds.push(like(sql`lower(${schema.blogPosts.title})`, `%${q}%`));
+  const rows = await db
+    .select({
+      id: schema.blogPosts.id,
+      slug: schema.blogPosts.slug,
+      title: schema.blogPosts.title,
+      excerpt: schema.blogPosts.excerpt,
+      coverImageUrl: schema.blogPosts.coverImageUrl,
+      category: schema.blogPosts.category,
+      author: schema.blogPosts.author,
+      status: schema.blogPosts.status,
+      source: schema.blogPosts.source,
+      viewCount: schema.blogPosts.viewCount,
+      publishedAt: schema.blogPosts.publishedAt,
+      createdAt: schema.blogPosts.createdAt,
+    })
+    .from(schema.blogPosts)
+    .where(conds.length ? and(...conds) : (undefined as any))
+    .orderBy(desc(schema.blogPosts.publishedAt))
+    .limit(limit)
+    .all();
+  return c.json(rows);
+});
+
+// Blog stats for dashboards / list header.
+adminRoute.get("/blog/stats", async (c) => {
+  const db = getDb(c.env);
+  const total = (await db.select({ v: count() }).from(schema.blogPosts).get())?.v ?? 0;
+  const published =
+    (await db.select({ v: count() }).from(schema.blogPosts).where(eq(schema.blogPosts.status, "published")).get())?.v ?? 0;
+  const imported =
+    (await db.select({ v: count() }).from(schema.blogPosts).where(eq(schema.blogPosts.source, "archive")).get())?.v ?? 0;
+  return c.json({ total, published, drafts: total - published, imported });
+});
+
+// Bulk upsert used by the Wayback archive importer. Body: { posts: [...] }.
+// Dedups by originalUrl (preferred) or slug so re-running the import is safe.
+adminRoute.post("/blog/import", async (c) => {
+  const db = getDb(c.env);
+  const body = await c.req.json<any>();
+  const posts: any[] = Array.isArray(body) ? body : body.posts || [];
+  if (!Array.isArray(posts) || posts.length === 0) {
+    throw httpsError("invalid-argument", "Body must be { posts: [...] } with at least one post.");
+  }
+  let created = 0,
+    updated = 0,
+    skipped = 0;
+  for (const p of posts) {
+    if (!p || !p.title) {
+      skipped++;
+      continue;
+    }
+    // Find an existing row by originalUrl first, then by slug.
+    let existing: any = null;
+    if (p.originalUrl) {
+      existing = await db
+        .select({ id: schema.blogPosts.id })
+        .from(schema.blogPosts)
+        .where(eq(schema.blogPosts.originalUrl, p.originalUrl))
+        .get();
+    }
+    const baseSlug = slugify(p.slug || p.title);
+    if (!existing) {
+      existing = await db
+        .select({ id: schema.blogPosts.id })
+        .from(schema.blogPosts)
+        .where(eq(schema.blogPosts.slug, baseSlug))
+        .get();
+    }
+
+    const ts = now();
+    const values = {
+      title: String(p.title).slice(0, 500),
+      excerpt: p.excerpt ? String(p.excerpt).slice(0, 500) : null,
+      content: p.content || null,
+      coverImageUrl: p.coverImageUrl || null,
+      category: p.category || null,
+      tags: Array.isArray(p.tags) ? p.tags : [],
+      author: p.author || "TopHunt",
+      status: p.status || "published",
+      source: "archive",
+      originalUrl: p.originalUrl || null,
+      publishedAt: typeof p.publishedAt === "number" ? p.publishedAt : ts,
+      updatedAt: ts,
+    };
+
+    if (existing) {
+      await db.update(schema.blogPosts).set(values).where(eq(schema.blogPosts.id, existing.id));
+      updated++;
+    } else {
+      const slug = await uniqueBlogSlug(db, baseSlug);
+      await db.insert(schema.blogPosts).values({ id: newId(), slug, createdAt: ts, viewCount: 0, ...values });
+      created++;
+    }
+  }
+  return c.json({ success: true, created, updated, skipped, received: posts.length });
+});
+
+// Create a single post (admin panel form).
+adminRoute.post("/blog", async (c) => {
+  const db = getDb(c.env);
+  const b = await c.req.json<any>();
+  if (!b.title) throw httpsError("invalid-argument", "Title is required.");
+  const ts = now();
+  const slug = await uniqueBlogSlug(db, slugify(b.slug || b.title));
+  const id = newId();
+  await db.insert(schema.blogPosts).values({
+    id,
+    slug,
+    title: String(b.title).slice(0, 500),
+    excerpt: b.excerpt || null,
+    content: b.content || null,
+    coverImageUrl: b.coverImageUrl || null,
+    category: b.category || null,
+    tags: Array.isArray(b.tags) ? b.tags : [],
+    author: b.author || "TopHunt",
+    status: b.status || "published",
+    source: "admin",
+    originalUrl: null,
+    viewCount: 0,
+    publishedAt: typeof b.publishedAt === "number" ? b.publishedAt : ts,
+    createdAt: ts,
+    updatedAt: ts,
+  });
+  return c.json({ success: true, id, slug });
+});
+
+// Read a single post (with content) for the edit form.
+adminRoute.get("/blog/:id", async (c) => {
+  const db = getDb(c.env);
+  const row = await db.select().from(schema.blogPosts).where(eq(schema.blogPosts.id, c.req.param("id"))).get();
+  return c.json(row || null);
+});
+
+// Update a post.
+adminRoute.patch("/blog/:id", async (c) => {
+  const db = getDb(c.env);
+  const id = c.req.param("id");
+  const b = await c.req.json<any>();
+  const current = await db.select().from(schema.blogPosts).where(eq(schema.blogPosts.id, id)).get();
+  if (!current) throw httpsError("not-found", "Post not found.");
+  const set: any = { updatedAt: now() };
+  if (b.title !== undefined) set.title = String(b.title).slice(0, 500);
+  if (b.excerpt !== undefined) set.excerpt = b.excerpt;
+  if (b.content !== undefined) set.content = b.content;
+  if (b.coverImageUrl !== undefined) set.coverImageUrl = b.coverImageUrl;
+  if (b.category !== undefined) set.category = b.category;
+  if (b.tags !== undefined) set.tags = Array.isArray(b.tags) ? b.tags : [];
+  if (b.author !== undefined) set.author = b.author;
+  if (b.status !== undefined) set.status = b.status;
+  if (typeof b.publishedAt === "number") set.publishedAt = b.publishedAt;
+  // Regenerate slug only when explicitly requested.
+  if (b.slug !== undefined && b.slug) set.slug = await uniqueBlogSlug(db, slugify(b.slug), id);
+  await db.update(schema.blogPosts).set(set).where(eq(schema.blogPosts.id, id));
+  return c.json({ message: "Post updated", id });
+});
+
+// Delete a post.
+adminRoute.delete("/blog/:id", async (c) => {
+  const db = getDb(c.env);
+  await db.delete(schema.blogPosts).where(eq(schema.blogPosts.id, c.req.param("id")));
+  return c.json({ message: "Post deleted" });
+});
 
 // ======================= DASHBOARD =======================
 adminRoute.get("/overview", async (c) => {

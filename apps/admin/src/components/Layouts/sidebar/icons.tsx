@@ -186,3 +186,24 @@ export function ArrowLeftIcon(props: PropsType) {
     </svg>
   );
 }
+
+
+export function Blog(props: PropsType) {
+  return (
+    <svg
+      width={24}
+      height={24}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.7}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      {...props}
+    >
+      <path d="M4 4.5A1.5 1.5 0 0 1 5.5 3H15l5 5v10.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5v-14Z" />
+      <path d="M14.5 3v5h5" />
+      <path d="M8 12h8M8 15.5h8M8 8.5h3" />
+    </svg>
+  );
+}
