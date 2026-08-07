@@ -1,0 +1,141 @@
+/**
+ * Scheduled tasks — port of apps/functions/src/contests/cron.ts and
+ * scheduled/index.ts. Wired to Cron Triggers in wrangler.toml:
+ *   every 10 minutes -> resolveContests + expired story cleanup
+ *   monthly (1st)    -> monthlyHallOfFame
+ *
+ * Firestore triggers had no equivalent here; the notification side effects that
+ * used to fire from onDocument triggers are emitted explicitly via createNotification.
+ */
+import { and, eq, lte, gt, desc, sql } from "drizzle-orm";
+import type { Env } from "./types";
+import { getDb, schema } from "./db";
+import { createNotification } from "./lib/notify";
+import { newId, now } from "./lib/ids";
+
+type Match = typeof schema.contestMatches.$inferSelect;
+
+async function resolveMatch(env: Env, match: Match): Promise<void> {
+  const db = getDb(env);
+  const userA = match.userA as any;
+  const userB = match.userB as any;
+  if (!userA || !userB) return;
+
+  let rewardAmount = Number(match.entryFee || 0);
+  if (match.contestId) {
+    const contest = await db.select({ reward: schema.contests.rewardCoins }).from(schema.contests).where(eq(schema.contests.id, match.contestId)).get();
+    if (contest?.reward) rewardAmount = Number(contest.reward);
+  }
+
+  const votesA = Number(userA.votes || 0);
+  const votesB = Number(userB.votes || 0);
+
+  // Tie -> refund both
+  if (votesA === votesB) {
+    const refund = Number(match.entryFee || 0) / 2;
+    await db.update(schema.contestMatches).set({ status: "completed", completedAt: now() }).where(eq(schema.contestMatches.id, match.id));
+    if (refund > 0) {
+      await db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${refund}` }).where(eq(schema.users.uid, userA.uid));
+      await db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${refund}` }).where(eq(schema.users.uid, userB.uid));
+    }
+    await createNotification(env, userA.uid, { title: "It's a Tie!", body: "The match ended in a tie. Entry fees refunded.", type: "contest-tie", targetId: "wallet" });
+    await createNotification(env, userB.uid, { title: "It's a Tie!", body: "The match ended in a tie. Entry fees refunded.", type: "contest-tie", targetId: "wallet" });
+    return;
+  }
+
+  const winnerUid = votesA > votesB ? userA.uid : userB.uid;
+  const loserUid = votesA > votesB ? userB.uid : userA.uid;
+  const ts = now();
+
+  await db.update(schema.contestMatches).set({ status: "completed", winnerUid, rewardAmount, completedAt: ts }).where(eq(schema.contestMatches.id, match.id));
+  await db.update(schema.users).set({
+    dpcoin: sql`${schema.users.dpcoin} + ${rewardAmount}`,
+    xp: sql`${schema.users.xp} + 100`,
+    wins: sql`${schema.users.wins} + 1`,
+    monthlyWins: sql`${schema.users.monthlyWins} + 1`,
+    updatedAt: ts,
+  }).where(eq(schema.users.uid, winnerUid));
+  await db.update(schema.users).set({ xp: sql`${schema.users.xp} + 20`, updatedAt: ts }).where(eq(schema.users.uid, loserUid));
+  await db.insert(schema.coinTransactions).values({
+    id: newId(), uid: winnerUid, amount: rewardAmount, type: "contest_win_reward",
+    matchId: match.id, contestId: match.contestId, description: `Victory reward for "${match.title}"`, createdAt: ts,
+  });
+
+  await createNotification(env, winnerUid, { title: "You Won! 🏆", body: `Victory! You won the battle "${match.title}" and earned ${rewardAmount} Dpcoins!`, type: "contest-win", targetId: match.id });
+  await createNotification(env, loserUid, { title: "Battle Ended", body: `The battle "${match.title}" has concluded. You played well!`, type: "contest-loss", targetId: match.id });
+}
+
+async function refundWaitingMatch(env: Env, match: Match): Promise<void> {
+  const db = getDb(env);
+  const refund = Number(match.entryFee || 0) / 2;
+  const userA = match.userA as any;
+  await db.update(schema.contestMatches).set({ status: "cancelled", completedAt: now() }).where(eq(schema.contestMatches.id, match.id));
+  if (refund > 0 && userA?.uid) {
+    await db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${refund}` }).where(eq(schema.users.uid, userA.uid));
+    await db.insert(schema.coinTransactions).values({ id: newId(), uid: userA.uid, amount: refund, type: "contest_refund", matchId: match.id, createdAt: now() });
+    await createNotification(env, userA.uid, { title: "Contest Refunded", body: `No opponent joined your "${match.title}" contest. ${refund} Dpcoins have been returned.`, type: "contest-refund", targetId: "wallet" });
+  }
+}
+
+/** Every-10-min cron: resolve expired matches, refund unmatched, notify ending-soon, cleanup stories. */
+export async function resolveContests(env: Env): Promise<void> {
+  const db = getDb(env);
+  const nowMs = now();
+
+  const active = await db.select().from(schema.contestMatches)
+    .where(and(eq(schema.contestMatches.status, "active"), lte(schema.contestMatches.expiresAt, nowMs)))
+    .limit(50).all();
+  for (const m of active) await resolveMatch(env, m);
+
+  const waiting = await db.select().from(schema.contestMatches)
+    .where(and(eq(schema.contestMatches.status, "waiting_for_opponent"), lte(schema.contestMatches.expiresAt, nowMs)))
+    .limit(50).all();
+  for (const m of waiting) await refundWaitingMatch(env, m);
+
+  // ending soon (< 60 min), not yet notified
+  const soon = await db.select().from(schema.contestMatches)
+    .where(and(
+      eq(schema.contestMatches.status, "active"),
+      gt(schema.contestMatches.expiresAt, nowMs),
+      lte(schema.contestMatches.expiresAt, nowMs + 60 * 60 * 1000),
+      eq(schema.contestMatches.endingSoonNotified, false),
+    ))
+    .limit(50).all();
+  for (const m of soon) {
+    const userA = m.userA as any;
+    const userB = m.userB as any;
+    const msg = `⏳ Hurry! The battle "${m.title || "Match"}" ends in less than an hour. Get more votes!`;
+    if (userA?.uid) await createNotification(env, userA.uid, { title: "Battle Ending Soon!", body: msg, type: "contest-ending", targetId: m.id });
+    if (userB?.uid) await createNotification(env, userB.uid, { title: "Battle Ending Soon!", body: msg, type: "contest-ending", targetId: m.id });
+    await db.update(schema.contestMatches).set({ endingSoonNotified: true }).where(eq(schema.contestMatches.id, m.id));
+  }
+
+  // expired story cleanup (was scheduled/index.ts cleanupExpiredStories)
+  await db.delete(schema.stories).where(lte(schema.stories.expiresAt, nowMs));
+}
+
+/** Monthly cron: top-3 by monthlyWins get coins/xp/badge, then reset monthlyWins. */
+export async function monthlyHallOfFame(env: Env): Promise<void> {
+  const db = getDb(env);
+  const top = await db.select().from(schema.users).orderBy(desc(schema.users.monthlyWins)).limit(3).all();
+  const rewards = [1000, 500, 250];
+  const badges = ["Gold Hall of Fame", "Silver Hall of Fame", "Bronze Hall of Fame"];
+
+  for (let i = 0; i < top.length; i++) {
+    const u = top[i];
+    if (!u.monthlyWins || u.monthlyWins <= 0) continue;
+    const reward = rewards[i];
+    const ts = now();
+    const currentBadges = ((u.badges as unknown as any[]) || []).slice();
+    if (!currentBadges.includes(badges[i])) currentBadges.push(badges[i]);
+    await db.update(schema.users).set({
+      dpcoin: sql`${schema.users.dpcoin} + ${reward}`,
+      xp: sql`${schema.users.xp} + 500`,
+      badges: currentBadges as any,
+      monthlyWins: 0,
+      updatedAt: ts,
+    }).where(eq(schema.users.uid, u.uid));
+    await db.insert(schema.coinTransactions).values({ id: newId(), uid: u.uid, amount: reward, type: "monthly_hall_of_fame_reward", description: `Hall of Fame rank #${i + 1}`, createdAt: ts });
+    await createNotification(env, u.uid, { title: "Monthly Hall of Fame! 🏆", body: `Congratulations! You ranked #${i + 1} this month. You've earned ${reward} Dpcoins and the ${badges[i]}!`, type: "hall-of-fame", targetId: "profile" });
+  }
+}

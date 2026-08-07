@@ -1,0 +1,23 @@
+# Copy to `.dev.vars` for local `wrangler dev`, and set in production with
+# `wrangler secret put <NAME>`. Do NOT commit real values.
+
+# Firebase Admin service account JSON (single line, escaped). Used to mint OAuth
+# tokens for the Identity Toolkit REST API (create/update/delete users, custom
+# claims) and FCM HTTP v1 push. Get it from Firebase console > Project settings >
+# Service accounts > Generate new private key.
+FIREBASE_SERVICE_ACCOUNT='{"type":"service_account","project_id":"tophuntdpcontest","private_key_id":"...","private_key":"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n","client_email":"...@tophuntdpcontest.iam.gserviceaccount.com","client_id":"...","token_uri":"https://oauth2.googleapis.com/token"}'
+
+# R2 S3-compatible credentials (R2 dashboard > Manage R2 API Tokens).
+R2_ACCOUNT_ID=your_cloudflare_account_id
+R2_ACCESS_KEY_ID=your_r2_access_key
+R2_SECRET_ACCESS_KEY=your_r2_secret
+R2_BUCKET=tophunt-media
+
+# Twilio (SMS OTP)
+TWILIO_ACCOUNT_SID=ACxxxxxxxx
+TWILIO_AUTH_TOKEN=xxxxxxxx
+TWILIO_PHONE_NUMBER=+1xxxxxxxxxx
+
+# Email (Resend or compatible HTTP email API)
+RESEND_API_KEY=re_xxxxxxxx
+EMAIL_FROM=TopHunt <no-reply@tophuntdpcontest.com>
