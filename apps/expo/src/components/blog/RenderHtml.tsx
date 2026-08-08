@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, Linking, Platform, useWindowDimensions } from 'react-native';
+import { View, Text, StyleSheet, Linking, Platform, Pressable, useWindowDimensions } from 'react-native';
 import { Image } from 'expo-image';
 
 /**
@@ -59,6 +59,51 @@ const decodeEntities = (s: string): string =>
         return '';
       }
     });
+
+/** Stable web anchor id from a heading's text (matches TOC item slugs). */
+function slugify(s: string): string {
+  return decodeEntities(String(s))
+    .toLowerCase()
+    .replace(/<[^>]+>/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 90) || 'section';
+}
+
+const textOf = (segs: InlineSeg[]) => segs.map((s) => s.text).join('').replace(/\s+/g, ' ').trim();
+
+/** Pull the (WordPress ez-toc) Table of Contents entries out of the HTML. */
+function extractTocItems(html: string): { text: string; id: string }[] {
+  const items: { text: string; id: string }[] = [];
+  const seen = new Set<string>();
+  const links = html.match(/<a[^>]*ez-toc-link[^>]*>([\s\S]*?)<\/a>/gi) || [];
+  for (const a of links) {
+    const text = decodeEntities(a.replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ').trim();
+    if (!text) continue;
+    const id = slugify(text);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    items.push({ text, id });
+  }
+  return items;
+}
+
+/** Remove the raw ez-toc widget markup (rendered separately as a clean card). */
+function stripTocUi(html: string): string {
+  return html
+    .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, ' ')
+    .replace(/<div[^>]*ez-toc[^>]*>[\s\S]*?<\/div>/gi, ' ')
+    .replace(/<p[^>]*ez-toc-title[^>]*>[\s\S]*?<\/p>/gi, ' ')
+    .replace(/<span[^>]*ez-toc[^>]*>[\s\S]*?<\/span>/gi, ' ');
+}
+
+/** Smooth-scroll to a heading by id (web only; no-op on native). */
+function jumpTo(id: string) {
+  if (Platform.OS === 'web' && typeof document !== 'undefined') {
+    const el = document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
 
 /** Parse a run of inline HTML into styled text segments. */
 function parseInline(html: string): InlineSeg[] {
@@ -208,6 +253,45 @@ function BlogImage({ src, width, isDark }: { src: string; width: number; isDark?
   );
 }
 
+/** Clean, collapsible Table of Contents. Tapping an item scrolls to that section. */
+function TocCard({ items, isDark }: { items: { text: string; id: string }[]; isDark?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const border = isDark ? '#2C2C30' : '#ECECF1';
+  const bg = isDark ? '#141416' : '#FAFAFC';
+  const titleColor = isDark ? '#FFFFFF' : '#111114';
+  const numColor = isDark ? '#FF6A60' : ACCENT;
+  const itemColor = isDark ? '#D2D2D8' : '#33333A';
+  const sub = isDark ? '#9B9BA3' : '#8A8A93';
+
+  return (
+    <View style={[tocStyles.card, { backgroundColor: bg, borderColor: border }]}>
+      <Pressable onPress={() => setOpen((o) => !o)} style={tocStyles.head}>
+        <Text style={[tocStyles.title, { color: titleColor, fontFamily: FONT_SANS }]}>Table of Contents</Text>
+        <Text style={[tocStyles.chev, { color: sub }]}>{open ? '\u2212' : '+'}</Text>
+      </Pressable>
+      {open &&
+        items.map((it, i) => (
+          <Pressable key={i} onPress={() => jumpTo(it.id)} style={tocStyles.item}>
+            <Text style={[tocStyles.num, { color: numColor, fontFamily: FONT_SANS }]}>{i + 1}.</Text>
+            <Text style={[tocStyles.itemText, { color: itemColor, fontFamily: FONT_SANS }]} numberOfLines={2}>
+              {it.text}
+            </Text>
+          </Pressable>
+        ))}
+    </View>
+  );
+}
+
+const tocStyles = StyleSheet.create({
+  card: { borderWidth: 1, borderRadius: 14, paddingHorizontal: 16, paddingVertical: 12, marginVertical: 18 },
+  head: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  title: { fontSize: 16, fontWeight: '800' },
+  chev: { fontSize: 22, fontWeight: '700', width: 24, textAlign: 'center' },
+  item: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 7, gap: 8, marginTop: 2 },
+  num: { fontSize: 14, fontWeight: '700', minWidth: 22 },
+  itemText: { flex: 1, fontSize: 14.5, lineHeight: 21, fontWeight: '600' },
+});
+
 export default function RenderHtml({ html, isDark }: Props) {
   const { width } = useWindowDimensions();
   const textColor = isDark ? '#E7E7EC' : '#22222A';
@@ -227,9 +311,13 @@ export default function RenderHtml({ html, isDark }: Props) {
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '')
     .replace(/<iframe[\s\S]*?<\/iframe>/gi, '')
-    .replace(/<noscript[\s\S]*?<\/noscript>/gi, '');
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
+    .replace(/<svg[\s\S]*?<\/svg>/gi, '');
 
-  const blocks = React.useMemo(() => parseBlocks(cleaned), [cleaned]);
+  // Extract the Table of Contents and strip its raw markup (rendered as a card).
+  const tocItems = React.useMemo(() => extractTocItems(cleaned), [cleaned]);
+  const body = React.useMemo(() => stripTocUi(cleaned), [cleaned]);
+  const blocks = React.useMemo(() => parseBlocks(body), [body]);
   // Match the article column: capped at 800, minus the sheet's 20px side padding.
   const contentWidth = Math.min(width, 800) - 40;
 
@@ -263,6 +351,7 @@ export default function RenderHtml({ html, isDark }: Props) {
 
   return (
     <View>
+      {tocItems.length > 1 && <TocCard items={tocItems} isDark={isDark} />}
       {blocks.map((block, idx) => {
         switch (block.type) {
           case 'heading': {
@@ -270,6 +359,7 @@ export default function RenderHtml({ html, isDark }: Props) {
             return (
               <Text
                 key={idx}
+                nativeID={slugify(textOf(block.segs))}
                 style={[styles.heading, { fontSize: size, color: headingColor, fontFamily: FONT_SANS }]}
               >
                 {renderSegs(block.segs, headingColor, FONT_SANS)}
