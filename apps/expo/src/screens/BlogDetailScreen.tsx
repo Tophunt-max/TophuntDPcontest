@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Share,
   Platform,
+  useWindowDimensions,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -31,12 +32,16 @@ export default function BlogDetailScreen() {
   const router = useRouter();
   const { slug } = useLocalSearchParams<{ slug: string }>();
   const isDark = useColorScheme() === 'dark';
+  const { width } = useWindowDimensions();
+  // Article lives in a centered, capped column so it reads well on tablets/desktop.
+  const colW = Math.min(width, 800);
+  const heroH = Math.min(Math.round(colW * 0.56), 360);
 
   const bg = isDark ? '#0D0D0F' : '#FFFFFF';
   const textColor = isDark ? '#FFFFFF' : '#111114';
   const subTextColor = isDark ? '#9B9BA3' : '#6A6A73';
   const cardBg = isDark ? '#0D0D0F' : '#FFFFFF';
-  const iconBg = isDark ? '#1A1A1D' : '#F4F4F7';
+
 
   const [post, setPost] = useState<BlogPost | null>(null);
   const [loading, setLoading] = useState(true);
@@ -105,29 +110,34 @@ export default function BlogDetailScreen() {
         </View>
       ) : (
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-          {/* Back + share row */}
-          <View style={styles.topRow}>
-            <TouchableOpacity onPress={goToBlog} style={styles.backBtn} hitSlop={8}>
-              <Text style={[styles.backText, { color: subTextColor, fontFamily: FONT_SANS }]}>{'\u2190'}  All posts</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={onShare} style={[styles.shareChip, { backgroundColor: iconBg }]} hitSlop={8}>
-              <Text style={[styles.shareChipText, { color: textColor, fontFamily: FONT_SANS }]}>Share</Text>
-            </TouchableOpacity>
-          </View>
-
-          {/* Hero cover (only when an image exists) */}
-          {post.coverImageUrl ? (
-            <Image source={{ uri: post.coverImageUrl }} style={styles.cover} contentFit="cover" transition={220} />
-          ) : null}
-
-          {/* Content sheet overlapping the hero */}
           <View style={styles.columnWrap}>
+            {/* Hero cover with floating back/share pills */}
+            {post.coverImageUrl ? (
+              <View style={styles.heroWrap}>
+                <Image source={{ uri: post.coverImageUrl }} style={[styles.cover, { height: heroH }]} contentFit="cover" transition={220} />
+                <View style={styles.heroOverlay} pointerEvents="box-none">
+                  <TouchableOpacity onPress={goToBlog} style={styles.pill} hitSlop={6}>
+                    <Text style={styles.pillText}>{'\u2190'}  All posts</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={onShare} style={styles.pill} hitSlop={6}>
+                    <Text style={styles.pillText}>Share</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : null}
+
+            {/* Content sheet (overlaps the hero) */}
             <View
               style={[
                 styles.sheet,
                 { backgroundColor: cardBg, marginTop: post.coverImageUrl ? -28 : 0 },
               ]}
             >
+              {!post.coverImageUrl && (
+                <TouchableOpacity onPress={goToBlog} style={styles.backInline} hitSlop={8}>
+                  <Text style={[styles.backText, { color: subTextColor, fontFamily: FONT_SANS }]}>{'\u2190'}  All posts</Text>
+                </TouchableOpacity>
+              )}
               {!!post.category && (
                 <View style={styles.categoryPill}>
                   <Text style={styles.categoryText}>{post.category.toUpperCase()}</Text>
@@ -183,25 +193,28 @@ export default function BlogDetailScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
-  notFoundIcon: { width: 76, height: 76, borderRadius: 24, alignItems: 'center', justifyContent: 'center' },
-  topRow: {
-    width: '100%',
-    maxWidth: 800,
-    alignSelf: 'center',
+  backInline: { alignSelf: 'flex-start', marginBottom: 14 },
+  backText: { fontSize: 14.5, fontWeight: '600' },
+  heroWrap: { width: '100%', position: 'relative' },
+  heroOverlay: {
+    position: 'absolute',
+    top: 12,
+    left: 12,
+    right: 12,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 4,
   },
-  backBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  backText: { fontSize: 14.5, fontWeight: '600' },
-  shareChip: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 999, alignItems: 'center', justifyContent: 'center' },
-  shareChipText: { fontSize: 13, fontWeight: '700' },
+  pill: {
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    paddingHorizontal: 13,
+    paddingVertical: 7,
+    borderRadius: 999,
+    ...(Platform.OS === 'web' ? ({ backdropFilter: 'blur(6px)' } as any) : {}),
+  },
+  pillText: { color: '#fff', fontSize: 13, fontWeight: '700', fontFamily: FONT_SANS },
   scrollContent: { paddingBottom: 72, alignItems: 'center' },
-  cover: { width: '100%', maxWidth: 800, height: 300 },
-  coverFallback: { width: '100%', maxWidth: 800, height: 180, alignItems: 'center', justifyContent: 'center' },
+  cover: { width: '100%' },
   columnWrap: { width: '100%', maxWidth: 800, alignSelf: 'center' },
   sheet: {
     borderTopLeftRadius: 28,

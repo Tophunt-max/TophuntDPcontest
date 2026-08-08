@@ -230,7 +230,8 @@ export default function RenderHtml({ html, isDark }: Props) {
     .replace(/<noscript[\s\S]*?<\/noscript>/gi, '');
 
   const blocks = React.useMemo(() => parseBlocks(cleaned), [cleaned]);
-  const contentWidth = Math.min(width - 40, 720);
+  // Match the article column: capped at 800, minus the sheet's 20px side padding.
+  const contentWidth = Math.min(width, 800) - 40;
 
   const renderSegs = (segs: InlineSeg[], baseColor: string, baseFont: any) =>
     segs.map((s, i) => {
