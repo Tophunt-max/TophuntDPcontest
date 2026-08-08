@@ -11,7 +11,6 @@ import {
   Platform,
 } from 'react-native';
 import { Image } from 'expo-image';
-import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { blogService, BlogPost } from '@/src/services/blog/blogService';
 import RenderHtml from '@/src/components/blog/RenderHtml';
@@ -37,8 +36,7 @@ export default function BlogDetailScreen() {
   const textColor = isDark ? '#FFFFFF' : '#111114';
   const subTextColor = isDark ? '#9B9BA3' : '#6A6A73';
   const cardBg = isDark ? '#0D0D0F' : '#FFFFFF';
-  const iconBg = isDark ? 'rgba(20,20,22,0.72)' : 'rgba(255,255,255,0.92)';
-  const heroFallback = isDark ? '#17171A' : '#F4F4F7';
+  const iconBg = isDark ? '#1A1A1D' : '#F4F4F7';
 
   const [post, setPost] = useState<BlogPost | null>(null);
   const [loading, setLoading] = useState(true);
@@ -94,17 +92,14 @@ export default function BlogDetailScreen() {
         </View>
       ) : notFound || !post ? (
         <View style={styles.center}>
-          <View style={[styles.notFoundIcon, { backgroundColor: heroFallback }]}>
-            <Ionicons name="reader-outline" size={34} color={subTextColor} />
-          </View>
-          <Text style={{ color: textColor, marginTop: 18, fontSize: 20, fontWeight: '800', fontFamily: FONT_SANS }}>
+          <Text style={{ fontSize: 44 }}>{'\uD83D\uDCC4'}</Text>
+          <Text style={{ color: textColor, marginTop: 14, fontSize: 20, fontWeight: '800', fontFamily: FONT_SANS }}>
             Post not found
           </Text>
           <Text style={{ color: subTextColor, marginTop: 6, fontFamily: FONT_SANS }}>
             This page isn’t available.
           </Text>
           <TouchableOpacity onPress={goToBlog} style={[styles.cta, { marginTop: 22 }]}>
-            <Ionicons name="albums-outline" size={17} color="#fff" />
             <Text style={styles.ctaText}>Browse the blog</Text>
           </TouchableOpacity>
         </View>
@@ -113,22 +108,17 @@ export default function BlogDetailScreen() {
           {/* Back + share row */}
           <View style={styles.topRow}>
             <TouchableOpacity onPress={goToBlog} style={styles.backBtn} hitSlop={8}>
-              <Ionicons name="arrow-back" size={20} color={subTextColor} />
-              <Text style={[styles.backText, { color: subTextColor, fontFamily: FONT_SANS }]}>All posts</Text>
+              <Text style={[styles.backText, { color: subTextColor, fontFamily: FONT_SANS }]}>{'\u2190'}  All posts</Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={onShare} style={[styles.shareBtn, { backgroundColor: iconBg }]} hitSlop={8}>
-              <Ionicons name="share-outline" size={18} color={textColor} />
+            <TouchableOpacity onPress={onShare} style={[styles.shareChip, { backgroundColor: iconBg }]} hitSlop={8}>
+              <Text style={[styles.shareChipText, { color: textColor, fontFamily: FONT_SANS }]}>Share</Text>
             </TouchableOpacity>
           </View>
 
-          {/* Hero cover */}
+          {/* Hero cover (only when an image exists) */}
           {post.coverImageUrl ? (
             <Image source={{ uri: post.coverImageUrl }} style={styles.cover} contentFit="cover" transition={220} />
-          ) : (
-            <View style={[styles.coverFallback, { backgroundColor: heroFallback }]}>
-              <Ionicons name="newspaper-outline" size={46} color={isDark ? '#2E2E33' : '#D6D6DE'} />
-            </View>
-          )}
+          ) : null}
 
           {/* Content sheet overlapping the hero */}
           <View style={styles.columnWrap}>
@@ -179,8 +169,7 @@ export default function BlogDetailScreen() {
               {/* Footer CTA */}
               <View style={[styles.footer, { borderTopColor: isDark ? '#232327' : '#EEEEF2' }]}>
                 <TouchableOpacity onPress={goToBlog} style={styles.cta}>
-                  <Ionicons name="albums-outline" size={17} color="#fff" />
-                  <Text style={styles.ctaText}>Explore more posts</Text>
+                  <Text style={styles.ctaText}>Explore more posts  {'\u2192'}</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -208,7 +197,8 @@ const styles = StyleSheet.create({
   },
   backBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   backText: { fontSize: 14.5, fontWeight: '600' },
-  shareBtn: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
+  shareChip: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 999, alignItems: 'center', justifyContent: 'center' },
+  shareChipText: { fontSize: 13, fontWeight: '700' },
   scrollContent: { paddingBottom: 72, alignItems: 'center' },
   cover: { width: '100%', maxWidth: 800, height: 300 },
   coverFallback: { width: '100%', maxWidth: 800, height: 180, alignItems: 'center', justifyContent: 'center' },
