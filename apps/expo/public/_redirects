@@ -1,0 +1,5 @@
+# SPA fallback for Cloudflare Pages: serve the single-page app for any route
+# that isn't a real static file, so client-side routing resolves deep links like
+# /amazon-cadbury-vday-quiz-answers and /blog/<slug>. Existing files (JS/CSS,
+# favicon, firebase-messaging-sw.js) are served directly and are unaffected.
+/*    /index.html   200
