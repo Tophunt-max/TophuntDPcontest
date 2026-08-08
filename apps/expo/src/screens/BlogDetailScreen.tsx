@@ -15,6 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { blogService, BlogPost } from '@/src/services/blog/blogService';
 import RenderHtml from '@/src/components/blog/RenderHtml';
+import { Header } from '@/src/components/home/Header';
 
 const FONT_SANS = Platform.select({
   web: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
@@ -84,17 +85,8 @@ export default function BlogDetailScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: bg }]}>
-      {/* Floating controls */}
-      <View style={styles.floatingHeader} pointerEvents="box-none">
-        <TouchableOpacity style={[styles.iconBtn, { backgroundColor: iconBg }]} onPress={goToBlog}>
-          <Ionicons name="arrow-back" size={21} color={textColor} />
-        </TouchableOpacity>
-        {post && (
-          <TouchableOpacity style={[styles.iconBtn, { backgroundColor: iconBg }]} onPress={onShare}>
-            <Ionicons name="share-outline" size={20} color={textColor} />
-          </TouchableOpacity>
-        )}
-      </View>
+      {/* App global header (logo + notifications + chat) */}
+      <Header />
 
       {loading ? (
         <View style={styles.center}>
@@ -118,6 +110,17 @@ export default function BlogDetailScreen() {
         </View>
       ) : (
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+          {/* Back + share row */}
+          <View style={styles.topRow}>
+            <TouchableOpacity onPress={goToBlog} style={styles.backBtn} hitSlop={8}>
+              <Ionicons name="arrow-back" size={20} color={subTextColor} />
+              <Text style={[styles.backText, { color: subTextColor, fontFamily: FONT_SANS }]}>All posts</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={onShare} style={[styles.shareBtn, { backgroundColor: iconBg }]} hitSlop={8}>
+              <Ionicons name="share-outline" size={18} color={textColor} />
+            </TouchableOpacity>
+          </View>
+
           {/* Hero cover */}
           {post.coverImageUrl ? (
             <Image source={{ uri: post.coverImageUrl }} style={styles.cover} contentFit="cover" transition={220} />
@@ -192,26 +195,20 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   notFoundIcon: { width: 76, height: 76, borderRadius: 24, alignItems: 'center', justifyContent: 'center' },
-  floatingHeader: {
-    position: 'absolute',
-    top: Platform.OS === 'web' ? 18 : 46,
-    left: 0,
-    right: 0,
-    zIndex: 20,
+  topRow: {
+    width: '100%',
+    maxWidth: 800,
+    alignSelf: 'center',
     flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 4,
   },
-  iconBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...(Platform.OS === 'web'
-      ? ({ boxShadow: '0 4px 14px rgba(0,0,0,0.18)' } as any)
-      : { shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 8, shadowOffset: { width: 0, height: 3 }, elevation: 4 }),
-  },
+  backBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  backText: { fontSize: 14.5, fontWeight: '600' },
+  shareBtn: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
   scrollContent: { paddingBottom: 72, alignItems: 'center' },
   cover: { width: '100%', maxWidth: 800, height: 300 },
   coverFallback: { width: '100%', maxWidth: 800, height: 180, alignItems: 'center', justifyContent: 'center' },

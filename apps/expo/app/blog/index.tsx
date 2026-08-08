@@ -15,6 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { blogService, BlogPost, BlogCategory } from '@/src/services/blog/blogService';
 import { Colors } from '@/constants/theme';
+import { Header } from '@/src/components/home/Header';
 
 export default function BlogListScreen() {
   const router = useRouter();
@@ -165,6 +166,7 @@ export default function BlogListScreen() {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]}>
+      <Header />
       {loading ? (
         <>
           {renderHeader()}
