@@ -14,8 +14,24 @@ export const useProfile = (userId: string) => {
     queryFn: async (): Promise<UserProfile> => {
       if (!userId) throw new Error("No User ID");
 
-      const profile = await readApi(`/read/users/${userId}`);
-      if (profile) return { ...profile, uid: userId } as UserProfile;
+      const raw: any = await readApi(`/read/users/${userId}`);
+      if (raw) {
+        // The Worker returns a flat user row (lowercase dpcoin, top-level
+        // wins/contestsJoined/totalVotesReceived). Map it into the UserProfile
+        // shape the UI expects so wallet balance and stats aren't stuck at 0.
+        return {
+          ...raw,
+          uid: userId,
+          Dpcoin: raw.Dpcoin ?? raw.dpcoin ?? 0,
+          profileImageUrl: raw.profileImageUrl ?? raw.avatarUrl ?? '',
+          isAdmin: raw.isAdmin ?? raw.role === 'admin',
+          stats: raw.stats ?? {
+            contestsJoined: raw.contestsJoined ?? 0,
+            wins: raw.wins ?? 0,
+            totalVotesReceived: raw.totalVotesReceived ?? 0,
+          },
+        } as UserProfile;
+      }
 
       // Self with no profile row yet -> create a default one.
       if (currentUser && currentUser.uid === userId) {

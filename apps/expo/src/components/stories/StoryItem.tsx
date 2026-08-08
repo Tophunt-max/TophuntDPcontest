@@ -41,7 +41,7 @@ export const StoryItem: React.FC<StoryItemProps> = ({ item, isCurrentUser, onPre
           style={styles.ring}
         >
           <View style={[styles.innerRing, { backgroundColor }]}>
-            <Image source={{ uri: avatarUrl }} style={styles.avatar} />
+            <Image source={{ uri: avatarUrl ?? undefined }} style={styles.avatar} />
           </View>
         </LinearGradient>
       );
@@ -50,7 +50,7 @@ export const StoryItem: React.FC<StoryItemProps> = ({ item, isCurrentUser, onPre
       return (
         <View style={[styles.ring, styles.seenRing, isDark && styles.seenRingDark]}>
            <View style={[styles.innerRing, { backgroundColor }]}>
-              <Image source={{ uri: avatarUrl }} style={styles.avatar} />
+              <Image source={{ uri: avatarUrl ?? undefined }} style={styles.avatar} />
            </View>
         </View>
       );

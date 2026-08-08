@@ -41,13 +41,21 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
     console.error("[resolveMatch] vote finalize failed, using D1 snapshot", match.id, e);
   }
 
-  // Tie -> refund both
+  // Tie -> refund both. Atomically claim the match (active -> completed) FIRST
+  // so an overlapping/duplicate cron run can't refund twice.
   if (votesA === votesB) {
+    const ts = now();
+    const claim = await db.update(schema.contestMatches)
+      .set({ status: "completed", completedAt: ts })
+      .where(and(eq(schema.contestMatches.id, match.id), eq(schema.contestMatches.status, "active")))
+      .run();
+    if (claim.meta.changes === 0) return; // already resolved by another run
     const refund = Number(match.entryFee || 0) / 2;
-    await db.update(schema.contestMatches).set({ status: "completed", completedAt: now() }).where(eq(schema.contestMatches.id, match.id));
     if (refund > 0) {
-      await db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${refund}` }).where(eq(schema.users.uid, userA.uid));
-      await db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${refund}` }).where(eq(schema.users.uid, userB.uid));
+      await db.batch([
+        db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${refund}` }).where(eq(schema.users.uid, userA.uid)),
+        db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${refund}` }).where(eq(schema.users.uid, userB.uid)),
+      ]);
     }
     await createNotification(env, userA.uid, { title: "It's a Tie!", body: "The match ended in a tie. Entry fees refunded.", type: "contest-tie", targetId: "wallet" });
     await createNotification(env, userB.uid, { title: "It's a Tie!", body: "The match ended in a tie. Entry fees refunded.", type: "contest-tie", targetId: "wallet" });
@@ -58,19 +66,29 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
   const loserUid = votesA > votesB ? userB.uid : userA.uid;
   const ts = now();
 
-  await db.update(schema.contestMatches).set({ status: "completed", winnerUid, rewardAmount, completedAt: ts }).where(eq(schema.contestMatches.id, match.id));
-  await db.update(schema.users).set({
-    dpcoin: sql`${schema.users.dpcoin} + ${rewardAmount}`,
-    xp: sql`${schema.users.xp} + 100`,
-    wins: sql`${schema.users.wins} + 1`,
-    monthlyWins: sql`${schema.users.monthlyWins} + 1`,
-    updatedAt: ts,
-  }).where(eq(schema.users.uid, winnerUid));
-  await db.update(schema.users).set({ xp: sql`${schema.users.xp} + 20`, updatedAt: ts }).where(eq(schema.users.uid, loserUid));
-  await db.insert(schema.coinTransactions).values({
-    id: newId(), uid: winnerUid, amount: rewardAmount, type: "contest_win_reward",
-    matchId: match.id, contestId: match.contestId, description: `Victory reward for "${match.title}"`, createdAt: ts,
-  });
+  // Atomically claim the match before paying out. If another run already flipped
+  // it out of "active", stop — prevents double-payout. The payout below is a
+  // single batch so the reward + stats + ledger commit together.
+  const claim = await db.update(schema.contestMatches)
+    .set({ status: "completed", winnerUid, rewardAmount, completedAt: ts })
+    .where(and(eq(schema.contestMatches.id, match.id), eq(schema.contestMatches.status, "active")))
+    .run();
+  if (claim.meta.changes === 0) return;
+
+  await db.batch([
+    db.update(schema.users).set({
+      dpcoin: sql`${schema.users.dpcoin} + ${rewardAmount}`,
+      xp: sql`${schema.users.xp} + 100`,
+      wins: sql`${schema.users.wins} + 1`,
+      monthlyWins: sql`${schema.users.monthlyWins} + 1`,
+      updatedAt: ts,
+    }).where(eq(schema.users.uid, winnerUid)),
+    db.update(schema.users).set({ xp: sql`${schema.users.xp} + 20`, updatedAt: ts }).where(eq(schema.users.uid, loserUid)),
+    db.insert(schema.coinTransactions).values({
+      id: newId(), uid: winnerUid, amount: rewardAmount, type: "contest_win_reward",
+      matchId: match.id, contestId: match.contestId, description: `Victory reward for "${match.title}"`, createdAt: ts,
+    }),
+  ]);
 
   await createNotification(env, winnerUid, { title: "You Won! 🏆", body: `Victory! You won the battle "${match.title}" and earned ${rewardAmount} Dpcoins!`, type: "contest-win", targetId: match.id });
   await createNotification(env, loserUid, { title: "Battle Ended", body: `The battle "${match.title}" has concluded. You played well!`, type: "contest-loss", targetId: match.id });
@@ -78,12 +96,21 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
 
 async function refundWaitingMatch(env: Env, match: Match): Promise<void> {
   const db = getDb(env);
-  const refund = Number(match.entryFee || 0) / 2;
   const userA = match.userA as any;
-  await db.update(schema.contestMatches).set({ status: "cancelled", completedAt: now() }).where(eq(schema.contestMatches.id, match.id));
+  // Atomically claim (waiting -> cancelled) so we can't refund the same
+  // unmatched contest twice across overlapping cron runs.
+  const claim = await db.update(schema.contestMatches)
+    .set({ status: "cancelled", completedAt: now() })
+    .where(and(eq(schema.contestMatches.id, match.id), eq(schema.contestMatches.status, "waiting_for_opponent")))
+    .run();
+  if (claim.meta.changes === 0) return;
+  const refund = Number(match.entryFee || 0) / 2;
   if (refund > 0 && userA?.uid) {
-    await db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${refund}` }).where(eq(schema.users.uid, userA.uid));
-    await db.insert(schema.coinTransactions).values({ id: newId(), uid: userA.uid, amount: refund, type: "contest_refund", matchId: match.id, createdAt: now() });
+    const ts = now();
+    await db.batch([
+      db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${refund}` }).where(eq(schema.users.uid, userA.uid)),
+      db.insert(schema.coinTransactions).values({ id: newId(), uid: userA.uid, amount: refund, type: "contest_refund", matchId: match.id, createdAt: ts }),
+    ]);
     await createNotification(env, userA.uid, { title: "Contest Refunded", body: `No opponent joined your "${match.title}" contest. ${refund} Dpcoins have been returned.`, type: "contest-refund", targetId: "wallet" });
   }
 }

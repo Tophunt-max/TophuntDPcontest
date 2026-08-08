@@ -147,7 +147,7 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
             {isOwnProfile && (
               <WalletCard 
                 Dpcoin={profile?.Dpcoin || 0} 
-                stats={profile?.stats || { contestsJoined: 0, wins: 0 }} 
+                stats={profile?.stats || { contestsJoined: 0, wins: 0, totalVotesReceived: 0 }} 
                 onPress={() => router.push('/wallet')}
               />
             )}

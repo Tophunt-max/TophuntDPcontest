@@ -236,7 +236,9 @@ export class VoteCounter extends DurableObject<Env> {
     } catch (e) {
       console.error("[VoteCounter] vote seed failed", matchId, e);
       this.voteSeedPromise = null;
-      return;
+      // Do NOT proceed: voting against an unseeded (empty) baseline would bypass
+      // the already-voted / device-used dedup guards. Fail so the caller retries.
+      throw e;
     }
     this.setMeta("voteSeeded", "1");
   }
@@ -278,7 +280,9 @@ export class VoteCounter extends DurableObject<Env> {
     } catch (e) {
       console.error("[VoteCounter] engagement seed failed", matchId, e);
       this.engSeedPromise = null;
-      return;
+      // Bail: flushing absolute counters from an unseeded (zero) baseline would
+      // clobber the real counts in D1. Fail so the caller retries.
+      throw e;
     }
     this.setMeta("engSeeded", "1");
   }

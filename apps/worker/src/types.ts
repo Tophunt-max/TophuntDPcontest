@@ -41,6 +41,11 @@ export interface Env {
   // Shared secret for server-to-server admin calls (the admin Next.js API
   // routes proxy to /admin/* with this in the X-Admin-Secret header).
   ADMIN_PROXY_SECRET: string;
+
+  // Razorpay payment gateway — used to verify coin top-ups server-side.
+  // If RAZORPAY_KEY_SECRET is unset, top-ups are rejected (never free-minted).
+  RAZORPAY_KEY_ID: string;
+  RAZORPAY_KEY_SECRET: string;
 }
 
 /** Authenticated user context attached by the auth middleware. */

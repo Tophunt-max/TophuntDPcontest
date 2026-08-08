@@ -1,0 +1,47 @@
+/**
+ * Server-side payment verification for coin top-ups.
+ *
+ * Uses Razorpay's standard signature scheme: the client returns
+ * `razorpay_order_id`, `razorpay_payment_id` and `razorpay_signature` from the
+ * checkout, and the server recomputes HMAC_SHA256(order_id | payment_id) with
+ * the secret key and compares. This is what proves a real payment happened —
+ * without it, a client could mint unlimited coins by calling topup directly.
+ *
+ * Fail-closed: if RAZORPAY_KEY_SECRET is not configured, top-ups are rejected
+ * (see the topup handler), never credited for free.
+ */
+import type { Env } from "../types";
+
+function timingSafeEqualHex(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+export interface RazorpayProof {
+  orderId: string;
+  paymentId: string;
+  signature: string;
+}
+
+/**
+ * Verify a Razorpay checkout signature. Returns false when the payment secret
+ * is not configured or any field is missing (caller must fail-closed).
+ */
+export async function verifyRazorpaySignature(env: Env, proof: RazorpayProof): Promise<boolean> {
+  const secret = env.RAZORPAY_KEY_SECRET;
+  if (!secret || !proof.orderId || !proof.paymentId || !proof.signature) return false;
+
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const mac = await crypto.subtle.sign("HMAC", key, enc.encode(`${proof.orderId}|${proof.paymentId}`));
+  const expected = [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return timingSafeEqualHex(expected, String(proof.signature).toLowerCase());
+}

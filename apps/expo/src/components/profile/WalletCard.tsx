@@ -1,11 +1,11 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { UserStats } from '../../types/user';
+import { UserProfile } from '../../types/user';
 import { LinearGradient } from 'expo-linear-gradient';
 
 interface WalletCardProps {
   Dpcoin: number;
-  stats: UserStats;
+  stats: UserProfile['stats'];
   onPress?: () => void;
 }
 

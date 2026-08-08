@@ -7,7 +7,7 @@
  * count to prevent double-spend / races.
  */
 import { Hono } from "hono";
-import { eq, and, desc, sql, count, like, gte, inArray } from "drizzle-orm";
+import { eq, and, or, desc, sql, count, like, gte, lt, isNull, inArray } from "drizzle-orm";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
@@ -20,7 +20,8 @@ import { setCustomClaims } from "../lib/firebaseAdmin";
 import { publish, publishMany } from "../lib/publish";
 import { castVote, bumpEngagement } from "../lib/voteCounter";
 import { rateLimit } from "../lib/rateLimit";
-import { enforceIdempotency } from "../lib/idempotency";
+import { enforceIdempotency, releaseIdempotency } from "../lib/idempotency";
+import { verifyRazorpaySignature } from "../lib/payments";
 import { newId, now, generateJoinId } from "../lib/ids";
 
 export const apiRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -47,6 +48,7 @@ apiRoute.post("/", async (c) => {
   // (safe for retries on critical writes like purchases/joins/claims).
   if (body.idempotencyKey) await enforceIdempotency(env, uid, String(body.idempotencyKey));
 
+  try {
   switch (action) {
     // ================= STORAGE (R2) =================
     case "getPresignedUrl": {
@@ -76,25 +78,36 @@ apiRoute.post("/", async (c) => {
         throw httpsError("failed-precondition", `Insufficient Dpcoin. Required: ${fee}, Current: ${user.dpcoin}`);
 
       const ts = now();
-      await db.insert(schema.coinTransactions).values({
-        id: newId(), uid, amount: -fee, type: "contest_entry_fee", contestId,
-        description: `Entry fee (50% split) for ${contest.title || "contest"}`, createdAt: ts,
-      });
-
       const matchId = newId();
       const joinIdA = generateJoinId();
       const expiresAt = ts + (contest.autoCancelHours || 24) * 60 * 60 * 1000;
-      await db.insert(schema.contestMatches).values({
-        id: matchId, contestId, status: "waiting_for_opponent", type: contest.type || "photo",
-        title: contest.title || "Untitled Contest", entryFee: totalFee, isPrivate: !!invitedUid,
-        invitedUid: invitedUid || null, joinIdA,
-        userA: {
-          uid, joinId: joinIdA, username: user.username || "Anonymous",
-          profilePic: user.profileImageUrl || "", mediaUrl, mediaType: mediaType || "photo",
-          caption: caption || "", votes: 0, deviceId: deviceId || "",
-        } as any,
-        totalVotes: 0, createdAt: ts, expiresAt,
-      });
+      // Entry-fee ledger + match creation atomically. If this fails, refund the
+      // deducted fee so the user never loses coins for a match that never existed.
+      try {
+        await db.batch([
+          db.insert(schema.coinTransactions).values({
+            id: newId(), uid, amount: -fee, type: "contest_entry_fee", contestId,
+            description: `Entry fee (50% split) for ${contest.title || "contest"}`, createdAt: ts,
+          }),
+          db.insert(schema.contestMatches).values({
+            id: matchId, contestId, status: "waiting_for_opponent", type: contest.type || "photo",
+            title: contest.title || "Untitled Contest", entryFee: totalFee, isPrivate: !!invitedUid,
+            invitedUid: invitedUid || null, joinIdA,
+            userA: {
+              uid, joinId: joinIdA, username: user.username || "Anonymous",
+              profilePic: user.profileImageUrl || "", mediaUrl, mediaType: mediaType || "photo",
+              caption: caption || "", votes: 0, deviceId: deviceId || "",
+            } as any,
+            totalVotes: 0, createdAt: ts, expiresAt,
+          }),
+        ]);
+      } catch (e) {
+        await db.update(schema.users)
+          .set({ dpcoin: sql`${schema.users.dpcoin} + ${fee}`, xp: sql`${schema.users.xp} - 10`, updatedAt: now() })
+          .where(eq(schema.users.uid, uid));
+        console.error("[startMatch] match creation failed, refunded entry fee", uid, e);
+        throw httpsError("internal", "Failed to create match. Your entry fee has been refunded.");
+      }
 
       // auto-story
       await db.insert(schema.stories).values({
@@ -305,21 +318,31 @@ apiRoute.post("/", async (c) => {
       const user = await db.select().from(schema.users).where(eq(schema.users.uid, uid)).get();
       if (!user) throw httpsError("not-found", "User not found.");
       const nowDate = new Date();
-      const last = user.lastDailyClaim ? new Date(user.lastDailyClaim) : null;
-      if (last && last.toDateString() === nowDate.toDateString())
+      // Use explicit UTC day boundaries (server runs in UTC) instead of
+      // toDateString(), which is ambiguous and made streak/eligibility wrong.
+      const startOfToday = Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth(), nowDate.getUTCDate());
+      const startOfYesterday = startOfToday - 24 * 60 * 60 * 1000;
+      const lastMs = user.lastDailyClaim ? Number(user.lastDailyClaim) : 0;
+      if (lastMs >= startOfToday)
         throw httpsError("already-exists", "Daily reward already claimed today.");
-      const yesterday = new Date();
-      yesterday.setDate(nowDate.getDate() - 1);
+      // Streak continues only if the previous claim happened during "yesterday".
       let streak = user.streak || 0;
-      streak = !last || last.toDateString() !== yesterday.toDateString() ? 1 : streak + 1;
+      streak = lastMs >= startOfYesterday && lastMs < startOfToday ? streak + 1 : 1;
       const coinReward = settings.dailyLoginReward + streak * settings.dailyStreakBonus;
       const xpReward = 50;
       const ts = now();
-      await db.update(schema.users).set({
+      // Atomic guard: the conditional WHERE + affected-row check guarantees only
+      // ONE claim per UTC day even if two requests race.
+      const upd = await db.update(schema.users).set({
         dpcoin: sql`${schema.users.dpcoin} + ${coinReward}`,
         xp: sql`${schema.users.xp} + ${xpReward}`,
         streak, lastDailyClaim: ts, updatedAt: ts,
-      }).where(eq(schema.users.uid, uid));
+      }).where(and(
+        eq(schema.users.uid, uid),
+        or(isNull(schema.users.lastDailyClaim), lt(schema.users.lastDailyClaim, startOfToday)),
+      )).run();
+      if (upd.meta.changes === 0)
+        throw httpsError("already-exists", "Daily reward already claimed today.");
       await db.insert(schema.coinTransactions).values({
         id: newId(), uid, amount: coinReward, type: "daily_reward",
         description: `Daily login reward (${streak} day streak)`, createdAt: ts,
@@ -329,20 +352,39 @@ apiRoute.post("/", async (c) => {
 
     // ================= WALLET =================
     case "topup": {
-      const { amount, paymentId } = body;
-      if (!amount || amount <= 0) throw httpsError("invalid-argument", "Invalid amount.");
-      if (!paymentId) throw httpsError("invalid-argument", "paymentId is required.");
+      const { amount, paymentId, orderId, signature } = body;
+      const coins = Number(amount);
+      // Validate amount: positive integer within a sane cap.
+      if (!Number.isInteger(coins) || coins <= 0 || coins > 1_000_000)
+        throw httpsError("invalid-argument", "Invalid amount.");
+      if (!paymentId || !orderId || !signature)
+        throw httpsError("invalid-argument", "paymentId, orderId and signature are required.");
+
+      // SECURITY: verify the payment server-side. Fail closed if the gateway is
+      // not configured — never credit coins without a verified payment.
+      if (!env.RAZORPAY_KEY_SECRET)
+        throw httpsError("failed-precondition", "Payments are not configured on the server.");
+      const verified = await verifyRazorpaySignature(env, { orderId, paymentId, signature });
+      if (!verified) throw httpsError("permission-denied", "Payment verification failed.");
+
       const ts = now();
+      // Idempotency guard: the first insert of this paymentId wins; replays are
+      // rejected so the same payment can't be credited twice.
       const pay = await db
         .insert(schema.payments)
-        .values({ id: paymentId, userId: uid, amount, status: "success", createdAt: ts })
+        .values({ id: paymentId, userId: uid, amount: coins, status: "success", createdAt: ts })
         .onConflictDoNothing()
         .run();
       if (pay.meta.changes === 0) throw httpsError("already-exists", "Payment already processed.");
-      await db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${amount}` }).where(eq(schema.users.uid, uid));
-      await db.insert(schema.coinTransactions).values({
-        id: newId(), uid, amount, type: "purchase", description: `Purchased ${amount} Dpcoins`, createdAt: ts,
-      });
+
+      // Credit + ledger atomically so we can't mark a payment success without
+      // recording the matching coin grant.
+      await db.batch([
+        db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${coins}` }).where(eq(schema.users.uid, uid)),
+        db.insert(schema.coinTransactions).values({
+          id: newId(), uid, amount: coins, type: "purchase", description: `Purchased ${coins} Dpcoins`, createdAt: ts,
+        }),
+      ]);
       return c.json({ success: true, message: "Coins added successfully!" });
     }
 
@@ -744,25 +786,35 @@ apiRoute.post("/", async (c) => {
       return c.json({ success: true, ticketId: id });
     }
 
-    // ================= NOT YET PORTED =================
+    // ================= WALLET (ADMIN) =================
     case "adminManageWallet": {
       if (!(await isAdmin(c as any))) throw httpsError("permission-denied", "Admin only.");
       const { userId, amount, type } = body;
-      if (!userId || typeof amount !== "number" || !["add", "subtract"].includes(type))
+      const amt = Number(amount);
+      // Amount must be a positive integer; direction is decided by `type`.
+      if (!userId || !Number.isInteger(amt) || amt <= 0 || !["add", "subtract"].includes(type))
         throw httpsError("invalid-argument", "Invalid request parameters.");
-      const delta = type === "add" ? amount : -amount;
-      const upd = await db
-        .update(schema.users)
-        .set({ dpcoin: sql`MAX(${schema.users.dpcoin} + ${delta}, 0)`, updatedAt: now() })
+      const target = await db
+        .select({ balance: schema.users.dpcoin })
+        .from(schema.users)
         .where(eq(schema.users.uid, userId))
-        .run();
-      if (upd.meta.changes === 0) throw httpsError("not-found", "User not found.");
-      await db.insert(schema.coinTransactions).values({
-        id: newId(), uid: userId, amount: delta, type: "admin_adjustment",
-        description: `Admin ${type} ${amount} Dpcoin`, createdAt: now(),
-      });
-      const u = await db.select({ balance: schema.users.dpcoin }).from(schema.users).where(eq(schema.users.uid, userId)).get();
-      return c.json({ success: true, message: "Wallet updated successfully", newBalance: u?.balance ?? 0 });
+        .get();
+      if (!target) throw httpsError("not-found", "User not found.");
+      const oldBal = Number(target.balance || 0);
+      const newBal = type === "add" ? oldBal + amt : Math.max(oldBal - amt, 0);
+      // Record the ACTUAL applied change (after clamping at 0) so the ledger
+      // always reconciles with the balance — previously it logged the full
+      // requested delta even when the balance was clamped.
+      const applied = newBal - oldBal;
+      const ts = now();
+      await db.batch([
+        db.update(schema.users).set({ dpcoin: newBal, updatedAt: ts }).where(eq(schema.users.uid, userId)),
+        db.insert(schema.coinTransactions).values({
+          id: newId(), uid: userId, amount: applied, type: "admin_adjustment",
+          description: `Admin ${type} ${amt} Dpcoin`, createdAt: ts,
+        }),
+      ]);
+      return c.json({ success: true, message: "Wallet updated successfully", newBalance: newBal });
     }
     case "join":
     case "vote":
@@ -770,5 +822,11 @@ apiRoute.post("/", async (c) => {
 
     default:
       throw httpsError("invalid-argument", `Action '${action}' nahi mila.`);
+  }
+  } catch (e) {
+    // The guarded action failed and committed nothing — free the idempotency
+    // key so a legitimate retry isn't rejected for the next 24h.
+    if (body.idempotencyKey) await releaseIdempotency(env, uid, String(body.idempotencyKey));
+    throw e;
   }
 });

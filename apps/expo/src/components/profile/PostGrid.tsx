@@ -27,8 +27,8 @@ const PostGrid: React.FC<PostGridProps> = ({
 }) => {
   const renderItem = ({ item }: { item: Post }) => (
     <View style={styles.itemContainer}>
-      <Image source={{ uri: item.imageUrl }} style={styles.itemImage} />
-      {item.type === 'video' && (
+      <Image source={{ uri: item.mediaUrl }} style={styles.itemImage} />
+      {item.mediaType === 'video' && (
         <Ionicons name="play" size={24} color="white" style={styles.videoIcon} />
       )}
       <View style={styles.viewsContainer}>

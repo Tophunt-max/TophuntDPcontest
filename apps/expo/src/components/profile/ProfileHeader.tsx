@@ -107,7 +107,7 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
         );
 
         const chatPromise = startChat(user.uid, {
-            displayName: user.displayName || user.username,
+            displayName: user.fullName || user.username,
             photoURL: user.profileImageUrl
         });
 

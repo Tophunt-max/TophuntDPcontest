@@ -15,7 +15,12 @@ import {
   updateAuthUser,
 } from "../lib/firebaseAdmin";
 import { getRewardSettings } from "../lib/settings";
-import { setOtp, getOtp, deleteOtp, generateOtp } from "../lib/otp";
+import { setOtp, generateOtp, verifyOtp } from "../lib/otp";
+
+/** How long a successful password-reset OTP verification stays valid before the
+ * password must actually be changed. */
+const PWRESET_VERIFIED_TTL = 10 * 60;
+const pwVerifiedKey = (phone: string) => `pwverified:${phone}`;
 import { sendSms } from "../lib/twilio";
 import { sendEmail } from "../lib/email";
 import { newId, now } from "../lib/ids";
@@ -218,17 +223,25 @@ authRoute.post("/", async (c) => {
     case "verifyOtp": {
       const normalizedPhone = normalizePhone(body.phone);
       if (!normalizedPhone || !body.code) throw httpsError("invalid-argument", "Phone and code are required.");
-      const rec = await getOtp(env, "pwreset", normalizedPhone);
-      if (!rec) throw httpsError("not-found", "No OTP found.");
-      if (rec.otp !== body.code) throw httpsError("invalid-argument", "Invalid OTP.");
+      // Hardened: attempt-limited, single-use, constant-time compare.
+      await verifyOtp(env, "pwreset", normalizedPhone, body.code);
+      // Server-set proof that the code matched. updatePasswordWithPhone requires
+      // this flag, so knowing only the phone number is NOT enough to reset.
+      await env.OTP_KV.put(pwVerifiedKey(normalizedPhone), "1", { expirationTtl: PWRESET_VERIFIED_TTL });
       return c.json({ success: true });
     }
     case "updatePasswordWithPhone": {
       const normalizedPhone = normalizePhone(body.phone);
       if (!normalizedPhone || !body.newPassword)
         throw httpsError("invalid-argument", "Phone and password required.");
-      const rec = await getOtp(env, "pwreset", normalizedPhone);
-      if (!rec) throw httpsError("permission-denied", "OTP verification required.");
+      if (String(body.newPassword).length < 6)
+        throw httpsError("invalid-argument", "Password must be at least 6 characters.");
+      // SECURITY: require a prior SUCCESSFUL OTP verification (server-set flag),
+      // not merely the existence of an OTP request. Previously this only checked
+      // that an OTP record existed, allowing account takeover by anyone who knew
+      // the victim's phone number.
+      const verified = await env.OTP_KV.get(pwVerifiedKey(normalizedPhone));
+      if (!verified) throw httpsError("permission-denied", "OTP verification required.");
       const row = await db
         .select({ uid: schema.users.uid })
         .from(schema.users)
@@ -236,7 +249,7 @@ authRoute.post("/", async (c) => {
         .get();
       if (!row) throw httpsError("not-found", "User not found.");
       await updateAuthUser(env, row.uid, { password: body.newPassword });
-      await deleteOtp(env, "pwreset", normalizedPhone);
+      await env.OTP_KV.delete(pwVerifiedKey(normalizedPhone));
       return c.json({ success: true });
     }
 
@@ -257,13 +270,10 @@ authRoute.post("/", async (c) => {
     case "verifyEmailOtp": {
       if (!uid) throw httpsError("unauthenticated", "User must be logged in.");
       if (!body.otp) throw httpsError("invalid-argument", "OTP is required.");
-      const rec = await getOtp(env, "email", uid);
-      if (!rec) throw httpsError("not-found", "No OTP request found.");
-      if (rec.otp !== body.otp) throw httpsError("invalid-argument", "Incorrect OTP.");
+      const rec = await verifyOtp(env, "email", uid, body.otp);
       const newEmail = rec.newEmail as string;
       await updateAuthUser(env, uid, { email: newEmail });
       await db.update(schema.users).set({ email: newEmail, updatedAt: now() }).where(eq(schema.users.uid, uid));
-      await deleteOtp(env, "email", uid);
       return c.json({ success: true, email: newEmail });
     }
 
@@ -279,12 +289,9 @@ authRoute.post("/", async (c) => {
     case "verifyPhoneOtp": {
       if (!uid) throw httpsError("unauthenticated", "User must be logged in.");
       if (!body.otp) throw httpsError("invalid-argument", "OTP is required.");
-      const rec = await getOtp(env, "phone", uid);
-      if (!rec) throw httpsError("not-found", "No OTP request found.");
-      if (rec.otp !== body.otp) throw httpsError("invalid-argument", "Incorrect OTP.");
+      const rec = await verifyOtp(env, "phone", uid, body.otp);
       const newPhone = normalizePhone(rec.newPhone as string);
       await db.update(schema.users).set({ phone: newPhone, updatedAt: now() }).where(eq(schema.users.uid, uid));
-      await deleteOtp(env, "phone", uid);
       return c.json({ success: true, phone: newPhone });
     }
 

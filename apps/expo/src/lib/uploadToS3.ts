@@ -41,7 +41,7 @@ export async function uploadToS3(
       const blob = await response.blob();
       console.log(`[S3Upload] Blob created, size: ${blob.size} bytes`);
 
-      return new Promise((resolve, reject) => {
+      return new Promise<string>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         
         xhr.open("PUT", uploadUrl);
