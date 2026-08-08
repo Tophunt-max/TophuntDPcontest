@@ -88,7 +88,9 @@ async function fetchRetry(url, init = {}, tries = 5) {
   for (let attempt = 0; attempt < tries; attempt++) {
     try {
       const res = await fetch(url, init);
-      if (res.status === 429 || res.status === 503) lastErr = new Error(`rate-limited ${res.status}`);
+      // Retry on archive.org rate-limits (429) and any gateway/server error
+      // (500/502/503/504 — the unbounded CDX endpoint times out at 60s).
+      if (res.status === 429 || (res.status >= 500 && res.status <= 599)) lastErr = new Error(`server ${res.status}`);
       else return res;
     } catch (e) {
       lastErr = e;
@@ -127,17 +129,49 @@ async function workerGet(path) {
 // --------------------------------------------------------------------------
 async function fetchPostSnapshots() {
   log("→ Querying Wayback CDX for", DOMAIN, "…");
-  const cdx =
+  const base =
     `https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(DOMAIN)}*` +
     `&output=json&fl=original,timestamp,statuscode,mimetype&filter=statuscode:200&filter=mimetype:text/html`;
-  const res = await fetchRetry(cdx);
-  if (!res.ok) throw new Error(`CDX request failed: ${res.status}`);
-  const rows = await res.json();
+
+  // The unbounded CDX query times out (504) for domains with many captures, so
+  // page through it with limit + showResumeKey. Each page returns up to
+  // CDX_PAGE rows followed by an empty row and a single resumeKey row.
+  const CDX_PAGE = 1500;
+  const rows = [];
+  let resumeKey = "";
+  let page = 0;
+  for (;;) {
+    let url = `${base}&limit=${CDX_PAGE}&showResumeKey=true`;
+    if (resumeKey) url += `&resumeKey=${encodeURIComponent(resumeKey)}`;
+    const res = await fetchRetry(url);
+    if (!res.ok) throw new Error(`CDX request failed: ${res.status}`);
+    const chunk = await res.json();
+    if (!Array.isArray(chunk) || chunk.length === 0) break;
+
+    // Strip the header row on the first page.
+    const start = page === 0 && chunk[0] && chunk[0][0] === "original" ? 1 : 0;
+
+    // The resumeKey (if any) is the last non-empty row, preceded by an empty row.
+    let end = chunk.length;
+    let nextKey = "";
+    if (chunk.length >= 2 && Array.isArray(chunk[chunk.length - 1]) && chunk[chunk.length - 1].length === 1) {
+      nextKey = chunk[chunk.length - 1][0];
+      end = chunk.length - 1;
+      while (end > start && Array.isArray(chunk[end - 1]) && chunk[end - 1].length === 0) end--; // drop blank separator
+    }
+    for (let i = start; i < end; i++) rows.push(chunk[i]);
+
+    page++;
+    log(`   …CDX page ${page}: +${end - start} rows (total ${rows.length})`);
+    if (!nextKey) break;
+    resumeKey = nextKey;
+    await sleep(300); // be gentle with archive.org
+  }
 
   const byKey = new Map();
-  for (let i = 1; i < rows.length; i++) {
+  for (let i = 0; i < rows.length; i++) {
     let [original, timestamp] = rows[i];
-    if (!original) continue;
+    if (!original || original === "original") continue;
     original = original.replace(/(%0[aAdD]|%20|\s)+$/g, "");
     // Domain guard — only tophunt.in / www.tophunt.in.
     let host = "";
