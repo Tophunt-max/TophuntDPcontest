@@ -497,16 +497,47 @@ function rewriteLinks(contentEl) {
 // --------------------------------------------------------------------------
 // Fetch + extract a single snapshot into a post (throws on invalid/broken page)
 // --------------------------------------------------------------------------
-/** Per-URL CDX (small + fast — unlike the domain-wide crawl it doesn't 504). */
+/**
+ * Candidate snapshot timestamps for one URL. The CDX search API gets heavily
+ * rate-limited (503/504) after bulk use, but the Wayback "availability" API and
+ * page replay do not — so we probe a few target dates via availability to get
+ * the closest good capture around each. Falls back to per-URL CDX only if the
+ * availability probes yield nothing.
+ */
 async function fetchTimestampsForUrl(url) {
   const clean = url.replace(/^https?:\/\//i, "").replace(":80/", "/");
-  const cdx =
-    `https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(clean)}` +
-    `&output=json&fl=timestamp&filter=statuscode:200&filter=mimetype:text/html&collapse=timestamp:8`;
-  const res = await fetchRetry(cdx, {}, 4);
-  if (!res.ok) return [];
-  const rows = await res.json().catch(() => []);
-  return rows.slice(1).map((r) => r[0]).filter(Boolean).sort();
+  const targets = ["20240601", "20221001", "20200101"]; // newest → oldest eras
+  const out = new Set();
+  for (const t of targets) {
+    try {
+      const res = await fetchRetry(
+        `https://archive.org/wayback/available?url=${encodeURIComponent(clean)}&timestamp=${t}`,
+        {},
+        3,
+      );
+      const j = await res.json().catch(() => ({}));
+      const ts = j?.archived_snapshots?.closest?.timestamp;
+      if (ts && j.archived_snapshots.closest.status === "200") out.add(ts);
+    } catch {
+      /* ignore */
+    }
+  }
+  if (out.size) return [...out].sort();
+  // Fallback: per-URL CDX (only when availability gave nothing).
+  try {
+    const res = await fetchRetry(
+      `https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(clean)}&output=json&fl=timestamp&filter=statuscode:200&collapse=timestamp:8`,
+      {},
+      2,
+    );
+    if (res.ok) {
+      const rows = await res.json().catch(() => []);
+      return rows.slice(1).map((r) => r[0]).filter(Boolean).sort();
+    }
+  } catch {
+    /* ignore */
+  }
+  return [];
 }
 
 async function fetchSnapshotHtml(url, timestamp) {
