@@ -67,6 +67,9 @@ const SOURCE = val("source", "cdx");
 // updated at/after this epoch-ms (i.e. re-done in the current pass). Pass the
 // same value to every chunk to make the whole re-import resumable.
 const SINCE = parseInt(val("since", "0"), 10) || 0;
+// How many candidate snapshots to score per post (fewer = faster bulk import,
+// slightly lower cover/category hit rate). Default 4.
+const CANDIDATES = parseInt(val("candidates", "4"), 10) || 4;
 const CONCURRENCY = parseInt(val("concurrency", "3"), 10) || 3;
 const BATCH = parseInt(val("batch", "20"), 10) || 20;
 const DELAY = parseInt(val("delay", "300"), 10) || 300;
@@ -659,7 +662,7 @@ async function importOne({ url, timestamps }) {
     timestamps = await fetchTimestampsForUrl(url);
     if (!timestamps.length) throw new Error("no snapshots (per-url cdx)");
   }
-  const candidates = candidateTimestamps(timestamps, 4).slice().reverse(); // newest-first
+  const candidates = candidateTimestamps(timestamps, CANDIDATES).slice().reverse(); // newest-first
   const htmlCache = new Map();
   let best = null; // { ts, score }
   let lastErr = "no snapshots";
