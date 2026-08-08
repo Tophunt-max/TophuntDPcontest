@@ -117,7 +117,7 @@ export default function BlogDetailScreen() {
           </TouchableOpacity>
         </View>
       ) : (
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 72 }}>
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
           {/* Hero cover */}
           {post.coverImageUrl ? (
             <Image source={{ uri: post.coverImageUrl }} style={styles.cover} contentFit="cover" transition={220} />
@@ -212,9 +212,10 @@ const styles = StyleSheet.create({
       ? ({ boxShadow: '0 4px 14px rgba(0,0,0,0.18)' } as any)
       : { shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 8, shadowOffset: { width: 0, height: 3 }, elevation: 4 }),
   },
-  cover: { width: '100%', height: 300 },
-  coverFallback: { width: '100%', height: 180, alignItems: 'center', justifyContent: 'center' },
-  columnWrap: { width: '100%', maxWidth: 760, alignSelf: 'center' },
+  scrollContent: { paddingBottom: 72, alignItems: 'center' },
+  cover: { width: '100%', maxWidth: 800, height: 300 },
+  coverFallback: { width: '100%', maxWidth: 800, height: 180, alignItems: 'center', justifyContent: 'center' },
+  columnWrap: { width: '100%', maxWidth: 800, alignSelf: 'center' },
   sheet: {
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
