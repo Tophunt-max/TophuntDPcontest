@@ -58,6 +58,7 @@ const RETRY_FAILED = has("--retry-failed");
 const FRESH = has("--fresh");
 const LIMIT = parseInt(val("limit", "0"), 10) || 0;
 const OFFSET = parseInt(val("offset", "0"), 10) || 0;
+const ONLY = val("only", ""); // process only URLs containing this substring
 const CONCURRENCY = parseInt(val("concurrency", "3"), 10) || 3;
 const BATCH = parseInt(val("batch", "20"), 10) || 20;
 const DELAY = parseInt(val("delay", "300"), 10) || 300;
@@ -223,12 +224,21 @@ function stripWayback(root) {
     ".related-posts", ".yarpp-related", ".author-bio", "form",
     ".wp-block-buttons", ".addtoany_share_save_container", ".code-block",
     ".adsbygoogle", "ins", ".sharedaddy", ".post-tags", ".entry-footer",
+    // AddThis / share widgets (these carry leftover Wayback data-url attrs).
+    ".at-above-post", ".at-below-post", ".at-above-post-recommended",
+    ".at-below-post-recommended", ".addthis_tool", ".addthis_native_toolbox",
+    ".addthis-smartlayers", ".a2a_kit", ".heateor_sss_sharing_container",
+    ".sharethis-inline-share-buttons", ".social-share",
   ];
   for (const sel of junk) root.querySelectorAll(sel).forEach((n) => n.remove());
-  // Remove any leftover Wayback insert comments.
+  // Remove leftover Wayback inserts + share widgets by class fragment.
   root.querySelectorAll("*").forEach((n) => {
     const cls = (n.getAttribute?.("class") || "").toLowerCase();
-    if (cls.includes("wm-ipp") || cls.includes("wb-autocomplete")) n.remove();
+    if (
+      cls.includes("wm-ipp") || cls.includes("wb-autocomplete") ||
+      cls.includes("addthis") || cls.includes("at-above") || cls.includes("at-below") ||
+      cls.includes("sharedaddy") || cls.includes("a2a_")
+    ) n.remove();
   });
 }
 
@@ -249,6 +259,48 @@ function cleanTitle(t) {
     .replace(/\s*[|\-–—]\s*TopHunt.*$/i, "")
     .replace(/\s*[|\-–—]\s*tophunt\.in.*$/i, "")
     .replace(/\s*[|\-–—]\s*TOPHUNT.*$/i, "")
+    .trim();
+}
+
+/**
+ * Parse all JSON-LD blocks from the RAW html (node-html-parser drops <script>
+ * text with our config, and Yoast adds class="yoast-schema-graph" so a strict
+ * selector misses it). Wayback wrappers are stripped so the JSON is clean.
+ */
+function jsonLdBlocks(rawHtml) {
+  const blocks = [];
+  const re = /<script[^>]*application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi;
+  let m;
+  while ((m = re.exec(rawHtml))) {
+    const raw = m[1].trim().replace(/https?:\/\/web\.archive\.org\/web\/\d{14}(?:[a-z]{2}_)?\//gi, "");
+    try {
+      const j = JSON.parse(raw);
+      (Array.isArray(j) ? j : j["@graph"] || [j]).forEach((n) => n && blocks.push(n));
+    } catch {
+      /* ignore malformed */
+    }
+  }
+  return blocks;
+}
+
+/** JSON-LD publish date (fallback for extractDate). */
+function dateFromLd(lds) {
+  for (const n of lds || []) {
+    if (n && n.datePublished) {
+      const d = Date.parse(n.datePublished);
+      if (!isNaN(d)) return d;
+    }
+  }
+  return null;
+}
+
+/** Strip any residual Wayback wrapping / web-static refs from a content string. */
+function scrubWayback(html) {
+  return html
+    .replace(/https?:\/\/web\.archive\.org\/web\/\d{14}(?:[a-z]{2}_)?\//gi, "")
+    .replace(/\/\/web\.archive\.org\/web\/\d{14}(?:[a-z]{2}_)?\//gi, "//")
+    .replace(/https?:\/\/web-static\.archive\.org[^"'()\s]*/gi, "")
+    .replace(/\s+\n/g, "\n")
     .trim();
 }
 
@@ -281,10 +333,31 @@ function extractDate(root) {
   return null; // never fall back to the Wayback capture date
 }
 
-function extractCategory(root) {
+function extractCategory(root, lds) {
+  // 1) JSON-LD Article.articleSection.
+  for (const n of lds || []) {
+    const t = n["@type"];
+    const types = Array.isArray(t) ? t : [t];
+    if (types.some((x) => ["Article", "BlogPosting", "NewsArticle"].includes(x))) {
+      const s = Array.isArray(n.articleSection) ? n.articleSection[0] : n.articleSection;
+      if (s && String(s).trim()) return String(s).trim();
+    }
+  }
+  // 2) JSON-LD BreadcrumbList: Home > Category > Post -> second-to-last item.
+  for (const n of lds || []) {
+    if (n["@type"] === "BreadcrumbList" && Array.isArray(n.itemListElement) && n.itemListElement.length >= 2) {
+      const items = [...n.itemListElement].sort((a, b) => (a.position || 0) - (b.position || 0));
+      const cat = items[items.length - 2];
+      const name = cat?.name || cat?.item?.name;
+      if (name && String(name).trim()) return String(name).trim();
+    }
+  }
+  // 3) DOM fallbacks.
   const section = meta(root, "article:section");
   if (section) return section;
-  const link = root.querySelector('a[rel="category tag"], .cat-links a, .post-categories a');
+  const link = root.querySelector(
+    'a[rel="category tag"], .cat-links a, .post-categories a, .entry-meta a[href*="/category/"], .entry-header a[href*="/category/"]',
+  );
   return link?.text?.trim() || null;
 }
 
@@ -413,42 +486,76 @@ function rewriteLinks(contentEl) {
 }
 
 // --------------------------------------------------------------------------
-// Parse a single snapshot into a post (throws on invalid/broken page)
+// Fetch + extract a single snapshot into a post (throws on invalid/broken page)
 // --------------------------------------------------------------------------
-async function parseSnapshot(url, timestamp) {
+async function fetchSnapshotHtml(url, timestamp) {
   const snapUrl = `https://web.archive.org/web/${timestamp}/${url}`;
   const res = await fetchRetry(snapUrl, {
     headers: { "User-Agent": "TopHuntArchiveImporter/1.0 (+https://tophunt.in)" },
     redirect: "follow",
   });
   if (!res.ok) throw new Error(`snapshot ${res.status}`);
-  const html = await res.text();
+  return res.text();
+}
+
+/**
+ * Extract a post from a snapshot's HTML.
+ *   migrate=true  → download images to R2 + resolve the real cover URL (final).
+ *   migrate=false → no uploads; used to SCORE candidate snapshots cheaply.
+ * Returns a post object (plus a private `_textLen`/`_hasCover` for scoring).
+ */
+async function extractPost(html, url, timestamp, migrate = true) {
   const root = parse(html, { blockTextElements: { script: false, style: false } });
+  const lds = jsonLdBlocks(html);
 
   const title = cleanTitle(meta(root, "og:title") || root.querySelector("title")?.text || root.querySelector("h1")?.text || "");
   if (!title) throw new Error("no title");
 
-  // Read metadata/date BEFORE stripping scripts (JSON-LD lives in <script>).
+  // Read metadata/date BEFORE stripping scripts.
   const ogImage = meta(root, "og:image");
-  const publishedAt = extractDate(root);
-  const category = extractCategory(root);
+  const publishedAt = extractDate(root) ?? dateFromLd(lds);
+  const category = extractCategory(root, lds);
   const tags = extractTags(root);
   const metaDescription = (meta(root, "og:description") || meta(root, "description") || "").slice(0, 300);
+  const ownCover = (() => {
+    const co = originalFromWayback(ogImage) || ogImage;
+    return isOwnImage(co);
+  })();
 
   stripWayback(root);
   const contentEl = pickContent(root);
   if (!contentEl) throw new Error("no content element");
 
   rewriteLinks(contentEl);
-  const { total: imagesTotal, missing: imagesMissing } = await migrateContentImages(contentEl, timestamp);
 
-  const content = contentEl.innerHTML.replace(/\s+\n/g, "\n").trim();
+  let imagesTotal = 0,
+    imagesMissing = 0;
+  if (migrate) {
+    const r = await migrateContentImages(contentEl, timestamp);
+    imagesTotal = r.total;
+    imagesMissing = r.missing;
+  } else {
+    // Count own images (and drop foreign ones) without uploading anything.
+    for (const img of contentEl.querySelectorAll("img")) {
+      const raw = img.getAttribute("data-src") || img.getAttribute("data-lazy-src") || img.getAttribute("src") || "";
+      const orig = originalFromWayback(raw) || (/^https?:/i.test(raw) ? raw : null);
+      if (isOwnImage(orig)) imagesTotal++;
+      else img.remove();
+    }
+  }
+
+  const content = scrubWayback(contentEl.innerHTML);
   const textLen = content.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().length;
   if (!content || textLen < 80) throw new Error("no content");
 
-  // Cover: reuse first migrated content image if og:image is unusable.
-  const firstImgR2 = contentEl.querySelector("img")?.getAttribute("src") || null;
-  const coverImageUrl = await migrateCover(ogImage, DRY_RUN ? null : firstImgR2, timestamp);
+  let coverImageUrl = null;
+  if (migrate) {
+    const firstImgR2 = contentEl.querySelector("img")?.getAttribute("src") || null;
+    coverImageUrl = await migrateCover(ogImage, DRY_RUN ? null : firstImgR2, timestamp);
+  } else {
+    // Scoring only: does this capture have a recoverable cover at all?
+    coverImageUrl = ownCover ? "own-cover" : contentEl.querySelector("img") ? "content-img" : null;
+  }
 
   const canonical = url.replace(/^http:/, "https:").replace(":80/", "/");
   const excerpt = metaDescription || content.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
@@ -473,6 +580,7 @@ async function parseSnapshot(url, timestamp) {
     publishedAt, // may be null (never the Wayback date)
     imagesTotal,
     imagesMissing,
+    _textLen: textLen,
   };
 }
 
@@ -485,19 +593,39 @@ function slugFromUrl(url) {
   }
 }
 
-/** Try several snapshots (oldest-first, healthy era) until one parses. */
+/**
+ * Pick the RICHEST snapshot for a post (not merely the first that parses):
+ * captures vary — older ones often lack the cover/category, newer ones have
+ * full SEO. We score candidates (cover + date + category + content length),
+ * newest-first with an early exit on a fully-populated capture, then do the
+ * real image migration only for the winner.
+ */
 async function importOne({ url, timestamps }) {
-  const candidates = candidateTimestamps(timestamps);
+  const candidates = candidateTimestamps(timestamps, 4).slice().reverse(); // newest-first
+  const htmlCache = new Map();
+  let best = null; // { ts, score }
   let lastErr = "no snapshots";
   for (const ts of candidates) {
     try {
-      return await parseSnapshot(url, ts);
+      const html = await fetchSnapshotHtml(url, ts);
+      htmlCache.set(ts, html);
+      const p = await extractPost(html, url, ts, false);
+      const score =
+        (p.coverImageUrl ? 5 : 0) +
+        (p.publishedAt ? 3 : 0) +
+        (p.category ? 3 : 0) +
+        Math.min((p._textLen || 0) / 400, 10);
+      if (!best || score > best.score) best = { ts, score };
+      // A complete capture — no need to look further.
+      if (p.coverImageUrl && p.publishedAt && p.category && (p._textLen || 0) > 500) break;
     } catch (e) {
       lastErr = e.message;
-      if (DELAY) await sleep(DELAY);
     }
+    if (DELAY) await sleep(DELAY);
   }
-  throw new Error(lastErr);
+  if (!best) throw new Error(lastErr);
+  const html = htmlCache.get(best.ts) || (await fetchSnapshotHtml(url, best.ts));
+  return await extractPost(html, url, best.ts, true); // final: migrate images
 }
 
 // --------------------------------------------------------------------------
@@ -542,6 +670,15 @@ async function main() {
     try {
       const { urls } = await workerGet("/admin/blog/import/done-urls");
       const done = new Set((urls || []).map((u) => (u || "").replace(/\/$/, "").toLowerCase()));
+      // Also skip URLs already marked "failed" — importOne already tries several
+      // candidate snapshots, so a failure means the capture is unparseable.
+      // (Use --retry-failed to re-attempt those explicitly.)
+      try {
+        const failed = await workerGet("/admin/blog/import/log?status=failed&limit=100000");
+        for (const r of failed || []) if (r?.url) done.add(r.url.replace(/\/$/, "").toLowerCase());
+      } catch {
+        /* ignore */
+      }
       const before = snapshots.length;
       snapshots = snapshots.filter((s) => !done.has(s.url.replace(/^http:/, "https:").replace(":80/", "/").replace(/\/$/, "").toLowerCase()));
       if (before !== snapshots.length) log(`→ Resume: skipping ${before - snapshots.length} already-imported URLs.`);
@@ -550,6 +687,11 @@ async function main() {
     }
   }
 
+  if (ONLY) {
+    const needle = ONLY.toLowerCase();
+    snapshots = snapshots.filter((s) => s.url.toLowerCase().includes(needle));
+    log(`→ --only filter: ${snapshots.length} matching URLs.`);
+  }
   if (OFFSET) snapshots = snapshots.slice(OFFSET);
   if (LIMIT) snapshots = snapshots.slice(0, LIMIT);
 
@@ -667,7 +809,14 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  console.error("FATAL:", e);
-  process.exit(1);
-});
+// Run only when executed directly (so tests can import the extractors).
+import { pathToFileURL } from "node:url";
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMain) {
+  main().catch((e) => {
+    console.error("FATAL:", e);
+    process.exit(1);
+  });
+}
+
+export { extractPost, fetchSnapshotHtml, importOne, jsonLdBlocks, extractCategory, scrubWayback };
