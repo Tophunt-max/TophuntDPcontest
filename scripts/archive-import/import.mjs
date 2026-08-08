@@ -59,6 +59,14 @@ const FRESH = has("--fresh");
 const LIMIT = parseInt(val("limit", "0"), 10) || 0;
 const OFFSET = parseInt(val("offset", "0"), 10) || 0;
 const ONLY = val("only", ""); // process only URLs containing this substring
+// Where the URL list comes from: "cdx" (crawl the whole domain, default) or
+// "done" (re-import URLs already in the import log — avoids the flaky domain
+// CDX and is used to re-process existing posts with an improved parser).
+const SOURCE = val("source", "cdx");
+// For --source=done re-imports: skip URLs whose import-log row was already
+// updated at/after this epoch-ms (i.e. re-done in the current pass). Pass the
+// same value to every chunk to make the whole re-import resumable.
+const SINCE = parseInt(val("since", "0"), 10) || 0;
 const CONCURRENCY = parseInt(val("concurrency", "3"), 10) || 3;
 const BATCH = parseInt(val("batch", "20"), 10) || 20;
 const DELAY = parseInt(val("delay", "300"), 10) || 300;
@@ -348,8 +356,9 @@ function extractCategory(root, lds) {
     if (n["@type"] === "BreadcrumbList" && Array.isArray(n.itemListElement) && n.itemListElement.length >= 2) {
       const items = [...n.itemListElement].sort((a, b) => (a.position || 0) - (b.position || 0));
       const cat = items[items.length - 2];
-      const name = cat?.name || cat?.item?.name;
-      if (name && String(name).trim()) return String(name).trim();
+      const name = (cat?.name || cat?.item?.name || "").trim();
+      // "Home" means the page is itself a category/listing (no real category).
+      if (name && !/^(home|tophunt|homepage)$/i.test(name)) return name;
     }
   }
   // 3) DOM fallbacks.
@@ -488,6 +497,18 @@ function rewriteLinks(contentEl) {
 // --------------------------------------------------------------------------
 // Fetch + extract a single snapshot into a post (throws on invalid/broken page)
 // --------------------------------------------------------------------------
+/** Per-URL CDX (small + fast — unlike the domain-wide crawl it doesn't 504). */
+async function fetchTimestampsForUrl(url) {
+  const clean = url.replace(/^https?:\/\//i, "").replace(":80/", "/");
+  const cdx =
+    `https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(clean)}` +
+    `&output=json&fl=timestamp&filter=statuscode:200&filter=mimetype:text/html&collapse=timestamp:8`;
+  const res = await fetchRetry(cdx, {}, 4);
+  if (!res.ok) return [];
+  const rows = await res.json().catch(() => []);
+  return rows.slice(1).map((r) => r[0]).filter(Boolean).sort();
+}
+
 async function fetchSnapshotHtml(url, timestamp) {
   const snapUrl = `https://web.archive.org/web/${timestamp}/${url}`;
   const res = await fetchRetry(snapUrl, {
@@ -601,6 +622,12 @@ function slugFromUrl(url) {
  * real image migration only for the winner.
  */
 async function importOne({ url, timestamps }) {
+  // When the URL list didn't come with timestamps (e.g. --source=done), fetch
+  // them per-URL now.
+  if (!timestamps || timestamps.length === 0) {
+    timestamps = await fetchTimestampsForUrl(url);
+    if (!timestamps.length) throw new Error("no snapshots (per-url cdx)");
+  }
   const candidates = candidateTimestamps(timestamps, 4).slice().reverse(); // newest-first
   const htmlCache = new Map();
   let best = null; // { ts, score }
@@ -648,8 +675,35 @@ async function pushProgress(state, force = false) {
 // Main
 // --------------------------------------------------------------------------
 async function main() {
-  let snapshots = await fetchPostSnapshots();
-  snapshots.sort((a, b) => a.url.localeCompare(b.url));
+  let snapshots;
+  if (SOURCE === "done") {
+    // Re-import: take the URL list from the import log (already-processed +
+    // failed) and fetch each URL's timestamps on demand. Avoids the domain CDX.
+    requireWorker();
+    const [doneRes, failedRows] = await Promise.all([
+      workerGet("/admin/blog/import/done-urls"),
+      workerGet("/admin/blog/import/log?status=failed&limit=100000").catch(() => []),
+    ]);
+    const set = new Map();
+    for (const u of doneRes?.urls || []) if (u) set.set(u.toLowerCase(), u);
+    for (const r of failedRows || []) if (r?.url) set.set(r.url.toLowerCase(), r.url);
+    snapshots = [...set.values()].map((u) => ({ url: u.replace(/^http:/, "https:"), timestamps: [] }));
+    snapshots.sort((a, b) => a.url.localeCompare(b.url));
+    log(`→ Re-import source=done: ${snapshots.length} URLs (timestamps fetched per-URL).`);
+    if (SINCE) {
+      const redone = new Set();
+      const logRows = await workerGet("/admin/blog/import/log?limit=100000").catch(() => []);
+      for (const r of logRows || []) {
+        if (r?.url && (r.updatedAt || 0) >= SINCE) redone.add(r.url.replace(/\/$/, "").toLowerCase());
+      }
+      const before = snapshots.length;
+      snapshots = snapshots.filter((s) => !redone.has(s.url.replace(/\/$/, "").toLowerCase()));
+      log(`→ --since resume: skipping ${before - snapshots.length} URLs already re-imported this pass.`);
+    }
+  } else {
+    snapshots = await fetchPostSnapshots();
+    snapshots.sort((a, b) => a.url.localeCompare(b.url));
+  }
 
   if (URLS_ONLY) {
     snapshots.forEach((s) => log(s.timestamps[s.timestamps.length - 1], s.url));
@@ -665,7 +719,7 @@ async function main() {
     const failedUrls = new Set(failed.map((r) => (r.url || "").replace(/\/$/, "").toLowerCase()));
     snapshots = snapshots.filter((s) => failedUrls.has(s.url.replace(/^https?:\/\//i, "").replace(":80/", "/").replace(/\/$/, "").toLowerCase()) || failedUrls.has(s.url.replace(/\/$/, "").toLowerCase()));
     log(`→ Retry mode: ${snapshots.length} previously-failed URLs.`);
-  } else if (!FRESH && !DRY_RUN) {
+  } else if (!FRESH && !DRY_RUN && SOURCE !== "done") {
     // Resume: skip URLs already handled.
     try {
       const { urls } = await workerGet("/admin/blog/import/done-urls");
