@@ -7,7 +7,7 @@ import { StatCard } from "@/components/ui/StatCard";
 import { PageHeader, fmtDate } from "@/lib/format";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { toast } from "@/lib/toast";
-import { Plus, Pencil, Trash2, FileText, CheckCircle2, FilePlus, DownloadCloud } from "lucide-react";
+import { Plus, Pencil, Trash2, FileText, CheckCircle2, FilePlus, DownloadCloud, Archive, ChevronDown, ChevronUp, ExternalLink, Loader2 } from "lucide-react";
 
 export default function Blog() {
   const qc = useQueryClient();
@@ -49,6 +49,8 @@ export default function Blog() {
         <StatCard icon={FilePlus} label="Drafts" value={stats.data?.drafts ?? "–"} gradient="gradient-orange" />
         <StatCard icon={DownloadCloud} label="Imported" value={stats.data?.imported ?? "–"} gradient="gradient-blue" />
       </div>
+
+      <ImportStatus />
 
       <Table
         loading={isLoading}
@@ -108,6 +110,147 @@ export default function Blog() {
           }}
           onDone={invalidate}
         />
+      )}
+    </div>
+  );
+}
+
+const STATUS_META: Record<string, { label: string; cls: string }> = {
+  imported: { label: "Imported", cls: "bg-green-500/15 text-green-600 border-green-500/30" },
+  updated: { label: "Updated", cls: "bg-blue-500/15 text-blue-600 border-blue-500/30" },
+  duplicate: { label: "Duplicate", cls: "bg-slate-500/15 text-slate-500 border-slate-500/30" },
+  skipped: { label: "Skipped", cls: "bg-amber-500/15 text-amber-600 border-amber-500/30" },
+  failed: { label: "Failed", cls: "bg-red-500/15 text-red-600 border-red-500/30" },
+  pending: { label: "Pending", cls: "bg-violet-500/15 text-violet-600 border-violet-500/30" },
+};
+
+function ImportStatus() {
+  const qc = useQueryClient();
+  const [expanded, setExpanded] = useState(false);
+  const [filter, setFilter] = useState("failed");
+
+  const summary = useQuery({ queryKey: ["blog-import-summary"], queryFn: api.blogImportSummary });
+  const progress = useQuery({ queryKey: ["blog-import-progress"], queryFn: api.blogImportProgress });
+  const logQ = useQuery({
+    queryKey: ["blog-import-log", filter],
+    queryFn: () => api.blogImportLog(filter === "all" ? undefined : filter, 100),
+    enabled: expanded,
+  });
+
+  const by = summary.data?.byStatus || {};
+  const done = (by.imported || 0) + (by.updated || 0);
+  const notDone = (by.failed || 0) + (by.skipped || 0);
+  const p = progress.data;
+  const running = p && !p.done && p.total > 0;
+
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ["blog-import-summary"] });
+    qc.invalidateQueries({ queryKey: ["blog-import-progress"] });
+    qc.invalidateQueries({ queryKey: ["blog-import-log"] });
+  };
+
+  return (
+    <div className="bg-card border border-border rounded-2xl p-5 mb-6">
+      <div className="flex items-center gap-3 mb-4">
+        <div className="p-2 rounded-xl gradient-blue">
+          <Archive size={16} className="text-white" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="font-bold text-foreground text-sm">Archive Import</p>
+          <p className="text-xs text-muted-foreground">
+            {done} imported · {notDone} not imported (failed/skipped)
+          </p>
+        </div>
+        <button onClick={refresh} className="text-xs font-medium px-3 py-1.5 rounded-lg bg-secondary hover:bg-secondary/70 flex items-center gap-1.5">
+          {summary.isFetching ? <Loader2 size={13} className="animate-spin" /> : null} Refresh
+        </button>
+      </div>
+
+      {running && (
+        <div className="mb-4">
+          <div className="flex justify-between text-xs text-muted-foreground mb-1">
+            <span>Importing… {p.processed}/{p.total}</span>
+            <span>{p.speedPerMin}/min</span>
+          </div>
+          <div className="h-2 rounded-full bg-secondary overflow-hidden">
+            <div className="h-full gradient-purple" style={{ width: `${Math.min(100, Math.round((p.processed / p.total) * 100))}%` }} />
+          </div>
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-2">
+        {["imported", "updated", "duplicate", "skipped", "failed"].map((s) => (
+          <span key={s} className={`text-xs font-semibold px-2.5 py-1 rounded-lg border ${STATUS_META[s].cls}`}>
+            {STATUS_META[s].label}: {by[s] ?? 0}
+          </span>
+        ))}
+        {typeof summary.data?.missingImages === "number" && (
+          <span className="text-xs font-semibold px-2.5 py-1 rounded-lg border bg-slate-500/10 text-slate-500 border-slate-500/20">
+            Missing images: {summary.data.missingImages}
+          </span>
+        )}
+      </div>
+
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="mt-4 text-xs font-medium text-violet-600 flex items-center gap-1"
+      >
+        {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        {expanded ? "Hide" : "View"} import log (which URLs did / didn't import)
+      </button>
+
+      {expanded && (
+        <div className="mt-3">
+          <div className="flex flex-wrap gap-1.5 mb-3">
+            {["failed", "skipped", "imported", "updated", "duplicate", "all"].map((s) => (
+              <button
+                key={s}
+                onClick={() => setFilter(s)}
+                className={`text-xs px-2.5 py-1 rounded-lg border ${filter === s ? "gradient-purple text-white border-transparent" : "bg-secondary text-muted-foreground border-border"}`}
+              >
+                {s === "all" ? "All" : STATUS_META[s].label}
+              </button>
+            ))}
+          </div>
+          {logQ.isLoading ? (
+            <div className="py-8 flex justify-center"><Loader2 className="animate-spin text-muted-foreground" /></div>
+          ) : (logQ.data || []).length === 0 ? (
+            <p className="text-sm text-muted-foreground py-6 text-center">No “{filter}” rows.</p>
+          ) : (
+            <div className="overflow-x-auto -mx-1">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-muted-foreground border-b border-border">
+                    <th className="py-2 px-1 font-medium">URL</th>
+                    <th className="py-2 px-1 font-medium">Status</th>
+                    <th className="py-2 px-1 font-medium hidden sm:table-cell">Reason / error</th>
+                    <th className="py-2 px-1 font-medium">Updated</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(logQ.data || []).map((r: any) => (
+                    <tr key={r.id} className="border-b border-border/50">
+                      <td className="py-2 px-1 max-w-[220px]">
+                        <a href={r.url} target="_blank" rel="noreferrer" className="text-violet-600 hover:underline flex items-center gap-1 truncate">
+                          <span className="truncate">{(r.url || "").replace(/^https?:\/\/(www\.)?tophunt\.in/, "")}</span>
+                          <ExternalLink size={12} className="flex-shrink-0" />
+                        </a>
+                      </td>
+                      <td className="py-2 px-1">
+                        <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-md border ${STATUS_META[r.status]?.cls || ""}`}>
+                          {STATUS_META[r.status]?.label || r.status}
+                        </span>
+                      </td>
+                      <td className="py-2 px-1 text-xs text-muted-foreground hidden sm:table-cell max-w-[260px] truncate">{r.error || "—"}</td>
+                      <td className="py-2 px-1 text-xs text-muted-foreground whitespace-nowrap">{fmtDate(r.updatedAt)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="text-[11px] text-muted-foreground mt-2">Showing up to 100 latest “{filter}” rows.</p>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

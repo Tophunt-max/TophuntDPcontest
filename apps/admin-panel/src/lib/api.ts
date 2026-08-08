@@ -131,6 +131,13 @@ export const api = {
   updateBlog: (id: string, payload: any) => patch(`/admin/blog/${id}`, payload),
   deleteBlog: (id: string) => del(`/admin/blog/${id}`),
 
+  // archive import status (Wayback importer)
+  blogImportSummary: () =>
+    get<{ byStatus: Record<string, number>; missingImages: number }>("/admin/blog/import/summary"),
+  blogImportProgress: () => get<any | null>("/admin/blog/import/progress"),
+  blogImportLog: (status?: string, limit = 100) =>
+    get<any[]>(`/admin/blog/import/log?limit=${limit}${status ? `&status=${encodeURIComponent(status)}` : ""}`),
+
   // settings
   rewards: () => get<any>("/admin/rewards"),
   saveRewards: (payload: any) => post("/admin/rewards", payload),
