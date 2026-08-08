@@ -125,10 +125,15 @@ function RootLayoutNav() {
     const inAuthGroup = segments[0] === 'auth';
     const inOnboarding = segments[0] === 'onboarding';
     const inSplash = segments[0] === 'splash';
+    // Public content — viewable without login (needed for SEO + old shared
+    // links): the blog listing/detail (/blog, /blog/[slug]), root-level post
+    // permalinks (app/[slug].tsx → segment "[slug]"), and legal pages.
+    const isPublic =
+      segments[0] === 'blog' || segments[0] === '[slug]' || segments[0] === 'legal';
 
     if (!user) {
       // Agar user login nahi hai aur kisi protected page par jane ki koshish kar raha hai
-      if (!inAuthGroup && !inOnboarding && !inSplash && segments.length > 0) {
+      if (!inAuthGroup && !inOnboarding && !inSplash && !isPublic && segments.length > 0) {
         router.replace('/auth/login');
       }
     } else {
