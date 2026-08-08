@@ -1,3 +1,7 @@
+---
+inclusion: always
+---
+
 # TopHunt Blog — Complete Handbook
 
 > Single source of truth for the TopHunt blog: architecture, data, endpoints, the
