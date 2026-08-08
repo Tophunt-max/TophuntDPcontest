@@ -359,7 +359,7 @@ export default function RenderHtml({ html, isDark }: Props) {
             return (
               <Text
                 key={idx}
-                nativeID={slugify(textOf(block.segs))}
+                {...({ id: slugify(textOf(block.segs)), nativeID: slugify(textOf(block.segs)) } as any)}
                 style={[styles.heading, { fontSize: size, color: headingColor, fontFamily: FONT_SANS }]}
               >
                 {renderSegs(block.segs, headingColor, FONT_SANS)}
