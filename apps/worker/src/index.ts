@@ -46,8 +46,9 @@ app.use("*", async (c, next) => {
   c.header("X-Content-Type-Options", "nosniff");
   c.header("X-Frame-Options", "DENY");
   c.header("Referrer-Policy", "no-referrer");
-  c.header("Cross-Origin-Resource-Policy", "same-site");
   const path = new URL(c.req.url).pathname;
+  // Public media must be embeddable cross-origin (blog/app live on other hosts).
+  c.header("Cross-Origin-Resource-Policy", path.startsWith("/media/") ? "cross-origin" : "same-site");
   console.log(
     JSON.stringify({
       level: "info",
@@ -76,6 +77,24 @@ app.use("*", async (c, next) => {
 
 app.get("/", (c) => c.json({ service: "tophunt-api", status: "ok" }));
 app.get("/health", (c) => c.json({ ok: true, ts: Date.now() }));
+
+/**
+ * Public media — serves R2 objects (blog images imported from the archive,
+ * user uploads) directly from the Worker. This avoids needing a custom R2
+ * domain: R2_PUBLIC_BASE_URL points at "<worker>/media". Keys are content-hash
+ * addressed, so responses are immutable and cached for a year.
+ */
+app.get("/media/*", async (c) => {
+  const key = decodeURIComponent(new URL(c.req.url).pathname.replace(/^\/media\//, "")).replace(/^\/+/, "");
+  if (!key) return c.text("Not found", 404);
+  const obj = await c.env.MEDIA.get(key);
+  if (!obj) return c.text("Not found", 404);
+  const headers = new Headers();
+  obj.writeHttpMetadata(headers);
+  headers.set("etag", obj.httpEtag);
+  headers.set("Cache-Control", "public, max-age=31536000, immutable");
+  return new Response(obj.body, { headers });
+});
 
 /**
  * Real-time WebSocket endpoint.

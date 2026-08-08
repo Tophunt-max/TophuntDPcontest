@@ -78,5 +78,5 @@ crons = ["*/10 * * * *", "0 0 1 * *"]
 # ---------------------------------------------------------------------------
 [vars]
 FIREBASE_PROJECT_ID = "tophuntdpcontest"
-R2_PUBLIC_BASE_URL = "https://media.tophuntdpcontest.com"
+R2_PUBLIC_BASE_URL = "https://tophunt-api.weadown-in.workers.dev/media"
 ALLOWED_ORIGINS = "*"
