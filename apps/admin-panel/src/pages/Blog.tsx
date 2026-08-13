@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Table } from "@/components/ui/Table";
@@ -7,7 +7,7 @@ import { StatCard } from "@/components/ui/StatCard";
 import { PageHeader, fmtDate } from "@/lib/format";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { toast } from "@/lib/toast";
-import { Plus, Pencil, Trash2, FileText, CheckCircle2, FilePlus, DownloadCloud, Archive, ChevronDown, ChevronUp, ExternalLink, Loader2, Play, RotateCcw } from "lucide-react";
+import { Plus, Pencil, Trash2, FileText, CheckCircle2, FilePlus, DownloadCloud, Archive, ChevronDown, ChevronUp, ExternalLink, Loader2, Play, RotateCcw, Square } from "lucide-react";
 
 export default function Blog() {
   const qc = useQueryClient();
@@ -138,10 +138,12 @@ function ImportStatus() {
   });
 
   const [importing, setImporting] = useState(false);
+  const abortRef = useRef(false);
 
   const runImport = async (type: string) => {
     if (importing) return;
     setImporting(true);
+    abortRef.current = false;
     try {
       const { urls } = await api.blogImportDiscover({ type });
       if (urls.length === 0) {
@@ -169,16 +171,36 @@ function ImportStatus() {
       toast.success(`Starting import of ${urls.length} posts...`);
       refresh();
 
-      const BATCH_SIZE = 5;
+      const BATCH_SIZE = 3;
       for (let i = 0; i < urls.length; i += BATCH_SIZE) {
+        if (abortRef.current) {
+          toast.info("Import aborted by user");
+          break;
+        }
         const batch = urls.slice(i, i + BATCH_SIZE);
-        const res = await api.blogImportProcessBatch({ urls: batch, state });
-        state = res.state;
+        try {
+          const res = await api.blogImportProcessBatch({ urls: batch, state });
+          state = res.state;
+        } catch (batchError: any) {
+          // If the batch fails (e.g., 500 error, network timeout), log failures for these URLs and advance state
+          console.error("Batch failed:", batchError);
+          for (const url of batch) {
+            try {
+              await api.blogImportFail({ url, error: batchError.message || "Batch failure" });
+            } catch (e) {
+              // Ignore failure to log failure
+            }
+          }
+          state.processed += batch.length;
+          state.failed += batch.length;
+        }
         refresh();
       }
 
-      await api.blogImportFinish({ state });
-      toast.success("Import complete!");
+      if (!abortRef.current) {
+        await api.blogImportFinish({ state });
+        toast.success("Import complete!");
+      }
     } catch (e: any) {
       toast.error(e.message || "Import failed");
     } finally {
@@ -200,7 +222,8 @@ function ImportStatus() {
   const done = (by.imported || 0) + (by.updated || 0);
   const notDone = (by.failed || 0) + (by.skipped || 0);
   const p = progress.data;
-  const running = p && !p.done && p.total > 0;
+  const running = importing; // only consider running if actively importing in this session
+  const paused = !importing && p && !p.done && p.total > 0;
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ["blog-import-summary"] });
@@ -221,29 +244,34 @@ function ImportStatus() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-           <button disabled={importing || running} onClick={async () => { if(window.confirm("Start a fresh import job from the archive?")) runImport("fresh") }} className="text-xs font-medium px-3 py-1.5 rounded-lg bg-green-500/10 text-green-600 hover:bg-green-500/20 flex items-center gap-1.5 disabled:opacity-50">
-             {importing ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />} Start Import
+           <button disabled={running} onClick={async () => { if(window.confirm("Start a fresh import job from the archive?")) runImport("fresh") }} className="text-xs font-medium px-3 py-1.5 rounded-lg bg-green-500/10 text-green-600 hover:bg-green-500/20 flex items-center gap-1.5 disabled:opacity-50">
+             {running ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />} Start Import
            </button>
-           <button disabled={importing || running} onClick={async () => { if(window.confirm("Resume import job?")) runImport("resume") }} className="text-xs font-medium px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-600 hover:bg-blue-500/20 flex items-center gap-1.5 disabled:opacity-50">
+           <button disabled={running} onClick={async () => { if(window.confirm("Resume import job?")) runImport("resume") }} className="text-xs font-medium px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-600 hover:bg-blue-500/20 flex items-center gap-1.5 disabled:opacity-50">
              <Play size={13} /> Resume Import
            </button>
-           <button disabled={retryFailedMut.isPending || importing || running || by.failed === 0} onClick={() => retryFailedMut.mutate()} className="text-xs font-medium px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 flex items-center gap-1.5 disabled:opacity-50">
+           <button disabled={retryFailedMut.isPending || running || by.failed === 0} onClick={() => retryFailedMut.mutate()} className="text-xs font-medium px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 flex items-center gap-1.5 disabled:opacity-50">
              {retryFailedMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <RotateCcw size={13} />} Retry Failed
            </button>
+           {running && (
+            <button onClick={() => { abortRef.current = true; }} className="text-xs font-medium px-3 py-1.5 rounded-lg bg-red-500/10 text-red-600 hover:bg-red-500/20 flex items-center gap-1.5">
+              <Square size={13} /> Stop
+            </button>
+           )}
           <button onClick={refresh} className="text-xs font-medium px-3 py-1.5 rounded-lg bg-secondary hover:bg-secondary/70 flex items-center gap-1.5">
             {summary.isFetching ? <Loader2 size={13} className="animate-spin" /> : null} Refresh
           </button>
         </div>
       </div>
 
-      {running && (
+      {(running || paused) && (
         <div className="mb-4">
           <div className="flex justify-between text-xs text-muted-foreground mb-1">
-            <span>Importing… {p.processed}/{p.total}</span>
+            <span>{paused ? "Paused" : "Importing"}… {p.processed}/{p.total}</span>
             <span>{p.speedPerMin}/min</span>
           </div>
           <div className="h-2 rounded-full bg-secondary overflow-hidden">
-            <div className="h-full gradient-purple" style={{ width: `${Math.min(100, Math.round((p.processed / p.total) * 100))}%` }} />
+            <div className={`h-full ${paused ? "bg-muted-foreground/30" : "gradient-purple"}`} style={{ width: `${Math.min(100, Math.round((p.processed / p.total) * 100))}%` }} />
           </div>
         </div>
       )}

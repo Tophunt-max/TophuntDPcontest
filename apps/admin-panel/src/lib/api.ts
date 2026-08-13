@@ -141,6 +141,7 @@ export const api = {
   blogImportProcessBatch: (payload: { urls: string[], state: any }) => post<{state: any}>("/admin/blog/import/process-batch", payload),
   blogImportFinish: (payload: { state: any }) => post("/admin/blog/import/finish", payload),
   blogImportRetryFailed: () => post<{requeued: number}>("/admin/blog/import/retry-failed"),
+  blogImportFail: (payload: { url: string; error: string }) => post("/admin/blog/import/fail", payload),
 
   // settings
   rewards: () => get<any>("/admin/rewards"),
