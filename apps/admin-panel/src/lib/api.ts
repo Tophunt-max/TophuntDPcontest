@@ -137,6 +137,10 @@ export const api = {
   blogImportProgress: () => get<any | null>("/admin/blog/import/progress"),
   blogImportLog: (status?: string, limit = 100) =>
     get<any[]>(`/admin/blog/import/log?limit=${limit}${status ? `&status=${encodeURIComponent(status)}` : ""}`),
+  blogImportDiscover: (payload: { type: string }) => post<{urls: string[]}>("/admin/blog/import/discover", payload),
+  blogImportProcessBatch: (payload: { urls: string[], state: any }) => post<{state: any}>("/admin/blog/import/process-batch", payload),
+  blogImportFinish: (payload: { state: any }) => post("/admin/blog/import/finish", payload),
+  blogImportRetryFailed: () => post<{requeued: number}>("/admin/blog/import/retry-failed"),
 
   // settings
   rewards: () => get<any>("/admin/rewards"),
