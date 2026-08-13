@@ -492,20 +492,24 @@ adminRoute.get("/blog/import/summary", async (c) => {
   return c.json({ byStatus, missingImages });
 });
 
-// Mark failed rows as pending so the next importer run retries them.
-adminRoute.post("/blog/import/retry-failed", async (c) => {
+// Mark rows of a certain status as pending so the next importer run retries them.
+adminRoute.post("/blog/import/retry", async (c) => {
   const db = getDb(c.env);
+  const { status } = await c.req.json<{status: string}>();
+  if (!status) {
+    throw httpsError("invalid-argument", "Status is required");
+  }
   const res = await db
     .update(schema.blogImportLog)
     .set({ status: "pending", updatedAt: now() })
-    .where(eq(schema.blogImportLog.status, "failed"))
+    .where(eq(schema.blogImportLog.status, status))
     .run();
   return c.json({ ok: true, requeued: (res as any)?.meta?.changes ?? undefined });
 });
 
 adminRoute.post("/blog/import/discover", async (c) => {
   const { type } = await c.req.json<any>();
-  if (type !== "fresh" && type !== "resume" && type !== "failed") {
+  if (type !== "fresh" && type !== "resume" && !["failed", "skipped", "duplicate", "updated"].includes(type)) {
     throw httpsError("invalid-argument", "Invalid mode");
   }
   const urls = await discoverUrls(c.env, type);

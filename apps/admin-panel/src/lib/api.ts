@@ -140,7 +140,7 @@ export const api = {
   blogImportDiscover: (payload: { type: string }) => post<{urls: string[]}>("/admin/blog/import/discover", payload),
   blogImportProcessBatch: (payload: { urls: string[], state: any }) => post<{state: any}>("/admin/blog/import/process-batch", payload),
   blogImportFinish: (payload: { state: any }) => post("/admin/blog/import/finish", payload),
-  blogImportRetryFailed: () => post<{requeued: number}>("/admin/blog/import/retry-failed"),
+  blogImportRetry: (payload: { status: string }) => post<{requeued: number}>("/admin/blog/import/retry", payload),
   blogImportFail: (payload: { url: string; error: string }) => post("/admin/blog/import/fail", payload),
 
   // settings

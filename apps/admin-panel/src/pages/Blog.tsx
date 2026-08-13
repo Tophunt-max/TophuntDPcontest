@@ -115,13 +115,13 @@ export default function Blog() {
   );
 }
 
-const STATUS_META: Record<string, { label: string; cls: string }> = {
-  imported: { label: "Imported", cls: "bg-green-500/15 text-green-600 border-green-500/30" },
-  updated: { label: "Updated", cls: "bg-blue-500/15 text-blue-600 border-blue-500/30" },
-  duplicate: { label: "Duplicate", cls: "bg-slate-500/15 text-slate-500 border-slate-500/30" },
-  skipped: { label: "Skipped", cls: "bg-amber-500/15 text-amber-600 border-amber-500/30" },
-  failed: { label: "Failed", cls: "bg-red-500/15 text-red-600 border-red-500/30" },
-  pending: { label: "Pending", cls: "bg-violet-500/15 text-violet-600 border-violet-500/30" },
+const STATUS_META: Record<string, { label: string; cls: string; hoverCls?: string }> = {
+  imported: { label: "Imported", cls: "bg-green-500/15 text-green-700 border-green-500/30" },
+  updated: { label: "Updated", cls: "bg-blue-500/15 text-blue-700 border-blue-500/30", hoverCls: "hover:bg-blue-500/20" },
+  duplicate: { label: "Duplicate", cls: "bg-slate-500/15 text-slate-600 border-slate-500/30", hoverCls: "hover:bg-slate-500/20" },
+  skipped: { label: "Skipped", cls: "bg-amber-500/15 text-amber-700 border-amber-500/30", hoverCls: "hover:bg-amber-500/20" },
+  failed: { label: "Failed", cls: "bg-red-500/15 text-red-700 border-red-500/30", hoverCls: "hover:bg-red-500/20" },
+  pending: { label: "Pending", cls: "bg-violet-500/15 text-violet-700 border-violet-500/30" },
 };
 
 function ImportStatus() {
@@ -209,11 +209,11 @@ function ImportStatus() {
     }
   };
 
-  const retryFailedMut = useMutation({
-    mutationFn: () => api.blogImportRetryFailed(),
-    onSuccess: async (data: any) => {
-      toast.success(`Marked ${data.requeued || 0} failed rows for retry`);
-      await runImport("failed");
+  const retryMut = useMutation({
+    mutationFn: (status: string) => api.blogImportRetry({ status }),
+    onSuccess: async (data: any, status) => {
+      toast.success(`Marked ${data.requeued || 0} ${status} rows for retry`);
+      await runImport(status);
     },
     onError: (e: any) => toast.error(e.message),
   });
@@ -243,49 +243,60 @@ function ImportStatus() {
             {done} imported · {notDone} not imported (failed/skipped)
           </p>
         </div>
-        <div className="flex items-center gap-2">
-           <button disabled={running} onClick={async () => { if(window.confirm("Start a fresh import job from the archive?")) runImport("fresh") }} className="text-xs font-medium px-3 py-1.5 rounded-lg bg-green-500/10 text-green-600 hover:bg-green-500/20 flex items-center gap-1.5 disabled:opacity-50">
-             {running ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />} Start Import
+        <div className="flex flex-wrap items-center gap-2.5">
+           <button disabled={running} onClick={async () => { if(window.confirm("Start a fresh import job from the archive?")) runImport("fresh") }} className="text-xs font-semibold px-3.5 py-2 rounded-xl bg-green-500/10 text-green-700 hover:bg-green-500/20 transition-colors flex items-center gap-1.5 disabled:opacity-50">
+             {running ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />} Start Import
            </button>
-           <button disabled={running} onClick={async () => { if(window.confirm("Resume import job?")) runImport("resume") }} className="text-xs font-medium px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-600 hover:bg-blue-500/20 flex items-center gap-1.5 disabled:opacity-50">
-             <Play size={13} /> Resume Import
-           </button>
-           <button disabled={retryFailedMut.isPending || running || by.failed === 0} onClick={() => retryFailedMut.mutate()} className="text-xs font-medium px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 flex items-center gap-1.5 disabled:opacity-50">
-             {retryFailedMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <RotateCcw size={13} />} Retry Failed
+           <button disabled={running} onClick={async () => { if(window.confirm("Resume import job?")) runImport("resume") }} className="text-xs font-semibold px-3.5 py-2 rounded-xl bg-blue-500/10 text-blue-700 hover:bg-blue-500/20 transition-colors flex items-center gap-1.5 disabled:opacity-50">
+             <Play size={14} /> Resume Import
            </button>
            {running && (
-            <button onClick={() => { abortRef.current = true; }} className="text-xs font-medium px-3 py-1.5 rounded-lg bg-red-500/10 text-red-600 hover:bg-red-500/20 flex items-center gap-1.5">
-              <Square size={13} /> Stop
+            <button onClick={() => { abortRef.current = true; }} className="text-xs font-semibold px-3.5 py-2 rounded-xl bg-red-500/10 text-red-700 hover:bg-red-500/20 transition-colors flex items-center gap-1.5 shadow-sm border border-red-500/20">
+              <Square size={14} /> Stop
             </button>
            )}
-          <button onClick={refresh} className="text-xs font-medium px-3 py-1.5 rounded-lg bg-secondary hover:bg-secondary/70 flex items-center gap-1.5">
-            {summary.isFetching ? <Loader2 size={13} className="animate-spin" /> : null} Refresh
+          <button onClick={refresh} className="text-xs font-semibold px-3.5 py-2 rounded-xl bg-secondary hover:bg-secondary/80 text-foreground transition-colors flex items-center gap-1.5">
+            {summary.isFetching ? <Loader2 size={14} className="animate-spin" /> : null} Refresh
           </button>
         </div>
       </div>
 
       {(running || paused) && (
-        <div className="mb-4">
-          <div className="flex justify-between text-xs text-muted-foreground mb-1">
-            <span>{paused ? "Paused" : "Importing"}… {p.processed}/{p.total}</span>
-            <span>{p.speedPerMin}/min</span>
+        <div className="mt-3 mb-2 px-1">
+          <div className="flex justify-between items-end text-xs font-medium text-muted-foreground mb-2">
+            <span>{paused ? "Paused" : "Importing"}… {p.processed} / {p.total} URLs</span>
+            <span>{p.speedPerMin} / min</span>
           </div>
-          <div className="h-2 rounded-full bg-secondary overflow-hidden">
-            <div className={`h-full ${paused ? "bg-muted-foreground/30" : "gradient-purple"}`} style={{ width: `${Math.min(100, Math.round((p.processed / p.total) * 100))}%` }} />
+          <div className="h-2.5 rounded-full bg-secondary overflow-hidden border border-border/50">
+            <div className={`h-full transition-all duration-500 ease-out ${paused ? "bg-muted-foreground/30" : "gradient-purple"}`} style={{ width: `${Math.min(100, Math.round((p.processed / p.total) * 100))}%` }} />
           </div>
         </div>
       )}
 
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap gap-2.5 mt-2">
         {["imported", "updated", "duplicate", "skipped", "failed"].map((s) => (
-          <span key={s} className={`text-xs font-semibold px-2.5 py-1 rounded-lg border ${STATUS_META[s].cls}`}>
-            {STATUS_META[s].label}: {by[s] ?? 0}
-          </span>
+          <div key={s} className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-xl border ${STATUS_META[s].cls}`}>
+            <span>{STATUS_META[s].label}: {by[s] ?? 0}</span>
+            {s !== "imported" && (
+              <button
+                disabled={running || retryMut.isPending || (by[s] ?? 0) === 0}
+                onClick={() => {
+                  if (window.confirm(`Do you want to re-import all ${by[s]} ${STATUS_META[s].label} posts?`)) {
+                    retryMut.mutate(s);
+                  }
+                }}
+                className={`ml-1 p-1 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${STATUS_META[s].hoverCls || "hover:bg-black/10"}`}
+                title={`Retry ${STATUS_META[s].label}`}
+              >
+                {retryMut.isPending && retryMut.variables === s ? <Loader2 size={13} className="animate-spin" /> : <RotateCcw size={13} />}
+              </button>
+            )}
+          </div>
         ))}
         {typeof summary.data?.missingImages === "number" && (
-          <span className="text-xs font-semibold px-2.5 py-1 rounded-lg border bg-slate-500/10 text-slate-500 border-slate-500/20">
+          <div className="flex items-center text-xs font-semibold px-3 py-1.5 rounded-xl border bg-slate-500/10 text-slate-600 border-slate-500/20">
             Missing images: {summary.data.missingImages}
-          </span>
+          </div>
         )}
       </div>
 
@@ -315,37 +326,39 @@ function ImportStatus() {
           ) : (logQ.data || []).length === 0 ? (
             <p className="text-sm text-muted-foreground py-6 text-center">No “{filter}” rows.</p>
           ) : (
-            <div className="overflow-x-auto -mx-1">
-              <table className="w-full text-sm">
+            <div className="overflow-x-auto -mx-1 mt-2">
+              <table className="w-full text-sm border-collapse">
                 <thead>
-                  <tr className="text-left text-xs text-muted-foreground border-b border-border">
-                    <th className="py-2 px-1 font-medium">URL</th>
-                    <th className="py-2 px-1 font-medium">Status</th>
-                    <th className="py-2 px-1 font-medium hidden sm:table-cell">Reason / error</th>
-                    <th className="py-2 px-1 font-medium">Updated</th>
+                  <tr className="text-left text-xs text-muted-foreground border-b border-border/80 bg-secondary/30">
+                    <th className="py-2.5 px-3 font-semibold rounded-tl-lg">URL</th>
+                    <th className="py-2.5 px-3 font-semibold">Status</th>
+                    <th className="py-2.5 px-3 font-semibold hidden sm:table-cell">Reason / error</th>
+                    <th className="py-2.5 px-3 font-semibold rounded-tr-lg">Updated</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="divide-y divide-border/40">
                   {(logQ.data || []).map((r: any) => (
-                    <tr key={r.id} className="border-b border-border/50">
-                      <td className="py-2 px-1 max-w-[220px]">
-                        <a href={r.url} target="_blank" rel="noreferrer" className="text-violet-600 hover:underline flex items-center gap-1 truncate">
+                    <tr key={r.id} className="hover:bg-secondary/20 transition-colors">
+                      <td className="py-2.5 px-3 max-w-[220px]">
+                        <a href={r.url} target="_blank" rel="noreferrer" className="text-violet-600 hover:text-violet-500 hover:underline flex items-center gap-1.5 truncate">
                           <span className="truncate">{(r.url || "").replace(/^https?:\/\/(www\.)?tophunt\.in/, "")}</span>
-                          <ExternalLink size={12} className="flex-shrink-0" />
+                          <ExternalLink size={13} className="flex-shrink-0" />
                         </a>
                       </td>
-                      <td className="py-2 px-1">
-                        <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-md border ${STATUS_META[r.status]?.cls || ""}`}>
+                      <td className="py-2.5 px-3">
+                        <span className={`text-[11px] font-semibold px-2 py-0.5 rounded border ${STATUS_META[r.status]?.cls || ""}`}>
                           {STATUS_META[r.status]?.label || r.status}
                         </span>
                       </td>
-                      <td className="py-2 px-1 text-xs text-muted-foreground hidden sm:table-cell max-w-[260px] truncate">{r.error || "—"}</td>
-                      <td className="py-2 px-1 text-xs text-muted-foreground whitespace-nowrap">{fmtDate(r.updatedAt)}</td>
+                      <td className="py-2.5 px-3 text-xs text-muted-foreground hidden sm:table-cell max-w-[260px] truncate" title={r.error || ""}>{r.error || "—"}</td>
+                      <td className="py-2.5 px-3 text-xs text-muted-foreground whitespace-nowrap">{fmtDate(r.updatedAt)}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-              <p className="text-[11px] text-muted-foreground mt-2">Showing up to 100 latest “{filter}” rows.</p>
+              <div className="mt-3 px-1 flex justify-between items-center text-xs text-muted-foreground">
+                <p>Showing up to 100 latest “{filter}” rows.</p>
+              </div>
             </div>
           )}
         </div>
