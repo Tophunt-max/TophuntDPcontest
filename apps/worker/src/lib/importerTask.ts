@@ -21,13 +21,13 @@ function slugify(input: string): string {
   return (input || "").toString().normalize("NFKC").toLowerCase().trim().replace(/['"]/g, "").replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 120) || "post";
 }
 
-export async function discoverUrls(env: Env, mode: "fresh" | "resume" | "failed"): Promise<string[]> {
+export async function discoverUrls(env: Env, mode: string): Promise<string[]> {
   const db = getDb(env);
   let urlsToProcess: string[] = [];
 
-  if (mode === "failed") {
-    const failed = await db.select({ url: schema.blogImportLog.url }).from(schema.blogImportLog).where(eq(schema.blogImportLog.status, "pending")).all();
-    urlsToProcess = failed.map(r => r.url);
+  if (mode !== "fresh" && mode !== "resume") {
+    const pendingRows = await db.select({ url: schema.blogImportLog.url }).from(schema.blogImportLog).where(eq(schema.blogImportLog.status, "pending")).all();
+    urlsToProcess = pendingRows.map(r => r.url);
   } else {
     // Fetch URLs via CDX (simplified)
     const base = `https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(DOMAIN)}*&output=json&fl=original,statuscode,mimetype&filter=statuscode:200&filter=mimetype:text/html&limit=2000`;
