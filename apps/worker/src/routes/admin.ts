@@ -18,6 +18,7 @@ import { getAppConfig, getGamificationSettings, invalidateSetting } from "../lib
 import { deleteAuthUser, updateAuthUser, setCustomClaims, getUserByEmail } from "../lib/firebaseAdmin";
 import { createNotification } from "../lib/notify";
 import { newId, now } from "../lib/ids";
+import { discoverUrls, processBatch } from "../lib/importerTask";
 
 export const adminRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -500,6 +501,31 @@ adminRoute.post("/blog/import/retry-failed", async (c) => {
     .where(eq(schema.blogImportLog.status, "failed"))
     .run();
   return c.json({ ok: true, requeued: (res as any)?.meta?.changes ?? undefined });
+});
+
+adminRoute.post("/blog/import/discover", async (c) => {
+  const { type } = await c.req.json<any>();
+  if (type !== "fresh" && type !== "resume" && type !== "failed") {
+    throw httpsError("invalid-argument", "Invalid mode");
+  }
+  const urls = await discoverUrls(c.env, type);
+  return c.json({ urls });
+});
+
+adminRoute.post("/blog/import/process-batch", async (c) => {
+  const { urls, state } = await c.req.json<any>();
+  if (!Array.isArray(urls)) throw httpsError("invalid-argument", "urls must be an array");
+  const newState = await processBatch(c.env, urls, state);
+  return c.json({ state: newState });
+});
+
+adminRoute.post("/blog/import/finish", async (c) => {
+  const { state } = await c.req.json<any>();
+  if (state) {
+    state.done = true;
+    await c.env.CACHE_KV.put(PROGRESS_KEY, JSON.stringify({ ...state, updatedAt: now() }), { expirationTtl: 86400 });
+  }
+  return c.json({ ok: true });
 });
 
 // Record a failed URL (importer reports parse/network failures here).

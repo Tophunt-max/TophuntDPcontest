@@ -7,7 +7,7 @@ import { StatCard } from "@/components/ui/StatCard";
 import { PageHeader, fmtDate } from "@/lib/format";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { toast } from "@/lib/toast";
-import { Plus, Pencil, Trash2, FileText, CheckCircle2, FilePlus, DownloadCloud, Archive, ChevronDown, ChevronUp, ExternalLink, Loader2 } from "lucide-react";
+import { Plus, Pencil, Trash2, FileText, CheckCircle2, FilePlus, DownloadCloud, Archive, ChevronDown, ChevronUp, ExternalLink, Loader2, Play, RotateCcw } from "lucide-react";
 
 export default function Blog() {
   const qc = useQueryClient();
@@ -137,6 +137,65 @@ function ImportStatus() {
     enabled: expanded,
   });
 
+  const [importing, setImporting] = useState(false);
+
+  const runImport = async (type: string) => {
+    if (importing) return;
+    setImporting(true);
+    try {
+      const { urls } = await api.blogImportDiscover({ type });
+      if (urls.length === 0) {
+        toast.info("No URLs found to import");
+        setImporting(false);
+        return;
+      }
+
+      let state = {
+        startedAt: Date.now(),
+        total: urls.length,
+        processed: 0,
+        imported: 0,
+        updated: 0,
+        skipped: 0,
+        duplicates: 0,
+        failed: 0,
+        missingImages: 0,
+        currentUrl: "",
+        speedPerMin: 0,
+        done: false,
+        created: 0,
+      };
+
+      toast.success(`Starting import of ${urls.length} posts...`);
+      refresh();
+
+      const BATCH_SIZE = 5;
+      for (let i = 0; i < urls.length; i += BATCH_SIZE) {
+        const batch = urls.slice(i, i + BATCH_SIZE);
+        const res = await api.blogImportProcessBatch({ urls: batch, state });
+        state = res.state;
+        refresh();
+      }
+
+      await api.blogImportFinish({ state });
+      toast.success("Import complete!");
+    } catch (e: any) {
+      toast.error(e.message || "Import failed");
+    } finally {
+      setImporting(false);
+      refresh();
+    }
+  };
+
+  const retryFailedMut = useMutation({
+    mutationFn: () => api.blogImportRetryFailed(),
+    onSuccess: async (data: any) => {
+      toast.success(`Marked ${data.requeued || 0} failed rows for retry`);
+      await runImport("failed");
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+
   const by = summary.data?.byStatus || {};
   const done = (by.imported || 0) + (by.updated || 0);
   const notDone = (by.failed || 0) + (by.skipped || 0);
@@ -161,9 +220,20 @@ function ImportStatus() {
             {done} imported · {notDone} not imported (failed/skipped)
           </p>
         </div>
-        <button onClick={refresh} className="text-xs font-medium px-3 py-1.5 rounded-lg bg-secondary hover:bg-secondary/70 flex items-center gap-1.5">
-          {summary.isFetching ? <Loader2 size={13} className="animate-spin" /> : null} Refresh
-        </button>
+        <div className="flex items-center gap-2">
+           <button disabled={importing || running} onClick={async () => { if(window.confirm("Start a fresh import job from the archive?")) runImport("fresh") }} className="text-xs font-medium px-3 py-1.5 rounded-lg bg-green-500/10 text-green-600 hover:bg-green-500/20 flex items-center gap-1.5 disabled:opacity-50">
+             {importing ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />} Start Import
+           </button>
+           <button disabled={importing || running} onClick={async () => { if(window.confirm("Resume import job?")) runImport("resume") }} className="text-xs font-medium px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-600 hover:bg-blue-500/20 flex items-center gap-1.5 disabled:opacity-50">
+             <Play size={13} /> Resume Import
+           </button>
+           <button disabled={retryFailedMut.isPending || importing || running || by.failed === 0} onClick={() => retryFailedMut.mutate()} className="text-xs font-medium px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 flex items-center gap-1.5 disabled:opacity-50">
+             {retryFailedMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <RotateCcw size={13} />} Retry Failed
+           </button>
+          <button onClick={refresh} className="text-xs font-medium px-3 py-1.5 rounded-lg bg-secondary hover:bg-secondary/70 flex items-center gap-1.5">
+            {summary.isFetching ? <Loader2 size={13} className="animate-spin" /> : null} Refresh
+          </button>
+        </div>
       </div>
 
       {running && (
