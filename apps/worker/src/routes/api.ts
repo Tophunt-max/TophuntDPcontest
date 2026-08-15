@@ -22,6 +22,8 @@ import { castVote, bumpEngagement } from "../lib/voteCounter";
 import { rateLimit } from "../lib/rateLimit";
 import { enforceIdempotency, releaseIdempotency } from "../lib/idempotency";
 import { verifyRazorpaySignature } from "../lib/payments";
+import { assertClean } from "../lib/moderation";
+import { getAppConfig } from "../lib/settings";
 import { newId, now, generateJoinId } from "../lib/ids";
 
 export const apiRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -228,6 +230,7 @@ apiRoute.post("/", async (c) => {
     case "createPost": {
       const { mediaUrl, mediaType, caption, location } = body;
       if (!mediaUrl || !mediaType) throw httpsError("invalid-argument", "Media URL and type are required.");
+      await assertClean(env, caption, location);
       const postId = newId();
       const ts = now();
       await db.insert(schema.posts).values({
@@ -259,6 +262,7 @@ apiRoute.post("/", async (c) => {
     case "createStory": {
       const { mediaUrl, mediaType, overlayText, textPosition, mentions, visibility } = body;
       if (!mediaUrl) throw httpsError("invalid-argument", "mediaUrl is required.");
+      await assertClean(env, overlayText);
       const user = await db.select({ username: schema.users.username, avatar: schema.users.profileImageUrl }).from(schema.users).where(eq(schema.users.uid, uid)).get();
       const ts = now();
       const storyId = newId();
@@ -466,6 +470,55 @@ apiRoute.post("/", async (c) => {
       return c.json({ success: true, message: "Coins added successfully!", coins });
     }
 
+    case "requestWithdrawal": {
+      const { amount, method, accountDetails } = body;
+      const amt = Number(amount);
+      if (!Number.isInteger(amt) || amt <= 0) throw httpsError("invalid-argument", "Invalid amount.");
+      if (!method) throw httpsError("invalid-argument", "Payout method is required.");
+
+      // Honor the admin App Control withdrawal config.
+      const cfg = await getAppConfig(env);
+      const wcfg = (cfg?.withdrawal as any) || {};
+      if (wcfg.enabled === false) throw httpsError("failed-precondition", "Withdrawals are currently disabled.");
+      const minAmount = Number(wcfg.minAmount ?? 0);
+      if (amt < minAmount) throw httpsError("failed-precondition", `Minimum withdrawal is ${minAmount} coins.`);
+      const rate = Number(wcfg.conversionRate ?? 1);
+
+      const user = await db.select({ balance: schema.users.dpcoin }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+      if (!user) throw httpsError("not-found", "User not found.");
+      const balance = Number(user.balance || 0);
+      if (balance < amt) throw httpsError("failed-precondition", "Insufficient balance.");
+
+      // Coins are held by the admin on approval (not now). Prevent stacking
+      // pending requests that together exceed the current balance.
+      const pending = await db
+        .select({ v: sql<number>`COALESCE(SUM(${schema.withdrawals.amount}),0)` })
+        .from(schema.withdrawals)
+        .where(and(eq(schema.withdrawals.userId, uid), eq(schema.withdrawals.status, "pending")))
+        .get();
+      if ((pending?.v ?? 0) + amt > balance)
+        throw httpsError("failed-precondition", "Your pending requests already cover your balance.");
+
+      const ts = now();
+      const id = newId();
+      await db.insert(schema.withdrawals).values({
+        id,
+        userId: uid,
+        amount: amt,
+        cashAmount: amt * rate,
+        method: String(method),
+        accountDetails: accountDetails ? String(accountDetails) : null,
+        status: "pending",
+        createdAt: ts,
+        updatedAt: ts,
+      });
+      await db.insert(schema.adminNotifications).values({
+        id: newId(), title: "New Withdrawal Request",
+        message: `A user requested a payout of ${amt} coins.`, link: "/withdrawals", isRead: false, createdAt: ts,
+      });
+      return c.json({ success: true, withdrawalId: id, cashAmount: amt * rate });
+    }
+
     // ================= ADMIN =================
     case "setAdminRole": {
       if (!(await isAdmin(c as any))) throw httpsError("permission-denied", "Admin only.");
@@ -671,6 +724,7 @@ apiRoute.post("/", async (c) => {
     case "commentContest": {
       const { matchId, text } = body;
       if (!matchId || !text) throw httpsError("invalid-argument", "matchId and text are required.");
+      await assertClean(env, text);
       await rateLimit(env, `comment:${uid}`, 30, 60);
       const commentId = newId();
       const ts = now();
@@ -735,6 +789,7 @@ apiRoute.post("/", async (c) => {
     case "addComment": {
       const { targetType, targetId, text } = body;
       if (!targetId || !text) throw httpsError("invalid-argument", "targetId and text are required.");
+      await assertClean(env, text);
       const commentId = newId();
       const ts = now();
       if (targetType === "matches" || targetType === "contestMatches") {
@@ -778,6 +833,8 @@ apiRoute.post("/", async (c) => {
     // ================= PROFILE =================
     case "updateProfile":
     case "completeSignup": {
+      // Block banned words in user-visible profile fields.
+      if (action === "updateProfile") await assertClean(env, body.username, body.fullName, body.bio);
       const fields = action === "completeSignup" ? { signupCompleted: true } : body;
       const set: Record<string, any> = { updatedAt: now() };
       const extraPatch: Record<string, any> = {};

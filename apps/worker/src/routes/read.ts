@@ -243,6 +243,79 @@ readRoute.get("/app-config", async (c) => {
   return c.json(cfg || {});
 });
 
+// ================= COIN PACKAGES (public store) =================
+readRoute.get("/coin-packages", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db
+    .select()
+    .from(schema.coinPackages)
+    .where(eq(schema.coinPackages.active, true))
+    .orderBy(asc(schema.coinPackages.sortOrder))
+    .all();
+  return c.json(
+    rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      coins: r.coins,
+      bonusCoins: r.bonusCoins,
+      totalCoins: (r.coins || 0) + (r.bonusCoins || 0),
+      priceInr: r.priceInr,
+      sortOrder: r.sortOrder,
+    })),
+  );
+});
+
+// ================= WALLET (auth) =================
+// The signed-in user's own coin transaction history.
+readRoute.get("/transactions", requireAuth, async (c) => {
+  const db = getDb(c.env);
+  const uid = c.get("user").uid;
+  const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 200);
+  const rows = await db
+    .select()
+    .from(schema.coinTransactions)
+    .where(eq(schema.coinTransactions.uid, uid))
+    .orderBy(desc(schema.coinTransactions.createdAt))
+    .limit(limit)
+    .all();
+  return c.json({
+    transactions: rows.map((r) => ({
+      id: r.id,
+      amount: r.amount,
+      type: r.type,
+      description: r.description,
+      contestId: r.contestId,
+      matchId: r.matchId,
+      createdAt: r.createdAt,
+    })),
+  });
+});
+
+// The signed-in user's own withdrawal requests.
+readRoute.get("/withdrawals", requireAuth, async (c) => {
+  const db = getDb(c.env);
+  const uid = c.get("user").uid;
+  const rows = await db
+    .select()
+    .from(schema.withdrawals)
+    .where(eq(schema.withdrawals.userId, uid))
+    .orderBy(desc(schema.withdrawals.createdAt))
+    .limit(50)
+    .all();
+  return c.json(
+    rows.map((r) => ({
+      id: r.id,
+      amount: r.amount,
+      cashAmount: r.cashAmount,
+      method: r.method,
+      status: r.status,
+      adminNote: r.adminNote,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+    })),
+  );
+});
+
 // ================= NOTIFICATIONS (auth) =================
 readRoute.get("/notifications", requireAuth, async (c) => {
   const db = getDb(c.env);

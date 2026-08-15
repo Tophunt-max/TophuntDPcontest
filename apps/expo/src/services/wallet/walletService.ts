@@ -50,4 +50,13 @@ export const walletService = {
       throw error;
     }
   },
+
+  /**
+   * Request a cash payout of Dpcoins. The Worker validates against the admin
+   * withdrawal config (enabled / min amount / conversion rate) and creates a
+   * pending request; coins are held by the admin on approval.
+   */
+  requestWithdrawal: async (amount: number, method: string, accountDetails: string) => {
+    return await callApi('requestWithdrawal', { amount, method, accountDetails });
+  },
 };

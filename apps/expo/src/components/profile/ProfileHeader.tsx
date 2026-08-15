@@ -8,6 +8,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { equipBadgeService } from '@/src/services/users';
 import Animated, { useSharedValue, useAnimatedStyle, withSpring, withRepeat, withTiming, Easing } from 'react-native-reanimated';
 import { startChat } from '@/src/services/messages/messageService';
+import { useFeature } from '@/src/services/appSettings';
 import { Colors } from '@/constants/theme';
 
 const { width } = Dimensions.get('window');
@@ -46,7 +47,8 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
   const [loading, setLoading] = useState(false);
   const [canClaim, setCanClaim] = useState(false);
   const [isStartingChat, setIsStartingChat] = useState(false);
-  
+  const chatEnabled = useFeature('chat'); // admin feature flag
+
   const xp = user.xp || 0;
   const levelInfo = calculateLevelInfo(xp);
   const equippedBadge = user.equippedBadge;
@@ -180,6 +182,7 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
                     </Text>
                 </TouchableOpacity>
                 
+                {chatEnabled && (
                 <TouchableOpacity 
                     style={[styles.messageButton, { backgroundColor: isDark ? '#1F222A' : '#F5F5F5' }]} 
                     onPress={handleMessagePress}
@@ -187,6 +190,7 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
                 >
                     {isStartingChat ? <ActivityIndicator size="small" color={textColor} /> : <Text style={[styles.messageButtonText, { color: textColor }]}>Message</Text>}
                 </TouchableOpacity>
+                )}
             </View>
         )}
       </View>

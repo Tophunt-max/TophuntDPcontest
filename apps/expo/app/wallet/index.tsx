@@ -33,6 +33,7 @@ export default function WalletScreen() {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   const topupsEnabled = useFeature('topups'); // admin feature flag
+  const withdrawalsEnabled = useFeature('withdrawals'); // admin feature flag
 
   // Theme Colors
   const backgroundColor = isDark ? Colors.dark.background : '#F8F9FA';
@@ -70,7 +71,7 @@ export default function WalletScreen() {
   const [adTimer, setAdTimer] = useState(5);
 
   // Real transaction history from the coin ledger (signed amounts).
-  const { data: txnData, isLoading: txnLoading } = useQuery({
+  const { data: txnData } = useQuery({
     queryKey: ['transactions', user?.uid],
     queryFn: async () => {
       const res: any = await readApi('/read/transactions', { limit: 50 });
@@ -348,6 +349,19 @@ export default function WalletScreen() {
                             <Text style={styles.topUpText}>Top Up Balance</Text>
                         </TouchableOpacity>
                         )}
+                        {withdrawalsEnabled && (
+                        <TouchableOpacity
+                            style={styles.withdrawButton}
+                            onPress={() => {
+                                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                                router.push('/wallet/withdraw');
+                            }}
+                            activeOpacity={0.9}
+                        >
+                            <Ionicons name="cash-outline" size={18} color="#FFF" />
+                            <Text style={styles.withdrawText}>Withdraw</Text>
+                        </TouchableOpacity>
+                        )}
                     </LinearGradient>
                 </Animated.View>
 
@@ -462,6 +476,8 @@ const styles = StyleSheet.create({
   
   topUpButton: { backgroundColor: 'white', paddingHorizontal: 20, paddingVertical: 14, borderRadius: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', shadowColor: 'black', shadowOpacity: 0.1, shadowRadius: 5, shadowOffset: { width: 0, height: 2 } },
   topUpText: { color: '#FF4D67', fontFamily: 'Urbanist-Bold', fontSize: 16, marginLeft: 6 },
+  withdrawButton: { marginTop: 10, paddingVertical: 12, borderRadius: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.6)' },
+  withdrawText: { color: '#FFF', fontFamily: 'Urbanist-Bold', fontSize: 15, marginLeft: 6 },
   
   // Section Headers
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, marginBottom: 15 },

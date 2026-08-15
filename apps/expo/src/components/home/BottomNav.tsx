@@ -6,6 +6,7 @@ import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFeature } from '@/src/services/appSettings';
 
 const { width, height } = Dimensions.get('window');
 
@@ -19,6 +20,8 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
   const pathname = usePathname();
   const [showAddMenu, setShowAddMenu] = useState(false);
   const insets = useSafeAreaInsets();
+  const contestsEnabled = useFeature('contests'); // admin feature flag
+  const storiesEnabled = useFeature('stories'); // admin feature flag
   
   const animation = useRef(new Animated.Value(0)).current;
   const panY = useRef(new Animated.Value(0)).current;
@@ -199,6 +202,7 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
                         </TouchableOpacity>
                     </View>
 
+                    {contestsEnabled && (
                     <TouchableOpacity 
                         style={styles.menuItem} 
                         onPress={() => { closeMenu(); setTimeout(() => router.push('/contest/photo'), 300); }}
@@ -208,7 +212,9 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
                         </View>
                         <Text style={[styles.menuText, { color: isDark ? 'white' : 'black' }]}>Photo Contest</Text>
                     </TouchableOpacity>
+                    )}
 
+                    {contestsEnabled && (
                     <TouchableOpacity 
                         style={styles.menuItem} 
                         onPress={() => { closeMenu(); setTimeout(() => router.push('/contest/video'), 300); }}
@@ -218,7 +224,9 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
                         </View>
                         <Text style={[styles.menuText, { color: isDark ? 'white' : 'black' }]}>Video Contest</Text>
                     </TouchableOpacity>
+                    )}
 
+                    {storiesEnabled && (
                     <TouchableOpacity 
                         style={styles.menuItem} 
                         onPress={() => { closeMenu(); setTimeout(() => router.push('/story/create'), 300); }}
@@ -228,6 +236,13 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
                         </View>
                         <Text style={[styles.menuText, { color: isDark ? 'white' : 'black' }]}>Create Story</Text>
                     </TouchableOpacity>
+                    )}
+
+                    {!contestsEnabled && !storiesEnabled && (
+                      <Text style={{ textAlign: 'center', color: isDark ? '#888' : '#999', fontFamily: 'Urbanist-Medium', paddingVertical: 20 }}>
+                        Creating content is temporarily unavailable.
+                      </Text>
+                    )}
                 </Animated.View>
             </View>
         </Modal>
