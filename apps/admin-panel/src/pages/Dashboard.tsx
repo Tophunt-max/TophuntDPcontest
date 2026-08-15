@@ -49,6 +49,7 @@ export default function Dashboard() {
   const revenue = useQuery({ queryKey: ["revenue"], queryFn: api.revenue, refetchInterval: SLOW });
   const tickets = useQuery({ queryKey: ["recent-tickets"], queryFn: api.recentTickets, refetchInterval: SLOW });
 
+  const an = analytics.data;
   const chartData =
     growth.data?.categories.map((c, i) => ({ month: c, users: growth.data!.data[i] })) ?? [];
 
@@ -80,10 +81,10 @@ export default function Dashboard() {
       {/* Primary KPIs (clickable → drill into the relevant page). */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
         <LinkCard href="/users">
-          <StatCard icon={UsersIcon} label="Total Users" value={fmtNumber(o?.users)} gradient="gradient-purple" />
+          <StatCard icon={UsersIcon} label="Total Users" value={fmtNumber(o?.users)} gradient="gradient-purple" change={pct(an?.newUsers7d, an?.newUsersPrev7d)} />
         </LinkCard>
         <LinkCard href="/transactions">
-          <StatCard icon={IndianRupee} label="Coins Sold (all-time)" value={fmtNumber(o?.revenue)} gradient="gradient-green" />
+          <StatCard icon={IndianRupee} label="Coins Sold (all-time)" value={fmtNumber(o?.revenue)} gradient="gradient-green" change={pct(an?.revenue7d, an?.revenuePrev7d)} />
         </LinkCard>
         <LinkCard href="/matches">
           <StatCard icon={Swords} label="Active Battles" value={fmtNumber(o?.activeMatches)} gradient="gradient-blue" />
@@ -93,12 +94,12 @@ export default function Dashboard() {
         </LinkCard>
       </div>
 
-      {/* Today's activity (from analytics). */}
+      {/* Today's activity (from analytics) — deltas compare today vs yesterday. */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <StatCard icon={UserPlus} label="New Users (today)" value={fmtNumber(analytics.data?.newUsersToday)} gradient="gradient-purple" />
-        <StatCard icon={Activity} label="Active Users (24h)" value={fmtNumber(analytics.data?.dau)} gradient="gradient-blue" />
-        <StatCard icon={Coins} label="Coins Sold (today)" value={fmtNumber(analytics.data?.revenueToday)} gradient="gradient-green" />
-        <StatCard icon={Vote} label="Votes (today)" value={fmtNumber(analytics.data?.votesToday)} gradient="gradient-orange" />
+        <StatCard icon={UserPlus} label="New Users (today)" value={fmtNumber(an?.newUsersToday)} gradient="gradient-purple" change={pct(an?.newUsersToday, an?.newUsersYesterday)} />
+        <StatCard icon={Activity} label="Active Users (24h)" value={fmtNumber(an?.dau)} gradient="gradient-blue" change={pct(an?.dau, an?.dauYesterday)} />
+        <StatCard icon={Coins} label="Coins Sold (today)" value={fmtNumber(an?.revenueToday)} gradient="gradient-green" change={pct(an?.revenueToday, an?.revenueYesterday)} />
+        <StatCard icon={Vote} label="Votes (today)" value={fmtNumber(an?.votesToday)} gradient="gradient-orange" change={pct(an?.votesToday, an?.votesYesterday)} />
       </div>
 
       {/* Charts row. */}
@@ -236,6 +237,16 @@ export default function Dashboard() {
       </div>
     </div>
   );
+}
+
+/**
+ * Percentage change of `current` vs `previous`, rounded. Returns undefined when
+ * there's no meaningful baseline (previous period had 0), so we never render a
+ * misleading "+100%" against an empty comparison window.
+ */
+function pct(current?: number, previous?: number): number | undefined {
+  if (current == null || previous == null || previous <= 0) return undefined;
+  return Math.round(((current - previous) / previous) * 100);
 }
 
 /** Wraps a StatCard so the whole card navigates on click. */

@@ -8,7 +8,7 @@
  * the admin panel keep its existing route URLs while the data moves to D1.
  */
 import { Hono } from "hono";
-import { and, eq, desc, sql, count, ne, like, gte, inArray, or } from "drizzle-orm";
+import { and, eq, desc, sql, count, ne, like, gte, lt, inArray, or } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
@@ -1946,6 +1946,13 @@ adminRoute.get("/analytics", async (c) => {
     (await db.select({ v: count() }).from(tbl).where(gte(col, since)).get())?.v ?? 0;
   const sum = async (col: any, tbl: any, since: number, statusOk?: any) =>
     (await db.select({ v: sql<number>`COALESCE(SUM(${col}),0)` }).from(tbl).where(statusOk ? and(gte(tbl.createdAt, since), statusOk) : gte(tbl.createdAt, since)).get())?.v ?? 0;
+  // Range variants ([since, until)) for previous-period deltas.
+  const cntRange = async (tbl: any, col: any, since: number, until: number) =>
+    (await db.select({ v: count() }).from(tbl).where(and(gte(col, since), lt(col, until))).get())?.v ?? 0;
+  const sumRange = async (col: any, tbl: any, since: number, until: number, statusOk?: any) =>
+    (await db.select({ v: sql<number>`COALESCE(SUM(${col}),0)` }).from(tbl).where(statusOk ? and(gte(tbl.createdAt, since), lt(tbl.createdAt, until), statusOk) : and(gte(tbl.createdAt, since), lt(tbl.createdAt, until))).get())?.v ?? 0;
+  const votersRange = async (since: number, until: number) =>
+    (await db.select({ v: sql<number>`COUNT(DISTINCT ${schema.votes.voterUid})` }).from(schema.votes).where(and(gte(schema.votes.createdAt, since), lt(schema.votes.createdAt, until))).get())?.v ?? 0;
 
   const totalUsers = (await db.select({ v: count() }).from(schema.users).get())?.v ?? 0;
   const newUsersToday = await cnt(schema.users, schema.users.createdAt, nowMs - day);
@@ -1957,6 +1964,7 @@ adminRoute.get("/analytics", async (c) => {
   const mau = (await db.select({ v: sql<number>`COUNT(DISTINCT ${schema.votes.voterUid})` }).from(schema.votes).where(gte(schema.votes.createdAt, nowMs - 30 * day)).get())?.v ?? 0;
 
   const revenueToday = await sum(schema.payments.amount, schema.payments, nowMs - day, eq(schema.payments.status, "success"));
+  const revenue7d = await sum(schema.payments.amount, schema.payments, nowMs - 7 * day, eq(schema.payments.status, "success"));
   const revenue30d = await sum(schema.payments.amount, schema.payments, nowMs - 30 * day, eq(schema.payments.status, "success"));
 
   const matchesToday = await cnt(schema.contestMatches, schema.contestMatches.createdAt, nowMs - day);
@@ -1965,12 +1973,25 @@ adminRoute.get("/analytics", async (c) => {
   const activeMatches = (await db.select({ v: count() }).from(schema.contestMatches).where(eq(schema.contestMatches.status, "active")).get())?.v ?? 0;
   const completedMatches = (await db.select({ v: count() }).from(schema.contestMatches).where(eq(schema.contestMatches.status, "completed")).get())?.v ?? 0;
 
+  // Previous-period comparators so the dashboard can show honest deltas:
+  //   * "today" cards compare against yesterday (24-48h ago),
+  //   * weekly momentum compares the last 7 days against the 7 days before that.
+  const newUsersYesterday = await cntRange(schema.users, schema.users.createdAt, nowMs - 2 * day, nowMs - day);
+  const votesYesterday = await cntRange(schema.votes, schema.votes.createdAt, nowMs - 2 * day, nowMs - day);
+  const dauYesterday = await votersRange(nowMs - 2 * day, nowMs - day);
+  const revenueYesterday = await sumRange(schema.payments.amount, schema.payments, nowMs - 2 * day, nowMs - day, eq(schema.payments.status, "success"));
+  const newUsersPrev7d = await cntRange(schema.users, schema.users.createdAt, nowMs - 14 * day, nowMs - 7 * day);
+  const revenuePrev7d = await sumRange(schema.payments.amount, schema.payments, nowMs - 14 * day, nowMs - 7 * day, eq(schema.payments.status, "success"));
+
   return c.json({
     totalUsers, newUsersToday, newUsers7d, newUsers30d,
     dau, mau,
-    revenueToday, revenue30d,
+    revenueToday, revenue7d, revenue30d,
     matchesToday, votesToday, postsToday,
     activeMatches, completedMatches,
+    // deltas
+    newUsersYesterday, votesYesterday, dauYesterday, revenueYesterday,
+    newUsersPrev7d, revenuePrev7d,
   });
 });
 

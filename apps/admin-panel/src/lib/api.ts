@@ -270,9 +270,12 @@ export const api = {
   analytics: () =>
     get<{
       totalUsers: number; newUsersToday: number; newUsers7d: number; newUsers30d: number;
-      dau: number; mau: number; revenueToday: number; revenue30d: number;
+      dau: number; mau: number; revenueToday: number; revenue7d: number; revenue30d: number;
       matchesToday: number; votesToday: number; postsToday: number;
       activeMatches: number; completedMatches: number;
+      // previous-period comparators (for week-over-week / day-over-day deltas)
+      newUsersYesterday: number; votesYesterday: number; dauYesterday: number; revenueYesterday: number;
+      newUsersPrev7d: number; revenuePrev7d: number;
     }>("/admin/analytics"),
 
   // ops (manual cron triggers)
