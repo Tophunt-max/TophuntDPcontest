@@ -74,6 +74,11 @@ const CONCURRENCY = parseInt(val("concurrency", "3"), 10) || 3;
 const BATCH = parseInt(val("batch", "20"), 10) || 20;
 const DELAY = parseInt(val("delay", "300"), 10) || 300;
 const OUT = val("out", "");
+// Explicit URL list (one URL per line). Bypasses the domain CDX crawl and the
+// resume-skip step entirely: every URL in the file is (re)processed, with each
+// URL's snapshot timestamps fetched on demand — same path as --source=done.
+// Used to (re)import a targeted set, e.g. the "pending" rows from the log.
+const URLS_FILE = val("urls-file", "");
 
 const WORKER_URL = (process.env.WORKER_URL || "").replace(/\/$/, "");
 const ADMIN_PROXY_SECRET = process.env.ADMIN_PROXY_SECRET || "";
@@ -261,6 +266,34 @@ function pickContent(root) {
   for (const sel of selectors) {
     const el = root.querySelector(sel);
     if (el && el.innerHTML && el.text.trim().length > 120) return el;
+  }
+  return null;
+}
+
+/**
+ * Fallback content extractor for pages node-html-parser mis-nests. Some posts
+ * (e.g. later GeneratePress-themed captures) embed <script> ad blocks directly
+ * inside `.entry-content`; with our parse options the tree breaks there and the
+ * content container becomes unreachable via querySelector. Pull the container
+ * straight out of the RAW html by balanced-<div> matching and return its inner
+ * HTML, which can then be parsed on its own (intact) tree.
+ */
+function extractContentFragment(html) {
+  const classes = ["entry-content", "td-post-content", "post-content", "single-content"];
+  for (const cls of classes) {
+    const re = new RegExp(`<div[^>]*class="[^"]*\\b${cls}\\b[^"]*"[^>]*>`, "i");
+    const m = re.exec(html);
+    if (!m) continue;
+    const start = m.index + m[0].length;
+    const tag = /<(\/?)div\b[^>]*>/gi;
+    tag.lastIndex = start;
+    let depth = 1;
+    let t;
+    while ((t = tag.exec(html))) {
+      depth += t[1] ? -1 : 1;
+      if (depth === 0) return html.slice(start, t.index);
+    }
+    return html.slice(start); // unbalanced markup — take the remainder
   }
   return null;
 }
@@ -578,7 +611,17 @@ async function extractPost(html, url, timestamp, migrate = true) {
   })();
 
   stripWayback(root);
-  const contentEl = pickContent(root);
+  let contentEl = pickContent(root);
+  if (!contentEl) {
+    // Broken tree recovery: pull the content container from the raw html and
+    // re-parse just that fragment (scripts kept as text -> tree stays intact).
+    const frag = extractContentFragment(html);
+    if (frag) {
+      const fragRoot = parse(frag);
+      stripWayback(fragRoot);
+      if (fragRoot.innerHTML && fragRoot.text.trim().length > 120) contentEl = fragRoot;
+    }
+  }
   if (!contentEl) throw new Error("no content element");
 
   rewriteLinks(contentEl);
@@ -710,7 +753,21 @@ async function pushProgress(state, force = false) {
 // --------------------------------------------------------------------------
 async function main() {
   let snapshots;
-  if (SOURCE === "done") {
+  if (URLS_FILE) {
+    // Targeted (re)import from an explicit URL list — no domain CDX crawl.
+    const raw = fs.readFileSync(URLS_FILE, "utf8");
+    const set = new Map();
+    for (const line of raw.split("\n")) {
+      const u = line.trim();
+      if (u) set.set(u.toLowerCase(), u);
+    }
+    snapshots = [...set.values()].map((u) => ({
+      url: u.replace(/^http:/, "https:").replace(":80/", "/"),
+      timestamps: [],
+    }));
+    snapshots.sort((a, b) => a.url.localeCompare(b.url));
+    log(`→ URL-file source: ${snapshots.length} URLs from ${URLS_FILE} (timestamps fetched per-URL).`);
+  } else if (SOURCE === "done") {
     // Re-import: take the URL list from the import log (already-processed +
     // failed) and fetch each URL's timestamps on demand. Avoids the domain CDX.
     requireWorker();
@@ -753,7 +810,7 @@ async function main() {
     const failedUrls = new Set(failed.map((r) => (r.url || "").replace(/\/$/, "").toLowerCase()));
     snapshots = snapshots.filter((s) => failedUrls.has(s.url.replace(/^https?:\/\//i, "").replace(":80/", "/").replace(/\/$/, "").toLowerCase()) || failedUrls.has(s.url.replace(/\/$/, "").toLowerCase()));
     log(`→ Retry mode: ${snapshots.length} previously-failed URLs.`);
-  } else if (!FRESH && !DRY_RUN && SOURCE !== "done") {
+  } else if (!FRESH && !DRY_RUN && SOURCE !== "done" && !URLS_FILE) {
     // Resume: skip URLs already handled.
     try {
       const { urls } = await workerGet("/admin/blog/import/done-urls");
