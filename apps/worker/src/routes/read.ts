@@ -136,14 +136,17 @@ const mapBlogPost = (r: any, opts: { withContent?: boolean } = {}) => ({
 });
 
 // ================= CONTESTS =================
-readRoute.get("/contests", optionalAuth, async (c) => {
-  const db = getDb(c.env);
-  const type = c.req.query("type");
-  const conds = [eq(schema.contests.status, "live")];
-  if (type) conds.push(eq(schema.contests.type, type));
-  const rows = await db.select().from(schema.contests).where(and(...conds)).all();
-  return c.json(rows.map(mapContest));
-});
+readRoute.get("/contests", optionalAuth, async (c) =>
+  // Public, user-agnostic list — edge-cache 60s to skip D1 on repeat loads.
+  edgeCached(c, 60, async () => {
+    const db = getDb(c.env);
+    const type = c.req.query("type");
+    const conds = [eq(schema.contests.status, "live")];
+    if (type) conds.push(eq(schema.contests.type, type));
+    const rows = await db.select().from(schema.contests).where(and(...conds)).all();
+    return rows.map(mapContest);
+  }),
+);
 
 readRoute.get("/contests/:id", optionalAuth, async (c) => {
   const db = getDb(c.env);
@@ -167,6 +170,7 @@ readRoute.get("/matches", optionalAuth, async (c) => {
   const cached = await cacheGet(c.env, cacheKey);
   if (cached) {
     if (cached.nextCursor != null) c.header("X-Next-Cursor", String(cached.nextCursor));
+    c.header("Cache-Control", "public, max-age=15");
     return c.json(cached.matches);
   }
 
@@ -210,7 +214,8 @@ readRoute.get("/matches", optionalAuth, async (c) => {
   }
 
   if (nextCursor != null) c.header("X-Next-Cursor", String(nextCursor));
-  await cachePut(c.env, cacheKey, { matches, nextCursor }, 15);
+  await cachePut(c.env, cacheKey, { matches, nextCursor }, 30);
+  c.header("Cache-Control", "public, max-age=15");
   return c.json(matches);
 });
 
@@ -259,7 +264,8 @@ readRoute.get("/leaderboard", optionalAuth, async (c) => {
     .limit(limit)
     .all();
   const enriched = rows.map((r: any) => ({ ...r, profileImageUrlThumb: avatarUrl(c.env, r.profileImageUrl) }));
-  await cachePut(c.env, cacheKey, enriched, 30);
+  await cachePut(c.env, cacheKey, enriched, 60);
+  c.header("Cache-Control", "public, max-age=30");
   return c.json(enriched);
 });
 
@@ -749,7 +755,10 @@ readRoute.get("/blog", async (c) => {
 
   const nextCursor = rows.length === limit ? rows[rows.length - 1].publishedAt : null;
   const payload = { posts: rows.map((r) => mapBlogPost(r)), nextCursor };
-  if (cacheable) await cachePut(c.env, cacheKey, payload, 30);
+  if (cacheable) {
+    await cachePut(c.env, cacheKey, payload, 120);
+    c.header("Cache-Control", "public, max-age=60");
+  }
   return c.json(payload);
 });
 
