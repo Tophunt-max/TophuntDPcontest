@@ -13,6 +13,7 @@ import { requireAuth, optionalAuth } from "../middleware/auth";
 import { getAppConfig } from "../lib/settings";
 import { enrichMatchMedia, avatarUrl, thumbUrl, optimizedUrl } from "../lib/media";
 import { userCacheKey, blogPostCacheKey, cacheGetJson, cachePutJson } from "../lib/cache";
+import { getLiveTally } from "../lib/voteCounter";
 
 export const readRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -230,6 +231,19 @@ readRoute.get("/matches/:id", optionalAuth, async (c) => {
   const row = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, id)).get();
   if (!row) return c.json(null);
   const out: any = mapMatch(row);
+  // For LIVE battles, surface the authoritative vote tally straight from the
+  // per-match VoteCounter DO — D1 only holds the last (up to 5s) flushed
+  // snapshot. Read-only (no flush, no D1 write); fail-open to the D1 snapshot.
+  if (row.status === "active" && out.userA?.uid && out.userB?.uid) {
+    try {
+      const t = await getLiveTally(c.env, id, out.userA.uid, out.userB.uid);
+      out.userA = { ...out.userA, votes: t.votesA };
+      out.userB = { ...out.userB, votes: t.votesB };
+      out.totalVotes = t.total;
+    } catch {
+      /* DO unreachable — keep D1 snapshot values */
+    }
+  }
   const uid = c.get("user")?.uid;
   if (uid) {
     const liked = await db.select().from(schema.matchLikes).where(and(eq(schema.matchLikes.matchId, id), eq(schema.matchLikes.userId, uid))).get();

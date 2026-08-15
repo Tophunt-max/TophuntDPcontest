@@ -110,6 +110,12 @@ apiRoute.post("/", async (c) => {
     // ================= CONTEST MATCHES =================
     case "startMatch": {
       const { contestId, mediaUrl, mediaType, caption, deviceId, invitedUid } = body;
+      // Idempotency fallback: if the client didn't send an explicit key, derive
+      // a short-lived one so a double-tap / retry can't create two matches and
+      // charge two entry fees. Released below if the action throws.
+      const startIdemKey = body.idempotencyKey ? null : `startMatch:${contestId}:${mediaUrl || ""}`;
+      if (startIdemKey) await enforceIdempotency(env, uid, startIdemKey, 60);
+      try {
       const contest = await db.select().from(schema.contests).where(eq(schema.contests.id, contestId)).get();
       if (!contest) throw httpsError("not-found", "Contest template not found.");
       const user = await db.select().from(schema.users).where(eq(schema.users.uid, uid)).get();
@@ -167,6 +173,10 @@ apiRoute.post("/", async (c) => {
       }).catch(() => {});
 
       return c.json({ matchId, joinId: joinIdA });
+      } catch (e) {
+        if (startIdemKey) await releaseIdempotency(env, uid, startIdemKey);
+        throw e;
+      }
     }
 
     case "joinMatch": {
@@ -176,10 +186,23 @@ apiRoute.post("/", async (c) => {
       if (match.status !== "waiting_for_opponent") throw httpsError("failed-precondition", "Match unavailable.");
       const userA = match.userA as any;
       if (userA?.uid === uid) throw httpsError("failed-precondition", "You cannot join your own match.");
+      // Invite-only matches: only the invited user may join.
+      if (match.isPrivate && match.invitedUid && match.invitedUid !== uid)
+        throw httpsError("permission-denied", "This is a private match — you weren't invited.");
+      // Anti-collusion: block joining from the same device as the creator
+      // (multi-account self-matching to farm rewards).
+      if (userA?.deviceId && deviceId && String(userA.deviceId) === String(deviceId))
+        throw httpsError("failed-precondition", "You cannot join a match from the same device as the creator.");
 
       const user = await db.select().from(schema.users).where(eq(schema.users.uid, uid)).get();
       if (!user) throw httpsError("not-found", "User document not found.");
       const fee = Number(match.entryFee || 0) / 2;
+      // Voting window starts on activation and lasts the contest's configured
+      // voteDurationDays — NOT the waiting-room autoCancelHours (which only
+      // bounds how long a match may sit waiting for an opponent).
+      const voteDays = match.contestId
+        ? Number((await db.select({ d: schema.contests.voteDurationDays }).from(schema.contests).where(eq(schema.contests.id, match.contestId)).get())?.d || 1)
+        : 1;
 
       const deduct = await db
         .update(schema.users)
@@ -196,6 +219,7 @@ apiRoute.post("/", async (c) => {
         .update(schema.contestMatches)
         .set({
           status: "active", joinIdB, activatedAt: ts,
+          expiresAt: ts + Math.max(1, voteDays) * 24 * 60 * 60 * 1000,
           userB: {
             uid, joinId: joinIdB, username: user.username || "Anonymous",
             profilePic: user.profileImageUrl || "", mediaUrl, mediaType: mediaType || "photo",
@@ -238,9 +262,17 @@ apiRoute.post("/", async (c) => {
         throw httpsError("invalid-argument", "Missing matchId, votedForUid, or deviceId.");
       // Throttle abusive vote bursts (per user): max 60 / minute.
       await rateLimit(env, `vote:${uid}`, 60, 60);
+      // Per-IP velocity cap — slows multi-account vote stuffing from one network
+      // beyond the per-user and per-match-device guards (max 40 / minute / IP).
+      const voteIp = c.req.header("cf-connecting-ip") || c.req.header("x-real-ip") || "";
+      if (voteIp) await rateLimit(env, `vote:ip:${voteIp}`, 40, 60);
       const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, matchId)).get();
       if (!match) throw httpsError("not-found", "Match not found.");
       if (match.status !== "active") throw httpsError("failed-precondition", "Battle is not active.");
+      // Voting closes exactly at expiry — don't accept votes in the gap before
+      // the resolver cron runs (which can lag up to its 10-min interval).
+      if (match.expiresAt && Number(match.expiresAt) <= now())
+        throw httpsError("failed-precondition", "Voting has closed for this battle.");
       const userA = match.userA as any;
       const userB = match.userB as any;
       if (uid === userA?.uid || (userB && uid === userB.uid))

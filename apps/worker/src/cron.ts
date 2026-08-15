@@ -42,6 +42,29 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
     console.error("[resolveMatch] vote finalize failed, using D1 snapshot", match.id, e);
   }
 
+  // Anti-collusion: if BOTH participants entered from the same device, the
+  // match is void — refund both entry fees and pay NO reward. This closes the
+  // self-match exploit (create + join from one phone to farm rewardCoins).
+  if (userA.deviceId && userB.deviceId && String(userA.deviceId) === String(userB.deviceId)) {
+    const ts = now();
+    const claim = await db.update(schema.contestMatches)
+      .set({ status: "cancelled", completedAt: ts })
+      .where(and(eq(schema.contestMatches.id, match.id), eq(schema.contestMatches.status, "active")))
+      .run();
+    if (claim.meta.changes === 0) return; // already resolved by another run
+    const refund = Number(match.entryFee || 0) / 2;
+    if (refund > 0) {
+      await db.batch([
+        db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${refund}` }).where(eq(schema.users.uid, userA.uid)),
+        db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${refund}` }).where(eq(schema.users.uid, userB.uid)),
+        db.insert(schema.coinTransactions).values({ id: newId(), uid: userA.uid, amount: refund, type: "contest_refund", matchId: match.id, contestId: match.contestId, description: "Match voided (same-device entries)", createdAt: ts }),
+        db.insert(schema.coinTransactions).values({ id: newId(), uid: userB.uid, amount: refund, type: "contest_refund", matchId: match.id, contestId: match.contestId, description: "Match voided (same-device entries)", createdAt: ts }),
+      ]);
+    }
+    console.warn("[resolveMatch] voided same-device match", match.id, userA.uid, userB.uid);
+    return;
+  }
+
   // Tie -> refund both. Atomically claim the match (active -> completed) FIRST
   // so an overlapping/duplicate cron run can't refund twice.
   if (votesA === votesB) {
@@ -121,15 +144,29 @@ export async function resolveContests(env: Env): Promise<void> {
   const db = getDb(env);
   const nowMs = now();
 
-  const active = await db.select().from(schema.contestMatches)
-    .where(and(eq(schema.contestMatches.status, "active"), lte(schema.contestMatches.expiresAt, nowMs)))
-    .limit(50).all();
-  for (const m of active) await resolveMatch(env, m);
+  // Drain the backlog in pages so a burst of matches expiring at once is fully
+  // resolved in this run instead of trickling 50 per 10-min tick (which would
+  // delay payouts/refunds for hours). resolveMatch/refund flip the row out of
+  // its status, so each page naturally advances without an offset. A safety cap
+  // bounds worst-case cron time.
+  const PAGE = 50;
+  const MAX_PAGES = 20; // up to 1000 matches per category per run
 
-  const waiting = await db.select().from(schema.contestMatches)
-    .where(and(eq(schema.contestMatches.status, "waiting_for_opponent"), lte(schema.contestMatches.expiresAt, nowMs)))
-    .limit(50).all();
-  for (const m of waiting) await refundWaitingMatch(env, m);
+  for (let i = 0; i < MAX_PAGES; i++) {
+    const active = await db.select().from(schema.contestMatches)
+      .where(and(eq(schema.contestMatches.status, "active"), lte(schema.contestMatches.expiresAt, nowMs)))
+      .limit(PAGE).all();
+    for (const m of active) await resolveMatch(env, m);
+    if (active.length < PAGE) break;
+  }
+
+  for (let i = 0; i < MAX_PAGES; i++) {
+    const waiting = await db.select().from(schema.contestMatches)
+      .where(and(eq(schema.contestMatches.status, "waiting_for_opponent"), lte(schema.contestMatches.expiresAt, nowMs)))
+      .limit(PAGE).all();
+    for (const m of waiting) await refundWaitingMatch(env, m);
+    if (waiting.length < PAGE) break;
+  }
 
   // ending soon (< 60 min), not yet notified
   const soon = await db.select().from(schema.contestMatches)
@@ -218,4 +255,9 @@ export async function monthlyHallOfFame(env: Env): Promise<void> {
     await db.insert(schema.coinTransactions).values({ id: newId(), uid: u.uid, amount: reward, type: "monthly_hall_of_fame_reward", description: `Hall of Fame rank #${i + 1}`, createdAt: ts });
     await createNotification(env, u.uid, { title: "Monthly Hall of Fame! 🏆", body: `Congratulations! You ranked #${i + 1} this month. You've earned ${reward} Dpcoins and the ${badges[i]}!`, type: "hall-of-fame", targetId: "profile" });
   }
+
+  // Reset the monthly leaderboard for EVERYONE (not just the top 3) so next
+  // month starts clean — otherwise non-winners' monthlyWins accumulate forever
+  // and the "monthly" ranking silently becomes an all-time cumulative one.
+  await db.update(schema.users).set({ monthlyWins: 0, updatedAt: now() }).where(gt(schema.users.monthlyWins, 0));
 }

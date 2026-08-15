@@ -50,3 +50,18 @@ export async function finalizeVotes(
 ): Promise<{ votesA: number; votesB: number; total: number }> {
   return stub(env, matchId).flushTally(matchId, uidA, uidB);
 }
+
+/**
+ * Read-only authoritative tally from the per-match DO. Unlike finalizeVotes it
+ * does NOT flush to D1 (no write), so it's safe to call on hot read paths (e.g.
+ * the live match-detail view) to show up-to-the-second counts instead of D1's
+ * last-flushed snapshot.
+ */
+export async function getLiveTally(
+  env: Env,
+  matchId: string,
+  uidA: string,
+  uidB: string,
+): Promise<{ votesA: number; votesB: number; total: number }> {
+  return stub(env, matchId).tally(matchId, uidA, uidB);
+}
