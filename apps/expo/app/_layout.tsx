@@ -1,7 +1,7 @@
 import { ThemeProvider } from '@react-navigation/native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import 'react-native-reanimated';
 import { QueryClient, QueryClientProvider, QueryCache, MutationCache, onlineManager, focusManager } from '@tanstack/react-query';
 import { Provider as PaperProvider } from 'react-native-paper';
@@ -134,7 +134,7 @@ function RootLayoutNav() {
           // Remove leading slash if present to avoid double slash issues if needed, 
           // but router.push works well with absolute paths too.
           try {
-             router.push(data.url);
+             router.push(data.url as any);
           } catch (e) {
              console.error("Navigation failed", e);
              router.push('/notifications');
@@ -243,16 +243,31 @@ function RootLayoutNav() {
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
-  // Preload @expo/vector-icons glyph fonts (same approach as the Voxcall app) so
-  // icons render on web: registering the @font-face makes the glyphs display.
-  // Non-gating — the app renders immediately and icons swap in once the font
-  // loads (on native @expo/vector-icons also auto-loads these).
-  useFonts({
+  // Preload @expo/vector-icons glyph fonts. On web the glyphs only render once
+  // the @font-face has loaded, so we briefly GATE the first paint until the
+  // fonts are ready — otherwise icons show as blank boxes (as they did on the
+  // web build). A timeout fallback guarantees the app still renders even if a
+  // font fails to load, so we never hang on a font error.
+  const [iconFontsLoaded] = useFonts({
     ...Ionicons.font,
     ...MaterialCommunityIcons.font,
     ...FontAwesome5.font,
     ...Feather.font,
   });
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    if (iconFontsLoaded) {
+      setReady(true);
+      return;
+    }
+    // Safety valve: render anyway after 2s even if fonts are slow / failed.
+    const t = setTimeout(() => setReady(true), 2000);
+    return () => clearTimeout(t);
+  }, [iconFontsLoaded]);
+
+  if (!ready) {
+    return <View style={{ flex: 1, backgroundColor: colorScheme === 'dark' ? '#0F0F13' : '#F9F9FB' }} />;
+  }
 
   return (
     <ErrorBoundary>

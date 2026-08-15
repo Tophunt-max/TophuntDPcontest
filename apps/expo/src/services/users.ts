@@ -51,6 +51,31 @@ export async function fetchSuggestedUsers(currentUserCoords?: { lat: number; lng
   }
 }
 
+/**
+ * Server-side user search (username prefix match, min 2 chars). Backed by the
+ * Worker's /read/users/search endpoint, so results aren't limited to the
+ * already-loaded suggested list.
+ */
+export async function searchUsers(q: string) {
+  const query = q.trim();
+  if (query.length < 2) return [];
+  try {
+    const raw: any[] = (await readApi("/read/users/search", { q: query })) || [];
+    return raw.map((d) => ({
+      id: d.id,
+      name: d.fullName || d.username || "User",
+      username: d.username || "user",
+      avatar:
+        d.avatarUrl ||
+        d.profileImageUrl ||
+        `https://ui-avatars.com/api/?name=${d.username || "User"}&background=random`,
+    }));
+  } catch (error) {
+    console.error("Error searching users:", error);
+    return [];
+  }
+}
+
 export const toggleFollowService = async (targetUserId: string) => {
   try {
     return await callApi("toggleFollow", { targetUserId });

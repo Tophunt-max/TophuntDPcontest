@@ -2,12 +2,14 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, SafeAreaView, useColorScheme, Image, TouchableOpacity,
   ScrollView, Dimensions, TextInput, Animated as RNAnimated, FlatList,
+  RefreshControl, Platform, Pressable, ActivityIndicator,
 } from 'react-native';
 import { BottomNav } from '@/src/components/home/BottomNav';
 import { Ionicons, MaterialCommunityIcons, FontAwesome5 } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import * as Haptics from 'expo-haptics';
 import { contestService } from '@/src/services/contests/contestService';
-import { fetchSuggestedUsers, toggleFollowService } from '@/src/services/users';
+import { fetchSuggestedUsers, toggleFollowService, searchUsers } from '@/src/services/users';
 import { useAuth } from '@/src/hooks/useAuth';
 import { useProfile } from '@/src/hooks/useProfileData';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -21,7 +23,7 @@ const GRID_GAP = 14;
 const PEOPLE_CARD_W = (CONTENT_W - GRID_GAP) / 2;
 const TEMPLATE_W = 168;
 
-type TabKey = 'photo' | 'video' | 'users';
+type TabKey = 'all' | 'photo' | 'video' | 'users';
 
 const TABS: {
   key: TabKey;
@@ -30,6 +32,7 @@ const TABS: {
   color: string;
   grad: [string, string];
 }[] = [
+  { key: 'all', label: 'All', icon: 'apps', color: '#FF4D67', grad: ['#FF4D67', '#8B5CF6'] },
   { key: 'photo', label: 'Photos', icon: 'image', color: '#FF4D67', grad: ['#FF4D67', '#FF7A45'] },
   { key: 'video', label: 'Videos', icon: 'videocam', color: '#6A5AE0', grad: ['#6A5AE0', '#8B5CF6'] },
   { key: 'users', label: 'People', icon: 'people', color: '#22C55E', grad: ['#22C55E', '#16A34A'] },
@@ -44,9 +47,14 @@ const QUICK_ACTIONS: {
 }[] = [
   { key: 'leaderboard', label: 'Ranks', icon: 'trophy', grad: ['#FFB300', '#FF7A00'], route: '/explore/leaderboard' },
   { key: 'contests', label: 'Contests', icon: 'flame', grad: ['#FF4D67', '#FF7A45'], route: '/contests' },
+  { key: 'joined', label: 'My Battles', icon: 'game-controller', grad: ['#0EA5E9', '#2563EB'], route: '/contest/joined' },
   { key: 'rewards', label: 'Rewards', icon: 'gift', grad: ['#22C55E', '#16A34A'], route: '/wallet/store' },
   { key: 'wallet', label: 'Wallet', icon: 'wallet', grad: ['#6A5AE0', '#8B5CF6'], route: '/wallet' },
 ];
+
+const gradForType = (t?: string): [string, string] =>
+  t === 'video' ? ['#6A5AE0', '#8B5CF6'] : ['#FF4D67', '#FF7A45'];
+const colorForType = (t?: string): string => (t === 'video' ? '#6A5AE0' : '#FF4D67');
 
 export default function DiscoverScreen() {
   const router = useRouter();
@@ -69,17 +77,25 @@ export default function DiscoverScreen() {
   const [availableContests, setAvailableContests] = useState<any[]>([]);
   const [waitingMatches, setWaitingMatches] = useState<any[]>([]);
   const [suggestedUsers, setSuggestedUsers] = useState<any[]>([]);
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [searching, setSearching] = useState(false);
   const [followedUsers, setFollowedUsers] = useState<Set<string>>(new Set());
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useState<TabKey>('photo');
+  const [activeTab, setActiveTab] = useState<TabKey>('all');
 
   const activeMeta = TABS.find(t => t.key === activeTab)!;
   const activeColor = activeMeta.color;
 
+  const profileAny = currentUserProfile as any;
+  const coins = Number(profileAny?.Dpcoin ?? profileAny?.dpcoin ?? 0);
+  const avatarUri =
+    profileAny?.profileImageUrl ||
+    `https://ui-avatars.com/api/?name=${profileAny?.fullName || 'U'}&background=random`;
+
   useEffect(() => {
-    if (currentUserProfile && currentUserProfile.following) {
-      setFollowedUsers(new Set(currentUserProfile.following));
+    if (currentUserProfile && (currentUserProfile as any).following) {
+      setFollowedUsers(new Set((currentUserProfile as any).following));
     }
   }, [currentUserProfile]);
 
@@ -87,6 +103,20 @@ export default function DiscoverScreen() {
     if (!authLoading) fetchExploreData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, user]);
+
+  // Debounced server-side people search (min 2 chars, only on the People tab).
+  useEffect(() => {
+    if (activeTab !== 'users') return;
+    const query = searchQuery.trim();
+    if (query.length < 2) { setSearchResults([]); setSearching(false); return; }
+    setSearching(true);
+    const t = setTimeout(async () => {
+      const res = await searchUsers(query);
+      setSearchResults(res);
+      setSearching(false);
+    }, 350);
+    return () => clearTimeout(t);
+  }, [searchQuery, activeTab]);
 
   const fetchExploreData = async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true); else setLoading(true);
@@ -108,16 +138,19 @@ export default function DiscoverScreen() {
     }
   };
 
+  const switchTab = (key: TabKey) => {
+    if (Platform.OS !== 'web') Haptics.selectionAsync().catch(() => {});
+    setActiveTab(key);
+  };
+
   const handleAction = (action: () => void) => {
-    if (!user) {
-      router.push(`/auth/login?redirect=${encodeURIComponent('/explore')}`);
-    } else {
-      action();
-    }
+    if (!user) router.push(`/auth/login?redirect=${encodeURIComponent('/explore')}`);
+    else action();
   };
 
   const handleFollow = async (targetId: string) => {
     handleAction(async () => {
+      if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
       const isFollowing = followedUsers.has(targetId);
       setFollowedUsers(prev => {
         const s = new Set(prev);
@@ -139,36 +172,53 @@ export default function DiscoverScreen() {
 
   // --- Filtering ---
   const q = searchQuery.trim().toLowerCase();
+  const matchType = (t?: string) => {
+    if (activeTab === 'all') return true;
+    if (activeTab === 'photo') return t === 'photo' || !t;
+    if (activeTab === 'video') return t === 'video';
+    return false;
+  };
   const filteredContests = availableContests.filter(c =>
-    (c.type === activeTab || (!c.type && activeTab === 'photo')) &&
-    (!q || c.title?.toLowerCase().includes(q))
+    matchType(c.type) && (!q || c.title?.toLowerCase().includes(q))
   );
   const filteredMatches = waitingMatches.filter(m =>
-    (m.type === activeTab || (!m.type && activeTab === 'photo')) &&
-    (!q || m.title?.toLowerCase().includes(q) || m.userA?.username?.toLowerCase().includes(q))
+    matchType(m.type) && (!q || m.title?.toLowerCase().includes(q) || m.userA?.username?.toLowerCase().includes(q))
   );
-  const filteredUsers = suggestedUsers.filter(u =>
-    !q || u.name?.toLowerCase().includes(q) || u.username?.toLowerCase().includes(q)
-  );
+  const filteredUsers = q.length >= 2
+    ? searchResults
+    : suggestedUsers.filter(u => !q || u.name?.toLowerCase().includes(q) || u.username?.toLowerCase().includes(q));
 
   // ================================================================
   // HEADER (non-sticky)
   // ================================================================
   const renderHeader = () => (
     <View style={{ backgroundColor: bg }}>
-      {/* Top bar */}
+      {/* Top bar: avatar + title + coin balance + notifications */}
       <View style={styles.topBar}>
-        <View style={{ flex: 1 }}>
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={() => handleAction(() => router.push('/profile'))}
+        >
+          <Image source={{ uri: avatarUri }} style={[styles.headerAvatar, { borderColor: activeColor }]} />
+        </TouchableOpacity>
+        <View style={{ flex: 1, marginLeft: 12 }}>
           <Text style={[styles.kicker, { color: activeColor }]}>DISCOVER</Text>
           <Text style={[styles.title, { color: textColor }]}>Explore</Text>
         </View>
-        <TouchableOpacity
-          activeOpacity={0.85}
-          style={[styles.iconBtn, { backgroundColor: chipBg }]}
-          onPress={() => handleAction(() => router.push('/explore/leaderboard'))}
-        >
-          <Ionicons name="trophy" size={20} color="#FFB300" />
-        </TouchableOpacity>
+
+        {user && (
+          <TouchableOpacity
+            activeOpacity={0.85}
+            style={[styles.coinChip, { backgroundColor: chipBg }]}
+            onPress={() => router.push('/wallet/store' as any)}
+          >
+            <FontAwesome5 name="coins" size={13} color="#FFB300" />
+            <Text style={[styles.coinText, { color: textColor }]}>{coins.toLocaleString()}</Text>
+            <View style={styles.coinPlus}>
+              <Ionicons name="add" size={13} color="#FFF" />
+            </View>
+          </TouchableOpacity>
+        )}
         <TouchableOpacity
           activeOpacity={0.85}
           style={[styles.iconBtn, { backgroundColor: chipBg, marginLeft: 10 }]}
@@ -184,13 +234,15 @@ export default function DiscoverScreen() {
           <Ionicons name="search" size={20} color={activeColor} />
           <TextInput
             style={[styles.searchInput, { color: textColor }]}
-            placeholder={`Search ${activeTab === 'users' ? 'people' : activeTab}...`}
+            placeholder={activeTab === 'users' ? 'Search people by @username...' : 'Search battles...'}
             placeholderTextColor={subText}
             value={searchQuery}
             onChangeText={setSearchQuery}
             returnKeyType="search"
+            autoCapitalize="none"
           />
-          {searchQuery.length > 0 && (
+          {searching && activeTab === 'users' && <ActivityIndicator size="small" color={activeColor} />}
+          {searchQuery.length > 0 && !searching && (
             <TouchableOpacity onPress={() => setSearchQuery('')}>
               <Ionicons name="close-circle" size={18} color={subText} />
             </TouchableOpacity>
@@ -199,23 +251,14 @@ export default function DiscoverScreen() {
       </View>
 
       {/* Quick action shortcuts */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.quickRow}
-      >
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.quickRow}>
         {QUICK_ACTIONS.map(a => (
-          <TouchableOpacity
-            key={a.key}
-            activeOpacity={0.85}
-            style={styles.quickItem}
-            onPress={() => handleAction(() => router.push(a.route as any))}
-          >
+          <ScaleTouchable key={a.key} style={styles.quickItem} onPress={() => handleAction(() => router.push(a.route as any))}>
             <LinearGradient colors={a.grad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.quickCircle}>
               <Ionicons name={a.icon} size={22} color="#FFF" />
             </LinearGradient>
             <Text style={[styles.quickLabel, { color: subText }]}>{a.label}</Text>
-          </TouchableOpacity>
+          </ScaleTouchable>
         ))}
       </ScrollView>
     </View>
@@ -232,26 +275,19 @@ export default function DiscoverScreen() {
           const count = tab.key === 'users' ? filteredUsers.length : filteredMatches.length;
           if (isActive) {
             return (
-              <TouchableOpacity key={tab.key} activeOpacity={0.9} onPress={() => setActiveTab(tab.key)}>
+              <TouchableOpacity key={tab.key} activeOpacity={0.9} onPress={() => switchTab(tab.key)}>
                 <LinearGradient colors={tab.grad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.chipActive}>
                   <Ionicons name={tab.icon} size={16} color="#FFF" />
                   <Text style={styles.chipActiveText}>{tab.label}</Text>
                   {count > 0 && (
-                    <View style={styles.chipCount}>
-                      <Text style={styles.chipCountText}>{count}</Text>
-                    </View>
+                    <View style={styles.chipCount}><Text style={styles.chipCountText}>{count}</Text></View>
                   )}
                 </LinearGradient>
               </TouchableOpacity>
             );
           }
           return (
-            <TouchableOpacity
-              key={tab.key}
-              activeOpacity={0.85}
-              style={[styles.chip, { backgroundColor: chipBg }]}
-              onPress={() => setActiveTab(tab.key)}
-            >
+            <TouchableOpacity key={tab.key} activeOpacity={0.85} style={[styles.chip, { backgroundColor: chipBg }]} onPress={() => switchTab(tab.key)}>
               <Ionicons name={tab.icon} size={16} color={subText} />
               <Text style={[styles.chipText, { color: subText }]}>{tab.label}</Text>
             </TouchableOpacity>
@@ -267,53 +303,58 @@ export default function DiscoverScreen() {
   const renderTemplate = (item: any) => {
     if (!item || !item.title) return null;
     const isVideo = item.type === 'video';
-    const prize = item.rewardCoins ?? item.totalEntryFee ?? item.entryFee ?? 0;
+    const prize = Number(item.rewardCoins ?? item.winningCoins ?? 0);
+    const entry = item.totalEntryFee ? Math.round(Number(item.totalEntryFee) / 2) : 0;
     return (
-      <TouchableOpacity
-        key={item.id}
-        activeOpacity={0.9}
+      <ScaleTouchable
         style={styles.templateCard}
         onPress={() => handleAction(() => router.push({
           pathname: isVideo ? '/contest/video' : '/contest/photo',
           params: { contestId: item.id },
         }))}
       >
-        <LinearGradient colors={activeMeta.grad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.templateInner}>
+        <LinearGradient colors={gradForType(item.type)} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.templateInner}>
           <MaterialCommunityIcons
             name={isVideo ? 'movie-open-star' : 'image-filter-hdr'}
-            size={72}
-            color="rgba(255,255,255,0.14)"
-            style={styles.templateWm}
+            size={72} color="rgba(255,255,255,0.14)" style={styles.templateWm}
           />
           <View style={styles.templateIcon}>
             <MaterialCommunityIcons name={isVideo ? 'movie-open-play' : 'image-multiple'} size={20} color="#FFF" />
           </View>
           {prize > 0 && (
             <View style={styles.templatePrize}>
-              <FontAwesome5 name="coins" size={9} color="#FFF" />
+              <FontAwesome5 name="trophy" size={9} color="#FFF" />
               <Text style={styles.templatePrizeText}>{prize}</Text>
             </View>
           )}
           <View style={{ flex: 1, justifyContent: 'flex-end' }}>
             <Text style={styles.templateTitle} numberOfLines={2}>{item.title}</Text>
+            {entry > 0 && (
+              <View style={styles.templateEntry}>
+                <FontAwesome5 name="coins" size={9} color="#FFF" />
+                <Text style={styles.templateEntryText}>Entry {entry}</Text>
+              </View>
+            )}
             <View style={styles.templateCta}>
               <Text style={styles.templateCtaText}>Start Battle</Text>
-              <Ionicons name="arrow-forward" size={12} color={activeColor} />
+              <Ionicons name="arrow-forward" size={12} color={colorForType(item.type)} />
             </View>
           </View>
         </LinearGradient>
-      </TouchableOpacity>
+      </ScaleTouchable>
     );
   };
 
   // ================================================================
-  // VERSUS / LIVE BATTLE CARD (redesigned)
+  // VERSUS / LIVE BATTLE CARD
   // ================================================================
   const renderVersus = (item: any) => {
     const isMyMatch = user && item.userA && item.userA.uid === user.uid;
     const entryFee = item.entryFee ? item.entryFee / 2 : 0;
     const prize = item.entryFee || 0;
     const isVideo = item.type === 'video';
+    const grad = gradForType(item.type);
+    const accent = colorForType(item.type);
 
     const goJoin = () => handleAction(() => {
       if (isMyMatch) { addToast('This is your own contest! Wait for someone to join.', 'info'); return; }
@@ -325,12 +366,9 @@ export default function DiscoverScreen() {
 
     return (
       <View key={item.id} style={[styles.battleCard, { backgroundColor: cardBg, borderColor }]}>
-        {/* Media strip */}
         <View style={styles.battleMedia}>
           <Image source={{ uri: item.userA?.mediaUrl }} style={styles.battleImg} />
           <LinearGradient colors={['transparent', 'rgba(0,0,0,0.75)']} style={StyleSheet.absoluteFill as any} />
-
-          {/* top row: status + prize */}
           <View style={styles.battleTopRow}>
             <View style={styles.statusPill}>
               <View style={styles.liveDot} />
@@ -341,41 +379,30 @@ export default function DiscoverScreen() {
               <Text style={styles.prizeText}>{prize}</Text>
             </View>
           </View>
-
-          {/* creator chip */}
           <View style={styles.creatorChip}>
             <Image source={{ uri: item.userA?.avatar || 'https://via.placeholder.com/50' }} style={styles.creatorAvatar} />
             <Text style={styles.creatorName} numberOfLines={1}>@{item.userA?.username || 'user'}</Text>
           </View>
-
-          {/* VS badge */}
           <View style={styles.vsWrap}>
-            <LinearGradient colors={activeMeta.grad} style={styles.vsCircle}>
-              <Text style={styles.vsText}>VS</Text>
-            </LinearGradient>
+            <LinearGradient colors={grad} style={styles.vsCircle}><Text style={styles.vsText}>VS</Text></LinearGradient>
           </View>
         </View>
 
-        {/* footer */}
         <View style={styles.battleFooter}>
           <View style={{ flex: 1, marginRight: 12 }}>
             <Text style={[styles.battleTitle, { color: textColor }]} numberOfLines={1}>{item.title || 'Untitled Battle'}</Text>
             {!isMyMatch ? (
               <View style={styles.entryRow}>
                 <Text style={[styles.entryLabel, { color: subText }]}>Entry</Text>
-                <FontAwesome5 name="coins" size={10} color={activeColor} />
-                <Text style={[styles.entryVal, { color: activeColor }]}>{entryFee}</Text>
+                <FontAwesome5 name="coins" size={10} color={accent} />
+                <Text style={[styles.entryVal, { color: accent }]}>{entryFee}</Text>
               </View>
             ) : (
               <Text style={[styles.entryLabel, { color: subText, marginTop: 4 }]}>Your battle · waiting for a rival</Text>
             )}
           </View>
           <TouchableOpacity activeOpacity={0.85} onPress={goJoin} disabled={!!isMyMatch}>
-            <LinearGradient
-              colors={isMyMatch ? ['#9AA0AA', '#7E848E'] : activeMeta.grad}
-              start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-              style={styles.joinBtn}
-            >
+            <LinearGradient colors={isMyMatch ? ['#9AA0AA', '#7E848E'] : grad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.joinBtn}>
               <Ionicons name={isMyMatch ? 'hourglass' : 'flash'} size={14} color="#FFF" />
               <Text style={styles.joinBtnText}>{isMyMatch ? 'Waiting' : 'Join Battle'}</Text>
             </LinearGradient>
@@ -422,13 +449,15 @@ export default function DiscoverScreen() {
     if (activeTab === 'users') {
       return (
         <View style={{ paddingHorizontal: PAD, marginTop: 18 }}>
-          <SectionHeader icon="people" color={activeColor} title="Suggested People" textColor={textColor} />
+          <SectionHeader icon="people" color={activeColor} title={q.length >= 2 ? 'Search Results' : 'Suggested People'} textColor={textColor} />
           {filteredUsers.length === 0 ? (
-            <EmptyState icon="people-outline" text="No people found." border={borderColor} sub={subText} />
+            <EmptyState
+              icon="people-outline"
+              text={q.length >= 2 ? `No people found for "${searchQuery.trim()}".` : 'No people to show yet.'}
+              border={borderColor} sub={subText}
+            />
           ) : (
-            <View style={styles.peopleGrid}>
-              {filteredUsers.map(renderPerson)}
-            </View>
+            <View style={styles.peopleGrid}>{filteredUsers.map(renderPerson)}</View>
           )}
         </View>
       );
@@ -436,7 +465,6 @@ export default function DiscoverScreen() {
 
     return (
       <View style={{ marginTop: 18 }}>
-        {/* Start a battle */}
         <View style={{ paddingHorizontal: PAD }}>
           <SectionHeader iconLib="mci" mci="rocket-launch" color={activeColor} title="Start a New Battle" textColor={textColor} />
         </View>
@@ -455,7 +483,6 @@ export default function DiscoverScreen() {
           />
         )}
 
-        {/* Live arena */}
         <View style={[styles.liveHeader, { paddingHorizontal: PAD }]}>
           <View style={styles.rowCenter}>
             <View style={styles.liveBadge}>
@@ -471,13 +498,22 @@ export default function DiscoverScreen() {
 
         <View style={{ paddingHorizontal: PAD, gap: 16 }}>
           {filteredMatches.length === 0 ? (
-            <EmptyState
-              iconLib="mci" mci="sword-cross" text="No active battles right now."
-              border={borderColor} sub={subText}
-              actionText="Check Leaderboard"
-              actionColor={activeColor}
-              onAction={() => handleAction(() => router.push('/explore/leaderboard'))}
-            />
+            <View style={[styles.emptyBattle, { backgroundColor: cardBg, borderColor }]}>
+              <View style={[styles.emptyBattleIcon, { backgroundColor: isDark ? '#20222B' : '#F4F5F8' }]}>
+                <MaterialCommunityIcons name="sword-cross" size={30} color={activeColor} />
+              </View>
+              <Text style={[styles.emptyBattleTitle, { color: textColor }]}>No active battles right now</Text>
+              <Text style={[styles.emptyBattleSub, { color: subText }]}>Be the first to step into the arena!</Text>
+              <TouchableOpacity
+                activeOpacity={0.9}
+                onPress={() => handleAction(() => router.push(activeTab === 'video' ? '/contest/video' : '/contest/photo'))}
+              >
+                <LinearGradient colors={activeMeta.grad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.emptyBattleBtn}>
+                  <Ionicons name="flash" size={16} color="#FFF" />
+                  <Text style={styles.emptyBattleBtnText}>Start a Battle</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
           ) : (
             filteredMatches.map(renderVersus)
           )}
@@ -492,6 +528,14 @@ export default function DiscoverScreen() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: 120 }}
         stickyHeaderIndices={[1]}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => fetchExploreData(true)}
+            tintColor={activeColor}
+            colors={[activeColor]}
+          />
+        }
       >
         {renderHeader()}
         {renderChips()}
@@ -503,8 +547,27 @@ export default function DiscoverScreen() {
 }
 
 // ================================================================
-// Small presentational helpers
+// Reusable helpers
 // ================================================================
+
+/** Pressable that gently scales down on press for a tactile, premium feel. */
+function ScaleTouchable({ children, onPress, style, disabled }: any) {
+  const scale = useRef(new RNAnimated.Value(1)).current;
+  return (
+    <RNAnimated.View style={[style, { transform: [{ scale }] }]}>
+      <Pressable
+        onPress={onPress}
+        disabled={disabled}
+        onPressIn={() => RNAnimated.spring(scale, { toValue: 0.95, useNativeDriver: true, speed: 50, bounciness: 0 }).start()}
+        onPressOut={() => RNAnimated.spring(scale, { toValue: 1, useNativeDriver: true, speed: 50, bounciness: 4 }).start()}
+        style={{ flex: 1 }}
+      >
+        {children}
+      </Pressable>
+    </RNAnimated.View>
+  );
+}
+
 function SectionHeader({ icon, iconLib, mci, color, title, textColor }: any) {
   return (
     <View style={styles.sectionHeader}>
@@ -575,9 +638,7 @@ function SkeletonBody({ isDark, activeTab, cardBg, borderColor }: any) {
           <View style={[styles.skLine, { backgroundColor: block, width: 180, marginBottom: 16 }]} />
         </View>
         <View style={{ flexDirection: 'row', paddingHorizontal: PAD, gap: 14 }}>
-          {[0, 1].map(i => (
-            <View key={i} style={[styles.templateCard, { backgroundColor: block }]} />
-          ))}
+          {[0, 1].map(i => (<View key={i} style={[styles.templateCard, { backgroundColor: block }]} />))}
         </View>
         <View style={{ paddingHorizontal: PAD, marginTop: 28, gap: 16 }}>
           {[0, 1].map(i => (
@@ -603,8 +664,12 @@ const styles = StyleSheet.create({
 
   // Top bar
   topBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: PAD, paddingTop: 10, paddingBottom: 4 },
+  headerAvatar: { width: 46, height: 46, borderRadius: 23, borderWidth: 2 },
   kicker: { fontSize: 12, fontFamily: 'Urbanist-Bold', letterSpacing: 1.5, marginBottom: 2 },
-  title: { fontSize: 30, fontFamily: 'Urbanist-Bold', letterSpacing: -0.5 },
+  title: { fontSize: 28, fontFamily: 'Urbanist-Bold', letterSpacing: -0.5 },
+  coinChip: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingLeft: 12, paddingRight: 4, height: 40, borderRadius: 20 },
+  coinText: { fontSize: 14, fontFamily: 'Urbanist-Black' },
+  coinPlus: { width: 26, height: 26, borderRadius: 13, backgroundColor: '#FFB300', justifyContent: 'center', alignItems: 'center' },
   iconBtn: { width: 44, height: 44, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
 
   // Search
@@ -616,8 +681,8 @@ const styles = StyleSheet.create({
   searchInput: { flex: 1, fontSize: 16, fontFamily: 'Urbanist-Medium' },
 
   // Quick actions
-  quickRow: { paddingHorizontal: PAD, gap: 20, paddingTop: 18, paddingBottom: 6 },
-  quickItem: { alignItems: 'center', width: 62 },
+  quickRow: { paddingHorizontal: PAD, gap: 18, paddingTop: 18, paddingBottom: 6 },
+  quickItem: { alignItems: 'center', width: 64 },
   quickCircle: {
     width: 58, height: 58, borderRadius: 20, justifyContent: 'center', alignItems: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.18, shadowRadius: 8, elevation: 4,
@@ -648,7 +713,7 @@ const styles = StyleSheet.create({
 
   // Template card
   templateCard: {
-    width: TEMPLATE_W, height: 200, borderRadius: 24, overflow: 'hidden',
+    width: TEMPLATE_W, height: 208, borderRadius: 24, overflow: 'hidden',
     shadowColor: '#000', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.15, shadowRadius: 10, elevation: 5,
   },
   templateInner: { flex: 1, padding: 16 },
@@ -656,7 +721,9 @@ const styles = StyleSheet.create({
   templateIcon: { width: 40, height: 40, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.22)', justifyContent: 'center', alignItems: 'center' },
   templatePrize: { position: 'absolute', top: 16, right: 16, flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(0,0,0,0.28)', paddingHorizontal: 9, paddingVertical: 5, borderRadius: 100 },
   templatePrizeText: { color: '#FFF', fontSize: 11, fontFamily: 'Urbanist-Black' },
-  templateTitle: { color: '#FFF', fontSize: 17, fontFamily: 'Urbanist-Bold', marginBottom: 10, lineHeight: 20 },
+  templateTitle: { color: '#FFF', fontSize: 17, fontFamily: 'Urbanist-Bold', marginBottom: 6, lineHeight: 20 },
+  templateEntry: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 10 },
+  templateEntryText: { color: 'rgba(255,255,255,0.9)', fontSize: 11, fontFamily: 'Urbanist-Bold' },
   templateCta: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', backgroundColor: '#FFF', paddingHorizontal: 14, paddingVertical: 7, borderRadius: 100, gap: 6 },
   templateCtaText: { fontSize: 12, fontFamily: 'Urbanist-Bold', color: '#121212' },
 
@@ -686,6 +753,14 @@ const styles = StyleSheet.create({
   entryVal: { fontSize: 14, fontFamily: 'Urbanist-Black' },
   joinBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 11, paddingHorizontal: 20, borderRadius: 14 },
   joinBtnText: { color: '#FFF', fontSize: 14, fontFamily: 'Urbanist-Bold' },
+
+  // Empty battle state (actionable)
+  emptyBattle: { borderRadius: 24, borderWidth: 1, alignItems: 'center', paddingVertical: 30, paddingHorizontal: 20 },
+  emptyBattleIcon: { width: 64, height: 64, borderRadius: 22, justifyContent: 'center', alignItems: 'center', marginBottom: 14 },
+  emptyBattleTitle: { fontSize: 16, fontFamily: 'Urbanist-Bold' },
+  emptyBattleSub: { fontSize: 13, fontFamily: 'Urbanist-Medium', marginTop: 4, marginBottom: 18 },
+  emptyBattleBtn: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingVertical: 12, paddingHorizontal: 26, borderRadius: 14 },
+  emptyBattleBtnText: { color: '#FFF', fontSize: 14, fontFamily: 'Urbanist-Bold' },
 
   // People grid
   peopleGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: GRID_GAP },
