@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity, FlatList, ActivityIndicator, 
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@/src/lib/icons';
+import { ContestListSkeleton } from '@/src/components/skeletons/ContestListSkeleton';
 import * as ImagePicker from 'expo-image-picker';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { contestService } from '@/src/services/contests/contestService';
@@ -129,7 +130,7 @@ export default function VideoContestScreen() {
     />
   );
 
-  if (loading) return <View style={[styles.centered, {backgroundColor: bgColor}]}><ActivityIndicator size="large" color={BRAND_PRIMARY} /></View>;
+  if (loading) return <View style={{ flex: 1, backgroundColor: bgColor, paddingTop: 56 }}><ContestListSkeleton /></View>;
 
   return (
     <SafeAreaView style={[styles.container, {backgroundColor: bgColor}]}>

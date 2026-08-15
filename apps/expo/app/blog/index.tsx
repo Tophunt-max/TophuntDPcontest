@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@/src/lib/icons';
+import { BlogSkeleton } from '@/src/components/skeletons/BlogSkeleton';
 import { useRouter } from 'expo-router';
 import { blogService, BlogPost, BlogCategory } from '@/src/services/blog/blogService';
 import { Colors } from '@/constants/theme';
@@ -179,9 +180,7 @@ export default function BlogListScreen() {
       {loading ? (
         <>
           {renderHeader()}
-          <View style={styles.center}>
-            <ActivityIndicator size="large" color={primaryColor} />
-          </View>
+          <BlogSkeleton />
         </>
       ) : (
         <FlatList

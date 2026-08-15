@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@/src/lib/icons';
 import { CoinIcon } from '@/src/components/ui/CoinIcon';
+import { WalletSkeleton } from '@/src/components/skeletons/WalletSkeleton';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import Animated, { FadeInDown, FadeInRight } from 'react-native-reanimated';
@@ -26,7 +27,7 @@ const taskIcon = (type: string) => (type === 'vote' ? 'stats-chart' : type === '
 export default function WalletScreen() {
   const router = useRouter();
   const { user } = useAuth();
-  const { data: profile, refetch: refetchProfile } = useProfile(user?.uid || '');
+  const { data: profile, refetch: refetchProfile, isLoading: profileLoading } = useProfile(user?.uid || '');
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   const topupsEnabled = useFeature('topups'); // admin feature flag
@@ -325,6 +326,14 @@ export default function WalletScreen() {
         </View>
     </Animated.View>
   );
+
+  if (profileLoading) {
+    return (
+      <SafeAreaView style={[styles.container, { backgroundColor }]}>
+        <WalletSkeleton />
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]}>

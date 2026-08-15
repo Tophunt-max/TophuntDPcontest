@@ -4,6 +4,7 @@ import { View, Text, StyleSheet, useColorScheme, FlatList, Image, TouchableOpaci
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { readApi } from "@/src/services/api";
 import { Ionicons } from '@/src/lib/icons';
+import { UserListSkeleton } from '@/src/components/skeletons/UserListSkeleton';
 import { toggleFollowService } from '@/src/services/users';
 import { useAuth } from '@/src/hooks/useAuth';
 import { useProfile } from '@/src/hooks/useProfileData';
@@ -196,7 +197,7 @@ export default function ConnectionsScreen() {
             showsVerticalScrollIndicator={false}
             ListEmptyComponent={() => (
                 <View style={{ height: 300, justifyContent: 'center', alignItems:'center' }}>
-                    {loading ? <ActivityIndicator size="large" color={primaryColor} /> : <Text style={{color: subTextColor}}>No users found.</Text> }
+                    {loading ? <UserListSkeleton /> : <Text style={{color: subTextColor}}>No users found.</Text> }
                 </View>
             )}
         />

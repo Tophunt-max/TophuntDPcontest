@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert, ActivityIndi
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@/src/lib/icons';
+import { CoinStoreSkeleton } from '@/src/components/skeletons/CoinStoreSkeleton';
 import { CoinIcon } from '@/src/components/ui/CoinIcon';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useQuery } from '@tanstack/react-query';
@@ -143,7 +144,7 @@ export default function CoinStoreScreen() {
       <Text style={[styles.sectionTitle, { color: textColor }]}>Select a Package</Text>
 
       {isLoading ? (
-        <View style={styles.stateBox}><ActivityIndicator size="large" color="#FF4D67" /></View>
+        <CoinStoreSkeleton />
       ) : isError ? (
         <View style={styles.stateBox}>
           <Ionicons name="cloud-offline-outline" size={40} color="#9E9E9E" />

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, FlatList, Image, TouchableOpacity, ActivityIndicator, SafeAreaView, Dimensions } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons, MaterialCommunityIcons } from '@/src/lib/icons';
+import { LeaderboardSkeleton } from '@/src/components/skeletons/LeaderboardSkeleton';
 import { leaderboardService } from '@/src/services/contests/leaderboardService';
 import { UserProfile } from '@/src/types/user';
 import { useThemeColor } from '@/hooks/use-theme-color';
@@ -154,7 +155,7 @@ export default function LeaderboardScreen() {
       </View>
 
       {loading ? (
-        <ActivityIndicator size="large" color="#FF4D67" style={{ marginTop: 50 }} />
+        <LeaderboardSkeleton />
       ) : (
         <FlatList
           data={users}
