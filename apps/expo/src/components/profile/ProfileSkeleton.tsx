@@ -1,99 +1,98 @@
 import React from 'react';
 import { View, StyleSheet, Dimensions } from 'react-native';
-
-const SkeletonPlaceholder = ({ height, width, borderRadius = 4, style }: { height: number; width?: number | string; borderRadius?: number; style?: object }) => (
-  <View style={[styles.skeleton, { height, width, borderRadius }, style]} />
-);
+import { Skeleton, SkeletonCircle } from '../ui/Skeleton';
 
 export const ProfileHeaderSkeleton = () => (
   <View style={styles.headerContainer}>
     <View style={styles.topBar}>
-      <SkeletonPlaceholder height={24} width={24} borderRadius={12} />
-      <SkeletonPlaceholder height={24} width={150} />
-      <SkeletonPlaceholder height={24} width={24} borderRadius={12} />
+      <SkeletonCircle size={26} />
+      <Skeleton width={140} height={20} />
+      <SkeletonCircle size={26} />
     </View>
-    <SkeletonPlaceholder height={100} width={100} borderRadius={50} />
-    <SkeletonPlaceholder height={20} width={200} style={{ marginTop: 12 }} />
-    <SkeletonPlaceholder height={16} width={180} style={{ marginTop: 8 }} />
-    <SkeletonPlaceholder height={40} width="80%" style={{ marginTop: 16 }} />
+
+    <SkeletonCircle size={100} style={{ marginTop: 20 }} />
+    <Skeleton width={180} height={20} style={{ marginTop: 14 }} />
+    <Skeleton width={120} height={13} style={{ marginTop: 8 }} />
+
     <View style={styles.statsContainer}>
-      <SkeletonPlaceholder height={50} width={80} />
-      <SkeletonPlaceholder height={50} width={80} />
-      <SkeletonPlaceholder height={50} width={80} />
-    </View>
-    {/* Placeholder for WalletCard */}
-    <SkeletonPlaceholder height={100} width="90%" borderRadius={8} style={{ marginTop: 20 }} />
-    {/* Placeholder for Highlights (e.g., a row of circles) */}
-    <View style={styles.highlightsContainer}>
-      {[...Array(4)].map((_, i) => (
-        <SkeletonPlaceholder key={i} height={60} width={60} borderRadius={30} style={{ marginHorizontal: 5 }} />
+      {[0, 1, 2].map((i) => (
+        <View key={i} style={{ alignItems: 'center' }}>
+          <Skeleton width={44} height={20} />
+          <Skeleton width={60} height={11} style={{ marginTop: 8 }} />
+        </View>
       ))}
     </View>
-    {/* Placeholder for ProfileTabs */}
+
+    <Skeleton width="88%" height={44} borderRadius={12} style={{ marginTop: 20 }} />
+
+    {/* WalletCard placeholder */}
+    <Skeleton width="100%" height={120} borderRadius={20} style={{ marginTop: 20 }} />
+
+    {/* Highlights row */}
+    <View style={styles.highlightsContainer}>
+      {[0, 1, 2, 3].map((i) => (
+        <SkeletonCircle key={i} size={60} style={{ marginRight: 14 }} />
+      ))}
+    </View>
+
+    {/* Tabs */}
     <View style={styles.tabsContainer}>
-      <SkeletonPlaceholder height={30} width={80} borderRadius={15} />
-      <SkeletonPlaceholder height={30} width={80} borderRadius={15} />
-      <SkeletonPlaceholder height={30} width={80} borderRadius={15} />
+      {[0, 1, 2].map((i) => (
+        <Skeleton key={i} width={80} height={30} borderRadius={15} />
+      ))}
     </View>
   </View>
 );
 
 const { width } = Dimensions.get('window');
-const itemSize = width / 3;
+const GAP = 2;
+const itemSize = (width - GAP * 2) / 3;
 
 export const PostGridSkeleton = () => (
   <View style={styles.gridContainer}>
     {Array.from({ length: 9 }).map((_, index) => (
-      <View key={index} style={styles.gridItem}>
-        <SkeletonPlaceholder height={itemSize * 1.5 - 2} width={itemSize - 2} borderRadius={8} />
-      </View>
+      <Skeleton
+        key={index}
+        width={itemSize}
+        height={itemSize * 1.4}
+        borderRadius={10}
+        style={{ margin: GAP / 2 }}
+      />
     ))}
   </View>
 );
 
 const styles = StyleSheet.create({
-  skeleton: {
-    backgroundColor: '#E1E9EE',
-    borderRadius: 4,
-  },
-  headerContainer: {
-    alignItems: 'center',
-    padding: 16,
-    width: '100%',
-  },
+  headerContainer: { alignItems: 'center', padding: 16, width: '100%' },
   topBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     width: '100%',
-    marginBottom: 16,
   },
   statsContainer: {
     flexDirection: 'row',
     justifyContent: 'space-around',
     width: '100%',
-    marginTop: 16,
+    marginTop: 22,
   },
   highlightsContainer: {
     flexDirection: 'row',
-    marginTop: 20,
-    justifyContent: 'center',
-    width: '100%'
+    marginTop: 22,
+    alignSelf: 'flex-start',
+    paddingLeft: 4,
   },
   tabsContainer: {
     flexDirection: 'row',
     justifyContent: 'space-around',
     width: '100%',
-    marginTop: 20,
-    paddingHorizontal: 20
+    marginTop: 22,
+    paddingHorizontal: 20,
   },
   gridContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-  },
-  gridItem: {
-    width: itemSize,
-    height: itemSize * 1.5,
-    padding: 1,
+    paddingHorizontal: GAP / 2,
+    marginTop: 8,
   },
 });

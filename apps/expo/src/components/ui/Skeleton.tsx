@@ -20,7 +20,7 @@ interface SkeletonProps {
 export const Skeleton = ({ width = '100%', height = 16, borderRadius = 8, style }: SkeletonProps) => {
   const isDark = useColorScheme() === 'dark';
   const base = isDark ? '#20222B' : '#E7E9EF';
-  const highlight = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.70)';
+  const highlight = isDark ? 'rgba(255,255,255,0.09)' : 'rgba(255,255,255,0.55)';
 
   const progress = useRef(new Animated.Value(0)).current;
   const [w, setW] = useState(0);
@@ -55,6 +55,7 @@ export const Skeleton = ({ width = '100%', height = 16, borderRadius = 8, style 
         <Animated.View style={[StyleSheet.absoluteFill, { transform: [{ translateX }] }]}>
           <LinearGradient
             colors={['transparent', highlight, 'transparent']}
+            locations={[0.35, 0.5, 0.65]}
             start={{ x: 0, y: 0.5 }}
             end={{ x: 1, y: 0.5 }}
             style={StyleSheet.absoluteFill}
