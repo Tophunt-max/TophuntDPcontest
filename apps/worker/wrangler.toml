@@ -11,6 +11,13 @@ type = "Text"
 globs = ["**/*.sql"]
 fallthrough = true
 
+# Auto-discover migrations before bundling: scans migrations/*.sql and writes
+# the static import list (src/db/migrations.generated.ts). Runs on every
+# `wrangler deploy` / `wrangler dev`, including directly-connected Cloudflare
+# Workers Builds — so a new .sql file needs no code changes.
+[build]
+command = "node scripts/gen-migrations.mjs"
+
 # ---------------------------------------------------------------------------
 # D1 database (replaces Firestore)
 # Create with:  wrangler d1 create tophunt-db
