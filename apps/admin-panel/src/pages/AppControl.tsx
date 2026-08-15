@@ -12,7 +12,7 @@ type Cfg = {
   minAppVersion: string;
   announcement: { enabled: boolean; message: string; link?: string };
   features: Record<string, boolean>;
-  withdrawal: { enabled: boolean; minAmount: number; conversionRate: number };
+  withdrawal: { enabled: boolean; minAmount: number; conversionRate: number; payoutsFrozen?: boolean };
 };
 
 const FEATURES = ["contests", "chat", "stories", "topups", "withdrawals", "posts"];
@@ -24,7 +24,7 @@ const DEFAULTS: Cfg = {
   minAppVersion: "",
   announcement: { enabled: false, message: "", link: "" },
   features: Object.fromEntries(FEATURES.map((f) => [f, true])),
-  withdrawal: { enabled: true, minAmount: 100, conversionRate: 1 },
+  withdrawal: { enabled: true, minAmount: 100, conversionRate: 1, payoutsFrozen: false },
 };
 
 export default function AppControl() {
@@ -101,6 +101,11 @@ export default function AppControl() {
         {/* Withdrawal config */}
         <Card icon={Banknote} title="Withdrawal Settings" tint="text-amber-500">
           <Toggle label="Allow withdrawals" checked={cfg.withdrawal.enabled} onChange={(v) => setCfg({ ...cfg, withdrawal: { ...cfg.withdrawal, enabled: v } })} />
+          <Toggle
+            label="🚨 Emergency freeze (block ALL new payout requests)"
+            checked={cfg.withdrawal.payoutsFrozen === true}
+            onChange={(v) => setCfg({ ...cfg, withdrawal: { ...cfg.withdrawal, payoutsFrozen: v } })}
+          />
           <div className="grid grid-cols-2 gap-3 mt-3">
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">Min payout (coins)</label>

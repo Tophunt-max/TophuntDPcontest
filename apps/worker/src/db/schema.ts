@@ -198,6 +198,36 @@ export const payments = sqliteTable("payments", {
 });
 
 // ---------------------------------------------------------------------------
+// payment_orders  (persistent record of Razorpay orders for reconciliation)
+//
+// Created when the client calls `createOrder`; credited exactly once by EITHER
+// the client callback (`topup`) OR the server-to-server webhook — whichever
+// arrives first. The `status` CAS (created -> paid) is the idempotency guard so
+// a paid-but-not-credited order can be reconciled without double-crediting.
+// ---------------------------------------------------------------------------
+export const paymentOrders = sqliteTable(
+  "payment_orders",
+  {
+    orderId: text("order_id").primaryKey(), // Razorpay order id
+    userId: text("user_id").notNull(),
+    packageId: text("package_id"),
+    coins: real("coins").notNull(), // server-authoritative coins to credit
+    amountPaise: integer("amount_paise").notNull(), // expected amount (paise)
+    currency: text("currency").notNull().default("INR"),
+    status: text("status").notNull().default("created"), // created | paid | failed
+    paymentId: text("payment_id"),
+    source: text("source"), // callback | webhook
+    creditedAt: integer("credited_at"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => ({
+    userIdx: index("idx_payment_orders_user").on(t.userId),
+    statusIdx: index("idx_payment_orders_status").on(t.status, t.createdAt),
+  }),
+);
+
+// ---------------------------------------------------------------------------
 // posts + engagement
 // ---------------------------------------------------------------------------
 export const posts = sqliteTable(
@@ -540,6 +570,9 @@ export const withdrawals = sqliteTable(
     status: text("status").notNull().default("pending"), // pending | approved | rejected | paid
     adminNote: text("admin_note"),
     processedBy: text("processed_by"), // admin uid who actioned it
+    // true = coins were already deducted (escrowed) at request time. Legacy rows
+    // (created before this model) are 0 and are deducted on admin approval.
+    reserved: integer("reserved", { mode: "boolean" }).notNull().default(false),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },

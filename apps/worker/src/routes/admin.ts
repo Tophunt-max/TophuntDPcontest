@@ -1474,23 +1474,38 @@ adminRoute.patch("/withdrawals/:id", async (c) => {
 
   const status = action === "approve" ? "approved" : action === "paid" ? "paid" : "rejected";
 
-  // On approve/paid from a pending request: deduct (hold) the coins now.
-  if ((action === "approve" || action === "paid") && w.status === "pending") {
-    const user = await db.select({ balance: schema.users.dpcoin }).from(schema.users).where(eq(schema.users.uid, w.userId)).get();
-    if (!user) throw httpsError("not-found", "Requesting user not found.");
-    if ((user.balance ?? 0) < w.amount) throw httpsError("failed-precondition", "User has insufficient balance for this payout.");
-    await db.batch([
-      db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} - ${w.amount}`, updatedAt: ts }).where(eq(schema.users.uid, w.userId)),
-      db.insert(schema.coinTransactions).values({ id: newId(), uid: w.userId, amount: -w.amount, type: "withdrawal", description: `Payout ${status} (${w.method})`, createdAt: ts }),
-    ]);
-  }
-
-  // Rejecting a previously-approved request refunds the held coins.
-  if (action === "reject" && w.status === "approved") {
-    await db.batch([
-      db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${w.amount}`, updatedAt: ts }).where(eq(schema.users.uid, w.userId)),
-      db.insert(schema.coinTransactions).values({ id: newId(), uid: w.userId, amount: w.amount, type: "withdrawal_refund", description: "Payout rejected — coins refunded", createdAt: ts }),
-    ]);
+  // Coin accounting depends on WHEN the coins were held:
+  //   * reserved rows (new model): coins were already deducted at request time,
+  //     so approving/paying does NOT deduct again; a rejection refunds them.
+  //   * legacy rows (reserved = false, created before the escrow model): coins
+  //     are deducted here on approval and refunded only on a reject-from-approved.
+  if (w.reserved) {
+    // Refund on rejection of a still-held request (pending or approved).
+    if (action === "reject" && (w.status === "pending" || w.status === "approved")) {
+      await db.batch([
+        db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${w.amount}`, updatedAt: ts }).where(eq(schema.users.uid, w.userId)),
+        db.insert(schema.coinTransactions).values({ id: newId(), uid: w.userId, amount: w.amount, type: "withdrawal_refund", description: "Payout rejected — coins refunded", createdAt: ts }),
+      ]);
+    }
+  } else {
+    // On approve/paid from a pending legacy request: deduct the coins now with
+    // an atomic conditional guard so two admins can't double-deduct.
+    if ((action === "approve" || action === "paid") && w.status === "pending") {
+      const deduct = await db
+        .update(schema.users)
+        .set({ dpcoin: sql`${schema.users.dpcoin} - ${w.amount}`, updatedAt: ts })
+        .where(and(eq(schema.users.uid, w.userId), sql`${schema.users.dpcoin} >= ${w.amount}`))
+        .run();
+      if (deduct.meta.changes === 0) throw httpsError("failed-precondition", "User has insufficient balance for this payout.");
+      await db.insert(schema.coinTransactions).values({ id: newId(), uid: w.userId, amount: -w.amount, type: "withdrawal", description: `Payout ${status} (${w.method})`, createdAt: ts });
+    }
+    // Rejecting a previously-approved legacy request refunds the held coins.
+    if (action === "reject" && w.status === "approved") {
+      await db.batch([
+        db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${w.amount}`, updatedAt: ts }).where(eq(schema.users.uid, w.userId)),
+        db.insert(schema.coinTransactions).values({ id: newId(), uid: w.userId, amount: w.amount, type: "withdrawal_refund", description: "Payout rejected — coins refunded", createdAt: ts }),
+      ]);
+    }
   }
 
   await db.update(schema.withdrawals).set({ status, adminNote: adminNote || w.adminNote, processedBy: admin?.uid ?? null, updatedAt: ts }).where(eq(schema.withdrawals.id, id));
@@ -1628,6 +1643,18 @@ adminRoute.patch("/deposits/:id", async (c) => {
   const admin = c.get("user");
   const ts = now();
   const status = action === "approve" ? "approved" : "rejected";
+
+  // Guard against crediting a UTR that was already credited on another deposit.
+  // Submit-time blocking covers new requests; this catches any duplicate rows
+  // that predate that check (or were created concurrently).
+  if (action === "approve" && d.utr) {
+    const already = await db
+      .select({ id: schema.deposits.id })
+      .from(schema.deposits)
+      .where(and(sql`lower(${schema.deposits.utr}) = ${d.utr.toLowerCase()}`, eq(schema.deposits.status, "approved"), ne(schema.deposits.id, id)))
+      .get();
+    if (already) throw httpsError("failed-precondition", "This UTR was already credited on another deposit.");
+  }
 
   // Atomically claim the pending row so overlapping approvals can't double-credit.
   const claim = await db

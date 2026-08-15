@@ -45,3 +45,33 @@ export async function verifyRazorpaySignature(env: Env, proof: RazorpayProof): P
   const expected = [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
   return timingSafeEqualHex(expected, String(proof.signature).toLowerCase());
 }
+
+/**
+ * Verify a Razorpay WEBHOOK signature. Razorpay signs the RAW request body with
+ * the webhook secret (configured in the dashboard) and sends the hex HMAC in the
+ * `X-Razorpay-Signature` header. This is a different secret and scheme from the
+ * checkout signature above — the whole body is the message here.
+ *
+ * Fail-closed: returns false when the webhook secret is not configured or the
+ * signature header is missing, so an unverified event is never credited.
+ */
+export async function verifyRazorpayWebhookSignature(
+  env: Env,
+  rawBody: string,
+  signature: string | null | undefined,
+): Promise<boolean> {
+  const secret = env.RAZORPAY_WEBHOOK_SECRET;
+  if (!secret || !signature) return false;
+
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const mac = await crypto.subtle.sign("HMAC", key, enc.encode(rawBody));
+  const expected = [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return timingSafeEqualHex(expected, String(signature).toLowerCase());
+}

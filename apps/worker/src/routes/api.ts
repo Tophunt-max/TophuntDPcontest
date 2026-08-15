@@ -22,6 +22,7 @@ import { castVote, bumpEngagement } from "../lib/voteCounter";
 import { rateLimit } from "../lib/rateLimit";
 import { enforceIdempotency, releaseIdempotency } from "../lib/idempotency";
 import { verifyRazorpaySignature } from "../lib/payments";
+import { creditPaymentOrder } from "../lib/coinOrders";
 import { assertClean } from "../lib/moderation";
 import { getAppConfig } from "../lib/settings";
 import { getSettings } from "../lib/gamification";
@@ -548,7 +549,34 @@ apiRoute.post("/", async (c) => {
       }
       const order = (await rzpRes.json()) as any;
 
-      // Persist the server-authoritative intent (fail closed if KV write fails).
+      // Persist the server-authoritative intent DURABLY in D1 so a webhook (or a
+      // late client callback) can reconcile and credit the order even if the
+      // client never returns. This is the authoritative record going forward.
+      const orderTs = now();
+      try {
+        await db
+          .insert(schema.paymentOrders)
+          .values({
+            orderId: String(order.id),
+            userId: uid,
+            packageId: String(packageId),
+            coins: totalCoins,
+            amountPaise,
+            currency: "INR",
+            status: "created",
+            createdAt: orderTs,
+            updatedAt: orderTs,
+          })
+          .onConflictDoNothing()
+          .run();
+      } catch (e) {
+        console.error("[createOrder] payment_orders insert failed", e);
+        throw httpsError("internal", "Could not initialize payment. Please try again.");
+      }
+
+      // Also keep the short-lived KV intent as a fast-path fallback (and for
+      // orders still in flight across a deploy). Best-effort — the DB row above
+      // is the source of truth.
       try {
         await env.CACHE_KV.put(
           `rzp_order:${order.id}`,
@@ -556,8 +584,7 @@ apiRoute.post("/", async (c) => {
           { expirationTtl: 3600 },
         );
       } catch (e) {
-        console.error("[createOrder] KV put failed", e);
-        throw httpsError("internal", "Could not initialize payment. Please try again.");
+        console.warn("[createOrder] KV put failed (non-fatal)", e);
       }
 
       return c.json({
@@ -585,7 +612,27 @@ apiRoute.post("/", async (c) => {
       const verified = await verifyRazorpaySignature(env, { orderId, paymentId, signature });
       if (!verified) throw httpsError("permission-denied", "Payment verification failed.");
 
-      // Server-authoritative coin amount from the createOrder record.
+      // Primary path: credit the persisted order (shared with the webhook so we
+      // never double-credit regardless of which arrives first).
+      const res = await creditPaymentOrder(env, db, {
+        orderId: String(orderId),
+        paymentId: String(paymentId),
+        source: "callback",
+        expectedFromUid: uid,
+      });
+      if (res.reason === "owner_mismatch")
+        throw httpsError("permission-denied", "Order does not belong to this user.");
+      if (res.reason === "invalid_amount")
+        throw httpsError("failed-precondition", "Invalid order amount.");
+      if (res.reason === "already")
+        throw httpsError("already-exists", "Payment already processed.");
+      if (res.credited) {
+        try { await env.CACHE_KV.delete(`rzp_order:${orderId}`); } catch { /* ignore */ }
+        return c.json({ success: true, message: "Coins added successfully!", coins: res.coins });
+      }
+
+      // Fallback (only for orders with no DB row — e.g. created before this
+      // deploy): use the legacy short-lived KV intent.
       let record: { uid: string; coins: number } | null = null;
       try {
         record = (await env.CACHE_KV.get(`rzp_order:${orderId}`, "json")) as any;
@@ -630,42 +677,53 @@ apiRoute.post("/", async (c) => {
       // Anti-spam: max 5 withdrawal requests per hour per user.
       await rateLimit(env, `withdraw:${uid}`, 5, 3600);
 
-      // Honor the admin App Control withdrawal config.
+      // Honor the admin App Control withdrawal config. `payoutsFrozen` is an
+      // emergency kill-switch that blocks all new payout requests instantly
+      // (e.g. during a suspected-fraud incident) without disabling the feature.
       const cfg = await getAppConfig(env);
       const wcfg = (cfg?.withdrawal as any) || {};
-      if (wcfg.enabled === false) throw httpsError("failed-precondition", "Withdrawals are currently disabled.");
+      if (wcfg.enabled === false || wcfg.payoutsFrozen === true)
+        throw httpsError("failed-precondition", "Withdrawals are currently disabled.");
       const minAmount = Number(wcfg.minAmount ?? 0);
       if (amt < minAmount) throw httpsError("failed-precondition", `Minimum withdrawal is ${minAmount} coins.`);
       const rate = Number(wcfg.conversionRate ?? 1);
 
-      const user = await db.select({ balance: schema.users.dpcoin }).from(schema.users).where(eq(schema.users.uid, uid)).get();
-      if (!user) throw httpsError("not-found", "User not found.");
-      const balance = Number(user.balance || 0);
-      if (balance < amt) throw httpsError("failed-precondition", "Insufficient balance.");
-
-      // Coins are held by the admin on approval (not now). Prevent stacking
-      // pending requests that together exceed the current balance.
-      const pending = await db
-        .select({ v: sql<number>`COALESCE(SUM(${schema.withdrawals.amount}),0)` })
-        .from(schema.withdrawals)
-        .where(and(eq(schema.withdrawals.userId, uid), eq(schema.withdrawals.status, "pending")))
-        .get();
-      if ((pending?.v ?? 0) + amt > balance)
-        throw httpsError("failed-precondition", "Your pending requests already cover your balance.");
-
       const ts = now();
       const id = newId();
-      await db.insert(schema.withdrawals).values({
-        id,
-        userId: uid,
-        amount: amt,
-        cashAmount: amt * rate,
-        method: String(method),
-        accountDetails: accountDetails ? String(accountDetails) : null,
-        status: "pending",
-        createdAt: ts,
-        updatedAt: ts,
-      });
+
+      // Escrow the coins NOW with a single atomic conditional deduct. This
+      // removes the race where a user could request a payout and then spend the
+      // same coins elsewhere before an admin approved it. The `WHERE dpcoin >=
+      // amt` guard + affected-row check makes concurrent requests safe.
+      const reserve = await db
+        .update(schema.users)
+        .set({ dpcoin: sql`${schema.users.dpcoin} - ${amt}`, updatedAt: ts })
+        .where(and(eq(schema.users.uid, uid), sql`${schema.users.dpcoin} >= ${amt}`))
+        .run();
+      if (reserve.meta.changes === 0) throw httpsError("failed-precondition", "Insufficient balance.");
+
+      await db.batch([
+        db.insert(schema.withdrawals).values({
+          id,
+          userId: uid,
+          amount: amt,
+          cashAmount: amt * rate,
+          method: String(method),
+          accountDetails: accountDetails ? String(accountDetails) : null,
+          status: "pending",
+          reserved: true,
+          createdAt: ts,
+          updatedAt: ts,
+        }),
+        db.insert(schema.coinTransactions).values({
+          id: newId(),
+          uid,
+          amount: -amt,
+          type: "withdrawal_hold",
+          description: `Payout requested (${method}) — coins reserved`,
+          createdAt: ts,
+        }),
+      ]);
       await db.insert(schema.adminNotifications).values({
         id: newId(), title: "New Withdrawal Request",
         message: `A user requested a payout of ${amt} coins.`, link: "/withdrawals", isRead: false, createdAt: ts,
@@ -692,6 +750,17 @@ apiRoute.post("/", async (c) => {
       const mode = gw.mode || "auto";
       if (mode === "auto") throw httpsError("failed-precondition", "Manual deposits are currently disabled.");
       const coinRate = Number(gw.coinRate ?? 1);
+
+      // Hard-block reused UTRs: a bank reference can only fund one deposit. Reject
+      // at submit time if a non-rejected deposit already carries this UTR (any
+      // user) — stops replaying one payment reference across multiple requests.
+      const utrClean = String(utr).trim();
+      const utrDupe = await db
+        .select({ id: schema.deposits.id })
+        .from(schema.deposits)
+        .where(and(sql`lower(${schema.deposits.utr}) = ${utrClean.toLowerCase()}`, sql`${schema.deposits.status} != 'rejected'`))
+        .get();
+      if (utrDupe) throw httpsError("already-exists", "This UTR / transaction reference has already been submitted.");
 
       const ts = now();
       const id = newId();

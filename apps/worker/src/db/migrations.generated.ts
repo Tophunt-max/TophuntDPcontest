@@ -10,6 +10,7 @@ import m_0005_admin_features_sql from "../../migrations/0005_admin_features.sql"
 import m_0006_full_control_sql from "../../migrations/0006_full_control.sql";
 import m_0007_deposits_sql from "../../migrations/0007_deposits.sql";
 import m_0008_growth_safety_sql from "../../migrations/0008_growth_safety.sql";
+import m_0009_payment_hardening_sql from "../../migrations/0009_payment_hardening.sql";
 
 export interface Migration {
   name: string;
@@ -26,4 +27,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0006_full_control.sql", sql: m_0006_full_control_sql },
   { name: "0007_deposits.sql", sql: m_0007_deposits_sql },
   { name: "0008_growth_safety.sql", sql: m_0008_growth_safety_sql },
+  { name: "0009_payment_hardening.sql", sql: m_0009_payment_hardening_sql },
 ];

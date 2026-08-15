@@ -46,6 +46,10 @@ export interface Env {
   // If RAZORPAY_KEY_SECRET is unset, top-ups are rejected (never free-minted).
   RAZORPAY_KEY_ID: string;
   RAZORPAY_KEY_SECRET: string;
+  // Razorpay webhook signing secret (set in the Razorpay dashboard when you
+  // configure the webhook). Used to verify /webhook/razorpay payloads. If unset,
+  // webhook events are rejected (never credited) — the client callback still works.
+  RAZORPAY_WEBHOOK_SECRET?: string;
 }
 
 /** Authenticated user context attached by the auth middleware. */
