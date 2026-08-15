@@ -31,6 +31,8 @@ import { ToastProvider } from '@/src/components/toast/ToastProvider';
 import { lightTheme, darkTheme } from '@/constants/theme';
 import '@/src/services/firebase/initFirebase'; // Import to initialize Firebase
 import { View, AppState } from 'react-native';
+import { useFonts } from 'expo-font';
+import { Ionicons, MaterialCommunityIcons, FontAwesome5, Feather } from '@expo/vector-icons';
 
 // Pause react-query background refetches (refetchInterval) whenever the app is
 // not in the foreground. On mobile the "window" is never focused the way a
@@ -241,7 +243,16 @@ function RootLayoutNav() {
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
-  // Icons are SVG (lucide) via src/lib/icons.tsx — no icon fonts to preload.
+  // Preload @expo/vector-icons glyph fonts (same approach as the Voxcall app) so
+  // icons render on web: registering the @font-face makes the glyphs display.
+  // Non-gating — the app renders immediately and icons swap in once the font
+  // loads (on native @expo/vector-icons also auto-loads these).
+  useFonts({
+    ...Ionicons.font,
+    ...MaterialCommunityIcons.font,
+    ...FontAwesome5.font,
+    ...Feather.font,
+  });
 
   return (
     <ErrorBoundary>
