@@ -1,3 +1,4 @@
+import { AppState } from 'react-native';
 import { auth } from './firebase/initFirebase';
 
 /**
@@ -88,6 +89,12 @@ export const poll = <T>(
   let timer: ReturnType<typeof setTimeout> | null = null;
   const tick = async () => {
     if (!active) return;
+    // Skip network while the app is backgrounded — saves Worker requests + D1
+    // reads for idle users. We still reschedule so it resumes on foreground.
+    if (AppState.currentState !== 'active') {
+      timer = setTimeout(tick, intervalMs);
+      return;
+    }
     try {
       const data = await fetcher();
       if (active) callback(data);

@@ -1,3 +1,4 @@
+import { AppState } from 'react-native';
 import { auth } from './firebase/initFirebase';
 import { API_BASE_URL } from './api';
 
@@ -147,12 +148,17 @@ export function live<T>(
   callback: (data: T) => void,
   opts: { fallbackMs?: number; filter?: (e: RealtimeEvent) => boolean } = {},
 ): () => void {
-  const fallbackMs = opts.fallbackMs ?? 30000;
+  // The WebSocket pushes updates instantly, so this poll is only a safety net —
+  // 60s is plenty and halves the idle fetch volume vs 30s.
+  const fallbackMs = opts.fallbackMs ?? 60000;
   let active = true;
   let inFlight = false;
 
   const refresh = async () => {
     if (!active || inFlight) return;
+    // Skip the safety-net fetch while backgrounded (the socket reconnects and
+    // refreshes on foreground anyway).
+    if (AppState.currentState !== 'active') return;
     inFlight = true;
     try {
       const data = await fetcher();

@@ -3,7 +3,7 @@ import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect } from 'react';
 import 'react-native-reanimated';
-import { QueryClient, QueryClientProvider, QueryCache, MutationCache, onlineManager } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, QueryCache, MutationCache, onlineManager, focusManager } from '@tanstack/react-query';
 import { Provider as PaperProvider } from 'react-native-paper';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -30,7 +30,17 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { ToastProvider } from '@/src/components/toast/ToastProvider';
 import { lightTheme, darkTheme } from '@/constants/theme';
 import '@/src/services/firebase/initFirebase'; // Import to initialize Firebase
-import { View } from 'react-native';
+import { View, AppState } from 'react-native';
+
+// Pause react-query background refetches (refetchInterval) whenever the app is
+// not in the foreground. On mobile the "window" is never focused the way a
+// browser is, so without this react-query keeps polling even when the app is
+// backgrounded — burning Worker requests + D1 reads for idle users. Wiring
+// focusManager to AppState makes every useQuery poll ONLY while the app is open.
+focusManager.setEventListener((handleFocus) => {
+  const sub = AppState.addEventListener('change', (state) => handleFocus(state === 'active'));
+  return () => sub.remove();
+});
 import { useAppConfig, isUpdateRequired } from '@/src/services/appSettings';
 import { useAuth } from '@/src/hooks/useAuth'; // Import useAuth hook
 import { notificationService } from '@/src/services/notifications/notificationService';
