@@ -1,89 +1,89 @@
 // src/lib/uploadToS3.ts
-import { callApi } from "../services/api";
+import { API_BASE_URL } from "../services/api";
+import { auth } from "../services/firebase/initFirebase";
 
 /**
- * Uploads a file to S3 using a pre-signed URL.
+ * Uploads a local file to Cloudflare R2 THROUGH the Worker (`POST /upload`).
+ *
+ * Previously the client PUT directly to the R2 S3 endpoint via a presigned URL,
+ * which fails in the browser with "Network error during S3 upload / CORS"
+ * because R2 has no CORS policy for our web origin. Routing through the Worker
+ * (same origin as the API) avoids CORS entirely and works on web + native.
+ *
+ * Signature is unchanged so all callers keep working.
+ *
  * @param uri Local file URI
  * @param fileType MIME type (e.g., 'image/jpeg', 'video/mp4')
- * @param folder Target folder in S3 (e.g., 'stories', 'avatars')
+ * @param folder Target folder (e.g., 'stories', 'avatars', 'contests')
  * @param onProgress Callback for upload progress (0 to 1)
  */
 export async function uploadToS3(
-  uri: string, 
-  fileType: string, 
+  uri: string,
+  fileType: string,
   folder: string = "avatars",
-  onProgress?: (progress: number) => void
-) {
-  console.log(`[S3Upload] Starting...`, { uri, fileType, folder });
-  
-  let result: any;
-  try {
-      console.log(`[S3Upload] Requesting presigned URL...`);
-      // Calling the consolidated API with the 'getPresignedUrl' action
-      result = await callApi('getPresignedUrl', { fileType, folder });
-      console.log(`[S3Upload] Presigned URL response received:`, result);
-  } catch (err: any) {
-      console.error("[S3Upload] Failed to get presigned URL:", err);
-      throw new Error(`Failed to initialize upload: ${err.message}`);
+  onProgress?: (progress: number) => void,
+): Promise<string> {
+  console.log(`[Upload] Starting...`, { uri, fileType, folder });
+
+  // Read the local file into a Blob.
+  const fileRes = await fetch(uri);
+  if (!fileRes.ok) {
+    throw new Error(`Failed to read the selected file (${fileRes.status}).`);
   }
-  
-  const { uploadUrl, publicUrl } = result;
-  if (!uploadUrl) {
-      throw new Error("Cloud Function did not return an upload URL.");
+  const blob = await fileRes.blob();
+  console.log(`[Upload] Blob ready, size: ${blob.size} bytes`);
+
+  // Attach the Firebase ID token so the Worker can authorize the upload.
+  let token = "";
+  try {
+    token = (await auth.currentUser?.getIdToken()) || "";
+  } catch {
+    /* proceed without token — Worker will reject if required */
   }
 
-  try {
-      console.log(`[S3Upload] Fetching blob from URI: ${uri}`);
-      const response = await fetch(uri);
-      if (!response.ok) {
-          throw new Error(`Failed to fetch local file: ${response.statusText}`);
-      }
-      const blob = await response.blob();
-      console.log(`[S3Upload] Blob created, size: ${blob.size} bytes`);
+  const url = `${API_BASE_URL}/upload?folder=${encodeURIComponent(folder)}&fileType=${encodeURIComponent(fileType)}`;
 
-      return new Promise<string>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        
-        xhr.open("PUT", uploadUrl);
-        xhr.setRequestHeader("Content-Type", fileType);
+  return new Promise<string>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.setRequestHeader("Content-Type", fileType);
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
 
-        if (typeof onProgress === 'function') {
-          xhr.upload.onprogress = (event) => {
-            if (event.lengthComputable) {
-              const progress = event.loaded / event.total;
-              onProgress(progress);
-              console.log(`[S3Upload] Progress: ${Math.round(progress * 100)}%`);
-            }
-          };
-        }
+    if (typeof onProgress === "function") {
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress(event.loaded / event.total);
+      };
+    }
 
-        xhr.onload = () => {
-          console.log(`[S3Upload] XHR OnLoad Status: ${xhr.status}`);
-          if (xhr.status === 200 || xhr.status === 201 || xhr.status === 204) {
-            console.log("[S3Upload] Success! Public URL:", publicUrl);
-            resolve(publicUrl);
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const json = JSON.parse(xhr.responseText);
+          if (json?.publicUrl) {
+            console.log("[Upload] Success:", json.publicUrl);
+            resolve(json.publicUrl);
           } else {
-            console.error(`[S3Upload] Upload failed with status ${xhr.status}:`, xhr.responseText);
-            reject(new Error(`S3 upload failed with status ${xhr.status}`));
+            reject(new Error("Upload finished but no file URL was returned."));
           }
-        };
+        } catch {
+          reject(new Error("Received an invalid response from the upload server."));
+        }
+      } else {
+        let msg = `Upload failed (status ${xhr.status}).`;
+        try {
+          const j = JSON.parse(xhr.responseText);
+          msg = j?.error?.message || msg;
+        } catch {
+          /* keep default */
+        }
+        console.error(`[Upload] Failed ${xhr.status}:`, xhr.responseText);
+        reject(new Error(msg));
+      }
+    };
 
-        xhr.onerror = (err) => {
-          console.error("[S3Upload] XHR Network Error:", err);
-          reject(new Error("Network error during S3 upload. Check CORS settings."));
-        };
+    xhr.onerror = () => reject(new Error("Network error during upload. Please check your connection and try again."));
+    xhr.ontimeout = () => reject(new Error("Upload timed out. Please try again."));
 
-        xhr.ontimeout = () => {
-          console.error("[S3Upload] XHR Timeout");
-          reject(new Error("S3 upload timed out."));
-        };
-
-        console.log(`[S3Upload] Sending XHR request to S3...`);
-        xhr.send(blob);
-      });
-
-  } catch (error: any) {
-      console.error("[S3Upload] Unexpected error:", error);
-      throw error;
-  }
+    xhr.send(blob);
+  });
 }

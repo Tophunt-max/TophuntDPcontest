@@ -89,6 +89,33 @@ export async function presignUpload(
   };
 }
 
+/**
+ * Upload bytes to R2 THROUGH the Worker (server-side put via the binding).
+ *
+ * This is the production upload path: the client sends the file to the Worker
+ * (same origin as the API, so no S3/CORS issues in the browser) and we write it
+ * to R2 here. Keeps the same `{folder}/{images|videos}/{uuid}{ext}` key layout
+ * as the presigned flow, and returns a Worker-served public URL.
+ */
+export async function uploadToR2(
+  env: Env,
+  fileType: string,
+  folder: string,
+  body: ArrayBuffer | ReadableStream,
+): Promise<{ publicUrl: string; fileKey: string }> {
+  if (!ALLOWED_MIME_TYPES.includes(fileType)) {
+    throw httpsError("invalid-argument", "Invalid file type.");
+  }
+  const safeFolder = (folder || "misc").replace(/[^a-zA-Z0-9_-]/g, "") || "misc";
+  const subFolder = fileType.startsWith("video/") ? "videos" : "images";
+  const fileKey = `${safeFolder}/${subFolder}/${crypto.randomUUID()}${extensionFor(fileType)}`;
+
+  await env.MEDIA.put(fileKey, body, { httpMetadata: { contentType: fileType } });
+
+  const publicBase = env.R2_PUBLIC_BASE_URL.replace(/\/$/, "");
+  return { fileKey, publicUrl: `${publicBase}/${fileKey}` };
+}
+
 /** Delete an object from R2 given its public URL (used by deleteStory). */
 export async function deleteByPublicUrl(env: Env, publicUrl: string): Promise<void> {
   try {

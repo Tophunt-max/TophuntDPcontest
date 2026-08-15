@@ -22,6 +22,7 @@ import { apiRoute } from "./routes/api";
 import { readRoute } from "./routes/read";
 import { adminRoute } from "./routes/admin";
 import { webhookRoute } from "./routes/webhook";
+import { uploadRoute } from "./routes/upload";
 import { verifyIdToken } from "./lib/firebaseAuth";
 import { resolveContests, monthlyHallOfFame } from "./cron";
 import { ensureMigrated } from "./db/autoMigrate";
@@ -177,6 +178,7 @@ app.get("/ws", async (c) => {
 
 app.route("/auth", authRoute);
 app.route("/api", apiRoute);
+app.route("/upload", uploadRoute);
 app.route("/read", readRoute);
 app.route("/admin", adminRoute);
 // Public payment-gateway webhooks (no Firebase auth — trust = signature check).
