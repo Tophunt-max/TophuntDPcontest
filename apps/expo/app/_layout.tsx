@@ -245,12 +245,19 @@ export default function RootLayout() {
   const colorScheme = useColorScheme();
   // Preload @expo/vector-icons glyph fonts at the root so icons render on EVERY
   // entry route (incl. deep links / web refresh that bypass the splash screen).
-  // Without this, icons show blank on web. Non-blocking: icons appear once ready.
-  useFonts({
+  // We GATE the app tree until the icon fonts are ready (or errored) — on web
+  // an icon rendered before its font loads shows blank, and there's no reliable
+  // re-render, so waiting a beat guarantees Ionicons/Material/FontAwesome show.
+  const [iconFontsLoaded, iconFontsError] = useFonts({
     ...Ionicons.font,
     ...MaterialCommunityIcons.font,
     ...FontAwesome5.font,
   });
+
+  if (!iconFontsLoaded && !iconFontsError) {
+    // Fonts still loading — render a blank frame (very brief; native is cached).
+    return <View style={{ flex: 1, backgroundColor: colorScheme === 'dark' ? '#000' : '#fff' }} />;
+  }
 
   return (
     <ErrorBoundary>
