@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { reportError } from '@/src/lib/reportError';
 
 interface Props {
@@ -32,7 +33,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
     if (this.state.hasError) {
       return (
         <View style={styles.container}>
-          <Text style={styles.emoji}>😵</Text>
+          <Ionicons name="sad-outline" size={56} color="#FF4D67" style={styles.icon} />
           <Text style={styles.title}>Something went wrong</Text>
           <Text style={styles.subtitle}>
             An unexpected error occurred. You can try again — if it keeps
@@ -50,7 +51,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
 
 const styles = StyleSheet.create({
   container: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, backgroundColor: '#fff' },
-  emoji: { fontSize: 48, marginBottom: 16 },
+  icon: { marginBottom: 16 },
   title: { fontSize: 20, fontFamily: 'Urbanist-Bold', color: '#121212', marginBottom: 8 },
   subtitle: { fontSize: 14, fontFamily: 'Urbanist-Medium', color: '#757575', textAlign: 'center', lineHeight: 20, marginBottom: 24 },
   button: { backgroundColor: '#FF4D67', paddingHorizontal: 32, paddingVertical: 14, borderRadius: 30 },

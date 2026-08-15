@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, Image, TouchableOpacity, Modal, Dimensions, ActivityIndicator, Alert, useColorScheme } from 'react-native';
 import { UserProfile, Badge } from '@/src/types/user';
 import { Settings_Icon, ChatIcon_Light, ChatIcon_Dark } from '@/assets/svgs';
+import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { equipBadgeService } from '@/src/services/users';
@@ -87,7 +88,7 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
     // In reality, this would call a backend function to 'claim' and add to user.badges
     // For now, we simulate equipping it
     try {
-        const newBadge: Badge = { name: `Level ${levelInfo.level} Hero`, icon: '🏆', level: levelInfo.level };
+        const newBadge: Badge = { name: `Level ${levelInfo.level} Hero`, icon: 'trophy', level: levelInfo.level };
         await equipBadgeService(user.uid, newBadge);
         setClaimModalVisible(false);
         if (onRefresh) onRefresh();
@@ -152,7 +153,7 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
         </View>
         {equippedBadge && (
             <View style={[styles.equippedBadgeIcon, { backgroundColor }]}>
-                <Text style={{fontSize: 20}}>{equippedBadge.icon}</Text>
+                <Ionicons name="trophy" size={18} color="#FFD700" />
             </View>
         )}
         <LinearGradient colors={['#FFD700', '#FFA500']} style={styles.levelBadge}>
@@ -219,8 +220,9 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
         {canClaim && isOwnProfile ? (
             <Animated.View style={animatedClaimBtnStyle}>
                 <TouchableOpacity onPress={handleClaim}>
-                    <LinearGradient colors={['#FFD700', '#FF8C00']} style={styles.claimButton}>
-                        <Text style={styles.claimButtonText}>🎁 CLAIM LEVEL BADGE</Text>
+                    <LinearGradient colors={['#FFD700', '#FF8C00']} style={[styles.claimButton, { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }]}>
+                        <Ionicons name="gift" size={16} color="#fff" />
+                        <Text style={styles.claimButtonText}>CLAIM LEVEL BADGE</Text>
                     </LinearGradient>
                 </TouchableOpacity>
             </Animated.View>
@@ -243,7 +245,7 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
                 <Text style={[styles.reachText, { color: textColor }]}>You reached Level {levelInfo.level}</Text>
                 
                 <View style={[styles.badgeCircle, { backgroundColor: isDark ? '#2D2D2D' : '#FFF5E6' }]}>
-                    <Text style={styles.largeBadgeIcon}>🏆</Text>
+                    <Ionicons name="trophy" size={60} color="#FFD700" />
                 </View>
 
                 <Text style={[styles.badgeNameText, { color: textColor }]}>Level {levelInfo.level} Badge</Text>

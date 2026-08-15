@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, SafeAreaView, useColorScheme, FlatList, Image, TouchableOpacity, ScrollView, ActivityIndicator, Dimensions, TextInput, Animated as RNAnimated } from 'react-native';
 import { BottomNav } from '@/src/components/home/BottomNav';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons, FontAwesome5 } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { contestService } from '@/src/services/contests/contestService';
 import { fetchSuggestedUsers, toggleFollowService } from '@/src/services/users';
@@ -307,8 +307,9 @@ export default function DiscoverScreen() {
             <View style={styles.liveDot} />
             <Text style={[styles.matchStatus, { color: textColor }]}>Waiting for Opponent</Text>
           </View>
-          <View style={styles.prizePill}>
-            <Text style={styles.prizeValue}>🪙 {prize}</Text>
+          <View style={[styles.prizePill, { flexDirection: 'row', alignItems: 'center', gap: 5 }]}>
+            <FontAwesome5 name="coins" size={11} color="#FFB300" />
+            <Text style={styles.prizeValue}>{prize}</Text>
           </View>
         </View>
 
@@ -347,7 +348,12 @@ export default function DiscoverScreen() {
               <Ionicons name="add" size={30} color={activeColor} />
             </View>
             <Text style={[styles.joinText, { color: subTextColor }]}>{isMyMatch ? 'Waiting...' : 'Tap to Join'}</Text>
-            {!isMyMatch && <Text style={[styles.entryFeeText, { color: activeColor }]}>Pay {entryFee} 🪙</Text>}
+            {!isMyMatch && (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 }}>
+                <Text style={[styles.entryFeeText, { color: activeColor, marginTop: 0 }]}>Pay {entryFee}</Text>
+                <FontAwesome5 name="coins" size={11} color={activeColor} />
+              </View>
+            )}
           </TouchableOpacity>
         </View>
 

@@ -99,7 +99,7 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId }: ShareSheetPr
   const onShareAction = async (platformName: string) => {
     try {
       const shareUrl = `https://tophunt.app/battle/${matchId}`;
-      const message = `Check out this battle on TopHunt! 🏆\n\n${shareUrl}`;
+      const message = `Check out this battle on TopHunt!\n\n${shareUrl}`;
       
       const result = await RNShare.share({
         message,
@@ -109,7 +109,7 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId }: ShareSheetPr
 
       if (result.action === RNShare.sharedAction) {
         await handleShareSuccess();
-        addToast(`Shared to ${platformName}! 🔥`, 'success');
+        addToast(`Shared to ${platformName}!`, 'success');
         closeSheet();
       }
     } catch (error: any) {
@@ -121,7 +121,7 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId }: ShareSheetPr
     const shareUrl = `https://tophunt.app/battle/${matchId}`;
     await Clipboard.setStringAsync(shareUrl);
     await handleShareSuccess();
-    addToast("Link copied to clipboard! 📋", 'success');
+    addToast("Link copied to clipboard!", 'success');
     closeSheet();
   };
 
@@ -238,7 +238,7 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId }: ShareSheetPr
                     </View>
                     <Text style={[styles.actionLabel, { color: textColor }]}>Share to...</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.actionBtn} onPress={() => { addToast("Feature coming soon! 🚧", 'info'); }}>
+                <TouchableOpacity style={styles.actionBtn} onPress={() => { addToast("Feature coming soon!", 'info'); }}>
                     <View style={[styles.actionIconCircle, { backgroundColor: isDark ? '#2A2E38' : '#F5F5F5' }]}>
                         <Icons.Download_Icon width={28} height={28} color={textColor} />
                     </View>

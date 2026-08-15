@@ -184,7 +184,7 @@ function RootLayoutNav() {
     const inSplash = segments[0] === 'splash';
     // Public content — viewable without login (needed for SEO + old shared
     // links): the blog listing/detail (/blog, /blog/[slug]), root-level post
-    // permalinks (app/[slug].tsx → segment "[slug]"), and legal pages.
+    // permalinks (app/[slug].tsx -> segment "[slug]"), and legal pages.
     const isPublic =
       segments[0] === 'blog' || segments[0] === '[slug]' || segments[0] === 'legal';
 

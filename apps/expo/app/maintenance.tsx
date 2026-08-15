@@ -28,7 +28,7 @@ export default function MaintenanceScreen() {
 
         <View style={styles.infoCard}>
            <Text style={styles.infoText}>
-             Please check back later. Thank you for your patience! 🍀
+             Please check back later. Thank you for your patience!
            </Text>
         </View>
 

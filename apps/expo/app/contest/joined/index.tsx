@@ -20,7 +20,7 @@ export default function ContestJoinedScreen() {
   const handleShare = async () => {
     try {
       await Share.share({
-        message: `I just joined the ${contestName} battle! 📸 Come compete with me and win coins! 🏆 #PhotoContest`,
+        message: `I just joined the ${contestName} battle! Come compete with me and win coins! #PhotoContest`,
       });
     } catch (error) {
       console.log(error);
@@ -41,7 +41,7 @@ export default function ContestJoinedScreen() {
             </LinearGradient>
         </View>
 
-        <Text style={[styles.title, { color: textColor }]}>Congratulations! 🎉</Text>
+        <Text style={[styles.title, { color: textColor }]}>Congratulations!</Text>
         <Text style={styles.subtitle}>
             You have successfully joined the{"\n"}
             <Text style={{ fontWeight: 'bold', color: '#FF4D67' }}>{contestName}</Text>
@@ -50,7 +50,7 @@ export default function ContestJoinedScreen() {
         {/* Info Card */}
         <View style={[styles.infoCard, { backgroundColor: cardBg }]}>
             <Text style={[styles.infoText, { color: textColor }]}>
-                Your entry is now live! Waiting for an opponent to match with you. Good luck! 🍀
+                Your entry is now live! Waiting for an opponent to match with you. Good luck!
             </Text>
         </View>
 

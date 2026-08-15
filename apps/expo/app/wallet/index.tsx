@@ -98,7 +98,7 @@ export default function WalletScreen() {
     try {
       const r: any = await walletService.claimDailyTask(taskId);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert('Reward earned! 🪙', `You got ${r.reward} Dpcoins!`);
+      Alert.alert('Reward earned!', `You got ${r.reward} Dpcoins!`);
       refetchProfile();
       refetchTasks();
     } catch (e: any) {
@@ -129,7 +129,7 @@ export default function WalletScreen() {
         const res: any = await walletService.claimDailyBonus(user.uid, currentDay);
         const earned = res?.coinsEarned ?? 0;
         setClaimedToday(true);
-        Alert.alert("🎉 Bonus Claimed!", `You received ${earned} Dpcoins.`);
+        Alert.alert("Bonus Claimed!", `You received ${earned} Dpcoins.`);
         // refetch re-runs the derivation effect above with the new streak/lastClaim.
         refetchProfile();
     } catch (error: any) {
@@ -175,7 +175,7 @@ export default function WalletScreen() {
       // Server credits the reward (with a daily cap) and returns the amount.
       const res: any = await walletService.claimAdReward();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert("Reward Earned! 🪙", `You earned ${res?.coinsEarned ?? 0} Dpcoins for watching the ad!`);
+      Alert.alert("Reward Earned!", `You earned ${res?.coinsEarned ?? 0} Dpcoins for watching the ad!`);
       refetchProfile();
       refetchTasks();
     } catch (error: any) {

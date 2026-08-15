@@ -68,7 +68,7 @@ export default function CoinStoreScreen() {
         },
       );
       await refetchProfile();
-      Alert.alert('Success 🎉', `${coins} Dpcoins added to your wallet!`);
+      Alert.alert('Success', `${coins} Dpcoins added to your wallet!`);
       router.back();
     } catch (error: any) {
       const msg = error?.message || error?.details || 'Transaction could not be completed. Please try again.';

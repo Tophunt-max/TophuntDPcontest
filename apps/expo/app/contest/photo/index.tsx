@@ -115,7 +115,10 @@ export default function PhotoContestsScreen() {
                 <View style={styles.cardFooter}>
                    <View style={styles.rewardInfo}>
                       <Text style={[styles.rewardLabel, { color: subTextColor }]}>Winner Reward</Text>
-                      <Text style={styles.rewardValue}>🏆 {item.rewardCoins || item.winningCoins || 0} Coins</Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
+                        <Ionicons name="trophy" size={15} color="#FFD700" />
+                        <Text style={styles.rewardValue}>{item.rewardCoins || item.winningCoins || 0} Coins</Text>
+                      </View>
                    </View>
                    <View style={[styles.startBtn, { backgroundColor: BRAND_PRIMARY }]}>
                       <Text style={styles.startBtnText}>Start</Text>

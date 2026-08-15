@@ -1,5 +1,6 @@
 import React, { useState, memo, useEffect, useCallback, useRef } from 'react';
 import { View, Text, StyleSheet, Image, TouchableOpacity, Dimensions, Alert, Pressable } from 'react-native';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { CommentSheet } from '../comments/CommentSheet';
 import { ShareSheet } from '../share/ShareSheet';
 import { useAuth } from '@/src/hooks/useAuth';
@@ -115,11 +116,11 @@ export const PostCard = memo(({ item, isDark }: PostCardProps) => {
   };
 
   const funnyVoteMessages = [
-    "Dhanyawaad! Aapka vote swikar kar liya gaya hai. 😉",
-    "Wah! Kya baat hai. Aapka favorite khiladi khush hoga! 🚀",
-    "Zabardast! Aapka vote count ho chuka hai. 🏆",
-    "Aapne toh game hi badal diya! Vote done! 🔥",
-    "Shukriya! Aapne sahi jagah apna nishana lagaya. 🎯"
+    "Dhanyawaad! Aapka vote swikar kar liya gaya hai.",
+    "Wah! Kya baat hai. Aapka favorite khiladi khush hoga!",
+    "Zabardast! Aapka vote count ho chuka hai.",
+    "Aapne toh game hi badal diya! Vote done!",
+    "Shukriya! Aapne sahi jagah apna nishana lagaya."
   ];
 
   const getRandomMessage = (messages: string[]) => {
@@ -146,7 +147,7 @@ export const PostCard = memo(({ item, isDark }: PostCardProps) => {
       const newLikedStatus = !isLiked;
       setIsLiked(newLikedStatus);
       await contestService.likeMatch(item.id);
-      if (newLikedStatus) addToast("Zabardast Like! ❤️", 'success');
+      if (newLikedStatus) addToast("Zabardast Like!", 'success');
     } catch (error) {
        setIsLiked(!isLiked);
     }
@@ -168,7 +169,7 @@ export const PostCard = memo(({ item, isDark }: PostCardProps) => {
       
       const status = await engagementService.toggleBookmark(item.id, user.uid);
       setIsBookmarked(status);
-      addToast(status ? "Saved to your profile! 📌" : "Removed from bookmarks!", 'info');
+      addToast(status ? "Saved to your profile!" : "Removed from bookmarks!", 'info');
     } catch (error) {
         setIsBookmarked(!isBookmarked);
     }
@@ -238,8 +239,9 @@ export const PostCard = memo(({ item, isDark }: PostCardProps) => {
            </View>
         </View>
         {item.entryFee > 0 && (
-            <View style={styles.prizeBadge}>
-                <Text style={styles.prizeText}>🏆 {item.entryFee * 1.8} Dpcoins</Text>
+            <View style={[styles.prizeBadge, { flexDirection: 'row', alignItems: 'center', gap: 4 }]}>
+                <Ionicons name="trophy" size={13} color="#FFD700" />
+                <Text style={styles.prizeText}>{item.entryFee * 1.8} Dpcoins</Text>
             </View>
         )}
       </View>
@@ -247,11 +249,11 @@ export const PostCard = memo(({ item, isDark }: PostCardProps) => {
       <Pressable onPress={handleDoubleTap} style={styles.mediaSection}>
         <View style={styles.imageWrapper}>
             <Image source={{ uri: item.userA.mediaUrl }} style={[styles.postImage, isALeading && styles.leadingImage]} />
-            {isALeading && <View style={styles.crownContainer}><Text style={{fontSize: 20}}>👑</Text></View>}
+            {isALeading && <View style={styles.crownContainer}><MaterialCommunityIcons name="crown" size={20} color="#FFD700" /></View>}
         </View>
         <View style={styles.imageWrapper}>
             <Image source={{ uri: item.userB.mediaUrl }} style={[styles.postImage, isBLeading && styles.leadingImage]} />
-            {isBLeading && <View style={styles.crownContainer}><Text style={{fontSize: 20}}>👑</Text></View>}
+            {isBLeading && <View style={styles.crownContainer}><MaterialCommunityIcons name="crown" size={20} color="#FFD700" /></View>}
         </View>
         
         <Animated.View pointerEvents="none" style={[styles.largeHeart, animatedHeartStyle]}>

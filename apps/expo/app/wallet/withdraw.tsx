@@ -68,7 +68,7 @@ export default function WithdrawScreen() {
     try {
       await walletService.requestWithdrawal(amt, method, account.trim());
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert('Request submitted 💸', 'Your payout request is pending admin approval.');
+      Alert.alert('Request submitted', 'Your payout request is pending admin approval.');
       setAmount(''); setAccount('');
       refetch();
       loadHistory();
@@ -154,7 +154,11 @@ export default function WithdrawScreen() {
           history.map((w) => (
             <View key={w.id} style={[styles.historyItem, { backgroundColor: cardBg }]}>
               <View style={{ flex: 1 }}>
-                <Text style={[styles.histAmount, { color: textColor }]}>{w.amount} coins → ₹{Number(w.cashAmount || 0).toFixed(2)}</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                  <Text style={[styles.histAmount, { color: textColor }]}>{w.amount} coins</Text>
+                  <Ionicons name="arrow-forward" size={13} color={subTextColor} />
+                  <Text style={[styles.histAmount, { color: textColor }]}>₹{Number(w.cashAmount || 0).toFixed(2)}</Text>
+                </View>
                 <Text style={[styles.hint, { color: subTextColor }]}>{String(w.method || '').toUpperCase()}</Text>
               </View>
               <View style={[styles.statusPill, { backgroundColor: statusColor(w.status) + '22' }]}>

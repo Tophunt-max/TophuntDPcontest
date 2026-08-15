@@ -22,7 +22,7 @@ export const engagementService = {
    */
   shareBattle: async (contestName: string, userA: string, userB: string, battleId?: string) => {
     try {
-      const message = `Check out this VS Battle on our App! 🏆\n\n${userA} VS ${userB}\nContest: ${contestName}\n\nDownload the app to vote and earn coins!`;
+      const message = `Check out this VS Battle on our App!\n\n${userA} VS ${userB}\nContest: ${contestName}\n\nDownload the app to vote and earn coins!`;
 
       const result = await Share.share({
         message,

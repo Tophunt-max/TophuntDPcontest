@@ -77,7 +77,7 @@ export default function DepositScreen() {
     try {
       await walletService.requestDeposit(amt, utr.trim(), 'qr', shot || undefined);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert('Submitted ✅', 'Your deposit is pending admin approval. Coins will be added once verified.');
+      Alert.alert('Submitted', 'Your deposit is pending admin approval. Coins will be added once verified.');
       setAmount(''); setUtr(''); setShot('');
       loadHistory();
     } catch (e: any) {
@@ -159,7 +159,8 @@ export default function DepositScreen() {
                 ) : shot ? (
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                     <Image source={{ uri: shot }} style={{ width: 32, height: 32, borderRadius: 6 }} />
-                    <Text style={{ color: '#4CAF50', fontFamily: 'Urbanist-Bold', fontSize: 13 }}>Screenshot attached ✓</Text>
+                    <Text style={{ color: '#4CAF50', fontFamily: 'Urbanist-Bold', fontSize: 13 }}>Screenshot attached</Text>
+                    <Ionicons name="checkmark-circle" size={16} color="#4CAF50" />
                   </View>
                 ) : (
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -175,8 +176,9 @@ export default function DepositScreen() {
             </View>
 
             {mode === 'both' && (
-              <TouchableOpacity onPress={() => router.replace('/wallet/store')} style={{ marginBottom: 16 }}>
-                <Text style={{ color: primaryColor, textAlign: 'center', fontFamily: 'Urbanist-Bold' }}>Or pay instantly by card / UPI →</Text>
+              <TouchableOpacity onPress={() => router.replace('/wallet/store')} style={{ marginBottom: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                <Text style={{ color: primaryColor, textAlign: 'center', fontFamily: 'Urbanist-Bold' }}>Or pay instantly by card / UPI</Text>
+                <Ionicons name="arrow-forward" size={16} color={primaryColor} />
               </TouchableOpacity>
             )}
           </>

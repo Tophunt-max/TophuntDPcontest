@@ -376,8 +376,9 @@ export default function BattleSetupScreen() {
             </View>
           </View>
 
-          <View style={styles.winnerBanner}>
-             <Text style={styles.winnerBannerText}>🏆 Winner Gets {winningReward} Coins!</Text>
+          <View style={[styles.winnerBanner, { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }]}>
+             <Ionicons name="trophy" size={16} color="#EAB308" />
+             <Text style={styles.winnerBannerText}>Winner Gets {winningReward} Coins!</Text>
           </View>
         </View>
 
