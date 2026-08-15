@@ -354,6 +354,48 @@ apiRoute.post("/", async (c) => {
       return c.json({ success: true, coinsEarned: coinReward, xpEarned: xpReward, streak });
     }
 
+    // Credit a rewarded-ad view. Guarded by a per-minute rate limit AND a
+    // per-UTC-day cap so a client can't mint unlimited coins by replaying this.
+    //
+    // ⚠️ SECURITY: this trusts the client that an ad was actually watched. For
+    // real money value it MUST be gated by the ad network's Server-Side
+    // Verification (SSV) callback (e.g. AdMob SSV) before crediting. The cap +
+    // rate limit bound the abuse until SSV is wired in. See PRODUCTION_TODO.md.
+    case "claimAdReward": {
+      const AD_REWARD = 5;
+      const DAILY_CAP = 10;
+      await rateLimit(env, `ad:${uid}`, 20, 60);
+
+      const day = Math.floor(Date.now() / 86_400_000); // UTC day bucket
+      const capKey = `adreward:${uid}:${day}`;
+      let used = 0;
+      try {
+        used = Number((await env.CACHE_KV.get(capKey)) || 0);
+      } catch {
+        /* KV blip — treat as 0 (fail-open on the counter, cap still applies next reads) */
+      }
+      if (used >= DAILY_CAP)
+        throw httpsError("resource-exhausted", "Daily ad reward limit reached. Come back tomorrow!");
+
+      const ts = now();
+      await db.batch([
+        db.update(schema.users)
+          .set({ dpcoin: sql`${schema.users.dpcoin} + ${AD_REWARD}`, updatedAt: ts })
+          .where(eq(schema.users.uid, uid)),
+        db.insert(schema.coinTransactions).values({
+          id: newId(), uid, amount: AD_REWARD, type: "ad_reward",
+          description: "Rewarded ad view", createdAt: ts,
+        }),
+      ]);
+      // Bump the daily counter (TTL ~25h so it clears after the day rolls over).
+      try {
+        await env.CACHE_KV.put(capKey, String(used + 1), { expirationTtl: 90_000 });
+      } catch {
+        /* best-effort */
+      }
+      return c.json({ success: true, coinsEarned: AD_REWARD, remaining: DAILY_CAP - used - 1 });
+    }
+
     // ================= WALLET =================
     // Step 1 of the purchase flow: create a Razorpay order priced SERVER-SIDE
     // from the coin package. The client never dictates the price or the number

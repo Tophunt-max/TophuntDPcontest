@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, ReactNode, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Animated, Platform, Dimensions } from 'react-native';
+import { setToastHandler } from '@/src/lib/toastBridge';
 
 const { width } = Dimensions.get('window');
 
@@ -52,6 +53,12 @@ export const ToastProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const removeToast = useCallback((id: number) => {
     setToasts(currentToasts => currentToasts.filter(toast => toast.id !== id));
   }, []);
+
+  // Expose addToast to non-React callers (React Query error handlers, etc.).
+  useEffect(() => {
+    setToastHandler((message, type) => addToast(message, type));
+    return () => setToastHandler(null);
+  }, [addToast]);
 
   return (
     <ToastContext.Provider value={{ addToast }}>

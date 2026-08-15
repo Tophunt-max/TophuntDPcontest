@@ -52,6 +52,20 @@ export const walletService = {
   },
 
   /**
+   * Credit a rewarded-ad view. The server enforces a daily cap + rate limit and
+   * returns { coinsEarned, remaining }. (Server-Side Verification of the ad
+   * should gate this before production — see PRODUCTION_TODO.md.)
+   */
+  claimAdReward: async () => {
+    try {
+      return await callApi('claimAdReward', {});
+    } catch (error) {
+      console.error("Error claiming ad reward:", error);
+      throw error;
+    }
+  },
+
+  /**
    * Request a cash payout of Dpcoins. The Worker validates against the admin
    * withdrawal config (enabled / min amount / conversion rate) and creates a
    * pending request; coins are held by the admin on approval.

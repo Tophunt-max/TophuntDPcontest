@@ -300,3 +300,27 @@ describe('submitVote (validation)', () => {
     expect(status).toBe(400);
   });
 });
+
+
+// ===========================================================================
+describe('claimAdReward', () => {
+  it('credits a capped reward and enforces the daily limit', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', 0);
+
+    // Daily cap is 10 × 5 coins.
+    for (let i = 0; i < 10; i++) {
+      const { status, body } = await call(env, 'alice', 'claimAdReward', {});
+      expect(status).toBe(200);
+      expect(body.coinsEarned).toBe(5);
+    }
+    const u = await getUser(env, 'alice');
+    expect(u?.dpcoin).toBe(50);
+
+    // 11th call in the same day is rejected, and no extra coins are credited.
+    const over = await call(env, 'alice', 'claimAdReward', {});
+    expect(over.status).toBe(429);
+    const after = await getUser(env, 'alice');
+    expect(after?.dpcoin).toBe(50);
+  });
+});

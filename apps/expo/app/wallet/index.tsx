@@ -151,12 +151,24 @@ export default function WalletScreen() {
     }, 1000);
   };
 
-  const finishAd = () => {
+  const finishAd = async () => {
     setIsWatchingAd(false);
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    // NOTE: There is no server endpoint to credit ad rewards yet, so we must not
-    // tell the user they earned coins that never get added to their balance.
-    Alert.alert("Thanks for watching! 🙏", "Ad rewards are coming soon and will be added to your balance automatically.");
+    try {
+      // Server credits the reward (with a daily cap) and returns the amount.
+      const res: any = await walletService.claimAdReward();
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert("Reward Earned! 🪙", `You earned ${res?.coinsEarned ?? 0} Dpcoins for watching the ad!`);
+      refetchProfile();
+    } catch (error: any) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      const limitHit = typeof error?.message === 'string' && error.message.toLowerCase().includes('limit');
+      Alert.alert(
+        'Reward',
+        limitHit
+          ? "You've reached today's ad reward limit. Come back tomorrow!"
+          : "Couldn't credit your reward right now. Please try again.",
+      );
+    }
   };
 
   const handleTaskAction = (task: any) => {

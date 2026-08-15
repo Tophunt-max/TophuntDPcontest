@@ -28,4 +28,10 @@ describe('walletService', () => {
     await walletService.claimDailyBonus('uid-1', 3);
     expect(callApi).toHaveBeenCalledWith('claimDailyReward', { dayIndex: 3 });
   });
+
+  it('claimAdReward calls the claimAdReward action', async () => {
+    const { walletService } = await import('@/src/services/wallet/walletService');
+    await walletService.claimAdReward();
+    expect(callApi).toHaveBeenCalledWith('claimAdReward', {});
+  });
 });

@@ -3,11 +3,12 @@ import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect } from 'react';
 import 'react-native-reanimated';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, QueryCache, MutationCache, onlineManager } from '@tanstack/react-query';
 import { Provider as PaperProvider } from 'react-native-paper';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as Notifications from 'expo-notifications';
+import NetInfo from '@react-native-community/netinfo';
 
 import dayjs from 'dayjs';
 import localeData from 'dayjs/plugin/localeData';
@@ -35,10 +36,30 @@ import { useAuth } from '@/src/hooks/useAuth'; // Import useAuth hook
 import { notificationService } from '@/src/services/notifications/notificationService';
 import { AnnouncementBanner } from '@/src/components/ui/AnnouncementBanner';
 import { ErrorBoundary } from '@/src/components/ErrorBoundary';
+import { OfflineBanner } from '@/src/components/ui/OfflineBanner';
+import { emitToast } from '@/src/lib/toastBridge';
+import { reportError } from '@/src/lib/reportError';
+
+// Drive React Query's online state from the device's real connectivity so
+// queries pause offline and auto-refetch when the network returns.
+onlineManager.setEventListener((setOnline) =>
+  NetInfo.addEventListener((state) => setOnline(!!state.isConnected)),
+);
 
 // Resilient defaults: retry transient failures, keep data briefly fresh, and
 // refetch when connectivity returns — important on flaky mobile networks.
 const queryClient = new QueryClient({
+  // Report every query error; toast only on user-triggered mutation failures to
+  // avoid spamming toasts for background refetches.
+  queryCache: new QueryCache({
+    onError: (error) => reportError(error),
+  }),
+  mutationCache: new MutationCache({
+    onError: (error: any) => {
+      reportError(error);
+      emitToast(error?.message || 'Something went wrong. Please try again.', 'error');
+    },
+  }),
   defaultOptions: {
     queries: {
       retry: 2,
@@ -200,6 +221,8 @@ function RootLayoutNav() {
         </Stack>
         {/* Admin-controlled announcement banner (overlays all screens). */}
         <AnnouncementBanner />
+        {/* Connectivity banner shown whenever the device goes offline. */}
+        <OfflineBanner />
       </View>
     </MaintenanceGuard>
   );

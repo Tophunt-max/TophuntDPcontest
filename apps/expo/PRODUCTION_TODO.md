@@ -58,18 +58,31 @@ The full purchase flow is wired end-to-end:
 
 ## 🔴 Still needed before launch
 
-### 4. Ad-reward crediting
-The "Watch Ad" task currently shows a "coming soon" message (it previously
-falsely claimed coins were credited). To make it real:
-- Integrate a rewarded-ads SDK (AdMob via `react-native-google-mobile-ads`).
-- Add a server action to credit the reward, verified via the ad network's
-  server-side verification callback (never trust the client).
+### 4. Ad-reward crediting — PARTIALLY DONE
+The "Watch Ad" flow now actually credits coins via the `claimAdReward` worker
+action (fixed reward, per-UTC-day cap + rate limit, ledger entry). Remaining
+hardening before real money value:
+- ⚠️ It currently trusts the client that an ad was watched. Gate it behind the
+  ad network's **Server-Side Verification** (AdMob SSV) callback so only a
+  verified impression credits coins.
+- Integrate the actual rewarded-ads SDK (e.g. `react-native-google-mobile-ads`)
+  in place of the simulated timer.
 
-### 5. Automated tests (currently zero)
-- **Worker unit tests** (Vitest + Miniflare) for money-critical paths:
-  `createOrder`/`topup`, `claimDailyReward`, `submitVote`, entry-fee deduction.
-- Client component/integration tests (Jest + React Native Testing Library) for
-  auth, join-battle, and wallet flows.
+### 5. Automated tests — STARTED
+Done:
+- **Worker** money-path suite (Vitest + a node:sqlite-backed D1 shim, since
+  workerd can't run in all CI): `createOrder`/`topup`, `claimDailyReward`,
+  `claimAdReward`, entry-fee deduction, `submitVote` validation. `npm test` in
+  `apps/worker`.
+- **Client** logic suite (Vitest, native modules mocked): `walletService`,
+  `razorpayCheckout`, `getDeviceId`, `contestService.voteOnMatch`. `npm test`
+  in `apps/expo`.
+
+Still to add:
+- Component/screen tests (jest-expo + React Native Testing Library) for auth,
+  join-battle, and wallet screens.
+- Full `submitVote` tally/dedup test (needs the VoteCounter Durable Object → run
+  under `@cloudflare/vitest-pool-workers` in a workerd-capable CI).
 - E2E smoke tests (Maestro/Detox) for the critical happy paths.
 
 ### 6. Daily-tasks progress (partially mock)
@@ -88,10 +101,16 @@ The worker already has Durable Objects (`REALTIME`, `VOTE_COUNTER`) and a
 waiting-match) to a WebSocket/SSE connection backed by the existing DO, keeping
 polling as a fallback. This cuts latency and request volume at scale.
 
-### 8. Offline & error UX
-- React Query now retries + refetches on reconnect (done). Add a visible
-  offline banner (`@react-native-community/netinfo`) and consistent
-  error/empty/retry states on the remaining screens.
+### 8. Offline & error UX — DONE (baseline)
+- React Query retries + refetches on reconnect, and `onlineManager` is now wired
+  to NetInfo so queries pause offline and resume automatically.
+- A global `OfflineBanner` overlays every screen when connectivity drops.
+- Mutation errors surface a toast globally (via `QueryClient` `MutationCache`
+  + the toast bridge); query errors are reported to the central reporter.
+- Reusable `ErrorState` / `EmptyState` components exist
+  (`src/components/ui/StateViews.tsx`).
+- Remaining: adopt `ErrorState`/`EmptyState` on the rest of the screens as they
+  are touched.
 
 ### 9. Auth hardening
 - Token refresh + expired-session handling, force-logout, and a race-free
