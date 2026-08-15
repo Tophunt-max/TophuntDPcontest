@@ -12,6 +12,7 @@ import {
   Modal,
   FlatList,
   PanResponder,
+  Platform,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useRouter } from 'expo-router';
@@ -100,6 +101,12 @@ export default function AddStoryScreen() {
   const cameraRef = useRef<CameraView>(null);
   const router = useRouter();
   const queryClient = useQueryClient();
+
+  // expo-camera's live CameraView is unreliable on web (renders a black frame
+  // and blocks behind the permission gate). On web we skip the live camera and
+  // let the user pick a photo/video from their device instead — the preview,
+  // overlays and upload flow all work fine in the browser.
+  const isWeb = Platform.OS === 'web';
 
   const player = useVideoPlayer(media?.type === 'video' ? media.uri : '', (player) => {
     player.loop = true;
@@ -223,6 +230,13 @@ export default function AddStoryScreen() {
       onPanResponderRelease: (evt, gestureState) => { if (gestureState.dy > 100) toggleMusicSheet(false); else toggleMusicSheet(true); }
   })).current;
 
+  const pickFromGallery = async () => {
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images', 'videos'], quality: 0.8 });
+    if (!result.canceled) {
+      setMedia({ uri: result.assets[0].uri, type: result.assets[0].type === 'video' ? 'video' : 'image' });
+    }
+  };
+
   const takePicture = async () => {
     if (!cameraRef.current || !isCameraReady) return;
     try {
@@ -268,19 +282,23 @@ export default function AddStoryScreen() {
     }
   };
 
-  if (!cameraPermission) {
-    return <View />;
-  }
+  // On web we don't use the native camera, so skip the permission gate entirely.
+  if (!isWeb) {
+    if (!cameraPermission) {
+      return <View />;
+    }
 
-  if (!cameraPermission.granted) {
-    return (
-      <View style={styles.container}>
-        <Text style={{ textAlign: 'center', color: 'white' }}>We need your permission to show the camera</Text>
-        <TouchableOpacity onPress={requestCameraPermission} style={styles.nextButton}>
-          <Text style={styles.nextButtonText}>Grant Permission</Text>
-        </TouchableOpacity>
-      </View>
-    );
+    if (!cameraPermission.granted) {
+      return (
+        <View style={[styles.container, styles.permissionContainer]}>
+          <Ionicons name="camera-outline" size={64} color="white" style={{ marginBottom: 16 }} />
+          <Text style={styles.permissionText}>We need your permission to show the camera</Text>
+          <TouchableOpacity onPress={requestCameraPermission} style={styles.permissionButton}>
+            <Text style={styles.permissionButtonText}>Grant Permission</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
   }
 
   return (
@@ -318,6 +336,19 @@ export default function AddStoryScreen() {
 
       <View style={styles.content}>
         {!media ? (
+            isWeb ? (
+                <View style={styles.webCaptureContainer}>
+                    <View style={styles.webUploadIcon}>
+                        <Ionicons name="cloud-upload-outline" size={64} color="#ff4466" />
+                    </View>
+                    <Text style={styles.webCaptureTitle}>Create a Story</Text>
+                    <Text style={styles.webCaptureSubtitle}>Select a photo or video from your device to share.</Text>
+                    <TouchableOpacity onPress={pickFromGallery} style={styles.webUploadButton}>
+                        <Gallery_Icon width={22} height={22} />
+                        <Text style={styles.webUploadButtonText}>Choose Photo or Video</Text>
+                    </TouchableOpacity>
+                </View>
+            ) : (
             <CameraView 
                 ref={cameraRef} 
                 style={styles.camera} 
@@ -329,15 +360,13 @@ export default function AddStoryScreen() {
             >
                 <View style={styles.cameraOverlay}>
                     <View style={styles.bottomControls}>
-                        <TouchableOpacity onPress={async () => {
-                            const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images', 'videos'], quality: 0.8 });
-                            if (!result.canceled) setMedia({ uri: result.assets[0].uri, type: result.assets[0].type === 'video' ? 'video' : 'image' });
-                        }} style={styles.iconCircle}><Gallery_Icon width={28} height={28} /></TouchableOpacity>
+                        <TouchableOpacity onPress={pickFromGallery} style={styles.iconCircle}><Gallery_Icon width={28} height={28} /></TouchableOpacity>
                         <TouchableOpacity onPress={takePicture} style={[styles.captureButton, !isCameraReady && { opacity: 0.3 }]} disabled={!isCameraReady}><View style={styles.captureButtonInner} /></TouchableOpacity>
                         <TouchableOpacity onPress={() => setFacing(f => f === 'back' ? 'front' : 'back')} style={styles.iconCircle}><Ionicons name="camera-reverse-outline" size={28} color="white" /></TouchableOpacity>
                     </View>
                 </View>
             </CameraView>
+            )
         ) : (
           <View style={styles.previewContainer}>
             {media.type === 'image' ? <Image source={{ uri: media.uri }} style={styles.previewMedia} contentFit="cover" /> : <VideoView player={player} style={styles.previewMedia} contentFit="cover" />}
@@ -479,6 +508,16 @@ const styles = StyleSheet.create({
   disabledButton: { opacity: 0.5 },
   disabledText: { color: '#8e8e8e' },
   content: { flex: 1 },
+  permissionContainer: { justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
+  permissionText: { textAlign: 'center', color: 'white', fontSize: 16, fontFamily: 'Urbanist-SemiBold', marginBottom: 20 },
+  permissionButton: { backgroundColor: '#ff4466', paddingHorizontal: 28, paddingVertical: 14, borderRadius: 30 },
+  permissionButtonText: { color: 'white', fontSize: 16, fontFamily: 'Urbanist-Bold' },
+  webCaptureContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
+  webUploadIcon: { width: 130, height: 130, borderRadius: 65, backgroundColor: 'rgba(255,68,102,0.12)', justifyContent: 'center', alignItems: 'center', marginBottom: 28 },
+  webCaptureTitle: { color: 'white', fontSize: 26, fontFamily: 'Urbanist-Bold', marginBottom: 10 },
+  webCaptureSubtitle: { color: 'rgba(255,255,255,0.6)', fontSize: 15, fontFamily: 'Urbanist-Medium', textAlign: 'center', lineHeight: 22, marginBottom: 36 },
+  webUploadButton: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#ff4466', paddingHorizontal: 28, paddingVertical: 16, borderRadius: 30 },
+  webUploadButtonText: { color: 'white', fontSize: 16, fontFamily: 'Urbanist-Bold' },
   camera: { flex: 1 },
   cameraOverlay: { flex: 1, backgroundColor: 'transparent', justifyContent: 'flex-end', paddingBottom: 40 },
   bottomControls: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', width: '100%' },
