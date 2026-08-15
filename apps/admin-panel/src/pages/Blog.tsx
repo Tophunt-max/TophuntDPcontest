@@ -16,7 +16,12 @@ export default function Blog() {
   const [creating, setCreating] = useState(false);
 
   const { data = [], isLoading } = useQuery({ queryKey: ["blog"], queryFn: () => api.blog() });
-  const stats = useQuery({ queryKey: ["blog-stats"], queryFn: api.blogStats });
+  const stats = useQuery({
+    queryKey: ["blog-stats"],
+    queryFn: api.blogStats,
+    refetchInterval: 30000,
+    refetchOnWindowFocus: true,
+  });
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["blog"] });
     qc.invalidateQueries({ queryKey: ["blog-stats"] });
@@ -129,8 +134,18 @@ function ImportStatus() {
   const [expanded, setExpanded] = useState(false);
   const [filter, setFilter] = useState("failed");
 
-  const summary = useQuery({ queryKey: ["blog-import-summary"], queryFn: api.blogImportSummary });
-  const progress = useQuery({ queryKey: ["blog-import-progress"], queryFn: api.blogImportProgress });
+  const summary = useQuery({
+    queryKey: ["blog-import-summary"],
+    queryFn: api.blogImportSummary,
+    refetchInterval: 30000,
+    refetchOnWindowFocus: true,
+  });
+  const progress = useQuery({
+    queryKey: ["blog-import-progress"],
+    queryFn: api.blogImportProgress,
+    refetchInterval: 30000,
+    refetchOnWindowFocus: true,
+  });
   const logQ = useQuery({
     queryKey: ["blog-import-log", filter],
     queryFn: () => api.blogImportLog(filter === "all" ? undefined : filter, 100),
@@ -222,8 +237,14 @@ function ImportStatus() {
   const done = (by.imported || 0) + (by.updated || 0);
   const notDone = (by.failed || 0) + (by.skipped || 0);
   const p = progress.data;
+  // A progress row older than a few minutes is stale — e.g. a job that was
+  // killed (or hit the KV write limit) before it could report `done`. Don't
+  // surface such a row as a live "Paused" job; it would otherwise show a
+  // phantom progress bar forever until the next successful import.
+  const PROGRESS_FRESH_MS = 5 * 60 * 1000;
+  const progressFresh = !!p && typeof p.updatedAt === "number" && Date.now() - p.updatedAt < PROGRESS_FRESH_MS;
   const running = importing; // only consider running if actively importing in this session
-  const paused = !importing && p && !p.done && p.total > 0;
+  const paused = !importing && !!p && !p.done && p.total > 0 && progressFresh;
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ["blog-import-summary"] });
