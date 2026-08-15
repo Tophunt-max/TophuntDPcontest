@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, ReactNode, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Animated, Platform, Dimensions } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { setToastHandler } from '@/src/lib/toastBridge';
 
 const { width } = Dimensions.get('window');
@@ -60,122 +61,121 @@ export const ToastProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     return () => setToastHandler(null);
   }, [addToast]);
 
+  const hasToasts = toasts.length > 0;
+
   return (
     <ToastContext.Provider value={{ addToast }}>
       <View style={{ flex: 1 }}>
         {children}
-        <View style={styles.container} pointerEvents="box-none">
-          {toasts.map(toast => (
-            <ToastItem key={toast.id} toast={toast} onHide={() => removeToast(toast.id)} />
-          ))}
-        </View>
+        {/* Centered popup overlay. pointerEvents="none" so transient toasts
+            never block interaction with the app underneath. */}
+        {hasToasts && (
+          <View style={styles.overlay} pointerEvents="none">
+            {toasts.map(toast => (
+              <ToastItem key={toast.id} toast={toast} onHide={() => removeToast(toast.id)} />
+            ))}
+          </View>
+        )}
       </View>
     </ToastContext.Provider>
   );
 };
 
+const TYPE_META: Record<ToastMessage['type'], { colors: [string, string]; emoji: string }> = {
+  success: { colors: ['#FF4D67', '#FF8A4D'], emoji: '🎉' },
+  error: { colors: ['#FF5252', '#FF1744'], emoji: '⚠️' },
+  info: { colors: ['#448AFF', '#2979FF'], emoji: 'ℹ️' },
+};
+
 const ToastItem: React.FC<{ toast: ToastMessage; onHide: () => void }> = ({ toast, onHide }) => {
+    const scaleAnim = useRef(new Animated.Value(0.8)).current;
     const fadeAnim = useRef(new Animated.Value(0)).current;
-    const slideAnim = useRef(new Animated.Value(-100)).current;
-    const rotateAnim = useRef(new Animated.Value(0)).current;
 
     useEffect(() => {
-        // Entrance animation: Pop and Slide
+        // Pop in — scale up + fade.
         Animated.parallel([
-            Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: true }),
-            Animated.spring(slideAnim, { toValue: 0, tension: 50, friction: 7, useNativeDriver: true }),
-            Animated.sequence([
-                Animated.timing(rotateAnim, { toValue: 1, duration: 100, useNativeDriver: true }),
-                Animated.timing(rotateAnim, { toValue: -1, duration: 200, useNativeDriver: true }),
-                Animated.timing(rotateAnim, { toValue: 0, duration: 100, useNativeDriver: true }),
-            ])
+            Animated.spring(scaleAnim, { toValue: 1, tension: 80, friction: 8, useNativeDriver: true }),
+            Animated.timing(fadeAnim, { toValue: 1, duration: 220, useNativeDriver: true }),
         ]).start();
 
         const timer = setTimeout(() => {
             Animated.parallel([
-                Animated.timing(fadeAnim, { toValue: 0, duration: 400, useNativeDriver: true }),
-                Animated.timing(slideAnim, { toValue: -100, duration: 400, useNativeDriver: true })
+                Animated.timing(scaleAnim, { toValue: 0.9, duration: 250, useNativeDriver: true }),
+                Animated.timing(fadeAnim, { toValue: 0, duration: 250, useNativeDriver: true }),
             ]).start(onHide);
-        }, 2800);
+        }, 2600);
 
         return () => clearTimeout(timer);
     }, []);
 
-    const rotation = rotateAnim.interpolate({
-        inputRange: [-1, 1],
-        outputRange: ['-5deg', '5deg']
-    });
-
-    const getColors = () => {
-        switch (toast.type) {
-            case 'success': return ['#FF4D67', '#FF8A4D']; // Success with gradient feel
-            case 'error': return ['#FF5252', '#FF1744'];
-            default: return ['#448AFF', '#2979FF'];
-        }
-    };
-
-    const colors = getColors();
+    const meta = TYPE_META[toast.type] || TYPE_META.info;
 
     return (
-        <Animated.View 
+        <Animated.View
             style={[
-                styles.toast, 
-                { 
-                    opacity: fadeAnim, 
-                    transform: [
-                        { translateY: slideAnim },
-                        { rotate: rotation }
-                    ],
-                    backgroundColor: colors[0]
-                }
+                styles.cardWrapper,
+                { opacity: fadeAnim, transform: [{ scale: scaleAnim }] },
             ]}
         >
-            <View style={styles.content}>
-                <Text style={styles.emoji}>{toast.type === 'success' ? '🔥' : toast.type === 'error' ? '💀' : '✨'}</Text>
+            <LinearGradient
+                colors={meta.colors}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.card}
+            >
+                <View style={styles.iconCircle}>
+                    <Text style={styles.emoji}>{meta.emoji}</Text>
+                </View>
                 <Text style={styles.message}>{toast.message}</Text>
-            </View>
+            </LinearGradient>
         </Animated.View>
     );
 };
 
 const styles = StyleSheet.create({
-  container: {
-    position: 'absolute',
-    top: Platform.OS === 'ios' ? 60 : 40,
-    left: 0,
-    right: 0,
-    alignItems: 'center',
-    zIndex: 9999,
-  },
-  toast: {
-    paddingVertical: 14,
-    paddingHorizontal: 20,
-    borderRadius: 20,
-    marginVertical: 6,
-    width: width * 0.85,
-    borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.3)',
-    elevation: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 5 },
-    shadowOpacity: 0.3,
-    shadowRadius: 10,
-  },
-  content: {
-    flexDirection: 'row',
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
     justifyContent: 'center',
+    paddingHorizontal: 32,
+    zIndex: 9999,
+  },
+  cardWrapper: {
+    marginVertical: 8,
+  },
+  card: {
+    minWidth: width * 0.6,
+    maxWidth: width * 0.82,
+    paddingVertical: 24,
+    paddingHorizontal: 26,
+    borderRadius: 26,
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.25)',
+    elevation: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.35,
+    shadowRadius: 20,
+  },
+  iconCircle: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: 'rgba(255,255,255,0.22)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 14,
   },
   emoji: {
-    fontSize: 20,
-    marginRight: 10,
+    fontSize: 28,
   },
   message: {
     color: 'white',
-    fontSize: 15,
+    fontSize: 16,
     fontFamily: Platform.OS === 'ios' ? 'System' : 'Roboto',
     fontWeight: 'bold',
     textAlign: 'center',
-    flexShrink: 1,
+    lineHeight: 22,
   },
 });
