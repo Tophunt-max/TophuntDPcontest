@@ -47,9 +47,28 @@ export default function WalletScreen() {
   const primaryColor = '#FF4D67';
 
   // State
-  const [currentDay, setCurrentDay] = useState(2);
+  const [currentDay, setCurrentDay] = useState(0);
   const [claimedToday, setClaimedToday] = useState(false);
   const [activeFilter, setActiveFilter] = useState('All');
+
+  // Derive the daily check-in state from real server data (streak + last claim)
+  // instead of hardcoding it, so the UI reflects what the user has actually claimed.
+  useEffect(() => {
+    if (!profile) return;
+    const lastMs = (profile as any).lastDailyClaim ? Number((profile as any).lastDailyClaim) : 0;
+    const d = new Date();
+    const startOfTodayUTC = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+    const claimed = lastMs >= startOfTodayUTC;
+    const streak = (profile as any).streak || 0;
+    setClaimedToday(claimed);
+    if (claimed) {
+      // Today already claimed: highlight the last claimed day on the track.
+      setCurrentDay(Math.max(0, Math.min(streak - 1, DAILY_REWARDS.length - 1)));
+    } else {
+      // Not claimed yet today: the next day in the streak is ready to claim.
+      setCurrentDay(Math.min(streak, DAILY_REWARDS.length - 1));
+    }
+  }, [profile]);
   
   // Ad Simulation State
   const [isWatchingAd, setIsWatchingAd] = useState(false);
@@ -73,14 +92,19 @@ export default function WalletScreen() {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
     try {
-        const amount = await walletService.claimDailyBonus(user.uid, currentDay);
+        // The Worker returns { success, coinsEarned, xpEarned, streak } — read the
+        // coin amount off the object instead of stringifying the whole response.
+        const res: any = await walletService.claimDailyBonus(user.uid, currentDay);
+        const earned = res?.coinsEarned ?? 0;
         setClaimedToday(true);
-        Alert.alert("🎉 Bonus Claimed!", `You received ${amount} Dpcoins.`);
+        Alert.alert("🎉 Bonus Claimed!", `You received ${earned} Dpcoins.`);
+        // refetch re-runs the derivation effect above with the new streak/lastClaim.
         refetchProfile();
-        if(currentDay < 6) setCurrentDay(currentDay + 1);
-    } catch (error) {
+    } catch (error: any) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        Alert.alert("Error", "Could not claim bonus.");
+        const alreadyClaimed = typeof error?.message === 'string' && error.message.toLowerCase().includes('already');
+        setClaimedToday(alreadyClaimed ? true : claimedToday);
+        Alert.alert("Error", alreadyClaimed ? "You have already claimed your daily reward today." : "Could not claim bonus.");
     }
   };
 
@@ -114,8 +138,9 @@ export default function WalletScreen() {
   const finishAd = () => {
     setIsWatchingAd(false);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    Alert.alert("Reward Earned! 🪙", "You watched the ad and earned 5 Dpcoins!");
-    // In a real app, you would call walletService.addCoins(5) here
+    // NOTE: There is no server endpoint to credit ad rewards yet, so we must not
+    // tell the user they earned coins that never get added to their balance.
+    Alert.alert("Thanks for watching! 🙏", "Ad rewards are coming soon and will be added to your balance automatically.");
   };
 
   const handleTaskAction = (task: any) => {

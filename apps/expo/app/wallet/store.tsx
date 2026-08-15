@@ -28,11 +28,15 @@ export default function CoinStoreScreen() {
     if (!user) return;
     setLoading(pkg.id);
     try {
+      // A verified Razorpay payment proof is required by the server. Until the
+      // checkout flow is wired up, this call will be rejected server-side — we
+      // surface the real reason rather than pretending the purchase succeeded.
       await walletService.purchaseCoins(pkg.coins, pkg.price);
       Alert.alert("Success", `You purchased ${pkg.coins} Dpcoins!`);
       router.back();
     } catch (error: any) {
-      Alert.alert("Failed", "Transaction failed. Please try again.");
+      const reason = error?.details || error?.message || "Transaction could not be completed. Please try again.";
+      Alert.alert("Payment Failed", reason);
     } finally {
       setLoading(null);
     }

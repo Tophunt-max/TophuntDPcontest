@@ -2,12 +2,21 @@ import { callApi } from '../api';
 
 export const walletService = {
   /**
-   * Purchase coins (mock payment) — credited via the Worker /api `topup`.
+   * Purchase coins — credited via the Worker /api `topup`.
+   *
+   * IMPORTANT: The Worker verifies the payment server-side and requires a real
+   * Razorpay proof (`orderId`, `paymentId`, `signature`). It deliberately
+   * "fails closed" — coins are never minted without a verified payment. A real
+   * Razorpay checkout flow (order creation + signature) must supply `proof`
+   * before this can succeed; there is no client-side mock that will pass.
    */
-  purchaseCoins: async (amount: number, _price: string) => {
+  purchaseCoins: async (
+    amount: number,
+    _price: string,
+    proof?: { paymentId: string; orderId: string; signature: string },
+  ) => {
     try {
-      const mockPaymentId = `pay_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      return await callApi('topup', { amount, paymentId: mockPaymentId });
+      return await callApi('topup', { amount, ...(proof || {}) });
     } catch (error) {
       console.error("Purchase error:", error);
       throw error;

@@ -92,10 +92,12 @@ export default function BattleSetupScreen() {
     }
   }, [contestId, matchId]);
 
-  // Autofill user info
+  // Autofill user info. The profile row uses `fullName` (there is no
+  // `displayName` field), so fall back to it — otherwise the Display Name stays
+  // empty and the user is blocked from joining until they retype their own name.
   useEffect(() => {
     if (profile) {
-      setDisplayName(profile.displayName || '');
+      setDisplayName((profile as any).displayName || profile.fullName || '');
       setUsername(profile.username || '');
     }
   }, [profile]);

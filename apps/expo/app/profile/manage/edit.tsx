@@ -105,10 +105,20 @@ export default function EditProfileScreen() {
 
   useEffect(() => {
     if (profile) {
+      // Split the stored E.164-style number into dial code + 10-digit local part.
+      // Using a hardcoded "+91" replace() mangled numbers saved with any other
+      // country code (the prefix was left in the field and the picker was wrong).
+      const rawPhone = profile.phone || "";
+      let localPhone = rawPhone;
+      if (rawPhone.startsWith("+")) {
+        localPhone = rawPhone.slice(-10);
+        const dial = rawPhone.slice(0, rawPhone.length - 10);
+        if (dial) setCountryCode(dial);
+      }
       reset({
         fullName: profile.fullName || "",
         email: profile.email || "",
-        phone: profile.phone?.replace(countryCode, "") || "",
+        phone: localPhone,
         occupation: (profile as any).occupation || "",
         bio: profile.bio || "",
         facebook: (profile as any).facebook || "",

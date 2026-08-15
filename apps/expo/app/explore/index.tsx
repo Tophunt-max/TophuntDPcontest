@@ -84,7 +84,7 @@ export default function DiscoverScreen() {
     try {
       const [contests, waiting, usersData] = await Promise.all([
         contestService.getAvailableContests(),
-        contestService.getWaitingMatches(undefined, user?.uid),
+        contestService.getWaitingMatches(),
         fetchSuggestedUsers(),
       ]);
       setAvailableContests(contests);

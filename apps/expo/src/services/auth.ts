@@ -1,22 +1,11 @@
-import { useState, useEffect } from 'react';
-import { onAuthStateChanged, User, createUserWithEmailAndPassword, signOut as firebaseSignOut } from 'firebase/auth';
+import { createUserWithEmailAndPassword, signOut as firebaseSignOut } from 'firebase/auth';
 import { auth } from './firebase/initFirebase';
 
-export const useAuth = () => {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setUser(user);
-      setLoading(false);
-    });
-
-    return () => unsubscribe();
-  }, []);
-
-  return { user, loading };
-};
+// Single source of truth for auth state. Previously this module had its own
+// duplicate `useAuth` implementation (a second onAuthStateChanged listener),
+// which could drift from `hooks/useAuth`. Re-export the hook so every caller
+// shares one implementation regardless of import path.
+export { useAuth } from '../hooks/useAuth';
 
 export const signupWithEmail = async (email: string, password: string) => {
   try {
