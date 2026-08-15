@@ -22,8 +22,8 @@ export default function MaintenanceScreen() {
         <Text style={[styles.title, { color: textColor }]}>Under Maintenance</Text>
         
         <Text style={[styles.description, { color: isDark ? '#BDBDBD' : '#616161' }]}>
-          We are currently performing scheduled maintenance to improve our services. 
-          We'll be back shortly!
+          {config?.maintenanceMessage?.trim() ||
+            "We are currently performing scheduled maintenance to improve our services. We'll be back shortly!"}
         </Text>
 
         <View style={styles.infoCard}>

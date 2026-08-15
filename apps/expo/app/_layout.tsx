@@ -29,9 +29,11 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { ToastProvider } from '@/src/components/toast/ToastProvider';
 import { lightTheme, darkTheme } from '@/constants/theme';
 import '@/src/services/firebase/initFirebase'; // Import to initialize Firebase
-import { useAppConfig } from '@/src/services/appSettings';
+import { View } from 'react-native';
+import { useAppConfig, isUpdateRequired } from '@/src/services/appSettings';
 import { useAuth } from '@/src/hooks/useAuth'; // Import useAuth hook
 import { notificationService } from '@/src/services/notifications/notificationService';
+import { AnnouncementBanner } from '@/src/components/ui/AnnouncementBanner';
 
 const queryClient = new QueryClient();
 
@@ -45,17 +47,23 @@ function MaintenanceGuard({ children }: { children: React.ReactNode }) {
     if (loading) return;
 
     const isMaintenancePage = segments[0] === 'maintenance';
+    const isForceUpdatePage = segments[0] === 'force-update';
 
+    // 1) Maintenance takes top priority.
     if (config?.maintenanceMode) {
-      if (!isMaintenancePage) {
-        router.replace('/maintenance');
-      }
-    } else {
-      if (isMaintenancePage) {
-        router.replace('/');
-      }
+      if (!isMaintenancePage) router.replace('/maintenance');
+      return;
     }
-  }, [config?.maintenanceMode, loading, segments]);
+    // 2) Force update (app version below the admin-set minimum).
+    if (isUpdateRequired(config)) {
+      if (!isForceUpdatePage) router.replace('/force-update');
+      return;
+    }
+    // 3) Neither active — leave the gate screens if we're stuck on one.
+    if (isMaintenancePage || isForceUpdatePage) {
+      router.replace('/');
+    }
+  }, [config?.maintenanceMode, config?.forceUpdate, config?.minAppVersion, loading, segments]);
 
   return <>{children}</>;
 }
@@ -153,13 +161,18 @@ function RootLayoutNav() {
 
   return (
     <MaintenanceGuard>
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="index" />
-        <Stack.Screen name="splash" />
-        <Stack.Screen name="home" />
-        <Stack.Screen name="maintenance" options={{ gestureEnabled: false }} />
-        <Stack.Screen name="notifications/index" options={{ presentation: 'modal', title: 'Notifications' }} />
-      </Stack>
+      <View style={{ flex: 1 }}>
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="index" />
+          <Stack.Screen name="splash" />
+          <Stack.Screen name="home" />
+          <Stack.Screen name="maintenance" options={{ gestureEnabled: false }} />
+          <Stack.Screen name="force-update" options={{ gestureEnabled: false }} />
+          <Stack.Screen name="notifications/index" options={{ presentation: 'modal', title: 'Notifications' }} />
+        </Stack>
+        {/* Admin-controlled announcement banner (overlays all screens). */}
+        <AnnouncementBanner />
+      </View>
     </MaintenanceGuard>
   );
 }

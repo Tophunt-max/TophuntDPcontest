@@ -11,6 +11,7 @@ import { useAuth } from '@/src/services/auth';
 import { Colors } from '@/constants/theme';
 import { useProfile } from '@/src/hooks/useProfileData';
 import { walletService } from '@/src/services/wallet/walletService';
+import { useFeature } from '@/src/services/appSettings';
 
 const { width, height } = Dimensions.get('window');
 
@@ -38,7 +39,8 @@ export default function WalletScreen() {
   const { data: profile, refetch: refetchProfile } = useProfile(user?.uid || '');
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
-  
+  const topupsEnabled = useFeature('topups'); // admin feature flag
+
   // Theme Colors
   const backgroundColor = isDark ? Colors.dark.background : '#F8F9FA';
   const cardBg = isDark ? '#1F222A' : '#FFFFFF';
@@ -324,6 +326,7 @@ export default function WalletScreen() {
                             <Text style={styles.balanceValue}>{profile?.Dpcoin || 0}</Text>
                         </View>
                         
+                        {topupsEnabled && (
                         <TouchableOpacity 
                             style={styles.topUpButton}
                             onPress={() => {
@@ -335,6 +338,7 @@ export default function WalletScreen() {
                             <Ionicons name="add" size={20} color="#FF4D67" />
                             <Text style={styles.topUpText}>Top Up Balance</Text>
                         </TouchableOpacity>
+                        )}
                     </LinearGradient>
                 </Animated.View>
 
