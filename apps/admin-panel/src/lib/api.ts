@@ -77,9 +77,16 @@ const del = <T>(p: string) => req<T>("DELETE", p);
 export const api = {
   // dashboard
   overview: () =>
-    get<{ users: number; posts: number; reports: number; support: number }>(
-      "/admin/overview",
-    ),
+    get<{
+      users: number;
+      posts: number;
+      reports: number;
+      support: number;
+      revenue: number;
+      activeMatches: number;
+      liveContests: number;
+      pendingWithdrawals: number;
+    }>("/admin/overview"),
   deviceStats: () =>
     get<{ web: number; mobile: number; other: number }>("/admin/device-stats"),
   userGrowth: () =>
@@ -149,9 +156,64 @@ export const api = {
   appSettings: () => get<any>("/admin/app-settings"),
   saveAppSettings: (payload: any) => post("/admin/app-settings", payload),
 
+  // contest editing / matches (battles)
+  updateContest: (id: string, payload: any) => patch(`/admin/contests/${id}`, payload),
+  matches: (status?: string) =>
+    get<any[]>(`/admin/matches${status ? `?status=${encodeURIComponent(status)}` : ""}`),
+  match: (id: string) => get<any>(`/admin/matches/${id}`),
+  matchVotes: (id: string) => get<any[]>(`/admin/matches/${id}/votes`),
+  declareWinner: (id: string, winnerUid?: string) =>
+    post(`/admin/matches/${id}/declare-winner`, winnerUid ? { winnerUid } : {}),
+  cancelMatch: (id: string) => post(`/admin/matches/${id}/cancel`),
+
+  // transactions + revenue
+  transactions: (params?: { uid?: string; type?: string; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.uid) q.set("uid", params.uid);
+    if (params?.type) q.set("type", params.type);
+    if (params?.limit) q.set("limit", String(params.limit));
+    const s = q.toString();
+    return get<any[]>(`/admin/transactions${s ? `?${s}` : ""}`);
+  },
+  transactionTypes: () => get<string[]>("/admin/transactions/types"),
+  revenue: () =>
+    get<{
+      totalRevenue: number;
+      paymentCount: number;
+      coinsInCirculation: number;
+      byType: { type: string; total: number; n: number }[];
+      trend: { date: string; amount: number }[];
+      topSpenders: { userId: string; total: number; username?: string; fullName?: string }[];
+    }>("/admin/revenue"),
+  payments: () => get<any[]>("/admin/payments"),
+
+  // fraud
+  fraudVotes: () => get<{ deviceId: string; accounts: number; totalVotes: number }[]>("/admin/fraud/votes"),
+
+  // comments moderation
+  comments: (postId?: string) =>
+    get<any[]>(`/admin/comments${postId ? `?postId=${encodeURIComponent(postId)}` : ""}`),
+  deleteComment: (id: string) => del(`/admin/comments/${id}`),
+
+  // followers
+  userFollowers: (id: string) => get<any[]>(`/admin/users/${id}/followers`),
+  userFollowing: (id: string) => get<any[]>(`/admin/users/${id}/following`),
+
+  // withdrawals
+  withdrawals: (status?: string) =>
+    get<any[]>(`/admin/withdrawals${status ? `?status=${encodeURIComponent(status)}` : ""}`),
+  actionWithdrawal: (id: string, action: "approve" | "reject" | "paid", adminNote?: string) =>
+    patch(`/admin/withdrawals/${id}`, { action, adminNote }),
+
+  // audit log
+  auditLog: (action?: string) =>
+    get<any[]>(`/admin/audit-log${action ? `?action=${encodeURIComponent(action)}` : ""}`),
+
   // notifications
   notifications: () => get<any[]>("/admin/notifications"),
   markNotificationsRead: () => post("/admin/notifications/read"),
   notify: (payload: { userId: string; title: string; body: string; type?: string }) =>
     post("/admin/notify", payload),
+  broadcast: (payload: { title: string; body: string; image?: string }) =>
+    post<{ recipients: number }>("/admin/broadcast", payload),
 };

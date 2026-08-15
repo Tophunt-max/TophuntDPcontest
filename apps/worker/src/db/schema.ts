@@ -520,6 +520,51 @@ export const blogImportLog = sqliteTable(
 );
 
 // ---------------------------------------------------------------------------
+// withdrawals  (cash payout requests against Dpcoin balance)
+// ---------------------------------------------------------------------------
+export const withdrawals = sqliteTable(
+  "withdrawals",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    amount: real("amount").notNull(), // Dpcoins requested
+    cashAmount: real("cash_amount").default(0), // local currency value
+    method: text("method").default("upi"), // upi | bank | paytm ...
+    accountDetails: text("account_details"), // UPI id / bank details
+    status: text("status").notNull().default("pending"), // pending | approved | rejected | paid
+    adminNote: text("admin_note"),
+    processedBy: text("processed_by"), // admin uid who actioned it
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => ({
+    statusIdx: index("idx_withdrawals_status").on(t.status, t.createdAt),
+    userIdx: index("idx_withdrawals_user").on(t.userId),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// admin_audit_log  (accountability: who did what admin action, when)
+// ---------------------------------------------------------------------------
+export const adminAuditLog = sqliteTable(
+  "admin_audit_log",
+  {
+    id: text("id").primaryKey(),
+    adminUid: text("admin_uid"),
+    adminEmail: text("admin_email"),
+    action: text("action").notNull(), // e.g. user.block, wallet.adjust
+    targetType: text("target_type"), // user | contest | match | withdrawal ...
+    targetId: text("target_id"),
+    detail: text("detail", { mode: "json" }), // extra context
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    createdIdx: index("idx_audit_created").on(t.createdAt),
+    actionIdx: index("idx_audit_action").on(t.action),
+  }),
+);
+
+// ---------------------------------------------------------------------------
 // settings  (was: settings/{docId}: appConfig, gamification)
 // ---------------------------------------------------------------------------
 export const settings = sqliteTable("settings", {

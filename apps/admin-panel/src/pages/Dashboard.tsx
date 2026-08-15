@@ -7,6 +7,10 @@ import {
   Smartphone,
   Monitor,
   HelpCircle,
+  IndianRupee,
+  Swords,
+  Trophy,
+  Banknote,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -60,6 +64,33 @@ export default function Dashboard() {
           label="Pending Tickets"
           value={overview.data?.support ?? "–"}
           gradient="gradient-green"
+        />
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <StatCard
+          icon={IndianRupee}
+          label="Total Revenue"
+          value={overview.data?.revenue ?? "–"}
+          gradient="gradient-green"
+        />
+        <StatCard
+          icon={Swords}
+          label="Active Battles"
+          value={overview.data?.activeMatches ?? "–"}
+          gradient="gradient-purple"
+        />
+        <StatCard
+          icon={Trophy}
+          label="Live Contests"
+          value={overview.data?.liveContests ?? "–"}
+          gradient="gradient-blue"
+        />
+        <StatCard
+          icon={Banknote}
+          label="Pending Payouts"
+          value={overview.data?.pendingWithdrawals ?? "–"}
+          gradient="gradient-orange"
         />
       </div>
 

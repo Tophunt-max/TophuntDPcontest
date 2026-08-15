@@ -8,7 +8,7 @@
  * the admin panel keep its existing route URLs while the data moves to D1.
  */
 import { Hono } from "hono";
-import { and, eq, desc, sql, count, ne, like } from "drizzle-orm";
+import { and, eq, desc, sql, count, ne, like, gte, inArray } from "drizzle-orm";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
@@ -16,9 +16,41 @@ import { verifyIdToken, bearerToken } from "../lib/firebaseAuth";
 import { isAdmin } from "../middleware/auth";
 import { getAppConfig, getGamificationSettings, invalidateSetting } from "../lib/settings";
 import { deleteAuthUser, updateAuthUser, setCustomClaims, getUserByEmail } from "../lib/firebaseAdmin";
-import { createNotification } from "../lib/notify";
+import { createNotification, sendBroadcastToAllUsers } from "../lib/notify";
+import { finalizeVotes } from "../lib/voteCounter";
 import { newId, now } from "../lib/ids";
 import { discoverUrls, processBatch } from "../lib/importerTask";
+
+/**
+ * Record a sensitive admin action in the audit trail. Best-effort — never
+ * throws (a failed audit write must not break the action itself). The acting
+ * admin identity comes from the verified Firebase token when present; requests
+ * that use the shared server secret are recorded as "server".
+ */
+async function logAudit(
+  c: any,
+  action: string,
+  targetType: string,
+  targetId: string | null,
+  detail?: Record<string, unknown>,
+): Promise<void> {
+  try {
+    const db = getDb(c.env);
+    const user = c.get("user");
+    await db.insert(schema.adminAuditLog).values({
+      id: newId(),
+      adminUid: user?.uid ?? null,
+      adminEmail: user?.email ?? (user ? null : "server"),
+      action,
+      targetType,
+      targetId: targetId ?? null,
+      detail: detail ?? null,
+      createdAt: now(),
+    });
+  } catch (e) {
+    console.error("[audit] failed to record", action, e);
+  }
+}
 
 export const adminRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -73,8 +105,33 @@ adminRoute.post("/rewards", async (c) => {
 // ---- contests ----
 adminRoute.delete("/contests/:id", async (c) => {
   const db = getDb(c.env);
-  await db.delete(schema.contests).where(eq(schema.contests.id, c.req.param("id")));
+  const id = c.req.param("id");
+  await db.delete(schema.contests).where(eq(schema.contests.id, id));
+  await logAudit(c, "contest.delete", "contest", id);
   return c.json({ message: "Contest deleted successfully" });
+});
+
+// Update a contest template.
+adminRoute.patch("/contests/:id", async (c) => {
+  const db = getDb(c.env);
+  const id = c.req.param("id");
+  const b = await c.req.json<any>();
+  const current = await db.select().from(schema.contests).where(eq(schema.contests.id, id)).get();
+  if (!current) throw httpsError("not-found", "Contest not found.");
+  const set: any = {};
+  if (b.title !== undefined || b.name !== undefined) set.title = b.title ?? b.name;
+  if (b.type !== undefined) set.type = b.type;
+  if (b.status !== undefined) set.status = b.status;
+  if (b.totalEntryFee !== undefined || b.entryFishCoins !== undefined)
+    set.totalEntryFee = Number(b.totalEntryFee ?? b.entryFishCoins);
+  if (b.rewardCoins !== undefined || b.prizePool !== undefined)
+    set.rewardCoins = Number(b.rewardCoins ?? b.prizePool);
+  if (b.voteDurationDays !== undefined) set.voteDurationDays = Number(b.voteDurationDays);
+  if (b.autoCancelHours !== undefined) set.autoCancelHours = Number(b.autoCancelHours);
+  if (b.minVotes !== undefined) set.minVotes = Number(b.minVotes);
+  await db.update(schema.contests).set(set).where(eq(schema.contests.id, id));
+  await logAudit(c, "contest.update", "contest", id, set);
+  return c.json({ message: "Contest updated", id });
 });
 
 // ---- posts ----
@@ -140,6 +197,7 @@ adminRoute.delete("/users/:id", async (c) => {
   const id = c.req.param("id");
   await db.delete(schema.users).where(eq(schema.users.uid, id));
   await deleteAuthUser(c.env, id).catch((e) => console.error("Auth delete failed", e));
+  await logAudit(c, "user.delete", "user", id);
   return c.json({ message: "User deleted successfully" });
 });
 adminRoute.patch("/users/:id", async (c) => {
@@ -148,6 +206,7 @@ adminRoute.patch("/users/:id", async (c) => {
   const { isBlocked } = await c.req.json<any>();
   await db.update(schema.users).set({ isBlocked: !!isBlocked, status: isBlocked ? "blocked" : "active", updatedAt: now() }).where(eq(schema.users.uid, id));
   await updateAuthUser(c.env, id, { disabled: !!isBlocked }).catch((e) => console.warn("Auth update failed", e));
+  await logAudit(c, isBlocked ? "user.block" : "user.unblock", "user", id);
   return c.json({ message: `User ${isBlocked ? "blocked" : "unblocked"} successfully`, status: isBlocked });
 });
 
@@ -175,6 +234,7 @@ adminRoute.post("/users/:id/wallet", async (c) => {
     createdAt: now(),
   });
   const user = await db.select({ balance: schema.users.dpcoin }).from(schema.users).where(eq(schema.users.uid, userId)).get();
+  await logAudit(c, "wallet.adjust", "user", userId, { amount: delta, type });
   return c.json({ message: "Wallet updated successfully", newBalance: user?.balance ?? 0 });
 });
 
@@ -622,7 +682,16 @@ adminRoute.get("/overview", async (c) => {
   const reports = (await db.select({ v: count() }).from(schema.reports).get())?.v ?? 0;
   const support =
     (await db.select({ v: count() }).from(schema.supportTickets).where(ne(schema.supportTickets.status, "resolved")).get())?.v ?? 0;
-  return c.json({ users, posts, reports, support });
+  // Money + engagement metrics.
+  const revenue =
+    (await db.select({ v: sql<number>`COALESCE(SUM(${schema.payments.amount}),0)` }).from(schema.payments).where(eq(schema.payments.status, "success")).get())?.v ?? 0;
+  const activeMatches =
+    (await db.select({ v: count() }).from(schema.contestMatches).where(eq(schema.contestMatches.status, "active")).get())?.v ?? 0;
+  const liveContests =
+    (await db.select({ v: count() }).from(schema.contests).where(eq(schema.contests.status, "live")).get())?.v ?? 0;
+  const pendingWithdrawals =
+    (await db.select({ v: count() }).from(schema.withdrawals).where(eq(schema.withdrawals.status, "pending")).get())?.v ?? 0;
+  return c.json({ users, posts, reports, support, revenue, activeMatches, liveContests, pendingWithdrawals });
 });
 
 adminRoute.get("/device-stats", async (c) => {
@@ -768,6 +837,7 @@ adminRoute.post("/set-role", async (c) => {
   const role = makeAdmin === false ? "user" : "admin";
   await setCustomClaims(c.env, uid, { role });
   await db.update(schema.users).set({ role, updatedAt: now() }).where(eq(schema.users.uid, uid));
+  await logAudit(c, "user.set-role", "user", uid, { role });
   return c.json({ success: true, uid, role });
 });
 
@@ -804,4 +874,503 @@ adminRoute.post("/notify", async (c) => {
     targetId: "admin-test",
   });
   return c.json({ success: true });
+});
+
+
+// ======================= TRANSACTIONS / REVENUE =======================
+/**
+ * Coin transaction ledger. Optional filters: ?uid= , ?type= , ?limit= .
+ * Joins the user's display name/username for a readable admin table.
+ */
+adminRoute.get("/transactions", async (c) => {
+  const db = getDb(c.env);
+  const uid = c.req.query("uid");
+  const type = c.req.query("type");
+  const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 500);
+  const conds: any[] = [];
+  if (uid) conds.push(eq(schema.coinTransactions.uid, uid));
+  if (type) conds.push(eq(schema.coinTransactions.type, type));
+  const rows = await db
+    .select({
+      id: schema.coinTransactions.id,
+      uid: schema.coinTransactions.uid,
+      amount: schema.coinTransactions.amount,
+      type: schema.coinTransactions.type,
+      contestId: schema.coinTransactions.contestId,
+      matchId: schema.coinTransactions.matchId,
+      description: schema.coinTransactions.description,
+      createdAt: schema.coinTransactions.createdAt,
+      username: schema.users.username,
+      fullName: schema.users.fullName,
+    })
+    .from(schema.coinTransactions)
+    .leftJoin(schema.users, eq(schema.users.uid, schema.coinTransactions.uid))
+    .where(conds.length ? and(...conds) : (undefined as any))
+    .orderBy(desc(schema.coinTransactions.createdAt))
+    .limit(limit)
+    .all();
+  return c.json(rows.map((r) => ({ ...r, createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null })));
+});
+
+// Distinct transaction types (for the filter dropdown).
+adminRoute.get("/transactions/types", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db.select({ type: schema.coinTransactions.type }).from(schema.coinTransactions).groupBy(schema.coinTransactions.type).all();
+  return c.json(rows.map((r) => r.type).filter(Boolean));
+});
+
+/**
+ * Revenue analytics: total top-up revenue, count, coins-in-circulation, a
+ * per-type breakdown of the coin ledger, the last-14-day payment trend and the
+ * top spenders.
+ */
+adminRoute.get("/revenue", async (c) => {
+  const db = getDb(c.env);
+  const totalRevenue =
+    (await db.select({ v: sql<number>`COALESCE(SUM(${schema.payments.amount}),0)` }).from(schema.payments).where(eq(schema.payments.status, "success")).get())?.v ?? 0;
+  const paymentCount =
+    (await db.select({ v: count() }).from(schema.payments).where(eq(schema.payments.status, "success")).get())?.v ?? 0;
+  const coinsInCirculation =
+    (await db.select({ v: sql<number>`COALESCE(SUM(${schema.users.dpcoin}),0)` }).from(schema.users).get())?.v ?? 0;
+
+  const byType = await db
+    .select({ type: schema.coinTransactions.type, total: sql<number>`COALESCE(SUM(${schema.coinTransactions.amount}),0)`, n: count() })
+    .from(schema.coinTransactions)
+    .groupBy(schema.coinTransactions.type)
+    .all();
+
+  // Last 14 days of payment revenue, bucketed by day (UTC).
+  const since = now() - 14 * 86400000;
+  const recentPayments = await db
+    .select({ amount: schema.payments.amount, createdAt: schema.payments.createdAt })
+    .from(schema.payments)
+    .where(and(eq(schema.payments.status, "success"), gte(schema.payments.createdAt, since)))
+    .all();
+  const dayMap: Record<string, number> = {};
+  for (let i = 13; i >= 0; i--) {
+    const d = new Date(now() - i * 86400000).toISOString().slice(0, 10);
+    dayMap[d] = 0;
+  }
+  for (const p of recentPayments) {
+    const d = new Date(p.createdAt).toISOString().slice(0, 10);
+    if (dayMap[d] !== undefined) dayMap[d] += Number(p.amount) || 0;
+  }
+  const trend = Object.entries(dayMap).map(([date, amount]) => ({ date, amount }));
+
+  const topSpenders = await db
+    .select({ userId: schema.payments.userId, total: sql<number>`COALESCE(SUM(${schema.payments.amount}),0)`, username: schema.users.username, fullName: schema.users.fullName })
+    .from(schema.payments)
+    .leftJoin(schema.users, eq(schema.users.uid, schema.payments.userId))
+    .where(eq(schema.payments.status, "success"))
+    .groupBy(schema.payments.userId)
+    .orderBy(desc(sql`SUM(${schema.payments.amount})`))
+    .limit(10)
+    .all();
+
+  return c.json({ totalRevenue, paymentCount, coinsInCirculation, byType, trend, topSpenders });
+});
+
+// Raw payment (top-up) list.
+adminRoute.get("/payments", async (c) => {
+  const db = getDb(c.env);
+  const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 500);
+  const rows = await db
+    .select({
+      id: schema.payments.id,
+      userId: schema.payments.userId,
+      amount: schema.payments.amount,
+      status: schema.payments.status,
+      createdAt: schema.payments.createdAt,
+      username: schema.users.username,
+      fullName: schema.users.fullName,
+    })
+    .from(schema.payments)
+    .leftJoin(schema.users, eq(schema.users.uid, schema.payments.userId))
+    .orderBy(desc(schema.payments.createdAt))
+    .limit(limit)
+    .all();
+  return c.json(rows.map((r) => ({ ...r, createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null })));
+});
+
+// ======================= CONTEST MATCHES (BATTLES) =======================
+function matchRow(m: any) {
+  const a = (m.userA as any) || {};
+  const b = (m.userB as any) || {};
+  return {
+    id: m.id,
+    contestId: m.contestId,
+    title: m.title,
+    type: m.type,
+    status: m.status,
+    entryFee: m.entryFee,
+    isPrivate: !!m.isPrivate,
+    totalVotes: m.totalVotes ?? 0,
+    likeCount: m.likeCount ?? 0,
+    commentCount: m.commentCount ?? 0,
+    winnerUid: m.winnerUid,
+    rewardAmount: m.rewardAmount ?? 0,
+    userA: { uid: a.uid, username: a.username, profilePic: a.profilePic || a.profileImageUrl, mediaUrl: a.mediaUrl, votes: a.votes ?? 0 },
+    userB: { uid: b.uid, username: b.username, profilePic: b.profilePic || b.profileImageUrl, mediaUrl: b.mediaUrl, votes: b.votes ?? 0 },
+    createdAt: m.createdAt ? new Date(m.createdAt).toISOString() : null,
+    expiresAt: m.expiresAt ? new Date(m.expiresAt).toISOString() : null,
+    completedAt: m.completedAt ? new Date(m.completedAt).toISOString() : null,
+  };
+}
+
+// List matches. Optional ?status= filter.
+adminRoute.get("/matches", async (c) => {
+  const db = getDb(c.env);
+  const status = c.req.query("status");
+  const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 300);
+  const conds: any[] = [];
+  if (status) conds.push(eq(schema.contestMatches.status, status));
+  const rows = await db
+    .select()
+    .from(schema.contestMatches)
+    .where(conds.length ? and(...conds) : (undefined as any))
+    .orderBy(desc(schema.contestMatches.createdAt))
+    .limit(limit)
+    .all();
+  return c.json(rows.map(matchRow));
+});
+
+// Single match detail.
+adminRoute.get("/matches/:id", async (c) => {
+  const db = getDb(c.env);
+  const m = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, c.req.param("id"))).get();
+  return c.json(m ? matchRow(m) : null);
+});
+
+// Votes cast in a match (audit — includes device ids for fraud checks).
+adminRoute.get("/matches/:id/votes", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db
+    .select({
+      id: schema.votes.id,
+      voterUid: schema.votes.voterUid,
+      votedForUid: schema.votes.votedForUid,
+      deviceId: schema.votes.deviceId,
+      createdAt: schema.votes.createdAt,
+      username: schema.users.username,
+    })
+    .from(schema.votes)
+    .leftJoin(schema.users, eq(schema.users.uid, schema.votes.voterUid))
+    .where(eq(schema.votes.matchId, c.req.param("id")))
+    .orderBy(desc(schema.votes.createdAt))
+    .limit(500)
+    .all();
+  return c.json(rows.map((r) => ({ ...r, createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null })));
+});
+
+/**
+ * Force-resolve a match and pay out the winner. `winnerUid` may be provided to
+ * override the vote result (dispute resolution); otherwise the winner is
+ * decided by the authoritative vote tally. Mirrors the cron payout: reward +
+ * XP + wins + ledger + notifications, all committed atomically. Idempotent —
+ * only claims a match that is still active/waiting.
+ */
+adminRoute.post("/matches/:id/declare-winner", async (c) => {
+  const db = getDb(c.env);
+  const id = c.req.param("id");
+  const body = await c.req.json<any>().catch(() => ({}));
+  const m = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, id)).get();
+  if (!m) throw httpsError("not-found", "Match not found.");
+  if (m.status === "completed") throw httpsError("failed-precondition", "Match is already completed.");
+  const userA = m.userA as any;
+  const userB = m.userB as any;
+  if (!userA?.uid || !userB?.uid) throw httpsError("failed-precondition", "Match has no opponents to judge.");
+
+  let votesA = Number(userA.votes || 0);
+  let votesB = Number(userB.votes || 0);
+  try {
+    const t = await finalizeVotes(c.env, id, userA.uid, userB.uid);
+    votesA = t.votesA;
+    votesB = t.votesB;
+  } catch (e) {
+    console.error("[declare-winner] vote finalize failed, using D1 snapshot", id, e);
+  }
+
+  let winnerUid: string = body.winnerUid || (votesA >= votesB ? userA.uid : userB.uid);
+  if (winnerUid !== userA.uid && winnerUid !== userB.uid) {
+    throw httpsError("invalid-argument", "winnerUid must be one of the two participants.");
+  }
+  const loserUid = winnerUid === userA.uid ? userB.uid : userA.uid;
+
+  let rewardAmount = Number(m.entryFee || 0);
+  if (m.contestId) {
+    const contest = await db.select({ reward: schema.contests.rewardCoins }).from(schema.contests).where(eq(schema.contests.id, m.contestId)).get();
+    if (contest?.reward) rewardAmount = Number(contest.reward);
+  }
+
+  const ts = now();
+  const claim = await db
+    .update(schema.contestMatches)
+    .set({ status: "completed", winnerUid, rewardAmount, completedAt: ts })
+    .where(and(eq(schema.contestMatches.id, id), ne(schema.contestMatches.status, "completed")))
+    .run();
+  if (claim.meta.changes === 0) throw httpsError("failed-precondition", "Match was already resolved.");
+
+  await db.batch([
+    db.update(schema.users).set({
+      dpcoin: sql`${schema.users.dpcoin} + ${rewardAmount}`,
+      xp: sql`${schema.users.xp} + 100`,
+      wins: sql`${schema.users.wins} + 1`,
+      monthlyWins: sql`${schema.users.monthlyWins} + 1`,
+      updatedAt: ts,
+    }).where(eq(schema.users.uid, winnerUid)),
+    db.update(schema.users).set({ xp: sql`${schema.users.xp} + 20`, updatedAt: ts }).where(eq(schema.users.uid, loserUid)),
+    db.insert(schema.coinTransactions).values({
+      id: newId(), uid: winnerUid, amount: rewardAmount, type: "contest_win_reward",
+      matchId: id, contestId: m.contestId, description: `Admin-declared victory for "${m.title}"`, createdAt: ts,
+    }),
+  ]);
+
+  await createNotification(c.env, winnerUid, { title: "You Won! 🏆", body: `You won the battle "${m.title}" and earned ${rewardAmount} Dpcoins!`, type: "contest-win", targetId: id });
+  await createNotification(c.env, loserUid, { title: "Battle Ended", body: `The battle "${m.title}" has concluded.`, type: "contest-loss", targetId: id });
+  await logAudit(c, "match.declare-winner", "match", id, { winnerUid, rewardAmount, forced: !!body.winnerUid });
+  return c.json({ message: "Winner declared", winnerUid, rewardAmount });
+});
+
+/**
+ * Cancel a match and refund both participants' entry fees. Only cancels a match
+ * that isn't already completed/cancelled. Idempotent via an atomic status claim.
+ */
+adminRoute.post("/matches/:id/cancel", async (c) => {
+  const db = getDb(c.env);
+  const id = c.req.param("id");
+  const m = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, id)).get();
+  if (!m) throw httpsError("not-found", "Match not found.");
+  if (m.status === "completed" || m.status === "cancelled") {
+    throw httpsError("failed-precondition", "Match is already finalized.");
+  }
+  const ts = now();
+  const claim = await db
+    .update(schema.contestMatches)
+    .set({ status: "cancelled", completedAt: ts })
+    .where(and(eq(schema.contestMatches.id, id), inArray(schema.contestMatches.status, ["active", "waiting_for_opponent"])))
+    .run();
+  if (claim.meta.changes === 0) throw httpsError("failed-precondition", "Match could not be cancelled.");
+
+  const userA = m.userA as any;
+  const userB = m.userB as any;
+  const fee = Number(m.entryFee || 0);
+  const ops: any[] = [];
+  for (const u of [userA, userB]) {
+    if (u?.uid && fee > 0) {
+      const refund = fee / 2;
+      ops.push(db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${refund}` }).where(eq(schema.users.uid, u.uid)));
+      ops.push(db.insert(schema.coinTransactions).values({ id: newId(), uid: u.uid, amount: refund, type: "contest_refund", matchId: id, description: `Admin cancelled "${m.title}" — entry fee refunded`, createdAt: ts }));
+    }
+  }
+  if (ops.length) await db.batch(ops as any);
+  for (const u of [userA, userB]) {
+    if (u?.uid) await createNotification(c.env, u.uid, { title: "Battle Cancelled", body: `The battle "${m.title}" was cancelled by an admin and your entry fee was refunded.`, type: "contest-refund", targetId: "wallet" });
+  }
+  await logAudit(c, "match.cancel", "match", id, { refunded: fee });
+  return c.json({ message: "Match cancelled and refunded" });
+});
+
+// ======================= FRAUD DETECTION =======================
+/**
+ * Devices that cast votes under more than one voter account — a signal of
+ * multi-account vote stuffing. Returns each suspicious device with the number
+ * of distinct accounts and total votes it produced.
+ */
+adminRoute.get("/fraud/votes", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db
+    .select({
+      deviceId: schema.votes.deviceId,
+      accounts: sql<number>`COUNT(DISTINCT ${schema.votes.voterUid})`,
+      totalVotes: count(),
+    })
+    .from(schema.votes)
+    .where(sql`${schema.votes.deviceId} IS NOT NULL AND ${schema.votes.deviceId} != ''`)
+    .groupBy(schema.votes.deviceId)
+    .having(sql`COUNT(DISTINCT ${schema.votes.voterUid}) > 1`)
+    .orderBy(desc(sql`COUNT(DISTINCT ${schema.votes.voterUid})`))
+    .limit(100)
+    .all();
+  return c.json(rows);
+});
+
+// ======================= BROADCAST =======================
+// Send a push + in-app notification to every user.
+adminRoute.post("/broadcast", async (c) => {
+  const { title, body, image } = await c.req.json<any>();
+  if (!title || !body) throw httpsError("invalid-argument", "title and body are required.");
+  const sent = await sendBroadcastToAllUsers(c.env, title, body, image || undefined);
+  await logAudit(c, "notification.broadcast", "broadcast", null, { title, recipients: sent });
+  return c.json({ success: true, recipients: sent });
+});
+
+// ======================= COMMENTS MODERATION =======================
+// Recent post comments (with author + optional ?postId= filter).
+adminRoute.get("/comments", async (c) => {
+  const db = getDb(c.env);
+  const postId = c.req.query("postId");
+  const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 300);
+  const conds: any[] = [];
+  if (postId) conds.push(eq(schema.postComments.postId, postId));
+  const rows = await db
+    .select({
+      id: schema.postComments.id,
+      postId: schema.postComments.postId,
+      userId: schema.postComments.userId,
+      text: schema.postComments.text,
+      likeCount: schema.postComments.likeCount,
+      createdAt: schema.postComments.createdAt,
+      username: schema.users.username,
+      fullName: schema.users.fullName,
+    })
+    .from(schema.postComments)
+    .leftJoin(schema.users, eq(schema.users.uid, schema.postComments.userId))
+    .where(conds.length ? and(...conds) : (undefined as any))
+    .orderBy(desc(schema.postComments.createdAt))
+    .limit(limit)
+    .all();
+  return c.json(rows.map((r) => ({ ...r, createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null })));
+});
+
+adminRoute.delete("/comments/:id", async (c) => {
+  const db = getDb(c.env);
+  const id = c.req.param("id");
+  const comment = await db.select({ postId: schema.postComments.postId }).from(schema.postComments).where(eq(schema.postComments.id, id)).get();
+  await db.delete(schema.postComments).where(eq(schema.postComments.id, id));
+  // Keep the post's denormalized counter honest.
+  if (comment?.postId) {
+    await db.update(schema.posts).set({ commentCount: sql`MAX(${schema.posts.commentCount} - 1, 0)` }).where(eq(schema.posts.id, comment.postId));
+  }
+  await logAudit(c, "comment.delete", "comment", id);
+  return c.json({ message: "Comment deleted" });
+});
+
+// ======================= FOLLOWERS =======================
+adminRoute.get("/users/:id/followers", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db
+    .select({ uid: schema.users.uid, username: schema.users.username, fullName: schema.users.fullName, profileImageUrl: schema.users.profileImageUrl, since: schema.follows.createdAt })
+    .from(schema.follows)
+    .leftJoin(schema.users, eq(schema.users.uid, schema.follows.followerId))
+    .where(eq(schema.follows.followingId, c.req.param("id")))
+    .orderBy(desc(schema.follows.createdAt))
+    .limit(200)
+    .all();
+  return c.json(rows);
+});
+
+adminRoute.get("/users/:id/following", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db
+    .select({ uid: schema.users.uid, username: schema.users.username, fullName: schema.users.fullName, profileImageUrl: schema.users.profileImageUrl, since: schema.follows.createdAt })
+    .from(schema.follows)
+    .leftJoin(schema.users, eq(schema.users.uid, schema.follows.followingId))
+    .where(eq(schema.follows.followerId, c.req.param("id")))
+    .orderBy(desc(schema.follows.createdAt))
+    .limit(200)
+    .all();
+  return c.json(rows);
+});
+
+// ======================= WITHDRAWALS =======================
+// List payout requests (optional ?status= filter).
+adminRoute.get("/withdrawals", async (c) => {
+  const db = getDb(c.env);
+  const status = c.req.query("status");
+  const conds: any[] = [];
+  if (status) conds.push(eq(schema.withdrawals.status, status));
+  const rows = await db
+    .select({
+      id: schema.withdrawals.id,
+      userId: schema.withdrawals.userId,
+      amount: schema.withdrawals.amount,
+      cashAmount: schema.withdrawals.cashAmount,
+      method: schema.withdrawals.method,
+      accountDetails: schema.withdrawals.accountDetails,
+      status: schema.withdrawals.status,
+      adminNote: schema.withdrawals.adminNote,
+      createdAt: schema.withdrawals.createdAt,
+      updatedAt: schema.withdrawals.updatedAt,
+      username: schema.users.username,
+      fullName: schema.users.fullName,
+      balance: schema.users.dpcoin,
+    })
+    .from(schema.withdrawals)
+    .leftJoin(schema.users, eq(schema.users.uid, schema.withdrawals.userId))
+    .where(conds.length ? and(...conds) : (undefined as any))
+    .orderBy(desc(schema.withdrawals.createdAt))
+    .limit(200)
+    .all();
+  return c.json(
+    rows.map((r) => ({
+      ...r,
+      createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null,
+      updatedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : null,
+    })),
+  );
+});
+
+/**
+ * Action a withdrawal request. action: "approve" | "reject" | "paid".
+ * Coins are deducted (held) when moving to approved/paid; a rejection of an
+ * approved request refunds the held coins. The user's balance is validated on
+ * approval so we never approve more than they hold.
+ */
+adminRoute.patch("/withdrawals/:id", async (c) => {
+  const db = getDb(c.env);
+  const id = c.req.param("id");
+  const { action, adminNote } = await c.req.json<any>();
+  if (!["approve", "reject", "paid"].includes(action)) throw httpsError("invalid-argument", "Invalid action.");
+  const w = await db.select().from(schema.withdrawals).where(eq(schema.withdrawals.id, id)).get();
+  if (!w) throw httpsError("not-found", "Withdrawal not found.");
+  const admin = c.get("user");
+  const ts = now();
+
+  const status = action === "approve" ? "approved" : action === "paid" ? "paid" : "rejected";
+
+  // On approve/paid from a pending request: deduct (hold) the coins now.
+  if ((action === "approve" || action === "paid") && w.status === "pending") {
+    const user = await db.select({ balance: schema.users.dpcoin }).from(schema.users).where(eq(schema.users.uid, w.userId)).get();
+    if (!user) throw httpsError("not-found", "Requesting user not found.");
+    if ((user.balance ?? 0) < w.amount) throw httpsError("failed-precondition", "User has insufficient balance for this payout.");
+    await db.batch([
+      db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} - ${w.amount}`, updatedAt: ts }).where(eq(schema.users.uid, w.userId)),
+      db.insert(schema.coinTransactions).values({ id: newId(), uid: w.userId, amount: -w.amount, type: "withdrawal", description: `Payout ${status} (${w.method})`, createdAt: ts }),
+    ]);
+  }
+
+  // Rejecting a previously-approved request refunds the held coins.
+  if (action === "reject" && w.status === "approved") {
+    await db.batch([
+      db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${w.amount}`, updatedAt: ts }).where(eq(schema.users.uid, w.userId)),
+      db.insert(schema.coinTransactions).values({ id: newId(), uid: w.userId, amount: w.amount, type: "withdrawal_refund", description: "Payout rejected — coins refunded", createdAt: ts }),
+    ]);
+  }
+
+  await db.update(schema.withdrawals).set({ status, adminNote: adminNote || w.adminNote, processedBy: admin?.uid ?? null, updatedAt: ts }).where(eq(schema.withdrawals.id, id));
+  await createNotification(c.env, w.userId, {
+    title: action === "reject" ? "Withdrawal Rejected" : action === "paid" ? "Payout Sent 💸" : "Withdrawal Approved",
+    body: action === "reject" ? `Your payout request was rejected. ${adminNote ? "Reason: " + adminNote : ""}` : action === "paid" ? `Your payout of ${w.amount} Dpcoins has been sent.` : "Your payout request was approved and is being processed.",
+    type: "withdrawal",
+    targetId: "wallet",
+  });
+  await logAudit(c, `withdrawal.${action}`, "withdrawal", id, { amount: w.amount });
+  return c.json({ message: `Withdrawal ${status}` });
+});
+
+// ======================= AUDIT LOG =======================
+adminRoute.get("/audit-log", async (c) => {
+  const db = getDb(c.env);
+  const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 500);
+  const action = c.req.query("action");
+  const conds: any[] = [];
+  if (action) conds.push(eq(schema.adminAuditLog.action, action));
+  const rows = await db
+    .select()
+    .from(schema.adminAuditLog)
+    .where(conds.length ? and(...conds) : (undefined as any))
+    .orderBy(desc(schema.adminAuditLog.createdAt))
+    .limit(limit)
+    .all();
+  return c.json(rows.map((r) => ({ ...r, createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null })));
 });

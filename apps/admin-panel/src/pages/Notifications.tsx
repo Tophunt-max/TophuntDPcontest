@@ -4,13 +4,26 @@ import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
 import { PageHeader, fmtDateTime } from "@/lib/format";
 import { toast } from "@/lib/toast";
-import { Send, CheckCheck, Bell } from "lucide-react";
+import { useConfirm } from "@/components/ConfirmDialog";
+import { Send, CheckCheck, Bell, Megaphone } from "lucide-react";
 
 export default function Notifications() {
   const qc = useQueryClient();
+  const { confirm } = useConfirm();
   const { data = [], isLoading } = useQuery({ queryKey: ["notifications"], queryFn: api.notifications });
   const [form, setForm] = useState({ userId: "", title: "", body: "", type: "system" });
+  const [bcast, setBcast] = useState({ title: "", body: "", image: "" });
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const setB = (k: string, v: string) => setBcast((f) => ({ ...f, [k]: v }));
+
+  const broadcastMut = useMutation({
+    mutationFn: () => api.broadcast({ title: bcast.title, body: bcast.body, image: bcast.image || undefined }),
+    onSuccess: (d: any) => {
+      toast.success(`Broadcast sent to ${d.recipients} users`);
+      setBcast({ title: "", body: "", image: "" });
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
 
   const readMut = useMutation({
     mutationFn: () => api.markNotificationsRead(),
@@ -36,11 +49,34 @@ export default function Notifications() {
     <div>
       <PageHeader title="Notifications" subtitle="Admin alerts and push messaging" />
 
+      {/* Broadcast to all users */}
+      <div className="bg-card border border-border rounded-2xl p-5 mb-6">
+        <h3 className="font-bold text-foreground mb-1 flex items-center gap-2">
+          <Megaphone size={16} className="text-violet-600" /> Broadcast to All Users
+        </h3>
+        <p className="text-xs text-muted-foreground mb-4">Sends an in-app + push notification to every registered user.</p>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <input className={field} placeholder="Title" value={bcast.title} onChange={(e) => setB("title", e.target.value)} />
+          <input className={`${field} md:col-span-2`} placeholder="Message body" value={bcast.body} onChange={(e) => setB("body", e.target.value)} />
+          <input className={`${field} md:col-span-2`} placeholder="Image URL (optional)" value={bcast.image} onChange={(e) => setB("image", e.target.value)} />
+          <button
+            onClick={async () => {
+              if (await confirm({ title: "Send broadcast?", description: "This notification will be delivered to ALL users. This cannot be undone." }))
+                broadcastMut.mutate();
+            }}
+            disabled={!bcast.title || !bcast.body || broadcastMut.isPending}
+            className="gradient-purple text-white text-sm font-semibold py-2.5 rounded-xl disabled:opacity-50 flex items-center justify-center gap-2"
+          >
+            <Megaphone size={15} /> {broadcastMut.isPending ? "Sending…" : "Broadcast"}
+          </button>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Send push */}
         <div className="bg-card border border-border rounded-2xl p-5">
           <h3 className="font-bold text-foreground mb-4 flex items-center gap-2">
-            <Send size={16} className="text-violet-600" /> Send Push Notification
+            <Send size={16} className="text-violet-600" /> Send Push to One User
           </h3>
           <div className="space-y-3">
             <input className={field} placeholder="Target user ID (uid)" value={form.userId} onChange={(e) => set("userId", e.target.value)} />

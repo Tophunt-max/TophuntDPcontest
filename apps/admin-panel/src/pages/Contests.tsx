@@ -6,12 +6,13 @@ import { Badge } from "@/components/ui/Badge";
 import { PageHeader, fmtDate, fmtNumber } from "@/lib/format";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { toast } from "@/lib/toast";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Trash2, Pencil } from "lucide-react";
 
 export default function Contests() {
   const qc = useQueryClient();
   const { confirm } = useConfirm();
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<any | null>(null);
 
   const { data = [], isLoading } = useQuery({ queryKey: ["contests"], queryFn: api.contests });
   const invalidate = () => qc.invalidateQueries({ queryKey: ["contests"] });
@@ -20,6 +21,15 @@ export default function Contests() {
     mutationFn: (id: string) => api.deleteContest(id),
     onSuccess: () => {
       toast.success("Contest deleted");
+      invalidate();
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  const statusMut = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: string }) => api.updateContest(id, { status }),
+    onSuccess: () => {
+      toast.success("Status updated");
       invalidate();
     },
     onError: (e: any) => toast.error(e.message),
@@ -48,7 +58,22 @@ export default function Contests() {
         columns={[
           { key: "name", header: "Name", render: (c: any) => <span className="font-medium text-foreground">{c.name || "Untitled"}</span> },
           { key: "type", header: "Type", render: (c: any) => <Badge variant={c.type === "video" ? "video" : "audio"}>{c.type || "photo"}</Badge> },
-          { key: "status", header: "Status", render: (c: any) => <Badge variant={c.status === "live" ? "active" : c.status === "ended" ? "ended" : "pending"}>{c.status}</Badge> },
+          {
+            key: "status",
+            header: "Status",
+            render: (c: any) => (
+              <select
+                value={c.status}
+                onChange={(e) => statusMut.mutate({ id: c.id, status: e.target.value })}
+                className="text-xs rounded-lg border border-border bg-card px-2 py-1 focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="live">live</option>
+                <option value="upcoming">upcoming</option>
+                <option value="paused">paused</option>
+                <option value="ended">ended</option>
+              </select>
+            ),
+          },
           { key: "entry", header: "Entry Fee", render: (c: any) => <span>{fmtNumber(c.entryFishCoins)}</span> },
           { key: "prize", header: "Prize Pool", render: (c: any) => <span>{fmtNumber(c.prizePool)}</span> },
           { key: "minVotes", header: "Min Votes", render: (c: any) => <span>{fmtNumber(c.minVotes)}</span> },
@@ -58,51 +83,63 @@ export default function Contests() {
             header: "",
             className: "text-right",
             render: (c: any) => (
-              <button
-                title="Delete"
-                onClick={async () => {
-                  if (await confirm({ title: "Delete contest?", description: `Delete "${c.name}"? This cannot be undone.`, variant: "destructive" }))
-                    delMut.mutate(c.id);
-                }}
-                className="p-2 rounded-lg hover:bg-secondary text-red-600"
-              >
-                <Trash2 size={15} />
-              </button>
+              <div className="flex items-center justify-end gap-1">
+                <button
+                  title="Edit"
+                  onClick={() => setEditing(c)}
+                  className="p-2 rounded-lg hover:bg-secondary text-muted-foreground hover:text-foreground"
+                >
+                  <Pencil size={15} />
+                </button>
+                <button
+                  title="Delete"
+                  onClick={async () => {
+                    if (await confirm({ title: "Delete contest?", description: `Delete "${c.name}"? This cannot be undone.`, variant: "destructive" }))
+                      delMut.mutate(c.id);
+                  }}
+                  className="p-2 rounded-lg hover:bg-secondary text-red-600"
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
             ),
           },
         ]}
       />
 
-      {creating && <CreateContestDialog onClose={() => setCreating(false)} onDone={invalidate} />}
+      {creating && <ContestDialog onClose={() => setCreating(false)} onDone={invalidate} />}
+      {editing && <ContestDialog contest={editing} onClose={() => setEditing(null)} onDone={invalidate} />}
     </div>
   );
 }
 
-function CreateContestDialog({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+function ContestDialog({ contest, onClose, onDone }: { contest?: any; onClose: () => void; onDone: () => void }) {
+  const isEdit = !!contest;
   const [form, setForm] = useState({
-    title: "",
-    type: "photo",
-    status: "live",
-    totalEntryFee: "0",
-    rewardCoins: "0",
-    voteDurationDays: "1",
-    minVotes: "0",
+    title: contest?.name || "",
+    type: contest?.type || "photo",
+    status: contest?.status || "live",
+    totalEntryFee: String(contest?.entryFishCoins ?? 0),
+    rewardCoins: String(contest?.prizePool ?? 0),
+    voteDurationDays: String(contest?.voteDurationDays ?? 1),
+    minVotes: String(contest?.minVotes ?? 0),
   });
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
+  const payload = () => ({
+    title: form.title,
+    type: form.type,
+    status: form.status,
+    totalEntryFee: Number(form.totalEntryFee),
+    rewardCoins: Number(form.rewardCoins),
+    voteDurationDays: Number(form.voteDurationDays),
+    minVotes: Number(form.minVotes),
+  });
+
   const mut = useMutation({
-    mutationFn: () =>
-      api.createContest({
-        title: form.title,
-        type: form.type,
-        status: form.status,
-        totalEntryFee: Number(form.totalEntryFee),
-        rewardCoins: Number(form.rewardCoins),
-        voteDurationDays: Number(form.voteDurationDays),
-        minVotes: Number(form.minVotes),
-      }),
+    mutationFn: () => (isEdit ? api.updateContest(contest.id, payload()) : api.createContest(payload())),
     onSuccess: () => {
-      toast.success("Contest created");
+      toast.success(isEdit ? "Contest updated" : "Contest created");
       onDone();
       onClose();
     },
@@ -114,7 +151,7 @@ function CreateContestDialog({ onClose, onDone }: { onClose: () => void; onDone:
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={onClose}>
       <div className="bg-card border border-border rounded-2xl p-6 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
-        <h3 className="font-bold text-foreground mb-4">New Contest</h3>
+        <h3 className="font-bold text-foreground mb-4">{isEdit ? "Edit Contest" : "New Contest"}</h3>
         <div className="space-y-3">
           <input className={field} placeholder="Contest title" value={form.title} onChange={(e) => set("title", e.target.value)} />
           <div className="grid grid-cols-2 gap-3">
@@ -143,7 +180,7 @@ function CreateContestDialog({ onClose, onDone }: { onClose: () => void; onDone:
             disabled={!form.title || mut.isPending}
             className="flex-1 py-2.5 rounded-xl gradient-purple text-white text-sm font-semibold disabled:opacity-50"
           >
-            Create
+            {isEdit ? "Save" : "Create"}
           </button>
         </div>
       </div>

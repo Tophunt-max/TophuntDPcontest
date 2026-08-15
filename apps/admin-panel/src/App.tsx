@@ -10,11 +10,16 @@ import Login from "@/pages/Login";
 const Dashboard = lazy(() => import("@/pages/Dashboard"));
 const UsersPage = lazy(() => import("@/pages/Users"));
 const Contests = lazy(() => import("@/pages/Contests"));
+const Matches = lazy(() => import("@/pages/Matches"));
+const Transactions = lazy(() => import("@/pages/Transactions"));
+const Withdrawals = lazy(() => import("@/pages/Withdrawals"));
 const Posts = lazy(() => import("@/pages/Posts"));
 const Stories = lazy(() => import("@/pages/Stories"));
+const Comments = lazy(() => import("@/pages/Comments"));
 const Blog = lazy(() => import("@/pages/Blog"));
 const Reports = lazy(() => import("@/pages/Reports"));
 const Support = lazy(() => import("@/pages/Support"));
+const AuditLog = lazy(() => import("@/pages/AuditLog"));
 const Notifications = lazy(() => import("@/pages/Notifications"));
 const Rewards = lazy(() => import("@/pages/Rewards"));
 const AppSettings = lazy(() => import("@/pages/AppSettings"));
@@ -52,11 +57,16 @@ function ProtectedApp() {
           <Route path="/dashboard" component={Dashboard} />
           <Route path="/users" component={UsersPage} />
           <Route path="/contests" component={Contests} />
+          <Route path="/matches" component={Matches} />
+          <Route path="/transactions" component={Transactions} />
+          <Route path="/withdrawals" component={Withdrawals} />
           <Route path="/posts" component={Posts} />
           <Route path="/stories" component={Stories} />
+          <Route path="/comments" component={Comments} />
           <Route path="/blog" component={Blog} />
           <Route path="/reports" component={Reports} />
           <Route path="/support" component={Support} />
+          <Route path="/audit-log" component={AuditLog} />
           <Route path="/notifications" component={Notifications} />
           <Route path="/rewards" component={Rewards} />
           <Route path="/app-settings" component={AppSettings} />
