@@ -2,6 +2,7 @@ import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { UserProfile } from '../../types/user';
 import { LinearGradient } from 'expo-linear-gradient';
+import { CoinIcon } from '@/src/components/ui/CoinIcon';
 
 interface WalletCardProps {
   Dpcoin: number;
@@ -25,6 +26,7 @@ export const WalletCard = ({ Dpcoin, stats, onPress }: WalletCardProps) => {
           <View>
             <Text style={styles.label}>Wallet Balance</Text>
             <View style={styles.coinRow}>
+              <CoinIcon size={26} color="#FFFFFF" style={{ marginRight: 8 }} />
               <Text style={styles.coinValue}>{Dpcoin || 0}</Text>
               <Text style={styles.coinUnit}> Dpcoins</Text>
             </View>
@@ -79,7 +81,7 @@ const styles = StyleSheet.create({
   },
   coinRow: {
     flexDirection: 'row',
-    alignItems: 'baseline',
+    alignItems: 'center',
   },
   coinValue: {
     fontSize: 32,

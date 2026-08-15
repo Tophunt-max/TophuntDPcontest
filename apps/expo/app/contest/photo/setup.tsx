@@ -25,7 +25,8 @@ import { SuccessModal } from '@/src/components/forms/SuccessModal';
 import { RulesModal } from '@/src/components/modals/RulesModal';
 import { useProfile } from '@/src/hooks/useProfileData'; 
 import { useThemeColor } from '@/hooks/use-theme-color';
-import { Left_Arrow, Wallet_Color } from '@/assets/svgs'; 
+import { Left_Arrow } from '@/assets/svgs';
+import { CoinIcon } from '@/src/components/ui/CoinIcon'; 
 import { BattleSetupSkeleton } from '@/src/components/contests/BattleSetupSkeleton';
 import { useToast } from '@/src/components/toast/ToastProvider';
 import Animated, { 
@@ -317,7 +318,7 @@ export default function BattleSetupScreen() {
             onPress={navigateToWallet} 
             style={[styles.walletContainer, { backgroundColor: cardBg }]}
          >
-            <Wallet_Color width={20} height={20} />
+            <CoinIcon size={20} />
             <Text style={[styles.walletText, { color: textColor }]}>{userCoins}</Text>
          </TouchableOpacity>
       </View>
@@ -351,7 +352,7 @@ export default function BattleSetupScreen() {
               <Text style={[styles.playerName, { color: textColor }]} numberOfLines={1}>You</Text>
               <View style={styles.feeInfo}>
                 <Text style={styles.feeMinus}>-{fee}</Text>
-                <Wallet_Color width={18} height={18} />
+                <CoinIcon size={18} />
               </View>
             </View>
 
@@ -384,7 +385,7 @@ export default function BattleSetupScreen() {
               </Text>
               <View style={styles.feeInfo}>
                 <Text style={styles.feeMinus}>-{fee}</Text>
-                <Wallet_Color width={18} height={18} />
+                <CoinIcon size={18} />
               </View>
             </View>
           </View>
@@ -550,7 +551,7 @@ export default function BattleSetupScreen() {
                   <ActivityIndicator color="#FFF" />
                 ) : (
                   <View style={styles.joinBtnContent}>
-                    {!hasInsufficientCoins && <Wallet_Color width={20} height={20} />}
+                    {!hasInsufficientCoins && <CoinIcon size={20} color="#FFF" />}
                     <Text style={styles.joinBtnText}>
                       {hasInsufficientCoins ? "Get Coins" : `Pay ${fee} Coins & Join`}
                     </Text>
@@ -561,7 +562,7 @@ export default function BattleSetupScreen() {
           {/* Coin Animation */}
           {showCoinAnimation && (
             <Animated.View style={[styles.flyingCoin, animatedCoinStyle]}>
-                <Wallet_Color width={32} height={32} />
+                <CoinIcon size={32} />
                 <Text style={styles.flyingCoinText}>-{fee}</Text>
             </Animated.View>
           )}

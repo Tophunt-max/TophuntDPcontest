@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert, ActivityIndi
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@/src/lib/icons';
+import { CoinIcon } from '@/src/components/ui/CoinIcon';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useQuery } from '@tanstack/react-query';
 import { readApi } from '@/src/services/api';
@@ -101,7 +102,7 @@ export default function CoinStoreScreen() {
       )}
 
       <View style={styles.coinContainer}>
-        <Ionicons name="flash" size={32} color="#FF4D67" />
+        <CoinIcon size={32} color="#FF4D67" />
         <Text style={[styles.coinText, { color: textColor }]}>{item.totalCoins}</Text>
         <Text style={styles.coinLabel}>Dpcoins</Text>
         {item.bonusCoins > 0 && (
@@ -133,7 +134,7 @@ export default function CoinStoreScreen() {
         <LinearGradient colors={['#FF4D67', '#FF8A9B']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.gradient}>
           <Text style={styles.balanceLabel}>Current Balance</Text>
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-            <Ionicons name="flash" size={24} color="white" style={{ marginRight: 8 }} />
+            <CoinIcon size={24} color="white" style={{ marginRight: 8 }} />
             <Text style={styles.balanceValue}>{profile?.Dpcoin ?? 0} Dpcoins</Text>
           </View>
         </LinearGradient>

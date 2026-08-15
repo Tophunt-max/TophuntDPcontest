@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Alert,
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@/src/lib/icons';
+import { CoinIcon } from '@/src/components/ui/CoinIcon';
 import * as Haptics from 'expo-haptics';
 
 import { useAuth } from '@/src/services/auth';
@@ -101,7 +102,10 @@ export default function WithdrawScreen() {
           <>
             <View style={[styles.card, { backgroundColor: cardBg }]}>
               <Text style={[styles.label, { color: subTextColor }]}>Available balance</Text>
-              <Text style={[styles.balance, { color: textColor }]}>{balance} <Text style={{ fontSize: 16, color: subTextColor }}>coins</Text></Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <CoinIcon size={26} />
+                <Text style={[styles.balance, { color: textColor }]}>{balance} <Text style={{ fontSize: 16, color: subTextColor }}>coins</Text></Text>
+              </View>
               <Text style={[styles.hint, { color: subTextColor }]}>Min {minAmount} coins • Rate ₹{rate}/coin</Text>
             </View>
 

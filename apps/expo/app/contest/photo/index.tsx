@@ -16,7 +16,8 @@ import { useAuth } from '@/src/hooks/useAuth';
 import { useProfile } from '@/src/hooks/useProfileData'; 
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { PhotoContestSkeleton } from '@/src/components/contests/PhotoContestSkeleton';
-import { Wallet_Icon, Left_Arrow } from '@/assets/svgs'; 
+import { Left_Arrow } from '@/assets/svgs';
+import { CoinIcon } from '@/src/components/ui/CoinIcon'; 
 import { LinearGradient } from 'expo-linear-gradient';
 
 const BRAND_PRIMARY = '#FF4D67'; 
@@ -85,7 +86,7 @@ export default function PhotoContestsScreen() {
         <Text style={[styles.title, { color: textColor }]}>Photo Contests</Text>
         
         <View style={[styles.walletBadge, { backgroundColor: cardBg }]}>
-           <Wallet_Icon width={18} height={18} />
+           <CoinIcon size={18} />
            <Text style={[styles.walletText, { color: textColor }]}>{profile?.Dpcoin || profile?.coins || 0}</Text>
         </View>
       </View>

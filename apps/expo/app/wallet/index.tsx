@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, FlatList, TouchableOpacity, useColorScheme, Ale
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@/src/lib/icons';
+import { CoinIcon } from '@/src/components/ui/CoinIcon';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import Animated, { FadeInDown, FadeInRight } from 'react-native-reanimated';
@@ -361,7 +362,7 @@ export default function WalletScreen() {
                         <View style={styles.balanceHeader}>
                             <Text style={styles.balanceLabel}>Total Balance</Text>
                             <View style={styles.coinBadge}>
-                                <Ionicons name="wallet-outline" size={14} color="#FFF" />
+                                <CoinIcon size={14} color="#FFF" />
                                 <Text style={styles.coinBadgeText}>Dpcoin</Text>
                             </View>
                         </View>

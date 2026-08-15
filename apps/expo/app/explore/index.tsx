@@ -5,7 +5,8 @@ import {
   RefreshControl, Platform, Pressable, ActivityIndicator,
 } from 'react-native';
 import { BottomNav } from '@/src/components/home/BottomNav';
-import { Ionicons, MaterialCommunityIcons, FontAwesome5 } from '@/src/lib/icons';
+import { Ionicons, MaterialCommunityIcons } from '@/src/lib/icons';
+import { CoinIcon } from '@/src/components/ui/CoinIcon';
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { contestService } from '@/src/services/contests/contestService';
@@ -212,7 +213,7 @@ export default function DiscoverScreen() {
             style={[styles.coinChip, { backgroundColor: chipBg }]}
             onPress={() => router.push('/wallet/store' as any)}
           >
-            <FontAwesome5 name="coins" size={13} color="#FFB300" />
+            <CoinIcon size={14} color="#FFB300" />
             <Text style={[styles.coinText, { color: textColor }]}>{coins.toLocaleString()}</Text>
             <View style={styles.coinPlus}>
               <Ionicons name="add" size={13} color="#FFF" />
@@ -323,7 +324,7 @@ export default function DiscoverScreen() {
           </View>
           {prize > 0 && (
             <View style={styles.templatePrize}>
-              <FontAwesome5 name="trophy" size={9} color="#FFF" />
+              <CoinIcon size={11} color="#FFF" />
               <Text style={styles.templatePrizeText}>{prize}</Text>
             </View>
           )}
@@ -331,7 +332,7 @@ export default function DiscoverScreen() {
             <Text style={styles.templateTitle} numberOfLines={2}>{item.title}</Text>
             {entry > 0 && (
               <View style={styles.templateEntry}>
-                <FontAwesome5 name="coins" size={9} color="#FFF" />
+                <CoinIcon size={11} color="#FFF" />
                 <Text style={styles.templateEntryText}>Entry {entry}</Text>
               </View>
             )}
@@ -375,7 +376,7 @@ export default function DiscoverScreen() {
               <Text style={styles.statusText}>WAITING</Text>
             </View>
             <View style={styles.prizePill}>
-              <FontAwesome5 name="coins" size={10} color="#FFB300" />
+              <CoinIcon size={12} color="#FFB300" />
               <Text style={styles.prizeText}>{prize}</Text>
             </View>
           </View>
@@ -394,7 +395,7 @@ export default function DiscoverScreen() {
             {!isMyMatch ? (
               <View style={styles.entryRow}>
                 <Text style={[styles.entryLabel, { color: subText }]}>Entry</Text>
-                <FontAwesome5 name="coins" size={10} color={accent} />
+                <CoinIcon size={12} color={accent} />
                 <Text style={[styles.entryVal, { color: accent }]}>{entryFee}</Text>
               </View>
             ) : (
