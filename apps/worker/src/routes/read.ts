@@ -12,6 +12,7 @@ import { httpsError } from "../lib/http";
 import { requireAuth, optionalAuth } from "../middleware/auth";
 import { getAppConfig } from "../lib/settings";
 import { enrichMatchMedia, avatarUrl, thumbUrl, optimizedUrl } from "../lib/media";
+import { userCacheKey, blogPostCacheKey, cacheGetJson, cachePutJson } from "../lib/cache";
 
 export const readRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -148,11 +149,14 @@ readRoute.get("/contests", optionalAuth, async (c) =>
   }),
 );
 
-readRoute.get("/contests/:id", optionalAuth, async (c) => {
-  const db = getDb(c.env);
-  const row = await db.select().from(schema.contests).where(eq(schema.contests.id, c.req.param("id"))).get();
-  return c.json(row ? mapContest(row) : null);
-});
+readRoute.get("/contests/:id", optionalAuth, async (c) =>
+  // Public, viewer-agnostic — edge-cache 60s (matches the /contests list TTL).
+  edgeCached(c, 60, async () => {
+    const db = getDb(c.env);
+    const row = await db.select().from(schema.contests).where(eq(schema.contests.id, c.req.param("id"))).get();
+    return row ? mapContest(row) : null;
+  }),
+);
 
 // ================= MATCHES =================
 readRoute.get("/matches", optionalAuth, async (c) => {
@@ -450,8 +454,18 @@ readRoute.get("/users/search", optionalAuth, async (c) => {
 });
 
 readRoute.get("/users/:id", optionalAuth, async (c) => {
+  const id = c.req.param("id");
+  // The public profile is viewer-agnostic (target user's own data + their
+  // following list), so it's safe to share one cached copy across all callers.
+  // The app polls this heavily, so a short KV cache saves a lot of D1 reads.
+  // Invalidated immediately when the user edits their profile (see api.ts
+  // updateProfile → delCache(userCacheKey)). Follower counts may lag by <=TTL.
+  const key = userCacheKey(id);
+  const cached = await cacheGetJson(c.env, key);
+  if (cached !== null) return c.json(cached);
+
   const db = getDb(c.env);
-  const row = await db.select().from(schema.users).where(eq(schema.users.uid, c.req.param("id"))).get();
+  const row = await db.select().from(schema.users).where(eq(schema.users.uid, id)).get();
   if (!row) return c.json(null);
   const { fcmTokens, ...safe } = row as any;
   // expose following[] (list of uids) for screens that expect it
@@ -462,6 +476,7 @@ readRoute.get("/users/:id", optionalAuth, async (c) => {
     Object.assign(safe, safe.extra);
   }
   safe.profileImageUrlThumb = avatarUrl(c.env, safe.profileImageUrl);
+  await cachePutJson(c.env, key, safe, 30);
   return c.json(safe);
 });
 
@@ -762,23 +777,42 @@ readRoute.get("/blog", async (c) => {
   return c.json(payload);
 });
 
-// Distinct categories with post counts — for the blog filter UI.
-readRoute.get("/blog/categories", async (c) => {
-  const db = getDb(c.env);
-  const rows = await db
-    .select({ category: schema.blogPosts.category, count: sql<number>`count(*)` })
-    .from(schema.blogPosts)
-    .where(and(eq(schema.blogPosts.status, "published"), sql`${schema.blogPosts.category} IS NOT NULL`))
-    .groupBy(schema.blogPosts.category)
-    .orderBy(desc(sql`count(*)`))
-    .all();
-  return c.json(rows.filter((r) => r.category));
-});
+// Distinct categories with post counts — for the blog filter UI. Public and
+// slow-changing, so edge-cache 5min to skip D1's GROUP BY on repeat loads.
+readRoute.get("/blog/categories", async (c) =>
+  edgeCached(c, 300, async () => {
+    const db = getDb(c.env);
+    const rows = await db
+      .select({ category: schema.blogPosts.category, count: sql<number>`count(*)` })
+      .from(schema.blogPosts)
+      .where(and(eq(schema.blogPosts.status, "published"), sql`${schema.blogPosts.category} IS NOT NULL`))
+      .groupBy(schema.blogPosts.category)
+      .orderBy(desc(sql`count(*)`))
+      .all();
+    return rows.filter((r) => r.category);
+  }),
+);
 
 // Single post by slug (falls back to id). Increments view count fire-and-forget.
 readRoute.get("/blog/:slug", async (c) => {
   const db = getDb(c.env);
   const key = c.req.param("slug");
+  const cacheKey = blogPostCacheKey(key);
+
+  // Serve the (expensive-to-serialize) full post body from KV when hot. The
+  // view counter still increments on every request — only the payload is
+  // cached — so analytics stay live while D1 content reads drop. The displayed
+  // viewCount itself may lag by up to the TTL, which is fine for a blog.
+  const cached = await cacheGetJson<{ id: string } & Record<string, any>>(c.env, cacheKey);
+  if (cached) {
+    db.update(schema.blogPosts)
+      .set({ viewCount: sql`${schema.blogPosts.viewCount} + 1` })
+      .where(eq(schema.blogPosts.id, cached.id))
+      .run()
+      .catch(() => {});
+    return c.json(cached);
+  }
+
   let row = await db.select().from(schema.blogPosts).where(eq(schema.blogPosts.slug, key)).get();
   if (!row) row = await db.select().from(schema.blogPosts).where(eq(schema.blogPosts.id, key)).get();
   if (!row || row.status !== "published") return c.json(null);
@@ -788,5 +822,7 @@ readRoute.get("/blog/:slug", async (c) => {
     .where(eq(schema.blogPosts.id, row.id))
     .run()
     .catch(() => {});
-  return c.json(mapBlogPost(row, { withContent: true }));
+  const payload = mapBlogPost(row, { withContent: true });
+  await cachePutJson(c.env, cacheKey, payload, 120);
+  return c.json(payload);
 });

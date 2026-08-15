@@ -21,6 +21,7 @@ import { publish, publishMany } from "../lib/publish";
 import { castVote, bumpEngagement } from "../lib/voteCounter";
 import { rateLimit } from "../lib/rateLimit";
 import { enforceIdempotency, releaseIdempotency } from "../lib/idempotency";
+import { delCache, userCacheKey } from "../lib/cache";
 import { verifyRazorpaySignature } from "../lib/payments";
 import { creditPaymentOrder } from "../lib/coinOrders";
 import { assertClean } from "../lib/moderation";
@@ -886,6 +887,8 @@ apiRoute.post("/", async (c) => {
     case "equipBadge": {
       // badge can be an object or null (unequip)
       await db.update(schema.users).set({ equippedBadge: body.badge ?? null, updatedAt: now() }).where(eq(schema.users.uid, uid));
+      // Reflect the equipped badge on the user's public profile right away.
+      c.executionCtx.waitUntil(delCache(env, userCacheKey(uid)));
       return c.json({ success: true });
     }
 
@@ -1171,6 +1174,9 @@ apiRoute.post("/", async (c) => {
           }
         }
       }
+      // Invalidate the cached public profile so the user sees their edits
+      // immediately (GET /users/:id serves a short-lived KV copy).
+      c.executionCtx.waitUntil(delCache(env, userCacheKey(uid)));
       return c.json({ success: true });
     }
 
