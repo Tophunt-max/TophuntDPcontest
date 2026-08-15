@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, FlatList, Image, TouchableOpacity, ActivityIndicator, SafeAreaView, Dimensions } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { leaderboardService } from '@/src/services/contests/leaderboardService';
 import { UserProfile } from '@/src/types/user';
 import { useThemeColor } from '@/hooks/use-theme-color';
@@ -70,7 +70,7 @@ export default function LeaderboardScreen() {
         {/* First Place */}
         <View style={styles.podiumItem}>
             <View style={{ position: 'relative' }}>
-                <Ionicons name="crown" size={32} color="#FFD700" style={styles.crown} />
+                <MaterialCommunityIcons name="crown" size={32} color="#FFD700" style={styles.crown} />
                 <Image 
                     source={{ uri: first.profileImageUrl || `https://ui-avatars.com/api/?name=${first.fullName}&background=random` }} 
                     style={[styles.podiumAvatar, { width: 90, height: 90, borderWidth: 3, borderColor: '#FFD700' }]} 
