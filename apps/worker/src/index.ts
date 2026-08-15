@@ -23,6 +23,7 @@ import { readRoute } from "./routes/read";
 import { adminRoute } from "./routes/admin";
 import { verifyIdToken } from "./lib/firebaseAuth";
 import { resolveContests, monthlyHallOfFame } from "./cron";
+import { ensureMigrated } from "./db/autoMigrate";
 
 // Durable Object for real-time WebSocket push.
 export { RealtimeHub } from "./realtime";
@@ -73,6 +74,19 @@ app.use("*", async (c, next) => {
     maxAge: 86400,
   });
   return mw(c, next);
+});
+
+// Auto-apply pending D1 migrations on first request per isolate. Best-effort:
+// a failure is logged but never blocks traffic (it retries on the next request).
+// WebSocket upgrades are skipped — their 101 response can't be delayed here.
+app.use("*", async (c, next) => {
+  if (c.req.header("Upgrade") === "websocket") return next();
+  try {
+    await ensureMigrated(c.env);
+  } catch (e) {
+    console.error("[migrate] auto-migration failed (continuing)", e);
+  }
+  return next();
 });
 
 app.get("/", (c) => c.json({ service: "tophunt-api", status: "ok" }));
@@ -168,6 +182,7 @@ export default {
 
   // Cron Triggers (wrangler.toml [triggers].crons)
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    await ensureMigrated(env).catch((e) => console.error("[migrate] cron auto-migration failed", e));
     switch (event.cron) {
       case "0 0 1 * *":
         ctx.waitUntil(monthlyHallOfFame(env));

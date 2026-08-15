@@ -3,6 +3,14 @@ main = "src/index.ts"
 compatibility_date = "2024-11-27"
 compatibility_flags = ["nodejs_compat"]
 
+# Bundle *.sql migration files as text so the Worker can auto-apply pending D1
+# migrations at runtime (see src/db/autoMigrate.ts). This removes the need for a
+# separate `wrangler d1 migrations apply` step in CI or before deploy.
+[[rules]]
+type = "Text"
+globs = ["**/*.sql"]
+fallthrough = true
+
 # ---------------------------------------------------------------------------
 # D1 database (replaces Firestore)
 # Create with:  wrangler d1 create tophunt-db
