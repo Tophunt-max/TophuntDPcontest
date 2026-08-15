@@ -86,6 +86,7 @@ export const api = {
       activeMatches: number;
       liveContests: number;
       pendingWithdrawals: number;
+      pendingDeposits: number;
     }>("/admin/overview"),
   deviceStats: () =>
     get<{ web: number; mobile: number; other: number }>("/admin/device-stats"),
