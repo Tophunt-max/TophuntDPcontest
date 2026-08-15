@@ -2,21 +2,48 @@ import React, { createContext, useContext, useState, useCallback, ReactNode, use
 import { View, Text, StyleSheet, Animated, Platform, Dimensions, Image, ImageSourcePropType } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { setToastHandler } from '@/src/lib/toastBridge';
-import { Toast_Success, Toast_Error, Toast_Info } from '@/assets/svgs';
+import {
+  Toast_Success, Toast_Error, Toast_Info,
+  Toast_NetworkOn, Toast_NetworkOff, Toast_Coins, Toast_Reward,
+  Toast_Follow, Toast_Upload, Toast_Delete, Toast_Warning,
+} from '@/assets/svgs';
 
 const { width } = Dimensions.get('window');
+
+/** Named custom icon a toast can show, independent of its color type. */
+export type ToastIcon =
+  | 'success' | 'error' | 'info'
+  | 'network-on' | 'network-off'
+  | 'coins' | 'reward' | 'follow' | 'upload' | 'delete' | 'warning';
+
+// Every named icon maps to a custom-designed SVG in assets/svgs.
+const ICON_VARIANTS: Record<ToastIcon, React.FC<any>> = {
+  'success': Toast_Success,
+  'error': Toast_Error,
+  'info': Toast_Info,
+  'network-on': Toast_NetworkOn,
+  'network-off': Toast_NetworkOff,
+  'coins': Toast_Coins,
+  'reward': Toast_Reward,
+  'follow': Toast_Follow,
+  'upload': Toast_Upload,
+  'delete': Toast_Delete,
+  'warning': Toast_Warning,
+};
 
 interface ToastMessage {
   id: number;
   message: string;
   type: 'success' | 'error' | 'info';
   image?: ImageSourcePropType;
+  icon?: ToastIcon;
 }
 
 interface AddToastOptions {
     text: string;
     type?: 'success' | 'error' | 'info';
     image?: ImageSourcePropType;
+    icon?: ToastIcon;
 }
 
 type AddToastArg = string | AddToastOptions;
@@ -43,6 +70,7 @@ export const ToastProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     let message = '';
     let type: 'success' | 'error' | 'info' = 'info';
     let image: ImageSourcePropType | undefined;
+    let icon: ToastIcon | undefined;
 
     if (typeof arg === 'string') {
         message = arg;
@@ -51,9 +79,10 @@ export const ToastProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         message = arg.text;
         type = arg.type || typeArg || 'info';
         image = arg.image;
+        icon = arg.icon;
     }
 
-    setToasts(currentToasts => [...currentToasts, { id, message, type, image }]);
+    setToasts(currentToasts => [...currentToasts, { id, message, type, image, icon }]);
   }, []);
 
   const removeToast = useCallback((id: number) => {
@@ -62,7 +91,8 @@ export const ToastProvider: React.FC<{ children: ReactNode }> = ({ children }) =
 
   // Expose addToast to non-React callers (React Query error handlers, etc.).
   useEffect(() => {
-    setToastHandler((message, type) => addToast(message, type));
+    setToastHandler((message, type, opts) =>
+      addToast({ text: message, type, icon: opts?.icon as ToastIcon | undefined }));
     return () => setToastHandler(null);
   }, [addToast]);
 
@@ -115,7 +145,8 @@ const ToastItem: React.FC<{ toast: ToastMessage; onHide: () => void }> = ({ toas
     }, []);
 
     const meta = TYPE_META[toast.type] || TYPE_META.info;
-    const Icon = meta.Icon;
+    // Named icon variant wins over the type's default icon.
+    const Icon = (toast.icon && ICON_VARIANTS[toast.icon]) || meta.Icon;
 
     return (
         <Animated.View

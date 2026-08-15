@@ -114,6 +114,14 @@ import About_Bio from './about/bio.svg';
 import Toast_Success from './toastSuccess.svg';
 import Toast_Error from './toastError.svg';
 import Toast_Info from './toastInfo.svg';
+import Toast_NetworkOn from './toastNetworkOn.svg';
+import Toast_NetworkOff from './toastNetworkOff.svg';
+import Toast_Coins from './toastCoins.svg';
+import Toast_Reward from './toastReward.svg';
+import Toast_Follow from './toastFollow.svg';
+import Toast_Upload from './toastUpload.svg';
+import Toast_Delete from './toastDelete.svg';
+import Toast_Warning from './toastWarning.svg';
 
 export {
   Home_Light,
@@ -131,6 +139,14 @@ export {
   Toast_Success,
   Toast_Error,
   Toast_Info,
+  Toast_NetworkOn,
+  Toast_NetworkOff,
+  Toast_Coins,
+  Toast_Reward,
+  Toast_Follow,
+  Toast_Upload,
+  Toast_Delete,
+  Toast_Warning,
   Facebook_Icon,
   Google_Icon,
   Apple_Light,

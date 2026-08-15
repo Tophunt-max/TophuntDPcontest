@@ -24,9 +24,9 @@ export function OfflineBanner() {
 
       if (prevConnected.current !== null && connected !== prevConnected.current) {
         if (connected) {
-          emitToast('Back online', 'success');
+          emitToast('Back online', 'success', { icon: 'network-on' });
         } else {
-          emitToast("You're offline. Check your connection.", 'error');
+          emitToast("You're offline. Check your connection.", 'error', { icon: 'network-off' });
         }
       }
       prevConnected.current = connected;
