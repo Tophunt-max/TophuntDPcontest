@@ -130,9 +130,10 @@ npx wrangler deploy
 cd apps/admin-panel
 npm run build && npx wrangler pages deploy dist --project-name tophunt-admin-panel --branch main
 
-# Expo web
+# Expo web  (IMPORTANT: use `npm run build`, NOT bare `expo export`, so the
+# SEO edge Worker gets installed into dist/_worker.js — see section 8)
 cd apps/expo
-npx expo export --platform web
+npm run build
 npx wrangler pages deploy dist --project-name tophuntdpcontest --branch main
 
 # Expo mobile (OTA update, eas.json env change hone par)
@@ -153,3 +154,53 @@ Total **4 custom domains** banane/point karne padenge + Firebase authorized doma
 
 Har ek ke liye: (a) code/config me URL update, (b) Cloudflare me custom domain connect,
 (c) rebuild + redeploy. API + app + admin domains ko Firebase authorized domains me bhi daalo.
+
+
+---
+
+## 8. Blog SEO (Google ranking) — Cloudflare Pages edge Worker
+
+Blog (imported tophunt.in archive + editorial) ka SEO ab **edge par** handle hota hai.
+User web app ek client-side Expo SPA hai (`app.json` -> `web.output = "single"`), isliye
+crawler ko default me khaali HTML shell milta tha (na title, na description, na content).
+Fix: Cloudflare Pages **"advanced mode" `_worker.js`** jo blog URLs ke liye HTML head ko
+real SEO tags se rewrite karta hai + `sitemap.xml` / `robots.txt` serve karta hai.
+
+### Kya-kya add hua (code)
+| File | Kaam |
+|------|------|
+| `apps/expo/seo/worker.js` | Edge Worker source: per-post `<title>`, meta description, canonical, Open Graph, Twitter Card, JSON-LD `Article`, aur `<noscript>` content block. Plus `/robots.txt` aur dynamic `/sitemap.xml` (API se saare published posts). |
+| `apps/expo/scripts/build-seo-worker.mjs` | Export ke baad `seo/worker.js` ko `dist/_worker.js` me copy karta hai. |
+| `apps/expo/package.json` | `build` = `expo export -p web && node scripts/build-seo-worker.mjs`. Standalone: `npm run build:seo`. |
+| `apps/expo/src/lib/webSeo.ts` | Client-side (web-only) title/meta update — client-side navigation par tab title sahi rehta hai. |
+
+### Build/deploy (badla hua)
+- **Hamesha `npm run build` use karo** (bare `expo export` NAHI) — warna `dist/_worker.js` install nahi hoga aur SEO edge layer deploy nahi hogi.
+- Deploy command wahi: `npx wrangler pages deploy dist --project-name tophuntdpcontest --branch main`.
+- Advanced mode me `_redirects` ignore hota hai — SPA fallback ab Worker khud handle karta hai (koi action nahi chahiye).
+
+### Cloudflare Pages env vars (optional — defaults already sahi)
+Pages project `tophuntdpcontest` → **Settings → Environment variables** (Production):
+| Var | Default (agar set na ho) | Kab set karo |
+|-----|--------------------------|--------------|
+| `SEO_SITE_ORIGIN` | `https://tophunt.in` | Agar public domain badle |
+| `SEO_API_BASE` | `https://tophunt-api.weadown-in.workers.dev` | Jab API custom domain (`https://api.tophuntdpcontest.com`) live ho — yahan update karo |
+
+> Note: `_worker.js` in vars ko runtime par `env` se padhta hai; set na ho to upar wale
+> defaults use hote hain. Isliye jab API domain migrate karo, yahan `SEO_API_BASE` zaroor update karo.
+
+### Deploy ke baad — Google Search Console steps (one-time)
+1. **Search Console** me `https://tophunt.in` property add + verify karo (DNS TXT ya HTML tag).
+2. **Sitemaps** → `https://tophunt.in/sitemap.xml` submit karo.
+3. Kuch important posts ka URL **URL Inspection** → "Request indexing" karo (baaki sitemap se aa jayenge).
+4. Verify:
+   - `https://tophunt.in/robots.txt` khule aur sitemap line dikhe.
+   - `https://tophunt.in/sitemap.xml` me saare post URLs aayein.
+   - Kisi post ka `view-source:` me sahi `<title>` + `<meta name="description">` + `og:*` + JSON-LD dikhe.
+   - [Rich Results Test](https://search.google.com/test/rich-results) me post URL Article structured data pass kare.
+
+### Canonical policy
+Imported posts ka `canonicalUrl` = original tophunt.in permalink. Worker: agar canonical is
+site (tophunt.in) par hi hai to usi ko canonical rakhta hai; warna current site path par
+self-canonical set karta hai. Isse `/blog/<slug>` aur root `/<slug>` duplicate content
+resolve ho jaata hai (dono ka canonical ek hi root permalink).

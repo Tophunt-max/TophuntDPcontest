@@ -16,10 +16,19 @@ import { useRouter } from 'expo-router';
 import { blogService, BlogPost, BlogCategory } from '@/src/services/blog/blogService';
 import { Colors } from '@/constants/theme';
 import { Header } from '@/src/components/home/Header';
+import { useWebSeo } from '@/src/lib/webSeo';
 
 export default function BlogListScreen() {
   const router = useRouter();
   const isDark = useColorScheme() === 'dark';
+
+  useWebSeo({
+    title: 'Blog',
+    description:
+      'Read the latest TopHunt articles — contest answers, quiz solutions, giveaway guides and offer updates.',
+    canonical: 'https://tophunt.in/blog',
+    type: 'website',
+  });
 
   const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
   const cardBg = isDark ? '#1C1C1E' : '#FFFFFF';

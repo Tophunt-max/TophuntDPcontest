@@ -16,6 +16,12 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { blogService, BlogPost } from '@/src/services/blog/blogService';
 import RenderHtml from '@/src/components/blog/RenderHtml';
 import { Header } from '@/src/components/home/Header';
+import { useWebSeo } from '@/src/lib/webSeo';
+
+const SITE_ORIGIN = 'https://tophunt.in';
+
+const stripTags = (html?: string) =>
+  (html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 
 const FONT_SANS = Platform.select({
   web: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
@@ -63,6 +69,23 @@ export default function BlogDetailScreen() {
     const words = (post?.content || '').replace(/<[^>]+>/g, ' ').split(/\s+/).filter(Boolean).length;
     return Math.max(1, Math.round(words / 200));
   }, [post]);
+
+  // Keep the browser tab title + meta in sync on client-side navigation.
+  useWebSeo(
+    useMemo(
+      () =>
+        post
+          ? {
+              title: (post as any).metaTitle || post.title,
+              description: ((post as any).metaDescription || post.excerpt || stripTags(post.content)).slice(0, 160),
+              canonical: `${SITE_ORIGIN}/${post.slug}`,
+              image: post.coverImageUrl,
+              type: 'article' as const,
+            }
+          : { title: 'Blog', type: 'website' as const },
+      [post],
+    ),
+  );
 
   const goToBlog = () => {
     try {
