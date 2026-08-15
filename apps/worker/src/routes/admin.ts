@@ -162,6 +162,7 @@ adminRoute.patch("/contests/:id", async (c) => {
   if (b.voteDurationDays !== undefined) set.voteDurationDays = Number(b.voteDurationDays);
   if (b.autoCancelHours !== undefined) set.autoCancelHours = Number(b.autoCancelHours);
   if (b.minVotes !== undefined) set.minVotes = Number(b.minVotes);
+  if (b.bannerUrl !== undefined) set.bannerUrl = b.bannerUrl || null;
   await db.update(schema.contests).set(set).where(eq(schema.contests.id, id));
   await logAudit(c, "contest.update", "contest", id, set);
   return c.json({ message: "Contest updated", id });
@@ -998,6 +999,7 @@ adminRoute.post("/contests", async (c) => {
     voteDurationDays: Number(b.voteDurationDays ?? (b.durationHours ? Math.ceil(b.durationHours / 24) : 1)),
     autoCancelHours: Number(b.autoCancelHours ?? 24),
     minVotes: Number(b.minVotes ?? 0),
+    bannerUrl: b.bannerUrl || b.bannerImageUrl || null,
     extra: b,
     createdBy: "admin-script",
     createdAt: now(),

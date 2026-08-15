@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/Badge";
 import { PageHeader, fmtDate, fmtNumber } from "@/lib/format";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { toast } from "@/lib/toast";
-import { Plus, Trash2, Pencil } from "lucide-react";
+import { Plus, Trash2, Pencil, Image as ImageIcon } from "lucide-react";
 
 export default function Contests() {
   const qc = useQueryClient();
@@ -119,6 +119,7 @@ function ContestDialog({ contest, onClose, onDone }: { contest?: any; onClose: (
     title: contest?.name || "",
     type: contest?.type || "photo",
     status: contest?.status || "live",
+    bannerUrl: contest?.bannerUrl || "",
     totalEntryFee: String(contest?.entryFishCoins ?? 0),
     rewardCoins: String(contest?.prizePool ?? 0),
     voteDurationDays: String(contest?.voteDurationDays ?? 1),
@@ -130,6 +131,7 @@ function ContestDialog({ contest, onClose, onDone }: { contest?: any; onClose: (
     title: form.title,
     type: form.type,
     status: form.status,
+    bannerUrl: form.bannerUrl.trim(),
     totalEntryFee: Number(form.totalEntryFee),
     rewardCoins: Number(form.rewardCoins),
     voteDurationDays: Number(form.voteDurationDays),
@@ -154,6 +156,33 @@ function ContestDialog({ contest, onClose, onDone }: { contest?: any; onClose: (
         <h3 className="font-bold text-foreground mb-4">{isEdit ? "Edit Contest" : "New Contest"}</h3>
         <div className="space-y-3">
           <input className={field} placeholder="Contest title" value={form.title} onChange={(e) => set("title", e.target.value)} />
+
+          {/* Contest photo / banner */}
+          <div>
+            <label className="text-xs text-muted-foreground mb-1 block">Contest photo (banner image URL)</label>
+            <div className="flex gap-3 items-start">
+              <div className="w-24 h-16 rounded-xl overflow-hidden border border-border bg-secondary flex items-center justify-center flex-shrink-0">
+                {form.bannerUrl.trim() ? (
+                  <img
+                    src={form.bannerUrl.trim()}
+                    alt="preview"
+                    className="w-full h-full object-cover"
+                    onError={(e) => ((e.target as HTMLImageElement).style.opacity = "0.2")}
+                    onLoad={(e) => ((e.target as HTMLImageElement).style.opacity = "1")}
+                  />
+                ) : (
+                  <ImageIcon size={20} className="text-muted-foreground" />
+                )}
+              </div>
+              <input
+                className={`${field} flex-1`}
+                placeholder="https://…/photo.jpg"
+                value={form.bannerUrl}
+                onChange={(e) => set("bannerUrl", e.target.value)}
+              />
+            </div>
+          </div>
+
           <div className="grid grid-cols-2 gap-3">
             <select className={field} value={form.type} onChange={(e) => set("type", e.target.value)}>
               <option value="photo">Photo</option>

@@ -65,6 +65,7 @@ const mapContest = (r: any) => ({
   title: r.title,
   name: r.title,
   type: r.type,
+  bannerUrl: r.bannerUrl ?? (r.extra?.bannerUrl) ?? null,
   status: r.status,
   totalEntryFee: r.totalEntryFee,
   entryDpcoin: r.totalEntryFee,

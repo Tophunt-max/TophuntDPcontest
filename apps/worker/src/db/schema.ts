@@ -102,6 +102,7 @@ export const contests = sqliteTable("contests", {
   voteDurationDays: integer("vote_duration_days").default(1),
   autoCancelHours: integer("auto_cancel_hours").default(24),
   minVotes: integer("min_votes").default(0),
+  bannerUrl: text("banner_url"), // contest photo/banner shown in the user app
   extra: text("extra", { mode: "json" }), // any additional template fields
   createdBy: text("created_by"),
   createdAt: integer("created_at").notNull(),
