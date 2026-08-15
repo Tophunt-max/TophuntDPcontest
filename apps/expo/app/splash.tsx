@@ -4,7 +4,6 @@ import { useRouter } from 'expo-router';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { auth } from '../src/services/firebase/initFirebase';
 import * as Font from 'expo-font';
-import { Ionicons, MaterialCommunityIcons, FontAwesome5 } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Animated, { 
   useSharedValue, 
@@ -88,18 +87,13 @@ export default function SplashScreen() {
             setSplashImage(config.splashImageUrl);
         }
 
-        // 2. Load Fonts — Urbanist text fonts PLUS the @expo/vector-icons glyph
-        // fonts. On native these auto-load, but on web the icon fonts must be
-        // registered explicitly or icons (Ionicons etc.) render blank. This is
-        // why icons were missing on Explore and many other web pages.
+        // 2. Load text fonts. Icons are now SVG (lucide) via src/lib/icons.tsx —
+        // no icon fonts needed, so nothing to preload for them.
         await Font.loadAsync({
             'Urbanist-Regular': require('../assets/fonts/Urbanist-Regular.ttf'),
             'Urbanist-Bold': require('../assets/fonts/Urbanist-Bold.ttf'),
             'Urbanist-Medium': require('../assets/fonts/Urbanist-Medium.ttf'),
             'Urbanist-SemiBold': require('../assets/fonts/Urbanist-SemiBold.ttf'),
-            ...Ionicons.font,
-            ...MaterialCommunityIcons.font,
-            ...FontAwesome5.font,
         });
         
         console.log("Assets loaded successfully.");

@@ -31,8 +31,6 @@ import { ToastProvider } from '@/src/components/toast/ToastProvider';
 import { lightTheme, darkTheme } from '@/constants/theme';
 import '@/src/services/firebase/initFirebase'; // Import to initialize Firebase
 import { View, AppState } from 'react-native';
-import { useFonts } from 'expo-font';
-import { Ionicons, MaterialCommunityIcons, FontAwesome5 } from '@expo/vector-icons';
 
 // Pause react-query background refetches (refetchInterval) whenever the app is
 // not in the foreground. On mobile the "window" is never focused the way a
@@ -243,21 +241,7 @@ function RootLayoutNav() {
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
-  // Preload @expo/vector-icons glyph fonts at the root so icons render on EVERY
-  // entry route (incl. deep links / web refresh that bypass the splash screen).
-  // We GATE the app tree until the icon fonts are ready (or errored) — on web
-  // an icon rendered before its font loads shows blank, and there's no reliable
-  // re-render, so waiting a beat guarantees Ionicons/Material/FontAwesome show.
-  const [iconFontsLoaded, iconFontsError] = useFonts({
-    ...Ionicons.font,
-    ...MaterialCommunityIcons.font,
-    ...FontAwesome5.font,
-  });
-
-  if (!iconFontsLoaded && !iconFontsError) {
-    // Fonts still loading — render a blank frame (very brief; native is cached).
-    return <View style={{ flex: 1, backgroundColor: colorScheme === 'dark' ? '#000' : '#fff' }} />;
-  }
+  // Icons are SVG (lucide) via src/lib/icons.tsx — no icon fonts to preload.
 
   return (
     <ErrorBoundary>
