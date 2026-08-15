@@ -13,7 +13,7 @@ import {
   Share as RNShare
 } from 'react-native';
 import { Portal } from 'react-native-paper';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons } from '@/src/lib/icons';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,

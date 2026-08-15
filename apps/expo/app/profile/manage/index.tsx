@@ -11,7 +11,7 @@ import {
   useColorScheme,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons } from '@/src/lib/icons';
 import {
   Left_Arrow,
   Settings_User,

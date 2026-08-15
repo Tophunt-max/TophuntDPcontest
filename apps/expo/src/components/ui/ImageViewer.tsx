@@ -6,7 +6,7 @@
 
 import React from 'react';
 import { Modal, View, Image, StyleSheet, TouchableOpacity, Text } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons } from '@/src/lib/icons';
 
 // Simple web-compatible lightbox implementation
 export const ImageViewer = ({ 

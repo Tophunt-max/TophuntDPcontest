@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet, SafeAreaView, useColorScheme, TouchableOpacity } from 'react-native';
 import { Colors } from '@/constants/theme';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons } from '@/src/lib/icons';
 import { useAppConfig } from '@/src/services/appSettings';
 
 export default function MaintenanceScreen() {

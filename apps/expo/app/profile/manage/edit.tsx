@@ -24,7 +24,7 @@ import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Left_Arrow, Email_Icon, Add_Icon } from "@/assets/svgs";
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons } from "@/src/lib/icons";
 import { CountryPicker } from "react-native-country-codes-picker";
 import { callApi } from "@/src/services/api"; // Centralized Worker API Caller
 import { ReanimatedBottomSheet } from "@/src/components/modals/ReanimatedBottomSheet";

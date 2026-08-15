@@ -3,7 +3,7 @@ import { View, TouchableOpacity, Text, StyleSheet, Platform, Dimensions, Modal, 
 import { useRouter, usePathname } from 'expo-router';
 import * as Icons from '@/assets/svgs';
 import * as Haptics from 'expo-haptics';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons } from '@/src/lib/icons';
 import { Colors } from '@/constants/theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFeature } from '@/src/services/appSettings';

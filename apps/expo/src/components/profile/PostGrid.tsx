@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, FlatList, Image, StyleSheet, Dimensions, Text, ActivityIndicator } from 'react-native';
 import { Post } from '@/src/types/user';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons } from '@/src/lib/icons';
 import { Colors } from '@/constants/theme';
 
 type PostGridProps = {

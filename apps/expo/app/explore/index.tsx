@@ -5,7 +5,7 @@ import {
   RefreshControl, Platform, Pressable, ActivityIndicator,
 } from 'react-native';
 import { BottomNav } from '@/src/components/home/BottomNav';
-import { Ionicons, MaterialCommunityIcons, FontAwesome5 } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons, FontAwesome5 } from '@/src/lib/icons';
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { contestService } from '@/src/services/contests/contestService';
@@ -28,7 +28,7 @@ type TabKey = 'all' | 'photo' | 'video' | 'users';
 const TABS: {
   key: TabKey;
   label: string;
-  icon: keyof typeof Ionicons.glyphMap;
+  icon: string;
   color: string;
   grad: [string, string];
 }[] = [
@@ -41,7 +41,7 @@ const TABS: {
 const QUICK_ACTIONS: {
   key: string;
   label: string;
-  icon: keyof typeof Ionicons.glyphMap;
+  icon: string;
   grad: [string, string];
   route: string;
 }[] = [

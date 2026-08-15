@@ -14,7 +14,7 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { fetchSuggestedUsers, toggleFollowService } from "@/src/services/users";
 import { useSignupStore } from "@/src/store/signup";
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons } from "@/src/lib/icons";
 import { auth } from "@/src/services/firebase/initFirebase";
 
 export default function FollowSomeone() {

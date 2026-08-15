@@ -20,7 +20,7 @@ import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Left_Arrow, Email_Icon, Pencil_Icon } from "@/assets/svgs";
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons } from "@/src/lib/icons";
 import { DatePickerField } from "@/src/components/inputs/DatePickerField";
 import { CountryPicker } from "react-native-country-codes-picker";
 import { useToast } from "@/src/components/toast/ToastProvider";

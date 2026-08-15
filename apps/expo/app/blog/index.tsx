@@ -11,7 +11,7 @@ import {
   RefreshControl,
 } from 'react-native';
 import { Image } from 'expo-image';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons } from '@/src/lib/icons';
 import { useRouter } from 'expo-router';
 import { blogService, BlogPost, BlogCategory } from '@/src/services/blog/blogService';
 import { Colors } from '@/constants/theme';

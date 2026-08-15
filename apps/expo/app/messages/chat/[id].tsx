@@ -7,7 +7,7 @@ import { useLocalSearchParams } from 'expo-router';
 import { View, Text, ActivityIndicator, StyleSheet, TouchableOpacity } from 'react-native';
 import { useAuth } from '@/src/hooks/useAuth';
 import ChatHeader from '@/components/chat/ChatHeader';
-import Ionicons from '@expo/vector-icons/Ionicons';
+import { Ionicons } from '@/src/lib/icons';
 import { Colors } from '@/constants/theme'; // Assuming Colors are defined here
 
 export default function ChatScreen() {

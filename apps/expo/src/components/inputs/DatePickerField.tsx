@@ -12,7 +12,7 @@ import {
 import { Control, Controller, FieldValues, Path } from 'react-hook-form';
 import DateTimePicker from 'react-native-ui-datepicker';
 import dayjs from 'dayjs';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons } from '@/src/lib/icons';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 

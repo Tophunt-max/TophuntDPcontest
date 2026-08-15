@@ -15,7 +15,7 @@ import {
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Image } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons } from '@/src/lib/icons';
 import { fetchHighlightStories, fetchStoryViewers } from '@/src/services/stories/storyService';
 import { auth } from '@/src/services/firebase/initFirebase';
 

@@ -27,7 +27,7 @@ import { firebaseConfig } from "@/src/firebaseConfig";
 import { readApi } from "../../../../src/services/api";
 import { useSignupStore } from "../../../../src/store/signup";
 import { CountryPicker } from "react-native-country-codes-picker";
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons } from "@/src/lib/icons";
 
 export default function PhoneLoginScreen() {
   const router = useRouter();

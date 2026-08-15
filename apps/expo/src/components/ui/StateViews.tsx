@@ -1,8 +1,8 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, useColorScheme } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons } from '@/src/lib/icons';
 
-type IconName = keyof typeof Ionicons.glyphMap;
+type IconName = string;
 
 interface StateProps {
   icon?: IconName;

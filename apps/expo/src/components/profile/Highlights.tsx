@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, Image, FlatList, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { fetchUserHighlights } from '@/src/services/stories/storyService';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons } from '@/src/lib/icons';
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/src/services/auth';
 

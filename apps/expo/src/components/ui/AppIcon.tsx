@@ -12,7 +12,7 @@
 
 import React from "react";
 import type { StyleProp, TextStyle } from "react-native";
-import { MaterialCommunityIcons, Feather, FontAwesome5 } from "@expo/vector-icons";
+import { MaterialCommunityIcons, Feather, FontAwesome5 } from "@/src/lib/icons";
 
 export type AppIconName =
   | "gift" | "celebrate" | "star" | "star-outline" | "sparkles"

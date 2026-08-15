@@ -20,7 +20,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { Image } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons } from '@/src/lib/icons';
 import { uploadToS3 } from '@/src/lib/uploadToS3';
 import { createStoryRecord, searchUsers } from '@/src/services/stories/storyService';
 import { useQueryClient } from '@tanstack/react-query';

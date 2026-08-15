@@ -1,7 +1,7 @@
 import { ThemeProvider } from '@react-navigation/native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
 import 'react-native-reanimated';
 import { QueryClient, QueryClientProvider, QueryCache, MutationCache, onlineManager, focusManager } from '@tanstack/react-query';
 import { Provider as PaperProvider } from 'react-native-paper';
@@ -31,8 +31,8 @@ import { ToastProvider } from '@/src/components/toast/ToastProvider';
 import { lightTheme, darkTheme } from '@/constants/theme';
 import '@/src/services/firebase/initFirebase'; // Import to initialize Firebase
 import { View, AppState } from 'react-native';
-import { useFonts } from 'expo-font';
-import { Ionicons, MaterialCommunityIcons, FontAwesome5, Feather } from '@expo/vector-icons';
+// Icons are now SVG-based (src/lib/icons.tsx via lucide-react-native), so there
+// are NO icon fonts to preload — icons render identically on web/Android/iOS.
 
 // Pause react-query background refetches (refetchInterval) whenever the app is
 // not in the foreground. On mobile the "window" is never focused the way a
@@ -243,31 +243,6 @@ function RootLayoutNav() {
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
-  // Preload @expo/vector-icons glyph fonts. On web the glyphs only render once
-  // the @font-face has loaded, so we briefly GATE the first paint until the
-  // fonts are ready — otherwise icons show as blank boxes (as they did on the
-  // web build). A timeout fallback guarantees the app still renders even if a
-  // font fails to load, so we never hang on a font error.
-  const [iconFontsLoaded] = useFonts({
-    ...Ionicons.font,
-    ...MaterialCommunityIcons.font,
-    ...FontAwesome5.font,
-    ...Feather.font,
-  });
-  const [ready, setReady] = useState(false);
-  useEffect(() => {
-    if (iconFontsLoaded) {
-      setReady(true);
-      return;
-    }
-    // Safety valve: render anyway after 2s even if fonts are slow / failed.
-    const t = setTimeout(() => setReady(true), 2000);
-    return () => clearTimeout(t);
-  }, [iconFontsLoaded]);
-
-  if (!ready) {
-    return <View style={{ flex: 1, backgroundColor: colorScheme === 'dark' ? '#0F0F13' : '#F9F9FB' }} />;
-  }
 
   return (
     <ErrorBoundary>

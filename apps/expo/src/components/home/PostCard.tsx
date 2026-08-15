@@ -1,6 +1,6 @@
 import React, { useState, memo, useEffect, useCallback, useRef } from 'react';
 import { View, Text, StyleSheet, Image, TouchableOpacity, Dimensions, Alert, Pressable } from 'react-native';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@/src/lib/icons';
 import { CommentSheet } from '../comments/CommentSheet';
 import { ShareSheet } from '../share/ShareSheet';
 import { useAuth } from '@/src/hooks/useAuth';

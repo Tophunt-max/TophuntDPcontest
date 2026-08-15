@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, FlatList, Image, TouchableOpacity, ActivityIndicator, SafeAreaView, Dimensions } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@/src/lib/icons';
 import { leaderboardService } from '@/src/services/contests/leaderboardService';
 import { UserProfile } from '@/src/types/user';
 import { useThemeColor } from '@/hooks/use-theme-color';
