@@ -31,6 +31,8 @@ import { ToastProvider } from '@/src/components/toast/ToastProvider';
 import { lightTheme, darkTheme } from '@/constants/theme';
 import '@/src/services/firebase/initFirebase'; // Import to initialize Firebase
 import { View, AppState } from 'react-native';
+import { useFonts } from 'expo-font';
+import { Ionicons, MaterialCommunityIcons, FontAwesome5 } from '@expo/vector-icons';
 
 // Pause react-query background refetches (refetchInterval) whenever the app is
 // not in the foreground. On mobile the "window" is never focused the way a
@@ -241,6 +243,14 @@ function RootLayoutNav() {
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
+  // Preload @expo/vector-icons glyph fonts at the root so icons render on EVERY
+  // entry route (incl. deep links / web refresh that bypass the splash screen).
+  // Without this, icons show blank on web. Non-blocking: icons appear once ready.
+  useFonts({
+    ...Ionicons.font,
+    ...MaterialCommunityIcons.font,
+    ...FontAwesome5.font,
+  });
 
   return (
     <ErrorBoundary>
