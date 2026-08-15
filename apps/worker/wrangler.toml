@@ -3,6 +3,12 @@ main = "src/index.ts"
 compatibility_date = "2024-11-27"
 compatibility_flags = ["nodejs_compat"]
 
+# Pin the bundler to this package's own tsconfig. Without this, esbuild walks up
+# the monorepo and picks up the root tsconfig.json (which extends
+# "expo/tsconfig.base" — not resolvable from the worker), emitting a build
+# warning on every deploy.
+tsconfig = "tsconfig.json"
+
 # Bundle *.sql migration files as text so the Worker can auto-apply pending D1
 # migrations at runtime (see src/db/autoMigrate.ts). This removes the need for a
 # separate `wrangler d1 migrations apply` step in CI or before deploy.
