@@ -1,19 +1,25 @@
 import React, { createContext, useContext, useState, useCallback, ReactNode, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Animated, Platform, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, Animated, Platform, Dimensions, Image, ImageSourcePropType } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { setToastHandler } from '@/src/lib/toastBridge';
 
 const { width } = Dimensions.get('window');
 
+// Brand image shown in every toast popup by default. Callers can override it
+// per-toast (e.g. a user avatar) via addToast({ text, image }).
+const DEFAULT_TOAST_IMAGE: ImageSourcePropType = require('@/assets/images/Tophunt.png');
+
 interface ToastMessage {
   id: number;
   message: string;
   type: 'success' | 'error' | 'info';
+  image?: ImageSourcePropType;
 }
 
 interface AddToastOptions {
     text: string;
     type?: 'success' | 'error' | 'info';
+    image?: ImageSourcePropType;
 }
 
 type AddToastArg = string | AddToastOptions;
@@ -39,6 +45,7 @@ export const ToastProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     const id = Date.now();
     let message = '';
     let type: 'success' | 'error' | 'info' = 'info';
+    let image: ImageSourcePropType | undefined;
 
     if (typeof arg === 'string') {
         message = arg;
@@ -46,9 +53,10 @@ export const ToastProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     } else {
         message = arg.text;
         type = arg.type || typeArg || 'info';
+        image = arg.image;
     }
 
-    setToasts(currentToasts => [...currentToasts, { id, message, type }]);
+    setToasts(currentToasts => [...currentToasts, { id, message, type, image }]);
   }, []);
 
   const removeToast = useCallback((id: number) => {
@@ -82,7 +90,7 @@ export const ToastProvider: React.FC<{ children: ReactNode }> = ({ children }) =
 };
 
 const TYPE_META: Record<ToastMessage['type'], { colors: [string, string]; emoji: string }> = {
-  success: { colors: ['#FF4D67', '#FF8A4D'], emoji: '🎉' },
+  success: { colors: ['#FF4D67', '#FF8A4D'], emoji: '✅' },
   error: { colors: ['#FF5252', '#FF1744'], emoji: '⚠️' },
   info: { colors: ['#448AFF', '#2979FF'], emoji: 'ℹ️' },
 };
@@ -123,8 +131,16 @@ const ToastItem: React.FC<{ toast: ToastMessage; onHide: () => void }> = ({ toas
                 end={{ x: 1, y: 1 }}
                 style={styles.card}
             >
-                <View style={styles.iconCircle}>
-                    <Text style={styles.emoji}>{meta.emoji}</Text>
+                {/* Custom image (brand logo by default) with a small status badge. */}
+                <View style={styles.imageCircle}>
+                    <Image
+                        source={toast.image || DEFAULT_TOAST_IMAGE}
+                        style={styles.image}
+                        resizeMode="contain"
+                    />
+                    <View style={styles.badge}>
+                        <Text style={styles.badgeEmoji}>{meta.emoji}</Text>
+                    </View>
                 </View>
                 <Text style={styles.message}>{toast.message}</Text>
             </LinearGradient>
@@ -158,17 +174,41 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.35,
     shadowRadius: 20,
   },
-  iconCircle: {
-    width: 58,
-    height: 58,
-    borderRadius: 29,
-    backgroundColor: 'rgba(255,255,255,0.22)',
+  imageCircle: {
+    width: 66,
+    height: 66,
+    borderRadius: 33,
+    backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
   },
-  emoji: {
-    fontSize: 28,
+  image: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+  },
+  badge: {
+    position: 'absolute',
+    bottom: -2,
+    right: -2,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 2,
+  },
+  badgeEmoji: {
+    fontSize: 13,
   },
   message: {
     color: 'white',
