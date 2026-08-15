@@ -16,6 +16,7 @@ import {
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
 import { contestService } from '@/src/services/contests/contestService';
 import { contestMediaService } from '@/src/services/contests/uploadMedia';
@@ -45,6 +46,7 @@ import { getDeviceId } from '@/src/lib/deviceId';
 
 const PINK_ACCENT = '#FFB1BD';
 const PRIMARY_COLOR = '#FF4D67';
+const SECONDARY_COLOR = '#FF758C';
 
 export default function BattleSetupScreen() {
   const router = useRouter();
@@ -58,6 +60,7 @@ export default function BattleSetupScreen() {
   const cardBg = useThemeColor({ light: '#FFFFFF', dark: '#1F222A' }, 'background');
   const borderColor = useThemeColor({ light: '#EEEEEE', dark: '#35383F' }, 'border');
   const inputBg = useThemeColor({ light: '#F5F5F5', dark: '#1F222A' }, 'background');
+  const subTextColor = useThemeColor({ light: '#9E9E9E', dark: '#8E939A' }, 'text');
 
   const [loading, setLoading] = useState(true);
   const [selectedContest, setSelectedContest] = useState<any>(null);
@@ -304,17 +307,18 @@ export default function BattleSetupScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]} edges={['top', 'bottom']}>
       <View style={styles.header}>
-         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-            <Left_Arrow width={24} height={24} color={textColor} />
+         <TouchableOpacity onPress={() => router.back()} style={[styles.backBtn, { backgroundColor: cardBg }]}>
+            <Left_Arrow width={22} height={22} color={textColor} />
          </TouchableOpacity>
+         <Text style={[styles.headerTitle, { color: textColor }]}>Battle Setup</Text>
          <TouchableOpacity 
             ref={walletRef}
             onLayout={measureWallet}
             onPress={navigateToWallet} 
-            style={[styles.walletContainer, { backgroundColor: inputBg }]}
+            style={[styles.walletContainer, { backgroundColor: cardBg }]}
          >
+            <Wallet_Color width={20} height={20} />
             <Text style={[styles.walletText, { color: textColor }]}>{userCoins}</Text>
-            <Wallet_Color width={24} height={24} />
          </TouchableOpacity>
       </View>
 
@@ -322,61 +326,70 @@ export default function BattleSetupScreen() {
         contentContainerStyle={styles.scrollContent} 
         showsVerticalScrollIndicator={false}
       >
-        <Text style={[styles.title, { color: textColor }]}>Battle Setup</Text>
-
         {/* Entry Fee Breakdown Card */}
         <View style={[styles.breakdownCard, { backgroundColor: cardBg, borderColor }]}>
-          <Text style={styles.breakdownLabel}>Entry Fee Breakdown</Text>
+          <View style={styles.breakdownHeaderRow}>
+            <Ionicons name="flash" size={15} color={PRIMARY_COLOR} />
+            <Text style={styles.breakdownLabel}>Entry Fee Breakdown</Text>
+          </View>
           
           <View style={styles.playersContainer}>
             {/* User Profile (Left) */}
             <View style={styles.playerItem}>
-              <View style={[styles.playerAvatarCircle, { backgroundColor: '#E1F5FE' }]}>
-                {profile?.profileImageUrl ? (
-                  <Image source={{ uri: profile.profileImageUrl }} style={styles.avatarImg} />
-                ) : (
-                  <Ionicons name="person" size={36} color="#03A9F4" />
-                )}
-              </View>
+              <LinearGradient
+                colors={[PRIMARY_COLOR, SECONDARY_COLOR]}
+                style={styles.avatarRing}
+              >
+                <View style={[styles.playerAvatarCircle, { backgroundColor: cardBg }]}>
+                  {profile?.profileImageUrl ? (
+                    <Image source={{ uri: profile.profileImageUrl }} style={styles.avatarImg} />
+                  ) : (
+                    <Ionicons name="person" size={32} color="#03A9F4" />
+                  )}
+                </View>
+              </LinearGradient>
               <Text style={[styles.playerName, { color: textColor }]} numberOfLines={1}>You</Text>
               <View style={styles.feeInfo}>
                 <Text style={styles.feeMinus}>-{fee}</Text>
-                <View style={styles.coinIconWrapper}>
-                   <Wallet_Color width={24} height={24} />
-                </View>
+                <Wallet_Color width={18} height={18} />
               </View>
             </View>
 
-            <View style={styles.vsCircle}>
-              <Text style={styles.vsText}>VS</Text>
+            <View style={styles.vsWrap}>
+              <LinearGradient
+                colors={[PRIMARY_COLOR, SECONDARY_COLOR]}
+                style={styles.vsCircle}
+              >
+                <Text style={styles.vsText}>VS</Text>
+              </LinearGradient>
             </View>
 
             {/* Opponent Profile (Right) */}
             <View style={styles.playerItem}>
-              <View style={[styles.playerAvatarCircle, { backgroundColor: opponent ? '#E1F5FE' : '#FFF5F5' }]}>
-                {opponentPic ? (
-                  <Image source={{ uri: opponentPic }} style={styles.avatarImg} />
-                ) : (
-                  opponent ? (
-                    <Ionicons name="person" size={36} color="#03A9F4" />
+              <View style={[styles.avatarRing, styles.avatarRingIdle, { backgroundColor: borderColor }]}>
+                <View style={[styles.playerAvatarCircle, { backgroundColor: cardBg }]}>
+                  {opponentPic ? (
+                    <Image source={{ uri: opponentPic }} style={styles.avatarImg} />
                   ) : (
-                    <Text style={styles.questionMark}>?</Text>
-                  )
-                )}
+                    opponent ? (
+                      <Ionicons name="person" size={32} color="#03A9F4" />
+                    ) : (
+                      <Text style={[styles.questionMark, { color: subTextColor }]}>?</Text>
+                    )
+                  )}
+                </View>
               </View>
               <Text style={[styles.playerName, { color: textColor }]} numberOfLines={1}>
                 {opponent ? (opponent.displayName || opponent.username || "Opponent") : "Waiting..."}
               </Text>
               <View style={styles.feeInfo}>
                 <Text style={styles.feeMinus}>-{fee}</Text>
-                <View style={styles.coinIconWrapper}>
-                   <Wallet_Color width={24} height={24} />
-                </View>
+                <Wallet_Color width={18} height={18} />
               </View>
             </View>
           </View>
 
-          <View style={[styles.winnerBanner, { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }]}>
+          <View style={styles.winnerBanner}>
              <Ionicons name="trophy" size={16} color="#EAB308" />
              <Text style={styles.winnerBannerText}>Winner Gets {winningReward} Coins!</Text>
           </View>
@@ -426,12 +439,57 @@ export default function BattleSetupScreen() {
           </View>
         )}
 
-        {/* User Info & Submission Section */}
+        {/* Your Submission Section */}
         <View style={styles.formSection}>
-           <Text style={[styles.sectionTitle, { color: textColor }]}>Your Information</Text>
+           <View style={styles.sectionHeaderRow}>
+             <View style={styles.stepBadge}><Text style={styles.stepBadgeText}>1</Text></View>
+             <Text style={[styles.sectionTitle, { color: textColor }]}>Your Submission</Text>
+           </View>
+           
+           <TouchableOpacity 
+              activeOpacity={0.85}
+              onPress={media ? () => setIsImageViewVisible(true) : pickImage}
+              style={[styles.uploadBox, { borderColor: media ? 'transparent' : borderColor, backgroundColor: inputBg }]}
+            >
+              {media ? (
+                <>
+                  <Image source={{ uri: media }} style={styles.previewImage} />
+                  <View style={styles.previewOverlay}>
+                    <Ionicons name="expand-outline" size={18} color="#FFF" />
+                  </View>
+                </>
+              ) : (
+                <View style={styles.uploadPlaceholder}>
+                  <LinearGradient
+                    colors={[PRIMARY_COLOR, SECONDARY_COLOR]}
+                    style={styles.uploadCircleInner}
+                  >
+                     <Ionicons name="camera" size={26} color="#FFF" />
+                  </LinearGradient>
+                  <Text style={[styles.uploadText, { color: textColor }]}>Tap to Upload Photo</Text>
+                  <Text style={styles.uploadSubtext}>Supports JPG, PNG · Max 10MB</Text>
+                </View>
+              )}
+           </TouchableOpacity>
+           
+           {/* Re-add Upload Button if media is present, to allow changing */}
+           {media && (
+               <TouchableOpacity onPress={pickImage} style={styles.changePhotoBtn}>
+                   <Ionicons name="sync-outline" size={15} color={PRIMARY_COLOR} />
+                   <Text style={[styles.changePhotoText, { color: PRIMARY_COLOR }]}>Change Photo</Text>
+               </TouchableOpacity>
+           )}
+        </View>
+
+        {/* User Info Section */}
+        <View style={styles.formSection}>
+           <View style={styles.sectionHeaderRow}>
+             <View style={styles.stepBadge}><Text style={styles.stepBadgeText}>2</Text></View>
+             <Text style={[styles.sectionTitle, { color: textColor }]}>Your Information</Text>
+           </View>
            
            <View style={styles.inputGroup}>
-              <Text style={[styles.inputLabel, { color: textColor }]}>Display Name</Text>
+              <Text style={[styles.inputLabel, { color: subTextColor }]}>Display Name</Text>
               <TextInput 
                 style={[styles.input, { backgroundColor: inputBg, color: textColor, borderColor }]}
                 value={displayName}
@@ -442,46 +500,23 @@ export default function BattleSetupScreen() {
            </View>
 
            <View style={styles.inputGroup}>
-              <Text style={[styles.inputLabel, { color: textColor }]}>Username</Text>
-              <TextInput 
-                style={[styles.input, { backgroundColor: inputBg, color: '#888', borderColor }]}
-                value={username}
-                editable={false}
-                placeholder="username"
-                autoCapitalize="none"
-                placeholderTextColor="#9E9E9E"
-              />
+              <Text style={[styles.inputLabel, { color: subTextColor }]}>Username</Text>
+              <View style={[styles.input, styles.inputDisabled, { backgroundColor: inputBg, borderColor }]}>
+                <Text style={styles.usernamePrefix}>@</Text>
+                <TextInput 
+                  style={[styles.usernameField, { color: subTextColor }]}
+                  value={username}
+                  editable={false}
+                  placeholder="username"
+                  autoCapitalize="none"
+                  placeholderTextColor="#9E9E9E"
+                />
+                <Ionicons name="lock-closed" size={15} color={subTextColor} />
+              </View>
            </View>
 
-           <Text style={[styles.sectionTitle, { color: textColor, marginTop: 10 }]}>Your Submission</Text>
-           
-           <TouchableOpacity 
-              activeOpacity={0.8}
-              onPress={media ? () => setIsImageViewVisible(true) : pickImage}
-              style={[styles.uploadBox, { borderColor: '#E0E0E0' }]}
-            >
-              {media ? (
-                <Image source={{ uri: media }} style={styles.previewImage} />
-              ) : (
-                <View style={styles.uploadPlaceholder}>
-                  <View style={styles.uploadCircleInner}>
-                     <Ionicons name="camera" size={24} color="#9E9E9E" />
-                  </View>
-                  <Text style={[styles.uploadText, { color: textColor }]}>Tap to Upload Photo</Text>
-                  <Text style={styles.uploadSubtext}>Supports JPG, PNG · Max 10MB</Text>
-                </View>
-              )}
-           </TouchableOpacity>
-           
-           {/* Re-add Upload Button if media is present, to allow changing */}
-           {media && (
-               <TouchableOpacity onPress={pickImage} style={styles.changePhotoBtn}>
-                   <Text style={[styles.changePhotoText, { color: PRIMARY_COLOR }]}>Change Photo</Text>
-               </TouchableOpacity>
-           )}
-
-           <View style={[styles.inputGroup, { marginTop: 20 }]}>
-              <Text style={[styles.inputLabel, { color: textColor }]}>Caption (Optional)</Text>
+           <View style={styles.inputGroup}>
+              <Text style={[styles.inputLabel, { color: subTextColor }]}>Caption (Optional)</Text>
               <TextInput 
                 style={[styles.input, styles.textArea, { backgroundColor: inputBg, color: textColor, borderColor }]}
                 value={caption}
@@ -496,25 +531,32 @@ export default function BattleSetupScreen() {
       </ScrollView>
 
       {/* Sticky Bottom Actions */}
-      <View style={[styles.footer, { backgroundColor }]}>
+      <View style={[styles.footer, { backgroundColor, borderTopColor: borderColor }]}>
         <View style={styles.buttonWrapper}>
           <Animated.View style={[styles.glowBackground, animatedGlowStyle]} />
           <TouchableOpacity 
-            activeOpacity={0.8}
+            activeOpacity={0.85}
             onPress={handleAction}
             disabled={uploading}
-            style={[
-              styles.joinButton,
-              hasInsufficientCoins ? { backgroundColor: '#FF9800' } : (isReady ? { backgroundColor: PRIMARY_COLOR } : { backgroundColor: PINK_ACCENT })
-            ]}
+            style={styles.joinButtonTouchable}
           >
-             {uploading ? (
-                <ActivityIndicator color="#FFF" />
-              ) : (
-                <Text style={styles.joinBtnText}>
-                  {hasInsufficientCoins ? "Get Coins" : `Pay ${fee} Coins & Join`}
-                </Text>
-              )}
+             <LinearGradient
+               colors={hasInsufficientCoins ? ['#FF9800', '#FFB74D'] : (isReady ? [PRIMARY_COLOR, SECONDARY_COLOR] : [PINK_ACCENT, PINK_ACCENT])}
+               start={{ x: 0, y: 0 }}
+               end={{ x: 1, y: 0 }}
+               style={styles.joinButton}
+             >
+               {uploading ? (
+                  <ActivityIndicator color="#FFF" />
+                ) : (
+                  <View style={styles.joinBtnContent}>
+                    {!hasInsufficientCoins && <Wallet_Color width={20} height={20} />}
+                    <Text style={styles.joinBtnText}>
+                      {hasInsufficientCoins ? "Get Coins" : `Pay ${fee} Coins & Join`}
+                    </Text>
+                  </View>
+                )}
+             </LinearGradient>
           </TouchableOpacity>
           {/* Coin Animation */}
           {showCoinAnimation && (
@@ -526,7 +568,7 @@ export default function BattleSetupScreen() {
         </View>
 
         <TouchableOpacity onPress={() => setShowRulesModal(true)} style={styles.rulesContainer}>
-          <Text style={styles.rulesLink}>By joining, you agree to the contest rules.</Text>
+          <Text style={[styles.rulesLink, { color: subTextColor }]}>By joining, you agree to the contest rules.</Text>
         </TouchableOpacity>
       </View>
 
@@ -560,7 +602,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20, 
     paddingVertical: 10
   },
-  backBtn: { padding: 5 },
+  backBtn: { 
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontFamily: 'Urbanist-Bold',
+  },
   avatarPlaceholder: {
     width: 40,
     height: 40,
@@ -571,35 +628,44 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 12,
-    paddingVertical: 6,
+    height: 40,
     borderRadius: 20,
-    gap: 8,
+    gap: 6,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
   },
   walletText: {
-    fontSize: 16,
+    fontSize: 15,
     fontFamily: 'Urbanist-Bold',
   },
-  scrollContent: { paddingHorizontal: 20, alignItems: 'center', paddingBottom: 20 },
-  title: { 
-    fontSize: 28, 
-    fontFamily: 'Urbanist-Bold', 
-    marginVertical: 15, 
-    textAlign: 'center',
-    letterSpacing: 1
-  },
+  scrollContent: { paddingHorizontal: 20, alignItems: 'center', paddingBottom: 20, paddingTop: 8 },
   breakdownCard: {
     width: '100%',
-    borderRadius: 25,
+    borderRadius: 24,
     borderWidth: 1,
     padding: 20,
     alignItems: 'center',
-    marginBottom: 25,
+    marginBottom: 24,
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+  },
+  breakdownHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 22,
   },
   breakdownLabel: {
-    fontSize: 16,
-    fontFamily: 'Urbanist-Medium',
+    fontSize: 14,
+    fontFamily: 'Urbanist-Bold',
     color: '#9E9E9E',
-    marginBottom: 20,
+    letterSpacing: 0.3,
   },
   playersContainer: {
     flexDirection: 'row',
@@ -607,19 +673,29 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     width: '100%',
     paddingHorizontal: 10,
-    marginBottom: 20,
+    marginBottom: 22,
   },
   playerItem: {
     alignItems: 'center',
     flex: 1,
   },
-  playerAvatarCircle: {
-    width: 70,
-    height: 70,
-    borderRadius: 35,
+  avatarRing: {
+    width: 78,
+    height: 78,
+    borderRadius: 39,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: 10,
+  },
+  avatarRingIdle: {
+    borderStyle: 'dashed',
+  },
+  playerAvatarCircle: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    justifyContent: 'center',
+    alignItems: 'center',
     overflow: 'hidden',
   },
   avatarImg: {
@@ -628,10 +704,10 @@ const styles = StyleSheet.create({
     resizeMode: 'cover',
   },
   playerName: {
-    fontSize: 16,
+    fontSize: 15,
     fontFamily: 'Urbanist-Bold',
-    marginBottom: 4,
-    width: 80,
+    marginBottom: 6,
+    width: 90,
     textAlign: 'center',
   },
   feeInfo: {
@@ -640,38 +716,24 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   feeMinus: {
-    fontSize: 14,
+    fontSize: 15,
     color: '#FF4D67',
     fontFamily: 'Urbanist-Bold',
   },
-  coinIconWrapper: {
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  coinIconOuter: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    backgroundColor: '#FFD700',
-    borderWidth: 1,
-    borderColor: '#DAA520',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  coinIconInner: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: 'rgba(255,255,255,0.5)',
+  vsWrap: {
+    zIndex: 1,
   },
   vsCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#FF758C',
+    width: 46,
+    height: 46,
+    borderRadius: 23,
     justifyContent: 'center',
     alignItems: 'center',
-    zIndex: 1,
+    elevation: 4,
+    shadowColor: PRIMARY_COLOR,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 6,
   },
   vsText: {
     color: '#FFF',
@@ -686,18 +748,21 @@ const styles = StyleSheet.create({
   winnerBanner: {
     backgroundColor: '#FEF9C3',
     width: '100%',
-    paddingVertical: 12,
-    borderRadius: 12,
+    paddingVertical: 13,
+    borderRadius: 14,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
   },
   winnerBannerText: {
-    color: '#EAB308',
+    color: '#CA8A04',
     fontFamily: 'Urbanist-Bold',
     fontSize: 15,
   },
   matchupPreviewContainer: {
     width: '100%',
-    marginBottom: 25,
+    marginBottom: 24,
   },
   previewRow: {
     flexDirection: 'row',
@@ -759,22 +824,41 @@ const styles = StyleSheet.create({
   },
   formSection: {
     width: '100%',
-    marginBottom: 20,
+    marginBottom: 22,
+  },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 16,
+  },
+  stepBadge: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: PRIMARY_COLOR,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  stepBadgeText: {
+    color: '#FFF',
+    fontSize: 14,
+    fontFamily: 'Urbanist-Bold',
   },
   sectionTitle: {
-    fontSize: 20,
+    fontSize: 19,
     fontFamily: 'Urbanist-Bold',
-    marginBottom: 15,
   },
   inputGroup: {
     width: '100%',
-    marginBottom: 15,
+    marginBottom: 16,
   },
   inputLabel: {
-    fontSize: 14,
+    fontSize: 13,
     fontFamily: 'Urbanist-Bold',
     marginBottom: 8,
     marginLeft: 4,
+    letterSpacing: 0.2,
   },
   input: {
     width: '100%',
@@ -784,6 +868,22 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontFamily: 'Urbanist-Medium',
     borderWidth: 1,
+  },
+  inputDisabled: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  usernamePrefix: {
+    fontSize: 16,
+    fontFamily: 'Urbanist-Bold',
+    color: '#9E9E9E',
+  },
+  usernameField: {
+    flex: 1,
+    fontSize: 16,
+    fontFamily: 'Urbanist-Medium',
+    height: '100%',
   },
   textArea: {
     height: 100,
@@ -804,10 +904,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   uploadCircleInner: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: '#F5F5F5',
+    width: 58,
+    height: 58,
+    borderRadius: 29,
     marginBottom: 15,
     justifyContent: 'center',
     alignItems: 'center',
@@ -827,9 +926,27 @@ const styles = StyleSheet.create({
     height: '100%',
     resizeMode: 'cover',
   },
-  changePhotoBtn: {
-    marginTop: 10,
+  previewOverlay: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
     alignItems: 'center',
+  },
+  changePhotoBtn: {
+    marginTop: 12,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,77,103,0.08)',
   },
   changePhotoText: {
     fontSize: 14,
@@ -837,8 +954,9 @@ const styles = StyleSheet.create({
   },
   footer: {
     paddingHorizontal: 20,
-    paddingTop: 10,
+    paddingTop: 14,
     paddingBottom: Platform.OS === 'ios' ? 0 : 20,
+    borderTopWidth: 1,
   },
   buttonWrapper: {
     position: 'relative',
@@ -858,13 +976,22 @@ const styles = StyleSheet.create({
     shadowRadius: 15,
     elevation: 8,
   },
+  joinButtonTouchable: {
+    width: '100%',
+    borderRadius: 20,
+    overflow: 'hidden',
+    zIndex: 10,
+  },
   joinButton: {
     width: '100%',
     height: 60,
-    borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
-    zIndex: 10,
+  },
+  joinBtnContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   joinBtnText: {
     color: '#FFF',
