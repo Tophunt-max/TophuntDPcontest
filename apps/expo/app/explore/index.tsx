@@ -7,6 +7,7 @@ import {
 import { BottomNav } from '@/src/components/home/BottomNav';
 import { Ionicons, MaterialCommunityIcons } from '@/src/lib/icons';
 import { CoinIcon } from '@/src/components/ui/CoinIcon';
+import { Skeleton, SkeletonCircle } from '@/src/components/ui/Skeleton';
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { contestService } from '@/src/services/contests/contestService';
@@ -597,65 +598,47 @@ function EmptyState({ icon, iconLib, mci, text, border, sub, actionText, actionC
 }
 
 /** Pulsing skeleton placeholders shown while data loads. */
-function SkeletonBody({ isDark, activeTab, cardBg, borderColor }: any) {
-  const pulse = useRef(new RNAnimated.Value(0.4)).current;
-  useEffect(() => {
-    const loop = RNAnimated.loop(
-      RNAnimated.sequence([
-        RNAnimated.timing(pulse, { toValue: 1, duration: 700, useNativeDriver: true }),
-        RNAnimated.timing(pulse, { toValue: 0.4, duration: 700, useNativeDriver: true }),
-      ]),
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [pulse]);
-
-  const block = isDark ? '#20222B' : '#EAEBF0';
-
+function SkeletonBody({ activeTab, cardBg, borderColor }: any) {
   if (activeTab === 'users') {
     return (
       <View style={{ paddingHorizontal: PAD, marginTop: 18 }}>
-        <RNAnimated.View style={{ opacity: pulse }}>
-          <View style={[styles.skLine, { backgroundColor: block, width: 160, marginBottom: 16 }]} />
-          <View style={styles.peopleGrid}>
-            {[0, 1, 2, 3].map(i => (
-              <View key={i} style={[styles.personCard, { backgroundColor: cardBg, borderColor, width: PEOPLE_CARD_W, alignItems: 'center' }]}>
-                <View style={[styles.skCircle, { backgroundColor: block }]} />
-                <View style={[styles.skLine, { backgroundColor: block, width: '70%', marginTop: 12 }]} />
-                <View style={[styles.skLine, { backgroundColor: block, width: '45%', marginTop: 6, height: 8 }]} />
-                <View style={[styles.skBtn, { backgroundColor: block }]} />
-              </View>
-            ))}
-          </View>
-        </RNAnimated.View>
+        <Skeleton width={160} height={20} style={{ marginBottom: 16 }} />
+        <View style={styles.peopleGrid}>
+          {[0, 1, 2, 3].map(i => (
+            <View key={i} style={[styles.personCard, { backgroundColor: cardBg, borderColor, width: PEOPLE_CARD_W, alignItems: 'center' }]}>
+              <SkeletonCircle size={76} />
+              <Skeleton width="70%" height={13} style={{ marginTop: 12 }} />
+              <Skeleton width="45%" height={9} style={{ marginTop: 6 }} />
+              <Skeleton width="100%" height={34} borderRadius={100} style={{ marginTop: 14 }} />
+            </View>
+          ))}
+        </View>
       </View>
     );
   }
 
   return (
     <View style={{ marginTop: 18 }}>
-      <RNAnimated.View style={{ opacity: pulse }}>
-        <View style={{ paddingHorizontal: PAD }}>
-          <View style={[styles.skLine, { backgroundColor: block, width: 180, marginBottom: 16 }]} />
-        </View>
-        <View style={{ flexDirection: 'row', paddingHorizontal: PAD, gap: 14 }}>
-          {[0, 1].map(i => (<View key={i} style={[styles.templateCard, { backgroundColor: block }]} />))}
-        </View>
-        <View style={{ paddingHorizontal: PAD, marginTop: 28, gap: 16 }}>
-          {[0, 1].map(i => (
-            <View key={i} style={[styles.battleCard, { backgroundColor: cardBg, borderColor }]}>
-              <View style={[styles.battleMedia, { backgroundColor: block }]} />
-              <View style={styles.battleFooter}>
-                <View style={{ flex: 1 }}>
-                  <View style={[styles.skLine, { backgroundColor: block, width: '60%' }]} />
-                  <View style={[styles.skLine, { backgroundColor: block, width: '30%', marginTop: 8, height: 8 }]} />
-                </View>
-                <View style={[styles.skBtn, { backgroundColor: block, width: 110, marginTop: 0 }]} />
+      <View style={{ paddingHorizontal: PAD }}>
+        <Skeleton width={180} height={20} style={{ marginBottom: 16 }} />
+      </View>
+      <View style={{ flexDirection: 'row', paddingHorizontal: PAD, gap: 14 }}>
+        {[0, 1].map(i => (<Skeleton key={i} width={TEMPLATE_W} height={208} borderRadius={24} />))}
+      </View>
+      <View style={{ paddingHorizontal: PAD, marginTop: 28, gap: 16 }}>
+        {[0, 1].map(i => (
+          <View key={i} style={[styles.battleCard, { backgroundColor: cardBg, borderColor }]}>
+            <Skeleton width="100%" height={210} borderRadius={0} />
+            <View style={styles.battleFooter}>
+              <View style={{ flex: 1 }}>
+                <Skeleton width="60%" height={14} />
+                <Skeleton width="30%" height={9} style={{ marginTop: 8 }} />
               </View>
+              <Skeleton width={110} height={40} borderRadius={14} />
             </View>
-          ))}
-        </View>
-      </RNAnimated.View>
+          </View>
+        ))}
+      </View>
     </View>
   );
 }
