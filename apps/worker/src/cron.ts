@@ -12,6 +12,7 @@ import type { Env } from "./types";
 import { getDb, schema } from "./db";
 import { createNotification, sendSegmentedBroadcast } from "./lib/notify";
 import { finalizeVotes } from "./lib/voteCounter";
+import { deleteByPublicUrl } from "./lib/r2";
 import { newId, now } from "./lib/ids";
 
 type Match = typeof schema.contestMatches.$inferSelect;
@@ -148,7 +149,19 @@ export async function resolveContests(env: Env): Promise<void> {
     await db.update(schema.contestMatches).set({ endingSoonNotified: true }).where(eq(schema.contestMatches.id, m.id));
   }
 
-  // expired story cleanup (was scheduled/index.ts cleanupExpiredStories)
+  // expired story cleanup — also delete the R2 media of expired PERSONAL
+  // ("user") stories so R2 storage doesn't grow forever. Contest stories
+  // (contest_announcement / contest_match_live) reuse the match's media, so we
+  // must NOT delete their objects here. R2 DELETE ops are free.
+  const expiredUserStories = await db
+    .select({ mediaUrl: schema.stories.mediaUrl })
+    .from(schema.stories)
+    .where(and(lte(schema.stories.expiresAt, nowMs), eq(schema.stories.type, "user")))
+    .limit(500)
+    .all();
+  for (const s of expiredUserStories) {
+    if (s.mediaUrl) await deleteByPublicUrl(env, s.mediaUrl).catch(() => {});
+  }
   await db.delete(schema.stories).where(lte(schema.stories.expiresAt, nowMs));
 
   // due scheduled/segmented broadcasts

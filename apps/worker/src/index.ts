@@ -99,15 +99,37 @@ app.get("/health", (c) => c.json({ ok: true, ts: Date.now() }));
  * addressed, so responses are immutable and cached for a year.
  */
 app.get("/media/*", async (c) => {
-  const key = decodeURIComponent(new URL(c.req.url).pathname.replace(/^\/media\//, "")).replace(/^\/+/, "");
+  const url = new URL(c.req.url);
+  const key = decodeURIComponent(url.pathname.replace(/^\/media\//, "")).replace(/^\/+/, "");
   if (!key) return c.text("Not found", 404);
+
+  // Edge-cache media at the Cloudflare colo. Media keys are content-hash / uuid
+  // addressed and immutable, so once cached a repeat view is served from the
+  // edge WITHOUT an R2 GET (no R2 Class-B op) and with near-zero Worker CPU.
+  // This is the single biggest R2 read-cost saver for a media-heavy app.
+  const cache = (caches as any).default as Cache;
+  const cacheKey = new Request(url.toString(), { method: "GET" });
+  try {
+    const hit = await cache.match(cacheKey);
+    if (hit) return hit;
+  } catch {
+    /* cache unavailable — fall through to R2 */
+  }
+
   const obj = await c.env.MEDIA.get(key);
   if (!obj) return c.text("Not found", 404);
   const headers = new Headers();
   obj.writeHttpMetadata(headers);
   headers.set("etag", obj.httpEtag);
   headers.set("Cache-Control", "public, max-age=31536000, immutable");
-  return new Response(obj.body, { headers });
+  const res = new Response(obj.body, { headers });
+  // Populate the edge cache so future views skip R2 entirely.
+  try {
+    c.executionCtx.waitUntil(cache.put(cacheKey, res.clone()));
+  } catch {
+    /* best-effort */
+  }
+  return res;
 });
 
 /**

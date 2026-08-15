@@ -296,6 +296,8 @@ apiRoute.post("/", async (c) => {
         throw httpsError("permission-denied", "You don't have permission to delete this post.");
       await db.delete(schema.posts).where(eq(schema.posts.id, postId));
       await db.update(schema.users).set({ postsCount: sql`MAX(${schema.users.postsCount} - 1, 0)` }).where(eq(schema.users.uid, post.userId));
+      // Free the R2 object so storage doesn't leak (DELETE is free in R2).
+      if (post.mediaUrl) await deleteByPublicUrl(env, post.mediaUrl).catch(() => {});
       return c.json({ success: true, message: "Post deleted successfully" });
     }
 
