@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, FlatList, ActivityIndicator, Alert, ScrollView, TextInput } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, FlatList, ActivityIndicator, Alert, ScrollView, TextInput, ImageBackground } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@/src/lib/icons';
@@ -147,18 +147,51 @@ export default function VideoContestScreen() {
           data={contests}
           keyExtractor={(item) => item.id}
           contentContainerStyle={{ padding: 16 }}
-          renderItem={({ item }) => (
-            <TouchableOpacity 
-              style={[styles.contestCard, { backgroundColor: cardBg, borderColor }]} 
-              onPress={() => setSelectedContest(item)}
-            >
-              <View>
-                <Text style={[styles.contestName, {color: textColor}]}>{item.title || item.name}</Text>
-                <Text style={styles.contestPrize}>Prize: {item.winningCoins} Coins</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={24} color={BRAND_PRIMARY} />
-            </TouchableOpacity>
-          )}
+          renderItem={({ item }) => {
+            const reward = item.winningCoins || item.rewardCoins || 0;
+            const fee = item.entryFishCoins || item.totalEntryFee || 0;
+            return (
+              <TouchableOpacity
+                activeOpacity={0.92}
+                style={[styles.contestCard, { backgroundColor: cardBg }]}
+                onPress={() => setSelectedContest(item)}
+              >
+                <ImageBackground
+                  source={{ uri: item.bannerUrl || 'https://via.placeholder.com/400x200' }}
+                  style={styles.cardBanner}
+                  imageStyle={styles.cardBannerImg}
+                >
+                  <LinearGradient colors={['rgba(0,0,0,0.05)', 'rgba(0,0,0,0.85)']} style={styles.bannerGradient}>
+                    <View style={styles.topRow}>
+                      <View style={styles.livePill}>
+                        <View style={styles.livePillDot} />
+                        <Text style={styles.livePillText}>LIVE</Text>
+                      </View>
+                      <View style={styles.feeBadge}>
+                        <Ionicons name="videocam" size={13} color="#FFF" />
+                        <Text style={styles.feeText}>{fee} Coins</Text>
+                      </View>
+                    </View>
+                    <Text style={styles.cardTitle} numberOfLines={2}>{item.title || item.name}</Text>
+                  </LinearGradient>
+                </ImageBackground>
+
+                <View style={styles.cardFooter}>
+                  <View style={styles.rewardInfo}>
+                    <Text style={[styles.rewardLabel, { color: subTextColor }]}>WINNER GETS</Text>
+                    <View style={styles.rewardValueRow}>
+                      <Ionicons name="trophy" size={16} color="#FFB800" />
+                      <Text style={styles.rewardValue}>{reward} Coins</Text>
+                    </View>
+                  </View>
+                  <LinearGradient colors={[BRAND_PRIMARY, '#FF8A9B']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.startBtn}>
+                    <Text style={styles.startBtnText}>Enter</Text>
+                    <Ionicons name="arrow-forward" size={16} color="#FFF" />
+                  </LinearGradient>
+                </View>
+              </TouchableOpacity>
+            );
+          }}
         />
       ) : (
         <ScrollView contentContainerStyle={{ padding: 20 }}>
@@ -204,9 +237,66 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16 },
   title: { fontSize: 22, fontFamily: 'Urbanist-Bold' },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  contestCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderRadius: 20, marginBottom: 12, borderWidth: 1 },
-  contestName: { fontSize: 18, fontFamily: 'Urbanist-Bold' },
-  contestPrize: { color: '#4CAF50', fontFamily: 'Urbanist-SemiBold', marginTop: 4 },
+  contestCard: {
+    borderRadius: 22,
+    marginBottom: 20,
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    overflow: 'hidden',
+  },
+  cardBanner: { width: '100%', height: 190 },
+  cardBannerImg: { borderTopLeftRadius: 22, borderTopRightRadius: 22 },
+  bannerGradient: { flex: 1, justifyContent: 'flex-end', padding: 16 },
+  topRow: {
+    position: 'absolute',
+    top: 14,
+    left: 14,
+    right: 14,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  livePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(255,77,103,0.95)',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 20,
+  },
+  livePillDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#FFF' },
+  livePillText: { color: '#FFF', fontSize: 10, fontFamily: 'Urbanist-Bold', letterSpacing: 0.5 },
+  feeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.25)',
+  },
+  feeText: { color: '#FFF', fontSize: 12, fontFamily: 'Urbanist-Bold' },
+  cardTitle: { fontSize: 22, fontFamily: 'Urbanist-Bold', color: '#FFF' },
+  cardFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16 },
+  rewardInfo: { flex: 1 },
+  rewardLabel: { fontSize: 11, fontFamily: 'Urbanist-Bold', letterSpacing: 0.6 },
+  rewardValueRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 3 },
+  rewardValue: { fontSize: 17, fontFamily: 'Urbanist-Bold', color: '#FFB800' },
+  startBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 20,
+    paddingVertical: 11,
+    borderRadius: 14,
+  },
+  startBtnText: { color: '#FFF', fontFamily: 'Urbanist-Bold', fontSize: 15 },
   subtitle: { fontSize: 20, fontFamily: 'Urbanist-Bold', marginBottom: 20 },
   mediaUpload: { width: '100%', height: 350, borderRadius: 24, overflow: 'hidden', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderStyle: 'dashed' },
   previewVideo: { width: '100%', height: '100%' },
