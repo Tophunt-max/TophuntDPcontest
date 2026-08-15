@@ -1,22 +1,36 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import { Ionicons } from '@expo/vector-icons';
+import { emitToast } from '@/src/lib/toastBridge';
 
 /**
- * A slim bar that appears whenever the device loses connectivity. Rendered once
- * at the root so it overlays every screen. Pairs with React Query's
- * onlineManager (wired in _layout) which pauses/refetches based on the same
- * NetInfo signal.
+ * Shows a slim persistent bar while the device is offline AND fires a centered
+ * popup toast on every connectivity change (offline / back online). Rendered
+ * once at the root so it overlays every screen. Pairs with React Query's
+ * onlineManager (wired in _layout) which pauses/refetches on the same signal.
  */
 export function OfflineBanner() {
   const [offline, setOffline] = useState(false);
+  // Last known connectivity (null = unknown). Used to detect real transitions
+  // so we don't toast on cold start.
+  const prevConnected = useRef<boolean | null>(null);
 
   useEffect(() => {
     const unsub = NetInfo.addEventListener((state) => {
-      // `isConnected` is null until the first probe — treat only an explicit
-      // `false` as offline to avoid a flash on cold start.
-      setOffline(state.isConnected === false);
+      const connected = state.isConnected;
+      // `isConnected` is null until the first probe — ignore unknown states.
+      if (connected === null || connected === undefined) return;
+
+      if (prevConnected.current !== null && connected !== prevConnected.current) {
+        if (connected) {
+          emitToast('Back online', 'success');
+        } else {
+          emitToast("You're offline. Check your connection.", 'error');
+        }
+      }
+      prevConnected.current = connected;
+      setOffline(connected === false);
     });
     return () => unsub();
   }, []);
