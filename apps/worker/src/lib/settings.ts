@@ -16,7 +16,14 @@ async function readSetting(env: Env, id: string): Promise<any> {
   const db = getDb(env);
   const row = await db.select().from(schema.settings).where(eq(schema.settings.id, id)).get();
   const data = row?.data ?? {};
-  await env.CACHE_KV.put(cacheKey, JSON.stringify(data), { expirationTtl: CACHE_TTL });
+  // Never let a KV write failure (e.g. the daily put() quota being exhausted)
+  // break config reads — we already have the data from D1. Fail open: skip the
+  // cache write and just serve the fresh value.
+  try {
+    await env.CACHE_KV.put(cacheKey, JSON.stringify(data), { expirationTtl: CACHE_TTL });
+  } catch (e) {
+    console.error("[settings] cache write failed (continuing)", e);
+  }
   return data;
 }
 

@@ -37,9 +37,16 @@ async function getJwks(env: Env): Promise<JSONWebKeySet> {
   const maxAge = maxAgeMatch ? parseInt(maxAgeMatch[1], 10) : 3600;
   const payload: CachedJwks = { keys, expiresAt: Date.now() + maxAge * 1000 };
 
-  await env.CACHE_KV.put(JWKS_KV_KEY, JSON.stringify(payload), {
-    expirationTtl: Math.max(60, maxAge),
-  });
+  // Cache the keys, but NEVER let a KV write failure (e.g. the daily put()
+  // quota being exhausted) break token verification — we already have the keys
+  // in hand. A failed cache write just means we refetch on the next cold path.
+  try {
+    await env.CACHE_KV.put(JWKS_KV_KEY, JSON.stringify(payload), {
+      expirationTtl: Math.max(60, maxAge),
+    });
+  } catch (e) {
+    console.error("[firebaseAuth] JWKS cache write failed (continuing)", e);
+  }
   return keys;
 }
 

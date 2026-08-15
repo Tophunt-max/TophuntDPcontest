@@ -99,9 +99,17 @@ export async function getAccessToken(env: Env): Promise<string> {
   if (!res.ok) throw httpsError("internal", `OAuth token exchange failed: ${await res.text()}`);
   const json = (await res.json()) as { access_token: string; expires_in: number };
   const expiresAt = Date.now() + json.expires_in * 1000;
-  await env.CACHE_KV.put(TOKEN_KV_KEY, JSON.stringify({ token: json.access_token, expiresAt }), {
-    expirationTtl: Math.max(60, json.expires_in - 60),
-  });
+  // Cache the access token, but never let a KV write failure (e.g. the daily
+  // put() quota being exhausted) break admin/Identity-Toolkit operations — we
+  // already minted a valid token. A failed cache write just costs one extra
+  // OAuth exchange on the next cold path.
+  try {
+    await env.CACHE_KV.put(TOKEN_KV_KEY, JSON.stringify({ token: json.access_token, expiresAt }), {
+      expirationTtl: Math.max(60, json.expires_in - 60),
+    });
+  } catch (e) {
+    console.error("[firebaseAdmin] access-token cache write failed (continuing)", e);
+  }
   return json.access_token;
 }
 
