@@ -1,8 +1,9 @@
 import { ReactNode, useState, useEffect, useRef } from "react";
 import { Link, useLocation } from "wouter";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
+import { fmtDateTime } from "@/lib/format";
 import {
   LayoutDashboard,
   BarChart3,
@@ -202,13 +203,16 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
 
 function NotificationBell() {
   const [, setLoc] = useLocation();
+  const qc = useQueryClient();
   const prevUnread = useRef<number | null>(null);
+  const [open, setOpen] = useState(false);
   const { data = [] } = useQuery({
     queryKey: ["notifications"],
     queryFn: api.notifications,
     refetchInterval: 15000,
   });
-  const unread = (data as any[]).filter((n) => !n.isRead).length;
+  const items = data as any[];
+  const unread = items.filter((n) => !n.isRead).length;
 
   // Play a ping when unread count rises (new admin alert arrived).
   useEffect(() => {
@@ -218,19 +222,80 @@ function NotificationBell() {
     prevUnread.current = unread;
   }, [unread]);
 
+  const markAllRead = async () => {
+    try {
+      await api.markNotificationsRead();
+      qc.invalidateQueries({ queryKey: ["notifications"] });
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const openItem = (n: any) => {
+    setOpen(false);
+    if (n?.link) setLoc(n.link);
+  };
+
   return (
-    <button
-      onClick={() => setLoc("/notifications")}
-      className="relative p-2 rounded-lg hover:bg-secondary transition-colors"
-      title="Admin alerts"
-    >
-      <Bell size={18} />
-      {unread > 0 && (
-        <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center">
-          {unread > 99 ? "99+" : unread}
-        </span>
+    <div className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="relative p-2 rounded-lg hover:bg-secondary transition-colors"
+        title="Admin alerts"
+      >
+        <Bell size={18} />
+        {unread > 0 && (
+          <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center">
+            {unread > 99 ? "99+" : unread}
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <>
+          {/* click-away backdrop */}
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 mt-2 w-80 max-w-[90vw] bg-card border border-border rounded-2xl shadow-xl z-50 overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+              <p className="font-bold text-sm text-foreground">Notifications</p>
+              {unread > 0 && (
+                <button onClick={markAllRead} className="text-xs text-violet-600 font-medium hover:underline">
+                  Mark all read
+                </button>
+              )}
+            </div>
+            <div className="max-h-[360px] overflow-y-auto">
+              {items.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-8">No notifications</p>
+              ) : (
+                items.map((n) => (
+                  <button
+                    key={n.id}
+                    onClick={() => openItem(n)}
+                    className={`w-full text-left px-4 py-3 border-b border-border last:border-0 hover:bg-secondary/40 transition-colors ${n.isRead ? "" : "bg-violet-50/60"}`}
+                  >
+                    <div className="flex items-start gap-2">
+                      {!n.isRead && <span className="mt-1.5 w-2 h-2 rounded-full bg-violet-500 flex-shrink-0" />}
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-foreground truncate">{n.title}</p>
+                        {n.message && <p className="text-xs text-muted-foreground line-clamp-2">{n.message}</p>}
+                        <p className="text-[11px] text-muted-foreground mt-0.5">{fmtDateTime(n.createdAt)}</p>
+                      </div>
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+            <button
+              onClick={() => { setOpen(false); setLoc("/notifications"); }}
+              className="w-full text-center py-2.5 text-xs font-medium text-violet-600 hover:bg-secondary/40 border-t border-border"
+            >
+              Open notifications page
+            </button>
+          </div>
+        </>
       )}
-    </button>
+    </div>
   );
 }
 
