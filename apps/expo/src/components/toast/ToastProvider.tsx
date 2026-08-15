@@ -2,12 +2,9 @@ import React, { createContext, useContext, useState, useCallback, ReactNode, use
 import { View, Text, StyleSheet, Animated, Platform, Dimensions, Image, ImageSourcePropType } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { setToastHandler } from '@/src/lib/toastBridge';
+import { Toast_Success, Toast_Error, Toast_Info } from '@/assets/svgs';
 
 const { width } = Dimensions.get('window');
-
-// Brand image shown in every toast popup by default. Callers can override it
-// per-toast (e.g. a user avatar) via addToast({ text, image }).
-const DEFAULT_TOAST_IMAGE: ImageSourcePropType = require('@/assets/images/Tophunt.png');
 
 interface ToastMessage {
   id: number;
@@ -89,10 +86,11 @@ export const ToastProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   );
 };
 
-const TYPE_META: Record<ToastMessage['type'], { colors: [string, string]; emoji: string }> = {
-  success: { colors: ['#FF4D67', '#FF8A4D'], emoji: '✅' },
-  error: { colors: ['#FF5252', '#FF1744'], emoji: '⚠️' },
-  info: { colors: ['#448AFF', '#2979FF'], emoji: 'ℹ️' },
+// Custom-designed icon (SVG) + gradient per toast type. See assets/svgs/toast*.svg
+const TYPE_META: Record<ToastMessage['type'], { colors: [string, string]; Icon: React.FC<any> }> = {
+  success: { colors: ['#FF4D67', '#FF8A4D'], Icon: Toast_Success },
+  error: { colors: ['#FF5252', '#FF1744'], Icon: Toast_Error },
+  info: { colors: ['#448AFF', '#2979FF'], Icon: Toast_Info },
 };
 
 const ToastItem: React.FC<{ toast: ToastMessage; onHide: () => void }> = ({ toast, onHide }) => {
@@ -117,6 +115,7 @@ const ToastItem: React.FC<{ toast: ToastMessage; onHide: () => void }> = ({ toas
     }, []);
 
     const meta = TYPE_META[toast.type] || TYPE_META.info;
+    const Icon = meta.Icon;
 
     return (
         <Animated.View
@@ -131,16 +130,16 @@ const ToastItem: React.FC<{ toast: ToastMessage; onHide: () => void }> = ({ toas
                 end={{ x: 1, y: 1 }}
                 style={styles.card}
             >
-                {/* Custom image (brand logo by default) with a small status badge. */}
-                <View style={styles.imageCircle}>
-                    <Image
-                        source={toast.image || DEFAULT_TOAST_IMAGE}
-                        style={styles.image}
-                        resizeMode="contain"
-                    />
-                    <View style={styles.badge}>
-                        <Text style={styles.badgeEmoji}>{meta.emoji}</Text>
-                    </View>
+                {/* Per-toast image override (e.g. an avatar), else the custom
+                    type icon we ship in assets/svgs. */}
+                <View style={styles.iconWrap}>
+                    {toast.image ? (
+                        <View style={styles.imageCircle}>
+                            <Image source={toast.image} style={styles.image} resizeMode="cover" />
+                        </View>
+                    ) : (
+                        <Icon width={76} height={76} />
+                    )}
                 </View>
                 <Text style={styles.message}>{toast.message}</Text>
             </LinearGradient>
@@ -174,6 +173,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.35,
     shadowRadius: 20,
   },
+  iconWrap: {
+    marginBottom: 14,
+  },
   imageCircle: {
     width: 66,
     height: 66,
@@ -181,34 +183,16 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 14,
+    overflow: 'hidden',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.15,
     shadowRadius: 4,
   },
   image: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-  },
-  badge: {
-    position: 'absolute',
-    bottom: -2,
-    right: -2,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: '#FFFFFF',
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.2,
-    shadowRadius: 2,
-  },
-  badgeEmoji: {
-    fontSize: 13,
+    width: 66,
+    height: 66,
+    borderRadius: 33,
   },
   message: {
     color: 'white',

@@ -110,6 +110,11 @@ import About_Name from './about/name.svg';
 import About_Username from './about/username.svg';
 import About_Bio from './about/bio.svg';
 
+// Toast Icons (custom-designed for the popup toasts)
+import Toast_Success from './toastSuccess.svg';
+import Toast_Error from './toastError.svg';
+import Toast_Info from './toastInfo.svg';
+
 export {
   Home_Light,
   Inbox_Light,
@@ -123,6 +128,9 @@ export {
   Left_Arrow,
   App_Logo,
   Success,
+  Toast_Success,
+  Toast_Error,
+  Toast_Info,
   Facebook_Icon,
   Google_Icon,
   Apple_Light,
