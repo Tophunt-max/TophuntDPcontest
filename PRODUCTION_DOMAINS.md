@@ -183,11 +183,13 @@ real SEO tags se rewrite karta hai + `sitemap.xml` / `robots.txt` serve karta ha
 Pages project `tophuntdpcontest` → **Settings → Environment variables** (Production):
 | Var | Default (agar set na ho) | Kab set karo |
 |-----|--------------------------|--------------|
-| `SEO_SITE_ORIGIN` | `https://tophunt.in` | Agar public domain badle |
-| `SEO_API_BASE` | `https://tophunt-api.weadown-in.workers.dev` | Jab API custom domain (`https://api.tophuntdpcontest.com`) live ho — yahan update karo |
+| `SEO_SITE_ORIGIN` | `https://tophunt.in` | Live site — normally set hi rehne do |
+| `SEO_API_BASE` | `https://tophunt-api.weadown-in.workers.dev` | Sirf tab badlo jab backend Worker ka URL hi change ho |
 
 > Note: `_worker.js` in vars ko runtime par `env` se padhta hai; set na ho to upar wale
-> defaults use hote hain. Isliye jab API domain migrate karo, yahan `SEO_API_BASE` zaroor update karo.
+> defaults use hote hain. Live site `https://tophunt.in` hai aur API abhi
+> `tophunt-api.weadown-in.workers.dev` par live hai — dono defaults sahi hain,
+> koi change abhi zaroori nahi.
 
 ### Deploy ke baad — Google Search Console steps (one-time)
 1. **Search Console** me `https://tophunt.in` property add + verify karo (DNS TXT ya HTML tag).

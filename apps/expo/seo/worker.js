@@ -20,8 +20,8 @@
  * Worker; static files and the SPA fallback are served via `env.ASSETS`.
  *
  * Config (optional Pages env vars, sensible defaults below):
- *   - SEO_API_BASE     Worker API base, e.g. https://api.tophuntdpcontest.com
- *   - SEO_SITE_ORIGIN  Public origin, e.g. https://tophunt.in
+ *   - SEO_API_BASE     Worker API base (default below is the live API)
+ *   - SEO_SITE_ORIGIN  Public origin (default: https://tophunt.in)
  */
 
 const DEFAULT_API_BASE = 'https://tophunt-api.weadown-in.workers.dev';
