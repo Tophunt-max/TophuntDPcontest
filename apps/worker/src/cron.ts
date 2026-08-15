@@ -10,7 +10,7 @@
 import { and, eq, lte, gt, desc, sql } from "drizzle-orm";
 import type { Env } from "./types";
 import { getDb, schema } from "./db";
-import { createNotification } from "./lib/notify";
+import { createNotification, sendSegmentedBroadcast } from "./lib/notify";
 import { finalizeVotes } from "./lib/voteCounter";
 import { newId, now } from "./lib/ids";
 
@@ -150,6 +150,35 @@ export async function resolveContests(env: Env): Promise<void> {
 
   // expired story cleanup (was scheduled/index.ts cleanupExpiredStories)
   await db.delete(schema.stories).where(lte(schema.stories.expiresAt, nowMs));
+
+  // due scheduled/segmented broadcasts
+  await processScheduledNotifications(env);
+}
+
+/** Send any pending scheduled notifications whose send_at has passed. */
+export async function processScheduledNotifications(env: Env): Promise<void> {
+  const db = getDb(env);
+  const due = await db
+    .select()
+    .from(schema.scheduledNotifications)
+    .where(and(eq(schema.scheduledNotifications.status, "pending"), lte(schema.scheduledNotifications.sendAt, now())))
+    .limit(20)
+    .all();
+  for (const n of due) {
+    // Claim atomically so overlapping cron runs don't double-send.
+    const claim = await db
+      .update(schema.scheduledNotifications)
+      .set({ status: "sent", sentAt: now() })
+      .where(and(eq(schema.scheduledNotifications.id, n.id), eq(schema.scheduledNotifications.status, "pending")))
+      .run();
+    if (claim.meta.changes === 0) continue;
+    try {
+      const recipients = await sendSegmentedBroadcast(env, n.title, n.body, n.image || undefined, (n.segment as any) || undefined);
+      await db.update(schema.scheduledNotifications).set({ recipients }).where(eq(schema.scheduledNotifications.id, n.id));
+    } catch (e) {
+      console.error("[cron] scheduled notification failed", n.id, e);
+    }
+  }
 }
 
 /** Monthly cron: top-3 by monthlyWins get coins/xp/badge, then reset monthlyWins. */

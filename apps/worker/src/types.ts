@@ -59,4 +59,7 @@ export interface AuthUser {
 export type Variables = {
   user: AuthUser;
   requestId: string;
+  // Effective admin role for the current /admin request: "superadmin" | "admin"
+  // | "moderator". Server-to-server (shared secret) calls are "superadmin".
+  adminRole: string;
 };

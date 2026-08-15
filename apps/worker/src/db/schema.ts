@@ -56,6 +56,9 @@ export const users = sqliteTable(
     fcmTokens: text("fcm_tokens", { mode: "json" }).$type<string[]>().default([]),
 
     signupCompleted: integer("signup_completed", { mode: "boolean" }).default(false),
+    // admin flags
+    verified: integer("verified", { mode: "boolean" }).default(false),
+    featured: integer("featured", { mode: "boolean" }).default(false),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
@@ -563,6 +566,54 @@ export const adminAuditLog = sqliteTable(
     actionIdx: index("idx_audit_action").on(t.action),
   }),
 );
+
+// ---------------------------------------------------------------------------
+// coin_packages  (admin-managed top-up store items)
+// ---------------------------------------------------------------------------
+export const coinPackages = sqliteTable(
+  "coin_packages",
+  {
+    id: text("id").primaryKey(),
+    name: text("name"),
+    coins: real("coins").notNull().default(0),
+    bonusCoins: real("bonus_coins").notNull().default(0),
+    priceInr: real("price_inr").notNull().default(0),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => ({ activeIdx: index("idx_coin_packages_active").on(t.active, t.sortOrder) }),
+);
+
+// ---------------------------------------------------------------------------
+// scheduled_notifications  (scheduled / segmented broadcasts, sent by cron)
+// ---------------------------------------------------------------------------
+export const scheduledNotifications = sqliteTable(
+  "scheduled_notifications",
+  {
+    id: text("id").primaryKey(),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    image: text("image"),
+    segment: text("segment", { mode: "json" }), // { platform?, minLevel? }
+    sendAt: integer("send_at").notNull(),
+    status: text("status").notNull().default("pending"), // pending | sent | cancelled
+    recipients: integer("recipients").default(0),
+    createdBy: text("created_by"),
+    createdAt: integer("created_at").notNull(),
+    sentAt: integer("sent_at"),
+  },
+  (t) => ({ statusIdx: index("idx_sched_notif_status").on(t.status, t.sendAt) }),
+);
+
+// ---------------------------------------------------------------------------
+// banned_words  (auto-moderation word list)
+// ---------------------------------------------------------------------------
+export const bannedWords = sqliteTable("banned_words", {
+  word: text("word").primaryKey(),
+  createdAt: integer("created_at").notNull(),
+});
 
 // ---------------------------------------------------------------------------
 // settings  (was: settings/{docId}: appConfig, gamification)

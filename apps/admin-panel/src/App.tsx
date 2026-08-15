@@ -8,20 +8,26 @@ import { ConfirmProvider } from "@/components/ConfirmDialog";
 import Login from "@/pages/Login";
 
 const Dashboard = lazy(() => import("@/pages/Dashboard"));
+const Analytics = lazy(() => import("@/pages/Analytics"));
 const UsersPage = lazy(() => import("@/pages/Users"));
+const Admins = lazy(() => import("@/pages/Admins"));
 const Contests = lazy(() => import("@/pages/Contests"));
 const Matches = lazy(() => import("@/pages/Matches"));
+const Leaderboard = lazy(() => import("@/pages/Leaderboard"));
 const Transactions = lazy(() => import("@/pages/Transactions"));
 const Withdrawals = lazy(() => import("@/pages/Withdrawals"));
+const CoinPackages = lazy(() => import("@/pages/CoinPackages"));
 const Posts = lazy(() => import("@/pages/Posts"));
 const Stories = lazy(() => import("@/pages/Stories"));
 const Comments = lazy(() => import("@/pages/Comments"));
 const Blog = lazy(() => import("@/pages/Blog"));
 const Reports = lazy(() => import("@/pages/Reports"));
 const Support = lazy(() => import("@/pages/Support"));
+const Moderation = lazy(() => import("@/pages/Moderation"));
 const AuditLog = lazy(() => import("@/pages/AuditLog"));
 const Notifications = lazy(() => import("@/pages/Notifications"));
 const Rewards = lazy(() => import("@/pages/Rewards"));
+const AppControl = lazy(() => import("@/pages/AppControl"));
 const AppSettings = lazy(() => import("@/pages/AppSettings"));
 
 const queryClient = new QueryClient({
@@ -55,20 +61,26 @@ function ProtectedApp() {
         <Switch>
           <Route path="/" component={() => <Redirect to="/dashboard" />} />
           <Route path="/dashboard" component={Dashboard} />
+          <Route path="/analytics" component={Analytics} />
           <Route path="/users" component={UsersPage} />
+          <Route path="/admins" component={Admins} />
           <Route path="/contests" component={Contests} />
           <Route path="/matches" component={Matches} />
+          <Route path="/leaderboard" component={Leaderboard} />
           <Route path="/transactions" component={Transactions} />
           <Route path="/withdrawals" component={Withdrawals} />
+          <Route path="/coin-packages" component={CoinPackages} />
           <Route path="/posts" component={Posts} />
           <Route path="/stories" component={Stories} />
           <Route path="/comments" component={Comments} />
           <Route path="/blog" component={Blog} />
           <Route path="/reports" component={Reports} />
           <Route path="/support" component={Support} />
+          <Route path="/moderation" component={Moderation} />
           <Route path="/audit-log" component={AuditLog} />
           <Route path="/notifications" component={Notifications} />
           <Route path="/rewards" component={Rewards} />
+          <Route path="/app-control" component={AppControl} />
           <Route path="/app-settings" component={AppSettings} />
           <Route component={() => <Redirect to="/dashboard" />} />
         </Switch>

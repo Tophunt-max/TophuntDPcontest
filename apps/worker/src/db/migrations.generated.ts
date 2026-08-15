@@ -7,6 +7,7 @@ import m_0002_admin_notifications_sql from "../../migrations/0002_admin_notifica
 import m_0003_blog_sql from "../../migrations/0003_blog.sql";
 import m_0004_blog_seo_import_sql from "../../migrations/0004_blog_seo_import.sql";
 import m_0005_admin_features_sql from "../../migrations/0005_admin_features.sql";
+import m_0006_full_control_sql from "../../migrations/0006_full_control.sql";
 
 export interface Migration {
   name: string;
@@ -20,4 +21,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0003_blog.sql", sql: m_0003_blog_sql },
   { name: "0004_blog_seo_import.sql", sql: m_0004_blog_seo_import_sql },
   { name: "0005_admin_features.sql", sql: m_0005_admin_features_sql },
+  { name: "0006_full_control.sql", sql: m_0006_full_control_sql },
 ];

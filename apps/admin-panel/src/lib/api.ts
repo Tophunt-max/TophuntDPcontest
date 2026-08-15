@@ -103,8 +103,11 @@ export const api = {
   deleteUser: (id: string) => del(`/admin/users/${id}`),
   adjustWallet: (id: string, amount: number, type: "add" | "subtract") =>
     post<{ newBalance: number }>(`/admin/users/${id}/wallet`, { amount, type }),
-  setRole: (payload: { email?: string; userId?: string; makeAdmin: boolean }) =>
+  setRole: (payload: { email?: string; userId?: string; makeAdmin?: boolean; role?: string }) =>
     post("/admin/set-role", payload),
+  updateUserProfile: (id: string, payload: any) => patch(`/admin/users/${id}/profile`, payload),
+  grantUser: (id: string, payload: { xp?: number; badge?: string }) =>
+    post(`/admin/users/${id}/grant`, payload),
 
   // contests
   contests: () => get<any[]>("/admin/contests"),
@@ -214,6 +217,45 @@ export const api = {
   markNotificationsRead: () => post("/admin/notifications/read"),
   notify: (payload: { userId: string; title: string; body: string; type?: string }) =>
     post("/admin/notify", payload),
-  broadcast: (payload: { title: string; body: string; image?: string }) =>
+  broadcast: (payload: { title: string; body: string; image?: string; segment?: { platform?: string; minLevel?: number } }) =>
     post<{ recipients: number }>("/admin/broadcast", payload),
+
+  // scheduled notifications
+  scheduledNotifications: () => get<any[]>("/admin/scheduled-notifications"),
+  createScheduledNotification: (payload: any) => post("/admin/scheduled-notifications", payload),
+  cancelScheduledNotification: (id: string) => del(`/admin/scheduled-notifications/${id}`),
+
+  // coin packages
+  coinPackages: () => get<any[]>("/admin/coin-packages"),
+  createCoinPackage: (payload: any) => post("/admin/coin-packages", payload),
+  updateCoinPackage: (id: string, payload: any) => patch(`/admin/coin-packages/${id}`, payload),
+  deleteCoinPackage: (id: string) => del(`/admin/coin-packages/${id}`),
+
+  // banned words
+  bannedWords: () => get<string[]>("/admin/banned-words"),
+  addBannedWord: (word: string) => post("/admin/banned-words", { word }),
+  deleteBannedWord: (word: string) => del(`/admin/banned-words/${encodeURIComponent(word)}`),
+
+  // admins / roles
+  admins: () => get<any[]>("/admin/admins"),
+
+  // leaderboard
+  leaderboard: (metric?: string) => get<any[]>(`/admin/leaderboard${metric ? `?metric=${encodeURIComponent(metric)}` : ""}`),
+
+  // messages moderation
+  messages: () => get<any[]>("/admin/messages"),
+  deleteMessage: (id: string) => del(`/admin/messages/${id}`),
+
+  // analytics
+  analytics: () =>
+    get<{
+      totalUsers: number; newUsersToday: number; newUsers7d: number; newUsers30d: number;
+      dau: number; mau: number; revenueToday: number; revenue30d: number;
+      matchesToday: number; votesToday: number; postsToday: number;
+      activeMatches: number; completedMatches: number;
+    }>("/admin/analytics"),
+
+  // ops (manual cron triggers)
+  opsResolveContests: () => post("/admin/ops/resolve-contests"),
+  opsHallOfFame: () => post("/admin/ops/hall-of-fame"),
 };

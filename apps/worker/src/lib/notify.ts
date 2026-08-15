@@ -7,7 +7,7 @@
  * createNotification: writes a row to `notifications` (was
  * notifications/{uid}/items) AND sends an FCM push, pruning dead tokens.
  */
-import { eq } from "drizzle-orm";
+import { eq, and, gte } from "drizzle-orm";
 import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { newId, now } from "./ids";
@@ -94,6 +94,48 @@ export async function createNotification(
   } catch (e) {
     console.error("[notify] createNotification failed", e);
   }
+}
+
+export interface BroadcastSegment {
+  /** Only users on this platform ("web" | "android" | "ios"). */
+  platform?: string;
+  /** Only users at or above this level. */
+  minLevel?: number;
+}
+
+/**
+ * Segmented broadcast (admin). Filters recipients by platform / minimum level,
+ * then delivers in batches. An empty/undefined segment targets everyone.
+ */
+export async function sendSegmentedBroadcast(
+  env: Env,
+  title: string,
+  body: string,
+  imageUrl?: string,
+  segment?: BroadcastSegment,
+  data?: Record<string, string>,
+): Promise<number> {
+  const db = getDb(env);
+  const conds: any[] = [];
+  if (segment?.platform) conds.push(eq(schema.users.platform, segment.platform));
+  if (typeof segment?.minLevel === "number") conds.push(gte(schema.users.level, segment.minLevel));
+  const rows = await db
+    .select({ uid: schema.users.uid })
+    .from(schema.users)
+    .where(conds.length ? and(...conds) : (undefined as any))
+    .all();
+  let sent = 0;
+  const BATCH = 50;
+  for (let i = 0; i < rows.length; i += BATCH) {
+    const batch = rows.slice(i, i + BATCH);
+    await Promise.all(
+      batch.map((r) =>
+        createNotification(env, r.uid, { title, body, type: "admin", targetId: "broadcast", image: imageUrl, data }),
+      ),
+    );
+    sent += batch.length;
+  }
+  return sent;
 }
 
 /** Broadcast to all users (admin). Batched to avoid huge parallelism. */

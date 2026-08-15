@@ -6,13 +6,15 @@ import { Badge } from "@/components/ui/Badge";
 import { PageHeader, fmtDate, fmtNumber } from "@/lib/format";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { toast } from "@/lib/toast";
-import { Search, Ban, CheckCircle2, Trash2, Wallet, ShieldCheck } from "lucide-react";
+import { fmtDateTime } from "@/lib/format";
+import { Search, Ban, CheckCircle2, Trash2, Wallet, ShieldCheck, Eye, BadgeCheck, Star } from "lucide-react";
 
 export default function UsersPage() {
   const qc = useQueryClient();
   const { confirm } = useConfirm();
   const [search, setSearch] = useState("");
   const [wallet, setWallet] = useState<{ id: string; name: string } | null>(null);
+  const [detailId, setDetailId] = useState<string | null>(null);
 
   const { data = [], isLoading } = useQuery({ queryKey: ["users"], queryFn: api.users });
 
@@ -95,7 +97,11 @@ export default function UsersPage() {
                   )}
                 </div>
                 <div className="min-w-0">
-                  <p className="font-medium text-foreground truncate">{u.fullName || u.username || "Unnamed"}</p>
+                  <p className="font-medium text-foreground truncate flex items-center gap-1">
+                    {u.fullName || u.username || "Unnamed"}
+                    {u.verified && <BadgeCheck size={13} className="text-blue-500 flex-shrink-0" />}
+                    {u.featured && <Star size={12} className="text-amber-500 flex-shrink-0" />}
+                  </p>
                   <p className="text-xs text-muted-foreground truncate">{u.email || u.phone || u.id}</p>
                 </div>
               </div>
@@ -131,6 +137,9 @@ export default function UsersPage() {
             className: "text-right",
             render: (u: any) => (
               <div className="flex items-center justify-end gap-1">
+                <IconBtn title="View / edit" onClick={() => setDetailId(u.id)}>
+                  <Eye size={15} />
+                </IconBtn>
                 <IconBtn title="Adjust wallet" onClick={() => setWallet({ id: u.id, name: u.fullName || u.username })}>
                   <Wallet size={15} />
                 </IconBtn>
@@ -167,6 +176,117 @@ export default function UsersPage() {
       />
 
       {wallet && <WalletDialog user={wallet} onClose={() => setWallet(null)} onDone={invalidate} />}
+      {detailId && <UserDetail id={detailId} onClose={() => setDetailId(null)} onDone={invalidate} />}
+    </div>
+  );
+}
+
+function UserDetail({ id, onClose, onDone }: { id: string; onClose: () => void; onDone: () => void }) {
+  const user = useQuery({ queryKey: ["user", id], queryFn: () => api.user(id) });
+  const followers = useQuery({ queryKey: ["user-followers", id], queryFn: () => api.userFollowers(id) });
+  const txns = useQuery({ queryKey: ["user-txns", id], queryFn: () => api.transactions({ uid: id, limit: 50 }) });
+  const [tab, setTab] = useState<"profile" | "followers" | "transactions">("profile");
+  const u = user.data;
+
+  const [form, setForm] = useState({ fullName: "", username: "", bio: "" });
+  const [xp, setXp] = useState("");
+  const [badge, setBadge] = useState("");
+  const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+
+  // Prefill once loaded.
+  if (u && form.fullName === "" && form.username === "" && form.bio === "" && (u.fullName || u.username || u.bio)) {
+    setForm({ fullName: u.fullName || "", username: u.username || "", bio: u.bio || "" });
+  }
+
+  const saveMut = useMutation({
+    mutationFn: () => api.updateUserProfile(id, form),
+    onSuccess: () => { toast.success("Profile updated"); user.refetch(); onDone(); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const flagMut = useMutation({
+    mutationFn: (patch: { verified?: boolean; featured?: boolean }) => api.updateUserProfile(id, patch),
+    onSuccess: () => { toast.success("Updated"); user.refetch(); onDone(); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const grantMut = useMutation({
+    mutationFn: () => api.grantUser(id, { xp: xp ? Number(xp) : undefined, badge: badge || undefined }),
+    onSuccess: () => { toast.success("Granted"); setXp(""); setBadge(""); user.refetch(); },
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  const field = "w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={onClose}>
+      <div className="bg-card border border-border rounded-2xl p-6 w-full max-w-2xl max-h-[85vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
+        {!u ? (
+          <p className="text-sm text-muted-foreground py-8 text-center">Loading…</p>
+        ) : (
+          <>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-12 h-12 rounded-xl overflow-hidden bg-secondary flex items-center justify-center">
+                {u.profileImageUrl ? <img src={u.profileImageUrl} alt="" className="w-full h-full object-cover" /> : <span className="font-bold text-lg text-muted-foreground">{(u.fullName || u.username || "?")[0]?.toUpperCase()}</span>}
+              </div>
+              <div className="min-w-0">
+                <p className="font-bold text-foreground truncate flex items-center gap-1">{u.fullName || u.username} {u.verified && <BadgeCheck size={15} className="text-blue-500" />}</p>
+                <p className="text-xs text-muted-foreground truncate">Lv {u.level ?? 0} · {u.Dpcoin ?? 0} coins · {u.stats?.followersCount ?? 0} followers</p>
+              </div>
+              <div className="ml-auto flex gap-2">
+                <button onClick={() => flagMut.mutate({ verified: !u.verified })} className={`px-3 py-1.5 rounded-lg text-xs font-medium ${u.verified ? "bg-blue-100 text-blue-700" : "bg-secondary text-foreground"}`}>{u.verified ? "Verified ✓" : "Verify"}</button>
+                <button onClick={() => flagMut.mutate({ featured: !u.featured })} className={`px-3 py-1.5 rounded-lg text-xs font-medium ${u.featured ? "bg-amber-100 text-amber-700" : "bg-secondary text-foreground"}`}>{u.featured ? "Featured ★" : "Feature"}</button>
+              </div>
+            </div>
+
+            <div className="flex gap-1 mb-4 bg-secondary/50 p-1 rounded-xl w-fit">
+              {(["profile", "followers", "transactions"] as const).map((t) => (
+                <button key={t} onClick={() => setTab(t)} className={`px-4 py-1.5 rounded-lg text-sm font-medium capitalize ${tab === t ? "bg-card shadow-sm text-foreground" : "text-muted-foreground"}`}>{t}</button>
+              ))}
+            </div>
+
+            {tab === "profile" && (
+              <div className="space-y-3">
+                <input className={field} placeholder="Full name" value={form.fullName} onChange={(e) => set("fullName", e.target.value)} />
+                <input className={field} placeholder="Username" value={form.username} onChange={(e) => set("username", e.target.value)} />
+                <textarea className={field} placeholder="Bio" value={form.bio} onChange={(e) => set("bio", e.target.value)} />
+                <button onClick={() => saveMut.mutate()} disabled={saveMut.isPending} className="gradient-purple text-white text-sm font-semibold px-4 py-2 rounded-xl disabled:opacity-50">Save Profile</button>
+
+                <div className="border-t border-border pt-4 mt-4">
+                  <p className="text-sm font-semibold mb-2">Grant XP / Badge</p>
+                  <div className="flex flex-wrap gap-2">
+                    <input type="number" className={`${field} w-32`} placeholder="XP" value={xp} onChange={(e) => setXp(e.target.value)} />
+                    <input className={`${field} flex-1 min-w-[140px]`} placeholder="Badge name" value={badge} onChange={(e) => setBadge(e.target.value)} />
+                    <button onClick={() => grantMut.mutate()} disabled={(!xp && !badge) || grantMut.isPending} className="bg-secondary text-sm font-medium px-4 py-2 rounded-xl disabled:opacity-50">Grant</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {tab === "followers" && (
+              <div className="space-y-2 max-h-72 overflow-auto">
+                {(followers.data ?? []).length === 0 ? <p className="text-sm text-muted-foreground py-6 text-center">No followers</p> : followers.data!.map((f: any) => (
+                  <div key={f.uid} className="flex items-center gap-2 p-2 rounded-lg hover:bg-secondary/40">
+                    <span className="text-sm text-foreground">{f.fullName || f.username || f.uid}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {tab === "transactions" && (
+              <div className="space-y-1 max-h-72 overflow-auto">
+                {(txns.data ?? []).length === 0 ? <p className="text-sm text-muted-foreground py-6 text-center">No transactions</p> : txns.data!.map((t: any) => (
+                  <div key={t.id} className="flex items-center justify-between gap-2 p-2 rounded-lg hover:bg-secondary/40 text-sm">
+                    <span className="text-muted-foreground truncate">{t.type} · {fmtDateTime(t.createdAt)}</span>
+                    <span className={`font-bold ${t.amount >= 0 ? "text-green-600" : "text-red-600"}`}>{t.amount >= 0 ? "+" : ""}{t.amount}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+        <div className="mt-5 flex justify-end">
+          <button onClick={onClose} className="px-4 py-2 rounded-xl bg-secondary text-sm font-medium">Close</button>
+        </div>
+      </div>
     </div>
   );
 }

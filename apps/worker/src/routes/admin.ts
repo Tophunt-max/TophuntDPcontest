@@ -13,11 +13,11 @@ import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
 import { verifyIdToken, bearerToken } from "../lib/firebaseAuth";
-import { isAdmin } from "../middleware/auth";
 import { getAppConfig, getGamificationSettings, invalidateSetting } from "../lib/settings";
 import { deleteAuthUser, updateAuthUser, setCustomClaims, getUserByEmail } from "../lib/firebaseAdmin";
-import { createNotification, sendBroadcastToAllUsers } from "../lib/notify";
+import { createNotification, sendBroadcastToAllUsers, sendSegmentedBroadcast } from "../lib/notify";
 import { finalizeVotes } from "../lib/voteCounter";
+import { resolveContests, monthlyHallOfFame } from "../cron";
 import { newId, now } from "../lib/ids";
 import { discoverUrls, processBatch } from "../lib/importerTask";
 
@@ -54,17 +54,38 @@ async function logAudit(
 
 export const adminRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
-// Gate: shared secret (server-to-server) OR admin Firebase token.
+// Roles allowed through the /admin gate. "moderator" is limited (content
+// moderation only) and is blocked from money/user-lifecycle actions by
+// requireFullAdmin below.
+const ADMIN_ROLES = ["superadmin", "admin", "moderator"];
+
+/** Resolve the caller's effective admin role from claim or the D1 users row. */
+async function resolveAdminRole(c: any): Promise<string | null> {
+  const user = c.get("user");
+  if (!user?.uid) return null;
+  if (user.role && ADMIN_ROLES.includes(user.role)) return user.role;
+  const db = getDb(c.env);
+  const row = await db.select({ role: schema.users.role }).from(schema.users).where(eq(schema.users.uid, user.uid)).get();
+  return row?.role && ADMIN_ROLES.includes(row.role) ? row.role : null;
+}
+
+// Gate: shared secret (server-to-server, treated as superadmin) OR an admin/
+// moderator Firebase token.
 adminRoute.use("*", async (c, next) => {
   const secret = c.req.header("X-Admin-Secret");
   if (secret && c.env.ADMIN_PROXY_SECRET && secret === c.env.ADMIN_PROXY_SECRET) {
+    c.set("adminRole", "superadmin");
     return next();
   }
   const token = bearerToken(c.req.header("Authorization"));
   if (token) {
     try {
       c.set("user", await verifyIdToken(token, c.env));
-      if (await isAdmin(c as any)) return next();
+      const role = await resolveAdminRole(c);
+      if (role) {
+        c.set("adminRole", role);
+        return next();
+      }
     } catch {
       /* fall through */
     }
@@ -72,9 +93,17 @@ adminRoute.use("*", async (c, next) => {
   throw httpsError("permission-denied", "Admin access required.");
 });
 
+/** Block moderators from privileged (money / user-lifecycle / config) actions. */
+function requireFullAdmin(c: any): void {
+  if (c.get("adminRole") === "moderator") {
+    throw httpsError("permission-denied", "This action requires full admin access.");
+  }
+}
+
 // ---- app settings (settings/appConfig) ----
 adminRoute.get("/app-settings", async (c) => c.json((await getAppConfig(c.env)) || {}));
 adminRoute.post("/app-settings", async (c) => {
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const body = await c.req.json<any>();
   const existing = (await getAppConfig(c.env)) || {};
@@ -90,6 +119,7 @@ adminRoute.post("/app-settings", async (c) => {
 // ---- rewards (settings/gamification) ----
 adminRoute.get("/rewards", async (c) => c.json((await getGamificationSettings(c.env)) || {}));
 adminRoute.post("/rewards", async (c) => {
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const body = await c.req.json<any>();
   const existing = (await getGamificationSettings(c.env)) || {};
@@ -104,6 +134,7 @@ adminRoute.post("/rewards", async (c) => {
 
 // ---- contests ----
 adminRoute.delete("/contests/:id", async (c) => {
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const id = c.req.param("id");
   await db.delete(schema.contests).where(eq(schema.contests.id, id));
@@ -113,6 +144,7 @@ adminRoute.delete("/contests/:id", async (c) => {
 
 // Update a contest template.
 adminRoute.patch("/contests/:id", async (c) => {
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const id = c.req.param("id");
   const b = await c.req.json<any>();
@@ -194,6 +226,7 @@ adminRoute.delete("/support", async (c) => {
 // ---- users ----
 adminRoute.delete("/users/:id", async (c) => {
   const db = getDb(c.env);
+  requireFullAdmin(c);
   const id = c.req.param("id");
   await db.delete(schema.users).where(eq(schema.users.uid, id));
   await deleteAuthUser(c.env, id).catch((e) => console.error("Auth delete failed", e));
@@ -212,6 +245,7 @@ adminRoute.patch("/users/:id", async (c) => {
 
 // ---- wallet (was adminManageWallet Cloud Function) ----
 adminRoute.post("/users/:id/wallet", async (c) => {
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const userId = c.req.param("id");
   const { amount, type } = await c.req.json<any>();
@@ -827,14 +861,17 @@ adminRoute.post("/notifications/read", async (c) => {
 // Make/unmake a user admin: sets the Firebase custom claim (Identity Toolkit)
 // AND the D1 users.role, keyed by email or uid.
 adminRoute.post("/set-role", async (c) => {
+  requireFullAdmin(c);
   const db = getDb(c.env);
-  const { email, userId, makeAdmin } = await c.req.json<any>();
+  const { email, userId, makeAdmin, role: roleArg } = await c.req.json<any>();
   let uid = userId as string | undefined;
   if (!uid && email) {
     uid = (await getUserByEmail(c.env, email)) || undefined;
   }
   if (!uid) throw httpsError("not-found", "User not found (provide a valid email or userId).");
-  const role = makeAdmin === false ? "user" : "admin";
+  // Prefer an explicit role ("admin" | "moderator" | "user"); fall back to the
+  // legacy makeAdmin boolean.
+  const role = ["admin", "moderator", "user"].includes(roleArg) ? roleArg : makeAdmin === false ? "user" : "admin";
   await setCustomClaims(c.env, uid, { role });
   await db.update(schema.users).set({ role, updatedAt: now() }).where(eq(schema.users.uid, uid));
   await logAudit(c, "user.set-role", "user", uid, { role });
@@ -843,6 +880,7 @@ adminRoute.post("/set-role", async (c) => {
 
 // Create a contest template (used by seed-contests).
 adminRoute.post("/contests", async (c) => {
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const b = await c.req.json<any>();
   const id = newId();
@@ -1070,6 +1108,7 @@ adminRoute.get("/matches/:id/votes", async (c) => {
  * only claims a match that is still active/waiting.
  */
 adminRoute.post("/matches/:id/declare-winner", async (c) => {
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const id = c.req.param("id");
   const body = await c.req.json<any>().catch(() => ({}));
@@ -1136,6 +1175,7 @@ adminRoute.post("/matches/:id/declare-winner", async (c) => {
  * that isn't already completed/cancelled. Idempotent via an atomic status claim.
  */
 adminRoute.post("/matches/:id/cancel", async (c) => {
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const id = c.req.param("id");
   const m = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, id)).get();
@@ -1197,10 +1237,11 @@ adminRoute.get("/fraud/votes", async (c) => {
 // ======================= BROADCAST =======================
 // Send a push + in-app notification to every user.
 adminRoute.post("/broadcast", async (c) => {
-  const { title, body, image } = await c.req.json<any>();
+  requireFullAdmin(c);
+  const { title, body, image, segment } = await c.req.json<any>();
   if (!title || !body) throw httpsError("invalid-argument", "title and body are required.");
-  const sent = await sendBroadcastToAllUsers(c.env, title, body, image || undefined);
-  await logAudit(c, "notification.broadcast", "broadcast", null, { title, recipients: sent });
+  const sent = await sendSegmentedBroadcast(c.env, title, body, image || undefined, segment);
+  await logAudit(c, "notification.broadcast", "broadcast", null, { title, recipients: sent, segment });
   return c.json({ success: true, recipients: sent });
 });
 
@@ -1317,6 +1358,7 @@ adminRoute.get("/withdrawals", async (c) => {
  * approval so we never approve more than they hold.
  */
 adminRoute.patch("/withdrawals/:id", async (c) => {
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const id = c.req.param("id");
   const { action, adminNote } = await c.req.json<any>();
@@ -1373,4 +1415,294 @@ adminRoute.get("/audit-log", async (c) => {
     .limit(limit)
     .all();
   return c.json(rows.map((r) => ({ ...r, createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null })));
+});
+
+
+// ======================= COIN PACKAGES (top-up store) =======================
+adminRoute.get("/coin-packages", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db.select().from(schema.coinPackages).orderBy(schema.coinPackages.sortOrder).all();
+  return c.json(rows.map((r) => ({ ...r, active: !!r.active })));
+});
+
+adminRoute.post("/coin-packages", async (c) => {
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const b = await c.req.json<any>();
+  const id = newId();
+  const ts = now();
+  await db.insert(schema.coinPackages).values({
+    id,
+    name: b.name || null,
+    coins: Number(b.coins ?? 0),
+    bonusCoins: Number(b.bonusCoins ?? 0),
+    priceInr: Number(b.priceInr ?? 0),
+    active: b.active !== false,
+    sortOrder: Number(b.sortOrder ?? 0),
+    createdAt: ts,
+    updatedAt: ts,
+  });
+  await logAudit(c, "coin-package.create", "coin_package", id, b);
+  return c.json({ success: true, id });
+});
+
+adminRoute.patch("/coin-packages/:id", async (c) => {
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const id = c.req.param("id");
+  const b = await c.req.json<any>();
+  const set: any = { updatedAt: now() };
+  if (b.name !== undefined) set.name = b.name;
+  if (b.coins !== undefined) set.coins = Number(b.coins);
+  if (b.bonusCoins !== undefined) set.bonusCoins = Number(b.bonusCoins);
+  if (b.priceInr !== undefined) set.priceInr = Number(b.priceInr);
+  if (b.active !== undefined) set.active = !!b.active;
+  if (b.sortOrder !== undefined) set.sortOrder = Number(b.sortOrder);
+  await db.update(schema.coinPackages).set(set).where(eq(schema.coinPackages.id, id));
+  await logAudit(c, "coin-package.update", "coin_package", id, set);
+  return c.json({ message: "Package updated" });
+});
+
+adminRoute.delete("/coin-packages/:id", async (c) => {
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const id = c.req.param("id");
+  await db.delete(schema.coinPackages).where(eq(schema.coinPackages.id, id));
+  await logAudit(c, "coin-package.delete", "coin_package", id);
+  return c.json({ message: "Package deleted" });
+});
+
+// ======================= SCHEDULED / SEGMENTED NOTIFICATIONS ==============
+adminRoute.get("/scheduled-notifications", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db.select().from(schema.scheduledNotifications).orderBy(desc(schema.scheduledNotifications.sendAt)).limit(100).all();
+  return c.json(
+    rows.map((r) => ({
+      ...r,
+      sendAt: r.sendAt ? new Date(r.sendAt).toISOString() : null,
+      createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null,
+      sentAt: r.sentAt ? new Date(r.sentAt).toISOString() : null,
+    })),
+  );
+});
+
+adminRoute.post("/scheduled-notifications", async (c) => {
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const b = await c.req.json<any>();
+  if (!b.title || !b.body) throw httpsError("invalid-argument", "title and body are required.");
+  const sendAt = b.sendAt ? new Date(b.sendAt).getTime() : now();
+  const id = newId();
+  const admin = c.get("user");
+  await db.insert(schema.scheduledNotifications).values({
+    id,
+    title: b.title,
+    body: b.body,
+    image: b.image || null,
+    segment: b.segment || null,
+    sendAt,
+    status: "pending",
+    recipients: 0,
+    createdBy: admin?.uid ?? null,
+    createdAt: now(),
+  });
+  await logAudit(c, "notification.schedule", "scheduled_notification", id, { sendAt: b.sendAt, segment: b.segment });
+  return c.json({ success: true, id });
+});
+
+adminRoute.delete("/scheduled-notifications/:id", async (c) => {
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const id = c.req.param("id");
+  await db.update(schema.scheduledNotifications).set({ status: "cancelled" }).where(and(eq(schema.scheduledNotifications.id, id), eq(schema.scheduledNotifications.status, "pending")));
+  return c.json({ message: "Scheduled notification cancelled" });
+});
+
+// ======================= BANNED WORDS (auto-moderation) =====================
+adminRoute.get("/banned-words", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db.select().from(schema.bannedWords).orderBy(schema.bannedWords.word).all();
+  return c.json(rows.map((r) => r.word));
+});
+
+adminRoute.post("/banned-words", async (c) => {
+  const db = getDb(c.env);
+  const { word } = await c.req.json<any>();
+  const w = String(word || "").trim().toLowerCase();
+  if (!w) throw httpsError("invalid-argument", "word is required.");
+  await db.insert(schema.bannedWords).values({ word: w, createdAt: now() }).onConflictDoNothing();
+  await logAudit(c, "banned-word.add", "banned_word", w);
+  return c.json({ success: true });
+});
+
+adminRoute.delete("/banned-words/:word", async (c) => {
+  const db = getDb(c.env);
+  const w = decodeURIComponent(c.req.param("word")).toLowerCase();
+  await db.delete(schema.bannedWords).where(eq(schema.bannedWords.word, w));
+  return c.json({ message: "Removed" });
+});
+
+// ======================= USER PROFILE EDIT + GRANT =========================
+adminRoute.patch("/users/:id/profile", async (c) => {
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const id = c.req.param("id");
+  const b = await c.req.json<any>();
+  const set: any = { updatedAt: now() };
+  if (b.fullName !== undefined) set.fullName = b.fullName;
+  if (b.username !== undefined) set.username = String(b.username).toLowerCase();
+  if (b.bio !== undefined) set.bio = b.bio;
+  if (b.verified !== undefined) set.verified = !!b.verified;
+  if (b.featured !== undefined) set.featured = !!b.featured;
+  await db.update(schema.users).set(set).where(eq(schema.users.uid, id));
+  await logAudit(c, "user.profile-edit", "user", id, set);
+  return c.json({ message: "Profile updated" });
+});
+
+// Grant XP and/or a badge to a user (coins go through /wallet).
+adminRoute.post("/users/:id/grant", async (c) => {
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const id = c.req.param("id");
+  const { xp, badge } = await c.req.json<any>();
+  const user = await db.select({ xp: schema.users.xp, badges: schema.users.badges }).from(schema.users).where(eq(schema.users.uid, id)).get();
+  if (!user) throw httpsError("not-found", "User not found.");
+  const set: any = { updatedAt: now() };
+  if (typeof xp === "number" && xp !== 0) set.xp = sql`${schema.users.xp} + ${xp}`;
+  if (badge) {
+    const badges = ((user.badges as unknown as string[]) || []).slice();
+    if (!badges.includes(badge)) badges.push(badge);
+    set.badges = badges as any;
+  }
+  await db.update(schema.users).set(set).where(eq(schema.users.uid, id));
+  await logAudit(c, "user.grant", "user", id, { xp, badge });
+  return c.json({ message: "Granted" });
+});
+
+// ======================= ADMINS (role management) =========================
+adminRoute.get("/admins", async (c) => {
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const rows = await db
+    .select({ uid: schema.users.uid, email: schema.users.email, username: schema.users.username, fullName: schema.users.fullName, role: schema.users.role, profileImageUrl: schema.users.profileImageUrl })
+    .from(schema.users)
+    .where(inArray(schema.users.role, ["admin", "moderator", "superadmin"]))
+    .all();
+  return c.json(rows);
+});
+
+// ======================= LEADERBOARD =======================
+adminRoute.get("/leaderboard", async (c) => {
+  const db = getDb(c.env);
+  const metric = c.req.query("metric") || "monthlyWins";
+  const col: Record<string, any> = {
+    monthlyWins: schema.users.monthlyWins,
+    wins: schema.users.wins,
+    xp: schema.users.xp,
+    dpcoin: schema.users.dpcoin,
+    totalVotesReceived: schema.users.totalVotesReceived,
+    followersCount: schema.users.followersCount,
+  };
+  const orderCol = col[metric] || schema.users.monthlyWins;
+  const rows = await db
+    .select({
+      uid: schema.users.uid,
+      username: schema.users.username,
+      fullName: schema.users.fullName,
+      profileImageUrl: schema.users.profileImageUrl,
+      verified: schema.users.verified,
+      level: schema.users.level,
+      xp: schema.users.xp,
+      wins: schema.users.wins,
+      monthlyWins: schema.users.monthlyWins,
+      dpcoin: schema.users.dpcoin,
+      totalVotesReceived: schema.users.totalVotesReceived,
+      followersCount: schema.users.followersCount,
+    })
+    .from(schema.users)
+    .orderBy(desc(orderCol))
+    .limit(50)
+    .all();
+  return c.json(rows.map((r) => ({ ...r, verified: !!r.verified })));
+});
+
+// ======================= MESSAGES MODERATION =======================
+adminRoute.get("/messages", async (c) => {
+  const db = getDb(c.env);
+  const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 300);
+  const rows = await db
+    .select({
+      id: schema.messages.id,
+      chatId: schema.messages.chatId,
+      senderId: schema.messages.senderId,
+      text: schema.messages.text,
+      createdAt: schema.messages.createdAt,
+      username: schema.users.username,
+    })
+    .from(schema.messages)
+    .leftJoin(schema.users, eq(schema.users.uid, schema.messages.senderId))
+    .orderBy(desc(schema.messages.createdAt))
+    .limit(limit)
+    .all();
+  return c.json(rows.map((r) => ({ ...r, createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null })));
+});
+
+adminRoute.delete("/messages/:id", async (c) => {
+  const db = getDb(c.env);
+  const id = c.req.param("id");
+  await db.delete(schema.messages).where(eq(schema.messages.id, id));
+  await logAudit(c, "message.delete", "message", id);
+  return c.json({ message: "Message deleted" });
+});
+
+// ======================= ANALYTICS =======================
+adminRoute.get("/analytics", async (c) => {
+  const db = getDb(c.env);
+  const nowMs = now();
+  const day = 86400000;
+  const cnt = async (tbl: any, col: any, since: number) =>
+    (await db.select({ v: count() }).from(tbl).where(gte(col, since)).get())?.v ?? 0;
+  const sum = async (col: any, tbl: any, since: number, statusOk?: any) =>
+    (await db.select({ v: sql<number>`COALESCE(SUM(${col}),0)` }).from(tbl).where(statusOk ? and(gte(tbl.createdAt, since), statusOk) : gte(tbl.createdAt, since)).get())?.v ?? 0;
+
+  const totalUsers = (await db.select({ v: count() }).from(schema.users).get())?.v ?? 0;
+  const newUsersToday = await cnt(schema.users, schema.users.createdAt, nowMs - day);
+  const newUsers7d = await cnt(schema.users, schema.users.createdAt, nowMs - 7 * day);
+  const newUsers30d = await cnt(schema.users, schema.users.createdAt, nowMs - 30 * day);
+
+  // Active users (proxy): distinct voters in the window.
+  const dau = (await db.select({ v: sql<number>`COUNT(DISTINCT ${schema.votes.voterUid})` }).from(schema.votes).where(gte(schema.votes.createdAt, nowMs - day)).get())?.v ?? 0;
+  const mau = (await db.select({ v: sql<number>`COUNT(DISTINCT ${schema.votes.voterUid})` }).from(schema.votes).where(gte(schema.votes.createdAt, nowMs - 30 * day)).get())?.v ?? 0;
+
+  const revenueToday = await sum(schema.payments.amount, schema.payments, nowMs - day, eq(schema.payments.status, "success"));
+  const revenue30d = await sum(schema.payments.amount, schema.payments, nowMs - 30 * day, eq(schema.payments.status, "success"));
+
+  const matchesToday = await cnt(schema.contestMatches, schema.contestMatches.createdAt, nowMs - day);
+  const votesToday = await cnt(schema.votes, schema.votes.createdAt, nowMs - day);
+  const postsToday = await cnt(schema.posts, schema.posts.createdAt, nowMs - day);
+  const activeMatches = (await db.select({ v: count() }).from(schema.contestMatches).where(eq(schema.contestMatches.status, "active")).get())?.v ?? 0;
+  const completedMatches = (await db.select({ v: count() }).from(schema.contestMatches).where(eq(schema.contestMatches.status, "completed")).get())?.v ?? 0;
+
+  return c.json({
+    totalUsers, newUsersToday, newUsers7d, newUsers30d,
+    dau, mau,
+    revenueToday, revenue30d,
+    matchesToday, votesToday, postsToday,
+    activeMatches, completedMatches,
+  });
+});
+
+// ======================= OPS (manual cron triggers) =======================
+adminRoute.post("/ops/resolve-contests", async (c) => {
+  requireFullAdmin(c);
+  await resolveContests(c.env);
+  await logAudit(c, "ops.resolve-contests", "ops", null);
+  return c.json({ message: "Contest resolver ran" });
+});
+
+adminRoute.post("/ops/hall-of-fame", async (c) => {
+  requireFullAdmin(c);
+  await monthlyHallOfFame(c.env);
+  await logAudit(c, "ops.hall-of-fame", "ops", null);
+  return c.json({ message: "Hall of Fame ran" });
 });
