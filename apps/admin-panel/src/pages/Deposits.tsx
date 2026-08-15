@@ -3,10 +3,10 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Table } from "@/components/ui/Table";
 import { Badge } from "@/components/ui/Badge";
-import { PageHeader, fmtDateTime, fmtNumber } from "@/lib/format";
+import { PageHeader, fmtDateTime, fmtNumber, exportCsv } from "@/lib/format";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { toast } from "@/lib/toast";
-import { Check, X, QrCode, Save, Copy } from "lucide-react";
+import { Check, X, QrCode, Save, Copy, Download, AlertTriangle } from "lucide-react";
 
 const TABS = [
   { key: "pending", label: "Pending" },
@@ -35,7 +35,18 @@ export default function Deposits() {
 
   return (
     <div>
-      <PageHeader title="Deposits" subtitle="Payment gateway & manual top-up approvals" />
+      <PageHeader
+        title="Deposits"
+        subtitle="Payment gateway & manual top-up approvals"
+        action={
+          <button
+            onClick={() => exportCsv(`deposits-${Date.now()}.csv`, data, ["id", "userId", "username", "amount", "payAmount", "method", "utr", "status", "createdAt"])}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-secondary text-sm font-medium hover:bg-secondary/70"
+          >
+            <Download size={15} /> Export CSV
+          </button>
+        }
+      />
 
       <GatewayConfig />
 
@@ -77,6 +88,11 @@ export default function Deposits() {
               <span className="font-mono text-xs flex items-center gap-1">
                 {d.utr || "—"}
                 {d.utr && <button title="Copy" onClick={() => navigator.clipboard?.writeText(d.utr)} className="text-muted-foreground hover:text-foreground"><Copy size={12} /></button>}
+                {d.duplicateUtr && (
+                  <span title="This UTR is used by more than one deposit!" className="inline-flex items-center gap-0.5 text-amber-600">
+                    <AlertTriangle size={12} /> dup
+                  </span>
+                )}
               </span>
             ),
           },

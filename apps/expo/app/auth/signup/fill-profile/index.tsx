@@ -1,6 +1,7 @@
 import {
   View,
   Text,
+  TextInput,
   TouchableOpacity,
   Image,
   ScrollView,
@@ -234,6 +235,16 @@ const FillProfile: React.FC = () => {
 
         <DatePickerField control={control} name="dateOfBirth" placeholder="Date of Birth" errorMessage={errors.dateOfBirth?.message} />
 
+        {/* Optional referral code — credits both users on signup. */}
+        <TextInput
+          value={signupData.referralCode || ''}
+          onChangeText={(t) => setField('referralCode', t.trim().toUpperCase())}
+          placeholder="Referral code (optional)"
+          placeholderTextColor="#9E9E9E"
+          autoCapitalize="characters"
+          style={styles.referralInput}
+        />
+
         <TouchableOpacity onPress={handleSubmit(onSubmit)} style={styles.continueButton} disabled={isLoading || isUploading || usernameChecking || phoneChecking}>
           {isLoading ? <ActivityIndicator color="white" /> : <Text style={styles.continueButtonText}>Continue</Text>}
         </TouchableOpacity>
@@ -280,6 +291,7 @@ const styles = StyleSheet.create({
   flagText: { fontSize: 16, fontFamily: "Urbanist-Medium" },
   phoneField: { flex: 1 },
   dropdown: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#FAFAFA', borderRadius: 12, paddingHorizontal: 16, height: 56, marginBottom: 20, borderWidth: 1, borderColor: '#f0f0f0' },
+  referralInput: { backgroundColor: '#FAFAFA', borderRadius: 12, paddingHorizontal: 16, height: 56, marginBottom: 20, borderWidth: 1, borderColor: '#f0f0f0', fontFamily: 'Urbanist-Medium', color: '#000' },
   continueButton: { backgroundColor: "#ff4466", paddingVertical: 18, borderRadius: 30, marginTop: 10 },
   continueButtonText: { color: "white", textAlign: "center", fontSize: 16, fontFamily: "Urbanist-Bold" },
   modalOption: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#F5F5F5', paddingHorizontal: 10 },

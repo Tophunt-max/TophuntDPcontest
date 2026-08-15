@@ -68,6 +68,14 @@ export default function CongratulationsScreen() {
             }
         }
 
+        // Generate the user's referral code + apply an inbound referral bonus
+        // (if a code was entered during signup). Best-effort — never block signup.
+        try {
+          await callApi('completeSignup', { referralCode: signupData.referralCode || undefined });
+        } catch (e) {
+          console.warn('completeSignup/referral step failed', e);
+        }
+
         console.log("Signup finalized successfully.");
         await AsyncStorage.setItem('hasSeenOnboarding', 'true');
         resetStore();

@@ -6,17 +6,22 @@ import { Badge } from "@/components/ui/Badge";
 import { PageHeader, fmtDate, fmtNumber } from "@/lib/format";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { toast } from "@/lib/toast";
-import { fmtDateTime } from "@/lib/format";
-import { Search, Ban, CheckCircle2, Trash2, Wallet, ShieldCheck, Eye, BadgeCheck, Star } from "lucide-react";
+import { fmtDateTime, exportCsv } from "@/lib/format";
+import { Search, Ban, CheckCircle2, Trash2, Wallet, ShieldCheck, Eye, BadgeCheck, Star, Download, ChevronLeft, ChevronRight } from "lucide-react";
 
 export default function UsersPage() {
   const qc = useQueryClient();
   const { confirm } = useConfirm();
   const [search, setSearch] = useState("");
+  const [offset, setOffset] = useState(0);
   const [wallet, setWallet] = useState<{ id: string; name: string } | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
 
-  const { data = [], isLoading } = useQuery({ queryKey: ["users"], queryFn: api.users });
+  const LIMIT = 50;
+  const { data = [], isLoading } = useQuery({
+    queryKey: ["users", search, offset],
+    queryFn: () => api.users({ q: search.length >= 2 ? search : undefined, offset, limit: LIMIT }),
+  });
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["users"] });
 
@@ -48,30 +53,30 @@ export default function UsersPage() {
     onError: (e: any) => toast.error(e.message),
   });
 
-  const filtered = data.filter((u: any) => {
-    const q = search.toLowerCase();
-    return (
-      !q ||
-      (u.username || "").toLowerCase().includes(q) ||
-      (u.fullName || "").toLowerCase().includes(q) ||
-      (u.email || "").toLowerCase().includes(q)
-    );
-  });
+  const filtered = data;
 
   return (
     <div>
       <PageHeader
         title="Users"
-        subtitle={`${data.length} registered users`}
+        subtitle={search.length >= 2 ? `Search results` : `Page ${offset / LIMIT + 1}`}
         action={
-          <div className="relative">
-            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search users…"
-              className="pl-9 pr-3 py-2 rounded-xl border border-border bg-card text-sm w-56 focus:outline-none focus:ring-2 focus:ring-ring"
-            />
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <input
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); setOffset(0); }}
+                placeholder="Search users…"
+                className="pl-9 pr-3 py-2 rounded-xl border border-border bg-card text-sm w-56 focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+            <button
+              onClick={() => exportCsv(`users-${Date.now()}.csv`, data, ["id", "username", "fullName", "email", "Dpcoin", "level", "role", "isBlocked", "createdAt"])}
+              className="flex items-center gap-2 px-3 py-2 rounded-xl bg-secondary text-sm font-medium hover:bg-secondary/70"
+            >
+              <Download size={15} /> CSV
+            </button>
           </div>
         }
       />
@@ -174,6 +179,26 @@ export default function UsersPage() {
           },
         ]}
       />
+
+      {search.length < 2 && (
+        <div className="flex items-center justify-between mt-4">
+          <button
+            disabled={offset === 0}
+            onClick={() => setOffset(Math.max(0, offset - LIMIT))}
+            className="flex items-center gap-1 px-3 py-2 rounded-xl bg-secondary text-sm font-medium disabled:opacity-40"
+          >
+            <ChevronLeft size={15} /> Prev
+          </button>
+          <span className="text-xs text-muted-foreground">Page {offset / LIMIT + 1}</span>
+          <button
+            disabled={data.length < LIMIT}
+            onClick={() => setOffset(offset + LIMIT)}
+            className="flex items-center gap-1 px-3 py-2 rounded-xl bg-secondary text-sm font-medium disabled:opacity-40"
+          >
+            Next <ChevronRight size={15} />
+          </button>
+        </div>
+      )}
 
       {wallet && <WalletDialog user={wallet} onClose={() => setWallet(null)} onDone={invalidate} />}
       {detailId && <UserDetail id={detailId} onClose={() => setDetailId(null)} onDone={invalidate} />}

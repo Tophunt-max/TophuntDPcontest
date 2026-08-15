@@ -94,7 +94,14 @@ export const api = {
   recentTickets: () => get<any[]>("/admin/recent-tickets"),
 
   // users
-  users: () => get<any[]>("/admin/users"),
+  users: (params?: { q?: string; offset?: number; limit?: number }) => {
+    const s = new URLSearchParams();
+    if (params?.q) s.set("q", params.q);
+    if (params?.offset) s.set("offset", String(params.offset));
+    if (params?.limit) s.set("limit", String(params.limit));
+    const qs = s.toString();
+    return get<any[]>(`/admin/users${qs ? `?${qs}` : ""}`);
+  },
   user: (id: string) => get<any>(`/admin/users/${id}`),
   userPosts: (id: string) => get<any[]>(`/admin/users/${id}/posts`),
   userStories: (id: string) => get<any[]>(`/admin/users/${id}/stories`),
@@ -122,9 +129,15 @@ export const api = {
   stories: () => get<any[]>("/admin/stories"),
   deleteStory: (id: string) => del(`/admin/stories/${id}`),
 
-  // reports
+  // reports (media moderation)
   reports: () => get<any[]>("/admin/reports"),
   deleteReport: (id: string) => del(`/admin/reports?id=${encodeURIComponent(id)}`),
+  resolveReport: (id: string, action: "dismiss" | "remove") =>
+    post(`/admin/reports/${id}/resolve`, { action }),
+
+  // referrals + finance trends
+  referrals: () => get<any[]>("/admin/referrals"),
+  financeTrends: () => get<{ date: string; deposits: number; withdrawals: number }[]>("/admin/finance-trends"),
 
   // support
   support: () => get<any[]>("/admin/support"),

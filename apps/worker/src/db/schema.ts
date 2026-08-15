@@ -59,6 +59,9 @@ export const users = sqliteTable(
     // admin flags
     verified: integer("verified", { mode: "boolean" }).default(false),
     featured: integer("featured", { mode: "boolean" }).default(false),
+    // referral program
+    referralCode: text("referral_code"),
+    referredBy: text("referred_by"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
@@ -544,6 +547,36 @@ export const withdrawals = sqliteTable(
     statusIdx: index("idx_withdrawals_status").on(t.status, t.createdAt),
     userIdx: index("idx_withdrawals_user").on(t.userId),
   }),
+);
+
+// ---------------------------------------------------------------------------
+// referrals  (referral bonus ledger; one row per referred user)
+// ---------------------------------------------------------------------------
+export const referrals = sqliteTable(
+  "referrals",
+  {
+    id: text("id").primaryKey(),
+    referrerUid: text("referrer_uid").notNull(),
+    referredUid: text("referred_uid").notNull().unique(),
+    bonus: real("bonus").default(0),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({ referrerIdx: index("idx_referrals_referrer").on(t.referrerUid) }),
+);
+
+// ---------------------------------------------------------------------------
+// daily_task_claims  (one row per user/task/UTC-day)
+// ---------------------------------------------------------------------------
+export const dailyTaskClaims = sqliteTable(
+  "daily_task_claims",
+  {
+    uid: text("uid").notNull(),
+    taskId: text("task_id").notNull(),
+    day: integer("day").notNull(), // days since epoch (UTC)
+    reward: real("reward").default(0),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.uid, t.taskId, t.day] }) }),
 );
 
 // ---------------------------------------------------------------------------

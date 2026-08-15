@@ -8,7 +8,8 @@
  * the admin panel keep its existing route URLs while the data moves to D1.
  */
 import { Hono } from "hono";
-import { and, eq, desc, sql, count, ne, like, gte, inArray } from "drizzle-orm";
+import { and, eq, desc, sql, count, ne, like, gte, inArray, or } from "drizzle-orm";
+import { alias } from "drizzle-orm/sqlite-core";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
@@ -191,16 +192,95 @@ adminRoute.patch("/stories/:id", async (c) => {
 });
 
 // ---- reports ----
+/** Fetch a light preview (media/text) of a reported target for moderation. */
+async function reportPreview(db: any, targetType: string | null, targetId: string | null): Promise<any> {
+  if (!targetId) return null;
+  try {
+    switch (targetType) {
+      case "post": {
+        const p = await db.select({ mediaUrl: schema.posts.mediaUrl, caption: schema.posts.caption, userId: schema.posts.userId }).from(schema.posts).where(eq(schema.posts.id, targetId)).get();
+        return p ? { kind: "post", mediaUrl: p.mediaUrl, text: p.caption, ownerId: p.userId } : { kind: "post", missing: true };
+      }
+      case "story": {
+        const s = await db.select({ mediaUrl: schema.stories.mediaUrl, userId: schema.stories.userId }).from(schema.stories).where(eq(schema.stories.id, targetId)).get();
+        return s ? { kind: "story", mediaUrl: s.mediaUrl, ownerId: s.userId } : { kind: "story", missing: true };
+      }
+      case "match":
+      case "contestMatch":
+      case "contestMatches": {
+        const m = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, targetId)).get();
+        const a = (m?.userA as any) || {};
+        return m ? { kind: "match", mediaUrl: a.mediaUrl, text: m.title } : { kind: "match", missing: true };
+      }
+      case "comment": {
+        const cm = await db.select({ text: schema.postComments.text, userId: schema.postComments.userId }).from(schema.postComments).where(eq(schema.postComments.id, targetId)).get();
+        return cm ? { kind: "comment", text: cm.text, ownerId: cm.userId } : { kind: "comment", missing: true };
+      }
+      case "user": {
+        const u = await db.select({ username: schema.users.username, profileImageUrl: schema.users.profileImageUrl }).from(schema.users).where(eq(schema.users.uid, targetId)).get();
+        return u ? { kind: "user", mediaUrl: u.profileImageUrl, text: u.username } : { kind: "user", missing: true };
+      }
+      default:
+        return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
 adminRoute.get("/reports", async (c) => {
   const db = getDb(c.env);
   const rows = await db.select().from(schema.reports).orderBy(desc(schema.reports.createdAt)).limit(100).all();
-  return c.json(rows.map((r) => ({ ...r, createdAt: new Date(r.createdAt).toISOString() })));
+  const out = await Promise.all(
+    rows.map(async (r) => ({
+      ...r,
+      createdAt: new Date(r.createdAt).toISOString(),
+      preview: await reportPreview(db, r.targetType, r.targetId),
+    })),
+  );
+  return c.json(out);
 });
 adminRoute.delete("/reports", async (c) => {
   const db = getDb(c.env);
   const id = c.req.query("id");
   if (id) await db.delete(schema.reports).where(eq(schema.reports.id, id));
   return c.json({ message: "Report deleted" });
+});
+
+/**
+ * Resolve a report. action: "dismiss" (just close it) or "remove" (delete the
+ * reported content, then close it).
+ */
+adminRoute.post("/reports/:id/resolve", async (c) => {
+  const db = getDb(c.env);
+  const id = c.req.param("id");
+  const { action } = await c.req.json<any>();
+  const r = await db.select().from(schema.reports).where(eq(schema.reports.id, id)).get();
+  if (!r) throw httpsError("not-found", "Report not found.");
+
+  if (action === "remove") {
+    switch (r.targetType) {
+      case "post":
+        await db.delete(schema.posts).where(eq(schema.posts.id, r.targetId as string));
+        break;
+      case "story":
+        await db.delete(schema.stories).where(eq(schema.stories.id, r.targetId as string));
+        break;
+      case "comment":
+        await db.delete(schema.postComments).where(eq(schema.postComments.id, r.targetId as string));
+        break;
+      case "match":
+      case "contestMatch":
+      case "contestMatches":
+        await db.update(schema.contestMatches).set({ status: "cancelled" }).where(eq(schema.contestMatches.id, r.targetId as string));
+        break;
+      default:
+        break;
+    }
+  }
+  await db.delete(schema.reports).where(eq(schema.reports.id, id));
+  await logAudit(c, `report.${action === "remove" ? "remove" : "dismiss"}`, r.targetType || "report", r.targetId || id);
+  return c.json({ message: action === "remove" ? "Content removed" : "Report dismissed" });
 });
 
 // ---- support tickets ----
@@ -791,7 +871,29 @@ const iso = (r: any) => ({ ...r, createdAt: r.createdAt ? new Date(r.createdAt).
 
 adminRoute.get("/users", async (c) => {
   const db = getDb(c.env);
-  const rows = await db.select().from(schema.users).limit(100).all();
+  const q = (c.req.query("q") || "").trim().toLowerCase();
+  const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 100);
+  const offset = Math.max(parseInt(c.req.query("offset") || "0", 10), 0);
+  const conds: any[] = [];
+  if (q.length >= 2) {
+    const term = `%${q}%`;
+    conds.push(
+      or(
+        like(sql`lower(${schema.users.username})`, term),
+        like(sql`lower(${schema.users.fullName})`, term),
+        like(sql`lower(${schema.users.email})`, term),
+      ),
+    );
+  }
+  const rows = await db
+    .select()
+    .from(schema.users)
+    .where(conds.length ? and(...conds) : (undefined as any))
+    .orderBy(desc(schema.users.createdAt))
+    .limit(limit)
+    .offset(offset)
+    .all();
+  if (rows.length === limit) c.header("X-Next-Offset", String(offset + limit));
   return c.json(rows.map(adminUser));
 });
 
@@ -1430,13 +1532,82 @@ adminRoute.get("/deposits", async (c) => {
     .orderBy(desc(schema.deposits.createdAt))
     .limit(200)
     .all();
+  // Flag UTRs that appear on more than one deposit (possible reuse / fraud).
+  const dupRows = await db
+    .select({ utr: schema.deposits.utr })
+    .from(schema.deposits)
+    .where(sql`${schema.deposits.utr} IS NOT NULL AND ${schema.deposits.utr} != ''`)
+    .groupBy(schema.deposits.utr)
+    .having(sql`COUNT(*) > 1`)
+    .all();
+  const dupSet = new Set(dupRows.map((r) => (r.utr || "").toLowerCase()));
   return c.json(
     rows.map((r) => ({
       ...r,
+      duplicateUtr: !!r.utr && dupSet.has((r.utr || "").toLowerCase()),
       createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null,
       updatedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : null,
     })),
   );
+});
+
+// ======================= REFERRALS =======================
+adminRoute.get("/referrals", async (c) => {
+  const db = getDb(c.env);
+  const referrer = alias(schema.users, "ref_user");
+  const referred = alias(schema.users, "invited_user");
+  const rows = await db
+    .select({
+      id: schema.referrals.id,
+      referrerUid: schema.referrals.referrerUid,
+      referredUid: schema.referrals.referredUid,
+      bonus: schema.referrals.bonus,
+      createdAt: schema.referrals.createdAt,
+      referrerName: referrer.username,
+      referredName: referred.username,
+    })
+    .from(schema.referrals)
+    .leftJoin(referrer, eq(referrer.uid, schema.referrals.referrerUid))
+    .leftJoin(referred, eq(referred.uid, schema.referrals.referredUid))
+    .orderBy(desc(schema.referrals.createdAt))
+    .limit(200)
+    .all();
+  return c.json(rows.map((r) => ({ ...r, createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null })));
+});
+
+// ======================= FINANCE TRENDS =======================
+// 14-day daily series of approved deposits and paid/approved withdrawals.
+adminRoute.get("/finance-trends", async (c) => {
+  const db = getDb(c.env);
+  const since = now() - 14 * 86400000;
+  const deps = await db
+    .select({ amount: schema.deposits.amount, createdAt: schema.deposits.updatedAt })
+    .from(schema.deposits)
+    .where(and(eq(schema.deposits.status, "approved"), gte(schema.deposits.updatedAt, since)))
+    .all();
+  const wds = await db
+    .select({ amount: schema.withdrawals.amount, status: schema.withdrawals.status, createdAt: schema.withdrawals.updatedAt })
+    .from(schema.withdrawals)
+    .where(and(inArray(schema.withdrawals.status, ["approved", "paid"]), gte(schema.withdrawals.updatedAt, since)))
+    .all();
+  const days: string[] = [];
+  const depMap: Record<string, number> = {};
+  const wdMap: Record<string, number> = {};
+  for (let i = 13; i >= 0; i--) {
+    const d = new Date(now() - i * 86400000).toISOString().slice(0, 10);
+    days.push(d);
+    depMap[d] = 0;
+    wdMap[d] = 0;
+  }
+  for (const r of deps) {
+    const d = new Date(r.createdAt).toISOString().slice(0, 10);
+    if (depMap[d] !== undefined) depMap[d] += Number(r.amount) || 0;
+  }
+  for (const r of wds) {
+    const d = new Date(r.createdAt).toISOString().slice(0, 10);
+    if (wdMap[d] !== undefined) wdMap[d] += Number(r.amount) || 0;
+  }
+  return c.json(days.map((d) => ({ date: d, deposits: depMap[d], withdrawals: wdMap[d] })));
 });
 
 /**

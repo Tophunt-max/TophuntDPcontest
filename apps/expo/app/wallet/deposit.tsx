@@ -5,6 +5,8 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
+import * as ImagePicker from 'expo-image-picker';
+import { uploadToS3 } from '@/src/lib/uploadToS3';
 
 import { Colors } from '@/constants/theme';
 import { walletService } from '@/src/services/wallet/walletService';
@@ -32,6 +34,8 @@ export default function DepositScreen() {
   const [utr, setUtr] = useState('');
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState<any[]>([]);
+  const [shot, setShot] = useState('');
+  const [uploading, setUploading] = useState(false);
 
   const amt = Number(amount) || 0;
   const payInr = amt * rate;
@@ -52,15 +56,29 @@ export default function DepositScreen() {
     Alert.alert('Copied', v);
   };
 
+  const pickScreenshot = async () => {
+    try {
+      const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.6 });
+      if (res.canceled || !res.assets?.[0]?.uri) return;
+      setUploading(true);
+      const url = await uploadToS3(res.assets[0].uri, 'image/jpeg', 'deposits');
+      setShot(url);
+    } catch (e: any) {
+      Alert.alert('Upload failed', e?.message || 'Could not upload screenshot.');
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const submit = async () => {
     if (!Number.isInteger(amt) || amt <= 0) return Alert.alert('Invalid amount', 'Enter a valid whole number of coins.');
     if (!utr.trim() || utr.trim().length < 4) return Alert.alert('UTR required', 'Enter the bank UTR / transaction reference from your payment.');
     setLoading(true);
     try {
-      await walletService.requestDeposit(amt, utr.trim(), 'qr');
+      await walletService.requestDeposit(amt, utr.trim(), 'qr', shot || undefined);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       Alert.alert('Submitted ✅', 'Your deposit is pending admin approval. Coins will be added once verified.');
-      setAmount(''); setUtr('');
+      setAmount(''); setUtr(''); setShot('');
       loadHistory();
     } catch (e: any) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -135,6 +153,22 @@ export default function DepositScreen() {
               />
               <Text style={[styles.note, { color: subTextColor, marginTop: 6 }]}>Pay first, then paste the UTR from your bank/UPI app.</Text>
 
+              <TouchableOpacity style={[styles.uploadBtn, { borderColor: isDark ? '#35383F' : '#DDD' }]} onPress={pickScreenshot} disabled={uploading}>
+                {uploading ? (
+                  <ActivityIndicator color={primaryColor} />
+                ) : shot ? (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <Image source={{ uri: shot }} style={{ width: 32, height: 32, borderRadius: 6 }} />
+                    <Text style={{ color: '#4CAF50', fontFamily: 'Urbanist-Bold', fontSize: 13 }}>Screenshot attached ✓</Text>
+                  </View>
+                ) : (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Ionicons name="image-outline" size={18} color={subTextColor} />
+                    <Text style={{ color: subTextColor, fontFamily: 'Urbanist-Medium', fontSize: 13 }}>Attach payment screenshot (optional)</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+
               <TouchableOpacity style={[styles.submitBtn, { backgroundColor: primaryColor, opacity: loading ? 0.7 : 1 }]} onPress={submit} disabled={loading}>
                 {loading ? <ActivityIndicator color="#FFF" /> : <Text style={styles.submitText}>Submit Deposit</Text>}
               </TouchableOpacity>
@@ -182,6 +216,7 @@ const styles = StyleSheet.create({
   note: { fontSize: 12, fontFamily: 'Urbanist-Medium', marginTop: 8, textAlign: 'center' },
   input: { borderWidth: 1, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16, fontFamily: 'Urbanist-Bold' },
   cashPreview: { fontSize: 14, fontFamily: 'Urbanist-Bold', marginTop: 8 },
+  uploadBtn: { marginTop: 14, paddingVertical: 12, borderRadius: 14, borderWidth: 1, borderStyle: 'dashed', alignItems: 'center', justifyContent: 'center' },
   submitBtn: { marginTop: 20, paddingVertical: 15, borderRadius: 16, alignItems: 'center' },
   submitText: { color: '#FFF', fontFamily: 'Urbanist-Bold', fontSize: 16 },
   disabledText: { textAlign: 'center', fontFamily: 'Urbanist-Medium', fontSize: 15, marginTop: 12, lineHeight: 22 },

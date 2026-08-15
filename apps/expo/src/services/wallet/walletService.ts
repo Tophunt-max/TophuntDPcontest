@@ -76,9 +76,19 @@ export const walletService = {
 
   /**
    * Manual deposit request — user pays the admin's QR/UPI externally, then
-   * submits the amount + bank UTR. Admin approves/rejects in the panel.
+   * submits the amount + bank UTR (+ optional payment screenshot).
    */
-  requestDeposit: async (amount: number, utr: string, method = 'qr') => {
-    return await callApi('requestDeposit', { amount, utr, method });
+  requestDeposit: async (amount: number, utr: string, method = 'qr', screenshotUrl?: string) => {
+    return await callApi('requestDeposit', { amount, utr, method, screenshotUrl });
+  },
+
+  /** Daily tasks with live progress + claim state. */
+  getDailyTasks: async () => {
+    return await callApi('getDailyTasks', {});
+  },
+
+  /** Claim a completed daily task's reward. */
+  claimDailyTask: async (taskId: string) => {
+    return await callApi('claimDailyTask', { taskId });
   },
 };

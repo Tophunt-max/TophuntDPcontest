@@ -24,7 +24,53 @@ import { enforceIdempotency, releaseIdempotency } from "../lib/idempotency";
 import { verifyRazorpaySignature } from "../lib/payments";
 import { assertClean } from "../lib/moderation";
 import { getAppConfig } from "../lib/settings";
+import { getSettings } from "../lib/gamification";
+import { sendEmail } from "../lib/email";
 import { newId, now, generateJoinId } from "../lib/ids";
+
+/** Fire-and-forget admin email alert (only if an alert address is configured). */
+function alertAdminEmail(c: any, cfg: any, subject: string, html: string): void {
+  const to = (cfg?.adminAlertEmail as string) || "";
+  if (!to) return;
+  c.executionCtx.waitUntil(sendEmail(c.env, { to, subject, html }).catch(() => {}));
+}
+
+/** A short, URL-safe referral code. */
+function makeReferralCode(): string {
+  return "TH" + Math.random().toString(36).slice(2, 8).toUpperCase();
+}
+
+/** Days since epoch in UTC (stable daily bucket key). */
+function utcDay(ts: number = Date.now()): number {
+  return Math.floor(ts / 86400000);
+}
+
+interface DailyTaskDef {
+  id: string;
+  title: string;
+  reward: number;
+  target: number;
+  type: "vote" | "share" | "ad";
+}
+const DEFAULT_DAILY_TASKS: DailyTaskDef[] = [
+  { id: "vote5", title: "Vote in 5 battles", reward: 15, target: 5, type: "vote" },
+  { id: "share", title: "Share your profile", reward: 10, target: 1, type: "share" },
+  { id: "watch_ad", title: "Watch a video ad", reward: 5, target: 1, type: "ad" },
+];
+/** Daily tasks from gamification settings (admin override) or defaults. */
+function getDailyTaskDefs(settings: any): DailyTaskDef[] {
+  const custom = settings?.dailyTasks;
+  if (Array.isArray(custom) && custom.length) {
+    return custom.map((t: any) => ({
+      id: String(t.id),
+      title: String(t.title || t.id),
+      reward: Number(t.reward || 0),
+      target: Number(t.target || 1),
+      type: (["vote", "share", "ad"].includes(t.type) ? t.type : "ad") as DailyTaskDef["type"],
+    }));
+  }
+  return DEFAULT_DAILY_TASKS;
+}
 
 export const apiRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -396,6 +442,68 @@ apiRoute.post("/", async (c) => {
       return c.json({ success: true, coinsEarned: AD_REWARD, remaining: DAILY_CAP - used - 1 });
     }
 
+    // ================= DAILY TASKS =================
+    case "getDailyTasks": {
+      const settings: any = await getSettings(env);
+      const tasks = getDailyTaskDefs(settings);
+      const day = utcDay();
+      const startOfDay = day * 86400000;
+      const votesToday =
+        (await db.select({ v: count() }).from(schema.votes).where(and(eq(schema.votes.voterUid, uid), gte(schema.votes.createdAt, startOfDay))).get())?.v ?? 0;
+      const sharesToday =
+        (await db.select({ v: count() }).from(schema.shares).where(and(eq(schema.shares.userId, uid), gte(schema.shares.createdAt, startOfDay))).get())?.v ?? 0;
+      const claimed = await db
+        .select({ taskId: schema.dailyTaskClaims.taskId })
+        .from(schema.dailyTaskClaims)
+        .where(and(eq(schema.dailyTaskClaims.uid, uid), eq(schema.dailyTaskClaims.day, day)))
+        .all();
+      const claimedSet = new Set(claimed.map((r) => r.taskId));
+      const out = tasks.map((t) => {
+        const progress = t.type === "vote" ? votesToday : t.type === "share" ? sharesToday : 0;
+        const isClaimed = claimedSet.has(t.id);
+        // "ad" tasks are credited via the separate claimAdReward flow (watch an
+        // ad), so they're never "claimable" through the generic task claim.
+        const eligible = t.type === "ad" ? false : progress >= t.target;
+        return { id: t.id, title: t.title, reward: t.reward, target: t.target, type: t.type, progress: Math.min(progress, t.target), claimed: isClaimed, claimable: eligible && !isClaimed };
+      });
+      return c.json({ tasks: out });
+    }
+
+    case "claimDailyTask": {
+      const { taskId } = body;
+      if (!taskId) throw httpsError("invalid-argument", "taskId is required.");
+      const settings: any = await getSettings(env);
+      const task = getDailyTaskDefs(settings).find((t) => t.id === taskId);
+      if (!task) throw httpsError("not-found", "Unknown task.");
+      if (task.type === "ad") throw httpsError("failed-precondition", "Ad rewards are claimed by watching an ad.");
+      const day = utcDay();
+      const startOfDay = day * 86400000;
+
+      // Verify progress for verifiable tasks.
+      if (task.type === "vote") {
+        const v = (await db.select({ v: count() }).from(schema.votes).where(and(eq(schema.votes.voterUid, uid), gte(schema.votes.createdAt, startOfDay))).get())?.v ?? 0;
+        if (v < task.target) throw httpsError("failed-precondition", "Task not completed yet.");
+      } else if (task.type === "share") {
+        const s = (await db.select({ v: count() }).from(schema.shares).where(and(eq(schema.shares.userId, uid), gte(schema.shares.createdAt, startOfDay))).get())?.v ?? 0;
+        if (s < task.target) throw httpsError("failed-precondition", "Task not completed yet.");
+      }
+
+      const ts = now();
+      // PK (uid, task_id, day) dedups — first claim wins.
+      const ins = await db
+        .insert(schema.dailyTaskClaims)
+        .values({ uid, taskId, day, reward: task.reward, createdAt: ts })
+        .onConflictDoNothing()
+        .run();
+      if (ins.meta.changes === 0) throw httpsError("already-exists", "Task already claimed today.");
+
+      await db.batch([
+        db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${task.reward}`, updatedAt: ts }).where(eq(schema.users.uid, uid)),
+        db.insert(schema.coinTransactions).values({ id: newId(), uid, amount: task.reward, type: "daily_task", description: `Task reward: ${task.title}`, createdAt: ts }),
+      ]);
+      return c.json({ success: true, reward: task.reward });
+    }
+
     // ================= WALLET =================
     // Step 1 of the purchase flow: create a Razorpay order priced SERVER-SIDE
     // from the coin package. The client never dictates the price or the number
@@ -517,6 +625,8 @@ apiRoute.post("/", async (c) => {
       const amt = Number(amount);
       if (!Number.isInteger(amt) || amt <= 0) throw httpsError("invalid-argument", "Invalid amount.");
       if (!method) throw httpsError("invalid-argument", "Payout method is required.");
+      // Anti-spam: max 5 withdrawal requests per hour per user.
+      await rateLimit(env, `withdraw:${uid}`, 5, 3600);
 
       // Honor the admin App Control withdrawal config.
       const cfg = await getAppConfig(env);
@@ -558,6 +668,8 @@ apiRoute.post("/", async (c) => {
         id: newId(), title: "New Withdrawal Request",
         message: `A user requested a payout of ${amt} coins.`, link: "/withdrawals", isRead: false, createdAt: ts,
       });
+      alertAdminEmail(c, cfg, "New Withdrawal Request",
+        `<p>A user requested a payout of <b>${amt} coins</b> (₹${(amt * rate).toFixed(2)}) via ${method}.</p><p>Review it in the admin panel → Withdrawals.</p>`);
       return c.json({ success: true, withdrawalId: id, cashAmount: amt * rate });
     }
 
@@ -570,6 +682,8 @@ apiRoute.post("/", async (c) => {
         throw httpsError("invalid-argument", "Invalid amount.");
       if (!utr || String(utr).trim().length < 4)
         throw httpsError("invalid-argument", "A valid UTR / transaction reference is required.");
+      // Anti-spam: max 5 deposit submissions per hour per user.
+      await rateLimit(env, `deposit:${uid}`, 5, 3600);
 
       const cfg = await getAppConfig(env);
       const gw = (cfg?.paymentGateway as any) || {};
@@ -595,6 +709,8 @@ apiRoute.post("/", async (c) => {
         id: newId(), title: "New Deposit Request",
         message: `A user submitted a ${amt}-coin deposit (UTR ${String(utr).trim()}).`, link: "/deposits", isRead: false, createdAt: ts,
       });
+      alertAdminEmail(c, cfg, "New Deposit Request",
+        `<p>A user submitted a <b>${amt}-coin</b> deposit (₹${(amt * coinRate).toFixed(2)}).</p><p>UTR: <b>${String(utr).trim()}</b></p><p>Verify & approve in the admin panel → Deposits.</p>`);
       return c.json({ success: true, depositId: id });
     }
 
@@ -942,6 +1058,47 @@ apiRoute.post("/", async (c) => {
           updatedAt: now(),
           ...set,
         } as any).onConflictDoUpdate({ target: schema.users.uid, set });
+      }
+
+      // Ensure a referral code + apply an inbound referral (once) at signup.
+      const meRow = await db
+        .select({ referralCode: schema.users.referralCode, referredBy: schema.users.referredBy })
+        .from(schema.users)
+        .where(eq(schema.users.uid, uid))
+        .get();
+      if (meRow && !meRow.referralCode) {
+        await db.update(schema.users).set({ referralCode: makeReferralCode() }).where(eq(schema.users.uid, uid));
+      }
+      const refCode = String(body.referralCode || body.referredByCode || "").trim().toUpperCase();
+      if (action === "completeSignup" && refCode && meRow && !meRow.referredBy) {
+        const referrer = await db
+          .select({ uid: schema.users.uid })
+          .from(schema.users)
+          .where(eq(schema.users.referralCode, refCode))
+          .get();
+        if (referrer && referrer.uid !== uid) {
+          const settings = await getSettings(env);
+          const bonus = Number(settings.referralBonus || 0);
+          const ts2 = now();
+          // referred_uid is UNIQUE → dedups if this runs twice.
+          const ins = await db
+            .insert(schema.referrals)
+            .values({ id: newId(), referrerUid: referrer.uid, referredUid: uid, bonus, createdAt: ts2 })
+            .onConflictDoNothing()
+            .run();
+          if (ins.meta.changes > 0) {
+            await db.update(schema.users).set({ referredBy: referrer.uid, updatedAt: ts2 }).where(eq(schema.users.uid, uid));
+            if (bonus > 0) {
+              await db.batch([
+                db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${bonus}` }).where(eq(schema.users.uid, referrer.uid)),
+                db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${bonus}` }).where(eq(schema.users.uid, uid)),
+                db.insert(schema.coinTransactions).values({ id: newId(), uid: referrer.uid, amount: bonus, type: "referral_bonus", description: "Referral bonus — invited a friend", createdAt: ts2 }),
+                db.insert(schema.coinTransactions).values({ id: newId(), uid, amount: bonus, type: "referral_bonus", description: "Referral welcome bonus", createdAt: ts2 }),
+              ]);
+              await createNotification(env, referrer.uid, { title: "Referral Bonus! 🎉", body: `You earned ${bonus} coins — a friend joined with your code!`, type: "referral", targetId: "wallet" });
+            }
+          }
+        }
       }
       return c.json({ success: true });
     }

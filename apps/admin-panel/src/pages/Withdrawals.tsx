@@ -3,10 +3,10 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Table } from "@/components/ui/Table";
 import { Badge } from "@/components/ui/Badge";
-import { PageHeader, fmtDateTime, fmtNumber } from "@/lib/format";
+import { PageHeader, fmtDateTime, fmtNumber, exportCsv } from "@/lib/format";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { toast } from "@/lib/toast";
-import { Check, X, BadgeCheck } from "lucide-react";
+import { Check, X, BadgeCheck, Download } from "lucide-react";
 
 const TABS = [
   { key: "pending", label: "Pending" },
@@ -36,7 +36,18 @@ export default function Withdrawals() {
 
   return (
     <div>
-      <PageHeader title="Withdrawals" subtitle="Cash payout requests" />
+      <PageHeader
+        title="Withdrawals"
+        subtitle="Cash payout requests"
+        action={
+          <button
+            onClick={() => exportCsv(`withdrawals-${Date.now()}.csv`, data, ["id", "userId", "username", "amount", "cashAmount", "method", "accountDetails", "status", "createdAt"])}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-secondary text-sm font-medium hover:bg-secondary/70"
+          >
+            <Download size={15} /> Export CSV
+          </button>
+        }
+      />
 
       <div className="flex gap-1 mb-4 bg-secondary/50 p-1 rounded-xl w-fit">
         {TABS.map((t) => (

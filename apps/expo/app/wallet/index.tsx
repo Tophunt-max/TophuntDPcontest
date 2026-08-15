@@ -20,11 +20,7 @@ const { width, height } = Dimensions.get('window');
 const DAILY_REWARDS = [10, 15, 20, 25, 30, 50, 100];
 const FILTERS = ['All', 'Income', 'Expense'];
 
-const TASKS = [
-  { id: '1', title: 'Watch a Video Ad', reward: 5, progress: 0, maxProgress: 5, icon: 'videocam', action: 'Watch' },
-  { id: '2', title: 'Vote in 5 Battles', reward: 15, progress: 2, maxProgress: 5, icon: 'stats-chart', action: 'Vote' },
-  { id: '3', title: 'Share your Profile', reward: 10, progress: 0, maxProgress: 1, icon: 'share-social', action: 'Share' },
-];
+const taskIcon = (type: string) => (type === 'vote' ? 'stats-chart' : type === 'share' ? 'share-social' : 'videocam');
 
 export default function WalletScreen() {
   const router = useRouter();
@@ -90,6 +86,26 @@ export default function WalletScreen() {
     enabled: !!user?.uid,
   });
 
+  // Real daily tasks (progress + claim state from the server).
+  const { data: tasksResp, refetch: refetchTasks } = useQuery({
+    queryKey: ['daily-tasks', user?.uid],
+    queryFn: () => walletService.getDailyTasks(),
+    enabled: !!user?.uid,
+  });
+  const tasks = ((tasksResp as any)?.tasks || []).map((t: any) => ({ ...t, maxProgress: t.target, icon: taskIcon(t.type) }));
+
+  const claimTask = async (taskId: string) => {
+    try {
+      const r: any = await walletService.claimDailyTask(taskId);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert('Reward earned! 🪙', `You got ${r.reward} Dpcoins!`);
+      refetchProfile();
+      refetchTasks();
+    } catch (e: any) {
+      Alert.alert('Cannot claim', e?.message || 'Task not completed yet.');
+    }
+  };
+
   // Filter Logic
   const filteredTransactions = (txnData || []).filter((t: any) => {
     if (activeFilter === 'All') return true;
@@ -124,11 +140,13 @@ export default function WalletScreen() {
     }
   };
 
+  const referralCode = (profile as any)?.referralCode || '';
   const handleRefer = async () => {
     Haptics.selectionAsync();
     try {
+      const code = referralCode || 'TOPHUNT';
       await Share.share({
-        message: 'Join me on Tophunt and earn free Dpcoins! Use my invite code: ' + (user?.uid?.substring(0, 6) || 'TOPHUNT'),
+        message: `Join me on TopHunt and earn free Dpcoins! Use my referral code: ${code}`,
       });
     } catch (error) {
       Alert.alert('Error', 'Could not open share dialog');
@@ -159,6 +177,7 @@ export default function WalletScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       Alert.alert("Reward Earned! 🪙", `You earned ${res?.coinsEarned ?? 0} Dpcoins for watching the ad!`);
       refetchProfile();
+      refetchTasks();
     } catch (error: any) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       const limitHit = typeof error?.message === 'string' && error.message.toLowerCase().includes('limit');
@@ -173,16 +192,11 @@ export default function WalletScreen() {
 
   const handleTaskAction = (task: any) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    if (task.action === 'Share') {
-        handleRefer();
-    } else if (task.action === 'Watch') {
-        simulateWatchAd();
-    } else if (task.action === 'Vote') {
-        // Navigate to Battles or Home
-        router.push('/'); 
-    } else {
-        Alert.alert(task.title, `This action will open the ${task.action.toLowerCase()} flow.`);
-    }
+    if (task.claimed) return;
+    if (task.claimable) { claimTask(task.id); return; }
+    if (task.type === 'share') handleRefer();
+    else if (task.type === 'vote') router.push('/');
+    else if (task.type === 'ad') simulateWatchAd();
   };
 
   const renderFilter = (filter: string) => {
@@ -259,7 +273,8 @@ export default function WalletScreen() {
   };
 
   const renderTaskItem = ({ item, index }: { item: any, index: number }) => {
-    const progressPercent = (item.progress / item.maxProgress) * 100;
+    const progressPercent = Math.min((item.progress / item.maxProgress) * 100, 100);
+    const label = item.claimed ? 'Done' : item.claimable ? 'Claim' : (item.type === 'vote' ? 'Vote' : item.type === 'share' ? 'Share' : 'Watch');
     return (
         <Animated.View entering={FadeInRight.delay(index * 100).duration(500)} style={[styles.taskCard, { backgroundColor: cardBg }]}>
             <View style={[styles.taskIconBox, { backgroundColor: isDark ? '#2A2D35' : '#F5F5F5' }]}>
@@ -273,14 +288,17 @@ export default function WalletScreen() {
                 <Text style={styles.taskProgressText}>{item.progress}/{item.maxProgress} completed</Text>
             </View>
             <TouchableOpacity 
-                style={styles.taskButton} 
+                style={[styles.taskButton, item.claimed && { backgroundColor: isDark ? '#2A2D35' : '#EEE' }, item.claimable && { backgroundColor: '#4CAF50' }]}
                 onPress={() => handleTaskAction(item)}
+                disabled={item.claimed}
                 activeOpacity={0.8}
             >
-                <Text style={styles.taskButtonText}>{item.action}</Text>
-                <View style={styles.taskRewardBadge}>
-                    <Text style={styles.taskRewardText}>+{item.reward}</Text>
-                </View>
+                <Text style={[styles.taskButtonText, item.claimable && { color: '#FFF' }, item.claimed && { color: 'gray' }]}>{label}</Text>
+                {!item.claimed && (
+                  <View style={styles.taskRewardBadge}>
+                      <Text style={styles.taskRewardText}>+{item.reward}</Text>
+                  </View>
+                )}
             </TouchableOpacity>
         </Animated.View>
     );
@@ -402,7 +420,11 @@ export default function WalletScreen() {
                     </View>
                 </View>
                 <View style={{ paddingHorizontal: 20 }}>
-                    {TASKS.map((item, index) => renderTaskItem({ item, index }))}
+                    {tasks.length === 0 ? (
+                      <Text style={{ color: subTextColor, fontFamily: 'Urbanist-Medium', paddingHorizontal: 4 }}>No tasks right now. Check back later!</Text>
+                    ) : (
+                      tasks.map((item: any, index: number) => renderTaskItem({ item, index }))
+                    )}
                 </View>
 
                 {/* Refer & Earn Banner */}
@@ -423,7 +445,7 @@ export default function WalletScreen() {
                             </View>
                             <View style={{ flex: 1, marginLeft: 12 }}>
                                 <Text style={[styles.referTitle, { color: isDark ? '#fff' : '#101010' }]}>Refer & Earn</Text>
-                                <Text style={styles.referDesc}>Get <Text style={{fontWeight: '800', color: '#FF4D67'}}>50 Dpcoins</Text> for each friend!</Text>
+                                <Text style={styles.referDesc}>{referralCode ? <>Your code: <Text style={{fontWeight: '800', color: '#FF4D67'}}>{referralCode}</Text></> : 'Invite friends & earn bonus coins!'}</Text>
                             </View>
                             <Ionicons name="chevron-forward" size={20} color={subTextColor} />
                         </View>
