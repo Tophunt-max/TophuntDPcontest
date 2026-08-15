@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react";
 import Constants from "expo-constants";
-import { readApi, poll } from "./api";
+import { useQuery } from "@tanstack/react-query";
+import { readApi } from "./api";
 
 export interface AppConfig {
   appName: string;
@@ -67,24 +67,23 @@ export function useFeature(key: string): boolean {
   return isFeatureEnabled(config, key);
 }
 
-// Real-time updates via polling (was Firestore onSnapshot on settings/appConfig).
+/**
+ * App config, shared across ALL consumers via a single react-query cache.
+ * Previously every component that called useAppConfig() spun up its own 30s
+ * poll of /read/app-config — a screen with 4-5 consumers meant 4-5× the
+ * requests. react-query dedupes by queryKey, so now there is ONE request
+ * regardless of how many components read it, refreshed at most every 5 min
+ * (app config changes rarely). This is a big win for load time + Worker/D1 cost.
+ */
 export function useAppConfig() {
-  const [config, setConfig] = useState<AppConfig | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const unsubscribe = poll<AppConfig>(
-      () => readApi("/read/app-config"),
-      (data) => {
-        if (data) setConfig(data);
-        setLoading(false);
-      },
-      30000,
-    );
-    return () => unsubscribe();
-  }, []);
-
-  return { config, loading };
+  const { data, isLoading } = useQuery({
+    queryKey: ["app-config"],
+    queryFn: () => getAppConfig(),
+    staleTime: 5 * 60_000,
+    refetchInterval: 5 * 60_000,
+    refetchOnMount: false,
+  });
+  return { config: (data as AppConfig) ?? null, loading: isLoading };
 }
 
 // One-time fetch (used in splash / onboarding).

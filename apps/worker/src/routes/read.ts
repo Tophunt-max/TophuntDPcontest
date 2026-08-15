@@ -31,6 +31,32 @@ async function cachePut(env: Env, key: string, data: any, ttlSec: number): Promi
   }
 }
 
+/**
+ * Edge-cache a fully-public (user-agnostic) JSON GET at the Cloudflare colo via
+ * the Cache API. On a hit the Worker returns immediately WITHOUT touching D1/KV
+ * — cutting D1 rows-read and Worker CPU (and therefore billing) for hot public
+ * endpoints. Only use for responses that are identical for every caller.
+ */
+async function edgeCached<T>(c: any, ttlSec: number, producer: () => Promise<T>): Promise<Response> {
+  const cache = (caches as any).default as Cache;
+  const cacheKey = new Request(new URL(c.req.url).toString(), { method: "GET" });
+  try {
+    const hit = await cache.match(cacheKey);
+    if (hit) return hit;
+  } catch {
+    /* cache unavailable — fall through */
+  }
+  const data = await producer();
+  const res = c.json(data) as Response;
+  res.headers.set("Cache-Control", `public, max-age=${ttlSec}`);
+  try {
+    c.executionCtx.waitUntil(cache.put(cacheKey, res.clone()));
+  } catch {
+    /* best-effort */
+  }
+  return res;
+}
+
 // --- mappers ---------------------------------------------------------------
 const mapContest = (r: any) => ({
   id: r.id,
@@ -239,57 +265,12 @@ readRoute.get("/leaderboard", optionalAuth, async (c) => {
 
 // ================= APP CONFIG =================
 readRoute.get("/app-config", async (c) => {
-  const cfg = await getAppConfig(c.env);
-  return c.json(cfg || {});
-});
-
-// ================= COIN PACKAGES (public store) =================
-readRoute.get("/coin-packages", async (c) => {
-  const db = getDb(c.env);
-  const rows = await db
-    .select()
-    .from(schema.coinPackages)
-    .where(eq(schema.coinPackages.active, true))
-    .orderBy(asc(schema.coinPackages.sortOrder))
-    .all();
-  return c.json(
-    rows.map((r) => ({
-      id: r.id,
-      name: r.name,
-      coins: r.coins,
-      bonusCoins: r.bonusCoins,
-      totalCoins: (r.coins || 0) + (r.bonusCoins || 0),
-      priceInr: r.priceInr,
-      sortOrder: r.sortOrder,
-    })),
-  );
+  return edgeCached(c, 120, async () => (await getAppConfig(c.env)) || {});
 });
 
 // ================= WALLET (auth) =================
-// The signed-in user's own coin transaction history.
-readRoute.get("/transactions", requireAuth, async (c) => {
-  const db = getDb(c.env);
-  const uid = c.get("user").uid;
-  const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 200);
-  const rows = await db
-    .select()
-    .from(schema.coinTransactions)
-    .where(eq(schema.coinTransactions.uid, uid))
-    .orderBy(desc(schema.coinTransactions.createdAt))
-    .limit(limit)
-    .all();
-  return c.json({
-    transactions: rows.map((r) => ({
-      id: r.id,
-      amount: r.amount,
-      type: r.type,
-      description: r.description,
-      contestId: r.contestId,
-      matchId: r.matchId,
-      createdAt: r.createdAt,
-    })),
-  });
-});
+// (Coin-packages + transactions endpoints are defined once below — the
+// server-authoritative, cursor-paginated versions.)
 
 // The signed-in user's own manual deposit requests.
 readRoute.get("/deposits", requireAuth, async (c) => {
@@ -411,25 +392,25 @@ readRoute.get("/transactions", requireAuth, async (c) => {
 // Public catalog of purchasable coin packages (used by the store to build a
 // Razorpay order via the server-authoritative `createOrder` action). Only
 // active packages are exposed; pricing lives server-side.
-readRoute.get("/coin-packages", async (c) => {
-  const db = getDb(c.env);
-  const rows = await db
-    .select()
-    .from(schema.coinPackages)
-    .where(eq(schema.coinPackages.active, true))
-    .orderBy(asc(schema.coinPackages.sortOrder))
-    .all();
-  return c.json(
-    rows.map((p: any) => ({
+readRoute.get("/coin-packages", async (c) =>
+  edgeCached(c, 120, async () => {
+    const db = getDb(c.env);
+    const rows = await db
+      .select()
+      .from(schema.coinPackages)
+      .where(eq(schema.coinPackages.active, true))
+      .orderBy(asc(schema.coinPackages.sortOrder))
+      .all();
+    return rows.map((p: any) => ({
       id: p.id,
       name: p.name,
       coins: p.coins,
       bonusCoins: p.bonusCoins,
       priceInr: p.priceInr,
       totalCoins: (Number(p.coins) || 0) + (Number(p.bonusCoins) || 0),
-    })),
-  );
-});
+    }));
+  }),
+);
 
 // ================= USERS =================
 readRoute.get("/users/suggested", optionalAuth, async (c) => {
