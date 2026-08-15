@@ -59,4 +59,12 @@ export const walletService = {
   requestWithdrawal: async (amount: number, method: string, accountDetails: string) => {
     return await callApi('requestWithdrawal', { amount, method, accountDetails });
   },
+
+  /**
+   * Manual deposit request — user pays the admin's QR/UPI externally, then
+   * submits the amount + bank UTR. Admin approves/rejects in the panel.
+   */
+  requestDeposit: async (amount: number, utr: string, method = 'qr') => {
+    return await callApi('requestDeposit', { amount, utr, method });
+  },
 };

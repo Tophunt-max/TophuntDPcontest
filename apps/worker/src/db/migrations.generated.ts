@@ -8,6 +8,7 @@ import m_0003_blog_sql from "../../migrations/0003_blog.sql";
 import m_0004_blog_seo_import_sql from "../../migrations/0004_blog_seo_import.sql";
 import m_0005_admin_features_sql from "../../migrations/0005_admin_features.sql";
 import m_0006_full_control_sql from "../../migrations/0006_full_control.sql";
+import m_0007_deposits_sql from "../../migrations/0007_deposits.sql";
 
 export interface Migration {
   name: string;
@@ -22,4 +23,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0004_blog_seo_import.sql", sql: m_0004_blog_seo_import_sql },
   { name: "0005_admin_features.sql", sql: m_0005_admin_features_sql },
   { name: "0006_full_control.sql", sql: m_0006_full_control_sql },
+  { name: "0007_deposits.sql", sql: m_0007_deposits_sql },
 ];

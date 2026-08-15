@@ -725,7 +725,9 @@ adminRoute.get("/overview", async (c) => {
     (await db.select({ v: count() }).from(schema.contests).where(eq(schema.contests.status, "live")).get())?.v ?? 0;
   const pendingWithdrawals =
     (await db.select({ v: count() }).from(schema.withdrawals).where(eq(schema.withdrawals.status, "pending")).get())?.v ?? 0;
-  return c.json({ users, posts, reports, support, revenue, activeMatches, liveContests, pendingWithdrawals });
+  const pendingDeposits =
+    (await db.select({ v: count() }).from(schema.deposits).where(eq(schema.deposits.status, "pending")).get())?.v ?? 0;
+  return c.json({ users, posts, reports, support, revenue, activeMatches, liveContests, pendingWithdrawals, pendingDeposits });
 });
 
 adminRoute.get("/device-stats", async (c) => {
@@ -1398,6 +1400,88 @@ adminRoute.patch("/withdrawals/:id", async (c) => {
   });
   await logAudit(c, `withdrawal.${action}`, "withdrawal", id, { amount: w.amount });
   return c.json({ message: `Withdrawal ${status}` });
+});
+
+// ======================= DEPOSITS (manual QR/UPI top-ups) =======================
+adminRoute.get("/deposits", async (c) => {
+  const db = getDb(c.env);
+  const status = c.req.query("status");
+  const conds: any[] = [];
+  if (status) conds.push(eq(schema.deposits.status, status));
+  const rows = await db
+    .select({
+      id: schema.deposits.id,
+      userId: schema.deposits.userId,
+      amount: schema.deposits.amount,
+      payAmount: schema.deposits.payAmount,
+      method: schema.deposits.method,
+      utr: schema.deposits.utr,
+      screenshotUrl: schema.deposits.screenshotUrl,
+      status: schema.deposits.status,
+      adminNote: schema.deposits.adminNote,
+      createdAt: schema.deposits.createdAt,
+      updatedAt: schema.deposits.updatedAt,
+      username: schema.users.username,
+      fullName: schema.users.fullName,
+    })
+    .from(schema.deposits)
+    .leftJoin(schema.users, eq(schema.users.uid, schema.deposits.userId))
+    .where(conds.length ? and(...conds) : (undefined as any))
+    .orderBy(desc(schema.deposits.createdAt))
+    .limit(200)
+    .all();
+  return c.json(
+    rows.map((r) => ({
+      ...r,
+      createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null,
+      updatedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : null,
+    })),
+  );
+});
+
+/**
+ * Action a manual deposit. action: "approve" | "reject".
+ * Approving credits the coins (users.dpcoin), records a payment + coin ledger
+ * entry, and is idempotent via an atomic status claim (only a pending row is
+ * ever credited, so double-approval can't double-credit).
+ */
+adminRoute.patch("/deposits/:id", async (c) => {
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const id = c.req.param("id");
+  const { action, adminNote } = await c.req.json<any>();
+  if (!["approve", "reject"].includes(action)) throw httpsError("invalid-argument", "Invalid action.");
+  const d = await db.select().from(schema.deposits).where(eq(schema.deposits.id, id)).get();
+  if (!d) throw httpsError("not-found", "Deposit not found.");
+  if (d.status !== "pending") throw httpsError("failed-precondition", "Deposit is already processed.");
+  const admin = c.get("user");
+  const ts = now();
+  const status = action === "approve" ? "approved" : "rejected";
+
+  // Atomically claim the pending row so overlapping approvals can't double-credit.
+  const claim = await db
+    .update(schema.deposits)
+    .set({ status, adminNote: adminNote || null, processedBy: admin?.uid ?? null, updatedAt: ts })
+    .where(and(eq(schema.deposits.id, id), eq(schema.deposits.status, "pending")))
+    .run();
+  if (claim.meta.changes === 0) throw httpsError("failed-precondition", "Deposit was already processed.");
+
+  if (action === "approve") {
+    await db.batch([
+      db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${d.amount}`, updatedAt: ts }).where(eq(schema.users.uid, d.userId)),
+      db.insert(schema.payments).values({ id: `dep_${id}`, userId: d.userId, amount: d.amount, status: "success", createdAt: ts }).onConflictDoNothing(),
+      db.insert(schema.coinTransactions).values({ id: newId(), uid: d.userId, amount: d.amount, type: "manual_deposit", description: `Manual deposit approved (UTR ${d.utr || "-"})`, createdAt: ts }),
+    ]);
+  }
+
+  await createNotification(c.env, d.userId, {
+    title: action === "approve" ? "Deposit Approved 🎉" : "Deposit Rejected",
+    body: action === "approve" ? `${d.amount} coins have been added to your wallet.` : `Your deposit request was rejected. ${adminNote ? "Reason: " + adminNote : ""}`,
+    type: "deposit",
+    targetId: "wallet",
+  });
+  await logAudit(c, `deposit.${action}`, "deposit", id, { amount: d.amount, utr: d.utr });
+  return c.json({ message: `Deposit ${status}` });
 });
 
 // ======================= AUDIT LOG =======================

@@ -11,7 +11,7 @@ import { useAuth } from '@/src/services/auth';
 import { Colors } from '@/constants/theme';
 import { useProfile } from '@/src/hooks/useProfileData';
 import { walletService } from '@/src/services/wallet/walletService';
-import { useFeature } from '@/src/services/appSettings';
+import { useFeature, useAppConfig } from '@/src/services/appSettings';
 import { readApi } from '@/src/services/api';
 import { useQuery } from '@tanstack/react-query';
 
@@ -34,6 +34,10 @@ export default function WalletScreen() {
   const isDark = colorScheme === 'dark';
   const topupsEnabled = useFeature('topups'); // admin feature flag
   const withdrawalsEnabled = useFeature('withdrawals'); // admin feature flag
+  const { config: appCfg } = useAppConfig();
+  // Route top-up to the manual QR screen when the gateway is manual/both.
+  const gwMode = (appCfg?.paymentGateway as any)?.mode || 'auto';
+  const topUpRoute = gwMode === 'manual' || gwMode === 'both' ? '/wallet/deposit' : '/wallet/store';
 
   // Theme Colors
   const backgroundColor = isDark ? Colors.dark.background : '#F8F9FA';
@@ -341,7 +345,7 @@ export default function WalletScreen() {
                             style={styles.topUpButton}
                             onPress={() => {
                                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                                router.push('/wallet/store');
+                                router.push(topUpRoute);
                             }}
                             activeOpacity={0.9}
                         >

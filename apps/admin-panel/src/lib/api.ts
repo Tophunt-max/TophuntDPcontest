@@ -208,6 +208,12 @@ export const api = {
   actionWithdrawal: (id: string, action: "approve" | "reject" | "paid", adminNote?: string) =>
     patch(`/admin/withdrawals/${id}`, { action, adminNote }),
 
+  // deposits (manual QR/UPI top-ups)
+  deposits: (status?: string) =>
+    get<any[]>(`/admin/deposits${status ? `?status=${encodeURIComponent(status)}` : ""}`),
+  actionDeposit: (id: string, action: "approve" | "reject", adminNote?: string) =>
+    patch(`/admin/deposits/${id}`, { action, adminNote }),
+
   // audit log
   auditLog: (action?: string) =>
     get<any[]>(`/admin/audit-log${action ? `?action=${encodeURIComponent(action)}` : ""}`),

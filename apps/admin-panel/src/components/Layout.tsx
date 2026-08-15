@@ -1,6 +1,8 @@
-import { ReactNode, useState } from "react";
+import { ReactNode, useState, useEffect, useRef } from "react";
 import { Link, useLocation } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth";
+import { api } from "@/lib/api";
 import {
   LayoutDashboard,
   BarChart3,
@@ -11,6 +13,7 @@ import {
   Crown,
   Receipt,
   Banknote,
+  ArrowDownToLine,
   Coins,
   Image,
   Clapperboard,
@@ -30,6 +33,30 @@ import {
   ChevronRight,
 } from "lucide-react";
 
+/** Short beep via Web Audio API — no asset needed. */
+function playPing() {
+  try {
+    const Ctx = (window as any).AudioContext || (window as any).webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    osc.frequency.setValueAtTime(1174, ctx.currentTime + 0.1);
+    gain.gain.setValueAtTime(0.001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.36);
+    osc.onended = () => ctx.close().catch(() => {});
+  } catch {
+    /* audio not allowed / unsupported — ignore */
+  }
+}
+
 const nav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, section: "main" },
   { href: "/analytics", label: "Analytics", icon: BarChart3, section: "main" },
@@ -39,7 +66,8 @@ const nav = [
   { href: "/matches", label: "Matches", icon: Swords, section: "contests" },
   { href: "/leaderboard", label: "Leaderboard", icon: Crown, section: "contests" },
   { href: "/transactions", label: "Transactions", icon: Receipt, section: "finance" },
-  { href: "/withdrawals", label: "Withdrawals", icon: Banknote, section: "finance" },
+  { href: "/deposits", label: "Deposits", icon: ArrowDownToLine, section: "finance", badgeKey: "pendingDeposits" },
+  { href: "/withdrawals", label: "Withdrawals", icon: Banknote, section: "finance", badgeKey: "pendingWithdrawals" },
   { href: "/coin-packages", label: "Coin Packages", icon: Coins, section: "finance" },
   { href: "/posts", label: "Posts", icon: Image, section: "content" },
   { href: "/stories", label: "Stories", icon: Clapperboard, section: "content" },
@@ -65,7 +93,8 @@ const sections: Record<string, string> = {
   system: "SYSTEM",
 };
 
-function NavItem({ href, label, icon: Icon, active, onClick }: any) {
+function NavItem({ href, label, icon: Icon, active, onClick, badge }: any) {
+  const hasBadge = typeof badge === "number" && badge > 0;
   return (
     <Link href={href} onClick={onClick}>
       <div
@@ -83,7 +112,13 @@ function NavItem({ href, label, icon: Icon, active, onClick }: any) {
           <Icon size={15} className={active ? "text-white" : ""} />
         </div>
         <span className="text-sm font-medium">{label}</span>
-        {active && <ChevronRight size={14} className="ml-auto text-white/60" />}
+        {hasBadge ? (
+          <span className="ml-auto min-w-[20px] h-5 px-1.5 rounded-full bg-red-500 text-white text-[11px] font-bold flex items-center justify-center">
+            {badge > 99 ? "99+" : badge}
+          </span>
+        ) : (
+          active && <ChevronRight size={14} className="ml-auto text-white/60" />
+        )}
       </div>
     </Link>
   );
@@ -92,6 +127,12 @@ function NavItem({ href, label, icon: Icon, active, onClick }: any) {
 function Sidebar({ onClose }: { onClose?: () => void }) {
   const [loc] = useLocation();
   const { user, logout } = useAuth();
+  // Live pending counts for sidebar badges (deposits / withdrawals).
+  const { data: overview } = useQuery({
+    queryKey: ["overview"],
+    queryFn: api.overview,
+    refetchInterval: 20000,
+  });
   let lastSection = "";
 
   return (
@@ -130,7 +171,7 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
                   {sections[item.section]}
                 </p>
               )}
-              <NavItem {...item} active={active} onClick={onClose} />
+              <NavItem {...item} active={active} onClick={onClose} badge={(item as any).badgeKey ? (overview as any)?.[(item as any).badgeKey] : undefined} />
             </div>
           );
         })}
@@ -156,6 +197,40 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
         </button>
       </div>
     </div>
+  );
+}
+
+function NotificationBell() {
+  const [, setLoc] = useLocation();
+  const prevUnread = useRef<number | null>(null);
+  const { data = [] } = useQuery({
+    queryKey: ["notifications"],
+    queryFn: api.notifications,
+    refetchInterval: 15000,
+  });
+  const unread = (data as any[]).filter((n) => !n.isRead).length;
+
+  // Play a ping when unread count rises (new admin alert arrived).
+  useEffect(() => {
+    if (prevUnread.current !== null && unread > prevUnread.current) {
+      playPing();
+    }
+    prevUnread.current = unread;
+  }, [unread]);
+
+  return (
+    <button
+      onClick={() => setLoc("/notifications")}
+      className="relative p-2 rounded-lg hover:bg-secondary transition-colors"
+      title="Admin alerts"
+    >
+      <Bell size={18} />
+      {unread > 0 && (
+        <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center">
+          {unread > 99 ? "99+" : unread}
+        </span>
+      )}
+    </button>
   );
 }
 
@@ -206,6 +281,7 @@ export function Layout({ children }: { children: ReactNode }) {
               <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
               <span className="text-xs text-muted-foreground">System Operational</span>
             </div>
+            <NotificationBell />
           </div>
         </header>
 

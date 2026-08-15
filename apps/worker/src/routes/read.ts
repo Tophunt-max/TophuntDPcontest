@@ -291,6 +291,32 @@ readRoute.get("/transactions", requireAuth, async (c) => {
   });
 });
 
+// The signed-in user's own manual deposit requests.
+readRoute.get("/deposits", requireAuth, async (c) => {
+  const db = getDb(c.env);
+  const uid = c.get("user").uid;
+  const rows = await db
+    .select()
+    .from(schema.deposits)
+    .where(eq(schema.deposits.userId, uid))
+    .orderBy(desc(schema.deposits.createdAt))
+    .limit(50)
+    .all();
+  return c.json({
+    deposits: rows.map((r) => ({
+      id: r.id,
+      amount: r.amount,
+      payAmount: r.payAmount,
+      method: r.method,
+      utr: r.utr,
+      status: r.status,
+      adminNote: r.adminNote,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+    })),
+  });
+});
+
 // The signed-in user's own withdrawal requests.
 readRoute.get("/withdrawals", requireAuth, async (c) => {
   const db = getDb(c.env);

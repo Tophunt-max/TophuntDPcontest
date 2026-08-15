@@ -519,6 +519,43 @@ apiRoute.post("/", async (c) => {
       return c.json({ success: true, withdrawalId: id, cashAmount: amt * rate });
     }
 
+    // Manual QR/UPI deposit: user pays externally then submits the UTR here.
+    // Admin approves/rejects in the panel; coins are credited on approval.
+    case "requestDeposit": {
+      const { amount, utr, method, screenshotUrl } = body;
+      const amt = Number(amount);
+      if (!Number.isInteger(amt) || amt <= 0 || amt > 1_000_000)
+        throw httpsError("invalid-argument", "Invalid amount.");
+      if (!utr || String(utr).trim().length < 4)
+        throw httpsError("invalid-argument", "A valid UTR / transaction reference is required.");
+
+      const cfg = await getAppConfig(env);
+      const gw = (cfg?.paymentGateway as any) || {};
+      const mode = gw.mode || "auto";
+      if (mode === "auto") throw httpsError("failed-precondition", "Manual deposits are currently disabled.");
+      const coinRate = Number(gw.coinRate ?? 1);
+
+      const ts = now();
+      const id = newId();
+      await db.insert(schema.deposits).values({
+        id,
+        userId: uid,
+        amount: amt,
+        payAmount: amt * coinRate,
+        method: method || "qr",
+        utr: String(utr).trim(),
+        screenshotUrl: screenshotUrl ? String(screenshotUrl) : null,
+        status: "pending",
+        createdAt: ts,
+        updatedAt: ts,
+      });
+      await db.insert(schema.adminNotifications).values({
+        id: newId(), title: "New Deposit Request",
+        message: `A user submitted a ${amt}-coin deposit (UTR ${String(utr).trim()}).`, link: "/deposits", isRead: false, createdAt: ts,
+      });
+      return c.json({ success: true, depositId: id });
+    }
+
     // ================= ADMIN =================
     case "setAdminRole": {
       if (!(await isAdmin(c as any))) throw httpsError("permission-denied", "Admin only.");

@@ -547,6 +547,31 @@ export const withdrawals = sqliteTable(
 );
 
 // ---------------------------------------------------------------------------
+// deposits  (manual QR/UPI top-up requests, admin-approved)
+// ---------------------------------------------------------------------------
+export const deposits = sqliteTable(
+  "deposits",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    amount: real("amount").notNull(), // coins to credit on approval
+    payAmount: real("pay_amount").default(0), // INR paid
+    method: text("method").default("qr"), // qr | upi | bank
+    utr: text("utr"), // user-entered bank transaction reference
+    screenshotUrl: text("screenshot_url"),
+    status: text("status").notNull().default("pending"), // pending | approved | rejected
+    adminNote: text("admin_note"),
+    processedBy: text("processed_by"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => ({
+    statusIdx: index("idx_deposits_status").on(t.status, t.createdAt),
+    userIdx: index("idx_deposits_user").on(t.userId),
+  }),
+);
+
+// ---------------------------------------------------------------------------
 // admin_audit_log  (accountability: who did what admin action, when)
 // ---------------------------------------------------------------------------
 export const adminAuditLog = sqliteTable(
