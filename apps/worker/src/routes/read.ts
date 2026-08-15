@@ -269,6 +269,69 @@ readRoute.get("/notifications/unread-count", requireAuth, async (c) => {
   return c.json({ count: row?.v ?? 0 });
 });
 
+// ================= WALLET / COIN LEDGER =================
+// The signed coin transaction history for the authenticated user. Amounts are
+// stored signed (entry fees negative, rewards/purchases positive), so the
+// client can render income/expense directly. Cursor-paginated on createdAt.
+readRoute.get("/transactions", requireAuth, async (c) => {
+  const db = getDb(c.env);
+  const uid = c.get("user").uid;
+  const limit = Math.min(parseInt(c.req.query("limit") || "30", 10), 100);
+  const cursor = c.req.query("cursor"); // createdAt of the last row seen
+
+  const where = cursor
+    ? and(eq(schema.coinTransactions.uid, uid), lt(schema.coinTransactions.createdAt, Number(cursor)))
+    : eq(schema.coinTransactions.uid, uid);
+
+  const rows = await db
+    .select()
+    .from(schema.coinTransactions)
+    .where(where)
+    .orderBy(desc(schema.coinTransactions.createdAt))
+    .limit(limit + 1)
+    .all();
+
+  const hasMore = rows.length > limit;
+  const page = hasMore ? rows.slice(0, limit) : rows;
+  const nextCursor = hasMore ? String(page[page.length - 1].createdAt) : null;
+
+  return c.json({
+    transactions: page.map((r: any) => ({
+      id: r.id,
+      amount: r.amount,
+      type: r.type,
+      description: r.description || r.type,
+      contestId: r.contestId ?? null,
+      matchId: r.matchId ?? null,
+      createdAt: r.createdAt,
+    })),
+    nextCursor,
+  });
+});
+
+// Public catalog of purchasable coin packages (used by the store to build a
+// Razorpay order via the server-authoritative `createOrder` action). Only
+// active packages are exposed; pricing lives server-side.
+readRoute.get("/coin-packages", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db
+    .select()
+    .from(schema.coinPackages)
+    .where(eq(schema.coinPackages.active, true))
+    .orderBy(asc(schema.coinPackages.sortOrder))
+    .all();
+  return c.json(
+    rows.map((p: any) => ({
+      id: p.id,
+      name: p.name,
+      coins: p.coins,
+      bonusCoins: p.bonusCoins,
+      priceInr: p.priceInr,
+      totalCoins: (Number(p.coins) || 0) + (Number(p.bonusCoins) || 0),
+    })),
+  );
+});
+
 // ================= USERS =================
 readRoute.get("/users/suggested", optionalAuth, async (c) => {
   const db = getDb(c.env);

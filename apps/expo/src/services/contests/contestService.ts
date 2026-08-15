@@ -1,5 +1,6 @@
 import { Contest } from '@/src/types/contest';
 import { callApi, readApi } from '../api';
+import { getDeviceId } from '@/src/lib/deviceId';
 
 /**
  * All reads now hit the Cloudflare Worker /read endpoints (D1) instead of
@@ -32,9 +33,12 @@ export const contestService = {
   joinMatch: async (data: any) => callApi('joinMatch', data),
 
   /** Vote on a participant in a match. */
-  voteOnMatch: async (matchId: string, votedForUid: string, deviceId: string = 'unknown') => {
+  voteOnMatch: async (matchId: string, votedForUid: string, deviceId?: string) => {
     try {
-      return await callApi('submitVote', { matchId, votedForUid, deviceId });
+      // Use a stable per-install device id so the server can de-duplicate votes;
+      // callers no longer need to pass a (previously hardcoded) placeholder.
+      const did = deviceId || (await getDeviceId());
+      return await callApi('submitVote', { matchId, votedForUid, deviceId: did });
     } catch (error) { console.error("Error submitting vote:", error); throw error; }
   },
 

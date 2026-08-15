@@ -12,17 +12,10 @@ import { Colors } from '@/constants/theme';
 import { useProfile } from '@/src/hooks/useProfileData';
 import { walletService } from '@/src/services/wallet/walletService';
 import { useFeature } from '@/src/services/appSettings';
+import { readApi } from '@/src/services/api';
+import { useQuery } from '@tanstack/react-query';
 
 const { width, height } = Dimensions.get('window');
-
-// Mock transactions
-const MOCK_TRANSACTIONS = [
-  { id: '1', type: 'deposit', amount: 500, date: '2023-10-25', description: 'Top Up', category: 'Income' },
-  { id: '2', type: 'contest_entry', amount: -50, date: '2023-10-24', description: 'Photo Battle Entry', category: 'Expense' },
-  { id: '3', type: 'win', amount: 200, date: '2023-10-22', description: 'Contest Win', category: 'Income' },
-  { id: '4', type: 'bonus', amount: 20, date: '2023-10-20', description: 'Daily Bonus', category: 'Income' },
-  { id: '5', type: 'gift', amount: -10, date: '2023-10-19', description: 'Sent Gift', category: 'Expense' },
-];
 
 const DAILY_REWARDS = [10, 15, 20, 25, 30, 50, 100];
 const FILTERS = ['All', 'Income', 'Expense'];
@@ -76,8 +69,24 @@ export default function WalletScreen() {
   const [isWatchingAd, setIsWatchingAd] = useState(false);
   const [adTimer, setAdTimer] = useState(5);
 
+  // Real transaction history from the coin ledger (signed amounts).
+  const { data: txnData, isLoading: txnLoading } = useQuery({
+    queryKey: ['transactions', user?.uid],
+    queryFn: async () => {
+      const res: any = await readApi('/read/transactions', { limit: 50 });
+      return (res?.transactions || []).map((t: any) => ({
+        id: t.id,
+        type: t.type,
+        amount: t.amount,
+        description: t.description || t.type,
+        date: t.createdAt ? new Date(Number(t.createdAt)).toLocaleDateString() : '',
+      }));
+    },
+    enabled: !!user?.uid,
+  });
+
   // Filter Logic
-  const filteredTransactions = MOCK_TRANSACTIONS.filter(t => {
+  const filteredTransactions = (txnData || []).filter((t: any) => {
     if (activeFilter === 'All') return true;
     if (activeFilter === 'Income') return t.amount > 0;
     if (activeFilter === 'Expense') return t.amount < 0;

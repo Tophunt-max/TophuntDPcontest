@@ -34,8 +34,24 @@ import { useAppConfig, isUpdateRequired } from '@/src/services/appSettings';
 import { useAuth } from '@/src/hooks/useAuth'; // Import useAuth hook
 import { notificationService } from '@/src/services/notifications/notificationService';
 import { AnnouncementBanner } from '@/src/components/ui/AnnouncementBanner';
+import { ErrorBoundary } from '@/src/components/ErrorBoundary';
 
-const queryClient = new QueryClient();
+// Resilient defaults: retry transient failures, keep data briefly fresh, and
+// refetch when connectivity returns — important on flaky mobile networks.
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      retry: 2,
+      retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 8000),
+      staleTime: 30_000,
+      refetchOnReconnect: true,
+      refetchOnWindowFocus: false,
+    },
+    mutations: {
+      retry: 0,
+    },
+  },
+});
 
 // Component to handle maintenance redirect logic
 function MaintenanceGuard({ children }: { children: React.ReactNode }) {
@@ -93,23 +109,35 @@ function RootLayoutNav() {
           return;
       }
 
-      // 2. Handle Specific Types based on targetId
+      // 2. Handle Specific Types based on targetId. Route to real screens that
+      //    actually exist (the previous targets like `/profile/view/:id` and
+      //    `/contest/:id` had no matching route and dead-ended). Wrapped in
+      //    try/catch so a bad payload falls back to the notifications list.
       if (data?.targetId) {
-          switch (data.type) {
-              case 'follow':
-                  router.push(`/profile/view/${data.targetId}`); // Assuming you have a user view page
-                  break;
-              case 'like':
-              case 'comment':
-                  // Redirect to Post Details (Check if it's a post or contest match)
-                  // For now, assuming post
-                  router.push(`/home`); // Ideally: /post/${data.targetId}
-                  break;
-              case 'contest':
-                  router.push(`/contest/${data.targetId}`); // Assuming contest detail page exists
-                  break;
-              default:
-                  router.push('/notifications');
+          try {
+              switch (data.type) {
+                  case 'follow':
+                  case 'profile_visit':
+                      // Profile screen is app/profile/index.tsx?userId=...
+                      router.push(`/profile?userId=${data.targetId}`);
+                      break;
+                  case 'like':
+                  case 'comment':
+                      // Post permalink is the root-level app/[slug].tsx route.
+                      router.push(`/${data.targetId}`);
+                      break;
+                  case 'contest':
+                  case 'match':
+                      // No standalone contest/match detail route exists yet —
+                      // send the user to the live battles feed on home.
+                      router.push('/home');
+                      break;
+                  default:
+                      router.push('/notifications');
+              }
+          } catch (e) {
+              console.error('Notification navigation failed', e);
+              router.push('/notifications');
           }
       } else {
           router.push('/notifications');
@@ -182,19 +210,21 @@ export default function RootLayout() {
   const colorScheme = useColorScheme();
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
-      <SafeAreaProvider>
-        <QueryClientProvider client={queryClient}>
-          <PaperProvider>
-            <ToastProvider>
-              <ThemeProvider value={colorScheme === 'dark' ? darkTheme : lightTheme}>
-                <RootLayoutNav />
-                <StatusBar style="auto" />
-              </ThemeProvider>
-            </ToastProvider>
-          </PaperProvider>
-        </QueryClientProvider>
-      </SafeAreaProvider>
-    </GestureHandlerRootView>
+    <ErrorBoundary>
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <SafeAreaProvider>
+          <QueryClientProvider client={queryClient}>
+            <PaperProvider>
+              <ToastProvider>
+                <ThemeProvider value={colorScheme === 'dark' ? darkTheme : lightTheme}>
+                  <RootLayoutNav />
+                  <StatusBar style="auto" />
+                </ThemeProvider>
+              </ToastProvider>
+            </PaperProvider>
+          </QueryClientProvider>
+        </SafeAreaProvider>
+      </GestureHandlerRootView>
+    </ErrorBoundary>
   );
 }

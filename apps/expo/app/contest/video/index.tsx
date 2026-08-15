@@ -12,6 +12,7 @@ import { useProfile } from '@/src/hooks/useProfileData';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SuccessModal } from '@/src/components/forms/SuccessModal';
+import { getDeviceId } from '@/src/lib/deviceId';
 
 const BRAND_PRIMARY = '#FF4D67';
 
@@ -81,23 +82,27 @@ export default function VideoContestScreen() {
       return;
     }
 
-    const fee = selectedContest.entryFishCoins || 0;
-    if ((profile?.coins || 0) < fee) {
-        Alert.alert("Insufficient Coins", `Need ${fee} Coins. Current: ${profile?.coins || 0}`);
+    const fee = selectedContest.entryFishCoins || selectedContest.entryFee || 0;
+    // Profile balance is stored as `Dpcoin` (there is no `coins` field), so the
+    // old `profile?.coins` read was always undefined and blocked every entry.
+    const userCoins = (profile as any)?.Dpcoin ?? (profile as any)?.coins ?? 0;
+    if (userCoins < fee) {
+        Alert.alert("Insufficient Coins", `Need ${fee} Coins. Current: ${userCoins}`);
         return;
     }
 
     setUploading(true);
     try {
       const downloadUrl = await contestMediaService.uploadMedia(media, selectedContest.id || selectedContest.contestId, user.uid, 'video');
-      
+      const deviceId = await getDeviceId();
+
       if (mode === 'join' || matchId) {
         await contestService.joinMatch({
           matchId: matchId as string || selectedContest.id,
           mediaUrl: downloadUrl,
           mediaType: 'video',
           caption,
-          deviceId: 'device-id'
+          deviceId,
         });
       } else {
         await contestService.startMatch({
@@ -105,7 +110,7 @@ export default function VideoContestScreen() {
           mediaUrl: downloadUrl,
           mediaType: 'video',
           caption,
-          deviceId: 'device-id'
+          deviceId,
         });
       }
       setShowSuccessModal(true);

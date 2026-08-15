@@ -41,6 +41,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { ImageViewer } from '@/src/components/ui/ImageViewer';
 import * as Haptics from 'expo-haptics';
+import { getDeviceId } from '@/src/lib/deviceId';
 
 const PINK_ACCENT = '#FFB1BD';
 const PRIMARY_COLOR = '#FF4D67';
@@ -229,14 +230,15 @@ export default function BattleSetupScreen() {
         setUploading(true);
         try {
             const downloadUrl = await contestMediaService.uploadMedia(media, selectedContest.id || selectedContest.contestId, user.uid, 'photo');
-            
+            const deviceId = await getDeviceId();
+
             const matchData = {
               mediaUrl: downloadUrl,
               mediaType: 'photo',
               caption: caption,
               displayName: displayName,
               username: username,
-              deviceId: 'device-id' 
+              deviceId,
             };
       
             if (selectedContest.isJoinMode || mode === 'join') {

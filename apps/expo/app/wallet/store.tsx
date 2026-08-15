@@ -4,69 +4,118 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { walletService } from '@/src/services/wallet/walletService';
+import { useQuery } from '@tanstack/react-query';
+import { readApi } from '@/src/services/api';
+import { purchasePackage } from '@/src/services/wallet/razorpayCheckout';
 import { useAuth } from '@/src/hooks/useAuth';
+import { useProfile } from '@/src/hooks/useProfileData';
 import { Colors } from '@/constants/theme';
 
-const PACKAGES = [
-  { id: '1', coins: 100, price: '$1.99', popular: false },
-  { id: '2', coins: 500, price: '$4.99', popular: true }, // Best Value
-  { id: '3', coins: 1200, price: '$9.99', popular: false },
-  { id: '4', coins: 2500, price: '$19.99', popular: false },
-];
+interface CoinPackage {
+  id: string;
+  name?: string;
+  coins: number;
+  bonusCoins: number;
+  priceInr: number;
+  totalCoins: number;
+  popular?: boolean;
+}
 
 export default function CoinStoreScreen() {
   const router = useRouter();
   const { user } = useAuth();
+  const { data: profile, refetch: refetchProfile } = useProfile(user?.uid || '');
   const [loading, setLoading] = useState<string | null>(null);
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
   const textColor = isDark ? Colors.dark.text : Colors.light.text;
 
-  const handlePurchase = async (pkg: any) => {
-    if (!user) return;
+  // Real, server-priced packages (pricing lives in the coin_packages table).
+  const { data: packages, isLoading, isError, refetch } = useQuery({
+    queryKey: ['coin-packages'],
+    queryFn: async () => {
+      const rows = (await readApi('/read/coin-packages')) as CoinPackage[];
+      // Flag the best-value package (highest coins-per-rupee) for the UI badge.
+      if (rows && rows.length) {
+        let bestIdx = 0;
+        let bestRatio = 0;
+        rows.forEach((p, i) => {
+          const ratio = p.priceInr > 0 ? p.totalCoins / p.priceInr : 0;
+          if (ratio > bestRatio) { bestRatio = ratio; bestIdx = i; }
+        });
+        rows[bestIdx].popular = true;
+      }
+      return rows;
+    },
+  });
+
+  const formatInr = (v: number) => `₹${Number(v).toLocaleString('en-IN')}`;
+
+  const handlePurchase = async (pkg: CoinPackage) => {
+    if (!user) {
+      router.push('/auth/login');
+      return;
+    }
     setLoading(pkg.id);
     try {
-      // A verified Razorpay payment proof is required by the server. Until the
-      // checkout flow is wired up, this call will be rejected server-side — we
-      // surface the real reason rather than pretending the purchase succeeded.
-      await walletService.purchaseCoins(pkg.coins, pkg.price);
-      Alert.alert("Success", `You purchased ${pkg.coins} Dpcoins!`);
+      const { coins } = await purchasePackage(
+        { id: pkg.id, name: pkg.name },
+        {
+          email: profile?.email || undefined,
+          name: profile?.fullName || undefined,
+          contact: (profile as any)?.phone || undefined,
+        },
+      );
+      await refetchProfile();
+      Alert.alert('Success 🎉', `${coins} Dpcoins added to your wallet!`);
       router.back();
     } catch (error: any) {
-      const reason = error?.details || error?.message || "Transaction could not be completed. Please try again.";
-      Alert.alert("Payment Failed", reason);
+      const msg = error?.message || error?.details || 'Transaction could not be completed. Please try again.';
+      // "Payment cancelled." is a normal user action — keep it low-key.
+      if (/cancel/i.test(msg)) {
+        Alert.alert('Payment Cancelled', 'You cancelled the payment. No coins were charged.');
+      } else {
+        Alert.alert('Payment Failed', msg);
+      }
     } finally {
       setLoading(null);
     }
   };
 
-  const renderItem = ({ item }: { item: any }) => (
-    <TouchableOpacity 
-      style={[styles.card, { backgroundColor: isDark ? '#1F222A' : '#FFF', borderColor: item.popular ? '#FF4D67' : (isDark ? '#35383F' : '#EEE') }, item.popular && styles.popularCard]}
+  const renderItem = ({ item }: { item: CoinPackage }) => (
+    <TouchableOpacity
+      style={[
+        styles.card,
+        { backgroundColor: isDark ? '#1F222A' : '#FFF', borderColor: item.popular ? '#FF4D67' : (isDark ? '#35383F' : '#EEE') },
+        item.popular && styles.popularCard,
+      ]}
       onPress={() => handlePurchase(item)}
       disabled={!!loading}
+      activeOpacity={0.85}
     >
       {item.popular && (
         <View style={styles.badge}>
           <Text style={styles.badgeText}>BEST VALUE</Text>
         </View>
       )}
-      
+
       <View style={styles.coinContainer}>
         <Ionicons name="flash" size={32} color="#FF4D67" />
-        <Text style={[styles.coinText, { color: textColor }]}>{item.coins}</Text>
+        <Text style={[styles.coinText, { color: textColor }]}>{item.totalCoins}</Text>
         <Text style={styles.coinLabel}>Dpcoins</Text>
+        {item.bonusCoins > 0 && (
+          <Text style={styles.bonusLabel}>+{item.bonusCoins} bonus</Text>
+        )}
       </View>
 
-      <TouchableOpacity style={[styles.priceBtn, { backgroundColor: isDark ? '#FF4D67' : '#181A20' }]}>
+      <View style={[styles.priceBtn, { backgroundColor: isDark ? '#FF4D67' : '#181A20' }]}>
         {loading === item.id ? (
           <ActivityIndicator color="white" size="small" />
         ) : (
-          <Text style={styles.priceText}>{item.price}</Text>
+          <Text style={styles.priceText}>{formatInr(item.priceInr)}</Text>
         )}
-      </TouchableOpacity>
+      </View>
     </TouchableOpacity>
   );
 
@@ -81,30 +130,40 @@ export default function CoinStoreScreen() {
       </View>
 
       <View style={styles.balanceContainer}>
-        <LinearGradient
-          colors={['#FF4D67', '#FF8A9B']}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 0 }}
-          style={styles.gradient}
-        >
+        <LinearGradient colors={['#FF4D67', '#FF8A9B']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.gradient}>
           <Text style={styles.balanceLabel}>Current Balance</Text>
-          <View style={{flexDirection: 'row', alignItems: 'center'}}>
-             <Ionicons name="flash" size={24} color="white" style={{marginRight: 8}} />
-             <Text style={styles.balanceValue}>Top up to join battles!</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <Ionicons name="flash" size={24} color="white" style={{ marginRight: 8 }} />
+            <Text style={styles.balanceValue}>{profile?.Dpcoin ?? 0} Dpcoins</Text>
           </View>
         </LinearGradient>
       </View>
 
       <Text style={[styles.sectionTitle, { color: textColor }]}>Select a Package</Text>
 
-      <FlatList
-        data={PACKAGES}
-        keyExtractor={(item) => item.id}
-        renderItem={renderItem}
-        numColumns={2}
-        columnWrapperStyle={{ justifyContent: 'space-between' }}
-        contentContainerStyle={{ paddingHorizontal: 20 }}
-      />
+      {isLoading ? (
+        <View style={styles.stateBox}><ActivityIndicator size="large" color="#FF4D67" /></View>
+      ) : isError ? (
+        <View style={styles.stateBox}>
+          <Ionicons name="cloud-offline-outline" size={40} color="#9E9E9E" />
+          <Text style={styles.stateText}>Couldn't load packages.</Text>
+          <TouchableOpacity onPress={() => refetch()}><Text style={styles.retryText}>Tap to retry</Text></TouchableOpacity>
+        </View>
+      ) : !packages || packages.length === 0 ? (
+        <View style={styles.stateBox}>
+          <Ionicons name="pricetags-outline" size={40} color="#9E9E9E" />
+          <Text style={styles.stateText}>No packages available right now.</Text>
+        </View>
+      ) : (
+        <FlatList
+          data={packages}
+          keyExtractor={(item) => item.id}
+          renderItem={renderItem}
+          numColumns={2}
+          columnWrapperStyle={{ justifyContent: 'space-between' }}
+          contentContainerStyle={{ paddingHorizontal: 20 }}
+        />
+      )}
     </SafeAreaView>
   );
 }
@@ -125,6 +184,10 @@ const styles = StyleSheet.create({
   coinContainer: { alignItems: 'center', marginBottom: 15, marginTop: 10 },
   coinText: { fontSize: 24, fontFamily: 'Urbanist-Bold', marginVertical: 5 },
   coinLabel: { color: '#999', fontSize: 12 },
+  bonusLabel: { color: '#4CAF50', fontSize: 11, fontFamily: 'Urbanist-Bold', marginTop: 2 },
   priceBtn: { width: '100%', paddingVertical: 12, borderRadius: 12, alignItems: 'center' },
-  priceText: { color: 'white', fontFamily: 'Urbanist-Bold' }
+  priceText: { color: 'white', fontFamily: 'Urbanist-Bold' },
+  stateBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 50, gap: 10 },
+  stateText: { color: '#9E9E9E', fontFamily: 'Urbanist-Medium', fontSize: 15 },
+  retryText: { color: '#FF4D67', fontFamily: 'Urbanist-Bold', marginTop: 4 },
 });

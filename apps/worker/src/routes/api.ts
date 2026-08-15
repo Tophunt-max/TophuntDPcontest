@@ -351,12 +351,74 @@ apiRoute.post("/", async (c) => {
     }
 
     // ================= WALLET =================
+    // Step 1 of the purchase flow: create a Razorpay order priced SERVER-SIDE
+    // from the coin package. The client never dictates the price or the number
+    // of coins — that is derived here and stashed so `topup` can trust it.
+    case "createOrder": {
+      const { packageId } = body;
+      if (!packageId) throw httpsError("invalid-argument", "packageId is required.");
+      if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET)
+        throw httpsError("failed-precondition", "Payments are not configured on the server.");
+
+      const pkg = await db
+        .select()
+        .from(schema.coinPackages)
+        .where(and(eq(schema.coinPackages.id, String(packageId)), eq(schema.coinPackages.active, true)))
+        .get();
+      if (!pkg) throw httpsError("not-found", "Coin package not found.");
+
+      const priceInr = Number(pkg.priceInr) || 0;
+      if (priceInr <= 0) throw httpsError("failed-precondition", "This package is not purchasable.");
+      const amountPaise = Math.round(priceInr * 100);
+      const totalCoins = (Number(pkg.coins) || 0) + (Number(pkg.bonusCoins) || 0);
+      if (totalCoins <= 0) throw httpsError("failed-precondition", "This package has no coins configured.");
+
+      // Create the order at Razorpay (HTTP Basic auth = key_id:key_secret).
+      const authHeader = btoa(`${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`);
+      const rzpRes = await fetch("https://api.razorpay.com/v1/orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Basic ${authHeader}` },
+        body: JSON.stringify({
+          amount: amountPaise,
+          currency: "INR",
+          receipt: `rcpt_${uid.slice(0, 8)}_${Date.now()}`,
+          notes: { uid, packageId: String(packageId), coins: totalCoins },
+        }),
+      });
+      if (!rzpRes.ok) {
+        const errTxt = await rzpRes.text().catch(() => "");
+        console.error("[createOrder] Razorpay error", rzpRes.status, errTxt);
+        throw httpsError("internal", "Could not create payment order. Please try again.");
+      }
+      const order = (await rzpRes.json()) as any;
+
+      // Persist the server-authoritative intent (fail closed if KV write fails).
+      try {
+        await env.CACHE_KV.put(
+          `rzp_order:${order.id}`,
+          JSON.stringify({ uid, coins: totalCoins, priceInr, packageId: String(packageId) }),
+          { expirationTtl: 3600 },
+        );
+      } catch (e) {
+        console.error("[createOrder] KV put failed", e);
+        throw httpsError("internal", "Could not initialize payment. Please try again.");
+      }
+
+      return c.json({
+        orderId: order.id,
+        amount: amountPaise,
+        currency: "INR",
+        keyId: env.RAZORPAY_KEY_ID,
+        coins: totalCoins,
+        name: pkg.name || `${totalCoins} Dpcoins`,
+      });
+    }
+
+    // Step 2: verify the checkout result and credit coins. The coin count comes
+    // from the order record created above — NOT from the client — so a client
+    // can never mint arbitrary coins by calling this directly.
     case "topup": {
-      const { amount, paymentId, orderId, signature } = body;
-      const coins = Number(amount);
-      // Validate amount: positive integer within a sane cap.
-      if (!Number.isInteger(coins) || coins <= 0 || coins > 1_000_000)
-        throw httpsError("invalid-argument", "Invalid amount.");
+      const { paymentId, orderId, signature } = body;
       if (!paymentId || !orderId || !signature)
         throw httpsError("invalid-argument", "paymentId, orderId and signature are required.");
 
@@ -366,6 +428,20 @@ apiRoute.post("/", async (c) => {
         throw httpsError("failed-precondition", "Payments are not configured on the server.");
       const verified = await verifyRazorpaySignature(env, { orderId, paymentId, signature });
       if (!verified) throw httpsError("permission-denied", "Payment verification failed.");
+
+      // Server-authoritative coin amount from the createOrder record.
+      let record: { uid: string; coins: number } | null = null;
+      try {
+        record = (await env.CACHE_KV.get(`rzp_order:${orderId}`, "json")) as any;
+      } catch (e) {
+        console.error("[topup] KV get failed", e);
+        throw httpsError("internal", "Could not verify the order. Please contact support.");
+      }
+      if (!record) throw httpsError("not-found", "Payment order not found or expired.");
+      if (record.uid !== uid) throw httpsError("permission-denied", "Order does not belong to this user.");
+      const coins = Number(record.coins);
+      if (!Number.isFinite(coins) || coins <= 0 || coins > 1_000_000)
+        throw httpsError("failed-precondition", "Invalid order amount.");
 
       const ts = now();
       // Idempotency guard: the first insert of this paymentId wins; replays are
@@ -385,7 +461,9 @@ apiRoute.post("/", async (c) => {
           id: newId(), uid, amount: coins, type: "purchase", description: `Purchased ${coins} Dpcoins`, createdAt: ts,
         }),
       ]);
-      return c.json({ success: true, message: "Coins added successfully!" });
+      // Best-effort cleanup so the same order can't be reused.
+      try { await env.CACHE_KV.delete(`rzp_order:${orderId}`); } catch { /* ignore */ }
+      return c.json({ success: true, message: "Coins added successfully!", coins });
     }
 
     // ================= ADMIN =================

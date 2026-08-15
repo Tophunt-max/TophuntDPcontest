@@ -9,8 +9,20 @@ import { auth } from './firebase/initFirebase';
  * Set EXPO_PUBLIC_API_URL to the deployed Worker URL
  * (e.g. https://tophunt-api.<subdomain>.workers.dev).
  */
-export const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_URL || 'https://tophunt-api.weadown-in.workers.dev';
+// The Worker base URL MUST be provided via EXPO_PUBLIC_API_URL (set per
+// environment in eas.json / .env). We keep a last-resort fallback so the app
+// never fetches an undefined URL, but warn loudly in development when the env
+// var is missing so staging/dev builds don't silently hit production.
+const FALLBACK_API_URL = 'https://tophunt-api.weadown-in.workers.dev';
+
+if (!process.env.EXPO_PUBLIC_API_URL && __DEV__) {
+  console.warn(
+    '[api] EXPO_PUBLIC_API_URL is not set — falling back to the production Worker URL. ' +
+      'Set EXPO_PUBLIC_API_URL in your .env / EAS env to target the right backend.',
+  );
+}
+
+export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || FALLBACK_API_URL;
 
 // Actions handled by the /auth route (was the `authHandler` callable).
 const AUTH_ACTIONS = new Set([

@@ -1,24 +1,40 @@
 import { callApi } from '../api';
 
+export interface CreatedOrder {
+  orderId: string;
+  amount: number; // in paise
+  currency: string;
+  keyId: string;
+  coins: number;
+  name: string;
+}
+
 export const walletService = {
   /**
-   * Purchase coins — credited via the Worker /api `topup`.
-   *
-   * IMPORTANT: The Worker verifies the payment server-side and requires a real
-   * Razorpay proof (`orderId`, `paymentId`, `signature`). It deliberately
-   * "fails closed" — coins are never minted without a verified payment. A real
-   * Razorpay checkout flow (order creation + signature) must supply `proof`
-   * before this can succeed; there is no client-side mock that will pass.
+   * Step 1 of a coin purchase: ask the server to create a Razorpay order for a
+   * coin package. Pricing and the number of coins are decided SERVER-SIDE from
+   * the coin_packages table — the client only passes the package id. The
+   * returned order + keyId are fed into the Razorpay checkout.
    */
-  purchaseCoins: async (
-    amount: number,
-    _price: string,
-    proof?: { paymentId: string; orderId: string; signature: string },
-  ) => {
+  createOrder: async (packageId: string): Promise<CreatedOrder> => {
     try {
-      return await callApi('topup', { amount, ...(proof || {}) });
+      return (await callApi('createOrder', { packageId })) as CreatedOrder;
     } catch (error) {
-      console.error("Purchase error:", error);
+      console.error("createOrder error:", error);
+      throw error;
+    }
+  },
+
+  /**
+   * Step 2: after checkout, hand the Razorpay proof back to the server. The
+   * Worker verifies the signature and credits the coins recorded against the
+   * order (never a client-supplied amount). "Fails closed" if unverified.
+   */
+  confirmTopup: async (proof: { paymentId: string; orderId: string; signature: string }) => {
+    try {
+      return await callApi('topup', proof);
+    } catch (error) {
+      console.error("confirmTopup error:", error);
       throw error;
     }
   },
