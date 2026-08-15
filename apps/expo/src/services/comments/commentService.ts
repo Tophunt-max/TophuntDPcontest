@@ -1,4 +1,5 @@
 import { callApi, readApi, poll } from '../api';
+import { live } from '../realtime';
 
 export interface Comment {
   id: string;
@@ -28,17 +29,32 @@ export const commentService = {
     return res.commentId;
   },
 
-  // Realtime via polling (was Firestore onSnapshot).
+  /**
+   * Live comments.
+   * - For contest matches, subscribe to the match's WebSocket channel so new
+   *   comments appear instantly (with a slow safety-net refresh built into
+   *   `live`). The server publishes `{ type: 'comment' }` on `match:<id>`.
+   * - Posts have no realtime channel yet, so they keep a light poll. (Add a
+   *   `post:<id>` channel on the worker to make these instant too.)
+   */
   subscribeToComments: (
     postId: string,
     callback: (comments: Comment[]) => void,
     collectionName: string = 'posts',
   ) => {
-    return poll<Comment[]>(
-      () => readApi('/read/comments', { targetType: collectionName, targetId: postId }),
-      (comments) => callback(comments || []),
-      6000,
-    );
+    const fetcher = () => readApi('/read/comments', { targetType: collectionName, targetId: postId });
+    const isMatch = collectionName === 'matches' || collectionName === 'contestMatches';
+
+    if (isMatch) {
+      return live<Comment[]>(
+        `match:${postId}`,
+        fetcher,
+        (comments) => callback(comments || []),
+        { filter: (e) => e.type === 'comment' },
+      );
+    }
+
+    return poll<Comment[]>(fetcher, (comments) => callback(comments || []), 6000);
   },
 
   deleteComment: async (postId: string, commentId: string, collectionName: string = 'posts') => {

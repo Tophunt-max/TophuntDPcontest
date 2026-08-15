@@ -94,12 +94,24 @@ ones that aren't tracked yet.
 
 ## 🟠 Stability & scale
 
-### 7. Realtime (infrastructure already exists — migrate the client)
-The worker already has Durable Objects (`REALTIME`, `VOTE_COUNTER`) and a
-`publish`/`voteCounter` layer, but the **client still polls every 5s**
-(`poll()` in `src/services/api.ts`). Migrate hot paths (live voting, chat,
-waiting-match) to a WebSocket/SSE connection backed by the existing DO, keeping
-polling as a fallback. This cuts latency and request volume at scale.
+### 7. Realtime — DONE (hot paths on WebSockets)
+The worker's `RealtimeHub` Durable Object + `/ws?channel=...&token=...` endpoint
+and the client's `src/services/realtime.ts` (`subscribeChannel` + `live()`,
+multiplexed, ref-counted, auto-reconnect, heartbeat) now drive all hot paths off
+polling:
+- Live match vote/like/comment/share/reaction counts (`PostCard`) → `match:<id>`
+- Chat messages → `chat:<id>`; chat-list bumps → `user:<uid>`
+- Notifications (unread count + list) → `user:<uid>`
+- Match/battle comments → `match:<id>` (migrated from a 6s poll)
+
+`live()` keeps a slow (30s) safety-net refetch so a missed event or dropped
+socket self-heals. Remaining low-frequency `poll()` calls (app config, auth
+status, legal content) intentionally stay polled — they have no realtime channel
+and aren't hot.
+
+Optional follow-up: add a `post:<id>` channel on the worker (publish in the
+post comment/like handlers + authorize it in `/ws`) to make **post** comments
+instant too; today they still use a light 6s poll.
 
 ### 8. Offline & error UX — DONE (baseline)
 - React Query retries + refetches on reconnect, and `onlineManager` is now wired
