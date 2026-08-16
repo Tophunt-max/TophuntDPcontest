@@ -1,9 +1,10 @@
 import { uploadToS3 } from "@/src/lib/uploadToS3";
 
 /**
- * Contest media upload — now goes to Cloudflare R2 via the Worker's presigned
- * URL (getPresignedUrl), NOT Firebase Storage. Signature is unchanged so
- * callers (contest photo/video setup) don't need edits.
+ * Contest media upload — streams to Cloudflare R2 via the Worker's authenticated
+ * `POST /upload` proxy (NOT a direct S3/R2 presigned PUT, which CORS-fails in the
+ * browser). Signature is unchanged so callers (contest photo/video setup) don't
+ * need edits.
  */
 export const contestMediaService = {
   uploadMedia: async (
