@@ -38,6 +38,14 @@ interface PostCardProps {
 
 const AnimatedLinearGradient = Animated.createAnimatedComponent(LinearGradient);
 
+/** Compact vote count formatting (1.2k / 3.4M) for the on-image chips. */
+const formatVotes = (n: number): string => {
+  const value = Number(n) || 0;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value % 1_000_000 === 0 ? 0 : 1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(value % 1_000 === 0 ? 0 : 1)}k`;
+  return String(value);
+};
+
 export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => {
   const { user } = useAuth();
   const { addToast } = useToast();
@@ -50,6 +58,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
   const cardColor = isDark ? '#1A1D23' : '#FFFFFF';
   const textColor = isDark ? Colors.dark.text : Colors.light.text;
   const subTextColor = isDark ? '#BDBDBD' : '#616161';
+  const trackColor = isDark ? '#2A2E37' : '#EEF0F4';
 
   // Real-time states
   const initialVotesA = Number(item.userA.votes || 0);
@@ -123,8 +132,11 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
     if (matchStatus !== 'active') onMatchEnded?.(item.id);
   }, [item.id, matchStatus, onMatchEnded]);
 
-  const animatedBarStyle = useAnimatedStyle(() => ({
+  const animatedBarStyleA = useAnimatedStyle(() => ({
     width: `${barProgress.value * 100}%`,
+  }));
+  const animatedBarStyleB = useAnimatedStyle(() => ({
+    width: `${(1 - barProgress.value) * 100}%`,
   }));
 
   const triggerHaptic = () => {
@@ -282,8 +294,17 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
   const votingClosed = matchStatus !== 'active' || timeRemaining === 'Ended';
   const votingDisabled = isVoting || hasVoted || votingClosed;
 
+  // Urgency: highlight the countdown chip in the final hour of an open battle.
+  const endMs = item.expiresAt
+    ? (item.expiresAt.toDate ? item.expiresAt.toDate() : new Date(item.expiresAt)).getTime()
+    : 0;
+  const msLeft = endMs - Date.now();
+  const isUrgent = !votingClosed && msLeft > 0 && msLeft < 3_600_000;
+
   const isALeading = votesA > votesB;
   const isBLeading = votesB > votesA;
+  const votedForA = votedForUid === item.userA.uid;
+  const votedForB = votedForUid === item.userB?.uid;
 
   const picA = item.userA.profilePic || item.userA.profileImageUrl || `https://ui-avatars.com/api/?name=${nameA}&background=random`;
   const picB = item.userB?.profilePic || item.userB?.profileImageUrl || `https://ui-avatars.com/api/?name=${nameB}&background=random`;
@@ -308,40 +329,64 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
                 <Image source={{ uri: picA }} style={styles.avatarImage} />
               </View>
               {item.userB && (
-                <View style={[styles.avatarWrapper, isBLeading && styles.leadingAvatar, { marginLeft: -15, zIndex: 1 }]}>
+                <View style={[styles.avatarWrapper, isBLeading && styles.leadingAvatar, { marginLeft: -14, zIndex: 1 }]}>
                   <Image source={{ uri: picB }} style={styles.avatarImage} />
                 </View>
               )}
            </View>
            <View style={styles.nameContainer}>
-               <Text style={[styles.username, { color: textColor }]} numberOfLines={1}>
-                   <Text style={{ fontFamily: 'Urbanist-Bold', fontSize: 16 }}>{nameA}</Text>
-                   <Text style={{ fontFamily: 'Urbanist-Medium', fontSize: 13, color: subTextColor }}> vs </Text>
-                   <Text style={{ fontFamily: 'Urbanist-Bold', fontSize: 16 }}>{nameB}</Text>
-               </Text>
-               <Text style={[styles.timeText, { color: subTextColor }]}>{item.title}</Text> 
+               <View style={styles.nameRow}>
+                   <Text style={[styles.nameText, { color: textColor }]} numberOfLines={1}>{nameA}</Text>
+                   <View style={styles.vsPill}><Text style={styles.vsPillText}>VS</Text></View>
+                   <Text style={[styles.nameText, { color: textColor }]} numberOfLines={1}>{nameB}</Text>
+               </View>
+               <Text style={[styles.timeText, { color: subTextColor }]} numberOfLines={1}>{item.title}</Text>
            </View>
         </View>
         {item.entryFee > 0 && (
-            <View style={[styles.prizeBadge, { flexDirection: 'row', alignItems: 'center', gap: 4 }]}>
-                <Ionicons name="trophy" size={13} color="#FFD700" />
-                <Text style={styles.prizeText}>{item.entryFee * 1.8} Dpcoins</Text>
-            </View>
+            <LinearGradient
+                colors={['#FFF4C2', '#FFE68A']}
+                start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+                style={styles.prizeBadge}
+            >
+                <Ionicons name="trophy" size={12} color="#E6A200" />
+                <Text style={styles.prizeText}>{item.entryFee * 1.8}</Text>
+            </LinearGradient>
         )}
       </View>
 
       <Pressable onPress={handleDoubleTap} style={styles.mediaSection}>
-        <View style={styles.imageWrapper}>
-            <Image source={{ uri: item.userA.mediaUrl }} style={[styles.postImage, isALeading && styles.leadingImage]} />
-            {isALeading && <View style={styles.crownContainer}><MaterialCommunityIcons name="crown" size={20} color="#FFD700" /></View>}
+        <View style={[styles.imageWrapper, isALeading && styles.leadingImage]}>
+            <Image source={{ uri: item.userA.mediaUrl }} style={styles.postImage} />
+            <LinearGradient colors={['transparent', 'rgba(0,0,0,0.6)']} style={styles.imageOverlay} pointerEvents="none" />
+            {isALeading && <View style={styles.crownContainer}><MaterialCommunityIcons name="crown" size={18} color="#FFD700" /></View>}
+            <View style={[styles.voteCountChip, styles.voteChipA]}>
+                <Ionicons name="flame" size={11} color="#FFF" />
+                <Text style={styles.voteCountText}>{formatVotes(votesA)}</Text>
+            </View>
         </View>
-        <View style={styles.imageWrapper}>
-            <Image source={{ uri: item.userB.mediaUrl }} style={[styles.postImage, isBLeading && styles.leadingImage]} />
-            {isBLeading && <View style={styles.crownContainer}><MaterialCommunityIcons name="crown" size={20} color="#FFD700" /></View>}
+        <View style={[styles.imageWrapper, isBLeading && styles.leadingImage]}>
+            <Image source={{ uri: item.userB.mediaUrl }} style={styles.postImage} />
+            <LinearGradient colors={['transparent', 'rgba(0,0,0,0.6)']} style={styles.imageOverlay} pointerEvents="none" />
+            {isBLeading && <View style={styles.crownContainer}><MaterialCommunityIcons name="crown" size={18} color="#FFD700" /></View>}
+            <View style={[styles.voteCountChip, styles.voteChipB]}>
+                <Ionicons name="flame" size={11} color="#FFF" />
+                <Text style={styles.voteCountText}>{formatVotes(votesB)}</Text>
+            </View>
+        </View>
+
+        <View pointerEvents="none" style={styles.vsBadge}>
+            <LinearGradient
+                colors={['#FF4D7E', '#FF8A4D']}
+                start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+                style={styles.vsBadgeGradient}
+            >
+                <Text style={styles.vsBadgeText}>VS</Text>
+            </LinearGradient>
         </View>
         
         <Animated.View pointerEvents="none" style={[styles.largeHeart, animatedHeartStyle]}>
-            <HeartIcon_Filled width={100} height={100} color="#FF4D67" />
+            <HeartIcon_Filled width={90} height={90} color="#FF4D67" />
         </Animated.View>
       </Pressable>
       
@@ -349,37 +394,50 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
         <TouchableOpacity
           style={[
             styles.voteButton,
-            votedForUid === item.userA.uid && styles.selectedVoteButton,
-            votingDisabled && votedForUid !== item.userA.uid && styles.disabledVoteButton,
+            styles.voteButtonA,
+            votedForA && styles.selectedVoteButton,
+            votingDisabled && !votedForA && styles.disabledVoteButton,
           ]}
           onPress={() => handleVote(item.userA.uid)}
           disabled={votingDisabled}
+          activeOpacity={0.85}
           accessibilityRole="button"
           accessibilityLabel={`Vote for ${nameA}`}
           accessibilityHint={votingClosed ? 'Voting has ended' : 'Submits your one vote for this battle'}
-          accessibilityState={{ disabled: votingDisabled, busy: submittingForUid === item.userA.uid, selected: votedForUid === item.userA.uid }}
+          accessibilityState={{ disabled: votingDisabled, busy: submittingForUid === item.userA.uid, selected: votedForA }}
         >
           {submittingForUid === item.userA.uid
             ? <ActivityIndicator size="small" color="#FFF" />
-            : <Text style={styles.voteButtonText}>{votedForUid === item.userA.uid ? 'Voted' : `Vote ${nameA}`}</Text>}
+            : votedForA
+              ? <View style={styles.voteButtonInner}>
+                  <Ionicons name="checkmark-circle" size={16} color="#FFF" />
+                  <Text style={styles.voteButtonText}>Voted</Text>
+                </View>
+              : <Text style={styles.voteButtonText} numberOfLines={1}>Vote {nameA}</Text>}
         </TouchableOpacity>
         <TouchableOpacity
           style={[
             styles.voteButton,
             styles.voteButtonB,
-            votedForUid === item.userB.uid && styles.selectedVoteButton,
-            votingDisabled && votedForUid !== item.userB.uid && styles.disabledVoteButton,
+            votedForB && styles.selectedVoteButton,
+            votingDisabled && !votedForB && styles.disabledVoteButton,
           ]}
           onPress={() => handleVote(item.userB.uid)}
           disabled={votingDisabled}
+          activeOpacity={0.85}
           accessibilityRole="button"
           accessibilityLabel={`Vote for ${nameB}`}
           accessibilityHint={votingClosed ? 'Voting has ended' : 'Submits your one vote for this battle'}
-          accessibilityState={{ disabled: votingDisabled, busy: submittingForUid === item.userB.uid, selected: votedForUid === item.userB.uid }}
+          accessibilityState={{ disabled: votingDisabled, busy: submittingForUid === item.userB.uid, selected: votedForB }}
         >
           {submittingForUid === item.userB.uid
             ? <ActivityIndicator size="small" color="#FFF" />
-            : <Text style={styles.voteButtonText}>{votedForUid === item.userB.uid ? 'Voted' : `Vote ${nameB}`}</Text>}
+            : votedForB
+              ? <View style={styles.voteButtonInner}>
+                  <Ionicons name="checkmark-circle" size={16} color="#FFF" />
+                  <Text style={styles.voteButtonText}>Voted</Text>
+                </View>
+              : <Text style={styles.voteButtonText} numberOfLines={1}>Vote {nameB}</Text>}
         </TouchableOpacity>
       </View>
       
@@ -388,21 +446,35 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
         accessible
         accessibilityLabel={`${nameA} has ${votesA} votes, ${nameB} has ${votesB} votes. ${votingClosed ? 'Voting ended.' : timeRemaining}`}
       >
-        <View style={styles.progressBarContainer}>
+        <View style={[styles.progressTrack, { backgroundColor: trackColor }]}>
             <AnimatedLinearGradient
-                colors={['#FF4D7E', '#FFC54D']}
+                colors={['#FF4D7E', '#FF6FA0']}
                 start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                style={[styles.progressBar, animatedBarStyle]}
+                style={[styles.progressSegment, animatedBarStyleA]}
+            />
+            <AnimatedLinearGradient
+                colors={['#FFA24D', '#FF8A4D']}
+                start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                style={[styles.progressSegment, animatedBarStyleB]}
             />
         </View>
         <View style={styles.voteLabels}>
-            <Text style={[styles.votePercent, { color: textColor }]}>{Math.round(progressA * 100)}%</Text>
-            <Text style={[styles.pollEnds, { color: subTextColor }]}>{timeRemaining}</Text>
-            <Text style={[styles.votePercent, { color: textColor }]}>{Math.round((1 - progressA) * 100)}%</Text>
+            <Text style={[styles.votePercent, { color: '#FF4D7E' }]}>{Math.round(progressA * 100)}%</Text>
+            <View style={[styles.timeChip, { backgroundColor: trackColor }, isUrgent && styles.timeChipUrgent]}>
+                <Ionicons
+                    name={votingClosed ? 'lock-closed' : 'time-outline'}
+                    size={11}
+                    color={isUrgent ? '#FFF' : subTextColor}
+                />
+                <Text style={[styles.timeChipText, { color: isUrgent ? '#FFF' : subTextColor }]}>
+                    {votingClosed ? 'Ended' : timeRemaining}
+                </Text>
+            </View>
+            <Text style={[styles.votePercent, { color: '#FF8A4D' }]}>{Math.round((1 - progressA) * 100)}%</Text>
         </View>
       </View>
 
-      <View style={styles.actionBar}>
+      <View style={[styles.actionBar, { borderTopColor: trackColor }]}>
         <View style={styles.leftActions}>
             <TouchableOpacity style={styles.actionItem} onPress={handleLike}>
                {isLiked ? <HeartIcon_Filled width={24} height={24} /> : <HeartIcon_Light width={24} height={24} color={textColor} />}
@@ -434,39 +506,65 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
 PostCard.displayName = 'PostCard';
 
 const styles = StyleSheet.create({
-  postContainer: { borderRadius: 24, marginHorizontal: 8, marginBottom: 20, elevation: 3, paddingBottom: 10, position: 'relative' },
+  postContainer: {
+    borderRadius: 24,
+    marginHorizontal: 10,
+    marginBottom: 20,
+    paddingBottom: 6,
+    position: 'relative',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.08,
+    shadowRadius: 16,
+    elevation: 4,
+  },
   confetti: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 100 },
   confettiAnimation: { width: '100%', height: '100%' },
   postHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12 },
   userInfo: { flexDirection: 'row', alignItems: 'center', flex: 1 },
   avatarContainer: { flexDirection: 'row', alignItems: 'center' },
-  avatarWrapper: { width: 38, height: 38, borderRadius: 19, borderWidth: 2, borderColor: '#FFF', overflow: 'hidden', backgroundColor: '#EEE' },
+  avatarWrapper: { width: 40, height: 40, borderRadius: 20, borderWidth: 2, borderColor: '#FFF', overflow: 'hidden', backgroundColor: '#EEE' },
   avatarImage: { width: '100%', height: '100%', resizeMode: 'cover' },
   leadingAvatar: { borderColor: '#FFD700', borderWidth: 2.5 },
   nameContainer: { marginLeft: 10, flex: 1 },
-  username: { fontSize: 16 },
-  timeText: { fontFamily: 'Urbanist-Medium', fontSize: 12, marginTop: 1 },
-  prizeBadge: { backgroundColor: '#FFF9C4', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, borderWidth: 1, borderColor: '#FFD700' },
-  prizeText: { fontFamily: 'Urbanist-Bold', fontSize: 11, color: '#FBC02D' },
-  mediaSection: { flexDirection: 'row', justifyContent: 'space-between', marginHorizontal: 16, gap: 10, position: 'relative' },
-  imageWrapper: { flex: 1, position: 'relative' },
-  postImage: { width: '100%', height: 250, borderRadius: 20, backgroundColor: '#EEE' },
-  leadingImage: { borderWidth: 3, borderColor: '#FFD700' },
-  crownContainer: { position: 'absolute', top: -10, left: '40%', zIndex: 10 },
+  nameRow: { flexDirection: 'row', alignItems: 'center' },
+  nameText: { fontFamily: 'Urbanist-Bold', fontSize: 15, flexShrink: 1, maxWidth: '42%' },
+  vsPill: { backgroundColor: '#FF4D67', borderRadius: 6, paddingHorizontal: 5, paddingVertical: 1, marginHorizontal: 6 },
+  vsPillText: { fontFamily: 'Urbanist-Bold', fontSize: 9, color: '#FFF', letterSpacing: 0.5 },
+  timeText: { fontFamily: 'Urbanist-Medium', fontSize: 12, marginTop: 2 },
+  prizeBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, borderWidth: 1, borderColor: '#FFD700' },
+  prizeText: { fontFamily: 'Urbanist-Bold', fontSize: 11, color: '#B57E00' },
+  mediaSection: { flexDirection: 'row', justifyContent: 'space-between', marginHorizontal: 16, gap: 12, position: 'relative' },
+  imageWrapper: { flex: 1, position: 'relative', borderRadius: 20, overflow: 'hidden', borderWidth: 2, borderColor: 'transparent' },
+  postImage: { width: '100%', height: 260, backgroundColor: '#EEE' },
+  imageOverlay: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 70 },
+  leadingImage: { borderColor: '#FFD700' },
+  crownContainer: { position: 'absolute', top: 8, alignSelf: 'center', left: 0, right: 0, alignItems: 'center', zIndex: 10 },
+  voteCountChip: { position: 'absolute', bottom: 10, left: 10, flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 12 },
+  voteChipA: { backgroundColor: 'rgba(255,77,126,0.9)' },
+  voteChipB: { backgroundColor: 'rgba(255,138,77,0.9)' },
+  voteCountText: { fontFamily: 'Urbanist-Bold', fontSize: 11, color: '#FFF' },
+  vsBadge: { position: 'absolute', top: '50%', left: 0, right: 0, alignItems: 'center', marginTop: -22, zIndex: 15 },
+  vsBadgeGradient: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', borderWidth: 3, borderColor: '#FFF', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 5 },
+  vsBadgeText: { fontFamily: 'Urbanist-Bold', fontSize: 15, color: '#FFF', letterSpacing: 0.5 },
   largeHeart: { position: 'absolute', top: '30%', left: '35%', zIndex: 20 },
-  voteButtonSection: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, marginTop: 15, gap: 10 },
-  voteButton: { flex: 1, minHeight: 44, backgroundColor: '#FF4D67', paddingVertical: 12, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  voteButtonSection: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, marginTop: 16, gap: 12 },
+  voteButton: { flex: 1, minHeight: 46, paddingVertical: 12, paddingHorizontal: 8, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  voteButtonA: { backgroundColor: '#FF4D67' },
   voteButtonB: { backgroundColor: '#FF8A4D' },
-  selectedVoteButton: { backgroundColor: '#2E7D32', opacity: 1 },
-  disabledVoteButton: { opacity: 0.45 },
-  voteButtonText: { fontFamily: 'Urbanist-Bold', fontSize: 12, color: '#FFF' },
-  pollInfoSection: { paddingHorizontal: 16, marginTop: 20 },
-  progressBarContainer: { width: '100%', height: 8, backgroundColor: '#E0E0E0', borderRadius: 4, overflow: 'hidden' },
-  progressBar: { height: '100%', borderRadius: 4 },
-  voteLabels: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 5 },
-  votePercent: { fontFamily: 'Urbanist-Bold', fontSize: 12 },
-  pollEnds: { fontFamily: 'Urbanist-Medium', fontSize: 11 },
-  actionBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 24, paddingTop: 15 },
+  voteButtonInner: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  selectedVoteButton: { backgroundColor: '#22A559', opacity: 1 },
+  disabledVoteButton: { opacity: 0.4 },
+  voteButtonText: { fontFamily: 'Urbanist-Bold', fontSize: 13, color: '#FFF' },
+  pollInfoSection: { paddingHorizontal: 16, marginTop: 18 },
+  progressTrack: { width: '100%', height: 9, borderRadius: 5, overflow: 'hidden', flexDirection: 'row' },
+  progressSegment: { height: '100%' },
+  voteLabels: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 },
+  votePercent: { fontFamily: 'Urbanist-Bold', fontSize: 13 },
+  timeChip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
+  timeChipUrgent: { backgroundColor: '#F0413E' },
+  timeChipText: { fontFamily: 'Urbanist-SemiBold', fontSize: 11 },
+  actionBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 14, marginTop: 14, borderTopWidth: 1 },
   leftActions: { flexDirection: 'row', alignItems: 'center' },
   actionItem: { flexDirection: 'row', alignItems: 'center', marginRight: 24 },
   actionCount: { fontFamily: 'Urbanist-Bold', fontSize: 13, marginLeft: 8 },
