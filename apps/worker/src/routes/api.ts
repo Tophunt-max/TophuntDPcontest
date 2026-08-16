@@ -82,6 +82,9 @@ function getDailyTaskDefs(settings: any): DailyTaskDef[] {
   return DEFAULT_DAILY_TASKS;
 }
 
+/** Max length of a single comment (server-enforced; UI mirrors this). */
+const MAX_COMMENT_LEN = 500;
+
 export const apiRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 // All /api actions require a valid Firebase ID token (matches callable auth).
@@ -1168,13 +1171,16 @@ apiRoute.post("/", async (c) => {
     }
 
     case "commentContest": {
-      const { matchId, text } = body;
-      if (!matchId || !text) throw httpsError("invalid-argument", "matchId and text are required.");
-      await assertClean(env, text);
+      const { matchId } = body;
+      const raw = typeof body.text === "string" ? body.text.trim() : "";
+      if (!matchId) throw httpsError("invalid-argument", "matchId is required.");
+      if (!raw) throw httpsError("invalid-argument", "Comment cannot be empty.");
+      if (raw.length > MAX_COMMENT_LEN) throw httpsError("invalid-argument", `Comment is too long (max ${MAX_COMMENT_LEN} characters).`);
+      await assertClean(env, raw);
       await rateLimit(env, `comment:${uid}`, 30, 60);
       const commentId = newId();
       const ts = now();
-      await db.insert(schema.matchComments).values({ id: commentId, matchId, userId: uid, text, createdAt: ts });
+      await db.insert(schema.matchComments).values({ id: commentId, matchId, userId: uid, text: raw, createdAt: ts });
       const commentCounters = await bumpEngagement(env, matchId, "comment", 1);
       await publish(env, `match:${matchId}`, { type: "comment", commentId, commentCount: commentCounters.comment ?? 0 });
       // Bust the cached comment list so the new comment is visible immediately.
@@ -1235,13 +1241,28 @@ apiRoute.post("/", async (c) => {
 
     // ================= GENERIC COMMENTS (posts or matches) =================
     case "addComment": {
-      const { targetType, targetId, text } = body;
-      if (!targetId || !text) throw httpsError("invalid-argument", "targetId and text are required.");
-      await assertClean(env, text);
-      const commentId = newId();
+      const { targetType, targetId } = body;
+      const raw = typeof body.text === "string" ? body.text.trim() : "";
+      if (!targetId) throw httpsError("invalid-argument", "targetId is required.");
+      if (!raw) throw httpsError("invalid-argument", "Comment cannot be empty.");
+      if (raw.length > MAX_COMMENT_LEN) throw httpsError("invalid-argument", `Comment is too long (max ${MAX_COMMENT_LEN} characters).`);
+      // Spam guard (parity with commentContest) + banned-word moderation.
+      await rateLimit(env, `comment:${uid}`, 30, 60);
+      await assertClean(env, raw);
+      const isMatch = targetType === "matches" || targetType === "contestMatches";
+      // Idempotency: the client may pass a stable clientId so a retried submit
+      // (flaky network) never posts the same comment twice.
+      const clientId = typeof body.clientId === "string" && body.clientId.trim() ? body.clientId.trim().slice(0, 64) : null;
+      const commentId = clientId || newId();
       const ts = now();
-      if (targetType === "matches" || targetType === "contestMatches") {
-        await db.insert(schema.matchComments).values({ id: commentId, matchId: targetId, userId: uid, text, createdAt: ts });
+      if (clientId) {
+        const dupe = isMatch
+          ? await db.select({ id: schema.matchComments.id }).from(schema.matchComments).where(eq(schema.matchComments.id, commentId)).get()
+          : await db.select({ id: schema.postComments.id }).from(schema.postComments).where(eq(schema.postComments.id, commentId)).get();
+        if (dupe) return c.json({ success: true, commentId, duplicate: true });
+      }
+      if (isMatch) {
+        await db.insert(schema.matchComments).values({ id: commentId, matchId: targetId, userId: uid, text: raw, createdAt: ts }).onConflictDoNothing();
         const cCounters = await bumpEngagement(env, targetId, "comment", 1);
         // Push so both the open comment sheet and the feed card update instantly.
         await publish(env, `match:${targetId}`, { type: "comment", commentId, commentCount: cCounters.comment ?? 0 });
@@ -1257,7 +1278,7 @@ apiRoute.post("/", async (c) => {
           })(),
         );
       } else {
-        await db.insert(schema.postComments).values({ id: commentId, postId: targetId, userId: uid, text, createdAt: ts });
+        await db.insert(schema.postComments).values({ id: commentId, postId: targetId, userId: uid, text: raw, createdAt: ts }).onConflictDoNothing();
         await db.update(schema.posts).set({ commentCount: sql`${schema.posts.commentCount} + 1` }).where(eq(schema.posts.id, targetId));
         c.executionCtx.waitUntil(
           (async () => {

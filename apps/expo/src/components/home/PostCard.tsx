@@ -99,6 +99,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
   const lastTap = useRef<number>(0);
   const lastVoteTotal = useRef(initialTotal);
   const isHeartAnimating = useRef<boolean>(false);
+  const likeInFlight = useRef<boolean>(false);
 
   const voteAnimA = useAnimatedStyle(() => ({ transform: [{ scale: voteScaleA.value }] }));
   const voteAnimB = useAnimatedStyle(() => ({ transform: [{ scale: voteScaleB.value }] }));
@@ -292,6 +293,10 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
   
   const handleLike = async () => {
     if (!user) return Alert.alert("Login required", "Please login to like.");
+    // In-flight guard: rapid taps must not fire overlapping toggle requests
+    // (which desync the count and hammer the DB).
+    if (likeInFlight.current) return;
+    likeInFlight.current = true;
     triggerHaptic();
     const next = !isLiked;
     // Optimistic: flip the heart AND move the count immediately.
@@ -307,6 +312,8 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
       // Roll back the optimistic update on failure.
       setIsLiked(!next);
       setLikeCount((c: number) => Math.max(0, c + (next ? -1 : 1)));
+    } finally {
+      likeInFlight.current = false;
     }
   };
 

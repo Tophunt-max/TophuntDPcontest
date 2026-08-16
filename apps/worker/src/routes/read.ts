@@ -5,7 +5,7 @@
  * the existing screens already consume, so UI code stays unchanged.
  */
 import { Hono } from "hono";
-import { and, eq, desc, asc, gt, lt, sql, inArray, like } from "drizzle-orm";
+import { and, or, eq, desc, asc, gt, lt, sql, inArray, like } from "drizzle-orm";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
@@ -716,19 +716,44 @@ readRoute.get("/comments", optionalAuth, async (c) => {
   const uid = c.get("user")?.uid;
   const targetType = c.req.query("targetType") || "posts";
   const targetId = c.req.query("targetId");
-  if (!targetId) return c.json([]);
+  if (!targetId) return c.json({ items: [], nextCursor: null });
 
   const isMatch = targetType === "matches" || targetType === "contestMatches";
+  const limit = Math.min(Math.max(parseInt(c.req.query("limit") || "20", 10) || 20, 1), 50);
 
-  // Cache the user-agnostic base list (id/text/author/likes/createdAt). It is
-  // busted the instant a comment is added or deleted (see routes/api.ts), so
-  // hot threads stay off D1 without ever showing a stale set of comments. The
-  // per-viewer "likedByMe" flag is layered on per request below, so it is never
-  // baked into the shared cache. (Comment like COUNTS are eventually consistent
-  // within the short TTL — the same trade-off the match list makes for votes.)
+  // Keyset (cursor) pagination — Instagram-style "load older on scroll". The
+  // cursor is an opaque `${createdAt}_${id}` string; the id tie-break keeps
+  // paging stable even when two comments share the same millisecond.
+  const cursorRaw = c.req.query("cursor");
+  let cursorAt: number | null = null;
+  let cursorId = "";
+  if (cursorRaw) {
+    const sep = cursorRaw.indexOf("_");
+    if (sep > 0) {
+      cursorAt = Number(cursorRaw.slice(0, sep));
+      cursorId = cursorRaw.slice(sep + 1);
+    }
+  }
+  const isFirstPage = !cursorRaw;
+
+  // Only the first page is cached (by far the most requested + kept fresh by
+  // the add/delete cache bust in routes/api.ts). Deeper pages are rare, so they
+  // hit D1 directly. The per-viewer `likedByMe` flag is layered on per request
+  // and never baked into the shared cache. Comment like COUNTS are eventually
+  // consistent within the TTL — the same trade-off the feed makes for votes.
   const cacheKey = commentsCacheKey(targetType, targetId);
-  let base = await cacheGet(c.env, cacheKey);
-  if (!base) {
+  let payload: { items: any[]; nextCursor: string | null } | null = isFirstPage
+    ? await cacheGet(c.env, cacheKey)
+    : null;
+
+  if (!payload) {
+    const keyset =
+      cursorAt != null && Number.isFinite(cursorAt)
+        ? isMatch
+          ? or(lt(schema.matchComments.createdAt, cursorAt), and(eq(schema.matchComments.createdAt, cursorAt), lt(schema.matchComments.id, cursorId)))
+          : or(lt(schema.postComments.createdAt, cursorAt), and(eq(schema.postComments.createdAt, cursorAt), lt(schema.postComments.id, cursorId)))
+        : undefined;
+
     const rows = isMatch
       ? await db
           .select({
@@ -738,8 +763,9 @@ readRoute.get("/comments", optionalAuth, async (c) => {
           })
           .from(schema.matchComments)
           .leftJoin(schema.users, eq(schema.matchComments.userId, schema.users.uid))
-          .where(eq(schema.matchComments.matchId, targetId))
-          .orderBy(desc(schema.matchComments.createdAt))
+          .where(and(eq(schema.matchComments.matchId, targetId), keyset))
+          .orderBy(desc(schema.matchComments.createdAt), desc(schema.matchComments.id))
+          .limit(limit + 1)
           .all()
       : await db
           .select({
@@ -749,30 +775,37 @@ readRoute.get("/comments", optionalAuth, async (c) => {
           })
           .from(schema.postComments)
           .leftJoin(schema.users, eq(schema.postComments.userId, schema.users.uid))
-          .where(eq(schema.postComments.postId, targetId))
-          .orderBy(desc(schema.postComments.createdAt))
+          .where(and(eq(schema.postComments.postId, targetId), keyset))
+          .orderBy(desc(schema.postComments.createdAt), desc(schema.postComments.id))
+          .limit(limit + 1)
           .all();
-    base = rows.map((r: any) => ({ ...r, postId: targetId, likes: r.likes ?? 0, likedByMe: false }));
-    await cachePut(c.env, cacheKey, base, 30);
+
+    const hasMore = rows.length > limit;
+    const pageRows = hasMore ? rows.slice(0, limit) : rows;
+    const last: any = pageRows[pageRows.length - 1];
+    const nextCursor = hasMore && last ? `${last.createdAt}_${last.id}` : null;
+    const items = pageRows.map((r: any) => ({ ...r, postId: targetId, likes: r.likes ?? 0, likedByMe: false }));
+    payload = { items, nextCursor };
+    if (isFirstPage) await cachePut(c.env, cacheKey, payload, 30);
   }
 
-  // Layer the signed-in viewer's per-comment like state so hearts stay filled
-  // across refreshes (one indexed query over just this page of comment ids).
-  if (uid && base.length > 0) {
-    const commentIds = base.map((r: any) => r.id);
+  // Layer the signed-in viewer's per-comment like state so hearts stay filled.
+  let items = payload.items;
+  if (uid && items.length > 0) {
+    const commentIds = items.map((r: any) => r.id);
     const likedRows = await db
       .select({ commentId: schema.commentLikes.commentId })
       .from(schema.commentLikes)
       .where(and(eq(schema.commentLikes.userId, uid), inArray(schema.commentLikes.commentId, commentIds)))
       .all();
     const likedSet = new Set<string>((likedRows as Array<{ commentId: string }>).map((r) => r.commentId));
-    // Per-user data — never store in a shared/edge cache.
+    items = items.map((r: any) => ({ ...r, likedByMe: likedSet.has(r.id) }));
     c.header("Cache-Control", "private, no-store");
-    return c.json(base.map((r: any) => ({ ...r, likedByMe: likedSet.has(r.id) })));
+    return c.json({ items, nextCursor: payload.nextCursor });
   }
 
   c.header("Cache-Control", "public, max-age=10");
-  return c.json(base);
+  return c.json({ items, nextCursor: payload.nextCursor });
 });
 
 // ================= STORIES =================
