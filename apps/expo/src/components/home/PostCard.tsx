@@ -63,7 +63,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
   const [isBookmarked, setIsBookmarked] = useState(false);
   const [showConfetti, setShowConfetti] = useState(false);
   
-  const cardColor = isDark ? '#1A1D23' : '#FFFFFF';
+  const cardColor = isDark ? '#181B21' : '#FFFFFF';
   const textColor = isDark ? Colors.dark.text : Colors.light.text;
   const subTextColor = isDark ? '#BDBDBD' : '#616161';
   const trackColor = isDark ? '#2A2E37' : '#EEF0F4';
@@ -331,103 +331,133 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
           />
         </View>
       )}
-      
-      <View style={styles.postHeader}>
-        <View style={styles.userInfo}>
-           <View style={styles.avatarContainer}>
-              <TouchableOpacity
-                activeOpacity={0.8}
-                onPress={() => openProfile(item.userA?.uid)}
-                style={[styles.avatarWrapper, isALeading && styles.leadingAvatar, { zIndex: 2 }]}
-                accessibilityRole="button"
-                accessibilityLabel={`Open ${nameA}'s profile`}
-              >
-                <Image source={{ uri: picA }} style={styles.avatarImage} />
-              </TouchableOpacity>
-              {item.userB && (
-                <TouchableOpacity
-                  activeOpacity={0.8}
-                  onPress={() => openProfile(item.userB?.uid)}
-                  style={[styles.avatarWrapper, isBLeading && styles.leadingAvatar, { marginLeft: -14, zIndex: 1 }]}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Open ${nameB}'s profile`}
-                >
-                  <Image source={{ uri: picB }} style={styles.avatarImage} />
-                </TouchableOpacity>
-              )}
-           </View>
-           <View style={styles.nameContainer}>
-               <View style={styles.nameRow}>
-                   <TouchableOpacity
-                     activeOpacity={0.7}
-                     onPress={() => openProfile(item.userA?.uid)}
-                     style={styles.nameTouch}
-                     accessibilityRole="button"
-                     accessibilityLabel={`Open ${nameA}'s profile`}
-                   >
-                     <Text style={[styles.nameText, { color: textColor }]} numberOfLines={1}>{nameA}</Text>
-                   </TouchableOpacity>
-                   <View style={styles.vsPill}><Text style={styles.vsPillText}>VS</Text></View>
-                   <TouchableOpacity
-                     activeOpacity={0.7}
-                     onPress={() => openProfile(item.userB?.uid)}
-                     style={styles.nameTouch}
-                     accessibilityRole="button"
-                     accessibilityLabel={`Open ${nameB}'s profile`}
-                   >
-                     <Text style={[styles.nameText, { color: textColor }]} numberOfLines={1}>{nameB}</Text>
-                   </TouchableOpacity>
-               </View>
-               <Text style={[styles.timeText, { color: subTextColor }]} numberOfLines={1}>{item.title}</Text>
-           </View>
+
+      {/* Meta bar: battle title + prize pool */}
+      <View style={styles.metaBar}>
+        <View style={styles.metaLeft}>
+          <View style={styles.battleTag}>
+            <MaterialCommunityIcons name="sword-cross" size={13} color="#FFF" />
+          </View>
+          <Text style={[styles.metaTitle, { color: textColor }]} numberOfLines={1}>{item.title || 'VS Battle'}</Text>
         </View>
         {item.entryFee > 0 && (
-            <LinearGradient
-                colors={['#FFF4C2', '#FFE68A']}
-                start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
-                style={styles.prizeBadge}
-            >
-                <Ionicons name="trophy" size={12} color="#E6A200" />
-                <Text style={styles.prizeText}>{item.entryFee * 1.8}</Text>
-            </LinearGradient>
+          <LinearGradient
+            colors={['#FFF4C2', '#FFE68A']}
+            start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+            style={styles.prizeBadge}
+          >
+            <Ionicons name="trophy" size={12} color="#E6A200" />
+            <Text style={styles.prizeText}>{item.entryFee * 1.8}</Text>
+          </LinearGradient>
         )}
       </View>
 
+      {/* Hero media — contestant identity is overlaid directly on each photo */}
       <Pressable onPress={handleDoubleTap} style={styles.mediaSection}>
         <View style={[styles.imageWrapper, isALeading && styles.leadingImage]}>
-            <Image source={{ uri: item.userA.mediaUrl }} style={styles.postImage} />
-            <LinearGradient colors={['transparent', 'rgba(0,0,0,0.6)']} style={styles.imageOverlay} pointerEvents="none" />
-            {isALeading && <View style={styles.crownContainer}><MaterialCommunityIcons name="crown" size={18} color="#FFD700" /></View>}
-            <View style={[styles.voteCountChip, styles.voteChipA]}>
-                <Ionicons name="flame" size={11} color="#FFF" />
-                <Text style={styles.voteCountText}>{formatVotes(votesA)}</Text>
+          <Image source={{ uri: item.userA.mediaUrl }} style={styles.postImage} />
+          <LinearGradient
+            colors={['rgba(0,0,0,0.28)', 'transparent', 'rgba(0,0,0,0.78)']}
+            locations={[0, 0.45, 1]}
+            style={styles.imageOverlayFull}
+            pointerEvents="none"
+          />
+          {isALeading && <View style={styles.crownContainer}><MaterialCommunityIcons name="crown" size={20} color="#FFD700" /></View>}
+          <View style={[styles.voteCountChip, styles.voteChipA]}>
+            <Ionicons name="flame" size={11} color="#FFF" />
+            <Text style={styles.voteCountText}>{formatVotes(votesA)}</Text>
+          </View>
+          <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={() => openProfile(item.userA?.uid)}
+            style={styles.identityOverlay}
+            accessibilityRole="button"
+            accessibilityLabel={`Open ${nameA}'s profile`}
+          >
+            <View style={[styles.identityAvatar, isALeading && styles.identityAvatarLead]}>
+              <Image source={{ uri: picA }} style={styles.identityAvatarImg} />
             </View>
+            <Text style={styles.identityName} numberOfLines={1}>{nameA}</Text>
+          </TouchableOpacity>
         </View>
+
         <View style={[styles.imageWrapper, isBLeading && styles.leadingImage]}>
-            <Image source={{ uri: item.userB.mediaUrl }} style={styles.postImage} />
-            <LinearGradient colors={['transparent', 'rgba(0,0,0,0.6)']} style={styles.imageOverlay} pointerEvents="none" />
-            {isBLeading && <View style={styles.crownContainer}><MaterialCommunityIcons name="crown" size={18} color="#FFD700" /></View>}
-            <View style={[styles.voteCountChip, styles.voteChipB]}>
-                <Ionicons name="flame" size={11} color="#FFF" />
-                <Text style={styles.voteCountText}>{formatVotes(votesB)}</Text>
+          <Image source={{ uri: item.userB.mediaUrl }} style={styles.postImage} />
+          <LinearGradient
+            colors={['rgba(0,0,0,0.28)', 'transparent', 'rgba(0,0,0,0.78)']}
+            locations={[0, 0.45, 1]}
+            style={styles.imageOverlayFull}
+            pointerEvents="none"
+          />
+          {isBLeading && <View style={styles.crownContainer}><MaterialCommunityIcons name="crown" size={20} color="#FFD700" /></View>}
+          <View style={[styles.voteCountChip, styles.voteChipB]}>
+            <Ionicons name="flame" size={11} color="#FFF" />
+            <Text style={styles.voteCountText}>{formatVotes(votesB)}</Text>
+          </View>
+          <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={() => openProfile(item.userB?.uid)}
+            style={[styles.identityOverlay, styles.identityOverlayRight]}
+            accessibilityRole="button"
+            accessibilityLabel={`Open ${nameB}'s profile`}
+          >
+            <View style={[styles.identityAvatar, isBLeading && styles.identityAvatarLead]}>
+              <Image source={{ uri: picB }} style={styles.identityAvatarImg} />
             </View>
+            <Text style={styles.identityName} numberOfLines={1}>{nameB}</Text>
+          </TouchableOpacity>
         </View>
 
         <View pointerEvents="none" style={styles.vsBadge}>
-            <LinearGradient
-                colors={['#FF4D7E', '#FF8A4D']}
-                start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
-                style={styles.vsBadgeGradient}
-            >
-                <Text style={styles.vsBadgeText}>VS</Text>
-            </LinearGradient>
+          <LinearGradient
+            colors={['#FF4D7E', '#FF8A4D']}
+            start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+            style={styles.vsBadgeGradient}
+          >
+            <Text style={styles.vsBadgeText}>VS</Text>
+          </LinearGradient>
         </View>
-        
+
         <Animated.View pointerEvents="none" style={[styles.largeHeart, animatedHeartStyle]}>
-            <HeartIcon_Filled width={90} height={90} color="#FF4D67" />
+          <HeartIcon_Filled width={90} height={90} color="#FF4D67" />
         </Animated.View>
       </Pressable>
-      
+
+      {/* Battle meter */}
+      <View
+        style={styles.pollInfoSection}
+        accessible
+        accessibilityLabel={`${nameA} has ${votesA} votes, ${nameB} has ${votesB} votes. ${votingClosed ? 'Voting ended.' : timeRemaining}`}
+      >
+        <View style={[styles.progressTrack, { backgroundColor: trackColor }]}>
+          <AnimatedLinearGradient
+            colors={['#FF4D7E', '#FF6FA0']}
+            start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+            style={[styles.progressSegment, animatedBarStyleA]}
+          />
+          <AnimatedLinearGradient
+            colors={['#FFA24D', '#FF8A4D']}
+            start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+            style={[styles.progressSegment, animatedBarStyleB]}
+          />
+        </View>
+        <View style={styles.voteLabels}>
+          <Text style={[styles.votePercent, { color: '#FF4D7E' }]}>{Math.round(progressA * 100)}%</Text>
+          <View style={[styles.timeChip, { backgroundColor: trackColor }, isUrgent && styles.timeChipUrgent]}>
+            <Ionicons
+              name={votingClosed ? 'lock-closed' : 'time-outline'}
+              size={11}
+              color={isUrgent ? '#FFF' : subTextColor}
+            />
+            <Text style={[styles.timeChipText, { color: isUrgent ? '#FFF' : subTextColor }]}>
+              {votingClosed ? 'Ended' : timeRemaining}
+            </Text>
+          </View>
+          <Text style={[styles.votePercent, { color: '#FF8A4D' }]}>{Math.round((1 - progressA) * 100)}%</Text>
+        </View>
+      </View>
+
+      {/* Vote buttons */}
       <View style={styles.voteButtonSection}>
         <TouchableOpacity
           style={[
@@ -451,7 +481,10 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
                   <Ionicons name="checkmark-circle" size={16} color="#FFF" />
                   <Text style={styles.voteButtonText}>Voted</Text>
                 </View>
-              : <Text style={styles.voteButtonText} numberOfLines={1}>Vote {nameA}</Text>}
+              : <View style={styles.voteButtonInner}>
+                  <Ionicons name="heart" size={14} color="#FFF" />
+                  <Text style={styles.voteButtonText} numberOfLines={1}>{nameA}</Text>
+                </View>}
         </TouchableOpacity>
         <TouchableOpacity
           style={[
@@ -475,41 +508,11 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
                   <Ionicons name="checkmark-circle" size={16} color="#FFF" />
                   <Text style={styles.voteButtonText}>Voted</Text>
                 </View>
-              : <Text style={styles.voteButtonText} numberOfLines={1}>Vote {nameB}</Text>}
+              : <View style={styles.voteButtonInner}>
+                  <Ionicons name="heart" size={14} color="#FFF" />
+                  <Text style={styles.voteButtonText} numberOfLines={1}>{nameB}</Text>
+                </View>}
         </TouchableOpacity>
-      </View>
-      
-      <View
-        style={styles.pollInfoSection}
-        accessible
-        accessibilityLabel={`${nameA} has ${votesA} votes, ${nameB} has ${votesB} votes. ${votingClosed ? 'Voting ended.' : timeRemaining}`}
-      >
-        <View style={[styles.progressTrack, { backgroundColor: trackColor }]}>
-            <AnimatedLinearGradient
-                colors={['#FF4D7E', '#FF6FA0']}
-                start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                style={[styles.progressSegment, animatedBarStyleA]}
-            />
-            <AnimatedLinearGradient
-                colors={['#FFA24D', '#FF8A4D']}
-                start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                style={[styles.progressSegment, animatedBarStyleB]}
-            />
-        </View>
-        <View style={styles.voteLabels}>
-            <Text style={[styles.votePercent, { color: '#FF4D7E' }]}>{Math.round(progressA * 100)}%</Text>
-            <View style={[styles.timeChip, { backgroundColor: trackColor }, isUrgent && styles.timeChipUrgent]}>
-                <Ionicons
-                    name={votingClosed ? 'lock-closed' : 'time-outline'}
-                    size={11}
-                    color={isUrgent ? '#FFF' : subTextColor}
-                />
-                <Text style={[styles.timeChipText, { color: isUrgent ? '#FFF' : subTextColor }]}>
-                    {votingClosed ? 'Ended' : timeRemaining}
-                </Text>
-            </View>
-            <Text style={[styles.votePercent, { color: '#FF8A4D' }]}>{Math.round((1 - progressA) * 100)}%</Text>
-        </View>
       </View>
 
       <View style={[styles.actionBar, { borderTopColor: trackColor }]}>
@@ -558,44 +561,43 @@ const styles = StyleSheet.create({
   },
   confetti: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 100 },
   confettiAnimation: { width: '100%', height: '100%' },
-  postHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12 },
-  userInfo: { flexDirection: 'row', alignItems: 'center', flex: 1 },
-  avatarContainer: { flexDirection: 'row', alignItems: 'center' },
-  avatarWrapper: { width: 40, height: 40, borderRadius: 20, borderWidth: 2, borderColor: '#FFF', overflow: 'hidden', backgroundColor: '#EEE' },
-  avatarImage: { width: '100%', height: '100%', resizeMode: 'cover' },
-  leadingAvatar: { borderColor: '#FFD700', borderWidth: 2.5 },
-  nameContainer: { marginLeft: 10, flex: 1 },
-  nameRow: { flexDirection: 'row', alignItems: 'center' },
-  nameTouch: { flexShrink: 1, maxWidth: '42%' },
-  nameText: { fontFamily: 'Urbanist-Bold', fontSize: 15 },
-  vsPill: { backgroundColor: '#FF4D67', borderRadius: 6, paddingHorizontal: 5, paddingVertical: 1, marginHorizontal: 6 },
-  vsPillText: { fontFamily: 'Urbanist-Bold', fontSize: 9, color: '#FFF', letterSpacing: 0.5 },
-  timeText: { fontFamily: 'Urbanist-Medium', fontSize: 12, marginTop: 2 },
+
+  // Meta bar
+  metaBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 14, paddingBottom: 12 },
+  metaLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, marginRight: 10 },
+  battleTag: { width: 24, height: 24, borderRadius: 8, backgroundColor: '#FF4D67', alignItems: 'center', justifyContent: 'center' },
+  metaTitle: { fontFamily: 'Urbanist-Bold', fontSize: 15, flexShrink: 1 },
   prizeBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, borderWidth: 1, borderColor: '#FFD700' },
   prizeText: { fontFamily: 'Urbanist-Bold', fontSize: 11, color: '#B57E00' },
+
+  // Media
   mediaSection: { flexDirection: 'row', justifyContent: 'space-between', marginHorizontal: 16, gap: 12, position: 'relative' },
   imageWrapper: { flex: 1, position: 'relative', borderRadius: 20, overflow: 'hidden', borderWidth: 2, borderColor: 'transparent' },
-  postImage: { width: '100%', height: 260, backgroundColor: '#EEE' },
-  imageOverlay: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 70 },
+  postImage: { width: '100%', height: 300, backgroundColor: '#EEE' },
+  imageOverlayFull: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 },
   leadingImage: { borderColor: '#FFD700' },
   crownContainer: { position: 'absolute', top: 8, alignSelf: 'center', left: 0, right: 0, alignItems: 'center', zIndex: 10 },
-  voteCountChip: { position: 'absolute', bottom: 10, left: 10, flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 12 },
-  voteChipA: { backgroundColor: 'rgba(255,77,126,0.9)' },
-  voteChipB: { backgroundColor: 'rgba(255,138,77,0.9)' },
+  voteCountChip: { position: 'absolute', top: 10, flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 12 },
+  voteChipA: { left: 10, backgroundColor: 'rgba(255,77,126,0.92)' },
+  voteChipB: { right: 10, backgroundColor: 'rgba(255,138,77,0.92)' },
   voteCountText: { fontFamily: 'Urbanist-Bold', fontSize: 11, color: '#FFF' },
+
+  // Identity overlay on each photo
+  identityOverlay: { position: 'absolute', bottom: 10, left: 10, right: 10, flexDirection: 'row', alignItems: 'center', gap: 7 },
+  identityOverlayRight: { flexDirection: 'row-reverse' },
+  identityAvatar: { width: 30, height: 30, borderRadius: 15, borderWidth: 2, borderColor: '#FFF', overflow: 'hidden', backgroundColor: '#EEE' },
+  identityAvatarLead: { borderColor: '#FFD700' },
+  identityAvatarImg: { width: '100%', height: '100%', resizeMode: 'cover' },
+  identityName: { fontFamily: 'Urbanist-Bold', fontSize: 13, color: '#FFF', flexShrink: 1, textShadowColor: 'rgba(0,0,0,0.6)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 3 },
+
+  // Center VS orb
   vsBadge: { position: 'absolute', top: '50%', left: 0, right: 0, alignItems: 'center', marginTop: -22, zIndex: 15 },
   vsBadgeGradient: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', borderWidth: 3, borderColor: '#FFF', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 5 },
   vsBadgeText: { fontFamily: 'Urbanist-Bold', fontSize: 15, color: '#FFF', letterSpacing: 0.5 },
   largeHeart: { position: 'absolute', top: '30%', left: '35%', zIndex: 20 },
-  voteButtonSection: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, marginTop: 16, gap: 12 },
-  voteButton: { flex: 1, minHeight: 46, paddingVertical: 12, paddingHorizontal: 8, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
-  voteButtonA: { backgroundColor: '#FF4D67' },
-  voteButtonB: { backgroundColor: '#FF8A4D' },
-  voteButtonInner: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  selectedVoteButton: { backgroundColor: '#22A559', opacity: 1 },
-  disabledVoteButton: { opacity: 0.4 },
-  voteButtonText: { fontFamily: 'Urbanist-Bold', fontSize: 13, color: '#FFF' },
-  pollInfoSection: { paddingHorizontal: 16, marginTop: 18 },
+
+  // Battle meter
+  pollInfoSection: { paddingHorizontal: 16, marginTop: 16 },
   progressTrack: { width: '100%', height: 9, borderRadius: 5, overflow: 'hidden', flexDirection: 'row' },
   progressSegment: { height: '100%' },
   voteLabels: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 },
@@ -603,6 +605,18 @@ const styles = StyleSheet.create({
   timeChip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
   timeChipUrgent: { backgroundColor: '#F0413E' },
   timeChipText: { fontFamily: 'Urbanist-SemiBold', fontSize: 11 },
+
+  // Vote buttons
+  voteButtonSection: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, marginTop: 14, gap: 12 },
+  voteButton: { flex: 1, minHeight: 46, paddingVertical: 12, paddingHorizontal: 8, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  voteButtonA: { backgroundColor: '#FF4D67' },
+  voteButtonB: { backgroundColor: '#FF8A4D' },
+  voteButtonInner: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  selectedVoteButton: { backgroundColor: '#22A559', opacity: 1 },
+  disabledVoteButton: { opacity: 0.4 },
+  voteButtonText: { fontFamily: 'Urbanist-Bold', fontSize: 13, color: '#FFF' },
+
+  // Action bar
   actionBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 14, marginTop: 14, borderTopWidth: 1 },
   leftActions: { flexDirection: 'row', alignItems: 'center' },
   actionItem: { flexDirection: 'row', alignItems: 'center', marginRight: 24 },
