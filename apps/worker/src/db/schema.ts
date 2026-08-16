@@ -6,6 +6,7 @@
  * Timestamps are stored as INTEGER epoch-millis for easy comparison in cron
  * jobs (expiresAt, createdAt, etc.).
  */
+import { sql } from "drizzle-orm";
 import { sqliteTable, text, integer, real, index, uniqueIndex, primaryKey } from "drizzle-orm/sqlite-core";
 
 // ---------------------------------------------------------------------------
@@ -133,6 +134,10 @@ export const contestMatches = sqliteTable(
     shareCount: integer("share_count").default(0),
     winnerUid: text("winner_uid"),
     rewardAmount: real("reward_amount").default(0),
+    // Immutable eligibility threshold captured when the match is created/activated.
+    minVotesRequired: integer("min_votes_required"),
+    // Unique token used to make status + financial settlement one atomic D1 batch.
+    settlementId: text("settlement_id"),
     // { fire: n, heart: n, laugh: n } quick-reaction counters
     reactions: text("reactions", { mode: "json" }),
     endingSoonNotified: integer("ending_soon_notified", { mode: "boolean" }).default(false),
@@ -145,6 +150,9 @@ export const contestMatches = sqliteTable(
     statusIdx: index("idx_matches_status").on(t.status),
     expiresIdx: index("idx_matches_expires").on(t.expiresAt),
     statusExpiresIdx: index("idx_matches_status_expires").on(t.status, t.expiresAt),
+    settlementUnique: uniqueIndex("uniq_matches_settlement_id")
+      .on(t.settlementId)
+      .where(sql`${t.settlementId} IS NOT NULL`),
   }),
 );
 
@@ -163,6 +171,25 @@ export const votes = sqliteTable(
   },
   (t) => ({
     matchIdx: index("idx_votes_match").on(t.matchId),
+    matchVoterUnique: uniqueIndex("uniq_votes_match_voter").on(t.matchId, t.voterUid),
+    matchDeviceUnique: uniqueIndex("uniq_votes_match_device")
+      .on(t.matchId, t.deviceId)
+      .where(sql`${t.deviceId} IS NOT NULL AND ${t.deviceId} <> ''`),
+  }),
+);
+
+// Exactly-once vote XP ledger. The DO checks/inserts this in the same D1 batch
+// as the XP increment, so actor retries cannot credit a voter twice.
+export const voteXpAwards = sqliteTable(
+  "vote_xp_awards",
+  {
+    matchId: text("match_id").notNull(),
+    voterUid: text("voter_uid").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.matchId, t.voterUid] }),
+    voterIdx: index("idx_vote_xp_awards_voter").on(t.voterUid, t.createdAt),
   }),
 );
 

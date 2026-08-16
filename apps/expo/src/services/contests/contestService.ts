@@ -25,20 +25,23 @@ export const contestService = {
   getActiveMatches: async (_currentUserUid?: string, limitCount: number = 30): Promise<any[]> => {
     try {
       return (await readApi('/read/matches', { status: 'active', limit: limitCount })) as any[];
-    } catch (error) { console.error("Error fetching active matches:", error); return []; }
+    } catch (error) {
+      console.error("Error fetching active matches:", error);
+      throw error;
+    }
   },
 
   startMatch: async (data: any) => callApi('startMatch', data),
 
   joinMatch: async (data: any) => callApi('joinMatch', data),
 
-  /** Vote on a participant in a match. */
-  voteOnMatch: async (matchId: string, votedForUid: string, deviceId?: string) => {
+  /** Vote on a participant in a match using this installation's stable ID. */
+  voteOnMatch: async (matchId: string, votedForUid: string) => {
     try {
-      // Use a stable per-install device id so the server can de-duplicate votes;
-      // callers no longer need to pass a (previously hardcoded) placeholder.
-      const did = deviceId || (await getDeviceId());
-      return await callApi('submitVote', { matchId, votedForUid, deviceId: did });
+      // Device identity is owned here so UI callers cannot accidentally send a
+      // shared placeholder that locks every other voter out of the match.
+      const deviceId = await getDeviceId();
+      return await callApi('submitVote', { matchId, votedForUid, deviceId });
     } catch (error) { console.error("Error submitting vote:", error); throw error; }
   },
 

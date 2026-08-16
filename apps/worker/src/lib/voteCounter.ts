@@ -4,9 +4,9 @@
  * Routes/cron call these instead of touching the vote counters in D1 directly.
  */
 import type { Env } from "../types";
-import type { VoteTally } from "../voteCounter";
+import type { VoteTally, ViewerVote } from "../voteCounter";
 
-export type { VoteTally } from "../voteCounter";
+export type { VoteTally, ViewerVote } from "../voteCounter";
 
 function stub(env: Env, matchId: string) {
   const id = env.VOTE_COUNTER.idFromName(matchId);
@@ -17,7 +17,14 @@ function stub(env: Env, matchId: string) {
 export async function castVote(
   env: Env,
   matchId: string,
-  p: { voterUid: string; votedForUid: string; deviceId?: string | null; uidA: string; uidB: string },
+  p: {
+    voterUid: string;
+    votedForUid: string;
+    deviceId?: string | null;
+    uidA: string;
+    uidB: string;
+    expiresAt: number;
+  },
 ): Promise<VoteTally> {
   return stub(env, matchId).vote({ matchId, ...p });
 }
@@ -38,17 +45,28 @@ export async function bumpEngagement(
 }
 
 /**
- * Flush the DO's accumulated votes to D1 and return the authoritative tally.
- * Called by the cron resolver before it decides a winner. Best-effort: on
- * failure the caller falls back to the last-flushed values already in D1.
+ * Atomically close the match actor, flush every accepted vote to D1, and
+ * return the authoritative final tally. Errors deliberately propagate so the
+ * resolver retries later instead of settling from a stale D1 snapshot.
  */
 export async function finalizeVotes(
   env: Env,
   matchId: string,
   uidA: string,
   uidB: string,
+  expiresAt: number,
+  force = false,
 ): Promise<{ votesA: number; votesB: number; total: number }> {
-  return stub(env, matchId).flushTally(matchId, uidA, uidB);
+  return stub(env, matchId).closeAndFlush(matchId, uidA, uidB, expiresAt, force);
+}
+
+/** Return whether/how the authenticated viewer voted in this match. */
+export async function getViewerVote(
+  env: Env,
+  matchId: string,
+  voterUid: string,
+): Promise<ViewerVote> {
+  return stub(env, matchId).viewerVote(matchId, voterUid);
 }
 
 /**

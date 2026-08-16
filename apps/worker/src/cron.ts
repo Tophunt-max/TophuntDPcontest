@@ -7,15 +7,33 @@
  * Firestore triggers had no equivalent here; the notification side effects that
  * used to fire from onDocument triggers are emitted explicitly via createNotification.
  */
-import { and, eq, lte, gt, desc, sql } from "drizzle-orm";
+import { and, eq, lte, gt, desc, sql, asc, isNull } from "drizzle-orm";
 import type { Env } from "./types";
 import { getDb, schema } from "./db";
 import { createNotification, sendSegmentedBroadcast } from "./lib/notify";
 import { finalizeVotes } from "./lib/voteCounter";
+import { settleRefund, settleWinner } from "./lib/contestSettlement";
 import { deleteByPublicUrl } from "./lib/r2";
 import { newId, now } from "./lib/ids";
+import { publish } from "./lib/publish";
 
 type Match = typeof schema.contestMatches.$inferSelect;
+
+async function publishMatchStatus(
+  env: Env,
+  matchId: string,
+  status: "completed" | "cancelled",
+  votesA: number,
+  votesB: number,
+): Promise<void> {
+  await publish(env, `match:${matchId}`, {
+    type: "match_status",
+    status,
+    votesA,
+    votesB,
+    totalVotes: votesA + votesB,
+  });
+}
 
 async function resolveMatch(env: Env, match: Match): Promise<void> {
   const db = getDb(env);
@@ -24,44 +42,87 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
   if (!userA || !userB) return;
 
   let rewardAmount = Number(match.entryFee || 0);
+  let minVotes = match.minVotesRequired == null
+    ? null
+    : Math.max(0, Number(match.minVotesRequired));
   if (match.contestId) {
-    const contest = await db.select({ reward: schema.contests.rewardCoins }).from(schema.contests).where(eq(schema.contests.id, match.contestId)).get();
+    const contest = await db
+      .select({ reward: schema.contests.rewardCoins, minVotes: schema.contests.minVotes })
+      .from(schema.contests)
+      .where(eq(schema.contests.id, match.contestId))
+      .get();
     if (contest?.reward) rewardAmount = Number(contest.reward);
+    if (minVotes == null) {
+      if (!contest) {
+        throw new Error(`Match ${match.id} has no min-vote snapshot and its template is missing.`);
+      }
+      minVotes = Math.max(0, Number(contest.minVotes || 0));
+      await db.update(schema.contestMatches)
+        .set({ minVotesRequired: minVotes })
+        .where(and(
+          eq(schema.contestMatches.id, match.id),
+          isNull(schema.contestMatches.minVotesRequired),
+        ));
+    }
+  }
+  if (minVotes == null) {
+    throw new Error(`Match ${match.id} has no immutable minimum-vote policy snapshot.`);
   }
 
-  // Ask the per-match VoteCounter DO for the authoritative tally (it also
-  // flushes any in-flight votes to D1). Fall back to the last-flushed values
-  // stored in the match JSON if the DO is unreachable.
-  let votesA = Number(userA.votes || 0);
-  let votesB = Number(userB.votes || 0);
-  try {
-    const t = await finalizeVotes(env, match.id, userA.uid, userB.uid);
-    votesA = t.votesA;
-    votesB = t.votesB;
-  } catch (e) {
-    console.error("[resolveMatch] vote finalize failed, using D1 snapshot", match.id, e);
+  // Finalization is deliberately fail-closed. The per-match actor closes first,
+  // flushes every accepted vote, and only then returns the authoritative tally.
+  // If that fails, throw so this match remains active and is retried next cron;
+  // never make an irreversible payout from a stale D1 snapshot.
+  const expiresAt = Number(match.expiresAt);
+  if (!Number.isFinite(expiresAt) || expiresAt <= 0) {
+    throw new Error(`Match ${match.id} has no valid voting deadline.`);
   }
+  const finalTally = await finalizeVotes(env, match.id, userA.uid, userB.uid, expiresAt);
+  const votesA = finalTally.votesA;
+  const votesB = finalTally.votesB;
+  const totalVotes = finalTally.total;
 
   // Anti-collusion: if BOTH participants entered from the same device, the
   // match is void — refund both entry fees and pay NO reward. This closes the
   // self-match exploit (create + join from one phone to farm rewardCoins).
   if (userA.deviceId && userB.deviceId && String(userA.deviceId) === String(userB.deviceId)) {
     const ts = now();
-    const claim = await db.update(schema.contestMatches)
-      .set({ status: "cancelled", completedAt: ts })
-      .where(and(eq(schema.contestMatches.id, match.id), eq(schema.contestMatches.status, "active")))
-      .run();
-    if (claim.meta.changes === 0) return; // already resolved by another run
-    const refund = Number(match.entryFee || 0) / 2;
-    if (refund > 0) {
-      await db.batch([
-        db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${refund}` }).where(eq(schema.users.uid, userA.uid)),
-        db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${refund}` }).where(eq(schema.users.uid, userB.uid)),
-        db.insert(schema.coinTransactions).values({ id: newId(), uid: userA.uid, amount: refund, type: "contest_refund", matchId: match.id, contestId: match.contestId, description: "Match voided (same-device entries)", createdAt: ts }),
-        db.insert(schema.coinTransactions).values({ id: newId(), uid: userB.uid, amount: refund, type: "contest_refund", matchId: match.id, contestId: match.contestId, description: "Match voided (same-device entries)", createdAt: ts }),
-      ]);
-    }
+    const settled = await settleRefund(env, {
+      matchId: match.id,
+      contestId: match.contestId,
+      expectedStatus: "active",
+      finalStatus: "cancelled",
+      participantUids: [userA.uid, userB.uid],
+      refundPerUser: Number(match.entryFee || 0) / 2,
+      description: "Match voided (same-device entries)",
+      completedAt: ts,
+    });
+    if (!settled) return;
+    await publishMatchStatus(env, match.id, "cancelled", votesA, votesB);
     console.warn("[resolveMatch] voided same-device match", match.id, userA.uid, userB.uid);
+    return;
+  }
+
+  // A contest is only eligible for a winner when its configured participation
+  // threshold is reached. Insufficient-vote matches are void and both entrants
+  // get their entry fee back; no winner reward or win stats are awarded.
+  if (totalVotes < minVotes) {
+    const ts = now();
+    const settled = await settleRefund(env, {
+      matchId: match.id,
+      contestId: match.contestId,
+      expectedStatus: "active",
+      finalStatus: "cancelled",
+      participantUids: [userA.uid, userB.uid],
+      refundPerUser: Number(match.entryFee || 0) / 2,
+      description: `Refund: minimum ${minVotes} votes not reached`,
+      completedAt: ts,
+    });
+    if (!settled) return;
+    await publishMatchStatus(env, match.id, "cancelled", votesA, votesB);
+    const message = `The battle ended with ${totalVotes} of ${minVotes} required votes. Entry fees were refunded.`;
+    await createNotification(env, userA.uid, { title: "Battle Voided", body: message, type: "contest-refund", targetId: "wallet" });
+    await createNotification(env, userB.uid, { title: "Battle Voided", body: message, type: "contest-refund", targetId: "wallet" });
     return;
   }
 
@@ -69,18 +130,18 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
   // so an overlapping/duplicate cron run can't refund twice.
   if (votesA === votesB) {
     const ts = now();
-    const claim = await db.update(schema.contestMatches)
-      .set({ status: "completed", completedAt: ts })
-      .where(and(eq(schema.contestMatches.id, match.id), eq(schema.contestMatches.status, "active")))
-      .run();
-    if (claim.meta.changes === 0) return; // already resolved by another run
-    const refund = Number(match.entryFee || 0) / 2;
-    if (refund > 0) {
-      await db.batch([
-        db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${refund}` }).where(eq(schema.users.uid, userA.uid)),
-        db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${refund}` }).where(eq(schema.users.uid, userB.uid)),
-      ]);
-    }
+    const settled = await settleRefund(env, {
+      matchId: match.id,
+      contestId: match.contestId,
+      expectedStatus: "active",
+      finalStatus: "completed",
+      participantUids: [userA.uid, userB.uid],
+      refundPerUser: Number(match.entryFee || 0) / 2,
+      description: "Match tied; entry fee refunded",
+      completedAt: ts,
+    });
+    if (!settled) return;
+    await publishMatchStatus(env, match.id, "completed", votesA, votesB);
     await createNotification(env, userA.uid, { title: "It's a Tie!", body: "The match ended in a tie. Entry fees refunded.", type: "contest-tie", targetId: "wallet" });
     await createNotification(env, userB.uid, { title: "It's a Tie!", body: "The match ended in a tie. Entry fees refunded.", type: "contest-tie", targetId: "wallet" });
     return;
@@ -90,51 +151,39 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
   const loserUid = votesA > votesB ? userB.uid : userA.uid;
   const ts = now();
 
-  // Atomically claim the match before paying out. If another run already flipped
-  // it out of "active", stop — prevents double-payout. The payout below is a
-  // single batch so the reward + stats + ledger commit together.
-  const claim = await db.update(schema.contestMatches)
-    .set({ status: "completed", winnerUid, rewardAmount, completedAt: ts })
-    .where(and(eq(schema.contestMatches.id, match.id), eq(schema.contestMatches.status, "active")))
-    .run();
-  if (claim.meta.changes === 0) return;
+  const settled = await settleWinner(env, {
+    matchId: match.id,
+    contestId: match.contestId,
+    expectedStatus: "active",
+    winnerUid,
+    loserUid,
+    rewardAmount,
+    description: `Victory reward for "${match.title}"`,
+    completedAt: ts,
+  });
+  if (!settled) return;
 
-  await db.batch([
-    db.update(schema.users).set({
-      dpcoin: sql`${schema.users.dpcoin} + ${rewardAmount}`,
-      xp: sql`${schema.users.xp} + 100`,
-      wins: sql`${schema.users.wins} + 1`,
-      monthlyWins: sql`${schema.users.monthlyWins} + 1`,
-      updatedAt: ts,
-    }).where(eq(schema.users.uid, winnerUid)),
-    db.update(schema.users).set({ xp: sql`${schema.users.xp} + 20`, updatedAt: ts }).where(eq(schema.users.uid, loserUid)),
-    db.insert(schema.coinTransactions).values({
-      id: newId(), uid: winnerUid, amount: rewardAmount, type: "contest_win_reward",
-      matchId: match.id, contestId: match.contestId, description: `Victory reward for "${match.title}"`, createdAt: ts,
-    }),
-  ]);
-
+  await publishMatchStatus(env, match.id, "completed", votesA, votesB);
   await createNotification(env, winnerUid, { title: "You Won! 🏆", body: `Victory! You won the battle "${match.title}" and earned ${rewardAmount} Dpcoins!`, type: "contest-win", targetId: match.id });
   await createNotification(env, loserUid, { title: "Battle Ended", body: `The battle "${match.title}" has concluded. You played well!`, type: "contest-loss", targetId: match.id });
 }
 
 async function refundWaitingMatch(env: Env, match: Match): Promise<void> {
-  const db = getDb(env);
   const userA = match.userA as any;
-  // Atomically claim (waiting -> cancelled) so we can't refund the same
-  // unmatched contest twice across overlapping cron runs.
-  const claim = await db.update(schema.contestMatches)
-    .set({ status: "cancelled", completedAt: now() })
-    .where(and(eq(schema.contestMatches.id, match.id), eq(schema.contestMatches.status, "waiting_for_opponent")))
-    .run();
-  if (claim.meta.changes === 0) return;
   const refund = Number(match.entryFee || 0) / 2;
+  const ts = now();
+  const settled = await settleRefund(env, {
+    matchId: match.id,
+    contestId: match.contestId,
+    expectedStatus: "waiting_for_opponent",
+    finalStatus: "cancelled",
+    participantUids: userA?.uid ? [userA.uid] : [],
+    refundPerUser: refund,
+    description: "No opponent joined before the waiting deadline",
+    completedAt: ts,
+  });
+  if (!settled) return;
   if (refund > 0 && userA?.uid) {
-    const ts = now();
-    await db.batch([
-      db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${refund}` }).where(eq(schema.users.uid, userA.uid)),
-      db.insert(schema.coinTransactions).values({ id: newId(), uid: userA.uid, amount: refund, type: "contest_refund", matchId: match.id, createdAt: ts }),
-    ]);
     await createNotification(env, userA.uid, { title: "Contest Refunded", body: `No opponent joined your "${match.title}" contest. ${refund} Dpcoins have been returned.`, type: "contest-refund", targetId: "wallet" });
   }
 }
@@ -152,11 +201,27 @@ export async function resolveContests(env: Env): Promise<void> {
   const PAGE = 50;
   const MAX_PAGES = 20; // up to 1000 matches per category per run
 
+  let lastActiveId: string | null = null;
   for (let i = 0; i < MAX_PAGES; i++) {
+    const activeConditions = [
+      eq(schema.contestMatches.status, "active"),
+      lte(schema.contestMatches.expiresAt, nowMs),
+    ];
+    if (lastActiveId) activeConditions.push(gt(schema.contestMatches.id, lastActiveId));
     const active = await db.select().from(schema.contestMatches)
-      .where(and(eq(schema.contestMatches.status, "active"), lte(schema.contestMatches.expiresAt, nowMs)))
+      .where(and(...activeConditions))
+      .orderBy(asc(schema.contestMatches.id))
       .limit(PAGE).all();
-    for (const m of active) await resolveMatch(env, m);
+    for (const m of active) {
+      try {
+        await resolveMatch(env, m);
+      } catch (e) {
+        // Keep this row active for the next cron retry, but do not let one
+        // temporarily unavailable actor block settlement of every other match.
+        console.error("[resolveContests] match settlement deferred", m.id, e);
+      }
+    }
+    if (active.length > 0) lastActiveId = active[active.length - 1].id;
     if (active.length < PAGE) break;
   }
 

@@ -13,7 +13,7 @@ import { requireAuth, optionalAuth } from "../middleware/auth";
 import { getAppConfig } from "../lib/settings";
 import { enrichMatchMedia, avatarUrl, thumbUrl, optimizedUrl } from "../lib/media";
 import { userCacheKey, blogPostCacheKey, cacheGetJson, cachePutJson } from "../lib/cache";
-import { getLiveTally } from "../lib/voteCounter";
+import { getLiveTally, getViewerVote } from "../lib/voteCounter";
 
 export const readRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -98,6 +98,7 @@ const mapMatch = (r: any) => ({
   shareCount: r.shareCount,
   winnerUid: r.winnerUid,
   rewardAmount: r.rewardAmount,
+  minVotesRequired: r.minVotesRequired,
   endingSoonNotified: r.endingSoonNotified,
   createdAt: r.createdAt,
   activatedAt: r.activatedAt,
@@ -246,10 +247,37 @@ readRoute.get("/matches/:id", optionalAuth, async (c) => {
   }
   const uid = c.get("user")?.uid;
   if (uid) {
-    const liked = await db.select().from(schema.matchLikes).where(and(eq(schema.matchLikes.matchId, id), eq(schema.matchLikes.userId, uid))).get();
-    const bookmarked = await db.select().from(schema.bookmarks).where(and(eq(schema.bookmarks.userId, uid), eq(schema.bookmarks.matchId, id))).get();
+    const [liked, bookmarked] = await Promise.all([
+      db.select().from(schema.matchLikes).where(and(eq(schema.matchLikes.matchId, id), eq(schema.matchLikes.userId, uid))).get(),
+      db.select().from(schema.bookmarks).where(and(eq(schema.bookmarks.userId, uid), eq(schema.bookmarks.matchId, id))).get(),
+    ]);
     out.isLiked = !!liked;
     out.isBookmarked = !!bookmarked;
+
+    // Viewer vote state must come from the actor while active because D1 can be
+    // up to one flush window behind. Completed matches are immutable and can use
+    // their persisted audit row without waking a Durable Object.
+    if (row.status === "active") {
+      try {
+        const viewerVote = await getViewerVote(c.env, id, uid);
+        out.hasVoted = viewerVote.hasVoted;
+        out.votedForUid = viewerVote.votedForUid;
+      } catch {
+        const vote = await db.select({ votedForUid: schema.votes.votedForUid })
+          .from(schema.votes)
+          .where(and(eq(schema.votes.matchId, id), eq(schema.votes.voterUid, uid)))
+          .get();
+        out.hasVoted = !!vote;
+        out.votedForUid = vote?.votedForUid ?? null;
+      }
+    } else {
+      const vote = await db.select({ votedForUid: schema.votes.votedForUid })
+        .from(schema.votes)
+        .where(and(eq(schema.votes.matchId, id), eq(schema.votes.voterUid, uid)))
+        .get();
+      out.hasVoted = !!vote;
+      out.votedForUid = vote?.votedForUid ?? null;
+    }
   }
   return c.json(enrichMatchMedia(c.env, out));
 });

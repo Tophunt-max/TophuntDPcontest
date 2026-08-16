@@ -24,6 +24,7 @@ import { adminRoute } from "./routes/admin";
 import { webhookRoute } from "./routes/webhook";
 import { uploadRoute } from "./routes/upload";
 import { verifyIdToken } from "./lib/firebaseAuth";
+import { assertAccountNotBlocked } from "./middleware/auth";
 import { resolveContests, monthlyHallOfFame } from "./cron";
 import { ensureMigrated } from "./db/autoMigrate";
 
@@ -152,6 +153,7 @@ app.get("/ws", async (c) => {
   let user;
   try {
     user = await verifyIdToken(token, c.env);
+    await assertAccountNotBlocked(c.env, user.uid);
   } catch {
     return c.text("Unauthorized.", 401);
   }
@@ -173,7 +175,11 @@ app.get("/ws", async (c) => {
 
   const id = c.env.REALTIME.idFromName(channel);
   const stub = c.env.REALTIME.get(id);
-  return stub.fetch(c.req.raw);
+  const forwardedHeaders = new Headers(c.req.raw.headers);
+  // The channel DO stores this verified identity as a hibernation tag so an
+  // admin block can close already-established private sockets immediately.
+  forwardedHeaders.set("X-Authenticated-Uid", user.uid);
+  return stub.fetch(new Request(c.req.raw, { headers: forwardedHeaders }));
 });
 
 app.route("/auth", authRoute);

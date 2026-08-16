@@ -43,8 +43,10 @@ import type { Env } from "./types";
 const FLUSH_MS = 5_000;
 /** XP awarded per (new) vote — matches the previous inline awardXp(uid, 5). */
 const VOTE_XP = 5;
-/** Max uids per IN(...) chunk when batching XP updates. */
-const XP_CHUNK = 40;
+/** Bound each D1 batch below platform statement limits during viral bursts. */
+const FLUSH_VOTER_LIMIT = 25;
+/** Actor-local schema version for deduplicated/rebuilt tallies. */
+const VOTE_STATE_VERSION = "2";
 
 export interface VoteInput {
   matchId: string;
@@ -53,12 +55,16 @@ export interface VoteInput {
   deviceId?: string | null;
   uidA?: string | null;
   uidB?: string | null;
+  /** Authoritative match deadline supplied by the Worker from D1. */
+  expiresAt?: number | null;
 }
 
 export interface VoteTally {
   alreadyVoted: boolean;
   /** True when this device already voted in the match (multi-account abuse). */
   deviceUsed: boolean;
+  /** True once the actor deadline has passed or finalization has closed it. */
+  votingClosed: boolean;
   votesA: number;
   votesB: number;
   total: number;
@@ -68,6 +74,11 @@ export interface VoteTotals {
   votesA: number;
   votesB: number;
   total: number;
+}
+
+export interface ViewerVote {
+  hasVoted: boolean;
+  votedForUid: string | null;
 }
 
 export class VoteCounter extends DurableObject<Env> {
@@ -108,15 +119,27 @@ export class VoteCounter extends DurableObject<Env> {
 
   // ============================ RPC methods ================================
 
-  /** Cast a vote. Dedup + tally are authoritative inside the DO. */
+  /** Cast a vote. Dedup, deadline enforcement, and tally are authoritative here. */
   async vote(p: VoteInput): Promise<VoteTally> {
-    await this.ensureVoteSeeded(p.matchId, p.uidA ?? null, p.uidB ?? null);
+    await this.ensureVoteSeeded(p.matchId, p.uidA ?? null, p.uidB ?? null, p.expiresAt);
+
+    // The actor owns the final close decision. This removes the API-check -> DO
+    // TOCTOU gap: a request that passed the D1 check before expiry is still
+    // rejected if it reaches this serialized actor after the deadline/close.
+    if (this.isVotingClosed()) {
+      return {
+        alreadyVoted: false,
+        deviceUsed: false,
+        votingClosed: true,
+        ...this.voteTally(),
+      };
+    }
 
     const existing = this.sql
       .exec("SELECT 1 FROM voters WHERE voter_uid = ? LIMIT 1", p.voterUid)
       .toArray();
     if (existing.length > 0) {
-      return { alreadyVoted: true, deviceUsed: false, ...this.voteTally() };
+      return { alreadyVoted: true, deviceUsed: false, votingClosed: false, ...this.voteTally() };
     }
 
     // Anti-fraud: a single device may vote only once per match — blocks
@@ -126,7 +149,7 @@ export class VoteCounter extends DurableObject<Env> {
         .exec("SELECT 1 FROM voters WHERE device_id = ? LIMIT 1", p.deviceId)
         .toArray();
       if (dev.length > 0) {
-        return { alreadyVoted: false, deviceUsed: true, ...this.voteTally() };
+        return { alreadyVoted: false, deviceUsed: true, votingClosed: false, ...this.voteTally() };
       }
     }
 
@@ -144,7 +167,7 @@ export class VoteCounter extends DurableObject<Env> {
     );
 
     await this.scheduleFlush();
-    return { alreadyVoted: false, deviceUsed: false, ...this.voteTally() };
+    return { alreadyVoted: false, deviceUsed: false, votingClosed: false, ...this.voteTally() };
   }
 
   /**
@@ -172,7 +195,27 @@ export class VoteCounter extends DurableObject<Env> {
   /** Force a synchronous flush to D1 and return the authoritative vote tally. */
   async flushTally(matchId: string, uidA?: string | null, uidB?: string | null): Promise<VoteTotals> {
     await this.ensureVoteSeeded(matchId, uidA ?? null, uidB ?? null);
-    await this.flush();
+    await this.flush(true);
+    return this.voteTally();
+  }
+
+  /**
+   * Atomically close voting in this per-match actor, flush every accepted vote,
+   * and return the final tally. Once closed, all later vote RPCs are rejected.
+   */
+  async closeAndFlush(
+    matchId: string,
+    uidA: string,
+    uidB: string,
+    expiresAt: number,
+    force = false,
+  ): Promise<VoteTotals> {
+    await this.ensureVoteSeeded(matchId, uidA, uidB, expiresAt);
+    if (!force && (!Number.isFinite(expiresAt) || expiresAt > Date.now())) {
+      throw new Error("Cannot finalize a match before its voting deadline.");
+    }
+    this.setMeta("closed", "1");
+    await this.flush(true);
     return this.voteTally();
   }
 
@@ -182,19 +225,32 @@ export class VoteCounter extends DurableObject<Env> {
     return this.voteTally();
   }
 
+  /** Return the authenticated viewer's persisted actor-local vote selection. */
+  async viewerVote(matchId: string, voterUid: string): Promise<ViewerVote> {
+    await this.ensureVoteSeeded(matchId, null, null);
+    const row = this.sql
+      .exec("SELECT voted_for_uid FROM voters WHERE voter_uid = ? LIMIT 1", voterUid)
+      .toArray()[0] as { voted_for_uid: string } | undefined;
+    return { hasVoted: !!row, votedForUid: row?.voted_for_uid ?? null };
+  }
+
   // --------------------------------------------------------------------- seed
   private async ensureVoteSeeded(
     matchId: string | undefined,
     uidA: string | null,
     uidB: string | null,
+    expiresAt?: number | null,
   ): Promise<void> {
+    if (Number.isFinite(expiresAt)) this.setMeta("expiresAt", String(expiresAt));
     if (this.getMeta("voteSeeded") === "1") {
       if (uidA && !this.getMeta("uidA")) this.setMeta("uidA", uidA);
       if (uidB && !this.getMeta("uidB")) this.setMeta("uidB", uidB);
+      this.repairVoteTallies();
       return;
     }
     if (!this.voteSeedPromise) this.voteSeedPromise = this.doVoteSeed(matchId, uidA, uidB);
     await this.voteSeedPromise;
+    this.repairVoteTallies();
   }
 
   private async doVoteSeed(
@@ -227,10 +283,6 @@ export class VoteCounter extends DurableObject<Env> {
           r.voted_for_uid,
           r.device_id ?? null,
           r.created_at ?? Date.now(),
-        );
-        this.sql.exec(
-          "INSERT INTO tallies (uid, votes) VALUES (?, 1) ON CONFLICT(uid) DO UPDATE SET votes = votes + 1",
-          r.voted_for_uid,
         );
       }
     } catch (e) {
@@ -304,10 +356,14 @@ export class VoteCounter extends DurableObject<Env> {
 
   /** Alarm handler — batch-write accumulated state into D1. */
   async alarm(): Promise<void> {
-    await this.flush();
+    await this.flush(false);
   }
 
-  private async flush(): Promise<void> {
+  /**
+   * Persist actor state. Finalization uses strict=true so an unavailable D1
+   * leaves the match unresolved and retriable instead of paying from stale data.
+   */
+  private async flush(strict: boolean): Promise<void> {
     const matchId = this.getMeta("matchId");
     if (!matchId) return;
 
@@ -346,7 +402,9 @@ export class VoteCounter extends DurableObject<Env> {
     // 3) Persist not-yet-flushed vote audit rows.
     const pending = this.sql
       .exec(
-        "SELECT voter_uid, voted_for_uid, device_id, created_at FROM voters WHERE flushed = 0",
+        `SELECT voter_uid, voted_for_uid, device_id, created_at
+           FROM voters WHERE flushed = 0
+          ORDER BY created_at LIMIT ${FLUSH_VOTER_LIMIT}`,
       )
       .toArray() as Array<{
       voter_uid: string;
@@ -372,20 +430,31 @@ export class VoteCounter extends DurableObject<Env> {
       }
     }
 
-    // 4) Batched vote XP for voters who haven't been credited yet.
+    // 4) Exactly-once vote XP. Each conditional increment and its ledger insert
+    // are in the same D1 batch. If this actor retries after a crash, the ledger
+    // makes the UPDATE a no-op instead of crediting XP twice.
     const xpPending = (
       this.sql
-        .exec("SELECT voter_uid FROM voters WHERE xp_awarded = 0")
+        .exec(`SELECT voter_uid FROM voters WHERE xp_awarded = 0 ORDER BY created_at LIMIT ${FLUSH_VOTER_LIMIT}`)
         .toArray() as Array<{ voter_uid: string }>
     ).map((r) => r.voter_uid);
     const ts = Date.now();
-    for (let i = 0; i < xpPending.length; i += XP_CHUNK) {
-      const chunk = xpPending.slice(i, i + XP_CHUNK);
-      const placeholders = chunk.map(() => "?").join(",");
+    for (const voterUid of xpPending) {
       statements.push(
         this.env.DB.prepare(
-          `UPDATE users SET xp = xp + ${VOTE_XP}, updated_at = ? WHERE uid IN (${placeholders})`,
-        ).bind(ts, ...chunk),
+          `UPDATE users
+              SET xp = xp + ?, updated_at = ?
+            WHERE uid = ?
+              AND NOT EXISTS (
+                SELECT 1 FROM vote_xp_awards
+                 WHERE match_id = ? AND voter_uid = ?
+              )`,
+        ).bind(VOTE_XP, ts, voterUid, matchId, voterUid),
+      );
+      statements.push(
+        this.env.DB.prepare(
+          "INSERT OR IGNORE INTO vote_xp_awards (match_id, voter_uid, created_at) VALUES (?, ?, ?)",
+        ).bind(matchId, voterUid, ts),
       );
     }
 
@@ -393,17 +462,54 @@ export class VoteCounter extends DurableObject<Env> {
 
     try {
       await this.env.DB.batch(statements);
-      // Only mark local rows done AFTER D1 confirms the batch.
-      if (pending.length > 0) this.sql.exec("UPDATE voters SET flushed = 1 WHERE flushed = 0");
-      if (xpPending.length > 0) this.sql.exec("UPDATE voters SET xp_awarded = 1 WHERE xp_awarded = 0");
+      // Only mark the rows included in this bounded chunk after D1 confirms it.
+      for (const row of pending) {
+        this.sql.exec("UPDATE voters SET flushed = 1 WHERE voter_uid = ?", row.voter_uid);
+      }
+      for (const voterUid of xpPending) {
+        this.sql.exec("UPDATE voters SET xp_awarded = 1 WHERE voter_uid = ?", voterUid);
+      }
+
+      const remaining = this.sql.exec(
+        "SELECT 1 FROM voters WHERE flushed = 0 OR xp_awarded = 0 LIMIT 1",
+      ).toArray().length > 0;
+      if (remaining) {
+        if (strict) await this.flush(true);
+        else await this.ctx.storage.setAlarm(Date.now() + FLUSH_MS);
+      }
     } catch (e) {
       console.error("[VoteCounter] flush failed", matchId, e);
       // Leave rows unflushed and reschedule so the next window retries.
       await this.ctx.storage.setAlarm(Date.now() + FLUSH_MS);
+      if (strict) throw e;
     }
   }
 
   // -------------------------------------------------------------------- helpers
+  private repairVoteTallies(): void {
+    if (this.getMeta("voteStateVersion") === VOTE_STATE_VERSION) return;
+    // Older actors could have incremented tallies for duplicate imported rows
+    // even though voters.voter_uid was unique. Rebuild from the canonical local
+    // voter set once after deployment, then persist the schema version.
+    this.sql.exec("DELETE FROM tallies");
+    this.sql.exec(
+      `INSERT INTO tallies (uid, votes)
+       SELECT voted_for_uid, COUNT(*) FROM voters GROUP BY voted_for_uid`,
+    );
+    this.setMeta("voteStateVersion", VOTE_STATE_VERSION);
+  }
+
+  private isVotingClosed(): boolean {
+    if (this.getMeta("closed") === "1") return true;
+    const rawDeadline = this.getMeta("expiresAt");
+    const deadline = rawDeadline == null ? Number.POSITIVE_INFINITY : Number(rawDeadline);
+    if (Number.isFinite(deadline) && Date.now() >= deadline) {
+      this.setMeta("closed", "1");
+      return true;
+    }
+    return false;
+  }
+
   private voteTally(): { votesA: number; votesB: number; total: number } {
     const uidA = this.getMeta("uidA");
     const uidB = this.getMeta("uidB");

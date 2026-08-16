@@ -1,5 +1,5 @@
 import React, { useState, memo, useEffect, useCallback, useRef } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, Dimensions, Alert, Pressable } from 'react-native';
+import { View, Text, StyleSheet, Image, TouchableOpacity, Alert, Pressable, ActivityIndicator, AccessibilityInfo } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@/src/lib/icons';
 import { CommentSheet } from '../comments/CommentSheet';
 import { ShareSheet } from '../share/ShareSheet';
@@ -30,16 +30,15 @@ import {
   Bookmark_Filled 
 } from '@/assets/svgs';
 
-const { width } = Dimensions.get('window');
-
 interface PostCardProps {
     item: any;
     isDark: boolean;
+    onMatchEnded?: (matchId: string) => void;
 }
 
 const AnimatedLinearGradient = Animated.createAnimatedComponent(LinearGradient);
 
-export const PostCard = memo(({ item, isDark }: PostCardProps) => {
+export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => {
   const { user } = useAuth();
   const { addToast } = useToast();
   const [showComments, setShowComments] = useState(false);
@@ -53,41 +52,76 @@ export const PostCard = memo(({ item, isDark }: PostCardProps) => {
   const subTextColor = isDark ? '#BDBDBD' : '#616161';
 
   // Real-time states
-  const [votesA, setVotesA] = useState(item.userA.votes || 0);
-  const [votesB, setVotesB] = useState(item.userB?.votes || 0);
+  const initialVotesA = Number(item.userA.votes || 0);
+  const initialVotesB = Number(item.userB?.votes || 0);
+  const initialTotal = initialVotesA + initialVotesB;
+  const initialProgressA = initialTotal > 0 ? initialVotesA / initialTotal : 0.5;
+  const [votesA, setVotesA] = useState(initialVotesA);
+  const [votesB, setVotesB] = useState(initialVotesB);
   const [likeCount, setLikeCount] = useState(item.likeCount || 0);
   const [commentCount, setCommentCount] = useState(item.commentCount || 0);
   const [shareCount, setShareCount] = useState(item.shareCount || 0);
-  const [progressA, setProgressA] = useState(0.5);
+  const [progressA, setProgressA] = useState(initialProgressA);
+  const [matchStatus, setMatchStatus] = useState(item.status || 'active');
+  const [isVoting, setIsVoting] = useState(false);
+  const [submittingForUid, setSubmittingForUid] = useState<string | null>(null);
+  const [hasVoted, setHasVoted] = useState(!!item.hasVoted);
+  const [votedForUid, setVotedForUid] = useState<string | null>(item.votedForUid || null);
 
   // Animation values
   const heartScale = useSharedValue(0);
-  const barProgress = useSharedValue(0.5);
+  const barProgress = useSharedValue(initialProgressA);
   const lastTap = useRef<number>(0);
+  const lastVoteTotal = useRef(initialTotal);
   const isHeartAnimating = useRef<boolean>(false);
+
+  const applyTally = useCallback((nextVotesA: number, nextVotesB: number) => {
+    const total = nextVotesA + nextVotesB;
+    // waitUntil publishes and in-flight HTTP reads may complete out of order.
+    // Active vote totals only increase, so never let an older snapshot roll back.
+    if (total < lastVoteTotal.current) return;
+    lastVoteTotal.current = total;
+    setVotesA(nextVotesA);
+    setVotesB(nextVotesB);
+    const nextProgress = total > 0 ? nextVotesA / total : 0.5;
+    setProgressA(nextProgress);
+    barProgress.value = withSpring(nextProgress, { damping: 15, stiffness: 100 });
+  }, [barProgress]);
 
   useEffect(() => {
     if (!item.id) return;
-    // Instant push via the match's WebSocket channel (live vote/like counts).
+
+    // Self-contained vote/status events update the card immediately. Other
+    // engagement events refetch details; live() coalesces overlapping refreshes.
     const unsub = live<any>(
       `match:${item.id}`,
       () => readApi(`/read/matches/${item.id}`),
       (data) => {
         if (!data) return;
-        setVotesA(data.userA?.votes || 0);
-        setVotesB(data.userB?.votes || 0);
+        applyTally(Number(data.userA?.votes || 0), Number(data.userB?.votes || 0));
         setLikeCount(data.likeCount || 0);
         setCommentCount(data.commentCount || 0);
         setShareCount(data.shareCount || 0);
-
-        const total = (data.userA?.votes || 0) + (data.userB?.votes || 0);
-        const newProgress = total > 0 ? (data.userA?.votes || 0) / total : 0.5;
-        setProgressA(newProgress);
-        barProgress.value = withSpring(newProgress, { damping: 15, stiffness: 100 });
+        setMatchStatus(data.status || 'active');
+        if (typeof data.hasVoted === 'boolean') setHasVoted(data.hasVoted);
+        if ('votedForUid' in data) setVotedForUid(data.votedForUid || null);
+      },
+      {
+        onEvent: (event) => {
+          if (event.type === 'vote' || event.type === 'match_status') {
+            applyTally(Number(event.votesA || 0), Number(event.votesB || 0));
+          }
+          if (event.type === 'match_status' && event.status) setMatchStatus(String(event.status));
+        },
+        shouldRefresh: (event) => event.type !== 'vote' && event.type !== 'match_status',
       },
     );
     return () => unsub();
-  }, [item.id, user]);
+  }, [applyTally, item.id, user?.uid]);
+
+  useEffect(() => {
+    if (matchStatus !== 'active') onMatchEnded?.(item.id);
+  }, [item.id, matchStatus, onMatchEnded]);
 
   const animatedBarStyle = useAnimatedStyle(() => ({
     width: `${barProgress.value * 100}%`,
@@ -123,20 +157,61 @@ export const PostCard = memo(({ item, isDark }: PostCardProps) => {
     "Shukriya! Aapne sahi jagah apna nishana lagaya."
   ];
 
+  const nameA = item.joinIdA || item.userA.username || "User A";
+  const nameB = item.joinIdB || item.userB?.username || "User B";
+
   const getRandomMessage = (messages: string[]) => {
     return messages[Math.floor(Math.random() * messages.length)];
   };
 
-  const handleVote = async (votedForUid: string) => {
+  const handleVote = async (selectedUid: string) => {
     if (!user) return Alert.alert("Login required", "Please login to vote.");
+    if (isVoting || hasVoted) return;
+    const endDate = item.expiresAt?.toDate ? item.expiresAt.toDate() : new Date(item.expiresAt);
+    if (matchStatus !== 'active' || !item.expiresAt || endDate.getTime() <= Date.now()) {
+      addToast('Voting has closed for this battle.', 'info');
+      return;
+    }
+
     triggerHaptic();
+    setIsVoting(true);
+    setSubmittingForUid(selectedUid);
     try {
-      await contestService.voteOnMatch(item.id, votedForUid, 'device_id');
+      // contestService owns the stable per-install identifier. Never pass a
+      // shared placeholder from UI code.
+      const result = await contestService.voteOnMatch(item.id, selectedUid);
+      const nextVotesA = Number(result?.votesA ?? votesA);
+      const nextVotesB = Number(result?.votesB ?? votesB);
+      applyTally(nextVotesA, nextVotesB);
+      setHasVoted(true);
+      setVotedForUid(selectedUid);
       setShowConfetti(true);
       setTimeout(() => setShowConfetti(false), 3000);
-      addToast(getRandomMessage(funnyVoteMessages), 'success');
+      const successMessage = getRandomMessage(funnyVoteMessages);
+      addToast(successMessage, 'success');
+      AccessibilityInfo.announceForAccessibility(`Vote submitted for ${selectedUid === item.userA.uid ? nameA : nameB}.`);
     } catch (error: any) {
-      addToast(error.message || "Vote fail ho gaya!", 'error');
+      if (String(error?.code || '').includes('already-exists')) {
+        setHasVoted(true);
+        try {
+          const detail: any = await contestService.getMatchById(item.id);
+          setVotedForUid(detail?.votedForUid || null);
+          if (detail?.userA && detail?.userB) {
+            applyTally(
+              Number(detail.userA.votes || 0),
+              Number(detail.userB.votes || 0),
+            );
+          }
+        } catch {
+          // Keep voting disabled even if state restoration temporarily fails.
+        }
+      }
+      const message = error.message || "Vote fail ho gaya!";
+      addToast(message, 'error');
+      AccessibilityInfo.announceForAccessibility(message);
+    } finally {
+      setIsVoting(false);
+      setSubmittingForUid(null);
     }
   };
   
@@ -148,7 +223,7 @@ export const PostCard = memo(({ item, isDark }: PostCardProps) => {
       setIsLiked(newLikedStatus);
       await contestService.likeMatch(item.id);
       if (newLikedStatus) addToast("Zabardast Like!", 'success');
-    } catch (error) {
+    } catch {
        setIsLiked(!isLiked);
     }
   };
@@ -170,7 +245,7 @@ export const PostCard = memo(({ item, isDark }: PostCardProps) => {
       const status = await engagementService.toggleBookmark(item.id, user.uid);
       setIsBookmarked(status);
       addToast(status ? "Saved to your profile!" : "Removed from bookmarks!", 'info');
-    } catch (error) {
+    } catch {
         setIsBookmarked(!isBookmarked);
     }
   };
@@ -193,11 +268,19 @@ export const PostCard = memo(({ item, isDark }: PostCardProps) => {
   const [timeRemaining, setTimeRemaining] = useState(getTimeRemaining());
   useEffect(() => {
     const timer = setInterval(() => setTimeRemaining(getTimeRemaining()), 60000);
-    return () => clearInterval(timer);
-  }, [getTimeRemaining]);
+    const endDate = item.expiresAt?.toDate ? item.expiresAt.toDate() : new Date(item.expiresAt);
+    const msUntilEnd = endDate.getTime() - Date.now();
+    const endTimer = Number.isFinite(msUntilEnd) && msUntilEnd > 0
+      ? setTimeout(() => setTimeRemaining('Ended'), Math.min(msUntilEnd + 50, 2_147_000_000))
+      : null;
+    return () => {
+      clearInterval(timer);
+      if (endTimer) clearTimeout(endTimer);
+    };
+  }, [getTimeRemaining, item.expiresAt]);
 
-  const nameA = item.joinIdA || item.userA.username || "User A";
-  const nameB = item.joinIdB || item.userB?.username || "User B";
+  const votingClosed = matchStatus !== 'active' || timeRemaining === 'Ended';
+  const votingDisabled = isVoting || hasVoted || votingClosed;
 
   const isALeading = votesA > votesB;
   const isBLeading = votesB > votesA;
@@ -208,13 +291,14 @@ export const PostCard = memo(({ item, isDark }: PostCardProps) => {
   return (
     <View style={[styles.postContainer, { backgroundColor: cardColor }]}>
       {showConfetti && (
-        <LottieView
-            source={{ uri: 'https://assets2.lottiefiles.com/packages/lf20_u4y36v.json' }}
-            autoPlay
-            loop={false}
-            style={styles.confetti}
-            pointerEvents="none"
-        />
+        <View style={styles.confetti} pointerEvents="none">
+          <LottieView
+              source={{ uri: 'https://assets2.lottiefiles.com/packages/lf20_u4y36v.json' }}
+              autoPlay
+              loop={false}
+              style={styles.confettiAnimation}
+          />
+        </View>
       )}
       
       <View style={styles.postHeader}>
@@ -262,15 +346,48 @@ export const PostCard = memo(({ item, isDark }: PostCardProps) => {
       </Pressable>
       
       <View style={styles.voteButtonSection}>
-        <TouchableOpacity style={styles.voteButton} onPress={() => handleVote(item.userA.uid)}>
-            <Text style={styles.voteButtonText}>Vote {nameA}</Text>
+        <TouchableOpacity
+          style={[
+            styles.voteButton,
+            votedForUid === item.userA.uid && styles.selectedVoteButton,
+            votingDisabled && votedForUid !== item.userA.uid && styles.disabledVoteButton,
+          ]}
+          onPress={() => handleVote(item.userA.uid)}
+          disabled={votingDisabled}
+          accessibilityRole="button"
+          accessibilityLabel={`Vote for ${nameA}`}
+          accessibilityHint={votingClosed ? 'Voting has ended' : 'Submits your one vote for this battle'}
+          accessibilityState={{ disabled: votingDisabled, busy: submittingForUid === item.userA.uid, selected: votedForUid === item.userA.uid }}
+        >
+          {submittingForUid === item.userA.uid
+            ? <ActivityIndicator size="small" color="#FFF" />
+            : <Text style={styles.voteButtonText}>{votedForUid === item.userA.uid ? 'Voted' : `Vote ${nameA}`}</Text>}
         </TouchableOpacity>
-        <TouchableOpacity style={[styles.voteButton, { backgroundColor: '#FF8A4D' }]} onPress={() => handleVote(item.userB.uid)}>
-            <Text style={styles.voteButtonText}>Vote {nameB}</Text>
+        <TouchableOpacity
+          style={[
+            styles.voteButton,
+            styles.voteButtonB,
+            votedForUid === item.userB.uid && styles.selectedVoteButton,
+            votingDisabled && votedForUid !== item.userB.uid && styles.disabledVoteButton,
+          ]}
+          onPress={() => handleVote(item.userB.uid)}
+          disabled={votingDisabled}
+          accessibilityRole="button"
+          accessibilityLabel={`Vote for ${nameB}`}
+          accessibilityHint={votingClosed ? 'Voting has ended' : 'Submits your one vote for this battle'}
+          accessibilityState={{ disabled: votingDisabled, busy: submittingForUid === item.userB.uid, selected: votedForUid === item.userB.uid }}
+        >
+          {submittingForUid === item.userB.uid
+            ? <ActivityIndicator size="small" color="#FFF" />
+            : <Text style={styles.voteButtonText}>{votedForUid === item.userB.uid ? 'Voted' : `Vote ${nameB}`}</Text>}
         </TouchableOpacity>
       </View>
       
-      <View style={styles.pollInfoSection}>
+      <View
+        style={styles.pollInfoSection}
+        accessible
+        accessibilityLabel={`${nameA} has ${votesA} votes, ${nameB} has ${votesB} votes. ${votingClosed ? 'Voting ended.' : timeRemaining}`}
+      >
         <View style={styles.progressBarContainer}>
             <AnimatedLinearGradient
                 colors={['#FF4D7E', '#FFC54D']}
@@ -314,9 +431,12 @@ export const PostCard = memo(({ item, isDark }: PostCardProps) => {
   );
 });
 
+PostCard.displayName = 'PostCard';
+
 const styles = StyleSheet.create({
   postContainer: { borderRadius: 24, marginHorizontal: 8, marginBottom: 20, elevation: 3, paddingBottom: 10, position: 'relative' },
   confetti: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 100 },
+  confettiAnimation: { width: '100%', height: '100%' },
   postHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12 },
   userInfo: { flexDirection: 'row', alignItems: 'center', flex: 1 },
   avatarContainer: { flexDirection: 'row', alignItems: 'center' },
@@ -335,7 +455,10 @@ const styles = StyleSheet.create({
   crownContainer: { position: 'absolute', top: -10, left: '40%', zIndex: 10 },
   largeHeart: { position: 'absolute', top: '30%', left: '35%', zIndex: 20 },
   voteButtonSection: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, marginTop: 15, gap: 10 },
-  voteButton: { flex: 1, backgroundColor: '#FF4D67', paddingVertical: 12, borderRadius: 20, alignItems: 'center' },
+  voteButton: { flex: 1, minHeight: 44, backgroundColor: '#FF4D67', paddingVertical: 12, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  voteButtonB: { backgroundColor: '#FF8A4D' },
+  selectedVoteButton: { backgroundColor: '#2E7D32', opacity: 1 },
+  disabledVoteButton: { opacity: 0.45 },
   voteButtonText: { fontFamily: 'Urbanist-Bold', fontSize: 12, color: '#FFF' },
   pollInfoSection: { paddingHorizontal: 16, marginTop: 20 },
   progressBarContainer: { width: '100%', height: 8, backgroundColor: '#E0E0E0', borderRadius: 4, overflow: 'hidden' },

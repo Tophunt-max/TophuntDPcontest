@@ -7,11 +7,28 @@ import { getDb, schema } from "../db";
 
 type MW = { Bindings: Env; Variables: Variables };
 
-/** Require a valid Firebase ID token; sets c.var.user. */
+/** Reject an already-issued token as soon as its D1 account is blocked. */
+export async function assertAccountNotBlocked(env: Env, uid: string): Promise<void> {
+  const account = await getDb(env)
+    .select({ status: schema.users.status, isBlocked: schema.users.isBlocked })
+    .from(schema.users)
+    .where(eq(schema.users.uid, uid))
+    .get();
+  if (account?.isBlocked || account?.status === "blocked") {
+    throw httpsError("permission-denied", "This account has been blocked.");
+  }
+}
+
+/** Require a valid Firebase ID token and reject blocked accounts immediately. */
 export const requireAuth = createMiddleware<MW>(async (c, next) => {
   const token = bearerToken(c.req.header("Authorization"));
   if (!token) throw httpsError("unauthenticated", "User must be logged in.");
   const user = await verifyIdToken(token, c.env);
+
+  // Firebase ID tokens may remain valid for up to an hour after an account is
+  // disabled. D1 is the immediate source of truth for immediate revocation.
+  await assertAccountNotBlocked(c.env, user.uid);
+
   c.set("user", user);
   await next();
 });
@@ -21,7 +38,9 @@ export const optionalAuth = createMiddleware<MW>(async (c, next) => {
   const token = bearerToken(c.req.header("Authorization"));
   if (token) {
     try {
-      c.set("user", await verifyIdToken(token, c.env));
+      const user = await verifyIdToken(token, c.env);
+      await assertAccountNotBlocked(c.env, user.uid);
+      c.set("user", user);
     } catch {
       /* ignore — treated as guest */
     }

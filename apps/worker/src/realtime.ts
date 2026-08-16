@@ -25,6 +25,21 @@ export class RealtimeHub {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
+    // Internal revocation: close every hibernating socket authenticated as uid.
+    if (url.pathname === "/revoke") {
+      const payload = await request.json<{ uid?: string }>()
+        .catch(() => ({} as { uid?: string }));
+      if (!payload.uid) return new Response("uid required", { status: 400 });
+      for (const ws of this.state.getWebSockets(`uid:${payload.uid}`)) {
+        try {
+          ws.close(4003, "Account blocked");
+        } catch {
+          /* socket already closing */
+        }
+      }
+      return new Response("ok");
+    }
+
     // Internal fan-out: broadcast a JSON payload to every connected socket.
     if (url.pathname === "/publish") {
       const body = await request.text();
@@ -40,9 +55,11 @@ export class RealtimeHub {
 
     // WebSocket upgrade (hibernatable).
     if (request.headers.get("Upgrade") === "websocket") {
+      const uid = request.headers.get("X-Authenticated-Uid");
+      if (!uid) return new Response("missing verified identity", { status: 401 });
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
-      this.state.acceptWebSocket(server);
+      this.state.acceptWebSocket(server, [`uid:${uid}`]);
       // Greet so the client knows the socket is live.
       try {
         server.send(JSON.stringify({ type: "connected", ts: Date.now() }));

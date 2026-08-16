@@ -14,10 +14,12 @@ import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
 import { verifyIdToken, bearerToken } from "../lib/firebaseAuth";
+import { assertAccountNotBlocked } from "../middleware/auth";
 import { getAppConfig, getGamificationSettings, invalidateSetting } from "../lib/settings";
 import { deleteAuthUser, updateAuthUser, setCustomClaims, getUserByEmail } from "../lib/firebaseAdmin";
 import { createNotification, sendBroadcastToAllUsers, sendSegmentedBroadcast } from "../lib/notify";
 import { finalizeVotes } from "../lib/voteCounter";
+import { settleRefund, settleWinner } from "../lib/contestSettlement";
 import { resolveContests, monthlyHallOfFame } from "../cron";
 import { newId, now } from "../lib/ids";
 import { discoverUrls, processBatch } from "../lib/importerTask";
@@ -60,6 +62,28 @@ export const adminRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 // requireFullAdmin below.
 const ADMIN_ROLES = ["superadmin", "admin", "moderator"];
 
+/** Close existing private realtime sessions after an account is blocked. */
+async function revokeRealtimeSessions(env: Env, uid: string): Promise<void> {
+  const chats = await env.DB.prepare(
+    `SELECT id FROM chats
+      WHERE EXISTS (
+        SELECT 1 FROM json_each(chats.users) WHERE json_each.value = ?
+      )`,
+  ).bind(uid).all<{ id: string }>();
+  const channels = new Set<string>([
+    `user:${uid}`,
+    ...(chats.results ?? []).map((chat) => `chat:${chat.id}`),
+  ]);
+  await Promise.all([...channels].map(async (channel) => {
+    const id = env.REALTIME.idFromName(channel);
+    await env.REALTIME.get(id).fetch("https://do.internal/revoke", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uid }),
+    });
+  }));
+}
+
 /** Resolve the caller's effective admin role from claim or the D1 users row. */
 async function resolveAdminRole(c: any): Promise<string | null> {
   const user = c.get("user");
@@ -81,7 +105,9 @@ adminRoute.use("*", async (c, next) => {
   const token = bearerToken(c.req.header("Authorization"));
   if (token) {
     try {
-      c.set("user", await verifyIdToken(token, c.env));
+      const user = await verifyIdToken(token, c.env);
+      await assertAccountNotBlocked(c.env, user.uid);
+      c.set("user", user);
       const role = await resolveAdminRole(c);
       if (role) {
         c.set("adminRole", role);
@@ -309,19 +335,27 @@ adminRoute.delete("/users/:id", async (c) => {
   const db = getDb(c.env);
   requireFullAdmin(c);
   const id = c.req.param("id");
+  await revokeRealtimeSessions(c.env, id);
   await db.delete(schema.users).where(eq(schema.users.uid, id));
   await deleteAuthUser(c.env, id).catch((e) => console.error("Auth delete failed", e));
   await logAudit(c, "user.delete", "user", id);
   return c.json({ message: "User deleted successfully" });
 });
 adminRoute.patch("/users/:id", async (c) => {
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const id = c.req.param("id");
   const { isBlocked } = await c.req.json<any>();
-  await db.update(schema.users).set({ isBlocked: !!isBlocked, status: isBlocked ? "blocked" : "active", updatedAt: now() }).where(eq(schema.users.uid, id));
-  await updateAuthUser(c.env, id, { disabled: !!isBlocked }).catch((e) => console.warn("Auth update failed", e));
-  await logAudit(c, isBlocked ? "user.block" : "user.unblock", "user", id);
-  return c.json({ message: `User ${isBlocked ? "blocked" : "unblocked"} successfully`, status: isBlocked });
+  const blocked = !!isBlocked;
+  const updated = await db.update(schema.users)
+    .set({ isBlocked: blocked, status: blocked ? "blocked" : "active", updatedAt: now() })
+    .where(eq(schema.users.uid, id))
+    .run();
+  if (updated.meta.changes === 0) throw httpsError("not-found", "User not found.");
+  await updateAuthUser(c.env, id, { disabled: blocked }).catch((e) => console.warn("Auth update failed", e));
+  if (blocked) await revokeRealtimeSessions(c.env, id);
+  await logAudit(c, blocked ? "user.block" : "user.unblock", "user", id);
+  return c.json({ message: `User ${blocked ? "blocked" : "unblocked"} successfully`, status: blocked });
 });
 
 // ---- wallet (was adminManageWallet Cloud Function) ----
@@ -1220,25 +1254,22 @@ adminRoute.post("/matches/:id/declare-winner", async (c) => {
   const body = await c.req.json<any>().catch(() => ({}));
   const m = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, id)).get();
   if (!m) throw httpsError("not-found", "Match not found.");
-  if (m.status === "completed") throw httpsError("failed-precondition", "Match is already completed.");
+  if (m.status !== "active") throw httpsError("failed-precondition", "Only an active match can have a winner declared.");
   const userA = m.userA as any;
   const userB = m.userB as any;
   if (!userA?.uid || !userB?.uid) throw httpsError("failed-precondition", "Match has no opponents to judge.");
 
-  let votesA = Number(userA.votes || 0);
-  let votesB = Number(userB.votes || 0);
-  try {
-    const t = await finalizeVotes(c.env, id, userA.uid, userB.uid);
-    votesA = t.votesA;
-    votesB = t.votesB;
-  } catch (e) {
-    console.error("[declare-winner] vote finalize failed, using D1 snapshot", id, e);
-  }
-
-  let winnerUid: string = body.winnerUid || (votesA >= votesB ? userA.uid : userB.uid);
-  if (winnerUid !== userA.uid && winnerUid !== userB.uid) {
+  const requestedWinnerUid = body.winnerUid == null ? null : String(body.winnerUid);
+  if (requestedWinnerUid && requestedWinnerUid !== userA.uid && requestedWinnerUid !== userB.uid) {
     throw httpsError("invalid-argument", "winnerUid must be one of the two participants.");
   }
+
+  // Validate every client-supplied field before permanently closing the actor.
+  const t = await finalizeVotes(c.env, id, userA.uid, userB.uid, Number(m.expiresAt || 0), true);
+  const votesA = t.votesA;
+  const votesB = t.votesB;
+
+  const winnerUid: string = requestedWinnerUid || (votesA >= votesB ? userA.uid : userB.uid);
   const loserUid = winnerUid === userA.uid ? userB.uid : userA.uid;
 
   let rewardAmount = Number(m.entryFee || 0);
@@ -1248,27 +1279,17 @@ adminRoute.post("/matches/:id/declare-winner", async (c) => {
   }
 
   const ts = now();
-  const claim = await db
-    .update(schema.contestMatches)
-    .set({ status: "completed", winnerUid, rewardAmount, completedAt: ts })
-    .where(and(eq(schema.contestMatches.id, id), ne(schema.contestMatches.status, "completed")))
-    .run();
-  if (claim.meta.changes === 0) throw httpsError("failed-precondition", "Match was already resolved.");
-
-  await db.batch([
-    db.update(schema.users).set({
-      dpcoin: sql`${schema.users.dpcoin} + ${rewardAmount}`,
-      xp: sql`${schema.users.xp} + 100`,
-      wins: sql`${schema.users.wins} + 1`,
-      monthlyWins: sql`${schema.users.monthlyWins} + 1`,
-      updatedAt: ts,
-    }).where(eq(schema.users.uid, winnerUid)),
-    db.update(schema.users).set({ xp: sql`${schema.users.xp} + 20`, updatedAt: ts }).where(eq(schema.users.uid, loserUid)),
-    db.insert(schema.coinTransactions).values({
-      id: newId(), uid: winnerUid, amount: rewardAmount, type: "contest_win_reward",
-      matchId: id, contestId: m.contestId, description: `Admin-declared victory for "${m.title}"`, createdAt: ts,
-    }),
-  ]);
+  const settled = await settleWinner(c.env, {
+    matchId: id,
+    contestId: m.contestId,
+    expectedStatus: "active",
+    winnerUid,
+    loserUid,
+    rewardAmount,
+    description: `Admin-declared victory for "${m.title}"`,
+    completedAt: ts,
+  });
+  if (!settled) throw httpsError("failed-precondition", "Match was already resolved.");
 
   await createNotification(c.env, winnerUid, { title: "You Won! 🏆", body: `You won the battle "${m.title}" and earned ${rewardAmount} Dpcoins!`, type: "contest-win", targetId: id });
   await createNotification(c.env, loserUid, { title: "Battle Ended", body: `The battle "${m.title}" has concluded.`, type: "contest-loss", targetId: id });
@@ -1286,29 +1307,35 @@ adminRoute.post("/matches/:id/cancel", async (c) => {
   const id = c.req.param("id");
   const m = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, id)).get();
   if (!m) throw httpsError("not-found", "Match not found.");
-  if (m.status === "completed" || m.status === "cancelled") {
-    throw httpsError("failed-precondition", "Match is already finalized.");
+  if (m.status !== "active" && m.status !== "waiting_for_opponent") {
+    throw httpsError("failed-precondition", "Only an active or waiting match can be cancelled.");
   }
-  const ts = now();
-  const claim = await db
-    .update(schema.contestMatches)
-    .set({ status: "cancelled", completedAt: ts })
-    .where(and(eq(schema.contestMatches.id, id), inArray(schema.contestMatches.status, ["active", "waiting_for_opponent"])))
-    .run();
-  if (claim.meta.changes === 0) throw httpsError("failed-precondition", "Match could not be cancelled.");
-
   const userA = m.userA as any;
   const userB = m.userB as any;
-  const fee = Number(m.entryFee || 0);
-  const ops: any[] = [];
-  for (const u of [userA, userB]) {
-    if (u?.uid && fee > 0) {
-      const refund = fee / 2;
-      ops.push(db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${refund}` }).where(eq(schema.users.uid, u.uid)));
-      ops.push(db.insert(schema.coinTransactions).values({ id: newId(), uid: u.uid, amount: refund, type: "contest_refund", matchId: id, description: `Admin cancelled "${m.title}" — entry fee refunded`, createdAt: ts }));
+  if (m.status === "active") {
+    if (!userA?.uid || !userB?.uid) {
+      throw httpsError("failed-precondition", "Active match participants are incomplete.");
     }
+    // Close first so a vote already in flight cannot land after cancellation.
+    await finalizeVotes(c.env, id, userA.uid, userB.uid, Number(m.expiresAt || 0), true);
+  } else if (!userA?.uid) {
+    throw httpsError("failed-precondition", "Waiting match creator is missing.");
   }
-  if (ops.length) await db.batch(ops as any);
+
+  const ts = now();
+  const fee = Number(m.entryFee || 0);
+  const participants = [userA, userB].filter((u) => u?.uid).map((u) => String(u.uid));
+  const settled = await settleRefund(c.env, {
+    matchId: id,
+    contestId: m.contestId,
+    expectedStatus: m.status as "active" | "waiting_for_opponent",
+    finalStatus: "cancelled",
+    participantUids: participants,
+    refundPerUser: fee / 2,
+    description: `Admin cancelled "${m.title}" — entry fee refunded`,
+    completedAt: ts,
+  });
+  if (!settled) throw httpsError("failed-precondition", "Match could not be cancelled.");
   for (const u of [userA, userB]) {
     if (u?.uid) await createNotification(c.env, u.uid, { title: "Battle Cancelled", body: `The battle "${m.title}" was cancelled by an admin and your entry fee was refunded.`, type: "contest-refund", targetId: "wallet" });
   }

@@ -146,16 +146,30 @@ export function live<T>(
   channel: string,
   fetcher: () => Promise<T>,
   callback: (data: T) => void,
-  opts: { fallbackMs?: number; filter?: (e: RealtimeEvent) => boolean } = {},
+  opts: {
+    fallbackMs?: number;
+    filter?: (e: RealtimeEvent) => boolean;
+    /** Apply self-contained push payloads immediately without an extra GET. */
+    onEvent?: (e: RealtimeEvent) => void;
+    /** Return false when onEvent fully handled this event and no refetch is needed. */
+    shouldRefresh?: (e: RealtimeEvent) => boolean;
+  } = {},
 ): () => void {
   // The WebSocket pushes updates instantly, so this poll is only a safety net —
   // 60s is plenty and halves the idle fetch volume vs 30s.
   const fallbackMs = opts.fallbackMs ?? 60000;
   let active = true;
   let inFlight = false;
+  let refreshPending = false;
 
   const refresh = async () => {
-    if (!active || inFlight) return;
+    if (!active) return;
+    if (inFlight) {
+      // Coalesce bursts, but never drop the last event. Once the current fetch
+      // finishes, one trailing refresh observes everything that happened during it.
+      refreshPending = true;
+      return;
+    }
     // Skip the safety-net fetch while backgrounded (the socket reconnects and
     // refreshes on foreground anyway).
     if (AppState.currentState !== 'active') return;
@@ -167,13 +181,18 @@ export function live<T>(
       /* transient */
     } finally {
       inFlight = false;
+      if (active && refreshPending) {
+        refreshPending = false;
+        void refresh();
+      }
     }
   };
 
-  refresh(); // initial load
+  void refresh(); // initial load
   const unsub = subscribeChannel(channel, (event) => {
     if (opts.filter && !opts.filter(event)) return;
-    refresh();
+    opts.onEvent?.(event);
+    if (!opts.shouldRefresh || opts.shouldRefresh(event)) void refresh();
   });
   const safety = setInterval(refresh, fallbackMs);
 

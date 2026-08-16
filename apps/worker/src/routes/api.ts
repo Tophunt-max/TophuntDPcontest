@@ -86,6 +86,18 @@ const notPorted = (action: string, file: string): never => {
   );
 };
 
+/** Validate untrusted client identifiers before they reach D1 or a DO. */
+function requiredId(value: unknown, name: string, maxLength = 256): string {
+  if (typeof value !== "string") {
+    throw httpsError("invalid-argument", `${name} must be a string.`);
+  }
+  const normalized = value.trim();
+  if (!normalized || normalized.length > maxLength || /[\u0000-\u001f\u007f]/.test(normalized)) {
+    throw httpsError("invalid-argument", `Invalid ${name}.`);
+  }
+  return normalized;
+}
+
 apiRoute.post("/", async (c) => {
   const body = await c.req.json<any>().catch(() => ({}));
   const action = body?.action;
@@ -118,6 +130,9 @@ apiRoute.post("/", async (c) => {
       try {
       const contest = await db.select().from(schema.contests).where(eq(schema.contests.id, contestId)).get();
       if (!contest) throw httpsError("not-found", "Contest template not found.");
+      if (contest.status !== "live") {
+        throw httpsError("failed-precondition", "This contest is not currently accepting new matches.");
+      }
       const user = await db.select().from(schema.users).where(eq(schema.users.uid, uid)).get();
       if (!user) throw httpsError("not-found", "User document not found.");
 
@@ -154,7 +169,10 @@ apiRoute.post("/", async (c) => {
               profilePic: user.profileImageUrl || "", mediaUrl, mediaType: mediaType || "photo",
               caption: caption || "", votes: 0, deviceId: deviceId || "",
             } as any,
-            totalVotes: 0, createdAt: ts, expiresAt,
+            totalVotes: 0,
+            minVotesRequired: Math.max(0, Number(contest.minVotes || 0)),
+            createdAt: ts,
+            expiresAt,
           }),
         ]);
       } catch (e) {
@@ -200,9 +218,24 @@ apiRoute.post("/", async (c) => {
       // Voting window starts on activation and lasts the contest's configured
       // voteDurationDays — NOT the waiting-room autoCancelHours (which only
       // bounds how long a match may sit waiting for an opponent).
-      const voteDays = match.contestId
-        ? Number((await db.select({ d: schema.contests.voteDurationDays }).from(schema.contests).where(eq(schema.contests.id, match.contestId)).get())?.d || 1)
-        : 1;
+      const contestPolicy = match.contestId
+        ? await db.select({
+            voteDays: schema.contests.voteDurationDays,
+            minVotes: schema.contests.minVotes,
+            status: schema.contests.status,
+          }).from(schema.contests).where(eq(schema.contests.id, match.contestId)).get()
+        : null;
+      if (match.contestId && !contestPolicy) {
+        throw httpsError("failed-precondition", "The contest template for this match no longer exists.");
+      }
+      if (contestPolicy && contestPolicy.status !== "live") {
+        throw httpsError("failed-precondition", "This contest is not currently accepting opponents.");
+      }
+      const voteDays = Number(contestPolicy?.voteDays || 1);
+      const minVotesRequired = Math.max(
+        0,
+        Number(match.minVotesRequired ?? contestPolicy?.minVotes ?? 0),
+      );
 
       const deduct = await db
         .update(schema.users)
@@ -219,6 +252,7 @@ apiRoute.post("/", async (c) => {
         .update(schema.contestMatches)
         .set({
           status: "active", joinIdB, activatedAt: ts,
+          minVotesRequired,
           expiresAt: ts + Math.max(1, voteDays) * 24 * 60 * 60 * 1000,
           userB: {
             uid, joinId: joinIdB, username: user.username || "Anonymous",
@@ -257,9 +291,18 @@ apiRoute.post("/", async (c) => {
     }
 
     case "submitVote": {
-      const { matchId, votedForUid, deviceId } = body;
-      if (!matchId || !votedForUid || !deviceId)
-        throw httpsError("invalid-argument", "Missing matchId, votedForUid, or deviceId.");
+      const matchId = requiredId(body.matchId, "matchId", 128);
+      const votedForUid = requiredId(body.votedForUid, "votedForUid", 128);
+      const deviceId = requiredId(body.deviceId, "deviceId", 256);
+      const voterAccount = await db.select({
+        uid: schema.users.uid,
+        status: schema.users.status,
+        isBlocked: schema.users.isBlocked,
+      }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+      if (!voterAccount) throw httpsError("failed-precondition", "Complete your profile before voting.");
+      if (voterAccount.isBlocked || voterAccount.status !== "active") {
+        throw httpsError("permission-denied", "This account is not eligible to vote.");
+      }
       // Throttle abusive vote bursts (per user): max 60 / minute.
       await rateLimit(env, `vote:${uid}`, 60, 60);
       // Per-IP velocity cap — slows multi-account vote stuffing from one network
@@ -269,9 +312,13 @@ apiRoute.post("/", async (c) => {
       const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, matchId)).get();
       if (!match) throw httpsError("not-found", "Match not found.");
       if (match.status !== "active") throw httpsError("failed-precondition", "Battle is not active.");
+      const expiresAt = Number(match.expiresAt);
+      if (!Number.isFinite(expiresAt) || expiresAt <= 0) {
+        throw httpsError("failed-precondition", "This battle has no valid voting deadline.");
+      }
       // Voting closes exactly at expiry — don't accept votes in the gap before
       // the resolver cron runs (which can lag up to its 10-min interval).
-      if (match.expiresAt && Number(match.expiresAt) <= now())
+      if (expiresAt <= now())
         throw httpsError("failed-precondition", "Voting has closed for this battle.");
       const userA = match.userA as any;
       const userB = match.userB as any;
@@ -291,19 +338,30 @@ apiRoute.post("/", async (c) => {
         deviceId,
         uidA: userA?.uid,
         uidB: userB?.uid ?? userA?.uid,
+        expiresAt,
       });
+      if (tally.votingClosed) throw httpsError("failed-precondition", "Voting has closed for this battle.");
       if (tally.alreadyVoted) throw httpsError("already-exists", "You have already voted in this match.");
       if (tally.deviceUsed) throw httpsError("failed-precondition", "This device has already voted in this match.");
 
-      // Vote XP (+5) is batched into the DO's flush — no per-vote users write.
-      await publish(env, `match:${matchId}`, {
+      // The vote is already durably committed in the per-match actor. Realtime
+      // fan-out must never turn that success into a client-visible failure, so
+      // publish out-of-band and return the authoritative tally immediately.
+      c.executionCtx.waitUntil(publish(env, `match:${matchId}`, {
         type: "vote",
         votedForUid,
         votesA: tally.votesA,
         votesB: tally.votesB,
         totalVotes: tally.total,
+      }));
+      return c.json({
+        success: true,
+        hasVoted: true,
+        votedForUid,
+        votesA: tally.votesA,
+        votesB: tally.votesB,
+        totalVotes: tally.total,
       });
-      return c.json({ success: true });
     }
 
     // ================= POSTS =================

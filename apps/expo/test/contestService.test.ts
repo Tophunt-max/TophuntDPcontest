@@ -21,14 +21,4 @@ describe('contestService.voteOnMatch', () => {
       deviceId: 'dev-abc',
     });
   });
-
-  it('respects an explicitly supplied device id', async () => {
-    const { contestService } = await import('@/src/services/contests/contestService');
-    await contestService.voteOnMatch('m1', 'u2', 'explicit-id');
-    expect(callApi).toHaveBeenCalledWith('submitVote', {
-      matchId: 'm1',
-      votedForUid: 'u2',
-      deviceId: 'explicit-id',
-    });
-  });
 });
