@@ -160,10 +160,15 @@ export default function SignupEntryScreen() {
       );
     };
 
-    if (useSignupStore.persist.hasHydrated()) {
+    if (useSignupStore.getState()._hydrated) {
       offerResume();
     } else {
-      const unsub = useSignupStore.persist.onFinishHydration(offerResume);
+      const unsub = useSignupStore.subscribe((s) => {
+        if (s._hydrated) {
+          unsub();
+          offerResume();
+        }
+      });
       return unsub;
     }
   }, [resumeChecked]);
