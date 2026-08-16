@@ -639,11 +639,11 @@ function ContestDialog({
   return (
     <Dialog open onOpenChange={(open) => { if (!open) void requestClose(); }}>
       <DialogContent
-        className="max-h-[calc(100vh-1rem)] w-[calc(100%-1rem)] max-w-3xl gap-0 overflow-hidden p-0 sm:max-h-[92vh]"
+        className="left-0 top-0 flex h-[100dvh] max-h-[100dvh] w-full max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-0 p-0 shadow-none duration-0 sm:left-[50%] sm:top-[50%] sm:h-auto sm:max-h-[92dvh] sm:w-[calc(100%-2rem)] sm:max-w-3xl sm:translate-x-[-50%] sm:translate-y-[-50%] sm:rounded-lg sm:border sm:shadow-lg sm:duration-200"
         onEscapeKeyDown={(event) => { if (saving) event.preventDefault(); }}
         onPointerDownOutside={(event) => { if (saving) event.preventDefault(); }}
       >
-        <DialogHeader className="border-b border-border px-5 py-4 pr-12 text-left sm:px-6">
+        <DialogHeader className="shrink-0 border-b border-border px-5 pb-4 pr-12 pt-[max(1rem,env(safe-area-inset-top))] text-left sm:px-6 sm:py-4">
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>
             Upload a local JPEG, PNG, or WebP banner, then configure publishing, economy, and match rules.
@@ -651,7 +651,7 @@ function ContestDialog({
         </DialogHeader>
 
         <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          <div className="space-y-6 overflow-y-auto px-5 py-5 sm:px-6">
+          <div className="min-h-0 flex-1 space-y-6 overscroll-contain overflow-y-auto px-5 py-5 pb-8 [-webkit-overflow-scrolling:touch] sm:px-6">
             <section className="space-y-4">
               <FormSectionTitle title="Basics" description="How this contest appears to participants." />
               <Field label="Contest title" required error={errors.title} hint={`${form.title.length}/160`}>
@@ -797,9 +797,9 @@ function ContestDialog({
             )}
           </div>
 
-          <DialogFooter className="gap-2 border-t border-border bg-background px-5 py-4 sm:px-6">
-            <Button type="button" variant="secondary" disabled={saving} onClick={() => void requestClose()}>Cancel</Button>
-            <Button type="submit" disabled={saving} className="gradient-purple border-0 text-white">
+          <DialogFooter className="shrink-0 flex-row gap-2 border-t border-border bg-background px-5 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:px-6 sm:py-4">
+            <Button type="button" variant="secondary" disabled={saving} onClick={() => void requestClose()} className="flex-1">Cancel</Button>
+            <Button type="submit" disabled={saving} className="gradient-purple flex-1 border-0 text-white">
               {saving && <Loader2 className="animate-spin" />}
               {uploading ? `Uploading ${uploadProgress}%` : saving ? "Saving…" : isEdit ? "Save changes" : mode === "duplicate" ? "Create duplicate" : "Create contest"}
             </Button>
