@@ -12,7 +12,7 @@ import { httpsError } from "../lib/http";
 import { requireAuth, optionalAuth } from "../middleware/auth";
 import { getAppConfig } from "../lib/settings";
 import { enrichMatchMedia, avatarUrl, thumbUrl, optimizedUrl } from "../lib/media";
-import { userCacheKey, blogPostCacheKey, cacheGetJson, cachePutJson } from "../lib/cache";
+import { userCacheKey, blogPostCacheKey, blogListCacheKey, cacheGetJson, cachePutJson } from "../lib/cache";
 import { getLiveTally, getViewerVote } from "../lib/voteCounter";
 
 export const readRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -795,9 +795,10 @@ readRoute.get("/blog", async (c) => {
   if (category) conds.push(eq(schema.blogPosts.category, category));
   if (q.length >= 2) conds.push(like(sql`lower(${schema.blogPosts.title})`, `%${q}%`));
 
-  // Only cache the default first page (no cursor/filters) — it's the hot path.
-  const cacheable = !cursor && !category && !q;
-  const cacheKey = `cache:blog:list:${limit}`;
+  // Cache only the canonical default first page. This keeps write-side
+  // invalidation bounded to one known key instead of up to 50 limit variants.
+  const cacheable = !cursor && !category && !q && limit === 12;
+  const cacheKey = blogListCacheKey(limit);
   if (cacheable) {
     const cached = await cacheGet(c.env, cacheKey);
     if (cached) return c.json(cached);

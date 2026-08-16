@@ -16,6 +16,8 @@ import type { Env } from "../types";
 export const userCacheKey = (uid: string) => `cache:user:${uid}`;
 /** A single published blog post by slug or id (routes/read.ts GET /blog/:slug). */
 export const blogPostCacheKey = (slugOrId: string) => `cache:blog:post:${slugOrId}`;
+/** Default public blog list page (routes/read.ts GET /blog?limit=N). */
+export const blogListCacheKey = (limit: number) => `cache:blog:list:${limit}`;
 
 // --- fail-open ops ----------------------------------------------------------
 /** Read JSON from the cache; returns null on miss OR any KV error. */
