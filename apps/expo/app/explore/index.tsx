@@ -366,51 +366,82 @@ export default function DiscoverScreen() {
       });
     });
 
+    const creatorPhoto = item.userA?.mediaUrl || item.userA?.avatar;
+
     return (
-      <View key={item.id} style={[styles.battleCard, { backgroundColor: cardBg, borderColor }]}>
-        <View style={styles.battleMedia}>
-          <Image source={{ uri: item.userA?.mediaUrl }} style={styles.battleImg} />
-          <LinearGradient colors={['transparent', 'rgba(0,0,0,0.75)']} style={StyleSheet.absoluteFill as any} />
-          <View style={styles.battleTopRow}>
-            <View style={styles.statusPill}>
-              <View style={styles.liveDot} />
-              <Text style={styles.statusText}>WAITING</Text>
-            </View>
-            <View style={styles.prizePill}>
-              <CoinIcon size={12} color="#FFB300" />
-              <Text style={styles.prizeText}>{prize}</Text>
-            </View>
+      <ScaleTouchable key={item.id} style={[styles.arenaCard, { backgroundColor: cardBg, borderColor }]} onPress={goJoin}>
+        {/* Status strip */}
+        <View style={styles.arenaTopRow}>
+          <View style={styles.arenaStatusPill}>
+            <View style={styles.liveDot} />
+            <Text style={styles.arenaStatusText}>LIVE · WAITING</Text>
           </View>
-          <View style={styles.creatorChip}>
-            <Image source={{ uri: item.userA?.avatar || 'https://via.placeholder.com/50' }} style={styles.creatorAvatar} />
-            <Text style={styles.creatorName} numberOfLines={1}>@{item.userA?.username || 'user'}</Text>
-          </View>
-          <View style={styles.vsWrap}>
-            <LinearGradient colors={grad} style={styles.vsCircle}><Text style={styles.vsText}>VS</Text></LinearGradient>
+          <View style={styles.arenaPrizePill}>
+            <MaterialCommunityIcons name="trophy" size={12} color="#F59E0B" />
+            <Text style={styles.arenaPrizeText}>Win {prize}</Text>
+            <CoinIcon size={12} color="#F59E0B" />
           </View>
         </View>
 
-        <View style={styles.battleFooter}>
-          <View style={{ flex: 1, marginRight: 12 }}>
-            <Text style={[styles.battleTitle, { color: textColor }]} numberOfLines={1}>{item.title || 'Untitled Battle'}</Text>
-            {!isMyMatch ? (
-              <View style={styles.entryRow}>
-                <Text style={[styles.entryLabel, { color: subText }]}>Entry</Text>
-                <CoinIcon size={12} color={accent} />
-                <Text style={[styles.entryVal, { color: accent }]}>{entryFee}</Text>
+        {/* Versus arena: creator vs empty challenger slot */}
+        <View style={styles.arenaBody}>
+          {/* Player 1 — creator */}
+          <View style={styles.arenaSide}>
+            <View style={styles.arenaPhotoWrap}>
+              <Image source={{ uri: creatorPhoto }} style={styles.arenaPhoto} />
+              <LinearGradient colors={['transparent', 'rgba(0,0,0,0.5)']} style={StyleSheet.absoluteFill as any} />
+              <View style={[styles.arenaCorner, { backgroundColor: accent }]}>
+                <Text style={styles.arenaCornerText}>P1</Text>
               </View>
-            ) : (
-              <Text style={[styles.entryLabel, { color: subText, marginTop: 4 }]}>Your battle · waiting for a rival</Text>
-            )}
+            </View>
+            <View style={styles.arenaNameRow}>
+              <Image source={{ uri: item.userA?.avatar || 'https://via.placeholder.com/50' }} style={styles.arenaNameAvatar} />
+              <Text style={[styles.arenaName, { color: textColor }]} numberOfLines={1}>@{item.userA?.username || 'user'}</Text>
+            </View>
           </View>
-          <TouchableOpacity activeOpacity={0.85} onPress={goJoin} disabled={!!isMyMatch}>
-            <LinearGradient colors={isMyMatch ? ['#9AA0AA', '#7E848E'] : grad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.joinBtn}>
-              <Ionicons name={isMyMatch ? 'hourglass' : 'flash'} size={14} color="#FFF" />
-              <Text style={styles.joinBtnText}>{isMyMatch ? 'Waiting' : 'Join Battle'}</Text>
+
+          {/* Center VS */}
+          <View style={styles.arenaVsCol}>
+            <View style={[styles.arenaVsLine, { backgroundColor: borderColor }]} />
+            <LinearGradient colors={grad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.arenaVsBadge}>
+              <Text style={styles.arenaVsText}>VS</Text>
             </LinearGradient>
-          </TouchableOpacity>
+            <View style={[styles.arenaVsLine, { backgroundColor: borderColor }]} />
+          </View>
+
+          {/* Player 2 — empty challenger slot */}
+          <View style={styles.arenaSide}>
+            <View style={[styles.arenaPhotoWrap, styles.arenaEmptySlot, { borderColor: accent, backgroundColor: isDark ? '#1B1D26' : '#FFF4F5' }]}>
+              <MaterialCommunityIcons name="sword-cross" size={26} color={accent} />
+              <Text style={[styles.arenaEmptyText, { color: accent }]}>{isMyMatch ? 'Awaiting\nchallenger' : 'Your spot\nawaits'}</Text>
+            </View>
+            <View style={styles.arenaNameRow}>
+              <View style={[styles.arenaNameAvatar, styles.arenaNameAvatarEmpty, { borderColor }]}>
+                <Ionicons name="help" size={12} color={subText} />
+              </View>
+              <Text style={[styles.arenaName, { color: subText }]} numberOfLines={1}>Waiting…</Text>
+            </View>
+          </View>
         </View>
-      </View>
+
+        {/* Info + CTA */}
+        <View style={styles.arenaFooterWrap}>
+          <Text style={[styles.arenaTitle, { color: textColor }]} numberOfLines={1}>{item.title || (isVideo ? 'Video Battle' : 'Photo Battle')}</Text>
+          <View style={styles.arenaMetaRow}>
+            <CoinIcon size={12} color={accent} />
+            <Text style={[styles.arenaMetaText, { color: subText }]}>Entry {entryFee}</Text>
+            <Text style={[styles.arenaMetaDot, { color: subText }]}>·</Text>
+            <MaterialCommunityIcons name="vote-outline" size={14} color={subText} />
+            <Text style={[styles.arenaMetaText, { color: subText }]}>Fans vote the winner</Text>
+          </View>
+
+          <LinearGradient colors={isMyMatch ? ['#9AA0AA', '#7E848E'] : grad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.arenaCta}>
+            <Ionicons name={isMyMatch ? 'hourglass' : 'flash'} size={16} color="#FFF" />
+            <Text style={styles.arenaCtaText}>{isMyMatch ? 'Waiting for a rival' : 'Join Battle'}</Text>
+            {!isMyMatch && <Ionicons name="arrow-forward" size={16} color="#FFF" />}
+          </LinearGradient>
+        </View>
+      </ScaleTouchable>
     );
   };
 
@@ -737,6 +768,46 @@ const styles = StyleSheet.create({
   entryVal: { fontSize: 14, fontFamily: 'Urbanist-Black' },
   joinBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 11, paddingHorizontal: 20, borderRadius: 14 },
   joinBtnText: { color: '#FFF', fontSize: 14, fontFamily: 'Urbanist-Bold' },
+
+  // Live Arena — VS battle card (redesigned)
+  arenaCard: {
+    borderRadius: 26, borderWidth: 1, padding: 16,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.09, shadowRadius: 20, elevation: 5,
+  },
+  arenaTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
+  arenaStatusPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#FF4D67', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 100 },
+  arenaStatusText: { color: '#FFF', fontSize: 10, fontFamily: 'Urbanist-Black', letterSpacing: 0.5 },
+  arenaPrizePill: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(245,158,11,0.14)', paddingHorizontal: 11, paddingVertical: 5, borderRadius: 100 },
+  arenaPrizeText: { color: '#F59E0B', fontSize: 12, fontFamily: 'Urbanist-Black' },
+
+  arenaBody: { flexDirection: 'row', alignItems: 'center' },
+  arenaSide: { flex: 1, alignItems: 'center' },
+  arenaPhotoWrap: { width: '100%', aspectRatio: 0.82, borderRadius: 18, overflow: 'hidden', position: 'relative' },
+  arenaPhoto: { width: '100%', height: '100%', resizeMode: 'cover' },
+  arenaCorner: { position: 'absolute', top: 8, left: 8, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
+  arenaCornerText: { color: '#FFF', fontSize: 10, fontFamily: 'Urbanist-Black', letterSpacing: 0.5 },
+  arenaEmptySlot: { borderWidth: 2, borderStyle: 'dashed', justifyContent: 'center', alignItems: 'center', gap: 8, padding: 8 },
+  arenaEmptyText: { fontSize: 11, fontFamily: 'Urbanist-Bold', textAlign: 'center', lineHeight: 14 },
+  arenaNameRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10, maxWidth: '100%', paddingHorizontal: 2 },
+  arenaNameAvatar: { width: 22, height: 22, borderRadius: 11, borderWidth: 1.5, borderColor: '#FFF' },
+  arenaNameAvatarEmpty: { justifyContent: 'center', alignItems: 'center' },
+  arenaName: { fontSize: 13, fontFamily: 'Urbanist-Bold', flexShrink: 1 },
+
+  arenaVsCol: { width: 52, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  arenaVsLine: { width: 2, flex: 1, borderRadius: 1, opacity: 0.7 },
+  arenaVsBadge: {
+    width: 46, height: 46, borderRadius: 23, justifyContent: 'center', alignItems: 'center', borderWidth: 3, borderColor: '#FFF',
+    shadowColor: '#FF4D67', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.4, shadowRadius: 8, elevation: 6,
+  },
+  arenaVsText: { color: '#FFF', fontFamily: 'Urbanist-Black', fontSize: 15, fontStyle: 'italic' },
+
+  arenaFooterWrap: { marginTop: 16 },
+  arenaTitle: { fontSize: 17, fontFamily: 'Urbanist-Bold' },
+  arenaMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6, flexWrap: 'wrap' },
+  arenaMetaText: { fontSize: 12, fontFamily: 'Urbanist-SemiBold' },
+  arenaMetaDot: { fontSize: 12, fontFamily: 'Urbanist-Black' },
+  arenaCta: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, borderRadius: 16, marginTop: 16 },
+  arenaCtaText: { color: '#FFF', fontSize: 15, fontFamily: 'Urbanist-Bold' },
 
   // Empty battle state (actionable)
   emptyBattle: { borderRadius: 24, borderWidth: 1, alignItems: 'center', paddingVertical: 30, paddingHorizontal: 20 },
