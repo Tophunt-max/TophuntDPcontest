@@ -3,6 +3,7 @@ import {
   initializeAuth,
   indexedDBLocalPersistence,
   browserLocalPersistence,
+  browserPopupRedirectResolver,
   Auth,
   getAuth,
 } from "firebase/auth";
@@ -42,6 +43,9 @@ try {
             Platform.OS === 'web'
                 ? [indexedDBLocalPersistence, browserLocalPersistence]
                 : getReactNativePersistence(AsyncStorage),
+        // On web, signInWithPopup/Redirect need a resolver at init time —
+        // without it Firebase throws auth/argument-error.
+        ...(Platform.OS === 'web' ? { popupRedirectResolver: browserPopupRedirectResolver } : {}),
     });
 } catch {
     auth = getAuth(app);

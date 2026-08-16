@@ -16,6 +16,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSignupStore } from "@/src/store/signup";
 import { auth } from "@/src/services/firebase/initFirebase";
 import { callApi } from "@/src/services/api"; // Consolidated API used
+import { uploadToS3 } from "@/src/lib/uploadToS3";
 import { signInWithEmailAndPassword, sendEmailVerification } from "firebase/auth";
 
 const { width } = Dimensions.get('window');
@@ -30,6 +31,21 @@ export default function CongratulationsScreen() {
   // creating the account twice would fail the 2nd time with EMAIL_EXISTS.
   const hasFinalized = useRef(false);
 
+  // Upload the profile picture if it's still a local URI (avatars are uploaded
+  // here, not on the fill-profile step, because the auth token doesn't exist
+  // yet for email signups). Returns a remote URL or null. Best-effort.
+  const resolveAvatarUrl = async (): Promise<string | null> => {
+    const a = signupData.avatarUrl;
+    if (!a) return null;
+    if (/^https?:\/\//.test(a)) return a; // already a remote URL
+    try {
+      return (await uploadToS3(a, "image/jpeg", "avatars")) as string;
+    } catch (e) {
+      console.warn("avatar upload failed", e);
+      return null;
+    }
+  };
+
   useEffect(() => {
     const finalizeSignup = async () => {
       if (hasFinalized.current) return;
@@ -43,9 +59,11 @@ export default function CongratulationsScreen() {
             }
             
             setStatusMessage("Creating your account securely...");
-            // Using Consolidated API for Account Creation
+            // Create the account WITHOUT the avatar first — it's still a local
+            // URI and can only be uploaded once we're authenticated (below).
             const result: any = await callApi('create', { 
                 ...signupData,
+                avatarUrl: null,
                 platform: Platform.OS,
             });
 
@@ -55,6 +73,17 @@ export default function CongratulationsScreen() {
 
             setStatusMessage("Signing you in...");
             const cred = await signInWithEmailAndPassword(auth, signupData.email, signupData.password);
+
+            // Now authenticated → upload the avatar and attach it to the profile.
+            setStatusMessage("Uploading your photo...");
+            const avatarUrl = await resolveAvatarUrl();
+            if (avatarUrl) {
+              try {
+                await callApi('updateProfile', { avatarUrl });
+              } catch (e) {
+                console.warn('avatar profile update failed', e);
+              }
+            }
             // Send a verification email so the user can confirm ownership of the
             // address. Best-effort — never block signup if the email send fails.
             try {
@@ -82,10 +111,16 @@ export default function CongratulationsScreen() {
                 throw new Error("Username is required to complete your profile.");
             }
 
+            // Social/phone signups are already authenticated here, so the avatar
+            // can be uploaded now and included in the profile.
+            setStatusMessage("Uploading your photo...");
+            const avatarUrl = await resolveAvatarUrl();
+
             setStatusMessage("Saving your profile details...");
             // Using Consolidated API for Profile Creation
             const result: any = await callApi('createProfile', { 
                 ...signupData,
+                avatarUrl: avatarUrl ?? null,
                 platform: Platform.OS,
                 uid: auth.currentUser?.uid
             });

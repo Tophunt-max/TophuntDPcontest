@@ -3,6 +3,7 @@ import {
   GoogleAuthProvider,
   OAuthProvider,
   signInWithPopup,
+  browserPopupRedirectResolver,
   getAuth,
 } from "firebase/auth";
 import { Platform } from "react-native";
@@ -28,7 +29,11 @@ export const SocialAuthService = {
       const auth = getAuth(app);
       console.log(`Starting ${providerName} login...`);
 
-      const userCredential = await signInWithPopup(auth, provider);
+      // Pass the popup/redirect resolver explicitly. Auth is initialised via
+      // initializeAuth() WITHOUT a popupRedirectResolver, so calling
+      // signInWithPopup(auth, provider) alone throws `auth/argument-error` on
+      // web. Supplying the resolver here fixes social login.
+      const userCredential = await signInWithPopup(auth, provider, browserPopupRedirectResolver);
       const user = userCredential.user;
 
       const signupStore = useSignupStore.getState();

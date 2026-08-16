@@ -163,14 +163,14 @@ const FillProfile: React.FC = () => {
     if (!img.canceled && img.assets) {
       const selectedImage = img.assets[0];
       setLocalAvatarUri(selectedImage.uri);
-      setIsUploading(true);
-      setUploadProgress(0);
-      try {
-         const s3Url = await uploadToS3(selectedImage.uri, "image/jpeg", "avatars", (p) => setUploadProgress(p));
-         setValue("avatarUrl", s3Url as string);
-         setField("avatarUrl", s3Url as string);
-         trigger("avatarUrl");
-      } catch (e) { addToast("Upload failed", "error"); } finally { setIsUploading(false); }
+      // Defer the actual upload to the final step. During signup the account
+      // (and its auth token) doesn't exist yet for email signups, so uploading
+      // now would hit the authenticated /upload endpoint and 401 ("Upload
+      // failed"). We keep the local URI and upload it in `congratulations`
+      // once the account is created and the user is signed in.
+      setValue("avatarUrl", selectedImage.uri);
+      setField("avatarUrl", selectedImage.uri);
+      trigger("avatarUrl");
     }
   };
 
