@@ -83,6 +83,28 @@ wrangler d1 execute tophunt-db --remote --file=./d1-seed.sql
 node scripts/migrate-s3-to-r2.mjs
 ```
 
+## Demo seed data
+
+`scripts/seed-demo.sql` inserts a self-contained demo dataset: exactly **2 fake
+users** and **2 contests**, plus a full live battle between the two users
+(entries + entry-fee ledger) so the whole contest flow is populated. It is
+**idempotent** — every run first deletes the previous demo rows (all ids are
+prefixed with `demo-`), so re-running never creates duplicates.
+
+```bash
+cd apps/worker
+
+# Local D1 (needs migrations applied locally once: npm run db:migrate:local)
+npx wrangler d1 execute tophunt-db --local  --file=scripts/seed-demo.sql
+
+# Remote D1 (your real database — requires wrangler login)
+npx wrangler d1 execute tophunt-db --remote --file=scripts/seed-demo.sql
+```
+
+The final `SELECT` prints row counts so you can confirm `users=2`,
+`contests=2`, `matches=1`, `txns=2`. Remove the demo data anytime by deleting
+rows whose ids/uids start with `demo-`.
+
 ## Status
 
 **Ported & compiling** (tsc clean, wrangler bundle OK):
