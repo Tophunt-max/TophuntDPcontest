@@ -118,6 +118,134 @@ async function hydrateViewerState(db: any, matches: any[], uid: string): Promise
   });
 }
 
+// ============================ FEED RANKING ================================
+// Instagram-style ranking: a two-stage recommender.
+//   1) Candidate generation — a user-agnostic pool scored by content signals
+//      (freshness, engagement velocity, closing-soon urgency, prize). Cached
+//      briefly and shared by everyone, so D1 sees ~one query per window.
+//   2) Personalized re-rank — cheap per-viewer signals (affinity: do you follow
+//      a participant?; novelty: have you already voted?) adjust that base score.
+// This mirrors how large feeds work (candidate gen + ranking) while staying
+// light enough for D1 + the edge cache.
+const FEED_CANDIDATE_POOL = 150;
+const FEED_FOLLOW_BOOST = 3.0; // relationship is the strongest personal signal
+const FEED_VOTED_PENALTY = 1.5; // you already engaged → make room for fresh battles
+
+/** User-agnostic content score for one match (higher = show sooner). */
+function rankBaseScore(r: any, now: number): number {
+  const start = Number(r.activatedAt || r.createdAt || now);
+  const ageHours = Math.max(0, (now - start) / 3_600_000);
+
+  let reactions = 0;
+  if (r.reactions && typeof r.reactions === "object") {
+    for (const v of Object.values(r.reactions)) reactions += Number(v) || 0;
+  }
+  // Weighted engagement: shares > comments > likes/votes (harder actions count more).
+  const engagement =
+    (Number(r.totalVotes) || 0) +
+    (Number(r.likeCount) || 0) +
+    (Number(r.commentCount) || 0) * 2 +
+    (Number(r.shareCount) || 0) * 3 +
+    reactions;
+
+  // Velocity (engagement per hour) lets a brand-new battle out-rank an old one
+  // that only accumulated its counts slowly. +2 smooths the first minutes.
+  const velocity = engagement / (ageHours + 2);
+  // Freshness decays over ~a day so the feed keeps turning over.
+  const freshness = Math.exp(-ageHours / 24);
+  // Closing-soon urgency: nudge battles into view in their final hours so people
+  // can still vote before they end.
+  let urgency = 0;
+  const exp = Number(r.expiresAt);
+  if (Number.isFinite(exp)) {
+    const hoursLeft = (exp - now) / 3_600_000;
+    if (hoursLeft > 0 && hoursLeft <= 6) urgency = 1 - hoursLeft / 6;
+  }
+  const prize = Math.log1p(Number(r.entryFee) || 0);
+
+  return 2.2 * freshness + 1.6 * Math.log1p(velocity) + 1.2 * urgency + 0.3 * prize;
+}
+
+/**
+ * Serve the personalized "For You" feed. Candidate pool is cached user-agnostic;
+ * the per-viewer re-rank + engagement hydration run per request (never cached).
+ * Pagination is offset-based over the ranked pool (stable within a cache window).
+ */
+async function servePersonalizedFeed(
+  c: any,
+  db: any,
+  opts: { status: string; type?: string; limit: number; cursorRaw?: string; uid?: string },
+) {
+  const { status, type, limit, cursorRaw, uid } = opts;
+  const now = Date.now();
+
+  const candKey = `cache:matches:cand:${status}:${type || "all"}`;
+  let candidates: any[] | null = await cacheGet(c.env, candKey);
+  if (!candidates) {
+    const conds = [eq(schema.contestMatches.status, status)];
+    if (type) conds.push(eq(schema.contestMatches.type, type));
+    const rows = await db
+      .select()
+      .from(schema.contestMatches)
+      .where(and(...conds))
+      .orderBy(desc(schema.contestMatches.createdAt))
+      .limit(FEED_CANDIDATE_POOL)
+      .all();
+    candidates = (rows as any[])
+      .map((r) => ({ ...enrichMatchMedia(c.env, mapMatch(r)), _base: rankBaseScore(r, now) }))
+      .sort((a, b) => b._base - a._base);
+    await cachePut(c.env, candKey, candidates, 45);
+  }
+
+  let ranked = candidates;
+  if (uid && candidates.length > 0) {
+    const ids = candidates.map((m) => m.id);
+    const participantUids = Array.from(
+      new Set(candidates.flatMap((m) => [m.userA?.uid, m.userB?.uid]).filter(Boolean) as string[]),
+    );
+    const [followRows, votedRows] = await Promise.all([
+      participantUids.length
+        ? db
+            .select({ following: schema.follows.followingId })
+            .from(schema.follows)
+            .where(and(eq(schema.follows.followerId, uid), inArray(schema.follows.followingId, participantUids)))
+            .all()
+        : Promise.resolve([] as Array<{ following: string }>),
+      db
+        .select({ matchId: schema.votes.matchId })
+        .from(schema.votes)
+        .where(and(eq(schema.votes.voterUid, uid), inArray(schema.votes.matchId, ids)))
+        .all(),
+    ]);
+    const followSet = new Set((followRows as Array<{ following: string }>).map((r) => r.following));
+    const votedSet = new Set((votedRows as Array<{ matchId: string }>).map((r) => r.matchId));
+    ranked = candidates
+      .map((m) => {
+        let s = m._base as number;
+        if (followSet.has(m.userA?.uid) || followSet.has(m.userB?.uid)) s += FEED_FOLLOW_BOOST;
+        if (votedSet.has(m.id)) s -= FEED_VOTED_PENALTY;
+        return { m, s };
+      })
+      .sort((a, b) => b.s - a.s)
+      .map((x) => x.m);
+  }
+
+  const offset = cursorRaw ? Math.max(parseInt(cursorRaw, 10) || 0, 0) : 0;
+  const pageItems = ranked.slice(offset, offset + limit).map((m) => {
+    const { _base, ...rest } = m; // strip the internal score from the response
+    return rest;
+  });
+  const nextCursor = offset + limit < ranked.length ? offset + limit : null;
+  if (nextCursor != null) c.header("X-Next-Cursor", String(nextCursor));
+
+  if (uid) {
+    c.header("Cache-Control", "private, no-store");
+    return c.json(await hydrateViewerState(db, pageItems, uid));
+  }
+  c.header("Cache-Control", "public, max-age=15");
+  return c.json(pageItems);
+}
+
 // --- mappers ---------------------------------------------------------------
 const mapContest = (r: any) => ({
   id: r.id,
@@ -246,13 +374,21 @@ readRoute.get("/matches", optionalAuth, async (c) => {
   const db = getDb(c.env);
   const status = c.req.query("status") || "active";
   const type = c.req.query("type");
-  // sort=recent (default, keyset by createdAt) | hot (engagement-ranked, offset)
-  const sort = c.req.query("sort") === "hot" ? "hot" : "recent";
+  // sort=foryou (personalized ranking) | hot (engagement-ranked) | recent
+  // (default, keyset by createdAt).
+  const sortParam = c.req.query("sort");
+  const sort = sortParam === "hot" ? "hot" : sortParam === "foryou" ? "foryou" : "recent";
   const limit = Math.min(parseInt(c.req.query("limit") || "30", 10), 100);
   const cursorRaw = c.req.query("cursor");
   // Signed-in viewer (optionalAuth). Only the base list is cached publicly; the
   // viewer's vote state is layered on per-request so refresh keeps "Voted".
   const uid = c.get("user")?.uid;
+
+  // Personalized "For You" ranking has its own caching model (shared candidate
+  // pool + per-viewer re-rank), so it returns before the per-page cache below.
+  if (sort === "foryou") {
+    return servePersonalizedFeed(c, db, { status, type, limit, cursorRaw, uid });
+  }
 
   // Cache each page for 15s. nextCursor is returned via the X-Next-Cursor
   // header (response body stays a plain array — non-breaking).

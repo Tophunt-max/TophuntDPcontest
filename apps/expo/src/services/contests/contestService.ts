@@ -21,10 +21,14 @@ export const contestService = {
     } catch (error) { console.error(error); throw error; }
   },
 
-  /** Fetch active battles for the home feed. */
+  /**
+   * Fetch active battles for the home feed, ranked by the personalized
+   * "For You" algorithm (freshness + engagement velocity + closing-soon
+   * urgency + who you follow). Falls back to recency server-side if signed out.
+   */
   getActiveMatches: async (_currentUserUid?: string, limitCount: number = 30): Promise<any[]> => {
     try {
-      return (await readApi('/read/matches', { status: 'active', limit: limitCount })) as any[];
+      return (await readApi('/read/matches', { status: 'active', sort: 'foryou', limit: limitCount })) as any[];
     } catch (error) {
       console.error("Error fetching active matches:", error);
       throw error;
