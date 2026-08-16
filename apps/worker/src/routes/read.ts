@@ -19,6 +19,7 @@ import {
   contestListCacheKey,
   contestDetailCacheKey,
   commentsCacheKey,
+  feedSeenKey,
   cacheGetJson,
   cachePutJson,
 } from "../lib/cache";
@@ -134,6 +135,33 @@ const FEED_VISIT_AFFINITY_BOOST = 1.0; // you've viewed this creator's profile
 const FEED_VOTED_PENALTY = 1.5; // you already voted on THIS battle → make room for fresh ones
 const FEED_DIVERSITY_WINDOW = 2; // don't repeat a participant within N neighbouring slots
 const FEED_AFFINITY_LOOKBACK = 500; // cap on how many past votes/visits we scan
+const FEED_SEEN_PENALTY = 0.6; // per prior impression (not engaged) → demotion
+const FEED_SEEN_CAP = 5; // count at most this many impressions (max −3.0)
+const FEED_SEEN_MAX_KEYS = 300; // bound the per-user seen map size in KV
+const FEED_SEEN_TTL = 3 * 86_400; // fatigue persists ~3 days
+
+/**
+ * Write-behind impression tracking (KV, fail-open). Increments the times each
+ * served battle was shown to this viewer, prunes to the most-penalising keys,
+ * and never throws — so a KV blip can't break the feed and it never touches D1.
+ */
+async function bumpSeen(env: Env, uid: string, ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  try {
+    const key = feedSeenKey(uid);
+    const map = (await cacheGetJson<Record<string, number>>(env, key)) || {};
+    for (const id of ids) map[id] = Math.min((map[id] || 0) + 1, 99);
+    const keys = Object.keys(map);
+    if (keys.length > FEED_SEEN_MAX_KEYS) {
+      // Drop the least-seen entries first — they need the least fatigue.
+      keys.sort((a, b) => (map[a] || 0) - (map[b] || 0));
+      for (const k of keys.slice(0, keys.length - FEED_SEEN_MAX_KEYS)) delete map[k];
+    }
+    await cachePutJson(env, key, map, FEED_SEEN_TTL);
+  } catch {
+    /* fail-open: impression fatigue is best-effort */
+  }
+}
 
 /**
  * Spread out battles that share a participant so one creator can't dominate
@@ -235,7 +263,7 @@ async function servePersonalizedFeed(
     );
     // Three cheap per-viewer affinity signals ("your history with this creator"):
     //   follows (strongest), past votes (backed them before), profile visits.
-    const [followRows, voteRows, visitRows] = await Promise.all([
+    const [followRows, voteRows, visitRows, seenMap] = await Promise.all([
       participantUids.length
         ? db
             .select({ following: schema.follows.followingId })
@@ -255,6 +283,7 @@ async function servePersonalizedFeed(
         .where(eq(schema.profileVisits.visitorId, uid))
         .limit(FEED_AFFINITY_LOOKBACK)
         .all(),
+      cacheGetJson<Record<string, number>>(c.env, feedSeenKey(uid)),
     ]);
     const followSet = new Set((followRows as Array<{ following: string }>).map((r) => r.following));
     // Same scan gives both the affinity set (creators backed) and the novelty
@@ -262,6 +291,7 @@ async function servePersonalizedFeed(
     const votedForSet = new Set((voteRows as Array<{ votedForUid: string }>).map((r) => r.votedForUid));
     const votedMatchSet = new Set((voteRows as Array<{ matchId: string }>).map((r) => r.matchId));
     const visitedSet = new Set((visitRows as Array<{ userId: string }>).map((r) => r.userId));
+    const seen = seenMap || {};
 
     ranked = candidates
       .map((m) => {
@@ -272,6 +302,12 @@ async function servePersonalizedFeed(
         if (votedForSet.has(a) || votedForSet.has(b)) s += FEED_VOTED_AFFINITY_BOOST;
         if (visitedSet.has(a) || visitedSet.has(b)) s += FEED_VISIT_AFFINITY_BOOST;
         if (votedMatchSet.has(m.id)) s -= FEED_VOTED_PENALTY;
+        // Impression fatigue: shown before but not voted on → demote, scaled by
+        // how many times it was shown (capped).
+        const seenCount = seen[m.id] || 0;
+        if (seenCount > 0 && !votedMatchSet.has(m.id)) {
+          s -= FEED_SEEN_PENALTY * Math.min(seenCount, FEED_SEEN_CAP);
+        }
         return { m, s };
       })
       .sort((a, b) => b.s - a.s)
@@ -289,6 +325,12 @@ async function servePersonalizedFeed(
   });
   const nextCursor = offset + limit < ranked.length ? offset + limit : null;
   if (nextCursor != null) c.header("X-Next-Cursor", String(nextCursor));
+
+  // Record what we just showed this viewer (write-behind, KV) so repeatedly
+  // shown-but-ignored battles fatigue on the next load.
+  if (uid && pageItems.length > 0) {
+    c.executionCtx.waitUntil(bumpSeen(c.env, uid, pageItems.map((m: any) => m.id)));
+  }
 
   if (uid) {
     c.header("Cache-Control", "private, no-store");

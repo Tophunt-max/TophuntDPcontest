@@ -38,6 +38,13 @@ export const commentsCacheKey = (targetType: string, targetId: string) => {
   const kind = targetType === "matches" || targetType === "contestMatches" ? "match" : "post";
   return `cache:comments:${kind}:${targetId}`;
 };
+/**
+ * Per-viewer "recently shown in the feed" map (matchId -> times shown). Powers
+ * impression fatigue: battles shown repeatedly without engagement sink in the
+ * For You ranking. Stored in KV (not D1) with write-behind + fail-open, so it
+ * never adds to the hot database write path.
+ */
+export const feedSeenKey = (uid: string) => `feed:seen:${uid}`;
 
 // --- fail-open ops ----------------------------------------------------------
 /** Read JSON from the cache; returns null on miss OR any KV error. */
