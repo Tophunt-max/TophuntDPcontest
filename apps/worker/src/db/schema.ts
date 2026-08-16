@@ -67,9 +67,14 @@ export const users = sqliteTable(
     updatedAt: integer("updated_at").notNull(),
   },
   (t) => ({
-    usernameIdx: index("idx_users_username").on(t.username),
-    emailIdx: index("idx_users_email").on(t.email),
-    phoneIdx: index("idx_users_phone").on(t.phone),
+    // Unique to guarantee no two accounts share an identifier. SQLite treats
+    // NULLs as distinct, so users without a phone/email still coexist. The
+    // actual DB-level enforcement is applied by migration 0012 (as PARTIAL
+    // unique indexes `WHERE <col> IS NOT NULL`); these declarations keep the
+    // Drizzle model in sync for drizzle-kit/introspection.
+    usernameIdx: uniqueIndex("idx_users_username").on(t.username),
+    emailIdx: uniqueIndex("idx_users_email").on(t.email),
+    phoneIdx: uniqueIndex("idx_users_phone").on(t.phone),
     monthlyWinsIdx: index("idx_users_monthly_wins").on(t.monthlyWins),
   }),
 );

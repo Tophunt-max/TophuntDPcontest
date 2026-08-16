@@ -16,6 +16,11 @@ import {
 } from "../lib/firebaseAdmin";
 import { getRewardSettings } from "../lib/settings";
 import { setOtp, generateOtp, verifyOtp } from "../lib/otp";
+import { validatePasswordStrength } from "../lib/password";
+import { rateLimit, enforceSendCooldown, markSent, clientIp } from "../lib/rateLimit";
+
+/** Per-recipient cooldown between OTP sends (seconds). */
+const OTP_SEND_COOLDOWN = 60;
 
 /** How long a successful password-reset OTP verification stays valid before the
  * password must actually be changed. */
@@ -59,14 +64,46 @@ function validateUsername(username: string): string {
   return lower;
 }
 
+/**
+ * Enforce identifier uniqueness at WRITE time. The client-side `check` action
+ * is only advisory (TOCTOU: a username/phone can be taken between the check and
+ * the final create). This closes that race server-side, and — together with the
+ * DB unique indexes added in migration 0012 — guarantees no two accounts can
+ * share a username, email or phone. A conflicting value owned by a DIFFERENT
+ * uid is rejected; the same uid updating its own row is allowed (re-runs).
+ */
+async function assertIdentifiersAvailable(
+  env: Env,
+  uid: string,
+  ids: { username?: string | null; email?: string | null; phone?: string | null },
+): Promise<void> {
+  const db = getDb(env);
+  const checks: Array<{ col: any; val: string | null; field: string }> = [
+    { col: schema.users.username, val: ids.username ? String(ids.username).toLowerCase() : null, field: "Username" },
+    { col: schema.users.email, val: ids.email ? String(ids.email).toLowerCase() : null, field: "Email" },
+    { col: schema.users.phone, val: normalizePhone(ids.phone), field: "Phone number" },
+  ];
+  for (const { col, val, field } of checks) {
+    if (!val) continue;
+    const row = await db.select({ uid: schema.users.uid }).from(schema.users).where(eq(col, val)).get();
+    if (row && row.uid !== uid) throw httpsError("already-exists", `${field} is already in use.`);
+  }
+}
+
 async function createUserProfile(env: Env, uid: string, data: any, signupBonus: number) {
   const db = getDb(env);
   const ts = now();
+  // Reject duplicates before writing (defense-in-depth with the DB unique index).
+  await assertIdentifiersAvailable(env, uid, {
+    username: data.username,
+    email: data.email,
+    phone: data.phone,
+  });
   await db
     .insert(schema.users)
     .values({
       uid,
-      email: data.email ?? null,
+      email: data.email ? String(data.email).toLowerCase() : null,
       username: data.username ? String(data.username).toLowerCase() : null,
       fullName: data.fullName ?? null,
       profileImageUrl: data.avatarUrl ?? null,
@@ -86,7 +123,7 @@ async function createUserProfile(env: Env, uid: string, data: any, signupBonus: 
     .onConflictDoUpdate({
       target: schema.users.uid,
       set: {
-        email: data.email ?? null,
+        email: data.email ? String(data.email).toLowerCase() : null,
         username: data.username ? String(data.username).toLowerCase() : null,
         fullName: data.fullName ?? null,
         profileImageUrl: data.avatarUrl ?? null,
@@ -118,9 +155,13 @@ authRoute.post("/", async (c) => {
   const env = c.env;
   const db = getDb(env);
   const uid = c.get("user")?.uid;
+  const ip = clientIp(c.req.raw.headers);
 
   switch (action) {
     case "check": {
+      // Availability lookups are unauthenticated → cap per IP to blunt bulk
+      // account enumeration while still allowing normal signup typing.
+      await rateLimit(env, `check:${ip}`, 40, 60);
       const { type } = body;
       if (!type || !["email", "phone", "username"].includes(type))
         throw httpsError("invalid-argument", "Type must be 'email', 'phone', or 'username'.");
@@ -149,10 +190,15 @@ authRoute.post("/", async (c) => {
     }
 
     case "create": {
+      // Account creation is expensive (Firebase user + profile) and unauthenticated.
+      await rateLimit(env, `create:${ip}`, 10, 3600);
       const { email, password, username, avatarUrl } = body;
       if (!email || !password || !username)
         throw httpsError("invalid-argument", "Email, password, and username are required.");
       if (isDisposableEmail(email)) throw httpsError("invalid-argument", "Disposable email blocked.");
+      // Enforce the canonical password policy server-side — client validation is
+      // bypassable, so this is the only real guarantee.
+      validatePasswordStrength(password);
       const validatedUsername = validateUsername(username);
 
       const newUid = await createAuthUser(env, {
@@ -175,16 +221,21 @@ authRoute.post("/", async (c) => {
     }
 
     case "createProfile": {
-      const profileUid = uid || body.uid;
-      if (!profileUid) throw httpsError("unauthenticated", "User must be authenticated.");
+      // SECURITY: the profile uid MUST come from the verified ID token, never
+      // from the request body. Previously this trusted `body.uid` whenever no
+      // token was present, letting an unauthenticated caller create or OVERWRITE
+      // any user's profile (email/username/avatar) by guessing their uid — an
+      // IDOR / account-takeover vector.
+      if (!uid) throw httpsError("unauthenticated", "User must be authenticated.");
       if (body.email && isDisposableEmail(body.email))
         throw httpsError("invalid-argument", "Disposable email blocked.");
       const reward = await getRewardSettings(env);
-      await createUserProfile(env, profileUid, body, reward.signupBonus || 0);
-      return c.json({ status: "success", uid: profileUid, message: "Profile created successfully" });
+      await createUserProfile(env, uid, body, reward.signupBonus || 0);
+      return c.json({ status: "success", uid, message: "Profile created successfully" });
     }
 
     case "getUserByIdentifier": {
+      await rateLimit(env, `identifier:${ip}`, 20, 60);
       const { identifier, type } = body;
       if (!identifier || !type) throw httpsError("invalid-argument", "Identifier and type are required.");
       let value = identifier;
@@ -215,9 +266,25 @@ authRoute.post("/", async (c) => {
     case "sendOtpToPhone": {
       const normalizedPhone = normalizePhone(body.phone);
       if (!normalizedPhone) throw httpsError("invalid-argument", "Invalid phone format.");
-      const otp = generateOtp();
-      await setOtp(env, "pwreset", normalizedPhone, { otp });
-      await sendSms(env, normalizedPhone, `Your Password Reset OTP is: ${otp}. Valid for 10 minutes.`);
+      // Abuse controls: per-IP burst cap + strict per-number cooldown so this
+      // can't be used as an SMS bomber (real Twilio spend) or a resend spammer.
+      await rateLimit(env, `otpsend:${ip}`, 15, 3600);
+      await enforceSendCooldown(env, "pwreset", normalizedPhone, OTP_SEND_COOLDOWN);
+
+      // Anti-enumeration: only actually send an SMS if the phone belongs to a
+      // real account, but ALWAYS return the same generic success so a caller
+      // can't tell whether the number is registered.
+      const owner = await db
+        .select({ uid: schema.users.uid })
+        .from(schema.users)
+        .where(eq(schema.users.phone, normalizedPhone))
+        .get();
+      if (owner) {
+        const otp = generateOtp();
+        await setOtp(env, "pwreset", normalizedPhone, { otp, createdAt: now() });
+        await markSent(env, "pwreset", normalizedPhone, OTP_SEND_COOLDOWN);
+        await sendSms(env, normalizedPhone, `Your Password Reset OTP is: ${otp}. Valid for 10 minutes.`);
+      }
       return c.json({ success: true });
     }
     case "verifyOtp": {
@@ -234,8 +301,8 @@ authRoute.post("/", async (c) => {
       const normalizedPhone = normalizePhone(body.phone);
       if (!normalizedPhone || !body.newPassword)
         throw httpsError("invalid-argument", "Phone and password required.");
-      if (String(body.newPassword).length < 6)
-        throw httpsError("invalid-argument", "Password must be at least 6 characters.");
+      // Same canonical policy as signup — no weaker rule for reset.
+      validatePasswordStrength(body.newPassword);
       // SECURITY: require a prior SUCCESSFUL OTP verification (server-set flag),
       // not merely the existence of an OTP request. Previously this only checked
       // that an OTP record existed, allowing account takeover by anyone who knew
@@ -257,8 +324,11 @@ authRoute.post("/", async (c) => {
     case "sendEmailOtp": {
       if (!uid) throw httpsError("unauthenticated", "User must be logged in.");
       if (!body.newEmail) throw httpsError("invalid-argument", "New email is required.");
+      await rateLimit(env, `emailotp:${uid}`, 10, 3600);
+      await enforceSendCooldown(env, "email", uid, OTP_SEND_COOLDOWN);
       const otp = generateOtp();
-      await setOtp(env, "email", uid, { otp, newEmail: body.newEmail });
+      await setOtp(env, "email", uid, { otp, newEmail: body.newEmail, createdAt: now() });
+      await markSent(env, "email", uid, OTP_SEND_COOLDOWN);
       await sendEmail(env, {
         to: body.newEmail,
         subject: "Verify your new email address",
@@ -281,9 +351,14 @@ authRoute.post("/", async (c) => {
     case "sendPhoneOtp": {
       if (!uid) throw httpsError("unauthenticated", "User must be logged in.");
       if (!body.newPhone) throw httpsError("invalid-argument", "New phone number is required.");
+      const newPhone = normalizePhone(body.newPhone);
+      if (!newPhone) throw httpsError("invalid-argument", "Invalid phone format.");
+      await rateLimit(env, `phoneotp:${uid}`, 10, 3600);
+      await enforceSendCooldown(env, "phone", uid, OTP_SEND_COOLDOWN);
       const otp = generateOtp();
-      await setOtp(env, "phone", uid, { otp, newPhone: body.newPhone });
-      await sendSms(env, body.newPhone, `Your TopHunt OTP for phone number update is: ${otp}.`);
+      await setOtp(env, "phone", uid, { otp, newPhone, createdAt: now() });
+      await markSent(env, "phone", uid, OTP_SEND_COOLDOWN);
+      await sendSms(env, newPhone, `Your TopHunt OTP for phone number update is: ${otp}.`);
       return c.json({ success: true });
     }
     case "verifyPhoneOtp": {

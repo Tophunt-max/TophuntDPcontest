@@ -5,6 +5,7 @@ import {
   signInWithPopup,
   getAuth,
 } from "firebase/auth";
+import { Platform } from "react-native";
 import app from "../firebase/initFirebase";
 import { readApi } from "../api";
 import { useSignupStore } from "../../store/signup";
@@ -12,9 +13,21 @@ import { useSignupStore } from "../../store/signup";
 export const SocialAuthService = {
   handleSocialLogin: async (router: any, addToast: any, providerName: string, provider: any) => {
     try {
+      // `signInWithPopup` is a WEB-ONLY Firebase API. On a native (iOS/Android)
+      // Expo build it throws `auth/operation-not-supported-in-this-environment`,
+      // so social login silently breaks on the real app. Fail fast here with a
+      // clear message instead of a cryptic Firebase crash.
+      // TODO(native social auth): implement with `expo-auth-session` (Google)
+      //   + `expo-apple-authentication` (Apple) and exchange the OAuth
+      //   credential via Firebase `signInWithCredential`.
+      if (Platform.OS !== "web") {
+        addToast(`${providerName} sign-in isn't available in the app yet. Please use email or phone.`, "info");
+        throw new Error("social-auth-unsupported-native");
+      }
+
       const auth = getAuth(app);
       console.log(`Starting ${providerName} login...`);
-      
+
       const userCredential = await signInWithPopup(auth, provider);
       const user = userCredential.user;
 
@@ -58,6 +71,8 @@ export const SocialAuthService = {
       return user;
     } catch (error: any) {
       console.error(`${providerName} Error:`, error);
+      // Already surfaced a friendly info toast for the native-unsupported case.
+      if (error?.message === "social-auth-unsupported-native") throw error;
       let msg = error.message;
       if (error.code === 'auth/popup-closed-by-user') msg = "Popup closed.";
       addToast(msg, "error");

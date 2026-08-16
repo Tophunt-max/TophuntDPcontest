@@ -20,7 +20,15 @@ import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useToast } from "@/src/components/toast/ToastProvider";
 import { callApi } from '@/src/services/api'; // Consolidated API used
 
-const passwordSchema = z.string().min(8, 'Password must be at least 8 characters long');
+// Mirror the server-side policy (worker lib/password.ts) so the user gets
+// inline feedback instead of a round-trip rejection.
+const passwordSchema = z
+  .string()
+  .min(8, 'Password must be at least 8 characters long')
+  .regex(/[a-z]/, 'Password must contain at least one lowercase letter')
+  .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
+  .regex(/\d/, 'Password must contain at least one number')
+  .regex(/[^a-zA-Z0-9]/, 'Password must contain at least one special character');
 
 export default function ResetPasswordScreen() {
   const router = useRouter();

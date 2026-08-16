@@ -96,6 +96,13 @@ export default function PasswordLoginScreen() {
       const userCredential = await signInWithEmailAndPassword(auth, data.email, data.password);
       const user = userCredential.user;
 
+      // Soft email-verification reminder. Non-blocking on purpose: hard-blocking
+      // would lock out the entire existing (pre-verification) user base. Sensitive
+      // actions can gate on emailVerified separately.
+      if (!user.emailVerified) {
+        addToast("Please verify your email — check your inbox for the link.", "info");
+      }
+
       // 2. Handle "Remember Me"
       if (rememberMe) {
         await AsyncStorage.setItem("remembered_email", data.email);

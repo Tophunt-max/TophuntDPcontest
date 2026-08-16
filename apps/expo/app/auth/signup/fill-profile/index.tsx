@@ -37,7 +37,13 @@ const fillProfileSchema = z.object({
     .min(3, "Must be at least 3 characters")
     .regex(/^[a-zA-Z0-9_.]+$/, "Invalid format"),
   email: z.string().min(1, "Email is required").email("Invalid email"),
-  phone: z.string().min(1, "Phone required").length(10, "Must be 10 digits"),
+  // National subscriber number (without country code). Lengths vary by country,
+  // so accept 6–14 digits instead of hardcoding India's 10. Combined with the
+  // selected dial code this forms a valid E.164 number.
+  phone: z
+    .string()
+    .min(1, "Phone required")
+    .regex(/^\d{6,14}$/, "Enter a valid phone number"),
   occupation: z.string().min(1, "Required"),
   gender: z.string().min(1, "Required"),
   dateOfBirth: z.any().refine((val) => !!val, "Required"),
@@ -138,7 +144,7 @@ const FillProfile: React.FC = () => {
   // PHONE CHECK (Using New API Router)
   useEffect(() => {
     const checkPhone = async () => {
-        if (phone && phone.length === 10 && !isPhoneLocked) {
+        if (phone && /^\d{6,14}$/.test(phone) && !isPhoneLocked) {
             setPhoneChecking(true);
             try {
                 const result = await callApi('check', { type: 'phone', value: countryCode + phone });
@@ -212,7 +218,7 @@ const FillProfile: React.FC = () => {
                 {!isPhoneLocked && <Ionicons name="chevron-down" size={14} color="#9E9E9E" style={{ marginLeft: 4 }} />}
              </TouchableOpacity>
              <View style={styles.phoneField}>
-                 <FormInput control={control} name="phone" placeholder="Phone Number" containerStyle={{ marginBottom: 0 }} keyboardType="phone-pad" maxLength={10} editable={!isPhoneLocked} style={isPhoneLocked ? styles.readOnlyInput : null} errorMessage={errors.phone?.message} rightIcon={phoneChecking ? <ActivityIndicator size="small" color="#ff4466" /> : null} />
+                 <FormInput control={control} name="phone" placeholder="Phone Number" containerStyle={{ marginBottom: 0 }} keyboardType="phone-pad" maxLength={14} editable={!isPhoneLocked} style={isPhoneLocked ? styles.readOnlyInput : null} errorMessage={errors.phone?.message} rightIcon={phoneChecking ? <ActivityIndicator size="small" color="#ff4466" /> : null} />
              </View>
         </View>
 

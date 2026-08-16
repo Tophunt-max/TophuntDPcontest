@@ -13,6 +13,7 @@ import m_0008_growth_safety_sql from "../../migrations/0008_growth_safety.sql";
 import m_0009_payment_hardening_sql from "../../migrations/0009_payment_hardening.sql";
 import m_0010_contest_banner_sql from "../../migrations/0010_contest_banner.sql";
 import m_0011_voting_integrity_sql from "../../migrations/0011_voting_integrity.sql";
+import m_0012_auth_unique_identifiers_sql from "../../migrations/0012_auth_unique_identifiers.sql";
 
 export interface Migration {
   name: string;
@@ -32,4 +33,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0009_payment_hardening.sql", sql: m_0009_payment_hardening_sql },
   { name: "0010_contest_banner.sql", sql: m_0010_contest_banner_sql },
   { name: "0011_voting_integrity.sql", sql: m_0011_voting_integrity_sql },
+  { name: "0012_auth_unique_identifiers.sql", sql: m_0012_auth_unique_identifiers_sql },
 ];

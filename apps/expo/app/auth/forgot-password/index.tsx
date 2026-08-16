@@ -47,8 +47,8 @@ export default function ForgotPasswordScreen() {
 
   const handleContinue = async (data: any) => {
     setLoading(true);
-    setUserInfo(null); 
-    clearErrors(); 
+    setUserInfo(null);
+    clearErrors();
 
     const identifier = activeTab === "email" ? data.email : data.phoneNumber;
     const fieldName = activeTab === "email" ? "email" : "phoneNumber";
@@ -58,40 +58,30 @@ export default function ForgotPasswordScreen() {
         setLoading(false);
         return;
     }
-    
+
+    // SECURITY: never reveal whether an account exists (account enumeration).
+    // We no longer pre-check the user via getUserByIdentifier and no longer show
+    // a "User not found" error. Both channels behave identically for any input:
+    //  - email → Firebase sendPasswordResetEmail (silently no-ops for unknown
+    //    addresses),
+    //  - phone → the Worker only sends an SMS when the number is registered but
+    //    always returns success, so we proceed to the OTP screen regardless.
     try {
-        // 1. Check if user exists using Consolidated API
-        const result: any = await callApi('getUserByIdentifier', { 
-            identifier: identifier, 
-            type: activeTab === 'email' ? 'email' : 'phone' 
-        });
-
-        if (!result.found) {
-            setError(fieldName, { 
-                type: "manual", 
-                message: "User not found. Please check your details." 
-            });
-            setLoading(false);
-            return;
-        }
-
-        const user = result.user;
-        setUserInfo(user);
-
-        // 2. Proceed with Sending Link/OTP
         if (activeTab === "email") {
-            await sendPasswordResetEmail(auth, data.email);
-            addToast("Password reset link sent to your email", "success");
+            await sendPasswordResetEmail(auth, data.email).catch((e) => {
+                // Suppress user-not-found so existence isn't leaked; surface only
+                // genuine client errors (e.g. malformed email / network).
+                if (e?.code && e.code !== "auth/user-not-found") throw e;
+            });
+            addToast("If an account exists, a reset link has been sent to your email.", "success");
             router.push("/auth/forgot-password/success");
         } else {
-            // Using Consolidated API for OTP
             await callApi('sendOtpToPhone', { phone: data.phoneNumber });
             router.push({
                 pathname: "/auth/forgot-password/otp",
                 params: { phoneNumber: data.phoneNumber },
             });
         }
-
     } catch (error: any) {
         console.error("Forgot Password Error:", error);
         addToast(error.message || "An error occurred", "error");

@@ -27,7 +27,10 @@ export default function OtpVerificationScreen() {
   const textColor = useThemeColor({}, "text");
   const { addToast } = useToast();
 
-  const [otp, setOtp] = useState<string[]>(Array(4).fill(""));
+  // Backend issues a 6-digit OTP (lib/otp.ts). The UI MUST collect all 6 digits
+  // or verification can never succeed (safeEqual rejects a length mismatch).
+  const OTP_LENGTH = 6;
+  const [otp, setOtp] = useState<string[]>(Array(OTP_LENGTH).fill(""));
   const [timer, setTimer] = useState(RESEND_TIME);
   const [loading, setLoading] = useState(false);
   const [resending, setResending] = useState(false);
@@ -45,15 +48,15 @@ export default function OtpVerificationScreen() {
     newOtp[index] = text;
     setOtp(newOtp);
 
-    if (text && index < 3) {
+    if (text && index < OTP_LENGTH - 1) {
       inputRefs.current[index + 1]?.focus();
     }
   };
 
   const handleVerify = async () => {
     const code = otp.join("");
-    if (code.length !== 4) {
-      addToast({ type: "error", text: "Please enter a valid 4-digit OTP." });
+    if (code.length !== OTP_LENGTH) {
+      addToast({ type: "error", text: `Please enter a valid ${OTP_LENGTH}-digit OTP.` });
       return;
     }
     setLoading(true);
@@ -141,7 +144,7 @@ export default function OtpVerificationScreen() {
             title="Verify"
             onPress={handleVerify}
             isLoading={loading}
-            disabled={loading || otp.join("").length !== 4}
+            disabled={loading || otp.join("").length !== OTP_LENGTH}
           />
         </View>
       </ScrollView>
@@ -176,12 +179,12 @@ const styles = StyleSheet.create({
   otpContainer: {
     flexDirection: "row",
     justifyContent: "space-between",
-    width: "60%",
+    width: "100%",
     marginBottom: 30,
   },
   otpInput: {
-    width: 50,
-    height: 50,
+    width: 48,
+    height: 52,
     textAlign: "center",
     fontSize: 20,
     borderRadius: 10,

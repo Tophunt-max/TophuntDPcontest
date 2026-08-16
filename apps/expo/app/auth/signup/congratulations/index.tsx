@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -16,7 +16,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSignupStore } from "@/src/store/signup";
 import { auth } from "@/src/services/firebase/initFirebase";
 import { callApi } from "@/src/services/api"; // Consolidated API used
-import { signInWithEmailAndPassword } from "firebase/auth";
+import { signInWithEmailAndPassword, sendEmailVerification } from "firebase/auth";
 
 const { width } = Dimensions.get('window');
 
@@ -26,9 +26,14 @@ export default function CongratulationsScreen() {
   const { data: signupData, reset: resetStore } = useSignupStore();
   const [isLoading, setIsLoading] = useState(true);
   const [statusMessage, setStatusMessage] = useState("Finalizing your account...");
+  // Guard against double execution (React StrictMode remount / effect re-run):
+  // creating the account twice would fail the 2nd time with EMAIL_EXISTS.
+  const hasFinalized = useRef(false);
 
   useEffect(() => {
     const finalizeSignup = async () => {
+      if (hasFinalized.current) return;
+      hasFinalized.current = true;
       try {
         console.log("Finalizing signup for provider:", signupData.authProvider);
 
@@ -49,7 +54,16 @@ export default function CongratulationsScreen() {
             }
 
             setStatusMessage("Signing you in...");
-            await signInWithEmailAndPassword(auth, signupData.email, signupData.password);
+            const cred = await signInWithEmailAndPassword(auth, signupData.email, signupData.password);
+            // Send a verification email so the user can confirm ownership of the
+            // address. Best-effort — never block signup if the email send fails.
+            try {
+              if (cred.user && !cred.user.emailVerified) {
+                await sendEmailVerification(cred.user);
+              }
+            } catch (verifyErr) {
+              console.warn("sendEmailVerification failed", verifyErr);
+            }
         } else {
             if (!signupData.username) {
                 throw new Error("Username is required to complete your profile.");
@@ -82,6 +96,8 @@ export default function CongratulationsScreen() {
 
       } catch (error: any) {
         console.error("Failed to finalize signup", error);
+        // Allow the "Retry" action below to re-run the finalize flow.
+        hasFinalized.current = false;
         Alert.alert(
             "Signup Failed", 
             error.message || "Could not complete the process. Please try again.",
