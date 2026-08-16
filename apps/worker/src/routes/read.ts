@@ -18,6 +18,7 @@ import {
   blogListCacheKey,
   contestListCacheKey,
   contestDetailCacheKey,
+  commentsCacheKey,
   cacheGetJson,
   cachePutJson,
 } from "../lib/cache";
@@ -718,46 +719,60 @@ readRoute.get("/comments", optionalAuth, async (c) => {
   if (!targetId) return c.json([]);
 
   const isMatch = targetType === "matches" || targetType === "contestMatches";
-  const rows = isMatch
-    ? await db
-        .select({
-          id: schema.matchComments.id, userId: schema.matchComments.userId, text: schema.matchComments.text,
-          likes: schema.matchComments.likeCount, createdAt: schema.matchComments.createdAt,
-          username: schema.users.username, userAvatar: schema.users.profileImageUrl,
-        })
-        .from(schema.matchComments)
-        .leftJoin(schema.users, eq(schema.matchComments.userId, schema.users.uid))
-        .where(eq(schema.matchComments.matchId, targetId))
-        .orderBy(desc(schema.matchComments.createdAt))
-        .all()
-    : await db
-        .select({
-          id: schema.postComments.id, userId: schema.postComments.userId, text: schema.postComments.text,
-          likes: schema.postComments.likeCount, createdAt: schema.postComments.createdAt,
-          username: schema.users.username, userAvatar: schema.users.profileImageUrl,
-        })
-        .from(schema.postComments)
-        .leftJoin(schema.users, eq(schema.postComments.userId, schema.users.uid))
-        .where(eq(schema.postComments.postId, targetId))
-        .orderBy(desc(schema.postComments.createdAt))
-        .all();
 
-  let out = rows.map((r: any) => ({ ...r, postId: targetId, likes: r.likes ?? 0, likedByMe: false }));
+  // Cache the user-agnostic base list (id/text/author/likes/createdAt). It is
+  // busted the instant a comment is added or deleted (see routes/api.ts), so
+  // hot threads stay off D1 without ever showing a stale set of comments. The
+  // per-viewer "likedByMe" flag is layered on per request below, so it is never
+  // baked into the shared cache. (Comment like COUNTS are eventually consistent
+  // within the short TTL — the same trade-off the match list makes for votes.)
+  const cacheKey = commentsCacheKey(targetType, targetId);
+  let base = await cacheGet(c.env, cacheKey);
+  if (!base) {
+    const rows = isMatch
+      ? await db
+          .select({
+            id: schema.matchComments.id, userId: schema.matchComments.userId, text: schema.matchComments.text,
+            likes: schema.matchComments.likeCount, createdAt: schema.matchComments.createdAt,
+            username: schema.users.username, userAvatar: schema.users.profileImageUrl,
+          })
+          .from(schema.matchComments)
+          .leftJoin(schema.users, eq(schema.matchComments.userId, schema.users.uid))
+          .where(eq(schema.matchComments.matchId, targetId))
+          .orderBy(desc(schema.matchComments.createdAt))
+          .all()
+      : await db
+          .select({
+            id: schema.postComments.id, userId: schema.postComments.userId, text: schema.postComments.text,
+            likes: schema.postComments.likeCount, createdAt: schema.postComments.createdAt,
+            username: schema.users.username, userAvatar: schema.users.profileImageUrl,
+          })
+          .from(schema.postComments)
+          .leftJoin(schema.users, eq(schema.postComments.userId, schema.users.uid))
+          .where(eq(schema.postComments.postId, targetId))
+          .orderBy(desc(schema.postComments.createdAt))
+          .all();
+    base = rows.map((r: any) => ({ ...r, postId: targetId, likes: r.likes ?? 0, likedByMe: false }));
+    await cachePut(c.env, cacheKey, base, 30);
+  }
 
   // Layer the signed-in viewer's per-comment like state so hearts stay filled
   // across refreshes (one indexed query over just this page of comment ids).
-  if (uid && out.length > 0) {
-    const commentIds = out.map((r) => r.id);
+  if (uid && base.length > 0) {
+    const commentIds = base.map((r: any) => r.id);
     const likedRows = await db
       .select({ commentId: schema.commentLikes.commentId })
       .from(schema.commentLikes)
       .where(and(eq(schema.commentLikes.userId, uid), inArray(schema.commentLikes.commentId, commentIds)))
       .all();
     const likedSet = new Set<string>((likedRows as Array<{ commentId: string }>).map((r) => r.commentId));
-    out = out.map((r) => ({ ...r, likedByMe: likedSet.has(r.id) }));
+    // Per-user data — never store in a shared/edge cache.
+    c.header("Cache-Control", "private, no-store");
+    return c.json(base.map((r: any) => ({ ...r, likedByMe: likedSet.has(r.id) })));
   }
 
-  return c.json(out);
+  c.header("Cache-Control", "public, max-age=10");
+  return c.json(base);
 });
 
 // ================= STORIES =================

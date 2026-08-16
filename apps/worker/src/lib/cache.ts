@@ -29,6 +29,15 @@ export const contestListCacheKeys = () => [
 ];
 /** Public detail for one contest template. */
 export const contestDetailCacheKey = (id: string) => `cache:contest:detail:${id}`;
+/**
+ * Comment list for one target. `targetType` is normalised so the "matches" /
+ * "contestMatches" aliases and every caller (reader + all writers) resolve to
+ * the SAME key — a key mismatch is the classic stale-cache bug.
+ */
+export const commentsCacheKey = (targetType: string, targetId: string) => {
+  const kind = targetType === "matches" || targetType === "contestMatches" ? "match" : "post";
+  return `cache:comments:${kind}:${targetId}`;
+};
 
 // --- fail-open ops ----------------------------------------------------------
 /** Read JSON from the cache; returns null on miss OR any KV error. */

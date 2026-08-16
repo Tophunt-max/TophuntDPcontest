@@ -25,6 +25,7 @@ import { enforceIdempotency, releaseIdempotency } from "../lib/idempotency";
 import {
   contestDetailCacheKey,
   contestListCacheKeys,
+  commentsCacheKey,
   delCache,
   userCacheKey,
 } from "../lib/cache";
@@ -1176,6 +1177,8 @@ apiRoute.post("/", async (c) => {
       await db.insert(schema.matchComments).values({ id: commentId, matchId, userId: uid, text, createdAt: ts });
       const commentCounters = await bumpEngagement(env, matchId, "comment", 1);
       await publish(env, `match:${matchId}`, { type: "comment", commentId, commentCount: commentCounters.comment ?? 0 });
+      // Bust the cached comment list so the new comment is visible immediately.
+      c.executionCtx.waitUntil(delCache(env, commentsCacheKey("matches", matchId)));
       c.executionCtx.waitUntil(
         (async () => {
           const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, matchId)).get();
@@ -1266,6 +1269,8 @@ apiRoute.post("/", async (c) => {
           })(),
         );
       }
+      // Bust the cached comment list so the new comment shows immediately.
+      c.executionCtx.waitUntil(delCache(env, commentsCacheKey(targetType, targetId)));
       return c.json({ success: true, commentId });
     }
 
@@ -1285,6 +1290,8 @@ apiRoute.post("/", async (c) => {
         await db.delete(schema.postComments).where(eq(schema.postComments.id, commentId));
         await db.update(schema.posts).set({ commentCount: sql`MAX(${schema.posts.commentCount} - 1, 0)` }).where(eq(schema.posts.id, row.postId));
       }
+      // Bust the cached comment list so the removal is reflected immediately.
+      c.executionCtx.waitUntil(delCache(env, commentsCacheKey(targetType, targetId)));
       return c.json({ success: true });
     }
 
