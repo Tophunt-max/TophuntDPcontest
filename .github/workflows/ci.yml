@@ -1,0 +1,41 @@
+name: CI
+
+# Production gate. The worker is fully typed + tested, so it blocks merges on
+# any type or test regression. The Expo app has known pre-existing type errors,
+# so we run its unit tests (which must pass) without gating on `tsc` yet — once
+# the app is type-clean, add an `expo typecheck` step here too.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  worker:
+    name: Worker (typecheck + tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  expo-tests:
+    name: Expo (unit tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/expo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm test

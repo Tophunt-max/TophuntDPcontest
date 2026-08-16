@@ -129,16 +129,57 @@ async function hydrateViewerState(db: any, matches: any[], uid: string): Promise
 // This mirrors how large feeds work (candidate gen + ranking) while staying
 // light enough for D1 + the edge cache.
 const FEED_CANDIDATE_POOL = 150;
-const FEED_FOLLOW_BOOST = 3.0; // relationship is the strongest personal signal
-const FEED_VOTED_AFFINITY_BOOST = 1.5; // you've backed this creator before
-const FEED_VISIT_AFFINITY_BOOST = 1.0; // you've viewed this creator's profile
-const FEED_VOTED_PENALTY = 1.5; // you already voted on THIS battle → make room for fresh ones
 const FEED_DIVERSITY_WINDOW = 2; // don't repeat a participant within N neighbouring slots
 const FEED_AFFINITY_LOOKBACK = 500; // cap on how many past votes/visits we scan
-const FEED_SEEN_PENALTY = 0.6; // per prior impression (not engaged) → demotion
-const FEED_SEEN_CAP = 5; // count at most this many impressions (max −3.0)
 const FEED_SEEN_MAX_KEYS = 300; // bound the per-user seen map size in KV
 const FEED_SEEN_TTL = 3 * 86_400; // fatigue persists ~3 days
+
+/**
+ * Tunable ranking weights. Defaults live here but can be overridden at runtime
+ * from the `appConfig.feedWeights` setting (admin panel) — so the feed can be
+ * A/B-tuned without a redeploy. Missing keys fall back to these.
+ */
+interface FeedWeights {
+  freshness: number;
+  velocity: number;
+  urgency: number;
+  prize: number;
+  follow: number;
+  votedAffinity: number;
+  visitAffinity: number;
+  votedPenalty: number;
+  seenPenalty: number;
+  seenCap: number;
+}
+const FEED_DEFAULT_WEIGHTS: FeedWeights = {
+  freshness: 2.2,
+  velocity: 1.6,
+  urgency: 1.2,
+  prize: 0.3,
+  follow: 3.0,
+  votedAffinity: 1.5,
+  visitAffinity: 1.0,
+  votedPenalty: 1.5,
+  seenPenalty: 0.6,
+  seenCap: 5,
+};
+
+async function getFeedWeights(env: Env): Promise<FeedWeights> {
+  try {
+    const cfg = await getAppConfig(env);
+    const w = cfg?.feedWeights;
+    if (w && typeof w === "object") {
+      const merged = { ...FEED_DEFAULT_WEIGHTS } as Record<string, number>;
+      for (const k of Object.keys(FEED_DEFAULT_WEIGHTS)) {
+        if (typeof w[k] === "number" && Number.isFinite(w[k])) merged[k] = w[k];
+      }
+      return merged as unknown as FeedWeights;
+    }
+  } catch {
+    /* fall through to defaults */
+  }
+  return FEED_DEFAULT_WEIGHTS;
+}
 
 /**
  * Write-behind impression tracking (KV, fail-open). Increments the times each
@@ -191,7 +232,7 @@ function diversifyFeed(items: any[], window: number): any[] {
 }
 
 /** User-agnostic content score for one match (higher = show sooner). */
-function rankBaseScore(r: any, now: number): number {
+function rankBaseScore(r: any, now: number, w: FeedWeights): number {
   const start = Number(r.activatedAt || r.createdAt || now);
   const ageHours = Math.max(0, (now - start) / 3_600_000);
 
@@ -222,7 +263,7 @@ function rankBaseScore(r: any, now: number): number {
   }
   const prize = Math.log1p(Number(r.entryFee) || 0);
 
-  return 2.2 * freshness + 1.6 * Math.log1p(velocity) + 1.2 * urgency + 0.3 * prize;
+  return w.freshness * freshness + w.velocity * Math.log1p(velocity) + w.urgency * urgency + w.prize * prize;
 }
 
 /**
@@ -233,10 +274,14 @@ function rankBaseScore(r: any, now: number): number {
 async function servePersonalizedFeed(
   c: any,
   db: any,
-  opts: { status: string; type?: string; limit: number; cursorRaw?: string; uid?: string },
+  opts: { status: string; type?: string; limit: number; cursorRaw?: string; uid?: string; following?: boolean },
 ) {
-  const { status, type, limit, cursorRaw, uid } = opts;
+  const { status, type, limit, cursorRaw, uid, following } = opts;
   const now = Date.now();
+  const w = await getFeedWeights(c.env);
+
+  // The "Following" tab is inherently personal — signed-out users get nothing.
+  if (following && !uid) return c.json({ items: [], nextCursor: null });
 
   const candKey = `cache:matches:cand:${status}:${type || "all"}`;
   let candidates: any[] | null = await cacheGet(c.env, candKey);
@@ -251,7 +296,7 @@ async function servePersonalizedFeed(
       .limit(FEED_CANDIDATE_POOL)
       .all();
     candidates = (rows as any[])
-      .map((r) => ({ ...enrichMatchMedia(c.env, mapMatch(r)), _base: rankBaseScore(r, now) }))
+      .map((r) => ({ ...enrichMatchMedia(c.env, mapMatch(r)), _base: rankBaseScore(r, now, w) }))
       .sort((a, b) => b._base - a._base);
     await cachePut(c.env, candKey, candidates, 45);
   }
@@ -293,25 +338,28 @@ async function servePersonalizedFeed(
     const visitedSet = new Set((visitRows as Array<{ userId: string }>).map((r) => r.userId));
     const seen = seenMap || {};
 
-    ranked = candidates
-      .map((m) => {
-        const a = m.userA?.uid;
-        const b = m.userB?.uid;
-        let s = m._base as number;
-        if (followSet.has(a) || followSet.has(b)) s += FEED_FOLLOW_BOOST;
-        if (votedForSet.has(a) || votedForSet.has(b)) s += FEED_VOTED_AFFINITY_BOOST;
-        if (visitedSet.has(a) || visitedSet.has(b)) s += FEED_VISIT_AFFINITY_BOOST;
-        if (votedMatchSet.has(m.id)) s -= FEED_VOTED_PENALTY;
-        // Impression fatigue: shown before but not voted on → demote, scaled by
-        // how many times it was shown (capped).
-        const seenCount = seen[m.id] || 0;
-        if (seenCount > 0 && !votedMatchSet.has(m.id)) {
-          s -= FEED_SEEN_PENALTY * Math.min(seenCount, FEED_SEEN_CAP);
-        }
-        return { m, s };
-      })
-      .sort((a, b) => b.s - a.s)
-      .map((x) => x.m);
+    let scored = candidates.map((m) => {
+      const a = m.userA?.uid;
+      const b = m.userB?.uid;
+      let s = m._base as number;
+      const followed = followSet.has(a) || followSet.has(b);
+      if (followed) s += w.follow;
+      if (votedForSet.has(a) || votedForSet.has(b)) s += w.votedAffinity;
+      if (visitedSet.has(a) || visitedSet.has(b)) s += w.visitAffinity;
+      if (votedMatchSet.has(m.id)) s -= w.votedPenalty;
+      // Impression fatigue: shown before but not voted on → demote, scaled by
+      // how many times it was shown (capped).
+      const seenCount = seen[m.id] || 0;
+      if (seenCount > 0 && !votedMatchSet.has(m.id)) {
+        s -= w.seenPenalty * Math.min(seenCount, w.seenCap);
+      }
+      return { m, s, followed };
+    });
+    // "Following" tab: keep only battles featuring someone the viewer follows.
+    if (following) scored = scored.filter((x) => x.followed);
+    ranked = scored.sort((a, b) => b.s - a.s).map((x) => x.m);
+  } else if (following) {
+    ranked = []; // signed-in but no candidates, or the empty-pool case
   }
 
   // Diversity pass (applied for everyone) so a single creator doesn't stack up
@@ -334,10 +382,10 @@ async function servePersonalizedFeed(
 
   if (uid) {
     c.header("Cache-Control", "private, no-store");
-    return c.json(await hydrateViewerState(db, pageItems, uid));
+    return c.json({ items: await hydrateViewerState(db, pageItems, uid), nextCursor });
   }
   c.header("Cache-Control", "public, max-age=15");
-  return c.json(pageItems);
+  return c.json({ items: pageItems, nextCursor });
 }
 
 // --- mappers ---------------------------------------------------------------
@@ -468,20 +516,28 @@ readRoute.get("/matches", optionalAuth, async (c) => {
   const db = getDb(c.env);
   const status = c.req.query("status") || "active";
   const type = c.req.query("type");
-  // sort=foryou (personalized ranking) | hot (engagement-ranked) | recent
-  // (default, keyset by createdAt).
+  // sort=foryou (personalized ranking) | following (only creators you follow) |
+  // hot (engagement-ranked) | recent (default, keyset by createdAt).
   const sortParam = c.req.query("sort");
-  const sort = sortParam === "hot" ? "hot" : sortParam === "foryou" ? "foryou" : "recent";
+  const sort =
+    sortParam === "hot"
+      ? "hot"
+      : sortParam === "foryou"
+        ? "foryou"
+        : sortParam === "following"
+          ? "following"
+          : "recent";
   const limit = Math.min(parseInt(c.req.query("limit") || "30", 10), 100);
   const cursorRaw = c.req.query("cursor");
   // Signed-in viewer (optionalAuth). Only the base list is cached publicly; the
   // viewer's vote state is layered on per-request so refresh keeps "Voted".
   const uid = c.get("user")?.uid;
 
-  // Personalized "For You" ranking has its own caching model (shared candidate
-  // pool + per-viewer re-rank), so it returns before the per-page cache below.
-  if (sort === "foryou") {
-    return servePersonalizedFeed(c, db, { status, type, limit, cursorRaw, uid });
+  // Ranked feeds ("For You" + "Following") share a caching model (shared
+  // candidate pool + per-viewer re-rank), so they return before the per-page
+  // cache below and respond as { items, nextCursor }.
+  if (sort === "foryou" || sort === "following") {
+    return servePersonalizedFeed(c, db, { status, type, limit, cursorRaw, uid, following: sort === "following" });
   }
 
   // Cache each page for 15s. nextCursor is returned via the X-Next-Cursor

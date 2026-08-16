@@ -22,13 +22,27 @@ export const contestService = {
   },
 
   /**
-   * Fetch active battles for the home feed, ranked by the personalized
-   * "For You" algorithm (freshness + engagement velocity + closing-soon
-   * urgency + who you follow). Falls back to recency server-side if signed out.
+   * Fetch a page of home-feed battles, ranked by the personalized algorithm.
+   *  - sort 'foryou'    → freshness + engagement velocity + closing-soon +
+   *                       affinity (follows/votes/visits) − fatigue.
+   *  - sort 'following' → only battles featuring creators you follow.
+   * Returns { items, nextCursor }; pass nextCursor back for the next page
+   * (infinite scroll). Signed-out users get content ranking server-side.
    */
-  getActiveMatches: async (_currentUserUid?: string, limitCount: number = 30): Promise<any[]> => {
+  getActiveMatches: async (
+    opts: { sort?: 'foryou' | 'following'; cursor?: number | string | null; limit?: number } = {},
+  ): Promise<{ items: any[]; nextCursor: number | string | null }> => {
+    const { sort = 'foryou', cursor = null, limit = 8 } = opts;
     try {
-      return (await readApi('/read/matches', { status: 'active', sort: 'foryou', limit: limitCount })) as any[];
+      const res: any = await readApi('/read/matches', {
+        status: 'active',
+        sort,
+        cursor: cursor ?? undefined,
+        limit,
+      });
+      // Tolerate both the paginated shape and a legacy bare array.
+      if (Array.isArray(res)) return { items: res, nextCursor: null };
+      return { items: res?.items || [], nextCursor: res?.nextCursor ?? null };
     } catch (error) {
       console.error("Error fetching active matches:", error);
       throw error;
