@@ -20,6 +20,8 @@ import Animated, {
   withSpring, 
   withSequence, 
   withDelay,
+  withTiming,
+  withRepeat,
   runOnJS
 } from 'react-native-reanimated';
 import { 
@@ -38,6 +40,7 @@ interface PostCardProps {
 }
 
 const AnimatedLinearGradient = Animated.createAnimatedComponent(LinearGradient);
+const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
 
 /** Compact vote count formatting (1.2k / 3.4M) for the on-image chips. */
 const formatVotes = (n: number): string => {
@@ -88,9 +91,24 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
   // Animation values
   const heartScale = useSharedValue(0);
   const barProgress = useSharedValue(initialProgressA);
+  const voteScaleA = useSharedValue(1);
+  const voteScaleB = useSharedValue(1);
+  const livePulse = useSharedValue(1);
   const lastTap = useRef<number>(0);
   const lastVoteTotal = useRef(initialTotal);
   const isHeartAnimating = useRef<boolean>(false);
+
+  const voteAnimA = useAnimatedStyle(() => ({ transform: [{ scale: voteScaleA.value }] }));
+  const voteAnimB = useAnimatedStyle(() => ({ transform: [{ scale: voteScaleB.value }] }));
+  const liveDotStyle = useAnimatedStyle(() => ({ opacity: livePulse.value }));
+
+  // A quick tap "squash" so pressing a vote button feels responsive.
+  const pulseButton = useCallback((sv: typeof voteScaleA) => {
+    sv.value = withSequence(
+      withTiming(0.92, { duration: 90 }),
+      withSpring(1, { damping: 9, stiffness: 220 }),
+    );
+  }, []);
 
   const applyTally = useCallback((nextVotesA: number, nextVotesB: number) => {
     const total = nextVotesA + nextVotesB;
@@ -156,9 +174,10 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
     if (now - lastTap.current < 300) {
       if (!isHeartAnimating.current) {
         isHeartAnimating.current = true;
+        // Fast pop-in, brief hold, quick fade-out so the heart doesn't linger.
         heartScale.value = withSequence(
-            withSpring(1.5, { damping: 10, stiffness: 100 }),
-            withDelay(300, withSpring(0, {}, (finished) => {
+            withTiming(1.25, { duration: 130 }),
+            withDelay(110, withTiming(0, { duration: 140 }, (finished) => {
                 if (finished) runOnJS(() => { isHeartAnimating.current = false; })();
             }))
         );
@@ -312,6 +331,19 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
   const votingClosed = matchStatus !== 'active' || timeRemaining === 'Ended';
   const votingDisabled = isVoting || hasVoted || votingClosed;
 
+  // Pulse the little "live" dot in the countdown while voting is still open.
+  useEffect(() => {
+    if (votingClosed) {
+      livePulse.value = 1;
+      return;
+    }
+    livePulse.value = withRepeat(
+      withSequence(withTiming(0.35, { duration: 700 }), withTiming(1, { duration: 700 })),
+      -1,
+      false,
+    );
+  }, [votingClosed, livePulse]);
+
   // Urgency: highlight the countdown chip in the final hour of an open battle.
   const endMs = item.expiresAt
     ? (item.expiresAt.toDate ? item.expiresAt.toDate() : new Date(item.expiresAt)).getTime()
@@ -450,12 +482,15 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
         <View style={styles.voteLabels}>
           <Text style={[styles.votePercent, { color: '#FF4D7E' }]}>{Math.round(progressA * 100)}%</Text>
           <View style={[styles.timeChip, { backgroundColor: trackColor }, isUrgent && styles.timeChipUrgent]}>
-            <Ionicons
-              name={votingClosed ? 'lock-closed' : 'time-outline'}
-              size={11}
-              color={isUrgent ? '#FFF' : subTextColor}
-            />
-            <Text style={[styles.timeChipText, { color: isUrgent ? '#FFF' : subTextColor }]}>
+            {votingClosed
+              ? <Ionicons name="lock-closed" size={11} color={subTextColor} />
+              : <Animated.View style={[styles.liveDot, isUrgent && styles.liveDotUrgent, liveDotStyle]} />}
+            <Text
+              style={[
+                styles.timeChipText,
+                { color: isUrgent ? '#FFF' : (votingClosed ? subTextColor : textColor) },
+              ]}
+            >
               {votingClosed ? 'Ended' : timeRemaining}
             </Text>
           </View>
@@ -479,14 +514,15 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
 
       {/* Vote buttons */}
       <View style={styles.voteButtonSection}>
-        <TouchableOpacity
+        <AnimatedTouchable
           style={[
             styles.voteButton,
             styles.voteButtonA,
             votedForA && styles.selectedVoteButton,
             votingDisabled && !votedForA && styles.disabledVoteButton,
+            voteAnimA,
           ]}
-          onPress={() => handleVote(item.userA.uid)}
+          onPress={() => { pulseButton(voteScaleA); handleVote(item.userA.uid); }}
           disabled={votingDisabled}
           activeOpacity={0.85}
           accessibilityRole="button"
@@ -505,15 +541,16 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
                   <Ionicons name="heart" size={14} color="#FFF" />
                   <Text style={styles.voteButtonText} numberOfLines={1}>{nameA}</Text>
                 </View>}
-        </TouchableOpacity>
-        <TouchableOpacity
+        </AnimatedTouchable>
+        <AnimatedTouchable
           style={[
             styles.voteButton,
             styles.voteButtonB,
             votedForB && styles.selectedVoteButton,
             votingDisabled && !votedForB && styles.disabledVoteButton,
+            voteAnimB,
           ]}
-          onPress={() => handleVote(item.userB.uid)}
+          onPress={() => { pulseButton(voteScaleB); handleVote(item.userB.uid); }}
           disabled={votingDisabled}
           activeOpacity={0.85}
           accessibilityRole="button"
@@ -532,29 +569,29 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
                   <Ionicons name="heart" size={14} color="#FFF" />
                   <Text style={styles.voteButtonText} numberOfLines={1}>{nameB}</Text>
                 </View>}
-        </TouchableOpacity>
+        </AnimatedTouchable>
       </View>
 
       <View style={[styles.actionBar, { borderTopColor: trackColor }]}>
         <View style={styles.leftActions}>
             <TouchableOpacity style={styles.actionItem} onPress={handleLike}>
-               {isLiked ? <HeartIcon_Filled width={24} height={24} /> : <HeartIcon_Light width={24} height={24} color={textColor} />}
+               {isLiked ? <HeartIcon_Filled width={26} height={26} /> : <HeartIcon_Light width={26} height={26} color={textColor} />}
                <Text style={[styles.actionCount, { color: textColor }]}>{likeCount}</Text>
             </TouchableOpacity>
             
             <TouchableOpacity style={styles.actionItem} onPress={() => setShowComments(true)}>
-               <ChatIcon_Light width={24} height={24} color={textColor} />
+               <ChatIcon_Light width={26} height={26} color={textColor} />
                <Text style={[styles.actionCount, { color: textColor }]}>{commentCount}</Text>
             </TouchableOpacity>
             
             <TouchableOpacity style={styles.actionItem} onPress={handleShare}>
-               <Share_Icon width={24} height={24} color={textColor} />
+               <Share_Icon width={26} height={26} color={textColor} />
                <Text style={[styles.actionCount, { color: textColor }]}>{shareCount}</Text>
             </TouchableOpacity>
         </View>
         
         <TouchableOpacity onPress={handleBookmark}>
-            {isBookmarked ? <Bookmark_Filled width={24} height={24} color="#FF4D67" /> : <Bookmark_Outline width={24} height={24} color={textColor} />}
+            {isBookmarked ? <Bookmark_Filled width={26} height={26} color="#FF4D67" /> : <Bookmark_Outline width={26} height={26} color={textColor} />}
         </TouchableOpacity>
       </View>
       
@@ -571,7 +608,7 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     marginHorizontal: 10,
     marginBottom: 20,
-    paddingBottom: 6,
+    paddingBottom: 14,
     position: 'relative',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 6 },
@@ -586,13 +623,13 @@ const styles = StyleSheet.create({
   postHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 14, paddingBottom: 12 },
   userInfo: { flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 10 },
   avatarContainer: { flexDirection: 'row', alignItems: 'center' },
-  avatarWrapper: { width: 40, height: 40, borderRadius: 20, borderWidth: 2, borderColor: '#FFF', overflow: 'hidden', backgroundColor: '#EEE' },
+  avatarWrapper: { width: 32, height: 32, borderRadius: 16, borderWidth: 2, borderColor: '#FFF', overflow: 'hidden', backgroundColor: '#EEE' },
   avatarImage: { width: '100%', height: '100%', resizeMode: 'cover' },
   leadingAvatar: { borderColor: '#FFD700', borderWidth: 2.5 },
   nameContainer: { marginLeft: 10, flex: 1 },
   nameRow: { flexDirection: 'row', alignItems: 'center' },
   nameTouch: { flexShrink: 1, maxWidth: '42%' },
-  nameText: { fontFamily: 'Urbanist-Bold', fontSize: 15 },
+  nameText: { fontFamily: 'Urbanist-Bold', fontSize: 16, fontWeight: '800' },
   vsPill: { backgroundColor: '#FF4D67', borderRadius: 6, paddingHorizontal: 5, paddingVertical: 1, marginHorizontal: 6 },
   vsPillText: { fontFamily: 'Urbanist-Bold', fontSize: 9, color: '#FFF', letterSpacing: 0.5 },
   timeText: { fontFamily: 'Urbanist-Medium', fontSize: 12, marginTop: 2 },
@@ -625,9 +662,11 @@ const styles = StyleSheet.create({
   progressSegment: { height: '100%' },
   voteLabels: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 },
   votePercent: { fontFamily: 'Urbanist-Bold', fontSize: 13 },
-  timeChip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
+  timeChip: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 20, minWidth: 108 },
   timeChipUrgent: { backgroundColor: '#F0413E' },
-  timeChipText: { fontFamily: 'Urbanist-SemiBold', fontSize: 11 },
+  timeChipText: { fontFamily: 'Urbanist-Bold', fontSize: 12, letterSpacing: 0.3 },
+  liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#22A559' },
+  liveDotUrgent: { backgroundColor: '#FFF' },
 
   // Vote buttons
   voteButtonSection: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, marginTop: 8, gap: 12 },
@@ -640,8 +679,8 @@ const styles = StyleSheet.create({
   voteButtonText: { fontFamily: 'Urbanist-Bold', fontSize: 13, color: '#FFF' },
 
   // Action bar
-  actionBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 14, marginTop: 14, borderTopWidth: 1 },
+  actionBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8, marginTop: 16, borderTopWidth: 1 },
   leftActions: { flexDirection: 'row', alignItems: 'center' },
-  actionItem: { flexDirection: 'row', alignItems: 'center', marginRight: 24 },
-  actionCount: { fontFamily: 'Urbanist-Bold', fontSize: 13, marginLeft: 8 },
+  actionItem: { flexDirection: 'row', alignItems: 'center', marginRight: 28 },
+  actionCount: { fontFamily: 'Urbanist-Bold', fontSize: 14, marginLeft: 8 },
 });
