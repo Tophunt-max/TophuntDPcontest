@@ -62,8 +62,10 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
   }, [router]);
   const [showComments, setShowComments] = useState(false);
   const [showShare, setShowShare] = useState(false);
-  const [isLiked, setIsLiked] = useState(false);
-  const [isBookmarked, setIsBookmarked] = useState(false);
+  // Seed from the server-provided per-viewer state so a like/bookmark survives
+  // a refresh (the feed list + /matches/:id now both return these flags).
+  const [isLiked, setIsLiked] = useState(!!item.isLiked);
+  const [isBookmarked, setIsBookmarked] = useState(!!item.isBookmarked);
   const [showConfetti, setShowConfetti] = useState(false);
   
   const cardColor = isDark ? '#181B21' : '#FFFFFF';
@@ -140,15 +142,47 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
         setMatchStatus(data.status || 'active');
         if (typeof data.hasVoted === 'boolean') setHasVoted(data.hasVoted);
         if ('votedForUid' in data) setVotedForUid(data.votedForUid || null);
+        // Keep the viewer's own like/bookmark state in sync (survives refresh).
+        if (typeof data.isLiked === 'boolean') setIsLiked(data.isLiked);
+        if (typeof data.isBookmarked === 'boolean') setIsBookmarked(data.isBookmarked);
       },
       {
+        // Self-contained push payloads update counts instantly. This avoids a
+        // refetch that would otherwise read D1's batched (up to ~5s stale)
+        // counters — the reason like/comment counts felt slow to move.
         onEvent: (event) => {
-          if (event.type === 'vote' || event.type === 'match_status') {
-            applyTally(Number(event.votesA || 0), Number(event.votesB || 0));
+          switch (event.type) {
+            case 'vote':
+            case 'match_status':
+              applyTally(Number(event.votesA || 0), Number(event.votesB || 0));
+              if (event.type === 'match_status' && event.status) setMatchStatus(String(event.status));
+              break;
+            case 'like':
+              if (typeof event.likeCount === 'number') setLikeCount(event.likeCount);
+              break;
+            case 'comment':
+              if (typeof event.commentCount === 'number') setCommentCount(event.commentCount);
+              break;
+            case 'share':
+              if (typeof event.shareCount === 'number') setShareCount(event.shareCount);
+              break;
           }
-          if (event.type === 'match_status' && event.status) setMatchStatus(String(event.status));
         },
-        shouldRefresh: (event) => event.type !== 'vote' && event.type !== 'match_status',
+        shouldRefresh: (event) => {
+          switch (event.type) {
+            case 'vote':
+            case 'match_status':
+              return false;
+            case 'like':
+              return typeof event.likeCount !== 'number';
+            case 'comment':
+              return typeof event.commentCount !== 'number';
+            case 'share':
+              return typeof event.shareCount !== 'number';
+            default:
+              return true;
+          }
+        },
       },
     );
     return () => unsub();
@@ -259,13 +293,20 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
   const handleLike = async () => {
     if (!user) return Alert.alert("Login required", "Please login to like.");
     triggerHaptic();
+    const next = !isLiked;
+    // Optimistic: flip the heart AND move the count immediately.
+    setIsLiked(next);
+    setLikeCount((c: number) => Math.max(0, c + (next ? 1 : -1)));
     try {
-      const newLikedStatus = !isLiked;
-      setIsLiked(newLikedStatus);
-      await contestService.likeMatch(item.id);
-      if (newLikedStatus) addToast("Zabardast Like!", 'success');
+      const res: any = await contestService.likeMatch(item.id);
+      // Trust the server's final liked state; the broadcast 'like' event
+      // carries the authoritative count and reconciles it for everyone.
+      if (res && typeof res.liked === 'boolean') setIsLiked(res.liked);
+      if (next) addToast("Zabardast Like!", 'success');
     } catch {
-       setIsLiked(!isLiked);
+      // Roll back the optimistic update on failure.
+      setIsLiked(!next);
+      setLikeCount((c: number) => Math.max(0, c + (next ? -1 : 1)));
     }
   };
 

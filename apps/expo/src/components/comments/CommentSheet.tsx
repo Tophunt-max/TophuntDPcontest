@@ -32,11 +32,8 @@ import * as Icons from '@/assets/svgs';
 import { CommentSkeleton } from './CommentSkeleton';
 import { commentService, Comment } from '@/src/services/comments/commentService';
 import { useAuth } from '@/src/hooks/useAuth';
-import dayjs from 'dayjs';
-import relativeTime from 'dayjs/plugin/relativeTime';
+import { useRouter } from 'expo-router';
 import { Colors } from '@/constants/theme';
-
-dayjs.extend(relativeTime);
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SHEET_HEIGHT = SCREEN_HEIGHT * 0.75;
@@ -51,6 +48,7 @@ interface CommentSheetProps {
 
 export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatch = false }: CommentSheetProps) => {
   const { user } = useAuth();
+  const router = useRouter();
   const translateY = useSharedValue(SHEET_HEIGHT);
   const opacity = useSharedValue(0);
   const [shouldRender, setShouldRender] = useState(false);
@@ -128,6 +126,37 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
     }
   };
 
+  // Open a commenter's profile — dismiss the sheet first so it doesn't stay
+  // stacked over the profile screen.
+  const openProfile = useCallback((userId?: string) => {
+    if (!userId) return;
+    closeSheet();
+    router.push(`/profile?userId=${userId}`);
+  }, [router, closeSheet]);
+
+  // Toggle a like on a comment with an optimistic update + server reconcile.
+  const handleLikeComment = useCallback(async (comment: Comment) => {
+    if (!user) return;
+    const collectionName = isContestMatch ? 'contestMatches' : 'posts';
+    const next = !comment.likedByMe;
+    setComments((prev) => prev.map((c) => (
+      c.id === comment.id
+        ? { ...c, likedByMe: next, likes: Math.max(0, (c.likes || 0) + (next ? 1 : -1)) }
+        : c
+    )));
+    try {
+      const res = await commentService.likeComment(comment.id, collectionName);
+      setComments((prev) => prev.map((c) => (
+        c.id === comment.id ? { ...c, likedByMe: res.liked, likes: res.likeCount } : c
+      )));
+    } catch {
+      // Revert to the pre-tap snapshot on failure.
+      setComments((prev) => prev.map((c) => (
+        c.id === comment.id ? { ...c, likedByMe: comment.likedByMe, likes: comment.likes } : c
+      )));
+    }
+  }, [user, isContestMatch]);
+
   const gesture = Gesture.Pan()
     .onUpdate((event) => {
       'worklet';
@@ -152,36 +181,65 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
     opacity: interpolate(translateY.value, [0, SHEET_HEIGHT], [0.5, 0], Extrapolation.CLAMP),
   }));
 
+  // Instagram-style compact relative time: now, 5s, 8m, 3h, 2d, 4w, 1y.
   const formatTime = (timestamp: any) => {
       if (!timestamp) return 'now';
-      const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
-      return dayjs(date).fromNow(true);
+      const date = timestamp?.toDate ? timestamp.toDate() : new Date(timestamp);
+      const ms = date.getTime();
+      if (!Number.isFinite(ms)) return 'now';
+      const secs = Math.floor((Date.now() - ms) / 1000);
+      if (secs < 5) return 'now';
+      if (secs < 60) return `${secs}s`;
+      const mins = Math.floor(secs / 60);
+      if (mins < 60) return `${mins}m`;
+      const hrs = Math.floor(mins / 60);
+      if (hrs < 24) return `${hrs}h`;
+      const days = Math.floor(hrs / 24);
+      if (days < 7) return `${days}d`;
+      const weeks = Math.floor(days / 7);
+      if (weeks < 52) return `${weeks}w`;
+      return `${Math.floor(days / 365)}y`;
   };
 
   if (!shouldRender && !visible) return null;
 
-  const renderComment = ({ item }: { item: Comment }) => (
-    <View style={styles.commentItem}>
-      <Image source={{ uri: item.userAvatar }} style={styles.commentAvatar} />
-      <View style={styles.commentContent}>
-        <View style={styles.commentHeader}>
-          <Text style={[styles.commentUser, { color: textColor }]}>
-            {item.username} <Text style={[styles.commentTime, { color: subTextColor }]}>{formatTime(item.createdAt)}</Text>
-          </Text>
+  const renderComment = ({ item }: { item: Comment }) => {
+    const liked = !!item.likedByMe;
+    const CommentHeart = liked ? Icons.HeartIcon_Filled : HeartIcon;
+    return (
+      <View style={styles.commentItem}>
+        <TouchableOpacity activeOpacity={0.8} onPress={() => openProfile(item.userId)}>
+          <Image source={{ uri: item.userAvatar }} style={styles.commentAvatar} />
+        </TouchableOpacity>
+        <View style={styles.commentContent}>
+          <View style={styles.commentHeader}>
+            <Text style={[styles.commentUser, { color: textColor }]}>
+              <Text onPress={() => openProfile(item.userId)}>{item.username}</Text>
+              {'  '}
+              <Text style={[styles.commentTime, { color: subTextColor }]}>{formatTime(item.createdAt)}</Text>
+            </Text>
+          </View>
+          <Text style={[styles.commentText, { color: textColor }]}>{item.text}</Text>
+          <View style={styles.commentFooter}>
+            <TouchableOpacity>
+              <Text style={[styles.replyText, { color: subTextColor }]}>Reply</Text>
+            </TouchableOpacity>
+          </View>
         </View>
-        <Text style={[styles.commentText, { color: textColor }]}>{item.text}</Text>
-        <View style={styles.commentFooter}>
-          <TouchableOpacity>
-            <Text style={[styles.replyText, { color: subTextColor }]}>Reply</Text>
-          </TouchableOpacity>
-        </View>
+        <TouchableOpacity
+          style={styles.heartButton}
+          onPress={() => handleLikeComment(item)}
+          accessibilityRole="button"
+          accessibilityLabel={liked ? `Unlike comment by ${item.username}` : `Like comment by ${item.username}`}
+        >
+          <CommentHeart width={18} height={18} color={liked ? '#FF4D67' : subTextColor} />
+          {(item.likes || 0) > 0 && (
+            <Text style={[styles.commentLikes, { color: liked ? '#FF4D67' : subTextColor }]}>{item.likes}</Text>
+          )}
+        </TouchableOpacity>
       </View>
-      <TouchableOpacity style={styles.heartButton}>
-        <HeartIcon width={18} height={18} color={subTextColor} />
-        <Text style={[styles.commentLikes, { color: subTextColor }]}>{item.likes || 0}</Text>
-      </TouchableOpacity>
-    </View>
-  );
+    );
+  };
 
   return (
     <Portal>

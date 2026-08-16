@@ -1174,8 +1174,8 @@ apiRoute.post("/", async (c) => {
       const commentId = newId();
       const ts = now();
       await db.insert(schema.matchComments).values({ id: commentId, matchId, userId: uid, text, createdAt: ts });
-      await bumpEngagement(env, matchId, "comment", 1);
-      await publish(env, `match:${matchId}`, { type: "comment", commentId });
+      const commentCounters = await bumpEngagement(env, matchId, "comment", 1);
+      await publish(env, `match:${matchId}`, { type: "comment", commentId, commentCount: commentCounters.comment ?? 0 });
       c.executionCtx.waitUntil(
         (async () => {
           const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, matchId)).get();
@@ -1239,7 +1239,20 @@ apiRoute.post("/", async (c) => {
       const ts = now();
       if (targetType === "matches" || targetType === "contestMatches") {
         await db.insert(schema.matchComments).values({ id: commentId, matchId: targetId, userId: uid, text, createdAt: ts });
-        await bumpEngagement(env, targetId, "comment", 1);
+        const cCounters = await bumpEngagement(env, targetId, "comment", 1);
+        // Push so both the open comment sheet and the feed card update instantly.
+        await publish(env, `match:${targetId}`, { type: "comment", commentId, commentCount: cCounters.comment ?? 0 });
+        c.executionCtx.waitUntil(
+          (async () => {
+            const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, targetId)).get();
+            const me = await db.select({ username: schema.users.username }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+            for (const p of [match?.userA as any, match?.userB as any]) {
+              if (p?.uid && p.uid !== uid) {
+                await createNotification(env, p.uid, { title: "New Comment 💬", body: `${me?.username || "Someone"} commented on "${match?.title}".`, type: "match_comment", targetId });
+              }
+            }
+          })(),
+        );
       } else {
         await db.insert(schema.postComments).values({ id: commentId, postId: targetId, userId: uid, text, createdAt: ts });
         await db.update(schema.posts).set({ commentCount: sql`${schema.posts.commentCount} + 1` }).where(eq(schema.posts.id, targetId));
@@ -1273,6 +1286,42 @@ apiRoute.post("/", async (c) => {
         await db.update(schema.posts).set({ commentCount: sql`MAX(${schema.posts.commentCount} - 1, 0)` }).where(eq(schema.posts.id, row.postId));
       }
       return c.json({ success: true });
+    }
+
+    case "likeComment": {
+      // Toggle a like on a single comment (match or post). Returns the new
+      // liked state + absolute like count so the client can reconcile instantly.
+      const { commentId, targetType } = body;
+      if (!commentId) throw httpsError("invalid-argument", "commentId is required.");
+      await rateLimit(env, `clike:${uid}`, 120, 60);
+      const isMatch = targetType === "matches" || targetType === "contestMatches";
+      const existing = await db
+        .select()
+        .from(schema.commentLikes)
+        .where(and(eq(schema.commentLikes.commentId, commentId), eq(schema.commentLikes.userId, uid)))
+        .get();
+      const liked = !existing;
+      if (existing) {
+        await db.delete(schema.commentLikes).where(and(eq(schema.commentLikes.commentId, commentId), eq(schema.commentLikes.userId, uid)));
+      } else {
+        await db.insert(schema.commentLikes).values({ commentId, userId: uid, createdAt: now() }).onConflictDoNothing().run();
+      }
+      const delta = liked ? 1 : -1;
+      let likeCount = 0;
+      if (isMatch) {
+        await db.update(schema.matchComments)
+          .set({ likeCount: sql`MAX(COALESCE(${schema.matchComments.likeCount}, 0) + ${delta}, 0)` })
+          .where(eq(schema.matchComments.id, commentId));
+        const row = await db.select({ likeCount: schema.matchComments.likeCount }).from(schema.matchComments).where(eq(schema.matchComments.id, commentId)).get();
+        likeCount = row?.likeCount ?? 0;
+      } else {
+        await db.update(schema.postComments)
+          .set({ likeCount: sql`MAX(COALESCE(${schema.postComments.likeCount}, 0) + ${delta}, 0)` })
+          .where(eq(schema.postComments.id, commentId));
+        const row = await db.select({ likeCount: schema.postComments.likeCount }).from(schema.postComments).where(eq(schema.postComments.id, commentId)).get();
+        likeCount = row?.likeCount ?? 0;
+      }
+      return c.json({ success: true, liked, likeCount });
     }
 
     // ================= PROFILE =================

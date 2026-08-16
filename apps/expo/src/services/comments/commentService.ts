@@ -10,6 +10,7 @@ export interface Comment {
   text: string;
   createdAt: any;
   likes: number;
+  likedByMe?: boolean;
 }
 
 /**
@@ -59,5 +60,17 @@ export const commentService = {
 
   deleteComment: async (postId: string, commentId: string, collectionName: string = 'posts') => {
     await callApi('deleteComment', { targetType: collectionName, targetId: postId, commentId });
+  },
+
+  /**
+   * Toggle a like on a single comment. Returns the new liked state and the
+   * authoritative like count so the UI can reconcile its optimistic update.
+   */
+  likeComment: async (
+    commentId: string,
+    collectionName: string = 'posts',
+  ): Promise<{ liked: boolean; likeCount: number }> => {
+    const res: any = await callApi('likeComment', { commentId, targetType: collectionName });
+    return { liked: !!res.liked, likeCount: Number(res.likeCount ?? 0) };
   },
 };

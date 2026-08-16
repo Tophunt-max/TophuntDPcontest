@@ -68,32 +68,52 @@ async function edgeCached<T>(c: any, ttlSec: number, producer: () => Promise<T>)
 }
 
 /**
- * Hydrate per-viewer vote state onto a PUBLIC match list without polluting the
- * shared cache. The base list is identical for every caller (cacheable); this
- * runs per-request for the signed-in viewer only and returns fresh copies so
- * the cached array objects are never mutated.
+ * Hydrate per-viewer engagement state (vote / like / bookmark) onto a PUBLIC
+ * match list without polluting the shared cache. The base list is identical for
+ * every caller (cacheable); this runs per-request for the signed-in viewer only
+ * and returns fresh copies so the cached array objects are never mutated.
  *
- * Backed by the D1 `votes` audit table — a single indexed query covers the
- * whole page. A vote cast within the last flush window (~5s) may not be
- * persisted to D1 yet; the per-match live subscription (/read/matches/:id,
- * served from the VoteCounter DO) reconciles that momentary gap. Without this,
- * the feed always renders "not voted" on load and only turns green once each
- * card's live() refetch of /matches/:id returns the viewer's vote.
+ * Three indexed batch queries cover the whole page. A vote cast within the last
+ * flush window (~5s) may not be persisted to D1 yet; the per-match live
+ * subscription (/read/matches/:id, served from the VoteCounter DO) reconciles
+ * that momentary gap. Without this, the feed always renders "not voted / not
+ * liked" on load and only corrects once each card's live() refetch of
+ * /matches/:id returns the viewer's own state.
  */
-async function hydrateViewerVotes(db: any, matches: any[], uid: string): Promise<any[]> {
+async function hydrateViewerState(db: any, matches: any[], uid: string): Promise<any[]> {
   const ids = matches.map((m) => m?.id).filter(Boolean) as string[];
   if (ids.length === 0) return matches;
-  const rows = await db
-    .select({ matchId: schema.votes.matchId, votedForUid: schema.votes.votedForUid })
-    .from(schema.votes)
-    .where(and(eq(schema.votes.voterUid, uid), inArray(schema.votes.matchId, ids)))
-    .all();
-  const byMatch = new Map<string, string>(
-    (rows as Array<{ matchId: string; votedForUid: string }>).map((r) => [r.matchId, r.votedForUid]),
+  const [voteRows, likeRows, bookmarkRows] = await Promise.all([
+    db
+      .select({ matchId: schema.votes.matchId, votedForUid: schema.votes.votedForUid })
+      .from(schema.votes)
+      .where(and(eq(schema.votes.voterUid, uid), inArray(schema.votes.matchId, ids)))
+      .all(),
+    db
+      .select({ matchId: schema.matchLikes.matchId })
+      .from(schema.matchLikes)
+      .where(and(eq(schema.matchLikes.userId, uid), inArray(schema.matchLikes.matchId, ids)))
+      .all(),
+    db
+      .select({ matchId: schema.bookmarks.matchId })
+      .from(schema.bookmarks)
+      .where(and(eq(schema.bookmarks.userId, uid), inArray(schema.bookmarks.matchId, ids)))
+      .all(),
+  ]);
+  const voteByMatch = new Map<string, string>(
+    (voteRows as Array<{ matchId: string; votedForUid: string }>).map((r) => [r.matchId, r.votedForUid]),
   );
+  const likedSet = new Set<string>((likeRows as Array<{ matchId: string }>).map((r) => r.matchId));
+  const bookmarkedSet = new Set<string>((bookmarkRows as Array<{ matchId: string }>).map((r) => r.matchId));
   return matches.map((m) => {
-    const votedForUid = byMatch.get(m.id) ?? null;
-    return { ...m, hasVoted: !!votedForUid, votedForUid };
+    const votedForUid = voteByMatch.get(m.id) ?? null;
+    return {
+      ...m,
+      hasVoted: !!votedForUid,
+      votedForUid,
+      isLiked: likedSet.has(m.id),
+      isBookmarked: bookmarkedSet.has(m.id),
+    };
   });
 }
 
@@ -242,7 +262,7 @@ readRoute.get("/matches", optionalAuth, async (c) => {
     if (uid) {
       // Per-user data — must never be stored by a shared/edge cache.
       c.header("Cache-Control", "private, no-store");
-      return c.json(await hydrateViewerVotes(db, cached.matches, uid));
+      return c.json(await hydrateViewerState(db, cached.matches, uid));
     }
     c.header("Cache-Control", "public, max-age=15");
     return c.json(cached.matches);
@@ -293,7 +313,7 @@ readRoute.get("/matches", optionalAuth, async (c) => {
   await cachePut(c.env, cacheKey, { matches, nextCursor }, 30);
   if (uid) {
     c.header("Cache-Control", "private, no-store");
-    return c.json(await hydrateViewerVotes(db, matches, uid));
+    return c.json(await hydrateViewerState(db, matches, uid));
   }
   c.header("Cache-Control", "public, max-age=15");
   return c.json(matches);
@@ -692,6 +712,7 @@ readRoute.get("/chats/:id/messages", requireAuth, async (c) => {
 // ================= COMMENTS (posts or matches) =================
 readRoute.get("/comments", optionalAuth, async (c) => {
   const db = getDb(c.env);
+  const uid = c.get("user")?.uid;
   const targetType = c.req.query("targetType") || "posts";
   const targetId = c.req.query("targetId");
   if (!targetId) return c.json([]);
@@ -721,7 +742,22 @@ readRoute.get("/comments", optionalAuth, async (c) => {
         .orderBy(desc(schema.postComments.createdAt))
         .all();
 
-  return c.json(rows.map((r: any) => ({ ...r, postId: targetId, likes: r.likes ?? 0 })));
+  let out = rows.map((r: any) => ({ ...r, postId: targetId, likes: r.likes ?? 0, likedByMe: false }));
+
+  // Layer the signed-in viewer's per-comment like state so hearts stay filled
+  // across refreshes (one indexed query over just this page of comment ids).
+  if (uid && out.length > 0) {
+    const commentIds = out.map((r) => r.id);
+    const likedRows = await db
+      .select({ commentId: schema.commentLikes.commentId })
+      .from(schema.commentLikes)
+      .where(and(eq(schema.commentLikes.userId, uid), inArray(schema.commentLikes.commentId, commentIds)))
+      .all();
+    const likedSet = new Set<string>((likedRows as Array<{ commentId: string }>).map((r) => r.commentId));
+    out = out.map((r) => ({ ...r, likedByMe: likedSet.has(r.id) }));
+  }
+
+  return c.json(out);
 });
 
 // ================= STORIES =================
