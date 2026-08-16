@@ -12,7 +12,15 @@ import { httpsError } from "../lib/http";
 import { requireAuth, optionalAuth } from "../middleware/auth";
 import { getAppConfig } from "../lib/settings";
 import { enrichMatchMedia, avatarUrl, thumbUrl, optimizedUrl } from "../lib/media";
-import { userCacheKey, blogPostCacheKey, blogListCacheKey, cacheGetJson, cachePutJson } from "../lib/cache";
+import {
+  userCacheKey,
+  blogPostCacheKey,
+  blogListCacheKey,
+  contestListCacheKey,
+  contestDetailCacheKey,
+  cacheGetJson,
+  cachePutJson,
+} from "../lib/cache";
 import { getLiveTally, getViewerVote } from "../lib/voteCounter";
 
 export const readRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -69,6 +77,7 @@ const mapContest = (r: any) => ({
   bannerUrl: r.bannerUrl ?? (r.extra?.bannerUrl) ?? null,
   status: r.status,
   totalEntryFee: r.totalEntryFee,
+  entryFishCoins: r.totalEntryFee,
   entryDpcoin: r.totalEntryFee,
   rewardCoins: r.rewardCoins,
   winningCoins: r.rewardCoins,
@@ -140,26 +149,46 @@ const mapBlogPost = (r: any, opts: { withContent?: boolean } = {}) => ({
 });
 
 // ================= CONTESTS =================
-readRoute.get("/contests", optionalAuth, async (c) =>
-  // Public, user-agnostic list — edge-cache 60s to skip D1 on repeat loads.
-  edgeCached(c, 60, async () => {
-    const db = getDb(c.env);
-    const type = c.req.query("type");
-    const conds = [eq(schema.contests.status, "live")];
-    if (type) conds.push(eq(schema.contests.type, type));
-    const rows = await db.select().from(schema.contests).where(and(...conds)).all();
-    return rows.map(mapContest);
-  }),
-);
+readRoute.get("/contests", optionalAuth, async (c) => {
+  const typeParam = c.req.query("type");
+  if (typeParam && typeParam !== "photo" && typeParam !== "video") {
+    throw httpsError("invalid-argument", "type must be photo or video.");
+  }
+  const type = typeParam as "photo" | "video" | undefined;
+  const key = contestListCacheKey(type ?? "all");
+  const cached = await cacheGetJson<any[]>(c.env, key);
+  if (cached !== null) {
+    c.header("Cache-Control", "public, max-age=60");
+    return c.json(cached);
+  }
 
-readRoute.get("/contests/:id", optionalAuth, async (c) =>
-  // Public, viewer-agnostic — edge-cache 60s (matches the /contests list TTL).
-  edgeCached(c, 60, async () => {
-    const db = getDb(c.env);
-    const row = await db.select().from(schema.contests).where(eq(schema.contests.id, c.req.param("id"))).get();
-    return row ? mapContest(row) : null;
-  }),
-);
+  const db = getDb(c.env);
+  const conds = [eq(schema.contests.status, "live")];
+  if (type) conds.push(eq(schema.contests.type, type));
+  const rows = await db.select().from(schema.contests).where(and(...conds)).all();
+  const contests = rows.map(mapContest);
+  await cachePutJson(c.env, key, contests, 60);
+  c.header("Cache-Control", "public, max-age=60");
+  return c.json(contests);
+});
+
+readRoute.get("/contests/:id", optionalAuth, async (c) => {
+  const id = c.req.param("id");
+  const key = contestDetailCacheKey(id);
+  // Wrap the value so a cached not-found (null) is distinguishable from a miss.
+  const cached = await cacheGetJson<{ contest: ReturnType<typeof mapContest> | null }>(c.env, key);
+  if (cached !== null) {
+    c.header("Cache-Control", "public, max-age=60");
+    return c.json(cached.contest);
+  }
+
+  const db = getDb(c.env);
+  const row = await db.select().from(schema.contests).where(eq(schema.contests.id, id)).get();
+  const contest = row ? mapContest(row) : null;
+  await cachePutJson(c.env, key, { contest }, 60);
+  c.header("Cache-Control", "public, max-age=60");
+  return c.json(contest);
+});
 
 // ================= MATCHES =================
 readRoute.get("/matches", optionalAuth, async (c) => {

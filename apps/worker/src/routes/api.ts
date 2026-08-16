@@ -21,7 +21,13 @@ import { publish, publishMany } from "../lib/publish";
 import { castVote, bumpEngagement } from "../lib/voteCounter";
 import { rateLimit } from "../lib/rateLimit";
 import { enforceIdempotency, releaseIdempotency } from "../lib/idempotency";
-import { delCache, userCacheKey } from "../lib/cache";
+import {
+  contestDetailCacheKey,
+  contestListCacheKeys,
+  delCache,
+  userCacheKey,
+} from "../lib/cache";
+import { createContestExtra, validateContestInput } from "../lib/contestAdmin";
 import { verifyRazorpaySignature } from "../lib/payments";
 import { creditPaymentOrder } from "../lib/coinOrders";
 import { assertClean } from "../lib/moderation";
@@ -150,6 +156,7 @@ apiRoute.post("/", async (c) => {
 
       const ts = now();
       const matchId = newId();
+      const entryTransactionId = newId();
       const joinIdA = generateJoinId();
       const expiresAt = ts + (contest.autoCancelHours || 24) * 60 * 60 * 1000;
       // Entry-fee ledger + match creation atomically. If this fails, refund the
@@ -157,7 +164,7 @@ apiRoute.post("/", async (c) => {
       try {
         await db.batch([
           db.insert(schema.coinTransactions).values({
-            id: newId(), uid, amount: -fee, type: "contest_entry_fee", contestId,
+            id: entryTransactionId, uid, amount: -fee, type: "contest_entry_fee", contestId,
             description: `Entry fee (50% split) for ${contest.title || "contest"}`, createdAt: ts,
           }),
           db.insert(schema.contestMatches).values({
@@ -181,6 +188,60 @@ apiRoute.post("/", async (c) => {
           .where(eq(schema.users.uid, uid));
         console.error("[startMatch] match creation failed, refunded entry fee", uid, e);
         throw httpsError("internal", "Failed to create match. Your entry fee has been refunded.");
+      }
+
+      // Close the create-vs-pause race: the admin pause update refuses to run
+      // while this waiting match exists. If the pause won just before the match
+      // insert, remove the new match and ledger entry and atomically refund.
+      let statusAfterCreate: { status: string | null } | undefined;
+      try {
+        statusAfterCreate = await db
+          .select({ status: schema.contests.status })
+          .from(schema.contests)
+          .where(eq(schema.contests.id, contestId))
+          .get();
+      } catch (e) {
+        // The match and charge are already committed. A failed reconciliation
+        // read must not release idempotency and permit a duplicate charged
+        // retry; return the committed match and let normal admin guards see it.
+        console.error("[startMatch] post-create contest status check failed", matchId, e);
+      }
+      if (statusAfterCreate && statusAfterCreate.status !== "live") {
+        try {
+          // D1 batches are atomic and sequential. Gate every financial change
+          // on the match still being waiting, then delete it last. If an
+          // opponent already activated it, all three statements are no-ops.
+          const stillWaiting = sql`EXISTS (
+            SELECT 1 FROM ${schema.contestMatches}
+            WHERE ${schema.contestMatches.id} = ${matchId}
+              AND ${schema.contestMatches.status} = 'waiting_for_opponent'
+          )`;
+          const rollback = await db.batch([
+            db.delete(schema.coinTransactions).where(and(
+              eq(schema.coinTransactions.id, entryTransactionId),
+              stillWaiting,
+            )),
+            db.update(schema.users)
+              .set({
+                dpcoin: sql`${schema.users.dpcoin} + ${fee}`,
+                xp: sql`${schema.users.xp} - 10`,
+                updatedAt: now(),
+              })
+              .where(and(eq(schema.users.uid, uid), stillWaiting)),
+            db.delete(schema.contestMatches).where(and(
+              eq(schema.contestMatches.id, matchId),
+              eq(schema.contestMatches.status, "waiting_for_opponent"),
+            )),
+          ]);
+          if (rollback[2].meta.changes > 0) {
+            throw httpsError("failed-precondition", "This contest stopped accepting new matches. Your entry fee was refunded.");
+          }
+        } catch (e: any) {
+          if (e?.status === "failed-precondition" || e?.code === "failed-precondition") throw e;
+          // Atomic rollback failure leaves the committed match and charge
+          // intact. Preserve the idempotency claim and return that match.
+          console.error("[startMatch] post-create rollback failed; keeping committed match", matchId, e);
+        }
       }
 
       // auto-story
@@ -919,17 +980,41 @@ apiRoute.post("/", async (c) => {
     }
     case "createContestTemplate": {
       if (!(await isAdmin(c as any))) throw httpsError("permission-denied", "Admin only.");
+      const { values } = validateContestInput(body, true);
+      if (!values.bannerUrl) throw httpsError("failed-precondition", "A banner is required for a new contest.");
       const id = newId();
+      const createdAt = now();
       await db.insert(schema.contests).values({
-        id, title: body.title || body.name || null, type: body.type || "photo", status: "live",
-        totalEntryFee: Number(body.totalEntryFee || body.entryDpcoin || 0),
-        rewardCoins: Number(body.rewardCoins || body.winningCoins || 0),
-        voteDurationDays: Number(body.voteDurationDays || 1),
-        autoCancelHours: Number(body.autoCancelHours || 24),
-        minVotes: Number(body.minVotes || 0),
-        extra: body, createdBy: uid, createdAt: now(),
+        id,
+        title: values.title,
+        type: values.type,
+        status: values.status,
+        totalEntryFee: values.totalEntryFee,
+        rewardCoins: values.rewardCoins,
+        voteDurationDays: values.voteDurationDays,
+        autoCancelHours: values.autoCancelHours,
+        minVotes: values.minVotes,
+        bannerUrl: values.bannerUrl,
+        extra: createContestExtra(body, values),
+        createdBy: uid,
+        createdAt,
       });
-      return c.json({ success: true, contestId: id });
+      await delCache(env, ...contestListCacheKeys(), contestDetailCacheKey(id));
+      try {
+        await db.insert(schema.adminAuditLog).values({
+          id: newId(),
+          adminUid: uid,
+          adminEmail: c.get("user")?.email ?? null,
+          action: "contest.create",
+          targetType: "contest",
+          targetId: id,
+          detail: { ...values, createdBy: uid, createdAt },
+          createdAt: now(),
+        });
+      } catch (e) {
+        console.error("[audit] failed to record contest.create", e);
+      }
+      return c.json({ success: true, contestId: id, id });
     }
     case "getAdminStats": {
       if (!(await isAdmin(c as any))) throw httpsError("permission-denied", "Admin only.");
