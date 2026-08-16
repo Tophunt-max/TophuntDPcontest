@@ -7,6 +7,7 @@ import { useAuth } from '@/src/hooks/useAuth';
 import { contestService } from '@/src/services/contests/contestService';
 import { readApi } from '@/src/services/api';
 import { live } from '@/src/services/realtime';
+import { useRouter } from 'expo-router';
 import { Colors } from '@/constants/theme';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useToast } from '../toast/ToastProvider';
@@ -48,7 +49,14 @@ const formatVotes = (n: number): string => {
 
 export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => {
   const { user } = useAuth();
+  const router = useRouter();
   const { addToast } = useToast();
+
+  /** Open a participant's public profile. No-op if the uid is missing. */
+  const openProfile = useCallback((uid?: string | null) => {
+    if (!uid) return;
+    router.push(`/profile?userId=${uid}`);
+  }, [router]);
   const [showComments, setShowComments] = useState(false);
   const [showShare, setShowShare] = useState(false);
   const [isLiked, setIsLiked] = useState(false);
@@ -169,8 +177,10 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
     "Shukriya! Aapne sahi jagah apna nishana lagaya."
   ];
 
-  const nameA = item.joinIdA || item.userA.username || "User A";
-  const nameB = item.joinIdB || item.userB?.username || "User B";
+  // Show the real username in the header, names and vote buttons; the join ID
+  // is only a fallback when a participant snapshot has no username.
+  const nameA = item.userA?.username || item.joinIdA || "User A";
+  const nameB = item.userB?.username || item.joinIdB || "User B";
 
   const getRandomMessage = (messages: string[]) => {
     return messages[Math.floor(Math.random() * messages.length)];
@@ -325,20 +335,48 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
       <View style={styles.postHeader}>
         <View style={styles.userInfo}>
            <View style={styles.avatarContainer}>
-              <View style={[styles.avatarWrapper, isALeading && styles.leadingAvatar, { zIndex: 2 }]}>
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => openProfile(item.userA?.uid)}
+                style={[styles.avatarWrapper, isALeading && styles.leadingAvatar, { zIndex: 2 }]}
+                accessibilityRole="button"
+                accessibilityLabel={`Open ${nameA}'s profile`}
+              >
                 <Image source={{ uri: picA }} style={styles.avatarImage} />
-              </View>
+              </TouchableOpacity>
               {item.userB && (
-                <View style={[styles.avatarWrapper, isBLeading && styles.leadingAvatar, { marginLeft: -14, zIndex: 1 }]}>
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  onPress={() => openProfile(item.userB?.uid)}
+                  style={[styles.avatarWrapper, isBLeading && styles.leadingAvatar, { marginLeft: -14, zIndex: 1 }]}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open ${nameB}'s profile`}
+                >
                   <Image source={{ uri: picB }} style={styles.avatarImage} />
-                </View>
+                </TouchableOpacity>
               )}
            </View>
            <View style={styles.nameContainer}>
                <View style={styles.nameRow}>
-                   <Text style={[styles.nameText, { color: textColor }]} numberOfLines={1}>{nameA}</Text>
+                   <TouchableOpacity
+                     activeOpacity={0.7}
+                     onPress={() => openProfile(item.userA?.uid)}
+                     style={styles.nameTouch}
+                     accessibilityRole="button"
+                     accessibilityLabel={`Open ${nameA}'s profile`}
+                   >
+                     <Text style={[styles.nameText, { color: textColor }]} numberOfLines={1}>{nameA}</Text>
+                   </TouchableOpacity>
                    <View style={styles.vsPill}><Text style={styles.vsPillText}>VS</Text></View>
-                   <Text style={[styles.nameText, { color: textColor }]} numberOfLines={1}>{nameB}</Text>
+                   <TouchableOpacity
+                     activeOpacity={0.7}
+                     onPress={() => openProfile(item.userB?.uid)}
+                     style={styles.nameTouch}
+                     accessibilityRole="button"
+                     accessibilityLabel={`Open ${nameB}'s profile`}
+                   >
+                     <Text style={[styles.nameText, { color: textColor }]} numberOfLines={1}>{nameB}</Text>
+                   </TouchableOpacity>
                </View>
                <Text style={[styles.timeText, { color: subTextColor }]} numberOfLines={1}>{item.title}</Text>
            </View>
@@ -528,7 +566,8 @@ const styles = StyleSheet.create({
   leadingAvatar: { borderColor: '#FFD700', borderWidth: 2.5 },
   nameContainer: { marginLeft: 10, flex: 1 },
   nameRow: { flexDirection: 'row', alignItems: 'center' },
-  nameText: { fontFamily: 'Urbanist-Bold', fontSize: 15, flexShrink: 1, maxWidth: '42%' },
+  nameTouch: { flexShrink: 1, maxWidth: '42%' },
+  nameText: { fontFamily: 'Urbanist-Bold', fontSize: 15 },
   vsPill: { backgroundColor: '#FF4D67', borderRadius: 6, paddingHorizontal: 5, paddingVertical: 1, marginHorizontal: 6 },
   vsPillText: { fontFamily: 'Urbanist-Bold', fontSize: 9, color: '#FFF', letterSpacing: 0.5 },
   timeText: { fontFamily: 'Urbanist-Medium', fontSize: 12, marginTop: 2 },
