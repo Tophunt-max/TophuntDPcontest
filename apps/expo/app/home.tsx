@@ -62,6 +62,8 @@ export default function HomeScreen() {
     <View>
       {/* FeaturedGrid Removed from here */}
       {isLoading ? <StoriesSkeleton isDark={isDark} /> : <StoriesBar />}
+      {/* Breathing room so the first battle card isn't glued to the stories bar */}
+      <View style={styles.storiesSpacer} />
     </View>
   ), [isLoading, isDark]);
 
@@ -110,6 +112,7 @@ export default function HomeScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  storiesSpacer: { height: 16 },
   emptyContainer: { padding: 40, alignItems: 'center' },
   retryButton: { marginTop: 16, minHeight: 44, paddingHorizontal: 24, justifyContent: 'center', borderRadius: 22, backgroundColor: '#FF4D67' },
   retryText: { color: '#FFF', fontFamily: 'Urbanist-Bold' },

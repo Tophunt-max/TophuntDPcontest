@@ -282,14 +282,22 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
     const endDate = item.expiresAt.toDate ? item.expiresAt.toDate() : new Date(item.expiresAt);
     const diff = endDate.getTime() - Date.now();
     if (diff <= 0) return 'Ended';
-    const hours = Math.floor(diff / 3600000);
-    const minutes = Math.floor((diff % 3600000) / 60000);
-    return `${hours}h ${minutes}m left`;
+    // Live countdown — the most significant units, seconds ticking under an hour.
+    const totalSec = Math.floor(diff / 1000);
+    const d = Math.floor(totalSec / 86400);
+    const h = Math.floor((totalSec % 86400) / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    if (d > 0) return `${d}d ${h}h ${m}m`;
+    if (h > 0) return `${h}h ${m}m ${s}s`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
   }, [item.expiresAt]);
 
   const [timeRemaining, setTimeRemaining] = useState(getTimeRemaining());
   useEffect(() => {
-    const timer = setInterval(() => setTimeRemaining(getTimeRemaining()), 60000);
+    // Tick every second for a live countdown feel.
+    const timer = setInterval(() => setTimeRemaining(getTimeRemaining()), 1000);
     const endDate = item.expiresAt?.toDate ? item.expiresAt.toDate() : new Date(item.expiresAt);
     const msUntilEnd = endDate.getTime() - Date.now();
     const endTimer = Number.isFinite(msUntilEnd) && msUntilEnd > 0
@@ -332,13 +340,55 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
         </View>
       )}
 
-      {/* Meta bar: battle title + prize pool */}
-      <View style={styles.metaBar}>
-        <View style={styles.metaLeft}>
-          <View style={styles.battleTag}>
-            <MaterialCommunityIcons name="sword-cross" size={13} color="#FFF" />
-          </View>
-          <Text style={[styles.metaTitle, { color: textColor }]} numberOfLines={1}>{item.title || 'VS Battle'}</Text>
+      {/* Header: avatars + names at the top */}
+      <View style={styles.postHeader}>
+        <View style={styles.userInfo}>
+           <View style={styles.avatarContainer}>
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => openProfile(item.userA?.uid)}
+                style={[styles.avatarWrapper, isALeading && styles.leadingAvatar, { zIndex: 2 }]}
+                accessibilityRole="button"
+                accessibilityLabel={`Open ${nameA}'s profile`}
+              >
+                <Image source={{ uri: picA }} style={styles.avatarImage} />
+              </TouchableOpacity>
+              {item.userB && (
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  onPress={() => openProfile(item.userB?.uid)}
+                  style={[styles.avatarWrapper, isBLeading && styles.leadingAvatar, { marginLeft: -14, zIndex: 1 }]}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open ${nameB}'s profile`}
+                >
+                  <Image source={{ uri: picB }} style={styles.avatarImage} />
+                </TouchableOpacity>
+              )}
+           </View>
+           <View style={styles.nameContainer}>
+               <View style={styles.nameRow}>
+                   <TouchableOpacity
+                     activeOpacity={0.7}
+                     onPress={() => openProfile(item.userA?.uid)}
+                     style={styles.nameTouch}
+                     accessibilityRole="button"
+                     accessibilityLabel={`Open ${nameA}'s profile`}
+                   >
+                     <Text style={[styles.nameText, { color: textColor }]} numberOfLines={1}>{nameA}</Text>
+                   </TouchableOpacity>
+                   <View style={styles.vsPill}><Text style={styles.vsPillText}>VS</Text></View>
+                   <TouchableOpacity
+                     activeOpacity={0.7}
+                     onPress={() => openProfile(item.userB?.uid)}
+                     style={styles.nameTouch}
+                     accessibilityRole="button"
+                     accessibilityLabel={`Open ${nameB}'s profile`}
+                   >
+                     <Text style={[styles.nameText, { color: textColor }]} numberOfLines={1}>{nameB}</Text>
+                   </TouchableOpacity>
+               </View>
+               <Text style={[styles.timeText, { color: subTextColor }]} numberOfLines={1}>{item.title}</Text>
+           </View>
         </View>
         {item.entryFee > 0 && (
           <LinearGradient
@@ -352,60 +402,16 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
         )}
       </View>
 
-      {/* Hero media — contestant identity is overlaid directly on each photo */}
+      {/* Hero media */}
       <Pressable onPress={handleDoubleTap} style={styles.mediaSection}>
         <View style={[styles.imageWrapper, isALeading && styles.leadingImage]}>
           <Image source={{ uri: item.userA.mediaUrl }} style={styles.postImage} />
-          <LinearGradient
-            colors={['rgba(0,0,0,0.28)', 'transparent', 'rgba(0,0,0,0.78)']}
-            locations={[0, 0.45, 1]}
-            style={styles.imageOverlayFull}
-            pointerEvents="none"
-          />
           {isALeading && <View style={styles.crownContainer}><MaterialCommunityIcons name="crown" size={20} color="#FFD700" /></View>}
-          <View style={[styles.voteCountChip, styles.voteChipA]}>
-            <Ionicons name="flame" size={11} color="#FFF" />
-            <Text style={styles.voteCountText}>{formatVotes(votesA)}</Text>
-          </View>
-          <TouchableOpacity
-            activeOpacity={0.8}
-            onPress={() => openProfile(item.userA?.uid)}
-            style={styles.identityOverlay}
-            accessibilityRole="button"
-            accessibilityLabel={`Open ${nameA}'s profile`}
-          >
-            <View style={[styles.identityAvatar, isALeading && styles.identityAvatarLead]}>
-              <Image source={{ uri: picA }} style={styles.identityAvatarImg} />
-            </View>
-            <Text style={styles.identityName} numberOfLines={1}>{nameA}</Text>
-          </TouchableOpacity>
         </View>
 
         <View style={[styles.imageWrapper, isBLeading && styles.leadingImage]}>
           <Image source={{ uri: item.userB.mediaUrl }} style={styles.postImage} />
-          <LinearGradient
-            colors={['rgba(0,0,0,0.28)', 'transparent', 'rgba(0,0,0,0.78)']}
-            locations={[0, 0.45, 1]}
-            style={styles.imageOverlayFull}
-            pointerEvents="none"
-          />
           {isBLeading && <View style={styles.crownContainer}><MaterialCommunityIcons name="crown" size={20} color="#FFD700" /></View>}
-          <View style={[styles.voteCountChip, styles.voteChipB]}>
-            <Ionicons name="flame" size={11} color="#FFF" />
-            <Text style={styles.voteCountText}>{formatVotes(votesB)}</Text>
-          </View>
-          <TouchableOpacity
-            activeOpacity={0.8}
-            onPress={() => openProfile(item.userB?.uid)}
-            style={[styles.identityOverlay, styles.identityOverlayRight]}
-            accessibilityRole="button"
-            accessibilityLabel={`Open ${nameB}'s profile`}
-          >
-            <View style={[styles.identityAvatar, isBLeading && styles.identityAvatarLead]}>
-              <Image source={{ uri: picB }} style={styles.identityAvatarImg} />
-            </View>
-            <Text style={styles.identityName} numberOfLines={1}>{nameB}</Text>
-          </TouchableOpacity>
         </View>
 
         <View pointerEvents="none" style={styles.vsBadge}>
@@ -454,6 +460,20 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
             </Text>
           </View>
           <Text style={[styles.votePercent, { color: '#FF8A4D' }]}>{Math.round((1 - progressA) * 100)}%</Text>
+        </View>
+      </View>
+
+      {/* Live vote counts, placed right above the vote buttons */}
+      <View style={styles.voteCountRow}>
+        <View style={styles.voteCountItem}>
+          <Ionicons name="flame" size={13} color="#FF4D67" />
+          <Text style={[styles.voteCountNum, { color: '#FF4D67' }]}>{formatVotes(votesA)}</Text>
+          <Text style={[styles.voteCountLabel, { color: subTextColor }]}>votes</Text>
+        </View>
+        <View style={[styles.voteCountItem, styles.voteCountItemRight]}>
+          <Ionicons name="flame" size={13} color="#FF8A4D" />
+          <Text style={[styles.voteCountNum, { color: '#FF8A4D' }]}>{formatVotes(votesB)}</Text>
+          <Text style={[styles.voteCountLabel, { color: subTextColor }]}>votes</Text>
         </View>
       </View>
 
@@ -562,33 +582,36 @@ const styles = StyleSheet.create({
   confetti: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 100 },
   confettiAnimation: { width: '100%', height: '100%' },
 
-  // Meta bar
-  metaBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 14, paddingBottom: 12 },
-  metaLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, marginRight: 10 },
-  battleTag: { width: 24, height: 24, borderRadius: 8, backgroundColor: '#FF4D67', alignItems: 'center', justifyContent: 'center' },
-  metaTitle: { fontFamily: 'Urbanist-Bold', fontSize: 15, flexShrink: 1 },
+  // Header (avatars + names at top)
+  postHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 14, paddingBottom: 12 },
+  userInfo: { flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 10 },
+  avatarContainer: { flexDirection: 'row', alignItems: 'center' },
+  avatarWrapper: { width: 40, height: 40, borderRadius: 20, borderWidth: 2, borderColor: '#FFF', overflow: 'hidden', backgroundColor: '#EEE' },
+  avatarImage: { width: '100%', height: '100%', resizeMode: 'cover' },
+  leadingAvatar: { borderColor: '#FFD700', borderWidth: 2.5 },
+  nameContainer: { marginLeft: 10, flex: 1 },
+  nameRow: { flexDirection: 'row', alignItems: 'center' },
+  nameTouch: { flexShrink: 1, maxWidth: '42%' },
+  nameText: { fontFamily: 'Urbanist-Bold', fontSize: 15 },
+  vsPill: { backgroundColor: '#FF4D67', borderRadius: 6, paddingHorizontal: 5, paddingVertical: 1, marginHorizontal: 6 },
+  vsPillText: { fontFamily: 'Urbanist-Bold', fontSize: 9, color: '#FFF', letterSpacing: 0.5 },
+  timeText: { fontFamily: 'Urbanist-Medium', fontSize: 12, marginTop: 2 },
   prizeBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, borderWidth: 1, borderColor: '#FFD700' },
   prizeText: { fontFamily: 'Urbanist-Bold', fontSize: 11, color: '#B57E00' },
 
   // Media
   mediaSection: { flexDirection: 'row', justifyContent: 'space-between', marginHorizontal: 16, gap: 12, position: 'relative' },
   imageWrapper: { flex: 1, position: 'relative', borderRadius: 20, overflow: 'hidden', borderWidth: 2, borderColor: 'transparent' },
-  postImage: { width: '100%', height: 300, backgroundColor: '#EEE' },
-  imageOverlayFull: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 },
+  postImage: { width: '100%', height: 260, backgroundColor: '#EEE' },
   leadingImage: { borderColor: '#FFD700' },
   crownContainer: { position: 'absolute', top: 8, alignSelf: 'center', left: 0, right: 0, alignItems: 'center', zIndex: 10 },
-  voteCountChip: { position: 'absolute', top: 10, flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 12 },
-  voteChipA: { left: 10, backgroundColor: 'rgba(255,77,126,0.92)' },
-  voteChipB: { right: 10, backgroundColor: 'rgba(255,138,77,0.92)' },
-  voteCountText: { fontFamily: 'Urbanist-Bold', fontSize: 11, color: '#FFF' },
 
-  // Identity overlay on each photo
-  identityOverlay: { position: 'absolute', bottom: 10, left: 10, right: 10, flexDirection: 'row', alignItems: 'center', gap: 7 },
-  identityOverlayRight: { flexDirection: 'row-reverse' },
-  identityAvatar: { width: 30, height: 30, borderRadius: 15, borderWidth: 2, borderColor: '#FFF', overflow: 'hidden', backgroundColor: '#EEE' },
-  identityAvatarLead: { borderColor: '#FFD700' },
-  identityAvatarImg: { width: '100%', height: '100%', resizeMode: 'cover' },
-  identityName: { fontFamily: 'Urbanist-Bold', fontSize: 13, color: '#FFF', flexShrink: 1, textShadowColor: 'rgba(0,0,0,0.6)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 3 },
+  // Vote counts above the buttons
+  voteCountRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 20, marginTop: 16 },
+  voteCountItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  voteCountItemRight: { flexDirection: 'row-reverse' },
+  voteCountNum: { fontFamily: 'Urbanist-Bold', fontSize: 16 },
+  voteCountLabel: { fontFamily: 'Urbanist-Medium', fontSize: 12 },
 
   // Center VS orb
   vsBadge: { position: 'absolute', top: '50%', left: 0, right: 0, alignItems: 'center', marginTop: -22, zIndex: 15 },
@@ -607,7 +630,7 @@ const styles = StyleSheet.create({
   timeChipText: { fontFamily: 'Urbanist-SemiBold', fontSize: 11 },
 
   // Vote buttons
-  voteButtonSection: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, marginTop: 14, gap: 12 },
+  voteButtonSection: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, marginTop: 8, gap: 12 },
   voteButton: { flex: 1, minHeight: 46, paddingVertical: 12, paddingHorizontal: 8, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   voteButtonA: { backgroundColor: '#FF4D67' },
   voteButtonB: { backgroundColor: '#FF8A4D' },
