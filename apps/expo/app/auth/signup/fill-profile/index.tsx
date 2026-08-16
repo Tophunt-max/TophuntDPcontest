@@ -72,7 +72,7 @@ const CircularProgress = ({ progress, size = 60 }: { progress: number, size?: nu
 };
 
 const FillProfile: React.FC = () => {
-  const { data: signupData, setMultiple, setField } = useSignupStore();
+  const { data: signupData, setMultiple, setField, setStep } = useSignupStore();
   const { addToast } = useToast();
   
   const [isGenderPickerVisible, setGenderPickerVisibility] = useState(false);
@@ -179,6 +179,7 @@ const FillProfile: React.FC = () => {
     setIsLoading(true);
     try {
       setMultiple({ ...signupData, avatarUrl: data.avatarUrl, fullName: data.fullName, username: data.username, email: data.email, phone: countryCode + data.phone, occupation: data.occupation, gender: data.gender, dob: data.dateOfBirth instanceof Date ? data.dateOfBirth.toISOString() : data.dateOfBirth });
+      setStep(3);
       router.push("/auth/signup/follow-someone");
     } catch (e) { addToast("Error saving", "error"); } finally { setIsLoading(false); }
   };

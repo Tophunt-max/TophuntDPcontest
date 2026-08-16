@@ -33,7 +33,7 @@ import { useThemeColor } from "@/hooks/use-theme-color";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { FormInput } from "@/src/components/inputs/FormInput";
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
-import { useSignupStore } from "@/src/store/signup";
+import { useSignupStore, SIGNUP_STEP_ROUTE } from "@/src/store/signup";
 import { auth } from "../../../src/services/firebase/initFirebase";
 import { callApi, readApi, poll } from "@/src/services/api"; // Centralized Worker API
 import { useToast } from "@/src/components/toast/ToastProvider";
@@ -58,6 +58,10 @@ const signupSchema = z.object({
 
 type SignupFormData = z.infer<typeof signupSchema>;
 
+// Show the "resume signup?" prompt at most once per app launch (not on every
+// intra-session back-navigation to this screen). Resets when the app restarts.
+let resumePromptShownThisSession = false;
+
 export default function SignupEntryScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -67,7 +71,8 @@ export default function SignupEntryScreen() {
   const textColor = isDark ? Colors.dark.text : Colors.light.text;
   const { addToast } = useToast();
   
-  const setMultiple = useSignupStore((state) => state.setMultiple);
+  const { data: signupData, setMultiple, step, setStep, reset: resetSignup, hasResumableDraft } = useSignupStore();
+  const [resumeChecked, setResumeChecked] = useState(false);
 
   const [isLoading, setIsLoading] = useState(false);
   const [emailChecking, setEmailChecking] = useState(false);
@@ -134,6 +139,35 @@ export default function SignupEntryScreen() {
   const password = watch("password");
   const termsAccepted = watch("termsAccepted");
 
+  // Resume an abandoned signup. The wizard data is persisted to disk (minus the
+  // password, which is never stored), so we can offer to continue where the
+  // user left off. The account is still only created on the final step.
+  useEffect(() => {
+    if (resumeChecked || resumePromptShownThisSession) return;
+    const offerResume = () => {
+      setResumeChecked(true);
+      if (!hasResumableDraft()) return;
+      resumePromptShownThisSession = true;
+      // Pre-fill the known email; password must be re-entered for security.
+      if (signupData.email) setValue("email", signupData.email);
+      Alert.alert(
+        "Resume your signup?",
+        "Aap ka adhoora signup mila. Wahin se continue karein? (Security ke liye password dobara daalna hoga.)",
+        [
+          { text: "Start over", style: "destructive", onPress: () => resetSignup() },
+          { text: "Resume", style: "default" },
+        ],
+      );
+    };
+
+    if (useSignupStore.persist.hasHydrated()) {
+      offerResume();
+    } else {
+      const unsub = useSignupStore.persist.onFinishHydration(offerResume);
+      return unsub;
+    }
+  }, [resumeChecked]);
+
   // Real-time Email Uniqueness Check (USING CALL API)
   useEffect(() => {
     const checkEmail = async () => {
@@ -186,8 +220,22 @@ export default function SignupEntryScreen() {
           password: data.password,
           authProvider: 'email'
       });
-      addToast("Looks good! Let's complete your profile.", "success");
-      router.push("/auth/signup/fill-profile");
+      // If this is a resumed draft (profile already filled in a previous
+      // session and email unchanged), jump straight to the furthest step the
+      // user had reached. Otherwise begin the profile step.
+      const resuming =
+        !!signupData.username &&
+        (signupData.authProvider ?? "email") === "email" &&
+        signupData.email === data.email;
+      if (resuming) {
+        const target = SIGNUP_STEP_ROUTE[Math.min(Math.max(step, 2), 4)] || "/auth/signup/fill-profile";
+        addToast("Welcome back! Let's finish up.", "success");
+        router.push(target as any);
+      } else {
+        setStep(2);
+        addToast("Looks good! Let's complete your profile.", "success");
+        router.push("/auth/signup/fill-profile");
+      }
     } catch (error) {
       console.error("Signup error", error);
       addToast("An error occurred during signup. Please try again.", "error");

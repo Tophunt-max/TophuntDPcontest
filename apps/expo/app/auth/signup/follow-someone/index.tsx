@@ -24,7 +24,7 @@ export default function FollowSomeone() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   
-  const { data: signup, setMultiple } = useSignupStore();
+  const { data: signup, setMultiple, setStep } = useSignupStore();
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
@@ -94,15 +94,18 @@ export default function FollowSomeone() {
     }
   };
 
-  const handleContinue = () => {
+  const goToCongratulations = () => {
+    setStep(4);
     router.push("/auth/signup/congratulations");
   };
+
+  const handleContinue = goToCongratulations;
 
   return (
     <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
       <View style={styles.header}>
         <Text style={styles.title}>Follow Someone</Text>
-        <TouchableOpacity onPress={() => router.push("/auth/signup/congratulations")} style={styles.skipButton}>
+        <TouchableOpacity onPress={goToCongratulations} style={styles.skipButton}>
           <Text style={styles.skipButtonText}>Skip</Text>
         </TouchableOpacity>
       </View>
