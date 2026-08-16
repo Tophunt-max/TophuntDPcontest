@@ -23,6 +23,7 @@ import { settleRefund, settleWinner } from "../lib/contestSettlement";
 import { resolveContests, monthlyHallOfFame } from "../cron";
 import { newId, now } from "../lib/ids";
 import { discoverUrls, processBatch } from "../lib/importerTask";
+import { blogListCacheKey, blogPostCacheKey, delCache } from "../lib/cache";
 
 /**
  * Record a sensitive admin action in the audit trail. Best-effort — never
@@ -417,6 +418,117 @@ async function uniqueBlogSlug(db: any, base: string, ignoreId?: string): Promise
   return `${base}-${Date.now()}`;
 }
 
+const BLOG_LIMITS = {
+  title: 200,
+  excerpt: 500,
+  content: 1_000_000,
+  url: 2_048,
+  category: 100,
+  author: 100,
+  tag: 50,
+  tags: 20,
+  metaTitle: 160,
+  metaDescription: 300,
+};
+
+function blogText(
+  value: unknown,
+  label: string,
+  maxLength: number,
+  options: { required?: boolean; preserveWhitespace?: boolean } = {},
+): string | null {
+  if (value === null || value === undefined) {
+    if (options.required) throw httpsError("invalid-argument", `${label} is required.`);
+    return null;
+  }
+  if (typeof value !== "string") throw httpsError("invalid-argument", `${label} must be text.`);
+  const normalized = options.preserveWhitespace ? value.trim() : value.trim().replace(/\s+/g, " ");
+  if (!normalized) {
+    if (options.required) throw httpsError("invalid-argument", `${label} is required.`);
+    return null;
+  }
+  if (normalized.length > maxLength) {
+    throw httpsError("invalid-argument", `${label} must be ${maxLength.toLocaleString()} characters or fewer.`);
+  }
+  return normalized;
+}
+
+function blogUrl(value: unknown, label: string): string | null {
+  const normalized = blogText(value, label, BLOG_LIMITS.url);
+  if (!normalized) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw httpsError("invalid-argument", `${label} must be a valid URL.`);
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw httpsError("invalid-argument", `${label} must use http:// or https://.`);
+  }
+  return normalized;
+}
+
+function blogTags(value: unknown): string[] {
+  if (!Array.isArray(value)) throw httpsError("invalid-argument", "Tags must be an array.");
+  if (value.length > BLOG_LIMITS.tags) {
+    throw httpsError("invalid-argument", `Add no more than ${BLOG_LIMITS.tags} tags.`);
+  }
+  const tags: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    const tag = blogText(raw, "Each tag", BLOG_LIMITS.tag);
+    if (!tag) continue;
+    const key = tag.toLocaleLowerCase();
+    if (!seen.has(key)) {
+      tags.push(tag);
+      seen.add(key);
+    }
+  }
+  return tags;
+}
+
+function blogStatus(value: unknown): "published" | "draft" {
+  if (value !== "published" && value !== "draft") {
+    throw httpsError("invalid-argument", "Status must be published or draft.");
+  }
+  return value;
+}
+
+function blogPlainText(content: string | null | undefined): string {
+  return (content || "")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&[a-zA-Z0-9#]+;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function validatePublishedBlog(status: string, content: string | null | undefined): void {
+  if (status === "published" && blogPlainText(content).length < 20) {
+    throw httpsError("invalid-argument", "Published posts need at least 20 characters of readable content.");
+  }
+}
+
+/** Clear the hot public list/detail caches after an editorial write. */
+async function invalidateBlogReadCache(c: any, id?: string, ...slugs: Array<string | null | undefined>): Promise<void> {
+  const keys = new Set<string>([blogListCacheKey(12)]);
+  if (id) keys.add(blogPostCacheKey(id));
+  for (const slug of slugs) if (slug) keys.add(blogPostCacheKey(slug));
+  await delCache(c.env, ...keys);
+
+  // Categories use the Cache API rather than KV. This is best-effort just like
+  // the shared KV invalidator and must never make an admin write fail.
+  try {
+    const categoriesUrl = new URL(c.req.url);
+    categoriesUrl.pathname = "/read/blog/categories";
+    categoriesUrl.search = "";
+    await (caches as any).default.delete(new Request(categoriesUrl.toString()));
+  } catch (e) {
+    console.error("[cache] blog categories delete failed (continuing)", e);
+  }
+}
+
 // List posts (any status) for the admin table. Optional ?q= title search.
 adminRoute.get("/blog", async (c) => {
   const db = getDb(c.env);
@@ -760,66 +872,166 @@ adminRoute.post("/blog/import/fail", async (c) => {
 // Create a single post (admin panel form).
 adminRoute.post("/blog", async (c) => {
   const db = getDb(c.env);
-  const b = await c.req.json<any>();
-  if (!b.title) throw httpsError("invalid-argument", "Title is required.");
+  const b = await c.req.json<any>().catch(() => {
+    throw httpsError("invalid-argument", "A JSON request body is required.");
+  });
+  const title = blogText(b.title, "Title", BLOG_LIMITS.title, { required: true })!;
+  const content = blogText(b.content, "Content", BLOG_LIMITS.content, { preserveWhitespace: true });
+  const excerpt = blogText(b.excerpt, "Excerpt", BLOG_LIMITS.excerpt);
+  const status = blogStatus(b.status ?? "draft");
+  const author = blogText(b.author ?? "TopHunt", "Author", BLOG_LIMITS.author, { required: true })!;
+  const category = blogText(b.category, "Category", BLOG_LIMITS.category);
+  const coverImageUrl = blogUrl(b.coverImageUrl, "Cover image URL");
+  const tags = b.tags === undefined ? [] : blogTags(b.tags);
+  validatePublishedBlog(status, content);
+
   const ts = now();
-  const slug = await uniqueBlogSlug(db, slugify(b.slug || b.title));
+  const slug = await uniqueBlogSlug(db, slugify(blogText(b.slug, "Slug", 120) || title));
   const id = newId();
+  const metaTitle = blogText(b.metaTitle, "SEO title", BLOG_LIMITS.metaTitle) || title.slice(0, BLOG_LIMITS.metaTitle);
+  const metaDescription =
+    blogText(b.metaDescription, "SEO description", BLOG_LIMITS.metaDescription) ||
+    (excerpt || blogPlainText(content)).slice(0, BLOG_LIMITS.metaDescription) || null;
+  if (
+    b.publishedAt !== undefined &&
+    b.publishedAt !== null &&
+    (typeof b.publishedAt !== "number" || !Number.isFinite(b.publishedAt))
+  ) {
+    throw httpsError("invalid-argument", "Published date must be a timestamp or null.");
+  }
+  const publishedAt =
+    typeof b.publishedAt === "number" && Number.isFinite(b.publishedAt)
+      ? b.publishedAt
+      : status === "published"
+        ? ts
+        : null;
+
   await db.insert(schema.blogPosts).values({
     id,
     slug,
-    title: String(b.title).slice(0, 500),
-    excerpt: b.excerpt || null,
-    content: b.content || null,
-    coverImageUrl: b.coverImageUrl || null,
-    category: b.category || null,
-    tags: Array.isArray(b.tags) ? b.tags : [],
-    author: b.author || "TopHunt",
-    status: b.status || "published",
+    title,
+    excerpt,
+    content,
+    coverImageUrl,
+    category,
+    tags,
+    author,
+    status,
+    metaTitle,
+    metaDescription,
     source: "admin",
     originalUrl: null,
     viewCount: 0,
-    publishedAt: typeof b.publishedAt === "number" ? b.publishedAt : ts,
+    publishedAt,
     createdAt: ts,
     updatedAt: ts,
   });
-  return c.json({ success: true, id, slug });
+  await invalidateBlogReadCache(c, id, slug);
+  await logAudit(c, "blog.create", "blog_post", id, { title, slug, status });
+  return c.json({ success: true as const, id, slug });
 });
 
 // Read a single post (with content) for the edit form.
 adminRoute.get("/blog/:id", async (c) => {
   const db = getDb(c.env);
   const row = await db.select().from(schema.blogPosts).where(eq(schema.blogPosts.id, c.req.param("id"))).get();
-  return c.json(row || null);
+  if (!row) throw httpsError("not-found", "Post not found.");
+  return c.json(row);
 });
 
-// Update a post.
+// Update a post. Omitted fields are preserved; supplied fields are normalized.
 adminRoute.patch("/blog/:id", async (c) => {
   const db = getDb(c.env);
   const id = c.req.param("id");
-  const b = await c.req.json<any>();
+  const b = await c.req.json<any>().catch(() => {
+    throw httpsError("invalid-argument", "A JSON request body is required.");
+  });
   const current = await db.select().from(schema.blogPosts).where(eq(schema.blogPosts.id, id)).get();
   if (!current) throw httpsError("not-found", "Post not found.");
+  if (b.expectedUpdatedAt !== undefined) {
+    if (typeof b.expectedUpdatedAt !== "number" || !Number.isFinite(b.expectedUpdatedAt)) {
+      throw httpsError("invalid-argument", "expectedUpdatedAt must be a timestamp.");
+    }
+    if (b.expectedUpdatedAt !== current.updatedAt) {
+      throw httpsError("failed-precondition", "This post changed after you opened it. Close and reopen the editor before saving.");
+    }
+  }
+
   const set: any = { updatedAt: now() };
-  if (b.title !== undefined) set.title = String(b.title).slice(0, 500);
-  if (b.excerpt !== undefined) set.excerpt = b.excerpt;
-  if (b.content !== undefined) set.content = b.content;
-  if (b.coverImageUrl !== undefined) set.coverImageUrl = b.coverImageUrl;
-  if (b.category !== undefined) set.category = b.category;
-  if (b.tags !== undefined) set.tags = Array.isArray(b.tags) ? b.tags : [];
-  if (b.author !== undefined) set.author = b.author;
-  if (b.status !== undefined) set.status = b.status;
-  if (typeof b.publishedAt === "number") set.publishedAt = b.publishedAt;
-  // Regenerate slug only when explicitly requested.
-  if (b.slug !== undefined && b.slug) set.slug = await uniqueBlogSlug(db, slugify(b.slug), id);
+  if (b.title !== undefined) set.title = blogText(b.title, "Title", BLOG_LIMITS.title, { required: true });
+  if (b.excerpt !== undefined) set.excerpt = blogText(b.excerpt, "Excerpt", BLOG_LIMITS.excerpt);
+  if (b.content !== undefined) set.content = blogText(b.content, "Content", BLOG_LIMITS.content, { preserveWhitespace: true });
+  if (b.coverImageUrl !== undefined) set.coverImageUrl = blogUrl(b.coverImageUrl, "Cover image URL");
+  if (b.category !== undefined) set.category = blogText(b.category, "Category", BLOG_LIMITS.category);
+  if (b.tags !== undefined) set.tags = blogTags(b.tags);
+  if (b.author !== undefined) set.author = blogText(b.author, "Author", BLOG_LIMITS.author, { required: true });
+  if (b.status !== undefined) set.status = blogStatus(b.status);
+  if (b.publishedAt !== undefined) {
+    if (b.publishedAt !== null && (typeof b.publishedAt !== "number" || !Number.isFinite(b.publishedAt))) {
+      throw httpsError("invalid-argument", "Published date must be a timestamp or null.");
+    }
+    set.publishedAt = b.publishedAt;
+  }
+
+  const finalTitle = set.title ?? current.title;
+  const finalExcerpt = set.excerpt !== undefined ? set.excerpt : current.excerpt;
+  const finalContent = set.content !== undefined ? set.content : current.content;
+  const finalStatus = set.status ?? current.status ?? "draft";
+  if (b.content !== undefined || b.status !== undefined) {
+    validatePublishedBlog(finalStatus, finalContent);
+  }
+
+  if (b.metaTitle !== undefined) {
+    set.metaTitle = blogText(b.metaTitle, "SEO title", BLOG_LIMITS.metaTitle) || finalTitle.slice(0, BLOG_LIMITS.metaTitle);
+  } else if (!current.metaTitle) {
+    set.metaTitle = finalTitle.slice(0, BLOG_LIMITS.metaTitle);
+  }
+  if (b.metaDescription !== undefined) {
+    set.metaDescription =
+      blogText(b.metaDescription, "SEO description", BLOG_LIMITS.metaDescription) ||
+      (finalExcerpt || blogPlainText(finalContent)).slice(0, BLOG_LIMITS.metaDescription) || null;
+  } else if (!current.metaDescription) {
+    set.metaDescription = (finalExcerpt || blogPlainText(finalContent)).slice(0, BLOG_LIMITS.metaDescription) || null;
+  }
+
+  // Regenerate the permalink only when explicitly requested.
+  if (b.slug !== undefined) {
+    const requestedSlug = blogText(b.slug, "Slug", 120, { required: true })!;
+    set.slug = await uniqueBlogSlug(db, slugify(requestedSlug), id);
+  }
+  if (
+    finalStatus === "published" &&
+    current.status !== "published" &&
+    (set.publishedAt === null || set.publishedAt === undefined)
+  ) {
+    set.publishedAt = now();
+  }
+
   await db.update(schema.blogPosts).set(set).where(eq(schema.blogPosts.id, id));
-  return c.json({ message: "Post updated", id });
+  const finalSlug = set.slug || current.slug;
+  await invalidateBlogReadCache(c, id, current.slug, finalSlug);
+  await logAudit(c, "blog.update", "blog_post", id, {
+    title: finalTitle,
+    slug: finalSlug,
+    status: finalStatus,
+    fields: Object.keys(b),
+  });
+  return c.json({ message: "Post updated", id, slug: finalSlug });
 });
 
 // Delete a post.
 adminRoute.delete("/blog/:id", async (c) => {
   const db = getDb(c.env);
-  await db.delete(schema.blogPosts).where(eq(schema.blogPosts.id, c.req.param("id")));
+  const id = c.req.param("id");
+  const current = await db
+    .select({ id: schema.blogPosts.id, slug: schema.blogPosts.slug, title: schema.blogPosts.title })
+    .from(schema.blogPosts)
+    .where(eq(schema.blogPosts.id, id))
+    .get();
+  if (!current) throw httpsError("not-found", "Post not found.");
+  await db.delete(schema.blogPosts).where(eq(schema.blogPosts.id, id));
+  await invalidateBlogReadCache(c, id, current.slug);
+  await logAudit(c, "blog.delete", "blog_post", id, { title: current.title, slug: current.slug });
   return c.json({ message: "Post deleted" });
 });
 

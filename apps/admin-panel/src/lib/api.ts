@@ -25,6 +25,59 @@ export class ApiError extends Error {
   }
 }
 
+export type BlogStatus = "published" | "draft";
+
+/** Lightweight row returned by GET /admin/blog. Full content/tags are detail-only. */
+export interface BlogListItem {
+  id: string;
+  slug: string;
+  title: string;
+  excerpt: string | null;
+  coverImageUrl: string | null;
+  category: string | null;
+  author: string | null;
+  status: BlogStatus;
+  source: "admin" | "archive" | string | null;
+  viewCount: number | null;
+  publishedAt: number | null;
+  createdAt: number;
+}
+
+export interface BlogPostDetail extends BlogListItem {
+  content: string | null;
+  tags: string[] | null;
+  metaTitle: string | null;
+  metaDescription: string | null;
+  canonicalUrl: string | null;
+  originalUrl: string | null;
+  contentHash: string | null;
+  updatedAt: number;
+}
+
+export interface BlogWritePayload {
+  title: string;
+  slug?: string;
+  excerpt: string | null;
+  content: string | null;
+  coverImageUrl: string | null;
+  category: string | null;
+  tags: string[];
+  author: string;
+  status: BlogStatus;
+  metaTitle: string | null;
+  metaDescription: string | null;
+  publishedAt?: number | null;
+  /** Optimistic-concurrency guard used by edits; create ignores it. */
+  expectedUpdatedAt?: number;
+}
+
+export interface BlogStats {
+  total: number;
+  published: number;
+  drafts: number;
+  imported: number;
+}
+
 /**
  * Core request helper. Attaches the Firebase ID token as a Bearer header — the
  * Worker's /admin gate verifies it and checks the admin role. On a 401 it
@@ -148,12 +201,15 @@ export const api = {
     del(`/admin/support?id=${encodeURIComponent(id)}`),
 
   // blog
-  blog: (q?: string) => get<any[]>(`/admin/blog${q ? `?q=${encodeURIComponent(q)}` : ""}`),
-  blogStats: () => get<any>("/admin/blog/stats"),
-  blogPost: (id: string) => get<any>(`/admin/blog/${id}`),
-  createBlog: (payload: any) => post("/admin/blog", payload),
-  updateBlog: (id: string, payload: any) => patch(`/admin/blog/${id}`, payload),
-  deleteBlog: (id: string) => del(`/admin/blog/${id}`),
+  blog: (q?: string) => get<BlogListItem[]>(`/admin/blog${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+  blogStats: () => get<BlogStats>("/admin/blog/stats"),
+  blogPost: (id: string) => get<BlogPostDetail>(`/admin/blog/${encodeURIComponent(id)}`),
+  createBlog: (payload: BlogWritePayload) =>
+    post<{ success: true; id: string; slug: string }>("/admin/blog", payload),
+  updateBlog: (id: string, payload: Partial<BlogWritePayload>) =>
+    patch<{ message: string; id: string; slug: string }>(`/admin/blog/${encodeURIComponent(id)}`, payload),
+  deleteBlog: (id: string) =>
+    del<{ message: string }>(`/admin/blog/${encodeURIComponent(id)}`),
 
   // archive import status (Wayback importer)
   blogImportSummary: () =>

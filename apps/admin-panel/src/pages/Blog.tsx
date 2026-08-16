@@ -1,27 +1,73 @@
-import { useState, useRef } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { api, type BlogListItem, type BlogPostDetail, type BlogStatus, type BlogWritePayload } from "@/lib/api";
 import { Table } from "@/components/ui/Table";
 import { Badge } from "@/components/ui/Badge";
 import { StatCard } from "@/components/ui/StatCard";
 import { PageHeader, fmtDate } from "@/lib/format";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { toast } from "@/lib/toast";
-import { Plus, Pencil, Trash2, FileText, CheckCircle2, FilePlus, DownloadCloud, Archive, ChevronDown, ChevronUp, ExternalLink, Loader2, Play, RotateCcw, Square } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  AlertCircle,
+  Archive,
+  Bold,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  DownloadCloud,
+  ExternalLink,
+  FilePlus,
+  FileText,
+  Heading2,
+  Link as LinkIcon,
+  List,
+  Loader2,
+  Pencil,
+  Pilcrow,
+  Play,
+  Plus,
+  RotateCcw,
+  Search,
+  Square,
+  Trash2,
+  X,
+} from "lucide-react";
 
 export default function Blog() {
   const qc = useQueryClient();
   const { confirm } = useConfirm();
-  const [editing, setEditing] = useState<any | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
 
-  const { data = [], isLoading } = useQuery({ queryKey: ["blog"], queryFn: () => api.blog() });
+  const posts = useQuery({
+    queryKey: ["blog", search],
+    queryFn: () => api.blog(search || undefined),
+  });
+  const data = posts.data ?? [];
   const stats = useQuery({
     queryKey: ["blog-stats"],
     queryFn: api.blogStats,
     refetchInterval: 30000,
     refetchOnWindowFocus: true,
   });
+  const categories = useMemo(
+    () => [...new Set(data.map((post) => post.category).filter((value): value is string => !!value))].sort(),
+    [data],
+  );
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["blog"] });
     qc.invalidateQueries({ queryKey: ["blog-stats"] });
@@ -33,8 +79,13 @@ export default function Blog() {
       toast.success("Post deleted");
       invalidate();
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (error: Error) => toast.error(error.message),
   });
+
+  const closeEditor = () => {
+    setCreating(false);
+    setEditingId(null);
+  };
 
   return (
     <div>
@@ -57,48 +108,92 @@ export default function Blog() {
 
       <ImportStatus />
 
-      <Table
-        loading={isLoading}
+      <form
+        className="mb-4 flex flex-col gap-2 sm:flex-row"
+        onSubmit={(event) => {
+          event.preventDefault();
+          setSearch(searchInput.trim());
+        }}
+      >
+        <div className="relative flex-1 sm:max-w-md">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={16} />
+          <Input
+            aria-label="Search blog posts"
+            className="h-10 rounded-xl pl-9 pr-9"
+            placeholder="Search posts by title…"
+            value={searchInput}
+            onChange={(event) => setSearchInput(event.target.value)}
+          />
+          {searchInput && (
+            <button
+              aria-label="Clear search"
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:text-foreground"
+              type="button"
+              onClick={() => {
+                setSearchInput("");
+                setSearch("");
+              }}
+            >
+              <X size={15} />
+            </button>
+          )}
+        </div>
+        <Button className="h-10 rounded-xl" type="submit" variant="secondary">Search</Button>
+      </form>
+
+      {posts.isError && (
+        <div className="mb-4 flex flex-col gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm sm:flex-row sm:items-center">
+          <AlertCircle className="text-destructive" size={18} />
+          <p className="flex-1">Could not load blog posts: {(posts.error as Error).message}</p>
+          <Button size="sm" type="button" variant="outline" onClick={() => posts.refetch()}>Retry</Button>
+        </div>
+      )}
+
+      <Table<BlogListItem>
+        loading={posts.isLoading}
         data={data}
-        keyFn={(p: any) => p.id}
-        empty="No blog posts"
+        keyFn={(post) => post.id}
+        empty={search ? `No posts found for “${search}”` : "No blog posts"}
         columns={[
           {
             key: "post",
             header: "Post",
-            render: (p: any) => (
+            render: (post) => (
               <div className="flex items-center gap-3">
                 <div className="w-14 h-10 rounded-lg overflow-hidden bg-secondary flex-shrink-0">
-                  {p.coverImageUrl && <img src={p.coverImageUrl} alt="" className="w-full h-full object-cover" />}
+                  {post.coverImageUrl && <img src={post.coverImageUrl} alt="" className="w-full h-full object-cover" />}
                 </div>
                 <div className="min-w-0">
-                  <p className="text-sm font-medium text-foreground truncate max-w-[280px]">{p.title}</p>
-                  <p className="text-xs text-muted-foreground truncate max-w-[280px]">/{p.slug}</p>
+                  <p className="text-sm font-medium text-foreground truncate max-w-[280px]">{post.title}</p>
+                  <p className="text-xs text-muted-foreground truncate max-w-[280px]">/{post.slug}</p>
                 </div>
               </div>
             ),
           },
-          { key: "category", header: "Category", render: (p: any) => <span className="text-sm">{p.category || "—"}</span> },
-          { key: "status", header: "Status", render: (p: any) => <Badge variant={p.status === "published" ? "success" : "pending"}>{p.status}</Badge> },
-          { key: "views", header: "Views", render: (p: any) => <span>{p.viewCount ?? 0}</span> },
-          { key: "date", header: "Published", render: (p: any) => <span className="text-muted-foreground">{fmtDate(p.publishedAt)}</span> },
+          { key: "category", header: "Category", render: (post) => <span className="text-sm">{post.category || "—"}</span> },
+          { key: "status", header: "Status", render: (post) => <Badge variant={post.status === "published" ? "success" : "pending"}>{post.status}</Badge> },
+          { key: "views", header: "Views", render: (post) => <span>{post.viewCount ?? 0}</span> },
+          { key: "date", header: "Published", render: (post) => <span className="text-muted-foreground">{fmtDate(post.publishedAt)}</span> },
           {
             key: "actions",
             header: "",
             className: "text-right",
-            render: (p: any) => (
+            render: (post) => (
               <div className="flex items-center justify-end gap-1">
-                <button title="Edit" onClick={() => setEditing(p)} className="p-2 rounded-lg hover:bg-secondary text-violet-600">
+                <button title="Edit" onClick={() => setEditingId(post.id)} className="p-2 rounded-lg hover:bg-secondary text-violet-600">
                   <Pencil size={15} />
                 </button>
                 <button
                   title="Delete"
+                  disabled={delMut.isPending && delMut.variables === post.id}
                   onClick={async () => {
-                    if (await confirm({ title: "Delete post?", description: `Delete "${p.title}"?`, variant: "destructive" })) delMut.mutate(p.id);
+                    if (await confirm({ title: "Delete post?", description: `Delete “${post.title}”? This cannot be undone.`, variant: "destructive" })) {
+                      delMut.mutate(post.id);
+                    }
                   }}
-                  className="p-2 rounded-lg hover:bg-secondary text-red-600"
+                  className="p-2 rounded-lg hover:bg-secondary text-red-600 disabled:opacity-50"
                 >
-                  <Trash2 size={15} />
+                  {delMut.isPending && delMut.variables === post.id ? <Loader2 className="animate-spin" size={15} /> : <Trash2 size={15} />}
                 </button>
               </div>
             ),
@@ -106,13 +201,11 @@ export default function Blog() {
         ]}
       />
 
-      {(creating || editing) && (
+      {(creating || editingId) && (
         <BlogDialog
-          post={editing}
-          onClose={() => {
-            setCreating(false);
-            setEditing(null);
-          }}
+          postId={editingId}
+          categories={categories}
+          onClose={closeEditor}
           onDone={invalidate}
         />
       )}
@@ -388,71 +481,507 @@ function ImportStatus() {
   );
 }
 
-function BlogDialog({ post, onClose, onDone }: { post: any | null; onClose: () => void; onDone: () => void }) {
-  const [form, setForm] = useState({
+type BlogFormState = {
+  title: string;
+  slug: string;
+  excerpt: string;
+  coverImageUrl: string;
+  category: string;
+  author: string;
+  tags: string;
+  status: BlogStatus;
+  publishedAt: string;
+  content: string;
+  metaTitle: string;
+  metaDescription: string;
+};
+
+type BlogFormErrors = Partial<Record<keyof BlogFormState, string>>;
+
+const BLOG_FORM_LIMITS = {
+  title: 200,
+  excerpt: 500,
+  category: 100,
+  author: 100,
+  tag: 50,
+  tags: 20,
+  content: 1_000_000,
+  metaTitle: 160,
+  metaDescription: 300,
+};
+
+function toLocalDateTime(timestamp: number | null): string {
+  if (!timestamp) return "";
+  const date = new Date(timestamp);
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+function initialBlogForm(post: BlogPostDetail | null): BlogFormState {
+  return {
     title: post?.title || "",
+    slug: post?.slug || "",
     excerpt: post?.excerpt || "",
     coverImageUrl: post?.coverImageUrl || "",
     category: post?.category || "",
     author: post?.author || "TopHunt",
-    status: post?.status || "published",
+    tags: (post?.tags || []).join("\n"),
+    status: post?.status || "draft",
+    publishedAt: toLocalDateTime(post?.publishedAt || null),
     content: post?.content || "",
-    tags: (post?.tags || []).join(", "),
-  });
-  const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+    metaTitle: post?.metaTitle || "",
+    metaDescription: post?.metaDescription || "",
+  };
+}
 
-  const mut = useMutation({
-    mutationFn: () => {
-      const payload = {
-        title: form.title,
-        excerpt: form.excerpt,
-        coverImageUrl: form.coverImageUrl,
-        category: form.category,
-        author: form.author,
-        status: form.status,
-        content: form.content,
-        tags: form.tags.split(",").map((t: string) => t.trim()).filter(Boolean),
-      };
-      return post ? api.updateBlog(post.id, payload) : api.createBlog(payload);
+function parseTags(value: string): string[] {
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const raw of value.split(/\r?\n/)) {
+    const tag = raw.trim().replace(/\s+/g, " ");
+    const key = tag.toLocaleLowerCase();
+    if (tag && !seen.has(key)) {
+      seen.add(key);
+      tags.push(tag);
+    }
+  }
+  return tags;
+}
+
+function readableContent(value: string): string {
+  return value
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&[a-zA-Z0-9#]+;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isHttpUrl(value: string): boolean {
+  if (!value.trim()) return true;
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+function validateBlogForm(form: BlogFormState, initial: BlogFormState, isEditing: boolean): BlogFormErrors {
+  const errors: BlogFormErrors = {};
+  const tags = parseTags(form.tags);
+  const changed = (key: keyof BlogFormState) => !isEditing || form[key] !== initial[key];
+
+  if (!form.title.trim()) errors.title = "Title is required.";
+  else if (changed("title") && form.title.trim().length > BLOG_FORM_LIMITS.title) errors.title = `Use ${BLOG_FORM_LIMITS.title} characters or fewer.`;
+  if (isEditing && changed("slug") && !form.slug.trim()) errors.slug = "An existing post needs a permalink slug.";
+  else if (changed("slug") && form.slug.trim().length > 120) errors.slug = "Use 120 characters or fewer.";
+  if (changed("excerpt") && form.excerpt.trim().length > BLOG_FORM_LIMITS.excerpt) errors.excerpt = `Use ${BLOG_FORM_LIMITS.excerpt} characters or fewer.`;
+  if (changed("coverImageUrl") && !isHttpUrl(form.coverImageUrl)) errors.coverImageUrl = "Enter a valid http:// or https:// URL.";
+  if (changed("category") && form.category.trim().length > BLOG_FORM_LIMITS.category) errors.category = `Use ${BLOG_FORM_LIMITS.category} characters or fewer.`;
+  if (!form.author.trim()) errors.author = "Author is required.";
+  else if (changed("author") && form.author.trim().length > BLOG_FORM_LIMITS.author) errors.author = `Use ${BLOG_FORM_LIMITS.author} characters or fewer.`;
+  if (changed("tags") && tags.length > BLOG_FORM_LIMITS.tags) errors.tags = `Add no more than ${BLOG_FORM_LIMITS.tags} tags.`;
+  else if (changed("tags") && tags.some((tag) => tag.length > BLOG_FORM_LIMITS.tag)) errors.tags = `Each tag must be ${BLOG_FORM_LIMITS.tag} characters or fewer.`;
+  if (changed("content") && form.content.length > BLOG_FORM_LIMITS.content) errors.content = "Content is too large.";
+  else if (
+    (changed("content") || changed("status")) &&
+    form.status === "published" &&
+    readableContent(form.content).length < 20
+  ) {
+    errors.content = "Published posts need at least 20 characters of readable content.";
+  }
+  if (changed("metaTitle") && form.metaTitle.trim().length > BLOG_FORM_LIMITS.metaTitle) errors.metaTitle = `Use ${BLOG_FORM_LIMITS.metaTitle} characters or fewer.`;
+  if (changed("metaDescription") && form.metaDescription.trim().length > BLOG_FORM_LIMITS.metaDescription) errors.metaDescription = `Use ${BLOG_FORM_LIMITS.metaDescription} characters or fewer.`;
+  if (changed("publishedAt") && form.publishedAt && Number.isNaN(new Date(form.publishedAt).getTime())) errors.publishedAt = "Enter a valid publish date.";
+  return errors;
+}
+
+function BlogDialog({
+  postId,
+  categories,
+  onClose,
+  onDone,
+}: {
+  postId: string | null;
+  categories: string[];
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { confirm } = useConfirm();
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const detail = useQuery({
+    queryKey: ["blog-post", postId],
+    queryFn: () => api.blogPost(postId!),
+    enabled: !!postId,
+    retry: 1,
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: false,
+  });
+
+  useEffect(() => {
+    if (!dirty || saving) return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [dirty, saving]);
+
+  const requestClose = async () => {
+    if (saving) return;
+    if (dirty) {
+      const discard = await confirm({
+        title: "Discard unsaved changes?",
+        description: "Your edits have not been saved.",
+        confirmLabel: "Discard changes",
+        variant: "destructive",
+      });
+      if (!discard) return;
+    }
+    onClose();
+  };
+
+  const post = postId ? detail.data ?? null : null;
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) void requestClose(); }}>
+      <DialogContent className="h-[100dvh] max-h-[100dvh] w-screen max-w-none gap-0 overflow-hidden rounded-none border-0 p-0 sm:h-[92vh] sm:max-h-[920px] sm:w-[calc(100vw-2rem)] sm:max-w-4xl sm:rounded-2xl sm:border">
+        <DialogHeader className="border-b border-border px-5 py-4 pr-12 text-left sm:px-6">
+          <div className="flex flex-wrap items-center gap-2">
+            <DialogTitle>{postId ? "Edit Post" : "New Post"}</DialogTitle>
+            {post && <Badge variant={post.source === "archive" ? "info" : "primary"}>{post.source === "archive" ? "Archive import" : "Admin post"}</Badge>}
+          </div>
+          <DialogDescription>
+            {postId ? "Loading the complete saved post before editing, so hidden fields are never overwritten." : "Create a draft, review the content, then publish when it is ready."}
+          </DialogDescription>
+        </DialogHeader>
+
+        {postId && detail.isLoading ? (
+          <div className="flex min-h-0 items-center justify-center gap-3 p-8 text-sm text-muted-foreground">
+            <Loader2 className="animate-spin text-violet-600" size={20} /> Loading complete post…
+          </div>
+        ) : postId && detail.isError ? (
+          <div className="flex min-h-0 flex-col items-center justify-center gap-4 p-8 text-center">
+            <AlertCircle className="text-destructive" size={28} />
+            <div>
+              <p className="font-semibold">Could not load this post</p>
+              <p className="mt-1 text-sm text-muted-foreground">{(detail.error as Error).message}</p>
+            </div>
+            <div className="flex gap-2">
+              <Button type="button" variant="outline" onClick={() => void requestClose()}>Cancel</Button>
+              <Button type="button" onClick={() => detail.refetch()}>Retry</Button>
+            </div>
+          </div>
+        ) : (
+          <BlogForm
+            key={post?.id || "new"}
+            post={post}
+            categories={categories}
+            onCancel={requestClose}
+            onDirtyChange={setDirty}
+            onSavingChange={setSaving}
+            onSaved={() => {
+              setDirty(false);
+              onDone();
+              onClose();
+            }}
+          />
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function BlogForm({
+  post,
+  categories,
+  onCancel,
+  onDirtyChange,
+  onSavingChange,
+  onSaved,
+}: {
+  post: BlogPostDetail | null;
+  categories: string[];
+  onCancel: () => void | Promise<void>;
+  onDirtyChange: (dirty: boolean) => void;
+  onSavingChange: (saving: boolean) => void;
+  onSaved: () => void;
+}) {
+  const qc = useQueryClient();
+  const initial = useMemo(() => initialBlogForm(post), [post]);
+  const [form, setForm] = useState<BlogFormState>(initial);
+  const [errors, setErrors] = useState<BlogFormErrors>({});
+  const [serverError, setServerError] = useState("");
+  const contentRef = useRef<HTMLTextAreaElement>(null);
+  const tags = useMemo(() => parseTags(form.tags), [form.tags]);
+  const dirty = JSON.stringify(form) !== JSON.stringify(initial);
+
+  useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
+
+  const set = <K extends keyof BlogFormState>(key: K, value: BlogFormState[K]) => {
+    setForm((current) => ({ ...current, [key]: value }));
+    setErrors((current) => ({ ...current, [key]: undefined }));
+    setServerError("");
+  };
+
+  const mutation = useMutation<unknown, Error, BlogWritePayload>({
+    mutationFn: (payload) => {
+      if (!post) return api.createBlog(payload);
+      const patch: Partial<BlogWritePayload> = { expectedUpdatedAt: post.updatedAt };
+      if (form.title !== initial.title) patch.title = payload.title;
+      if (form.slug !== initial.slug) patch.slug = payload.slug;
+      if (form.excerpt !== initial.excerpt) patch.excerpt = payload.excerpt;
+      if (form.coverImageUrl !== initial.coverImageUrl) patch.coverImageUrl = payload.coverImageUrl;
+      if (form.category !== initial.category) patch.category = payload.category;
+      if (form.author !== initial.author) patch.author = payload.author;
+      if (form.tags !== initial.tags) patch.tags = payload.tags;
+      if (form.status !== initial.status) patch.status = payload.status;
+      if (form.content !== initial.content) patch.content = payload.content;
+      if (form.metaTitle !== initial.metaTitle) patch.metaTitle = payload.metaTitle;
+      if (form.metaDescription !== initial.metaDescription) patch.metaDescription = payload.metaDescription;
+      if (form.publishedAt !== initial.publishedAt) patch.publishedAt = payload.publishedAt;
+      return api.updateBlog(post.id, patch);
+    },
+    onMutate: () => {
+      setServerError("");
+      onSavingChange(true);
     },
     onSuccess: () => {
+      if (post) qc.removeQueries({ queryKey: ["blog-post", post.id] });
       toast.success(post ? "Post updated" : "Post created");
-      onDone();
-      onClose();
+      onSaved();
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (error: Error) => {
+      setServerError(error.message || "Could not save the post.");
+      toast.error(error.message || "Could not save the post");
+    },
+    onSettled: () => onSavingChange(false),
   });
 
-  const field = "w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring";
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const nextErrors = validateBlogForm(form, initial, !!post);
+    setErrors(nextErrors);
+    const firstError = Object.keys(nextErrors)[0] as keyof BlogFormState | undefined;
+    if (firstError) {
+      document.getElementById(`blog-${firstError}`)?.focus();
+      return;
+    }
+    const payload: BlogWritePayload = {
+      title: form.title.trim(),
+      slug: form.slug.trim() || undefined,
+      excerpt: form.excerpt.trim() || null,
+      coverImageUrl: form.coverImageUrl.trim() || null,
+      category: form.category.trim() || null,
+      author: form.author.trim(),
+      tags,
+      status: form.status,
+      content: form.content.trim() || null,
+      metaTitle: form.metaTitle.trim() || null,
+      metaDescription: form.metaDescription.trim() || null,
+    };
+    if (!post || form.publishedAt !== initial.publishedAt) {
+      payload.publishedAt = form.publishedAt ? new Date(form.publishedAt).getTime() : null;
+    }
+    mutation.mutate(payload);
+  };
+
+  const insertMarkup = (before: string, after: string, placeholder: string) => {
+    const textarea = contentRef.current;
+    if (!textarea) return;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const selection = form.content.slice(start, end) || placeholder;
+    const next = `${form.content.slice(0, start)}${before}${selection}${after}${form.content.slice(end)}`;
+    set("content", next);
+    requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(start + before.length, start + before.length + selection.length);
+    });
+  };
+
+  const inputClass = (key: keyof BlogFormState) => `h-10 rounded-xl ${errors[key] ? "border-destructive focus-visible:ring-destructive" : ""}`;
+  const textAreaClass = (key: keyof BlogFormState) => `rounded-xl ${errors[key] ? "border-destructive focus-visible:ring-destructive" : ""}`;
+  const errorText = (key: keyof BlogFormState) => errors[key] ? <p className="text-xs text-destructive">{errors[key]}</p> : null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={onClose}>
-      <div className="bg-card border border-border rounded-2xl p-6 w-full max-w-2xl max-h-[90vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
-        <h3 className="font-bold text-foreground mb-4">{post ? "Edit Post" : "New Post"}</h3>
-        <div className="space-y-3">
-          <input className={field} placeholder="Title" value={form.title} onChange={(e) => set("title", e.target.value)} />
-          <input className={field} placeholder="Excerpt" value={form.excerpt} onChange={(e) => set("excerpt", e.target.value)} />
-          <input className={field} placeholder="Cover image URL" value={form.coverImageUrl} onChange={(e) => set("coverImageUrl", e.target.value)} />
-          <div className="grid grid-cols-2 gap-3">
-            <input className={field} placeholder="Category" value={form.category} onChange={(e) => set("category", e.target.value)} />
-            <input className={field} placeholder="Author" value={form.author} onChange={(e) => set("author", e.target.value)} />
+    <form className="grid min-h-0 grid-rows-[minmax(0,1fr)_auto]" onSubmit={submit} noValidate>
+      <div className="min-h-0 space-y-6 overflow-y-auto px-5 py-5 sm:px-6">
+        {post?.source === "archive" && (
+          <div className="flex flex-col gap-2 rounded-xl border border-blue-500/20 bg-blue-500/5 p-3 text-xs text-muted-foreground sm:flex-row sm:items-center">
+            <Archive className="shrink-0 text-blue-600" size={16} />
+            <span className="flex-1">Imported post. Missing category means none could be recovered from the archive; you can add one below.</span>
+            {post.originalUrl && (
+              <a className="inline-flex items-center gap-1 font-medium text-violet-600 hover:underline" href={post.originalUrl} target="_blank" rel="noreferrer">
+                Original <ExternalLink size={12} />
+              </a>
+            )}
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <input className={field} placeholder="Tags (comma separated)" value={form.tags} onChange={(e) => set("tags", e.target.value)} />
-            <select className={field} value={form.status} onChange={(e) => set("status", e.target.value)}>
-              <option value="published">Published</option>
-              <option value="draft">Draft</option>
-            </select>
+        )}
+
+        <section className="space-y-4" aria-labelledby="blog-basics-heading">
+          <div>
+            <h4 id="blog-basics-heading" className="text-sm font-semibold">Post details</h4>
+            <p className="text-xs text-muted-foreground">Title, summary, permalink and ownership.</p>
           </div>
-          <textarea className={`${field} min-h-[220px] font-mono text-[13px]`} placeholder="Content (HTML / Markdown)" value={form.content} onChange={(e) => set("content", e.target.value)} />
-        </div>
-        <div className="flex gap-2 mt-5">
-          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl bg-secondary text-sm font-medium">Cancel</button>
-          <button onClick={() => mut.mutate()} disabled={!form.title || mut.isPending} className="flex-1 py-2.5 rounded-xl gradient-purple text-white text-sm font-semibold disabled:opacity-50">
-            {post ? "Save Changes" : "Create Post"}
-          </button>
-        </div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <Label htmlFor="blog-title">Title <span className="text-destructive">*</span></Label>
+              <span className="text-xs text-muted-foreground">{form.title.length}/{BLOG_FORM_LIMITS.title}</span>
+            </div>
+            <Input id="blog-title" className={inputClass("title")} maxLength={BLOG_FORM_LIMITS.title} value={form.title} onChange={(event) => set("title", event.target.value)} aria-invalid={!!errors.title} />
+            {errorText("title")}
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <Label htmlFor="blog-excerpt">Excerpt</Label>
+              <span className="text-xs text-muted-foreground">{form.excerpt.length}/{BLOG_FORM_LIMITS.excerpt}</span>
+            </div>
+            <Textarea id="blog-excerpt" className={textAreaClass("excerpt")} rows={3} maxLength={BLOG_FORM_LIMITS.excerpt} placeholder="Short summary shown on blog cards" value={form.excerpt} onChange={(event) => set("excerpt", event.target.value)} aria-invalid={!!errors.excerpt} />
+            {errorText("excerpt")}
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="blog-slug">Permalink slug</Label>
+              <Input id="blog-slug" className={inputClass("slug")} maxLength={120} placeholder="Generated from title when blank" value={form.slug} onChange={(event) => set("slug", event.target.value)} aria-invalid={!!errors.slug} />
+              <p className="truncate text-xs text-muted-foreground">/blog/{form.slug.trim() || "generated-from-title"}</p>
+              {errorText("slug")}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="blog-author">Author <span className="text-destructive">*</span></Label>
+              <Input id="blog-author" className={inputClass("author")} maxLength={BLOG_FORM_LIMITS.author} value={form.author} onChange={(event) => set("author", event.target.value)} aria-invalid={!!errors.author} />
+              {errorText("author")}
+            </div>
+          </div>
+        </section>
+
+        <section className="space-y-4 border-t border-border pt-5" aria-labelledby="blog-media-heading">
+          <div>
+            <h4 id="blog-media-heading" className="text-sm font-semibold">Media & organization</h4>
+            <p className="text-xs text-muted-foreground">Featured image, category and searchable tags.</p>
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1fr)_180px]">
+            <div className="space-y-2">
+              <Label htmlFor="blog-coverImageUrl">Cover image URL</Label>
+              <Input id="blog-coverImageUrl" className={inputClass("coverImageUrl")} inputMode="url" placeholder="https://…" value={form.coverImageUrl} onChange={(event) => set("coverImageUrl", event.target.value)} aria-invalid={!!errors.coverImageUrl} />
+              {errorText("coverImageUrl")}
+            </div>
+            <div className="flex h-24 items-center justify-center overflow-hidden rounded-xl border border-border bg-secondary/40">
+              {form.coverImageUrl && isHttpUrl(form.coverImageUrl) ? (
+                <img key={form.coverImageUrl} src={form.coverImageUrl} alt="Cover preview" className="h-full w-full object-cover" />
+              ) : (
+                <span className="px-3 text-center text-xs text-muted-foreground">Cover preview</span>
+              )}
+            </div>
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="blog-category">Category</Label>
+              <Input id="blog-category" className={inputClass("category")} list="blog-category-options" maxLength={BLOG_FORM_LIMITS.category} placeholder="e.g. Amazon Quiz" value={form.category} onChange={(event) => set("category", event.target.value)} aria-invalid={!!errors.category} />
+              <datalist id="blog-category-options">{categories.map((category) => <option key={category} value={category} />)}</datalist>
+              {errorText("category")}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="blog-tags">Tags</Label>
+              <Textarea id="blog-tags" className={textAreaClass("tags")} rows={3} placeholder={"Amazon\nQuiz\nRewards"} value={form.tags} onChange={(event) => set("tags", event.target.value)} aria-invalid={!!errors.tags} />
+              <p className="text-xs text-muted-foreground">One tag per line; commas inside a tag are preserved ({tags.length}/{BLOG_FORM_LIMITS.tags}).</p>
+              {tags.length > 0 && <div className="flex flex-wrap gap-1.5">{tags.slice(0, BLOG_FORM_LIMITS.tags).map((tag) => <Badge key={tag}>{tag}</Badge>)}</div>}
+              {errorText("tags")}
+            </div>
+          </div>
+        </section>
+
+        <section className="space-y-4 border-t border-border pt-5" aria-labelledby="blog-publishing-heading">
+          <div>
+            <h4 id="blog-publishing-heading" className="text-sm font-semibold">Publishing</h4>
+            <p className="text-xs text-muted-foreground">Drafts stay hidden from readers until published.</p>
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="blog-status">Status</Label>
+              <select id="blog-status" className={`${inputClass("status")} w-full border border-input bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring`} value={form.status} onChange={(event) => set("status", event.target.value as BlogStatus)}>
+                <option value="draft">Draft</option>
+                <option value="published">Published</option>
+              </select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="blog-publishedAt">Publish date (optional)</Label>
+              <Input id="blog-publishedAt" className={inputClass("publishedAt")} type="datetime-local" value={form.publishedAt} onChange={(event) => set("publishedAt", event.target.value)} aria-invalid={!!errors.publishedAt} />
+              {errorText("publishedAt")}
+            </div>
+          </div>
+        </section>
+
+        <section className="space-y-3 border-t border-border pt-5" aria-labelledby="blog-content-heading">
+          <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-end">
+            <div>
+              <h4 id="blog-content-heading" className="text-sm font-semibold">Content (HTML source)</h4>
+              <p className="text-xs text-muted-foreground">HTML is stored and rendered as-is. Markdown is not supported.</p>
+            </div>
+            <span className="text-xs text-muted-foreground">{form.content.length.toLocaleString()} characters</span>
+          </div>
+          <div className="flex flex-wrap gap-1 rounded-t-xl border border-b-0 border-input bg-secondary/40 p-2" aria-label="HTML formatting tools">
+            <Button type="button" size="sm" variant="ghost" title="Paragraph" onClick={() => insertMarkup("<p>", "</p>", "Paragraph text")}><Pilcrow /> Paragraph</Button>
+            <Button type="button" size="sm" variant="ghost" title="Heading 2" onClick={() => insertMarkup("<h2>", "</h2>", "Section heading")}><Heading2 /> Heading</Button>
+            <Button type="button" size="sm" variant="ghost" title="Bold" onClick={() => insertMarkup("<strong>", "</strong>", "bold text")}><Bold /> Bold</Button>
+            <Button type="button" size="sm" variant="ghost" title="Link" onClick={() => insertMarkup('<a href="https://example.com">', "</a>", "link text")}><LinkIcon /> Link</Button>
+            <Button type="button" size="sm" variant="ghost" title="Bulleted list" onClick={() => insertMarkup("<ul>\n  <li>", "</li>\n</ul>", "List item")}><List /> List</Button>
+          </div>
+          <Textarea
+            ref={contentRef}
+            id="blog-content"
+            className={`${textAreaClass("content")} min-h-[320px] rounded-t-none font-mono text-[13px] leading-5`}
+            placeholder="<p>Write the post content here…</p>"
+            value={form.content}
+            onChange={(event) => set("content", event.target.value)}
+            aria-invalid={!!errors.content}
+          />
+          {errorText("content")}
+        </section>
+
+        <details className="border-t border-border pt-5">
+          <summary className="cursor-pointer text-sm font-semibold">SEO settings</summary>
+          <p className="mt-1 text-xs text-muted-foreground">Leave blank to derive metadata from the title, excerpt and content.</p>
+          <div className="mt-4 space-y-4">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="blog-metaTitle">SEO title</Label>
+                <span className="text-xs text-muted-foreground">{form.metaTitle.length}/{BLOG_FORM_LIMITS.metaTitle}</span>
+              </div>
+              <Input id="blog-metaTitle" className={inputClass("metaTitle")} maxLength={BLOG_FORM_LIMITS.metaTitle} placeholder={form.title || "Defaults to post title"} value={form.metaTitle} onChange={(event) => set("metaTitle", event.target.value)} aria-invalid={!!errors.metaTitle} />
+              {errorText("metaTitle")}
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="blog-metaDescription">SEO description</Label>
+                <span className="text-xs text-muted-foreground">{form.metaDescription.length}/{BLOG_FORM_LIMITS.metaDescription}</span>
+              </div>
+              <Textarea id="blog-metaDescription" className={textAreaClass("metaDescription")} rows={3} maxLength={BLOG_FORM_LIMITS.metaDescription} placeholder="Defaults to excerpt or readable content" value={form.metaDescription} onChange={(event) => set("metaDescription", event.target.value)} aria-invalid={!!errors.metaDescription} />
+              {errorText("metaDescription")}
+            </div>
+            {post?.canonicalUrl && <p className="break-all text-xs text-muted-foreground">Canonical source: {post.canonicalUrl}</p>}
+          </div>
+        </details>
+
+        {serverError && (
+          <div className="flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive" role="alert">
+            <AlertCircle className="mt-0.5 shrink-0" size={16} /> {serverError}
+          </div>
+        )}
       </div>
-    </div>
+
+      <DialogFooter className="sticky bottom-0 gap-2 border-t border-border bg-background px-5 py-4 sm:px-6">
+        <Button type="button" variant="secondary" disabled={mutation.isPending} onClick={() => void onCancel()}>Cancel</Button>
+        <Button className="gradient-purple border-0 text-white" type="submit" disabled={mutation.isPending || (!!post && !dirty)}>
+          {mutation.isPending && <Loader2 className="animate-spin" />}
+          {mutation.isPending ? "Saving…" : post ? "Save Changes" : form.status === "published" ? "Create & Publish" : "Create Draft"}
+        </Button>
+      </DialogFooter>
+    </form>
   );
 }
