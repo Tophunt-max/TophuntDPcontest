@@ -129,7 +129,38 @@ async function hydrateViewerState(db: any, matches: any[], uid: string): Promise
 // light enough for D1 + the edge cache.
 const FEED_CANDIDATE_POOL = 150;
 const FEED_FOLLOW_BOOST = 3.0; // relationship is the strongest personal signal
-const FEED_VOTED_PENALTY = 1.5; // you already engaged → make room for fresh battles
+const FEED_VOTED_AFFINITY_BOOST = 1.5; // you've backed this creator before
+const FEED_VISIT_AFFINITY_BOOST = 1.0; // you've viewed this creator's profile
+const FEED_VOTED_PENALTY = 1.5; // you already voted on THIS battle → make room for fresh ones
+const FEED_DIVERSITY_WINDOW = 2; // don't repeat a participant within N neighbouring slots
+const FEED_AFFINITY_LOOKBACK = 500; // cap on how many past votes/visits we scan
+
+/**
+ * Spread out battles that share a participant so one creator can't dominate
+ * several consecutive slots (Instagram-style diversity pass). Greedy: keep the
+ * score order, but skip a candidate whose participant appeared in the last
+ * `window` picks and take the next distinct one instead.
+ */
+function diversifyFeed(items: any[], window: number): any[] {
+  if (items.length <= 2) return items;
+  const pool = items.slice();
+  const out: any[] = [];
+  const recent: string[] = [];
+  while (pool.length > 0) {
+    let idx = pool.findIndex((m) => {
+      const a = m.userA?.uid;
+      const b = m.userB?.uid;
+      return !(a && recent.includes(a)) && !(b && recent.includes(b));
+    });
+    if (idx === -1) idx = 0; // everything conflicts → take the best remaining
+    const [chosen] = pool.splice(idx, 1);
+    out.push(chosen);
+    if (chosen.userA?.uid) recent.push(chosen.userA.uid);
+    if (chosen.userB?.uid) recent.push(chosen.userB.uid);
+    while (recent.length > window * 2) recent.shift();
+  }
+  return out;
+}
 
 /** User-agnostic content score for one match (higher = show sooner). */
 function rankBaseScore(r: any, now: number): number {
@@ -199,11 +230,12 @@ async function servePersonalizedFeed(
 
   let ranked = candidates;
   if (uid && candidates.length > 0) {
-    const ids = candidates.map((m) => m.id);
     const participantUids = Array.from(
       new Set(candidates.flatMap((m) => [m.userA?.uid, m.userB?.uid]).filter(Boolean) as string[]),
     );
-    const [followRows, votedRows] = await Promise.all([
+    // Three cheap per-viewer affinity signals ("your history with this creator"):
+    //   follows (strongest), past votes (backed them before), profile visits.
+    const [followRows, voteRows, visitRows] = await Promise.all([
       participantUids.length
         ? db
             .select({ following: schema.follows.followingId })
@@ -212,23 +244,43 @@ async function servePersonalizedFeed(
             .all()
         : Promise.resolve([] as Array<{ following: string }>),
       db
-        .select({ matchId: schema.votes.matchId })
+        .select({ matchId: schema.votes.matchId, votedForUid: schema.votes.votedForUid })
         .from(schema.votes)
-        .where(and(eq(schema.votes.voterUid, uid), inArray(schema.votes.matchId, ids)))
+        .where(eq(schema.votes.voterUid, uid))
+        .limit(FEED_AFFINITY_LOOKBACK)
+        .all(),
+      db
+        .select({ userId: schema.profileVisits.userId })
+        .from(schema.profileVisits)
+        .where(eq(schema.profileVisits.visitorId, uid))
+        .limit(FEED_AFFINITY_LOOKBACK)
         .all(),
     ]);
     const followSet = new Set((followRows as Array<{ following: string }>).map((r) => r.following));
-    const votedSet = new Set((votedRows as Array<{ matchId: string }>).map((r) => r.matchId));
+    // Same scan gives both the affinity set (creators backed) and the novelty
+    // set (this exact battle already voted on).
+    const votedForSet = new Set((voteRows as Array<{ votedForUid: string }>).map((r) => r.votedForUid));
+    const votedMatchSet = new Set((voteRows as Array<{ matchId: string }>).map((r) => r.matchId));
+    const visitedSet = new Set((visitRows as Array<{ userId: string }>).map((r) => r.userId));
+
     ranked = candidates
       .map((m) => {
+        const a = m.userA?.uid;
+        const b = m.userB?.uid;
         let s = m._base as number;
-        if (followSet.has(m.userA?.uid) || followSet.has(m.userB?.uid)) s += FEED_FOLLOW_BOOST;
-        if (votedSet.has(m.id)) s -= FEED_VOTED_PENALTY;
+        if (followSet.has(a) || followSet.has(b)) s += FEED_FOLLOW_BOOST;
+        if (votedForSet.has(a) || votedForSet.has(b)) s += FEED_VOTED_AFFINITY_BOOST;
+        if (visitedSet.has(a) || visitedSet.has(b)) s += FEED_VISIT_AFFINITY_BOOST;
+        if (votedMatchSet.has(m.id)) s -= FEED_VOTED_PENALTY;
         return { m, s };
       })
       .sort((a, b) => b.s - a.s)
       .map((x) => x.m);
   }
+
+  // Diversity pass (applied for everyone) so a single creator doesn't stack up
+  // several battles in a row.
+  ranked = diversifyFeed(ranked, FEED_DIVERSITY_WINDOW);
 
   const offset = cursorRaw ? Math.max(parseInt(cursorRaw, 10) || 0, 0) : 0;
   const pageItems = ranked.slice(offset, offset + limit).map((m) => {
