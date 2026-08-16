@@ -18,6 +18,7 @@ import { getRewardSettings } from "../lib/settings";
 import { setOtp, generateOtp, verifyOtp } from "../lib/otp";
 import { validatePasswordStrength } from "../lib/password";
 import { rateLimit, enforceSendCooldown, markSent, clientIp } from "../lib/rateLimit";
+import { assertIdentifiersAvailable } from "../lib/userIdentifiers";
 
 /** Per-recipient cooldown between OTP sends (seconds). */
 const OTP_SEND_COOLDOWN = 60;
@@ -62,32 +63,6 @@ function validateUsername(username: string): string {
     throw httpsError("invalid-argument", "Username can only contain letters, numbers, underscores, and dots.");
   if (RESERVED_USERNAMES.has(lower)) throw httpsError("invalid-argument", "This username is reserved and cannot be used.");
   return lower;
-}
-
-/**
- * Enforce identifier uniqueness at WRITE time. The client-side `check` action
- * is only advisory (TOCTOU: a username/phone can be taken between the check and
- * the final create). This closes that race server-side, and — together with the
- * DB unique indexes added in migration 0012 — guarantees no two accounts can
- * share a username, email or phone. A conflicting value owned by a DIFFERENT
- * uid is rejected; the same uid updating its own row is allowed (re-runs).
- */
-async function assertIdentifiersAvailable(
-  env: Env,
-  uid: string,
-  ids: { username?: string | null; email?: string | null; phone?: string | null },
-): Promise<void> {
-  const db = getDb(env);
-  const checks: Array<{ col: any; val: string | null; field: string }> = [
-    { col: schema.users.username, val: ids.username ? String(ids.username).toLowerCase() : null, field: "Username" },
-    { col: schema.users.email, val: ids.email ? String(ids.email).toLowerCase() : null, field: "Email" },
-    { col: schema.users.phone, val: normalizePhone(ids.phone), field: "Phone number" },
-  ];
-  for (const { col, val, field } of checks) {
-    if (!val) continue;
-    const row = await db.select({ uid: schema.users.uid }).from(schema.users).where(eq(col, val)).get();
-    if (row && row.uid !== uid) throw httpsError("already-exists", `${field} is already in use.`);
-  }
 }
 
 async function createUserProfile(env: Env, uid: string, data: any, signupBonus: number) {

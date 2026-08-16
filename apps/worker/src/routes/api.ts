@@ -20,6 +20,7 @@ import { setCustomClaims } from "../lib/firebaseAdmin";
 import { publish, publishMany } from "../lib/publish";
 import { castVote, bumpEngagement } from "../lib/voteCounter";
 import { rateLimit } from "../lib/rateLimit";
+import { assertIdentifiersAvailable, normalizePhone } from "../lib/userIdentifiers";
 import { enforceIdempotency, releaseIdempotency } from "../lib/idempotency";
 import {
   contestDetailCacheKey,
@@ -1290,8 +1291,16 @@ apiRoute.post("/", async (c) => {
         if (k === "action" || k === "uid" || v === undefined) continue;
         if (k === "avatarUrl" || k === "profileImageUrl") set.profileImageUrl = v;
         else if (k === "username") set.username = String(v).toLowerCase();
+        else if (k === "phone") set.phone = normalizePhone(v as string);
         else if (COLUMN_KEYS.has(k)) set[k] = v;
         else extraPatch[k] = v;
+      }
+      // Enforce identifier uniqueness on edits too (createUserProfile already
+      // does this at signup). Without it, two users could take the same username
+      // or phone via profile edit — a duplicate-account bug that would otherwise
+      // only surface as a raw UNIQUE-constraint 500.
+      if (set.username || set.phone) {
+        await assertIdentifiersAvailable(env, uid, { username: set.username, phone: set.phone });
       }
       if (Object.keys(extraPatch).length) {
         const cur = await db.select({ extra: schema.users.extra }).from(schema.users).where(eq(schema.users.uid, uid)).get();
