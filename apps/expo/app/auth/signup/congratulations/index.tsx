@@ -64,6 +64,19 @@ export default function CongratulationsScreen() {
             } catch (verifyErr) {
               console.warn("sendEmailVerification failed", verifyErr);
             }
+
+            // Apply the follow selections made on the "Follow Someone" step. For
+            // email signups the account only exists now, so these couldn't be
+            // persisted live (unlike social/phone signups, which are already
+            // authenticated by then). Best-effort — never block signup.
+            const toFollow = signupData.following || [];
+            for (const targetUserId of toFollow) {
+              try {
+                await callApi("toggleFollow", { targetUserId });
+              } catch (followErr) {
+                console.warn("follow apply failed for", targetUserId, followErr);
+              }
+            }
         } else {
             if (!signupData.username) {
                 throw new Error("Username is required to complete your profile.");

@@ -77,8 +77,15 @@ export default function FollowSomeone() {
     } else {
       newFollowList.push(id);
     }
-    
+
     setMultiple({ following: newFollowList });
+
+    // For email signups the Firebase account does NOT exist yet (it's created on
+    // the final "congratulations" step), so we are unauthenticated here and the
+    // toggleFollow API would 401. In that case we only record the selection
+    // locally and apply it after sign-in (see congratulations). Social/phone
+    // signups authenticate before this step, so we persist immediately.
+    if (!auth.currentUser) return;
 
     try {
       await toggleFollowService(id);

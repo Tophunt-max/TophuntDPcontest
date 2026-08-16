@@ -14,6 +14,9 @@ interface SignupData {
   password?: string;
   referralCode?: string;
   authProvider: 'email' | 'phone' | 'google' | 'facebook' | 'apple';
+  // Captured silently on the fill-profile step and used to sort suggested
+  // users by proximity on the follow-someone step.
+  coordinates?: { lat: number; lng: number };
 }
 
 interface SignupStore {

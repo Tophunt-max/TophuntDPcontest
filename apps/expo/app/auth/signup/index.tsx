@@ -186,7 +186,7 @@ export default function SignupEntryScreen() {
           password: data.password,
           authProvider: 'email'
       });
-      addToast("Email verified! Let's complete your profile.", "success");
+      addToast("Looks good! Let's complete your profile.", "success");
       router.push("/auth/signup/fill-profile");
     } catch (error) {
       console.error("Signup error", error);
