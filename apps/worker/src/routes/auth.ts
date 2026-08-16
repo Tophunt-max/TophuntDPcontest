@@ -13,6 +13,7 @@ import {
   createAuthUser,
   getUserByEmail,
   updateAuthUser,
+  deleteAuthUser,
 } from "../lib/firebaseAdmin";
 import { getRewardSettings } from "../lib/settings";
 import { setOtp, generateOtp, verifyOtp } from "../lib/otp";
@@ -74,6 +75,13 @@ async function createUserProfile(env: Env, uid: string, data: any, signupBonus: 
     email: data.email,
     phone: data.phone,
   });
+  // Idempotency: the signup bonus must be granted at most once per uid, even if
+  // this runs again on a retried/interrupted signup.
+  const alreadyExisted = await db
+    .select({ uid: schema.users.uid })
+    .from(schema.users)
+    .where(eq(schema.users.uid, uid))
+    .get();
   await db
     .insert(schema.users)
     .values({
@@ -107,7 +115,7 @@ async function createUserProfile(env: Env, uid: string, data: any, signupBonus: 
       },
     });
 
-  if (signupBonus > 0) {
+  if (!alreadyExisted && signupBonus > 0) {
     await db.insert(schema.coinTransactions).values({
       id: newId(),
       uid,
@@ -176,22 +184,50 @@ authRoute.post("/", async (c) => {
       validatePasswordStrength(password);
       const validatedUsername = validateUsername(username);
 
-      const newUid = await createAuthUser(env, {
-        email,
-        password,
-        displayName: validatedUsername,
-        photoUrl: avatarUrl || null,
-      });
+      // Idempotent create: if a previous attempt was interrupted (e.g. the auth
+      // user was created but the profile write or client sign-in failed), a
+      // retry with the SAME email must not dead-end on EMAIL_EXISTS. We adopt an
+      // existing auth account ONLY when it has no completed profile yet (i.e. an
+      // orphan from a failed attempt) and re-set its password to the caller's,
+      // so a real, completed account can never be taken over.
+      let newUid: string;
+      let createdFresh = false;
+      try {
+        newUid = await createAuthUser(env, {
+          email,
+          password,
+          displayName: validatedUsername,
+          photoUrl: avatarUrl || null,
+        });
+        createdFresh = true;
+      } catch (e: any) {
+        if (e?.code !== "already-exists") throw e;
+        const existingUid = await getUserByEmail(env, email);
+        if (!existingUid) throw httpsError("already-exists", "Email already registered.");
+        const existingProfile = await db
+          .select({ signupCompleted: schema.users.signupCompleted })
+          .from(schema.users)
+          .where(eq(schema.users.uid, existingUid))
+          .get();
+        if (existingProfile?.signupCompleted)
+          throw httpsError("already-exists", "Email already registered.");
+        // Orphaned/incomplete auth account → safe to resume this signup.
+        await updateAuthUser(env, existingUid, { password });
+        newUid = existingUid;
+      }
 
       try {
         const reward = await getRewardSettings(env);
         await createUserProfile(env, newUid, { ...body, username: validatedUsername }, reward.signupBonus || 0);
         return c.json({ status: "success", uid: newUid, message: "User created successfully" });
-      } catch (e) {
-        // roll back the auth user if the profile write fails
-        const { deleteAuthUser } = await import("../lib/firebaseAdmin");
-        await deleteAuthUser(env, newUid).catch(() => {});
-        throw httpsError("internal", "Firestore profile creation failed.");
+      } catch (e: any) {
+        // Roll back ONLY an auth user we freshly minted in this call — never an
+        // adopted pre-existing account.
+        if (createdFresh) await deleteAuthUser(env, newUid).catch(() => {});
+        // Preserve friendly ApiError codes (e.g. "Username is already in use.")
+        // instead of masking them as a generic internal error.
+        if (e?.code) throw e;
+        throw httpsError("internal", "Profile creation failed.");
       }
     }
 
