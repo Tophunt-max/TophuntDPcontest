@@ -71,7 +71,7 @@ app.use("*", async (c, next) => {
   const origins = (c.env.ALLOWED_ORIGINS || "*").split(",").map((s) => s.trim());
   const mw = cors({
     origin: origins.length === 1 && origins[0] === "*" ? "*" : origins,
-    allowMethods: ["GET", "POST", "OPTIONS"],
+    allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allowHeaders: ["Content-Type", "Authorization"],
     exposeHeaders: ["X-Next-Cursor", "X-Request-Id"],
     maxAge: 86400,
@@ -105,18 +105,22 @@ app.get("/media/*", async (c) => {
   const url = new URL(c.req.url);
   const key = decodeURIComponent(url.pathname.replace(/^\/media\//, "")).replace(/^\/+/, "");
   if (!key) return c.text("Not found", 404);
+  // Contest banners have an explicit deletion lifecycle. Never place them in
+  // the distributed Cache API or immutable browser caches, otherwise a removed
+  // banner can remain public in another colo for up to a year.
+  const hasDeletionLifecycle = key.startsWith("contest-banners/images/");
 
-  // Edge-cache media at the Cloudflare colo. Media keys are content-hash / uuid
-  // addressed and immutable, so once cached a repeat view is served from the
-  // edge WITHOUT an R2 GET (no R2 Class-B op) and with near-zero Worker CPU.
-  // This is the single biggest R2 read-cost saver for a media-heavy app.
+  // Edge-cache immutable media at the Cloudflare colo. Contest banners are
+  // intentionally served directly from R2 because they can be deleted.
   const cache = (caches as any).default as Cache;
   const cacheKey = new Request(url.toString(), { method: "GET" });
-  try {
-    const hit = await cache.match(cacheKey);
-    if (hit) return hit;
-  } catch {
-    /* cache unavailable — fall through to R2 */
+  if (!hasDeletionLifecycle) {
+    try {
+      const hit = await cache.match(cacheKey);
+      if (hit) return hit;
+    } catch {
+      /* cache unavailable — fall through to R2 */
+    }
   }
 
   const obj = await c.env.MEDIA.get(key);
@@ -124,13 +128,18 @@ app.get("/media/*", async (c) => {
   const headers = new Headers();
   obj.writeHttpMetadata(headers);
   headers.set("etag", obj.httpEtag);
-  headers.set("Cache-Control", "public, max-age=31536000, immutable");
+  headers.set(
+    "Cache-Control",
+    hasDeletionLifecycle ? "no-store" : "public, max-age=31536000, immutable",
+  );
   const res = new Response(obj.body, { headers });
-  // Populate the edge cache so future views skip R2 entirely.
-  try {
-    c.executionCtx.waitUntil(cache.put(cacheKey, res.clone()));
-  } catch {
-    /* best-effort */
+  // Populate the edge cache only for media without a deletion lifecycle.
+  if (!hasDeletionLifecycle) {
+    try {
+      c.executionCtx.waitUntil(cache.put(cacheKey, res.clone()));
+    } catch {
+      /* best-effort */
+    }
   }
   return res;
 });

@@ -78,6 +78,98 @@ export interface BlogStats {
   imported: number;
 }
 
+export type ContestType = "photo" | "video";
+export type ContestStatus = "live" | "upcoming" | "paused" | "ended";
+
+export interface AdminContest {
+  id: string;
+  title: string | null;
+  name: string | null;
+  type: ContestType;
+  status: ContestStatus;
+  bannerUrl: string | null;
+  totalEntryFee: number;
+  entryFishCoins: number;
+  rewardCoins: number;
+  prizePool: number;
+  voteDurationDays: number;
+  autoCancelHours: number;
+  minVotes: number;
+  description: string | null;
+  rules: string | null;
+  createdBy: string | null;
+  createdAt: number;
+  totalMatches: number;
+  waitingMatches: number;
+  activeMatches: number;
+}
+
+export interface ContestWritePayload {
+  title: string;
+  description: string | null;
+  rules: string | null;
+  type: ContestType;
+  status: ContestStatus;
+  bannerUrl: string | null;
+  totalEntryFee: number;
+  rewardCoins: number;
+  voteDurationDays: number;
+  autoCancelHours: number;
+  minVotes: number;
+}
+
+export interface ContestBannerUpload {
+  fileKey: string;
+  publicUrl: string;
+}
+
+export type UploadProgressHandler = (percent: number) => void;
+
+function parseApiErrorPayload(text: string, fallback: string): { message: string; code?: string } {
+  try {
+    const payload = JSON.parse(text) as { error?: { message?: string; status?: string }; message?: string };
+    return {
+      message: payload.error?.message || payload.message || fallback,
+      code: payload.error?.status,
+    };
+  } catch {
+    return { message: fallback };
+  }
+}
+
+/** Raw authenticated upload with browser-native progress reporting. */
+async function uploadContestBanner(
+  file: File,
+  onProgress?: UploadProgressHandler,
+): Promise<ContestBannerUpload> {
+  const send = async (forceToken: boolean): Promise<{ status: number; statusText: string; body: string }> => {
+    const token = await idToken(forceToken);
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${BASE}/admin/media/contest-banner`);
+      xhr.setRequestHeader("Content-Type", file.type);
+      if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress?.(Math.round((event.loaded / event.total) * 100));
+      };
+      xhr.onerror = () => reject(new ApiError("Banner upload failed. Check your connection and try again.", 0));
+      xhr.onabort = () => reject(new ApiError("Banner upload was cancelled.", 0));
+      xhr.onload = () => resolve({ status: xhr.status, statusText: xhr.statusText, body: xhr.responseText });
+      xhr.send(file);
+    });
+  };
+
+  onProgress?.(0);
+  let response = await send(false);
+  if (response.status === 401) response = await send(true);
+  if (response.status < 200 || response.status >= 300) {
+    const error = parseApiErrorPayload(response.body, response.statusText || "Banner upload failed.");
+    throw new ApiError(error.message, response.status, error.code);
+  }
+  onProgress?.(100);
+  return JSON.parse(response.body) as ContestBannerUpload;
+}
+
 /**
  * Core request helper. Attaches the Firebase ID token as a Bearer header — the
  * Worker's /admin gate verifies it and checks the admin role. On a 401 it
@@ -171,9 +263,16 @@ export const api = {
     post(`/admin/users/${id}/grant`, payload),
 
   // contests
-  contests: () => get<any[]>("/admin/contests"),
-  createContest: (payload: any) => post("/admin/contests", payload),
-  deleteContest: (id: string) => del(`/admin/contests/${id}`),
+  contests: () => get<AdminContest[]>("/admin/contests"),
+  createContest: (payload: ContestWritePayload) =>
+    post<{ success: true; contestId: string; id: string }>("/admin/contests", payload),
+  updateContest: (id: string, payload: Partial<ContestWritePayload>) =>
+    patch<{ message: string; id: string }>(`/admin/contests/${encodeURIComponent(id)}`, payload),
+  deleteContest: (id: string) =>
+    del<{ message: string }>(`/admin/contests/${encodeURIComponent(id)}`),
+  uploadContestBanner,
+  deleteContestBanner: (url: string) =>
+    req<{ success: true }>("DELETE", "/admin/media/contest-banner", { url }),
 
   // posts / stories (moderation)
   posts: () => get<any[]>("/admin/posts"),
@@ -229,8 +328,7 @@ export const api = {
   appSettings: () => get<any>("/admin/app-settings"),
   saveAppSettings: (payload: any) => post("/admin/app-settings", payload),
 
-  // contest editing / matches (battles)
-  updateContest: (id: string, payload: any) => patch(`/admin/contests/${id}`, payload),
+  // contest matches (battles)
   matches: (status?: string) =>
     get<any[]>(`/admin/matches${status ? `?status=${encodeURIComponent(status)}` : ""}`),
   match: (id: string) => get<any>(`/admin/matches/${id}`),

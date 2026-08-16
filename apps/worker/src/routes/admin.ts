@@ -23,7 +23,26 @@ import { settleRefund, settleWinner } from "../lib/contestSettlement";
 import { resolveContests, monthlyHallOfFame } from "../cron";
 import { newId, now } from "../lib/ids";
 import { discoverUrls, processBatch } from "../lib/importerTask";
-import { blogListCacheKey, blogPostCacheKey, delCache } from "../lib/cache";
+import {
+  blogListCacheKey,
+  blogPostCacheKey,
+  contestDetailCacheKey,
+  contestListCacheKeys,
+  delCache,
+} from "../lib/cache";
+import {
+  contestBannerUrl,
+  cleanContestExtra,
+  createContestExtra,
+  hasOwn,
+  isRecord,
+  validateContestInput,
+} from "../lib/contestAdmin";
+import {
+  contestBannerKeyFromPublicUrl,
+  deleteContestBannerByPublicUrl,
+  uploadToR2,
+} from "../lib/r2";
 
 /**
  * Record a sensitive admin action in the audit trail. Best-effort — never
@@ -161,12 +180,146 @@ adminRoute.post("/rewards", async (c) => {
 });
 
 // ---- contests ----
+const CONTEST_BANNER_MAX_BYTES = 5 * 1024 * 1024;
+const CONTEST_BANNER_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
+
+function contestBannerCandidates(row: any): string[] {
+  const extra = isRecord(row?.extra) ? row.extra : {};
+  return [...new Set([row?.bannerUrl, extra.bannerUrl, extra.bannerImageUrl].filter((url): url is string => typeof url === "string" && !!url))];
+}
+
+async function contestMatchCounts(db: ReturnType<typeof getDb>, contestId: string): Promise<{ waiting: number; active: number }> {
+  const result = await db
+    .select({
+      waiting: sql<number>`COALESCE(SUM(CASE WHEN ${schema.contestMatches.status} = 'waiting_for_opponent' THEN 1 ELSE 0 END), 0)`,
+      active: sql<number>`COALESCE(SUM(CASE WHEN ${schema.contestMatches.status} = 'active' THEN 1 ELSE 0 END), 0)`,
+    })
+    .from(schema.contestMatches)
+    .where(eq(schema.contestMatches.contestId, contestId))
+    .get();
+  return { waiting: Number(result?.waiting ?? 0), active: Number(result?.active ?? 0) };
+}
+
+async function contestBannerKeyIsAttached(
+  db: ReturnType<typeof getDb>,
+  env: Env,
+  key: string,
+): Promise<boolean> {
+  const rows = await db.select({ bannerUrl: schema.contests.bannerUrl, extra: schema.contests.extra }).from(schema.contests).all();
+  return rows.some((row) =>
+    contestBannerCandidates(row).some((url) => contestBannerKeyFromPublicUrl(env, url) === key),
+  );
+}
+
+async function cleanupUnattachedContestBanners(c: any, urls: string[]): Promise<void> {
+  try {
+    const db = getDb(c.env);
+    for (const url of new Set(urls)) {
+      const key = contestBannerKeyFromPublicUrl(c.env, url);
+      if (!key) continue;
+      if (!(await contestBannerKeyIsAttached(db, c.env, key))) await deleteContestBannerByPublicUrl(c.env, url);
+    }
+  } catch (e) {
+    console.error("[r2] contest banner cleanup failed (continuing)", e);
+  }
+}
+
+async function invalidateContestCaches(env: Env, id: string): Promise<void> {
+  await delCache(env, ...contestListCacheKeys(), contestDetailCacheKey(id));
+}
+
+function detectedContestBannerMime(bytes: Uint8Array): typeof CONTEST_BANNER_MIME_TYPES[number] | null {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (
+    bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47 &&
+    bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a
+  ) return "image/png";
+  if (
+    bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+    bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50
+  ) return "image/webp";
+  return null;
+}
+
+adminRoute.post("/media/contest-banner", async (c) => {
+  requireFullAdmin(c);
+  const fileType = (c.req.header("Content-Type") || "").split(";")[0].trim().toLowerCase();
+  if (!CONTEST_BANNER_MIME_TYPES.includes(fileType as any)) {
+    throw httpsError("invalid-argument", "Contest banners must be JPEG, PNG, or WebP images.");
+  }
+
+  const contentLength = c.req.header("Content-Length");
+  if (contentLength !== undefined) {
+    const declaredBytes = Number(contentLength);
+    if (!Number.isSafeInteger(declaredBytes) || declaredBytes < 0) {
+      throw httpsError("invalid-argument", "Invalid Content-Length.");
+    }
+    if (declaredBytes > CONTEST_BANNER_MAX_BYTES) {
+      throw httpsError("invalid-argument", "File too large (max 5MB).");
+    }
+  }
+
+  const body = await c.req.arrayBuffer();
+  if (!body.byteLength) throw httpsError("invalid-argument", "Empty upload.");
+  if (body.byteLength > CONTEST_BANNER_MAX_BYTES) throw httpsError("invalid-argument", "File too large (max 5MB).");
+  if (detectedContestBannerMime(new Uint8Array(body)) !== fileType) {
+    throw httpsError("invalid-argument", "File contents do not match the declared image type.");
+  }
+
+  const uploaded = await uploadToR2(c.env, fileType, "contest-banners", body);
+  await logAudit(c, "contest.banner.upload", "contest-banner", uploaded.fileKey, { publicUrl: uploaded.publicUrl });
+  return c.json(uploaded);
+});
+
+adminRoute.delete("/media/contest-banner", async (c) => {
+  requireFullAdmin(c);
+  const body = await c.req.json<unknown>();
+  if (!isRecord(body) || typeof body.url !== "string") {
+    throw httpsError("invalid-argument", "url must be an owned contest-banner URL.");
+  }
+  const key = contestBannerKeyFromPublicUrl(c.env, body.url);
+  if (!key) throw httpsError("invalid-argument", "url must be an owned contest-banner URL.");
+  const db = getDb(c.env);
+  if (await contestBannerKeyIsAttached(db, c.env, key)) {
+    throw httpsError("failed-precondition", "Cannot delete a banner that is attached to a contest.");
+  }
+  await deleteContestBannerByPublicUrl(c.env, body.url);
+  await logAudit(c, "contest.banner.delete", "contest-banner", body.url);
+  return c.json({ success: true });
+});
+
 adminRoute.delete("/contests/:id", async (c) => {
   requireFullAdmin(c);
   const db = getDb(c.env);
   const id = c.req.param("id");
-  await db.delete(schema.contests).where(eq(schema.contests.id, id));
-  await logAudit(c, "contest.delete", "contest", id);
+  const current = await db.select().from(schema.contests).where(eq(schema.contests.id, id)).get();
+  if (!current) throw httpsError("not-found", "Contest not found.");
+  if (current.status === "live") throw httpsError("failed-precondition", "Live contests cannot be deleted.");
+  const matches = await contestMatchCounts(db, id);
+  if (matches.waiting || matches.active) {
+    throw httpsError("failed-precondition", "Contests with waiting or active matches cannot be deleted.");
+  }
+
+  const deleted = await db
+    .delete(schema.contests)
+    .where(and(
+      eq(schema.contests.id, id),
+      sql`(${schema.contests.status} IS NULL OR ${schema.contests.status} <> 'live')`,
+      sql`NOT EXISTS (
+        SELECT 1 FROM ${schema.contestMatches}
+        WHERE ${schema.contestMatches.contestId} = ${id}
+          AND ${schema.contestMatches.status} IN ('waiting_for_opponent', 'active')
+      )`,
+    ))
+    .run();
+  if (deleted.meta.changes === 0) {
+    const stillExists = await db.select({ id: schema.contests.id }).from(schema.contests).where(eq(schema.contests.id, id)).get();
+    if (!stillExists) throw httpsError("not-found", "Contest not found.");
+    throw httpsError("failed-precondition", "Contest became ineligible for deletion; refresh and try again.");
+  }
+  await invalidateContestCaches(c.env, id);
+  await logAudit(c, "contest.delete", "contest", id, { previous: current });
+  await cleanupUnattachedContestBanners(c, contestBannerCandidates(current));
   return c.json({ message: "Contest deleted successfully" });
 });
 
@@ -175,23 +328,85 @@ adminRoute.patch("/contests/:id", async (c) => {
   requireFullAdmin(c);
   const db = getDb(c.env);
   const id = c.req.param("id");
-  const b = await c.req.json<any>();
+  const body = await c.req.json<unknown>();
+  const { recognized, values } = validateContestInput(body, false);
+  if (!recognized) throw httpsError("invalid-argument", "At least one recognized contest field is required.");
+
   const current = await db.select().from(schema.contests).where(eq(schema.contests.id, id)).get();
   if (!current) throw httpsError("not-found", "Contest not found.");
-  const set: any = {};
-  if (b.title !== undefined || b.name !== undefined) set.title = b.title ?? b.name;
-  if (b.type !== undefined) set.type = b.type;
-  if (b.status !== undefined) set.status = b.status;
-  if (b.totalEntryFee !== undefined || b.entryFishCoins !== undefined)
-    set.totalEntryFee = Number(b.totalEntryFee ?? b.entryFishCoins);
-  if (b.rewardCoins !== undefined || b.prizePool !== undefined)
-    set.rewardCoins = Number(b.rewardCoins ?? b.prizePool);
-  if (b.voteDurationDays !== undefined) set.voteDurationDays = Number(b.voteDurationDays);
-  if (b.autoCancelHours !== undefined) set.autoCancelHours = Number(b.autoCancelHours);
-  if (b.minVotes !== undefined) set.minVotes = Number(b.minVotes);
-  if (b.bannerUrl !== undefined) set.bannerUrl = b.bannerUrl || null;
-  await db.update(schema.contests).set(set).where(eq(schema.contests.id, id));
+
+  const matches = await contestMatchCounts(db, id);
+  if (hasOwn(values, "status") && current.status === "live" && values.status !== "live" && matches.waiting) {
+    throw httpsError("failed-precondition", "Cannot move a live contest while waiting matches exist.");
+  }
+  if (hasOwn(values, "rewardCoins") && values.rewardCoins !== Number(current.rewardCoins ?? 0) && matches.active) {
+    throw httpsError("failed-precondition", "Cannot change rewards while active matches exist.");
+  }
+  if (
+    hasOwn(values, "voteDurationDays") &&
+    values.voteDurationDays !== Number(current.voteDurationDays ?? 1) &&
+    matches.waiting
+  ) {
+    throw httpsError("failed-precondition", "Cannot change vote duration while waiting matches exist.");
+  }
+
+  const currentExtra = isRecord(current.extra) ? current.extra : {};
+  const set: Record<string, any> = {};
+  for (const field of [
+    "title", "type", "status", "totalEntryFee", "rewardCoins", "voteDurationDays", "autoCancelHours", "minVotes", "bannerUrl",
+  ]) {
+    if (hasOwn(values, field)) set[field] = values[field];
+  }
+  // Migrate a legacy extra-only banner before removing stale canonical copies.
+  if (!hasOwn(set, "bannerUrl") && !current.bannerUrl && typeof (currentExtra.bannerUrl ?? currentExtra.bannerImageUrl) === "string") {
+    set.bannerUrl = currentExtra.bannerUrl ?? currentExtra.bannerImageUrl;
+  }
+  const extra = cleanContestExtra(currentExtra);
+  if (hasOwn(values, "description")) extra.description = values.description;
+  if (hasOwn(values, "rules")) extra.rules = values.rules;
+  set.extra = extra;
+
+  const finalStatus = hasOwn(set, "status") ? set.status : current.status;
+  const finalBanner = hasOwn(set, "bannerUrl") ? set.bannerUrl : current.bannerUrl;
+  if (
+    finalStatus === "live" &&
+    !contestBannerUrl(finalBanner) &&
+    (current.status !== "live" || hasOwn(set, "bannerUrl"))
+  ) {
+    throw httpsError("failed-precondition", "A banner is required before a contest can go live.");
+  }
+
+  const oldBanners = contestBannerCandidates(current);
+  const updateConditions: any[] = [eq(schema.contests.id, id)];
+  if (current.status === "live" && set.status !== undefined && set.status !== "live") {
+    updateConditions.push(sql`NOT EXISTS (
+      SELECT 1 FROM ${schema.contestMatches}
+      WHERE ${schema.contestMatches.contestId} = ${id}
+        AND ${schema.contestMatches.status} = 'waiting_for_opponent'
+    )`);
+  }
+  if (set.rewardCoins !== undefined && set.rewardCoins !== Number(current.rewardCoins ?? 0)) {
+    updateConditions.push(sql`NOT EXISTS (
+      SELECT 1 FROM ${schema.contestMatches}
+      WHERE ${schema.contestMatches.contestId} = ${id}
+        AND ${schema.contestMatches.status} = 'active'
+    )`);
+  }
+  if (set.voteDurationDays !== undefined && set.voteDurationDays !== Number(current.voteDurationDays ?? 1)) {
+    updateConditions.push(sql`NOT EXISTS (
+      SELECT 1 FROM ${schema.contestMatches}
+      WHERE ${schema.contestMatches.contestId} = ${id}
+        AND ${schema.contestMatches.status} = 'waiting_for_opponent'
+    )`);
+  }
+
+  const updated = await db.update(schema.contests).set(set).where(and(...updateConditions)).run();
+  if (updated.meta.changes === 0) {
+    throw httpsError("failed-precondition", "Contest activity changed while saving. Refresh and try again.");
+  }
+  await invalidateContestCaches(c.env, id);
   await logAudit(c, "contest.update", "contest", id, set);
+  await cleanupUnattachedContestBanners(c, oldBanners);
   return c.json({ message: "Contest updated", id });
 });
 
@@ -1176,22 +1391,64 @@ adminRoute.get("/stories", async (c) => {
 
 adminRoute.get("/contests", async (c) => {
   const db = getDb(c.env);
-  const rows = await db.select().from(schema.contests).orderBy(desc(schema.contests.createdAt)).all();
-  return c.json(
-    rows.map((r) => ({
-      id: r.id,
-      ...(r.extra as any || {}),
-      name: r.title,
-      type: r.type,
-      status: r.status,
-      entryFishCoins: r.totalEntryFee,
-      prizePool: r.rewardCoins,
-      minVotes: r.minVotes,
-      createdAt: r.createdAt,
-      // voteDurationDays used to derive an end date for the list UI
-      endDate: r.createdAt ? r.createdAt + (r.voteDurationDays || 1) * 86400000 : null,
-    })),
-  );
+  const rows = await db
+    .select({
+      id: schema.contests.id,
+      title: schema.contests.title,
+      type: schema.contests.type,
+      status: schema.contests.status,
+      bannerUrl: schema.contests.bannerUrl,
+      totalEntryFee: schema.contests.totalEntryFee,
+      rewardCoins: schema.contests.rewardCoins,
+      voteDurationDays: schema.contests.voteDurationDays,
+      autoCancelHours: schema.contests.autoCancelHours,
+      minVotes: schema.contests.minVotes,
+      extra: schema.contests.extra,
+      createdBy: schema.contests.createdBy,
+      createdAt: schema.contests.createdAt,
+      totalMatches: count(schema.contestMatches.id),
+      waitingMatches: sql<number>`COALESCE(SUM(CASE WHEN ${schema.contestMatches.status} = 'waiting_for_opponent' THEN 1 ELSE 0 END), 0)`,
+      activeMatches: sql<number>`COALESCE(SUM(CASE WHEN ${schema.contestMatches.status} = 'active' THEN 1 ELSE 0 END), 0)`,
+    })
+    .from(schema.contests)
+    .leftJoin(schema.contestMatches, eq(schema.contestMatches.contestId, schema.contests.id))
+    .groupBy(schema.contests.id)
+    .orderBy(desc(schema.contests.createdAt))
+    .all();
+
+  return c.json(rows.map((row) => {
+    const extra = isRecord(row.extra) ? row.extra : {};
+    return {
+      id: row.id,
+      title: row.title,
+      name: row.title,
+      type: row.type,
+      status: row.status,
+      // Fall back only for legacy rows; any subsequent edit migrates this URL
+      // into the canonical physical column and removes stale extra aliases.
+      bannerUrl: row.bannerUrl ?? (
+        typeof extra.bannerUrl === "string"
+          ? extra.bannerUrl
+          : typeof extra.bannerImageUrl === "string"
+            ? extra.bannerImageUrl
+            : null
+      ),
+      totalEntryFee: row.totalEntryFee,
+      entryFishCoins: row.totalEntryFee,
+      rewardCoins: row.rewardCoins,
+      prizePool: row.rewardCoins,
+      voteDurationDays: row.voteDurationDays,
+      autoCancelHours: row.autoCancelHours,
+      minVotes: row.minVotes,
+      description: typeof extra.description === "string" ? extra.description : null,
+      rules: typeof extra.rules === "string" ? extra.rules : null,
+      createdBy: row.createdBy,
+      createdAt: row.createdAt,
+      totalMatches: Number(row.totalMatches ?? 0),
+      waitingMatches: Number(row.waitingMatches ?? 0),
+      activeMatches: Number(row.activeMatches ?? 0),
+    };
+  }));
 });
 
 // ======================= ADMIN NOTIFICATIONS =======================
@@ -1229,28 +1486,37 @@ adminRoute.post("/set-role", async (c) => {
   return c.json({ success: true, uid, role });
 });
 
-// Create a contest template (used by seed-contests).
+// Create a contest template (used by seed-contests and the admin panel).
 adminRoute.post("/contests", async (c) => {
   requireFullAdmin(c);
   const db = getDb(c.env);
-  const b = await c.req.json<any>();
+  const body = await c.req.json<unknown>();
+  const { values } = validateContestInput(body, true);
+  if (!values.bannerUrl) throw httpsError("failed-precondition", "A banner is required for a new contest.");
+
   const id = newId();
+  const user = c.get("user");
+  const createdBy = user?.uid || user?.email || "server";
+  const extra = createContestExtra(body as Record<string, any>, values);
+  const createdAt = now();
   await db.insert(schema.contests).values({
     id,
-    title: b.title || b.name || null,
-    type: b.type || "photo",
-    status: b.status || "live",
-    totalEntryFee: Number(b.totalEntryFee ?? b.entryFishCoins ?? 0),
-    rewardCoins: Number(b.rewardCoins ?? b.prizePool ?? 0),
-    voteDurationDays: Number(b.voteDurationDays ?? (b.durationHours ? Math.ceil(b.durationHours / 24) : 1)),
-    autoCancelHours: Number(b.autoCancelHours ?? 24),
-    minVotes: Number(b.minVotes ?? 0),
-    bannerUrl: b.bannerUrl || b.bannerImageUrl || null,
-    extra: b,
-    createdBy: "admin-script",
-    createdAt: now(),
+    title: values.title,
+    type: values.type,
+    status: values.status,
+    totalEntryFee: values.totalEntryFee,
+    rewardCoins: values.rewardCoins,
+    voteDurationDays: values.voteDurationDays,
+    autoCancelHours: values.autoCancelHours,
+    minVotes: values.minVotes,
+    bannerUrl: values.bannerUrl,
+    extra,
+    createdBy,
+    createdAt,
   });
-  return c.json({ success: true, contestId: id });
+  await invalidateContestCaches(c.env, id);
+  await logAudit(c, "contest.create", "contest", id, { ...values, createdBy, createdAt });
+  return c.json({ success: true, contestId: id, id });
 });
 
 // Send a notification to a user (used by test-notification).

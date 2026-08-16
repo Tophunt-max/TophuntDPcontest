@@ -116,6 +116,45 @@ export async function uploadToR2(
   return { fileKey, publicUrl: `${publicBase}/${fileKey}` };
 }
 
+/**
+ * Return the R2 key only when a URL is owned by this deployment and lives in
+ * the fixed contest-banner image prefix. External URLs and lookalike hosts or
+ * paths are never mapped to local objects.
+ */
+export function contestBannerKeyFromPublicUrl(env: Env, publicUrl: string): string | null {
+  try {
+    const base = new URL(env.R2_PUBLIC_BASE_URL.replace(/\/$/, ""));
+    const candidate = new URL(publicUrl);
+    if (candidate.protocol !== base.protocol || candidate.host !== base.host) return null;
+    if (candidate.username || candidate.password || candidate.search || candidate.hash) return null;
+
+    const basePath = base.pathname.replace(/\/$/, "");
+    const ownedPrefix = `${basePath}/contest-banners/images/`;
+    if (!candidate.pathname.startsWith(ownedPrefix)) return null;
+
+    const fileName = candidate.pathname.slice(ownedPrefix.length);
+    if (!fileName || fileName.includes("/") || fileName === "." || fileName === "..") return null;
+    return `contest-banners/images/${fileName}`;
+  } catch {
+    return null;
+  }
+}
+
+/** Remove a validated, deployment-owned contest banner. R2 failures propagate. */
+export async function deleteContestBannerByPublicUrl(env: Env, publicUrl: string): Promise<void> {
+  const key = contestBannerKeyFromPublicUrl(env, publicUrl);
+  if (!key) return;
+  await env.MEDIA.delete(key);
+
+  // Public media is cached separately from R2; clear this colo when available.
+  try {
+    const cache = (caches as any).default as Cache;
+    await cache.delete(new Request(publicUrl, { method: "GET" }));
+  } catch (e) {
+    console.error("[cache] contest banner edge delete failed (continuing)", key, e);
+  }
+}
+
 /** Delete an object from R2 given its public URL (used by deleteStory). */
 export async function deleteByPublicUrl(env: Env, publicUrl: string): Promise<void> {
   try {

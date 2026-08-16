@@ -18,6 +18,17 @@ export const userCacheKey = (uid: string) => `cache:user:${uid}`;
 export const blogPostCacheKey = (slugOrId: string) => `cache:blog:post:${slugOrId}`;
 /** Default public blog list page (routes/read.ts GET /blog?limit=N). */
 export const blogListCacheKey = (limit: number) => `cache:blog:list:${limit}`;
+/** Public live contest list, optionally filtered to photo or video. */
+export const contestListCacheKey = (type: "photo" | "video" | "all" = "all") =>
+  `cache:contest:list:${type}`;
+/** Every public contest-list key that an admin write must invalidate. */
+export const contestListCacheKeys = () => [
+  contestListCacheKey("all"),
+  contestListCacheKey("photo"),
+  contestListCacheKey("video"),
+];
+/** Public detail for one contest template. */
+export const contestDetailCacheKey = (id: string) => `cache:contest:detail:${id}`;
 
 // --- fail-open ops ----------------------------------------------------------
 /** Read JSON from the cache; returns null on miss OR any KV error. */
