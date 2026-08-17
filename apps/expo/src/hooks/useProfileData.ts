@@ -81,22 +81,25 @@ export const useUserPosts = (userId: string) => {
  * The same battle appears on both creators' profiles (server matches on either
  * participant uid). Returns mapped match objects ready for <PostCard/>.
  */
-export const useUserMatches = (userId: string, type: 'photo' | 'video') => {
+export const useUserMatches = (userId: string, type: 'photo' | 'video', enabled = true) => {
   return useQuery({
     queryKey: ['userMatches', userId, type],
     queryFn: async (): Promise<any[]> => {
       try {
-        return (await readApi(`/read/users/${userId}/matches`, { type, limit: 30 })) as any[];
+        return (await readApi(`/read/users/${userId}/matches`, { type, limit: 12 })) as any[];
       } catch (err) {
         console.error('Error fetching user matches:', err);
         return [];
       }
     },
-    enabled: !!userId,
+    // Only the active tab fetches; already-loaded tabs stay cached (no refetch
+    // for 30s when switching back and forth).
+    enabled: !!userId && enabled,
+    staleTime: 30_000,
   });
 };
 
-export const useUserBookmarks = (userId: string) => {
+export const useUserBookmarks = (userId: string, enabled = true) => {
   return useQuery({
     queryKey: ['userBookmarks', userId],
     queryFn: async () => {
@@ -107,7 +110,9 @@ export const useUserBookmarks = (userId: string) => {
         return [];
       }
     },
-    enabled: !!userId,
+    // Fetched only when the Saved tab is opened.
+    enabled: !!userId && enabled,
+    staleTime: 30_000,
   });
 };
 

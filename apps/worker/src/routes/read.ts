@@ -968,26 +968,38 @@ readRoute.get("/users/:id/matches", optionalAuth, async (c) => {
   const db = getDb(c.env);
   const userId = c.req.param("id");
   const type = c.req.query("type");
-  const limit = Math.min(parseInt(c.req.query("limit") || "20", 10), 50);
+  const limit = Math.min(parseInt(c.req.query("limit") || "12", 10), 50);
   const viewer = c.get("user")?.uid;
+  const typeKey = type === "photo" || type === "video" ? type : "all";
 
-  const conds: any[] = [
-    sql`(json_extract(${schema.contestMatches.userA}, '$.uid') = ${userId} OR json_extract(${schema.contestMatches.userB}, '$.uid') = ${userId})`,
-  ];
-  if (type === "photo" || type === "video") conds.push(eq(schema.contestMatches.type, type));
+  // Cache the user-agnostic base list (the json_extract scan is the expensive
+  // part). Repeat profile views — very common — then skip D1 entirely. The
+  // per-viewer engagement state (voted/liked/bookmarked) is layered on per
+  // request below, so it's never baked into the shared cache.
+  const cacheKey = `cache:usermatches:${userId}:${typeKey}:${limit}`;
+  let base = await cacheGet(c.env, cacheKey);
+  if (!base) {
+    const conds: any[] = [
+      sql`(json_extract(${schema.contestMatches.userA}, '$.uid') = ${userId} OR json_extract(${schema.contestMatches.userB}, '$.uid') = ${userId})`,
+    ];
+    if (type === "photo" || type === "video") conds.push(eq(schema.contestMatches.type, type));
+    const rows = await db
+      .select()
+      .from(schema.contestMatches)
+      .where(and(...conds))
+      .orderBy(desc(schema.contestMatches.createdAt))
+      .limit(limit)
+      .all();
+    base = (rows as any[]).map((r) => enrichMatchMedia(c.env, mapMatch(r)));
+    await cachePut(c.env, cacheKey, base, 30);
+  }
 
-  const rows = await db
-    .select()
-    .from(schema.contestMatches)
-    .where(and(...conds))
-    .orderBy(desc(schema.contestMatches.createdAt))
-    .limit(limit)
-    .all();
-
-  let matches = (rows as any[]).map((r) => enrichMatchMedia(c.env, mapMatch(r)));
-  if (viewer) matches = await hydrateViewerState(db, matches, viewer);
-  c.header("Cache-Control", viewer ? "private, no-store" : "public, max-age=15");
-  return c.json(matches);
+  if (viewer) {
+    c.header("Cache-Control", "private, no-store");
+    return c.json(await hydrateViewerState(db, base, viewer));
+  }
+  c.header("Cache-Control", "public, max-age=15");
+  return c.json(base);
 });
 
 readRoute.get("/users/:id/bookmarks", requireAuth, async (c) => {

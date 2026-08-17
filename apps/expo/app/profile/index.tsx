@@ -85,18 +85,22 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
     refetch: refetchProfile 
   } = useProfile(targetUserId);
 
-  const { data: myProfile } = useProfile(currentUser?.uid || '');
+  // Only needed to show the follow state on OTHER people's profiles — skip the
+  // extra user read entirely when viewing your own profile.
+  const { data: myProfile } = useProfile(isOwnProfile ? '' : (currentUser?.uid || ''));
 
   const isFollowing = useMemo(() => {
     return myProfile?.following?.includes(targetUserId) || false;
   }, [myProfile, targetUserId]);
 
-  const { data: photoMatches, isLoading: photoLoading, refetch: refetchPhoto, isRefetching: photoRefetching } = useUserMatches(targetUserId, 'photo');
-  const { data: videoMatches, isLoading: videoLoading, refetch: refetchVideo, isRefetching: videoRefetching } = useUserMatches(targetUserId, 'video');
-  const { data: bookmarks, isLoading: bookmarksLoading, refetch: refetchBookmarks } = useUserBookmarks(targetUserId);
-
   const { mutate: toggleFollow } = useToggleFollow();
   const [activeTab, setActiveTab] = useState<ProfileTab>('photo');
+
+  // Lazy per-tab loading: only the active tab hits the network; already-loaded
+  // tabs stay cached. Photo is the default so it loads on open.
+  const { data: photoMatches, isLoading: photoLoading, refetch: refetchPhoto, isRefetching: photoRefetching } = useUserMatches(targetUserId, 'photo', activeTab === 'photo');
+  const { data: videoMatches, isLoading: videoLoading, refetch: refetchVideo, isRefetching: videoRefetching } = useUserMatches(targetUserId, 'video', activeTab === 'video');
+  const { data: bookmarks, isLoading: bookmarksLoading, refetch: refetchBookmarks } = useUserBookmarks(targetUserId, activeTab === 'tags');
 
   const handleToggleFollow = () => {
     if (!isOwnProfile) toggleFollow(targetUserId);
