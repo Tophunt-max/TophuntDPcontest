@@ -979,6 +979,9 @@ readRoute.get("/users/:id/matches", optionalAuth, async (c) => {
   // a newly-created battle shows on the profile immediately, no 60s lag.
   const conds: any[] = [
     sql`(json_extract(${schema.contestMatches.userA}, '$.uid') = ${userId} OR json_extract(${schema.contestMatches.userB}, '$.uid') = ${userId})`,
+    // Only battles that have both participants render as a VS card. Excludes
+    // waiting_for_opponent (no userB -> would crash the card) and cancelled.
+    inArray(schema.contestMatches.status, ["active", "completed"]),
   ];
   if (type === "photo" || type === "video") conds.push(eq(schema.contestMatches.type, type));
   const rows = await db
