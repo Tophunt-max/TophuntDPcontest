@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Table } from "@/components/ui/Table";
@@ -9,7 +9,7 @@ import { useConfirm } from "@/components/ConfirmDialog";
 import { toast } from "@/lib/toast";
 import {
   Check, X, QrCode, Save, Copy, Download, AlertTriangle,
-  Coins, IndianRupee, Hourglass, ShieldAlert, Zap, Layers,
+  Coins, IndianRupee, Hourglass, ShieldAlert, Zap, Layers, Upload, Trash2, Loader2,
 } from "lucide-react";
 import { SegTabs, UserCell, MethodBadge, ActionBtn } from "@/components/finance/bits";
 
@@ -160,6 +160,34 @@ function GatewayConfig() {
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ["app-settings"], queryFn: api.appSettings });
   const [gw, setGw] = useState<Gateway>(GW_DEFAULT);
+  const qrInputRef = useRef<HTMLInputElement>(null);
+  const [qrUploading, setQrUploading] = useState(false);
+  const [qrProgress, setQrProgress] = useState(0);
+
+  const handleQrFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (e.target) e.target.value = ""; // allow re-selecting the same file
+    if (!file) return;
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+      toast.error("QR must be a JPEG, PNG, or WebP image.");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("QR image is too large (max 5MB).");
+      return;
+    }
+    setQrUploading(true);
+    setQrProgress(0);
+    try {
+      const { publicUrl } = await api.uploadPaymentQr(file, setQrProgress);
+      setGw((g) => ({ ...g, qrImageUrl: publicUrl }));
+      toast.success("QR uploaded — remember to Save Gateway");
+    } catch (err: any) {
+      toast.error(err?.message || "QR upload failed");
+    } finally {
+      setQrUploading(false);
+    }
+  };
 
   useEffect(() => {
     if (data?.paymentGateway) setGw({ ...GW_DEFAULT, ...data.paymentGateway });
@@ -215,9 +243,30 @@ function GatewayConfig() {
       {manual && (
         <div className="flex flex-col md:flex-row gap-4 mb-4 pt-1">
           <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs font-medium text-muted-foreground mb-1 block">QR image URL</label>
-              <input className={field} placeholder="https://…/qr.png" value={gw.qrImageUrl} onChange={(e) => setGw({ ...gw, qrImageUrl: e.target.value })} />
+            <div className="sm:col-span-2">
+              <label className="text-xs font-medium text-muted-foreground mb-1 block">QR image</label>
+              <input ref={qrInputRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={handleQrFile} />
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => qrInputRef.current?.click()}
+                  disabled={qrUploading}
+                  className="flex items-center gap-2 px-3 py-2.5 rounded-xl border border-border bg-background text-sm font-medium hover:border-violet-300 disabled:opacity-50"
+                >
+                  {qrUploading ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
+                  {qrUploading ? `Uploading… ${qrProgress}%` : gw.qrImageUrl ? "Replace QR image" : "Upload QR image"}
+                </button>
+                {gw.qrImageUrl && !qrUploading && (
+                  <button
+                    type="button"
+                    onClick={() => setGw({ ...gw, qrImageUrl: "" })}
+                    className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl border border-red-200 bg-red-50 text-sm text-red-600 hover:bg-red-100"
+                  >
+                    <Trash2 size={14} /> Remove
+                  </button>
+                )}
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1">PNG, JPEG or WebP · up to 5MB</p>
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground mb-1 block">UPI ID</label>

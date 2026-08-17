@@ -137,23 +137,25 @@ function parseApiErrorPayload(text: string, fallback: string): { message: string
   }
 }
 
-/** Raw authenticated upload with browser-native progress reporting. */
-async function uploadContestBanner(
+/** Raw authenticated binary upload (image) with browser-native progress. */
+async function uploadBinary(
+  path: string,
   file: File,
   onProgress?: UploadProgressHandler,
+  failMessage = "Upload failed. Check your connection and try again.",
 ): Promise<ContestBannerUpload> {
   const send = async (forceToken: boolean): Promise<{ status: number; statusText: string; body: string }> => {
     const token = await idToken(forceToken);
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      xhr.open("POST", `${BASE}/admin/media/contest-banner`);
+      xhr.open("POST", `${BASE}${path}`);
       xhr.setRequestHeader("Content-Type", file.type);
       if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable) onProgress?.(Math.round((event.loaded / event.total) * 100));
       };
-      xhr.onerror = () => reject(new ApiError("Banner upload failed. Check your connection and try again.", 0));
-      xhr.onabort = () => reject(new ApiError("Banner upload was cancelled.", 0));
+      xhr.onerror = () => reject(new ApiError(failMessage, 0));
+      xhr.onabort = () => reject(new ApiError("Upload was cancelled.", 0));
       xhr.onload = () => resolve({ status: xhr.status, statusText: xhr.statusText, body: xhr.responseText });
       xhr.send(file);
     });
@@ -163,12 +165,18 @@ async function uploadContestBanner(
   let response = await send(false);
   if (response.status === 401) response = await send(true);
   if (response.status < 200 || response.status >= 300) {
-    const error = parseApiErrorPayload(response.body, response.statusText || "Banner upload failed.");
+    const error = parseApiErrorPayload(response.body, response.statusText || failMessage);
     throw new ApiError(error.message, response.status, error.code);
   }
   onProgress?.(100);
   return JSON.parse(response.body) as ContestBannerUpload;
 }
+
+const uploadContestBanner = (file: File, onProgress?: UploadProgressHandler) =>
+  uploadBinary("/admin/media/contest-banner", file, onProgress, "Banner upload failed. Check your connection and try again.");
+
+const uploadPaymentQr = (file: File, onProgress?: UploadProgressHandler) =>
+  uploadBinary("/admin/media/payment-qr", file, onProgress, "QR upload failed. Check your connection and try again.");
 
 /**
  * Core request helper. Attaches the Firebase ID token as a Bearer header — the
@@ -273,6 +281,9 @@ export const api = {
   uploadContestBanner,
   deleteContestBanner: (url: string) =>
     req<{ success: true }>("DELETE", "/admin/media/contest-banner", { url }),
+
+  // Manual payment QR image upload (stored in R2, returns a public URL).
+  uploadPaymentQr,
 
   // posts / stories (moderation)
   posts: () => get<any[]>("/admin/posts"),

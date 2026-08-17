@@ -271,6 +271,39 @@ adminRoute.post("/media/contest-banner", async (c) => {
   return c.json(uploaded);
 });
 
+// Upload the manual payment QR image (stored in R2). Returns a public URL that
+// the admin saves into appConfig.paymentGateway.qrImageUrl — so the app keeps
+// reading a single URL, but it's now an uploaded image (no external hosting).
+adminRoute.post("/media/payment-qr", async (c) => {
+  requireFullAdmin(c);
+  const fileType = (c.req.header("Content-Type") || "").split(";")[0].trim().toLowerCase();
+  if (!CONTEST_BANNER_MIME_TYPES.includes(fileType as any)) {
+    throw httpsError("invalid-argument", "QR image must be a JPEG, PNG, or WebP.");
+  }
+
+  const contentLength = c.req.header("Content-Length");
+  if (contentLength !== undefined) {
+    const declaredBytes = Number(contentLength);
+    if (!Number.isSafeInteger(declaredBytes) || declaredBytes < 0) {
+      throw httpsError("invalid-argument", "Invalid Content-Length.");
+    }
+    if (declaredBytes > CONTEST_BANNER_MAX_BYTES) {
+      throw httpsError("invalid-argument", "File too large (max 5MB).");
+    }
+  }
+
+  const body = await c.req.arrayBuffer();
+  if (!body.byteLength) throw httpsError("invalid-argument", "Empty upload.");
+  if (body.byteLength > CONTEST_BANNER_MAX_BYTES) throw httpsError("invalid-argument", "File too large (max 5MB).");
+  if (detectedContestBannerMime(new Uint8Array(body)) !== fileType) {
+    throw httpsError("invalid-argument", "File contents do not match the declared image type.");
+  }
+
+  const uploaded = await uploadToR2(c.env, fileType, "payment-qr", body);
+  await logAudit(c, "payment.qr.upload", "payment-qr", uploaded.fileKey, { publicUrl: uploaded.publicUrl });
+  return c.json(uploaded);
+});
+
 adminRoute.delete("/media/contest-banner", async (c) => {
   requireFullAdmin(c);
   const body = await c.req.json<unknown>();
