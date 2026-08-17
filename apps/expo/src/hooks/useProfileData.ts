@@ -99,6 +99,23 @@ export const useUserMatches = (userId: string, type: 'photo' | 'video', enabled 
   });
 };
 
+/** Battles this user has won (completed + winnerUid === user). */
+export const useUserWins = (userId: string) => {
+  return useQuery({
+    queryKey: ['userWins', userId],
+    queryFn: async (): Promise<any[]> => {
+      try {
+        return (await readApi(`/read/users/${userId}/matches`, { won: 1, limit: 30 })) as any[];
+      } catch (err) {
+        console.error('Error fetching wins:', err);
+        return [];
+      }
+    },
+    enabled: !!userId,
+    staleTime: 30_000,
+  });
+};
+
 export const useUserBookmarks = (userId: string, enabled = true) => {
   return useQuery({
     queryKey: ['userBookmarks', userId],

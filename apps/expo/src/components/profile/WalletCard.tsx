@@ -8,52 +8,51 @@ interface WalletCardProps {
   Dpcoin: number;
   stats: UserProfile['stats'];
   onPress?: () => void;
+  /** Tapping the Wins stat opens the list of battles this user has won. */
+  onPressWins?: () => void;
 }
 
-export const WalletCard = ({ Dpcoin, stats, onPress }: WalletCardProps) => {
+export const WalletCard = ({ Dpcoin, stats, onPress, onPressWins }: WalletCardProps) => {
   return (
-    <TouchableOpacity 
-      onPress={onPress}
-      activeOpacity={0.9}
+    <LinearGradient
+      colors={['#FF4D67', '#FF8A9B']}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={styles.container}
     >
-      <LinearGradient
-        colors={['#FF4D67', '#FF8A9B']}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.container}
-      >
-        <View style={styles.header}>
-          <View>
-            <Text style={styles.label}>Wallet Balance</Text>
-            <View style={styles.coinRow}>
-              <CoinIcon size={26} color="#FFFFFF" style={{ marginRight: 8 }} />
-              <Text style={styles.coinValue}>{Dpcoin || 0}</Text>
-              <Text style={styles.coinUnit}> Dpcoins</Text>
-            </View>
-          </View>
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>Active</Text>
+      {/* Wallet balance → wallet screen */}
+      <TouchableOpacity onPress={onPress} activeOpacity={0.9} style={styles.header}>
+        <View>
+          <Text style={styles.label}>Wallet Balance</Text>
+          <View style={styles.coinRow}>
+            <CoinIcon size={26} color="#FFFFFF" style={{ marginRight: 8 }} />
+            <Text style={styles.coinValue}>{Dpcoin || 0}</Text>
+            <Text style={styles.coinUnit}> Dpcoins</Text>
           </View>
         </View>
-
-        <View style={styles.divider} />
-
-        <View style={styles.statsRow}>
-          <View style={styles.statItem}>
-            <Text style={styles.statValue}>{stats.wins || 0}</Text>
-            <Text style={styles.statLabel}>Wins</Text>
-          </View>
-          <View style={styles.statItem}>
-            <Text style={styles.statValue}>{stats.contestsJoined || 0}</Text>
-            <Text style={styles.statLabel}>Battles</Text>
-          </View>
-          <View style={styles.statItem}>
-            <Text style={styles.statValue}>{stats.totalVotesReceived || 0}</Text>
-            <Text style={styles.statLabel}>Votes</Text>
-          </View>
+        <View style={styles.badge}>
+          <Text style={styles.badgeText}>Active</Text>
         </View>
-      </LinearGradient>
-    </TouchableOpacity>
+      </TouchableOpacity>
+
+      <View style={styles.divider} />
+
+      <View style={styles.statsRow}>
+        {/* Wins → winner list */}
+        <TouchableOpacity style={styles.statItem} activeOpacity={0.7} onPress={onPressWins} accessibilityRole="button" accessibilityLabel="View your wins">
+          <Text style={styles.statValue}>{stats.wins || 0}</Text>
+          <Text style={styles.statLabel}>Wins</Text>
+        </TouchableOpacity>
+        <View style={styles.statItem}>
+          <Text style={styles.statValue}>{stats.contestsJoined || 0}</Text>
+          <Text style={styles.statLabel}>Battles</Text>
+        </View>
+        <View style={styles.statItem}>
+          <Text style={styles.statValue}>{stats.totalVotesReceived || 0}</Text>
+          <Text style={styles.statLabel}>Votes</Text>
+        </View>
+      </View>
+    </LinearGradient>
   );
 };
 

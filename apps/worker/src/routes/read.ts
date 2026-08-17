@@ -977,12 +977,19 @@ readRoute.get("/users/:id/matches", optionalAuth, async (c) => {
   // No KV cache here: migration 0014 makes this an indexed lookup (only the
   // user's own battles are read), so it's cheap enough to always serve fresh —
   // a newly-created battle shows on the profile immediately, no 60s lag.
+  const wonOnly = c.req.query("won") === "1" || c.req.query("won") === "true";
   const conds: any[] = [
     sql`(json_extract(${schema.contestMatches.userA}, '$.uid') = ${userId} OR json_extract(${schema.contestMatches.userB}, '$.uid') = ${userId})`,
+  ];
+  if (wonOnly) {
+    // The "Wins" list: only battles this user actually won.
+    conds.push(eq(schema.contestMatches.status, "completed"));
+    conds.push(eq(schema.contestMatches.winnerUid, userId));
+  } else {
     // Only battles that have both participants render as a VS card. Excludes
     // waiting_for_opponent (no userB -> would crash the card) and cancelled.
-    inArray(schema.contestMatches.status, ["active", "completed"]),
-  ];
+    conds.push(inArray(schema.contestMatches.status, ["active", "completed"]));
+  }
   if (type === "photo" || type === "video") conds.push(eq(schema.contestMatches.type, type));
   const rows = await db
     .select()
