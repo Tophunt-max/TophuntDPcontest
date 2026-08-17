@@ -37,7 +37,10 @@ async function cacheGet(env: Env, key: string): Promise<any | null> {
 }
 async function cachePut(env: Env, key: string, data: any, ttlSec: number): Promise<void> {
   try {
-    await env.CACHE_KV.put(key, JSON.stringify(data), { expirationTtl: ttlSec });
+    // Cloudflare KV enforces a 60s minimum TTL — a smaller value throws and the
+    // put silently fails (i.e. no cache at all). Clamp so short-lived caches
+    // actually take effect (matches lib/cache.ts cachePutJson).
+    await env.CACHE_KV.put(key, JSON.stringify(data), { expirationTtl: Math.max(60, ttlSec) });
   } catch {
     /* ignore KV blips */
   }
@@ -970,29 +973,22 @@ readRoute.get("/users/:id/matches", optionalAuth, async (c) => {
   const type = c.req.query("type");
   const limit = Math.min(parseInt(c.req.query("limit") || "12", 10), 50);
   const viewer = c.get("user")?.uid;
-  const typeKey = type === "photo" || type === "video" ? type : "all";
 
-  // Cache the user-agnostic base list (the json_extract scan is the expensive
-  // part). Repeat profile views — very common — then skip D1 entirely. The
-  // per-viewer engagement state (voted/liked/bookmarked) is layered on per
-  // request below, so it's never baked into the shared cache.
-  const cacheKey = `cache:usermatches:${userId}:${typeKey}:${limit}`;
-  let base = await cacheGet(c.env, cacheKey);
-  if (!base) {
-    const conds: any[] = [
-      sql`(json_extract(${schema.contestMatches.userA}, '$.uid') = ${userId} OR json_extract(${schema.contestMatches.userB}, '$.uid') = ${userId})`,
-    ];
-    if (type === "photo" || type === "video") conds.push(eq(schema.contestMatches.type, type));
-    const rows = await db
-      .select()
-      .from(schema.contestMatches)
-      .where(and(...conds))
-      .orderBy(desc(schema.contestMatches.createdAt))
-      .limit(limit)
-      .all();
-    base = (rows as any[]).map((r) => enrichMatchMedia(c.env, mapMatch(r)));
-    await cachePut(c.env, cacheKey, base, 30);
-  }
+  // No KV cache here: migration 0014 makes this an indexed lookup (only the
+  // user's own battles are read), so it's cheap enough to always serve fresh —
+  // a newly-created battle shows on the profile immediately, no 60s lag.
+  const conds: any[] = [
+    sql`(json_extract(${schema.contestMatches.userA}, '$.uid') = ${userId} OR json_extract(${schema.contestMatches.userB}, '$.uid') = ${userId})`,
+  ];
+  if (type === "photo" || type === "video") conds.push(eq(schema.contestMatches.type, type));
+  const rows = await db
+    .select()
+    .from(schema.contestMatches)
+    .where(and(...conds))
+    .orderBy(desc(schema.contestMatches.createdAt))
+    .limit(limit)
+    .all();
+  const base = (rows as any[]).map((r) => enrichMatchMedia(c.env, mapMatch(r)));
 
   if (viewer) {
     c.header("Cache-Control", "private, no-store");
