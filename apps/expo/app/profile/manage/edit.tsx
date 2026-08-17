@@ -429,6 +429,7 @@ export default function EditProfileScreen() {
       </ScrollView>
 
       <CountryPicker
+        lang="en"
         show={showCountryPicker}
         pickerButtonOnPress={(item) => { setCountryCode(item.dial_code); setShowCountryPicker(false); }}
         onBackdropPress={() => setShowCountryPicker(false)}

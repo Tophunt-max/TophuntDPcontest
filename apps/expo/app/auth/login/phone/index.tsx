@@ -250,6 +250,7 @@ export default function PhoneLoginScreen() {
       </ScrollView>
 
       <CountryPicker
+        lang="en"
         show={showCountryPicker}
         pickerButtonOnPress={(item) => {
           setCountryCode(item.dial_code);
@@ -332,7 +333,7 @@ const styles = StyleSheet.create({
   input: {
     flex: 1,
     fontSize: 16,
-    outlineStyle: 'none',
+    outlineStyle: 'none' as any,
   },
   resendButton: {
     alignItems: "center",

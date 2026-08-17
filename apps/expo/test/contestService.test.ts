@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const callApi = vi.fn(async () => ({ success: true }));
 vi.mock('@/src/services/api', () => ({
-  callApi: (...args: any[]) => callApi(...args),
+  callApi: (...args: any[]) => (callApi as any)(...args),
   readApi: vi.fn(async () => []),
 }));
 

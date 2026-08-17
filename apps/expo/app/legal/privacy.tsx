@@ -75,6 +75,5 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontFamily: 'Urbanist-Regular',
     lineHeight: 24,
-    whiteSpace: 'pre-wrap', // This helps with line breaks in text from Firestore
   },
 });

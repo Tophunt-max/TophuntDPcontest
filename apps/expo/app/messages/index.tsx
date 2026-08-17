@@ -392,7 +392,7 @@ export default function MessagesScreen() {
               tintColor={pinkPrimary}
             />
           }
-          ListEmptyComponent={!loading && <EmptyState />}
+          ListEmptyComponent={!loading ? <EmptyState /> : null}
           contentContainerStyle={styles.flatListContent}
         />
       )}
@@ -450,7 +450,7 @@ const styles = StyleSheet.create({
     height: '100%',
     ...Platform.select({
       web: {
-        outlineStyle: 'none',
+        outlineStyle: 'none' as any,
       },
     }),
   },

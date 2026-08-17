@@ -127,7 +127,7 @@ export default function HighlightView() {
   useEffect(() => {
     if (currentStory?.mediaType === 'video') {
         const subscription = player.addListener('statusChange', (status) => {
-            if (status === 'readyToPlay') {
+            if (status.status === 'readyToPlay') {
                 const videoDuration = (player.duration || 5) * 1000;
                 setDuration(videoDuration);
                 setIsLoading(false);
@@ -217,7 +217,7 @@ export default function HighlightView() {
       <SafeAreaView style={styles.overlay} pointerEvents="none">
         <View style={styles.header}>
           <View style={styles.progressContainer}>
-            {stories.map((_, index) => (
+            {stories.map((_: any, index: number) => (
               <View key={index} style={styles.progressBackground}>
                 <Animated.View style={[styles.progressBar, { width: index < currentStoryIndex ? '100%' : index === currentStoryIndex ? progress.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }) : '0%' }]} />
               </View>

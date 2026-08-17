@@ -224,6 +224,7 @@ const FillProfile: React.FC = () => {
         </View>
 
         <CountryPicker 
+            lang="en"
             show={showCountryPicker} 
             pickerButtonOnPress={(item) => { setCountryCode(item.dial_code); setShowCountryPicker(false); }} 
             onBackdropPress={() => setShowCountryPicker(false)} 
@@ -240,7 +241,7 @@ const FillProfile: React.FC = () => {
             <Ionicons name="chevron-down" size={20} color="#9E9E9E" />
         </TouchableOpacity>
 
-        <DatePickerField control={control} name="dateOfBirth" placeholder="Date of Birth" errorMessage={errors.dateOfBirth?.message} />
+        <DatePickerField control={control} name="dateOfBirth" placeholder="Date of Birth" errorMessage={errors.dateOfBirth?.message as string | undefined} />
 
         {/* Optional referral code — credits both users on signup. */}
         <TextInput

@@ -335,7 +335,7 @@ export default function StoryView() {
   useEffect(() => {
     if (currentStory?.mediaType === 'video') {
         const subscription = player.addListener('statusChange', (status) => {
-            if (status === 'readyToPlay') {
+            if (status.status === 'readyToPlay') {
                 const videoDuration = (player.duration || 5) * 1000;
                 setDuration(videoDuration);
                 setIsLoading(false);

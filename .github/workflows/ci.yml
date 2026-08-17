@@ -1,9 +1,9 @@
 name: CI
 
-# Production gate. The worker is fully typed + tested, so it blocks merges on
-# any type or test regression. The Expo app has known pre-existing type errors,
-# so we run its unit tests (which must pass) without gating on `tsc` yet — once
-# the app is type-clean, add an `expo typecheck` step here too.
+# Production gate. Both apps block merges on any type or test regression. The
+# worker type-checks fully; the Expo app type-checks our own code (a few
+# third-party packages ship React-19-incompatible source that we can't fix, so
+# scripts/typecheck.mjs ignores node_modules errors only).
 on:
   push:
     branches: [main]
@@ -21,13 +21,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
 
-  expo-tests:
-    name: Expo (unit tests)
+  expo:
+    name: Expo (typecheck + tests)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -36,6 +36,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - run: npm ci
+      # Gates on OUR app code being type-clean; ignores unfixable third-party
+      # node_modules type errors (see scripts/typecheck.mjs).
+      - run: npm run typecheck
       - run: npm test

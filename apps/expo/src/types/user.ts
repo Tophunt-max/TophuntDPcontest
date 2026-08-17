@@ -26,7 +26,9 @@ export interface UserProfile {
   following?: string[];
 
   // Contest Platform Fields
-  Dpcoin: number; 
+  Dpcoin: number;
+  /** Alias for the spendable coin balance used by some screens. */
+  coins?: number;
   isAdmin: boolean;
   xp?: number;
   level?: number;

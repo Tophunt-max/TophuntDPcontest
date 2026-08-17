@@ -10,6 +10,9 @@ Notifications.setNotificationHandler({
     shouldShowAlert: true,
     shouldPlaySound: true,
     shouldSetBadge: true,
+    // Required by newer expo-notifications NotificationBehavior.
+    shouldShowBanner: true,
+    shouldShowList: true,
   }),
 });
 
@@ -98,6 +101,11 @@ class NotificationService {
     }
 
     // 4. Mark as read -> Worker (was Firestore writeBatch)
+    /** Record that the current user viewed another user's profile (best-effort). */
+    async notifyProfileVisit(targetId: string) {
+        try { await callApi('profileVisit', { targetId }); } catch { /* best-effort */ }
+    }
+
     async markAsRead(_userId: string, notificationIds: string[]) {
         if (!notificationIds.length) return;
         await callApi('markNotificationsRead', { notificationIds });

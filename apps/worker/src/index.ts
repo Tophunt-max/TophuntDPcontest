@@ -27,6 +27,7 @@ import { verifyIdToken } from "./lib/firebaseAuth";
 import { assertAccountNotBlocked } from "./middleware/auth";
 import { resolveContests, monthlyHallOfFame } from "./cron";
 import { ensureMigrated } from "./db/autoMigrate";
+import { captureError } from "./lib/observability";
 
 // Durable Object for real-time WebSocket push.
 export { RealtimeHub } from "./realtime";
@@ -206,13 +207,20 @@ app.onError((err, c) => {
   if (err instanceof ApiError) {
     return c.json({ ...errorBody(err), requestId }, err.status);
   }
+  const path = new URL(c.req.url).pathname;
   console.error(
     JSON.stringify({
       level: "error",
       requestId,
+      path,
       message: err instanceof Error ? err.message : String(err),
       stack: err instanceof Error ? err.stack : undefined,
     }),
+  );
+  // Active error tracking (no-op unless SENTRY_DSN is set). Fire after the
+  // response via waitUntil so it never delays the user.
+  c.executionCtx.waitUntil(
+    captureError(c.env, err, { requestId, path, method: c.req.method }),
   );
   return c.json({ ...errorBody(new ApiError("internal", "Internal server error.")), requestId }, 500);
 });

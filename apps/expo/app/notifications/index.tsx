@@ -76,7 +76,7 @@ export default function NotificationsScreen() {
                         {item.title} {item.body}
                     </Text>
                     <Text style={styles.timeText}>
-                        {item.createdAt ? dayjs(item.createdAt.toDate()).fromNow() : 'Just now'}
+                        {item.createdAt ? dayjs((item.createdAt as any)?.toDate ? (item.createdAt as any).toDate() : item.createdAt).fromNow() : 'Just now'}
                     </Text>
                 </View>
                 {item.type !== 'follow' && item.type !== 'admin' && item.image && (

@@ -5,11 +5,11 @@ const readApi = vi.fn(async () => [] as any);
 const callApi = vi.fn(async () => ({} as any));
 
 vi.mock('@/src/services/realtime', () => ({
-  subscribeChannel: (...a: any[]) => subscribeChannel(...a),
+  subscribeChannel: (...a: any[]) => (subscribeChannel as any)(...a),
 }));
 vi.mock('@/src/services/api', () => ({
-  callApi: (...a: any[]) => callApi(...a),
-  readApi: (...a: any[]) => readApi(...a),
+  callApi: (...a: any[]) => (callApi as any)(...a),
+  readApi: (...a: any[]) => (readApi as any)(...a),
 }));
 
 beforeEach(() => {

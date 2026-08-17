@@ -155,7 +155,7 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
             <ProfileTabs 
               activeTab={activeTab} 
               onChangeTab={setActiveTab} 
-              isPrivate={profile?.isPrivate} 
+              isPrivate={!!profile?.isPrivate} 
             />
             {activeTab === 'tags' && (
               <View style={{ paddingBottom: 20 }}>

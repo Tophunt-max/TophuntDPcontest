@@ -117,9 +117,10 @@ export default function ChatScreen() {
     );
   };
 
+  const InputToolbarComp: any = (GiftedChat as any).InputToolbar;
   const renderInputToolbar = (props: InputToolbarProps<IMessage>) => (
     <View style={styles.inputToolbarContainer}>
-      <GiftedChat.InputToolbar
+      <InputToolbarComp
         {...props}
         containerStyle={styles.inputToolbar}
         renderActions={() => (
@@ -127,7 +128,7 @@ export default function ChatScreen() {
             {/* Add any left-side icons here if needed */}
           </View>
         )}
-        renderSend={(sendProps) => (
+        renderSend={(sendProps: any) => (
           <TouchableOpacity onPress={sendProps.onSend} style={styles.microphoneButton}>
             <Ionicons name="mic-sharp" size={24} color="white" />
           </TouchableOpacity>

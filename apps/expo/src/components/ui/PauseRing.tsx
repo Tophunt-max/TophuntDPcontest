@@ -53,7 +53,7 @@ export const PauseRing = () => {
                 fill="none"
                 strokeDasharray="60, 200"
                 origin="40, 40"
-                rotation={rotation}
+                rotation={rotation as any}
              />
         </Svg>
     </View>

@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Capture the action + payload sent to the worker.
 const callApi = vi.fn(async () => ({ ok: true }));
 vi.mock('@/src/services/api', () => ({
-  callApi: (...args: any[]) => callApi(...args),
+  callApi: (...args: any[]) => (callApi as any)(...args),
   readApi: vi.fn(),
 }));
 

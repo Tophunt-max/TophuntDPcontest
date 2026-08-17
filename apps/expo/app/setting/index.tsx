@@ -54,7 +54,7 @@ export default function SettingScreen() {
       // Clear navigation stack and go to login
       router.replace('/auth/login');
       
-    } catch (error) {
+    } catch (error: any) {
       console.error("[Settings] performLogout: Error:", error);
       if (Platform.OS === 'web') {
         alert("Logout failed: " + error.message);
@@ -91,7 +91,7 @@ export default function SettingScreen() {
     </View>
   );
 
-  const renderItem = ({ icon, label, onPress, rightElement, showArrow = true }) => (
+  const renderItem = ({ icon, label, onPress, rightElement, showArrow = true }: { icon: any; label: string; onPress: () => void; rightElement?: any; showArrow?: boolean }) => (
     <TouchableOpacity 
       style={styles.itemContainer} 
       onPress={() => {

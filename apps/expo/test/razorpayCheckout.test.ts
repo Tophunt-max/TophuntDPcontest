@@ -10,7 +10,7 @@ const createOrder = vi.fn(async () => ({
 }));
 const confirmTopup = vi.fn(async () => ({ success: true }));
 vi.mock('@/src/services/wallet/walletService', () => ({
-  walletService: { createOrder: (...a: any[]) => createOrder(...a), confirmTopup: (...a: any[]) => confirmTopup(...a) },
+  walletService: { createOrder: (...a: any[]) => (createOrder as any)(...a), confirmTopup: (...a: any[]) => (confirmTopup as any)(...a) },
 }));
 
 // Native Razorpay SDK mock (dynamically imported inside purchasePackage).
@@ -19,7 +19,7 @@ const open = vi.fn(async () => ({
   razorpay_order_id: 'order_1',
   razorpay_signature: 'sig_1',
 }));
-vi.mock('react-native-razorpay', () => ({ default: { open: (...a: any[]) => open(...a) } }));
+vi.mock('react-native-razorpay', () => ({ default: { open: (...a: any[]) => (open as any)(...a) } }));
 
 beforeEach(() => {
   createOrder.mockClear();

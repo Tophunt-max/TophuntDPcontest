@@ -10,7 +10,9 @@ import {
   Pressable,
 } from 'react-native';
 import { Control, Controller, FieldValues, Path } from 'react-hook-form';
-import DateTimePicker from 'react-native-ui-datepicker';
+import DateTimePickerBase from 'react-native-ui-datepicker';
+// The lib's prop union is over-strict for our single-date usage; alias as any.
+const DateTimePicker = DateTimePickerBase as unknown as React.ComponentType<any>;
 import dayjs from 'dayjs';
 import { Ionicons } from '@/src/lib/icons';
 
@@ -101,7 +103,7 @@ export const DatePickerField = <T extends FieldValues>({
                       <DateTimePicker
                         mode="single"
                         date={value ? new Date(value) : getDefaultDate()}
-                        onChange={(params) => {
+                        onChange={(params: any) => {
                           if (params.date) {
                             onChange(new Date(params.date as any));
                             // Auto close after selection with a small delay for feedback

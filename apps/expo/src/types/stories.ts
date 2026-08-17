@@ -10,6 +10,10 @@ export interface Story {
   createdAt: Timestamp;
   expiresAt: Timestamp;
   seen?: boolean;
+  // Optional creative overlays attached to a story.
+  overlayText?: string;
+  textPosition?: { x: number; y: number } | any;
+  mentions?: any[];
 }
 
 export interface UserStories {

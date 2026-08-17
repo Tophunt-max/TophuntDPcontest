@@ -50,6 +50,12 @@ export interface Env {
   // configure the webhook). Used to verify /webhook/razorpay payloads. If unset,
   // webhook events are rejected (never credited) — the client callback still works.
   RAZORPAY_WEBHOOK_SECRET?: string;
+
+  // Observability — optional. When SENTRY_DSN is set, unhandled server errors
+  // are forwarded to Sentry (in addition to structured console logs). If unset,
+  // error tracking is a no-op and nothing else changes.
+  SENTRY_DSN?: string;
+  SENTRY_ENVIRONMENT?: string;
 }
 
 /** Authenticated user context attached by the auth middleware. */

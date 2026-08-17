@@ -1475,6 +1475,23 @@ apiRoute.post("/", async (c) => {
       return c.json({ success: true });
     }
 
+    case "profileVisit": {
+      // Record that `uid` viewed `targetId`'s profile — powers the feed's
+      // visit-affinity signal. One row per (viewer, target); revisits refresh
+      // the timestamp. Self-visits are ignored.
+      const { targetId } = body;
+      if (!targetId || targetId === uid) return c.json({ success: true });
+      await rateLimit(env, `pvisit:${uid}`, 120, 60);
+      await db
+        .insert(schema.profileVisits)
+        .values({ userId: targetId, visitorId: uid, createdAt: now() })
+        .onConflictDoUpdate({
+          target: [schema.profileVisits.userId, schema.profileVisits.visitorId],
+          set: { createdAt: now() },
+        });
+      return c.json({ success: true });
+    }
+
     // ================= REPORTS / SUPPORT (also feed admin panel) =================
     case "createReport": {
       const { targetType, targetId, reason } = body;

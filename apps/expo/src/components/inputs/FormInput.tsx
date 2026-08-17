@@ -11,6 +11,8 @@ interface FormInputProps<T extends FieldValues> extends TextInputProps {
   rightIcon?: React.ReactNode;
   containerStyle?: ViewStyle;
   style?: StyleProp<TextStyle> | StyleProp<ViewStyle>;
+  /** Optional externally-supplied error (component also shows RHF field errors). */
+  errorMessage?: string;
 }
 
 export const FormInput = <T extends FieldValues>({
@@ -49,8 +51,8 @@ export const FormInput = <T extends FieldValues>({
             : icon;
           
           let rightIconWithColor = rightIcon;
-          if (isValidElement(rightIcon) && rightIcon.props.children) {
-            const newChildren = Children.map(rightIcon.props.children, child => {
+          if (isValidElement(rightIcon) && (rightIcon.props as any).children) {
+            const newChildren = Children.map((rightIcon.props as any).children, child => {
               if (isValidElement(child)) {
                 return cloneElement(child, { color: iconColor } as any);
               }
@@ -59,7 +61,7 @@ export const FormInput = <T extends FieldValues>({
             rightIconWithColor = cloneElement(rightIcon, {}, newChildren);
           }
           
-          const webStyle = Platform.OS === 'web' ? { boxShadow: `0 0 0 100px ${backgroundColor} inset` } : {};
+          const webStyle: any = Platform.OS === 'web' ? { boxShadow: `0 0 0 100px ${backgroundColor} inset`, outlineStyle: 'none' } : {};
 
           return (
             <>
@@ -112,7 +114,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     height: '100%',
     borderWidth: 0,
-    outlineStyle: 'none',
   },
   errorText: {
     color: 'red',

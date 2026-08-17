@@ -34,7 +34,7 @@ export const SocialAuthentication: React.FC<SocialAuthenticationProps> = ({ setI
           addToast(`Signed in as ${userCredential.user.displayName}`, 'success');
           router.push('/home');
         } else {
-          addToast('Facebook login cancelled.', 'warning');
+          addToast('Facebook login cancelled.', 'info');
         }
       } catch (error: any) {
         console.error('Facebook login error', error);

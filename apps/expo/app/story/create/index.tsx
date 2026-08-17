@@ -254,7 +254,7 @@ export default function AddStoryScreen() {
     try {
       const fileType = media.type === 'video' ? 'video/mp4' : 'image/jpeg';
       console.log(`Starting upload to S3 for story... folder: stories, function: generateStoryUploadUrl`);
-      const mediaUrl = await uploadToS3(media.uri, fileType, "stories", "generateStoryUploadUrl", (p) => {
+      const mediaUrl = await uploadToS3(media.uri, fileType, "stories", (p: number) => {
         console.log("Upload Progress:", p);
         setUploadProgress(p);
       });
