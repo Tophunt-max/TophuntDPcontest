@@ -153,10 +153,15 @@ export function live<T>(
     onEvent?: (e: RealtimeEvent) => void;
     /** Return false when onEvent fully handled this event and no refetch is needed. */
     shouldRefresh?: (e: RealtimeEvent) => boolean;
+    /**
+     * Skip the initial fetch when the caller already has fresh data (e.g. a
+     * feed card seeded from the list response). Events + the safety-net poll
+     * still keep it updated. Defaults to true (fetch on subscribe).
+     */
+    immediate?: boolean;
   } = {},
 ): () => void {
-  // The WebSocket pushes updates instantly, so this poll is only a safety net —
-  // 60s is plenty and halves the idle fetch volume vs 30s.
+  // The WebSocket pushes updates instantly, so this poll is only a safety net.
   const fallbackMs = opts.fallbackMs ?? 60000;
   let active = true;
   let inFlight = false;
@@ -188,7 +193,7 @@ export function live<T>(
     }
   };
 
-  void refresh(); // initial load
+  if (opts.immediate !== false) void refresh(); // initial load (skippable)
   const unsub = subscribeChannel(channel, (event) => {
     if (opts.filter && !opts.filter(event)) return;
     opts.onEvent?.(event);

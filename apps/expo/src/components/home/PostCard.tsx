@@ -150,6 +150,13 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
         if (typeof data.isBookmarked === 'boolean') setIsBookmarked(data.isBookmarked);
       },
       {
+        // The feed/profile list already hydrated this card (votes, counts,
+        // isLiked/hasVoted, winner), so skip the redundant initial GET of
+        // /read/matches/:id — a big saving of D1 reads + DO calls across a feed.
+        // The WebSocket keeps it live; the safety-net poll is slow (WS handles
+        // real-time) so idle cards barely touch the backend.
+        immediate: false,
+        fallbackMs: 180000,
         // Self-contained push payloads update counts instantly. This avoids a
         // refetch that would otherwise read D1's batched (up to ~5s stale)
         // counters — the reason like/comment counts felt slow to move.
