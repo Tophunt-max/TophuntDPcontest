@@ -20,6 +20,8 @@ import {
   contestDetailCacheKey,
   commentsCacheKey,
   feedSeenKey,
+  followersCacheKey,
+  followingCacheKey,
   cacheGetJson,
   cachePutJson,
 } from "../lib/cache";
@@ -1033,28 +1035,117 @@ readRoute.get("/users/:id/bookmarks", requireAuth, async (c) => {
   return c.json(matches.map(mapMatch));
 });
 
-async function connectionUsers(c: any, uids: string[]) {
+// ================= FOLLOWERS / FOLLOWING (connections) =================
+// Default page size for connection lists; clamped so a caller can't ask D1 for
+// an unbounded scan. First page (no cursor) is served from KV for hot profiles.
+const CONNECTIONS_PAGE_SIZE = 30;
+const CONNECTIONS_MAX_PAGE_SIZE = 100;
+
+/**
+ * Load one page of a user's connections in a SINGLE indexed D1 query.
+ *
+ * Previously this was two round-trips (fetch follow ids → fetch user rows) with
+ * NO limit — every follower row plus every user row loaded on each call. Now:
+ *   - one `leftJoin` (follows → users) = one D1 round-trip, index-backed;
+ *   - keyset pagination on `follows.created_at` (cursor) so large lists never
+ *     scan the whole edge set;
+ *   - `avatarUrl()` adds a lightweight R2/CDN thumbnail variant (smaller image
+ *     bytes on the wire) without breaking the original `profileImageUrl` field.
+ *
+ * `direction` picks which side of the edge is the "other" user:
+ *   followers → rows where following_id = :id, other user = follower_id
+ *   following → rows where follower_id  = :id, other user = following_id
+ */
+async function listConnections(
+  c: any,
+  targetId: string,
+  direction: "followers" | "following",
+  cursor: number | null,
+  limit: number,
+) {
   const db = getDb(c.env);
-  if (!uids.length) return [];
+  const edgeMatch =
+    direction === "followers"
+      ? eq(schema.follows.followingId, targetId)
+      : eq(schema.follows.followerId, targetId);
+  const otherUid =
+    direction === "followers" ? schema.follows.followerId : schema.follows.followingId;
+
+  const where = cursor
+    ? and(edgeMatch, lt(schema.follows.createdAt, cursor))
+    : edgeMatch;
+
   const rows = await db
-    .select({ id: schema.users.uid, username: schema.users.username, fullName: schema.users.fullName, profileImageUrl: schema.users.profileImageUrl })
-    .from(schema.users)
-    .where(inArray(schema.users.uid, uids))
+    .select({
+      id: schema.users.uid,
+      username: schema.users.username,
+      fullName: schema.users.fullName,
+      profileImageUrl: schema.users.profileImageUrl,
+      since: schema.follows.createdAt,
+    })
+    .from(schema.follows)
+    .leftJoin(schema.users, eq(schema.users.uid, otherUid))
+    .where(where)
+    .orderBy(desc(schema.follows.createdAt))
+    .limit(limit + 1) // fetch one extra to detect whether a next page exists
     .all();
-  return rows;
+
+  const hasMore = rows.length > limit;
+  const page = (hasMore ? rows.slice(0, limit) : rows)
+    // A leftJoin can yield a null user if the follow edge outlived the account.
+    .filter((r) => r.id)
+    .map((r) => ({
+      id: r.id,
+      username: r.username,
+      fullName: r.fullName,
+      profileImageUrl: r.profileImageUrl,
+      profileImageUrlThumb: avatarUrl(c.env, r.profileImageUrl),
+    }));
+  const nextCursor = hasMore ? rows[limit - 1]?.since ?? null : null;
+  return { items: page, nextCursor };
 }
 
-readRoute.get("/users/:id/followers", optionalAuth, async (c) => {
-  const db = getDb(c.env);
-  const rows = await db.select({ id: schema.follows.followerId }).from(schema.follows).where(eq(schema.follows.followingId, c.req.param("id"))).all();
-  return c.json(await connectionUsers(c, rows.map((r) => r.id)));
-});
+/** Shared handler for both /followers and /following. */
+async function connectionsHandler(c: any, direction: "followers" | "following") {
+  const targetId = c.req.param("id");
+  const limit = Math.min(
+    CONNECTIONS_MAX_PAGE_SIZE,
+    Math.max(1, parseInt(c.req.query("limit") || String(CONNECTIONS_PAGE_SIZE), 10) || CONNECTIONS_PAGE_SIZE),
+  );
+  const cursorRaw = c.req.query("cursor");
+  const cursor = cursorRaw ? parseInt(cursorRaw, 10) || null : null;
 
-readRoute.get("/users/:id/following", optionalAuth, async (c) => {
-  const db = getDb(c.env);
-  const rows = await db.select({ id: schema.follows.followingId }).from(schema.follows).where(eq(schema.follows.followerId, c.req.param("id"))).all();
-  return c.json(await connectionUsers(c, rows.map((r) => r.id)));
-});
+  // Only the default first page (no cursor, default size) is cacheable — that's
+  // what the connections screen loads on open, i.e. the hot path.
+  const isFirstPage = !cursor && limit === CONNECTIONS_PAGE_SIZE;
+  const cacheKey =
+    direction === "followers" ? followersCacheKey(targetId) : followingCacheKey(targetId);
+
+  if (isFirstPage) {
+    const cached = await cacheGetJson<{ items: any[]; nextCursor: number | null }>(c.env, cacheKey);
+    if (cached) {
+      const res = c.json(cached.items) as Response;
+      res.headers.set("Cache-Control", "public, max-age=30");
+      if (cached.nextCursor != null) res.headers.set("X-Next-Cursor", String(cached.nextCursor));
+      return res;
+    }
+  }
+
+  const { items, nextCursor } = await listConnections(c, targetId, direction, cursor, limit);
+
+  if (isFirstPage) {
+    c.executionCtx.waitUntil(cachePutJson(c.env, cacheKey, { items, nextCursor }, 30));
+  }
+
+  const res = c.json(items) as Response;
+  // Public list — safe to cache briefly at the edge/browser.
+  res.headers.set("Cache-Control", "public, max-age=30");
+  if (nextCursor != null) res.headers.set("X-Next-Cursor", String(nextCursor));
+  return res;
+}
+
+readRoute.get("/users/:id/followers", optionalAuth, (c) => connectionsHandler(c, "followers"));
+readRoute.get("/users/:id/following", optionalAuth, (c) => connectionsHandler(c, "following"));
 
 // ================= CHATS (auth) =================
 readRoute.get("/chats", requireAuth, async (c) => {

@@ -14,6 +14,14 @@ import type { Env } from "../types";
 // --- key builders ----------------------------------------------------------
 /** Public profile of a single user (routes/read.ts GET /users/:id). */
 export const userCacheKey = (uid: string) => `cache:user:${uid}`;
+/**
+ * First page of a user's followers / following list (routes/read.ts).
+ * Only the default first page (no cursor) is cached; deeper pages fall through
+ * to D1. `toggleFollow` (routes/api.ts) invalidates BOTH sides of the edge:
+ * the follower's "following" list and the target's "followers" list.
+ */
+export const followersCacheKey = (uid: string) => `cache:followers:${uid}`;
+export const followingCacheKey = (uid: string) => `cache:following:${uid}`;
 /** A single published blog post by slug or id (routes/read.ts GET /blog/:slug). */
 export const blogPostCacheKey = (slugOrId: string) => `cache:blog:post:${slugOrId}`;
 /** Default public blog list page (routes/read.ts GET /blog?limit=N). */

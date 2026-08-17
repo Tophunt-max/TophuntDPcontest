@@ -28,6 +28,8 @@ import {
   commentsCacheKey,
   delCache,
   userCacheKey,
+  followersCacheKey,
+  followingCacheKey,
 } from "../lib/cache";
 import { createContestExtra, validateContestInput } from "../lib/contestAdmin";
 import { verifyRazorpaySignature } from "../lib/payments";
@@ -503,22 +505,44 @@ apiRoute.post("/", async (c) => {
         .where(and(eq(schema.follows.followerId, uid), eq(schema.follows.followingId, targetUserId)))
         .get();
 
+      // The follow edge touches four cached surfaces: the follower's "following"
+      // list, the target's "followers" list, and both users' profile (denormalized
+      // follower/following counts). Invalidate all four so the next read is fresh.
+      const invalidateFollowCaches = () =>
+        delCache(
+          env,
+          followingCacheKey(uid),
+          followersCacheKey(targetUserId),
+          userCacheKey(uid),
+          userCacheKey(targetUserId),
+        );
+
       if (existing) {
-        await db.delete(schema.follows).where(and(eq(schema.follows.followerId, uid), eq(schema.follows.followingId, targetUserId)));
-        await db.update(schema.users).set({ followingCount: sql`MAX(${schema.users.followingCount} - 1, 0)` }).where(eq(schema.users.uid, uid));
-        await db.update(schema.users).set({ followersCount: sql`MAX(${schema.users.followersCount} - 1, 0)` }).where(eq(schema.users.uid, targetUserId));
+        // Unfollow: one atomic round-trip instead of three sequential ones.
+        await db.batch([
+          db.delete(schema.follows).where(and(eq(schema.follows.followerId, uid), eq(schema.follows.followingId, targetUserId))),
+          db.update(schema.users).set({ followingCount: sql`MAX(${schema.users.followingCount} - 1, 0)` }).where(eq(schema.users.uid, uid)),
+          db.update(schema.users).set({ followersCount: sql`MAX(${schema.users.followersCount} - 1, 0)` }).where(eq(schema.users.uid, targetUserId)),
+        ]);
+        c.executionCtx.waitUntil(invalidateFollowCaches());
         return c.json({ success: true, isFollowing: false });
       }
-      await db.insert(schema.follows).values({ followerId: uid, followingId: targetUserId, createdAt: now() });
-      await db.update(schema.users).set({ followingCount: sql`${schema.users.followingCount} + 1` }).where(eq(schema.users.uid, uid));
-      await db.update(schema.users).set({ followersCount: sql`${schema.users.followersCount} + 1` }).where(eq(schema.users.uid, targetUserId));
+      // Follow: insert edge + bump both counters atomically in a single batch.
+      await db.batch([
+        db.insert(schema.follows).values({ followerId: uid, followingId: targetUserId, createdAt: now() }),
+        db.update(schema.users).set({ followingCount: sql`${schema.users.followingCount} + 1` }).where(eq(schema.users.uid, uid)),
+        db.update(schema.users).set({ followersCount: sql`${schema.users.followersCount} + 1` }).where(eq(schema.users.uid, targetUserId)),
+      ]);
       const me = await db.select({ username: schema.users.username, fullName: schema.users.fullName, avatar: schema.users.profileImageUrl }).from(schema.users).where(eq(schema.users.uid, uid)).get();
       c.executionCtx.waitUntil(
-        createNotification(env, targetUserId, {
-          title: "New Follower! 👤",
-          body: `${me?.username || me?.fullName || "Someone"} started following you.`,
-          type: "follow", targetId: uid, image: me?.avatar || undefined,
-        }),
+        Promise.all([
+          invalidateFollowCaches(),
+          createNotification(env, targetUserId, {
+            title: "New Follower! 👤",
+            body: `${me?.username || me?.fullName || "Someone"} started following you.`,
+            type: "follow", targetId: uid, image: me?.avatar || undefined,
+          }),
+        ]),
       );
       return c.json({ success: true, isFollowing: true });
     }

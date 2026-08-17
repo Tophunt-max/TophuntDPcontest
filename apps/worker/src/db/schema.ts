@@ -92,6 +92,11 @@ export const follows = sqliteTable(
   (t) => ({
     pk: primaryKey({ columns: [t.followerId, t.followingId] }),
     followingIdx: index("idx_follows_following").on(t.followingId),
+    // Composite indexes for ordered, keyset-paginated connection lists
+    // (routes/read.ts). Match the WHERE + ORDER BY created_at of each direction
+    // so SQLite serves the page from the index without a sort (migration 0015).
+    followingCreatedIdx: index("idx_follows_following_created").on(t.followingId, t.createdAt),
+    followerCreatedIdx: index("idx_follows_follower_created").on(t.followerId, t.createdAt),
   }),
 );
 
