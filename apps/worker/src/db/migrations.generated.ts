@@ -15,6 +15,7 @@ import m_0010_contest_banner_sql from "../../migrations/0010_contest_banner.sql"
 import m_0011_voting_integrity_sql from "../../migrations/0011_voting_integrity.sql";
 import m_0012_auth_unique_identifiers_sql from "../../migrations/0012_auth_unique_identifiers.sql";
 import m_0013_error_logs_sql from "../../migrations/0013_error_logs.sql";
+import m_0014_match_participant_index_sql from "../../migrations/0014_match_participant_index.sql";
 
 export interface Migration {
   name: string;
@@ -36,4 +37,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0011_voting_integrity.sql", sql: m_0011_voting_integrity_sql },
   { name: "0012_auth_unique_identifiers.sql", sql: m_0012_auth_unique_identifiers_sql },
   { name: "0013_error_logs.sql", sql: m_0013_error_logs_sql },
+  { name: "0014_match_participant_index.sql", sql: m_0014_match_participant_index_sql },
 ];
