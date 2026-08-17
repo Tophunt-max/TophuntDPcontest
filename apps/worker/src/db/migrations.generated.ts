@@ -17,6 +17,7 @@ import m_0012_auth_unique_identifiers_sql from "../../migrations/0012_auth_uniqu
 import m_0013_error_logs_sql from "../../migrations/0013_error_logs.sql";
 import m_0014_match_participant_index_sql from "../../migrations/0014_match_participant_index.sql";
 import m_0015_follows_pagination_index_sql from "../../migrations/0015_follows_pagination_index.sql";
+import m_0016_notifications_unread_index_sql from "../../migrations/0016_notifications_unread_index.sql";
 
 export interface Migration {
   name: string;
@@ -40,4 +41,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0013_error_logs.sql", sql: m_0013_error_logs_sql },
   { name: "0014_match_participant_index.sql", sql: m_0014_match_participant_index_sql },
   { name: "0015_follows_pagination_index.sql", sql: m_0015_follows_pagination_index_sql },
+  { name: "0016_notifications_unread_index.sql", sql: m_0016_notifications_unread_index_sql },
 ];

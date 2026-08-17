@@ -30,6 +30,7 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { ToastProvider } from '@/src/components/toast/ToastProvider';
 import { lightTheme, darkTheme } from '@/constants/theme';
 import '@/src/services/firebase/initFirebase'; // Import to initialize Firebase
+import { getNotificationDestination } from '@/src/services/notifications/notificationMeta';
 import { View, AppState } from 'react-native';
 // Icons are now SVG-based (src/lib/icons.tsx via lucide-react-native), so there
 // are NO icon fonts to preload — icons render identically on web/Android/iOS.
@@ -129,50 +130,19 @@ function RootLayoutNav() {
       const data = response.notification.request.content.data;
       console.log("Notification Clicked Data:", data);
 
-      // 1. Check for Direct URL (Sent from Admin Panel)
-      if (data?.url) {
-          // Remove leading slash if present to avoid double slash issues if needed, 
-          // but router.push works well with absolute paths too.
-          try {
-             router.push(data.url as any);
-          } catch (e) {
-             console.error("Navigation failed", e);
-             router.push('/notifications');
-          }
-          return;
-      }
-
-      // 2. Handle Specific Types based on targetId. Route to real screens that
-      //    actually exist (the previous targets like `/profile/view/:id` and
-      //    `/contest/:id` had no matching route and dead-ended). Wrapped in
-      //    try/catch so a bad payload falls back to the notifications list.
-      if (data?.targetId) {
-          try {
-              switch (data.type) {
-                  case 'follow':
-                  case 'profile_visit':
-                      // Profile screen is app/profile/index.tsx?userId=...
-                      router.push(`/profile?userId=${data.targetId}`);
-                      break;
-                  case 'like':
-                  case 'comment':
-                      // Post permalink is the root-level app/[slug].tsx route.
-                      router.push(`/${data.targetId}`);
-                      break;
-                  case 'contest':
-                  case 'match':
-                      // No standalone contest/match detail route exists yet —
-                      // send the user to the live battles feed on home.
-                      router.push('/home');
-                      break;
-                  default:
-                      router.push('/notifications');
-              }
-          } catch (e) {
-              console.error('Notification navigation failed', e);
-              router.push('/notifications');
-          }
-      } else {
+      // Resolve the destination with the SAME shared helper the in-app list
+      // uses, so a tap behaves identically from the OS tray or inside the app.
+      // `data.url` (admin deep-link) wins; otherwise the real backend `type`
+      // string (follow, match_like, contest-win, purchase, ...) maps to a route.
+      try {
+          const dest = getNotificationDestination(
+              data?.type as string | undefined,
+              data?.targetId as string | undefined,
+              data?.url as string | undefined,
+          );
+          router.push((dest || '/notifications') as any);
+      } catch (e) {
+          console.error('Notification navigation failed', e);
           router.push('/notifications');
       }
     });

@@ -500,6 +500,7 @@ const mapNotification = (r: any) => ({
   read: !!r.read,
   targetId: r.targetId,
   image: r.image,
+  data: r.data ?? null, // admin deep-link payload ({ url?: ... }); json column
   createdAt: r.createdAt, // epoch ms
 });
 
@@ -813,20 +814,50 @@ readRoute.get("/withdrawals", requireAuth, async (c) => {
 });
 
 // ================= NOTIFICATIONS (auth) =================
+// Cursor-paginated on createdAt (index idx_notif_recipient covers recipient +
+// order). Selects explicit columns (no SELECT *) and fetches limit+1 to detect
+// a next page, exposed via X-Next-Cursor so the client can load older pages
+// without re-scanning. Response stays a plain array (backward compatible).
 readRoute.get("/notifications", requireAuth, async (c) => {
   const db = getDb(c.env);
   const uid = c.get("user").uid;
   const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 100);
+  const cursor = c.req.query("cursor"); // createdAt of the last row seen
+
+  const where = cursor
+    ? and(eq(schema.notifications.recipientId, uid), lt(schema.notifications.createdAt, Number(cursor)))
+    : eq(schema.notifications.recipientId, uid);
+
   const rows = await db
-    .select()
+    .select({
+      id: schema.notifications.id,
+      title: schema.notifications.title,
+      body: schema.notifications.body,
+      type: schema.notifications.type,
+      targetId: schema.notifications.targetId,
+      image: schema.notifications.image,
+      data: schema.notifications.data,
+      read: schema.notifications.read,
+      createdAt: schema.notifications.createdAt,
+    })
     .from(schema.notifications)
-    .where(eq(schema.notifications.recipientId, uid))
+    .where(where)
     .orderBy(desc(schema.notifications.createdAt))
-    .limit(limit)
+    .limit(limit + 1)
     .all();
-  return c.json(rows.map(mapNotification));
+
+  const hasMore = rows.length > limit;
+  const page = hasMore ? rows.slice(0, limit) : rows;
+  const res = c.json(page.map(mapNotification)) as Response;
+  // Per-user data — must never be shared-cached.
+  res.headers.set("Cache-Control", "private, no-store");
+  if (hasMore) res.headers.set("X-Next-Cursor", String(page[page.length - 1].createdAt));
+  return res;
 });
 
+// COUNT of unread notifications. Backed by the partial index idx_notif_unread
+// (recipient_id) WHERE read = 0 (migration 0016) so this is an index-only count
+// of just the recipient's UNREAD rows — it never scans read notifications.
 readRoute.get("/notifications/unread-count", requireAuth, async (c) => {
   const db = getDb(c.env);
   const uid = c.get("user").uid;
@@ -835,7 +866,9 @@ readRoute.get("/notifications/unread-count", requireAuth, async (c) => {
     .from(schema.notifications)
     .where(and(eq(schema.notifications.recipientId, uid), eq(schema.notifications.read, false)))
     .get();
-  return c.json({ count: row?.v ?? 0 });
+  const res = c.json({ count: row?.v ?? 0 }) as Response;
+  res.headers.set("Cache-Control", "private, no-store");
+  return res;
 });
 
 // ================= WALLET / COIN LEDGER =================

@@ -444,6 +444,9 @@ export const notifications = sqliteTable(
   },
   (t) => ({
     recipientIdx: index("idx_notif_recipient").on(t.recipientId, t.createdAt),
+    // Partial index for the polled unread-count query (migration 0016): indexes
+    // only unread rows so COUNT(*) WHERE recipient_id=? AND read=0 is index-only.
+    unreadIdx: index("idx_notif_unread").on(t.recipientId).where(sql`${t.read} = 0`),
   }),
 );
 

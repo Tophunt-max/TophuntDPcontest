@@ -3,6 +3,7 @@ import { Platform } from 'react-native';
 import { getApp } from 'firebase/app';
 import { callApi, readApi } from '../api';
 import { live } from '../realtime';
+import type { NotificationType } from './notificationMeta';
 
 // Configure notifications handler
 Notifications.setNotificationHandler({
@@ -20,10 +21,13 @@ export interface NotificationItem {
     id: string;
     title: string;
     body: string;
-    type: "like" | "comment" | "follow" | "contest" | "admin";
+    /** Real backend type strings (follow, match_like, contest-win, purchase, admin, ...). */
+    type: NotificationType;
     read: boolean;
     targetId?: string;
     image?: string;
+    /** Optional payload; `data.url` is an admin deep-link that wins over type routing. */
+    data?: { url?: string; [k: string]: any } | null;
     createdAt: number; // epoch ms (was Firestore Timestamp)
 }
 
