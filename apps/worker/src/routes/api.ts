@@ -1078,6 +1078,18 @@ apiRoute.post("/", async (c) => {
       return c.json({ success: true });
     }
 
+    // Mark EVERY unread notification read in a single indexed UPDATE. Preferred
+    // over markNotificationsRead when opening the screen: no large id array on
+    // the wire, and one write bounded by the idx_notif_unread partial index
+    // (SQLite also caps IN(...) params at ~999, which mark-all sidesteps).
+    case "markAllNotificationsRead": {
+      await db
+        .update(schema.notifications)
+        .set({ read: true })
+        .where(and(eq(schema.notifications.recipientId, uid), eq(schema.notifications.read, false)));
+      return c.json({ success: true });
+    }
+
     case "registerFcmToken": {
       const { token } = body;
       if (!token) throw httpsError("invalid-argument", "token is required.");

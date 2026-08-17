@@ -1,5 +1,6 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { View, FlatList, StyleSheet, RefreshControl, Text, Image, useColorScheme, TouchableOpacity } from 'react-native';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { View, FlatList, StyleSheet, RefreshControl, Text, useColorScheme, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { Image } from 'expo-image';
 import { Stack, useRouter } from 'expo-router';
 import { useAuth } from '@/src/hooks/useAuth';
 import { notificationService, NotificationItem } from '@/src/services/notifications/notificationService';
@@ -12,61 +13,166 @@ import relativeTime from 'dayjs/plugin/relativeTime';
 
 dayjs.extend(relativeTime);
 
+const HEAD_LIMIT = 30; // latest page kept fresh by the live socket
+const PAGE_SIZE = 20; // older pages pulled in during infinite scroll
+const FALLBACK_AVATAR = require('@/assets/images/icon.png');
+
+/** Merge the realtime HEAD with the paginated TAIL, dedupe by id (head wins for
+ *  freshness), and sort newest-first. */
+function mergeNotifications(head: NotificationItem[], tail: NotificationItem[]): NotificationItem[] {
+    const byId = new Map<string, NotificationItem>();
+    for (const n of tail) byId.set(n.id, n);
+    for (const n of head) byId.set(n.id, n); // head overrides tail (read state etc.)
+    return Array.from(byId.values()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+}
+
+// --- Row (memoized so unrelated state changes don't re-render every row) -----
+type RowProps = {
+    item: NotificationItem;
+    isDark: boolean;
+    onPress: (item: NotificationItem) => void;
+};
+
+const NotificationRow = React.memo(({ item, isDark, onPress }: RowProps) => {
+    const bg = isDark ? Colors.dark.background : Colors.light.background;
+    const unreadBg = isDark ? '#16202B' : '#EAF2FF';
+    const textColor = isDark ? '#FFFFFF' : '#101014';
+    const subTextColor = isDark ? '#9BA1A6' : '#6B7280';
+
+    const tag = getNotificationTag(item.type);
+    const showThumb = item.type !== 'follow' && item.type !== 'admin' && !!(item.imageThumb || item.image);
+    const avatarUri = item.imageThumb || item.image;
+
+    return (
+        <TouchableOpacity
+            activeOpacity={0.6}
+            onPress={() => onPress(item)}
+            style={[styles.itemContainer, { backgroundColor: item.read ? bg : unreadBg }]}
+        >
+            <View style={styles.avatarContainer}>
+                <Image
+                    source={avatarUri ? { uri: avatarUri } : FALLBACK_AVATAR}
+                    style={styles.avatar}
+                    contentFit="cover"
+                    transition={150}
+                    cachePolicy="memory-disk"
+                />
+                <View style={[styles.badge, { backgroundColor: tag.color }]}>
+                    <Ionicons name={tag.icon} size={11} color="#FFFFFF" />
+                </View>
+            </View>
+
+            <View style={styles.textContainer}>
+                <View style={styles.tagRow}>
+                    <View style={[styles.tagPill, { backgroundColor: tag.color + (isDark ? '33' : '22') }]}>
+                        <Text style={[styles.tagText, { color: tag.color }]}>{tag.label}</Text>
+                    </View>
+                    {!item.read && <View style={styles.unreadDot} />}
+                </View>
+
+                <Text style={[styles.bodyText, { color: textColor }]} numberOfLines={2}>
+                    {item.title ? <Text style={styles.titleBold}>{item.title} </Text> : null}
+                    {item.body}
+                </Text>
+                <Text style={[styles.timeText, { color: subTextColor }]}>
+                    {item.createdAt ? dayjs(item.createdAt).fromNow() : 'Just now'}
+                </Text>
+            </View>
+
+            {showThumb && (
+                <Image
+                    source={{ uri: item.imageThumb || item.image }}
+                    style={styles.postThumb}
+                    contentFit="cover"
+                    transition={150}
+                    cachePolicy="memory-disk"
+                />
+            )}
+        </TouchableOpacity>
+    );
+});
+NotificationRow.displayName = 'NotificationRow';
+
 export default function NotificationsScreen() {
     const { user } = useAuth();
     const router = useRouter();
-    const [notifications, setNotifications] = useState<NotificationItem[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [refreshing, setRefreshing] = useState(false);
     const colorScheme = useColorScheme();
     const isDark = colorScheme === 'dark';
 
     const bg = isDark ? Colors.dark.background : Colors.light.background;
     const textColor = isDark ? '#FFFFFF' : '#101014';
     const subTextColor = isDark ? '#9BA1A6' : '#6B7280';
-    const unreadBg = isDark ? '#16202B' : '#EAF2FF';
-    const unreadDot = '#3B82F6';
 
-    const loadNotifications = useCallback(() => {
+    // Realtime HEAD (latest page) + paginated TAIL (older pages).
+    const [head, setHead] = useState<NotificationItem[]>([]);
+    const [tail, setTail] = useState<NotificationItem[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
+    const [loadingMore, setLoadingMore] = useState(false);
+    const [reachedEnd, setReachedEnd] = useState(false);
+
+    // Refs to read latest values inside callbacks without re-subscribing.
+    const loadingMoreRef = useRef(false);
+    const reachedEndRef = useRef(false);
+    const markedRef = useRef(false);
+
+    const notifications = useMemo(() => mergeNotifications(head, tail), [head, tail]);
+
+    // Subscribe to the live head (WebSocket + safety-net poll).
+    useEffect(() => {
         if (!user?.uid) return;
-
-        // Real-time subscription (WebSocket-first with a safety-net poll). The
-        // callback fires on connect and on every incoming notification event.
-        const unsubscribe = notificationService.subscribeToNotifications(user.uid, 50, (items) => {
-            setNotifications(items);
+        const unsubscribe = notificationService.subscribeToNotifications(user.uid, HEAD_LIMIT, (items) => {
+            setHead(items);
             setLoading(false);
             setRefreshing(false);
 
-            // Opening the screen marks everything currently unread as read.
-            const unreadIds = items.filter((n) => !n.read).map((n) => n.id);
-            if (unreadIds.length > 0) {
-                notificationService.markAsRead(user.uid, unreadIds);
+            // Mark everything read once, the first time the screen has data.
+            if (!markedRef.current && items.some((n) => !n.read)) {
+                markedRef.current = true;
+                notificationService.markAllAsRead();
+                // Reflect locally so the unread highlight clears immediately.
+                setHead((prev) => prev.map((n) => ({ ...n, read: true })));
+                setTail((prev) => prev.map((n) => ({ ...n, read: true })));
             }
         });
-
-        return unsubscribe;
+        return () => unsubscribe();
     }, [user?.uid]);
 
-    useEffect(() => {
-        let unsubscribe: any;
-        if (user?.uid) {
-            unsubscribe = loadNotifications();
-        }
-        return () => {
-            if (unsubscribe) unsubscribe();
-        };
-    }, [loadNotifications, user?.uid]);
-
-    const onRefresh = () => {
-        // The live socket auto-updates; a brief spinner acknowledges the pull.
+    const onRefresh = useCallback(() => {
         setRefreshing(true);
-        setTimeout(() => setRefreshing(false), 800);
-    };
+        // Live socket auto-updates the head; a brief spinner acknowledges the pull.
+        setTimeout(() => setRefreshing(false), 700);
+    }, []);
 
-    const handlePress = (item: NotificationItem) => {
-        // Optimistically clear the unread highlight on tap.
+    const loadMore = useCallback(async () => {
+        if (loadingMoreRef.current || reachedEndRef.current) return;
+        // Nothing loaded yet, or list shorter than one head page → no tail to load.
+        const oldest = notifications[notifications.length - 1];
+        if (!oldest) return;
+
+        loadingMoreRef.current = true;
+        setLoadingMore(true);
+        try {
+            const { items, nextCursor } = await notificationService.fetchNotificationsPage(oldest.createdAt, PAGE_SIZE);
+            if (items.length > 0) {
+                setTail((prev) => mergeNotifications([], [...prev, ...items]));
+            }
+            if (!nextCursor || items.length === 0) {
+                reachedEndRef.current = true;
+                setReachedEnd(true);
+            }
+        } catch {
+            /* transient — user can scroll again to retry */
+        } finally {
+            loadingMoreRef.current = false;
+            setLoadingMore(false);
+        }
+    }, [notifications]);
+
+    const handlePress = useCallback((item: NotificationItem) => {
         if (!item.read) {
-            setNotifications((prev) => prev.map((n) => (n.id === item.id ? { ...n, read: true } : n)));
+            setHead((prev) => prev.map((n) => (n.id === item.id ? { ...n, read: true } : n)));
+            setTail((prev) => prev.map((n) => (n.id === item.id ? { ...n, read: true } : n)));
             if (user?.uid) notificationService.markAsRead(user.uid, [item.id]);
         }
         const dest = getNotificationDestination(item.type, item.targetId, item.data?.url);
@@ -77,53 +183,16 @@ export default function NotificationsScreen() {
                 console.error('Notification navigation failed', e);
             }
         }
-    };
+    }, [router, user?.uid]);
 
-    const renderItem = ({ item }: { item: NotificationItem }) => {
-        const isRead = item.read;
-        const tag = getNotificationTag(item.type);
-        const showThumb = item.type !== 'follow' && item.type !== 'admin' && !!item.image;
+    const renderItem = useCallback(
+        ({ item }: { item: NotificationItem }) => (
+            <NotificationRow item={item} isDark={isDark} onPress={handlePress} />
+        ),
+        [isDark, handlePress],
+    );
 
-        return (
-            <TouchableOpacity
-                activeOpacity={0.6}
-                onPress={() => handlePress(item)}
-                style={[styles.itemContainer, { backgroundColor: isRead ? bg : unreadBg }]}
-            >
-                <View style={styles.avatarContainer}>
-                    <Image
-                        source={item.image ? { uri: item.image } : require('@/assets/images/icon.png')}
-                        style={styles.avatar}
-                        resizeMode="cover"
-                    />
-                    {/* Type icon badge on the avatar corner */}
-                    <View style={[styles.badge, { backgroundColor: tag.color }]}>
-                        <Ionicons name={tag.icon} size={11} color="#FFFFFF" />
-                    </View>
-                </View>
-
-                <View style={styles.textContainer}>
-                    {/* Tag pill */}
-                    <View style={styles.tagRow}>
-                        <View style={[styles.tagPill, { backgroundColor: tag.color + (isDark ? '33' : '22') }]}>
-                            <Text style={[styles.tagText, { color: tag.color }]}>{tag.label}</Text>
-                        </View>
-                        {!isRead && <View style={[styles.unreadDot, { backgroundColor: unreadDot }]} />}
-                    </View>
-
-                    <Text style={[styles.bodyText, { color: textColor }]} numberOfLines={3}>
-                        {item.title ? <Text style={styles.titleBold}>{item.title} </Text> : null}
-                        {item.body}
-                    </Text>
-                    <Text style={[styles.timeText, { color: subTextColor }]}>
-                        {item.createdAt ? dayjs(item.createdAt).fromNow() : 'Just now'}
-                    </Text>
-                </View>
-
-                {showThumb && <Image source={{ uri: item.image }} style={styles.postThumb} />}
-            </TouchableOpacity>
-        );
-    };
+    const keyExtractor = useCallback((item: NotificationItem) => item.id, []);
 
     return (
         <View style={[styles.container, { backgroundColor: bg }]}>
@@ -141,7 +210,7 @@ export default function NotificationsScreen() {
             ) : (
                 <FlatList
                     data={notifications}
-                    keyExtractor={(item) => item.id}
+                    keyExtractor={keyExtractor}
                     renderItem={renderItem}
                     refreshControl={
                         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={textColor} />
@@ -157,8 +226,26 @@ export default function NotificationsScreen() {
                             </Text>
                         </View>
                     }
+                    ListFooterComponent={
+                        loadingMore ? (
+                            <View style={styles.footer}>
+                                <ActivityIndicator size="small" color={subTextColor} />
+                            </View>
+                        ) : reachedEnd && notifications.length > 0 ? (
+                            <Text style={[styles.footerText, { color: subTextColor }]}>You're all caught up</Text>
+                        ) : null
+                    }
                     contentContainerStyle={styles.listContent}
                     showsVerticalScrollIndicator={false}
+                    // Infinite scroll
+                    onEndReached={loadMore}
+                    onEndReachedThreshold={0.4}
+                    // Production perf: virtualize aggressively, drop offscreen rows.
+                    initialNumToRender={12}
+                    maxToRenderPerBatch={10}
+                    windowSize={9}
+                    removeClippedSubviews
+                    updateCellsBatchingPeriod={50}
                 />
             )}
         </View>
@@ -169,7 +256,6 @@ const styles = StyleSheet.create({
     container: {
         flex: 1,
     },
-    // Top gap so the first row doesn't butt against the header.
     listContent: {
         paddingTop: 10,
         paddingBottom: 24,
@@ -226,6 +312,7 @@ const styles = StyleSheet.create({
         height: 8,
         borderRadius: 4,
         marginLeft: 8,
+        backgroundColor: '#3B82F6',
     },
     bodyText: {
         fontSize: 14,
@@ -268,5 +355,14 @@ const styles = StyleSheet.create({
         textAlign: 'center',
         marginTop: 6,
         lineHeight: 18,
+    },
+    footer: {
+        paddingVertical: 20,
+        alignItems: 'center',
+    },
+    footerText: {
+        textAlign: 'center',
+        paddingVertical: 20,
+        fontSize: 12,
     },
 });

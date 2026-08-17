@@ -1,7 +1,7 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import { getApp } from 'firebase/app';
-import { callApi, readApi } from '../api';
+import { callApi, readApi, readApiWithCursor } from '../api';
 import { live } from '../realtime';
 import type { NotificationType } from './notificationMeta';
 
@@ -26,6 +26,8 @@ export interface NotificationItem {
     read: boolean;
     targetId?: string;
     image?: string;
+    /** 128px server-side variant of `image` (smaller R2/CDN bytes for the row). */
+    imageThumb?: string;
     /** Optional payload; `data.url` is an admin deep-link that wins over type routing. */
     data?: { url?: string; [k: string]: any } | null;
     createdAt: number; // epoch ms (was Firestore Timestamp)
@@ -113,6 +115,32 @@ class NotificationService {
     async markAsRead(_userId: string, notificationIds: string[]) {
         if (!notificationIds.length) return;
         await callApi('markNotificationsRead', { notificationIds });
+    }
+
+    /**
+     * Mark ALL unread notifications read in one server-side write. Preferred on
+     * screen-open over markAsRead(ids): no id array on the wire, one indexed
+     * UPDATE. Best-effort — a failure just leaves them unread for next time.
+     */
+    async markAllAsRead() {
+        try { await callApi('markAllNotificationsRead', {}); } catch { /* best-effort */ }
+    }
+
+    /**
+     * Fetch ONE older page for infinite scroll. Cursor is the `createdAt` of the
+     * oldest row already shown; omit for the first page. Returns the items plus
+     * the next cursor (null = no more). This is a plain paginated GET — the live
+     * socket keeps the HEAD of the list fresh; this only loads the TAIL.
+     */
+    async fetchNotificationsPage(
+        cursor?: number | string | null,
+        limit: number = 20,
+    ): Promise<{ items: NotificationItem[]; nextCursor: string | null }> {
+        const { data, nextCursor } = await readApiWithCursor<NotificationItem[]>(
+            '/read/notifications',
+            { limit, cursor: cursor ?? undefined },
+        );
+        return { items: data || [], nextCursor };
     }
 }
 

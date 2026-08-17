@@ -492,7 +492,7 @@ const mapMatch = (r: any) => ({
   expiresAt: r.expiresAt,
 });
 
-const mapNotification = (r: any) => ({
+const mapNotification = (env: Env, r: any) => ({
   id: r.id,
   title: r.title,
   body: r.body,
@@ -500,6 +500,9 @@ const mapNotification = (r: any) => ({
   read: !!r.read,
   targetId: r.targetId,
   image: r.image,
+  // Lightweight 128px variant for the 48px row image — cuts R2/CDN bytes on the
+  // wire. Falls back to the original URL for external/non-R2 images.
+  imageThumb: avatarUrl(env, r.image),
   data: r.data ?? null, // admin deep-link payload ({ url?: ... }); json column
   createdAt: r.createdAt, // epoch ms
 });
@@ -848,7 +851,7 @@ readRoute.get("/notifications", requireAuth, async (c) => {
 
   const hasMore = rows.length > limit;
   const page = hasMore ? rows.slice(0, limit) : rows;
-  const res = c.json(page.map(mapNotification)) as Response;
+  const res = c.json(page.map((r) => mapNotification(c.env, r))) as Response;
   // Per-user data — must never be shared-cached.
   res.headers.set("Cache-Control", "private, no-store");
   if (hasMore) res.headers.set("X-Next-Cursor", String(page[page.length - 1].createdAt));
