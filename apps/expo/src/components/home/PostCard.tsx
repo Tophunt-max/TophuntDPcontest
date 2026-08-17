@@ -89,6 +89,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
   const [submittingForUid, setSubmittingForUid] = useState<string | null>(null);
   const [hasVoted, setHasVoted] = useState(!!item.hasVoted);
   const [votedForUid, setVotedForUid] = useState<string | null>(item.votedForUid || null);
+  const [winnerUid, setWinnerUid] = useState<string | null>(item.winnerUid || null);
 
   // Animation values
   const heartScale = useSharedValue(0);
@@ -143,6 +144,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
         setMatchStatus(data.status || 'active');
         if (typeof data.hasVoted === 'boolean') setHasVoted(data.hasVoted);
         if ('votedForUid' in data) setVotedForUid(data.votedForUid || null);
+        if ('winnerUid' in data) setWinnerUid(data.winnerUid || null);
         // Keep the viewer's own like/bookmark state in sync (survives refresh).
         if (typeof data.isLiked === 'boolean') setIsLiked(data.isLiked);
         if (typeof data.isBookmarked === 'boolean') setIsBookmarked(data.isBookmarked);
@@ -157,6 +159,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
             case 'match_status':
               applyTally(Number(event.votesA || 0), Number(event.votesB || 0));
               if (event.type === 'match_status' && event.status) setMatchStatus(String(event.status));
+              if (event.type === 'match_status') setWinnerUid(event.winnerUid ?? null);
               break;
             case 'like':
               if (typeof event.likeCount === 'number') setLikeCount(event.likeCount);
@@ -190,7 +193,8 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
   }, [applyTally, item.id, user?.uid]);
 
   useEffect(() => {
-    if (matchStatus !== 'active') onMatchEnded?.(item.id);
+    // Cancelled/voided battles disappear; completed ones stay to show the result.
+    if (matchStatus === 'cancelled') onMatchEnded?.(item.id);
   }, [item.id, matchStatus, onMatchEnded]);
 
   const animatedBarStyleA = useAnimatedStyle(() => ({
@@ -404,6 +408,18 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
   const votedForA = votedForUid === item.userA.uid;
   const votedForB = votedForUid === item.userB?.uid;
 
+  // Completed-battle result. Winner = declared winnerUid, else the higher tally.
+  const isCompleted = matchStatus === 'completed';
+  const winnerSide: 'A' | 'B' | null =
+    winnerUid === item.userA.uid ? 'A'
+    : winnerUid === item.userB?.uid ? 'B'
+    : isCompleted ? (votesA > votesB ? 'A' : votesB > votesA ? 'B' : null) : null;
+  const isTie = isCompleted && !winnerSide;
+  const winnerName = winnerSide === 'A' ? nameA : winnerSide === 'B' ? nameB : null;
+  // Visual highlight: the winner once finished, otherwise the live leader.
+  const aWins = isCompleted ? winnerSide === 'A' : isALeading;
+  const bWins = isCompleted ? winnerSide === 'B' : isBLeading;
+
   const picA = item.userA.profilePic || item.userA.profileImageUrl || `https://ui-avatars.com/api/?name=${nameA}&background=random`;
   const picB = item.userB?.profilePic || item.userB?.profileImageUrl || `https://ui-avatars.com/api/?name=${nameB}&background=random`;
 
@@ -427,7 +443,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
               <TouchableOpacity
                 activeOpacity={0.8}
                 onPress={() => openProfile(item.userA?.uid)}
-                style={[styles.avatarWrapper, isALeading && styles.leadingAvatar, { zIndex: 2 }]}
+                style={[styles.avatarWrapper, aWins && styles.leadingAvatar, { zIndex: 2 }]}
                 accessibilityRole="button"
                 accessibilityLabel={`Open ${nameA}'s profile`}
               >
@@ -437,7 +453,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
                 <TouchableOpacity
                   activeOpacity={0.8}
                   onPress={() => openProfile(item.userB?.uid)}
-                  style={[styles.avatarWrapper, isBLeading && styles.leadingAvatar, { marginLeft: -14, zIndex: 1 }]}
+                  style={[styles.avatarWrapper, bWins && styles.leadingAvatar, { marginLeft: -14, zIndex: 1 }]}
                   accessibilityRole="button"
                   accessibilityLabel={`Open ${nameB}'s profile`}
                 >
@@ -484,14 +500,14 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
 
       {/* Hero media */}
       <Pressable onPress={handleDoubleTap} style={styles.mediaSection}>
-        <View style={[styles.imageWrapper, isALeading && styles.leadingImage]}>
+        <View style={[styles.imageWrapper, aWins && styles.leadingImage]}>
           <Image source={{ uri: item.userA.mediaUrl }} style={styles.postImage} />
-          {isALeading && <View style={styles.crownContainer}><MaterialCommunityIcons name="crown" size={20} color="#FFD700" /></View>}
+          {aWins && <View style={styles.crownContainer}><MaterialCommunityIcons name="crown" size={20} color="#FFD700" /></View>}
         </View>
 
-        <View style={[styles.imageWrapper, isBLeading && styles.leadingImage]}>
+        <View style={[styles.imageWrapper, bWins && styles.leadingImage]}>
           <Image source={{ uri: item.userB.mediaUrl }} style={styles.postImage} />
-          {isBLeading && <View style={styles.crownContainer}><MaterialCommunityIcons name="crown" size={20} color="#FFD700" /></View>}
+          {bWins && <View style={styles.crownContainer}><MaterialCommunityIcons name="crown" size={20} color="#FFD700" /></View>}
         </View>
 
         <View pointerEvents="none" style={styles.vsBadge}>
@@ -560,7 +576,25 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
         </View>
       </View>
 
-      {/* Vote buttons */}
+      {/* Finished battle → show the result banner instead of vote buttons */}
+      {isCompleted && (
+        <View style={styles.resultSection}>
+          {isTie ? (
+            <View style={[styles.resultBanner, styles.resultTie]}>
+              <Ionicons name="hand-left" size={16} color="#8A6D00" />
+              <Text style={styles.resultTieText}>It&apos;s a tie!</Text>
+            </View>
+          ) : (
+            <View style={[styles.resultBanner, styles.resultWin]}>
+              <MaterialCommunityIcons name="crown" size={16} color="#FFF" />
+              <Text style={styles.resultWinText} numberOfLines={1}>Winner: {winnerName}</Text>
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* Vote buttons (hidden once the battle is finished) */}
+      {!isCompleted && (
       <View style={styles.voteButtonSection}>
         <AnimatedTouchable
           style={[
@@ -619,6 +653,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
                 </View>}
         </AnimatedTouchable>
       </View>
+      )}
 
       <View style={[styles.actionBar, { borderTopColor: trackColor }]}>
         <View style={styles.leftActions}>
@@ -718,6 +753,12 @@ const styles = StyleSheet.create({
 
   // Vote buttons
   voteButtonSection: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, marginTop: 8, gap: 12 },
+  resultSection: { paddingHorizontal: 16, marginTop: 8 },
+  resultBanner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, minHeight: 46, borderRadius: 16, paddingHorizontal: 12 },
+  resultWin: { backgroundColor: '#22A559' },
+  resultWinText: { fontFamily: 'Urbanist-Bold', fontSize: 14, color: '#FFF', flexShrink: 1 },
+  resultTie: { backgroundColor: '#FFE68A', borderWidth: 1, borderColor: '#FFD700' },
+  resultTieText: { fontFamily: 'Urbanist-Bold', fontSize: 14, color: '#8A6D00' },
   voteButton: { flex: 1, minHeight: 46, paddingVertical: 12, paddingHorizontal: 8, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   voteButtonA: { backgroundColor: '#FF4D67' },
   voteButtonB: { backgroundColor: '#FF8A4D' },

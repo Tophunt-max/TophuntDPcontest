@@ -20,6 +20,7 @@ import { deleteAuthUser, updateAuthUser, setCustomClaims, getUserByEmail } from 
 import { createNotification, sendBroadcastToAllUsers, sendSegmentedBroadcast } from "../lib/notify";
 import { finalizeVotes } from "../lib/voteCounter";
 import { settleRefund, settleWinner } from "../lib/contestSettlement";
+import { publish } from "../lib/publish";
 import { resolveContests, monthlyHallOfFame } from "../cron";
 import { newId, now } from "../lib/ids";
 import { discoverUrls, processBatch } from "../lib/importerTask";
@@ -1801,6 +1802,16 @@ adminRoute.post("/matches/:id/declare-winner", async (c) => {
     completedAt: ts,
   });
   if (!settled) throw httpsError("failed-precondition", "Match was already resolved.");
+
+  // Flip any live feed card to its winner/result view without a refetch.
+  await publish(c.env, `match:${id}`, {
+    type: "match_status",
+    status: "completed",
+    votesA,
+    votesB,
+    totalVotes: votesA + votesB,
+    winnerUid,
+  });
 
   await createNotification(c.env, winnerUid, { title: "You Won! 🏆", body: `You won the battle "${m.title}" and earned ${rewardAmount} Dpcoins!`, type: "contest-win", targetId: id });
   await createNotification(c.env, loserUid, { title: "Battle Ended", body: `The battle "${m.title}" has concluded.`, type: "contest-loss", targetId: id });

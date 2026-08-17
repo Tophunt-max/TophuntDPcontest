@@ -25,6 +25,7 @@ async function publishMatchStatus(
   status: "completed" | "cancelled",
   votesA: number,
   votesB: number,
+  winnerUid: string | null = null,
 ): Promise<void> {
   await publish(env, `match:${matchId}`, {
     type: "match_status",
@@ -32,6 +33,8 @@ async function publishMatchStatus(
     votesA,
     votesB,
     totalVotes: votesA + votesB,
+    // Lets a live feed card flip to its winner/result view without a refetch.
+    winnerUid,
   });
 }
 
@@ -163,7 +166,7 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
   });
   if (!settled) return;
 
-  await publishMatchStatus(env, match.id, "completed", votesA, votesB);
+  await publishMatchStatus(env, match.id, "completed", votesA, votesB, winnerUid);
   await createNotification(env, winnerUid, { title: "You Won! 🏆", body: `Victory! You won the battle "${match.title}" and earned ${rewardAmount} Dpcoins!`, type: "contest-win", targetId: match.id });
   await createNotification(env, loserUid, { title: "Battle Ended", body: `The battle "${match.title}" has concluded. You played well!`, type: "contest-loss", targetId: match.id });
 }

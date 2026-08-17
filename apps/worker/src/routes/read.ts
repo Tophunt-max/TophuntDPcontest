@@ -129,6 +129,8 @@ async function hydrateViewerState(db: any, matches: any[], uid: string): Promise
 // This mirrors how large feeds work (candidate gen + ranking) while staying
 // light enough for D1 + the edge cache.
 const FEED_CANDIDATE_POOL = 150;
+const FEED_RESULT_WINDOW_MS = 24 * 60 * 60 * 1000; // keep finished battles visible ~1 day
+const FEED_RESULT_POOL = 40; // recently-finished battles pulled into the pool
 const FEED_DIVERSITY_WINDOW = 2; // don't repeat a participant within N neighbouring slots
 const FEED_AFFINITY_LOOKBACK = 500; // cap on how many past votes/visits we scan
 const FEED_SEEN_MAX_KEYS = 300; // bound the per-user seen map size in KV
@@ -286,16 +288,30 @@ async function servePersonalizedFeed(
   const candKey = `cache:matches:cand:${status}:${type || "all"}`;
   let candidates: any[] | null = await cacheGet(c.env, candKey);
   if (!candidates) {
-    const conds = [eq(schema.contestMatches.status, status)];
-    if (type) conds.push(eq(schema.contestMatches.type, type));
-    const rows = await db
+    const typeConds = type ? [eq(schema.contestMatches.type, type)] : [];
+    const activeRows = await db
       .select()
       .from(schema.contestMatches)
-      .where(and(...conds))
+      .where(and(eq(schema.contestMatches.status, status), ...typeConds))
       .orderBy(desc(schema.contestMatches.createdAt))
       .limit(FEED_CANDIDATE_POOL)
       .all();
-    candidates = (rows as any[])
+    let rows = activeRows as any[];
+    // On the live feed (status=active), also surface recently-finished battles
+    // so their winner/result stays visible for a while instead of vanishing the
+    // moment a winner is declared. Ranking (freshness) keeps them below active.
+    if (status === "active") {
+      const cutoff = now - FEED_RESULT_WINDOW_MS;
+      const completedRows = await db
+        .select()
+        .from(schema.contestMatches)
+        .where(and(eq(schema.contestMatches.status, "completed"), gt(schema.contestMatches.expiresAt, cutoff), ...typeConds))
+        .orderBy(desc(schema.contestMatches.expiresAt))
+        .limit(FEED_RESULT_POOL)
+        .all();
+      rows = [...activeRows, ...(completedRows as any[])];
+    }
+    candidates = rows
       .map((r) => ({ ...enrichMatchMedia(c.env, mapMatch(r)), _base: rankBaseScore(r, now, w) }))
       .sort((a, b) => b._base - a._base);
     await cachePut(c.env, candKey, candidates, 45);
