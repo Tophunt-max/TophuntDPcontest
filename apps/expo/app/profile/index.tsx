@@ -1,12 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { View, StyleSheet, SafeAreaView, Text, Button, ActivityIndicator, ScrollView, useColorScheme } from 'react-native';
-import { useRouter, useLocalSearchParams, usePathname } from 'expo-router';
+import { View, StyleSheet, SafeAreaView, Text, Button, FlatList, RefreshControl, ScrollView, useColorScheme } from 'react-native';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useAuth } from '@/src/services/auth';
-import { useProfile, useUserPosts, useToggleFollow, useUserBookmarks } from '@/src/hooks/useProfileData';
+import { useProfile, useToggleFollow, useUserBookmarks, useUserMatches } from '@/src/hooks/useProfileData';
 import ProfileHeader from '@/src/components/profile/ProfileHeader';
 import Highlights from '@/src/components/profile/Highlights';
-import ProfileTabs from '@/src/components/profile/ProfileTabs';
-import PostGrid from '@/src/components/profile/PostGrid';
+import ProfileTabs, { ProfileTab } from '@/src/components/profile/ProfileTabs';
 import { ProfileHeaderSkeleton, PostGridSkeleton } from '@/src/components/profile/ProfileSkeleton';
 import { WalletCard } from '@/src/components/profile/WalletCard';
 import { BottomNav } from '@/src/components/home/BottomNav';
@@ -92,87 +91,100 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
     return myProfile?.following?.includes(targetUserId) || false;
   }, [myProfile, targetUserId]);
 
-  const { 
-    data: postsData, 
-    isLoading: postsLoading, 
-    fetchNextPage, 
-    hasNextPage, 
-    refetch: refetchPosts, 
-    isRefetching 
-  } = useUserPosts(targetUserId);
-
+  const { data: photoMatches, isLoading: photoLoading, refetch: refetchPhoto, isRefetching: photoRefetching } = useUserMatches(targetUserId, 'photo');
+  const { data: videoMatches, isLoading: videoLoading, refetch: refetchVideo, isRefetching: videoRefetching } = useUserMatches(targetUserId, 'video');
   const { data: bookmarks, isLoading: bookmarksLoading, refetch: refetchBookmarks } = useUserBookmarks(targetUserId);
-  
+
   const { mutate: toggleFollow } = useToggleFollow();
-  const [activeTab, setActiveTab] = useState<'posts' | 'reels' | 'tags'>('posts');
+  const [activeTab, setActiveTab] = useState<ProfileTab>('photo');
 
   const handleToggleFollow = () => {
     if (!isOwnProfile) toggleFollow(targetUserId);
   };
 
   const handleRefresh = async () => {
-    await Promise.all([refetchProfile(), refetchPosts(), refetchBookmarks()]);
+    await Promise.all([refetchProfile(), refetchPhoto(), refetchVideo(), refetchBookmarks()]);
   };
+
+  const bg = isDark ? Colors.dark.background : Colors.light.background;
 
   if (profileLoading && !profile) {
     return (
-        <SafeAreaView style={[styles.container, { backgroundColor: isDark ? Colors.dark.background : Colors.light.background }]}>
+        <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
             <ScrollView showsVerticalScrollIndicator={false}>
                 <ProfileHeaderSkeleton />
                 <PostGridSkeleton />
             </ScrollView>
-            <BottomNav backgroundColor={isDark ? Colors.dark.background : Colors.light.background} isDark={isDark} />
+            <BottomNav backgroundColor={bg} isDark={isDark} />
         </SafeAreaView>
     );
   }
 
-  const posts = postsData?.pages.flatMap(page => page.posts) || [];
+  // Current tab's battles (photo/video) or saved bookmarks.
+  const currentData: any[] =
+    activeTab === 'photo' ? (photoMatches || [])
+    : activeTab === 'video' ? (videoMatches || [])
+    : (bookmarks || []);
+  const currentLoading =
+    activeTab === 'photo' ? photoLoading
+    : activeTab === 'video' ? videoLoading
+    : bookmarksLoading;
+
+  const emptyText =
+    activeTab === 'photo' ? 'No photo battles yet.'
+    : activeTab === 'video' ? 'No video battles yet.'
+    : 'No saved battles yet.';
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: isDark ? Colors.dark.background : Colors.light.background }]}>
-      <PostGrid
-        posts={activeTab === 'posts' ? posts : []}
-        onLoadMore={() => hasNextPage && fetchNextPage()}
-        isLoading={postsLoading || (activeTab === 'tags' && bookmarksLoading)}
-        refreshing={isRefetching}
-        onRefresh={handleRefresh}
+    <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
+      <FlatList
+        data={currentData}
+        keyExtractor={(item: any) => item.id}
+        renderItem={({ item }) => <PostCard item={item} isDark={isDark} />}
+        refreshControl={
+          <RefreshControl
+            refreshing={photoRefetching || videoRefetching}
+            onRefresh={handleRefresh}
+            tintColor="#FF4D67"
+            colors={["#FF4D67"]}
+          />
+        }
         ListHeaderComponent={
           <>
-            <ProfileHeader 
-              user={profile!} 
+            <ProfileHeader
+              user={profile!}
               isOwnProfile={isOwnProfile}
               onToggleFollow={handleToggleFollow}
               isFollowing={isFollowing}
             />
             {isOwnProfile && (
-              <WalletCard 
-                Dpcoin={profile?.Dpcoin || 0} 
-                stats={profile?.stats || { contestsJoined: 0, wins: 0, totalVotesReceived: 0 }} 
+              <WalletCard
+                Dpcoin={profile?.Dpcoin || 0}
+                stats={profile?.stats || { contestsJoined: 0, wins: 0, totalVotesReceived: 0 }}
                 onPress={() => router.push('/wallet')}
               />
             )}
             <Highlights userId={targetUserId} />
-            <ProfileTabs 
-              activeTab={activeTab} 
-              onChangeTab={setActiveTab} 
-              isPrivate={!!profile?.isPrivate} 
+            <ProfileTabs
+              activeTab={activeTab}
+              onChangeTab={setActiveTab}
+              isPrivate={!!profile?.isPrivate}
             />
-            {activeTab === 'tags' && (
-              <View style={{ paddingBottom: 20 }}>
-                {bookmarks?.map((match: any) => (
-                  <PostCard key={match.id} item={match} isDark={isDark} />
-                ))}
-                {(!bookmarks || bookmarks.length === 0) && !bookmarksLoading && (
-                  <View style={{ alignItems: 'center', marginTop: 40 }}>
-                    <Text style={{ color: isDark ? '#FFF' : '#616161', fontFamily: 'Urbanist-Medium' }}>No bookmarked battles yet.</Text>
-                  </View>
-                )}
-              </View>
-            )}
           </>
         }
+        ListEmptyComponent={
+          !currentLoading ? (
+            <View style={{ alignItems: 'center', marginTop: 40 }}>
+              <Text style={{ color: isDark ? '#FFF' : '#616161', fontFamily: 'Urbanist-Medium' }}>{emptyText}</Text>
+            </View>
+          ) : (
+            <PostGridSkeleton />
+          )
+        }
+        contentContainerStyle={{ paddingBottom: 100 }}
+        showsVerticalScrollIndicator={false}
       />
-      <BottomNav backgroundColor={isDark ? Colors.dark.background : Colors.light.background} isDark={isDark} />
+      <BottomNav backgroundColor={bg} isDark={isDark} />
     </SafeAreaView>
   );
 };

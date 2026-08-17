@@ -961,6 +961,35 @@ readRoute.get("/users/:id/posts", optionalAuth, async (c) => {
   return c.json({ posts: rows, nextCursor });
 });
 
+// A user's own battles (as either participant). Because participants are stored
+// in the userA/userB JSON snapshots, we match on json_extract(...uid) so the
+// same battle shows on BOTH creators' profiles. Optional ?type=photo|video.
+readRoute.get("/users/:id/matches", optionalAuth, async (c) => {
+  const db = getDb(c.env);
+  const userId = c.req.param("id");
+  const type = c.req.query("type");
+  const limit = Math.min(parseInt(c.req.query("limit") || "20", 10), 50);
+  const viewer = c.get("user")?.uid;
+
+  const conds: any[] = [
+    sql`(json_extract(${schema.contestMatches.userA}, '$.uid') = ${userId} OR json_extract(${schema.contestMatches.userB}, '$.uid') = ${userId})`,
+  ];
+  if (type === "photo" || type === "video") conds.push(eq(schema.contestMatches.type, type));
+
+  const rows = await db
+    .select()
+    .from(schema.contestMatches)
+    .where(and(...conds))
+    .orderBy(desc(schema.contestMatches.createdAt))
+    .limit(limit)
+    .all();
+
+  let matches = (rows as any[]).map((r) => enrichMatchMedia(c.env, mapMatch(r)));
+  if (viewer) matches = await hydrateViewerState(db, matches, viewer);
+  c.header("Cache-Control", viewer ? "private, no-store" : "public, max-age=15");
+  return c.json(matches);
+});
+
 readRoute.get("/users/:id/bookmarks", requireAuth, async (c) => {
   const db = getDb(c.env);
   const userId = c.req.param("id");

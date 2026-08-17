@@ -3,17 +3,19 @@ import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { Colors } from '@/constants/theme';
 import { Grid_Icon, Play_Circle, Bookmark_Outline } from '@/assets/svgs';
 
+export type ProfileTab = 'photo' | 'video' | 'tags';
+
 type ProfileTabsProps = {
-  activeTab: 'posts' | 'reels' | 'tags';
-  onChangeTab: (tab: 'posts' | 'reels' | 'tags') => void;
+  activeTab: ProfileTab;
+  onChangeTab: (tab: ProfileTab) => void;
   isPrivate: boolean;
 };
 
 const ProfileTabs: React.FC<ProfileTabsProps> = ({ activeTab, onChangeTab, isPrivate }) => {
-  const tabs = [
-    { key: 'posts', icon: Grid_Icon, label: 'Feeds' },
-    { key: 'reels', icon: Play_Circle, label: 'Shorts' },
-    { key: 'tags', icon: Bookmark_Outline, label: 'Tags' },
+  const tabs: { key: ProfileTab; icon: any; label: string }[] = [
+    { key: 'photo', icon: Grid_Icon, label: 'Photo' },
+    { key: 'video', icon: Play_Circle, label: 'Video' },
+    { key: 'tags', icon: Bookmark_Outline, label: 'Saved' },
   ];
 
   return (
@@ -27,8 +29,8 @@ const ProfileTabs: React.FC<ProfileTabsProps> = ({ activeTab, onChangeTab, isPri
           <TouchableOpacity
             key={tab.key}
             style={[styles.tab, isActive && styles.activeTab]}
-            onPress={() => onChangeTab(tab.key as 'posts' | 'reels' | 'tags')}
-            disabled={isPrivate && tab.key !== 'posts'}
+            onPress={() => onChangeTab(tab.key)}
+            disabled={isPrivate && tab.key !== 'photo'}
           >
             <Icon 
               width={24} 

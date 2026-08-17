@@ -76,6 +76,26 @@ export const useUserPosts = (userId: string) => {
   });
 };
 
+/**
+ * A user's own battles (as either participant), optionally filtered by type.
+ * The same battle appears on both creators' profiles (server matches on either
+ * participant uid). Returns mapped match objects ready for <PostCard/>.
+ */
+export const useUserMatches = (userId: string, type: 'photo' | 'video') => {
+  return useQuery({
+    queryKey: ['userMatches', userId, type],
+    queryFn: async (): Promise<any[]> => {
+      try {
+        return (await readApi(`/read/users/${userId}/matches`, { type, limit: 30 })) as any[];
+      } catch (err) {
+        console.error('Error fetching user matches:', err);
+        return [];
+      }
+    },
+    enabled: !!userId,
+  });
+};
+
 export const useUserBookmarks = (userId: string) => {
   return useQuery({
     queryKey: ['userBookmarks', userId],
