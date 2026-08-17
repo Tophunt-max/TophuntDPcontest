@@ -45,6 +45,10 @@ export default function WinsScreen() {
           onRefresh={refetch}
           contentContainerStyle={{ paddingVertical: 8, paddingBottom: 40 }}
           showsVerticalScrollIndicator={false}
+          removeClippedSubviews
+          initialNumToRender={4}
+          maxToRenderPerBatch={5}
+          windowSize={7}
           ListEmptyComponent={
             <View style={styles.center}>
               <Ionicons name="trophy-outline" size={40} color={subTextColor} />

@@ -337,8 +337,17 @@ async function servePersonalizedFeed(
     await cachePut(c.env, candKey, candidates, 45);
   }
 
-  let ranked = candidates;
-  if (uid && candidates.length > 0) {
+  // Per-user ranked order is cached briefly. On load-more / repeat requests
+  // within the TTL we reuse it: this skips the affinity re-queries AND keeps
+  // pagination stable (the feed doesn't reshuffle as you scroll).
+  const orderKey = uid ? `cache:feedorder:${uid}:${following ? "following" : "foryou"}:${status}:${type || "all"}` : "";
+  const cachedOrder = uid && candidates.length > 0 ? await cacheGet(c.env, orderKey) : null;
+
+  let ranked: any[];
+  if (uid && candidates.length > 0 && Array.isArray(cachedOrder)) {
+    const byId = new Map<string, any>(candidates.map((m) => [m.id, m]));
+    ranked = (cachedOrder as string[]).map((id) => byId.get(id)).filter(Boolean);
+  } else if (uid && candidates.length > 0) {
     const participantUids = Array.from(
       new Set(candidates.flatMap((m) => [m.userA?.uid, m.userB?.uid]).filter(Boolean) as string[]),
     );
@@ -400,14 +409,16 @@ async function servePersonalizedFeed(
     });
     // "Following" tab: keep only battles featuring someone the viewer follows.
     if (following) scored = scored.filter((x) => x.followed);
-    ranked = scored.sort((a, b) => b.s - a.s).map((x) => x.m);
+    // Diversity pass so one creator doesn't stack several battles in a row.
+    ranked = diversifyFeed(scored.sort((a, b) => b.s - a.s).map((x) => x.m), FEED_DIVERSITY_WINDOW);
+    // Cache the id order for stable, cheap pagination within the TTL.
+    await cachePut(c.env, orderKey, ranked.map((m) => m.id), 60);
   } else if (following) {
     ranked = []; // signed-in but no candidates, or the empty-pool case
+  } else {
+    // Signed-out: shared content ranking + diversity (no personalization).
+    ranked = diversifyFeed(candidates, FEED_DIVERSITY_WINDOW);
   }
-
-  // Diversity pass (applied for everyone) so a single creator doesn't stack up
-  // several battles in a row.
-  ranked = diversifyFeed(ranked, FEED_DIVERSITY_WINDOW);
 
   const offset = cursorRaw ? Math.max(parseInt(cursorRaw, 10) || 0, 0) : 0;
   const pageItems = ranked.slice(offset, offset + limit).map((m) => {

@@ -188,6 +188,11 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
         }
         contentContainerStyle={{ paddingBottom: 100 }}
         showsVerticalScrollIndicator={false}
+        removeClippedSubviews
+        initialNumToRender={4}
+        maxToRenderPerBatch={5}
+        windowSize={7}
+        updateCellsBatchingPeriod={50}
       />
       <BottomNav backgroundColor={bg} isDark={isDark} />
     </SafeAreaView>

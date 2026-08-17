@@ -1,5 +1,7 @@
 import React, { useState, memo, useEffect, useCallback, useRef } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, Alert, Pressable, ActivityIndicator, AccessibilityInfo } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, Pressable, ActivityIndicator, AccessibilityInfo } from 'react-native';
+import { Image as ExpoImage } from 'expo-image';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import { Ionicons, MaterialCommunityIcons } from '@/src/lib/icons';
 import { CommentSheet } from '../comments/CommentSheet';
 import { ShareSheet } from '../share/ShareSheet';
@@ -41,6 +43,29 @@ interface PostCardProps {
 
 const AnimatedLinearGradient = Animated.createAnimatedComponent(LinearGradient);
 const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
+
+// --- Media (cached images + autoplay video) --------------------------------
+// expo-image gives disk caching + a smooth fade, so re-scrolling a feed doesn't
+// re-download every image (less R2 bandwidth, faster paint).
+const PhotoMedia = ({ uri, style }: { uri?: string; style: any }) => (
+  <ExpoImage source={uri} style={style} contentFit="cover" cachePolicy="memory-disk" transition={180} />
+);
+
+// Photo/Video are SEPARATE components so a photo battle never instantiates a
+// video player (the useVideoPlayer hook only runs inside VideoMedia). Video
+// battles autoplay muted + looping; FlatList virtualization unmounts off-screen
+// cards, which releases their players.
+const VideoMedia = ({ uri, style }: { uri: string; style: any }) => {
+  const player = useVideoPlayer(uri, (p) => {
+    p.loop = true;
+    p.muted = true;
+    p.play();
+  });
+  return <VideoView player={player} style={style} contentFit="cover" nativeControls={false} />;
+};
+
+const BattleMedia = ({ isVideo, uri, style }: { isVideo: boolean; uri?: string; style: any }) =>
+  isVideo && uri ? <VideoMedia uri={uri} style={style} /> : <PhotoMedia uri={uri} style={style} />;
 
 /** Compact vote count formatting (1.2k / 3.4M) for the on-image chips. */
 const formatVotes = (n: number): string => {
@@ -410,6 +435,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
   const msLeft = endMs - Date.now();
   const isUrgent = !votingClosed && msLeft > 0 && msLeft < 3_600_000;
 
+  const isVideo = item.type === 'video';
   const isALeading = votesA > votesB;
   const isBLeading = votesB > votesA;
   const votedForA = votedForUid === item.userA.uid;
@@ -454,7 +480,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
                 accessibilityRole="button"
                 accessibilityLabel={`Open ${nameA}'s profile`}
               >
-                <Image source={{ uri: picA }} style={styles.avatarImage} />
+                <ExpoImage source={picA} style={styles.avatarImage} contentFit="cover" cachePolicy="memory-disk" />
               </TouchableOpacity>
               {item.userB && (
                 <TouchableOpacity
@@ -464,7 +490,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
                   accessibilityRole="button"
                   accessibilityLabel={`Open ${nameB}'s profile`}
                 >
-                  <Image source={{ uri: picB }} style={styles.avatarImage} />
+                  <ExpoImage source={picB} style={styles.avatarImage} contentFit="cover" cachePolicy="memory-disk" />
                 </TouchableOpacity>
               )}
            </View>
@@ -508,12 +534,12 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
       {/* Hero media */}
       <Pressable onPress={handleDoubleTap} style={styles.mediaSection}>
         <View style={[styles.imageWrapper, aWins && styles.leadingImage]}>
-          <Image source={{ uri: item.userA.mediaUrl }} style={styles.postImage} />
+          <BattleMedia isVideo={isVideo} uri={item.userA.mediaUrl} style={styles.postImage} />
           {aWins && <View style={styles.crownContainer}><MaterialCommunityIcons name="crown" size={20} color="#FFD700" /></View>}
         </View>
 
         <View style={[styles.imageWrapper, bWins && styles.leadingImage]}>
-          <Image source={{ uri: item.userB.mediaUrl }} style={styles.postImage} />
+          <BattleMedia isVideo={isVideo} uri={item.userB.mediaUrl} style={styles.postImage} />
           {bWins && <View style={styles.crownContainer}><MaterialCommunityIcons name="crown" size={20} color="#FFD700" /></View>}
         </View>
 

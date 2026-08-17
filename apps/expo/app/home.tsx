@@ -160,6 +160,11 @@ export default function HomeScreen() {
         ListFooterComponent={!isLoading ? ListFooter : null}
         onEndReached={loadMore}
         onEndReachedThreshold={0.5}
+        removeClippedSubviews
+        initialNumToRender={4}
+        maxToRenderPerBatch={5}
+        windowSize={7}
+        updateCellsBatchingPeriod={50}
         ListEmptyComponent={!isLoading ? (
           <View style={styles.emptyContainer}>
             <Text style={{ color: isDark ? '#fff' : '#000', fontFamily: 'Urbanist-Medium', textAlign: 'center' }}>
