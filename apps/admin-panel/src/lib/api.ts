@@ -386,6 +386,18 @@ export const api = {
   auditLog: (action?: string) =>
     get<any[]>(`/admin/audit-log${action ? `?action=${encodeURIComponent(action)}` : ""}`),
 
+  // error logs (observability)
+  logs: (params?: { level?: string; q?: string; limit?: number }) => {
+    const s = new URLSearchParams();
+    if (params?.level) s.set("level", params.level);
+    if (params?.q) s.set("q", params.q);
+    if (params?.limit) s.set("limit", String(params.limit));
+    const qs = s.toString();
+    return get<any[]>(`/admin/logs${qs ? `?${qs}` : ""}`);
+  },
+  logStats: () => get<{ total: number; last24h: number }>("/admin/logs/stats"),
+  clearLogs: () => del<{ success: true }>("/admin/logs"),
+
   // notifications
   notifications: () => get<any[]>("/admin/notifications"),
   markNotificationsRead: () => post("/admin/notifications/read"),

@@ -692,6 +692,30 @@ export const adminAuditLog = sqliteTable(
 );
 
 // ---------------------------------------------------------------------------
+// error_logs  (server error trail surfaced in the admin panel)
+// Persisted from app.onError so admins can triage without the Cloudflare
+// dashboard. Pruned by retention in the cron. Errors are rare -> low write load.
+// ---------------------------------------------------------------------------
+export const errorLogs = sqliteTable(
+  "error_logs",
+  {
+    id: text("id").primaryKey(),
+    level: text("level").notNull().default("error"), // error | warn
+    message: text("message").notNull(),
+    stack: text("stack"),
+    requestId: text("request_id"),
+    path: text("path"),
+    method: text("method"),
+    status: integer("status"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    createdIdx: index("idx_error_logs_created").on(t.createdAt),
+    levelIdx: index("idx_error_logs_level").on(t.level),
+  }),
+);
+
+// ---------------------------------------------------------------------------
 // coin_packages  (admin-managed top-up store items)
 // ---------------------------------------------------------------------------
 export const coinPackages = sqliteTable(

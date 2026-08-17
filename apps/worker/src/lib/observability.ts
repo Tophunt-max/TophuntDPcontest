@@ -13,12 +13,53 @@
  *    it in `ctx.waitUntil(...)` so delivery happens after the response is sent.
  */
 import type { Env } from "../types";
+import { getDb, schema } from "../db";
+import { newId, now } from "./ids";
 
 export interface CaptureContext {
   requestId?: string;
   path?: string;
   method?: string;
+  status?: number;
   tags?: Record<string, string | undefined>;
+}
+
+/** How long persisted error logs are kept before the cron prunes them. */
+const ERROR_LOG_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * Persist a server error to D1 so admins can triage it in the admin panel
+ * (Error Logs page) without opening the Cloudflare dashboard. Fail-open: a
+ * logging failure must never mask the original error.
+ */
+export async function logErrorToDb(env: Env, err: unknown, ctx: CaptureContext = {}): Promise<void> {
+  try {
+    const error = err instanceof Error ? err : new Error(typeof err === "string" ? err : "Unknown error");
+    const db = getDb(env);
+    await db.insert(schema.errorLogs).values({
+      id: newId(),
+      level: "error",
+      message: (error.message || String(err)).slice(0, 2000),
+      stack: error.stack ? error.stack.slice(0, 8000) : null,
+      requestId: ctx.requestId ?? null,
+      path: ctx.path ?? null,
+      method: ctx.method ?? null,
+      status: ctx.status ?? null,
+      createdAt: now(),
+    });
+  } catch (e) {
+    console.error("[observability] logErrorToDb failed (continuing)", e);
+  }
+}
+
+/** Delete error logs older than the retention window. Called from the cron. */
+export async function pruneErrorLogs(env: Env): Promise<void> {
+  try {
+    const cutoff = Date.now() - ERROR_LOG_RETENTION_MS;
+    await env.DB.prepare("DELETE FROM error_logs WHERE created_at < ?").bind(cutoff).run();
+  } catch (e) {
+    console.error("[observability] pruneErrorLogs failed (continuing)", e);
+  }
 }
 
 /** Parse a Sentry DSN into its envelope endpoint + public key. */

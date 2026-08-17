@@ -2207,6 +2207,46 @@ adminRoute.get("/audit-log", async (c) => {
 });
 
 
+// ======================= ERROR LOGS (observability) =========================
+// Server errors persisted from app.onError (src/lib/observability.ts) so admins
+// can triage without the Cloudflare dashboard.
+adminRoute.get("/logs", async (c) => {
+  const db = getDb(c.env);
+  const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 500);
+  const level = c.req.query("level");
+  const q = c.req.query("q");
+  const conds: any[] = [];
+  if (level) conds.push(eq(schema.errorLogs.level, level));
+  if (q) conds.push(like(schema.errorLogs.message, `%${q}%`));
+  const rows = await db
+    .select()
+    .from(schema.errorLogs)
+    .where(conds.length ? and(...conds) : (undefined as any))
+    .orderBy(desc(schema.errorLogs.createdAt))
+    .limit(limit)
+    .all();
+  return c.json(rows.map((r) => ({ ...r, createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null })));
+});
+
+adminRoute.get("/logs/stats", async (c) => {
+  const db = getDb(c.env);
+  const since = Date.now() - 24 * 60 * 60 * 1000;
+  const total = await db.select({ n: count() }).from(schema.errorLogs).get();
+  const last24h = await db
+    .select({ n: count() })
+    .from(schema.errorLogs)
+    .where(gte(schema.errorLogs.createdAt, since))
+    .get();
+  return c.json({ total: total?.n ?? 0, last24h: last24h?.n ?? 0 });
+});
+
+adminRoute.delete("/logs", async (c) => {
+  requireFullAdmin(c);
+  await c.env.DB.prepare("DELETE FROM error_logs").run();
+  return c.json({ success: true });
+});
+
+
 // ======================= COIN PACKAGES (top-up store) =======================
 adminRoute.get("/coin-packages", async (c) => {
   const db = getDb(c.env);

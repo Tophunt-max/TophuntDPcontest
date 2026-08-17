@@ -27,7 +27,7 @@ import { verifyIdToken } from "./lib/firebaseAuth";
 import { assertAccountNotBlocked } from "./middleware/auth";
 import { resolveContests, monthlyHallOfFame } from "./cron";
 import { ensureMigrated } from "./db/autoMigrate";
-import { captureError } from "./lib/observability";
+import { captureError, logErrorToDb, pruneErrorLogs } from "./lib/observability";
 
 // Durable Object for real-time WebSocket push.
 export { RealtimeHub } from "./realtime";
@@ -217,11 +217,11 @@ app.onError((err, c) => {
       stack: err instanceof Error ? err.stack : undefined,
     }),
   );
-  // Active error tracking (no-op unless SENTRY_DSN is set). Fire after the
-  // response via waitUntil so it never delays the user.
-  c.executionCtx.waitUntil(
-    captureError(c.env, err, { requestId, path, method: c.req.method }),
-  );
+  // Persist to D1 (admin panel Error Logs) + forward to Sentry if configured.
+  // Both fire after the response via waitUntil so they never delay the user.
+  const errCtx = { requestId, path, method: c.req.method, status: 500 };
+  c.executionCtx.waitUntil(logErrorToDb(c.env, err, errCtx));
+  c.executionCtx.waitUntil(captureError(c.env, err, errCtx));
   return c.json({ ...errorBody(new ApiError("internal", "Internal server error.")), requestId }, 500);
 });
 
@@ -240,6 +240,8 @@ export default {
       case "*/10 * * * *":
       default:
         ctx.waitUntil(resolveContests(env));
+        // Retention: drop error logs past the retention window.
+        ctx.waitUntil(pruneErrorLogs(env));
         break;
     }
   },

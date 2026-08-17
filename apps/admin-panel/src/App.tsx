@@ -30,6 +30,7 @@ const Notifications = lazy(() => import("@/pages/Notifications"));
 const Rewards = lazy(() => import("@/pages/Rewards"));
 const AppControl = lazy(() => import("@/pages/AppControl"));
 const AppSettings = lazy(() => import("@/pages/AppSettings"));
+const Logs = lazy(() => import("@/pages/Logs"));
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000, retry: 1, refetchOnWindowFocus: false } },
@@ -80,6 +81,7 @@ function ProtectedApp() {
           <Route path="/support" component={Support} />
           <Route path="/moderation" component={Moderation} />
           <Route path="/audit-log" component={AuditLog} />
+          <Route path="/logs" component={Logs} />
           <Route path="/notifications" component={Notifications} />
           <Route path="/rewards" component={Rewards} />
           <Route path="/app-control" component={AppControl} />
