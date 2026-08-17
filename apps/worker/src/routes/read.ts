@@ -131,6 +131,7 @@ async function hydrateViewerState(db: any, matches: any[], uid: string): Promise
 const FEED_CANDIDATE_POOL = 150;
 const FEED_RESULT_WINDOW_MS = 24 * 60 * 60 * 1000; // keep finished battles visible ~1 day
 const FEED_RESULT_POOL = 40; // recently-finished battles pulled into the pool
+const FEED_RESULT_TAU_H = 10; // result-freshness decay (hours) for finished battles
 const FEED_DIVERSITY_WINDOW = 2; // don't repeat a participant within N neighbouring slots
 const FEED_AFFINITY_LOOKBACK = 500; // cap on how many past votes/visits we scan
 const FEED_SEEN_MAX_KEYS = 300; // bound the per-user seen map size in KV
@@ -152,6 +153,8 @@ interface FeedWeights {
   votedPenalty: number;
   seenPenalty: number;
   seenCap: number;
+  result: number; // prominence bump for a freshly-finished battle's result
+  resultVotedBoost: number; // extra bump when you voted on that finished battle
 }
 const FEED_DEFAULT_WEIGHTS: FeedWeights = {
   freshness: 2.2,
@@ -164,6 +167,8 @@ const FEED_DEFAULT_WEIGHTS: FeedWeights = {
   votedPenalty: 1.5,
   seenPenalty: 0.6,
   seenCap: 5,
+  result: 2.6,
+  resultVotedBoost: 2.0,
 };
 
 async function getFeedWeights(env: Env): Promise<FeedWeights> {
@@ -235,8 +240,11 @@ function diversifyFeed(items: any[], window: number): any[] {
 
 /** User-agnostic content score for one match (higher = show sooner). */
 function rankBaseScore(r: any, now: number, w: FeedWeights): number {
-  const start = Number(r.activatedAt || r.createdAt || now);
-  const ageHours = Math.max(0, (now - start) / 3_600_000);
+  const isCompleted = r.status === "completed";
+  const startedAt = Number(r.activatedAt || r.createdAt || now);
+  const finishedAt = Number(r.expiresAt || startedAt);
+  const startAgeH = Math.max(0, (now - startedAt) / 3_600_000);
+  const lifetimeH = Math.max(0.5, (finishedAt - startedAt) / 3_600_000);
 
   let reactions = 0;
   if (r.reactions && typeof r.reactions === "object") {
@@ -250,22 +258,31 @@ function rankBaseScore(r: any, now: number, w: FeedWeights): number {
     (Number(r.shareCount) || 0) * 3 +
     reactions;
 
-  // Velocity (engagement per hour) lets a brand-new battle out-rank an old one
-  // that only accumulated its counts slowly. +2 smooths the first minutes.
-  const velocity = engagement / (ageHours + 2);
-  // Freshness decays over ~a day so the feed keeps turning over.
-  const freshness = Math.exp(-ageHours / 24);
-  // Closing-soon urgency: nudge battles into view in their final hours so people
-  // can still vote before they end.
+  // Active: engagement rate since it started (a new hot battle out-ranks an old
+  // slow one). Completed: average rate over its whole life (how hot it was).
+  const velocity = engagement / ((isCompleted ? lifetimeH : startAgeH) + 2);
+
+  // Active freshness decays from when it started. Completed "result freshness"
+  // decays from when it FINISHED — a just-declared winner is fresh content, so
+  // it surfaces near the top and only sinks as the result ages.
+  const finishAgeH = Math.max(0, (now - finishedAt) / 3_600_000);
+  const freshness = isCompleted
+    ? Math.exp(-finishAgeH / FEED_RESULT_TAU_H)
+    : Math.exp(-startAgeH / 24);
+
+  // Closing-soon urgency only applies while voting is open.
   let urgency = 0;
-  const exp = Number(r.expiresAt);
-  if (Number.isFinite(exp)) {
-    const hoursLeft = (exp - now) / 3_600_000;
+  if (!isCompleted && Number.isFinite(finishedAt)) {
+    const hoursLeft = (finishedAt - now) / 3_600_000;
     if (hoursLeft > 0 && hoursLeft <= 6) urgency = 1 - hoursLeft / 6;
   }
   const prize = Math.log1p(Number(r.entryFee) || 0);
 
-  return w.freshness * freshness + w.velocity * Math.log1p(velocity) + w.urgency * urgency + w.prize * prize;
+  let score = w.freshness * freshness + w.velocity * Math.log1p(velocity) + w.urgency * urgency + w.prize * prize;
+  // Prominence bump for a fresh result so winners surface instead of sinking to
+  // the bottom; scaled by result-freshness so it fades as the result ages.
+  if (isCompleted) score += w.result * freshness;
+  return score;
 }
 
 /**
@@ -362,12 +379,19 @@ async function servePersonalizedFeed(
       if (followed) s += w.follow;
       if (votedForSet.has(a) || votedForSet.has(b)) s += w.votedAffinity;
       if (visitedSet.has(a) || visitedSet.has(b)) s += w.visitAffinity;
-      if (votedMatchSet.has(m.id)) s -= w.votedPenalty;
-      // Impression fatigue: shown before but not voted on → demote, scaled by
-      // how many times it was shown (capped).
-      const seenCount = seen[m.id] || 0;
-      if (seenCount > 0 && !votedMatchSet.has(m.id)) {
-        s -= w.seenPenalty * Math.min(seenCount, w.seenCap);
+      if (m.status === "completed") {
+        // Finished battle: you voted on it → you want to see who won, so boost
+        // its result to you (the opposite of the active-feed novelty penalty).
+        // No impression fatigue either — results only live for the short window.
+        if (votedMatchSet.has(m.id)) s += w.resultVotedBoost;
+      } else {
+        if (votedMatchSet.has(m.id)) s -= w.votedPenalty;
+        // Impression fatigue: shown before but not voted on → demote, scaled by
+        // how many times it was shown (capped).
+        const seenCount = seen[m.id] || 0;
+        if (seenCount > 0 && !votedMatchSet.has(m.id)) {
+          s -= w.seenPenalty * Math.min(seenCount, w.seenCap);
+        }
       }
       return { m, s, followed };
     });
