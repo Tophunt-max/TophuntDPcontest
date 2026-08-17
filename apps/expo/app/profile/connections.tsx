@@ -67,11 +67,11 @@ export default function ConnectionsScreen() {
     }
   }, [currentUserProfile]);
 
+  // Fetch connections immediately — the Worker endpoint uses optionalAuth,
+  // so we don't need to wait for Firebase Auth to resolve.
   useEffect(() => {
-    if (!authLoading) {
-        fetchConnectionsData();
-    }
-  }, [authLoading, user, userId, type]);
+    fetchConnectionsData();
+  }, [userId, type]);
 
   const fetchConnectionsData = async () => {
     if (!userId || !type) { setLoading(false); return; }
@@ -186,6 +186,16 @@ export default function ConnectionsScreen() {
       </TouchableOpacity>
   )};
 
+  // Show full-page skeleton while data is loading (no flickering empty list)
+  if (loading) {
+    return (
+      <ThemedView style={[styles.container, { backgroundColor }]}>
+        {renderHeader()}
+        <UserListSkeleton />
+      </ThemedView>
+    );
+  }
+
   return (
     <ThemedView style={[styles.container, { backgroundColor }]}>
         <FlatList
@@ -197,7 +207,7 @@ export default function ConnectionsScreen() {
             showsVerticalScrollIndicator={false}
             ListEmptyComponent={() => (
                 <View style={{ height: 300, justifyContent: 'center', alignItems:'center' }}>
-                    {loading ? <UserListSkeleton /> : <Text style={{color: subTextColor}}>No users found.</Text> }
+                    <Text style={{color: subTextColor}}>No users found.</Text>
                 </View>
             )}
         />
