@@ -1,4 +1,5 @@
-import { UserStories } from '@/src/types/stories';
+import { UserStories } from '@/src/types/stories';import { debounce } from '@/src/lib/debounce';
+
 import { auth } from '../firebase/initFirebase';
 import { callApi, readApi } from '../api';
 
@@ -7,13 +8,37 @@ import { callApi, readApi } from '../api';
  * Reads go through /read/* endpoints; writes go through /api actions.
  */
 
-export const fetchStories = async (): Promise<UserStories[]> => {
+export const fetchStories = async (limit: number = 50, forceRefresh: boolean = false): Promise<UserStories[]> => {
   try {
     if (!auth.currentUser) return [];
-    return (await readApi('/read/stories/feed')) as UserStories[];
+    
+    // If not forcing refresh, try to get from local cache first
+    if (!forceRefresh) {
+      const localStories = await getUserStoriesLocally();
+      if (localStories.length > 0) {
+        return localStories;
+      }
+    }
+    
+    // Fetch from server
+    const response = await readApi('/read/stories/feed', { limit });
+    if (!Array.isArray(response)) {
+      console.error("[fetchStories] Invalid response format:", response);
+      return [];
+    }
+    
+    const stories = response as UserStories[];
+    
+    // Save to local database
+    for (const userStories of stories) {
+      await saveUserStoriesLocally(userStories);
+    }
+    
+    return stories;
   } catch (error) {
     console.error("[fetchStories] error:", error);
-    return [];
+    // Fallback to local cache if online fetch fails
+    return await getUserStoriesLocally();
   }
 };
 
@@ -48,8 +73,17 @@ export const markStoryAsSeen = async (storyId: string) => {
   if (!auth.currentUser) return;
   try {
     await callApi('viewStory', { storyId });
+    // Also mark as seen locally
+    await markStoryAsSeenLocally(storyId);
   } catch (err) {
     console.error("markStoryAsSeen error:", err);
+    // Queue for sync when online
+    await queuePendingAction({
+      type: 'view',
+      storyId,
+      userId: auth.currentUser.uid,
+      data: {},
+    });
   }
 };
 
@@ -95,10 +129,24 @@ export const fetchHighlightStories = async (
 
 export const reactToStory = async (storyId: string, emoji: string) => {
   if (!auth.currentUser) return;
-  await callApi('reactToStory', { storyId, emoji });
+  try {
+    await callApi('reactToStory', { storyId, emoji });
+    // Also react locally
+    await reactToStoryLocally(storyId, emoji);
+  } catch (err) {
+    console.error("reactToStory error:", err);
+    // Queue for sync when online
+    await queuePendingAction({
+      type: 'reaction',
+      storyId,
+      userId: auth.currentUser.uid,
+      data: { emoji },
+    });
+  }
 };
 
-export const searchUsers = async (searchTerm: string) => {
+// Debounced version of searchUsers to reduce API calls
+export const searchUsers = debounce(async (searchTerm: string) => {
   try {
     if (!searchTerm || searchTerm.length < 2) return [];
     return (await readApi('/read/users/search', { q: searchTerm })) as any[];
@@ -106,7 +154,7 @@ export const searchUsers = async (searchTerm: string) => {
     console.error("searchUsers error:", error);
     return [];
   }
-};
+}, 300); // 300ms debounce delay
 
 export const fetchUserStoriesByUserId = async (userId: string): Promise<UserStories | null> => {
   try {
@@ -127,4 +175,11 @@ export const fetchUserStoriesByUsername = async (username: string): Promise<User
     console.error("fetchUserStoriesByUsername error:", error);
     return null;
   }
+};
+
+/**
+ * Sync local changes with server (call this when app comes online)
+ */
+export const syncStories = async (): Promise<void> => {
+  await checkAndSync();
 };

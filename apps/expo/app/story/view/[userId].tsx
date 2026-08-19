@@ -23,7 +23,7 @@ import {
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Image } from 'expo-image';
-import { useVideoPlayer, VideoView } from 'expo-video';
+import { useVideoPlayer, VideoView, PreloadVideo } from 'expo-video';
 import { Ionicons } from '@/src/lib/icons';
 import { 
     fetchStories, 
@@ -96,6 +96,20 @@ export default function StoryView() {
   const currentUserIndex = users.findIndex(u => u.userId === userId);
   const currentUserStories = users[currentUserIndex];
   const currentStory = currentUserStories?.stories[currentStoryIndex];
+  // Preload next and previous videos for smoother transitions
+  const nextStory = currentUserStories?.stories[currentStoryIndex + 1];
+  const prevStory = currentUserStories?.stories[currentStoryIndex - 1];
+  
+  // Preload videos in background
+  useEffect(() => {
+    if (nextStory?.mediaType === 'video') {
+      PreloadVideo(nextStory.mediaUrl);
+    }
+    if (prevStory?.mediaType === 'video') {
+      PreloadVideo(prevStory.mediaUrl);
+    }
+  }, [currentStoryIndex, nextStory?.mediaUrl, prevStory?.mediaUrl]);
+
   const isMyStory = currentUserStories?.userId === auth.currentUser?.uid;
   const isMentioned = currentStory?.mentions?.includes(auth.currentUser?.uid || '');
 
@@ -426,7 +440,11 @@ export default function StoryView() {
     })
   ).current;
 
-  if (!currentUserStories || !currentStory) return null;
+  if (!currentUserStories?.stories?.length) {
+    router.back();
+    return null;
+  }
+  if (!currentStory) return null;
 
   return (
     <KeyboardAvoidingView 

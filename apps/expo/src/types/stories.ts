@@ -21,5 +21,5 @@ export interface UserStories {
   username: string;
   avatarUrl: string;
   stories: Story[];
-  hasUnseen: boolean;
+  hasUnseen?: boolean;
 }

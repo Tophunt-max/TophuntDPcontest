@@ -30,6 +30,7 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { ToastProvider } from '@/src/components/toast/ToastProvider';
 import { lightTheme, darkTheme } from '@/constants/theme';
 import '@/src/services/firebase/initFirebase'; // Import to initialize Firebase
+import '@/src/database'; // Initialize WatermelonDB
 import { getNotificationDestination } from '@/src/services/notifications/notificationMeta';
 import { View, AppState } from 'react-native';
 // Icons are now SVG-based (src/lib/icons.tsx via lucide-react-native), so there
@@ -145,7 +146,17 @@ function RootLayoutNav() {
           console.error('Notification navigation failed', e);
           router.push('/notifications');
       }
+    
+    // Sync offline stories when coming online
+    const unsubscribe = NetInfo.addEventListener(state => {
+      if (state.isConnected) {
+        import('@/src/services/stories/storyService').then(({ syncStories }) => {
+          syncStories();
+        });
+      }
     });
+    return () => { sub.remove(); unsubscribe(); };
+});
 
     // Also handle foreground notifications if needed
     const foregroundSubscription = Notifications.addNotificationReceivedListener(notification => {

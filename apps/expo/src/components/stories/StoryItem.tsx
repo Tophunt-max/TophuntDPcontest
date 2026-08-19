@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { StyleSheet, Text, View, Pressable, TouchableOpacity } from 'react-native';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -15,7 +15,7 @@ interface StoryItemProps {
   onPress: () => void;
 }
 
-export const StoryItem: React.FC<StoryItemProps> = ({ item, isCurrentUser, onPress }) => {
+export const StoryItem: React.FC<StoryItemProps> = memo(({ item, isCurrentUser, onPress }) => {
   const router = useRouter();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
@@ -41,7 +41,7 @@ export const StoryItem: React.FC<StoryItemProps> = ({ item, isCurrentUser, onPre
           style={styles.ring}
         >
           <View style={[styles.innerRing, { backgroundColor }]}>
-            <Image source={{ uri: avatarUrl ?? undefined }} style={styles.avatar} />
+            <Image source={{ uri: avatarUrl ?? undefined }} style={styles.avatar} cachePolicy="memory-disk" />
           </View>
         </LinearGradient>
       );
@@ -50,7 +50,7 @@ export const StoryItem: React.FC<StoryItemProps> = ({ item, isCurrentUser, onPre
       return (
         <View style={[styles.ring, styles.seenRing, isDark && styles.seenRingDark]}>
            <View style={[styles.innerRing, { backgroundColor }]}>
-              <Image source={{ uri: avatarUrl ?? undefined }} style={styles.avatar} />
+              <Image source={{ uri: avatarUrl ?? undefined }} style={styles.avatar} cachePolicy="memory-disk" />
            </View>
         </View>
       );
@@ -150,4 +150,4 @@ const styles = StyleSheet.create({
     zIndex: 10,
     borderWidth: 2,
   }
-});
+}));;
