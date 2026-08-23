@@ -17,6 +17,8 @@ import { Image } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { Ionicons } from '@/src/lib/icons';
 import { fetchHighlightStories, fetchStoryViewers } from '@/src/services/stories/storyService';
+import { formatClockTime } from '@/src/lib/formatTime';
+import type { StoryViewer } from '@/src/types/stories';
 import { auth } from '@/src/services/firebase/initFirebase';
 
 const { width, height } = Dimensions.get('window');
@@ -34,7 +36,7 @@ export default function HighlightView() {
   
   // Viewers Logic
   const [showViewers, setShowViewers] = useState(false);
-  const [viewers, setViewers] = useState<any[]>([]);
+  const [viewers, setViewers] = useState<StoryViewer[]>([]);
   const [loadingViewers, setLoadingViewers] = useState(false);
   const viewersTranslateY = useRef(new Animated.Value(height)).current;
 
@@ -263,7 +265,7 @@ export default function HighlightView() {
                       <Image source={{ uri: item.avatarUrl }} style={styles.viewerAvatar} />
                       <Text style={styles.viewerName}>{item.username}</Text>
                       <Text style={styles.viewTime}>
-                          {item.viewedAt ? new Date(item.viewedAt.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+                          {formatClockTime(item.viewedAt)}
                       </Text>
                   </View>
               )}

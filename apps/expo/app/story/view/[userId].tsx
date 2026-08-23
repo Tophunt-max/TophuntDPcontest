@@ -23,7 +23,7 @@ import {
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Image } from 'expo-image';
-import { useVideoPlayer, VideoView, PreloadVideo } from 'expo-video';
+import { useVideoPlayer, VideoView, createVideoPlayer } from 'expo-video';
 import { Ionicons } from '@/src/lib/icons';
 import { 
     fetchStories, 
@@ -43,6 +43,8 @@ import {
     Delete_Icon
 } from '@/assets/svgs';
 import { Colors } from '@/constants/theme';
+import { formatClockTime } from '@/src/lib/formatTime';
+import type { StoryViewer } from '@/src/types/stories';
 
 const { width, height } = Dimensions.get('window');
 const DEFAULT_STORY_DURATION = 5000;
@@ -63,7 +65,7 @@ export default function StoryView() {
   const [isLoading, setIsLoading] = useState(true);
   const [duration, setDuration] = useState(DEFAULT_STORY_DURATION);
   const [showViewers, setShowViewers] = useState(false);
-  const [viewers, setViewers] = useState<any[]>([]);
+  const [viewers, setViewers] = useState<StoryViewer[]>([]);
   const [loadingViewers, setLoadingViewers] = useState(false);
 
   // Highlights State
@@ -89,26 +91,50 @@ export default function StoryView() {
 
   const { data: allUserStories } = useQuery({
     queryKey: ['stories'],
-    queryFn: fetchStories,
+    // Wrapped, not passed by reference: react-query would otherwise pass its
+    // QueryFunctionContext in as fetchStories' options argument.
+    queryFn: () => fetchStories(),
   });
 
   const users = allUserStories || [];
   const currentUserIndex = users.findIndex(u => u.userId === userId);
   const currentUserStories = users[currentUserIndex];
   const currentStory = currentUserStories?.stories[currentStoryIndex];
-  // Preload next and previous videos for smoother transitions
-  const nextStory = currentUserStories?.stories[currentStoryIndex + 1];
-  const prevStory = currentUserStories?.stories[currentStoryIndex - 1];
-  
-  // Preload videos in background
+  // The stories adjacent to the current one. Named *Item to stay distinct from the
+  // nextStory/prevStory *navigation callbacks* declared further down.
+  const nextStoryItem = currentUserStories?.stories[currentStoryIndex + 1];
+  const prevStoryItem = currentUserStories?.stories[currentStoryIndex - 1];
+
+  // Warm the adjacent videos so transitions don't stall on a cold buffer.
+  // createVideoPlayer() returns a player that does NOT auto-release, so every
+  // instance created here must be released in the cleanup phase or it leaks a
+  // native decoder for the lifetime of the screen.
   useEffect(() => {
-    if (nextStory?.mediaType === 'video') {
-      PreloadVideo(nextStory.mediaUrl);
-    }
-    if (prevStory?.mediaType === 'video') {
-      PreloadVideo(prevStory.mediaUrl);
-    }
-  }, [currentStoryIndex, nextStory?.mediaUrl, prevStory?.mediaUrl]);
+    const preloadUrls = [nextStoryItem, prevStoryItem]
+      .filter((s) => s?.mediaType === 'video' && !!s?.mediaUrl)
+      .map((s) => s!.mediaUrl as string);
+
+    const players = preloadUrls.map((uri) => {
+      try {
+        const p = createVideoPlayer(uri);
+        p.muted = true;
+        return p;
+      } catch (e) {
+        console.warn('[StoryView] video preload failed:', e);
+        return null;
+      }
+    });
+
+    return () => {
+      players.forEach((p) => {
+        try {
+          p?.release();
+        } catch {
+          // Already released by the runtime; nothing to do.
+        }
+      });
+    };
+  }, [nextStoryItem?.mediaUrl, prevStoryItem?.mediaUrl]);
 
   const isMyStory = currentUserStories?.userId === auth.currentUser?.uid;
   const isMentioned = currentStory?.mentions?.includes(auth.currentUser?.uid || '');
@@ -499,7 +525,7 @@ export default function StoryView() {
                 <Image source={{ uri: currentUserStories.avatarUrl }} style={styles.avatar} />
                 <View style={styles.userTextContainer}>
                     <Text style={styles.username}>{currentUserStories.username}</Text>
-                    <Text style={styles.timeAgo}>{new Date((currentStory as any).createdAt?.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                    <Text style={styles.timeAgo}>{formatClockTime(currentStory.createdAt)}</Text>
                 </View>
                 <Pressable pointerEvents="auto" onPress={() => router.back()} style={styles.closeButton}><Ionicons name="close" size={28} color="white" /></Pressable>
             </View>
@@ -609,7 +635,7 @@ export default function StoryView() {
                     <Image source={{ uri: item.avatarUrl }} style={styles.viewerAvatar} />
                     <View style={{ flex: 1 }}>
                         <Text style={[styles.viewerName, { color: textColorTheme }]}>{item.username}</Text>
-                        <Text style={[styles.viewTime, { color: isDarkTheme ? '#BDBDBD' : '#666' }]}>{item.viewedAt ? new Date(item.viewedAt.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}</Text>
+                        <Text style={[styles.viewTime, { color: isDarkTheme ? '#BDBDBD' : '#666' }]}>{formatClockTime(item.viewedAt)}</Text>
                     </View>
                     {item.reaction && <Text style={{ fontSize: 24 }}>{item.reaction}</Text>}
                 </View>

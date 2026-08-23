@@ -25,7 +25,9 @@ export const StoriesBar: React.FC = () => {
 
   const { data: userStories, isLoading } = useQuery({
     queryKey: ['stories', currentUser?.uid],
-    queryFn: fetchStories,
+    // Wrapped, not passed by reference: react-query would otherwise pass its
+    // QueryFunctionContext in as fetchStories' options argument.
+    queryFn: () => fetchStories(),
     enabled: !!currentUser,
     staleTime: 5000, // Reduced staleTime for more frequent updates
     refetchOnWindowFocus: true,

@@ -12,7 +12,8 @@ import { and, eq, desc, sql, count, ne, like, gte, lt, inArray, or } from "drizz
 import { alias } from "drizzle-orm/sqlite-core";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
-import { httpsError } from "../lib/http";
+import { httpsError, ApiError } from "../lib/http";
+import { timingSafeEqualSecret } from "../lib/timingSafe";
 import { verifyIdToken, bearerToken } from "../lib/firebaseAuth";
 import { assertAccountNotBlocked } from "../middleware/auth";
 import { getAppConfig, getGamificationSettings, invalidateSetting } from "../lib/settings";
@@ -119,7 +120,14 @@ async function resolveAdminRole(c: any): Promise<string | null> {
 // moderator Firebase token.
 adminRoute.use("*", async (c, next) => {
   const secret = c.req.header("X-Admin-Secret");
-  if (secret && c.env.ADMIN_PROXY_SECRET && secret === c.env.ADMIN_PROXY_SECRET) {
+  // Constant-time compare: this secret grants full superadmin access, so a
+  // short-circuiting `===` would hand out a timing oracle for guessing it
+  // byte by byte.
+  if (
+    secret &&
+    c.env.ADMIN_PROXY_SECRET &&
+    (await timingSafeEqualSecret(secret, c.env.ADMIN_PROXY_SECRET))
+  ) {
     c.set("adminRole", "superadmin");
     return next();
   }
@@ -2007,10 +2015,31 @@ adminRoute.get("/withdrawals", async (c) => {
 });
 
 /**
+ * Allowed withdrawal status transitions. `paid` and `rejected` are terminal.
+ *
+ * This table is load-bearing, not documentation. Without it a `reserved` row
+ * could be rejected (coins refunded) and then marked paid — the `w.reserved`
+ * branch performs no deduction — leaving the user with their coins AND the
+ * payout. It matches the buttons the admin panel actually renders:
+ * pending → Approve/Reject, approved → Mark as paid.
+ */
+const WITHDRAWAL_TRANSITIONS: Record<string, readonly string[]> = {
+  pending: ["approved", "rejected"],
+  approved: ["paid", "rejected"],
+  paid: [],
+  rejected: [],
+};
+
+/**
  * Action a withdrawal request. action: "approve" | "reject" | "paid".
- * Coins are deducted (held) when moving to approved/paid; a rejection of an
- * approved request refunds the held coins. The user's balance is validated on
+ *
+ * Coins are deducted (held) when moving to approved/paid; a rejection of a
+ * still-held request refunds the coins. The user's balance is validated on
  * approval so we never approve more than they hold.
+ *
+ * Concurrency: the status is claimed with a compare-and-swap BEFORE any money
+ * moves, so a double-clicked Reject or two admins acting at once cannot both
+ * observe `pending` and both issue a refund.
  */
 adminRoute.patch("/withdrawals/:id", async (c) => {
   requireFullAdmin(c);
@@ -2024,49 +2053,94 @@ adminRoute.patch("/withdrawals/:id", async (c) => {
   const ts = now();
 
   const status = action === "approve" ? "approved" : action === "paid" ? "paid" : "rejected";
+  const fromStatus = w.status;
+
+  if (!(WITHDRAWAL_TRANSITIONS[fromStatus] ?? []).includes(status))
+    throw httpsError(
+      "failed-precondition",
+      `Cannot ${action} a withdrawal that is already "${fromStatus}".`,
+    );
+
+  // Atomic claim: flip the status only if it is STILL the value we just read.
+  // The loser of this compare-and-swap does no accounting at all. Same pattern
+  // as the exactly-once coin credit in lib/coinOrders.ts.
+  const claim = await db
+    .update(schema.withdrawals)
+    .set({ status, adminNote: adminNote || w.adminNote, processedBy: admin?.uid ?? null, updatedAt: ts })
+    .where(and(eq(schema.withdrawals.id, id), eq(schema.withdrawals.status, fromStatus)))
+    .run();
+  if (claim.meta.changes === 0)
+    throw httpsError(
+      "failed-precondition",
+      "This withdrawal was just actioned by someone else. Reload and try again.",
+    );
+
+  /** Undo the claim so a failed accounting step doesn't strand the row. */
+  const revertClaim = async () => {
+    await db
+      .update(schema.withdrawals)
+      .set({ status: fromStatus, adminNote: w.adminNote, processedBy: w.processedBy, updatedAt: w.updatedAt })
+      .where(and(eq(schema.withdrawals.id, id), eq(schema.withdrawals.status, status)))
+      .run();
+  };
 
   // Coin accounting depends on WHEN the coins were held:
   //   * reserved rows (new model): coins were already deducted at request time,
   //     so approving/paying does NOT deduct again; a rejection refunds them.
   //   * legacy rows (reserved = false, created before the escrow model): coins
   //     are deducted here on approval and refunded only on a reject-from-approved.
-  if (w.reserved) {
-    // Refund on rejection of a still-held request (pending or approved).
-    if (action === "reject" && (w.status === "pending" || w.status === "approved")) {
-      await db.batch([
-        db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${w.amount}`, updatedAt: ts }).where(eq(schema.users.uid, w.userId)),
-        db.insert(schema.coinTransactions).values({ id: newId(), uid: w.userId, amount: w.amount, type: "withdrawal_refund", description: "Payout rejected — coins refunded", createdAt: ts }),
-      ]);
+  try {
+    if (w.reserved) {
+      // Refund on rejection of a still-held request. The transition table
+      // guarantees fromStatus is "pending" or "approved" here.
+      if (action === "reject") {
+        await db.batch([
+          db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${w.amount}`, updatedAt: ts }).where(eq(schema.users.uid, w.userId)),
+          db.insert(schema.coinTransactions).values({ id: newId(), uid: w.userId, amount: w.amount, type: "withdrawal_refund", description: "Payout rejected — coins refunded", createdAt: ts }),
+        ]);
+      }
+    } else {
+      // Legacy rows are deducted on approval. `paid` can now only be reached
+      // from `approved`, where the deduction already happened.
+      if (action === "approve") {
+        const deduct = await db
+          .update(schema.users)
+          .set({ dpcoin: sql`${schema.users.dpcoin} - ${w.amount}`, updatedAt: ts })
+          .where(and(eq(schema.users.uid, w.userId), sql`${schema.users.dpcoin} >= ${w.amount}`))
+          .run();
+        if (deduct.meta.changes === 0) {
+          await revertClaim();
+          throw httpsError("failed-precondition", "User has insufficient balance for this payout.");
+        }
+        await db.insert(schema.coinTransactions).values({ id: newId(), uid: w.userId, amount: -w.amount, type: "withdrawal", description: `Payout ${status} (${w.method})`, createdAt: ts });
+      }
+      // Rejecting a previously-approved legacy request refunds the held coins.
+      if (action === "reject" && fromStatus === "approved") {
+        await db.batch([
+          db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${w.amount}`, updatedAt: ts }).where(eq(schema.users.uid, w.userId)),
+          db.insert(schema.coinTransactions).values({ id: newId(), uid: w.userId, amount: w.amount, type: "withdrawal_refund", description: "Payout rejected — coins refunded", createdAt: ts }),
+        ]);
+      }
     }
-  } else {
-    // On approve/paid from a pending legacy request: deduct the coins now with
-    // an atomic conditional guard so two admins can't double-deduct.
-    if ((action === "approve" || action === "paid") && w.status === "pending") {
-      const deduct = await db
-        .update(schema.users)
-        .set({ dpcoin: sql`${schema.users.dpcoin} - ${w.amount}`, updatedAt: ts })
-        .where(and(eq(schema.users.uid, w.userId), sql`${schema.users.dpcoin} >= ${w.amount}`))
-        .run();
-      if (deduct.meta.changes === 0) throw httpsError("failed-precondition", "User has insufficient balance for this payout.");
-      await db.insert(schema.coinTransactions).values({ id: newId(), uid: w.userId, amount: -w.amount, type: "withdrawal", description: `Payout ${status} (${w.method})`, createdAt: ts });
-    }
-    // Rejecting a previously-approved legacy request refunds the held coins.
-    if (action === "reject" && w.status === "approved") {
-      await db.batch([
-        db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${w.amount}`, updatedAt: ts }).where(eq(schema.users.uid, w.userId)),
-        db.insert(schema.coinTransactions).values({ id: newId(), uid: w.userId, amount: w.amount, type: "withdrawal_refund", description: "Payout rejected — coins refunded", createdAt: ts }),
-      ]);
-    }
+  } catch (err) {
+    // Insufficient-balance already reverted and is a clean precondition failure.
+    if (err instanceof ApiError) throw err;
+    await revertClaim();
+    throw err;
   }
 
-  await db.update(schema.withdrawals).set({ status, adminNote: adminNote || w.adminNote, processedBy: admin?.uid ?? null, updatedAt: ts }).where(eq(schema.withdrawals.id, id));
   await createNotification(c.env, w.userId, {
     title: action === "reject" ? "Withdrawal Rejected" : action === "paid" ? "Payout Sent 💸" : "Withdrawal Approved",
     body: action === "reject" ? `Your payout request was rejected. ${adminNote ? "Reason: " + adminNote : ""}` : action === "paid" ? `Your payout of ${w.amount} Dpcoins has been sent.` : "Your payout request was approved and is being processed.",
     type: "withdrawal",
     targetId: "wallet",
   });
-  await logAudit(c, `withdrawal.${action}`, "withdrawal", id, { amount: w.amount });
+  await logAudit(c, `withdrawal.${action}`, "withdrawal", id, {
+    amount: w.amount,
+    from: fromStatus,
+    to: status,
+    reserved: w.reserved,
+  });
   return c.json({ message: `Withdrawal ${status}` });
 });
 

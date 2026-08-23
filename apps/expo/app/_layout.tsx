@@ -129,7 +129,6 @@ function RootLayoutNav() {
   useEffect(() => {
     const subscription = Notifications.addNotificationResponseReceivedListener(response => {
       const data = response.notification.request.content.data;
-      console.log("Notification Clicked Data:", data);
 
       // Resolve the destination with the SAME shared helper the in-app list
       // uses, so a tap behaves identically from the OS tray or inside the app.
@@ -146,26 +145,31 @@ function RootLayoutNav() {
           console.error('Notification navigation failed', e);
           router.push('/notifications');
       }
-    
-    // Sync offline stories when coming online
-    const unsubscribe = NetInfo.addEventListener(state => {
+    });
+
+    // Also handle foreground notifications if needed
+    const foregroundSubscription = Notifications.addNotificationReceivedListener(() => {
+        // You can show a toast here if you want custom UI instead of system alert
+    });
+
+    // Replay queued story actions whenever connectivity returns.
+    //
+    // This registration belongs in the effect body. It previously sat *inside*
+    // the notification-response callback above, which meant offline sync only
+    // armed once the user tapped a notification, leaked an extra NetInfo
+    // listener on every tap, and the cleanup referenced an undefined `sub`.
+    const unsubscribeNetInfo = NetInfo.addEventListener(state => {
       if (state.isConnected) {
         import('@/src/services/stories/storyService').then(({ syncStories }) => {
           syncStories();
-        });
+        }).catch((e) => console.error('Story sync import failed', e));
       }
-    });
-    return () => { sub.remove(); unsubscribe(); };
-});
-
-    // Also handle foreground notifications if needed
-    const foregroundSubscription = Notifications.addNotificationReceivedListener(notification => {
-        // You can show a toast here if you want custom UI instead of system alert
     });
 
     return () => {
         subscription.remove();
         foregroundSubscription.remove();
+        unsubscribeNetInfo();
     };
   }, []);
 

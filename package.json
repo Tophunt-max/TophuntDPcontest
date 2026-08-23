@@ -10,9 +10,8 @@
         "admin:build": "cd apps/admin-panel && npm run build",
         "admin:start": "cd apps/admin-panel && npm run serve",
         "admin:deploy": "cd apps/admin-panel && npm run deploy",
-        "functions:serve": "cd functions && npm run serve",
-        "functions:build": "cd functions && npm run build",
-        "functions:deploy": "cd functions && firebase deploy --only functions",
+        "worker:dev": "cd apps/worker && npm run dev",
+        "worker:deploy": "cd apps/worker && npm run deploy",
         "lint": "echo \"Lint handled per-app\""
     },
     "devDependencies": {

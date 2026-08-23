@@ -3,6 +3,11 @@
   "compilerOptions": {
     "strict": true,
     "skipLibCheck": true,
+    // WatermelonDB models in src/database/models use legacy property
+    // decorators (@field/@date/@readonly). babel-preset-expo already applies
+    // @babel/plugin-proposal-decorators with { legacy: true } at build time;
+    // this only tells tsc to accept the same syntax. See babel.config.js.
+    "experimentalDecorators": true,
     "paths": {
       "@/*": [
         "./*"

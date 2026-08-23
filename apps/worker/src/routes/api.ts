@@ -35,6 +35,7 @@ import { createContestExtra, validateContestInput } from "../lib/contestAdmin";
 import { verifyRazorpaySignature } from "../lib/payments";
 import { creditPaymentOrder } from "../lib/coinOrders";
 import { assertClean } from "../lib/moderation";
+import { assertChatMember } from "../lib/chatAuth";
 import { getAppConfig } from "../lib/settings";
 import { getSettings } from "../lib/gamification";
 import { sendEmail } from "../lib/email";
@@ -1141,6 +1142,11 @@ apiRoute.post("/", async (c) => {
     case "sendMessage": {
       const { chatId, text } = body;
       if (!chatId || !text) throw httpsError("invalid-argument", "chatId and text are required.");
+      // Only participants may post into a chat.
+      await assertChatMember(env, chatId, uid);
+      // Messages were the one social write with no velocity cap (likes are
+      // 120/60s, comments 30/60s), which made this a free spam/abuse channel.
+      await rateLimit(env, `msg:${uid}`, 60, 60);
       const ts = now();
       const messageId = newId();
       await db.insert(schema.messages).values({ id: messageId, chatId, senderId: uid, text, read: false, createdAt: ts });
@@ -1157,6 +1163,7 @@ apiRoute.post("/", async (c) => {
     case "markChatRead": {
       const { chatId } = body;
       if (!chatId) throw httpsError("invalid-argument", "chatId is required.");
+      await assertChatMember(env, chatId, uid);
       await env.DB.prepare(
         `UPDATE messages SET read = 1 WHERE chat_id = ? AND sender_id != ? AND read = 0`,
       ).bind(chatId, uid).run();
@@ -1166,6 +1173,9 @@ apiRoute.post("/", async (c) => {
     case "deleteChat": {
       const { chatId } = body;
       if (!chatId) throw httpsError("invalid-argument", "chatId is required.");
+      // Destructive and irreversible — it drops the chat and every message in
+      // it — so membership must be proven before anything is deleted.
+      await assertChatMember(env, chatId, uid);
       await db.delete(schema.messages).where(eq(schema.messages.chatId, chatId));
       await db.delete(schema.chats).where(eq(schema.chats.id, chatId));
       return c.json({ success: true });

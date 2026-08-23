@@ -26,3 +26,25 @@ EMAIL_FROM=TopHunt <no-reply@tophuntdpcontest.com>
 # Shared secret for server-to-server admin calls from the admin Next.js API
 # routes (sent as the X-Admin-Secret header). Generate a long random string.
 ADMIN_PROXY_SECRET=change_me_to_a_long_random_string
+
+# ---------------------------------------------------------------------------
+# Razorpay (coin top-ups). BOTH of these are fail-closed by design:
+#   * Without RAZORPAY_KEY_SECRET, every top-up verification is rejected — coins
+#     are never free-minted. Symptom: all purchases fail with no obvious cause.
+#   * Without RAZORPAY_WEBHOOK_SECRET, /webhook/razorpay returns
+#     503 not_configured and Razorpay retries forever.
+# So a production deploy that forgets these looks "up" but cannot take payments.
+# Key id/secret: Razorpay dashboard > Settings > API Keys.
+# Webhook secret: Razorpay dashboard > Settings > Webhooks (set when you create
+# the webhook; it signs the RAW request body).
+# ---------------------------------------------------------------------------
+RAZORPAY_KEY_ID=rzp_test_xxxxxxxx
+RAZORPAY_KEY_SECRET=xxxxxxxx
+RAZORPAY_WEBHOOK_SECRET=xxxxxxxx
+
+# ---------------------------------------------------------------------------
+# Local-dev CORS override. `.dev.vars` takes precedence over [vars] in
+# wrangler.toml under `wrangler dev`, so put localhost origins here instead of
+# widening the production allow-list.
+# ---------------------------------------------------------------------------
+ALLOWED_ORIGINS=http://localhost:8081,http://localhost:5173

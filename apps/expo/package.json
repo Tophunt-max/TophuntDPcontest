@@ -80,6 +80,8 @@
     "zustand": "^5.0.9"
   },
   "devDependencies": {
+    "@babel/plugin-proposal-decorators": "^7.28.0",
+    "@babel/plugin-transform-class-properties": "^7.27.1",
     "@types/react": "~19.1.0",
     "babel-plugin-module-resolver": "^5.0.2",
     "eas-cli": "^16.28.0",

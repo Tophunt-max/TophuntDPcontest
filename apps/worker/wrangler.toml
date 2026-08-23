@@ -100,4 +100,18 @@ crons = ["*/10 * * * *", "0 0 1 * *"]
 [vars]
 FIREBASE_PROJECT_ID = "tophuntdpcontest"
 R2_PUBLIC_BASE_URL = "https://tophunt-api.weadown-in.workers.dev/media"
-ALLOWED_ORIGINS = "*"
+
+# CORS allow-list (comma-separated, exact origin match — no wildcards).
+#
+# This was previously "*", i.e. wide-open CORS on an API that moves wallets,
+# deposits and withdrawals. Both the current live *.pages.dev origins and the
+# planned custom domains are listed so the DNS cutover needs no redeploy.
+#
+# Native iOS/Android builds send no Origin header, so this only affects the web
+# app and the admin panel. Note that Pages *preview* deployments get per-commit
+# subdomains and are therefore NOT allowed against production — point them at a
+# staging Worker instead.
+#
+# For local development, override this in `.dev.vars` (which takes precedence
+# over these vars under `wrangler dev`) rather than adding localhost here.
+ALLOWED_ORIGINS = "https://tophuntdpcontest-89t.pages.dev,https://tophunt-admin-panel.pages.dev,https://app.tophuntdpcontest.com,https://admin.tophuntdpcontest.com"

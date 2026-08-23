@@ -375,14 +375,32 @@ today.
 
 # Blocked on
 
-This plan cannot ship until the P0 items in `AUDIT_2026-08-23.md` are fixed:
+**Update 2026-08-23: the code blockers are cleared.** See "Remediation status" in
+`AUDIT_2026-08-23.md`. All three of the following are fixed and verified — the web
+bundle builds, the expo app type-checks clean, and stories are functional again:
 
-- The web bundle does not build (duplicate `nextStory` in
-  `app/story/view/[userId].tsx`)
-- `storyService.ts` has broken imports, so stories are non-functional
-- `app/story/view/[userId].tsx:26` imports `PreloadVideo` from `expo-video`, which
-  does not export it — this sits in the same file as the video work and should be
-  resolved together with it
+- ~~The web bundle does not build (duplicate `nextStory` in
+  `app/story/view/[userId].tsx`)~~
+- ~~`storyService.ts` has broken imports, so stories are non-functional~~
+- ~~`app/story/view/[userId].tsx:26` imports `PreloadVideo` from `expo-video`, which
+  does not export it~~ — replaced with `createVideoPlayer` plus a `release()` in the
+  effect cleanup. Worth knowing before Phase 2f: that call site is now the app's
+  only video *preloading* path, and Bunny's HLS URLs will need the same treatment.
+
+What remains blocking is **external provisioning, not code**:
+
+1. **Phase 0 needs a real custom domain** attached to the `tophunt-media` R2 bucket,
+   with Cloudflare Transformations enabled on that zone. Until then the
+   `/cdn-cgi/image/` URLs in `lib/media.ts` cannot resolve and Phase 1b is moot.
+   `PRODUCTION_DOMAINS.md` names `media.tophuntdpcontest.com` as the intended host;
+   it is still not connected.
+2. **Phase 2 needs a Bunny Stream account** (library id + API key + pull-zone
+   hostname) before any of `2a`–`2f` can be built or tested.
+
+Also note that audit finding #15 (no distributed lock in `autoMigrate`) is
+**unresolved by design** — it is now documented as a constraint in
+`apps/worker/README.md`. The Phase 2c warning about keeping `0017_bunny_video.sql`
+DDL-only and idempotent therefore still applies exactly as written.
 
 ---
 

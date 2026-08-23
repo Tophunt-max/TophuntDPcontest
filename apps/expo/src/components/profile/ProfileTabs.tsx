@@ -9,13 +9,27 @@ type ProfileTabsProps = {
   activeTab: ProfileTab;
   onChangeTab: (tab: ProfileTab) => void;
   isPrivate: boolean;
+  /**
+   * Show the "Saved" tab. Bookmarks are private to their owner, so this must
+   * only be true on your own profile — the server now rejects
+   * `/read/users/:id/bookmarks` for anyone else, and rendering the tab on other
+   * people's profiles would just show a permanently empty list.
+   */
+  showSaved: boolean;
 };
 
-const ProfileTabs: React.FC<ProfileTabsProps> = ({ activeTab, onChangeTab, isPrivate }) => {
+const ProfileTabs: React.FC<ProfileTabsProps> = ({
+  activeTab,
+  onChangeTab,
+  isPrivate,
+  showSaved,
+}) => {
   const tabs: { key: ProfileTab; icon: any; label: string }[] = [
     { key: 'photo', icon: Grid_Icon, label: 'Photo' },
     { key: 'video', icon: Play_Circle, label: 'Video' },
-    { key: 'tags', icon: Bookmark_Outline, label: 'Saved' },
+    ...(showSaved
+      ? [{ key: 'tags' as ProfileTab, icon: Bookmark_Outline, label: 'Saved' }]
+      : []),
   ];
 
   return (

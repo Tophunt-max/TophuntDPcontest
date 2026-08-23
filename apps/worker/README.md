@@ -27,7 +27,8 @@ wrangler r2 bucket create tophunt-media
 wrangler kv namespace create OTP_KV    # paste id into wrangler.toml
 wrangler kv namespace create CACHE_KV  # paste id into wrangler.toml
 
-# 2. Apply the schema (also runs automatically on deploy — see below)
+# 2. Apply the schema (optional — the Worker also self-migrates at runtime;
+#    see "Auto migrations")
 wrangler d1 migrations apply tophunt-db --remote
 
 # 3. Secrets (see .dev.vars.example for the full list)
@@ -42,30 +43,51 @@ wrangler secret put TWILIO_PHONE_NUMBER
 wrangler secret put RESEND_API_KEY
 wrangler secret put EMAIL_FROM
 
-# 4. Deploy (migrations run automatically first — see "Auto migrations")
+# 4. Deploy (manual — there is no deploy pipeline; see "Deploys" below)
 npm run deploy
 ```
 
 ## Auto migrations
 
-D1 migrations are applied **automatically** — you never run them by hand in
-normal operation. `wrangler d1 migrations apply` records applied migrations in
-the remote `d1_migrations` table, so only new files in `migrations/` are run and
-it is safe to invoke on every deploy.
+D1 migrations are applied **automatically at runtime** by
+[`src/db/autoMigrate.ts`](src/db/autoMigrate.ts), not by a deploy step.
 
-Wired in three places:
-
-- **CI/CD** — `.github/workflows/worker-production.yml` runs
-  `wrangler d1 migrations apply --remote` then `wrangler deploy` on every push to
-  `main` that touches `apps/worker/**`. Requires repo secrets
-  `CLOUDFLARE_API_TOKEN` (scopes: Workers Scripts:Edit, D1:Edit, Account
-  Settings:Read) and `CLOUDFLARE_ACCOUNT_ID`.
-- **`npm run deploy`** — a `predeploy` script applies remote migrations before
-  `wrangler deploy`, so manual deploys stay in sync too.
-- **`npm run dev`** — a `predev` script applies migrations to the local D1 DB.
+How it works: `wrangler.toml` bundles `migrations/*.sql` as text
+(`[[rules]] type = "Text"`) and `scripts/gen-migrations.mjs` generates the static
+import list, so the migration bodies ship inside the Worker. On the first request
+handled by each isolate, `ensureMigrated()` runs any file not yet recorded in the
+`d1_migrations` table. Failures are logged and never block traffic — the next
+request retries.
 
 To add a schema change: drop a new `migrations/NNNN_name.sql` file (and update
-`src/db/schema.ts`). It ships and applies on the next deploy — no extra steps.
+`src/db/schema.ts`). It ships with the next deploy and applies itself on the
+first request — no extra commands.
+
+Two constraints that follow from this design:
+
+- **Keep migrations DDL-only and idempotent.** `autoMigrate` guards against
+  re-running per isolate, but the `d1_migrations` row is only written after every
+  statement in the file has succeeded, and there is no distributed lock — so
+  isolates in different colos can run the same file concurrently. DDL survives
+  this because `isIgnorable()` swallows `duplicate column name` / `already
+  exists`. A non-idempotent data backfill would not. Run backfills as explicit
+  one-shot admin actions instead.
+- **`splitStatements()` is a naive `;` split.** It strips `--` comments and
+  splits on semicolons, so it will mis-parse `CREATE TRIGGER ... BEGIN ... END;`
+  and any `;` inside a string literal. No current migration contains either;
+  avoid introducing one without fixing the splitter first.
+
+## Deploys
+
+**Deploys are manual.** Run `npm run deploy` (plain `wrangler deploy`) from
+`apps/worker`. There is no deploy workflow — `.github/workflows/` contains only
+`ci.yml` (typecheck + tests + build, no deploy), and there are no `predeploy` /
+`predev` scripts in `package.json`. Migrations do not need a deploy step because
+of the runtime auto-migrator described above.
+
+If you later want CI deploys, add a workflow that runs `wrangler deploy` with
+repo secrets `CLOUDFLARE_API_TOKEN` (scopes: Workers Scripts:Edit, D1:Edit,
+Account Settings:Read) and `CLOUDFLARE_ACCOUNT_ID`.
 
 Point `R2_PUBLIC_BASE_URL` (wrangler.toml `[vars]`) at your R2 public bucket / custom domain,
 then set the deployed Worker URL in the clients:

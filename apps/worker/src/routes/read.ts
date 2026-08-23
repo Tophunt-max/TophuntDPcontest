@@ -26,6 +26,7 @@ import {
   cachePutJson,
 } from "../lib/cache";
 import { getLiveTally, getViewerVote } from "../lib/voteCounter";
+import { assertChatMember } from "../lib/chatAuth";
 
 export const readRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -1059,7 +1060,13 @@ readRoute.get("/users/:id/matches", optionalAuth, async (c) => {
 
 readRoute.get("/users/:id/bookmarks", requireAuth, async (c) => {
   const db = getDb(c.env);
+  // Bookmarks are private. Derive the owner from the verified token and treat
+  // the :id param as an assertion to check, never as the lookup key — using the
+  // param directly made this an IDOR (any user could read anyone's saved posts).
+  // Same pattern as /read/deposits, /read/withdrawals and /read/transactions.
+  const uid = c.get("user").uid;
   const userId = c.req.param("id");
+  if (userId !== uid) throw httpsError("permission-denied", "Not allowed.");
   const rows = await db
     .select({ matchId: schema.bookmarks.matchId })
     .from(schema.bookmarks)
@@ -1209,6 +1216,9 @@ readRoute.get("/chats", requireAuth, async (c) => {
 readRoute.get("/chats/:id/messages", requireAuth, async (c) => {
   const db = getDb(c.env);
   const chatId = c.req.param("id");
+  // requireAuth only proves *someone* is signed in. Without this, any
+  // authenticated caller holding a chat id could read the whole conversation.
+  await assertChatMember(c.env, chatId, c.get("user").uid);
   const since = parseInt(c.req.query("since") || "0", 10);
   const rows = await db
     .select()
@@ -1400,6 +1410,15 @@ readRoute.get("/users/:id/stories", optionalAuth, async (c) => {
 readRoute.get("/stories/:id/viewers", requireAuth, async (c) => {
   const db = getDb(c.env);
   const storyId = c.req.param("id");
+  // Only the story's author may see who viewed it (and with what reaction).
+  const story = await db
+    .select({ userId: schema.stories.userId })
+    .from(schema.stories)
+    .where(eq(schema.stories.id, storyId))
+    .get();
+  if (!story) throw httpsError("not-found", "Story not found.");
+  if (story.userId !== c.get("user").uid)
+    throw httpsError("permission-denied", "Not allowed.");
   const rows = await db
     .select({
       uid: schema.storyViews.viewerId, viewedAt: schema.storyViews.createdAt, reaction: schema.storyViews.reaction,

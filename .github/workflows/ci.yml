@@ -1,9 +1,13 @@
 name: CI
 
-# Production gate. Both apps block merges on any type or test regression. The
-# worker type-checks fully; the Expo app type-checks our own code (a few
-# third-party packages ship React-19-incompatible source that we can't fix, so
-# scripts/typecheck.mjs ignores node_modules errors only).
+# Production gate. All three apps block merges on any type, test or build
+# regression. The worker type-checks fully; the Expo app type-checks our own code
+# (a few third-party packages ship React-19-incompatible source that we can't
+# fix, so scripts/typecheck.mjs ignores node_modules errors only).
+#
+# Each job also BUILDS. Typecheck and tests cannot catch bundler-only failures —
+# a bad import path, a missing asset, or a Babel plugin-ordering problem all pass
+# tsc and vitest while breaking the actual build.
 on:
   push:
     branches: [main]
@@ -22,12 +26,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: apps/worker/package-lock.json
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      # Catches bundling/config errors (wrangler.toml, migration text rules)
+      # without touching the deployed Worker.
+      - run: npx wrangler deploy --dry-run --outdir=/tmp/worker-build
 
   expo:
-    name: Expo (typecheck + tests)
+    name: Expo (typecheck + tests + web build)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -37,8 +46,30 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: apps/expo/package-lock.json
       - run: npm ci
       # Gates on OUR app code being type-clean; ignores unfixable third-party
       # node_modules type errors (see scripts/typecheck.mjs).
       - run: npm run typecheck
       - run: npm test
+      # A duplicate `const` in app/story/view/[userId].tsx once reached main
+      # because nothing in CI bundled. This step is that missing gate.
+      - run: npx expo export -p web
+
+  admin-panel:
+    name: Admin panel (typecheck + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/admin-panel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/admin-panel/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build

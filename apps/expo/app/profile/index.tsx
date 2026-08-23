@@ -94,13 +94,19 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
   }, [myProfile, targetUserId]);
 
   const { mutate: toggleFollow } = useToggleFollow();
-  const [activeTab, setActiveTab] = useState<ProfileTab>('photo');
+  const [selectedTab, setSelectedTab] = useState<ProfileTab>('photo');
+
+  // "Saved" only exists on your own profile. If the screen is reused for another
+  // user while that tab was open, fall back to Photo instead of showing a tab
+  // that is no longer rendered.
+  const activeTab: ProfileTab = selectedTab === 'tags' && !isOwnProfile ? 'photo' : selectedTab;
 
   // Lazy per-tab loading: only the active tab hits the network; already-loaded
   // tabs stay cached. Photo is the default so it loads on open.
   const { data: photoMatches, isLoading: photoLoading, refetch: refetchPhoto, isRefetching: photoRefetching } = useUserMatches(targetUserId, 'photo', activeTab === 'photo');
   const { data: videoMatches, isLoading: videoLoading, refetch: refetchVideo, isRefetching: videoRefetching } = useUserMatches(targetUserId, 'video', activeTab === 'video');
-  const { data: bookmarks, isLoading: bookmarksLoading, refetch: refetchBookmarks } = useUserBookmarks(targetUserId, activeTab === 'tags');
+  // Bookmarks are private to their owner — only ever request your own.
+  const { data: bookmarks, isLoading: bookmarksLoading, refetch: refetchBookmarks } = useUserBookmarks(targetUserId, activeTab === 'tags' && isOwnProfile);
 
   const handleToggleFollow = () => {
     if (!isOwnProfile) toggleFollow(targetUserId);
@@ -172,8 +178,9 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
             <Highlights userId={targetUserId} />
             <ProfileTabs
               activeTab={activeTab}
-              onChangeTab={setActiveTab}
+              onChangeTab={setSelectedTab}
               isPrivate={!!profile?.isPrivate}
+              showSaved={isOwnProfile}
             />
           </>
         }

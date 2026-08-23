@@ -259,9 +259,16 @@ curl -H "X-Admin-Secret: $ADMIN_PROXY_SECRET" "$WORKER_URL/admin/blog/import/log
 
 | Component | How it deploys |
 |---|---|
-| **Worker** (`apps/worker`) | `npx wrangler deploy` (from `apps/worker`). CI: `.github/workflows/worker-production.yml` on push to `main` touching `apps/worker/**`. **Note:** this CI job has been failing — deploy manually until it's fixed. |
-| **Admin panel** (`apps/admin-panel`) | **No CI.** Build + deploy manually: `npm run build` then `npx wrangler pages deploy dist --project-name=tophunt-admin-panel --branch=main`. |
-| **Reader app** (`apps/expo`) | `.github/workflows/web-production.yml` on push touching `apps/expo/**` → Cloudflare Pages `tophuntdpcontest`. |
+**All three components deploy manually.** `.github/workflows/` contains only
+`ci.yml` (typecheck + tests + web build). There is no deploy pipeline for
+anything — `worker-production.yml` and `web-production.yml` are referenced in
+some older docs but do not exist in the repo.
+
+| Component | How it deploys |
+|---|---|
+| **Worker** (`apps/worker`) | Manual: `npx wrangler deploy` from `apps/worker`. D1 migrations need no separate step — the Worker self-migrates at runtime (`src/db/autoMigrate.ts`). |
+| **Admin panel** (`apps/admin-panel`) | Manual: `npm run build` then `npx wrangler pages deploy dist --project-name=tophunt-admin-panel --branch=main`. |
+| **Reader app** (`apps/expo`) | Manual: `npm run build` (`expo export -p web` + SEO worker) then deploy `dist` to Cloudflare Pages project `tophuntdpcontest`. |
 
 Cloudflare bindings on the Worker: `DB` (D1 tophunt-db), `MEDIA` (R2 tophunt-media),
 `CACHE_KV`, `OTP_KV`, Durable Objects, plus vars incl. `R2_PUBLIC_BASE_URL`.
@@ -320,7 +327,9 @@ Use these as prompts; each maps to concrete, safe actions.
 
 - **"Add an auto‑deploy workflow for the admin panel."**
   → New `.github/workflows/admin-panel-production.yml`: build `apps/admin-panel`,
-  deploy `dist` to Pages project `tophunt-admin-panel` (mirror `web-production.yml`).
+  deploy `dist` to Pages project `tophunt-admin-panel`. Note there is no existing
+  deploy workflow to copy — `ci.yml` is the only workflow in the repo. Needs repo
+  secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
 
 - **"Hide/unpublish a post."**
   → `PATCH /admin/blog/:id { "status": "draft" }` (or delete via the panel).
