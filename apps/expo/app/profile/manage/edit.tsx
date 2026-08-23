@@ -18,6 +18,7 @@ import * as ImagePicker from "expo-image-picker";
 import { useAuth } from "@/src/hooks/useAuth";
 import { useProfile } from "@/src/hooks/useProfileData";
 import { uploadToR2 } from "@/src/lib/uploadToR2";
+import { optimizeImageForUpload } from '@/src/lib/imageOptimize';
 import { FormInput } from "@/src/components/inputs/FormInput";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -251,7 +252,8 @@ export default function EditProfileScreen() {
       let finalAvatarUrl = profile?.profileImageUrl;
 
       if (localAvatarUri && localAvatarUri !== profile?.profileImageUrl) {
-        finalAvatarUrl = await uploadToR2(localAvatarUri, "image/jpeg", "avatars") as string;
+        const optimizedAvatar = await optimizeImageForUpload(localAvatarUri, "avatar");
+        finalAvatarUrl = await uploadToR2(optimizedAvatar, "image/jpeg", "avatars") as string;
       }
 
       await callApi('updateProfile', {

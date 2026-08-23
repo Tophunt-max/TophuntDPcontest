@@ -17,6 +17,7 @@ import { useSignupStore } from "@/src/store/signup";
 import { auth } from "@/src/services/firebase/initFirebase";
 import { callApi } from "@/src/services/api"; // Consolidated API used
 import { uploadToR2 } from "@/src/lib/uploadToR2";
+import { optimizeImageForUpload } from '@/src/lib/imageOptimize';
 import { signInWithEmailAndPassword, sendEmailVerification } from "firebase/auth";
 
 const { width } = Dimensions.get('window');
@@ -39,7 +40,9 @@ export default function CongratulationsScreen() {
     if (!a) return null;
     if (/^https?:\/\//.test(a)) return a; // already a remote URL
     try {
-      return (await uploadToR2(a, "image/jpeg", "avatars")) as string;
+      // Downscale before upload — a raw camera photo is several MB.
+      const optimized = await optimizeImageForUpload(a, "avatar");
+      return (await uploadToR2(optimized, "image/jpeg", "avatars")) as string;
     } catch (e) {
       console.warn("avatar upload failed", e);
       return null;

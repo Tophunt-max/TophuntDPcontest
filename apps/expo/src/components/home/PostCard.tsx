@@ -1,6 +1,6 @@
 import React, { useState, memo, useEffect, useCallback, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Alert, Pressable, ActivityIndicator, AccessibilityInfo } from 'react-native';
-import { Image as ExpoImage } from 'expo-image';
+import { AppImage as ExpoImage } from '../ui/AppImage';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { Ionicons, MaterialCommunityIcons } from '@/src/lib/icons';
 import { CommentSheet } from '../comments/CommentSheet';
@@ -16,7 +16,7 @@ import { useToast } from '../toast/ToastProvider';
 import { engagementService } from '@/src/services/contests/engagementService';
 import { Avatar } from '../ui/Avatar';
 import { useVideoStatus } from '@/src/hooks/useVideoStatus';
-import { playableVideoUrl } from '@/src/lib/videoSource';
+import { videoSourceFor } from '@/src/lib/videoSource';
 import * as Haptics from 'expo-haptics';
 import LottieView from 'lottie-react-native';
 import Animated, { 
@@ -51,7 +51,7 @@ const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
 // expo-image gives disk caching + a smooth fade, so re-scrolling a feed doesn't
 // re-download every image (less R2 bandwidth, faster paint).
 const PhotoMedia = ({ uri, style }: { uri?: string; style: any }) => (
-  <ExpoImage source={uri} style={style} contentFit="cover" cachePolicy="memory-disk" transition={180} />
+  <ExpoImage source={uri} style={style} contentFit="cover" />
 );
 
 // Photo/Video are SEPARATE components so a photo battle never instantiates a
@@ -63,11 +63,12 @@ const VideoMedia = ({ uri, style }: { uri: string; style: any }) => {
   // playlist to play, so show the poster frame instead of mounting a player that
   // would just error. R2 videos report status null and skip all of this.
   const { isProcessing, isFailed, thumbnailUrl } = useVideoStatus(uri);
-  // Web gets Bunny's progressive MP4; native plays the HLS playlist directly
-  // (adaptive bitrate). R2 URLs pass through unchanged.
-  const source = playableVideoUrl(uri);
+  // videoSourceFor picks the right URL for the platform (HLS on native, Bunny's
+  // MP4 fallback on web) AND enables expo-video's disk cache, so the same clip is
+  // not re-downloaded every time this card scrolls back into view.
+  const source = videoSourceFor(uri);
 
-  const player = useVideoPlayer(isProcessing || isFailed ? '' : source, (p) => {
+  const player = useVideoPlayer(isProcessing || isFailed ? null : source, (p) => {
     p.loop = true;
     p.muted = true;
     p.play();

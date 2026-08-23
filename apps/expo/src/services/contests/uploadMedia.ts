@@ -1,4 +1,5 @@
 import { uploadToR2 } from "@/src/lib/uploadToR2";
+import { optimizeImageForUpload } from "@/src/lib/imageOptimize";
 import { uploadVideoToBunny } from "@/src/services/video/bunnyUpload";
 
 /**
@@ -41,6 +42,9 @@ export const contestMediaService = {
       return (await uploadToR2(uri, 'video/mp4', 'contests', onProgress)) as string;
     }
 
-    return (await uploadToR2(uri, 'image/jpeg', 'contests', onProgress)) as string;
+    // Downscale the photo first — contest entries were uploading full-resolution
+    // camera images, which is the main reason grids and feeds felt slow.
+    const optimized = await optimizeImageForUpload(uri, 'contest');
+    return (await uploadToR2(optimized, 'image/jpeg', 'contests', onProgress)) as string;
   },
 };

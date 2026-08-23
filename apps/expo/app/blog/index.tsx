@@ -10,7 +10,7 @@ import {
   ActivityIndicator,
   RefreshControl,
 } from 'react-native';
-import { Image } from 'expo-image';
+import { AppImage as Image } from '@/src/components/ui/AppImage';
 import { Ionicons } from '@/src/lib/icons';
 import { BlogSkeleton } from '@/src/components/skeletons/BlogSkeleton';
 import { useRouter } from 'expo-router';

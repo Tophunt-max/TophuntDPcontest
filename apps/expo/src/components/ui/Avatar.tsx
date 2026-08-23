@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
-import { Image } from 'expo-image';
+import { AppImage } from './AppImage';
 
 /**
  * Avatar with a locally-rendered initials fallback.
@@ -86,11 +86,10 @@ export const Avatar: React.FC<AvatarProps> = ({
 
   if (showImage) {
     return (
-      <Image
+      <AppImage
         source={{ uri: uri as string }}
         style={[box, style as any]}
         contentFit="cover"
-        transition={150}
         onError={() => setFailed(true)}
       />
     );

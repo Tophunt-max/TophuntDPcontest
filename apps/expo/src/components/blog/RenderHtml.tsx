@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, Linking, Platform, Pressable, useWindowDimensions } from 'react-native';
-import { Image } from 'expo-image';
+import { AppImage as Image } from '@/src/components/ui/AppImage';
 
 /**
  * A tiny, dependency-free HTML renderer for blog content, tuned for a pleasant

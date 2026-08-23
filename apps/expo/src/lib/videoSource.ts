@@ -1,4 +1,5 @@
 import { Platform } from 'react-native';
+import type { VideoSource } from 'expo-video';
 
 /**
  * Video source resolution for the R2 -> Bunny Stream migration
@@ -59,4 +60,39 @@ export function playableVideoUrl(url: string | null | undefined): string {
   if (!url) return '';
   if (Platform.OS !== 'web' || !isHlsUrl(url)) return url;
   return url.replace(/\/playlist\.m3u8(\?.*)?$/i, '/play_720p.mp4');
+}
+
+
+/**
+ * Can expo-video's disk cache be used for this URL on this platform?
+ *
+ * Two documented limitations:
+ *  - caching is Android/iOS only — on web the browser HTTP cache does the job,
+ *    and our R2 responses already carry `Cache-Control: immutable, max-age=1y`;
+ *  - expo-video cannot cache HLS sources on iOS. Bunny videos are HLS, so on iOS
+ *    they fall back to AVPlayer's own buffering. Adaptive bitrate is the win
+ *    there anyway.
+ */
+function cachingSupported(uri: string): boolean {
+  if (Platform.OS === 'web') return false;
+  if (Platform.OS === 'ios' && isHlsUrl(uri)) return false;
+  return true;
+}
+
+/**
+ * Build a `VideoSource` for a remote video, with disk caching turned on.
+ *
+ * **This is the function that stops videos being re-downloaded on every play.**
+ * `useCaching` defaults to `false` in expo-video, so passing a bare URL string —
+ * which is what every call site used to do — means the bytes are refetched every
+ * single time. Setting the cache *size* alone does nothing without this flag.
+ *
+ * Also applies `playableVideoUrl`, so callers get the right URL for the platform
+ * (HLS on native, Bunny's MP4 fallback on web) in one step.
+ */
+export function videoSourceFor(url: string | null | undefined): VideoSource {
+  const uri = playableVideoUrl(url);
+  if (!uri) return null;
+  if (!cachingSupported(uri)) return uri;
+  return { uri, useCaching: true };
 }

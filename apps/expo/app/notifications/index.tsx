@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { View, FlatList, StyleSheet, RefreshControl, Text, useColorScheme, TouchableOpacity, ActivityIndicator } from 'react-native';
-import { Image } from 'expo-image';
+import { AppImage as Image } from '@/src/components/ui/AppImage';
 import { Stack, useRouter } from 'expo-router';
 import { useAuth } from '@/src/hooks/useAuth';
 import { notificationService, NotificationItem } from '@/src/services/notifications/notificationService';
@@ -55,7 +55,6 @@ const NotificationRow = React.memo(({ item, isDark, onPress }: RowProps) => {
                     style={styles.avatar}
                     contentFit="cover"
                     transition={150}
-                    cachePolicy="memory-disk"
                 />
                 <View style={[styles.badge, { backgroundColor: tag.color }]}>
                     <Ionicons name={tag.icon} size={11} color="#FFFFFF" />
@@ -85,7 +84,6 @@ const NotificationRow = React.memo(({ item, isDark, onPress }: RowProps) => {
                     style={styles.postThumb}
                     contentFit="cover"
                     transition={150}
-                    cachePolicy="memory-disk"
                 />
             )}
         </TouchableOpacity>

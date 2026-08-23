@@ -18,10 +18,11 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
-import { Image } from 'expo-image';
+import { AppImage as Image } from '@/src/components/ui/AppImage';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { Ionicons } from '@/src/lib/icons';
 import { uploadToR2 } from '@/src/lib/uploadToR2';
+import { optimizeImageForUpload } from '@/src/lib/imageOptimize';
 import { createStoryRecord, searchUsers } from '@/src/services/stories/storyService';
 import { uploadVideoToBunny } from '@/src/services/video/bunnyUpload';
 import { useQueryClient } from '@tanstack/react-query';
@@ -271,8 +272,14 @@ export default function AddStoryScreen() {
       }
 
       if (!mediaUrl) {
-        const fileType = media.type === 'video' ? 'video/mp4' : 'image/jpeg';
-        mediaUrl = (await uploadToR2(media.uri, fileType, 'stories', (p: number) => {
+        const isVideo = media.type === 'video';
+        const fileType = isVideo ? 'video/mp4' : 'image/jpeg';
+        // Photos are downscaled to the 1080x1920 story spec first; video bytes
+        // are never touched here.
+        const source = isVideo
+          ? media.uri
+          : await optimizeImageForUpload(media.uri, 'story');
+        mediaUrl = (await uploadToR2(source, fileType, 'stories', (p: number) => {
           setUploadProgress(p);
         })) as string;
       }

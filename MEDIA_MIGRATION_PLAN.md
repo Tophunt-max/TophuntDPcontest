@@ -508,8 +508,15 @@ videos it can actually see, and only until they report ready or failed.
   `R2_PUBLIC_BASE_URL`, enable Transformations) — dashboard/DNS work. The var is
   deliberately **not** flipped: doing so before DNS is live would break every
   image and video.
-- **Phase 1c** (max-dimension cap + WebP/AVIF on upload) — needs Transformations
-  or the Cloudflare Images binding, so it is blocked on the same domain work.
+- **Phase 1c** — now **done client-side** instead. The plan put the max-dimension
+  cap on `POST /upload`, but a Worker cannot resize an image without
+  Transformations or the Images binding, both of which are blocked on the domain
+  work. So it moved to the client: `apps/expo/src/lib/imageOptimize.ts` downscales
+  and recompresses before upload, per target (avatar 512px, story 1920px, contest
+  1440px, deposit 1600px). WebP/AVIF conversion is still outstanding — the Worker
+  already accepts `image/webp`, but `expo-image-manipulator`'s WEBP support is not
+  reliably cross-platform, so uploads stay JPEG (which is what every one of these
+  paths already declared anyway).
 - **Phase 4** (drop `video/mp4` + `video/quicktime` from `ALLOWED_MIME_TYPES`,
   lower the 80 MB cap to ~15 MB) — deliberately deferred. Doing it now would break
   all video upload, since the R2 path is still the active one until Bunny is
@@ -535,3 +542,68 @@ against an R2 URL. Treat the first real upload as the integration test, and run
 Range support was verified only by typecheck and build, not against real R2
 objects — worth confirming with `curl -H 'Range: bytes=0-1' -i` on a deployed
 video, which should return `206` plus `Content-Range`.
+
+
+---
+
+# Media performance pass — 2026-08-23
+
+Follow-up work targeting perceived speed in stories and feeds. Four changes, all
+client-side, all verified by typecheck + tests + web bundle.
+
+## What was actually wrong
+
+The starting assumption was "images and videos re-download every time". That was
+only half right, and the half that was wrong mattered:
+
+- **Images were already disk-cached.** `expo-image` defaults to
+  `cachePolicy: 'disk'`, and `/media/*` sends
+  `Cache-Control: public, max-age=31536000, immutable` against content-hash keys.
+  Nothing was re-downloading.
+- **Videos genuinely were re-downloading**, but not for the expected reason.
+  `VideoSource.useCaching` defaults to **`false`** in expo-video, and every call
+  site passed a bare URL string — so the cache was never populated no matter what
+  size it was set to. (The default cache *budget* is already 1 GB, not zero.)
+- **The real image problem was byte size, not caching.** Uploads stored whatever
+  the picker returned — a modern camera photo is 3-8 MB at 4000x3000 — because the
+  only guard on `POST /upload` is an 80 MB cap.
+- **Nothing was ever preloaded**, so opening a story always began with a cold
+  fetch against a blank screen.
+
+## Changes
+
+| # | Change | Effect |
+|---|---|---|
+| 1 | `src/lib/imageOptimize.ts` — downscale + recompress before upload, per target | The largest single win. 4000x3000 → 1080x1440 is a ~12x pixel reduction before compression. |
+| 2 | `videoSourceFor()` sets `useCaching: true`; `configureVideoCache()` sets a 256 MB budget | Videos stop re-downloading. Budget trimmed from expo-video's 1 GB default. |
+| 3 | `src/lib/mediaPrefetch.ts` — warm story images ahead of the user | Tapping a story opens on a cached frame. |
+| 4 | `src/components/ui/AppImage.tsx` — one place for `cachePolicy` / `recyclingKey` / `transition` | `cachePolicy` was set on only 3 of 9 call sites; `recyclingKey` stops recycled rows flashing the previous image. |
+
+Notes worth keeping in mind when touching this code:
+
+- `setVideoCacheSizeAsync` **throws once any `VideoPlayer` exists**, which is why
+  `configureVideoCache()` runs at module scope in `app/_layout.tsx` rather than in
+  an effect.
+- expo-video **cannot cache HLS on iOS**. Bunny videos there fall back to
+  AVPlayer's own buffering; adaptive bitrate is the win on that path anyway.
+- Prefetching spends the user's data, so `prefetchImages` budgets by
+  `isConnectionExpensive` (6 normal / 2 metered) and de-duplicates per session.
+  expo-image has no prefetch cancellation, which is the other reason the budget is
+  small.
+- `optimizeImageForUpload` returns the **original URI** on any failure, so a
+  manipulation error can never block a user's upload.
+
+## Still outstanding
+
+- **WebP/AVIF on upload** — would save a further ~25-30%. Blocked on reliable
+  cross-platform WEBP support in `expo-image-manipulator`.
+- **Blurhash placeholders** — needs a hash computed at upload and stored on the
+  row; `expo-image` supports `placeholder={{ blurhash }}`.
+- **react-query persistence** — the query cache is memory-only, so a cold start
+  refetches every list. An AsyncStorage persister would show the last feed
+  instantly.
+- **A "Clear cache" action** — `clearVideoCache()` and `videoCacheSize()` exist and
+  are unused; they need a settings screen, and `clearVideoCacheAsync` only works
+  when no player is active.
+- **Flipping `MEDIA_TRANSFORMATIONS`** once the media domain is live, which turns
+  the already-adopted `*Thumb` fields into real 320px variants.

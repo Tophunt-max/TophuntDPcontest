@@ -22,7 +22,7 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Image } from 'expo-image';
+import { AppImage as Image } from '@/src/components/ui/AppImage';
 import { useVideoPlayer, VideoView, createVideoPlayer } from 'expo-video';
 import { Ionicons } from '@/src/lib/icons';
 import { 
@@ -44,7 +44,8 @@ import {
 } from '@/assets/svgs';
 import { Colors } from '@/constants/theme';
 import { formatClockTime } from '@/src/lib/formatTime';
-import { playableVideoUrl } from '@/src/lib/videoSource';
+import { videoSourceFor } from '@/src/lib/videoSource';
+import { prefetchImages } from '@/src/lib/mediaPrefetch';
 import { Avatar } from '@/src/components/ui/Avatar';
 import type { StoryViewer } from '@/src/types/stories';
 
@@ -107,18 +108,28 @@ export default function StoryView() {
   const nextStoryItem = currentUserStories?.stories[currentStoryIndex + 1];
   const prevStoryItem = currentUserStories?.stories[currentStoryIndex - 1];
 
+  // Warm the adjacent story IMAGES. Combined with the video preload below this
+  // is what makes tapping through a story reel feel instant: by the time the
+  // progress bar advances, the next frame is already decoded on disk.
+  useEffect(() => {
+    const adjacentImages = [nextStoryItem, prevStoryItem]
+      .filter((s) => s?.mediaType === 'image')
+      .map((s) => s!.mediaUrl);
+    if (adjacentImages.length) void prefetchImages(adjacentImages);
+  }, [nextStoryItem?.mediaUrl, prevStoryItem?.mediaUrl]);
+
   // Warm the adjacent videos so transitions don't stall on a cold buffer.
   // createVideoPlayer() returns a player that does NOT auto-release, so every
   // instance created here must be released in the cleanup phase or it leaks a
   // native decoder for the lifetime of the screen.
   useEffect(() => {
-    const preloadUrls = [nextStoryItem, prevStoryItem]
+    const preloadSources = [nextStoryItem, prevStoryItem]
       .filter((s) => s?.mediaType === 'video' && !!s?.mediaUrl)
-      .map((s) => playableVideoUrl(s!.mediaUrl));
+      .map((s) => videoSourceFor(s!.mediaUrl));
 
-    const players = preloadUrls.map((uri) => {
+    const players = preloadSources.map((source) => {
       try {
-        const p = createVideoPlayer(uri);
+        const p = createVideoPlayer(source);
         p.muted = true;
         return p;
       } catch (e) {
@@ -141,9 +152,9 @@ export default function StoryView() {
   const isMyStory = currentUserStories?.userId === auth.currentUser?.uid;
   const isMentioned = currentStory?.mentions?.includes(auth.currentUser?.uid || '');
 
-  // playableVideoUrl: web swaps a Bunny HLS playlist for the MP4 fallback;
-  // native plays HLS directly. R2 URLs are untouched.
-  const player = useVideoPlayer(currentStory?.mediaType === 'video' ? playableVideoUrl(currentStory.mediaUrl) : '', (player) => {
+  // videoSourceFor resolves the platform-correct URL and enables the disk cache,
+  // so re-watching a story does not refetch it.
+  const player = useVideoPlayer(currentStory?.mediaType === 'video' ? videoSourceFor(currentStory.mediaUrl) : null, (player) => {
     player.loop = false;
   });
 

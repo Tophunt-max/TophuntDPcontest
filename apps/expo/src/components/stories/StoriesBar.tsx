@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { StoryItem } from './StoryItem';
 import { fetchStories } from '@/src/services/stories/storyService';
+import { prefetchImages } from '@/src/lib/mediaPrefetch';
 import { auth } from '@/src/services/firebase/initFirebase';
 import { StoriesSkeleton } from './StoriesSkeleton';
 import { useColorScheme } from 'react-native';
@@ -60,6 +61,20 @@ export const StoriesBar: React.FC = () => {
   const otherUserStories = useMemo(() => 
     userStories?.filter(us => us.userId !== currentUser?.uid) || [], 
   [userStories, currentUser]);
+
+  // Warm the FIRST story image of each user as soon as the rail renders, so
+  // tapping an avatar opens on an already-cached frame instead of a blank screen
+  // and a cold fetch. Videos are skipped — those are preloaded by the viewer
+  // itself via createVideoPlayer, and pulling a whole clip here would be a lot of
+  // data for a story the user may never open.
+  useEffect(() => {
+    if (!userStories?.length) return;
+    const firstFrames = userStories
+      .map((us) => us.stories?.[0])
+      .filter((s) => s?.mediaType === 'image')
+      .map((s) => s!.mediaUrl);
+    if (firstFrames.length) void prefetchImages(firstFrames);
+  }, [userStories]);
 
   if (isLoading && !userStories) {
     return <StoriesSkeleton isDark={isDark} />;

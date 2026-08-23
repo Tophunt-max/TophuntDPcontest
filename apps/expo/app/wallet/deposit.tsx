@@ -7,6 +7,7 @@ import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
 import { uploadToR2 } from '@/src/lib/uploadToR2';
+import { optimizeImageForUpload } from '@/src/lib/imageOptimize';
 
 import { Colors } from '@/constants/theme';
 import { walletService } from '@/src/services/wallet/walletService';
@@ -61,7 +62,10 @@ export default function DepositScreen() {
       const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.6 });
       if (res.canceled || !res.assets?.[0]?.uri) return;
       setUploading(true);
-      const url = await uploadToR2(res.assets[0].uri, 'image/jpeg', 'deposits');
+      // 'deposit' preset is the most conservative — an admin has to read the
+      // transaction details in this screenshot.
+      const optimized = await optimizeImageForUpload(res.assets[0].uri, 'deposit');
+      const url = await uploadToR2(optimized, 'image/jpeg', 'deposits');
       setShot(url);
     } catch (e: any) {
       Alert.alert('Upload failed', e?.message || 'Could not upload screenshot.');

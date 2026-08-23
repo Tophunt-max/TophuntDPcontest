@@ -13,12 +13,12 @@ import {
   FlatList,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Image } from 'expo-image';
+import { AppImage as Image } from '@/src/components/ui/AppImage';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { Ionicons } from '@/src/lib/icons';
 import { fetchHighlightStories, fetchStoryViewers } from '@/src/services/stories/storyService';
 import { formatClockTime } from '@/src/lib/formatTime';
-import { playableVideoUrl } from '@/src/lib/videoSource';
+import { videoSourceFor } from '@/src/lib/videoSource';
 import type { StoryViewer } from '@/src/types/stories';
 import { auth } from '@/src/services/firebase/initFirebase';
 
@@ -63,7 +63,7 @@ export default function HighlightView() {
   const currentStory = stories[currentStoryIndex];
   const isMyProfile = userId === auth.currentUser?.uid;
 
-  const player = useVideoPlayer(currentStory?.mediaType === 'video' ? playableVideoUrl(currentStory.mediaUrl) : '', (player) => {
+  const player = useVideoPlayer(currentStory?.mediaType === 'video' ? videoSourceFor(currentStory.mediaUrl) : null, (player) => {
     player.loop = false;
   });
 

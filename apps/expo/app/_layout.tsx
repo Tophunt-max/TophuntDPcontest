@@ -36,6 +36,9 @@ import { View, AppState } from 'react-native';
 // Icons are now SVG-based (src/lib/icons.tsx via lucide-react-native), so there
 // are NO icon fonts to preload — icons render identically on web/Android/iOS.
 
+// Apply our video cache budget. This runs at module scope on purpose: expo-video
+// refuses to change the cache size once any VideoPlayer exists, and module
+// evaluation of the root layout happens before any screen can mount one.
 // Pause react-query background refetches (refetchInterval) whenever the app is
 // not in the foreground. On mobile the "window" is never focused the way a
 // browser is, so without this react-query keeps polling even when the app is
@@ -53,6 +56,12 @@ import { ErrorBoundary } from '@/src/components/ErrorBoundary';
 import { OfflineBanner } from '@/src/components/ui/OfflineBanner';
 import { emitToast } from '@/src/lib/toastBridge';
 import { reportError } from '@/src/lib/reportError';
+import { configureVideoCache } from '@/src/lib/videoCache';
+
+// Apply our video cache budget. Deliberately at module scope: expo-video refuses
+// to change the cache size once any VideoPlayer exists, and module evaluation of
+// the root layout happens before any screen can mount one.
+configureVideoCache();
 
 // Drive React Query's online state from the device's real connectivity so
 // queries pause offline and auto-refetch when the network returns.
