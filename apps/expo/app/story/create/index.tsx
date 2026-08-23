@@ -21,7 +21,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Image } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { Ionicons } from '@/src/lib/icons';
-import { uploadToS3 } from '@/src/lib/uploadToS3';
+import { uploadToR2 } from '@/src/lib/uploadToR2';
 import { createStoryRecord, searchUsers } from '@/src/services/stories/storyService';
 import { uploadVideoToBunny } from '@/src/services/video/bunnyUpload';
 import { useQueryClient } from '@tanstack/react-query';
@@ -272,7 +272,7 @@ export default function AddStoryScreen() {
 
       if (!mediaUrl) {
         const fileType = media.type === 'video' ? 'video/mp4' : 'image/jpeg';
-        mediaUrl = (await uploadToS3(media.uri, fileType, 'stories', (p: number) => {
+        mediaUrl = (await uploadToR2(media.uri, fileType, 'stories', (p: number) => {
           setUploadProgress(p);
         })) as string;
       }

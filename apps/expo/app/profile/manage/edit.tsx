@@ -17,7 +17,7 @@ import { useRouter } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
 import { useAuth } from "@/src/hooks/useAuth";
 import { useProfile } from "@/src/hooks/useProfileData";
-import { uploadToS3 } from "@/src/lib/uploadToS3";
+import { uploadToR2 } from "@/src/lib/uploadToR2";
 import { FormInput } from "@/src/components/inputs/FormInput";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -251,7 +251,7 @@ export default function EditProfileScreen() {
       let finalAvatarUrl = profile?.profileImageUrl;
 
       if (localAvatarUri && localAvatarUri !== profile?.profileImageUrl) {
-        finalAvatarUrl = await uploadToS3(localAvatarUri, "image/jpeg", "avatars") as string;
+        finalAvatarUrl = await uploadToR2(localAvatarUri, "image/jpeg", "avatars") as string;
       }
 
       await callApi('updateProfile', {

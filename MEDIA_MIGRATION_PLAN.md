@@ -29,8 +29,8 @@ Key layout: `{folder}/{images|videos}/{uuid}{ext}` (`apps/worker/src/lib/r2.ts:1
 | `contest-banners` | admin banners | admin panel |
 | blog images | imported posts | `scripts/archive-import/import.mjs` |
 
-Client upload helper: `apps/expo/src/lib/uploadToS3.ts` (name is legacy — it posts to
-the Worker, not S3). Allowed MIME types (`lib/r2.ts:13`): `image/jpeg`, `image/png`,
+Client upload helper: `apps/expo/src/lib/uploadToR2.ts` (was `uploadToS3.ts` — the
+name was legacy, it posts to the Worker, not S3; renamed during implementation). Allowed MIME types (`lib/r2.ts:13`): `image/jpeg`, `image/png`,
 `image/gif`, `image/webp`, `video/mp4`, `video/quicktime`. Hard cap 80 MB
 (`routes/upload.ts:23`).
 

@@ -1,23 +1,25 @@
-// src/lib/uploadToS3.ts
 import { API_BASE_URL } from "../services/api";
 import { auth } from "../services/firebase/initFirebase";
 
 /**
  * Uploads a local file to Cloudflare R2 THROUGH the Worker (`POST /upload`).
  *
- * Previously the client PUT directly to the R2 S3 endpoint via a presigned URL,
- * which fails in the browser with "Network error during S3 upload / CORS"
- * because R2 has no CORS policy for our web origin. Routing through the Worker
- * (same origin as the API) avoids CORS entirely and works on web + native.
+ * Previously the client PUT directly to the R2 S3-compatible endpoint via a
+ * presigned URL, which fails in the browser with "Network error during S3
+ * upload / CORS" because R2 has no CORS policy for our web origin. Routing
+ * through the Worker (same origin as the API) avoids CORS entirely and works on
+ * web + native.
  *
- * Signature is unchanged so all callers keep working.
+ * Named `uploadToR2` for what it actually does — it was `uploadToS3` in
+ * `src/lib/uploadToS3.ts`, which had been misleading since the presigned-S3 path
+ * was removed.
  *
  * @param uri Local file URI
  * @param fileType MIME type (e.g., 'image/jpeg', 'video/mp4')
  * @param folder Target folder (e.g., 'stories', 'avatars', 'contests')
  * @param onProgress Callback for upload progress (0 to 1)
  */
-export async function uploadToS3(
+export async function uploadToR2(
   uri: string,
   fileType: string,
   folder: string = "avatars",

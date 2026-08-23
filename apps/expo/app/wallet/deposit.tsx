@@ -6,7 +6,7 @@ import { Ionicons } from '@/src/lib/icons';
 import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
-import { uploadToS3 } from '@/src/lib/uploadToS3';
+import { uploadToR2 } from '@/src/lib/uploadToR2';
 
 import { Colors } from '@/constants/theme';
 import { walletService } from '@/src/services/wallet/walletService';
@@ -61,7 +61,7 @@ export default function DepositScreen() {
       const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.6 });
       if (res.canceled || !res.assets?.[0]?.uri) return;
       setUploading(true);
-      const url = await uploadToS3(res.assets[0].uri, 'image/jpeg', 'deposits');
+      const url = await uploadToR2(res.assets[0].uri, 'image/jpeg', 'deposits');
       setShot(url);
     } catch (e: any) {
       Alert.alert('Upload failed', e?.message || 'Could not upload screenshot.');

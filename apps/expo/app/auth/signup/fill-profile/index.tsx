@@ -13,7 +13,7 @@ import { router } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
 import * as Location from 'expo-location';
 import { useSignupStore } from "../../../../src/store/signup";
-import { uploadToS3 } from "../../../../src/lib/uploadToS3";
+import { uploadToR2 } from "../../../../src/lib/uploadToR2";
 import { FormInput } from "@/src/components/inputs/FormInput";
 import { useForm } from "react-hook-form";
 import { z } from "zod";

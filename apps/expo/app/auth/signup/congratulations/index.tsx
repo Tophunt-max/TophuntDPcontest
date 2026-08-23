@@ -16,7 +16,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSignupStore } from "@/src/store/signup";
 import { auth } from "@/src/services/firebase/initFirebase";
 import { callApi } from "@/src/services/api"; // Consolidated API used
-import { uploadToS3 } from "@/src/lib/uploadToS3";
+import { uploadToR2 } from "@/src/lib/uploadToR2";
 import { signInWithEmailAndPassword, sendEmailVerification } from "firebase/auth";
 
 const { width } = Dimensions.get('window');
@@ -39,7 +39,7 @@ export default function CongratulationsScreen() {
     if (!a) return null;
     if (/^https?:\/\//.test(a)) return a; // already a remote URL
     try {
-      return (await uploadToS3(a, "image/jpeg", "avatars")) as string;
+      return (await uploadToR2(a, "image/jpeg", "avatars")) as string;
     } catch (e) {
       console.warn("avatar upload failed", e);
       return null;

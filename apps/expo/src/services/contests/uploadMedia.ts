@@ -1,4 +1,4 @@
-import { uploadToS3 } from "@/src/lib/uploadToS3";
+import { uploadToR2 } from "@/src/lib/uploadToR2";
 import { uploadVideoToBunny } from "@/src/services/video/bunnyUpload";
 
 /**
@@ -38,9 +38,9 @@ export const contestMediaService = {
         // rather than failing the whole submission.
         console.warn('[contestMedia] Bunny upload failed, falling back to R2:', e);
       }
-      return (await uploadToS3(uri, 'video/mp4', 'contests', onProgress)) as string;
+      return (await uploadToR2(uri, 'video/mp4', 'contests', onProgress)) as string;
     }
 
-    return (await uploadToS3(uri, 'image/jpeg', 'contests', onProgress)) as string;
+    return (await uploadToR2(uri, 'image/jpeg', 'contests', onProgress)) as string;
   },
 };
