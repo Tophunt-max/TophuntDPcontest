@@ -1,0 +1,399 @@
+# Media Migration Plan — R2 for photos, Bunny Stream for video
+
+Written 2026-08-23 against commit `3bb480d`.
+
+**Goal:** every image served from Cloudflare R2, every video served from Bunny Stream.
+
+**Important starting point:** photos are *already* on R2, and so are videos. This is
+therefore not a "move to R2" project — it is (a) finish and fix the existing R2 setup,
+and (b) move video off R2 onto Bunny Stream.
+
+---
+
+# 1. Current state (verified)
+
+All media flows through one path:
+
+```
+client → POST /upload (Worker, requireAuth) → uploadToR2() → env.MEDIA.put() → R2
+```
+
+Key layout: `{folder}/{images|videos}/{uuid}{ext}` (`apps/worker/src/lib/r2.ts:111`).
+
+| Folder | Content | Upload site |
+|---|---|---|
+| `avatars` | profile photos | `app/auth/signup/fill-profile`, `app/auth/signup/congratulations`, `app/profile/manage/edit` |
+| `stories` | photo **and video** | `app/story/create/index.tsx:257` |
+| `contests` | photo **and video** entries | `app/contest/photo/setup.tsx`, `app/contest/video/index.tsx` via `src/services/contests/uploadMedia.ts` |
+| `deposits` | UPI payment screenshots | `app/wallet/deposit.tsx:64` |
+| `contest-banners` | admin banners | admin panel |
+| blog images | imported posts | `scripts/archive-import/import.mjs` |
+
+Client upload helper: `apps/expo/src/lib/uploadToS3.ts` (name is legacy — it posts to
+the Worker, not S3). Allowed MIME types (`lib/r2.ts:13`): `image/jpeg`, `image/png`,
+`image/gif`, `image/webp`, `video/mp4`, `video/quicktime`. Hard cap 80 MB
+(`routes/upload.ts:23`).
+
+Video playback today uses `expo-video` pointed straight at the R2/Worker URL, in six
+places: `app/contest/video/index.tsx`, `app/story/create/index.tsx`,
+`app/story/view/[userId].tsx`, `app/story/highlight/[userId].tsx`, and
+`src/components/home/PostCard.tsx` (`VideoMedia`). No transcoding, no adaptive
+bitrate, one resolution, no generated thumbnails.
+
+---
+
+# 2. Three problems found in the current setup
+
+## 2.1 `/media/*` has no HTTP Range support
+
+`apps/worker/src/index.ts:105-146` serves R2 objects with a plain
+`env.MEDIA.get(key)`. It never reads the `Range` request header and never returns
+`206 Partial Content` or `Accept-Ranges` (confirmed by grep — zero matches for
+`range`, `onlyIf`, `206` in `index.ts` and `lib/r2.ts`).
+
+Consequences:
+
+- **Seeking / scrubbing in video does not work**
+- The whole file is fetched on every play
+- iOS `AVPlayer` expects range requests and behaves unreliably without them
+
+This is the single strongest technical reason to move video to Bunny.
+
+## 2.2 `R2_PUBLIC_BASE_URL` points at the Worker itself
+
+`wrangler.toml [vars]`:
+
+```toml
+R2_PUBLIC_BASE_URL = "https://tophunt-api.weadown-in.workers.dev/media"
+```
+
+Every media byte is proxied through the Worker. That spends Worker invocations and
+CPU time on static file serving, and bypasses the custom-domain path where R2 egress
+is free.
+
+## 2.3 Image optimization is fully built but unused, and cannot work yet
+
+`apps/worker/src/lib/media.ts` provides `thumbUrl` (320px), `optimizedUrl` (1080px)
+and `avatarUrl` (128px), and `routes/read.ts` attaches the results as
+`mediaUrlThumb`, `mediaUrlOptimized`, `profileImageUrlThumb` and `imageThumb` in 12+
+places (lines 337, 505, 641, 653, 722, 753, 993, 1050, 1138, 1361, …).
+
+Two problems:
+
+1. **The Expo client consumes none of these fields** — grep for `mediaUrlThumb`,
+   `mediaUrlOptimized`, `profilePicThumb` across `apps/expo/app` and
+   `apps/expo/src` returns zero hits.
+2. They would not work anyway. The URLs are of the form
+   `{base}/cdn-cgi/image/width=320,.../{path}`, and `/cdn-cgi/image/` requires
+   Cloudflare **Transformations** enabled on the serving zone. A `workers.dev`
+   hostname is not such a zone, so the path would simply 404.
+
+So this is dead weight today. Both halves are missing: a proper domain, and client
+adoption.
+
+---
+
+# Phase 0 — Custom domain for media (foundation)
+
+Everything else depends on this.
+
+1. Attach a custom domain (e.g. `media.tophunt.in`) to the `tophunt-media` R2 bucket
+   in the Cloudflare dashboard.
+2. Update `wrangler.toml`:
+   ```toml
+   R2_PUBLIC_BASE_URL = "https://media.tophunt.in"
+   ```
+3. **Enable Transformations on that zone.** This is what makes the existing
+   `/cdn-cgi/image/` code in `lib/media.ts` actually resolve.
+4. Keep the `/media/*` Worker route in place — old DB rows contain `workers.dev`
+   URLs and must keep resolving. Do not delete it.
+
+This alone fixes 2.2 and unblocks 2.3.
+
+Also worth doing here: add Range support to `/media/*` for the legacy videos that
+will still be served from R2 during the migration window. R2's `get()` accepts a
+`range` option and the response needs `Accept-Ranges: bytes` plus a `206` status.
+
+---
+
+# Phase 1 — Photos: finish the R2 setup
+
+## 1a. Remove external image hosts
+
+These are still fetched from third parties:
+
+| Host | Occurrences | Used as |
+|---|---|---|
+| `ui-avatars.com` | 12 in `apps/expo`, plus `read.ts:1415` | avatar fallback |
+| `via.placeholder.com` | 3 | image placeholder |
+| `i.pravatar.cc` | 1 | avatar placeholder |
+
+Replace with a local initials-avatar component (SVG, rendered client-side) or a
+single default avatar object stored in R2.
+
+Reasons beyond tidiness: `ui-avatars.com` URLs embed the username, so every avatar
+render leaks a username to a third party; and the fallback silently breaks on poor
+connectivity, which is exactly when it is needed.
+
+## 1b. Make the client use the thumbnail variants
+
+Switch feeds, grids and avatar rows to `mediaUrlThumb` / `profileImageUrlThumb`, and
+keep the full-resolution URL for detail views only. The server side already emits
+these fields — this is a client-only change, and the bandwidth difference is large
+(320px vs. original camera resolution).
+
+## 1c. Normalize images on upload
+
+`POST /upload` currently stores whatever the client sends, so a 12 MB phone photo is
+stored and served at full size. Add a max-dimension cap and WebP/AVIF conversion at
+upload time in `apps/worker/src/routes/upload.ts`.
+
+---
+
+# Phase 2 — Video: move to Bunny Stream
+
+Core design rule: **the Bunny API key never reaches the app.** The Worker mints
+short-lived signed credentials; the client uploads directly to Bunny. Bunny's own docs
+are explicit about this — "Never expose your API key in client-side code."
+
+## 2a. Bunny setup
+
+1. Create a Video Library → gives `libraryId` + an API key.
+2. Note the pull-zone hostname (`vz-xxxx.b-cdn.net`).
+3. **Enable MP4 Fallback** — required for the web build (see 2f).
+4. Choose the **Volume** delivery network, not Standard. For an India-heavy audience
+   Standard is $0.030/GB (Asia & Oceania) while Volume is $0.005/GB up to 500 TB.
+   That is a 6x difference.
+
+## 2b. New secrets
+
+```bash
+wrangler secret put BUNNY_STREAM_API_KEY
+wrangler secret put BUNNY_LIBRARY_ID
+```
+
+Plus `BUNNY_CDN_HOSTNAME` in `wrangler.toml [vars]` (not secret).
+
+**Add all three to `apps/worker/.dev.vars.example`.** The Razorpay secrets are
+currently missing from that file (see audit finding #13) — do not repeat it.
+
+## 2c. D1 schema
+
+New migration `apps/worker/migrations/0017_bunny_video.sql`. A URL is no longer
+sufficient, because processing is asynchronous:
+
+```sql
+ALTER TABLE contest_matches ADD COLUMN video_provider TEXT;       -- 'r2' | 'bunny'
+ALTER TABLE contest_matches ADD COLUMN bunny_video_id TEXT;
+ALTER TABLE contest_matches ADD COLUMN video_status TEXT;         -- uploading|processing|ready|failed
+ALTER TABLE contest_matches ADD COLUMN video_thumbnail_url TEXT;
+ALTER TABLE contest_matches ADD COLUMN video_duration_sec INTEGER;
+```
+
+Same columns on the stories table. Update `apps/worker/src/db/schema.ts` to match.
+
+`video_provider` is what allows old R2 videos and new Bunny videos to coexist, so no
+big-bang cutover is needed.
+
+**Constraint:** keep this migration DDL-only and idempotent. `autoMigrate.ts` runs
+without a distributed lock (audit finding #15), so a data backfill inside a migration
+can execute more than once. Do backfills as explicit admin actions instead.
+
+## 2d. New Worker endpoints
+
+### `POST /api` action `createVideoUpload`
+
+Two steps, both server-side:
+
+1. Create the video object:
+   ```
+   POST https://video.bunnycdn.com/library/{libraryId}/videos
+   Header: AccessKey: {BUNNY_STREAM_API_KEY}
+   Body:   { "title": "..." }
+   → returns { guid: "..." }
+   ```
+2. Compute the TUS signature:
+   ```
+   SHA256(libraryId + apiKey + expirationTime + videoId)   // hex
+   ```
+   Order matters: library id, api key, expiry, video guid.
+
+Return to the client: `{ videoId, libraryId, expirationTime, signature }`.
+
+Set `expirationTime` to **at least 3600s** (Bunny's own recommendation). On slow
+Indian mobile networks even a 30s clip can take a while, and a mid-upload expiry
+produces a `401`.
+
+Rate-limit this action — otherwise anyone can create unlimited video objects in your
+Bunny account:
+
+```ts
+await rateLimit(env, `vidup:${uid}`, 10, 3600);
+```
+
+### `POST /webhook/bunny`
+
+Bunny calls this when encoding finishes. Set `video_status = 'ready'`, store the
+thumbnail URL and duration, and notify the user.
+
+Follow the existing pattern in `apps/worker/src/routes/webhook.ts`: read the **raw
+body first**, verify the signature over those exact bytes, and acknowledge with `200`
+even on internal failure so Bunny stops retrying. That file already does this
+correctly for Razorpay.
+
+### Deletion
+
+Wherever a story or contest entry is deleted, the Bunny video must be deleted too:
+
+```
+DELETE https://video.bunnycdn.com/library/{libraryId}/videos/{guid}
+```
+
+Today `deleteByPublicUrl()` (`lib/r2.ts:159`) only handles R2. Missing this means
+storage cost grows silently forever.
+
+## 2e. Client — upload
+
+Add `tus-js-client`. Flow:
+
+```
+createVideoUpload (Worker)  →  { videoId, libraryId, expirationTime, signature }
+  ↓
+tus upload → https://video.bunnycdn.com/tusupload
+  headers:  AuthorizationSignature, AuthorizationExpire, LibraryId, VideoId
+  metadata: filetype (MIME) + title    ← both mandatory
+  ↓
+uploadComplete (Worker) → bunny_video_id + video_status = 'processing'
+```
+
+Bonus that does not exist today: TUS is **resumable**. Use
+`findPreviousUploads()` + `resumeFromPreviousUpload()` so a dropped connection
+resumes instead of restarting. Suggested `retryDelays: [0, 3000, 5000, 10000, 20000, 60000]`.
+
+## 2f. Client — playback
+
+**Native (iOS / Android):** HLS plays directly. `expo-video` uses AVPlayer on iOS and
+ExoPlayer on Android, both of which support HLS natively. Bunny publishes a guide for
+exactly this setup.
+
+```
+https://{BUNNY_CDN_HOSTNAME}/{videoId}/playlist.m3u8
+```
+
+This gives adaptive bitrate — 240p up to 1080p selected automatically from the
+viewer's bandwidth. Compared to the current single-resolution R2 file, this is the
+biggest user-visible win of the whole migration, especially on Indian mobile data.
+
+**Web:** Chrome does not support HLS natively. Two options:
+
+1. Use the **MP4 Fallback** URL (why it is enabled in 2a)
+2. Use Bunny's iframe embed when `Platform.OS === 'web'`
+
+Recommendation: MP4 fallback. All six existing `expo-video` call sites keep working
+unchanged — only the URL differs. The iframe route would mean rewriting
+`VideoMedia` in `src/components/home/PostCard.tsx:55` and the story viewers.
+
+**New UI state to handle:** `processing`. Today a video is playable the instant upload
+finishes; with Bunny there is roughly 10-60s of encoding. Show the thumbnail with a
+"Processing…" overlay and subscribe to `video_status`. The `live()` helper in
+`apps/expo/src/services/realtime.ts` already does exactly this kind of subscription.
+
+---
+
+# Phase 3 — Backfill existing R2 videos
+
+Admin-only script: `apps/admin-panel/scripts/migrate-videos-to-bunny.mjs`, following
+the pattern of the existing scripts in that directory (they authenticate to the Worker
+with `ADMIN_PROXY_SECRET`).
+
+Bunny supports **fetch-from-URL**, so there is no need to download and re-upload —
+hand Bunny the R2 URL and it pulls the file itself.
+
+```
+1. SELECT rows WHERE video_provider IS NULL AND <video column> IS NOT NULL
+2. For each: create Bunny video object → trigger fetch from the R2 URL
+3. UPDATE row SET bunny_video_id = ..., video_provider = 'bunny', video_status = 'processing'
+4. Do NOT delete the R2 object yet
+```
+
+Run in batches, make it resumable (it can be re-run safely because of the
+`video_provider IS NULL` filter), and delete the R2 originals only after ~30 days of
+confirmed playback. The `video_provider` column means the app keeps working against
+both sources throughout.
+
+---
+
+# Phase 4 — Cleanup
+
+- Remove `video/mp4` and `video/quicktime` from `ALLOWED_MIME_TYPES`
+  (`apps/worker/src/lib/r2.ts:13`). Without this, clients keep uploading video down
+  the old path.
+- With video gone, the 80 MB cap in `routes/upload.ts:23` applies to images only and
+  can drop to ~15 MB.
+- Add a per-user Bunny upload quota and a cost alert on the Bunny account.
+
+---
+
+# Cost estimate
+
+Bunny Stream rates as of 2026-08-23:
+
+| Item | Rate |
+|---|---|
+| Storage | $0.01/GB/month (default region) |
+| Delivery — Volume network | $0.005/GB up to 500 TB |
+| Delivery — Standard, Asia & Oceania | $0.030/GB |
+| Standard encoding | **free** |
+| Premium encoding (1080p/720p) | $0.050 per output minute |
+| Minimum monthly fee | none |
+
+Rough projection for 10,000 contest videos × 30s × ~5 MB average:
+
+- Storage ≈ 50 GB → **~$0.50/month**
+- Delivery at 500 GB served/month on Volume → **~$2.50/month**
+
+Cost is not the constraint here. Use **Standard** encoding (free) — Premium is billed
+per output minute and buys nothing this app needs. The real return on this migration is
+adaptive bitrate, working range requests, and generated thumbnails, none of which exist
+today.
+
+---
+
+# Open decisions
+
+1. **Custom domain** — does one exist, or does it need registering? Phase 0 is
+   half-blocked without it, and Phase 1b/2.3 cannot work at all.
+2. **Scope of video migration** — contest entries and stories together, or contest
+   first? Recommendation: contest first (longer, higher-stakes videos), stories after.
+3. **Public or signed video URLs?** Contest entries are public, so no token auth
+   needed. Stories are arguably private and would need Bunny's embed-view token
+   authentication (HMAC-SHA256, `token` + `expires` query params).
+4. **How much does the web build matter?** If little, skip MP4 Fallback and ship
+   HLS-only for native.
+
+---
+
+# Blocked on
+
+This plan cannot ship until the P0 items in `AUDIT_2026-08-23.md` are fixed:
+
+- The web bundle does not build (duplicate `nextStory` in
+  `app/story/view/[userId].tsx`)
+- `storyService.ts` has broken imports, so stories are non-functional
+- `app/story/view/[userId].tsx:26` imports `PreloadVideo` from `expo-video`, which
+  does not export it — this sits in the same file as the video work and should be
+  resolved together with it
+
+---
+
+# Reference links
+
+- [TUS resumable uploads](https://bunny.net/docs/stream/tus-resumable-uploads)
+- [Stream HTTP API](https://bunny.net/docs/stream/http-api)
+- [Create video](https://bunny.net/docs/api-reference/stream/manage-videos/create-video)
+- [MP4 Fallback](https://bunny.net/docs/stream/mp4-downloads)
+- [Native video playback with Bunny Stream + Expo](https://bunny.net/blog/native-video-playback-with-bunny-stream-and-expo/)
+- [Embed view token authentication](https://bunny.net/docs/stream/token-authentication)
+- [Stream pricing](https://bunny.net/docs/stream/pricing)
+- [Delivery tiers](https://bunny.net/docs/stream/delivery-tiers)
+
