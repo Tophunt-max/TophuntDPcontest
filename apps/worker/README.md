@@ -43,7 +43,8 @@ wrangler secret put TWILIO_PHONE_NUMBER
 wrangler secret put RESEND_API_KEY
 wrangler secret put EMAIL_FROM
 
-# 4. Deploy (manual — there is no deploy pipeline; see "Deploys" below)
+# 4. Deploy (see "Deploys" below — Workers Builds is connected but failing,
+#    so this is currently the working path)
 npm run deploy
 ```
 
@@ -79,15 +80,29 @@ Two constraints that follow from this design:
 
 ## Deploys
 
-**Deploys are manual.** Run `npm run deploy` (plain `wrangler deploy`) from
-`apps/worker`. There is no deploy workflow — `.github/workflows/` contains only
-`ci.yml` (typecheck + tests + build, no deploy), and there are no `predeploy` /
-`predev` scripts in `package.json`. Migrations do not need a deploy step because
-of the runtime auto-migrator described above.
+There is **no GitHub Actions deploy workflow** — `.github/workflows/` contains
+only `ci.yml` (typecheck + tests + build, no deploy), and there are no
+`predeploy` / `predev` scripts in `package.json`.
 
-If you later want CI deploys, add a workflow that runs `wrangler deploy` with
-repo secrets `CLOUDFLARE_API_TOKEN` (scopes: Workers Scripts:Edit, D1:Edit,
-Account Settings:Read) and `CLOUDFLARE_ACCOUNT_ID`.
+Deployment is wired on the **Cloudflare side** instead, via a Workers Builds
+integration connected directly to this repo. It reports into GitHub as the
+`Workers Builds: tophunt-api` check on each push to `main`.
+
+> **That check is currently failing**, and has been for some time (it was already
+> red before the 2026-08-23 audit work). Until it is fixed, deploy by hand:
+>
+> ```bash
+> cd apps/worker && npm run deploy
+> ```
+>
+> The build logs are only visible in the Cloudflare dashboard. The usual cause in
+> a monorepo like this is the build's root directory / install step: Workers
+> Builds must run `npm ci` inside `apps/worker`, and `wrangler.toml`'s
+> `[build] command = "node scripts/gen-migrations.mjs"` resolves relative to that
+> directory.
+
+Migrations never need a deploy step either way, because of the runtime
+auto-migrator described above.
 
 Point `R2_PUBLIC_BASE_URL` (wrangler.toml `[vars]`) at your R2 public bucket / custom domain,
 then set the deployed Worker URL in the clients:

@@ -257,18 +257,18 @@ curl -H "X-Admin-Secret: $ADMIN_PROXY_SECRET" "$WORKER_URL/admin/blog/import/log
 
 ## 9. Deployment
 
-| Component | How it deploys |
-|---|---|
-**All three components deploy manually.** `.github/workflows/` contains only
-`ci.yml` (typecheck + tests + web build). There is no deploy pipeline for
-anything — `worker-production.yml` and `web-production.yml` are referenced in
-some older docs but do not exist in the repo.
+Deployment is wired on the **Cloudflare side**, not in GitHub Actions.
+`.github/workflows/` contains only `ci.yml` (typecheck + tests + build). The
+`worker-production.yml` / `web-production.yml` workflows referenced in some older
+docs **do not exist** — the equivalent is Cloudflare Pages and Workers Builds
+integrations connected directly to this repo, which report as GitHub checks on
+every push to `main`.
 
 | Component | How it deploys |
 |---|---|
-| **Worker** (`apps/worker`) | Manual: `npx wrangler deploy` from `apps/worker`. D1 migrations need no separate step — the Worker self-migrates at runtime (`src/db/autoMigrate.ts`). |
-| **Admin panel** (`apps/admin-panel`) | Manual: `npm run build` then `npx wrangler pages deploy dist --project-name=tophunt-admin-panel --branch=main`. |
-| **Reader app** (`apps/expo`) | Manual: `npm run build` (`expo export -p web` + SEO worker) then deploy `dist` to Cloudflare Pages project `tophuntdpcontest`. |
+| **Worker** (`apps/worker`) | Cloudflare **Workers Builds** (`Workers Builds: tophunt-api` check). **Currently failing — deploy manually with `npx wrangler deploy` from `apps/worker` until fixed.** D1 migrations need no separate step; the Worker self-migrates at runtime (`src/db/autoMigrate.ts`). |
+| **Admin panel** (`apps/admin-panel`) | Cloudflare **Pages** project `tophunt-admin-panel`, auto-deploys on push. Manual fallback: `npm run build` then `npx wrangler pages deploy dist --project-name=tophunt-admin-panel --branch=main`. |
+| **Reader app** (`apps/expo`) | Cloudflare **Pages** project `tophuntdpcontest`, auto-deploys on push. Manual fallback: `npm run build` (`expo export -p web` + SEO worker) then deploy `dist`. |
 
 Cloudflare bindings on the Worker: `DB` (D1 tophunt-db), `MEDIA` (R2 tophunt-media),
 `CACHE_KV`, `OTP_KV`, Durable Objects, plus vars incl. `R2_PUBLIC_BASE_URL`.
