@@ -1,5 +1,6 @@
 import { createUserWithEmailAndPassword, signOut as firebaseSignOut } from 'firebase/auth';
 import { auth } from './firebase/initFirebase';
+import { notificationService } from './notifications/notificationService';
 
 // Single source of truth for auth state. Previously this module had its own
 // duplicate `useAuth` implementation (a second onAuthStateChanged listener),
@@ -18,6 +19,13 @@ export const signupWithEmail = async (email: string, password: string) => {
 
 export const signOut = async () => {
   console.log("[AuthService] signOut called");
+
+  // Detach this device's push token FIRST, while the ID token is still valid —
+  // the Worker call needs auth. Skipping this left the token on the user row
+  // forever, so a shared or resold phone kept receiving the previous account's
+  // notifications. Best-effort: never block logout on it.
+  await notificationService.unregisterPushToken();
+
   try {
     await firebaseSignOut(auth);
     console.log("[AuthService] firebaseSignOut successful");

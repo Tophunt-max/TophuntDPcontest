@@ -9,3 +9,4 @@ export function getDb(env: Env): DB {
 }
 
 export { schema };
+export type { NotificationActor } from "./schema";

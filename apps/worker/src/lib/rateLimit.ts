@@ -13,6 +13,38 @@ import type { Env } from "../types";
 import { httpsError } from "./http";
 
 /**
+ * Consume one unit from `key`'s budget and report whether it was allowed.
+ *
+ * Non-throwing counterpart to `rateLimit`, for callers that want to DEGRADE
+ * rather than fail — e.g. suppressing a push notification while still writing
+ * the in-app row. Fails OPEN (returns true) on any KV error, matching
+ * `rateLimit`'s trade-off.
+ */
+export async function consumeRateLimit(
+  env: Env,
+  key: string,
+  max: number,
+  windowSec: number,
+): Promise<boolean> {
+  try {
+    const windowId = Math.floor(Date.now() / 1000 / windowSec);
+    const cacheKey = `rl:${key}:${windowId}`;
+    const current = Number((await env.CACHE_KV.get(cacheKey)) || 0);
+    if (current >= max) return false;
+    // Best-effort increment. TTL slightly longer than the window so the counter
+    // survives until the window rolls over, then expires on its own.
+    await env.CACHE_KV.put(cacheKey, String(current + 1), {
+      expirationTtl: windowSec + 5,
+    });
+    return true;
+  } catch (e) {
+    // Fail open so a KV blip never blocks legitimate traffic.
+    console.error("[rateLimit] KV error (failing open)", e);
+    return true;
+  }
+}
+
+/**
  * Allow at most `max` events per `windowSec` for `key`. Throws a
  * `resource-exhausted` HttpsError when the limit is exceeded.
  */
@@ -22,23 +54,8 @@ export async function rateLimit(
   max: number,
   windowSec: number,
 ): Promise<void> {
-  try {
-    const windowId = Math.floor(Date.now() / 1000 / windowSec);
-    const cacheKey = `rl:${key}:${windowId}`;
-    const current = Number((await env.CACHE_KV.get(cacheKey)) || 0);
-    if (current >= max) {
-      throw httpsError("resource-exhausted", "Too many requests. Please slow down.");
-    }
-    // Best-effort increment. TTL slightly longer than the window so the counter
-    // survives until the window rolls over, then expires on its own.
-    await env.CACHE_KV.put(cacheKey, String(current + 1), {
-      expirationTtl: windowSec + 5,
-    });
-  } catch (e: any) {
-    // Re-throw our own limit error; swallow KV transport errors (fail-open so a
-    // KV blip never blocks legitimate traffic).
-    if (e?.code === "resource-exhausted") throw e;
-    console.error("[rateLimit] KV error (failing open)", e);
+  if (!(await consumeRateLimit(env, key, max, windowSec))) {
+    throw httpsError("resource-exhausted", "Too many requests. Please slow down.");
   }
 }
 

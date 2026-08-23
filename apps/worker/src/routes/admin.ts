@@ -18,7 +18,8 @@ import { verifyIdToken, bearerToken } from "../lib/firebaseAuth";
 import { assertAccountNotBlocked } from "../middleware/auth";
 import { getAppConfig, getGamificationSettings, invalidateSetting } from "../lib/settings";
 import { deleteAuthUser, updateAuthUser, setCustomClaims, getUserByEmail } from "../lib/firebaseAdmin";
-import { createNotification, sendBroadcastToAllUsers, sendSegmentedBroadcast } from "../lib/notify";
+import { createNotification } from "../lib/notify";
+import { enqueueBroadcast } from "../lib/broadcast";
 import { finalizeVotes } from "../lib/voteCounter";
 import { settleRefund, settleWinner } from "../lib/contestSettlement";
 import { publish } from "../lib/publish";
@@ -1904,9 +1905,21 @@ adminRoute.post("/broadcast", async (c) => {
   requireFullAdmin(c);
   const { title, body, image, segment } = await c.req.json<any>();
   if (!title || !body) throw httpsError("invalid-argument", "title and body are required.");
-  const sent = await sendSegmentedBroadcast(c.env, title, body, image || undefined, segment);
-  await logAudit(c, "notification.broadcast", "broadcast", null, { title, recipients: sent, segment });
-  return c.json({ success: true, recipients: sent });
+  // Queued and drained by cron — see lib/broadcast.ts for why this is not sent
+  // inline. `recipients` is the estimated audience.
+  const { jobId, estimatedRecipients } = await enqueueBroadcast(c.env, {
+    title,
+    body,
+    image: image || undefined,
+    segment,
+    createdBy: c.get("user")?.uid ?? null,
+  });
+  await logAudit(c, "notification.broadcast", "broadcast", jobId, {
+    title,
+    recipients: estimatedRecipients,
+    segment,
+  });
+  return c.json({ success: true, jobId, recipients: estimatedRecipients, queued: true });
 });
 
 // ======================= COMMENTS MODERATION =======================

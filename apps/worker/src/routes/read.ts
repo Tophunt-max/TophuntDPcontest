@@ -7,7 +7,7 @@
 import { Hono } from "hono";
 import { and, or, eq, desc, asc, gt, lt, sql, inArray, like } from "drizzle-orm";
 import type { Env, Variables } from "../types";
-import { getDb, schema } from "../db";
+import { getDb, schema, type NotificationActor } from "../db";
 import { httpsError } from "../lib/http";
 import { requireAuth, optionalAuth } from "../middleware/auth";
 import { getAppConfig } from "../lib/settings";
@@ -505,6 +505,23 @@ const mapNotification = (env: Env, r: any) => ({
   // wire. Falls back to the original URL for external/non-R2 images.
   imageThumb: avatarUrl(env, r.image),
   data: r.data ?? null, // admin deep-link payload ({ url?: ... }); json column
+  /** True once shown in the list; `read` means actually opened. */
+  seen: !!r.seen,
+  // --- grouping (migration 0018) ---
+  /** Most recent actor, for the row avatar. */
+  actorId: r.actorId ?? null,
+  /**
+   * Up to a few recent actors. More may have been folded in than are listed
+   * here — `actorCount` is the authoritative total.
+   */
+  actors: (r.actors ?? null) as NotificationActor[] | null,
+  /** Distinct actors folded into this row; 1 for ungrouped notifications. */
+  actorCount: r.actorCount ?? 1,
+  /**
+   * NOTE: for collapsible types this is the LAST ACTIVITY time, not the first —
+   * collapsing bumps it so the regrouped notification returns to the top. The
+   * cursor pagination on this endpoint relies on that.
+   */
   createdAt: r.createdAt, // epoch ms
 });
 

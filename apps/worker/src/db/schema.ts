@@ -55,6 +55,15 @@ export const users = sqliteTable(
 
     // FCM registration tokens (array json)
     fcmTokens: text("fcm_tokens", { mode: "json" }).$type<string[]>().default([]),
+    /**
+     * Per-category notification preferences + quiet hours. See
+     * lib/notificationPrefs.ts for the shape and defaults.
+     *
+     * Deliberately a JSON column on `users` rather than its own table:
+     * createNotification() already reads users.fcmTokens for every
+     * notification, so prefs come along in that same query at no extra cost.
+     */
+    notificationPrefs: text("notification_prefs", { mode: "json" }),
 
     signupCompleted: integer("signup_completed", { mode: "boolean" }).default(false),
     // admin flags
@@ -446,15 +455,50 @@ export const notifications = sqliteTable(
     image: text("image"),
     data: text("data", { mode: "json" }),
     read: integer("read", { mode: "boolean" }).default(false),
+    /**
+     * "Shown in the list" vs `read` = "opened". Lets the bell badge clear on
+     * view without marking every item read.
+     */
+    seen: integer("seen", { mode: "boolean" }).default(false),
+
+    // --- collapsing / actor grouping (migration 0018) ---
+    /** Most recent actor — drives the avatar and the leading name. */
+    actorId: text("actor_id"),
+    /** A few recent actors for display: [{ uid, username, avatarUrl }]. */
+    actors: text("actors", { mode: "json" }).$type<NotificationActor[]>(),
+    /** Distinct actors folded into this row; 1 for non-collapsible types. */
+    actorCount: integer("actor_count").default(1),
+    /**
+     * Grouping handle, normally `{type}:{targetId}`. Doubles as the idempotency
+     * handle — a retried event resolves to the same key and is absorbed rather
+     * than duplicated. NULL for types that must never collapse.
+     */
+    collapseKey: text("collapse_key"),
+    /**
+     * NOTE: `createdAt` is bumped on collapse, i.e. it means LAST ACTIVITY for
+     * collapsible types. That keeps the existing created_at ordering, cursor
+     * pagination and index working while still letting a re-activated
+     * notification rise to the top. `updatedAt` is audit-only.
+     */
     createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at"),
   },
   (t) => ({
     recipientIdx: index("idx_notif_recipient").on(t.recipientId, t.createdAt),
     // Partial index for the polled unread-count query (migration 0016): indexes
     // only unread rows so COUNT(*) WHERE recipient_id=? AND read=0 is index-only.
     unreadIdx: index("idx_notif_unread").on(t.recipientId).where(sql`${t.read} = 0`),
+    // Collapse lookup: WHERE recipient_id = ? AND collapse_key = ?
+    collapseIdx: index("idx_notif_collapse").on(t.recipientId, t.collapseKey),
   }),
 );
+
+/** A single actor shown on a grouped notification. */
+export interface NotificationActor {
+  uid: string;
+  username: string | null;
+  avatarUrl: string | null;
+}
 
 // ---------------------------------------------------------------------------
 // chats + messages
@@ -832,5 +876,45 @@ export const videos = sqliteTable(
     ownerIdx: index("idx_videos_owner").on(t.ownerUid, t.createdAt),
     statusIdx: index("idx_videos_status").on(t.status),
     targetIdx: index("idx_videos_target").on(t.targetType, t.targetId),
+  }),
+);
+
+
+// ---------------------------------------------------------------------------
+// broadcast_jobs  (resumable admin broadcast fan-out — migration 0018)
+//
+// The previous implementation loaded every uid into memory and then did an
+// insert + a WebSocket publish + an FCM call per user inside one request, which
+// cannot survive a real user table within a Worker's CPU/time limits.
+//
+// A job row is drained by cron a page at a time using KEYSET pagination on
+// users.uid (the primary key): resumable, no OFFSET scan, one page in memory.
+// ---------------------------------------------------------------------------
+export const broadcastJobs = sqliteTable(
+  "broadcast_jobs",
+  {
+    id: text("id").primaryKey(),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    image: text("image"),
+    /** Notification type written for each recipient (usually "admin"). */
+    type: text("type").notNull().default("admin"),
+    data: text("data", { mode: "json" }),
+    /** { platform?, minLevel? } */
+    segment: text("segment", { mode: "json" }),
+    /** pending | running | done | cancelled | failed */
+    status: text("status").notNull().default("pending"),
+    /** Keyset cursor — the last users.uid processed. NULL = not started. */
+    cursor: text("cursor"),
+    processed: integer("processed").notNull().default(0),
+    failed: integer("failed").notNull().default(0),
+    createdBy: text("created_by"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    finishedAt: integer("finished_at"),
+    errorMessage: text("error_message"),
+  },
+  (t) => ({
+    statusIdx: index("idx_broadcast_jobs_status").on(t.status, t.createdAt),
   }),
 );

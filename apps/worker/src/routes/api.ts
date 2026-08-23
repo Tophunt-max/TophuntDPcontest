@@ -15,7 +15,8 @@ import { requireAuth, isAdmin } from "../middleware/auth";
 import { presignUpload } from "../lib/r2";
 import { deleteMediaByUrl } from "../lib/mediaDelete";
 import { awardReward } from "../lib/gamification";
-import { createNotification, sendBroadcastToAllUsers, sendPushNotification } from "../lib/notify";
+import { createNotification, sendPushNotification } from "../lib/notify";
+import { enqueueBroadcast } from "../lib/broadcast";
 import { setCustomClaims } from "../lib/firebaseAdmin";
 import { publish, publishMany } from "../lib/publish";
 import { castVote, bumpEngagement } from "../lib/voteCounter";
@@ -36,6 +37,8 @@ import { verifyRazorpaySignature } from "../lib/payments";
 import { creditPaymentOrder } from "../lib/coinOrders";
 import { assertClean } from "../lib/moderation";
 import { assertChatMember } from "../lib/chatAuth";
+import { detachTokenFromOtherUsers } from "../lib/pushTokens";
+import { resolvePrefs, serializePrefs } from "../lib/notificationPrefs";
 import {
   bunnyConfigured,
   createVideo,
@@ -655,6 +658,8 @@ apiRoute.post("/", async (c) => {
             title: "New Follower! 👤",
             body: `${me?.username || me?.fullName || "Someone"} started following you.`,
             type: "follow", targetId: uid, image: me?.avatar || undefined,
+            // Enables grouping: "Asha and 3 others started following you".
+            actor: { uid, username: me?.username || me?.fullName, avatarUrl: me?.avatar },
           }),
         ]),
       );
@@ -1109,8 +1114,18 @@ apiRoute.post("/", async (c) => {
     case "sendBroadcastNotification": {
       if (!(await isAdmin(c as any))) throw httpsError("permission-denied", "Admin only.");
       const { title, body: msg, imageUrl, data } = body;
-      const sentCount = await sendBroadcastToAllUsers(env, title, msg, imageUrl, data || {});
-      return c.json({ success: true, sentCount });
+      // Queued, not sent inline: fanning out to every user inside this request
+      // blows the Worker's CPU/time budget once the user table is real. Cron
+      // drains it a page at a time. `sentCount` is the ESTIMATED audience; the
+      // delivered figure lands on broadcast_jobs.processed.
+      const { jobId, estimatedRecipients } = await enqueueBroadcast(env, {
+        title,
+        body: msg,
+        image: imageUrl,
+        data: data || {},
+        createdBy: uid,
+      });
+      return c.json({ success: true, jobId, sentCount: estimatedRecipients, queued: true });
     }
     case "sendIndividualNotification": {
       if (!(await isAdmin(c as any))) throw httpsError("permission-denied", "Admin only.");
@@ -1207,11 +1222,68 @@ apiRoute.post("/", async (c) => {
     case "registerFcmToken": {
       const { token } = body;
       if (!token) throw httpsError("invalid-argument", "token is required.");
+      // A device token can previously have belonged to a DIFFERENT account on
+      // this same phone (shared, resold, or just a second login). Detach it from
+      // every other user first, otherwise the previous owner keeps receiving
+      // pushes on a device they no longer control.
+      await detachTokenFromOtherUsers(env, token, uid);
       const user = await db.select({ fcmTokens: schema.users.fcmTokens }).from(schema.users).where(eq(schema.users.uid, uid)).get();
       const tokens = new Set<string>(((user?.fcmTokens as string[]) || []));
       tokens.add(token);
       await db.update(schema.users).set({ fcmTokens: [...tokens], updatedAt: now() }).where(eq(schema.users.uid, uid));
       return c.json({ success: true });
+    }
+
+    /**
+     * Current notification preferences, fully resolved (absent keys filled with
+     * defaults) so the client never has to know the defaults itself.
+     */
+    case "getNotificationPrefs": {
+      const row = await db
+        .select({ prefs: schema.users.notificationPrefs })
+        .from(schema.users)
+        .where(eq(schema.users.uid, uid))
+        .get();
+      return c.json({ prefs: resolvePrefs(row?.prefs) });
+    }
+
+    /**
+     * Merge a partial preferences patch. Only the keys present are changed, so
+     * the client can PATCH a single toggle without re-sending everything.
+     */
+    case "updateNotificationPrefs": {
+      const { prefs: patch } = body;
+      if (!patch || typeof patch !== "object")
+        throw httpsError("invalid-argument", "prefs object is required.");
+      const row = await db
+        .select({ prefs: schema.users.notificationPrefs })
+        .from(schema.users)
+        .where(eq(schema.users.uid, uid))
+        .get();
+      const merged = resolvePrefs({ ...(row?.prefs as object || {}), ...patch });
+      await db
+        .update(schema.users)
+        // Only non-default keys are stored, so rows stay small.
+        .set({ notificationPrefs: serializePrefs(merged), updatedAt: now() })
+        .where(eq(schema.users.uid, uid));
+      return c.json({ success: true, prefs: merged });
+    }
+
+    /**
+     * Detach this device's push token on sign-out.
+     *
+     * Without this the token stayed on the user row forever, so after logout a
+     * shared or resold phone kept receiving the previous account's
+     * notifications — a privacy leak, not just clutter. The client calls this
+     * BEFORE Firebase sign-out, while the token is still authorised.
+     */
+    case "unregisterFcmToken": {
+      const { token } = body;
+      if (!token) throw httpsError("invalid-argument", "token is required.");
+      const user = await db.select({ fcmTokens: schema.users.fcmTokens }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+      const tokens = ((user?.fcmTokens as string[]) || []).filter((t) => t !== token);
+      await db.update(schema.users).set({ fcmTokens: tokens, updatedAt: now() }).where(eq(schema.users.uid, uid));
+      return c.json({ success: true, remaining: tokens.length });
     }
 
     case "equipBadge": {
@@ -1318,10 +1390,12 @@ apiRoute.post("/", async (c) => {
       c.executionCtx.waitUntil(
         (async () => {
           const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, matchId)).get();
-          const me = await db.select({ username: schema.users.username }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+          const me = await db.select({ username: schema.users.username, avatar: schema.users.profileImageUrl }).from(schema.users).where(eq(schema.users.uid, uid)).get();
           for (const p of [match?.userA as any, match?.userB as any]) {
             if (p?.uid && p.uid !== uid) {
-              await createNotification(env, p.uid, { title: "New Like ❤️", body: `${me?.username || "Someone"} liked your battle "${match?.title}".`, type: "match_like", targetId: matchId });
+              // `actor` turns repeat likes on the same battle into one grouped
+              // notification instead of one row + one push per liker.
+              await createNotification(env, p.uid, { title: "New Like ❤️", body: `${me?.username || "Someone"} liked your battle "${match?.title}".`, type: "match_like", targetId: matchId, actor: { uid, username: me?.username, avatarUrl: me?.avatar } });
             }
           }
         })(),
@@ -1347,10 +1421,10 @@ apiRoute.post("/", async (c) => {
       c.executionCtx.waitUntil(
         (async () => {
           const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, matchId)).get();
-          const me = await db.select({ username: schema.users.username }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+          const me = await db.select({ username: schema.users.username, avatar: schema.users.profileImageUrl }).from(schema.users).where(eq(schema.users.uid, uid)).get();
           for (const p of [match?.userA as any, match?.userB as any]) {
             if (p?.uid && p.uid !== uid) {
-              await createNotification(env, p.uid, { title: "New Comment 💬", body: `${me?.username || "Someone"} commented on "${match?.title}".`, type: "match_comment", targetId: matchId });
+              await createNotification(env, p.uid, { title: "New Comment 💬", body: `${me?.username || "Someone"} commented on "${match?.title}".`, type: "match_comment", targetId: matchId, actor: { uid, username: me?.username, avatarUrl: me?.avatar } });
             }
           }
         })(),
@@ -1428,10 +1502,10 @@ apiRoute.post("/", async (c) => {
         c.executionCtx.waitUntil(
           (async () => {
             const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, targetId)).get();
-            const me = await db.select({ username: schema.users.username }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+            const me = await db.select({ username: schema.users.username, avatar: schema.users.profileImageUrl }).from(schema.users).where(eq(schema.users.uid, uid)).get();
             for (const p of [match?.userA as any, match?.userB as any]) {
               if (p?.uid && p.uid !== uid) {
-                await createNotification(env, p.uid, { title: "New Comment 💬", body: `${me?.username || "Someone"} commented on "${match?.title}".`, type: "match_comment", targetId });
+                await createNotification(env, p.uid, { title: "New Comment 💬", body: `${me?.username || "Someone"} commented on "${match?.title}".`, type: "match_comment", targetId, actor: { uid, username: me?.username, avatarUrl: me?.avatar } });
               }
             }
           })(),
@@ -1442,9 +1516,9 @@ apiRoute.post("/", async (c) => {
         c.executionCtx.waitUntil(
           (async () => {
             const post = await db.select({ userId: schema.posts.userId }).from(schema.posts).where(eq(schema.posts.id, targetId)).get();
-            const me = await db.select({ username: schema.users.username }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+            const me = await db.select({ username: schema.users.username, avatar: schema.users.profileImageUrl }).from(schema.users).where(eq(schema.users.uid, uid)).get();
             if (post?.userId && post.userId !== uid) {
-              await createNotification(env, post.userId, { title: "New Comment 💬", body: `${me?.username || "Someone"} commented on your post.`, type: "comment", targetId });
+              await createNotification(env, post.userId, { title: "New Comment 💬", body: `${me?.username || "Someone"} commented on your post.`, type: "comment", targetId, actor: { uid, username: me?.username, avatarUrl: me?.avatar } });
             }
           })(),
         );

@@ -125,6 +125,12 @@ export default function SettingScreen() {
         })}
 
         {renderItem({
+          icon: <Settings_Alert width={24} height={24} color={textColor} />,
+          label: 'Notifications',
+          onPress: () => router.push('/setting/notifications'),
+        })}
+
+        {renderItem({
           icon: <Settings_Lock width={24} height={24} color={textColor} />,
           label: 'Privacy',
           onPress: () => router.push('/legal/privacy'),

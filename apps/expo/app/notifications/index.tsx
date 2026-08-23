@@ -41,7 +41,13 @@ const NotificationRow = React.memo(({ item, isDark, onPress }: RowProps) => {
 
     const tag = getNotificationTag(item.type);
     const showThumb = item.type !== 'follow' && item.type !== 'admin' && !!(item.imageThumb || item.image);
-    const avatarUri = item.imageThumb || item.image;
+    // Prefer the most recent ACTOR's avatar on grouped notifications — for
+    // "Asha and 4 others liked your post" the useful face is Asha's, not the
+    // post thumbnail. Falls back to the notification image for ungrouped types.
+    const actorAvatar = item.actors?.[0]?.avatarUrl || null;
+    const avatarUri = actorAvatar || item.imageThumb || item.image;
+    // Only surface a count once it actually means "more than one person".
+    const groupCount = (item.actorCount ?? 1) > 1 ? item.actorCount! : 0;
 
     return (
         <TouchableOpacity
@@ -59,6 +65,13 @@ const NotificationRow = React.memo(({ item, isDark, onPress }: RowProps) => {
                 <View style={[styles.badge, { backgroundColor: tag.color }]}>
                     <Ionicons name={tag.icon} size={11} color="#FFFFFF" />
                 </View>
+                {groupCount > 1 && (
+                    <View style={styles.groupCount}>
+                        <Text style={styles.groupCountText}>
+                            {groupCount > 9 ? '9+' : groupCount}
+                        </Text>
+                    </View>
+                )}
             </View>
 
             <View style={styles.textContainer}>
@@ -263,6 +276,25 @@ const styles = StyleSheet.create({
         paddingVertical: 12,
         paddingHorizontal: 16,
         alignItems: 'center',
+    },
+    groupCount: {
+        position: 'absolute',
+        top: -2,
+        left: -2,
+        minWidth: 18,
+        height: 18,
+        borderRadius: 9,
+        paddingHorizontal: 4,
+        backgroundColor: '#FF4D67',
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderWidth: 1.5,
+        borderColor: '#FFFFFF',
+    },
+    groupCountText: {
+        color: '#FFFFFF',
+        fontSize: 9,
+        fontFamily: 'Urbanist-Bold',
     },
     avatarContainer: {
         marginRight: 12,

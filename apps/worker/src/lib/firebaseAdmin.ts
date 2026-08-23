@@ -201,30 +201,71 @@ export async function setCustomClaims(
 }
 
 // --- FCM HTTP v1 -----------------------------------------------------------
+export interface FcmSendOptions {
+  /**
+   * The recipient's real unread count, used for the iOS app-icon badge.
+   *
+   * This used to be hardcoded to `1`, which meant the iOS badge always showed 1
+   * no matter how many notifications were waiting and never cleared correctly —
+   * a classic "stuck badge" complaint. Pass the actual count.
+   */
+  badge?: number;
+  /**
+   * Groups replaceable notifications. Android uses `collapse_key`, iOS uses the
+   * `apns-collapse-id` header; both make a new notification REPLACE the previous
+   * one with the same id in the tray rather than stacking. This is what turns 100
+   * likes into one updating notification instead of 100 alerts.
+   */
+  collapseKey?: string;
+  /** Android channel id — lets users mute per category in OS settings. */
+  androidChannelId?: string;
+}
+
 export async function sendFcmToToken(
   env: Env,
   token: string,
   notification: { title: string; body: string },
   data: Record<string, string>,
-): Promise<{ ok: boolean; invalid: boolean }> {
+  options: FcmSendOptions = {},
+): Promise<{ ok: boolean; invalid: boolean; retryable: boolean; status: number }> {
   const accessToken = await getAccessToken(env);
   const projectId = env.FIREBASE_PROJECT_ID;
+
+  const android: Record<string, any> = {
+    notification: {
+      icon: "ic_notification",
+      color: "#FF4D67",
+      ...(options.androidChannelId ? { channel_id: options.androidChannelId } : {}),
+    },
+  };
+  if (options.collapseKey) android.collapse_key = options.collapseKey;
+
+  const apns: Record<string, any> = {
+    payload: {
+      aps: {
+        sound: "default",
+        // Only send a badge when we actually know the count — omitting the key
+        // leaves the existing badge untouched, whereas sending a wrong number
+        // corrupts it.
+        ...(typeof options.badge === "number" ? { badge: options.badge } : {}),
+      },
+    },
+  };
+  if (options.collapseKey) apns.headers = { "apns-collapse-id": options.collapseKey.slice(0, 64) };
+
   const res = await fetch(`https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`, {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      message: {
-        token,
-        notification,
-        data,
-        android: { notification: { icon: "ic_notification", color: "#FF4D67" } },
-        apns: { payload: { aps: { sound: "default", badge: 1 } } },
-      },
-    }),
+    body: JSON.stringify({ message: { token, notification, data, android, apns } }),
   });
-  if (res.ok) return { ok: true, invalid: false };
+  if (res.ok) return { ok: true, invalid: false, retryable: false, status: res.status };
+
   const json = await res.json<any>().catch(() => ({}));
   const status = json?.error?.details?.[0]?.errorCode || json?.error?.status || "";
   const invalid = status === "UNREGISTERED" || status === "INVALID_ARGUMENT";
-  return { ok: false, invalid };
+  // 429/5xx and FCM's UNAVAILABLE/INTERNAL are transient — worth one retry.
+  // A permanently invalid token is not.
+  const retryable =
+    !invalid && (res.status === 429 || res.status >= 500 || status === "UNAVAILABLE" || status === "INTERNAL");
+  return { ok: false, invalid, retryable, status: res.status };
 }

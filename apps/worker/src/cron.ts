@@ -10,7 +10,8 @@
 import { and, eq, lte, gt, desc, sql, asc, isNull } from "drizzle-orm";
 import type { Env } from "./types";
 import { getDb, schema } from "./db";
-import { createNotification, sendSegmentedBroadcast } from "./lib/notify";
+import { createNotification } from "./lib/notify";
+import { drainBroadcastJobs, enqueueBroadcast } from "./lib/broadcast";
 import { finalizeVotes } from "./lib/voteCounter";
 import { settleRefund, settleWinner } from "./lib/contestSettlement";
 import { deleteMediaByUrl } from "./lib/mediaDelete";
@@ -273,6 +274,12 @@ export async function resolveContests(env: Env): Promise<void> {
 
   // due scheduled/segmented broadcasts
   await processScheduledNotifications(env);
+
+  // Advance any in-flight broadcast by one page. Deliberately last, and one page
+  // per tick, so a large broadcast can never starve the rest of this schedule.
+  await drainBroadcastJobs(env).catch((e) =>
+    console.error("[cron] broadcast drain failed", e),
+  );
 }
 
 /** Send any pending scheduled notifications whose send_at has passed. */
@@ -293,8 +300,18 @@ export async function processScheduledNotifications(env: Env): Promise<void> {
       .run();
     if (claim.meta.changes === 0) continue;
     try {
-      const recipients = await sendSegmentedBroadcast(env, n.title, n.body, n.image || undefined, (n.segment as any) || undefined);
-      await db.update(schema.scheduledNotifications).set({ recipients }).where(eq(schema.scheduledNotifications.id, n.id));
+      // Hand off to the resumable broadcast job rather than fanning out here:
+      // this cron has other work to do and cannot afford a full table walk.
+      const { estimatedRecipients } = await enqueueBroadcast(env, {
+        title: n.title,
+        body: n.body,
+        image: n.image || undefined,
+        segment: (n.segment as any) || undefined,
+      });
+      await db
+        .update(schema.scheduledNotifications)
+        .set({ recipients: estimatedRecipients })
+        .where(eq(schema.scheduledNotifications.id, n.id));
     } catch (e) {
       console.error("[cron] scheduled notification failed", n.id, e);
     }
