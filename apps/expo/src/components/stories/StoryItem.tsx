@@ -83,7 +83,7 @@ export const StoryItem: React.FC<StoryItemProps> = memo(({ item, isCurrentUser, 
       </Text>
     </Pressable>
   );
-};
+});
 
 const styles = StyleSheet.create({
   container: {
@@ -150,4 +150,4 @@ const styles = StyleSheet.create({
     zIndex: 10,
     borderWidth: 2,
   }
-}));;
+});
