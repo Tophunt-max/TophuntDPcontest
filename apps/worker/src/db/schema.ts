@@ -151,6 +151,10 @@ export const contestMatches = sqliteTable(
     // { fire: n, heart: n, laugh: n } quick-reaction counters
     reactions: text("reactions", { mode: "json" }),
     endingSoonNotified: integer("ending_soon_notified", { mode: "boolean" }).default(false),
+    // Coarse marker for the Bunny backfill: 'r2' | 'bunny' | null (not yet
+    // considered). Per-participant video identity lives in the userA/userB
+    // snapshots' mediaUrl; processing state lives in the `videos` table.
+    videoProvider: text("video_provider"),
     createdAt: integer("created_at").notNull(),
     activatedAt: integer("activated_at"),
     completedAt: integer("completed_at"),
@@ -338,6 +342,8 @@ export const stories = sqliteTable(
     type: text("type"),
     matchId: text("match_id"),
     contestTitle: text("contest_title"),
+    // 'r2' | 'bunny' | null. See contestMatches.videoProvider.
+    videoProvider: text("video_provider"),
     createdAt: integer("created_at").notNull(),
     expiresAt: integer("expires_at").notNull(),
   },
@@ -779,3 +785,52 @@ export const settings = sqliteTable("settings", {
   data: text("data", { mode: "json" }).notNull(),
   updatedAt: integer("updated_at").notNull(),
 });
+
+
+// ---------------------------------------------------------------------------
+// videos  (Bunny Stream processing state — MEDIA_MIGRATION_PLAN.md Phase 2)
+//
+// Keyed by Bunny's own video guid so the encoding webhook is a primary-key
+// update rather than a search across every table that could own a video.
+//
+// Content links back by URL, not by a foreign key: a Bunny playback URL is
+// https://{cdn-host}/{guid}/playlist.m3u8, so the guid is recoverable from the
+// existing stories.mediaUrl / userA.mediaUrl values. That is what lets contest
+// matches — which hold TWO participant videos in JSON — work without any
+// participant-snapshot migration.
+// ---------------------------------------------------------------------------
+export const videos = sqliteTable(
+  "videos",
+  {
+    /** Bunny video guid. */
+    id: text("id").primaryKey(),
+    libraryId: text("library_id"),
+    ownerUid: text("owner_uid").notNull(),
+    provider: text("provider").notNull().default("bunny"), // bunny | r2
+    /** uploading | processing | ready | failed */
+    status: text("status").notNull().default("uploading"),
+    /**
+     * What the video is attached to. Null until the story / contest entry is
+     * created, which is how orphaned uploads are found.
+     */
+    targetType: text("target_type"), // story | contest_entry
+    targetId: text("target_id"),
+    /** 'A' | 'B' — which participant of a contest match this video belongs to. */
+    targetSide: text("target_side"),
+    thumbnailUrl: text("thumbnail_url"),
+    durationSec: integer("duration_sec"),
+    /** Written on the 'ready' webhook so clients never construct URLs. */
+    playbackUrl: text("playback_url"),
+    mp4Url: text("mp4_url"),
+    /** Original R2 object, when this row came from the Phase 3 backfill. */
+    r2SourceUrl: text("r2_source_url"),
+    errorMessage: text("error_message"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => ({
+    ownerIdx: index("idx_videos_owner").on(t.ownerUid, t.createdAt),
+    statusIdx: index("idx_videos_status").on(t.status),
+    targetIdx: index("idx_videos_target").on(t.targetType, t.targetId),
+  }),
+);

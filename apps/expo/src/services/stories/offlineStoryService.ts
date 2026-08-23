@@ -60,7 +60,8 @@ function applyStoryFields(record: StoryModel, story: Story): void {
 function applyUserStoryFields(record: UserStoryModel, userStories: UserStories): void {
   record.userId = userStories.userId;
   record.username = userStories.username;
-  record.avatarUrl = userStories.avatarUrl;
+  // The local column is non-null; empty string means "no photo".
+  record.avatarUrl = userStories.avatarUrl || '';
   record.hasUnseen = userStories.hasUnseen || false;
   record.lastFetched = Date.now();
   record.stories = JSON.stringify(userStories.stories.map((s) => s.id));
@@ -187,7 +188,7 @@ export const getUserStoriesLocally = async (): Promise<UserStories[]> => {
       result.push({
         userId: userStory.userId,
         username: userStory.username,
-        avatarUrl: userStory.avatarUrl,
+        avatarUrl: userStory.avatarUrl || null,
         // Preserve the server's chronological order within a user's group.
         stories: validStories
           .map(mapStoryModelToStory)
@@ -220,7 +221,7 @@ export const getUserStoriesByUserIdLocally = async (
     return {
       userId: userStory.userId,
       username: userStory.username,
-      avatarUrl: userStory.avatarUrl,
+      avatarUrl: userStory.avatarUrl || null,
       stories: validStories
         .map(mapStoryModelToStory)
         .sort((a, b) => a.createdAt - b.createdAt),

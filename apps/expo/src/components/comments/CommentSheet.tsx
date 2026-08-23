@@ -35,6 +35,7 @@ import { commentService, Comment } from '@/src/services/comments/commentService'
 import { useAuth } from '@/src/hooks/useAuth';
 import { useRouter } from 'expo-router';
 import { Colors } from '@/constants/theme';
+import { Avatar } from '@/src/components/ui/Avatar';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SHEET_HEIGHT = SCREEN_HEIGHT * 0.75;
@@ -183,7 +184,8 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
       postId,
       userId: user.uid,
       username: user.displayName || 'You',
-      userAvatar: user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName || 'U'}`,
+      // No remote placeholder: null means "render initials locally".
+      userAvatar: user.photoURL || null,
       text,
       createdAt: Date.now(),
       likes: 0,
@@ -329,7 +331,12 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
         delayLongPress={350}
       >
         <TouchableOpacity activeOpacity={0.8} onPress={() => openProfile(item.userId)}>
-          <Image source={{ uri: item.userAvatar }} style={styles.commentAvatar} />
+          <Avatar
+            uri={item.userAvatar}
+            name={item.username}
+            size={36}
+            style={styles.commentAvatar}
+          />
         </TouchableOpacity>
         <View style={styles.commentContent}>
           <View style={styles.commentHeader}>
@@ -415,7 +422,12 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
               keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
             >
               <View style={[styles.inputArea, { backgroundColor, borderTopColor: isDark ? '#35383F' : '#EEEEEE' }]}>
-                <Image source={{ uri: user?.photoURL || 'https://ui-avatars.com/api/?name=' + (user?.displayName || 'Me') }} style={styles.myAvatar} />
+                <Avatar
+                  uri={user?.photoURL}
+                  name={user?.displayName || 'Me'}
+                  size={40}
+                  style={styles.myAvatar}
+                />
 
                 <View style={[
                   styles.inputBoxWrapper,

@@ -17,6 +17,10 @@ export interface Env {
   FIREBASE_PROJECT_ID: string;
   R2_PUBLIC_BASE_URL: string;
   ALLOWED_ORIGINS: string;
+  // "true" once Cloudflare Transformations is enabled on the media zone. While
+  // this is off, lib/media.ts returns original URLs for every *Thumb /
+  // *Optimized field. See transformationsAvailable().
+  MEDIA_TRANSFORMATIONS?: string;
 
   // --- Secrets (wrangler secret put) ---
   // Firebase Admin service account (JSON string) used for Identity Toolkit + FCM.
@@ -41,6 +45,18 @@ export interface Env {
   // Shared secret for server-to-server admin calls (the admin Next.js API
   // routes proxy to /admin/* with this in the X-Admin-Secret header).
   ADMIN_PROXY_SECRET: string;
+
+  // Bunny Stream (video hosting/transcoding). Fail-closed: without the API key
+  // and library id, `createVideoUpload` is rejected and /webhook/bunny returns
+  // 503, so video uploads fall back to the existing R2 path rather than
+  // silently breaking. The API key must NEVER reach the client — the Worker
+  // mints short-lived TUS signatures instead.
+  BUNNY_STREAM_API_KEY?: string;
+  BUNNY_LIBRARY_ID?: string;
+  /** Pull-zone hostname, e.g. "vz-xxxx.b-cdn.net". Not a secret. */
+  BUNNY_CDN_HOSTNAME?: string;
+  /** Webhook signing secret, if configured in the Bunny dashboard. */
+  BUNNY_WEBHOOK_SECRET?: string;
 
   // Razorpay payment gateway — used to verify coin top-ups server-side.
   // If RAZORPAY_KEY_SECRET is unset, top-ups are rejected (never free-minted).

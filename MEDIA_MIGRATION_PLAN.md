@@ -415,3 +415,123 @@ DDL-only and idempotent therefore still applies exactly as written.
 - [Stream pricing](https://bunny.net/docs/stream/pricing)
 - [Delivery tiers](https://bunny.net/docs/stream/delivery-tiers)
 
+
+
+---
+
+# Implementation status — 2026-08-23
+
+Everything below was verified by running the toolchain. What could **not** be
+verified is stated plainly at the end.
+
+| Check | Result |
+|---|---|
+| `apps/worker` typecheck / tests / dry-run build | clean / 19✅ / passes |
+| `apps/expo` typecheck / tests / web bundle | clean / 14✅ 3 skipped / builds |
+| `apps/admin-panel` typecheck / build | clean / passes |
+
+## Shipped and active immediately
+
+| Phase | Item | Where |
+|---|---|---|
+| 0 | **HTTP Range support on `/media/*`** — 206, `Content-Range`, `Accept-Ranges`, `HEAD`, and 416 for an unsatisfiable range. This is §2.1, the strongest technical item in this plan: video seeking now works and iOS `AVPlayer` gets the range requests it expects. | `worker/src/lib/httpRange.ts`, `worker/src/index.ts` |
+| 1a | **All external image hosts removed** — 19 call sites. `ui-avatars.com`, `via.placeholder.com`, `i.pravatar.cc` are gone; a local `<Avatar>` renders initials with a stable per-name colour. | `expo/src/components/ui/Avatar.tsx` + 18 files |
+
+Two notes on Range: ranged requests deliberately **bypass the edge Cache API**,
+because storing a 206 under the full-URL cache key would poison it with a partial
+body. And R2 is handed the request headers directly so it applies the RFC parsing
+and clamping rules itself.
+
+## Shipped, dormant until provisioning
+
+These are complete and type-checked but intentionally inert, so they were safe to
+merge before the accounts exist.
+
+| Phase | Item | Activation |
+|---|---|---|
+| 1b | Variant fields (`mediaUrlThumb` / `mediaUrlOptimized` / `profileImageUrlThumb` / `avatarUrlThumb`) adopted across feeds, grids and avatar rows | set `MEDIA_TRANSFORMATIONS = "true"` |
+| 2b/2c | `videos` table + `video_provider` markers (migration `0017`), Bunny config plumbing | `wrangler secret put BUNNY_STREAM_API_KEY` / `BUNNY_LIBRARY_ID`, set `BUNNY_CDN_HOSTNAME` |
+| 2d | `createVideoUpload`, `videoUploadComplete`, `videoStatus`, `POST /webhook/bunny`, provider-aware deletion | same as above |
+| 2e | TUS resumable upload with `findPreviousUploads` / `resumeFromPreviousUpload` | same as above |
+| 2f | HLS on native, MP4 fallback on web, `Processing…` overlay | same as above |
+| 3 | `migrate-videos-to-bunny.mjs` + `POST /admin/videos/migrate-batch` | same as above |
+
+**Phase 1b is gated on the server, not the client.** While
+`MEDIA_TRANSFORMATIONS` is off, `imgVariant()` returns the *original* URL, so
+every variant field simply equals the full-size URL. That is what made client
+adoption safe to do now: flipping the flag at cutover turns them into real
+resized URLs with no client release.
+
+`transformationsAvailable()` also refuses to enable on a `*.workers.dev` host or
+on a base URL with a path prefix. **That second condition is why the existing
+variant URLs never worked** — `/cdn-cgi/image/` only resolves at a zone *root*,
+and `R2_PUBLIC_BASE_URL` ends in `/media`. §2.3 attributed this to Transformations
+being disabled; the path prefix was the other half.
+
+**Everything Bunny is fail-closed.** With the secrets unset, `createVideoUpload`
+returns `{ configured: false }` and the client falls back to the existing R2
+upload path; `POST /webhook/bunny` returns 503. So this deploys safely today and
+switches on with secrets alone.
+
+## Corrections to this plan
+
+**§2c put the video columns on the wrong table.** `contest_matches` holds *two*
+participants in its `user_a` / `user_b` JSON, each with their own media, so single
+`bunny_video_id` / `video_status` columns cannot represent a match's videos.
+
+Implemented instead as a **`videos` table keyed by Bunny's guid**. Two benefits
+beyond correctness: the encoding webhook becomes a primary-key update rather than
+a search across every table that might own a video, and because a Bunny playback
+URL is `https://{host}/{guid}/playlist.m3u8`, the guid is recoverable from the
+existing `mediaUrl` — so **no participant-JSON migration was needed at all**.
+
+**§3's backfill would have broken playback.** As written it repoints the row at
+Bunny at enqueue time, but a Bunny video is unplayable for the ~10-60s it is
+encoding. The implementation leaves `mediaUrl` on R2 and lets the `ready` webhook
+perform the cutover (`promoteBackfilledVideo`), which is what actually delivers
+the plan's "app keeps working against both sources throughout".
+
+**Deletion was a wider leak than §2d implied.** `deleteByPublicUrl()` is called
+from three places, not one — and the one that matters most is the **cron expired-
+story sweep**, since stories expire every 24h. An R2-only delete there would have
+orphaned a Bunny video per story, forever. All three now route through
+`deleteMediaByUrl()`.
+
+**§2f's "subscribe to `video_status`" is implemented as client-driven polling.**
+Rather than joining the `videos` table into all six read endpoints, the client
+extracts the guid from a Bunny URL and polls the `videoStatus` action only for
+videos it can actually see, and only until they report ready or failed.
+
+## Not done
+
+- **Phase 0 steps 1-3** (attach `media.tophunt.in` to the bucket, repoint
+  `R2_PUBLIC_BASE_URL`, enable Transformations) — dashboard/DNS work. The var is
+  deliberately **not** flipped: doing so before DNS is live would break every
+  image and video.
+- **Phase 1c** (max-dimension cap + WebP/AVIF on upload) — needs Transformations
+  or the Cloudflare Images binding, so it is blocked on the same domain work.
+- **Phase 4** (drop `video/mp4` + `video/quicktime` from `ALLOWED_MIME_TYPES`,
+  lower the 80 MB cap to ~15 MB) — deliberately deferred. Doing it now would break
+  all video upload, since the R2 path is still the active one until Bunny is
+  provisioned. Do this only after cutover is confirmed.
+- **Bunny-side setup** (2a): create the library, **enable MP4 Fallback** (the web
+  build has no native HLS and depends on it), pick the **Volume** delivery tier —
+  for an India-heavy audience Standard is $0.030/GB vs Volume $0.005/GB — and keep
+  **Standard (free)** encoding.
+- Signed/token-authenticated story videos (open decision #3). Contest entries are
+  public so they need nothing; story privacy would need Bunny embed-view tokens.
+- Per-user Bunny upload quota and a cost alert. The `createVideoUpload` rate limit
+  (10/hour/user) is in place, but there is no account-level spend guard.
+
+## Unverified
+
+No Bunny account was available, so the entire Phase 2/3 path is **type-checked and
+bundled but never executed**. Specifically unexercised: the TUS signature is
+accepted by Bunny, the webhook payload field names match (`VideoGuid`, `Status`),
+`mapBunnyStatus`'s thresholds match real encode states, and fetch-from-URL works
+against an R2 URL. Treat the first real upload as the integration test, and run
+`migrate-videos-to-bunny.mjs --limit=1` before any bulk run.
+
+Range support was verified only by typecheck and build, not against real R2
+objects — worth confirming with `curl -H 'Range: bytes=0-1' -i` on a deployed
+video, which should return `206` plus `Content-Range`.

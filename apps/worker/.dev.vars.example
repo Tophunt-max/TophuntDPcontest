@@ -43,6 +43,30 @@ RAZORPAY_KEY_SECRET=xxxxxxxx
 RAZORPAY_WEBHOOK_SECRET=xxxxxxxx
 
 # ---------------------------------------------------------------------------
+# Bunny Stream (video hosting + transcoding).
+#
+# Get these from the Bunny dashboard: Stream > your Video Library > API.
+# BUNNY_CDN_HOSTNAME is the library's pull-zone host and is NOT secret — it also
+# lives in wrangler.toml [vars]; set it here only to override locally.
+#
+# The API key must never reach the app: the Worker creates the video object and
+# mints a short-lived TUS signature, and the client uploads directly to Bunny
+# with that. Fail-closed — with these unset, `createVideoUpload` is rejected and
+# /webhook/bunny returns 503, so video uploads keep using the R2 path.
+#
+# Library setup checklist (MEDIA_MIGRATION_PLAN.md 2a):
+#   - Enable MP4 Fallback (required for the web build, which has no native HLS)
+#   - Choose the Volume delivery tier, not Standard: for an India-heavy audience
+#     Standard is $0.030/GB vs Volume $0.005/GB — a 6x difference
+#   - Use Standard (free) encoding; Premium is billed per output minute
+# ---------------------------------------------------------------------------
+BUNNY_STREAM_API_KEY=xxxxxxxx-xxxx-xxxx-xxxxxxxxxxxx
+BUNNY_LIBRARY_ID=123456
+BUNNY_CDN_HOSTNAME=vz-xxxxxxxx-xxx.b-cdn.net
+# Optional: set only if you configure a signing secret on the Bunny webhook.
+BUNNY_WEBHOOK_SECRET=
+
+# ---------------------------------------------------------------------------
 # Local-dev CORS override. `.dev.vars` takes precedence over [vars] in
 # wrangler.toml under `wrangler dev`, so put localhost origins here instead of
 # widening the production allow-list.

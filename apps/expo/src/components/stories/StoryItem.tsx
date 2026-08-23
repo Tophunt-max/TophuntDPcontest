@@ -1,8 +1,8 @@
 import React, { memo } from 'react';
 import { StyleSheet, Text, View, Pressable, TouchableOpacity } from 'react-native';
-import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { UserStories } from '@/src/types/stories';
+import { Avatar } from '../ui/Avatar';
 import AddIcon from '@/assets/svgs/add_Icon.svg';
 import { auth } from '@/src/services/firebase/initFirebase';
 import { useRouter } from 'expo-router';
@@ -22,7 +22,12 @@ export const StoryItem: React.FC<StoryItemProps> = memo(({ item, isCurrentUser, 
   const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
   
   const username = isCurrentUser ? 'Your story' : item?.username;
-  const avatarUrl = item?.avatarUrl || (isCurrentUser ? auth.currentUser?.photoURL : null);
+  // Prefer the server's small variant for this rail; falls back to the full
+  // image, then to the signed-in user's own photo for the "Your story" tile.
+  const avatarUrl =
+    item?.avatarUrlThumb ||
+    item?.avatarUrl ||
+    (isCurrentUser ? auth.currentUser?.photoURL : null);
   const hasUnseen = item?.hasUnseen;
   const hasStories = !!item && item.stories.length > 0;
 
@@ -41,7 +46,7 @@ export const StoryItem: React.FC<StoryItemProps> = memo(({ item, isCurrentUser, 
           style={styles.ring}
         >
           <View style={[styles.innerRing, { backgroundColor }]}>
-            <Image source={{ uri: avatarUrl ?? undefined }} style={styles.avatar} cachePolicy="memory-disk" />
+            <Avatar uri={avatarUrl} name={username} size={58} />
           </View>
         </LinearGradient>
       );
@@ -50,7 +55,7 @@ export const StoryItem: React.FC<StoryItemProps> = memo(({ item, isCurrentUser, 
       return (
         <View style={[styles.ring, styles.seenRing, isDark && styles.seenRingDark]}>
            <View style={[styles.innerRing, { backgroundColor }]}>
-              <Image source={{ uri: avatarUrl ?? undefined }} style={styles.avatar} cachePolicy="memory-disk" />
+              <Avatar uri={avatarUrl} name={username} size={58} />
            </View>
         </View>
       );
@@ -58,10 +63,7 @@ export const StoryItem: React.FC<StoryItemProps> = memo(({ item, isCurrentUser, 
       // No Story - No Ring
       return (
         <View style={styles.ring}>
-           <Image 
-             source={{ uri: avatarUrl || 'https://ui-avatars.com/api/?name=U' }} 
-             style={styles.avatarNoRing} 
-           />
+           <Avatar uri={avatarUrl} name={username} size={64} />
         </View>
       );
     }

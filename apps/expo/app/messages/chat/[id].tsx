@@ -13,12 +13,16 @@ import { Colors } from '@/constants/theme'; // Assuming Colors are defined here
 export default function ChatScreen() {
   const { user: firebaseUser, loading: authLoading } = useAuth();
   const [messages, setMessages] = useState<IMessage[]>([]);
-  const { id: chatId } = useLocalSearchParams();
+  const params = useLocalSearchParams<{ id?: string; name?: string; avatar?: string }>();
+  const chatId = params.id;
   const [isLoadingMessages, setIsLoadingMessages] = useState(true);
 
-  // Placeholder for recipient details - in a real app, you'd fetch this based on chatId
-  const recipientName = "John Doe";
-  const recipientAvatar = "https://i.pravatar.cc/300"; 
+  // Recipient identity is passed as query params by whoever opened the chat
+  // (the chat list and the profile "Message" button both already know the other
+  // user). Falls back to a neutral label for a cold deep-link; the avatar then
+  // renders local initials rather than a third-party placeholder image.
+  const recipientName = params.name || 'Chat';
+  const recipientAvatar = params.avatar || null;
 
   const currentUser = firebaseUser;
 

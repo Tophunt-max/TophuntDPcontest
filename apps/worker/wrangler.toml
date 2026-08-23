@@ -101,6 +101,27 @@ crons = ["*/10 * * * *", "0 0 1 * *"]
 FIREBASE_PROJECT_ID = "tophuntdpcontest"
 R2_PUBLIC_BASE_URL = "https://tophunt-api.weadown-in.workers.dev/media"
 
+# Cloudflare Transformations (Image Resizing) switch for the media origin.
+#
+# Keep "false" until BOTH are true:
+#   1. R2_PUBLIC_BASE_URL points at a real custom domain on a Cloudflare zone
+#      (a *.workers.dev host can never work), with no path prefix — the
+#      /cdn-cgi/image/ route only resolves at a zone root; and
+#   2. "Transformations" is enabled for that zone in the dashboard.
+#
+# While this is "false", lib/media.ts returns the ORIGINAL url for every
+# mediaUrlThumb / mediaUrlOptimized / profileImageUrlThumb field, so the app
+# consumes them safely today. Flipping this to "true" turns them into real
+# resized variants with no client release needed.
+MEDIA_TRANSFORMATIONS = "false"
+
+# Bunny Stream pull-zone hostname, e.g. "vz-1a2b3c4d-e5f.b-cdn.net".
+# Not a secret. Empty disables the Bunny path entirely: `createVideoUpload` is
+# rejected and video uploads keep using the existing R2 flow, so this is safe to
+# deploy before the Bunny account exists.
+# The API key and library id are SECRETS — `wrangler secret put`, never here.
+BUNNY_CDN_HOSTNAME = ""
+
 # CORS allow-list (comma-separated, exact origin match — no wildcards).
 #
 # This was previously "*", i.e. wide-open CORS on an API that moves wallets,

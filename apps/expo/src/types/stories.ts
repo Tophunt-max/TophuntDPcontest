@@ -28,7 +28,14 @@ export interface Story {
 export interface UserStories {
   userId: string;
   username: string;
-  avatarUrl: string;
+  /** Null when the user has no photo — render local initials. */
+  avatarUrl: string | null;
+  /**
+   * Small avatar variant for the stories rail. Identical to `avatarUrl` until
+   * Cloudflare Transformations is enabled on the media zone, so it is always
+   * safe to prefer.
+   */
+  avatarUrlThumb?: string | null;
   stories: Story[];
   hasUnseen?: boolean;
 }

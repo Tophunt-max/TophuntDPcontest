@@ -44,6 +44,8 @@ import {
 } from '@/assets/svgs';
 import { Colors } from '@/constants/theme';
 import { formatClockTime } from '@/src/lib/formatTime';
+import { playableVideoUrl } from '@/src/lib/videoSource';
+import { Avatar } from '@/src/components/ui/Avatar';
 import type { StoryViewer } from '@/src/types/stories';
 
 const { width, height } = Dimensions.get('window');
@@ -112,7 +114,7 @@ export default function StoryView() {
   useEffect(() => {
     const preloadUrls = [nextStoryItem, prevStoryItem]
       .filter((s) => s?.mediaType === 'video' && !!s?.mediaUrl)
-      .map((s) => s!.mediaUrl as string);
+      .map((s) => playableVideoUrl(s!.mediaUrl));
 
     const players = preloadUrls.map((uri) => {
       try {
@@ -139,7 +141,9 @@ export default function StoryView() {
   const isMyStory = currentUserStories?.userId === auth.currentUser?.uid;
   const isMentioned = currentStory?.mentions?.includes(auth.currentUser?.uid || '');
 
-  const player = useVideoPlayer(currentStory?.mediaType === 'video' ? currentStory.mediaUrl : '', (player) => {
+  // playableVideoUrl: web swaps a Bunny HLS playlist for the MP4 fallback;
+  // native plays HLS directly. R2 URLs are untouched.
+  const player = useVideoPlayer(currentStory?.mediaType === 'video' ? playableVideoUrl(currentStory.mediaUrl) : '', (player) => {
     player.loop = false;
   });
 
@@ -522,7 +526,12 @@ export default function StoryView() {
                 ))}
             </View>
             <View style={styles.userInfo}>
-                <Image source={{ uri: currentUserStories.avatarUrl }} style={styles.avatar} />
+                <Avatar
+                  uri={currentUserStories.avatarUrlThumb || currentUserStories.avatarUrl}
+                  name={currentUserStories.username}
+                  size={40}
+                  style={styles.avatar}
+                />
                 <View style={styles.userTextContainer}>
                     <Text style={styles.username}>{currentUserStories.username}</Text>
                     <Text style={styles.timeAgo}>{formatClockTime(currentStory.createdAt)}</Text>

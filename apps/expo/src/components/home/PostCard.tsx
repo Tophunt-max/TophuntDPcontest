@@ -14,6 +14,9 @@ import { Colors } from '@/constants/theme';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useToast } from '../toast/ToastProvider';
 import { engagementService } from '@/src/services/contests/engagementService';
+import { Avatar } from '../ui/Avatar';
+import { useVideoStatus } from '@/src/hooks/useVideoStatus';
+import { playableVideoUrl } from '@/src/lib/videoSource';
 import * as Haptics from 'expo-haptics';
 import LottieView from 'lottie-react-native';
 import Animated, { 
@@ -56,11 +59,40 @@ const PhotoMedia = ({ uri, style }: { uri?: string; style: any }) => (
 // battles autoplay muted + looping; FlatList virtualization unmounts off-screen
 // cards, which releases their players.
 const VideoMedia = ({ uri, style }: { uri: string; style: any }) => {
-  const player = useVideoPlayer(uri, (p) => {
+  // Bunny videos need ~10-60s of encoding after upload. Until then there is no
+  // playlist to play, so show the poster frame instead of mounting a player that
+  // would just error. R2 videos report status null and skip all of this.
+  const { isProcessing, isFailed, thumbnailUrl } = useVideoStatus(uri);
+  // Web gets Bunny's progressive MP4; native plays the HLS playlist directly
+  // (adaptive bitrate). R2 URLs pass through unchanged.
+  const source = playableVideoUrl(uri);
+
+  const player = useVideoPlayer(isProcessing || isFailed ? '' : source, (p) => {
     p.loop = true;
     p.muted = true;
     p.play();
   });
+
+  if (isProcessing || isFailed) {
+    return (
+      <View style={[style, styles.videoPlaceholder]}>
+        {!!thumbnailUrl && (
+          <ExpoImage source={{ uri: thumbnailUrl }} style={StyleSheet.absoluteFill} contentFit="cover" />
+        )}
+        <View style={styles.videoPlaceholderOverlay}>
+          {isFailed ? (
+            <Text style={styles.videoPlaceholderText}>Video unavailable</Text>
+          ) : (
+            <>
+              <ActivityIndicator color="#FFF" />
+              <Text style={styles.videoPlaceholderText}>Processing…</Text>
+            </>
+          )}
+        </View>
+      </View>
+    );
+  }
+
   return <VideoView player={player} style={style} contentFit="cover" nativeControls={false} />;
 };
 
@@ -453,8 +485,12 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
   const aWins = isCompleted ? winnerSide === 'A' : isALeading;
   const bWins = isCompleted ? winnerSide === 'B' : isBLeading;
 
-  const picA = item.userA.profilePic || item.userA.profileImageUrl || `https://ui-avatars.com/api/?name=${nameA}&background=random`;
-  const picB = item.userB?.profilePic || item.userB?.profileImageUrl || `https://ui-avatars.com/api/?name=${nameB}&background=random`;
+  // Null when the user has no photo — <Avatar> renders local initials.
+  // profilePicThumb / mediaUrlOptimized come from the Worker's enrichMatchMedia
+  // and are identical to the originals until Transformations is enabled, so
+  // preferring them is safe today and gets lighter automatically at cutover.
+  const picA = item.userA.profilePicThumb || item.userA.profilePic || item.userA.profileImageUrl || null;
+  const picB = item.userB?.profilePicThumb || item.userB?.profilePic || item.userB?.profileImageUrl || null;
 
   return (
     <View style={[styles.postContainer, { backgroundColor: cardColor }]}>
@@ -480,7 +516,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
                 accessibilityRole="button"
                 accessibilityLabel={`Open ${nameA}'s profile`}
               >
-                <ExpoImage source={picA} style={styles.avatarImage} contentFit="cover" cachePolicy="memory-disk" />
+                <Avatar uri={picA} name={nameA} fill size={28} />
               </TouchableOpacity>
               {item.userB && (
                 <TouchableOpacity
@@ -490,7 +526,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
                   accessibilityRole="button"
                   accessibilityLabel={`Open ${nameB}'s profile`}
                 >
-                  <ExpoImage source={picB} style={styles.avatarImage} contentFit="cover" cachePolicy="memory-disk" />
+                  <Avatar uri={picB} name={nameB} fill size={28} />
                 </TouchableOpacity>
               )}
            </View>
@@ -534,12 +570,20 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
       {/* Hero media */}
       <Pressable onPress={handleDoubleTap} style={styles.mediaSection}>
         <View style={[styles.imageWrapper, aWins && styles.leadingImage]}>
-          <BattleMedia isVideo={isVideo} uri={item.userA.mediaUrl} style={styles.postImage} />
+          <BattleMedia
+            isVideo={isVideo}
+            uri={item.userA.mediaUrlOptimized || item.userA.mediaUrl}
+            style={styles.postImage}
+          />
           {aWins && <View style={styles.crownContainer}><MaterialCommunityIcons name="crown" size={20} color="#FFD700" /></View>}
         </View>
 
         <View style={[styles.imageWrapper, bWins && styles.leadingImage]}>
-          <BattleMedia isVideo={isVideo} uri={item.userB.mediaUrl} style={styles.postImage} />
+          <BattleMedia
+            isVideo={isVideo}
+            uri={item.userB.mediaUrlOptimized || item.userB.mediaUrl}
+            style={styles.postImage}
+          />
           {bWins && <View style={styles.crownContainer}><MaterialCommunityIcons name="crown" size={20} color="#FFD700" /></View>}
         </View>
 
@@ -741,6 +785,9 @@ const styles = StyleSheet.create({
   avatarContainer: { flexDirection: 'row', alignItems: 'center' },
   avatarWrapper: { width: 32, height: 32, borderRadius: 16, borderWidth: 2, borderColor: '#FFF', overflow: 'hidden', backgroundColor: '#EEE' },
   avatarImage: { width: '100%', height: '100%', resizeMode: 'cover' },
+  videoPlaceholder: { backgroundColor: '#15171C', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
+  videoPlaceholderOverlay: { alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: 'rgba(0,0,0,0.45)', paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10 },
+  videoPlaceholderText: { color: '#FFF', fontFamily: 'Urbanist-SemiBold', fontSize: 12 },
   leadingAvatar: { borderColor: '#FFD700', borderWidth: 2.5 },
   nameContainer: { marginLeft: 10, flex: 1 },
   nameRow: { flexDirection: 'row', alignItems: 'center' },

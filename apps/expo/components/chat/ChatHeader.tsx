@@ -1,12 +1,14 @@
 
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Image } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
+import { Avatar } from '@/src/components/ui/Avatar';
 
 interface ChatHeaderProps {
   recipientName: string;
-  recipientAvatar: string; // URL or local image source
+  /** Remote avatar URL, or null/undefined to render local initials. */
+  recipientAvatar?: string | null;
 }
 
 function ChatHeader({ recipientName, recipientAvatar }: ChatHeaderProps) {
@@ -17,7 +19,7 @@ function ChatHeader({ recipientName, recipientAvatar }: ChatHeaderProps) {
       <TouchableOpacity onPress={() => router.back()} style={styles.iconButton}>
         <Ionicons name="arrow-back" size={24} color="black" />
       </TouchableOpacity>
-      <Image source={{ uri: recipientAvatar }} style={styles.avatar} />
+      <Avatar uri={recipientAvatar} name={recipientName} size={35} style={styles.avatar} />
       <Text style={styles.recipientName}>{recipientName}</Text>
       <View style={styles.rightIcons}>
         <TouchableOpacity style={styles.iconButton}>
@@ -49,9 +51,6 @@ const styles = StyleSheet.create({
     padding: 5,
   },
   avatar: {
-    width: 35,
-    height: 35,
-    borderRadius: 17.5,
     marginLeft: 10,
     marginRight: 10,
   },

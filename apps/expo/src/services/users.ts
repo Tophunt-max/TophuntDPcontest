@@ -27,9 +27,9 @@ export async function fetchSuggestedUsers(currentUserCoords?: { lat: number; lng
       id: data.id,
       name: data.fullName || data.username || "User",
       username: data.username || "user",
-      avatar:
-        data.profileImageUrl ||
-        `https://ui-avatars.com/api/?name=${data.fullName || data.username || "User"}&background=random`,
+      // Null when unset — the UI renders local initials via <Avatar>. Do not
+      // substitute a third-party avatar URL here (it leaks the username).
+      avatar: data.profileImageUrl || null,
       coords: data.coordinates || null,
     }));
 
@@ -65,10 +65,8 @@ export async function searchUsers(q: string) {
       id: d.id,
       name: d.fullName || d.username || "User",
       username: d.username || "user",
-      avatar:
-        d.avatarUrl ||
-        d.profileImageUrl ||
-        `https://ui-avatars.com/api/?name=${d.username || "User"}&background=random`,
+      // See note in fetchSuggestedUsers — null, not a remote placeholder.
+      avatar: d.avatarUrl || d.profileImageUrl || null,
     }));
   } catch (error) {
     console.error("Error searching users:", error);

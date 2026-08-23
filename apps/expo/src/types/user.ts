@@ -13,6 +13,12 @@ export interface UserProfile {
   email: string;
   bio?: string;
   profileImageUrl?: string;
+  /**
+   * Lighter avatar variant from the Worker. Equal to profileImageUrl until
+   * Cloudflare Transformations is enabled (see worker lib/media.ts), so it is
+   * always safe to prefer this in lists.
+   */
+  profileImageUrlThumb?: string | null;
   website?: string;
   isPrivate?: boolean;
   occupation?: string;

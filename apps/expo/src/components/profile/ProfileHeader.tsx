@@ -117,7 +117,13 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
         const chatId = await Promise.race([chatPromise, timeoutPromise]);
         
         setIsStartingChat(false);
-        router.push(`/messages/chat/${chatId}`);
+        // Carry the recipient's identity so the chat header can render it —
+        // there is no single-chat read endpoint to resolve it from the id.
+        const chatQs = new URLSearchParams();
+        const chatName = user.fullName || user.username;
+        if (chatName) chatQs.set('name', chatName);
+        if (user.profileImageUrl) chatQs.set('avatar', user.profileImageUrl);
+        router.push(`/messages/chat/${chatId}?${chatQs.toString()}`);
     } catch (error: any) {
         console.error("Error starting chat:", error);
         setIsStartingChat(false);

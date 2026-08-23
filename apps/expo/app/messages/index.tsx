@@ -7,7 +7,6 @@ import {
   StyleSheet,
   TextInput,
   ScrollView,
-  Image,
   Platform,
   Keyboard,
   Animated,
@@ -24,6 +23,7 @@ import { ThemedView } from '@/components/themed-view';
 import { MessageSkeleton } from '@/src/components/messages/MessageSkeleton';
 import { Swipeable } from 'react-native-gesture-handler';
 import { Colors } from '@/constants/theme';
+import { Avatar } from '@/src/components/ui/Avatar';
 
 // Import Icons from assets
 import { 
@@ -56,6 +56,21 @@ interface ChatItemType {
     createdAt: any;
   };
   unreadCount?: number;
+}
+
+/**
+ * Build the chat route, carrying the recipient's identity along.
+ *
+ * The chat screen has no endpoint to resolve a single chat, so it used to render
+ * a hardcoded "John Doe" and an `i.pravatar.cc` avatar. Both call sites here
+ * already know the real other user, so pass it through instead.
+ */
+function chatRoute(chatId: string, name?: string | null, avatar?: string | null): string {
+  const qs = new URLSearchParams();
+  if (name) qs.set('name', name);
+  if (avatar) qs.set('avatar', avatar);
+  const query = qs.toString();
+  return `/messages/chat/${chatId}${query ? `?${query}` : ''}`;
 }
 
 export default function MessagesScreen() {
@@ -184,15 +199,9 @@ export default function MessagesScreen() {
 
     return (
       <View key={id} style={styles.recentlyItem}>
-        <TouchableOpacity onPress={() => router.push(`/messages/chat/${id}`)}>
+        <TouchableOpacity onPress={() => router.push(chatRoute(id, name, avatar))}>
           <View>
-            {avatar ? (
-              <Image source={{ uri: avatar }} style={styles.recentlyAvatar} />
-            ) : (
-              <View style={[styles.recentlyAvatar, styles.avatarPlaceholder]}>
-                <Text style={{ color: '#ccc', fontSize: 10 }}>User</Text>
-              </View>
-            )}
+            <Avatar uri={avatar} name={name} size={72} style={styles.recentlyAvatar} />
             {isOnline && <View style={[styles.onlineIndicator, { borderColor: backgroundColor }]} />}
           </View>
         </TouchableOpacity>
@@ -227,16 +236,23 @@ export default function MessagesScreen() {
       >
         <TouchableOpacity
           style={[styles.chatItem, { backgroundColor: backgroundColor }]}
-          onPress={() => router.push(`/messages/chat/${item.id}`)}
+          onPress={() =>
+            router.push(
+              chatRoute(
+                item.id,
+                otherUser?.displayName || 'User',
+                otherUser?.photoURL,
+              ),
+            )
+          }
         >
           <View>
-            {otherUser?.photoURL ? (
-              <Image source={{ uri: otherUser.photoURL }} style={styles.chatAvatar} />
-            ) : (
-              <View style={[styles.chatAvatar, styles.avatarPlaceholder]}>
-                 <Text style={{ color: '#ccc', fontSize: 12 }}>User</Text>
-              </View>
-            )}
+            <Avatar
+              uri={otherUser?.photoURL}
+              name={otherUser?.displayName}
+              size={68}
+              style={styles.chatAvatar}
+            />
             {isOnline && <View style={[styles.onlineIndicator, styles.chatOnlineIndicator, { borderColor: backgroundColor }]} />}
           </View>
           

@@ -13,7 +13,7 @@ import { getDb, schema } from "./db";
 import { createNotification, sendSegmentedBroadcast } from "./lib/notify";
 import { finalizeVotes } from "./lib/voteCounter";
 import { settleRefund, settleWinner } from "./lib/contestSettlement";
-import { deleteByPublicUrl } from "./lib/r2";
+import { deleteMediaByUrl } from "./lib/mediaDelete";
 import { newId, now } from "./lib/ids";
 import { publish } from "./lib/publish";
 
@@ -265,7 +265,9 @@ export async function resolveContests(env: Env): Promise<void> {
     .limit(500)
     .all();
   for (const s of expiredUserStories) {
-    if (s.mediaUrl) await deleteByPublicUrl(env, s.mediaUrl).catch(() => {});
+    // Provider-aware: story videos now live in Bunny, and stories expire every
+    // 24h, so an R2-only delete here would leak a video object per story.
+    if (s.mediaUrl) await deleteMediaByUrl(env, s.mediaUrl).catch(() => {});
   }
   await db.delete(schema.stories).where(lte(schema.stories.expiresAt, nowMs));
 

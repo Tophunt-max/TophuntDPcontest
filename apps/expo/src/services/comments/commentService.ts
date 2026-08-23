@@ -6,7 +6,8 @@ export interface Comment {
   postId: string;
   userId: string;
   username: string;
-  userAvatar: string;
+  /** Null when the user has no photo — the UI renders local initials. */
+  userAvatar: string | null;
   text: string;
   createdAt: any;
   likes: number;

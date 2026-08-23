@@ -28,6 +28,12 @@ import { assertAccountNotBlocked } from "./middleware/auth";
 import { resolveContests, monthlyHallOfFame } from "./cron";
 import { ensureMigrated } from "./db/autoMigrate";
 import { captureError, logErrorToDb, pruneErrorLogs } from "./lib/observability";
+import {
+  contentRangeHeader,
+  isRangedRequest,
+  resolveRange,
+  unsatisfiedRangeHeader,
+} from "./lib/httpRange";
 
 // Durable Object for real-time WebSocket push.
 export { RealtimeHub } from "./realtime";
@@ -102,7 +108,7 @@ app.get("/health", (c) => c.json({ ok: true, ts: Date.now() }));
  * domain: R2_PUBLIC_BASE_URL points at "<worker>/media". Keys are content-hash
  * addressed, so responses are immutable and cached for a year.
  */
-app.get("/media/*", async (c) => {
+app.on(["GET", "HEAD"], "/media/*", async (c) => {
   const url = new URL(c.req.url);
   const key = decodeURIComponent(url.pathname.replace(/^\/media\//, "")).replace(/^\/+/, "");
   if (!key) return c.text("Not found", 404);
@@ -111,11 +117,41 @@ app.get("/media/*", async (c) => {
   // banner can remain public in another colo for up to a year.
   const hasDeletionLifecycle = key.startsWith("contest-banners/images/");
 
-  // Edge-cache immutable media at the Cloudflare colo. Contest banners are
-  // intentionally served directly from R2 because they can be deleted.
+  const isHead = c.req.method === "HEAD";
+  const rangeHeader = c.req.header("range");
+  const ranged = isRangedRequest(rangeHeader);
+
+  /** Headers common to every response shape below. */
+  const baseHeaders = (obj: R2Object): Headers => {
+    const headers = new Headers();
+    obj.writeHttpMetadata(headers);
+    headers.set("etag", obj.httpEtag);
+    headers.set(
+      "Cache-Control",
+      hasDeletionLifecycle ? "no-store" : "public, max-age=31536000, immutable",
+    );
+    // Advertised unconditionally so players know they may seek. Without this,
+    // AVPlayer/ExoPlayer fall back to downloading the whole file.
+    headers.set("Accept-Ranges", "bytes");
+    return headers;
+  };
+
+  // HEAD is how some players discover length and range support before playing.
+  if (isHead) {
+    const head = await c.env.MEDIA.head(key);
+    if (!head) return c.text("Not found", 404);
+    const headers = baseHeaders(head);
+    headers.set("Content-Length", String(head.size));
+    return new Response(null, { status: 200, headers });
+  }
+
+  // Edge-cache immutable media at the Cloudflare colo. Ranged requests bypass
+  // the cache entirely: storing a 206 under the full-URL key would poison it
+  // with a partial body for every later full request.
+  const useEdgeCache = !hasDeletionLifecycle && !ranged;
   const cache = (caches as any).default as Cache;
   const cacheKey = new Request(url.toString(), { method: "GET" });
-  if (!hasDeletionLifecycle) {
+  if (useEdgeCache) {
     try {
       const hit = await cache.match(cacheKey);
       if (hit) return hit;
@@ -124,18 +160,34 @@ app.get("/media/*", async (c) => {
     }
   }
 
-  const obj = await c.env.MEDIA.get(key);
+  // Hand R2 the request headers and let it parse Range itself — it applies the
+  // RFC clamping rules and echoes the resolved window back on `obj.range`.
+  let obj: R2ObjectBody | null;
+  try {
+    obj = await c.env.MEDIA.get(key, ranged ? { range: c.req.raw.headers } : undefined);
+  } catch {
+    // R2 throws when the range falls entirely outside the object. Answering 416
+    // with the true size lets the player correct itself and retry.
+    const head = await c.env.MEDIA.head(key);
+    if (!head) return c.text("Not found", 404);
+    const headers = baseHeaders(head);
+    headers.set("Content-Range", unsatisfiedRangeHeader(head.size));
+    return new Response(null, { status: 416, headers });
+  }
   if (!obj) return c.text("Not found", 404);
-  const headers = new Headers();
-  obj.writeHttpMetadata(headers);
-  headers.set("etag", obj.httpEtag);
-  headers.set(
-    "Cache-Control",
-    hasDeletionLifecycle ? "no-store" : "public, max-age=31536000, immutable",
-  );
-  const res = new Response(obj.body, { headers });
-  // Populate the edge cache only for media without a deletion lifecycle.
-  if (!hasDeletionLifecycle) {
+
+  const headers = baseHeaders(obj);
+  const part = ranged ? resolveRange(obj.range, obj.size) : null;
+  if (part) {
+    headers.set("Content-Range", contentRangeHeader(part, obj.size));
+    headers.set("Content-Length", String(part.length));
+  } else {
+    headers.set("Content-Length", String(obj.size));
+  }
+
+  const res = new Response(obj.body, { status: part ? 206 : 200, headers });
+  // Populate the edge cache only for full responses to cacheable media.
+  if (useEdgeCache) {
     try {
       c.executionCtx.waitUntil(cache.put(cacheKey, res.clone()));
     } catch {

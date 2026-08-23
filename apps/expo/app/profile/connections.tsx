@@ -7,6 +7,7 @@ import { Ionicons } from '@/src/lib/icons';
 import { UserListSkeleton } from '@/src/components/skeletons/UserListSkeleton';
 import { toggleFollowService } from '@/src/services/users';
 import { useAuth } from '@/src/hooks/useAuth';
+import { Avatar } from '@/src/components/ui/Avatar';
 import { useProfile } from '@/src/hooks/useProfileData';
 import { useToast } from '@/src/components/toast/ToastProvider';
 import { Colors } from '@/constants/theme';
@@ -20,6 +21,7 @@ type User = {
     username: string;
     fullName?: string;
     profileImageUrl?: string;
+    profileImageUrlThumb?: string | null;
   };
 
 export default function ConnectionsScreen() {
@@ -162,7 +164,12 @@ export default function ConnectionsScreen() {
         activeOpacity={0.7}
         onPress={() => handleAction(() => router.push(`/profile?userId=${item.id}`))}
       >
-          <Image source={{ uri: item.profileImageUrl }} style={styles.userAvatar} />
+          <Avatar
+            uri={(item as any).profileImageUrlThumb || item.profileImageUrl}
+            name={item.fullName || item.username}
+            size={50}
+            style={styles.userAvatar}
+          />
           <View style={styles.userDetails}>
               <Text style={[styles.userName, { color: textColor }]} numberOfLines={1}>{item.fullName}</Text>
               <Text style={[styles.userHandle, { color: subTextColor }]} numberOfLines={1}>@{item.username}</Text>

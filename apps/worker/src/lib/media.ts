@@ -9,7 +9,9 @@
  * lighter variants for feeds/grids and keep the full-res URL for detail views.
  *
  * Requirement: "Transformations" (Image Resizing) must be enabled on the zone
- * that serves R2_PUBLIC_BASE_URL. Until then, keep using the original URLs.
+ * that serves R2_PUBLIC_BASE_URL, and that origin must be a zone root — see
+ * `transformationsAvailable()`. Until then every helper returns the original
+ * URL unchanged, which is what makes these fields safe to consume.
  * Videos and non-owned URLs (e.g. avatar fallbacks) are returned unchanged.
  */
 import type { Env } from "../types";
@@ -24,9 +26,40 @@ export interface ImgOpts {
 
 const VIDEO_RE = /\.(mp4|mov|webm|m4v)(\?|$)/i;
 
+/**
+ * Can `/cdn-cgi/image/` actually resolve for our media origin?
+ *
+ * This gate is what makes the variant fields safe for clients to consume. When
+ * it returns false every helper below hands back the ORIGINAL url, so
+ * `mediaUrlThumb === mediaUrl` and the app can adopt the variant fields today;
+ * flipping `MEDIA_TRANSFORMATIONS` at domain cutover turns them into real
+ * resized URLs with no client release.
+ *
+ * Three conditions, all required:
+ *  - `MEDIA_TRANSFORMATIONS` is explicitly "true" (opt-in, default off);
+ *  - the media origin is not a `*.workers.dev` host — those are not zones, so
+ *    Transformations cannot be enabled on them;
+ *  - the origin has no path prefix. `/cdn-cgi/image/` is only resolvable at the
+ *    ROOT of a zone, so a Worker-proxied base like `https://api.example/media`
+ *    would produce `https://api.example/media/cdn-cgi/image/...`, which 404s.
+ *    This is why the existing variant URLs never worked.
+ */
+export function transformationsAvailable(env: Env): boolean {
+  if (String(env.MEDIA_TRANSFORMATIONS ?? "").trim().toLowerCase() !== "true") return false;
+  try {
+    const base = new URL((env.R2_PUBLIC_BASE_URL || "").replace(/\/$/, ""));
+    if (base.hostname.endsWith(".workers.dev")) return false;
+    if (base.pathname && base.pathname !== "/") return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Build a resized/optimized variant URL for our own media; else return as-is. */
 export function imgVariant(env: Env, url: string | null | undefined, opts: ImgOpts): string | null | undefined {
   if (!url || typeof url !== "string") return url;
+  if (!transformationsAvailable(env)) return url; // see transformationsAvailable
   const base = (env.R2_PUBLIC_BASE_URL || "").replace(/\/$/, "");
   if (!base || !url.startsWith(base)) return url; // only transform our own media
   if (VIDEO_RE.test(url)) return url; // never transform videos

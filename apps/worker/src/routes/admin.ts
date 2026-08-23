@@ -8,7 +8,7 @@
  * the admin panel keep its existing route URLs while the data moves to D1.
  */
 import { Hono } from "hono";
-import { and, eq, desc, sql, count, ne, like, gte, lt, inArray, or } from "drizzle-orm";
+import { and, eq, desc, sql, count, ne, like, gte, lt, inArray, or, isNull } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
@@ -25,6 +25,7 @@ import { publish } from "../lib/publish";
 import { resolveContests, monthlyHallOfFame } from "../cron";
 import { newId, now } from "../lib/ids";
 import { discoverUrls, processBatch } from "../lib/importerTask";
+import { runVideoBackfillBatch } from "../lib/videoBackfill";
 import {
   blogListCacheKey,
   blogPostCacheKey,
@@ -2673,4 +2674,66 @@ adminRoute.post("/ops/hall-of-fame", async (c) => {
   await monthlyHallOfFame(c.env);
   await logAudit(c, "ops.hall-of-fame", "ops", null);
   return c.json({ message: "Hall of Fame ran" });
+});
+
+
+// ======================= VIDEO MIGRATION (R2 -> Bunny Stream) =======================
+/**
+ * Enqueue one resumable batch of existing R2 videos for migration to Bunny.
+ *
+ * Driven by `apps/admin-panel/scripts/migrate-videos-to-bunny.mjs`. Lives here
+ * rather than in the script so the Bunny API key never leaves the Worker.
+ *
+ * Safe to re-run: enqueued rows are marked `migrating`, and `mediaUrl` is not
+ * repointed until Bunny reports the encode `ready` (the webhook does that), so
+ * playback keeps working from R2 throughout.
+ */
+adminRoute.post("/videos/migrate-batch", async (c) => {
+  requireFullAdmin(c);
+  const body = await c.req.json<any>().catch(() => ({}));
+  const target = ["stories", "matches", "all"].includes(body?.target) ? body.target : "all";
+  const limit = Number(body?.limit) || 10;
+
+  let result;
+  try {
+    result = await runVideoBackfillBatch(c.env, { limit, target });
+  } catch (e: any) {
+    throw httpsError("failed-precondition", e?.message || "Video migration failed.");
+  }
+
+  await logAudit(c, "videos.migrate-batch", "videos", null, {
+    target,
+    limit,
+    enqueued: result.enqueued,
+    failed: result.failed,
+  });
+  return c.json(result);
+});
+
+/** Migration progress, for the script's summary output and for spot checks. */
+adminRoute.get("/videos/migration-status", async (c) => {
+  const db = getDb(c.env);
+  const byStatus = await db
+    .select({ status: schema.videos.status, count: count() })
+    .from(schema.videos)
+    .groupBy(schema.videos.status)
+    .all();
+  const pendingStories = await db
+    .select({ count: count() })
+    .from(schema.stories)
+    .where(and(isNull(schema.stories.videoProvider), eq(schema.stories.mediaType, "video")))
+    .get();
+  const pendingMatches = await db
+    .select({ count: count() })
+    .from(schema.contestMatches)
+    .where(and(isNull(schema.contestMatches.videoProvider), eq(schema.contestMatches.type, "video")))
+    .get();
+
+  return c.json({
+    videosByStatus: byStatus,
+    pending: {
+      stories: pendingStories?.count ?? 0,
+      matches: pendingMatches?.count ?? 0,
+    },
+  });
 });

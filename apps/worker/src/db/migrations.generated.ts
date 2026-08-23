@@ -18,6 +18,7 @@ import m_0013_error_logs_sql from "../../migrations/0013_error_logs.sql";
 import m_0014_match_participant_index_sql from "../../migrations/0014_match_participant_index.sql";
 import m_0015_follows_pagination_index_sql from "../../migrations/0015_follows_pagination_index.sql";
 import m_0016_notifications_unread_index_sql from "../../migrations/0016_notifications_unread_index.sql";
+import m_0017_bunny_video_sql from "../../migrations/0017_bunny_video.sql";
 
 export interface Migration {
   name: string;
@@ -42,4 +43,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0014_match_participant_index.sql", sql: m_0014_match_participant_index_sql },
   { name: "0015_follows_pagination_index.sql", sql: m_0015_follows_pagination_index_sql },
   { name: "0016_notifications_unread_index.sql", sql: m_0016_notifications_unread_index_sql },
+  { name: "0017_bunny_video.sql", sql: m_0017_bunny_video_sql },
 ];

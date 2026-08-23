@@ -12,6 +12,7 @@ import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { contestService } from '@/src/services/contests/contestService';
 import { fetchSuggestedUsers, toggleFollowService, searchUsers } from '@/src/services/users';
+import { Avatar } from '@/src/components/ui/Avatar';
 import { useAuth } from '@/src/hooks/useAuth';
 import { useProfile } from '@/src/hooks/useProfileData';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -91,9 +92,10 @@ export default function DiscoverScreen() {
 
   const profileAny = currentUserProfile as any;
   const coins = Number(profileAny?.Dpcoin ?? profileAny?.dpcoin ?? 0);
-  const avatarUri =
-    profileAny?.profileImageUrl ||
-    `https://ui-avatars.com/api/?name=${profileAny?.fullName || 'U'}&background=random`;
+  // Null when unset — <Avatar> renders local initials instead of fetching a
+  // name-bearing URL from a third party.
+  const avatarUri = profileAny?.profileImageUrl || null;
+  const avatarName = profileAny?.fullName || profileAny?.username || null;
 
   useEffect(() => {
     if (currentUserProfile && (currentUserProfile as any).following) {
@@ -201,7 +203,12 @@ export default function DiscoverScreen() {
           activeOpacity={0.85}
           onPress={() => handleAction(() => router.push('/profile'))}
         >
-          <Image source={{ uri: avatarUri }} style={[styles.headerAvatar, { borderColor: activeColor }]} />
+          <Avatar
+            uri={avatarUri}
+            name={avatarName}
+            size={46}
+            style={[styles.headerAvatar, { borderColor: activeColor }]}
+          />
         </TouchableOpacity>
         <View style={{ flex: 1, marginLeft: 12 }}>
           <Text style={[styles.kicker, { color: activeColor }]}>DISCOVER</Text>
@@ -395,7 +402,12 @@ export default function DiscoverScreen() {
               </View>
             </View>
             <View style={styles.arenaNameRow}>
-              <Image source={{ uri: item.userA?.avatar || 'https://via.placeholder.com/50' }} style={styles.arenaNameAvatar} />
+              <Avatar
+                uri={item.userA?.avatar}
+                name={item.userA?.username}
+                size={22}
+                style={styles.arenaNameAvatar}
+              />
               <Text style={[styles.arenaName, { color: textColor }]} numberOfLines={1}>@{item.userA?.username || 'user'}</Text>
             </View>
           </View>

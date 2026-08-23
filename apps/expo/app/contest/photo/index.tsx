@@ -119,7 +119,9 @@ export default function PhotoContestsScreen() {
                 onPress={() => navigateToSetup(item)}
               >
                 <ImageBackground 
-                  source={{ uri: item.bannerUrl || 'https://via.placeholder.com/400x200' }} 
+                  // No banner -> no source; cardBanner's own background colour
+                  // is the placeholder (was a via.placeholder.com request).
+                  source={item.bannerUrl ? { uri: item.bannerUrl } : undefined}
                   style={styles.cardBanner}
                   imageStyle={styles.cardBannerImg}
                 >
@@ -237,6 +239,7 @@ const styles = StyleSheet.create({
   cardBanner: { 
     width: '100%', 
     height: 190, 
+    backgroundColor: '#2A2D36',
   },
   cardBannerImg: { 
     borderTopLeftRadius: 22, 

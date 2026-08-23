@@ -1330,19 +1330,28 @@ readRoute.get("/comments", optionalAuth, async (c) => {
 });
 
 // ================= STORIES =================
+type AttachedUser = { username: string; avatarUrl: string | null; avatarUrlThumb: string | null };
+
 async function attachUsers(c: any, userIds: string[]) {
   const db = getDb(c.env);
-  if (!userIds.length) return {} as Record<string, { username: string; avatarUrl: string }>;
+  if (!userIds.length) return {} as Record<string, AttachedUser>;
   const rows = await db
     .select({ uid: schema.users.uid, username: schema.users.username, fullName: schema.users.fullName, avatar: schema.users.profileImageUrl })
     .from(schema.users)
     .where(inArray(schema.users.uid, userIds))
     .all();
-  const map: Record<string, { username: string; avatarUrl: string }> = {};
+  // avatarUrl is null when the user has no photo. Do NOT synthesize a
+  // ui-avatars.com URL here: it embeds the username, so every avatar render
+  // would leak it to a third party, and the fallback breaks offline. Clients
+  // render initials locally (see apps/expo/src/components/ui/Avatar.tsx).
+  const map: Record<string, AttachedUser> = {};
   for (const u of rows) {
     map[u.uid] = {
       username: u.username || u.fullName || "User",
-      avatarUrl: u.avatar || `https://ui-avatars.com/api/?name=${u.username || "U"}`,
+      avatarUrl: u.avatar || null,
+      // Small variant for avatar rows. Identical to avatarUrl until
+      // Transformations is enabled — see lib/media.ts transformationsAvailable().
+      avatarUrlThumb: avatarUrl(c.env, u.avatar) || null,
     };
   }
   return map;
@@ -1375,7 +1384,8 @@ readRoute.get("/stories/feed", requireAuth, async (c) => {
   const list = Object.keys(grouped).map((userId) => ({
     userId,
     username: userMap[userId]?.username || "User",
-    avatarUrl: userMap[userId]?.avatarUrl || `https://ui-avatars.com/api/?name=U`,
+    avatarUrl: userMap[userId]?.avatarUrl ?? null,
+    avatarUrlThumb: userMap[userId]?.avatarUrlThumb ?? null,
     stories: grouped[userId].sort((a, b) => a.createdAt - b.createdAt),
     hasUnseen: true,
   }));
@@ -1401,7 +1411,8 @@ readRoute.get("/users/:id/stories", optionalAuth, async (c) => {
   return c.json({
     userId,
     username: userMap[userId]?.username || "User",
-    avatarUrl: userMap[userId]?.avatarUrl,
+    avatarUrl: userMap[userId]?.avatarUrl ?? null,
+    avatarUrlThumb: userMap[userId]?.avatarUrlThumb ?? null,
     stories: rows.map((s) => ({ ...s, seen: false })),
     hasUnseen: true,
   });
@@ -1431,7 +1442,7 @@ readRoute.get("/stories/:id/viewers", requireAuth, async (c) => {
   return c.json(rows.map((r: any) => ({
     uid: r.uid,
     username: r.username || "Unknown",
-    avatarUrl: r.avatarUrl || `https://ui-avatars.com/api/?name=${r.username || "U"}`,
+    avatarUrl: r.avatarUrl || null,
     viewedAt: r.viewedAt,
     reaction: r.reaction || null,
   })));

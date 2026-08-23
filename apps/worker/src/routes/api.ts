@@ -13,7 +13,7 @@ import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
 import { requireAuth, isAdmin } from "../middleware/auth";
 import { presignUpload } from "../lib/r2";
-import { deleteByPublicUrl } from "../lib/r2";
+import { deleteMediaByUrl } from "../lib/mediaDelete";
 import { awardReward } from "../lib/gamification";
 import { createNotification, sendBroadcastToAllUsers, sendPushNotification } from "../lib/notify";
 import { setCustomClaims } from "../lib/firebaseAdmin";
@@ -36,6 +36,12 @@ import { verifyRazorpaySignature } from "../lib/payments";
 import { creditPaymentOrder } from "../lib/coinOrders";
 import { assertClean } from "../lib/moderation";
 import { assertChatMember } from "../lib/chatAuth";
+import {
+  bunnyConfigured,
+  createVideo,
+  bunnyPlaybackUrl,
+  bunnyThumbnailUrl,
+} from "../lib/bunny";
 import { getAppConfig } from "../lib/settings";
 import { getSettings } from "../lib/gamification";
 import { sendEmail } from "../lib/email";
@@ -131,6 +137,112 @@ apiRoute.post("/", async (c) => {
       const { fileType, folder } = body;
       if (!fileType || !folder) throw httpsError("invalid-argument", "fileType and folder are required.");
       return c.json(await presignUpload(env, fileType, folder));
+    }
+
+    // ================= VIDEO (Bunny Stream) =================
+    /**
+     * Mint credentials for a direct-to-Bunny resumable (TUS) video upload.
+     *
+     * Returns only { videoId, libraryId, expirationTime, signature } — the Bunny
+     * API key stays server-side. The client uploads the bytes itself, then the
+     * encoding webhook flips the row to 'ready'.
+     *
+     * Returns `configured: false` instead of throwing when Bunny is not set up,
+     * so the client can fall back to the existing R2 upload path.
+     */
+    case "createVideoUpload": {
+      if (!bunnyConfigured(env)) return c.json({ configured: false });
+
+      // Without this, anyone can create unlimited video objects in our Bunny
+      // account. 10/hour is far above real usage and far below abuse.
+      await rateLimit(env, `vidup:${uid}`, 10, 3600);
+
+      const { title, targetType } = body;
+      if (targetType && !["story", "contest_entry"].includes(String(targetType)))
+        throw httpsError("invalid-argument", "Invalid targetType.");
+
+      const created = await createVideo(env, String(title || `upload-${uid}-${now()}`));
+      const ts = now();
+      await db.insert(schema.videos).values({
+        id: created.guid,
+        libraryId: created.libraryId,
+        ownerUid: uid,
+        provider: "bunny",
+        status: "uploading",
+        // target_id is filled in when the story / contest entry is created; a row
+        // that stays null is an abandoned upload and can be swept later.
+        targetType: targetType ? String(targetType) : null,
+        createdAt: ts,
+        updatedAt: ts,
+      });
+
+      return c.json({
+        configured: true,
+        videoId: created.guid,
+        libraryId: created.libraryId,
+        expirationTime: created.expirationTime,
+        signature: created.signature,
+        tusEndpoint: created.tusEndpoint,
+        // The eventual playback URL, so the caller can store it as mediaUrl
+        // without knowing how Bunny URLs are shaped.
+        playbackUrl: bunnyPlaybackUrl(env, created.guid),
+        thumbnailUrl: bunnyThumbnailUrl(env, created.guid),
+      });
+    }
+
+    /**
+     * Called by the client once the TUS upload finishes. Moves the row from
+     * 'uploading' to 'processing' and records what the video is attached to.
+     * The authoritative 'ready' transition comes from the Bunny webhook.
+     */
+    case "videoUploadComplete": {
+      const { videoId, targetType, targetId } = body;
+      if (!videoId) throw httpsError("invalid-argument", "videoId is required.");
+      const ts = now();
+      // Scoped to the owner so one user cannot mutate another's video row, and
+      // only from 'uploading' so a webhook that already landed isn't regressed.
+      const claim = await db
+        .update(schema.videos)
+        .set({
+          status: "processing",
+          targetType: targetType ? String(targetType) : undefined,
+          targetId: targetId ? String(targetId) : undefined,
+          updatedAt: ts,
+        })
+        .where(
+          and(
+            eq(schema.videos.id, String(videoId)),
+            eq(schema.videos.ownerUid, uid),
+            eq(schema.videos.status, "uploading"),
+          ),
+        )
+        .run();
+      return c.json({ success: true, updated: claim.meta.changes > 0 });
+    }
+
+    /**
+     * Current processing state for a set of videos, so a client showing a
+     * "Processing…" overlay can poll without hitting Bunny directly.
+     */
+    case "videoStatus": {
+      const { videoIds } = body;
+      const ids = (Array.isArray(videoIds) ? videoIds : [videoIds])
+        .filter((v: any) => typeof v === "string" && v)
+        .slice(0, 50);
+      if (!ids.length) return c.json({ videos: [] });
+      const rows = await db
+        .select({
+          id: schema.videos.id,
+          status: schema.videos.status,
+          thumbnailUrl: schema.videos.thumbnailUrl,
+          durationSec: schema.videos.durationSec,
+          playbackUrl: schema.videos.playbackUrl,
+          mp4Url: schema.videos.mp4Url,
+        })
+        .from(schema.videos)
+        .where(inArray(schema.videos.id, ids))
+        .all();
+      return c.json({ videos: rows });
     }
 
     // ================= CONTEST MATCHES =================
@@ -458,7 +570,7 @@ apiRoute.post("/", async (c) => {
       await db.delete(schema.posts).where(eq(schema.posts.id, postId));
       await db.update(schema.users).set({ postsCount: sql`MAX(${schema.users.postsCount} - 1, 0)` }).where(eq(schema.users.uid, post.userId));
       // Free the R2 object so storage doesn't leak (DELETE is free in R2).
-      if (post.mediaUrl) await deleteByPublicUrl(env, post.mediaUrl).catch(() => {});
+      if (post.mediaUrl) await deleteMediaByUrl(env, post.mediaUrl).catch(() => {});
       return c.json({ success: true, message: "Post deleted successfully" });
     }
 
@@ -490,7 +602,8 @@ apiRoute.post("/", async (c) => {
       if (!story) throw httpsError("not-found", "Story not found.");
       if (story.userId !== uid && !(await isAdmin(c as any)))
         throw httpsError("permission-denied", "Not allowed.");
-      if (story.mediaUrl) await deleteByPublicUrl(env, story.mediaUrl);
+      // Provider-aware: a story's media is in R2 or in Bunny.
+      if (story.mediaUrl) await deleteMediaByUrl(env, story.mediaUrl);
       await db.delete(schema.stories).where(eq(schema.stories.id, storyId));
       return c.json({ success: true });
     }

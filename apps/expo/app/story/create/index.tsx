@@ -23,6 +23,7 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import { Ionicons } from '@/src/lib/icons';
 import { uploadToS3 } from '@/src/lib/uploadToS3';
 import { createStoryRecord, searchUsers } from '@/src/services/stories/storyService';
+import { uploadVideoToBunny } from '@/src/services/video/bunnyUpload';
 import { useQueryClient } from '@tanstack/react-query';
 import Svg, { Circle } from 'react-native-svg';
 import { auth } from '@/src/services/firebase/initFirebase';
@@ -252,18 +253,34 @@ export default function AddStoryScreen() {
     setIsUploading(true);
     setUploadProgress(0);
     try {
-      const fileType = media.type === 'video' ? 'video/mp4' : 'image/jpeg';
-      console.log(`Starting upload to S3 for story... folder: stories, function: generateStoryUploadUrl`);
-      const mediaUrl = await uploadToS3(media.uri, fileType, "stories", (p: number) => {
-        console.log("Upload Progress:", p);
-        setUploadProgress(p);
-      });
-      
-      console.log("S3 Upload Success, creating story record:", mediaUrl);
+      // Videos prefer Bunny Stream (resumable upload + adaptive bitrate).
+      // uploadVideoToBunny returns null when Bunny is not configured on the
+      // server, in which case we fall through to the existing R2 path.
+      let mediaUrl: string | null = null;
+      if (media.type === 'video') {
+        try {
+          const bunny = await uploadVideoToBunny(media.uri, {
+            title: `story-${Date.now()}`,
+            targetType: 'story',
+            onProgress: setUploadProgress,
+          });
+          if (bunny) mediaUrl = bunny.playbackUrl;
+        } catch (e) {
+          console.warn('Bunny story upload failed, falling back to R2:', e);
+        }
+      }
+
+      if (!mediaUrl) {
+        const fileType = media.type === 'video' ? 'video/mp4' : 'image/jpeg';
+        mediaUrl = (await uploadToS3(media.uri, fileType, 'stories', (p: number) => {
+          setUploadProgress(p);
+        })) as string;
+      }
+
       const textPos = { x: textX.value / width, y: textY.value / height };
       
       const storyId = await createStoryRecord(
-          mediaUrl as string, 
+          mediaUrl, 
           media.type, 
           visibility, 
           storyText || null,

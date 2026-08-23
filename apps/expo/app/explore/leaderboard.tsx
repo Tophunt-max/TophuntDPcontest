@@ -7,6 +7,7 @@ import { leaderboardService } from '@/src/services/contests/leaderboardService';
 import { UserProfile } from '@/src/types/user';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Avatar } from '@/src/components/ui/Avatar';
 
 const { width } = Dimensions.get('window');
 
@@ -59,9 +60,11 @@ export default function LeaderboardScreen() {
       <View style={styles.podiumContainer}>
         {/* Second Place */}
         <View style={[styles.podiumItem, { marginTop: 40 }]}>
-            <Image 
-                source={{ uri: second.profileImageUrl || `https://ui-avatars.com/api/?name=${second.fullName}&background=random` }} 
-                style={styles.podiumAvatar} 
+            <Avatar
+                uri={second.profileImageUrlThumb || second.profileImageUrl}
+                name={second.fullName}
+                size={70}
+                style={styles.podiumAvatar}
             />
             <View style={styles.badgeContainer}><Text style={styles.badgeText}>2</Text></View>
             <Text style={[styles.podiumName, { color: textColor }]} numberOfLines={1}>{second.fullName}</Text>
@@ -72,9 +75,11 @@ export default function LeaderboardScreen() {
         <View style={styles.podiumItem}>
             <View style={{ position: 'relative' }}>
                 <MaterialCommunityIcons name="crown" size={32} color="#FFD700" style={styles.crown} />
-                <Image 
-                    source={{ uri: first.profileImageUrl || `https://ui-avatars.com/api/?name=${first.fullName}&background=random` }} 
-                    style={[styles.podiumAvatar, { width: 90, height: 90, borderWidth: 3, borderColor: '#FFD700' }]} 
+                <Avatar
+                    uri={first.profileImageUrlThumb || first.profileImageUrl}
+                    name={first.fullName}
+                    size={90}
+                    style={[styles.podiumAvatar, { width: 90, height: 90, borderWidth: 3, borderColor: '#FFD700' }]}
                 />
                 <View style={[styles.badgeContainer, { backgroundColor: '#FFD700' }]}><Text style={styles.badgeText}>1</Text></View>
             </View>
@@ -84,9 +89,11 @@ export default function LeaderboardScreen() {
 
         {/* Third Place */}
         <View style={[styles.podiumItem, { marginTop: 60 }]}>
-            <Image 
-                source={{ uri: third.profileImageUrl || `https://ui-avatars.com/api/?name=${third.fullName}&background=random` }} 
-                style={styles.podiumAvatar} 
+            <Avatar
+                uri={third.profileImageUrlThumb || third.profileImageUrl}
+                name={third.fullName}
+                size={70}
+                style={styles.podiumAvatar}
             />
             <View style={[styles.badgeContainer, { backgroundColor: '#CD7F32' }]}><Text style={styles.badgeText}>3</Text></View>
             <Text style={[styles.podiumName, { color: textColor }]} numberOfLines={1}>{third.fullName}</Text>
@@ -109,9 +116,11 @@ export default function LeaderboardScreen() {
             <Text style={[styles.rankText, { color: textColor }]}>{index + 1}</Text>
         </View>
 
-        <Image 
-          source={{ uri: item.profileImageUrl || `https://ui-avatars.com/api/?name=${item.fullName}&background=random` }} 
-          style={styles.avatar} 
+        <Avatar
+          uri={item.profileImageUrlThumb || item.profileImageUrl}
+          name={item.fullName}
+          size={44}
+          style={styles.avatar}
         />
 
         <View style={styles.userInfo}>

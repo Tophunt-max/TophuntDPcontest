@@ -23,6 +23,7 @@ ADMIN_PROXY_SECRET=<same value set on the Worker via `wrangler secret put ADMIN_
 | `node scripts/seed-contests.mjs` | Insert a sample contest template. |
 | `node scripts/update-legal-content.mjs` | Write Privacy Policy + Terms into `settings/appConfig` (D1). |
 | `node scripts/test-notification.mjs <uid>` | Send a test notification (D1 + FCM push). |
+| `node scripts/migrate-videos-to-bunny.mjs` | Migrate existing R2 videos to Bunny Stream (resumable; `--status`, `--target=stories\|matches`, `--limit=N`). Requires Bunny secrets on the Worker. |
 
 No `serviceAccountKey.json` is needed anymore — the Worker holds the Firebase
 service account as a secret and performs any Auth operations (e.g. setting the
