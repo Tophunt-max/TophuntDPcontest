@@ -488,6 +488,9 @@ export const notifications = sqliteTable(
     // Partial index for the polled unread-count query (migration 0016): indexes
     // only unread rows so COUNT(*) WHERE recipient_id=? AND read=0 is index-only.
     unreadIdx: index("idx_notif_unread").on(t.recipientId).where(sql`${t.read} = 0`),
+    // Partial index for the polled BADGE count, which counts UNSEEN rows
+    // (migration 0019). Mirrors idx_notif_unread but for `seen`.
+    unseenIdx: index("idx_notif_unseen").on(t.recipientId).where(sql`${t.seen} = 0`),
     // Collapse lookup: WHERE recipient_id = ? AND collapse_key = ?
     collapseIdx: index("idx_notif_collapse").on(t.recipientId, t.collapseKey),
   }),

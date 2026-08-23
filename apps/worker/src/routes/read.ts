@@ -876,16 +876,27 @@ readRoute.get("/notifications", requireAuth, async (c) => {
   return res;
 });
 
-// COUNT of unread notifications. Backed by the partial index idx_notif_unread
-// (recipient_id) WHERE read = 0 (migration 0016) so this is an index-only count
-// of just the recipient's UNREAD rows — it never scans read notifications.
+/**
+ * Badge count — the number of notifications the user has NOT yet looked at.
+ *
+ * Counts `seen = 0`, not `read = 0`. `read` means "tapped through to the
+ * content", which is a different question and would leave the badge showing a
+ * number for rows the user has already scrolled past.
+ *
+ * Backed by the partial index idx_notif_unseen (recipient_id) WHERE seen = 0
+ * (migration 0019), so this is an index-only count over just the unseen rows —
+ * it never scans the user's notification history.
+ *
+ * The response name stays `count` and the route stays `/unread-count` so
+ * already-installed app builds keep working.
+ */
 readRoute.get("/notifications/unread-count", requireAuth, async (c) => {
   const db = getDb(c.env);
   const uid = c.get("user").uid;
   const row = await db
     .select({ v: sql<number>`count(*)` })
     .from(schema.notifications)
-    .where(and(eq(schema.notifications.recipientId, uid), eq(schema.notifications.read, false)))
+    .where(and(eq(schema.notifications.recipientId, uid), eq(schema.notifications.seen, false)))
     .get();
   const res = c.json({ count: row?.v ?? 0 }) as Response;
   res.headers.set("Cache-Control", "private, no-store");

@@ -53,7 +53,10 @@ const NotificationRow = React.memo(({ item, isDark, onPress }: RowProps) => {
         <TouchableOpacity
             activeOpacity={0.6}
             onPress={() => onPress(item)}
-            style={[styles.itemContainer, { backgroundColor: item.read ? bg : unreadBg }]}
+            // Highlight = not yet SEEN, i.e. new since the list was last
+            // opened. `read` means the user actually tapped through, which is a
+            // different thing and would leave rows highlighted forever.
+            style={[styles.itemContainer, { backgroundColor: item.seen ? bg : unreadBg }]}
         >
             <View style={styles.avatarContainer}>
                 <Image
@@ -79,7 +82,7 @@ const NotificationRow = React.memo(({ item, isDark, onPress }: RowProps) => {
                     <View style={[styles.tagPill, { backgroundColor: tag.color + (isDark ? '33' : '22') }]}>
                         <Text style={[styles.tagText, { color: tag.color }]}>{tag.label}</Text>
                     </View>
-                    {!item.read && <View style={styles.unreadDot} />}
+                    {!item.seen && <View style={styles.unreadDot} />}
                 </View>
 
                 <Text style={[styles.bodyText, { color: textColor }]} numberOfLines={2}>
@@ -137,13 +140,18 @@ export default function NotificationsScreen() {
             setLoading(false);
             setRefreshing(false);
 
-            // Mark everything read once, the first time the screen has data.
-            if (!markedRef.current && items.some((n) => !n.read)) {
+            // Mark everything SEEN once, the first time the screen has data.
+            // This is what clears the bell badge. `read` is left alone — it is
+            // set per row on tap, so it stays a real signal of engagement.
+            if (!markedRef.current && items.some((n) => !n.seen)) {
                 markedRef.current = true;
-                notificationService.markAllAsRead();
-                // Reflect locally so the unread highlight clears immediately.
-                setHead((prev) => prev.map((n) => ({ ...n, read: true })));
-                setTail((prev) => prev.map((n) => ({ ...n, read: true })));
+                notificationService.markAllAsSeen();
+                // The OS tray holds the same information the user is now
+                // looking at, so clear it rather than leaving a stack of alerts.
+                void notificationService.clearDeliveredNotifications();
+                // Reflect locally so the highlight clears immediately.
+                setHead((prev) => prev.map((n) => ({ ...n, seen: true })));
+                setTail((prev) => prev.map((n) => ({ ...n, seen: true })));
             }
         });
         return () => unsubscribe();

@@ -28,6 +28,7 @@ import { assertAccountNotBlocked } from "./middleware/auth";
 import { resolveContests, monthlyHallOfFame } from "./cron";
 import { ensureMigrated } from "./db/autoMigrate";
 import { captureError, logErrorToDb, pruneErrorLogs } from "./lib/observability";
+import { pruneNotifications } from "./lib/notify";
 import {
   contentRangeHeader,
   isRangedRequest,
@@ -294,6 +295,9 @@ export default {
         ctx.waitUntil(resolveContests(env));
         // Retention: drop error logs past the retention window.
         ctx.waitUntil(pruneErrorLogs(env));
+        // Retention: the notifications table previously grew forever, which made
+        // heavy users' own list and badge-count queries progressively slower.
+        ctx.waitUntil(pruneNotifications(env));
         break;
     }
   },

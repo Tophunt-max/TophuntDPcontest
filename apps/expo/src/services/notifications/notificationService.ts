@@ -276,6 +276,50 @@ class NotificationService {
     }
 
     /**
+     * Mark everything currently in the list as SEEN. This is what clears the
+     * bell badge, and it is what the notifications screen calls on open.
+     *
+     * Distinct from markAllAsRead: `seen` means "was in the list when you last
+     * opened it", `read` means "you tapped through to it". Opening the screen
+     * used to mark everything read, which meant `read` told us nothing about
+     * what the user had actually engaged with.
+     */
+    async markAllAsSeen() {
+        try { await callApi('markAllNotificationsSeen', {}); } catch { /* best-effort */ }
+    }
+
+    /**
+     * Push the unseen count onto the OS app-icon badge.
+     *
+     * The worker sends the correct number with each push, but nothing was
+     * clearing it locally — so the badge showed the right value and then never
+     * went down. Driving it from the live unseen count keeps the two in step.
+     */
+    async syncBadgeCount(count: number): Promise<void> {
+        if (Platform.OS === 'web') return;
+        try {
+            await Notifications.setBadgeCountAsync(Math.max(0, count));
+        } catch {
+            /* badge is cosmetic — never surface a failure */
+        }
+    }
+
+    /**
+     * Clear notifications already delivered to the OS tray.
+     *
+     * Called when the user opens the in-app list: they are looking at the same
+     * information, so leaving a stack of alerts in the shade is just noise.
+     */
+    async clearDeliveredNotifications(): Promise<void> {
+        if (Platform.OS === 'web') return;
+        try {
+            await Notifications.dismissAllNotificationsAsync();
+        } catch {
+            /* best-effort */
+        }
+    }
+
+    /**
      * Fetch ONE older page for infinite scroll. Cursor is the `createdAt` of the
      * oldest row already shown; omit for the first page. Returns the items plus
      * the next cursor (null = no more). This is a plain paginated GET — the live

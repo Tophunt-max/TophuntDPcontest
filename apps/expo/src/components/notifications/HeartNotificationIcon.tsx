@@ -19,6 +19,10 @@ export const HeartNotificationIcon = () => {
 
     const unsubscribe = notificationService.subscribeToUnreadCount(user.uid, (count) => {
       setUnreadCount(count);
+      // Keep the OS app-icon badge in step with this bell. The worker already
+      // sends the right number with each push, but nothing was clearing it
+      // locally, so the badge only ever went up.
+      void notificationService.syncBadgeCount(count);
     });
 
     return () => unsubscribe();

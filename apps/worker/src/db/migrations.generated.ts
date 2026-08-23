@@ -20,6 +20,7 @@ import m_0015_follows_pagination_index_sql from "../../migrations/0015_follows_p
 import m_0016_notifications_unread_index_sql from "../../migrations/0016_notifications_unread_index.sql";
 import m_0017_bunny_video_sql from "../../migrations/0017_bunny_video.sql";
 import m_0018_notifications_production_sql from "../../migrations/0018_notifications_production.sql";
+import m_0019_notification_seen_index_sql from "../../migrations/0019_notification_seen_index.sql";
 
 export interface Migration {
   name: string;
@@ -46,4 +47,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0016_notifications_unread_index.sql", sql: m_0016_notifications_unread_index_sql },
   { name: "0017_bunny_video.sql", sql: m_0017_bunny_video_sql },
   { name: "0018_notifications_production.sql", sql: m_0018_notifications_production_sql },
+  { name: "0019_notification_seen_index.sql", sql: m_0019_notification_seen_index_sql },
 ];

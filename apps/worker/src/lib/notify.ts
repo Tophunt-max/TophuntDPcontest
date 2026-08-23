@@ -61,6 +61,22 @@ const MAX_STORED_ACTORS = 10;
 const PUSH_BURST_MAX = 20;
 const PUSH_BURST_WINDOW_SEC = 60;
 
+/**
+ * Notification-fatigue cap: total pushes per recipient per day.
+ *
+ * The burst cap above stops a single spike, but says nothing about a steady drip
+ * — a busy account could still be buzzed hundreds of times across a day, which is
+ * the fastest way to get notifications disabled at the OS level.
+ *
+ * `wallet` is EXEMPT (see PUSH_CAP_EXEMPT_CATEGORIES): a payout confirmation or a
+ * failed top-up must never be dropped because the user had a popular day.
+ */
+const PUSH_DAILY_MAX = 40;
+const PUSH_DAILY_WINDOW_SEC = 24 * 60 * 60;
+
+/** Categories that bypass the daily fatigue cap. */
+const PUSH_CAP_EXEMPT_CATEGORIES = new Set(["wallet"]);
+
 /** Android channel per category, so users can mute a category in OS settings. */
 const ANDROID_CHANNEL: Record<string, string> = {
   social: "social",
@@ -100,6 +116,66 @@ function groupedBody(type: string, actors: NotificationActor[], count: number): 
   if (others === 0) return `${first} ${phrase}`;
   if (others === 1 && second) return `${first} and ${second} ${phrase}`;
   return `${first} and ${others} others ${phrase}`;
+}
+
+// ---------------------------------------------------------------------------
+// Retention
+//
+// `notifications` had no retention at all, so it grew forever. That is a real
+// problem rather than just wasted storage: the list query and the polled badge
+// count are both scoped per recipient, so a user who accumulates tens of
+// thousands of rows makes their own queries progressively slower, and D1 storage
+// grows without bound.
+//
+// Two windows, because "read" and "ignored" are different signals:
+//   - anything the user has already opened is safe to drop fairly early;
+//   - anything still unopened after six months is not going to be opened.
+// ---------------------------------------------------------------------------
+
+/** Drop notifications the user has already opened after this long. */
+const READ_RETENTION_MS = 60 * 24 * 60 * 60 * 1000; // 60 days
+
+/** Hard ceiling — drop anything older than this regardless of state. */
+const HARD_RETENTION_MS = 180 * 24 * 60 * 60 * 1000; // 180 days
+
+/**
+ * Rows deleted per statement.
+ *
+ * Bounded so a first run against a large backlog cannot blow the cron's time
+ * budget — it simply makes progress and the next tick continues. The delete uses
+ * a subquery rather than `DELETE ... LIMIT`, which requires SQLite to be built
+ * with SQLITE_ENABLE_UPDATE_DELETE_LIMIT and is not something to rely on.
+ */
+const PRUNE_BATCH = 500;
+
+/** Delete notifications past their retention window. Called from the cron. */
+export async function pruneNotifications(env: Env): Promise<void> {
+  const nowMs = Date.now();
+  const passes: { label: string; sql: string; cutoff: number }[] = [
+    {
+      label: "read",
+      cutoff: nowMs - READ_RETENTION_MS,
+      sql:
+        "DELETE FROM notifications WHERE id IN (" +
+        `SELECT id FROM notifications WHERE read = 1 AND created_at < ? LIMIT ${PRUNE_BATCH})`,
+    },
+    {
+      label: "hard",
+      cutoff: nowMs - HARD_RETENTION_MS,
+      sql:
+        "DELETE FROM notifications WHERE id IN (" +
+        `SELECT id FROM notifications WHERE created_at < ? LIMIT ${PRUNE_BATCH})`,
+    },
+  ];
+
+  for (const pass of passes) {
+    try {
+      await env.DB.prepare(pass.sql).bind(pass.cutoff).run();
+    } catch (e) {
+      // Housekeeping must never take the cron down.
+      console.error(`[notify] pruneNotifications (${pass.label}) failed (continuing)`, e);
+    }
+  }
 }
 
 export interface NotificationActorInput {
@@ -395,6 +471,15 @@ export async function createNotification(
     // Anti-spam: cap PUSHES per recipient per type. The row is already written,
     // so nothing is lost — the device just stops buzzing.
     if (!(await consumeRateLimit(env, `push:${recipientId}:${n.type}`, PUSH_BURST_MAX, PUSH_BURST_WINDOW_SEC))) {
+      return;
+    }
+
+    // Notification fatigue: cap total daily pushes. Money notifications bypass
+    // this — being rate-limited out of "your payout was sent" is unacceptable.
+    if (
+      !PUSH_CAP_EXEMPT_CATEGORIES.has(category) &&
+      !(await consumeRateLimit(env, `pushday:${recipientId}`, PUSH_DAILY_MAX, PUSH_DAILY_WINDOW_SEC))
+    ) {
       return;
     }
 

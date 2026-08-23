@@ -1214,8 +1214,32 @@ apiRoute.post("/", async (c) => {
     case "markAllNotificationsRead": {
       await db
         .update(schema.notifications)
-        .set({ read: true })
+        // Also marks them SEEN. Not redundant: the badge counts unseen rows, and
+        // already-installed app builds only ever call this action — without
+        // setting `seen` here their badge would never clear again.
+        .set({ read: true, seen: true })
         .where(and(eq(schema.notifications.recipientId, uid), eq(schema.notifications.read, false)));
+      return c.json({ success: true });
+    }
+
+    /**
+     * Mark everything the user is looking at as SEEN — this is what clears the
+     * bell badge, and it is what the notifications screen calls on open.
+     *
+     * Deliberately does NOT set `read`. Opening the list used to mark every row
+     * read, including ones the user never looked at, which left `read` carrying
+     * no real signal. Now:
+     *   seen = it was in the list when you last opened it (badge + "new" highlight)
+     *   read = you actually tapped through to the content
+     *
+     * Bounded by the idx_notif_unseen partial index, so this is one small
+     * indexed UPDATE regardless of how much history the user has.
+     */
+    case "markAllNotificationsSeen": {
+      await db
+        .update(schema.notifications)
+        .set({ seen: true })
+        .where(and(eq(schema.notifications.recipientId, uid), eq(schema.notifications.seen, false)));
       return c.json({ success: true });
     }
 
