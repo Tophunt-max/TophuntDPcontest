@@ -22,6 +22,7 @@ import { createNotification } from "../lib/notify";
 import { enqueueBroadcast } from "../lib/broadcast";
 import { finalizeVotes } from "../lib/voteCounter";
 import { settleRefund, settleWinner } from "../lib/contestSettlement";
+import { refundRejectedWithdrawal } from "../lib/payouts";
 import { publish } from "../lib/publish";
 import { resolveContests, monthlyHallOfFame } from "../cron";
 import { newId, now } from "../lib/ids";
@@ -208,10 +209,33 @@ adminRoute.post("/app-settings", async (c) => {
 
 // ---- rewards (settings/gamification) ----
 adminRoute.get("/rewards", async (c) => c.json((await getGamificationSettings(c.env)) || {}));
+/**
+ * Reward keys whose value is added directly to `users.dpcoin`.
+ *
+ * This endpoint merges arbitrary JSON into the gamification settings row, and
+ * these particular keys are then credited to real balances by the daily-reward,
+ * signup and referral paths. A fractional value would break the "coins are whole
+ * numbers" invariant for everyone who claimed it, and a negative one would
+ * silently DEBIT them — so they are validated here, at the point of entry, rather
+ * than being discovered later in a balance. lib/gamification.ts sanitises on read
+ * as a second line of defence for values stored before this check existed.
+ */
+const REWARD_COIN_KEYS = ["dailyLoginReward", "dailyBaseReward", "dailyStreakBonus", "signupBonus", "referralBonus"] as const;
+
 adminRoute.post("/rewards", async (c) => {
   requireFullAdmin(c);
   const db = getDb(c.env);
   const body = await c.req.json<any>();
+  for (const key of REWARD_COIN_KEYS) {
+    if (body?.[key] === undefined || body[key] === null) continue;
+    const n = Number(body[key]);
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0 || n > 1_000_000) {
+      throw httpsError(
+        "invalid-argument",
+        `${key} must be a whole number of coins between 0 and 1000000 — it is credited straight to user balances.`,
+      );
+    }
+  }
   const existing = (await getGamificationSettings(c.env)) || {};
   const merged = { ...existing, ...body };
   await db
@@ -2375,12 +2399,7 @@ adminRoute.patch("/withdrawals/:id", async (c) => {
       // Refund on rejection of a still-held request. The transition table
       // guarantees fromStatus is "pending" or "approved" here.
       if (action === "reject") {
-        // Deterministic ledger id: a retry after a partial failure cannot refund
-        // the same withdrawal twice.
-        await db.batch([
-          db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${w.amount}`, updatedAt: ts }).where(eq(schema.users.uid, w.userId)),
-          db.insert(schema.coinTransactions).values({ id: `withdrawal_refund:${id}`, uid: w.userId, amount: w.amount, type: "withdrawal_refund", description: "Payout rejected — coins refunded", createdAt: ts }).onConflictDoNothing(),
-        ]);
+        await refundRejectedWithdrawal(c.env, id, w.userId, w.amount, ts);
       }
       // Settle the hold when the money actually leaves.
       //
@@ -2445,10 +2464,7 @@ adminRoute.patch("/withdrawals/:id", async (c) => {
       }
       // Rejecting a previously-approved legacy request refunds the held coins.
       if (action === "reject" && fromStatus === "approved") {
-        await db.batch([
-          db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${w.amount}`, updatedAt: ts }).where(eq(schema.users.uid, w.userId)),
-          db.insert(schema.coinTransactions).values({ id: `withdrawal_refund:${id}`, uid: w.userId, amount: w.amount, type: "withdrawal_refund", description: "Payout rejected — coins refunded", createdAt: ts }).onConflictDoNothing(),
-        ]);
+        await refundRejectedWithdrawal(c.env, id, w.userId, w.amount, ts);
       }
     }
   } catch (err) {

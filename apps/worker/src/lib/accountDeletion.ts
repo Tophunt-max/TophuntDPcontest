@@ -154,7 +154,34 @@ export async function deleteOwnAccount(
   const suffix = uid.slice(-6).toLowerCase().replace(/[^a-z0-9]/g, "") || newId().slice(0, 6);
   const anonUsername = `deleted_${suffix}`;
 
+  // Forfeiting the balance is a balance change, so it needs a ledger row like
+  // every other one. `account_deletions.forfeited_coins` below is the compliance
+  // record of the deletion; it is not part of the coin ledger, so without this
+  // the ledger could not explain why the balance went to zero and a
+  // per-user replay of `coin_transactions` would not sum to the stored balance.
+  // That reconciliation is what the platform-liability figure and any future
+  // per-bucket balance derivation depend on.
+  //
+  // Deterministic id, so a retried deletion cannot record the forfeiture twice.
+  const forfeitLedger =
+    eligibility.balance > 0
+      ? db
+          .insert(schema.coinTransactions)
+          .values({
+            id: `account_deletion:${uid}`,
+            uid,
+            amount: -eligibility.balance,
+            type: "account_deletion_forfeit",
+            description: "Coins forfeited on account deletion",
+            createdAt: ts,
+          })
+          .onConflictDoNothing()
+      : null;
+
   await db.batch([
+    // 0) Record the forfeiture BEFORE the balance is zeroed, in the same
+    //    transaction, so the two can never disagree.
+    ...(forfeitLedger ? [forfeitLedger] : []),
     // 1) Wipe every personal field. `status` + `is_blocked` also make any
     //    still-valid ID token useless immediately (requireAuth checks D1).
     db
@@ -195,7 +222,9 @@ export async function deleteOwnAccount(
     db.delete(schema.highlights).where(eq(schema.highlights.userId, uid)),
     db.delete(schema.storyViews).where(eq(schema.storyViews.viewerId, uid)),
     db.delete(schema.messages).where(eq(schema.messages.senderId, uid)),
-  ]);
+    // `as any` because the forfeiture row above is conditionally spread in, which
+    // defeats drizzle's non-empty-tuple inference for batch().
+  ] as any);
 
   await db.batch([
     // 3) Social graph and activity trail.

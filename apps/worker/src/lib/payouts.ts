@@ -1,3 +1,4 @@
+import type { Env } from "../types";
 import { httpsError } from "./http";
 
 /**
@@ -144,4 +145,59 @@ export function readWithdrawalPolicy(cfg: any): WithdrawalPolicy {
     maxPerDay: num(w.maxPerDay, 0),
     conversionRate: Number.isFinite(Number(w.conversionRate)) ? Number(w.conversionRate) : 1,
   };
+}
+
+
+/**
+ * Return the coins held for a rejected withdrawal, exactly once.
+ *
+ * The balance UPDATE runs FIRST and is gated on the refund's ledger row being
+ * absent; the ledger INSERT follows. That ordering is the entire point, and it is
+ * not interchangeable:
+ *
+ *   - Gating the UPDATE on the row's absence *after* inserting it would never
+ *     fire, because by then the row exists.
+ *   - The previous version gated only the INSERT (deterministic id +
+ *     `onConflictDoNothing`) and left the balance UPDATE unconditional. Its
+ *     comment claimed "a retry after a partial failure cannot refund the same
+ *     withdrawal twice", which was true of the ledger and false of the balance: a
+ *     retry re-credited the coins while the ledger silently no-opped, producing a
+ *     double refund recorded as one.
+ *
+ * The reject path really is reachable twice. `PATCH /admin/withdrawals/:id`
+ * compare-and-swaps the status before doing any accounting, but a failure in the
+ * accounting step calls `revertClaim()` to put the row back to its previous
+ * status precisely so an admin can retry — which is the sequence that used to
+ * pay out twice.
+ *
+ * Both statements are also gated on the account still existing, so a deleted
+ * account (whose coins were already forfeited) neither moves a balance nor gains
+ * an orphan ledger row.
+ *
+ * Returns true when THIS call performed the refund, false when it had already
+ * been done (or there was no live account to refund).
+ */
+export async function refundRejectedWithdrawal(
+  env: Env,
+  withdrawalId: string,
+  uid: string,
+  amount: number,
+  ts: number,
+): Promise<boolean> {
+  const ledgerId = `withdrawal_refund:${withdrawalId}`;
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE users
+          SET dpcoin = dpcoin + ?, updated_at = ?
+        WHERE uid = ?
+          AND NOT EXISTS (SELECT 1 FROM coin_transactions WHERE id = ?)`,
+    ).bind(amount, ts, uid, ledgerId),
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO coin_transactions
+         (id, uid, amount, type, description, created_at)
+       SELECT ?, ?, ?, 'withdrawal_refund', ?, ?
+        WHERE EXISTS (SELECT 1 FROM users WHERE uid = ?)`,
+    ).bind(ledgerId, uid, amount, "Payout rejected — coins refunded", ts, uid),
+  ]);
+  return Number(results[0]?.meta?.changes || 0) > 0;
 }

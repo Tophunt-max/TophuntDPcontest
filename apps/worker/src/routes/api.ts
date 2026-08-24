@@ -15,7 +15,7 @@ import { requireAuth, isAdmin } from "../middleware/auth";
 import { requireFullAdmin as requireFullAdminAction, writeAdminAudit } from "../lib/adminAuthz";
 import { presignUpload } from "../lib/r2";
 import { deleteMediaByUrl } from "../lib/mediaDelete";
-import { awardReward } from "../lib/gamification";
+
 import { createNotification, sendPushNotification } from "../lib/notify";
 import { enqueueBroadcast } from "../lib/broadcast";
 import { setCustomClaims } from "../lib/firebaseAdmin";
@@ -293,50 +293,81 @@ apiRoute.post("/", async (c) => {
       // prize can never exceed the pot these two players fund.
       const prizeCoins = Math.min(Number(contest.rewardCoins || 0), matchPot(totalFee));
 
-      // atomic conditional deduct
-      const deduct = await db
-        .update(schema.users)
-        .set({ dpcoin: sql`${schema.users.dpcoin} - ${fee}`, xp: sql`${schema.users.xp} + 10`, updatedAt: now() })
-        .where(and(eq(schema.users.uid, uid), gte(schema.users.dpcoin, fee)))
-        .run();
-      if (deduct.meta.changes === 0)
-        throw httpsError("failed-precondition", `Insufficient Dpcoin. Required: ${fee}, Current: ${user.dpcoin}`);
-
       const ts = now();
       const matchId = newId();
-      const entryTransactionId = newId();
+      // Deterministic, matching the joinMatch side of the same match, so a retry
+      // resolves to the same ledger row instead of a second charge.
+      const entryTransactionId = `contest_entry:${matchId}:${uid}`;
       const joinIdA = generateJoinId();
       const expiresAt = ts + (contest.autoCancelHours || 24) * 60 * 60 * 1000;
-      // Entry-fee ledger + match creation atomically. If this fails, refund the
-      // deducted fee so the user never loses coins for a match that never existed.
-      try {
-        await db.batch([
-          db.insert(schema.coinTransactions).values({
-            id: entryTransactionId, uid, amount: -fee, type: "contest_entry_fee", contestId,
-            description: `Entry fee (50% split) for ${contest.title || "contest"}`, createdAt: ts,
-          }),
-          db.insert(schema.contestMatches).values({
-            id: matchId, contestId, status: "waiting_for_opponent", type: contest.type || "photo",
-            title: contest.title || "Untitled Contest", entryFee: totalFee, isPrivate: !!invitedUid,
-            invitedUid: invitedUid || null, joinIdA,
-            userA: {
-              uid, joinId: joinIdA, username: user.username || "Anonymous",
-              profilePic: user.profileImageUrl || "", mediaUrl, mediaType: mediaType || "photo",
-              caption: caption || "", votes: 0, deviceId: deviceId || "",
-            } as any,
-            totalVotes: 0,
-            minVotesRequired: Math.max(0, Number(contest.minVotes || 0)),
-            prizeCoins,
-            createdAt: ts,
-            expiresAt,
-          }),
-        ]);
-      } catch (e) {
-        await db.update(schema.users)
-          .set({ dpcoin: sql`${schema.users.dpcoin} + ${fee}`, xp: sql`${schema.users.xp} - 10`, updatedAt: now() })
-          .where(eq(schema.users.uid, uid));
-        console.error("[startMatch] match creation failed, refunded entry fee", uid, e);
-        throw httpsError("internal", "Failed to create match. Your entry fee has been refunded.");
+      const userASnapshot = {
+        uid, joinId: joinIdA, username: user.username || "Anonymous",
+        profilePic: user.profileImageUrl || "", mediaUrl, mediaType: mediaType || "photo",
+        caption: caption || "", votes: 0, deviceId: deviceId || "",
+      };
+
+      // The entry-fee debit, its ledger row and the match itself are ONE D1
+      // transaction, and all three are gated on the SAME pre-transaction solvency
+      // snapshot — the two INSERTs run first and do not touch `users`, so the
+      // UPDATE that follows evaluates an identical condition. Either all three
+      // apply or none do.
+      //
+      // Previously the deduct was a standalone statement and the ledger + match
+      // came afterwards in a separate batch, with a compensating refund in a
+      // `catch`. That refund was itself unledgered and ungated, so the failure it
+      // was meant to cover — the batch not applying — left the user charged with
+      // no match; and if the refund also failed, the coins were simply gone with
+      // no trace. Same pattern as joinMatch and lib/money.ts#adjustUserWallet.
+      const solvent = `EXISTS (SELECT 1 FROM users WHERE uid = ? AND dpcoin >= ?)`;
+      const createResults = await env.DB.batch([
+        env.DB.prepare(
+          `INSERT OR IGNORE INTO coin_transactions
+             (id, uid, amount, type, contest_id, description, created_at)
+           SELECT ?, ?, ?, 'contest_entry_fee', ?, ?, ?
+            WHERE ${solvent}`,
+        ).bind(
+          entryTransactionId,
+          uid,
+          -fee,
+          contestId ?? null,
+          `Entry fee (50% split) for ${contest.title || "contest"}`,
+          ts,
+          uid,
+          fee,
+        ),
+        env.DB.prepare(
+          `INSERT INTO contest_matches
+             (id, contest_id, status, type, title, entry_fee, is_private, invited_uid,
+              join_id_a, user_a, total_votes, min_votes_required, prize_coins, created_at, expires_at)
+           SELECT ?, ?, 'waiting_for_opponent', ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?
+            WHERE ${solvent}`,
+        ).bind(
+          matchId,
+          contestId ?? null,
+          contest.type || "photo",
+          contest.title || "Untitled Contest",
+          totalFee,
+          invitedUid ? 1 : 0,
+          invitedUid || null,
+          joinIdA,
+          JSON.stringify(userASnapshot),
+          Math.max(0, Number(contest.minVotes || 0)),
+          prizeCoins,
+          ts,
+          expiresAt,
+          uid,
+          fee,
+        ),
+        env.DB.prepare(
+          `UPDATE users
+              SET dpcoin = dpcoin - ?, xp = xp + 10, updated_at = ?
+            WHERE uid = ? AND dpcoin >= ?`,
+        ).bind(fee, ts, uid, fee),
+      ]);
+      if (Number(createResults[2]?.meta?.changes || 0) === 0) {
+        // Nothing was charged and no match was created — the two INSERTs share
+        // this statement's gate.
+        throw httpsError("failed-precondition", `Insufficient Dpcoin. Required: ${fee}, Current: ${user.dpcoin}`);
       }
 
       // Close the create-vs-pause race: the admin pause update refuses to run
