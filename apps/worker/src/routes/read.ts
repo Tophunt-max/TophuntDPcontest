@@ -5,7 +5,7 @@
  * the existing screens already consume, so UI code stays unchanged.
  */
 import { Hono } from "hono";
-import { and, or, eq, desc, asc, gt, lt, sql, inArray, like } from "drizzle-orm";
+import { and, or, eq, desc, asc, gt, lt, sql, inArray, notInArray, isNull, like } from "drizzle-orm";
 import type { Env, Variables } from "../types";
 import { getDb, schema, type NotificationActor } from "../db";
 import { httpsError } from "../lib/http";
@@ -27,6 +27,17 @@ import {
 } from "../lib/cache";
 import { getLiveTally, getViewerVote } from "../lib/voteCounter";
 import { assertChatMember } from "../lib/chatAuth";
+import {
+  blockedUidsFor,
+  describeUsers,
+  exclusionTruncated,
+  exclusionVersion,
+  excludeHiddenBy,
+  excludeHiddenMatches,
+  getRelations,
+  hiddenUidsFor,
+  sqlExclusionList,
+} from "../lib/blocks";
 
 export const readRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -340,10 +351,37 @@ async function servePersonalizedFeed(
     await cachePut(c.env, candKey, candidates, 45);
   }
 
+  // Per-viewer block/mute filter, applied to the value that came OUT of the
+  // shared pool and AFTER it has been written back. Filtering before the
+  // cachePut above would store one viewer's exclusions in an entry every other
+  // viewer then reads.
+  //
+  // Doing it here rather than further down also covers the cached-order branch
+  // below for free: that branch rebuilds the page by looking each cached id up
+  // in `byId`, so an id dropped from `candidates` resolves to undefined and is
+  // already discarded by its `.filter(Boolean)`. Without this, a block would
+  // take up to the 60s order-cache TTL to take effect.
+  //
+  // A battle is dropped when EITHER participant is hidden, and this set includes
+  // mutes. Muting one creator therefore also hides the battles of whoever they
+  // are up against: a 1-v-1 card is half each person's photo, so there is no
+  // version of it with the muted side omitted, and showing it would defeat the
+  // mute. Accepted deliberately — the alternative is showing muted content.
+  let hidden = new Set<string>();
+  if (uid) {
+    hidden = await hiddenUidsFor(c.env, uid);
+    candidates = excludeHiddenMatches(candidates, hidden);
+  }
+
   // Per-user ranked order is cached briefly. On load-more / repeat requests
   // within the TTL we reuse it: this skips the affinity re-queries AND keeps
   // pagination stable (the feed doesn't reshuffle as you scroll).
-  const orderKey = uid ? `cache:feedorder:${uid}:${following ? "following" : "foryou"}:${status}:${type || "all"}` : "";
+  // The exclusion version is part of the key so that UNBLOCKING also takes effect
+  // immediately — see exclusionVersion() in lib/blocks.ts for why filtering the
+  // pool alone only fixes the block direction.
+  const orderKey = uid
+    ? `cache:feedorder:${uid}:${following ? "following" : "foryou"}:${status}:${type || "all"}:${exclusionVersion(hidden)}`
+    : "";
   const cachedOrder = uid && candidates.length > 0 ? await cacheGet(c.env, orderKey) : null;
 
   let ranked: any[];
@@ -627,7 +665,9 @@ readRoute.get("/matches", optionalAuth, async (c) => {
     if (uid) {
       // Per-user data — must never be stored by a shared/edge cache.
       c.header("Cache-Control", "private, no-store");
-      return c.json(await hydrateViewerState(db, cached.matches, uid));
+      // Filtered on the way out of the shared page cache, never on the way in.
+      const visible = excludeHiddenMatches(cached.matches, await hiddenUidsFor(c.env, uid));
+      return c.json(await hydrateViewerState(db, visible, uid));
     }
     c.header("Cache-Control", "public, max-age=15");
     return c.json(cached.matches);
@@ -678,7 +718,8 @@ readRoute.get("/matches", optionalAuth, async (c) => {
   await cachePut(c.env, cacheKey, { matches, nextCursor }, 30);
   if (uid) {
     c.header("Cache-Control", "private, no-store");
-    return c.json(await hydrateViewerState(db, matches, uid));
+    const visible = excludeHiddenMatches(matches, await hiddenUidsFor(c.env, uid));
+    return c.json(await hydrateViewerState(db, visible, uid));
   }
   c.header("Cache-Control", "public, max-age=15");
   return c.json(matches);
@@ -689,6 +730,17 @@ readRoute.get("/matches/:id", optionalAuth, async (c) => {
   const id = c.req.param("id");
   const row = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, id)).get();
   if (!row) return c.json(null);
+  // A battle involving a blocked user reads as nonexistent. Reported as "no such
+  // battle" rather than "not allowed" so the response cannot be used to probe
+  // who has blocked whom. Only BLOCKS hide a battle outright — a mute keeps it
+  // reachable by direct link, because muting is about the feed, not access.
+  const directViewer = c.get("user")?.uid;
+  if (directViewer) {
+    const blocked = await blockedUidsFor(c.env, directViewer);
+    const pa = (row.userA as any)?.uid;
+    const pb = (row.userB as any)?.uid;
+    if ((pa && blocked.has(pa)) || (pb && blocked.has(pb))) return c.json(null);
+  }
   const out: any = mapMatch(row);
   // For LIVE battles, surface the authoritative vote tally straight from the
   // per-match VoteCounter DO — D1 only holds the last (up to 5s) flushed
@@ -746,9 +798,32 @@ readRoute.get("/leaderboard", optionalAuth, async (c) => {
   const by = c.req.query("by") || "wins"; // wins | votes | xp
   const limit = Math.min(parseInt(c.req.query("limit") || "20", 10), 100);
   // Leaderboard changes slowly (on match resolution) — cache 30s in KV.
+  const viewerUid = c.get("user")?.uid;
+  /**
+   * Drop blocked accounts from a leaderboard page.
+   *
+   * Applied after the shared cache is read, so the cached top-N stays identical
+   * for everyone. A consequence worth knowing: a viewer who has blocked someone
+   * in the top N sees a SHORTER list rather than the next person promoted into
+   * the gap. Back-filling would mean over-fetching and re-ranking per viewer on
+   * an endpoint whose whole point is to be one cached query, and a rank is a
+   * global fact — quietly renumbering it per viewer would be worse.
+   */
+  const visibleRanks = async (rows: any[]) => {
+    if (!viewerUid) return rows;
+    const blocked = await blockedUidsFor(c.env, viewerUid);
+    // Only downgrade cacheability when the response was ACTUALLY filtered. The
+    // overwhelming majority of viewers block nobody, and marking their responses
+    // private would throw away edge caching on one of the hottest endpoints for
+    // no benefit.
+    if (blocked.size === 0) return rows;
+    c.header("Cache-Control", "private, no-store");
+    return excludeHiddenBy(rows, blocked, (r) => r.uid);
+  };
+
   const cacheKey = `cache:leaderboard:${by}:${limit}`;
   const cached = await cacheGet(c.env, cacheKey);
-  if (cached) return c.json(cached);
+  if (cached) return c.json(await visibleRanks(cached));
   const orderCol =
     by === "votes" ? schema.users.totalVotesReceived : by === "xp" ? schema.users.xp : schema.users.wins;
   const rows = await db
@@ -770,8 +845,9 @@ readRoute.get("/leaderboard", optionalAuth, async (c) => {
     .all();
   const enriched = rows.map((r: any) => ({ ...r, profileImageUrlThumb: avatarUrl(c.env, r.profileImageUrl) }));
   await cachePut(c.env, cacheKey, enriched, 60);
+  // visibleRanks downgrades this to private only if it actually filtered.
   c.header("Cache-Control", "public, max-age=30");
-  return c.json(enriched);
+  return c.json(await visibleRanks(enriched));
 });
 
 // ================= APP CONFIG =================
@@ -914,6 +990,9 @@ readRoute.get("/notifications", requireAuth, async (c) => {
       image: schema.notifications.image,
       data: schema.notifications.data,
       read: schema.notifications.read,
+      actorId: schema.notifications.actorId,
+      actors: schema.notifications.actors,
+      actorCount: schema.notifications.actorCount,
       createdAt: schema.notifications.createdAt,
     })
     .from(schema.notifications)
@@ -923,11 +1002,40 @@ readRoute.get("/notifications", requireAuth, async (c) => {
     .all();
 
   const hasMore = rows.length > limit;
-  const page = hasMore ? rows.slice(0, limit) : rows;
+  const scanned: any[] = hasMore ? rows.slice(0, limit) : rows;
+  // Derived from the last SCANNED row, not the last surviving one. Taking it
+  // after the filter below would (a) crash on a page whose rows were all
+  // filtered away, and (b) make the next page re-scan rows already discarded.
+  // Same shape as connectionsHandler's `rows[limit - 1]?.since`.
+  const nextCursor = hasMore ? scanned[scanned.length - 1]?.createdAt ?? null : null;
+  let page: any[] = scanned;
+
+  // createNotification suppresses new notifications from blocked/muted users,
+  // but rows written BEFORE the block are already in the table and have to be
+  // filtered at read time. Two passes, because a notification can be grouped:
+  // drop rows whose (most recent) actor is hidden, then strip hidden actors out
+  // of the surviving rows' actor lists so a grouped avatar strip can't reveal
+  // them either.
+  const hidden = await hiddenUidsFor(c.env, uid);
+  if (hidden.size > 0) {
+    page = excludeHiddenBy(page, hidden, (r: any) => r.actorId).map((r: any) => {
+      const actors = Array.isArray(r.actors) ? r.actors : null;
+      if (!actors?.some((a: any) => a?.uid && hidden.has(a.uid))) return r;
+      const kept = actors.filter((a: any) => !(a?.uid && hidden.has(a.uid)));
+      return {
+        ...r,
+        actors: kept,
+        // Keep the count consistent with what was removed so the row does not
+        // claim more actors than it can name.
+        actorCount: Math.max(kept.length, (r.actorCount ?? 1) - (actors.length - kept.length)),
+      };
+    });
+  }
+
   const res = c.json(page.map((r) => mapNotification(c.env, r))) as Response;
   // Per-user data — must never be shared-cached.
   res.headers.set("Cache-Control", "private, no-store");
-  if (hasMore) res.headers.set("X-Next-Cursor", String(page[page.length - 1].createdAt));
+  if (nextCursor != null) res.headers.set("X-Next-Cursor", String(nextCursor));
   return res;
 });
 
@@ -948,10 +1056,27 @@ readRoute.get("/notifications", requireAuth, async (c) => {
 readRoute.get("/notifications/unread-count", requireAuth, async (c) => {
   const db = getDb(c.env);
   const uid = c.get("user").uid;
+  // Excludes hidden actors so the badge agrees with the list it opens — counting
+  // rows the list then filters away leaves a badge that cannot be cleared by
+  // reading. Capped for the same bound-parameter reason as the other SQL filters.
+  const hiddenActors = sqlExclusionList(await hiddenUidsFor(c.env, uid));
   const row = await db
     .select({ v: sql<number>`count(*)` })
     .from(schema.notifications)
-    .where(and(eq(schema.notifications.recipientId, uid), eq(schema.notifications.seen, false)))
+    .where(
+      and(
+        eq(schema.notifications.recipientId, uid),
+        eq(schema.notifications.seen, false),
+        ...(hiddenActors.length
+          ? [
+              or(
+                isNull(schema.notifications.actorId),
+                notInArray(schema.notifications.actorId, hiddenActors),
+              ),
+            ]
+          : []),
+      ),
+    )
     .get();
   const res = c.json({ count: row?.v ?? 0 }) as Response;
   res.headers.set("Cache-Control", "private, no-store");
@@ -1024,7 +1149,13 @@ readRoute.get("/coin-packages", async (c) =>
 // ================= USERS =================
 readRoute.get("/users/suggested", optionalAuth, async (c) => {
   const db = getDb(c.env);
+  const uid = c.get("user")?.uid;
   const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 100);
+  // Suggesting someone the viewer blocked or muted is the single most jarring
+  // place for one to appear, so this is filtered in SQL rather than after the
+  // fact — it keeps the requested page size intact instead of returning short.
+  const hidden = await hiddenUidsFor(c.env, uid);
+  const excluded = sqlExclusionList(hidden);
   const rows = await db
     .select({
       id: schema.users.uid,
@@ -1034,34 +1165,112 @@ readRoute.get("/users/suggested", optionalAuth, async (c) => {
       coordinates: schema.users.coordinates,
     })
     .from(schema.users)
+    .where(excluded.length ? notInArray(schema.users.uid, excluded) : undefined)
     .limit(limit)
     .all();
-  return c.json(rows);
+  if (hidden.size) c.header("Cache-Control", "private, no-store");
+  // Safety net for a viewer past SQL_EXCLUSION_MAX, where the clause above only
+  // covers part of the set.
+  const visible = exclusionTruncated(hidden) ? excludeHiddenBy(rows as any[], hidden, (r: any) => r.id) : rows;
+  return c.json(visible);
 });
 
 readRoute.get("/users/search", optionalAuth, async (c) => {
   const db = getDb(c.env);
+  const uid = c.get("user")?.uid;
   const q = (c.req.query("q") || "").toLowerCase();
   if (q.length < 2) return c.json([]);
+  // Blocks only: a muted user is still someone you can look up on purpose.
+  const blocked = await blockedUidsFor(c.env, uid);
+  const excluded = sqlExclusionList(blocked);
   const rows = await db
     .select({ id: schema.users.uid, username: schema.users.username, avatarUrl: schema.users.profileImageUrl })
     .from(schema.users)
-    .where(like(schema.users.username, `${q}%`))
+    .where(
+      excluded.length
+        ? and(like(schema.users.username, `${q}%`), notInArray(schema.users.uid, excluded))
+        : like(schema.users.username, `${q}%`),
+    )
     .limit(10)
     .all();
-  return c.json(rows);
+  if (blocked.size) c.header("Cache-Control", "private, no-store");
+  const visible = exclusionTruncated(blocked) ? excludeHiddenBy(rows as any[], blocked, (r: any) => r.id) : rows;
+  return c.json(visible);
 });
 
 readRoute.get("/users/:id", optionalAuth, async (c) => {
   const id = c.req.param("id");
+  const viewer = c.get("user")?.uid;
+
+  // Block handling here is deliberately ASYMMETRIC, and checked before the
+  // shared cache so no viewer-specific data can ever be written into it.
+  //
+  //   - The viewer blocked this user  → return a minimal shell flagged
+  //     `isBlockedByMe`. The client needs something to render the "You blocked
+  //     @name — Unblock" state; returning nothing would leave the user unable to
+  //     find the person again in order to undo it.
+  //   - This user blocked the viewer  → return null, i.e. indistinguishable from
+  //     an account that does not exist. Anything else (an error, an empty
+  //     profile, a different status code) tells the blocked party that they were
+  //     blocked and by whom, which turns the safety tool into a notification.
+  if (viewer && viewer !== id) {
+    const rel = await getRelations(c.env, viewer);
+    if (rel.blockedByMe.includes(id)) {
+      const shell = await describeUsers(c.env, [id]);
+      if (!shell.length) return c.json(null);
+      c.header("Cache-Control", "private, no-store");
+      return c.json({
+        uid: id,
+        username: shell[0].username,
+        fullName: shell[0].fullName,
+        profileImageUrl: null,
+        profileImageUrlThumb: null,
+        bio: null,
+        following: [],
+        followersCount: 0,
+        followingCount: 0,
+        postsCount: 0,
+        isBlockedByMe: true,
+      });
+    }
+    if (rel.blocked.includes(id)) return c.json(null);
+  }
+
   // The public profile is viewer-agnostic (target user's own data + their
   // following list), so it's safe to share one cached copy across all callers.
   // The app polls this heavily, so a short KV cache saves a lot of D1 reads.
   // Invalidated immediately when the user edits their profile (see api.ts
   // updateProfile → delCache(userCacheKey)). Follower counts may lag by <=TTL.
+  /**
+   * Last per-viewer pass over the SHARED cached copy.
+   *
+   * `following` is the target's own follow list and is part of the cached,
+   * viewer-agnostic payload — so it can name accounts this particular viewer has
+   * blocked. Filtered on a shallow copy: mutating the cached object would leak
+   * one viewer's exclusions into every subsequent reader of that entry.
+   */
+  const forViewer = async (profile: any) => {
+    if (!viewer || !profile) return profile;
+    const rel = await getRelations(c.env, viewer);
+    const blocked = new Set(rel.blocked);
+    // Surfaced so the profile's action sheet can offer "Unmute" rather than
+    // "Mute". Mute is one-way, so this is only ever true for the viewer asking.
+    const isMutedByMe = rel.muted.includes(id);
+    // Nothing viewer-specific to add → leave the response shared-cacheable.
+    if (blocked.size === 0 && !isMutedByMe) return profile;
+    c.header("Cache-Control", "private, no-store");
+    return {
+      ...profile,
+      isMutedByMe,
+      following: Array.isArray(profile.following)
+        ? profile.following.filter((u: string) => !blocked.has(u))
+        : profile.following,
+    };
+  };
+
   const key = userCacheKey(id);
   const cached = await cacheGetJson(c.env, key);
-  if (cached !== null) return c.json(cached);
+  if (cached !== null) return c.json(await forViewer(cached));
 
   const db = getDb(c.env);
   const row = await db.select().from(schema.users).where(eq(schema.users.uid, id)).get();
@@ -1076,12 +1285,32 @@ readRoute.get("/users/:id", optionalAuth, async (c) => {
   }
   safe.profileImageUrlThumb = avatarUrl(c.env, safe.profileImageUrl);
   await cachePutJson(c.env, key, safe, 30);
-  return c.json(safe);
+  return c.json(await forViewer(safe));
 });
+
+/**
+ * True when the viewer must not see anything belonging to `targetId`.
+ *
+ * Blocks only. A mute hides someone's content from the feed but leaves their
+ * profile browsable on purpose, so the profile sub-resources below use this
+ * rather than the wider `hiddenUidsFor`.
+ */
+async function profileHiddenFrom(c: any, targetId: string): Promise<boolean> {
+  const viewer = c.get("user")?.uid;
+  if (!viewer || viewer === targetId) return false;
+  // Uses the CACHED set, not a direct D1 lookup. This is a read path, and rule 2
+  // in lib/blocks.ts applies: a direct query would turn a transient D1 blip into
+  // a 500 on seven endpoints instead of degrading, and would add a round-trip in
+  // front of the KV-cached connections page that exists to avoid one.
+  return (await blockedUidsFor(c.env, viewer)).has(targetId);
+}
 
 readRoute.get("/users/:id/posts", optionalAuth, async (c) => {
   const db = getDb(c.env);
   const userId = c.req.param("id");
+  // Each sub-resource is reachable directly, so each needs its own check — the
+  // guard on GET /users/:id does not protect them.
+  if (await profileHiddenFrom(c, userId)) return c.json({ posts: [], nextCursor: null });
   const limit = Math.min(parseInt(c.req.query("limit") || "12", 10), 50);
   const cursor = c.req.query("cursor") ? parseInt(c.req.query("cursor")!, 10) : null;
   const conds = [eq(schema.posts.userId, userId), eq(schema.posts.isHidden, false)];
@@ -1106,6 +1335,7 @@ readRoute.get("/users/:id/matches", optionalAuth, async (c) => {
   const type = c.req.query("type");
   const limit = Math.min(parseInt(c.req.query("limit") || "12", 10), 50);
   const viewer = c.get("user")?.uid;
+  if (await profileHiddenFrom(c, userId)) return c.json([]);
 
   // No KV cache here: migration 0014 makes this an indexed lookup (only the
   // user's own battles are read), so it's cheap enough to always serve fresh —
@@ -1131,10 +1361,16 @@ readRoute.get("/users/:id/matches", optionalAuth, async (c) => {
     .orderBy(desc(schema.contestMatches.createdAt))
     .limit(limit)
     .all();
-  const base = (rows as any[]).map((r) => enrichMatchMedia(c.env, mapMatch(r)));
+  let base = (rows as any[]).map((r) => enrichMatchMedia(c.env, mapMatch(r)));
 
   if (viewer) {
     c.header("Cache-Control", "private, no-store");
+    // A battle has TWO participants, so the owner check above is not enough: a
+    // third party's grid (and the Wins list, which is this same handler with
+    // ?won=1) would otherwise render a blocked user in full as the opponent.
+    // Worse, the write guards check both participants, so the card would be shown
+    // and then refuse the like or vote it offers.
+    base = excludeHiddenMatches(base, await hiddenUidsFor(c.env, viewer));
     return c.json(await hydrateViewerState(db, base, viewer));
   }
   c.header("Cache-Control", "public, max-age=15");
@@ -1158,7 +1394,32 @@ readRoute.get("/users/:id/bookmarks", requireAuth, async (c) => {
   const ids = rows.map((r) => r.matchId);
   if (!ids.length) return c.json([]);
   const matches = await db.select().from(schema.contestMatches).where(inArray(schema.contestMatches.id, ids)).all();
-  return c.json(matches.map(mapMatch));
+  // Saved battles are the viewer's own list, but the battles in it involve other
+  // people — a bookmark taken before a block still points at their content.
+  const visible = excludeHiddenMatches(matches.map(mapMatch), await hiddenUidsFor(c.env, uid));
+  return c.json(visible);
+});
+
+// ================= BLOCKED / MUTED (auth) =================
+/**
+ * The viewer's own block and mute lists, for the management screen.
+ *
+ * Returns only the OUTGOING relations (`blockedByMe`), never the incoming ones —
+ * who has blocked *you* is deliberately not knowable, which is the same reason
+ * GET /users/:id reports a blocked-by profile as nonexistent.
+ */
+readRoute.get("/blocked", requireAuth, async (c) => {
+  const uid = c.get("user").uid;
+  const rel = await getRelations(c.env, uid);
+  const [blocked, muted] = await Promise.all([
+    describeUsers(c.env, rel.blockedByMe),
+    describeUsers(c.env, rel.muted),
+  ]);
+  const withThumbs = (rows: Awaited<ReturnType<typeof describeUsers>>) =>
+    rows.map((r) => ({ ...r, profileImageUrlThumb: avatarUrl(c.env, r.profileImageUrl) }));
+  const res = c.json({ blocked: withThumbs(blocked), muted: withThumbs(muted) }) as Response;
+  res.headers.set("Cache-Control", "private, no-store");
+  return res;
 });
 
 // ================= FOLLOWERS / FOLLOWING (connections) =================
@@ -1247,11 +1508,39 @@ async function connectionsHandler(c: any, direction: "followers" | "following") 
   const cacheKey =
     direction === "followers" ? followersCacheKey(targetId) : followingCacheKey(targetId);
 
+  // The list belongs to `targetId`, so if the viewer and the target have blocked
+  // each other the whole list is off limits, not just entries within it.
+  if (await profileHiddenFrom(c, targetId)) return c.json([]);
+
+  /**
+   * Remove blocked accounts from a page of connections, AFTER the shared cache.
+   *
+   * Like the leaderboard, this can return a short page: `nextCursor` is a keyset
+   * on `follows.created_at` and must keep describing the real edge that ended the
+   * page, or pagination breaks. Over-fetching to refill would mean an unbounded
+   * number of extra round-trips for a viewer with many blocks, so a slightly
+   * short page is the better trade — the cursor stays correct and the client's
+   * "load more" continues from the right place.
+   */
+  const viewerUid = c.get("user")?.uid;
+  // `filtered` records whether anything was actually removed, so a viewer with no
+  // blocks keeps the edge-cacheable public response.
+  let filtered = false;
+  const visible = async (items: any[]) => {
+    if (!viewerUid) return items;
+    const blocked = await blockedUidsFor(c.env, viewerUid);
+    if (blocked.size === 0) return items;
+    filtered = true;
+    return excludeHiddenBy(items, blocked, (r) => r.id);
+  };
+  const cacheHeader = () => (filtered ? "private, no-store" : "public, max-age=30");
+
   if (isFirstPage) {
     const cached = await cacheGetJson<{ items: any[]; nextCursor: number | null }>(c.env, cacheKey);
     if (cached) {
-      const res = c.json(cached.items) as Response;
-      res.headers.set("Cache-Control", "public, max-age=30");
+      const body = await visible(cached.items);
+      const res = c.json(body) as Response;
+      res.headers.set("Cache-Control", cacheHeader());
       if (cached.nextCursor != null) res.headers.set("X-Next-Cursor", String(cached.nextCursor));
       return res;
     }
@@ -1263,9 +1552,11 @@ async function connectionsHandler(c: any, direction: "followers" | "following") 
     c.executionCtx.waitUntil(cachePutJson(c.env, cacheKey, { items, nextCursor }, 30));
   }
 
-  const res = c.json(items) as Response;
-  // Public list — safe to cache briefly at the edge/browser.
-  res.headers.set("Cache-Control", "public, max-age=30");
+  const body = await visible(items);
+  const res = c.json(body) as Response;
+  // Public list — safe to cache briefly at the edge/browser, but only when the
+  // response was not filtered for a particular viewer.
+  res.headers.set("Cache-Control", cacheHeader());
   if (nextCursor != null) res.headers.set("X-Next-Cursor", String(nextCursor));
   return res;
 }
@@ -1293,7 +1584,15 @@ readRoute.get("/chats", requireAuth, async (c) => {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }));
-  return c.json(chats);
+  // Members live in a JSON array column, so this is filtered in JS rather than
+  // in the query. Blocks only: a muted person can still DM you, because mute is
+  // about the feed — silencing a conversation is what leaving the chat is for.
+  const blocked = await blockedUidsFor(c.env, uid);
+  const visible =
+    blocked.size === 0
+      ? chats
+      : chats.filter((chat: any) => !(chat.users as string[]).some((u) => u !== uid && blocked.has(u)));
+  return c.json(visible);
 });
 
 readRoute.get("/chats/:id/messages", requireAuth, async (c) => {
@@ -1302,6 +1601,11 @@ readRoute.get("/chats/:id/messages", requireAuth, async (c) => {
   // requireAuth only proves *someone* is signed in. Without this, any
   // authenticated caller holding a chat id could read the whole conversation.
   await assertChatMember(c.env, chatId, c.get("user").uid);
+  // Deliberately NOT filtered by block, unlike GET /read/chats, which hides the
+  // thread from the inbox. The thread becomes unreachable in the UI, but the
+  // history stays readable to a member who still has the id: these are the
+  // viewer's own past conversations, and `sendMessage` refuses new messages in
+  // both directions, so nothing can be added to what is already there.
   const since = parseInt(c.req.query("since") || "0", 10);
   const rows = await db
     .select()
@@ -1395,6 +1699,14 @@ readRoute.get("/comments", optionalAuth, async (c) => {
 
   // Layer the signed-in viewer's per-comment like state so hearts stay filled.
   let items = payload.items;
+  // Blocked authors are dropped here — the same place `likedByMe` is layered on,
+  // i.e. strictly after the shared first-page cache and never baked into it.
+  // Blocks only: a mute does not hide someone's replies inside a thread the
+  // viewer chose to open.
+  if (uid && items.length > 0) {
+    const blockedAuthors = await blockedUidsFor(c.env, uid);
+    if (blockedAuthors.size > 0) items = excludeHiddenBy(items, blockedAuthors, (r: any) => r.userId);
+  }
   if (uid && items.length > 0) {
     const commentIds = items.map((r: any) => r.id);
     const likedRows = await db
@@ -1444,13 +1756,26 @@ readRoute.get("/stories/feed", requireAuth, async (c) => {
   const db = getDb(c.env);
   const uid = c.get("user").uid;
   const nowMs = Date.now();
-  const rows = await db
+  // The stories bar sits directly above the feed, so it uses the same wider
+  // `hiddenUidsFor` (blocks AND mutes) — "stop showing me this person" has to
+  // cover both or the feature looks broken. Filtered in SQL because this
+  // endpoint has no shared cache to poison.
+  const hiddenAuthors = await hiddenUidsFor(c.env, uid);
+  const excludedAuthors = sqlExclusionList(hiddenAuthors);
+  const allRows = await db
     .select()
     .from(schema.stories)
-    .where(gt(schema.stories.expiresAt, nowMs))
+    .where(
+      excludedAuthors.length
+        ? and(gt(schema.stories.expiresAt, nowMs), notInArray(schema.stories.userId, excludedAuthors))
+        : gt(schema.stories.expiresAt, nowMs),
+    )
     .orderBy(desc(schema.stories.createdAt))
     .limit(100)
     .all();
+  const rows = exclusionTruncated(hiddenAuthors)
+    ? excludeHiddenBy(allRows as any[], hiddenAuthors, (r: any) => r.userId)
+    : allRows;
 
   const userIds = [...new Set(rows.map((r) => r.userId))];
   const userMap = await attachUsers(c, userIds);
@@ -1481,6 +1806,7 @@ readRoute.get("/stories/feed", requireAuth, async (c) => {
 readRoute.get("/users/:id/stories", optionalAuth, async (c) => {
   const db = getDb(c.env);
   const userId = c.req.param("id");
+  if (await profileHiddenFrom(c, userId)) return c.json(null);
   const nowMs = Date.now();
   const rows = await db
     .select()
@@ -1522,7 +1848,11 @@ readRoute.get("/stories/:id/viewers", requireAuth, async (c) => {
     .leftJoin(schema.users, eq(schema.storyViews.viewerId, schema.users.uid))
     .where(eq(schema.storyViews.storyId, storyId))
     .all();
-  return c.json(rows.map((r: any) => ({
+  // Views recorded before a block are still in the table; drop them so the
+  // author's viewer list cannot surface someone they have since blocked.
+  const hiddenViewers = await blockedUidsFor(c.env, c.get("user").uid);
+  const visibleViews = excludeHiddenBy(rows as any[], hiddenViewers, (r: any) => r.uid);
+  return c.json(visibleViews.map((r: any) => ({
     uid: r.uid,
     username: r.username || "Unknown",
     avatarUrl: r.avatarUrl || null,
@@ -1534,10 +1864,12 @@ readRoute.get("/stories/:id/viewers", requireAuth, async (c) => {
 // ================= HIGHLIGHTS =================
 readRoute.get("/users/:id/highlights", optionalAuth, async (c) => {
   const db = getDb(c.env);
+  const userId = c.req.param("id");
+  if (await profileHiddenFrom(c, userId)) return c.json([]);
   const rows = await db
     .select()
     .from(schema.highlights)
-    .where(eq(schema.highlights.userId, c.req.param("id")))
+    .where(eq(schema.highlights.userId, userId))
     .orderBy(desc(schema.highlights.createdAt))
     .all();
   return c.json(rows);
@@ -1547,6 +1879,9 @@ readRoute.get("/highlights/:id/stories", optionalAuth, async (c) => {
   const db = getDb(c.env);
   const h = await db.select().from(schema.highlights).where(eq(schema.highlights.id, c.req.param("id"))).get();
   if (!h) return c.json(null);
+  // Highlights outlive the 24h story window, so this is the one story surface
+  // reachable indefinitely by direct link — and therefore the easiest to forget.
+  if (await profileHiddenFrom(c, h.userId)) return c.json(null);
   const storyIds = ((h.storyIds as string[]) || []).slice(0, 30);
   if (!storyIds.length) return c.json(null);
   const rows = await db.select().from(schema.stories).where(inArray(schema.stories.id, storyIds)).all();

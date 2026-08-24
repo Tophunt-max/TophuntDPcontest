@@ -30,6 +30,7 @@ import { sendFcmToToken } from "./firebaseAdmin";
 import { publish } from "./publish";
 import { consumeRateLimit } from "./rateLimit";
 import { logErrorToDb } from "./observability";
+import { isNotificationSuppressed } from "./blocks";
 import {
   categoryForType,
   isCollapsibleType,
@@ -327,6 +328,22 @@ export async function createNotification(
   if (!recipientId) return;
   // Never notify someone about their own action.
   if (n.actor?.uid && n.actor.uid === recipientId) return;
+
+  // Blocked or muted: drop the notification entirely — including the in-app row.
+  //
+  // This is the one deliberate exception to the "the in-app row is always
+  // written" invariant above. That invariant exists so a user who silenced
+  // pushes still has a complete history; it does not extend to someone they
+  // asked never to hear from again. Writing the row would leave the blocked
+  // user's name sitting in the notification centre, which is precisely the
+  // outcome the block was meant to prevent.
+  //
+  // Placing the check here rather than at each call site covers every
+  // `createNotification` caller at once — there are 20-odd of them, and a new
+  // one added later is covered automatically instead of leaking by default.
+  // Actor-less notifications (system, wallet, admin) have nobody to compare
+  // against and are never suppressed.
+  if (n.actor?.uid && (await isNotificationSuppressed(env, recipientId, n.actor.uid))) return;
 
   try {
     const db = getDb(env);

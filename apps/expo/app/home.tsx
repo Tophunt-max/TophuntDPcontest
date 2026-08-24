@@ -18,6 +18,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { PostSkeleton } from '@/src/components/home/PostSkeleton';
 import { StoriesSkeleton } from '@/src/components/stories/StoriesSkeleton';
 import { contestService } from '@/src/services/contests/contestService';
+import { useFocusEffect } from 'expo-router';
+import { getSocialGraphVersion } from '@/src/lib/socialGraphVersion';
 import { Colors } from '@/constants/theme';
 
 type FeedTab = 'foryou' | 'following';
@@ -42,6 +44,8 @@ export default function HomeScreen() {
   // Guards against overlapping loads triggered by fast scrolling / tab switches.
   const loadingMoreRef = useRef(false);
   const reqIdRef = useRef(0);
+  // Block/mute version this feed was last loaded at (see the focus effect below).
+  const graphVersionRef = useRef(getSocialGraphVersion());
 
   const loadFeed = useCallback(async (tab: FeedTab, isRefresh = false) => {
     const reqId = ++reqIdRef.current; // ignore results from superseded requests
@@ -88,7 +92,26 @@ export default function HomeScreen() {
 
   useEffect(() => {
     loadFeed(feedTab);
+    graphVersionRef.current = getSocialGraphVersion();
   }, [feedTab, loadFeed]);
+
+  /**
+   * Reload on focus, but only if the viewer blocked or muted someone while away.
+   *
+   * The feed lives in component state, so returning from a profile where the user
+   * just blocked someone would otherwise still show that person's battles until a
+   * manual pull-to-refresh. Gated on the version so an ordinary tab switch back to
+   * Home costs nothing.
+   */
+  useFocusEffect(
+    useCallback(() => {
+      const current = getSocialGraphVersion();
+      if (current !== graphVersionRef.current) {
+        graphVersionRef.current = current;
+        void loadFeed(feedTab, true);
+      }
+    }, [feedTab, loadFeed]),
+  );
 
   const onRefresh = useCallback(async () => {
     await queryClient.invalidateQueries({ queryKey: ['stories'] });
