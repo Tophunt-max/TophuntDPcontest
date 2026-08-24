@@ -21,7 +21,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { contestService } from '@/src/services/contests/contestService';
 import { contestMediaService } from '@/src/services/contests/uploadMedia';
 import { useAuth } from '@/src/hooks/useAuth';
-import { SuccessModal } from '@/src/components/forms/SuccessModal';
+import { goToCongratulations } from '@/src/lib/contestSuccess';
 import { RulesModal } from '@/src/components/modals/RulesModal';
 import { useProfile } from '@/src/hooks/useProfileData'; 
 import { useThemeColor } from '@/hooks/use-theme-color';
@@ -37,7 +37,6 @@ import Animated, {
   withSequence,
   withDelay,
   Easing,
-  runOnJS,
   useDerivedValue,
   interpolate
 } from 'react-native-reanimated';
@@ -67,7 +66,7 @@ export default function BattleSetupScreen() {
   const [selectedContest, setSelectedContest] = useState<any>(null);
   const [media, setMedia] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [showSuccessModal, setShowSuccessModal] = useState(false);
+
   const [showRulesModal, setShowRulesModal] = useState(false);
   const [isImageViewVisible, setIsImageViewVisible] = useState(false);
 
@@ -174,7 +173,20 @@ export default function BattleSetupScreen() {
     }
   };
 
-  const startCoinAnimation = (callback: () => void) => {
+  /**
+   * Fire-and-forget coin animation.
+   *
+   * This deliberately takes NO callback. It used to accept one and invoke it from
+   * Reanimated's completion handler behind `if (finished)` — and the entire
+   * submit lived in that callback: the media upload, the entry-fee charge and the
+   * success screen. Any interruption (a re-render reassigning the shared value,
+   * the view unmounting, the screen losing focus, a worklet callback not firing
+   * on web) left `finished` false, so nothing ran at all. Because the try/catch
+   * was inside the callback too, there was not even an error toast: the user
+   * tapped Submit, watched the coin fly away, and silently landed back on the
+   * form. Decoration must never gate a payment.
+   */
+  const playCoinAnimation = () => {
       setShowCoinAnimation(true);
       coinTranslateY.value = 0;
       coinOpacity.value = 1;
@@ -183,11 +195,7 @@ export default function BattleSetupScreen() {
 
       // Animate up and fade out
       coinTranslateY.value = withTiming(-600, { duration: 1000, easing: Easing.out(Easing.exp) });
-      coinOpacity.value = withTiming(0, { duration: 1000, easing: Easing.in(Easing.exp) }, (finished) => {
-          if (finished) {
-             runOnJS(callback)();
-          }
-      });
+      coinOpacity.value = withTiming(0, { duration: 1000, easing: Easing.in(Easing.exp) });
   };
 
   const handleAction = async () => {
@@ -228,45 +236,48 @@ export default function BattleSetupScreen() {
       return;
     }
 
-    // Start Animation and then upload
-    startCoinAnimation(async () => {
-        setShowCoinAnimation(false);
-        setUploading(true);
-        try {
-            const downloadUrl = await contestMediaService.uploadMedia(media, selectedContest.id || selectedContest.contestId, user.uid, 'photo');
-            const deviceId = await getDeviceId();
+    // The animation plays alongside the submit, not in front of it.
+    playCoinAnimation();
+    setUploading(true);
+    const isJoining = !!(selectedContest.isJoinMode || mode === 'join');
+    try {
+        const downloadUrl = await contestMediaService.uploadMedia(media, selectedContest.id || selectedContest.contestId, user.uid, 'photo');
+        const deviceId = await getDeviceId();
 
-            const matchData = {
-              mediaUrl: downloadUrl,
-              mediaType: 'photo',
-              caption: caption,
-              displayName: displayName,
-              username: username,
-              deviceId,
-            };
-      
-            if (selectedContest.isJoinMode || mode === 'join') {
-              await contestService.joinMatch({
-                matchId: matchId as string || selectedContest.id,
-                ...matchData
-              });
-            } else {
-              await contestService.startMatch({
-                contestId: selectedContest.id,
-                ...matchData
-              });
-            }
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-            setShowSuccessModal(true);
-          } catch (error: any) {
-            console.error("[BattleSetup] Action Error:", error);
-            const msg = error.details || error.message || "Something went wrong on the server.";
-            addToast(msg, 'error');
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-          } finally {
-            setUploading(false);
-          }
-    });
+        const matchData = {
+          mediaUrl: downloadUrl,
+          mediaType: 'photo',
+          caption: caption,
+          displayName: displayName,
+          username: username,
+          deviceId,
+        };
+
+        if (isJoining) {
+          await contestService.joinMatch({
+            matchId: matchId as string || selectedContest.id,
+            ...matchData
+          });
+        } else {
+          await contestService.startMatch({
+            contestId: selectedContest.id,
+            ...matchData
+          });
+        }
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        goToCongratulations(router, {
+          contestName: selectedContest.title || selectedContest.name,
+          isJoining,
+        });
+      } catch (error: any) {
+        console.error("[BattleSetup] Action Error:", error);
+        const msg = error.details || error.message || "Something went wrong on the server.";
+        addToast(msg, 'error');
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      } finally {
+        setUploading(false);
+        setShowCoinAnimation(false);
+      }
   };
 
   const navigateToWallet = () => {
@@ -278,14 +289,6 @@ export default function BattleSetupScreen() {
         setWalletPosition({ x: pageX, y: pageY, width, height });
      });
   }
-
-  if (showSuccessModal) return (
-    <SuccessModal 
-        title="Battle Joined!"
-        subtitle={mode === 'join' || selectedContest?.isJoinMode ? "You are now LIVE in this battle!" : "Match created! Waiting for an opponent."}
-        onGoHome={() => { setShowSuccessModal(false); router.replace('/home'); }} 
-    />
-  );
 
   if (loading) {
     return <BattleSetupSkeleton />;

@@ -65,7 +65,11 @@ const QUICK_ACTIONS: {
 }[] = [
   { key: 'leaderboard', label: 'Ranks', icon: 'trophy', grad: ['#FFB300', '#FF7A00'], route: '/explore/leaderboard' },
   { key: 'contests', label: 'Contests', icon: 'flame', grad: ['#FF4D67', '#FF7A45'], route: '/contests' },
-  { key: 'joined', label: 'My Battles', icon: 'game-controller', grad: ['#0EA5E9', '#2563EB'], route: '/contest/joined' },
+  // Points at the profile, where the user's own photo/video battles are listed.
+  // This used to point at '/contest/joined', which is the post-entry
+  // congratulations screen — so tapping "My Battles" told people they had
+  // "successfully joined" a contest they had not entered.
+  { key: 'joined', label: 'My Battles', icon: 'game-controller', grad: ['#0EA5E9', '#2563EB'], route: '/profile' },
   { key: 'rewards', label: 'Rewards', icon: 'gift', grad: ['#22C55E', '#16A34A'], route: '/wallet/store' },
   { key: 'wallet', label: 'Wallet', icon: 'wallet', grad: ['#6A5AE0', '#8B5CF6'], route: '/wallet' },
 ];
@@ -383,7 +387,10 @@ export default function DiscoverScreen() {
     const goJoin = () => handleAction(() => {
       if (isMyMatch) { addToast('This is your own contest! Wait for someone to join.', 'info'); return; }
       router.push({
-        pathname: isVideo ? '/contest/video/setup' : '/contest/photo/setup',
+        // '/contest/video' — NOT '/contest/video/setup', which does not exist and
+        // silently dead-ended every video join on Expo Router's unmatched-route
+        // screen. The video screen handles both picking and setup in one file.
+        pathname: isVideo ? '/contest/video' : '/contest/photo/setup',
         params: { matchId: item.id, mode: 'join' },
       });
     });

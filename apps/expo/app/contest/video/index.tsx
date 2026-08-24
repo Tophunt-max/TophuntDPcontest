@@ -14,7 +14,7 @@ import { useAuth } from '@/src/hooks/useAuth';
 import { useProfile } from '@/src/hooks/useProfileData';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { LinearGradient } from 'expo-linear-gradient';
-import { SuccessModal } from '@/src/components/forms/SuccessModal';
+import { goToCongratulations } from '@/src/lib/contestSuccess';
 import { getDeviceId } from '@/src/lib/deviceId';
 
 const BRAND_PRIMARY = '#FF4D67';
@@ -31,7 +31,7 @@ export default function VideoContestScreen() {
   const [media, setMedia] = useState<string | null>(null);
   const [caption, setCaption] = useState("");
   const [uploading, setUploading] = useState(false);
-  const [showSuccessModal, setShowSuccessModal] = useState(false);
+
 
   const bgColor = useThemeColor({}, 'background');
   const textColor = useThemeColor({}, 'text');
@@ -49,10 +49,15 @@ export default function VideoContestScreen() {
   useEffect(() => {
     if (contestId) {
       fetchContestDetail(contestId as string);
+    } else if (matchId) {
+      // Joining an existing battle. Without this branch a join deep-link fell
+      // through to the contest LIST, so the user picked an unrelated template and
+      // `handleAction` then sent that template's id as the matchId.
+      fetchMatchDetail(matchId as string);
     } else {
       loadContests();
     }
-  }, [contestId]);
+  }, [contestId, matchId]);
 
   const loadContests = async () => {
     try {
@@ -67,6 +72,38 @@ export default function VideoContestScreen() {
       const contest = await contestService.getContestById(id);
       setSelectedContest(contest);
     } catch (error) { console.error(error); } finally { setLoading(false); }
+  };
+
+  /**
+   * Load the battle being joined and present it as the selected contest, so the
+   * entry fee, prize and title shown are the ones this battle was created with.
+   * Mirrors `fetchMatchDetail` in the photo setup screen.
+   */
+  const fetchMatchDetail = async (id: string) => {
+    setLoading(true);
+    try {
+      const match = await contestService.getMatchById(id);
+      if (!match) {
+        Alert.alert('Battle unavailable', 'This battle is no longer open to join.');
+        router.replace('/explore');
+        return;
+      }
+      setSelectedContest({
+        ...match,
+        // The match carries the entry fee it was created with; the contest
+        // template it came from may since have been edited.
+        id: match.contestId || match.id,
+        title: match.title,
+        totalEntryFee: match.entryFee,
+        entryFishCoins: match.entryFee,
+        rewardCoins: match.rewardAmount ?? match.prizeCoins,
+        isJoinMode: true,
+      });
+    } catch (error) {
+      console.error(error);
+      Alert.alert('Error', 'Could not load this battle.');
+      router.replace('/explore');
+    } finally { setLoading(false); }
   };
 
   const pickVideo = async () => {
@@ -95,11 +132,12 @@ export default function VideoContestScreen() {
     }
 
     setUploading(true);
+    const isJoining = !!(selectedContest.isJoinMode || mode === 'join' || matchId);
     try {
       const downloadUrl = await contestMediaService.uploadMedia(media, selectedContest.id || selectedContest.contestId, user.uid, 'video');
       const deviceId = await getDeviceId();
 
-      if (mode === 'join' || matchId) {
+      if (isJoining) {
         await contestService.joinMatch({
           matchId: matchId as string || selectedContest.id,
           mediaUrl: downloadUrl,
@@ -116,21 +154,16 @@ export default function VideoContestScreen() {
           deviceId,
         });
       }
-      setShowSuccessModal(true);
+      goToCongratulations(router, {
+        contestName: selectedContest.title || selectedContest.name,
+        isJoining,
+      });
     } catch (error: any) {
       Alert.alert("Oops!", error.message || "Failed to submit.");
     } finally {
       setUploading(false);
     }
   };
-
-  if (showSuccessModal) return (
-    <SuccessModal 
-        title="Battle Joined!"
-        subtitle={mode === 'join' ? "You are now LIVE in this battle!" : "Match created! Waiting for an opponent."}
-        onGoHome={() => { setShowSuccessModal(false); router.replace('/home'); }} 
-    />
-  );
 
   if (loading) return <View style={{ flex: 1, backgroundColor: bgColor, paddingTop: 56 }}><ContestListSkeleton /></View>;
 
