@@ -218,11 +218,26 @@ export default function CoinStoreScreen() {
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
           ListFooterComponent={
-            <View style={styles.secureRow}>
-              <Ionicons name={manualOnly ? 'qr-code-outline' : 'shield-checkmark-outline'} size={16} color={subText} />
-              <Text style={[styles.secureText, { color: subText }]}>
-                {manualOnly ? 'Pick a package, then pay via QR / UPI' : 'Secure payment via Razorpay'}
-              </Text>
+            <View>
+              <View style={styles.secureRow}>
+                <Ionicons name={manualOnly ? 'qr-code-outline' : 'shield-checkmark-outline'} size={16} color={subText} />
+                <Text style={[styles.secureText, { color: subText }]}>
+                  {manualOnly ? 'Pick a package, then pay via QR / UPI' : 'Secure payment via Razorpay'}
+                </Text>
+              </View>
+              {/* A pending manual deposit isn't in the coin ledger yet (coins are
+                  credited on approval), so keep its status one tap away. */}
+              {manualAvailable && (
+                <TouchableOpacity
+                  onPress={() => router.push('/wallet/deposit' as any)}
+                  style={styles.depositsRow}
+                  accessibilityRole="button"
+                  accessibilityLabel="View my deposit requests"
+                >
+                  <Ionicons name="receipt-outline" size={14} color="#FF4D67" />
+                  <Text style={styles.depositsText}>My deposit requests</Text>
+                </TouchableOpacity>
+              )}
             </View>
           }
         />
@@ -264,5 +279,7 @@ const styles = StyleSheet.create({
   retryText: { color: '#FF4D67', fontFamily: 'Urbanist-Bold', marginTop: 4 },
   secureRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 8 },
   secureText: { fontSize: 12, fontFamily: 'Urbanist-Medium' },
+  depositsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, marginTop: 14 },
+  depositsText: { color: '#FF4D67', fontSize: 13, fontFamily: 'Urbanist-Bold' },
 
 });
