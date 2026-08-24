@@ -208,7 +208,7 @@ export default function CoinStoreScreen() {
       ) : isError ? (
         <View style={styles.stateBox}>
           <Ionicons name="cloud-offline-outline" size={40} color="#9E9E9E" />
-          <Text style={styles.stateText}>Couldn't load packages.</Text>
+          <Text style={styles.stateText}>Couldn&apos;t load packages.</Text>
           <TouchableOpacity onPress={() => refetch()}><Text style={styles.retryText}>Tap to retry</Text></TouchableOpacity>
         </View>
       ) : !packages || packages.length === 0 ? (

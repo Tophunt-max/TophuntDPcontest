@@ -137,7 +137,7 @@ export default function LoginWelcomeScreen() {
            )}
         </View>
 
-        <Text style={[styles.title, { color: textColor, fontFamily: 'Urbanist-Bold' }]}>Let's you in</Text>
+        <Text style={[styles.title, { color: textColor, fontFamily: 'Urbanist-Bold' }]}>Let&apos;s you in</Text>
 
         <View style={styles.socialButtonsContainer}>
           {config.facebookLogin && socialAvailable.facebook && (
@@ -217,7 +217,7 @@ export default function LoginWelcomeScreen() {
 
         <View style={styles.footerContainer}>
           <Text style={[styles.footerText, { color: isDark ? '#E0E0E0' : 'gray', fontFamily: 'Urbanist-Regular' }]}>
-            Don't have an account?{" "}
+            Don&apos;t have an account?{" "}
           </Text>
           <TouchableOpacity onPress={() => router.push("/auth/signup")}>
             <Text style={[styles.signupText, { fontFamily: 'Urbanist-Bold' }]}>Sign up</Text>

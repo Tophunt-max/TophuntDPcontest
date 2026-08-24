@@ -153,3 +153,7 @@ const styles = StyleSheet.create({
     borderWidth: 2,
   }
 });
+
+// memo() wraps an anonymous arrow, so React devtools and error stacks would
+// otherwise show <Unknown>.
+StoryItem.displayName = 'StoryItem';

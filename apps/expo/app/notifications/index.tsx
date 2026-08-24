@@ -282,7 +282,7 @@ export default function NotificationsScreen() {
                                 <ActivityIndicator size="small" color={subTextColor} />
                             </View>
                         ) : reachedEnd && notifications.length > 0 ? (
-                            <Text style={[styles.footerText, { color: subTextColor }]}>You're all caught up</Text>
+                            <Text style={[styles.footerText, { color: subTextColor }]}>You&apos;re all caught up</Text>
                         ) : null
                     }
                     contentContainerStyle={styles.listContent}

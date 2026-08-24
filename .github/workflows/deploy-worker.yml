@@ -1,0 +1,105 @@
+name: Deploy Worker
+
+# Deploys were entirely manual (`cd apps/worker && npm run deploy`), which means
+# whatever was on one person's laptop reached production, with no record of what
+# shipped and no verification afterwards.
+#
+# This runs the same gates as CI, deploys, then SMOKE TESTS the deployment. The
+# smoke test matters more than the deploy: /health/deep exercises D1, KV and R2
+# and reports missing secrets, so a deploy that "succeeded" but cannot reach its
+# database fails here instead of in front of users.
+#
+# Required repository secrets:
+#   CLOUDFLARE_API_TOKEN   — token with Workers Scripts:Edit + D1:Edit
+#   CLOUDFLARE_ACCOUNT_ID
+# Optional:
+#   WORKER_HEALTH_URL          production /health/deep URL (skips smoke test if unset)
+#   WORKER_HEALTH_URL_STAGING  staging equivalent
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/worker/**'
+      - '.github/workflows/deploy-worker.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Which environment to deploy
+        required: true
+        default: production
+        type: choice
+        options: [production, staging]
+
+concurrency:
+  # Never let two deploys race. `cancel-in-progress: false` is deliberate: a
+  # half-cancelled deploy is worse than a queued one.
+  group: deploy-worker-${{ github.event.inputs.environment || 'production' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy (${{ github.event.inputs.environment || 'production' }})
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'production' }}
+    defaults:
+      run:
+        working-directory: apps/worker
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/worker/package-lock.json
+      - run: npm ci
+
+      # Re-run the gates here rather than trusting that CI passed on this commit.
+      # A deploy job that skips verification is how an untested merge reaches
+      # production.
+      - name: Verify before deploying
+        run: |
+          node scripts/check-migrations.mjs
+          npm run typecheck
+          npm test
+
+      - name: Deploy
+        run: |
+          if [ "${{ github.event.inputs.environment }}" = "staging" ]; then
+            npx wrangler deploy --env staging
+          else
+            npx wrangler deploy
+          fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # Pending migrations are applied by the Worker itself on the first request
+      # (src/db/autoMigrate.ts), so this both warms the isolate and triggers them.
+      - name: Smoke test the deployment
+        env:
+          HEALTH_URL: ${{ github.event.inputs.environment == 'staging' && secrets.WORKER_HEALTH_URL_STAGING || secrets.WORKER_HEALTH_URL }}
+        run: |
+          if [ -z "$HEALTH_URL" ]; then
+            echo "::warning::No health URL configured — skipping the smoke test. Set WORKER_HEALTH_URL to enable it."
+            exit 0
+          fi
+          echo "Probing $HEALTH_URL"
+          for attempt in 1 2 3 4 5; do
+            body=$(curl -sS --max-time 20 -w '\n%{http_code}' "$HEALTH_URL" || true)
+            status=$(echo "$body" | tail -n1)
+            payload=$(echo "$body" | sed '$d')
+            echo "attempt $attempt -> HTTP $status"
+            echo "$payload"
+            if [ "$status" = "200" ]; then
+              echo "✅ Deployment healthy"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Deployment is not healthy. /health/deep did not return 200 — check the reported failing dependency or missing secret above."
+          exit 1

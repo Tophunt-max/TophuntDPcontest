@@ -30,8 +30,23 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
+# ---------------------------------------------------------------------------
+# Secrets
+#
+# `.dev.vars` is how Wrangler loads local secrets, and it holds the Firebase
+# service account, R2 keys, Razorpay secrets and the settings encryption key.
+# It was only ignored by apps/worker/.gitignore, so a copy created anywhere else
+# in the monorepo was committable.
+# ---------------------------------------------------------------------------
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.env
+.env.local
 .env*.local
+
+# Wrangler build/state output
+.wrangler/
 
 # typescript
 *.tsbuildinfo
@@ -41,9 +56,3 @@ app-example
 # generated native folders
 /ios
 /android
-
-.env
-functions/.env
-.env
-functions/.env
-

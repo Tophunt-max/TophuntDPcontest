@@ -25,6 +25,11 @@ export default function OtpVerificationScreen() {
   const { phoneNumber } = useLocalSearchParams<{ phoneNumber: string }>();
   const backgroundColor = useThemeColor({}, "background");
   const textColor = useThemeColor({}, "text");
+  // Resolved here, at the top level. These were being called INSIDE the otp.map()
+  // callback below, which is a hooks-order violation: the number of hooks per
+  // render depended on the length of the array.
+  const inputBackgroundColor = useThemeColor({}, "input");
+  const inputBorderColor = useThemeColor({}, "inputBorder");
   const { addToast } = useToast();
 
   // Backend issues a 6-digit OTP (lib/otp.ts). The UI MUST collect all 6 digits
@@ -121,8 +126,8 @@ export default function OtpVerificationScreen() {
                   styles.otpInput,
                   {
                     color: textColor,
-                    backgroundColor: useThemeColor({}, "input"),
-                    borderColor: useThemeColor({}, "inputBorder"),
+                    backgroundColor: inputBackgroundColor,
+                    borderColor: inputBorderColor,
                   },
                 ]}
                 keyboardType="number-pad"

@@ -131,7 +131,7 @@ export default function WithdrawScreen() {
                 placeholderTextColor={subTextColor}
                 style={[styles.input, { color: textColor, borderColor: isDark ? '#35383F' : '#EEE' }]}
               />
-              {amt > 0 && <Text style={[styles.cashPreview, { color: primaryColor }]}>You'll receive ≈ ₹{cash.toFixed(2)}</Text>}
+              {amt > 0 && <Text style={[styles.cashPreview, { color: primaryColor }]}>You&apos;ll receive ≈ ₹{cash.toFixed(2)}</Text>}
 
               <Text style={[styles.label, { color: subTextColor, marginTop: 16 }]}>Method</Text>
               <View style={styles.methodRow}>

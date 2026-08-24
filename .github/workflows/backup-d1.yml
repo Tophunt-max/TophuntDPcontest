@@ -1,0 +1,98 @@
+name: Backup D1
+
+# Off-site database backup.
+#
+# D1's Time Travel gives 30 days of point-in-time recovery for free, and
+# apps/worker/wrangler.toml has recommended a weekly `d1 export` since day one —
+# but nothing implemented it. Time Travel also lives inside the same Cloudflare
+# account, so it does not survive account loss, a billing suspension, or a
+# compromised API token deleting the database.
+#
+# This exports the full database weekly and keeps it as a build artifact and (when
+# configured) in R2, so a restore is possible even if the account is gone.
+#
+# Required repository secrets:
+#   CLOUDFLARE_API_TOKEN   — needs D1:Read
+#   CLOUDFLARE_ACCOUNT_ID
+# Optional:
+#   BACKUP_R2_BUCKET       — R2 bucket name for off-site copies
+on:
+  schedule:
+    # Sundays at 02:30 UTC (08:00 IST) — outside Indian peak hours.
+    - cron: '30 2 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    name: Export tophunt-db
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/worker/package-lock.json
+      - run: npm ci
+
+      - name: Export database
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          stamp=$(date -u +%Y-%m-%dT%H-%M-%SZ)
+          echo "STAMP=$stamp" >> "$GITHUB_ENV"
+          npx wrangler d1 export tophunt-db --remote --output="tophunt-db-$stamp.sql"
+          ls -lh "tophunt-db-$stamp.sql"
+          # An export that "succeeded" but produced a near-empty file is worse than
+          # a failed one, because it looks like a backup. Refuse to accept it.
+          size=$(stat -c%s "tophunt-db-$stamp.sql")
+          if [ "$size" -lt 4096 ]; then
+            echo "::error::Export is only ${size} bytes — that is not a real backup. Failing rather than storing it."
+            exit 1
+          fi
+          gzip "tophunt-db-$stamp.sql"
+
+      # The bucket name is read into an env var rather than tested in an `if:`
+      # expression, because the `secrets` context is not reliably available there.
+      - name: Upload off-site copy to R2
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          BACKUP_R2_BUCKET: ${{ secrets.BACKUP_R2_BUCKET }}
+        run: |
+          if [ -z "$BACKUP_R2_BUCKET" ]; then
+            echo "::warning::BACKUP_R2_BUCKET is not set — the backup exists only as a workflow artifact. Set it for an off-site copy."
+            exit 0
+          fi
+          npx wrangler r2 object put \
+            "$BACKUP_R2_BUCKET/d1/tophunt-db-${{ env.STAMP }}.sql.gz" \
+            --file="tophunt-db-${{ env.STAMP }}.sql.gz" \
+            --remote
+
+      # Also kept as an artifact, so a restore is possible even without access to
+      # the Cloudflare account itself.
+      - name: Keep as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: d1-backup-${{ env.STAMP }}
+          path: apps/worker/tophunt-db-${{ env.STAMP }}.sql.gz
+          retention-days: 90
+
+      - name: Summarise
+        run: |
+          {
+            echo "### D1 backup"
+            echo ""
+            echo "- Snapshot: \`tophunt-db-${{ env.STAMP }}.sql.gz\`"
+            echo "- Size: $(stat -c%s tophunt-db-${{ env.STAMP }}.sql.gz) bytes (gzipped)"
+            echo ""
+            echo "Restore: \`gunzip\` then \`npx wrangler d1 execute tophunt-db --remote --file=<file>.sql\`"
+            echo "against a NEW database first — see docs/RUNBOOK.md."
+          } >> "$GITHUB_STEP_SUMMARY"
