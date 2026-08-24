@@ -1,5 +1,14 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { View, StyleSheet, FlatList, useColorScheme, RefreshControl, Text, TouchableOpacity, ActivityIndicator } from 'react-native';
+import {
+  View,
+  StyleSheet,
+  FlatList,
+  RefreshControl,
+  Text,
+  TouchableOpacity,
+  ActivityIndicator,
+} from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '@/src/components/home/Header';
 import { StoriesBar } from '@/src/components/stories/StoriesBar';

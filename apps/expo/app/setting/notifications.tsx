@@ -8,8 +8,8 @@ import {
   Text,
   TouchableOpacity,
   View,
-  useColorScheme,
 } from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 
 
 import { Ionicons } from '@/src/lib/icons';

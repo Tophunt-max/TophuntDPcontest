@@ -1,5 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, StyleSheet, Animated, useColorScheme, StyleProp, ViewStyle, DimensionValue } from 'react-native';
+import {
+  View,
+  StyleSheet,
+  Animated,
+  StyleProp,
+  ViewStyle,
+  DimensionValue,
+} from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { LinearGradient } from 'expo-linear-gradient';
 
 /**

@@ -3,9 +3,9 @@ import {
   View,
   StyleSheet,
   Pressable,
-  useColorScheme,
   Image,
-} from "react-native";
+} from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { 
     ChatIcon_Light, ChatIcon_Dark 
 } from '@/assets/svgs';

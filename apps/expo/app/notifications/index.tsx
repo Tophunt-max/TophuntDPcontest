@@ -1,5 +1,16 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { View, FlatList, StyleSheet, RefreshControl, Text, useColorScheme, TouchableOpacity, ActivityIndicator } from 'react-native';
+import {
+  View,
+  FlatList,
+  StyleSheet,
+  RefreshControl,
+  Text,
+  TouchableOpacity,
+  ActivityIndicator,
+} from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
+import { emitToast } from '@/src/lib/toastBridge';
+import { reportError } from '@/src/lib/reportError';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AppImage as Image } from '@/src/components/ui/AppImage';
 import { Stack, useRouter } from 'expo-router';
@@ -160,10 +171,28 @@ export default function NotificationsScreen() {
         return () => unsubscribe();
     }, [user?.uid]);
 
-    const onRefresh = useCallback(() => {
+    /**
+     * Pull-to-refresh.
+     *
+     * This was a 700ms setTimeout that spun and did nothing. The live socket does
+     * keep the head current, but a user pulls precisely BECAUSE they suspect it
+     * is stale — so fetch the newest page for real, and reset pagination so the
+     * tail cannot end up overlapping a changed head.
+     */
+    const onRefresh = useCallback(async () => {
         setRefreshing(true);
-        // Live socket auto-updates the head; a brief spinner acknowledges the pull.
-        setTimeout(() => setRefreshing(false), 700);
+        try {
+            const { items } = await notificationService.fetchNotificationsPage(undefined, HEAD_LIMIT);
+            setHead(items);
+            setTail([]);
+            setReachedEnd(false);
+            reachedEndRef.current = false;
+        } catch (e) {
+            reportError(e, { screen: 'notifications', action: 'refresh' });
+            emitToast('Could not refresh notifications.', 'error');
+        } finally {
+            setRefreshing(false);
+        }
     }, []);
 
     const loadMore = useCallback(async () => {

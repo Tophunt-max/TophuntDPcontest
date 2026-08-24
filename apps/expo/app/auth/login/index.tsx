@@ -18,10 +18,10 @@ import {
   Connect_Dark,
   Phone_Color,
 } from "../../../assets/svgs";
-import { useColorScheme } from "../../../hooks/use-color-scheme";
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useToast } from "../../../src/components/toast/ToastProvider";
 import { Colors } from "@/constants/theme";
-import { SocialAuthService } from "../../../src/services/auth/socialAuth";
+import { SocialAuthService, socialProviderAvailability } from "../../../src/services/auth/socialAuth";
 import { readApi, poll } from "../../../src/services/api";
 
 const { width } = Dimensions.get("window");
@@ -46,6 +46,9 @@ export default function LoginWelcomeScreen() {
   const textColor = isDark ? Colors.dark.text : Colors.light.text;
   const { addToast } = useToast();
   
+  // A provider with no client id for this platform cannot complete a sign-in, so
+  // the button is hidden rather than shown and then failing.
+  const socialAvailable = socialProviderAvailability();
   const [loading, setLoading] = useState<string | null>(null);
   const [isConfigLoading, setIsConfigLoading] = useState(true);
   const [config, setConfig] = useState<AuthConfig>({
@@ -137,7 +140,7 @@ export default function LoginWelcomeScreen() {
         <Text style={[styles.title, { color: textColor, fontFamily: 'Urbanist-Bold' }]}>Let's you in</Text>
 
         <View style={styles.socialButtonsContainer}>
-          {config.facebookLogin && (
+          {config.facebookLogin && socialAvailable.facebook && (
             <TouchableOpacity
               style={[styles.socialButton, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]}
               onPress={() => handleSocialLogin("Facebook")}
@@ -152,7 +155,7 @@ export default function LoginWelcomeScreen() {
             </TouchableOpacity>
           )}
 
-          {config.googleLogin && (
+          {config.googleLogin && socialAvailable.google && (
             <TouchableOpacity
               style={[styles.socialButton, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]}
               onPress={() => handleSocialLogin("Google")}
@@ -167,7 +170,7 @@ export default function LoginWelcomeScreen() {
             </TouchableOpacity>
           )}
 
-          {config.appleLogin && (
+          {config.appleLogin && socialAvailable.apple && (
             <TouchableOpacity
               style={[styles.socialButton, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]}
               onPress={() => handleSocialLogin("Apple")}
@@ -194,7 +197,7 @@ export default function LoginWelcomeScreen() {
           )}
         </View>
 
-        {(config.facebookLogin || config.googleLogin || config.appleLogin || config.phoneLogin) && config.passwordLogin && (
+        {((config.facebookLogin && socialAvailable.facebook) || (config.googleLogin && socialAvailable.google) || (config.appleLogin && socialAvailable.apple) || config.phoneLogin) && config.passwordLogin && (
           <View style={styles.dividerContainer}>
             <View style={[styles.dividerLine, { backgroundColor: isDark ? '#35383F' : '#eee' }]} />
             <Text style={[styles.dividerText, { color: textColor, fontFamily: 'Urbanist-Medium' }]}>or</Text>

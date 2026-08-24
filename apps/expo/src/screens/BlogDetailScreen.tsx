@@ -3,7 +3,6 @@ import {
   View,
   Text,
   StyleSheet,
-  useColorScheme,
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
@@ -11,6 +10,7 @@ import {
   Platform,
   useWindowDimensions,
 } from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { AppImage as Image } from '@/src/components/ui/AppImage';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { blogService, BlogPost } from '@/src/services/blog/blogService';

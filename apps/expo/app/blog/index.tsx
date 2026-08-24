@@ -4,12 +4,12 @@ import {
   Text,
   StyleSheet,
   SafeAreaView,
-  useColorScheme,
   FlatList,
   TouchableOpacity,
   ActivityIndicator,
   RefreshControl,
 } from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { AppImage as Image } from '@/src/components/ui/AppImage';
 import { Ionicons } from '@/src/lib/icons';
 import { BackButton } from '@/src/components/ui/BackButton';

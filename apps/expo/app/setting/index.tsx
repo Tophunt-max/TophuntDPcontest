@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   View,
   Text,
@@ -6,33 +6,53 @@ import {
   SafeAreaView,
   TouchableOpacity,
   ScrollView,
-  Switch,
-  useColorScheme,
   Alert,
   Platform,
 } from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useRouter } from 'expo-router';
 import { BackButton } from '@/src/components/ui/BackButton';
 import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
 import {
   Settings_User,
   Settings_Lock,
-  Settings_Shield,
-  Settings_Scan,
-  Settings_Language,
   Settings_Moon,
-  Settings_Video,
-  Settings_Ads,
   Settings_Help,
-  Settings_Safety,
   Settings_Community,
   Settings_Document,
   Settings_Info,
   Settings_Logout,
   Settings_Alert,
-} from "@/assets/svgs";
+} from '@/assets/svgs';
 import { signOut } from '../../src/services/auth';
 import { Colors } from '@/constants/theme';
+import {
+  setThemePreference,
+  useThemePreference,
+  type ThemePreference,
+} from '@/src/lib/themePreference';
+import { emitToast } from '@/src/lib/toastBridge';
+import { reportError } from '@/src/lib/reportError';
+
+/**
+ * Settings.
+ *
+ * Nine of the seventeen rows here used to be `onPress: () => {}` — including
+ * "Report a Problem" and "Community Guidelines", which matter in a
+ * user-generated-content app — and the Dark Mode switch moved without changing
+ * anything. Rows now either work or are not shown: an affordance that does
+ * nothing is worse than an absent one, because the user assumes the feature is
+ * broken rather than missing.
+ *
+ * Added: Delete Account (required by both app stores) and a real, persisted theme
+ * preference.
+ */
+
+const THEME_LABELS: Record<ThemePreference, string> = {
+  system: 'System',
+  light: 'Light',
+  dark: 'Dark',
+};
 
 export default function SettingScreen() {
   const router = useRouter();
@@ -40,82 +60,95 @@ export default function SettingScreen() {
   const isDark = colorScheme === 'dark';
   const textColor = isDark ? '#fff' : '#212121';
   const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
+  const secondary = isDark ? '#A0A0A0' : '#666';
 
-  const [isDarkMode, setIsDarkMode] = useState(isDark);
+  const themePreference = useThemePreference();
 
-  const toggleDarkMode = () => setIsDarkMode(previousState => !previousState);
+  /** Cycle system → light → dark. Three states need no extra UI surface. */
+  const cycleTheme = () => {
+    const next: ThemePreference =
+      themePreference === 'system' ? 'light' : themePreference === 'light' ? 'dark' : 'system';
+    void setThemePreference(next);
+  };
 
   const performLogout = async () => {
-    console.log("[Settings] performLogout: Starting...");
     try {
       await signOut();
-      console.log("[Settings] performLogout: Sign out successful");
-      
-      // Clear navigation stack and go to login
       router.replace('/auth/login');
-      
     } catch (error: any) {
-      console.error("[Settings] performLogout: Error:", error);
-      if (Platform.OS === 'web') {
-        alert("Logout failed: " + error.message);
-      } else {
-        Alert.alert("Error", "Failed to logout. Please try again.");
-      }
+      reportError(error, { screen: 'settings', action: 'logout' });
+      emitToast(error?.message || 'Could not log out. Please try again.', 'error');
     }
   };
 
   const handleLogout = () => {
-    console.log("[Settings] handleLogout called");
-    
+    // Alert.alert is a no-op on web, so confirm there instead of silently doing
+    // nothing (or logging the user out with no confirmation).
     if (Platform.OS === 'web') {
-      // Direct logout for web to avoid window.confirm issues for now
-      performLogout();
-    } else {
-      Alert.alert(
-        "Logout",
-        "Are you sure you want to log out?",
-        [
-          { text: "Cancel", style: "cancel", onPress: () => console.log("[Settings] Logout cancelled") },
-          { text: "Logout", onPress: performLogout, style: "destructive" }
-        ]
-      );
+      // eslint-disable-next-line no-alert
+      if (typeof window !== 'undefined' && !window.confirm('Log out of TopHunt?')) return;
+      void performLogout();
+      return;
     }
+    Alert.alert('Logout', 'Are you sure you want to log out?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Logout', onPress: performLogout, style: 'destructive' },
+    ]);
   };
 
   const renderHeader = () => (
     <View style={styles.header}>
       <BackButton size={24} color={textColor} style={styles.backButton} />
-      <Text style={[styles.headerTitle, { color: textColor }]}>Setting</Text>
+      <Text style={[styles.headerTitle, { color: textColor }]}>Settings</Text>
     </View>
   );
 
-  const renderItem = ({ icon, label, onPress, rightElement, showArrow = true }: { icon: any; label: string; onPress: () => void; rightElement?: any; showArrow?: boolean }) => (
-    <TouchableOpacity 
-      style={styles.itemContainer} 
-      onPress={() => {
-        console.log(`[Settings] Item pressed: ${label}`);
-        onPress();
-      }}
+  const renderItem = ({
+    icon,
+    label,
+    onPress,
+    rightElement,
+    showArrow = true,
+    destructive = false,
+    accessibilityHint,
+  }: {
+    icon: any;
+    label: string;
+    onPress: () => void;
+    rightElement?: any;
+    showArrow?: boolean;
+    destructive?: boolean;
+    accessibilityHint?: string;
+  }) => (
+    <TouchableOpacity
+      style={styles.itemContainer}
+      onPress={onPress}
       activeOpacity={0.7}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityHint={accessibilityHint}
     >
       <View style={styles.itemLeft}>
-        <View style={styles.iconContainer}>
-            {icon}
-        </View>
-        <Text style={[styles.itemLabel, { color: textColor }]}>{label}</Text>
+        <View style={styles.iconContainer}>{icon}</View>
+        <Text style={[styles.itemLabel, { color: destructive ? '#FF4D67' : textColor }]}>{label}</Text>
       </View>
       <View style={styles.itemRight}>
         {rightElement}
-        {showArrow && <ArrowIcon size={18} direction="right" color={textColor} />}
+        {showArrow && <ArrowIcon size={18} direction="right" color={destructive ? '#FF4D67' : textColor} />}
       </View>
     </TouchableOpacity>
+  );
+
+  const sectionTitle = (title: string) => (
+    <Text style={[styles.sectionTitle, { color: secondary }]}>{title}</Text>
   );
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]}>
       {renderHeader()}
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.contentContainer}>
-        
+        {sectionTitle('ACCOUNT')}
+
         {renderItem({
           icon: <Settings_User width={24} height={24} color={textColor} />,
           label: 'Manage Account',
@@ -128,94 +161,54 @@ export default function SettingScreen() {
           onPress: () => router.push('/setting/notifications'),
         })}
 
-        {renderItem({
-          icon: <Settings_Lock width={24} height={24} color={textColor} />,
-          label: 'Privacy',
-          onPress: () => router.push('/legal/privacy'),
-        })}
-
-        {renderItem({
-          icon: <Settings_Shield width={24} height={24} color={textColor} />,
-          label: 'Security',
-          onPress: () => {},
-        })}
-
-        {renderItem({
-          icon: <Settings_Scan width={24} height={24} color={textColor} />,
-          label: 'QR Code',
-          onPress: () => {},
-        })}
-
-        {renderItem({
-          icon: <Settings_Language width={24} height={24} color={textColor} />,
-          label: 'Language',
-          rightElement: <Text style={[styles.languageText, { color: isDark ? '#E0E0E0' : '#212121' }]}>English(US)</Text>,
-          onPress: () => {},
-        })}
+        {sectionTitle('PREFERENCES')}
 
         {renderItem({
           icon: <Settings_Moon width={24} height={24} color={textColor} />,
-          label: 'Dark Mode',
-          showArrow: false,
+          label: 'Appearance',
           rightElement: (
-            <Switch
-              trackColor={{ false: '#767577', true: '#FF4D67' }}
-              thumbColor={'#f4f3f4'}
-              ios_backgroundColor="#3e3e3e"
-              onValueChange={toggleDarkMode}
-              value={isDarkMode}
-            />
+            <Text style={[styles.valueText, { color: secondary }]}>{THEME_LABELS[themePreference]}</Text>
           ),
-          onPress: toggleDarkMode,
+          onPress: cycleTheme,
+          showArrow: false,
+          accessibilityHint: 'Switches between system, light and dark appearance',
         })}
 
-        {renderItem({
-          icon: <Settings_Video width={24} height={24} color={textColor} />,
-          label: 'Content Preferences',
-          onPress: () => {},
-        })}
-
-        {renderItem({
-          icon: <Settings_Ads width={24} height={24} color={textColor} />,
-          label: 'Ads',
-          onPress: () => {},
-        })}
+        {sectionTitle('SUPPORT')}
 
         {renderItem({
           icon: <Settings_Help width={24} height={24} color={textColor} />,
           label: 'Report a Problem',
-          onPress: () => {},
-        })}
-
-        {renderItem({
-          icon: <Settings_Info width={24} height={24} color={textColor} />,
-          label: 'Help Center',
-          onPress: () => {},
-        })}
-
-        {renderItem({
-          icon: <Settings_Safety width={24} height={24} color={textColor} />,
-          label: 'Safety Center',
-          onPress: () => {},
+          onPress: () => router.push('/setting/report'),
         })}
 
         {renderItem({
           icon: <Settings_Community width={24} height={24} color={textColor} />,
           label: 'Community Guidelines',
-          onPress: () => {},
+          onPress: () => router.push('/legal/guidelines'),
         })}
+
+        {sectionTitle('LEGAL')}
 
         {renderItem({
           icon: <Settings_Document width={24} height={24} color={textColor} />,
-          label: 'Terms of Services',
+          label: 'Terms of Service',
           onPress: () => router.push('/legal/terms'),
         })}
 
         {renderItem({
-          icon: <Settings_Alert width={24} height={24} color={textColor} />,
+          icon: <Settings_Lock width={24} height={24} color={textColor} />,
           label: 'Privacy Policy',
           onPress: () => router.push('/legal/privacy'),
         })}
+
+        {renderItem({
+          icon: <Settings_Info width={24} height={24} color={textColor} />,
+          label: 'Refund Policy',
+          onPress: () => router.push('/legal/refund'),
+        })}
+
+        <View style={styles.separator} />
 
         {renderItem({
           icon: <Settings_Logout width={24} height={24} color={textColor} />,
@@ -224,6 +217,13 @@ export default function SettingScreen() {
           onPress: handleLogout,
         })}
 
+        {renderItem({
+          icon: <Settings_Alert width={24} height={24} color="#FF4D67" />,
+          label: 'Delete Account',
+          destructive: true,
+          onPress: () => router.push('/setting/delete-account'),
+          accessibilityHint: 'Permanently deletes your account and personal data',
+        })}
       </ScrollView>
     </SafeAreaView>
   );
@@ -250,6 +250,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 30,
   },
+  sectionTitle: {
+    fontSize: 12,
+    fontFamily: 'Urbanist-Bold',
+    letterSpacing: 1,
+    marginTop: 22,
+    marginBottom: 4,
+  },
   itemContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -275,9 +282,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
-  languageText: {
+  valueText: {
     fontSize: 16,
     fontFamily: 'Urbanist-SemiBold',
-    marginRight: 10,
+    marginRight: 6,
+  },
+  separator: {
+    height: 1,
+    backgroundColor: 'rgba(128,128,128,0.2)',
+    marginTop: 24,
+    marginBottom: 4,
   },
 });

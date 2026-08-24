@@ -145,8 +145,11 @@ async function idToolkit(env: Env, path: string, body: unknown): Promise<any> {
 }
 
 export interface CreateUserInput {
-  email: string;
-  password: string;
+  /** Optional for phone-only accounts created by the OTP sign-in flow. */
+  email?: string;
+  password?: string;
+  /** E.164 phone number. Creating a phone-only account requires no password. */
+  phone?: string;
   displayName?: string;
   photoUrl?: string | null;
 }
@@ -158,6 +161,9 @@ export async function createAuthUser(env: Env, input: CreateUserInput): Promise<
     password: input.password,
     displayName: input.displayName,
     photoUrl: input.photoUrl || undefined,
+    // Phone-only accounts are created by the OTP sign-in flow, which has already
+    // proven the user controls the number.
+    phoneNumber: input.phone || undefined,
   });
   return json.localId as string;
 }
@@ -276,4 +282,59 @@ export async function sendFcmToToken(
   const retryable =
     !invalid && (res.status === 429 || res.status >= 500 || status === "UNAVAILABLE" || status === "INTERNAL");
   return { ok: false, invalid, retryable, status: res.status };
+}
+
+
+/**
+ * Mint a Firebase CUSTOM TOKEN for `uid`.
+ *
+ * This is what lets the server complete a sign-in it has authenticated itself.
+ * The phone-login flow needs it: the OTP is sent and verified by this Worker (via
+ * whichever SMS gateway is configured), so at the end there is a proven phone
+ * owner but no Firebase credential. A custom token bridges that gap — the client
+ * calls `signInWithCustomToken` and gets a normal Firebase session.
+ *
+ * The alternative, Firebase's own client-side phone auth, required an
+ * unmaintained reCAPTCHA package and a WebView dependency that is not installed,
+ * and it bypassed our own OTP rate limiting entirely.
+ *
+ * A custom token is a JWT signed by the service account with a fixed audience.
+ * Firebase enforces a maximum lifetime of one hour; 10 minutes is plenty for an
+ * immediate sign-in and limits the damage if one leaks.
+ */
+export async function createCustomToken(
+  env: Env,
+  uid: string,
+  claims?: Record<string, unknown>,
+): Promise<string> {
+  if (!uid) throw httpsError("invalid-argument", "uid is required to mint a token.");
+  const sa = await getServiceAccount(env);
+  const issuedAt = Math.floor(Date.now() / 1000);
+
+  const header = { alg: "RS256", typ: "JWT" };
+  const payload: Record<string, unknown> = {
+    iss: sa.client_email,
+    sub: sa.client_email,
+    aud: "https://identitytoolkit.googleapis.com/google.identity.identitytoolkit.v1.IdentityToolkit",
+    iat: issuedAt,
+    exp: issuedAt + 600,
+    uid,
+  };
+  // Custom claims must be nested; top-level unknown keys are rejected.
+  if (claims && Object.keys(claims).length > 0) payload.claims = claims;
+
+  const unsigned = `${base64url(JSON.stringify(header))}.${base64url(JSON.stringify(payload))}`;
+  const key = await crypto.subtle.importKey(
+    "pkcs8",
+    pemToArrayBuffer(sa.private_key.replace(/\\n/g, "\n")),
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sig = await crypto.subtle.sign(
+    "RSASSA-PKCS1-v1_5",
+    key,
+    new TextEncoder().encode(unsigned),
+  );
+  return `${unsigned}.${base64url(sig)}`;
 }

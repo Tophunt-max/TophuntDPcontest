@@ -29,7 +29,7 @@ import {
 } from "../../../../assets/svgs";
 import { BackButton } from "@/src/components/ui/BackButton";
 import { useSignupStore } from "../../../../src/store/signup";
-import { useColorScheme } from "../../../../hooks/use-color-scheme";
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { FormInput } from "@/src/components/inputs/FormInput";
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useToast } from "@/src/components/toast/ToastProvider";

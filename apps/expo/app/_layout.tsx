@@ -57,11 +57,16 @@ import { OfflineBanner } from '@/src/components/ui/OfflineBanner';
 import { emitToast } from '@/src/lib/toastBridge';
 import { reportError } from '@/src/lib/reportError';
 import { configureVideoCache } from '@/src/lib/videoCache';
+import { hydrateThemePreference } from '@/src/lib/themePreference';
 
 // Apply our video cache budget. Deliberately at module scope: expo-video refuses
 // to change the cache size once any VideoPlayer exists, and module evaluation of
 // the root layout happens before any screen can mount one.
 configureVideoCache();
+
+// Load the saved Dark Mode preference before the first paint where possible, so
+// an overridden theme doesn't flash the system theme on launch.
+void hydrateThemePreference();
 
 // Drive React Query's online state from the device's real connectivity so
 // queries pause offline and auto-refetch when the network returns.

@@ -8,8 +8,8 @@ import {
   ScrollView,
   Alert,
   Platform,
-  useColorScheme,
 } from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useRouter } from 'expo-router';
 import {
   Settings_User,

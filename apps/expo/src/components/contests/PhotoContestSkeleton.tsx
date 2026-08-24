@@ -1,5 +1,10 @@
 import React from 'react';
-import { View, StyleSheet, Dimensions, useColorScheme } from 'react-native';
+import {
+  View,
+  StyleSheet,
+  Dimensions,
+} from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Skeleton } from '../ui/Skeleton';
 
 const { width } = Dimensions.get('window');

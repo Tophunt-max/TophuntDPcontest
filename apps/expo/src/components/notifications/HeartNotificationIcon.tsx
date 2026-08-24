@@ -1,5 +1,10 @@
 import React, { useEffect, useState } from "react";
-import { View, StyleSheet, Pressable, useColorScheme } from "react-native";
+import {
+  View,
+  StyleSheet,
+  Pressable,
+} from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useRouter } from 'expo-router';
 import { HeartIcon_Light, HeartIcon_Dark } from '@/assets/svgs';
 import { notificationService } from "@/src/services/notifications/notificationService";

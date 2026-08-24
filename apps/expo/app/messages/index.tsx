@@ -12,8 +12,10 @@ import {
   Animated,
   Alert,
   RefreshControl,
-  useColorScheme
 } from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
+import { emitToast } from '@/src/lib/toastBridge';
+import { reportError } from '@/src/lib/reportError';
 import { auth } from '@/src/services/firebase/initFirebase';
 import { readApi, callApi } from '@/src/services/api';
 import { live } from '@/src/services/realtime';
@@ -137,12 +139,19 @@ export default function MessagesScreen() {
     };
   }, [fetchChats]);
 
-  const onRefresh = useCallback(() => {
+  // Actually refetch. This used to be a 1.5s setTimeout that showed the spinner
+  // and returned the same stale list, so pulling to refresh never did anything.
+  const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    setTimeout(() => {
+    try {
+      await fetchChats();
+    } catch (e) {
+      reportError(e, { screen: 'messages', action: 'refresh' });
+      emitToast('Could not refresh your chats.', 'error');
+    } finally {
       setRefreshing(false);
-    }, 1500);
-  }, []);
+    }
+  }, [fetchChats]);
 
   const handleDeleteChat = (chatId: string) => {
     Alert.alert(

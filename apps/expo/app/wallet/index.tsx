@@ -1,5 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, useColorScheme, Alert, Share, Modal, ActivityIndicator, Dimensions } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  FlatList,
+  TouchableOpacity,
+  Alert,
+  Share,
+  Modal,
+  ActivityIndicator,
+  Dimensions,
+} from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@/src/lib/icons';
@@ -14,6 +26,7 @@ import Animated, { FadeInDown, FadeInRight } from 'react-native-reanimated';
 import { useAuth } from '@/src/services/auth';
 import { Colors } from '@/constants/theme';
 import { useProfile } from '@/src/hooks/useProfileData';
+import { useAppConfig } from '@/src/services/appSettings';
 import { walletService } from '@/src/services/wallet/walletService';
 import { useFeature } from '@/src/services/appSettings';
 import { readApi } from '@/src/services/api';
@@ -72,7 +85,6 @@ export default function WalletScreen() {
   
   // Ad Simulation State
   const [isWatchingAd, setIsWatchingAd] = useState(false);
-  const [adTimer, setAdTimer] = useState(5);
 
   // Real transaction history from the coin ledger (signed amounts).
   const { data: txnData } = useQuery({
@@ -90,13 +102,21 @@ export default function WalletScreen() {
     enabled: !!user?.uid,
   });
 
+  const { config: appConfig } = useAppConfig();
+
   // Real daily tasks (progress + claim state from the server).
   const { data: tasksResp, refetch: refetchTasks } = useQuery({
     queryKey: ['daily-tasks', user?.uid],
     queryFn: () => walletService.getDailyTasks(),
     enabled: !!user?.uid,
   });
-  const tasks = ((tasksResp as any)?.tasks || []).map((t: any) => ({ ...t, maxProgress: t.target, icon: taskIcon(t.type) }));
+  // Rewarded ads are OFF unless an admin enables them, and the server refuses
+  // `claimAdReward` in that state. Hiding the task keeps the UI honest instead of
+  // offering a reward the backend will reject.
+  const adsEnabled = (appConfig as any)?.ads?.enabled === true;
+  const tasks = ((tasksResp as any)?.tasks || [])
+    .filter((t: any) => t.type !== 'ad' || adsEnabled)
+    .map((t: any) => ({ ...t, maxProgress: t.target, icon: taskIcon(t.type) }));
 
   const claimTask = async (taskId: string) => {
     try {
@@ -157,20 +177,26 @@ export default function WalletScreen() {
     }
   };
 
-  const simulateWatchAd = () => {
+  /**
+   * Start a rewarded ad.
+   *
+   * This used to be a five-second `setInterval` that then called
+   * `claimAdReward` — i.e. a client-side timer minting withdrawable currency with
+   * no ad involved and nothing to verify. There is no ad SDK in this app, so the
+   * only honest options were to remove the feature or gate it; it is gated.
+   *
+   * When an admin enables rewarded ads, the server still requires an explicit
+   * decision to trust an unverified client (see `ads.trustClient`). Wiring a real
+   * SDK later means replacing the body of this function with the SDK's
+   * show-ad call and letting its server-side verification callback do the
+   * crediting — `finishAd` stays as the success path.
+   */
+  const startRewardedAd = () => {
+    if (!adsEnabled) {
+      Alert.alert('Not available', 'Rewarded ads are not available right now. Please check back later.');
+      return;
+    }
     setIsWatchingAd(true);
-    setAdTimer(5);
-    
-    const interval = setInterval(() => {
-        setAdTimer((prev) => {
-            if (prev <= 1) {
-                clearInterval(interval);
-                finishAd();
-                return 0;
-            }
-            return prev - 1;
-        });
-    }, 1000);
   };
 
   const finishAd = async () => {
@@ -200,7 +226,7 @@ export default function WalletScreen() {
     if (task.claimable) { claimTask(task.id); return; }
     if (task.type === 'share') handleRefer();
     else if (task.type === 'vote') router.push('/');
-    else if (task.type === 'ad') simulateWatchAd();
+    else if (task.type === 'ad') startRewardedAd();
   };
 
   const renderFilter = (filter: string) => {
@@ -482,18 +508,24 @@ export default function WalletScreen() {
         }
       />
 
-      {/* Fake Ad Modal */}
-      <Modal visible={isWatchingAd} transparent animationType="fade">
+      {/* Rewarded ad. No ad SDK is integrated yet, so this states that plainly
+          rather than running a countdown and pretending an ad was shown. */}
+      <Modal visible={isWatchingAd} transparent animationType="fade" onRequestClose={() => setIsWatchingAd(false)}>
         <View style={styles.adModalContainer}>
             <View style={[styles.adModalContent, { backgroundColor: isDark ? '#1F222A' : '#FFF' }]}>
-                <Text style={[styles.adTitle, { color: textColor }]}>Watching Ad...</Text>
-                <Text style={[styles.adSubtitle, { color: subTextColor }]}>Please wait {adTimer} seconds to get reward</Text>
-                
-                <ActivityIndicator size="large" color={primaryColor} style={{ marginVertical: 20 }} />
-                
-                <View style={styles.adProgressBar}>
-                    <View style={[styles.adProgressFill, { width: `${((5-adTimer)/5)*100}%` }]} />
-                </View>
+                <Text style={[styles.adTitle, { color: textColor }]}>Rewarded ads coming soon</Text>
+                <Text style={[styles.adSubtitle, { color: subTextColor }]}>
+                  We&apos;re finishing the ad integration. You&apos;ll be able to earn coins here shortly —
+                  meanwhile the daily tasks above still pay out.
+                </Text>
+                <TouchableOpacity
+                  onPress={() => setIsWatchingAd(false)}
+                  style={{ marginTop: 20, paddingVertical: 12, paddingHorizontal: 28, borderRadius: 100, backgroundColor: primaryColor }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Close"
+                >
+                  <Text style={{ color: '#fff', fontFamily: 'Urbanist-Bold', fontSize: 15 }}>Got it</Text>
+                </TouchableOpacity>
             </View>
         </View>
       </Modal>

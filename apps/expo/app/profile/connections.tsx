@@ -1,6 +1,17 @@
 
 import React, { useState, useEffect, useLayoutEffect } from 'react';
-import { View, Text, StyleSheet, useColorScheme, FlatList, Image, TouchableOpacity, ActivityIndicator, Dimensions, TextInput } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  FlatList,
+  Image,
+  TouchableOpacity,
+  ActivityIndicator,
+  Dimensions,
+  TextInput,
+} from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { readApi } from "@/src/services/api";
 import { Ionicons } from '@/src/lib/icons';

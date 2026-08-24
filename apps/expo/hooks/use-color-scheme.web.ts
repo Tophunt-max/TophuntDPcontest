@@ -1,8 +1,13 @@
 import { useEffect, useState } from 'react';
-import { useColorScheme as useRNColorScheme } from 'react-native';
+import { useResolvedColorScheme } from '@/src/lib/themePreference';
 
 /**
- * To support static rendering, this value needs to be re-calculated on the client side for web
+ * Web variant.
+ *
+ * Static rendering has no access to the client's colour scheme, so the first
+ * paint must be deterministic ('light') and the real value is applied after
+ * hydration. Beyond that it resolves identically to native, including the in-app
+ * Dark Mode override.
  */
 export function useColorScheme() {
   const [hasHydrated, setHasHydrated] = useState(false);
@@ -11,7 +16,7 @@ export function useColorScheme() {
     setHasHydrated(true);
   }, []);
 
-  const colorScheme = useRNColorScheme();
+  const colorScheme = useResolvedColorScheme();
 
   if (hasHydrated) {
     return colorScheme;

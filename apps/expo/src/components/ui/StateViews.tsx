@@ -1,5 +1,11 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, useColorScheme } from 'react-native';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+} from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Ionicons } from '@/src/lib/icons';
 
 type IconName = string;

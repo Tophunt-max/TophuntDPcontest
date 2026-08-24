@@ -1,5 +1,15 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { View, StyleSheet, SafeAreaView, Text, Button, FlatList, RefreshControl, ScrollView, useColorScheme } from 'react-native';
+import {
+  View,
+  StyleSheet,
+  SafeAreaView,
+  Text,
+  Button,
+  FlatList,
+  RefreshControl,
+  ScrollView,
+} from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useAuth } from '@/src/services/auth';
 import { useProfile, useToggleFollow, useUserBookmarks, useUserMatches } from '@/src/hooks/useProfileData';

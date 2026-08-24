@@ -7,7 +7,7 @@ import { fetchStories } from '@/src/services/stories/storyService';
 import { prefetchImages } from '@/src/lib/mediaPrefetch';
 import { auth } from '@/src/services/firebase/initFirebase';
 import { StoriesSkeleton } from './StoriesSkeleton';
-import { useColorScheme } from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { onAuthStateChanged } from 'firebase/auth';
 import { Colors } from '@/constants/theme';
 

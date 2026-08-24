@@ -18,19 +18,15 @@ import { firebaseConfig } from "@/src/firebaseConfig";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Platform } from "react-native";
 
-// Import Firebase Compat for legacy libraries (Like expo-firebase-recaptcha)
-import firebase from 'firebase/compat/app';
-import 'firebase/compat/auth';
+// NOTE: firebase/compat used to be imported here purely to satisfy
+// expo-firebase-recaptcha. Phone sign-in now goes through our own Worker (OTP +
+// custom token), so the compat layer — and roughly a second copy of the Firebase
+// auth bundle — is gone.
 
 // 1. Initialize Modular App
 const app: FirebaseApp = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
-// 2. Initialize Compat App (Required for expo-firebase-recaptcha)
-if (!firebase.apps.length) {
-  firebase.initializeApp(firebaseConfig);
-}
-
-// 3. Initialize Auth with Persistence.
+// 2. Initialize Auth with Persistence.
 // NOTE: The previous guard used `getApps().length === 0`, but an app was always
 // created above, so this branch never ran and persistence was never configured
 // (auth silently fell back to in-memory -> users logged out on restart).
