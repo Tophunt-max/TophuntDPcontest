@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Alert, ActivityIndicator, Image, useColorScheme } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@/src/lib/icons';
 import { BackButton } from '@/src/components/ui/BackButton';
 import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
@@ -15,6 +16,15 @@ import { Colors } from '@/constants/theme';
 import { walletService } from '@/src/services/wallet/walletService';
 import { useAppConfig } from '@/src/services/appSettings';
 import { readApi } from '@/src/services/api';
+
+interface CoinPackage {
+  id: string;
+  name?: string;
+  coins: number;
+  bonusCoins: number;
+  priceInr: number;
+  totalCoins: number;
+}
 
 export default function DepositScreen() {
   const router = useRouter();
@@ -31,17 +41,35 @@ export default function DepositScreen() {
   const gw = config?.paymentGateway || {};
   const mode = gw.mode || 'auto';
   const manualEnabled = mode === 'manual' || mode === 'both';
-  const rate = Number(gw.coinRate ?? 1);
 
-  const [amount, setAmount] = useState('');
   const [utr, setUtr] = useState('');
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState<any[]>([]);
   const [shot, setShot] = useState('');
   const [uploading, setUploading] = useState(false);
 
-  const amt = Number(amount) || 0;
-  const payInr = amt * rate;
+  // Manual deposits are priced by coin package, same as the store. There used
+  // to be a free-form "coins to add" box multiplied by a `coinRate` gateway
+  // setting, which was a second pricing source that disagreed with
+  // coin_packages (15 coins cost Rs 10 as a package but Rs 15 here).
+  const { packageId: packageIdParam } = useLocalSearchParams<{ packageId?: string }>();
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  const { data: packages, isLoading: packagesLoading } = useQuery({
+    queryKey: ['coin-packages'],
+    queryFn: async () => (await readApi('/read/coin-packages')) as CoinPackage[],
+  });
+
+  // Preselect whatever the store sent over; otherwise the first package, so the
+  // QR is never shown without a price attached to it.
+  useEffect(() => {
+    if (selectedId || !packages?.length) return;
+    const fromParam = packageIdParam && packages.find((p) => p.id === packageIdParam);
+    setSelectedId(fromParam ? fromParam.id : packages[0].id);
+  }, [packages, packageIdParam, selectedId]);
+
+  const selected = packages?.find((p) => p.id === selectedId) || null;
+  const payInr = Number(selected?.priceInr) || 0;
 
   const loadHistory = async () => {
     try {
@@ -77,14 +105,14 @@ export default function DepositScreen() {
   };
 
   const submit = async () => {
-    if (!Number.isInteger(amt) || amt <= 0) return Alert.alert('Invalid amount', 'Enter a valid whole number of coins.');
+    if (!selected) return Alert.alert('Select a package', 'Choose a coin package to continue.');
     if (!utr.trim() || utr.trim().length < 4) return Alert.alert('UTR required', 'Enter the bank UTR / transaction reference from your payment.');
     setLoading(true);
     try {
-      await walletService.requestDeposit(amt, utr.trim(), 'qr', shot || undefined);
+      await walletService.requestDeposit(selected.id, utr.trim(), 'qr', shot || undefined);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       Alert.alert('Submitted', 'Your deposit is pending admin approval. Coins will be added once verified.');
-      setAmount(''); setUtr(''); setShot('');
+      setUtr(''); setShot('');
       loadHistory();
     } catch (e: any) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -118,7 +146,9 @@ export default function DepositScreen() {
           <>
             {/* QR + UPI */}
             <View style={[styles.card, { backgroundColor: cardBg, alignItems: 'center' }]}>
-              <Text style={[styles.label, { color: subTextColor, marginBottom: 12 }]}>Scan & pay to this QR</Text>
+              <Text style={[styles.label, { color: subTextColor, marginBottom: 12 }]}>
+                {selected ? `Scan & pay ₹${payInr.toFixed(2)} to this QR` : 'Scan & pay to this QR'}
+              </Text>
               {gw.qrImageUrl ? (
                 <Image source={{ uri: gw.qrImageUrl }} style={styles.qr} resizeMode="contain" />
               ) : (
@@ -135,18 +165,46 @@ export default function DepositScreen() {
               {gw.note ? <Text style={[styles.note, { color: subTextColor }]}>{gw.note}</Text> : null}
             </View>
 
-            {/* Amount + UTR */}
+            {/* Package + UTR */}
             <View style={[styles.card, { backgroundColor: cardBg }]}>
-              <Text style={[styles.label, { color: subTextColor }]}>Coins to add</Text>
-              <TextInput
-                value={amount}
-                onChangeText={setAmount}
-                keyboardType="number-pad"
-                placeholder="0"
-                placeholderTextColor={subTextColor}
-                style={[styles.input, { color: textColor, borderColor: isDark ? '#35383F' : '#EEE' }]}
-              />
-              {amt > 0 && <Text style={[styles.cashPreview, { color: primaryColor }]}>Pay ₹{payInr.toFixed(2)} (₹{rate}/coin)</Text>}
+              <Text style={[styles.label, { color: subTextColor }]}>Choose a package</Text>
+              {packagesLoading ? (
+                <ActivityIndicator color={primaryColor} style={{ marginVertical: 16 }} />
+              ) : !packages?.length ? (
+                <Text style={[styles.note, { color: subTextColor, textAlign: 'left' }]}>No packages available right now.</Text>
+              ) : (
+                <View style={styles.pkgGrid}>
+                  {packages.map((p) => {
+                    const active = p.id === selectedId;
+                    return (
+                      <TouchableOpacity
+                        key={p.id}
+                        onPress={() => setSelectedId(p.id)}
+                        activeOpacity={0.85}
+                        accessibilityRole="radio"
+                        accessibilityState={{ selected: active }}
+                        accessibilityLabel={`${p.totalCoins} coins for ₹${p.priceInr}`}
+                        style={[
+                          styles.pkgCard,
+                          { borderColor: active ? primaryColor : isDark ? '#35383F' : '#EEE', backgroundColor: active ? 'rgba(255,77,103,0.08)' : 'transparent' },
+                        ]}
+                      >
+                        <Text style={[styles.pkgCoins, { color: textColor }]}>{p.totalCoins}</Text>
+                        <Text style={[styles.pkgLabel, { color: subTextColor }]}>Dpcoins</Text>
+                        {p.bonusCoins > 0 && (
+                          <Text style={styles.pkgBonus}>+{p.bonusCoins} bonus</Text>
+                        )}
+                        <Text style={[styles.pkgPrice, { color: active ? primaryColor : textColor }]}>₹{Number(p.priceInr).toLocaleString('en-IN')}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
+              {selected && (
+                <Text style={[styles.cashPreview, { color: primaryColor }]}>
+                  Pay ₹{payInr.toFixed(2)} for {selected.totalCoins} Dpcoins
+                </Text>
+              )}
 
               <Text style={[styles.label, { color: subTextColor, marginTop: 16 }]}>UTR / Transaction reference</Text>
               <TextInput
@@ -176,7 +234,11 @@ export default function DepositScreen() {
                 )}
               </TouchableOpacity>
 
-              <TouchableOpacity style={[styles.submitBtn, { backgroundColor: primaryColor, opacity: loading ? 0.7 : 1 }]} onPress={submit} disabled={loading}>
+              <TouchableOpacity
+                style={[styles.submitBtn, { backgroundColor: primaryColor, opacity: loading || !selected ? 0.7 : 1 }]}
+                onPress={submit}
+                disabled={loading || !selected}
+              >
                 {loading ? <ActivityIndicator color="#FFF" /> : <Text style={styles.submitText}>Submit Deposit</Text>}
               </TouchableOpacity>
             </View>
@@ -223,7 +285,13 @@ const styles = StyleSheet.create({
   upiText: { fontSize: 15, fontFamily: 'Urbanist-Bold' },
   note: { fontSize: 12, fontFamily: 'Urbanist-Medium', marginTop: 8, textAlign: 'center' },
   input: { borderWidth: 1, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16, fontFamily: 'Urbanist-Bold' },
-  cashPreview: { fontSize: 14, fontFamily: 'Urbanist-Bold', marginTop: 8 },
+  cashPreview: { fontSize: 14, fontFamily: 'Urbanist-Bold', marginTop: 12 },
+  pkgGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 4 },
+  pkgCard: { minWidth: '30%', flexGrow: 1, borderWidth: 1.5, borderRadius: 14, paddingVertical: 12, paddingHorizontal: 10, alignItems: 'center' },
+  pkgCoins: { fontSize: 20, fontFamily: 'Urbanist-Bold' },
+  pkgLabel: { fontSize: 11, fontFamily: 'Urbanist-Medium', marginTop: 1 },
+  pkgBonus: { color: '#4CAF50', fontSize: 10, fontFamily: 'Urbanist-Bold', marginTop: 3 },
+  pkgPrice: { fontSize: 15, fontFamily: 'Urbanist-Bold', marginTop: 6 },
   uploadBtn: { marginTop: 14, paddingVertical: 12, borderRadius: 14, borderWidth: 1, borderStyle: 'dashed', alignItems: 'center', justifyContent: 'center' },
   submitBtn: { marginTop: 20, paddingVertical: 15, borderRadius: 16, alignItems: 'center' },
   submitText: { color: '#FFF', fontFamily: 'Urbanist-Bold', fontSize: 16 },

@@ -1,0 +1,18 @@
+-- Manual deposits are now priced by coin package, not by a rate multiplier.
+--
+-- DDL-only and idempotent (AUDIT_2026-08-23.md #15 — autoMigrate has no
+-- distributed lock, so this file may run concurrently across colos).
+-- ALTER TABLE ADD COLUMN is tolerated because isIgnorable() swallows
+-- "duplicate column name".
+--
+-- Background: the manual QR/UPI flow used to ask the user for a free-form coin
+-- amount and price it with settings.appConfig.paymentGateway.coinRate. That was
+-- a second, parallel source of truth for pricing, and it disagreed with the
+-- coin_packages table: a package selling 15 coins for Rs 10 priced the same 15
+-- coins at Rs 15 through the manual flow (coinRate 1). Packages are now the only
+-- pricing authority, and coinRate is gone.
+--
+-- amount / pay_amount keep their meaning (coins to credit / INR paid) and are
+-- still what the admin verifies before approving; package_id is the audit trail
+-- of which package was bought. NULL on rows created before this change.
+ALTER TABLE deposits ADD COLUMN package_id TEXT;

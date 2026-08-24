@@ -147,8 +147,11 @@ export default function Deposits() {
 
 /* ---------------- payment gateway config ---------------- */
 
-type Gateway = { mode: string; qrImageUrl: string; upiId: string; coinRate: number; note: string };
-const GW_DEFAULT: Gateway = { mode: "auto", qrImageUrl: "", upiId: "", coinRate: 1, note: "" };
+// No coinRate: manual deposits are priced from the coin_packages table, the same
+// source the in-app store uses. It used to live here and disagreed with the
+// packages (15 coins cost ₹10 as a package but ₹15 through the manual flow).
+type Gateway = { mode: string; qrImageUrl: string; upiId: string; note: string };
+const GW_DEFAULT: Gateway = { mode: "auto", qrImageUrl: "", upiId: "", note: "" };
 
 const MODES = [
   { k: "auto", l: "Auto", d: "Razorpay", icon: Zap },
@@ -272,9 +275,11 @@ function GatewayConfig() {
               <label className="text-xs font-medium text-muted-foreground mb-1 block">UPI ID</label>
               <input className={field} placeholder="yourname@upi" value={gw.upiId} onChange={(e) => setGw({ ...gw, upiId: e.target.value })} />
             </div>
-            <div>
-              <label className="text-xs font-medium text-muted-foreground mb-1 block">Coin rate (₹ per coin)</label>
-              <input type="number" step="0.01" className={field} value={gw.coinRate} onChange={(e) => setGw({ ...gw, coinRate: Number(e.target.value) })} />
+            <div className="rounded-xl border border-border bg-background px-3 py-2.5">
+              <p className="text-xs text-muted-foreground">
+                Pricing comes from <span className="font-semibold text-foreground">Coin Packages</span>. Manual deposits use
+                the same packages as the in-app store, so there is no separate coin rate to set here.
+              </p>
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground mb-1 block">Instructions (shown to user)</label>

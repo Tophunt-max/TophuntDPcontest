@@ -76,10 +76,14 @@ export const walletService = {
 
   /**
    * Manual deposit request — user pays the admin's QR/UPI externally, then
-   * submits the amount + bank UTR (+ optional payment screenshot).
+   * submits the bank UTR (+ optional payment screenshot).
+   *
+   * Takes a coin package rather than an amount: the server derives both the
+   * coins to credit and the rupees expected from coin_packages, so pricing has
+   * a single source of truth and the client cannot name its own price.
    */
-  requestDeposit: async (amount: number, utr: string, method = 'qr', screenshotUrl?: string) => {
-    return await callApi('requestDeposit', { amount, utr, method, screenshotUrl });
+  requestDeposit: async (packageId: string, utr: string, method = 'qr', screenshotUrl?: string) => {
+    return await callApi('requestDeposit', { packageId, utr, method, screenshotUrl });
   },
 
   /** Daily tasks with live progress + claim state. */

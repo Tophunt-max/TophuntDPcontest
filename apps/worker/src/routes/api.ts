@@ -1036,10 +1036,8 @@ apiRoute.post("/", async (c) => {
     // Manual QR/UPI deposit: user pays externally then submits the UTR here.
     // Admin approves/rejects in the panel; coins are credited on approval.
     case "requestDeposit": {
-      const { amount, utr, method, screenshotUrl } = body;
-      const amt = Number(amount);
-      if (!Number.isInteger(amt) || amt <= 0 || amt > 1_000_000)
-        throw httpsError("invalid-argument", "Invalid amount.");
+      const { packageId, utr, method, screenshotUrl } = body;
+      if (!packageId) throw httpsError("invalid-argument", "Select a coin package to continue.");
       if (!utr || String(utr).trim().length < 4)
         throw httpsError("invalid-argument", "A valid UTR / transaction reference is required.");
       // Anti-spam: max 5 deposit submissions per hour per user.
@@ -1049,7 +1047,23 @@ apiRoute.post("/", async (c) => {
       const gw = (cfg?.paymentGateway as any) || {};
       const mode = gw.mode || "auto";
       if (mode === "auto") throw httpsError("failed-precondition", "Manual deposits are currently disabled.");
-      const coinRate = Number(gw.coinRate ?? 1);
+
+      // Packages are the ONLY pricing authority. This used to read a
+      // `coinRate` multiplier off the gateway settings, which disagreed with
+      // coin_packages — a package selling 15 coins for Rs 10 priced the same 15
+      // coins at Rs 15 through here. Never trust a client-sent amount either:
+      // both the coins credited and the rupees expected come from the row.
+      const pkg = await db
+        .select()
+        .from(schema.coinPackages)
+        .where(and(eq(schema.coinPackages.id, String(packageId)), eq(schema.coinPackages.active, true)))
+        .get();
+      if (!pkg) throw httpsError("not-found", "Coin package not found.");
+
+      const amt = (Number(pkg.coins) || 0) + (Number(pkg.bonusCoins) || 0);
+      const payAmount = Number(pkg.priceInr) || 0;
+      if (amt <= 0 || payAmount <= 0)
+        throw httpsError("failed-precondition", "This coin package is misconfigured.");
 
       // Hard-block reused UTRs: a bank reference can only fund one deposit. Reject
       // at submit time if a non-rejected deposit already carries this UTR (any
@@ -1068,7 +1082,8 @@ apiRoute.post("/", async (c) => {
         id,
         userId: uid,
         amount: amt,
-        payAmount: amt * coinRate,
+        payAmount,
+        packageId: String(packageId),
         method: method || "qr",
         utr: String(utr).trim(),
         screenshotUrl: screenshotUrl ? String(screenshotUrl) : null,
@@ -1081,7 +1096,7 @@ apiRoute.post("/", async (c) => {
         message: `A user submitted a ${amt}-coin deposit (UTR ${String(utr).trim()}).`, link: "/deposits", isRead: false, createdAt: ts,
       });
       alertAdminEmail(c, cfg, "New Deposit Request",
-        `<p>A user submitted a <b>${amt}-coin</b> deposit (₹${(amt * coinRate).toFixed(2)}).</p><p>UTR: <b>${String(utr).trim()}</b></p><p>Verify & approve in the admin panel → Deposits.</p>`);
+        `<p>A user submitted a <b>${amt}-coin</b> deposit (₹${payAmount.toFixed(2)}${pkg.name ? ` — ${pkg.name}` : ""}).</p><p>UTR: <b>${String(utr).trim()}</b></p><p>Verify & approve in the admin panel → Deposits.</p>`);
       return c.json({ success: true, depositId: id });
     }
 

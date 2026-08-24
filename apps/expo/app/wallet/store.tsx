@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, useColorScheme } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -14,7 +14,6 @@ import { useProfile } from '@/src/hooks/useProfileData';
 import { useToast } from '@/src/components/toast/ToastProvider';
 import { Colors } from '@/constants/theme';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
-import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
 import { useAppConfig } from '@/src/services/appSettings';
 
 interface CoinPackage {
@@ -40,18 +39,10 @@ export default function CoinStoreScreen() {
   // (QR/UPI) or 'both'. This screen only sells through Razorpay, so in 'manual'
   // mode it must hand off to /wallet/deposit instead of attempting a checkout
   // that the server will refuse.
-  const { config, loading: configLoading } = useAppConfig();
+  const { config } = useAppConfig();
   const gwMode = (config?.paymentGateway as any)?.mode || 'auto';
-  const gatewayDisabled = !configLoading && gwMode === 'manual';
+  const manualOnly = gwMode === 'manual';
   const manualAvailable = gwMode === 'manual' || gwMode === 'both';
-
-  // The store is pushed from six places (explore ×2, contest setup ×2, the
-  // featured grid, and the wallet). Only the wallet checked the mode, so every
-  // other route dropped manual-mode users onto a dead Razorpay screen. Deciding
-  // here fixes all of them at once — and keeps the entry points dumb.
-  useEffect(() => {
-    if (gatewayDisabled) router.replace('/wallet/deposit');
-  }, [gatewayDisabled, router]);
 
   const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
   const textColor = isDark ? Colors.dark.text : Colors.light.text;
@@ -86,6 +77,12 @@ export default function CoinStoreScreen() {
       router.push('/auth/login');
       return;
     }
+    // Manual gateway: there is no card checkout to open. Carry the chosen
+    // package to the QR/UPI screen, which prices it from the same row.
+    if (manualOnly) {
+      router.push(`/wallet/deposit?packageId=${encodeURIComponent(pkg.id)}` as any);
+      return;
+    }
     setLoading(pkg.id);
     try {
       const { coins } = await purchasePackage(
@@ -110,7 +107,7 @@ export default function CoinStoreScreen() {
         // user, so route them to QR/UPI when that is an option.
         if (manualAvailable) {
           addToast({ text: 'Card / UPI checkout is unavailable — pay via QR instead.', type: 'info' });
-          router.replace('/wallet/deposit');
+          router.push(`/wallet/deposit?packageId=${encodeURIComponent(pkg.id)}` as any);
         } else {
           addToast({ text: 'Payments are temporarily unavailable. Please try again later.', type: 'error' });
         }
@@ -182,20 +179,6 @@ export default function CoinStoreScreen() {
     </View>
   );
 
-  // Redirecting to the manual screen — don't flash a store the server will
-  // refuse to sell from.
-  if (gatewayDisabled) {
-    return (
-      <SafeAreaView style={[styles.container, { backgroundColor }]}>
-        {header}
-        <View style={styles.stateBox}>
-          <ActivityIndicator color="#FF4D67" />
-          <Text style={styles.stateText}>Opening QR / UPI payment…</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]}>
       {header}
@@ -235,22 +218,11 @@ export default function CoinStoreScreen() {
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
           ListFooterComponent={
-            <View>
-              <View style={styles.secureRow}>
-                <Ionicons name="shield-checkmark-outline" size={16} color={subText} />
-                <Text style={[styles.secureText, { color: subText }]}>Secure payment via Razorpay</Text>
-              </View>
-              {gwMode === 'both' && (
-                <TouchableOpacity
-                  onPress={() => router.replace('/wallet/deposit')}
-                  style={styles.manualRow}
-                  accessibilityRole="button"
-                  accessibilityLabel="Pay via QR or UPI instead"
-                >
-                  <Text style={styles.manualText}>Or pay via QR / UPI</Text>
-                  <ArrowIcon size={14} variant="arrow" color="#FF4D67" />
-                </TouchableOpacity>
-              )}
+            <View style={styles.secureRow}>
+              <Ionicons name={manualOnly ? 'qr-code-outline' : 'shield-checkmark-outline'} size={16} color={subText} />
+              <Text style={[styles.secureText, { color: subText }]}>
+                {manualOnly ? 'Pick a package, then pay via QR / UPI' : 'Secure payment via Razorpay'}
+              </Text>
             </View>
           }
         />
@@ -292,6 +264,5 @@ const styles = StyleSheet.create({
   retryText: { color: '#FF4D67', fontFamily: 'Urbanist-Bold', marginTop: 4 },
   secureRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 8 },
   secureText: { fontSize: 12, fontFamily: 'Urbanist-Medium' },
-  manualRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 14 },
-  manualText: { color: '#FF4D67', fontSize: 13, fontFamily: 'Urbanist-Bold' },
+
 });

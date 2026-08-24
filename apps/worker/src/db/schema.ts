@@ -716,6 +716,7 @@ export const deposits = sqliteTable(
     userId: text("user_id").notNull(),
     amount: real("amount").notNull(), // coins to credit on approval
     payAmount: real("pay_amount").default(0), // INR paid
+    packageId: text("package_id"), // coin_packages.id this deposit was priced from
     method: text("method").default("qr"), // qr | upi | bank
     utr: text("utr"), // user-entered bank transaction reference
     screenshotUrl: text("screenshot_url"),
