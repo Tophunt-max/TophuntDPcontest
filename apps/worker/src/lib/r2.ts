@@ -9,6 +9,7 @@
 import { AwsClient } from "aws4fetch";
 import type { Env } from "../types";
 import { httpsError } from "./http";
+import { getR2Credentials } from "./integrations";
 
 export const ALLOWED_MIME_TYPES = [
   "image/jpeg",
@@ -98,7 +99,10 @@ export async function presignUpload(
   if (!ALLOWED_MIME_TYPES.includes(fileType)) {
     throw httpsError("invalid-argument", "Invalid file type.");
   }
-  if (!env.R2_ACCOUNT_ID || !env.R2_ACCESS_KEY_ID || !env.R2_SECRET_ACCESS_KEY || !env.R2_BUCKET) {
+  // Panel-managed with environment fallback (lib/integrations.ts), so the S3
+  // keys can be rotated without a deploy.
+  const creds = await getR2Credentials(env);
+  if (!creds.accountId || !creds.accessKeyId || !creds.secretAccessKey || !creds.bucket) {
     throw httpsError("internal", "Server storage configuration error.");
   }
   const safeFolder = sanitizeMediaFolder(folder);
@@ -113,13 +117,13 @@ export async function presignUpload(
   const fileKey = `${safeFolder}/${subFolder}/${crypto.randomUUID()}${extensionFor(fileType)}`;
 
   const client = new AwsClient({
-    accessKeyId: env.R2_ACCESS_KEY_ID,
-    secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+    accessKeyId: creds.accessKeyId,
+    secretAccessKey: creds.secretAccessKey,
     region: "auto",
     service: "s3",
   });
 
-  const endpoint = `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${env.R2_BUCKET}/${fileKey}`;
+  const endpoint = `https://${creds.accountId}.r2.cloudflarestorage.com/${creds.bucket}/${fileKey}`;
   const url = new URL(endpoint);
   url.searchParams.set("X-Amz-Expires", String(expiresIn));
 

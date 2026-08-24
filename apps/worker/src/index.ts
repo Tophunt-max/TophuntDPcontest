@@ -29,6 +29,7 @@ import { resolveContests, monthlyHallOfFame } from "./cron";
 import { ensureMigrated } from "./db/autoMigrate";
 import { captureError, logErrorToDb, pruneErrorLogs } from "./lib/observability";
 import { cronHealth, pruneOpsTables, runCronJob } from "./lib/ops";
+import { integrationHealth } from "./routes/integrations";
 import { reconcilePaymentOrders } from "./lib/coinOrders";
 import { pruneNotifications } from "./lib/notify";
 import {
@@ -186,6 +187,24 @@ app.get("/health/deep", async (c) => {
     ok: missingSecrets.length === 0,
     detail: missingSecrets.length ? `missing: ${missingSecrets.join(", ")}` : undefined,
   };
+
+  // Third-party integrations: an unconfigured SMS gateway means nobody can sign
+  // up, and an unconfigured payment secret means every top-up fails closed. Both
+  // look perfectly healthy from the request path.
+  try {
+    const providers = await integrationHealth(c.env);
+    const missing = Object.entries(providers)
+      .filter(([, ok]) => !ok)
+      .map(([name]) => name);
+    checks.integrations = {
+      // Video is optional (the app falls back to R2), so it does not fail the
+      // check on its own.
+      ok: missing.filter((m) => m !== "bunnyVideo").length === 0,
+      detail: missing.length ? `not configured: ${missing.join(", ")}` : undefined,
+    };
+  } catch (e: any) {
+    checks.integrations = { ok: false, detail: e?.message || "integration check failed" };
+  }
 
   // Is the cron actually running? A stalled cron means settlement, refunds and
   // payment reconciliation have stopped, which no request-path check would show.

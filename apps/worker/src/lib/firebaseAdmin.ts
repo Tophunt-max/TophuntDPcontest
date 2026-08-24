@@ -8,6 +8,7 @@
  */
 import type { Env } from "../types";
 import { httpsError } from "./http";
+import { getFirebaseServiceAccount } from "./integrations";
 
 interface ServiceAccount {
   client_email: string;
@@ -23,11 +24,18 @@ const OAUTH_SCOPES = [
 
 const TOKEN_KV_KEY = "firebase:access_token";
 
-function getServiceAccount(env: Env): ServiceAccount {
+/**
+ * The service account, resolved from the encrypted credential store first and the
+ * environment second (lib/integrations.ts), so it can be rotated from the admin
+ * panel without CLI access.
+ */
+async function getServiceAccount(env: Env): Promise<ServiceAccount> {
+  const raw = await getFirebaseServiceAccount(env);
+  if (!raw) throw httpsError("internal", "No Firebase service account is configured.");
   try {
-    return JSON.parse(env.FIREBASE_SERVICE_ACCOUNT) as ServiceAccount;
+    return JSON.parse(raw) as ServiceAccount;
   } catch {
-    throw httpsError("internal", "FIREBASE_SERVICE_ACCOUNT is missing or malformed.");
+    throw httpsError("internal", "The Firebase service account is malformed (expected the full JSON key file).");
   }
 }
 
@@ -86,7 +94,7 @@ export async function getAccessToken(env: Env): Promise<string> {
   );
   if (cached && cached.expiresAt > Date.now() + 30_000) return cached.token;
 
-  const sa = getServiceAccount(env);
+  const sa = await getServiceAccount(env);
   const assertion = await signJwt(sa);
   const res = await fetch(sa.token_uri || "https://oauth2.googleapis.com/token", {
     method: "POST",

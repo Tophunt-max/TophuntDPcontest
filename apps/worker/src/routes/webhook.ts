@@ -16,6 +16,7 @@ import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
 import { verifyRazorpayWebhookSignature } from "../lib/payments";
 import { clawbackPaymentOrder, creditPaymentOrder } from "../lib/coinOrders";
+import { getRazorpayCredentials } from "../lib/integrations";
 import { createNotification } from "../lib/notify";
 import { timingSafeEqualSecret } from "../lib/timingSafe";
 import { newId, now } from "../lib/ids";
@@ -73,8 +74,8 @@ webhookRoute.post("/razorpay", async (c) => {
   const raw = await c.req.text();
   const signature = c.req.header("X-Razorpay-Signature");
 
-  if (!c.env.RAZORPAY_WEBHOOK_SECRET) {
-    console.error("[webhook/razorpay] RAZORPAY_WEBHOOK_SECRET not configured — rejecting");
+  if (!(await getRazorpayCredentials(c.env)).webhookSecret) {
+    console.error("[webhook/razorpay] no Razorpay webhook secret configured (panel or env) — rejecting");
     return c.json({ ok: false, error: "not_configured" }, 503);
   }
 
@@ -221,7 +222,7 @@ webhookRoute.post("/razorpay", async (c) => {
 webhookRoute.post("/bunny", async (c) => {
   const raw = await c.req.text();
 
-  if (!bunnyConfigured(c.env)) {
+  if (!(await bunnyConfigured(c.env))) {
     console.error("[webhook/bunny] Bunny is not configured — rejecting");
     return c.json({ ok: false, error: "not_configured" }, 503);
   }
@@ -299,9 +300,9 @@ webhookRoute.post("/bunny", async (c) => {
       .update(schema.videos)
       .set({
         status: "ready",
-        thumbnailUrl: bunnyThumbnailUrl(c.env, guid),
-        playbackUrl: bunnyPlaybackUrl(c.env, guid),
-        mp4Url: bunnyMp4Url(c.env, guid),
+        thumbnailUrl: await bunnyThumbnailUrl(c.env, guid),
+        playbackUrl: await bunnyPlaybackUrl(c.env, guid),
+        mp4Url: await bunnyMp4Url(c.env, guid),
         durationSec: durationSec ?? undefined,
         updatedAt: ts,
       })

@@ -224,7 +224,56 @@ export async function req<T>(
 const get = <T>(p: string) => req<T>("GET", p);
 const post = <T>(p: string, b?: unknown) => req<T>("POST", p, b ?? {});
 const patch = <T>(p: string, b?: unknown) => req<T>("PATCH", p, b ?? {});
+const put = <T>(p: string, b?: unknown) => req<T>("PUT", p, b ?? {});
 const del = <T>(p: string) => req<T>("DELETE", p);
+
+// ─── Integrations (SMS / email / payments / video / storage) ─────────────────
+
+export type SecretSource = "panel" | "environment" | "unset";
+
+/**
+ * A credential's STATE — never its value. The API deliberately cannot return a
+ * stored secret; `hint` and `fingerprint` are all that come back.
+ */
+export interface SecretStatus {
+  name: string;
+  label: string;
+  group: "sms" | "email" | "payments" | "video" | "storage" | "auth" | "observability";
+  help?: string;
+  sensitive: boolean;
+  multiline: boolean;
+  configured: boolean;
+  source: SecretSource;
+  hint?: string | null;
+  fingerprint?: string | null;
+  updatedAt?: number | null;
+  updatedBy?: string | null;
+}
+
+export interface IntegrationsConfig {
+  sms: {
+    provider: "twilio" | "msg91" | "fast2sms" | "custom" | "none";
+    from: string;
+    templateId: string;
+    otpVariable: string;
+    route: string;
+    customUrl: string;
+    customMethod: "GET" | "POST";
+    customBody: string;
+  };
+  email: { provider: "resend" | "brevo" | "none"; from: string; replyTo: string };
+  payments: { razorpayKeyId: string };
+  video: { provider: "bunny" | "r2"; libraryId: string; cdnHostname: string };
+  push: { vapidPublicKey: string };
+}
+
+export interface IntegrationsResponse {
+  config: IntegrationsConfig;
+  defaults: IntegrationsConfig;
+  secrets: SecretStatus[];
+  /** False when the server has no encryption key, so credentials can't be saved. */
+  secretStorage: boolean;
+}
 
 // ─── Typed surface over the Worker's /admin endpoints ───────────────────────
 export const api = {
@@ -352,6 +401,26 @@ export const api = {
   saveRewards: (payload: any) => post("/admin/rewards", payload),
   appSettings: () => get<any>("/admin/app-settings"),
   saveAppSettings: (payload: any) => post("/admin/app-settings", payload),
+
+  // integrations — provider config plus write-only credentials
+  integrations: () => get<IntegrationsResponse>("/admin/integrations"),
+  saveIntegrations: (config: IntegrationsConfig) => put("/admin/integrations", config),
+  /** Store or rotate a credential. The value is encrypted server-side. */
+  setIntegrationSecret: (name: string, value: string) =>
+    put<{ success: boolean; fingerprint: string; hint: string }>(
+      `/admin/integrations/secrets/${encodeURIComponent(name)}`,
+      { value },
+    ),
+  deleteIntegrationSecret: (name: string) =>
+    del<{ success: boolean; fellBackToEnvironment: boolean; message: string }>(
+      `/admin/integrations/secrets/${encodeURIComponent(name)}`,
+    ),
+  /** Exercise a provider with its real credential, server-side. */
+  testIntegration: (provider: string, payload?: { to?: string }) =>
+    post<{ ok: boolean; message?: string; provider?: string; error?: string }>(
+      `/admin/integrations/test/${encodeURIComponent(provider)}`,
+      payload ?? {},
+    ),
 
   // contest matches (battles)
   matches: (status?: string) =>

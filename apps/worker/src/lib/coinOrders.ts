@@ -14,6 +14,7 @@ import { and, asc, eq, inArray, lt, sql } from "drizzle-orm";
 import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { newId, now } from "./ids";
+import { getRazorpayCredentials } from "./integrations";
 
 type Db = ReturnType<typeof getDb>;
 
@@ -336,7 +337,8 @@ export async function reconcilePaymentOrders(
   limit = 25,
 ): Promise<ReconcileSummary> {
   const summary: ReconcileSummary = { checked: 0, credited: 0, expired: 0, failed: 0, coins: 0 };
-  if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) {
+  const rzp = await getRazorpayCredentials(env);
+  if (!rzp.keyId || !rzp.keySecret) {
     // Fail closed and loudly: without credentials we cannot reconcile, and
     // silently doing nothing is how the original gap stayed invisible.
     console.error("[reconcile] Razorpay credentials missing — cannot reconcile paid-but-uncredited orders");
@@ -357,7 +359,7 @@ export async function reconcilePaymentOrders(
     .limit(limit)
     .all();
 
-  const auth = `Basic ${btoa(`${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`)}`;
+  const auth = `Basic ${btoa(`${rzp.keyId}:${rzp.keySecret}`)}`;
 
   for (const order of stale) {
     summary.checked++;

@@ -103,3 +103,41 @@ SENTRY_ENVIRONMENT=development
 #   ADMIN_PROXY_SECRET         server-to-server admin calls
 #   SENTRY_DSN                 error tracking
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Panel-managed credentials.
+#
+# Every credential above can ALSO be set from the admin panel (Integrations
+# page), where it is stored AES-256-GCM encrypted in D1. This key is what
+# encrypts them, so it stays a Cloudflare secret and is never written to the
+# database — the encrypted rows are useless without it.
+#
+#   Generate:  openssl rand -base64 32
+#   Set:       wrangler secret put SETTINGS_ENCRYPTION_KEY
+#
+# Without it, panel credential writes are REFUSED (there is no plaintext
+# fallback) and the environment variables above are used exactly as before.
+#
+# Resolution order for every credential is: panel value first, environment
+# second. `GET /admin/integrations` reports which source is actually in effect,
+# so there is never ambiguity about what is live.
+#
+# WARNING: rotating this key makes every stored credential undecryptable. The
+# affected credentials must be re-entered in the panel (the environment values
+# keep working in the meantime).
+# ---------------------------------------------------------------------------
+SETTINGS_ENCRYPTION_KEY=
+
+# ---------------------------------------------------------------------------
+# Alternative SMS gateways. The ACTIVE gateway is chosen in the admin panel;
+# these are only the fallback credentials. Indian DLT gateways are usually much
+# cheaper than Twilio for OTP traffic.
+# ---------------------------------------------------------------------------
+MSG91_AUTH_KEY=
+FAST2SMS_API_KEY=
+# Token substituted into a custom gateway's URL/body as {token}.
+SMS_CUSTOM_TOKEN=
+
+# Alternative transactional email provider (Resend is the other option).
+BREVO_API_KEY=

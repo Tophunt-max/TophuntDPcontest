@@ -866,6 +866,48 @@ export const errorLogs = sqliteTable(
 );
 
 // ---------------------------------------------------------------------------
+// integration_secrets  (panel-managed third-party credentials, ENCRYPTED)
+//
+// API keys for the SMS gateway, email provider, payment gateway and video CDN
+// used to be Cloudflare secrets only, so changing a provider or rotating a key
+// meant CLI access and a deploy. They are now settable from the admin panel —
+// but stored as AES-256-GCM ciphertext, with the encryption key itself remaining
+// a Cloudflare secret. The database alone therefore reveals nothing, and the API
+// never returns a stored value: only a fingerprint and a masked hint.
+// ---------------------------------------------------------------------------
+export const integrationSecrets = sqliteTable("integration_secrets", {
+  /** Credential name from the allow-list in lib/integrations.ts. */
+  name: text("name").primaryKey(),
+  ciphertext: text("ciphertext").notNull(),
+  iv: text("iv").notNull(),
+  /** Short SHA-256 prefix, so an admin can confirm WHICH value is stored. */
+  fingerprint: text("fingerprint"),
+  /** Masked display form, e.g. `••••3f9a`. */
+  hint: text("hint"),
+  updatedBy: text("updated_by"),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+// ---------------------------------------------------------------------------
+// account_deletions  (compliance record for self-service account deletion)
+// The users row is anonymised rather than deleted, because the ledger, contest
+// history and votes reference the uid and must be retained. This table records
+// that the deletion happened and holds no personal data.
+// ---------------------------------------------------------------------------
+export const accountDeletions = sqliteTable(
+  "account_deletions",
+  {
+    uid: text("uid").primaryKey(),
+    reason: text("reason"),
+    forfeitedCoins: real("forfeited_coins").notNull().default(0),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    createdIdx: index("idx_account_deletions_created").on(t.createdAt),
+  }),
+);
+
+// ---------------------------------------------------------------------------
 // cron_runs  (cron heartbeat + duration metric + failure trail)
 // One row per scheduled-job run. Without this a cron that stops firing is
 // invisible, and a job that throws only leaves a console.error behind while

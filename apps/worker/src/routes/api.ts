@@ -36,6 +36,11 @@ import {
 import { createContestExtra, validateContestInput } from "../lib/contestAdmin";
 import { parsePayoutDestination, readWithdrawalPolicy } from "../lib/payouts";
 import {
+  checkDeletionEligibility,
+  deleteOwnAccount,
+  purgeDeletedAccountMedia,
+} from "../lib/accountDeletion";
+import {
   adjustUserWallet,
   assertCoinAmount,
   matchPot,
@@ -44,6 +49,7 @@ import {
   WalletReplay,
 } from "../lib/money";
 import { verifyRazorpaySignature } from "../lib/payments";
+import { getRazorpayCredentials } from "../lib/integrations";
 import { creditPaymentOrder } from "../lib/coinOrders";
 import { assertClean } from "../lib/moderation";
 import { assertChatMember } from "../lib/chatAuth";
@@ -167,7 +173,7 @@ apiRoute.post("/", async (c) => {
      * so the client can fall back to the existing R2 upload path.
      */
     case "createVideoUpload": {
-      if (!bunnyConfigured(env)) return c.json({ configured: false });
+      if (!(await bunnyConfigured(env))) return c.json({ configured: false });
 
       // Without this, anyone can create unlimited video objects in our Bunny
       // account. 10/hour is far above real usage and far below abuse.
@@ -201,8 +207,8 @@ apiRoute.post("/", async (c) => {
         tusEndpoint: created.tusEndpoint,
         // The eventual playback URL, so the caller can store it as mediaUrl
         // without knowing how Bunny URLs are shaped.
-        playbackUrl: bunnyPlaybackUrl(env, created.guid),
-        thumbnailUrl: bunnyThumbnailUrl(env, created.guid),
+        playbackUrl: await bunnyPlaybackUrl(env, created.guid),
+        thumbnailUrl: await bunnyThumbnailUrl(env, created.guid),
       });
     }
 
@@ -931,7 +937,8 @@ apiRoute.post("/", async (c) => {
     case "createOrder": {
       const { packageId } = body;
       if (!packageId) throw httpsError("invalid-argument", "packageId is required.");
-      if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET)
+      const rzp = await getRazorpayCredentials(env);
+      if (!rzp.keyId || !rzp.keySecret)
         throw httpsError("failed-precondition", "Payments are not configured on the server.");
 
       const pkg = await db
@@ -949,7 +956,7 @@ apiRoute.post("/", async (c) => {
       if (totalCoins <= 0) throw httpsError("failed-precondition", "This package has no coins configured.");
 
       // Create the order at Razorpay (HTTP Basic auth = key_id:key_secret).
-      const authHeader = btoa(`${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`);
+      const authHeader = btoa(`${rzp.keyId}:${rzp.keySecret}`);
       const rzpRes = await fetch("https://api.razorpay.com/v1/orders", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Basic ${authHeader}` },
@@ -1010,7 +1017,7 @@ apiRoute.post("/", async (c) => {
         orderId: order.id,
         amount: amountPaise,
         currency: "INR",
-        keyId: env.RAZORPAY_KEY_ID,
+        keyId: rzp.keyId,
         coins: totalCoins,
         name: pkg.name || `${totalCoins} Dpcoins`,
       });
@@ -1026,7 +1033,7 @@ apiRoute.post("/", async (c) => {
 
       // SECURITY: verify the payment server-side. Fail closed if the gateway is
       // not configured — never credit coins without a verified payment.
-      if (!env.RAZORPAY_KEY_SECRET)
+      if (!(await getRazorpayCredentials(env)).keySecret)
         throw httpsError("failed-precondition", "Payments are not configured on the server.");
       const verified = await verifyRazorpaySignature(env, { orderId, paymentId, signature });
       if (!verified) throw httpsError("permission-denied", "Payment verification failed.");
@@ -1975,6 +1982,47 @@ apiRoute.post("/", async (c) => {
       await db.insert(schema.supportTickets).values({ id, userId: uid, subject, message: message || null, status: "open", createdAt: ts, updatedAt: ts });
       await db.insert(schema.adminNotifications).values({ id: newId(), title: "New Support Ticket", message: `${me?.username || "A user"}: ${subject}`, link: "/support", scope: "moderation", isRead: false, createdAt: ts });
       return c.json({ success: true, ticketId: id });
+    }
+
+    // ================= ACCOUNT DELETION =================
+    /**
+     * What deleting the account would do right now: whether it is currently
+     * allowed, why not if it isn't, and how many coins would be forfeited.
+     *
+     * The client shows this BEFORE asking for confirmation, so the user is never
+     * surprised by a forfeited balance or an unexplained refusal.
+     */
+    case "accountDeletionStatus": {
+      const eligibility = await checkDeletionEligibility(env, uid);
+      return c.json(eligibility);
+    }
+
+    /**
+     * Delete the signed-in user's own account. Required by both app stores.
+     *
+     * Anonymises the account, removes the user's content and media, and deletes
+     * the Firebase login so the identity can never sign in again. Financial and
+     * contest records are retained against an anonymous uid — see
+     * lib/accountDeletion.ts for exactly what is kept and why.
+     */
+    case "deleteAccount": {
+      // Deliberately strict: this is irreversible, so a runaway client or a
+      // stolen token gets very few attempts.
+      await rateLimit(env, `deleteaccount:${uid}`, 3, 3600, { failClosed: true });
+      // Require an explicit confirmation flag so a mis-sent request cannot
+      // destroy an account.
+      if (body.confirm !== true) {
+        throw httpsError("invalid-argument", "Account deletion must be confirmed.");
+      }
+      const result = await deleteOwnAccount(env, uid, body.reason);
+      // Storage cleanup happens after the response: the account is already gone
+      // as far as the user is concerned, and R2 deletes are slow and best-effort.
+      c.executionCtx.waitUntil(purgeDeletedAccountMedia(env, result.mediaUrls));
+      return c.json({
+        success: true,
+        deletedAt: result.deletedAt,
+        forfeitedCoins: result.forfeitedCoins,
+      });
     }
 
     // ================= WALLET (ADMIN) =================

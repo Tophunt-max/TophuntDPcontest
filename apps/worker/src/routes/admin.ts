@@ -61,6 +61,7 @@ import {
 } from "../lib/money";
 import { fetchExternalImage } from "../lib/safeFetch";
 import { enforceAdminIdempotency } from "../lib/idempotency";
+import { registerIntegrationRoutes } from "./integrations";
 import { assertIdentifiersAvailable, validateUsername } from "../lib/userIdentifiers";
 
 /**
@@ -183,6 +184,11 @@ function requireFullAdmin(c: any): void {
 function isFullAdmin(c: any): boolean {
   return c.get("adminRole") !== "moderator";
 }
+
+// ---- third-party integrations (SMS gateway, email, payments, video CDN) ----
+// Config + encrypted credentials, all manageable from the panel. See
+// routes/integrations.ts for why credential values are write-only.
+registerIntegrationRoutes(adminRoute, requireFullAdmin);
 
 // ---- app settings (settings/appConfig) ----
 adminRoute.get("/app-settings", async (c) => c.json((await getAppConfig(c.env)) || {}));
