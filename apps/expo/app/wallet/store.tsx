@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, useColorScheme } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -14,6 +14,8 @@ import { useProfile } from '@/src/hooks/useProfileData';
 import { useToast } from '@/src/components/toast/ToastProvider';
 import { Colors } from '@/constants/theme';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
+import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
+import { useAppConfig } from '@/src/services/appSettings';
 
 interface CoinPackage {
   id: string;
@@ -33,6 +35,23 @@ export default function CoinStoreScreen() {
   const [loading, setLoading] = useState<string | null>(null);
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
+
+  // Which gateway the admin has configured: 'auto' (Razorpay), 'manual'
+  // (QR/UPI) or 'both'. This screen only sells through Razorpay, so in 'manual'
+  // mode it must hand off to /wallet/deposit instead of attempting a checkout
+  // that the server will refuse.
+  const { config, loading: configLoading } = useAppConfig();
+  const gwMode = (config?.paymentGateway as any)?.mode || 'auto';
+  const gatewayDisabled = !configLoading && gwMode === 'manual';
+  const manualAvailable = gwMode === 'manual' || gwMode === 'both';
+
+  // The store is pushed from six places (explore ×2, contest setup ×2, the
+  // featured grid, and the wallet). Only the wallet checked the mode, so every
+  // other route dropped manual-mode users onto a dead Razorpay screen. Deciding
+  // here fixes all of them at once — and keeps the entry points dumb.
+  useEffect(() => {
+    if (gatewayDisabled) router.replace('/wallet/deposit');
+  }, [gatewayDisabled, router]);
 
   const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
   const textColor = isDark ? Colors.dark.text : Colors.light.text;
@@ -85,6 +104,16 @@ export default function CoinStoreScreen() {
       // "Payment cancelled." is a normal user action — keep it low-key (info).
       if (/cancel/i.test(msg)) {
         addToast({ text: 'Payment cancelled — no coins were charged.', type: 'info' });
+      } else if (error?.code === 'functions/failed-precondition' && /not configured/i.test(msg)) {
+        // The gateway keys aren't set server-side. Surfacing the raw server
+        // string ("Payments are not configured on the server.") dead-ends the
+        // user, so route them to QR/UPI when that is an option.
+        if (manualAvailable) {
+          addToast({ text: 'Card / UPI checkout is unavailable — pay via QR instead.', type: 'info' });
+          router.replace('/wallet/deposit');
+        } else {
+          addToast({ text: 'Payments are temporarily unavailable. Please try again later.', type: 'error' });
+        }
       } else {
         addToast({ text: msg, type: 'error' });
       }
@@ -138,20 +167,38 @@ export default function CoinStoreScreen() {
     );
   };
 
+  const header = (
+    <View style={styles.header}>
+      <TouchableOpacity
+        onPress={() => router.back()}
+        hitSlop={10}
+        accessibilityRole="button"
+        accessibilityLabel="Close store"
+      >
+        <CloseIcon size={28} color={textColor} />
+      </TouchableOpacity>
+      <Text style={[styles.title, { color: textColor }]}>Dpcoin Store</Text>
+      <View style={{ width: 28 }} />
+    </View>
+  );
+
+  // Redirecting to the manual screen — don't flash a store the server will
+  // refuse to sell from.
+  if (gatewayDisabled) {
+    return (
+      <SafeAreaView style={[styles.container, { backgroundColor }]}>
+        {header}
+        <View style={styles.stateBox}>
+          <ActivityIndicator color="#FF4D67" />
+          <Text style={styles.stateText}>Opening QR / UPI payment…</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]}>
-      <View style={styles.header}>
-        <TouchableOpacity
-          onPress={() => router.back()}
-          hitSlop={10}
-          accessibilityRole="button"
-          accessibilityLabel="Close store"
-        >
-          <CloseIcon size={28} color={textColor} />
-        </TouchableOpacity>
-        <Text style={[styles.title, { color: textColor }]}>Dpcoin Store</Text>
-        <View style={{ width: 28 }} />
-      </View>
+      {header}
 
       <View style={styles.balanceContainer}>
         <LinearGradient colors={['#FF4D67', '#FF8A9B']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.gradient}>
@@ -188,9 +235,22 @@ export default function CoinStoreScreen() {
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
           ListFooterComponent={
-            <View style={styles.secureRow}>
-              <Ionicons name="shield-checkmark-outline" size={16} color={subText} />
-              <Text style={[styles.secureText, { color: subText }]}>Secure payment via Razorpay</Text>
+            <View>
+              <View style={styles.secureRow}>
+                <Ionicons name="shield-checkmark-outline" size={16} color={subText} />
+                <Text style={[styles.secureText, { color: subText }]}>Secure payment via Razorpay</Text>
+              </View>
+              {gwMode === 'both' && (
+                <TouchableOpacity
+                  onPress={() => router.replace('/wallet/deposit')}
+                  style={styles.manualRow}
+                  accessibilityRole="button"
+                  accessibilityLabel="Pay via QR or UPI instead"
+                >
+                  <Text style={styles.manualText}>Or pay via QR / UPI</Text>
+                  <ArrowIcon size={14} variant="arrow" color="#FF4D67" />
+                </TouchableOpacity>
+              )}
             </View>
           }
         />
@@ -232,4 +292,6 @@ const styles = StyleSheet.create({
   retryText: { color: '#FF4D67', fontFamily: 'Urbanist-Bold', marginTop: 4 },
   secureRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 8 },
   secureText: { fontSize: 12, fontFamily: 'Urbanist-Medium' },
+  manualRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 14 },
+  manualText: { color: '#FF4D67', fontSize: 13, fontFamily: 'Urbanist-Bold' },
 });
