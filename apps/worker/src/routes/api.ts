@@ -13,7 +13,7 @@ import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
 import { requireAuth, isAdmin } from "../middleware/auth";
 import { requireFullAdmin as requireFullAdminAction, writeAdminAudit } from "../lib/adminAuthz";
-import { presignUpload } from "../lib/r2";
+import { presignUpload, vsImageKeyFromPublicUrl, deleteVsImageByPublicUrl } from "../lib/r2";
 import { deleteMediaByUrl } from "../lib/mediaDelete";
 
 import { createNotification, sendPushNotification } from "../lib/notify";
@@ -614,6 +614,127 @@ apiRoute.post("/", async (c) => {
       );
 
       return c.json({ status: "active", joinId: joinIdB });
+    }
+
+    /**
+     * Record the composite head-to-head image for a battle.
+     *
+     * The Worker cannot compose images (see migration 0033 and
+     * lib/matchStories.ts), so a participant's client captures the rendered card,
+     * uploads it to `vs-cards/`, and reports the url here. Both participants'
+     * stories then DISPLAY that single image, because the story viewer loads the
+     * match and prefers `vsImageUrl` over assembling the layout itself.
+     *
+     * ------------------------------------------------------------------------
+     * The card is recorded on the MATCH ONLY — never copied into `stories`
+     * ------------------------------------------------------------------------
+     * An earlier version of this also rewrote both `contest_vs` rows' `media_url`
+     * to the card. That was wrong twice over, and both are worth keeping written
+     * down because copying the url looks obviously convenient:
+     *
+     *   - It defeated blocking. `/read/matches/:id` deliberately returns nothing
+     *     when either participant is blocked by the viewer, which is what makes
+     *     the story fall back to the single entry the row itself carries. Once
+     *     that row carried the composite, the fallback showed the blocked user's
+     *     photo anyway.
+     *   - It gave one R2 object two owners. Account deletion collects
+     *     `stories.media_url` for the departing user and deletes those objects, so
+     *     one participant leaving would have deleted the image the other
+     *     participant's live story was displaying.
+     *
+     * Keeping `media_url` as each user's own entry means the row is still
+     * meaningful to anything that renders it directly, blocking still works, and
+     * the card has exactly one owner: the match.
+     *
+     * Guards, because a participant is supplying a url that the OTHER
+     * participant's story will render:
+     *   1. the battle must be full — an unjoined match has nothing to depict, and
+     *      without this its creator could claim the card before an opponent
+     *      exists, permanently;
+     *   2. only a participant may set it;
+     *   3. the url must be an object in our own bucket under `vs-cards/images/`,
+     *      so a story can never be pointed at an arbitrary remote image;
+     *   4. first writer wins — never overwrite. Both clients plausibly try, and
+     *      silently swapping the image under a story that is already being viewed
+     *      is worse than keeping the first good one.
+     *
+     * What this does NOT establish is that the pixels are a real capture of the
+     * battle; see `vsImageKeyFromPublicUrl` for why that residual risk is
+     * accepted, and what it actually amounts to.
+     */
+    case "setMatchVsImage": {
+      // Fail closed: this action writes a url that renders on another user's
+      // story, so an outage of the counter store must not remove the ceiling.
+      await rateLimit(env, `vsimage:${uid}`, 30, 3600, { failClosed: true });
+      const matchId = requiredId(body.matchId, "matchId", 128);
+      const imageUrl = requiredId(body.imageUrl, "imageUrl", 2048);
+      if (!vsImageKeyFromPublicUrl(env, imageUrl)) {
+        throw httpsError("invalid-argument", "imageUrl must be an uploaded battle card.");
+      }
+
+      const match = await db
+        .select({
+          userA: schema.contestMatches.userA,
+          userB: schema.contestMatches.userB,
+          vsImageUrl: schema.contestMatches.vsImageUrl,
+        })
+        .from(schema.contestMatches)
+        .where(eq(schema.contestMatches.id, matchId))
+        .get();
+      // The caller uploaded before calling, so from here on every rejection
+      // orphans that object unless we clean it up. R2 deletes are free and the
+      // key is pinned to the `vs-cards/` prefix, so this is unconditional.
+      if (!match) {
+        await deleteVsImageByPublicUrl(env, imageUrl);
+        throw httpsError("not-found", "Match not found.");
+      }
+
+      const uidA = (match.userA as any)?.uid;
+      const uidB = (match.userB as any)?.uid;
+      // A head-to-head card of a battle with one side is not a thing that can
+      // exist. Checked before the participant test so a creator waiting for an
+      // opponent gets the honest reason.
+      if (!uidA || !uidB) {
+        await deleteVsImageByPublicUrl(env, imageUrl);
+        throw httpsError("failed-precondition", "This battle does not have two participants yet.");
+      }
+      if (uid !== uidA && uid !== uidB) {
+        await deleteVsImageByPublicUrl(env, imageUrl);
+        throw httpsError("permission-denied", "Only a participant can set the battle image.");
+      }
+      // Already recorded by whoever got there first. The card this caller just
+      // uploaded is now unreferenced, so throw it away rather than paying to
+      // store it forever — unless it IS the stored one (a retry of a call that
+      // actually succeeded), in which case deleting it would break a live story.
+      if (match.vsImageUrl) {
+        if (match.vsImageUrl !== imageUrl) await deleteVsImageByPublicUrl(env, imageUrl);
+        return c.json({ success: true, vsImageUrl: match.vsImageUrl, alreadySet: true });
+      }
+
+      // The `vs_image_url IS NULL` gate makes the first-writer-wins rule hold
+      // against a genuine race, not just against the read above.
+      const claimed = await db
+        .update(schema.contestMatches)
+        .set({ vsImageUrl: imageUrl })
+        .where(and(eq(schema.contestMatches.id, matchId), isNull(schema.contestMatches.vsImageUrl)))
+        .run();
+      if (Number(claimed.meta?.changes || 0) === 0) {
+        // Someone claimed it between the read and the update. Re-read to tell this
+        // client which card actually won, and discard the one it uploaded.
+        const current = await db
+          .select({ vsImageUrl: schema.contestMatches.vsImageUrl })
+          .from(schema.contestMatches)
+          .where(eq(schema.contestMatches.id, matchId))
+          .get();
+        if (current?.vsImageUrl !== imageUrl) await deleteVsImageByPublicUrl(env, imageUrl);
+        // A null here means the row was deleted underneath us, not that a card
+        // exists — reporting `alreadySet` for that would have the client cache a
+        // card that never existed.
+        if (!current?.vsImageUrl) throw httpsError("not-found", "Match not found.");
+        return c.json({ success: true, vsImageUrl: current.vsImageUrl, alreadySet: true });
+      }
+
+      return c.json({ success: true, vsImageUrl: imageUrl });
     }
 
     case "submitVote": {

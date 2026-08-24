@@ -27,8 +27,9 @@ import { USER_UPLOAD_FOLDERS, sanitizeMediaFolder } from '../src/lib/r2';
  *   stories   — app/story/create/index.tsx
  *   avatars   — app/profile/manage/edit.tsx, app/auth/signup/congratulations
  *   deposits  — app/wallet/deposit.tsx
+ *   vs-cards  — src/lib/vsImage.ts (composite battle card)
  */
-const FOLDERS_THE_CLIENT_SENDS = ['contests', 'stories', 'avatars', 'deposits'] as const;
+const FOLDERS_THE_CLIENT_SENDS = ['contests', 'stories', 'avatars', 'deposits', 'vs-cards'] as const;
 
 describe('USER_UPLOAD_FOLDERS', () => {
   it.each(FOLDERS_THE_CLIENT_SENDS)('accepts %s, which the app uploads to', (folder) => {

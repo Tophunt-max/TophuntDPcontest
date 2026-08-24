@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { View, Text, StyleSheet, Dimensions, ActivityIndicator } from 'react-native';
 import { Image } from 'expo-image';
 import { useQuery } from '@tanstack/react-query';
@@ -8,7 +8,7 @@ import { Ionicons } from '@/src/lib/icons';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { CoinIcon } from '@/src/components/ui/CoinIcon';
 import { contestService } from '@/src/services/contests/contestService';
-import { resolveVsFrame } from '@/src/lib/vsStory';
+import { resolveVsFrame, vsImageOf } from '@/src/lib/vsStory';
 
 const { width, height } = Dimensions.get('window');
 
@@ -32,10 +32,31 @@ type Props = {
   /** Falls back to this while the match loads, so the frame is never empty. */
   fallbackMediaUrl?: string;
   contestTitle?: string | null;
+  /**
+   * Fired once when this frame is safe to screenshot: both halves are real
+   * photographs that have finished decoding, and no composite exists yet.
+   *
+   * This exists because `captureRef` copies *painted pixels*. Capturing on a
+   * timer would sometimes catch a half-decoded frame and produce a card with a
+   * grey rectangle where someone's entry should be — and because the first
+   * recorded card wins, that mistake would be permanent for both users. So the
+   * signal comes from the images themselves.
+   *
+   * Deliberately never fires for a video battle: a `VideoView`'s surface is not
+   * part of the view hierarchy the screenshot walks, so a captured video battle
+   * is two black rectangles. Those keep the live frame instead.
+   */
+  onCaptureReady?: () => void;
 };
 
 /** One side of the battle. Videos show their first frame, muted and still. */
-const VsSide: React.FC<{ uri?: string | null; isVideo: boolean; label: string }> = ({ uri, isVideo, label }) => {
+const VsSide: React.FC<{
+  uri?: string | null;
+  isVideo: boolean;
+  label: string;
+  /** Called when this side's photo has decoded — success only, never on error. */
+  onPhotoLoad?: () => void;
+}> = ({ uri, isVideo, label, onPhotoLoad }) => {
   // A story is a glance, not a watch — a paused first frame reads better than two
   // videos competing for attention, and avoids two decoders for one frame.
   const player = useVideoPlayer(isVideo && uri ? uri : null, (p) => {
@@ -49,7 +70,13 @@ const VsSide: React.FC<{ uri?: string | null; isVideo: boolean; label: string }>
         {isVideo && uri ? (
           <VideoView player={player} style={styles.media} contentFit="cover" nativeControls={false} />
         ) : (
-          <Image source={uri ? { uri } : undefined} style={styles.media} contentFit="cover" transition={150} />
+          <Image
+            source={uri ? { uri } : undefined}
+            style={styles.media}
+            contentFit="cover"
+            transition={150}
+            onLoad={uri ? onPhotoLoad : undefined}
+          />
         )}
         {isVideo && (
           <View style={styles.videoPip}>
@@ -62,7 +89,7 @@ const VsSide: React.FC<{ uri?: string | null; isVideo: boolean; label: string }>
   );
 };
 
-export const StoryVsFrame: React.FC<Props> = ({ matchId, fallbackMediaUrl, contestTitle }) => {
+export const StoryVsFrame: React.FC<Props> = ({ matchId, fallbackMediaUrl, contestTitle, onCaptureReady }) => {
   const { data: match, isLoading } = useQuery({
     queryKey: ['match', matchId],
     queryFn: () => contestService.getMatchById(matchId),
@@ -77,6 +104,59 @@ export const StoryVsFrame: React.FC<Props> = ({ matchId, fallbackMediaUrl, conte
   // which happens legitimately when a participant is blocked by this viewer), so
   // fall back to the single entry this story row already carries.
   const frame = resolveVsFrame(match);
+
+  // A composite has already been produced for this battle, so show that single
+  // image rather than re-assembling the layout. It is the same picture either
+  // way, but this is one decode instead of two and it is exactly what gets
+  // shared, so what the user sees is what they send.
+  //
+  // The trade-off, accepted deliberately: the card was captured at ONE device's
+  // aspect ratio, so on a differently-shaped screen `contain` letterboxes it
+  // against the black story background. Cropping to fill instead could cut the VS
+  // badge or someone's face off the edge, and the point of the card is that both
+  // users are looking at the identical image.
+  const composite = vsImageOf(match);
+
+  // A recorded card that will not load. The cron clears the column when the
+  // battle's stories expire, but a match can be read after its card is gone and
+  // before that write lands — and an `Image` pointed at a 404 renders nothing at
+  // all. Falling back to the live layout means a dead card degrades to the old
+  // behaviour instead of an empty black story.
+  const [compositeFailed, setCompositeFailed] = useState<string | null>(null);
+  const useComposite = !!composite && compositeFailed !== composite;
+
+  // Track which entry photos have decoded, so `onCaptureReady` fires on the real
+  // thing rather than a guess. Keyed by URI rather than by side, and never reset:
+  // an `Image` whose `uri` has not changed does NOT re-fire `onLoad`, so a second
+  // battle in the same reel that reuses one participant's entry would otherwise
+  // never reach two and would never produce a card. A uri that decoded once is
+  // decoded.
+  //
+  // Held in refs: nothing rendered depends on them, and a re-render per decoded
+  // image would restart the sibling's fade transition.
+  const loadedUris = useRef<Set<string>>(new Set());
+  const notifiedMatch = useRef<string | null>(null);
+
+  const readyRef = useRef(onCaptureReady);
+  readyRef.current = onCaptureReady;
+
+  const leftUri = frame?.left.uri ?? null;
+  const rightUri = frame?.right.uri ?? null;
+  const markUriLoaded = useCallback(
+    (uri: string | null) => {
+      if (!uri) return;
+      loadedUris.current.add(uri);
+      // Once per battle, and only when BOTH halves are known-decoded.
+      if (notifiedMatch.current === matchId) return;
+      if (!leftUri || !rightUri) return;
+      if (!loadedUris.current.has(leftUri) || !loadedUris.current.has(rightUri)) return;
+      notifiedMatch.current = matchId;
+      readyRef.current?.();
+    },
+    [matchId, leftUri, rightUri],
+  );
+  const onLeftLoad = useCallback(() => markUriLoaded(leftUri), [markUriLoaded, leftUri]);
+  const onRightLoad = useCallback(() => markUriLoaded(rightUri), [markUriLoaded, rightUri]);
 
   if (isLoading) {
     return (
@@ -96,6 +176,20 @@ export const StoryVsFrame: React.FC<Props> = ({ matchId, fallbackMediaUrl, conte
     );
   }
 
+  if (useComposite) {
+    return (
+      <View style={styles.container}>
+        <Image
+          source={{ uri: composite! }}
+          style={styles.media}
+          contentFit="contain"
+          transition={150}
+          onError={() => setCompositeFailed(composite!)}
+        />
+      </View>
+    );
+  }
+
   return (
     <LinearGradient colors={['#1B1226', '#2A1330', '#40121F']} style={styles.container}>
       <View style={styles.card}>
@@ -110,8 +204,18 @@ export const StoryVsFrame: React.FC<Props> = ({ matchId, fallbackMediaUrl, conte
 
         {/* Both entries, side by side, with the VS badge between them. */}
         <View style={styles.row}>
-          <VsSide uri={frame.left.uri} isVideo={frame.isVideo} label={frame.left.username} />
-          <VsSide uri={frame.right.uri} isVideo={frame.isVideo} label={frame.right.username} />
+          <VsSide
+            uri={frame.left.uri}
+            isVideo={frame.isVideo}
+            label={frame.left.username}
+            onPhotoLoad={frame.isVideo ? undefined : onLeftLoad}
+          />
+          <VsSide
+            uri={frame.right.uri}
+            isVideo={frame.isVideo}
+            label={frame.right.username}
+            onPhotoLoad={frame.isVideo ? undefined : onRightLoad}
+          />
 
           {/* Overlaps the gap between the two halves, like the feed card. */}
           <View pointerEvents="none" style={styles.vsBadge}>
@@ -137,7 +241,13 @@ export const StoryVsFrame: React.FC<Props> = ({ matchId, fallbackMediaUrl, conte
           )}
         </View>
 
-        <Text style={styles.cta}>Tap through to vote — fans decide the winner</Text>
+        {/*
+          The domain is IN the frame, not just in the share text. When this gets
+          captured and sent as an image file the message is dropped — a share sheet
+          attaching a picture carries no caption — so a card with no link on it
+          would travel with nothing pointing back at the app.
+        */}
+        <Text style={styles.cta}>Vote on tophunt.in — fans decide the winner</Text>
       </View>
     </LinearGradient>
   );

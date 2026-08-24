@@ -206,6 +206,15 @@ export const contestMatches = sqliteTable(
     // considered). Per-participant video identity lives in the userA/userB
     // snapshots' mediaUrl; processing state lives in the `videos` table.
     videoProvider: text("video_provider"),
+    /**
+     * One composite head-to-head image for this battle, for sharing outside the
+     * app (migration 0033). Produced by the joining client and recorded via the
+     * `setMatchVsImage` action, because the Worker cannot compose images.
+     *
+     * Always optional: generation needs a native capture module, so readers must
+     * fall back to rendering the two entries side by side themselves.
+     */
+    vsImageUrl: text("vs_image_url"),
     createdAt: integer("created_at").notNull(),
     activatedAt: integer("activated_at"),
     completedAt: integer("completed_at"),

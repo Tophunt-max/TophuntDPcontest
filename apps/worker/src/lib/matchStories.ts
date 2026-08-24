@@ -15,7 +15,7 @@
  * row could only ever appear on one participant's ring.
  *
  * ---------------------------------------------------------------------------
- * Why the VS visual is NOT rendered into an image here
+ * Why the VS visual is NOT composed into an image HERE
  * ---------------------------------------------------------------------------
  * There is no server-side image composition available. `lib/media.ts` only builds
  * Cloudflare Image *Resizing* URLs — which cannot combine two sources — and it is
@@ -24,14 +24,22 @@
  * a WASM decoder, then fetching, decoding, re-encoding and uploading a new R2
  * object on the paid-join hot path.
  *
- * It would also leak storage: `cron.ts` deliberately deletes expired story media
- * only for `type = 'user'`, precisely because contest stories reuse the match's
- * existing objects. A generated composite would have no owner in that cleanup.
- *
  * So each row stores that user's OWN entry as `media_url` — which keeps the story
  * meaningful on any client that just renders `media_url` — plus `match_id`. The
  * client reads `match_id`, loads the battle, and draws the head-to-head frame at
- * render time. Nothing new is stored and nothing new has to be cleaned up.
+ * render time.
+ *
+ * A composite image DOES exist, but it is produced later and elsewhere: a
+ * participant's device screenshots that rendered frame and reports it through the
+ * `setMatchVsImage` action, which records it on `contest_matches.vs_image_url`.
+ * Two things about it matter here:
+ *
+ *   - it is recorded on the MATCH, never copied into these rows. `media_url`
+ *     staying each user's own entry is what keeps blocking working, and what keeps
+ *     the card owned by one thing instead of two. `routes/api.ts` has the full
+ *     reasoning at `setMatchVsImage`.
+ *   - it is the one contest-story object that has an owner in cleanup: `cron.ts`
+ *     deletes it when these stories expire, because nothing else displays it.
  */
 import { and, eq } from "drizzle-orm";
 import type { Env } from "../types";

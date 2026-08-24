@@ -27,6 +27,7 @@ vi.mock('../src/lib/voteCounter', () => ({
 import { makeEnv, makeApp, fakeCtx, drizzleOf, type TestEnv } from './helpers/harness';
 import * as schema from '../src/db/schema';
 import { publishVsStories, storyMediaType } from '../src/lib/matchStories';
+import { resolveContests } from '../src/cron';
 
 const app = makeApp();
 
@@ -216,6 +217,231 @@ describe('joining a battle', () => {
     const [a, b] = rows as any[];
     expect(a.expiresAt).toBe(b.expiresAt);
     expect(a.expiresAt - a.createdAt).toBe(24 * 60 * 60 * 1000);
+  });
+});
+
+// ===========================================================================
+describe('setMatchVsImage', () => {
+  const CARD = 'https://cdn.test/vs-cards/images/card.png';
+
+  /** A live battle between alice and bob, with both VS stories written. */
+  async function liveMatch(env: TestEnv) {
+    await seedUser(env, 'alice');
+    await seedUser(env, 'bob');
+    await seedUser(env, 'carol');
+    await seedContest(env, 'c1');
+    const created = await call(env, 'alice', 'startMatch', {
+      contestId: 'c1', mediaUrl: 'alice.jpg', mediaType: 'photo', deviceId: 'device-a',
+    });
+    const matchId = created.body.matchId as string;
+    await call(env, 'bob', 'joinMatch', {
+      matchId, mediaUrl: 'bob.jpg', mediaType: 'photo', deviceId: 'device-b',
+    });
+    return matchId;
+  }
+
+  const matchRow = (env: TestEnv, id: string) =>
+    drizzleOf(env).select().from(schema.contestMatches).where(eq(schema.contestMatches.id, id)).get();
+
+  it('records the card on the match', async () => {
+    const { env } = makeEnv();
+    const matchId = await liveMatch(env);
+
+    const res = await call(env, 'bob', 'setMatchVsImage', { matchId, imageUrl: CARD });
+
+    expect(res.status).toBe(200);
+    expect(res.body.vsImageUrl).toBe(CARD);
+    expect((await matchRow(env, matchId))?.vsImageUrl).toBe(CARD);
+  });
+
+  it('leaves each story row pointing at that user\'s OWN entry', async () => {
+    // Copying the card into `stories.media_url` is the obvious convenience and it
+    // is wrong twice over, so it is pinned here rather than left to a comment.
+    //
+    // It would defeat blocking: `/read/matches/:id` returns nothing when a
+    // participant is blocked by the viewer, and the story then falls back to the
+    // row's own media — which would be the composite showing the blocked user.
+    //
+    // And it would give one R2 object two owners: account deletion collects
+    // `stories.media_url` for the departing user and deletes those objects, so one
+    // participant leaving would delete the image the other's story is displaying.
+    const { env } = makeEnv();
+    const matchId = await liveMatch(env);
+
+    await call(env, 'bob', 'setMatchVsImage', { matchId, imageUrl: CARD });
+
+    const rows = await stories(env);
+    expect(rows).toHaveLength(2);
+    expect(rows.some((r: any) => r.mediaUrl === CARD)).toBe(false);
+    expect(rows.map((r: any) => r.mediaUrl).sort()).toEqual(['alice.jpg', 'bob.jpg']);
+  });
+
+  it('refuses a url that is not one of our uploaded cards', async () => {
+    // This action writes into the OTHER participant's story, so an unchecked url
+    // would let one user put an arbitrary remote image on someone else's story.
+    const { env } = makeEnv();
+    const matchId = await liveMatch(env);
+
+    for (const hostile of [
+      'https://evil.example/card.png',              // foreign host
+      'http://cdn.test/vs-cards/images/card.png',   // wrong protocol
+      'https://cdn.test/stories/images/card.png',   // our host, wrong prefix
+      'https://cdn.test/vs-cards/images/../../a.png', // traversal
+      'https://cdn.test/vs-cards/images/card.png?x=1', // query string
+    ]) {
+      const res = await call(env, 'bob', 'setMatchVsImage', { matchId, imageUrl: hostile });
+      expect(res.status).toBe(400);
+    }
+
+    expect((await matchRow(env, matchId))?.vsImageUrl).toBeFalsy();
+    // A url we could not validate is not ours to reason about, so nothing is
+    // deleted on this path either.
+    expect(env.MEDIA._deleted).toEqual([]);
+  });
+
+  it('refuses a caller who is not in the battle, and bins their upload', async () => {
+    const { env } = makeEnv();
+    const matchId = await liveMatch(env);
+
+    const res = await call(env, 'carol', 'setMatchVsImage', { matchId, imageUrl: CARD });
+
+    expect(res.status).toBe(403);
+    expect((await matchRow(env, matchId))?.vsImageUrl).toBeFalsy();
+    // The caller uploaded before calling, so every rejection past validation
+    // orphans an object unless it is cleaned up here.
+    expect(env.MEDIA._deleted).toEqual(['vs-cards/images/card.png']);
+  });
+
+  it('refuses a battle that nobody has joined yet', async () => {
+    // Without this the creator of a pending match could claim `vs_image_url` with
+    // any image they can upload, before an opponent exists — and first-writer-wins
+    // would make it the card both users see for the life of the battle.
+    const { env } = makeEnv();
+    await seedUser(env, 'alice');
+    await seedContest(env, 'c1');
+    const created = await call(env, 'alice', 'startMatch', {
+      contestId: 'c1', mediaUrl: 'alice.jpg', mediaType: 'photo', deviceId: 'device-a',
+    });
+    const matchId = created.body.matchId as string;
+
+    const res = await call(env, 'alice', 'setMatchVsImage', { matchId, imageUrl: CARD });
+
+    expect(res.status).toBe(412);
+    expect((await matchRow(env, matchId))?.vsImageUrl).toBeFalsy();
+    expect(env.MEDIA._deleted).toEqual(['vs-cards/images/card.png']);
+  });
+
+  it('lets the creator set it too, not just the joiner', async () => {
+    const { env } = makeEnv();
+    const matchId = await liveMatch(env);
+    expect((await call(env, 'alice', 'setMatchVsImage', { matchId, imageUrl: CARD })).status).toBe(200);
+    expect((await matchRow(env, matchId))?.vsImageUrl).toBe(CARD);
+  });
+
+  it('first writer wins — a second card never replaces the first', async () => {
+    // Swapping the image under a story that is already being viewed is worse
+    // than keeping the first good one.
+    const { env } = makeEnv();
+    const matchId = await liveMatch(env);
+    await call(env, 'bob', 'setMatchVsImage', { matchId, imageUrl: CARD });
+
+    const second = 'https://cdn.test/vs-cards/images/other.png';
+    const res = await call(env, 'alice', 'setMatchVsImage', { matchId, imageUrl: second });
+
+    expect(res.status).toBe(200);
+    expect(res.body.alreadySet).toBe(true);
+    expect(res.body.vsImageUrl).toBe(CARD);
+    expect((await matchRow(env, matchId))?.vsImageUrl).toBe(CARD);
+  });
+
+  it('throws away the card that lost the race instead of paying to store it', async () => {
+    // Nothing else ever cleans these up — the story-expiry cron only touches
+    // `type = 'user'` media — so an unrecorded card would sit in R2 forever.
+    // Both participants can plausibly capture at the same moment, so without
+    // this every contested battle leaks an object.
+    const { env } = makeEnv();
+    const matchId = await liveMatch(env);
+    await call(env, 'bob', 'setMatchVsImage', { matchId, imageUrl: CARD });
+
+    const loser = 'https://cdn.test/vs-cards/images/loser.png';
+    await call(env, 'alice', 'setMatchVsImage', { matchId, imageUrl: loser });
+
+    expect(env.MEDIA._deleted).toEqual(['vs-cards/images/loser.png']);
+  });
+
+  it('never deletes the card it is reporting back as the winner', async () => {
+    // A retry of a call that actually succeeded sends the SAME url again. Reading
+    // that as "you lost, discard it" would delete the object both live stories
+    // point at, blanking the story for both users.
+    const { env } = makeEnv();
+    const matchId = await liveMatch(env);
+    await call(env, 'bob', 'setMatchVsImage', { matchId, imageUrl: CARD });
+
+    const retry = await call(env, 'bob', 'setMatchVsImage', { matchId, imageUrl: CARD });
+
+    expect(retry.body.alreadySet).toBe(true);
+    expect(retry.body.vsImageUrl).toBe(CARD);
+    expect(env.MEDIA._deleted).toEqual([]);
+  });
+
+  it('404s an unknown battle and bins the upload', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice');
+    expect((await call(env, 'alice', 'setMatchVsImage', { matchId: 'nope', imageUrl: CARD })).status).toBe(404);
+    // Nothing references it and nothing else ever will.
+    expect(env.MEDIA._deleted).toEqual(['vs-cards/images/card.png']);
+  });
+
+  it('is surfaced on the match read so clients can prefer it', async () => {
+    const { env } = makeEnv();
+    const matchId = await liveMatch(env);
+    await call(env, 'bob', 'setMatchVsImage', { matchId, imageUrl: CARD });
+
+    const res = await app.request(
+      `/read/matches/${matchId}`,
+      { headers: { Authorization: 'Bearer bob' } },
+      env,
+      fakeCtx(),
+    );
+    const match: any = await res.json();
+    expect(match.vsImageUrl).toBe(CARD);
+  });
+
+  it('is deleted from R2, and cleared, when the battle stories expire', async () => {
+    // The card is the ONE contest-story object that has no other owner: nothing
+    // else displays it, so when the stories go it is unreachable. The `type =
+    // 'user'` media sweep does not cover it, so without this pass every battle
+    // that generated a card would leave a permanent full-screen JPEG behind.
+    const { env } = makeEnv();
+    const matchId = await liveMatch(env);
+    await call(env, 'bob', 'setMatchVsImage', { matchId, imageUrl: CARD });
+
+    // Age both battle stories past their expiry, the way 24h would.
+    await drizzleOf(env).update(schema.stories).set({ expiresAt: Date.now() - 1000 } as any).run();
+
+    await resolveContests(env);
+
+    expect(env.MEDIA._deleted).toEqual(['vs-cards/images/card.png']);
+    // Cleared too: a match outlives its stories, and a client reading a url that
+    // points at a deleted object would render an empty frame instead of falling
+    // back to the live layout.
+    expect((await matchRow(env, matchId))?.vsImageUrl).toBeNull();
+  });
+
+  it('reports null rather than omitting the field when no card exists', async () => {
+    // Battles created before this feature must read as "no card", not undefined,
+    // so the client's fallback is an explicit branch.
+    const { env } = makeEnv();
+    const matchId = await liveMatch(env);
+
+    const res = await app.request(
+      `/read/matches/${matchId}`,
+      { headers: { Authorization: 'Bearer bob' } },
+      env,
+      fakeCtx(),
+    );
+    const match: any = await res.json();
+    expect(match.vsImageUrl).toBeNull();
   });
 });
 
