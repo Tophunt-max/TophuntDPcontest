@@ -28,6 +28,8 @@ import { assertAccountNotBlocked } from "./middleware/auth";
 import { resolveContests, monthlyHallOfFame } from "./cron";
 import { ensureMigrated } from "./db/autoMigrate";
 import { captureError, logErrorToDb, pruneErrorLogs } from "./lib/observability";
+import { cronHealth, pruneOpsTables, runCronJob } from "./lib/ops";
+import { reconcilePaymentOrders } from "./lib/coinOrders";
 import { pruneNotifications } from "./lib/notify";
 import {
   contentRangeHeader,
@@ -101,7 +103,95 @@ app.use("*", async (c, next) => {
 });
 
 app.get("/", (c) => c.json({ service: "tophunt-api", status: "ok" }));
+
+/**
+ * Liveness. Cheap, no I/O — "this isolate is running and serving".
+ * For "can this deployment actually do its job", use /health/deep.
+ */
 app.get("/health", (c) => c.json({ ok: true, ts: Date.now() }));
+
+/**
+ * Readiness / deep health check.
+ *
+ * `/health` returning `{ok:true}` was previously the ONLY health signal, and it
+ * checked nothing: a Worker with a dead D1 binding or a missing
+ * RAZORPAY_KEY_SECRET (which makes every top-up fail closed) still answered 200.
+ * This endpoint actually exercises each dependency and reports which required
+ * secrets are absent, so an uptime monitor can alert on a broken deploy instead
+ * of a broken process.
+ *
+ * Returns 503 when anything required is unhealthy, so a monitor only needs to
+ * watch the status code. Never leaks secret VALUES — only whether they are set.
+ */
+app.get("/health/deep", async (c) => {
+  const checks: Record<string, { ok: boolean; detail?: string; ms?: number }> = {};
+
+  const timed = async (name: string, fn: () => Promise<void>) => {
+    const start = Date.now();
+    try {
+      await fn();
+      checks[name] = { ok: true, ms: Date.now() - start };
+    } catch (e: any) {
+      checks[name] = { ok: false, ms: Date.now() - start, detail: e?.message || "failed" };
+    }
+  };
+
+  await timed("d1", async () => {
+    const row = await c.env.DB.prepare("SELECT 1 AS ok").first<{ ok: number }>();
+    if (!row || row.ok !== 1) throw new Error("unexpected D1 response");
+  });
+  await timed("kv_cache", async () => {
+    await c.env.CACHE_KV.get("health:probe");
+  });
+  await timed("kv_otp", async () => {
+    await c.env.OTP_KV.get("health:probe");
+  });
+  await timed("r2", async () => {
+    // `head` on a key that need not exist still proves the binding works.
+    await c.env.MEDIA.head("health/probe");
+  });
+
+  // Secrets whose absence silently breaks a user-visible flow. The code is
+  // correctly fail-closed on each, which is exactly why they must be surfaced:
+  // without them the app looks healthy and simply refuses to work.
+  const requiredSecrets: Record<string, unknown> = {
+    FIREBASE_SERVICE_ACCOUNT: c.env.FIREBASE_SERVICE_ACCOUNT,
+    FIREBASE_PROJECT_ID: c.env.FIREBASE_PROJECT_ID,
+    RAZORPAY_KEY_ID: c.env.RAZORPAY_KEY_ID,
+    RAZORPAY_KEY_SECRET: c.env.RAZORPAY_KEY_SECRET,
+    RAZORPAY_WEBHOOK_SECRET: c.env.RAZORPAY_WEBHOOK_SECRET,
+    R2_PUBLIC_BASE_URL: c.env.R2_PUBLIC_BASE_URL,
+    ALLOWED_ORIGINS: c.env.ALLOWED_ORIGINS,
+  };
+  const missingSecrets = Object.entries(requiredSecrets)
+    .filter(([, v]) => v == null || String(v).trim() === "")
+    .map(([k]) => k);
+  checks.secrets = {
+    ok: missingSecrets.length === 0,
+    detail: missingSecrets.length ? `missing: ${missingSecrets.join(", ")}` : undefined,
+  };
+
+  // Is the cron actually running? A stalled cron means settlement, refunds and
+  // payment reconciliation have stopped, which no request-path check would show.
+  let crons: Awaited<ReturnType<typeof cronHealth>> = [];
+  try {
+    crons = await cronHealth(c.env);
+    const stale = crons.filter((j) => j.stale).map((j) => j.job);
+    const failing = crons.filter((j) => j.lastOk === false).map((j) => j.job);
+    checks.cron = {
+      ok: stale.length === 0 && failing.length === 0,
+      detail:
+        [stale.length ? `stale: ${stale.join(", ")}` : "", failing.length ? `failing: ${failing.join(", ")}` : ""]
+          .filter(Boolean)
+          .join("; ") || undefined,
+    };
+  } catch (e: any) {
+    checks.cron = { ok: false, detail: e?.message || "cron health query failed" };
+  }
+
+  const ok = Object.values(checks).every((check) => check.ok);
+  return c.json({ ok, ts: Date.now(), checks, crons }, ok ? 200 : 503);
+});
 
 /**
  * Public media — serves R2 objects (blog images imported from the archive,
@@ -284,20 +374,40 @@ export default {
   fetch: app.fetch,
 
   // Cron Triggers (wrangler.toml [triggers].crons)
+  //
+  // Every job runs through `runCronJob`, which records a heartbeat row, a
+  // duration, and — on failure — an error log, a Sentry event and an admin
+  // notification. `ctx.waitUntil` is deliberately given ONE promise for the
+  // whole tick so the runtime keeps the isolate alive until the batch is done
+  // and the heartbeats are actually written.
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     await ensureMigrated(env).catch((e) => console.error("[migrate] cron auto-migration failed", e));
     switch (event.cron) {
       case "0 0 1 * *":
-        ctx.waitUntil(monthlyHallOfFame(env));
+        ctx.waitUntil(runCronJob(env, "monthlyHallOfFame", () => monthlyHallOfFame(env)).then(() => undefined));
         break;
       case "*/10 * * * *":
       default:
-        ctx.waitUntil(resolveContests(env));
-        // Retention: drop error logs past the retention window.
-        ctx.waitUntil(pruneErrorLogs(env));
-        // Retention: the notifications table previously grew forever, which made
-        // heavy users' own list and badge-count queries progressively slower.
-        ctx.waitUntil(pruneNotifications(env));
+        ctx.waitUntil(
+          (async () => {
+            await runCronJob(env, "resolveContests", () => resolveContests(env));
+            // Money that was captured at the gateway but never credited here
+            // (client died AND webhook lost) is invisible without this sweep.
+            await runCronJob(env, "reconcilePayments", () => reconcilePaymentOrders(env));
+            // Retention: drop error logs past the retention window.
+            await runCronJob(env, "pruneErrorLogs", async () => {
+              await pruneErrorLogs(env);
+            });
+            // Retention: the notifications table previously grew forever, which
+            // made heavy users' own list and badge-count queries progressively
+            // slower.
+            await runCronJob(env, "pruneNotifications", async () => {
+              await pruneNotifications(env);
+            });
+            // Retention: heartbeat rows and expired replay claims.
+            await runCronJob(env, "pruneIdempotencyKeys", () => pruneOpsTables(env));
+          })(),
+        );
         break;
     }
   },

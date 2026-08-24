@@ -15,10 +15,10 @@ import { eq } from "drizzle-orm";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
 import { verifyRazorpayWebhookSignature } from "../lib/payments";
-import { creditPaymentOrder } from "../lib/coinOrders";
+import { clawbackPaymentOrder, creditPaymentOrder } from "../lib/coinOrders";
 import { createNotification } from "../lib/notify";
 import { timingSafeEqualSecret } from "../lib/timingSafe";
-import { now } from "../lib/ids";
+import { newId, now } from "../lib/ids";
 import {
   bunnyConfigured,
   bunnyMp4Url,
@@ -30,6 +30,43 @@ import {
 import { promoteBackfilledVideo } from "../lib/videoBackfill";
 
 export const webhookRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
+
+/** Tell the user their coins were reversed, so a negative balance isn't a mystery. */
+async function notifyClawback(env: Env, uid: string, coins: number, what: string): Promise<void> {
+  await createNotification(env, uid, {
+    title: "Coins Reversed",
+    body: `A payment was ${what}, so ${coins} Dpcoins have been removed from your wallet.`,
+    type: "purchase",
+    targetId: "wallet",
+  });
+}
+
+/**
+ * Raise an admin notification when a clawback could not be fully recovered
+ * (the coins were already spent) or when a chargeback is opened at all.
+ * Refund-farming is invisible without this.
+ */
+async function flagClawbackShortfall(
+  env: Env,
+  paymentId: string,
+  uid: string | undefined,
+  shortfall: number,
+  isDispute = false,
+): Promise<void> {
+  const db = getDb(env);
+  await db.insert(schema.adminNotifications).values({
+    id: newId(),
+    title: isDispute ? "Chargeback opened" : "Refund clawback shortfall",
+    message:
+      `Payment ${paymentId}` +
+      (uid ? ` (user ${uid})` : "") +
+      (shortfall > 0
+        ? ` — ${shortfall} coins could not be recovered; the balance is now negative. Review for refund abuse.`
+        : " — coins were fully recovered."),
+    link: uid ? `/users/${uid}` : null,
+    createdAt: now(),
+  });
+}
 
 webhookRoute.post("/razorpay", async (c) => {
   // Read the raw body FIRST — the signature is computed over these exact bytes.
@@ -56,6 +93,77 @@ webhookRoute.post("/razorpay", async (c) => {
 
   const type: string = evt?.event || "";
   const payment = evt?.payload?.payment?.entity;
+
+  // ---- Refunds and chargebacks: reverse the credit -----------------------
+  //
+  // Every event other than a successful capture used to be silently 200'd, so a
+  // refunded or disputed payment left the coins credited and spendable. These
+  // are the events that must claw them back.
+  const refund = evt?.payload?.refund?.entity;
+  const dispute = evt?.payload?.dispute?.entity;
+
+  if (type === "refund.created" || type === "refund.processed") {
+    const paymentId = refund?.payment_id ?? payment?.id;
+    if (paymentId) {
+      try {
+        const res = await clawbackPaymentOrder(c.env, getDb(c.env), {
+          paymentId: String(paymentId),
+          kind: "refund",
+          refundedAmountPaise: Number(refund?.amount) || null,
+        });
+        if (res.clawedBack) {
+          console.warn(
+            `[webhook/razorpay] refund clawed back ${res.coins} coins from ${res.uid}` +
+              (res.shortfall ? ` (shortfall ${res.shortfall} — balance went negative)` : ""),
+          );
+          if (res.uid) {
+            c.executionCtx.waitUntil(
+              notifyClawback(c.env, res.uid, res.coins ?? 0, "refunded").catch(() => {}),
+            );
+          }
+          if (res.shortfall && res.shortfall > 0) {
+            // The user had already spent the refunded coins. Surface it for review
+            // rather than absorbing the loss silently.
+            c.executionCtx.waitUntil(
+              flagClawbackShortfall(c.env, String(paymentId), res.uid, res.shortfall).catch(() => {}),
+            );
+          }
+        } else if (res.reason !== "already") {
+          console.warn(`[webhook/razorpay] refund not applied for ${paymentId}: ${res.reason}`);
+        }
+      } catch (e) {
+        console.error("[webhook/razorpay] clawback failed", paymentId, e);
+      }
+    }
+    return c.json({ ok: true });
+  }
+
+  if (type === "payment.dispute.created" || type === "payment.dispute.lost") {
+    const paymentId = dispute?.payment_id ?? payment?.id;
+    if (paymentId) {
+      try {
+        const res = await clawbackPaymentOrder(c.env, getDb(c.env), {
+          paymentId: String(paymentId),
+          kind: "dispute",
+          refundedAmountPaise: Number(dispute?.amount) || null,
+        });
+        if (res.clawedBack) {
+          console.warn(`[webhook/razorpay] chargeback clawed back ${res.coins} coins from ${res.uid}`);
+          if (res.uid) {
+            c.executionCtx.waitUntil(
+              notifyClawback(c.env, res.uid, res.coins ?? 0, "charged back").catch(() => {}),
+            );
+          }
+          c.executionCtx.waitUntil(
+            flagClawbackShortfall(c.env, String(paymentId), res.uid, res.shortfall ?? 0, true).catch(() => {}),
+          );
+        }
+      } catch (e) {
+        console.error("[webhook/razorpay] dispute clawback failed", paymentId, e);
+      }
+    }
+    return c.json({ ok: true });
+  }
 
   // We only act on successful-capture events. Everything else is acknowledged
   // (200) so Razorpay stops retrying — the signature is already verified.

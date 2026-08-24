@@ -45,8 +45,19 @@ import {
 import {
   contestBannerKeyFromPublicUrl,
   deleteContestBannerByPublicUrl,
+  sanitizeMediaFolder,
   uploadToR2,
 } from "../lib/r2";
+import {
+  adjustUserWallet,
+  assertCoinAmount,
+  assertPrizeFundedByPot,
+  matchPot,
+  perPlayerEntryFee,
+  roundFiat,
+  WalletReplay,
+} from "../lib/money";
+import { fetchExternalImage } from "../lib/safeFetch";
 
 /**
  * Record a sensitive admin action in the audit trail. Best-effort — never
@@ -379,6 +390,13 @@ adminRoute.patch("/contests/:id", async (c) => {
   const current = await db.select().from(schema.contests).where(eq(schema.contests.id, id)).get();
   if (!current) throw httpsError("not-found", "Contest not found.");
 
+  // Validate the invariant on the MERGED result: a PATCH that only raises
+  // rewardCoins, or only lowers totalEntryFee, must be rejected just the same.
+  assertPrizeFundedByPot(
+    hasOwn(values, "totalEntryFee") ? values.totalEntryFee : Number(current.totalEntryFee ?? 0),
+    hasOwn(values, "rewardCoins") ? values.rewardCoins : Number(current.rewardCoins ?? 0),
+  );
+
   const matches = await contestMatchCounts(db, id);
   if (hasOwn(values, "status") && current.status === "live" && values.status !== "live" && matches.waiting) {
     throw httpsError("failed-precondition", "Cannot move a live contest while waiting matches exist.");
@@ -621,30 +639,46 @@ adminRoute.patch("/users/:id", async (c) => {
 // ---- wallet (was adminManageWallet Cloud Function) ----
 adminRoute.post("/users/:id/wallet", async (c) => {
   requireFullAdmin(c);
-  const db = getDb(c.env);
   const userId = c.req.param("id");
   const { amount, type } = await c.req.json<any>();
-  if (typeof amount !== "number" || !["add", "subtract"].includes(type)) {
-    throw httpsError("invalid-argument", "Invalid request parameters.");
+  if (!["add", "subtract"].includes(type)) {
+    throw httpsError("invalid-argument", "type must be add or subtract.");
   }
-  const delta = type === "add" ? amount : -amount;
-  const upd = await db
-    .update(schema.users)
-    .set({ dpcoin: sql`MAX(${schema.users.dpcoin} + ${delta}, 0)`, updatedAt: now() })
-    .where(eq(schema.users.uid, userId))
-    .run();
-  if (upd.meta.changes === 0) throw httpsError("not-found", "User not found.");
-  await db.insert(schema.coinTransactions).values({
-    id: crypto.randomUUID(),
-    uid: userId,
-    amount: delta,
-    type: "admin_adjustment",
-    description: `Admin ${type} ${amount} Dpcoin`,
-    createdAt: now(),
-  });
-  const user = await db.select({ balance: schema.users.dpcoin }).from(schema.users).where(eq(schema.users.uid, userId)).get();
-  await logAudit(c, "wallet.adjust", "user", userId, { amount: delta, type });
-  return c.json({ message: "Wallet updated successfully", newBalance: user?.balance ?? 0 });
+  const amt = assertCoinAmount(amount, "amount");
+  // `adjustUserWallet` is the only supported wallet mutation: it validates the
+  // amount as a positive whole number, writes balance + ledger in one D1
+  // transaction, and fails loudly instead of clamping an over-subtraction.
+  // An `Idempotency-Key` header turns a double-clicked adjustment into a no-op.
+  const idemKey = c.req.header("Idempotency-Key");
+  try {
+    const { newBalance, applied } = await adjustUserWallet(c.env, {
+      uid: userId,
+      amount: amt,
+      direction: type,
+      type: "admin_adjustment",
+      description: `Admin ${type} ${amt} Dpcoin`,
+      claimKey: idemKey ? `admin_wallet:${userId}:${idemKey}` : undefined,
+      ts: now(),
+    });
+    await logAudit(c, "wallet.adjust", "user", userId, { amount: applied, type, newBalance });
+    return c.json({ message: "Wallet updated successfully", newBalance });
+  } catch (e) {
+    if (e instanceof WalletReplay) {
+      // Same key, already applied. Report the current balance rather than
+      // pretending to have moved coins a second time.
+      const current = await getDb(c.env)
+        .select({ balance: schema.users.dpcoin })
+        .from(schema.users)
+        .where(eq(schema.users.uid, userId))
+        .get();
+      return c.json({
+        message: "Wallet already updated for this request (no change applied).",
+        newBalance: current?.balance ?? 0,
+        replayed: true,
+      });
+    }
+    throw e;
+  }
 });
 
 
@@ -848,32 +882,32 @@ const IMG_EXT: Record<string, string> = {
   "image/avif": ".avif",
 };
 
+/** Bound on a single imported image so one URL cannot exhaust Worker memory. */
+const MAX_IMPORT_IMAGE_BYTES = 15 * 1024 * 1024;
+
 /**
  * Fetch a single (Wayback-hosted) TopHunt image and store the ORIGINAL bytes in
  * R2, returning the permanent public R2 URL. De-duplicated by content hash so
  * the same image is never uploaded twice. Only image content-types are stored.
  */
 adminRoute.post("/media/fetch-to-r2", async (c) => {
+  // Server-side fetch of an attacker-influenced URL is an SSRF primitive, and
+  // it writes into our own R2 bucket. Restricted to full admins, the URL is
+  // validated against private/link-local/metadata targets, and redirects are
+  // re-validated per hop (see lib/safeFetch.ts).
+  requireFullAdmin(c);
   const { url, folder } = await c.req.json<any>();
   if (!url || typeof url !== "string") throw httpsError("invalid-argument", "url is required.");
-  const baseFolder = (folder || "blog/imported").replace(/[^a-z0-9/_-]/gi, "");
+  // Keep the key inside our own namespace: no leading slash, no traversal, no
+  // empty segments — a client-controlled prefix must not be able to write over
+  // deployment-owned paths such as `contest-banners/`.
+  const baseFolder = sanitizeMediaFolder(folder || "blog/imported", "blog/imported");
 
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      headers: { "User-Agent": "TopHuntArchiveImporter/1.0 (+https://tophunt.in)" },
-      redirect: "follow",
-    });
-  } catch (e: any) {
-    throw httpsError("internal", `Failed to fetch image: ${e.message}`);
-  }
-  if (!res.ok) throw httpsError("not-found", `Image fetch returned ${res.status}`);
-
-  const ct = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
-  if (!ct.startsWith("image/")) throw httpsError("invalid-argument", `Not an image (content-type: ${ct || "unknown"}).`);
-
-  const buf = await res.arrayBuffer();
-  if (buf.byteLength < 100) throw httpsError("invalid-argument", "Image too small / empty.");
+  const { buffer: buf, contentType: ct } = await fetchExternalImage(
+    url,
+    "TopHuntArchiveImporter/1.0 (+https://tophunt.in)",
+    MAX_IMPORT_IMAGE_BYTES,
+  );
 
   const hash = await sha256Hex(buf);
   const ext = IMG_EXT[ct] || ".img";
@@ -1537,6 +1571,9 @@ adminRoute.post("/contests", async (c) => {
   const body = await c.req.json<unknown>();
   const { values } = validateContestInput(body, true);
   if (!values.bannerUrl) throw httpsError("failed-precondition", "A banner is required for a new contest.");
+  // A prize larger than the pot the two players fund would mint coins on every
+  // settled match. Enforced here and on PATCH against the MERGED values.
+  assertPrizeFundedByPot(values.totalEntryFee, values.rewardCoins);
 
   const id = newId();
   const user = c.get("user");
@@ -1794,10 +1831,18 @@ adminRoute.post("/matches/:id/declare-winner", async (c) => {
   const winnerUid: string = requestedWinnerUid || (votesA >= votesB ? userA.uid : userB.uid);
   const loserUid = winnerUid === userA.uid ? userB.uid : userA.uid;
 
-  let rewardAmount = Number(m.entryFee || 0);
-  if (m.contestId) {
-    const contest = await db.select({ reward: schema.contests.rewardCoins }).from(schema.contests).where(eq(schema.contests.id, m.contestId)).get();
-    if (contest?.reward) rewardAmount = Number(contest.reward);
+  // Pay the prize snapshotted on the match, clamped to the pot the two players
+  // funded — identical rule to the cron resolver, so a manual declaration can
+  // never pay more than an automatic one.
+  const pot = matchPot(m.entryFee);
+  let rewardAmount = m.prizeCoins == null ? null : Math.min(Number(m.prizeCoins), pot);
+  if (rewardAmount == null) {
+    if (m.contestId) {
+      const contest = await db.select({ reward: schema.contests.rewardCoins }).from(schema.contests).where(eq(schema.contests.id, m.contestId)).get();
+      rewardAmount = Math.min(Number(contest?.reward ?? pot), pot);
+    } else {
+      rewardAmount = pot;
+    }
   }
 
   const ts = now();
@@ -1855,7 +1900,6 @@ adminRoute.post("/matches/:id/cancel", async (c) => {
   }
 
   const ts = now();
-  const fee = Number(m.entryFee || 0);
   const participants = [userA, userB].filter((u) => u?.uid).map((u) => String(u.uid));
   const settled = await settleRefund(c.env, {
     matchId: id,
@@ -1863,7 +1907,8 @@ adminRoute.post("/matches/:id/cancel", async (c) => {
     expectedStatus: m.status as "active" | "waiting_for_opponent",
     finalStatus: "cancelled",
     participantUids: participants,
-    refundPerUser: fee / 2,
+    // Refund exactly what each player was charged (whole coins, floored).
+    refundPerUser: perPlayerEntryFee(m.entryFee),
     description: `Admin cancelled "${m.title}" — entry fee refunded`,
     completedAt: ts,
   });
@@ -1871,7 +1916,10 @@ adminRoute.post("/matches/:id/cancel", async (c) => {
   for (const u of [userA, userB]) {
     if (u?.uid) await createNotification(c.env, u.uid, { title: "Battle Cancelled", body: `The battle "${m.title}" was cancelled by an admin and your entry fee was refunded.`, type: "contest-refund", targetId: "wallet" });
   }
-  await logAudit(c, "match.cancel", "match", id, { refunded: fee });
+  await logAudit(c, "match.cancel", "match", id, {
+    refundPerUser: perPlayerEntryFee(m.entryFee),
+    participants: participants.length,
+  });
   return c.json({ message: "Match cancelled and refunded" });
 });
 
@@ -2690,9 +2738,14 @@ adminRoute.post("/ops/resolve-contests", async (c) => {
 
 adminRoute.post("/ops/hall-of-fame", async (c) => {
   requireFullAdmin(c);
-  await monthlyHallOfFame(c.env);
-  await logAudit(c, "ops.hall-of-fame", "ops", null);
-  return c.json({ message: "Hall of Fame ran" });
+  // Safe to re-run: each (period, rank, uid) payout is claimed in
+  // `idempotency_keys` inside the crediting transaction, so a second click pays
+  // nobody twice. `skipped` tells the admin how many were already settled.
+  const body = await c.req.json<any>().catch(() => ({}));
+  const period = typeof body?.period === "string" && /^\d{4}-\d{2}$/.test(body.period) ? body.period : undefined;
+  const result = await monthlyHallOfFame(c.env, period);
+  await logAudit(c, "ops.hall-of-fame", "ops", null, result);
+  return c.json({ message: `Hall of Fame settled for ${result.period}`, ...result });
 });
 
 

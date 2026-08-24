@@ -12,6 +12,7 @@ import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
 import { requireAuth, isAdmin } from "../middleware/auth";
+import { requireFullAdmin as requireFullAdminAction, writeAdminAudit } from "../lib/adminAuthz";
 import { presignUpload } from "../lib/r2";
 import { deleteMediaByUrl } from "../lib/mediaDelete";
 import { awardReward } from "../lib/gamification";
@@ -33,6 +34,14 @@ import {
   followingCacheKey,
 } from "../lib/cache";
 import { createContestExtra, validateContestInput } from "../lib/contestAdmin";
+import {
+  adjustUserWallet,
+  assertCoinAmount,
+  matchPot,
+  perPlayerEntryFee,
+  roundFiat,
+  WalletReplay,
+} from "../lib/money";
 import { verifyRazorpaySignature } from "../lib/payments";
 import { creditPaymentOrder } from "../lib/coinOrders";
 import { assertClean } from "../lib/moderation";
@@ -45,7 +54,7 @@ import {
   bunnyPlaybackUrl,
   bunnyThumbnailUrl,
 } from "../lib/bunny";
-import { getAppConfig } from "../lib/settings";
+import { getAppConfig, getRewardedAdConfig } from "../lib/settings";
 import { getSettings } from "../lib/gamification";
 import { sendEmail } from "../lib/email";
 import { newId, now, generateJoinId } from "../lib/ids";
@@ -266,7 +275,13 @@ apiRoute.post("/", async (c) => {
       if (!user) throw httpsError("not-found", "User document not found.");
 
       const totalFee = Number(contest.totalEntryFee || 0);
-      const fee = totalFee / 2;
+      // Whole coins only. `perPlayerEntryFee` floors, so a legacy odd entry fee
+      // charges (and later refunds) an exact integer instead of x.5 coins.
+      const fee = perPlayerEntryFee(totalFee);
+      // Snapshot the prize now. Settlement pays the snapshot, so a later edit to
+      // the contest template cannot change what this match pays out, and the
+      // prize can never exceed the pot these two players fund.
+      const prizeCoins = Math.min(Number(contest.rewardCoins || 0), matchPot(totalFee));
 
       // atomic conditional deduct
       const deduct = await db
@@ -301,6 +316,7 @@ apiRoute.post("/", async (c) => {
             } as any,
             totalVotes: 0,
             minVotesRequired: Math.max(0, Number(contest.minVotes || 0)),
+            prizeCoins,
             createdAt: ts,
             expiresAt,
           }),
@@ -398,7 +414,7 @@ apiRoute.post("/", async (c) => {
 
       const user = await db.select().from(schema.users).where(eq(schema.users.uid, uid)).get();
       if (!user) throw httpsError("not-found", "User document not found.");
-      const fee = Number(match.entryFee || 0) / 2;
+      const fee = perPlayerEntryFee(match.entryFee);
       // Voting window starts on activation and lasts the contest's configured
       // voteDurationDays — NOT the waiting-room autoCancelHours (which only
       // bounds how long a match may sit waiting for an opponent).
@@ -407,6 +423,7 @@ apiRoute.post("/", async (c) => {
             voteDays: schema.contests.voteDurationDays,
             minVotes: schema.contests.minVotes,
             status: schema.contests.status,
+            reward: schema.contests.rewardCoins,
           }).from(schema.contests).where(eq(schema.contests.id, match.contestId)).get()
         : null;
       if (match.contestId && !contestPolicy) {
@@ -421,41 +438,84 @@ apiRoute.post("/", async (c) => {
         Number(match.minVotesRequired ?? contestPolicy?.minVotes ?? 0),
       );
 
-      const deduct = await db
-        .update(schema.users)
-        .set({ dpcoin: sql`${schema.users.dpcoin} - ${fee}`, xp: sql`${schema.users.xp} + 10`, updatedAt: now() })
-        .where(and(eq(schema.users.uid, uid), gte(schema.users.dpcoin, fee)))
-        .run();
-      if (deduct.meta.changes === 0)
-        throw httpsError("failed-precondition", `Insufficient Dpcoin. Required: ${fee}, Current: ${user.dpcoin}`);
-
       const ts = now();
       const joinIdB = generateJoinId();
-      // claim the slot atomically
-      const claim = await db
-        .update(schema.contestMatches)
-        .set({
-          status: "active", joinIdB, activatedAt: ts,
-          minVotesRequired,
-          expiresAt: ts + Math.max(1, voteDays) * 24 * 60 * 60 * 1000,
-          userB: {
-            uid, joinId: joinIdB, username: user.username || "Anonymous",
-            profilePic: user.profileImageUrl || "", mediaUrl, mediaType: mediaType || "photo",
-            caption: caption || "", votes: 0, deviceId: deviceId || "",
-          } as any,
-        })
-        .where(and(eq(schema.contestMatches.id, matchId), eq(schema.contestMatches.status, "waiting_for_opponent")))
-        .run();
-      if (claim.meta.changes === 0) {
-        // someone else took it — refund
-        await db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${fee}` }).where(eq(schema.users.uid, uid));
-        throw httpsError("failed-precondition", "Match unavailable.");
-      }
+      const entryLedgerId = `contest_entry:${matchId}:${uid}`;
+      // Legacy matches created before prize_coins existed get their snapshot
+      // here, at activation — the same treatment min_votes_required gets.
+      const prizeSnapshot = match.prizeCoins == null
+        ? Math.min(Number(contestPolicy?.reward ?? 0), matchPot(match.entryFee))
+        : Number(match.prizeCoins);
+      const userBSnapshot = {
+        uid, joinId: joinIdB, username: user.username || "Anonymous",
+        profilePic: user.profileImageUrl || "", mediaUrl, mediaType: mediaType || "photo",
+        caption: caption || "", votes: 0, deviceId: deviceId || "",
+      };
 
-      await db.insert(schema.coinTransactions).values({
-        id: newId(), uid, amount: -fee, type: "contest_entry_fee", matchId, contestId: match.contestId,
-        description: `Entry fee (50% split) for ${match.title || "contest"}`, createdAt: ts,
-      });
+      // Slot claim, entry-fee ledger and balance deduct are ONE D1 transaction,
+      // gated on the freshly generated `joinIdB` acting as a claim token — the
+      // same pattern lib/contestSettlement.ts uses with settlement_id.
+      //
+      // Previously these were three separate writes: the deduct happened first,
+      // a lost race was compensated by a bare refund that wrote NO ledger row,
+      // and the ledger insert could fail after the slot was already claimed. Now
+      // either all three apply or none do, so a player can never be charged for
+      // a slot they did not get, and no balance moves without a ledger row.
+      const claimGate = `EXISTS (SELECT 1 FROM contest_matches WHERE id = ? AND join_id_b = ?)`;
+      const joinResults = await env.DB.batch([
+        env.DB.prepare(
+          `UPDATE contest_matches
+              SET status = 'active', join_id_b = ?, activated_at = ?,
+                  min_votes_required = ?, prize_coins = ?, expires_at = ?, user_b = ?
+            WHERE id = ? AND status = 'waiting_for_opponent'
+              AND EXISTS (SELECT 1 FROM users WHERE uid = ? AND dpcoin >= ?)`,
+        ).bind(
+          joinIdB,
+          ts,
+          minVotesRequired,
+          prizeSnapshot,
+          ts + Math.max(1, voteDays) * 24 * 60 * 60 * 1000,
+          JSON.stringify(userBSnapshot),
+          matchId,
+          uid,
+          fee,
+        ),
+        env.DB.prepare(
+          `INSERT OR IGNORE INTO coin_transactions
+             (id, uid, amount, type, contest_id, match_id, description, created_at)
+           SELECT ?, ?, ?, 'contest_entry_fee', ?, ?, ?, ?
+            WHERE ${claimGate}`,
+        ).bind(
+          entryLedgerId,
+          uid,
+          -fee,
+          match.contestId ?? null,
+          matchId,
+          `Entry fee (50% split) for ${match.title || "contest"}`,
+          ts,
+          matchId,
+          joinIdB,
+        ),
+        env.DB.prepare(
+          `UPDATE users
+              SET dpcoin = dpcoin - ?, xp = xp + 10, updated_at = ?
+            WHERE uid = ? AND ${claimGate}`,
+        ).bind(fee, ts, uid, matchId, joinIdB),
+      ]);
+
+      if (Number(joinResults[0]?.meta?.changes || 0) === 0) {
+        // Nothing was charged and nothing was claimed. Tell the user which of
+        // the two guards rejected them.
+        const stillWaiting = await db
+          .select({ status: schema.contestMatches.status })
+          .from(schema.contestMatches)
+          .where(eq(schema.contestMatches.id, matchId))
+          .get();
+        if (!stillWaiting || stillWaiting.status !== "waiting_for_opponent") {
+          throw httpsError("failed-precondition", "Match unavailable.");
+        }
+        throw httpsError("failed-precondition", `Insufficient Dpcoin. Required: ${fee}, Current: ${user.dpcoin}`);
+      }
 
       await db.insert(schema.stories).values({
         id: newId(), userId: uid, username: user.username || "Anonymous", avatarUrl: user.profileImageUrl || "",
@@ -711,38 +771,68 @@ apiRoute.post("/", async (c) => {
     // Verification (SSV) callback (e.g. AdMob SSV) before crediting. The cap +
     // rate limit bound the abuse until SSV is wired in. See PRODUCTION_TODO.md.
     case "claimAdReward": {
-      const AD_REWARD = 5;
-      const DAILY_CAP = 10;
       await rateLimit(env, `ad:${uid}`, 20, 60);
+      const ads = await getRewardedAdConfig(env);
+
+      // Rewarded ads mint real, withdrawable currency on nothing but the
+      // client's word that an ad was watched. That is only acceptable once the
+      // ad network's Server-Side Verification callback is the thing that
+      // credits, so the feature is OFF unless an admin explicitly turns it on.
+      //
+      // `trustClient: true` is the escape hatch for a non-SSV provider: it still
+      // works, but it has to be a deliberate, visible decision rather than the
+      // silent default it used to be.
+      if (!ads.enabled) {
+        throw httpsError(
+          "failed-precondition",
+          "Rewarded ads are not currently available.",
+        );
+      }
+      if (!ads.trustClient) {
+        throw httpsError(
+          "failed-precondition",
+          "Rewarded ads must be credited through the ad network's server-side verification callback.",
+        );
+      }
 
       const day = Math.floor(Date.now() / 86_400_000); // UTC day bucket
-      const capKey = `adreward:${uid}:${day}`;
-      let used = 0;
-      try {
-        used = Number((await env.CACHE_KV.get(capKey)) || 0);
-      } catch {
-        /* KV blip — treat as 0 (fail-open on the counter, cap still applies next reads) */
-      }
-      if (used >= DAILY_CAP)
-        throw httpsError("resource-exhausted", "Daily ad reward limit reached. Come back tomorrow!");
-
       const ts = now();
-      await db.batch([
-        db.update(schema.users)
-          .set({ dpcoin: sql`${schema.users.dpcoin} + ${AD_REWARD}`, updatedAt: ts })
-          .where(eq(schema.users.uid, uid)),
-        db.insert(schema.coinTransactions).values({
-          id: newId(), uid, amount: AD_REWARD, type: "ad_reward",
-          description: "Rewarded ad view", createdAt: ts,
-        }),
+      const claimId = newId();
+      // The cap is enforced by a COUNT(*) guard evaluated INSIDE the crediting
+      // transaction, and the credit + ledger are gated on that claim row
+      // existing. Concurrent requests are serialised by the transaction, so the
+      // cap is exact rather than approximate.
+      const claimGate = `EXISTS (SELECT 1 FROM ad_reward_claims WHERE id = ?)`;
+      const adResults = await env.DB.batch([
+        env.DB.prepare(
+          `INSERT INTO ad_reward_claims (id, uid, day, provider, reward, created_at)
+           SELECT ?, ?, ?, ?, ?, ?
+            WHERE (SELECT COUNT(*) FROM ad_reward_claims WHERE uid = ? AND day = ?) < ?`,
+        ).bind(claimId, uid, day, ads.provider, ads.reward, ts, uid, day, ads.dailyCap),
+        env.DB.prepare(
+          `INSERT OR IGNORE INTO coin_transactions
+             (id, uid, amount, type, description, created_at)
+           SELECT ?, ?, ?, 'ad_reward', ?, ?
+            WHERE ${claimGate}`,
+        ).bind(newId(), uid, ads.reward, "Rewarded ad view", ts, claimId),
+        env.DB.prepare(
+          `UPDATE users SET dpcoin = dpcoin + ?, updated_at = ? WHERE uid = ? AND ${claimGate}`,
+        ).bind(ads.reward, ts, uid, claimId),
       ]);
-      // Bump the daily counter (TTL ~25h so it clears after the day rolls over).
-      try {
-        await env.CACHE_KV.put(capKey, String(used + 1), { expirationTtl: 90_000 });
-      } catch {
-        /* best-effort */
+
+      if (Number(adResults[0]?.meta?.changes || 0) === 0) {
+        throw httpsError("resource-exhausted", "Daily ad reward limit reached. Come back tomorrow!");
       }
-      return c.json({ success: true, coinsEarned: AD_REWARD, remaining: DAILY_CAP - used - 1 });
+      const usedToday = await db
+        .select({ n: count() })
+        .from(schema.adRewardClaims)
+        .where(and(eq(schema.adRewardClaims.uid, uid), eq(schema.adRewardClaims.day, day)))
+        .get();
+      return c.json({
+        success: true,
+        coinsEarned: ads.reward,
+        remaining: Math.max(0, ads.dailyCap - Number(usedToday?.n ?? 0)),
+      });
     }
 
     // ================= DAILY TASKS =================
@@ -1009,7 +1099,8 @@ apiRoute.post("/", async (c) => {
           id,
           userId: uid,
           amount: amt,
-          cashAmount: amt * rate,
+          // Fiat legitimately has paise, but it must not carry float dust.
+          cashAmount: roundFiat(amt * rate),
           method: String(method),
           accountDetails: accountDetails ? String(accountDetails) : null,
           status: "pending",
@@ -1107,12 +1198,30 @@ apiRoute.post("/", async (c) => {
 
     // ================= ADMIN =================
     case "setAdminRole": {
-      if (!(await isAdmin(c as any))) throw httpsError("permission-denied", "Admin only.");
+      // Privilege escalation must require full-admin authority and must be
+      // audited. Previously any `admin` could grant `admin` to anyone here with
+      // no audit row, while /admin/set-role required a full admin AND audited.
+      await requireFullAdminAction(env, uid);
       const { userId, makeAdmin } = body;
-      if (!userId) throw httpsError("invalid-argument", "userId is required.");
+      if (!userId || typeof userId !== "string") throw httpsError("invalid-argument", "userId is required.");
+      // Never let an admin strip a superadmin through this path.
+      const targetRole = await db
+        .select({ role: schema.users.role })
+        .from(schema.users)
+        .where(eq(schema.users.uid, userId))
+        .get();
+      if (!targetRole) throw httpsError("not-found", "User not found.");
+      if (targetRole.role === "superadmin") {
+        throw httpsError("permission-denied", "A superadmin's role can only be changed by a superadmin via /admin/set-role.");
+      }
       const role = makeAdmin === false ? "user" : "admin";
       await setCustomClaims(env, userId, { role });
       await db.update(schema.users).set({ role, updatedAt: now() }).where(eq(schema.users.uid, userId));
+      await writeAdminAudit(env, c.get("user"), "user.set-role", "user", userId, {
+        role,
+        previousRole: targetRole.role ?? null,
+        via: "/api",
+      });
       return c.json({ success: true, role });
     }
     case "adminDeletePost": {
@@ -1791,33 +1900,51 @@ apiRoute.post("/", async (c) => {
 
     // ================= WALLET (ADMIN) =================
     case "adminManageWallet": {
-      if (!(await isAdmin(c as any))) throw httpsError("permission-denied", "Admin only.");
+      // Full admins only. A plain `admin` used to be able to move any balance
+      // here with no audit trail, while the equivalent /admin route required a
+      // full admin — the two paths are now identical in authority and both are
+      // audited.
+      await requireFullAdminAction(env, uid);
       const { userId, amount, type } = body;
-      const amt = Number(amount);
-      // Amount must be a positive integer; direction is decided by `type`.
-      if (!userId || !Number.isInteger(amt) || amt <= 0 || !["add", "subtract"].includes(type))
-        throw httpsError("invalid-argument", "Invalid request parameters.");
-      const target = await db
-        .select({ balance: schema.users.dpcoin })
-        .from(schema.users)
-        .where(eq(schema.users.uid, userId))
-        .get();
-      if (!target) throw httpsError("not-found", "User not found.");
-      const oldBal = Number(target.balance || 0);
-      const newBal = type === "add" ? oldBal + amt : Math.max(oldBal - amt, 0);
-      // Record the ACTUAL applied change (after clamping at 0) so the ledger
-      // always reconciles with the balance — previously it logged the full
-      // requested delta even when the balance was clamped.
-      const applied = newBal - oldBal;
-      const ts = now();
-      await db.batch([
-        db.update(schema.users).set({ dpcoin: newBal, updatedAt: ts }).where(eq(schema.users.uid, userId)),
-        db.insert(schema.coinTransactions).values({
-          id: newId(), uid: userId, amount: applied, type: "admin_adjustment",
-          description: `Admin ${type} ${amt} Dpcoin`, createdAt: ts,
-        }),
-      ]);
-      return c.json({ success: true, message: "Wallet updated successfully", newBalance: newBal });
+      if (!userId || typeof userId !== "string" || !["add", "subtract"].includes(type))
+        throw httpsError("invalid-argument", "userId and a type of add or subtract are required.");
+      const amt = assertCoinAmount(amount, "amount");
+      // Same shared implementation the /admin route uses: validated amount,
+      // balance + ledger in one transaction, loud failure instead of a silent
+      // clamp, optional replay claim.
+      try {
+        const { newBalance } = await adjustUserWallet(env, {
+          uid: userId,
+          amount: amt,
+          direction: type,
+          type: "admin_adjustment",
+          description: `Admin ${type} ${amt} Dpcoin`,
+          claimKey: body.idempotencyKey ? `admin_wallet:${userId}:${body.idempotencyKey}` : undefined,
+          ts: now(),
+        });
+        await writeAdminAudit(env, c.get("user"), "wallet.adjust", "user", userId, {
+          amount: amt,
+          type,
+          newBalance,
+          via: "/api",
+        });
+        return c.json({ success: true, message: "Wallet updated successfully", newBalance });
+      } catch (e) {
+        if (e instanceof WalletReplay) {
+          const current = await db
+            .select({ balance: schema.users.dpcoin })
+            .from(schema.users)
+            .where(eq(schema.users.uid, userId))
+            .get();
+          return c.json({
+            success: true,
+            replayed: true,
+            message: "Wallet already updated for this request (no change applied).",
+            newBalance: current?.balance ?? 0,
+          });
+        }
+        throw e;
+      }
     }
     case "join":
     case "vote":

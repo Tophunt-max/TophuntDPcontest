@@ -155,6 +155,11 @@ export const contestMatches = sqliteTable(
     rewardAmount: real("reward_amount").default(0),
     // Immutable eligibility threshold captured when the match is created/activated.
     minVotesRequired: integer("min_votes_required"),
+    // Immutable prize snapshot captured at match creation. Settlement pays THIS,
+    // not the live contest template, so editing a template can never change the
+    // prize of a match that is already in flight. NULL = legacy row, fall back
+    // to the template at settlement time.
+    prizeCoins: real("prize_coins"),
     // Unique token used to make status + financial settlement one atomic D1 batch.
     settlementId: text("settlement_id"),
     // { fire: n, heart: n, laugh: n } quick-reaction counters
@@ -269,10 +274,24 @@ export const paymentOrders = sqliteTable(
     bonusCoins: real("bonus_coins").default(0), // how much of `coins` was bonus — display/reporting only
     amountPaise: integer("amount_paise").notNull(), // expected amount (paise)
     currency: text("currency").notNull().default("INR"),
-    status: text("status").notNull().default("created"), // created | paid | failed
+    // created | paid | refunded | disputed | expired | failed
+    //
+    // Only `created` and `expired` may transition to `paid` — see
+    // CREDITABLE_ORDER_STATUSES in lib/coinOrders.ts. A refunded or disputed
+    // order must never be re-credited by a late duplicate webhook.
+    status: text("status").notNull().default("created"),
     paymentId: text("payment_id"),
-    source: text("source"), // callback | webhook
+    source: text("source"), // callback | webhook | reconciliation
     creditedAt: integer("credited_at"),
+    // Clawback trail, written by the refund/dispute webhook.
+    refundedAt: integer("refunded_at"),
+    refundedAmountPaise: integer("refunded_amount_paise"),
+    clawedBackCoins: real("clawed_back_coins"),
+    /** Coins we could NOT recover (user had already spent them). Needs review. */
+    clawbackShortfall: real("clawback_shortfall"),
+    // Reconciliation bookkeeping so the sweeper never hammers the gateway.
+    reconcileAttempts: integer("reconcile_attempts").notNull().default(0),
+    reconciledAt: integer("reconciled_at"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
@@ -800,6 +819,70 @@ export const errorLogs = sqliteTable(
   (t) => ({
     createdIdx: index("idx_error_logs_created").on(t.createdAt),
     levelIdx: index("idx_error_logs_level").on(t.level),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// cron_runs  (cron heartbeat + duration metric + failure trail)
+// One row per scheduled-job run. Without this a cron that stops firing is
+// invisible, and a job that throws only leaves a console.error behind while
+// settlement/refunds/payouts quietly stop.
+// ---------------------------------------------------------------------------
+export const cronRuns = sqliteTable(
+  "cron_runs",
+  {
+    id: text("id").primaryKey(),
+    job: text("job").notNull(),
+    ok: integer("ok", { mode: "boolean" }).notNull().default(true),
+    durationMs: integer("duration_ms"),
+    detail: text("detail", { mode: "json" }),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    jobCreatedIdx: index("idx_cron_runs_job_created").on(t.job, t.createdAt),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// ad_reward_claims  (rewarded-ad daily cap, enforced in D1)
+// The cap used to live only in an eventually-consistent KV counter that failed
+// OPEN on error, so concurrent claims all read the same count and all credited.
+// One row per claim + a COUNT(*) guard inside the crediting transaction makes
+// the cap exact.
+// ---------------------------------------------------------------------------
+export const adRewardClaims = sqliteTable(
+  "ad_reward_claims",
+  {
+    id: text("id").primaryKey(),
+    uid: text("uid").notNull(),
+    day: integer("day").notNull(), // UTC day bucket
+    provider: text("provider"),
+    reward: real("reward").notNull().default(0),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    uidDayIdx: index("idx_ad_reward_uid_day").on(t.uid, t.day),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// idempotency_keys  (atomic, transactional replay protection)
+// Replaces the KV read-then-write claim, which failed OPEN on any KV error and
+// let two simultaneous requests both through. A primary key in D1 is atomic by
+// construction; `nonce` identifies WHICH request won the claim, so a replay is
+// distinguishable from a first attempt even inside the same millisecond.
+// Pruned by retention in the cron.
+// ---------------------------------------------------------------------------
+export const idempotencyKeys = sqliteTable(
+  "idempotency_keys",
+  {
+    key: text("key").primaryKey(),
+    nonce: text("nonce").notNull(),
+    scope: text("scope"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    createdIdx: index("idx_idempotency_created").on(t.createdAt),
   }),
 );
 

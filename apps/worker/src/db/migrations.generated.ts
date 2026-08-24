@@ -24,6 +24,9 @@ import m_0019_notification_seen_index_sql from "../../migrations/0019_notificati
 import m_0020_deposit_package_sql from "../../migrations/0020_deposit_package.sql";
 import m_0021_bonus_coin_breakdown_sql from "../../migrations/0021_bonus_coin_breakdown.sql";
 import m_0022_hot_path_indexes_sql from "../../migrations/0022_hot_path_indexes.sql";
+import m_0023_money_integrity_sql from "../../migrations/0023_money_integrity.sql";
+import m_0024_payment_lifecycle_sql from "../../migrations/0024_payment_lifecycle.sql";
+import m_0025_ops_heartbeat_sql from "../../migrations/0025_ops_heartbeat.sql";
 
 export interface Migration {
   name: string;
@@ -54,4 +57,7 @@ export const MIGRATIONS: Migration[] = [
   { name: "0020_deposit_package.sql", sql: m_0020_deposit_package_sql },
   { name: "0021_bonus_coin_breakdown.sql", sql: m_0021_bonus_coin_breakdown_sql },
   { name: "0022_hot_path_indexes.sql", sql: m_0022_hot_path_indexes_sql },
+  { name: "0023_money_integrity.sql", sql: m_0023_money_integrity_sql },
+  { name: "0024_payment_lifecycle.sql", sql: m_0024_payment_lifecycle_sql },
+  { name: "0025_ops_heartbeat.sql", sql: m_0025_ops_heartbeat_sql },
 ];

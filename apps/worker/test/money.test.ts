@@ -12,6 +12,7 @@ vi.mock('../src/lib/firebaseAuth', () => ({
 
 import { makeEnv, makeApp, fakeCtx, drizzleOf, type TestEnv } from './helpers/harness';
 import * as schema from '../src/db/schema';
+import { clawbackPaymentOrder, creditPaymentOrder } from '../src/lib/coinOrders';
 
 const app = makeApp();
 
@@ -50,6 +51,13 @@ async function seedPackage(env: TestEnv, id: string, coins: number, bonusCoins: 
   const db = drizzleOf(env);
   const ts = Date.now();
   await db.insert(schema.coinPackages).values({ id, name: `${coins} coins`, coins, bonusCoins, priceInr, active, sortOrder: 0, createdAt: ts, updatedAt: ts } as any);
+}
+
+/** Write an admin App Control settings document (settings/{id}.data). */
+async function seedSettings(env: TestEnv, id: string, data: Record<string, any>) {
+  const db = drizzleOf(env);
+  await db.insert(schema.settings).values({ id, data: data as any, updatedAt: Date.now() } as any);
+  await env.CACHE_KV.delete(`settings:${id}`);
 }
 
 // drizzle eq used in helpers above.
@@ -304,9 +312,34 @@ describe('submitVote (validation)', () => {
 
 // ===========================================================================
 describe('claimAdReward', () => {
+  // Rewarded ads mint withdrawable currency on the client's word alone, so the
+  // feature is fail-closed: disabled unless an admin turns it on, and even then
+  // it must be an explicit decision to trust an unverified client.
+  const adsOn = { ads: { enabled: true, trustClient: true, provider: 'test', reward: 5, dailyCap: 10 } };
+
+  it('is rejected when rewarded ads are not configured', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', 0);
+
+    const { status } = await call(env, 'alice', 'claimAdReward', {});
+    expect(status).toBe(412);
+    expect((await getUser(env, 'alice'))?.dpcoin).toBe(0);
+  });
+
+  it('is rejected when the provider has no server-side verification', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', 0);
+    await seedSettings(env, 'appConfig', { ads: { enabled: true, trustClient: false } });
+
+    const { status } = await call(env, 'alice', 'claimAdReward', {});
+    expect(status).toBe(412);
+    expect((await getUser(env, 'alice'))?.dpcoin).toBe(0);
+  });
+
   it('credits a capped reward and enforces the daily limit', async () => {
     const { env } = makeEnv();
     await seedUser(env, 'alice', 0);
+    await seedSettings(env, 'appConfig', adsOn);
 
     // Daily cap is 10 × 5 coins.
     for (let i = 0; i < 10; i++) {
@@ -322,5 +355,143 @@ describe('claimAdReward', () => {
     expect(over.status).toBe(429);
     const after = await getUser(env, 'alice');
     expect(after?.dpcoin).toBe(50);
+  });
+
+  it('writes exactly one ledger row per credited claim', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', 0);
+    await seedSettings(env, 'appConfig', adsOn);
+
+    await call(env, 'alice', 'claimAdReward', {});
+    await call(env, 'alice', 'claimAdReward', {});
+
+    const db = drizzleOf(env);
+    const ledger = await db
+      .select()
+      .from(schema.coinTransactions)
+      .where(eq(schema.coinTransactions.type, 'ad_reward'))
+      .all();
+    expect(ledger).toHaveLength(2);
+    // Ledger total must equal the balance — the invariant the KV counter broke.
+    const total = ledger.reduce((sum, row) => sum + Number(row.amount), 0);
+    expect(total).toBe(Number((await getUser(env, 'alice'))?.dpcoin));
+  });
+});
+
+
+
+// ===========================================================================
+// Refund / chargeback clawback. Before this existed, a user could pay, receive
+// coins, refund the payment and keep the coins — the webhook 200'd every event
+// that was not a successful capture and did nothing.
+describe('clawbackPaymentOrder', () => {
+  async function seedPaidOrder(
+    env: TestEnv,
+    uid: string,
+    { coins = 100, paise = 10000, orderId = 'order_1', paymentId = 'pay_1' } = {},
+  ) {
+    const db = drizzleOf(env);
+    const ts = Date.now();
+    await db.insert(schema.paymentOrders).values({
+      orderId, userId: uid, packageId: 'p1', coins, bonusCoins: 0, amountPaise: paise,
+      currency: 'INR', status: 'paid', paymentId, source: 'callback', creditedAt: ts,
+      createdAt: ts, updatedAt: ts,
+    } as any);
+    await db.insert(schema.payments).values({
+      id: paymentId, userId: uid, amount: coins, status: 'success', createdAt: ts,
+    } as any);
+    return { orderId, paymentId, coins };
+  }
+
+  it('reverses the credit, ledgers it, and makes the order terminal', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', 100);
+    const { paymentId } = await seedPaidOrder(env, 'alice');
+
+    const res = await clawbackPaymentOrder(env as any, drizzleOf(env), { paymentId, kind: 'refund' });
+
+    expect(res.clawedBack).toBe(true);
+    expect(res.coins).toBe(100);
+    expect(res.shortfall).toBe(0);
+    expect((await getUser(env, 'alice'))?.dpcoin).toBe(0);
+
+    const db = drizzleOf(env);
+    const ledger = await db.select().from(schema.coinTransactions)
+      .where(eq(schema.coinTransactions.type, 'refund_clawback')).all();
+    expect(ledger).toHaveLength(1);
+    expect(Number(ledger[0].amount)).toBe(-100);
+
+    const order = await db.select().from(schema.paymentOrders)
+      .where(eq(schema.paymentOrders.paymentId, paymentId)).get();
+    expect(order?.status).toBe('refunded');
+    // Revenue reporting must stop counting a refunded payment.
+    const payment = await db.select().from(schema.payments)
+      .where(eq(schema.payments.id, paymentId)).get();
+    expect(payment?.status).toBe('refunded');
+  });
+
+  it('is idempotent — a duplicate refund event debits nothing further', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', 100);
+    const { paymentId } = await seedPaidOrder(env, 'alice');
+
+    await clawbackPaymentOrder(env as any, drizzleOf(env), { paymentId, kind: 'refund' });
+    const second = await clawbackPaymentOrder(env as any, drizzleOf(env), { paymentId, kind: 'refund' });
+
+    expect(second.clawedBack).toBe(false);
+    expect(second.reason).toBe('already');
+    expect((await getUser(env, 'alice'))?.dpcoin).toBe(0);
+    const ledger = await drizzleOf(env).select().from(schema.coinTransactions)
+      .where(eq(schema.coinTransactions.type, 'refund_clawback')).all();
+    expect(ledger).toHaveLength(1);
+  });
+
+  it('claws back proportionally on a partial refund, rounding against the refunder', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', 100);
+    const { paymentId } = await seedPaidOrder(env, 'alice', { coins: 100, paise: 10000 });
+
+    // 30% refunded -> 30 coins. Rounding is ceil so it never favours the refunder.
+    const res = await clawbackPaymentOrder(env as any, drizzleOf(env), {
+      paymentId, kind: 'refund', refundedAmountPaise: 3000,
+    });
+
+    expect(res.coins).toBe(30);
+    expect((await getUser(env, 'alice'))?.dpcoin).toBe(70);
+  });
+
+  it('records a shortfall and goes negative when the coins were already spent', async () => {
+    const { env } = makeEnv();
+    // The user spent 80 of the 100 purchased coins before refunding.
+    await seedUser(env, 'alice', 20);
+    const { paymentId } = await seedPaidOrder(env, 'alice');
+
+    const res = await clawbackPaymentOrder(env as any, drizzleOf(env), { paymentId, kind: 'dispute' });
+
+    expect(res.clawedBack).toBe(true);
+    expect(res.shortfall).toBe(80);
+    // Negative balance is deliberate: every spend path guards on `dpcoin >= amt`,
+    // so the loss blocks further spending instead of silently disappearing.
+    expect((await getUser(env, 'alice'))?.dpcoin).toBe(-80);
+    const order = await drizzleOf(env).select().from(schema.paymentOrders)
+      .where(eq(schema.paymentOrders.paymentId, paymentId)).get();
+    expect(order?.status).toBe('disputed');
+    expect(Number(order?.clawbackShortfall)).toBe(80);
+  });
+
+  it('never lets a refunded order be re-credited by a late duplicate capture', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', 100);
+    const { orderId, paymentId } = await seedPaidOrder(env, 'alice');
+    await clawbackPaymentOrder(env as any, drizzleOf(env), { paymentId, kind: 'refund' });
+
+    // This is the bug a naive `status != 'paid'` CAS would reintroduce.
+    const credit = await creditPaymentOrder(env as any, drizzleOf(env), {
+      orderId, paymentId, source: 'webhook', capturedAmountPaise: 10000,
+    });
+
+    expect(credit.credited).toBe(false);
+    expect(credit.reason).toBe('already');
+    expect((await getUser(env, 'alice'))?.dpcoin).toBe(0);
   });
 });
