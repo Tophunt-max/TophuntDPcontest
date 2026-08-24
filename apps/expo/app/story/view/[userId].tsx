@@ -48,6 +48,7 @@ import { videoSourceFor } from '@/src/lib/videoSource';
 import { prefetchImages } from '@/src/lib/mediaPrefetch';
 import { Avatar } from '@/src/components/ui/Avatar';
 import type { StoryViewer } from '@/src/types/stories';
+import { CloseIcon } from '@/src/components/ui/CloseIcon';
 
 const { width, height } = Dimensions.get('window');
 const DEFAULT_STORY_DURATION = 5000;
@@ -547,7 +548,7 @@ export default function StoryView() {
                     <Text style={styles.username}>{currentUserStories.username}</Text>
                     <Text style={styles.timeAgo}>{formatClockTime(currentStory.createdAt)}</Text>
                 </View>
-                <Pressable pointerEvents="auto" onPress={() => router.back()} style={styles.closeButton}><Ionicons name="close" size={28} color="white" /></Pressable>
+                <Pressable pointerEvents="auto" onPress={() => router.back()} style={styles.closeButton} accessibilityRole="button" accessibilityLabel="Close story"><CloseIcon size={28} color="white" /></Pressable>
             </View>
             </View>
 
@@ -623,7 +624,7 @@ export default function StoryView() {
                         <View style={[styles.sheetHandle, { backgroundColor: isDarkTheme ? '#35383F' : '#DDD' }]} />
                         <View style={styles.modalHeaderContent}>
                             <Text style={[styles.modalTitle, { color: textColorTheme }]}>Add to Highlights</Text>
-                            <Pressable onPress={() => toggleHighlightSheet(false)}><Ionicons name="close-circle" size={24} color={isDarkTheme ? '#BDBDBD' : "#666"} /></Pressable>
+                            <Pressable onPress={() => toggleHighlightSheet(false)}><CloseIcon variant="circle" size={24} color={isDarkTheme ? '#BDBDBD' : "#666"} /></Pressable>
                         </View>
                     </View>
                     <View style={[styles.newHighlightContainer, { borderBottomColor: isDarkTheme ? '#35383F' : '#EEE' }]}>
@@ -648,7 +649,7 @@ export default function StoryView() {
             <View style={styles.sheetHeader}>
                 <View style={[styles.sheetHandle, { backgroundColor: isDarkTheme ? '#35383F' : '#DDD' }]} />
                 <Text style={[styles.sheetTitle, { color: textColorTheme }]}>Viewers ({viewers.length})</Text>
-                <Pressable onPress={() => toggleViewers(false)} style={styles.sheetClose}><Ionicons name="close-circle" size={24} color={isDarkTheme ? '#BDBDBD' : "#666"} /></Pressable>
+                <Pressable onPress={() => toggleViewers(false)} style={styles.sheetClose}><CloseIcon variant="circle" size={24} color={isDarkTheme ? '#BDBDBD' : "#666"} /></Pressable>
             </View>
             <FlatList data={viewers} keyExtractor={(item, index) => `${item.uid}_${index}`} renderItem={({ item }) => (
                 <View style={[styles.viewerItem, { borderBottomColor: isDarkTheme ? '#35383F' : '#F0F0F0' }]}>

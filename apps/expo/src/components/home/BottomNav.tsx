@@ -7,6 +7,7 @@ import { Ionicons } from '@/src/lib/icons';
 import { Colors } from '@/constants/theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFeature } from '@/src/services/appSettings';
+import { CloseIcon } from '@/src/components/ui/CloseIcon';
 
 const { width, height } = Dimensions.get('window');
 
@@ -197,8 +198,13 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
                     
                     <View style={styles.menuHeader}>
                         <Text style={[styles.menuTitle, { color: isDark ? 'white' : 'black' }]}>Create New</Text>
-                        <TouchableOpacity onPress={closeMenu} style={styles.closeIcon}>
-                            <Ionicons name="close" size={24} color={isDark ? 'white' : 'black'} />
+                        <TouchableOpacity
+                            onPress={closeMenu}
+                            style={styles.closeIcon}
+                            accessibilityRole="button"
+                            accessibilityLabel="Close menu"
+                        >
+                            <CloseIcon size={24} color={isDark ? 'white' : 'black'} />
                         </TouchableOpacity>
                     </View>
 

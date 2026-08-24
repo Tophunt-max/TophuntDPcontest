@@ -14,6 +14,7 @@ import DateTimePickerBase from 'react-native-ui-datepicker';
 import dayjs from 'dayjs';
 import { Ionicons } from '@/src/lib/icons';
 import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
+import { CloseIcon } from '@/src/components/ui/CloseIcon';
 
 // The lib's prop union is over-strict for our single-date usage; alias as any.
 const DateTimePicker = DateTimePickerBase as unknown as React.ComponentType<any>;
@@ -97,7 +98,7 @@ export const DatePickerField = <T extends FieldValues>({
                         onPress={() => setDatePickerVisibility(false)}
                         style={styles.closeBtn}
                       >
-                        <Ionicons name="close" size={20} color="#212121" />
+                        <CloseIcon size={20} color="#212121" />
                       </TouchableOpacity>
                     </View>
 

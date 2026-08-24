@@ -39,6 +39,7 @@ import {
 } from '@/assets/svgs';
 import { PanGestureHandler } from 'react-native-gesture-handler';
 import Animated, { useSharedValue, useAnimatedStyle, withSpring, runOnJS } from 'react-native-reanimated';
+import { CloseIcon } from '@/src/components/ui/CloseIcon';
 
 const { width, height } = Dimensions.get('window');
 const STICKERS = ['🔥', '❤️', '😂', '😍', '✨', '💯', '📍', '🎂', '🎉', '🍕', '🌈', '👑'];
@@ -331,8 +332,12 @@ export default function AddStoryScreen() {
       
       {!isUploading && (
         <SafeAreaView style={styles.header}>
-          <TouchableOpacity onPress={() => media ? setMedia(null) : router.back()}>
-            <Ionicons name="close" size={30} color="white" />
+          <TouchableOpacity
+            onPress={() => media ? setMedia(null) : router.back()}
+            accessibilityRole="button"
+            accessibilityLabel={media ? 'Discard selected media' : 'Close'}
+          >
+            <CloseIcon size={30} color="white" />
           </TouchableOpacity>
           
           {media && (
@@ -486,7 +491,7 @@ export default function AddStoryScreen() {
                 <View style={styles.modalOverlay}>
                     <Animated.View style={[styles.sheet, animatedStickerSheetStyle]} {...stickerPanResponder.panHandlers}>
                         <View style={styles.sheetHandle} />
-                        <View style={styles.sheetHeader}><Text style={styles.sheetTitle}>Choose Sticker</Text><TouchableOpacity onPress={() => toggleStickerSheet(false)}><Ionicons name="close-circle" size={24} color="#666" /></TouchableOpacity></View>
+                        <View style={styles.sheetHeader}><Text style={styles.sheetTitle}>Choose Sticker</Text><TouchableOpacity onPress={() => toggleStickerSheet(false)}><CloseIcon variant="circle" size={24} color="#666" /></TouchableOpacity></View>
                         <FlatList data={STICKERS} numColumns={4} keyExtractor={item => item} renderItem={({ item }) => (
                             <TouchableOpacity style={styles.stickerItem} onPress={() => { setSelectedSticker(item); toggleStickerSheet(false); }}><Text style={{ fontSize: 40 }}>{item}</Text></TouchableOpacity>
                         )} />
@@ -499,7 +504,7 @@ export default function AddStoryScreen() {
                 <View style={styles.modalOverlay}>
                     <Animated.View style={[styles.sheet, animatedMusicSheetStyle]} {...musicPanResponder.panHandlers}>
                         <View style={styles.sheetHandle} />
-                        <View style={styles.sheetHeader}><Text style={styles.sheetTitle}>Choose Music</Text><TouchableOpacity onPress={() => toggleMusicSheet(false)}><Ionicons name="close-circle" size={24} color="#666" /></TouchableOpacity></View>
+                        <View style={styles.sheetHeader}><Text style={styles.sheetTitle}>Choose Music</Text><TouchableOpacity onPress={() => toggleMusicSheet(false)}><CloseIcon variant="circle" size={24} color="#666" /></TouchableOpacity></View>
                         <View style={styles.musicSearchContainer}>
                             <Ionicons name="search" size={20} color="#999" />
                             <TextInput style={styles.musicSearchInput} placeholder="Search music..." value={musicSearch} onChangeText={setMusicSearch} />

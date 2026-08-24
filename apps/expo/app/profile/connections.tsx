@@ -12,6 +12,7 @@ import { useProfile } from '@/src/hooks/useProfileData';
 import { useToast } from '@/src/components/toast/ToastProvider';
 import { Colors } from '@/constants/theme';
 import { ThemedView } from '@/components/themed-view';
+import { CloseIcon } from '@/src/components/ui/CloseIcon';
 
 const { width } = Dimensions.get('window');
 const CARD_MARGIN = 16;
@@ -148,7 +149,7 @@ export default function ConnectionsScreen() {
           />
           {searchQuery.length > 0 && (
               <TouchableOpacity onPress={() => setSearchQuery('')}>
-                  <Ionicons name="close-circle" size={18} color={subTextColor} />
+                  <CloseIcon variant="circle" size={18} color={subTextColor} />
               </TouchableOpacity>
           )}
       </View>

@@ -6,7 +6,7 @@
 
 import React from 'react';
 import { Modal, View, Image, StyleSheet, TouchableOpacity, Text } from 'react-native';
-import { Ionicons } from '@/src/lib/icons';
+import { CloseIcon } from '@/src/components/ui/CloseIcon';
 
 // Simple web-compatible lightbox implementation
 export const ImageViewer = ({ 
@@ -27,8 +27,13 @@ export const ImageViewer = ({
   return (
     <Modal visible={visible} transparent={true} onRequestClose={onRequestClose}>
       <View style={styles.container}>
-        <TouchableOpacity style={styles.closeButton} onPress={onRequestClose}>
-           <Ionicons name="close" size={30} color="white" />
+        <TouchableOpacity
+          style={styles.closeButton}
+          onPress={onRequestClose}
+          accessibilityRole="button"
+          accessibilityLabel="Close image"
+        >
+           <CloseIcon size={30} color="white" />
         </TouchableOpacity>
         
         <View style={styles.imageContainer}>

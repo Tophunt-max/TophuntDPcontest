@@ -19,6 +19,7 @@ import { useProfile } from '@/src/hooks/useProfileData';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useToast } from '@/src/components/toast/ToastProvider';
 import { Colors } from '@/constants/theme';
+import { CloseIcon } from '@/src/components/ui/CloseIcon';
 
 const { width } = Dimensions.get('window');
 const PAD = 20;
@@ -254,7 +255,7 @@ export default function DiscoverScreen() {
           {searching && activeTab === 'users' && <ActivityIndicator size="small" color={activeColor} />}
           {searchQuery.length > 0 && !searching && (
             <TouchableOpacity onPress={() => setSearchQuery('')}>
-              <Ionicons name="close-circle" size={18} color={subText} />
+              <CloseIcon variant="circle" size={18} color={subText} />
             </TouchableOpacity>
           )}
         </View>
