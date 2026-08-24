@@ -2055,6 +2055,8 @@ adminRoute.get("/withdrawals", async (c) => {
       accountDetails: schema.withdrawals.accountDetails,
       status: schema.withdrawals.status,
       adminNote: schema.withdrawals.adminNote,
+      payoutRef: schema.withdrawals.payoutRef,
+      paidAt: schema.withdrawals.paidAt,
       createdAt: schema.withdrawals.createdAt,
       updatedAt: schema.withdrawals.updatedAt,
       username: schema.users.username,
@@ -2107,7 +2109,7 @@ adminRoute.patch("/withdrawals/:id", async (c) => {
   requireFullAdmin(c);
   const db = getDb(c.env);
   const id = c.req.param("id");
-  const { action, adminNote } = await c.req.json<any>();
+  const { action, adminNote, payoutRef } = await c.req.json<any>();
   if (!["approve", "reject", "paid"].includes(action)) throw httpsError("invalid-argument", "Invalid action.");
   const w = await db.select().from(schema.withdrawals).where(eq(schema.withdrawals.id, id)).get();
   if (!w) throw httpsError("not-found", "Withdrawal not found.");
@@ -2123,12 +2125,43 @@ adminRoute.patch("/withdrawals/:id", async (c) => {
       `Cannot ${action} a withdrawal that is already "${fromStatus}".`,
     );
 
+  // Payouts are executed by hand in the banking app, so "we marked it paid" and
+  // "the bank actually sent it" were two facts with nothing linking them. A bank
+  // reference (UTR / RRN / NEFT ref) is now REQUIRED to mark a payout paid, which
+  // makes every outgoing rupee reconcilable against a statement.
+  let payoutReference: string | null = null;
+  if (action === "paid") {
+    payoutReference = String(payoutRef ?? "").trim();
+    if (payoutReference.length < 4 || payoutReference.length > 64 || !/^[A-Za-z0-9._/-]+$/.test(payoutReference)) {
+      throw httpsError(
+        "invalid-argument",
+        "A bank payout reference (UTR / RRN, 4–64 characters) is required to mark a payout as paid.",
+      );
+    }
+    // The same reference must not be recorded against two payouts.
+    const dupe = await db
+      .select({ id: schema.withdrawals.id })
+      .from(schema.withdrawals)
+      .where(and(eq(schema.withdrawals.payoutRef, payoutReference), ne(schema.withdrawals.id, id)))
+      .get();
+    if (dupe) {
+      throw httpsError("already-exists", `That payout reference is already recorded on withdrawal ${dupe.id}.`);
+    }
+  }
+
   // Atomic claim: flip the status only if it is STILL the value we just read.
   // The loser of this compare-and-swap does no accounting at all. Same pattern
   // as the exactly-once coin credit in lib/coinOrders.ts.
   const claim = await db
     .update(schema.withdrawals)
-    .set({ status, adminNote: adminNote || w.adminNote, processedBy: admin?.uid ?? null, updatedAt: ts })
+    .set({
+      status,
+      adminNote: adminNote || w.adminNote,
+      processedBy: admin?.uid ?? null,
+      payoutRef: payoutReference ?? w.payoutRef,
+      paidAt: action === "paid" ? ts : w.paidAt,
+      updatedAt: ts,
+    })
     .where(and(eq(schema.withdrawals.id, id), eq(schema.withdrawals.status, fromStatus)))
     .run();
   if (claim.meta.changes === 0)
@@ -2141,7 +2174,14 @@ adminRoute.patch("/withdrawals/:id", async (c) => {
   const revertClaim = async () => {
     await db
       .update(schema.withdrawals)
-      .set({ status: fromStatus, adminNote: w.adminNote, processedBy: w.processedBy, updatedAt: w.updatedAt })
+      .set({
+        status: fromStatus,
+        adminNote: w.adminNote,
+        processedBy: w.processedBy,
+        payoutRef: w.payoutRef,
+        paidAt: w.paidAt,
+        updatedAt: w.updatedAt,
+      })
       .where(and(eq(schema.withdrawals.id, id), eq(schema.withdrawals.status, status)))
       .run();
   };
@@ -2156,31 +2196,79 @@ adminRoute.patch("/withdrawals/:id", async (c) => {
       // Refund on rejection of a still-held request. The transition table
       // guarantees fromStatus is "pending" or "approved" here.
       if (action === "reject") {
+        // Deterministic ledger id: a retry after a partial failure cannot refund
+        // the same withdrawal twice.
         await db.batch([
           db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${w.amount}`, updatedAt: ts }).where(eq(schema.users.uid, w.userId)),
-          db.insert(schema.coinTransactions).values({ id: newId(), uid: w.userId, amount: w.amount, type: "withdrawal_refund", description: "Payout rejected — coins refunded", createdAt: ts }),
+          db.insert(schema.coinTransactions).values({ id: `withdrawal_refund:${id}`, uid: w.userId, amount: w.amount, type: "withdrawal_refund", description: "Payout rejected — coins refunded", createdAt: ts }).onConflictDoNothing(),
+        ]);
+      }
+      // Settle the hold when the money actually leaves.
+      //
+      // The `withdrawal_hold` debit written at request time was never resolved:
+      // marking a reserved payout paid wrote NO ledger row at all, so the ledger
+      // carried a permanently dangling hold and could not be reconciled against
+      // a bank statement. This closes it with a zero-sum pair (release the hold,
+      // record the settled payout) so the balance is unchanged — the coins left
+      // at request time — while the ledger tells the true story.
+      if (action === "paid") {
+        await db.batch([
+          db.insert(schema.coinTransactions).values({
+            id: `withdrawal_hold_release:${id}`,
+            uid: w.userId,
+            amount: w.amount,
+            type: "withdrawal_hold_release",
+            description: "Payout hold released on settlement",
+            createdAt: ts,
+          }).onConflictDoNothing(),
+          db.insert(schema.coinTransactions).values({
+            id: `withdrawal_settled:${id}`,
+            uid: w.userId,
+            amount: -w.amount,
+            type: "withdrawal",
+            description: `Payout sent (${w.method}) — ref ${payoutReference}`,
+            createdAt: ts,
+          }).onConflictDoNothing(),
         ]);
       }
     } else {
       // Legacy rows are deducted on approval. `paid` can now only be reached
       // from `approved`, where the deduction already happened.
       if (action === "approve") {
-        const deduct = await db
-          .update(schema.users)
-          .set({ dpcoin: sql`${schema.users.dpcoin} - ${w.amount}`, updatedAt: ts })
-          .where(and(eq(schema.users.uid, w.userId), sql`${schema.users.dpcoin} >= ${w.amount}`))
-          .run();
-        if (deduct.meta.changes === 0) {
+        // Deduct and ledger in ONE transaction. These were two separate writes,
+        // so a failure between them moved a balance with no ledger row. Both
+        // statements test the same pre-transaction balance snapshot (the INSERT
+        // runs first and does not touch `users`), so they cannot disagree.
+        const solvent = `EXISTS (SELECT 1 FROM users WHERE uid = ? AND dpcoin >= ?)`;
+        const legacyResults = await c.env.DB.batch([
+          c.env.DB.prepare(
+            `INSERT OR IGNORE INTO coin_transactions
+               (id, uid, amount, type, description, created_at)
+             SELECT ?, ?, ?, 'withdrawal', ?, ?
+              WHERE ${solvent}`,
+          ).bind(
+            `withdrawal_legacy:${id}`,
+            w.userId,
+            -w.amount,
+            `Payout ${status} (${w.method})`,
+            ts,
+            w.userId,
+            w.amount,
+          ),
+          c.env.DB.prepare(
+            `UPDATE users SET dpcoin = dpcoin - ?, updated_at = ? WHERE uid = ? AND dpcoin >= ?`,
+          ).bind(w.amount, ts, w.userId, w.amount),
+        ]);
+        if (Number(legacyResults[1]?.meta?.changes || 0) === 0) {
           await revertClaim();
           throw httpsError("failed-precondition", "User has insufficient balance for this payout.");
         }
-        await db.insert(schema.coinTransactions).values({ id: newId(), uid: w.userId, amount: -w.amount, type: "withdrawal", description: `Payout ${status} (${w.method})`, createdAt: ts });
       }
       // Rejecting a previously-approved legacy request refunds the held coins.
       if (action === "reject" && fromStatus === "approved") {
         await db.batch([
           db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${w.amount}`, updatedAt: ts }).where(eq(schema.users.uid, w.userId)),
-          db.insert(schema.coinTransactions).values({ id: newId(), uid: w.userId, amount: w.amount, type: "withdrawal_refund", description: "Payout rejected — coins refunded", createdAt: ts }),
+          db.insert(schema.coinTransactions).values({ id: `withdrawal_refund:${id}`, uid: w.userId, amount: w.amount, type: "withdrawal_refund", description: "Payout rejected — coins refunded", createdAt: ts }).onConflictDoNothing(),
         ]);
       }
     }

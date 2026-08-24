@@ -7,7 +7,7 @@
  * count to prevent double-spend / races.
  */
 import { Hono } from "hono";
-import { eq, and, or, desc, sql, count, like, gte, lt, isNull, inArray } from "drizzle-orm";
+import { eq, and, or, desc, sql, count, like, gte, lt, ne, isNull, inArray } from "drizzle-orm";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
@@ -34,6 +34,7 @@ import {
   followingCacheKey,
 } from "../lib/cache";
 import { createContestExtra, validateContestInput } from "../lib/contestAdmin";
+import { parsePayoutDestination, readWithdrawalPolicy } from "../lib/payouts";
 import {
   adjustUserWallet,
   assertCoinAmount,
@@ -746,20 +747,35 @@ apiRoute.post("/", async (c) => {
       const ts = now();
       // Atomic guard: the conditional WHERE + affected-row check guarantees only
       // ONE claim per UTC day even if two requests race.
-      const upd = await db.update(schema.users).set({
-        dpcoin: sql`${schema.users.dpcoin} + ${coinReward}`,
-        xp: sql`${schema.users.xp} + ${xpReward}`,
-        streak, lastDailyClaim: ts, updatedAt: ts,
-      }).where(and(
-        eq(schema.users.uid, uid),
-        or(isNull(schema.users.lastDailyClaim), lt(schema.users.lastDailyClaim, startOfToday)),
-      )).run();
-      if (upd.meta.changes === 0)
+      //
+      // The ledger row is written in the SAME transaction, gated on the same
+      // pre-transaction snapshot (`last_daily_claim` before the update). It used
+      // to be a separate statement, so a failure between the two credited coins
+      // with no ledger entry.
+      const eligible = `(last_daily_claim IS NULL OR last_daily_claim < ?)`;
+      const dailyResults = await env.DB.batch([
+        env.DB.prepare(
+          `INSERT OR IGNORE INTO coin_transactions
+             (id, uid, amount, type, description, created_at)
+           SELECT ?, ?, ?, 'daily_reward', ?, ?
+            WHERE EXISTS (SELECT 1 FROM users WHERE uid = ? AND ${eligible})`,
+        ).bind(
+          `daily_reward:${uid}:${startOfToday}`,
+          uid,
+          coinReward,
+          `Daily login reward (${streak} day streak)`,
+          ts,
+          uid,
+          startOfToday,
+        ),
+        env.DB.prepare(
+          `UPDATE users
+              SET dpcoin = dpcoin + ?, xp = xp + ?, streak = ?, last_daily_claim = ?, updated_at = ?
+            WHERE uid = ? AND ${eligible}`,
+        ).bind(coinReward, xpReward, streak, ts, ts, uid, startOfToday),
+      ]);
+      if (Number(dailyResults[1]?.meta?.changes || 0) === 0)
         throw httpsError("already-exists", "Daily reward already claimed today.");
-      await db.insert(schema.coinTransactions).values({
-        id: newId(), uid, amount: coinReward, type: "daily_reward",
-        description: `Daily login reward (${streak} day streak)`, createdAt: ts,
-      });
       return c.json({ success: true, coinsEarned: coinReward, xpEarned: xpReward, streak });
     }
 
@@ -1063,67 +1079,111 @@ apiRoute.post("/", async (c) => {
 
     case "requestWithdrawal": {
       const { amount, method, accountDetails } = body;
-      const amt = Number(amount);
-      if (!Number.isInteger(amt) || amt <= 0) throw httpsError("invalid-argument", "Invalid amount.");
-      if (!method) throw httpsError("invalid-argument", "Payout method is required.");
+      const amt = assertCoinAmount(amount, "amount");
       // Anti-spam: max 5 withdrawal requests per hour per user.
-      await rateLimit(env, `withdraw:${uid}`, 5, 3600);
+      await rateLimit(env, `withdraw:${uid}`, 5, 3600, { failClosed: true });
 
       // Honor the admin App Control withdrawal config. `payoutsFrozen` is an
       // emergency kill-switch that blocks all new payout requests instantly
       // (e.g. during a suspected-fraud incident) without disabling the feature.
       const cfg = await getAppConfig(env);
-      const wcfg = (cfg?.withdrawal as any) || {};
-      if (wcfg.enabled === false || wcfg.payoutsFrozen === true)
+      const policy = readWithdrawalPolicy(cfg);
+      if (!policy.enabled || policy.payoutsFrozen)
         throw httpsError("failed-precondition", "Withdrawals are currently disabled.");
-      const minAmount = Number(wcfg.minAmount ?? 0);
-      if (amt < minAmount) throw httpsError("failed-precondition", `Minimum withdrawal is ${minAmount} coins.`);
-      const rate = Number(wcfg.conversionRate ?? 1);
+      if (amt < policy.minAmount)
+        throw httpsError("failed-precondition", `Minimum withdrawal is ${policy.minAmount} coins.`);
+      if (policy.maxAmount > 0 && amt > policy.maxAmount)
+        throw httpsError("failed-precondition", `Maximum withdrawal is ${policy.maxAmount} coins per request.`);
+
+      // Validate the destination BEFORE reserving coins: a typo'd UPI id or a
+      // malformed IFSC used to reach the admin panel — and a real bank transfer
+      // — completely unchecked.
+      const destination = parsePayoutDestination(method, accountDetails);
+
+      // Rolling 24h velocity cap. The 5-per-hour rate limit bounded the number
+      // of requests but not their total, so a whole balance could still leave in
+      // one go. Rejected requests don't count against the cap.
+      if (policy.maxPerDay > 0) {
+        const since = now() - 24 * 60 * 60 * 1000;
+        const recent = await db
+          .select({ total: sql<number>`COALESCE(SUM(${schema.withdrawals.amount}), 0)` })
+          .from(schema.withdrawals)
+          .where(and(
+            eq(schema.withdrawals.userId, uid),
+            gte(schema.withdrawals.createdAt, since),
+            ne(schema.withdrawals.status, "rejected"),
+          ))
+          .get();
+        const already = Number(recent?.total ?? 0);
+        if (already + amt > policy.maxPerDay) {
+          throw httpsError(
+            "failed-precondition",
+            `Daily payout limit is ${policy.maxPerDay} coins. You have already requested ${already} in the last 24 hours.`,
+          );
+        }
+      }
 
       const ts = now();
       const id = newId();
+      const cashAmount = roundFiat(amt * policy.conversionRate);
 
-      // Escrow the coins NOW with a single atomic conditional deduct. This
-      // removes the race where a user could request a payout and then spend the
-      // same coins elsewhere before an admin approved it. The `WHERE dpcoin >=
-      // amt` guard + affected-row check makes concurrent requests safe.
-      const reserve = await db
-        .update(schema.users)
-        .set({ dpcoin: sql`${schema.users.dpcoin} - ${amt}`, updatedAt: ts })
-        .where(and(eq(schema.users.uid, uid), sql`${schema.users.dpcoin} >= ${amt}`))
-        .run();
-      if (reserve.meta.changes === 0) throw httpsError("failed-precondition", "Insufficient balance.");
-
-      await db.batch([
-        db.insert(schema.withdrawals).values({
+      // Escrow the coins, create the withdrawal row and write the hold ledger
+      // entry in ONE transaction.
+      //
+      // Previously the deduct was its own statement followed by a separate
+      // batch, with no compensating revert: if that batch failed, the user's
+      // coins were simply gone — no withdrawal row, no ledger entry, nothing to
+      // reconcile against. Both inserts are gated on the same pre-transaction
+      // balance snapshot as the deduct, so all three apply or none do.
+      const solvent = `EXISTS (SELECT 1 FROM users WHERE uid = ? AND dpcoin >= ?)`;
+      const withdrawalResults = await env.DB.batch([
+        env.DB.prepare(
+          `INSERT INTO withdrawals
+             (id, user_id, amount, cash_amount, method, account_details, status, reserved, created_at, updated_at)
+           SELECT ?, ?, ?, ?, ?, ?, 'pending', 1, ?, ?
+            WHERE ${solvent}`,
+        ).bind(
           id,
-          userId: uid,
-          amount: amt,
-          // Fiat legitimately has paise, but it must not carry float dust.
-          cashAmount: roundFiat(amt * rate),
-          method: String(method),
-          accountDetails: accountDetails ? String(accountDetails) : null,
-          status: "pending",
-          reserved: true,
-          createdAt: ts,
-          updatedAt: ts,
-        }),
-        db.insert(schema.coinTransactions).values({
-          id: newId(),
           uid,
-          amount: -amt,
-          type: "withdrawal_hold",
-          description: `Payout requested (${method}) — coins reserved`,
-          createdAt: ts,
-        }),
+          amt,
+          cashAmount,
+          destination.method,
+          destination.accountDetails,
+          ts,
+          ts,
+          uid,
+          amt,
+        ),
+        env.DB.prepare(
+          `INSERT OR IGNORE INTO coin_transactions
+             (id, uid, amount, type, description, created_at)
+           SELECT ?, ?, ?, 'withdrawal_hold', ?, ?
+            WHERE ${solvent}`,
+        ).bind(
+          `withdrawal_hold:${id}`,
+          uid,
+          -amt,
+          `Payout requested (${destination.method}) — coins reserved`,
+          ts,
+          uid,
+          amt,
+        ),
+        env.DB.prepare(
+          `UPDATE users SET dpcoin = dpcoin - ?, updated_at = ? WHERE uid = ? AND dpcoin >= ?`,
+        ).bind(amt, ts, uid, amt),
       ]);
+      if (Number(withdrawalResults[2]?.meta?.changes || 0) === 0) {
+        throw httpsError("failed-precondition", "Insufficient balance.");
+      }
+
       await db.insert(schema.adminNotifications).values({
         id: newId(), title: "New Withdrawal Request",
-        message: `A user requested a payout of ${amt} coins.`, link: "/withdrawals", isRead: false, createdAt: ts,
+        message: `A user requested a payout of ${amt} coins to ${destination.masked}.`,
+        link: "/withdrawals", isRead: false, createdAt: ts,
       });
       alertAdminEmail(c, cfg, "New Withdrawal Request",
-        `<p>A user requested a payout of <b>${amt} coins</b> (₹${(amt * rate).toFixed(2)}) via ${method}.</p><p>Review it in the admin panel → Withdrawals.</p>`);
-      return c.json({ success: true, withdrawalId: id, cashAmount: amt * rate });
+        `<p>A user requested a payout of <b>${amt} coins</b> (₹${cashAmount.toFixed(2)}) via ${destination.method}.</p><p>Review it in the admin panel → Withdrawals.</p>`);
+      return c.json({ success: true, withdrawalId: id, cashAmount });
     }
 
     // Manual QR/UPI deposit: user pays externally then submits the UTR here.

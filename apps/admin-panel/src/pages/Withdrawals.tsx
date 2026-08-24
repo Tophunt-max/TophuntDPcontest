@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Table } from "@/components/ui/Table";
 import { Badge } from "@/components/ui/Badge";
+import { Modal } from "@/components/ui/Modal";
 import { StatCard } from "@/components/ui/StatCard";
 import { PageHeader, fmtDateTime, fmtNumber, exportCsv } from "@/lib/format";
 import { useConfirm } from "@/components/ConfirmDialog";
@@ -36,10 +37,14 @@ export default function Withdrawals() {
     return { count: data.length, dp, cash, pending };
   }, [data]);
 
+  // The withdrawal being marked as paid, plus its bank reference.
+  const [payFor, setPayFor] = useState<any | null>(null);
+  const [payoutRef, setPayoutRef] = useState("");
+
   const actionMut = useMutation({
-    mutationFn: ({ id, action, note }: { id: string; action: "approve" | "reject" | "paid"; note?: string }) =>
-      api.actionWithdrawal(id, action, note),
-    onSuccess: () => { toast.success("Withdrawal updated"); invalidate(); },
+    mutationFn: ({ id, action, note, payoutRef }: { id: string; action: "approve" | "reject" | "paid"; note?: string; payoutRef?: string }) =>
+      api.actionWithdrawal(id, action, note, payoutRef),
+    onSuccess: () => { toast.success("Withdrawal updated"); setPayFor(null); invalidate(); },
     onError: (e: any) => toast.error(e.message),
   });
 
@@ -50,7 +55,7 @@ export default function Withdrawals() {
         subtitle="Cash payout requests"
         action={
           <button
-            onClick={() => exportCsv(`withdrawals-${Date.now()}.csv`, data, ["id", "userId", "username", "amount", "cashAmount", "method", "accountDetails", "status", "createdAt"])}
+            onClick={() => exportCsv(`withdrawals-${Date.now()}.csv`, data, ["id", "userId", "username", "amount", "cashAmount", "method", "accountDetails", "status", "payoutRef", "paidAt", "createdAt"])}
             className="flex items-center gap-2 px-4 py-2 rounded-xl bg-secondary text-sm font-medium hover:bg-secondary/70 transition-colors"
           >
             <Download size={15} /> Export CSV
@@ -112,17 +117,73 @@ export default function Withdrawals() {
                   </>
                 )}
                 {w.status === "approved" && (
-                  <ActionBtn tone="blue" title="Mark as paid" onClick={async () => {
-                    if (await confirm({ title: "Mark as paid?", description: "Confirm the payout has been sent to the user." }))
-                      actionMut.mutate({ id: w.id, action: "paid" });
-                  }}><BadgeCheck size={14} /> Paid</ActionBtn>
+                  // Marking a payout paid requires the bank reference, so the
+                  // transfer can be reconciled against a statement later.
+                  <ActionBtn tone="blue" title="Mark as paid" onClick={() => { setPayFor(w); setPayoutRef(""); }}>
+                    <BadgeCheck size={14} /> Paid
+                  </ActionBtn>
                 )}
-                {(w.status === "paid" || w.status === "rejected") && <span className="text-xs text-muted-foreground">—</span>}
+                {w.status === "paid" && (
+                  <span className="text-xs text-muted-foreground font-mono" title="Bank payout reference">
+                    {w.payoutRef || "—"}
+                  </span>
+                )}
+                {w.status === "rejected" && <span className="text-xs text-muted-foreground">—</span>}
               </div>
             ),
           },
         ]}
       />
+
+      <Modal open={!!payFor} onClose={() => setPayFor(null)} title="Record the payout">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!payFor) return;
+            actionMut.mutate({ id: payFor.id, action: "paid", payoutRef: payoutRef.trim() });
+          }}
+        >
+          <p className="text-sm text-muted-foreground mb-4">
+            Paying <span className="font-semibold text-foreground">{fmtNumber(payFor?.amount)} DP</span>
+            {payFor?.cashAmount ? <> (₹{fmtNumber(payFor.cashAmount)})</> : null} to{" "}
+            <span className="font-mono text-xs">{payFor?.accountDetails || "—"}</span>.
+          </p>
+          <label className="block text-sm font-medium mb-1.5" htmlFor="payoutRef">
+            Bank reference (UTR / RRN)
+          </label>
+          <input
+            id="payoutRef"
+            autoFocus
+            required
+            minLength={4}
+            maxLength={64}
+            pattern="[A-Za-z0-9._/-]+"
+            value={payoutRef}
+            onChange={(e) => setPayoutRef(e.target.value)}
+            placeholder="e.g. 412345678901"
+            className="w-full px-3 py-2 rounded-xl bg-secondary border border-border text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/40"
+          />
+          <p className="text-xs text-muted-foreground mt-2">
+            Copy this from the transfer receipt. It must be unique and cannot be changed afterwards.
+          </p>
+          <div className="flex justify-end gap-2 mt-5">
+            <button
+              type="button"
+              onClick={() => setPayFor(null)}
+              className="px-4 py-2 rounded-xl bg-secondary text-sm font-medium hover:bg-secondary/70 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={actionMut.isPending || payoutRef.trim().length < 4}
+              className="px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-50 transition-opacity"
+            >
+              Confirm payout sent
+            </button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

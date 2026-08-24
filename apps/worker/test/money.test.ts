@@ -495,3 +495,127 @@ describe('clawbackPaymentOrder', () => {
     expect((await getUser(env, 'alice'))?.dpcoin).toBe(0);
   });
 });
+
+
+
+// ===========================================================================
+describe('requestWithdrawal', () => {
+  const payoutOn = (extra: Record<string, any> = {}) => ({
+    withdrawal: { enabled: true, minAmount: 100, conversionRate: 0.1, ...extra },
+  });
+
+  it('escrows coins, creates the row and writes the hold ledger atomically', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', 500);
+    await seedSettings(env, 'appConfig', payoutOn());
+
+    const { status, body } = await call(env, 'alice', 'requestWithdrawal', {
+      amount: 300, method: 'upi', accountDetails: 'alice@okhdfc',
+    });
+
+    expect(status).toBe(200);
+    expect(body.cashAmount).toBe(30);
+    expect((await getUser(env, 'alice'))?.dpcoin).toBe(200);
+
+    const db = drizzleOf(env);
+    const rows = await db.select().from(schema.withdrawals).all();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe('pending');
+    expect(rows[0].reserved).toBe(true);
+    expect(rows[0].accountDetails).toBe('alice@okhdfc');
+
+    // The escrow debit must be ledgered — it used to be possible for the coins to
+    // vanish with no withdrawal row and no ledger entry at all.
+    const hold = await db.select().from(schema.coinTransactions)
+      .where(eq(schema.coinTransactions.type, 'withdrawal_hold')).all();
+    expect(hold).toHaveLength(1);
+    expect(Number(hold[0].amount)).toBe(-300);
+  });
+
+  it('rejects an amount larger than the balance without touching anything', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', 150);
+    await seedSettings(env, 'appConfig', payoutOn());
+
+    const { status } = await call(env, 'alice', 'requestWithdrawal', {
+      amount: 200, method: 'upi', accountDetails: 'alice@okhdfc',
+    });
+
+    expect(status).toBe(412);
+    expect((await getUser(env, 'alice'))?.dpcoin).toBe(150);
+    expect(await drizzleOf(env).select().from(schema.withdrawals).all()).toHaveLength(0);
+    expect(await drizzleOf(env).select().from(schema.coinTransactions).all()).toHaveLength(0);
+  });
+
+  it('rejects a malformed payout destination before reserving coins', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', 500);
+    await seedSettings(env, 'appConfig', payoutOn());
+
+    const upi = await call(env, 'alice', 'requestWithdrawal', {
+      amount: 200, method: 'upi', accountDetails: 'not-a-upi-id',
+    });
+    expect(upi.status).toBe(400);
+
+    const bank = await call(env, 'alice', 'requestWithdrawal', {
+      amount: 200, method: 'bank', accountDetails: { accountNumber: '123', ifsc: 'nope', holderName: 'A' },
+    });
+    expect(bank.status).toBe(400);
+
+    // Nothing reserved by either failed attempt.
+    expect((await getUser(env, 'alice'))?.dpcoin).toBe(500);
+    expect(await drizzleOf(env).select().from(schema.withdrawals).all()).toHaveLength(0);
+  });
+
+  it('enforces min, max and the rolling 24h total', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', 10_000);
+    await seedSettings(env, 'appConfig', payoutOn({ minAmount: 100, maxAmount: 500, maxPerDay: 800 }));
+
+    expect((await call(env, 'alice', 'requestWithdrawal', { amount: 50, method: 'upi', accountDetails: 'a@ok' })).status).toBe(412);
+    expect((await call(env, 'alice', 'requestWithdrawal', { amount: 600, method: 'upi', accountDetails: 'a@ok' })).status).toBe(412);
+
+    // 500 + 400 would exceed the 800/day cap; the whole balance can no longer
+    // leave in a burst of individually-legal requests.
+    expect((await call(env, 'alice', 'requestWithdrawal', { amount: 500, method: 'upi', accountDetails: 'a@ok' })).status).toBe(200);
+    expect((await call(env, 'alice', 'requestWithdrawal', { amount: 400, method: 'upi', accountDetails: 'a@ok' })).status).toBe(412);
+    expect((await call(env, 'alice', 'requestWithdrawal', { amount: 300, method: 'upi', accountDetails: 'a@ok' })).status).toBe(200);
+
+    expect((await getUser(env, 'alice'))?.dpcoin).toBe(9_200);
+  });
+
+  it('refuses fractional and non-numeric amounts', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', 500);
+    await seedSettings(env, 'appConfig', payoutOn({ minAmount: 0 }));
+
+    for (const amount of [100.5, 'abc', -100, 0, null, Infinity]) {
+      const { status } = await call(env, 'alice', 'requestWithdrawal', {
+        amount, method: 'upi', accountDetails: 'alice@okhdfc',
+      });
+      expect(status).toBe(400);
+    }
+    expect((await getUser(env, 'alice'))?.dpcoin).toBe(500);
+  });
+});
+
+// ===========================================================================
+describe('claimDailyReward', () => {
+  it('credits and ledgers in one transaction, once per UTC day', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', 0);
+
+    const first = await call(env, 'alice', 'claimDailyReward', {});
+    expect(first.status).toBe(200);
+
+    const second = await call(env, 'alice', 'claimDailyReward', {});
+    expect(second.status).toBe(409);
+
+    const db = drizzleOf(env);
+    const ledger = await db.select().from(schema.coinTransactions)
+      .where(eq(schema.coinTransactions.type, 'daily_reward')).all();
+    // Exactly one ledger row, and it reconciles with the balance.
+    expect(ledger).toHaveLength(1);
+    expect(Number(ledger[0].amount)).toBe(Number((await getUser(env, 'alice'))?.dpcoin));
+  });
+});

@@ -384,8 +384,14 @@ export const api = {
   // withdrawals
   withdrawals: (status?: string) =>
     get<any[]>(`/admin/withdrawals${status ? `?status=${encodeURIComponent(status)}` : ""}`),
-  actionWithdrawal: (id: string, action: "approve" | "reject" | "paid", adminNote?: string) =>
-    patch(`/admin/withdrawals/${id}`, { action, adminNote }),
+  // `payoutRef` (bank UTR / RRN) is REQUIRED by the server when marking a
+  // payout paid, so an outgoing rupee can be reconciled against a statement.
+  actionWithdrawal: (
+    id: string,
+    action: "approve" | "reject" | "paid",
+    adminNote?: string,
+    payoutRef?: string,
+  ) => patch(`/admin/withdrawals/${id}`, { action, adminNote, payoutRef }),
 
   // deposits (manual QR/UPI top-ups)
   deposits: (status?: string) =>

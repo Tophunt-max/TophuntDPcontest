@@ -20,11 +20,25 @@ import { httpsError } from "./http";
  * the in-app row. Fails OPEN (returns true) on any KV error, matching
  * `rateLimit`'s trade-off.
  */
+export interface RateLimitOptions {
+  /**
+   * Reject instead of allowing when the counter cannot be read.
+   *
+   * The default (fail OPEN) is right for engagement throttles — a KV blip must
+   * not stop people using the app. It is the WRONG default for endpoints where
+   * an unlimited burst has a real cost or is a money/abuse risk: payouts, OTP
+   * sends, uploads, credential probing. For those, an outage that removes all
+   * throttling is worse than a brief refusal, so they opt into fail-closed.
+   */
+  failClosed?: boolean;
+}
+
 export async function consumeRateLimit(
   env: Env,
   key: string,
   max: number,
   windowSec: number,
+  options: RateLimitOptions = {},
 ): Promise<boolean> {
   try {
     const windowId = Math.floor(Date.now() / 1000 / windowSec);
@@ -38,6 +52,10 @@ export async function consumeRateLimit(
     });
     return true;
   } catch (e) {
+    if (options.failClosed) {
+      console.error("[rateLimit] KV error (failing CLOSED for a protected key)", key, e);
+      return false;
+    }
     // Fail open so a KV blip never blocks legitimate traffic.
     console.error("[rateLimit] KV error (failing open)", e);
     return true;
@@ -53,8 +71,9 @@ export async function rateLimit(
   key: string,
   max: number,
   windowSec: number,
+  options: RateLimitOptions = {},
 ): Promise<void> {
-  if (!(await consumeRateLimit(env, key, max, windowSec))) {
+  if (!(await consumeRateLimit(env, key, max, windowSec, options))) {
     throw httpsError("resource-exhausted", "Too many requests. Please slow down.");
   }
 }

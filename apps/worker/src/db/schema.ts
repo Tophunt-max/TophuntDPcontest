@@ -708,6 +708,14 @@ export const withdrawals = sqliteTable(
     status: text("status").notNull().default("pending"), // pending | approved | rejected | paid
     adminNote: text("admin_note"),
     processedBy: text("processed_by"), // admin uid who actioned it
+    /**
+     * Bank reference (UTR / RRN / NEFT ref) for the actual transfer. Required to
+     * mark a payout paid: without it, "we marked it paid" and "the bank sent it"
+     * were unrelated facts and no outgoing rupee could be reconciled against a
+     * statement. Unique across withdrawals.
+     */
+    payoutRef: text("payout_ref"),
+    paidAt: integer("paid_at"),
     // true = coins were already deducted (escrowed) at request time. Legacy rows
     // (created before this model) are 0 and are deducted on admin approval.
     reserved: integer("reserved", { mode: "boolean" }).notNull().default(false),
