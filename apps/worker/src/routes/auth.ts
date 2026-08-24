@@ -31,7 +31,7 @@ const PWRESET_VERIFIED_TTL = 10 * 60;
 const pwVerifiedKey = (phone: string) => `pwverified:${phone}`;
 import { sendSms } from "../lib/sms";
 import { sendEmail } from "../lib/email";
-import { newId, now } from "../lib/ids";
+import { now } from "../lib/ids";
 
 const DISPOSABLE_DOMAINS = new Set([
   "yopmail.com", "mailinator.com", "temp-mail.org", "10minutemail.com",
@@ -67,7 +67,36 @@ async function createUserProfile(env: Env, uid: string, data: any, signupBonus: 
     .from(schema.users)
     .where(eq(schema.users.uid, uid))
     .get();
-  await db
+
+  // The bonus is credited by the `dpcoin` column in the insert below, so its
+  // ledger row has to be written in the SAME transaction. It used to be a
+  // separate statement afterwards, which meant an interrupted signup could leave
+  // a funded account with no ledger entry explaining where the coins came from.
+  //
+  // Three things make the grant exactly-once:
+  //   * `onConflictDoUpdate` below deliberately does NOT set `dpcoin`, so a
+  //     repeated signup for an existing uid never re-grants;
+  //   * `alreadyExisted` keeps the ledger row out of the repeat case;
+  //   * the ledger id is deterministic and the insert ignores conflicts, so even
+  //     two concurrent first-signups can only produce one row.
+  const bonusLedger =
+    !alreadyExisted && signupBonus > 0
+      ? db
+          .insert(schema.coinTransactions)
+          .values({
+            id: `signup_bonus:${uid}`,
+            uid,
+            amount: signupBonus,
+            type: "signup_bonus",
+            description: "Welcome bonus for joining TopHunt!",
+            createdAt: ts,
+          })
+          .onConflictDoNothing()
+      : null;
+
+  const profileStatements: any[] = [];
+  profileStatements.push(
+    db
     .insert(schema.users)
     .values({
       uid,
@@ -91,6 +120,8 @@ async function createUserProfile(env: Env, uid: string, data: any, signupBonus: 
     .onConflictDoUpdate({
       target: schema.users.uid,
       set: {
+        // Deliberately does NOT include `dpcoin`: a repeated signup for an
+        // existing uid must never re-grant the welcome bonus.
         email: data.email ? String(data.email).toLowerCase() : null,
         username: data.username ? String(data.username).toLowerCase() : null,
         fullName: data.fullName ?? null,
@@ -98,18 +129,10 @@ async function createUserProfile(env: Env, uid: string, data: any, signupBonus: 
         updatedAt: ts,
         signupCompleted: true,
       },
-    });
-
-  if (!alreadyExisted && signupBonus > 0) {
-    await db.insert(schema.coinTransactions).values({
-      id: newId(),
-      uid,
-      amount: signupBonus,
-      type: "signup_bonus",
-      description: "Welcome bonus for joining TopHunt!",
-      createdAt: ts,
-    });
-  }
+    }),
+  );
+  if (bonusLedger) profileStatements.push(bonusLedger);
+  await db.batch(profileStatements as any);
 }
 
 export const authRoute = new Hono<{ Bindings: Env; Variables: Variables }>();

@@ -309,6 +309,8 @@ export interface ReconcileSummary {
   expired: number;
   failed: number;
   coins: number;
+  /** Orders that were already marked paid but whose coins never landed. */
+  recovered: number;
 }
 
 /** How long an order may sit uncredited before the sweeper checks the gateway. */
@@ -336,7 +338,7 @@ export async function reconcilePaymentOrders(
   env: Env,
   limit = 25,
 ): Promise<ReconcileSummary> {
-  const summary: ReconcileSummary = { checked: 0, credited: 0, expired: 0, failed: 0, coins: 0 };
+  const summary: ReconcileSummary = { checked: 0, credited: 0, expired: 0, failed: 0, coins: 0, recovered: 0 };
   const rzp = await getRazorpayCredentials(env);
   if (!rzp.keyId || !rzp.keySecret) {
     // Fail closed and loudly: without credentials we cannot reconcile, and
@@ -422,5 +424,122 @@ export async function reconcilePaymentOrders(
     }
   }
 
+  await recoverStrandedPaidOrders(env, db, summary, limit);
   return summary;
+}
+
+/**
+ * Second reconciliation phase: orders marked `paid` whose coins never landed.
+ *
+ * `creditPaymentOrder` claims an order by flipping its status to `paid` in a
+ * statement that is SEPARATE from the batch that actually credits the wallet.
+ * That separation is what makes the claim exactly-once, but it leaves a window:
+ * if the isolate dies (or D1 rejects the batch) after the claim commits, the
+ * order is in a terminal state with no coins, no `payments` row and no ledger
+ * entry. The customer has paid and has nothing.
+ *
+ * Phase one above cannot recover it, because it only looks at `status = 'created'`
+ * and `creditPaymentOrder` would return `already` for anything past the claim. So
+ * this phase looks for the fingerprint of the failure instead: `paid`, with a
+ * payment id, and no `payments` row for that id.
+ *
+ * `payments` is a reliable marker precisely because it is written INSIDE the
+ * credit batch — its absence means the batch did not apply, so no coins were
+ * added. It needs no gateway call: the claim already recorded the captured
+ * payment id, and the amount was validated before the claim was taken.
+ */
+async function recoverStrandedPaidOrders(
+  env: Env,
+  db: Db,
+  summary: ReconcileSummary,
+  limit: number,
+): Promise<void> {
+  const ts = now();
+  let stranded: any[] = [];
+  try {
+    stranded = await db
+      .select()
+      .from(schema.paymentOrders)
+      .where(
+        and(
+          eq(schema.paymentOrders.status, "paid"),
+          // Give the normal path time to finish before treating it as stranded.
+          lt(schema.paymentOrders.createdAt, ts - RECONCILE_MIN_AGE_MS),
+          lt(schema.paymentOrders.reconcileAttempts, RECONCILE_MAX_ATTEMPTS),
+          sql`${schema.paymentOrders.paymentId} IS NOT NULL`,
+          sql`NOT EXISTS (SELECT 1 FROM payments WHERE payments.id = ${schema.paymentOrders.paymentId})`,
+        ),
+      )
+      .orderBy(asc(schema.paymentOrders.createdAt))
+      .limit(limit)
+      .all();
+  } catch (e) {
+    console.error("[reconcile] could not scan for stranded paid orders", e);
+    return;
+  }
+
+  for (const order of stranded) {
+    const paymentId = String(order.paymentId);
+    const coins = Number(order.coins);
+    if (!Number.isFinite(coins) || coins <= 0 || coins > 1_000_000) {
+      summary.failed++;
+      console.error(`[reconcile] stranded order ${order.orderId} has an implausible coin amount (${order.coins})`);
+      continue;
+    }
+
+    // Back off first, so one permanently broken row cannot be retried forever.
+    await db
+      .update(schema.paymentOrders)
+      .set({ reconcileAttempts: (order.reconcileAttempts ?? 0) + 1, reconciledAt: ts, updatedAt: ts })
+      .where(eq(schema.paymentOrders.orderId, order.orderId))
+      .run();
+
+    const bonus = Number(order.bonusCoins) || 0;
+    const base = coins - bonus;
+    const description =
+      bonus > 0 ? `Purchased ${base} Dpcoins + ${bonus} bonus` : `Purchased ${coins} Dpcoins`;
+
+    try {
+      // The ledger row and the balance are gated on the `payments` marker being
+      // absent, and the marker is inserted LAST — D1 batches run sequentially, so
+      // the two gates read the pre-insert state and either both apply or both
+      // no-op. That also makes a concurrent second recovery attempt harmless.
+      //
+      // The ledger id is deterministic here (unlike the random one on the normal
+      // credit path) so a repeated recovery cannot write a second row.
+      const notCredited = `NOT EXISTS (SELECT 1 FROM payments WHERE id = ?)`;
+      const results = await env.DB.batch([
+        env.DB.prepare(
+          `INSERT OR IGNORE INTO coin_transactions
+             (id, uid, amount, type, description, created_at)
+           SELECT ?, ?, ?, 'purchase', ?, ?
+            WHERE ${notCredited}`,
+        ).bind(`purchase:${paymentId}`, order.userId, coins, description, ts, paymentId),
+        env.DB.prepare(
+          `UPDATE users
+              SET dpcoin = dpcoin + ?, updated_at = ?
+            WHERE uid = ? AND ${notCredited}`,
+        ).bind(coins, ts, order.userId, paymentId),
+        env.DB.prepare(
+          `INSERT OR IGNORE INTO payments
+             (id, user_id, amount, coins, amount_paise, source, status, created_at)
+           VALUES (?, ?, ?, ?, ?, 'razorpay', 'success', ?)`,
+        ).bind(paymentId, order.userId, coins, coins, Number(order.amountPaise) || 0, ts),
+      ]);
+
+      if (Number(results[1]?.meta?.changes || 0) > 0) {
+        summary.recovered++;
+        summary.coins += coins;
+        // Loud on purpose: this means a customer paid and the credit was lost
+        // until now, which is worth investigating even though it self-healed.
+        console.error(
+          `[reconcile] RECOVERED ${coins} coins for order ${order.orderId} (uid ${order.userId}, payment ${paymentId}) — ` +
+            `the order was marked paid but the wallet credit never applied`,
+        );
+      }
+    } catch (e) {
+      summary.failed++;
+      console.error(`[reconcile] failed to recover stranded order ${order.orderId}`, e);
+    }
+  }
 }

@@ -23,6 +23,8 @@ import * as schema from '../../src/db/schema';
 import { ApiError, errorBody } from '../../src/lib/http';
 import { apiRoute } from '../../src/routes/api';
 import { readRoute } from '../../src/routes/read';
+import { adminRoute } from '../../src/routes/admin';
+import { authRoute } from '../../src/routes/auth';
 
 const MIGRATIONS_DIR = path.join(import.meta.dirname, '..', '..', 'migrations');
 
@@ -135,6 +137,9 @@ export function makeEnv(overrides: Partial<TestEnv> = {}): { env: TestEnv; db: S
     R2_PUBLIC_BASE_URL: 'https://cdn.test',
     ALLOWED_ORIGINS: '*',
     FIREBASE_PROJECT_ID: 'test-project',
+    // Shared server-to-server admin secret. Sending it as X-Admin-Secret is the
+    // simplest way to exercise /admin routes at superadmin level.
+    ADMIN_PROXY_SECRET: 'test-admin-secret',
     ...overrides,
   };
   return { env, db: sqlite };
@@ -176,6 +181,14 @@ export function makeApp() {
   });
   app.route('/api', apiRoute);
   app.route('/read', readRoute);
+  // /auth is where the signup bonus is granted, which is a balance change and so
+  // has to be provable in a test.
+  app.route('/auth', authRoute);
+  // /admin carries the money-critical operator actions — approving and rejecting
+  // payouts, crediting manual deposits, adjusting balances. Authenticate with the
+  // `X-Admin-Secret: ADMIN_PROXY_SECRET` header, which the gate treats as
+  // superadmin and so satisfies requireFullAdmin without a Firebase token.
+  app.route('/admin', adminRoute);
   return app;
 }
 
