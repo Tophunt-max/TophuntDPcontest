@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, FlatList, Image, TouchableOpacity, ActivityIndicator, SafeAreaView, Dimensions } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Ionicons, MaterialCommunityIcons } from '@/src/lib/icons';
+import { MaterialCommunityIcons } from '@/src/lib/icons';
+import { BackButton } from '@/src/components/ui/BackButton';
 import { LeaderboardSkeleton } from '@/src/components/skeletons/LeaderboardSkeleton';
 import { leaderboardService } from '@/src/services/contests/leaderboardService';
 import { UserProfile } from '@/src/types/user';
@@ -142,9 +143,7 @@ export default function LeaderboardScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bgColor }]}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
-          <Ionicons name="chevron-back" size={28} color={textColor} />
-        </TouchableOpacity>
+        <BackButton size={26} color={textColor} />
         <Text style={[styles.title, { color: textColor }]}>Leaderboard</Text>
         <View style={{ width: 28 }} />
       </View>

@@ -1,13 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, ScrollView, StyleSheet, SafeAreaView, TouchableOpacity, ActivityIndicator } from 'react-native';
-import { useRouter } from 'expo-router';
-import { Left_Arrow } from '@/assets/svgs';
+import { View, Text, ScrollView, StyleSheet, SafeAreaView, ActivityIndicator } from 'react-native';
+import { BackButton } from '@/src/components/ui/BackButton';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from 'react-native';
 import { readApi, poll } from '@/src/services/api';
 
 export default function TermsOfServiceScreen() {
-  const router = useRouter();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   const textColor = isDark ? '#fff' : '#212121';
@@ -32,9 +30,7 @@ export default function TermsOfServiceScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <Left_Arrow width={24} height={24} color={textColor} />
-        </TouchableOpacity>
+        <BackButton size={24} color={textColor} style={styles.backButton} />
         <Text style={[styles.headerTitle, { color: textColor }]}>Terms of Service</Text>
       </View>
 

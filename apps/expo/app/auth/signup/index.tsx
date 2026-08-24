@@ -22,13 +22,13 @@ import {
   Google_Icon,
   Apple_Light,
   Apple_Dark,
-  Left_Arrow,
   New_Email_Icon,
   Lock_Icon,
   Eye_Open,
   Eye_Close,
   Checkmark_Icon,
 } from "@/assets/svgs";
+import { BackButton } from "@/src/components/ui/BackButton";
 import { useThemeColor } from "@/hooks/use-theme-color";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { FormInput } from "@/src/components/inputs/FormInput";
@@ -293,9 +293,7 @@ export default function SignupEntryScreen() {
           ]}
         >
           <View style={styles.header}>
-            <TouchableOpacity onPress={handleBack} style={styles.backButton}>
-              <Left_Arrow width={24} height={24} color={textColor} />
-            </TouchableOpacity>
+            <BackButton size={24} color={textColor} onPress={handleBack} style={styles.backButton} />
           </View>
 
           <View style={styles.contentContainer}>

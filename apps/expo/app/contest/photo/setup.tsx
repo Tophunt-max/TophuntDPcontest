@@ -25,7 +25,7 @@ import { SuccessModal } from '@/src/components/forms/SuccessModal';
 import { RulesModal } from '@/src/components/modals/RulesModal';
 import { useProfile } from '@/src/hooks/useProfileData'; 
 import { useThemeColor } from '@/hooks/use-theme-color';
-import { Left_Arrow } from '@/assets/svgs';
+import { BackButton } from '@/src/components/ui/BackButton';
 import { CoinIcon } from '@/src/components/ui/CoinIcon'; 
 import { BattleSetupSkeleton } from '@/src/components/contests/BattleSetupSkeleton';
 import { useToast } from '@/src/components/toast/ToastProvider';
@@ -308,9 +308,7 @@ export default function BattleSetupScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]} edges={['top', 'bottom']}>
       <View style={styles.header}>
-         <TouchableOpacity onPress={() => router.back()} style={[styles.backBtn, { backgroundColor: cardBg }]}>
-            <Left_Arrow width={22} height={22} color={textColor} />
-         </TouchableOpacity>
+         <BackButton size={22} color={textColor} style={[styles.backBtn, { backgroundColor: cardBg }]} />
          <Text style={[styles.headerTitle, { color: textColor }]}>Battle Setup</Text>
          <TouchableOpacity 
             ref={walletRef}

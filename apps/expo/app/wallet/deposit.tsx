@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Alert,
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@/src/lib/icons';
+import { BackButton } from '@/src/components/ui/BackButton';
 import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
@@ -98,7 +99,7 @@ export default function DepositScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}><Ionicons name="chevron-back" size={28} color={textColor} /></TouchableOpacity>
+        <BackButton size={26} color={textColor} />
         <Text style={[styles.title, { color: textColor }]}>Add Money</Text>
         <View style={{ width: 28 }} />
       </View>

@@ -12,7 +12,7 @@ import {
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColor } from "@/hooks/use-theme-color";
-import { Left_Arrow } from "@/assets/svgs";
+import { BackButton } from "@/src/components/ui/BackButton";
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useToast } from "@/src/components/toast/ToastProvider";
 import { callApi } from "@/src/services/api"; // Consolidated API used
@@ -104,9 +104,7 @@ export default function OtpVerificationScreen() {
         }}
       >
         <View style={styles.container}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-            <Left_Arrow />
-          </TouchableOpacity>
+          <BackButton size={24} color={textColor} style={styles.backButton} />
           <View style={styles.header}>
             <Text style={[styles.title, { color: textColor }]}>Forgot Password</Text>
             <Text style={[styles.subtitle, { color: textColor }]}>

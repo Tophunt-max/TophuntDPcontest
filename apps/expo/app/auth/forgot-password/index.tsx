@@ -14,7 +14,8 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColor } from "@/hooks/use-theme-color";
 import { useColorScheme } from "@/hooks/use-color-scheme";
-import { Left_Arrow, ForgotPassword_Light, ForgotPassword_Dark, Sms_Icon, Email_Icon } from "@/assets/svgs";
+import { ForgotPassword_Light, ForgotPassword_Dark, Sms_Icon, Email_Icon } from "@/assets/svgs";
+import { BackButton } from "@/src/components/ui/BackButton";
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useToast } from "@/src/components/toast/ToastProvider";
 import { sendPasswordResetEmail } from "firebase/auth";
@@ -105,9 +106,7 @@ export default function ForgotPasswordScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.header}>
-            <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-              <Left_Arrow width={24} height={24} color="#000" />
-            </TouchableOpacity>
+            <BackButton size={24} color={textColor} style={styles.backButton} />
             <Text style={styles.headerTitle}>Forgot Password</Text>
             <View style={{ width: 24 }} />
         </View>

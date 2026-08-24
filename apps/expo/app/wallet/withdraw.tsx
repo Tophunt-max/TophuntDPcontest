@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Alert, ActivityIndicator, useColorScheme } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+
 import { Ionicons } from '@/src/lib/icons';
+import { BackButton } from '@/src/components/ui/BackButton';
 import { CoinIcon } from '@/src/components/ui/CoinIcon';
 import * as Haptics from 'expo-haptics';
 
@@ -20,7 +21,7 @@ const METHODS = [
 ];
 
 export default function WithdrawScreen() {
-  const router = useRouter();
+
   const { user } = useAuth();
   const { data: profile, refetch } = useProfile(user?.uid || '');
   const { config } = useAppConfig();
@@ -87,7 +88,7 @@ export default function WithdrawScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}><Ionicons name="chevron-back" size={28} color={textColor} /></TouchableOpacity>
+        <BackButton size={26} color={textColor} />
         <Text style={[styles.title, { color: textColor }]}>Withdraw</Text>
         <View style={{ width: 28 }} />
       </View>

@@ -13,8 +13,8 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@/src/lib/icons';
+import { BackButton } from '@/src/components/ui/BackButton';
 import {
-  Left_Arrow,
   Settings_User,
   Settings_Lock,
   Settings_Shield,
@@ -84,9 +84,7 @@ export default function SettingScreen() {
 
   const renderHeader = () => (
     <View style={styles.header}>
-      <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-        <Left_Arrow width={24} height={24} color={textColor} />
-      </TouchableOpacity>
+      <BackButton size={24} color={textColor} style={styles.backButton} />
       <Text style={[styles.headerTitle, { color: textColor }]}>Setting</Text>
     </View>
   );

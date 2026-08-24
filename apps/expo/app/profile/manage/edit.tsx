@@ -24,7 +24,8 @@ import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Left_Arrow, Email_Icon, Add_Icon } from "@/assets/svgs";
+import { Email_Icon, Add_Icon } from "@/assets/svgs";
+import { BackButton } from "@/src/components/ui/BackButton";
 import { Ionicons } from "@/src/lib/icons";
 import { CountryPicker } from "react-native-country-codes-picker";
 import { callApi } from "@/src/services/api"; // Centralized Worker API Caller
@@ -305,9 +306,7 @@ export default function EditProfileScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
-          <Left_Arrow width={24} height={24} color="#000" />
-        </TouchableOpacity>
+        <BackButton size={24} color="#000" />
         <Text style={styles.headerTitle}>Edit Profile</Text>
         <View style={{ width: 24 }} />
       </View>

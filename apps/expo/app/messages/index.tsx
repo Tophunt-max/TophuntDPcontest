@@ -27,7 +27,6 @@ import { Avatar } from '@/src/components/ui/Avatar';
 
 // Import Icons from assets
 import { 
-  Left_Arrow, 
   Add_Icon, 
   Menu_Light, 
   Menu_Dark, 
@@ -38,6 +37,7 @@ import {
   Inbox_Light,
   Inbox_Dark
 } from '@/assets/svgs';
+import { BackButton } from '@/src/components/ui/BackButton';
 
 // --- TYPES ---
 interface UserData {
@@ -372,9 +372,7 @@ export default function MessagesScreen() {
       {/* Custom Header */}
       <View style={styles.topNav}>
         <View style={styles.leftHeader}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-            <Left_Arrow width={28} height={28} color={textColor} />
-          </TouchableOpacity>
+          <BackButton size={26} color={textColor} style={styles.backButton} />
           <Text style={[styles.headerTitle, { color: textColor }]}>Messages</Text>
         </View>
         <View style={styles.rightIcons}>

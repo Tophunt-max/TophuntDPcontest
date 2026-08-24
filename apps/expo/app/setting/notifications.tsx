@@ -10,9 +10,10 @@ import {
   View,
   useColorScheme,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+
 
 import { Ionicons } from '@/src/lib/icons';
+import { BackButton } from '@/src/components/ui/BackButton';
 import { Colors } from '@/constants/theme';
 import {
   notificationService,
@@ -53,7 +54,7 @@ function formatHour(h: number): string {
 }
 
 export default function NotificationSettingsScreen() {
-  const router = useRouter();
+
   const isDark = useColorScheme() === 'dark';
   const { addToast } = useToast();
 
@@ -115,9 +116,7 @@ export default function NotificationSettingsScreen() {
 
   const renderHeader = () => (
     <View style={[styles.header, { borderBottomColor: borderColor }]}>
-      <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-        <Ionicons name="chevron-back" size={26} color={textColor} />
-      </TouchableOpacity>
+      <BackButton size={24} color={textColor} style={styles.backBtn} />
       <Text style={[styles.headerTitle, { color: textColor }]}>Notifications</Text>
     </View>
   );

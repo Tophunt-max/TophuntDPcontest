@@ -13,12 +13,12 @@ import {
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@/src/lib/icons';
 import {
-  Left_Arrow,
   Settings_User,
   Settings_Lock,
   Settings_Shield,
   Settings_Logout,
 } from "@/assets/svgs";
+import { BackButton } from "@/src/components/ui/BackButton";
 import { signOut } from '../../../src/services/auth';
 import { Colors } from '@/constants/theme';
 
@@ -57,9 +57,7 @@ export default function ManageProfileScreen() {
 
   const renderHeader = () => (
     <View style={styles.header}>
-      <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-        <Left_Arrow width={24} height={24} color={textColor} />
-      </TouchableOpacity>
+      <BackButton size={24} color={textColor} style={styles.backButton} />
       <Text style={[styles.headerTitle, { color: textColor }]}>Manage Profile</Text>
     </View>
   );

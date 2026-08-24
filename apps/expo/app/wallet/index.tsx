@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, FlatList, TouchableOpacity, useColorScheme, Ale
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@/src/lib/icons';
+import { BackButton } from '@/src/components/ui/BackButton';
 import { CoinIcon } from '@/src/components/ui/CoinIcon';
 import { WalletSkeleton } from '@/src/components/skeletons/WalletSkeleton';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -347,9 +348,7 @@ export default function WalletScreen() {
             <View>
                 {/* Header */}
                 <View style={styles.header}>
-                    <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-                        <Ionicons name="chevron-back" size={28} color={textColor} />
-                    </TouchableOpacity>
+                    <BackButton size={26} color={textColor} style={styles.backButton} />
                     <Text style={[styles.title, { color: textColor }]}>My Wallet</Text>
                     <TouchableOpacity onPress={() => router.push('/wallet/store')}>
                         <Ionicons name="scan-outline" size={24} color={textColor} />

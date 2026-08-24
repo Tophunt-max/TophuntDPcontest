@@ -2,8 +2,8 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useRouter } from 'expo-router';
 import { Avatar } from '@/src/components/ui/Avatar';
+import { BackButton } from '@/src/components/ui/BackButton';
 
 interface ChatHeaderProps {
   recipientName: string;
@@ -12,13 +12,9 @@ interface ChatHeaderProps {
 }
 
 function ChatHeader({ recipientName, recipientAvatar }: ChatHeaderProps) {
-  const router = useRouter();
-
   return (
     <View style={styles.headerContainer}>
-      <TouchableOpacity onPress={() => router.back()} style={styles.iconButton}>
-        <Ionicons name="arrow-back" size={24} color="black" />
-      </TouchableOpacity>
+      <BackButton size={22} color="black" style={styles.iconButton} />
       <Avatar uri={recipientAvatar} name={recipientName} size={35} style={styles.avatar} />
       <Text style={styles.recipientName}>{recipientName}</Text>
       <View style={styles.rightIcons}>

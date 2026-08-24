@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { AppImage as Image } from '@/src/components/ui/AppImage';
 import { Ionicons } from '@/src/lib/icons';
+import { BackButton } from '@/src/components/ui/BackButton';
 import { BlogSkeleton } from '@/src/components/skeletons/BlogSkeleton';
 import { useRouter } from 'expo-router';
 import { blogService, BlogPost, BlogCategory } from '@/src/services/blog/blogService';
@@ -143,9 +144,7 @@ export default function BlogListScreen() {
   const renderHeader = () => (
     <View>
       <View style={styles.headerRow}>
-        <TouchableOpacity style={[styles.iconBtn, { backgroundColor: chipBg }]} onPress={() => router.back()}>
-          <Ionicons name="arrow-back" size={22} color={textColor} />
-        </TouchableOpacity>
+        <BackButton size={22} color={textColor} style={[styles.iconBtn, { backgroundColor: chipBg }]} />
         <Text style={[styles.headerTitle, { color: textColor }]}>Blog</Text>
         <View style={{ width: 44 }} />
       </View>

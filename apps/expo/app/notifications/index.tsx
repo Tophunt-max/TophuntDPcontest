@@ -8,6 +8,7 @@ import { notificationService, NotificationItem } from '@/src/services/notificati
 import { getNotificationDestination, getNotificationTag } from '@/src/services/notifications/notificationMeta';
 import { Colors } from '@/constants/theme';
 import { NotificationSkeleton } from '@/src/components/notifications/NotificationSkeleton';
+import { BackButton } from '@/src/components/ui/BackButton';
 import { Ionicons } from '@/src/lib/icons';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
@@ -221,15 +222,7 @@ export default function NotificationsScreen() {
             <Stack.Screen options={{ headerShown: false }} />
 
             <View style={[styles.header, { borderBottomColor: borderColor }]}>
-                <TouchableOpacity
-                    onPress={() => router.back()}
-                    style={styles.backBtn}
-                    hitSlop={8}
-                    accessibilityRole="button"
-                    accessibilityLabel="Go back"
-                >
-                    <Ionicons name="chevron-back" size={26} color={textColor} />
-                </TouchableOpacity>
+                <BackButton size={24} color={textColor} style={styles.backBtn} />
                 <Text style={[styles.headerTitle, { color: textColor }]}>Notification</Text>
             </View>
 
@@ -292,10 +285,6 @@ const styles = StyleSheet.create({
         borderBottomWidth: StyleSheet.hairlineWidth,
     },
     backBtn: {
-        width: 40,
-        height: 40,
-        alignItems: 'center',
-        justifyContent: 'center',
         marginRight: 2,
     },
     headerTitle: {
