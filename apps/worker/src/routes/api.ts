@@ -53,6 +53,7 @@ import { getRazorpayCredentials } from "../lib/integrations";
 import { creditPaymentOrder } from "../lib/coinOrders";
 import { assertClean } from "../lib/moderation";
 import { assertChatMember } from "../lib/chatAuth";
+import { publishVsStories, storyMediaType } from "../lib/matchStories";
 import {
   assertMatchInteractionAllowed,
   assertNotBlocked,
@@ -437,10 +438,13 @@ apiRoute.post("/", async (c) => {
         }
       }
 
-      // auto-story
+      // Solo "I've entered, come challenge me" story. Replaced by a head-to-head
+      // story for both users once someone joins (see lib/matchStories.ts).
+      // `storyMediaType` matters: this used to write "photo", which the story
+      // viewer does not recognise as an image, so it rendered blank.
       await db.insert(schema.stories).values({
         id: newId(), userId: uid, username: user.username || "Anonymous", avatarUrl: user.profileImageUrl || "",
-        mediaUrl, mediaType: mediaType || "photo", type: "contest_announcement", matchId,
+        mediaUrl, mediaType: storyMediaType(mediaType), type: "contest_announcement", matchId,
         contestTitle: contest.title || "Contest", createdAt: ts, expiresAt: ts + 24 * 60 * 60 * 1000,
       }).catch(() => {});
 
@@ -575,11 +579,31 @@ apiRoute.post("/", async (c) => {
         throw httpsError("failed-precondition", `Insufficient Dpcoin. Required: ${fee}, Current: ${user.dpcoin}`);
       }
 
-      await db.insert(schema.stories).values({
-        id: newId(), userId: uid, username: user.username || "Anonymous", avatarUrl: user.profileImageUrl || "",
-        mediaUrl, mediaType: mediaType || "photo", type: "contest_match_live", matchId,
-        contestTitle: match.title || "Contest", createdAt: ts, expiresAt: ts + 24 * 60 * 60 * 1000,
-      }).catch(() => {});
+      // The battle now has two sides, so both participants get a head-to-head
+      // story and the creator's solo announcement is retired. Best-effort: the
+      // entry fee is already taken and the match is already live, so a story
+      // problem must not surface as a failed join. See lib/matchStories.ts.
+      c.executionCtx.waitUntil(
+        publishVsStories(env, {
+          matchId,
+          contestTitle: match.title || "Contest",
+          userA: {
+            uid: userA.uid,
+            username: userA.username,
+            profilePic: userA.profilePic,
+            mediaUrl: userA.mediaUrl,
+            mediaType: userA.mediaType,
+          },
+          userB: {
+            uid,
+            username: user.username,
+            profilePic: user.profileImageUrl,
+            mediaUrl,
+            mediaType,
+          },
+          ts,
+        }),
+      );
 
       c.executionCtx.waitUntil(
         sendPushNotification(

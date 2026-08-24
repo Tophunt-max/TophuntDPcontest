@@ -8,7 +8,7 @@ import {
   PendingActionModel,
   type PendingActionType,
 } from '@/src/database';
-import { Story, UserStories } from '@/src/types/stories';
+import { Story, UserStories, storyMediaKind } from '@/src/types/stories';
 import { auth } from '../firebase/initFirebase';
 
 /**
@@ -47,7 +47,9 @@ function applyStoryFields(record: StoryModel, story: Story): void {
   record.username = story.username || '';
   record.avatarUrl = story.avatarUrl || '';
   record.mediaUrl = story.mediaUrl;
-  record.mediaType = story.mediaType;
+  // Normalised on the way into the cache, so a legacy `"photo"` from the contest
+  // flows does not get persisted locally and re-read as a non-image.
+  record.mediaType = storyMediaKind(story);
   record.createdAt = story.createdAt;
   record.expiresAt = story.expiresAt;
   record.seen = story.seen || false;

@@ -47,7 +47,8 @@ import { formatClockTime } from '@/src/lib/formatTime';
 import { videoSourceFor } from '@/src/lib/videoSource';
 import { prefetchImages } from '@/src/lib/mediaPrefetch';
 import { Avatar } from '@/src/components/ui/Avatar';
-import type { StoryViewer } from '@/src/types/stories';
+import { isVideoStory, isVsStory, storyMediaKind, type StoryViewer } from '@/src/types/stories';
+import { StoryVsFrame } from '@/src/components/stories/StoryVsFrame';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
 
 const { width, height } = Dimensions.get('window');
@@ -114,7 +115,7 @@ export default function StoryView() {
   // progress bar advances, the next frame is already decoded on disk.
   useEffect(() => {
     const adjacentImages = [nextStoryItem, prevStoryItem]
-      .filter((s) => s?.mediaType === 'image')
+      .filter((s) => s && !isVideoStory(s) && !!s.mediaUrl)
       .map((s) => s!.mediaUrl);
     if (adjacentImages.length) void prefetchImages(adjacentImages);
   }, [nextStoryItem?.mediaUrl, prevStoryItem?.mediaUrl]);
@@ -217,7 +218,10 @@ export default function StoryView() {
     if (currentStory) {
       markStoryAsSeen(currentStory.id);
       setIsLoading(true);
-      if (currentStory.mediaType === 'image') {
+      // Everything that is not a video advances on a fixed timer. This used to
+      // test `=== 'image'`, which excluded the `"photo"` the contest flows wrote —
+      // so contest stories never started their progress bar and never advanced.
+      if (!isVideoStory(currentStory)) {
         setDuration(DEFAULT_STORY_DURATION);
         setIsLoading(false);
         startAnimation(DEFAULT_STORY_DURATION);
@@ -304,7 +308,7 @@ export default function StoryView() {
       try {
           await createStoryRecord(
               currentStory.mediaUrl,
-              currentStory.mediaType,
+              storyMediaKind(currentStory),
               'public',
               `Reposted from @${currentUserStories.username}`,
               { x: 0.5, y: 0.8 }
@@ -496,7 +500,18 @@ export default function StoryView() {
         <View style={styles.container}>
         <StatusBar hidden />
         <View style={styles.mediaContainer} {...mainPanResponder.panHandlers}>
-            {currentStory.mediaType === 'image' ? (
+            {/*
+              A battle story renders as a head-to-head frame built from the match,
+              so it must be checked BEFORE the media-type branch — its own
+              `mediaUrl` is only the fallback for one side.
+            */}
+            {isVsStory(currentStory) ? (
+                <StoryVsFrame
+                    matchId={currentStory.matchId!}
+                    fallbackMediaUrl={currentStory.mediaUrl}
+                    contestTitle={currentStory.contestTitle}
+                />
+            ) : !isVideoStory(currentStory) ? (
                 <Image source={{ uri: currentStory.mediaUrl }} style={styles.media} contentFit="contain" />
             ) : (
                 <VideoView player={player} style={styles.media} contentFit="contain" />

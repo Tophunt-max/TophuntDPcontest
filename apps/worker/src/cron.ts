@@ -288,8 +288,11 @@ export async function resolveContests(env: Env): Promise<void> {
 
   // expired story cleanup — also delete the R2 media of expired PERSONAL
   // ("user") stories so R2 storage doesn't grow forever. Contest stories
-  // (contest_announcement / contest_match_live) reuse the match's media, so we
-  // must NOT delete their objects here. R2 DELETE ops are free.
+  // (contest_announcement / contest_vs) reuse the match's media, so we must NOT
+  // delete their objects here — doing so would blank out the battle itself. This
+  // is also why the head-to-head story composes its layout on the client instead
+  // of generating an image: a generated object would have no owner in this sweep.
+  // R2 DELETE ops are free.
   const expiredUserStories = await db
     .select({ mediaUrl: schema.stories.mediaUrl })
     .from(schema.stories)
