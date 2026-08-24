@@ -28,6 +28,8 @@ import m_0023_money_integrity_sql from "../../migrations/0023_money_integrity.sq
 import m_0024_payment_lifecycle_sql from "../../migrations/0024_payment_lifecycle.sql";
 import m_0025_ops_heartbeat_sql from "../../migrations/0025_ops_heartbeat.sql";
 import m_0026_payout_reference_sql from "../../migrations/0026_payout_reference.sql";
+import m_0027_admin_notification_scope_sql from "../../migrations/0027_admin_notification_scope.sql";
+import m_0028_vote_ip_sql from "../../migrations/0028_vote_ip.sql";
 
 export interface Migration {
   name: string;
@@ -62,4 +64,6 @@ export const MIGRATIONS: Migration[] = [
   { name: "0024_payment_lifecycle.sql", sql: m_0024_payment_lifecycle_sql },
   { name: "0025_ops_heartbeat.sql", sql: m_0025_ops_heartbeat_sql },
   { name: "0026_payout_reference.sql", sql: m_0026_payout_reference_sql },
+  { name: "0027_admin_notification_scope.sql", sql: m_0027_admin_notification_scope_sql },
+  { name: "0028_vote_ip.sql", sql: m_0028_vote_ip_sql },
 ];

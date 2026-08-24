@@ -55,9 +55,12 @@ import {
   matchPot,
   perPlayerEntryFee,
   roundFiat,
+  validateCoinPackage,
   WalletReplay,
 } from "../lib/money";
 import { fetchExternalImage } from "../lib/safeFetch";
+import { enforceAdminIdempotency } from "../lib/idempotency";
+import { assertIdentifiersAvailable, validateUsername } from "../lib/userIdentifiers";
 
 /**
  * Record a sensitive admin action in the audit trail. Best-effort — never
@@ -164,9 +167,20 @@ adminRoute.use("*", async (c, next) => {
 
 /** Block moderators from privileged (money / user-lifecycle / config) actions. */
 function requireFullAdmin(c: any): void {
-  if (c.get("adminRole") === "moderator") {
+  if (!isFullAdmin(c)) {
     throw httpsError("permission-denied", "This action requires full admin access.");
   }
+}
+
+/**
+ * True for superadmin/admin, false for moderator.
+ *
+ * Used where the right answer is to FILTER what a moderator sees rather than
+ * reject the request outright (e.g. the notification bell in the panel layout,
+ * which would otherwise error on every page for a moderator).
+ */
+function isFullAdmin(c: any): boolean {
+  return c.get("adminRole") !== "moderator";
 }
 
 // ---- app settings (settings/appConfig) ----
@@ -1530,15 +1544,39 @@ adminRoute.get("/contests", async (c) => {
 });
 
 // ======================= ADMIN NOTIFICATIONS =======================
+/**
+ * Notifications visible to the caller.
+ *
+ * The feed carries financial events (payout requests, refund clawbacks,
+ * chargebacks, cron failures) which name users and amounts. Moderators have
+ * panel access for content moderation only, so they see moderation-scoped
+ * notifications and nothing else — filtered rather than 403'd, so the bell in
+ * the panel layout keeps working for them.
+ */
 adminRoute.get("/notifications", async (c) => {
   const db = getDb(c.env);
-  const rows = await db.select().from(schema.adminNotifications).orderBy(desc(schema.adminNotifications.createdAt)).limit(10).all();
+  const scopes = isFullAdmin(c) ? ["finance", "moderation"] : ["moderation"];
+  const rows = await db
+    .select()
+    .from(schema.adminNotifications)
+    .where(inArray(schema.adminNotifications.scope, scopes))
+    .orderBy(desc(schema.adminNotifications.createdAt))
+    .limit(10)
+    .all();
   return c.json(rows.map((n) => ({ ...n, isRead: !!n.isRead })));
 });
 
 adminRoute.post("/notifications/read", async (c) => {
   const db = getDb(c.env);
-  await db.update(schema.adminNotifications).set({ isRead: true }).where(eq(schema.adminNotifications.isRead, false));
+  // Only mark read what the caller was allowed to see.
+  const scopes = isFullAdmin(c) ? ["finance", "moderation"] : ["moderation"];
+  await db
+    .update(schema.adminNotifications)
+    .set({ isRead: true })
+    .where(and(
+      eq(schema.adminNotifications.isRead, false),
+      inArray(schema.adminNotifications.scope, scopes),
+    ));
   return c.json({ success: true });
 });
 
@@ -1620,6 +1658,8 @@ adminRoute.post("/notify", async (c) => {
  * Joins the user's display name/username for a readable admin table.
  */
 adminRoute.get("/transactions", async (c) => {
+  // Full admins only: the coin ledger for every user.
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const uid = c.req.query("uid");
   const type = c.req.query("type");
@@ -1651,6 +1691,8 @@ adminRoute.get("/transactions", async (c) => {
 
 // Distinct transaction types (for the filter dropdown).
 adminRoute.get("/transactions/types", async (c) => {
+  // Full admins only: ledger metadata.
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const rows = await db.select({ type: schema.coinTransactions.type }).from(schema.coinTransactions).groupBy(schema.coinTransactions.type).all();
   return c.json(rows.map((r) => r.type).filter(Boolean));
@@ -1662,6 +1704,8 @@ adminRoute.get("/transactions/types", async (c) => {
  * top spenders.
  */
 adminRoute.get("/revenue", async (c) => {
+  // Full admins only: revenue and top spenders.
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const totalRevenue =
     (await db.select({ v: sql<number>`COALESCE(SUM(${schema.payments.amount}),0)` }).from(schema.payments).where(eq(schema.payments.status, "success")).get())?.v ?? 0;
@@ -1709,6 +1753,8 @@ adminRoute.get("/revenue", async (c) => {
 
 // Raw payment (top-up) list.
 adminRoute.get("/payments", async (c) => {
+  // Full admins only: individual payment records.
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 500);
   const rows = await db
@@ -1947,27 +1993,70 @@ adminRoute.get("/fraud/votes", async (c) => {
   return c.json(rows);
 });
 
+/**
+ * Networks that voted for the SAME entry under many accounts within one match.
+ *
+ * The IP was never recorded before, so this class of collusion — a farm rotating
+ * device ids but sharing an uplink — was invisible.
+ *
+ * Read this as a signal, not proof: carrier NAT legitimately puts thousands of
+ * unrelated users behind one address, which is exactly why the vote path does not
+ * BLOCK on IP. What is suspicious is many accounts from one address converging on
+ * one entry in one match, so the grouping is per (match, ip, votedFor).
+ */
+adminRoute.get("/fraud/vote-networks", async (c) => {
+  // Full admins only: exposes voter IP addresses.
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const minAccounts = Math.min(Math.max(parseInt(c.req.query("minAccounts") || "3", 10), 2), 50);
+  const rows = await db
+    .select({
+      matchId: schema.votes.matchId,
+      ip: schema.votes.ip,
+      votedForUid: schema.votes.votedForUid,
+      accounts: sql<number>`COUNT(DISTINCT ${schema.votes.voterUid})`,
+      devices: sql<number>`COUNT(DISTINCT ${schema.votes.deviceId})`,
+      totalVotes: count(),
+    })
+    .from(schema.votes)
+    .where(sql`${schema.votes.ip} IS NOT NULL AND ${schema.votes.ip} != ''`)
+    .groupBy(schema.votes.matchId, schema.votes.ip, schema.votes.votedForUid)
+    .having(sql`COUNT(DISTINCT ${schema.votes.voterUid}) >= ${minAccounts}`)
+    .orderBy(desc(sql`COUNT(DISTINCT ${schema.votes.voterUid})`))
+    .limit(100)
+    .all();
+  return c.json(rows);
+});
+
 // ======================= BROADCAST =======================
 // Send a push + in-app notification to every user.
 adminRoute.post("/broadcast", async (c) => {
   requireFullAdmin(c);
   const { title, body, image, segment } = await c.req.json<any>();
   if (!title || !body) throw httpsError("invalid-argument", "title and body are required.");
-  // Queued and drained by cron — see lib/broadcast.ts for why this is not sent
-  // inline. `recipients` is the estimated audience.
-  const { jobId, estimatedRecipients } = await enqueueBroadcast(c.env, {
-    title,
-    body,
-    image: image || undefined,
-    segment,
-    createdBy: c.get("user")?.uid ?? null,
-  });
-  await logAudit(c, "notification.broadcast", "broadcast", jobId, {
-    title,
-    recipients: estimatedRecipients,
-    segment,
-  });
-  return c.json({ success: true, jobId, recipients: estimatedRecipients, queued: true });
+  // A re-submitted broadcast used to fan out to every user a second time. With
+  // an Idempotency-Key header the retry is rejected instead.
+  const idem = await enforceAdminIdempotency(c, "broadcast");
+  try {
+    // Queued and drained by cron — see lib/broadcast.ts for why this is not sent
+    // inline. `recipients` is the estimated audience.
+    const { jobId, estimatedRecipients } = await enqueueBroadcast(c.env, {
+      title,
+      body,
+      image: image || undefined,
+      segment,
+      createdBy: c.get("user")?.uid ?? null,
+    });
+    await logAudit(c, "notification.broadcast", "broadcast", jobId, {
+      title,
+      recipients: estimatedRecipients,
+      segment,
+    });
+    return c.json({ success: true, jobId, recipients: estimatedRecipients, queued: true });
+  } catch (e) {
+    await idem?.finish(false);
+    throw e;
+  }
 });
 
 // ======================= COMMENTS MODERATION =======================
@@ -2041,6 +2130,8 @@ adminRoute.get("/users/:id/following", async (c) => {
 // ======================= WITHDRAWALS =======================
 // List payout requests (optional ?status= filter).
 adminRoute.get("/withdrawals", async (c) => {
+  // Full admins only: payout PII (bank / UPI details).
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const status = c.req.query("status");
   const conds: any[] = [];
@@ -2296,6 +2387,8 @@ adminRoute.patch("/withdrawals/:id", async (c) => {
 
 // ======================= DEPOSITS (manual QR/UPI top-ups) =======================
 adminRoute.get("/deposits", async (c) => {
+  // Full admins only: deposit records and UTRs.
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const status = c.req.query("status");
   const conds: any[] = [];
@@ -2344,6 +2437,8 @@ adminRoute.get("/deposits", async (c) => {
 
 // ======================= REFERRALS =======================
 adminRoute.get("/referrals", async (c) => {
+  // Full admins only: referral payouts.
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const referrer = alias(schema.users, "ref_user");
   const referred = alias(schema.users, "invited_user");
@@ -2369,6 +2464,8 @@ adminRoute.get("/referrals", async (c) => {
 // ======================= FINANCE TRENDS =======================
 // 14-day daily series of approved deposits and paid/approved withdrawals.
 adminRoute.get("/finance-trends", async (c) => {
+  // Full admins only: financial trends.
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const since = now() - 14 * 86400000;
   const deps = await db
@@ -2465,6 +2562,8 @@ adminRoute.patch("/deposits/:id", async (c) => {
 
 // ======================= AUDIT LOG =======================
 adminRoute.get("/audit-log", async (c) => {
+  // Full admins only: the trail of admin actions, including actions taken against the caller.
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 500);
   const action = c.req.query("action");
@@ -2485,6 +2584,8 @@ adminRoute.get("/audit-log", async (c) => {
 // Server errors persisted from app.onError (src/lib/observability.ts) so admins
 // can triage without the Cloudflare dashboard.
 adminRoute.get("/logs", async (c) => {
+  // Full admins only: server error logs, which can contain request context.
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 500);
   const level = c.req.query("level");
@@ -2503,6 +2604,8 @@ adminRoute.get("/logs", async (c) => {
 });
 
 adminRoute.get("/logs/stats", async (c) => {
+  // Full admins only: error-log statistics.
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const since = Date.now() - 24 * 60 * 60 * 1000;
   const total = await db.select({ n: count() }).from(schema.errorLogs).get();
@@ -2515,6 +2618,8 @@ adminRoute.get("/logs/stats", async (c) => {
 });
 
 adminRoute.delete("/logs", async (c) => {
+  // Full admins only: destroys the error trail.
+  requireFullAdmin(c);
   requireFullAdmin(c);
   await c.env.DB.prepare("DELETE FROM error_logs").run();
   return c.json({ success: true });
@@ -2532,20 +2637,25 @@ adminRoute.post("/coin-packages", async (c) => {
   requireFullAdmin(c);
   const db = getDb(c.env);
   const b = await c.req.json<any>();
+  // Packages price every real purchase, so they are validated on the way IN.
+  const values = validateCoinPackage(b);
+  if (values.coins == null || values.priceInr == null) {
+    throw httpsError("invalid-argument", "coins and priceInr are required.");
+  }
   const id = newId();
   const ts = now();
   await db.insert(schema.coinPackages).values({
     id,
-    name: b.name || null,
-    coins: Number(b.coins ?? 0),
-    bonusCoins: Number(b.bonusCoins ?? 0),
-    priceInr: Number(b.priceInr ?? 0),
-    active: b.active !== false,
-    sortOrder: Number(b.sortOrder ?? 0),
+    name: values.name ?? null,
+    coins: values.coins,
+    bonusCoins: values.bonusCoins ?? 0,
+    priceInr: values.priceInr,
+    active: values.active ?? true,
+    sortOrder: values.sortOrder ?? 0,
     createdAt: ts,
     updatedAt: ts,
   });
-  await logAudit(c, "coin-package.create", "coin_package", id, b);
+  await logAudit(c, "coin-package.create", "coin_package", id, values);
   return c.json({ success: true, id });
 });
 
@@ -2554,13 +2664,15 @@ adminRoute.patch("/coin-packages/:id", async (c) => {
   const db = getDb(c.env);
   const id = c.req.param("id");
   const b = await c.req.json<any>();
-  const set: any = { updatedAt: now() };
-  if (b.name !== undefined) set.name = b.name;
-  if (b.coins !== undefined) set.coins = Number(b.coins);
-  if (b.bonusCoins !== undefined) set.bonusCoins = Number(b.bonusCoins);
-  if (b.priceInr !== undefined) set.priceInr = Number(b.priceInr);
-  if (b.active !== undefined) set.active = !!b.active;
-  if (b.sortOrder !== undefined) set.sortOrder = Number(b.sortOrder);
+  const current = await db.select().from(schema.coinPackages).where(eq(schema.coinPackages.id, id)).get();
+  if (!current) throw httpsError("not-found", "Package not found.");
+  // Validate against the MERGED result so raising the bonus alone, or lowering
+  // the coins alone, is still checked against the other value.
+  const values = validateCoinPackage(b, {
+    coins: Number(current.coins),
+    bonusCoins: Number(current.bonusCoins),
+  });
+  const set: any = { ...values, updatedAt: now() };
   await db.update(schema.coinPackages).set(set).where(eq(schema.coinPackages.id, id));
   await logAudit(c, "coin-package.update", "coin_package", id, set);
   return c.json({ message: "Package updated" });
@@ -2652,9 +2764,24 @@ adminRoute.patch("/users/:id/profile", async (c) => {
   const id = c.req.param("id");
   const b = await c.req.json<any>();
   const set: any = { updatedAt: now() };
-  if (b.fullName !== undefined) set.fullName = b.fullName;
-  if (b.username !== undefined) set.username = String(b.username).toLowerCase();
-  if (b.bio !== undefined) set.bio = b.bio;
+  if (b.fullName !== undefined) {
+    const fullName = String(b.fullName).trim();
+    if (fullName.length > 80) throw httpsError("invalid-argument", "Full name must be at most 80 characters.");
+    set.fullName = fullName;
+  }
+  if (b.username !== undefined) {
+    // This used to be a bare `.toLowerCase()`, bypassing the length, charset and
+    // reserved-name policy that signup enforces — an admin could set a username
+    // of "support" or "admin", which is a phishing vector in the app's own DMs.
+    set.username = validateUsername(b.username);
+    // And it must still be globally unique.
+    await assertIdentifiersAvailable(c.env, id, { username: set.username });
+  }
+  if (b.bio !== undefined) {
+    const bio = String(b.bio);
+    if (bio.length > 500) throw httpsError("invalid-argument", "Bio must be at most 500 characters.");
+    set.bio = bio;
+  }
   if (b.verified !== undefined) set.verified = !!b.verified;
   if (b.featured !== undefined) set.featured = !!b.featured;
   await db.update(schema.users).set(set).where(eq(schema.users.uid, id));
@@ -2668,18 +2795,42 @@ adminRoute.post("/users/:id/grant", async (c) => {
   const db = getDb(c.env);
   const id = c.req.param("id");
   const { xp, badge } = await c.req.json<any>();
+  // XP was accepted as any number: NaN, Infinity, fractions and huge values all
+  // went straight into the leaderboard. A grant is repeatable by design, so an
+  // Idempotency-Key makes a double-click a no-op.
+  let xpDelta = 0;
+  if (xp !== undefined && xp !== null && xp !== 0) {
+    const parsed = Number(xp);
+    if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 1_000_000) {
+      throw httpsError("invalid-argument", "xp must be a whole number between 1 and 1,000,000.");
+    }
+    xpDelta = parsed;
+  }
+  const badgeName = badge == null ? null : String(badge).trim();
+  if (badgeName !== null && (badgeName.length === 0 || badgeName.length > 60)) {
+    throw httpsError("invalid-argument", "badge must be 1–60 characters.");
+  }
+  if (!xpDelta && !badgeName) throw httpsError("invalid-argument", "Provide xp and/or a badge to grant.");
+
   const user = await db.select({ xp: schema.users.xp, badges: schema.users.badges }).from(schema.users).where(eq(schema.users.uid, id)).get();
   if (!user) throw httpsError("not-found", "User not found.");
-  const set: any = { updatedAt: now() };
-  if (typeof xp === "number" && xp !== 0) set.xp = sql`${schema.users.xp} + ${xp}`;
-  if (badge) {
-    const badges = ((user.badges as unknown as string[]) || []).slice();
-    if (!badges.includes(badge)) badges.push(badge);
-    set.badges = badges as any;
+
+  const idem = await enforceAdminIdempotency(c, "user.grant", id);
+  try {
+    const set: any = { updatedAt: now() };
+    if (xpDelta) set.xp = sql`${schema.users.xp} + ${xpDelta}`;
+    if (badgeName) {
+      const badges = ((user.badges as unknown as string[]) || []).slice();
+      if (!badges.includes(badgeName)) badges.push(badgeName);
+      set.badges = badges as any;
+    }
+    await db.update(schema.users).set(set).where(eq(schema.users.uid, id));
+    await logAudit(c, "user.grant", "user", id, { xp: xpDelta, badge: badgeName });
+    return c.json({ message: "Granted" });
+  } catch (e) {
+    await idem?.finish(false);
+    throw e;
   }
-  await db.update(schema.users).set(set).where(eq(schema.users.uid, id));
-  await logAudit(c, "user.grant", "user", id, { xp, badge });
-  return c.json({ message: "Granted" });
 });
 
 // ======================= ADMINS (role management) =========================
@@ -2696,6 +2847,8 @@ adminRoute.get("/admins", async (c) => {
 
 // ======================= LEADERBOARD =======================
 adminRoute.get("/leaderboard", async (c) => {
+  // Full admins only: every user's coin balance.
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const metric = c.req.query("metric") || "monthlyWins";
   const col: Record<string, any> = {
@@ -2731,6 +2884,8 @@ adminRoute.get("/leaderboard", async (c) => {
 
 // ======================= MESSAGES MODERATION =======================
 adminRoute.get("/messages", async (c) => {
+  // Full admins only: a plaintext dump of private direct messages.
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 300);
   const rows = await db
@@ -2747,10 +2902,16 @@ adminRoute.get("/messages", async (c) => {
     .orderBy(desc(schema.messages.createdAt))
     .limit(limit)
     .all();
+  // Reading other people's private conversations is exactly the kind of access
+  // that must leave a trace. Every other destructive/sensitive action here is
+  // audited; this read was not, so there was no record of who looked at what.
+  await logAudit(c, "message.read", "message", null, { count: rows.length, limit });
   return c.json(rows.map((r) => ({ ...r, createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null })));
 });
 
 adminRoute.delete("/messages/:id", async (c) => {
+  // Full admins only: deletes a private message.
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const id = c.req.param("id");
   await db.delete(schema.messages).where(eq(schema.messages.id, id));

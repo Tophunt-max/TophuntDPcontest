@@ -13,6 +13,16 @@ export interface OtpRecord {
   otp: string;
   /** Number of failed verification attempts so far. */
   attempts?: number;
+  /**
+   * Absolute expiry (ms since epoch).
+   *
+   * Recording this is what makes the lifetime fixed. The attempt counter is
+   * stored in the same KV value as the code, so incrementing it means re-writing
+   * the value — and a re-write with a fresh TTL silently EXTENDED the code's
+   * validity every time an attacker guessed wrong. With an absolute expiry the
+   * re-write can restore the remaining TTL instead.
+   */
+  expiresAt?: number;
   // extra payload carried through verification (newEmail / newPhone)
   [k: string]: unknown;
 }
@@ -28,7 +38,13 @@ export async function setOtp(
   record: OtpRecord,
   ttlSeconds = TEN_MIN,
 ): Promise<void> {
-  await env.OTP_KV.put(key(scope, id), JSON.stringify(record), { expirationTtl: ttlSeconds });
+  const expiresAt = record.expiresAt ?? Date.now() + ttlSeconds * 1000;
+  await env.OTP_KV.put(
+    key(scope, id),
+    JSON.stringify({ ...record, expiresAt }),
+    // KV requires a TTL of at least 60s; never extend beyond the original expiry.
+    { expirationTtl: Math.max(60, Math.ceil((expiresAt - Date.now()) / 1000)) },
+  );
 }
 
 export async function getOtp(
@@ -80,6 +96,13 @@ export async function verifyOtp(
   const rec = await getOtp(env, scope, id);
   if (!rec) throw httpsError("not-found", "No OTP found or it has expired. Please request a new one.");
 
+  // KV's own TTL is the primary expiry, but a record written before `expiresAt`
+  // existed (or one whose TTL was floored to KV's 60s minimum) is rejected here.
+  if (rec.expiresAt != null && Number(rec.expiresAt) <= Date.now()) {
+    await deleteOtp(env, scope, id);
+    throw httpsError("not-found", "No OTP found or it has expired. Please request a new one.");
+  }
+
   const attempts = Number(rec.attempts || 0);
   if (attempts >= MAX_OTP_ATTEMPTS) {
     await deleteOtp(env, scope, id);
@@ -87,6 +110,8 @@ export async function verifyOtp(
   }
 
   if (!code || !safeEqual(String(rec.otp), String(code))) {
+    // Carrying `expiresAt` through keeps the original deadline: guessing wrong
+    // must not buy the attacker more time.
     await setOtp(env, scope, id, { ...rec, attempts: attempts + 1 });
     throw httpsError("invalid-argument", "Invalid OTP.");
   }

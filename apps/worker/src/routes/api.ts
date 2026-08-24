@@ -147,6 +147,9 @@ apiRoute.post("/", async (c) => {
   switch (action) {
     // ================= STORAGE (R2) =================
     case "getPresignedUrl": {
+      // Minting an upload credential is cheap for us but each one is a write
+      // into our own bucket, so it needs the same budget as /upload itself.
+      await rateLimit(env, `presign:${uid}`, 60, 3600, { failClosed: true });
       const { fileType, folder } = body;
       if (!fileType || !folder) throw httpsError("invalid-argument", "fileType and folder are required.");
       return c.json(await presignUpload(env, fileType, folder));
@@ -581,6 +584,10 @@ apiRoute.post("/", async (c) => {
         voterUid: uid,
         votedForUid,
         deviceId,
+        // Recorded so vote fraud can be investigated by network as well as by
+        // device id. The per-IP throttle above already bounds bursts; this makes
+        // clustering visible after the fact.
+        ip: voteIp || null,
         uidA: userA?.uid,
         uidB: userB?.uid ?? userA?.uid,
         expiresAt,
@@ -611,6 +618,7 @@ apiRoute.post("/", async (c) => {
 
     // ================= POSTS =================
     case "createPost": {
+      await rateLimit(env, `post:${uid}`, 30, 3600);
       const { mediaUrl, mediaType, caption, location } = body;
       if (!mediaUrl || !mediaType) throw httpsError("invalid-argument", "Media URL and type are required.");
       await assertClean(env, caption, location);
@@ -645,6 +653,7 @@ apiRoute.post("/", async (c) => {
       return c.json(await presignUpload(env, fileType, "stories"));
     }
     case "createStory": {
+      await rateLimit(env, `story:${uid}`, 40, 3600);
       const { mediaUrl, mediaType, overlayText, textPosition, mentions, visibility } = body;
       if (!mediaUrl) throw httpsError("invalid-argument", "mediaUrl is required.");
       await assertClean(env, overlayText);
@@ -674,6 +683,8 @@ apiRoute.post("/", async (c) => {
 
     // ================= USER & SOCIAL =================
     case "toggleFollow": {
+      // Follow/unfollow churn is a notification-spam and scraping vector.
+      await rateLimit(env, `follow:${uid}`, 120, 3600);
       const { targetUserId } = body;
       if (!targetUserId) throw httpsError("invalid-argument", "The function must be called with a 'targetUserId'.");
       if (targetUserId === uid) throw httpsError("invalid-argument", "You cannot follow yourself.");
@@ -1509,6 +1520,10 @@ apiRoute.post("/", async (c) => {
 
     // ================= CHAT =================
     case "startChat": {
+      // Creating a chat row writes a "Say hi!" preview into the other person's
+      // inbox, so an unlimited loop here is a DM-bombing primitive. sendMessage
+      // was rate limited; chat CREATION was not.
+      await rateLimit(env, `startchat:${uid}`, 30, 3600);
       const { otherUserId, otherUserData } = body;
       if (!otherUserId) throw httpsError("invalid-argument", "otherUserId is required.");
       // find an existing chat containing both users
@@ -1940,21 +1955,25 @@ apiRoute.post("/", async (c) => {
 
     // ================= REPORTS / SUPPORT (also feed admin panel) =================
     case "createReport": {
+      // Reports raise admin notifications; unbounded reporting is a way to bury
+      // the moderation queue.
+      await rateLimit(env, `report:${uid}`, 20, 3600);
       const { targetType, targetId, reason } = body;
       const id = newId();
       const ts = now();
       await db.insert(schema.reports).values({ id, reporterId: uid, targetType: targetType || null, targetId: targetId || null, reason: reason || null, status: "open", createdAt: ts });
-      await db.insert(schema.adminNotifications).values({ id: newId(), title: "New Report", message: `A ${targetType || "content"} was reported.`, link: "/reports", isRead: false, createdAt: ts });
+      await db.insert(schema.adminNotifications).values({ id: newId(), title: "New Report", message: `A ${targetType || "content"} was reported.`, link: "/reports", scope: "moderation", isRead: false, createdAt: ts });
       return c.json({ success: true, reportId: id });
     }
     case "createSupportTicket": {
+      await rateLimit(env, `support:${uid}`, 10, 3600);
       const { subject, message } = body;
       if (!subject) throw httpsError("invalid-argument", "subject is required.");
       const id = newId();
       const ts = now();
       const me = await db.select({ username: schema.users.username }).from(schema.users).where(eq(schema.users.uid, uid)).get();
       await db.insert(schema.supportTickets).values({ id, userId: uid, subject, message: message || null, status: "open", createdAt: ts, updatedAt: ts });
-      await db.insert(schema.adminNotifications).values({ id: newId(), title: "New Support Ticket", message: `${me?.username || "A user"}: ${subject}`, link: "/support", isRead: false, createdAt: ts });
+      await db.insert(schema.adminNotifications).values({ id: newId(), title: "New Support Ticket", message: `${me?.username || "A user"}: ${subject}`, link: "/support", scope: "moderation", isRead: false, createdAt: ts });
       return c.json({ success: true, ticketId: id });
     }
 

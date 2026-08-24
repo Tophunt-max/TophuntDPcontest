@@ -195,10 +195,17 @@ export const votes = sqliteTable(
     voterUid: text("voter_uid").notNull(),
     votedForUid: text("voted_for_uid").notNull(),
     deviceId: text("device_id"),
+    /**
+     * Voter IP, for fraud investigation only — never a blocking dedup key,
+     * because carrier NAT puts huge numbers of legitimate users behind one
+     * address. Without it the fraud view could only correlate device ids.
+     */
+    ip: text("ip"),
     createdAt: integer("created_at").notNull(),
   },
   (t) => ({
     matchIdx: index("idx_votes_match").on(t.matchId),
+    matchIpIdx: index("idx_votes_match_ip").on(t.matchId, t.ip),
     // voter_uid LEADING — the feed's affinity scan and the daily-task counts all
     // filter by voter, which the (match_id, ...) indexes below cannot serve.
     voterCreatedIdx: index("idx_votes_voter_created").on(t.voterUid, t.createdAt),
@@ -624,10 +631,19 @@ export const adminNotifications = sqliteTable(
     title: text("title"),
     message: text("message"),
     link: text("link"),
+    /**
+     * Who should see this: "finance" (payouts, clawbacks, chargebacks, cron
+     * failures — full admins only) or "moderation" (reports, support — anyone
+     * with panel access, including moderators). Defaults to the stricter value.
+     */
+    scope: text("scope").notNull().default("finance"),
     isRead: integer("is_read", { mode: "boolean" }).default(false),
     createdAt: integer("created_at").notNull(),
   },
-  (t) => ({ createdIdx: index("idx_admin_notif_created").on(t.createdAt) }),
+  (t) => ({
+    createdIdx: index("idx_admin_notif_created").on(t.createdAt),
+    scopeIdx: index("idx_admin_notif_scope").on(t.scope, t.createdAt),
+  }),
 );
 
 // ---------------------------------------------------------------------------

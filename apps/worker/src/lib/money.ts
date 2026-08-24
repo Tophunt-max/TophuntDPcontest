@@ -248,3 +248,77 @@ export async function adjustUserWallet(
 
   return { newBalance: Number(updated?.dpcoin || 0), applied: delta };
 }
+
+
+export interface CoinPackageInput {
+  name: string | null;
+  coins: number;
+  bonusCoins: number;
+  priceInr: number;
+  active: boolean;
+  sortOrder: number;
+}
+
+/**
+ * Validate a coin package before it is written.
+ *
+ * `coin_packages` is the ONLY pricing authority for both Razorpay checkout and
+ * manual deposits, yet writes accepted anything: a 0-rupee package, a negative
+ * price, or a fractional coin count would all have been stored and then used to
+ * price real purchases. Reads validated the row defensively; writes did not
+ * validate at all, which is the wrong end to catch it.
+ */
+export function validateCoinPackage(
+  body: Record<string, any>,
+  existing?: Partial<CoinPackageInput>,
+): Partial<CoinPackageInput> {
+  const out: Partial<CoinPackageInput> = {};
+  const has = (key: string) => Object.prototype.hasOwnProperty.call(body, key) && body[key] !== undefined;
+
+  if (has("name")) {
+    const name = body.name === null ? null : String(body.name).trim();
+    if (name !== null && (name.length === 0 || name.length > 120)) {
+      throw httpsError("invalid-argument", "Package name must be 1–120 characters.");
+    }
+    out.name = name;
+  }
+
+  if (has("coins")) out.coins = assertCoinAmount(body.coins, "coins");
+  if (has("bonusCoins")) out.bonusCoins = assertCoinAmountOrZero(body.bonusCoins, "bonusCoins");
+
+  if (has("priceInr")) {
+    const price = Number(body.priceInr);
+    if (!Number.isFinite(price) || price <= 0 || price > 1_000_000) {
+      throw httpsError("invalid-argument", "priceInr must be a positive amount up to 1,000,000.");
+    }
+    // Razorpay charges in integer paise, so a price with sub-paise precision
+    // could never be charged exactly.
+    if (Math.round(price * 100) !== Number((price * 100).toFixed(4))) {
+      throw httpsError("invalid-argument", "priceInr cannot have more than 2 decimal places.");
+    }
+    out.priceInr = roundFiat(price);
+  }
+
+  if (has("active")) out.active = !!body.active;
+
+  if (has("sortOrder")) {
+    const order = Number(body.sortOrder);
+    if (!Number.isInteger(order) || order < 0 || order > 10_000) {
+      throw httpsError("invalid-argument", "sortOrder must be a whole number between 0 and 10,000.");
+    }
+    out.sortOrder = order;
+  }
+
+  // A bonus larger than the paid amount is almost always a typo (a misplaced
+  // zero), and it silently doubles the coins sold for a fixed price.
+  const coins = out.coins ?? existing?.coins;
+  const bonus = out.bonusCoins ?? existing?.bonusCoins;
+  if (coins != null && bonus != null && bonus > coins) {
+    throw httpsError(
+      "invalid-argument",
+      `bonusCoins (${bonus}) cannot exceed the paid coins (${coins}).`,
+    );
+  }
+
+  return out;
+}

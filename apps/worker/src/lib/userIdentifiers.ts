@@ -23,6 +23,39 @@ export function normalizePhone(phone?: string | null): string | null {
 }
 
 /**
+ * Usernames reserved for the platform. Impersonating one of these ("support",
+ * "official", "moderator") is a phishing vector inside the app's own DMs.
+ */
+export const RESERVED_USERNAMES = new Set([
+  "admin", "administrator", "root", "system", "support", "help", "info",
+  "contact", "webmaster", "security", "privacy", "policy", "terms", "login",
+  "logout", "signin", "signup", "register", "auth", "user", "users", "profile",
+  "settings", "config", "api", "dev", "test", "null", "undefined", "true",
+  "false", "void", "anon", "anonymous", "official", "staff", "moderator",
+]);
+
+const USERNAME_REGEX = /^[a-zA-Z0-9_.]+$/;
+
+/**
+ * The single username policy for the whole backend.
+ *
+ * This lived privately inside routes/auth.ts, so the admin profile-edit route
+ * wrote `username` with nothing but `.toLowerCase()` — bypassing the length,
+ * character-set and reserved-name rules that signup enforces. Any write path
+ * that can SET a username must call this.
+ */
+export function validateUsername(username: string): string {
+  const value = String(username ?? "").trim();
+  const lower = value.toLowerCase();
+  if (lower.length < 3) throw httpsError("invalid-argument", "Username must be at least 3 characters long.");
+  if (lower.length > 30) throw httpsError("invalid-argument", "Username must be less than 30 characters long.");
+  if (!USERNAME_REGEX.test(value))
+    throw httpsError("invalid-argument", "Username can only contain letters, numbers, underscores, and dots.");
+  if (RESERVED_USERNAMES.has(lower)) throw httpsError("invalid-argument", "This username is reserved and cannot be used.");
+  return lower;
+}
+
+/**
  * Throws `already-exists` if any provided identifier is already used by a
  * DIFFERENT uid. Passing the caller's own uid is fine (updating their own row).
  * Undefined/empty identifiers are skipped.

@@ -53,6 +53,15 @@ export interface VoteInput {
   voterUid: string;
   votedForUid: string;
   deviceId?: string | null;
+  /**
+   * Voter IP, captured for post-hoc fraud analysis.
+   *
+   * Deliberately NOT used as a blocking dedup key: Indian mobile carriers NAT
+   * very large numbers of subscribers behind a single address, so a per-IP vote
+   * cap would reject legitimate voters. Recording it lets the admin fraud view
+   * correlate clusters that device-id analysis alone cannot see.
+   */
+  ip?: string | null;
   uidA?: string | null;
   uidB?: string | null;
   /** Authoritative match deadline supplied by the Worker from D1. */
@@ -96,11 +105,19 @@ export class VoteCounter extends DurableObject<Env> {
          voter_uid     TEXT PRIMARY KEY,
          voted_for_uid TEXT NOT NULL,
          device_id     TEXT,
+         ip            TEXT,
          created_at    INTEGER NOT NULL,
          flushed       INTEGER NOT NULL DEFAULT 0,
          xp_awarded    INTEGER NOT NULL DEFAULT 0
        );`,
     );
+    // `CREATE TABLE IF NOT EXISTS` does nothing for DOs that already exist, so
+    // the column is added separately. Every already-created VoteCounter needs it.
+    try {
+      this.sql.exec("ALTER TABLE voters ADD COLUMN ip TEXT");
+    } catch {
+      /* already present */
+    }
     this.sql.exec(
       `CREATE TABLE IF NOT EXISTS tallies (
          uid   TEXT PRIMARY KEY,
@@ -155,10 +172,11 @@ export class VoteCounter extends DurableObject<Env> {
 
     const ts = Date.now();
     this.sql.exec(
-      "INSERT INTO voters (voter_uid, voted_for_uid, device_id, created_at, flushed, xp_awarded) VALUES (?, ?, ?, ?, 0, 0)",
+      "INSERT INTO voters (voter_uid, voted_for_uid, device_id, ip, created_at, flushed, xp_awarded) VALUES (?, ?, ?, ?, ?, 0, 0)",
       p.voterUid,
       p.votedForUid,
       p.deviceId ?? null,
+      p.ip ?? null,
       ts,
     );
     this.sql.exec(
@@ -265,23 +283,25 @@ export class VoteCounter extends DurableObject<Env> {
 
     try {
       const rows = await this.env.DB.prepare(
-        "SELECT voter_uid, voted_for_uid, device_id, created_at FROM votes WHERE match_id = ?",
+        "SELECT voter_uid, voted_for_uid, device_id, ip, created_at FROM votes WHERE match_id = ?",
       )
         .bind(matchId)
         .all<{
           voter_uid: string;
           voted_for_uid: string;
           device_id: string | null;
+          ip: string | null;
           created_at: number;
         }>();
 
       for (const r of rows.results ?? []) {
         // Existing votes are already durable in D1 -> flushed = 1, xp_awarded = 1.
         this.sql.exec(
-          "INSERT OR IGNORE INTO voters (voter_uid, voted_for_uid, device_id, created_at, flushed, xp_awarded) VALUES (?, ?, ?, ?, 1, 1)",
+          "INSERT OR IGNORE INTO voters (voter_uid, voted_for_uid, device_id, ip, created_at, flushed, xp_awarded) VALUES (?, ?, ?, ?, ?, 1, 1)",
           r.voter_uid,
           r.voted_for_uid,
           r.device_id ?? null,
+          r.ip ?? null,
           r.created_at ?? Date.now(),
         );
       }
@@ -402,7 +422,7 @@ export class VoteCounter extends DurableObject<Env> {
     // 3) Persist not-yet-flushed vote audit rows.
     const pending = this.sql
       .exec(
-        `SELECT voter_uid, voted_for_uid, device_id, created_at
+        `SELECT voter_uid, voted_for_uid, device_id, ip, created_at
            FROM voters WHERE flushed = 0
           ORDER BY created_at LIMIT ${FLUSH_VOTER_LIMIT}`,
       )
@@ -410,11 +430,12 @@ export class VoteCounter extends DurableObject<Env> {
       voter_uid: string;
       voted_for_uid: string;
       device_id: string | null;
+      ip: string | null;
       created_at: number;
     }>;
     if (pending.length > 0) {
       const insertVote = this.env.DB.prepare(
-        "INSERT OR IGNORE INTO votes (id, match_id, voter_uid, voted_for_uid, device_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO votes (id, match_id, voter_uid, voted_for_uid, device_id, ip, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
       );
       for (const r of pending) {
         statements.push(
@@ -424,6 +445,7 @@ export class VoteCounter extends DurableObject<Env> {
             r.voter_uid,
             r.voted_for_uid,
             r.device_id ?? null,
+            r.ip ?? null,
             r.created_at,
           ),
         );

@@ -19,7 +19,7 @@ import { getRewardSettings } from "../lib/settings";
 import { setOtp, generateOtp, verifyOtp } from "../lib/otp";
 import { validatePasswordStrength } from "../lib/password";
 import { rateLimit, enforceSendCooldown, markSent, clientIp } from "../lib/rateLimit";
-import { assertIdentifiersAvailable } from "../lib/userIdentifiers";
+import { assertIdentifiersAvailable, validateUsername } from "../lib/userIdentifiers";
 
 /** Per-recipient cooldown between OTP sends (seconds). */
 const OTP_SEND_COOLDOWN = 60;
@@ -39,14 +39,8 @@ const DISPOSABLE_DOMAINS = new Set([
   "temp-mail.io", "yopmail.net", "cool.fr.nf", "jetable.org", "temporarily.de",
   "tempmailo.com", "smailpro.com", "trashmail.com", "luxusmail.org",
 ]);
-const RESERVED_USERNAMES = new Set([
-  "admin", "administrator", "root", "system", "support", "help", "info",
-  "contact", "webmaster", "security", "privacy", "policy", "terms", "login",
-  "logout", "signin", "signup", "register", "auth", "user", "users", "profile",
-  "settings", "config", "api", "dev", "test", "null", "undefined", "true",
-  "false", "void", "anon", "anonymous", "official", "staff", "moderator",
-]);
-const USERNAME_REGEX = /^[a-zA-Z0-9_.]+$/;
+// The username policy (reserved names, charset, length) is shared with every
+// other write path that can set a username — see lib/userIdentifiers.ts.
 
 function normalizePhone(phone?: string | null): string | null {
   if (!phone) return null;
@@ -56,16 +50,6 @@ function isDisposableEmail(email: string): boolean {
   const domain = email.split("@")[1];
   return domain ? DISPOSABLE_DOMAINS.has(domain.toLowerCase()) : false;
 }
-function validateUsername(username: string): string {
-  const lower = username.toLowerCase();
-  if (lower.length < 3) throw httpsError("invalid-argument", "Username must be at least 3 characters long.");
-  if (lower.length > 30) throw httpsError("invalid-argument", "Username must be less than 30 characters long.");
-  if (!USERNAME_REGEX.test(username))
-    throw httpsError("invalid-argument", "Username can only contain letters, numbers, underscores, and dots.");
-  if (RESERVED_USERNAMES.has(lower)) throw httpsError("invalid-argument", "This username is reserved and cannot be used.");
-  return lower;
-}
-
 async function createUserProfile(env: Env, uid: string, data: any, signupBonus: number) {
   const db = getDb(env);
   const ts = now();
@@ -301,6 +285,12 @@ authRoute.post("/", async (c) => {
     case "verifyOtp": {
       const normalizedPhone = normalizePhone(body.phone);
       if (!normalizedPhone || !body.code) throw httpsError("invalid-argument", "Phone and code are required.");
+      // The per-code 5-attempt counter caps guesses against ONE code; these caps
+      // bound guessing across codes (request a new one, guess 5 more, repeat)
+      // and across accounts from one source. Fail closed: an outage of the
+      // counter store must not open credential brute-forcing.
+      await rateLimit(env, `otpverify:${normalizedPhone}`, 15, 3600, { failClosed: true });
+      await rateLimit(env, `otpverify_ip:${clientIp(c.req.raw.headers)}`, 40, 3600, { failClosed: true });
       // Hardened: attempt-limited, single-use, constant-time compare.
       await verifyOtp(env, "pwreset", normalizedPhone, body.code);
       // Server-set proof that the code matched. updatePasswordWithPhone requires
@@ -312,6 +302,8 @@ authRoute.post("/", async (c) => {
       const normalizedPhone = normalizePhone(body.phone);
       if (!normalizedPhone || !body.newPassword)
         throw httpsError("invalid-argument", "Phone and password required.");
+      await rateLimit(env, `pwreset:${normalizedPhone}`, 10, 3600, { failClosed: true });
+      await rateLimit(env, `pwreset_ip:${clientIp(c.req.raw.headers)}`, 30, 3600, { failClosed: true });
       // Same canonical policy as signup — no weaker rule for reset.
       validatePasswordStrength(body.newPassword);
       // SECURITY: require a prior SUCCESSFUL OTP verification (server-set flag),
@@ -351,6 +343,7 @@ authRoute.post("/", async (c) => {
     case "verifyEmailOtp": {
       if (!uid) throw httpsError("unauthenticated", "User must be logged in.");
       if (!body.otp) throw httpsError("invalid-argument", "OTP is required.");
+      await rateLimit(env, `emailotpverify:${uid}`, 20, 3600, { failClosed: true });
       const rec = await verifyOtp(env, "email", uid, body.otp);
       const newEmail = rec.newEmail as string;
       await updateAuthUser(env, uid, { email: newEmail });
@@ -375,6 +368,7 @@ authRoute.post("/", async (c) => {
     case "verifyPhoneOtp": {
       if (!uid) throw httpsError("unauthenticated", "User must be logged in.");
       if (!body.otp) throw httpsError("invalid-argument", "OTP is required.");
+      await rateLimit(env, `phoneotpverify:${uid}`, 20, 3600, { failClosed: true });
       const rec = await verifyOtp(env, "phone", uid, body.otp);
       const newPhone = normalizePhone(rec.newPhone as string);
       await db.update(schema.users).set({ phone: newPhone, updatedAt: now() }).where(eq(schema.users.uid, uid));
