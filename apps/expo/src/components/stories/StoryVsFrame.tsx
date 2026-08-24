@@ -8,6 +8,7 @@ import { Ionicons } from '@/src/lib/icons';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { CoinIcon } from '@/src/components/ui/CoinIcon';
 import { contestService } from '@/src/services/contests/contestService';
+import { resolveVsFrame } from '@/src/lib/vsStory';
 
 const { width, height } = Dimensions.get('window');
 
@@ -71,13 +72,21 @@ export const StoryVsFrame: React.FC<Props> = ({ matchId, fallbackMediaUrl, conte
     enabled: !!matchId,
   });
 
-  const userA = (match as any)?.userA;
-  const userB = (match as any)?.userB;
+  // Which two entries to draw and in which order — see src/lib/vsStory.ts. Null
+  // means a head-to-head frame is not possible (the battle could not be loaded,
+  // which happens legitimately when a participant is blocked by this viewer), so
+  // fall back to the single entry this story row already carries.
+  const frame = resolveVsFrame(match);
 
-  // The match may be missing for a legitimate reason — it can be filtered out
-  // when a participant is blocked — so fall back to the single entry this story
-  // row already carries rather than showing an error.
-  if (!isLoading && (!match || !userA || !userB)) {
+  if (isLoading) {
+    return (
+      <View style={styles.container}>
+        <ActivityIndicator size="large" color="#FFF" />
+      </View>
+    );
+  }
+
+  if (!frame) {
     return (
       <View style={styles.container}>
         {fallbackMediaUrl ? (
@@ -87,55 +96,49 @@ export const StoryVsFrame: React.FC<Props> = ({ matchId, fallbackMediaUrl, conte
     );
   }
 
-  const isVideo = (match as any)?.type === 'video';
-  const prize = Number((match as any)?.rewardAmount ?? (match as any)?.prizeCoins ?? 0);
-
   return (
     <LinearGradient colors={['#1B1226', '#2A1330', '#40121F']} style={styles.container}>
-      {isLoading ? (
-        <ActivityIndicator size="large" color="#FFF" />
-      ) : (
-        <View style={styles.card}>
-          <View style={styles.livePill}>
-            <View style={styles.liveDot} />
-            <Text style={styles.livePillText}>BATTLE LIVE</Text>
-          </View>
-
-          <Text style={styles.title} numberOfLines={2}>
-            {(match as any)?.title || contestTitle || 'Battle'}
-          </Text>
-
-          <View style={styles.row}>
-            <VsSide uri={userA?.mediaUrlOptimized || userA?.mediaUrl} isVideo={isVideo} label={userA?.username || 'user'} />
-            <VsSide uri={userB?.mediaUrlOptimized || userB?.mediaUrl} isVideo={isVideo} label={userB?.username || 'user'} />
-
-            {/* Overlaps the gap between the two halves, like the feed card. */}
-            <View pointerEvents="none" style={styles.vsBadge}>
-              <LinearGradient
-                colors={['#FF4D7E', '#FF8A4D']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.vsBadgeGradient}
-              >
-                <Text style={styles.vsBadgeText}>VS</Text>
-              </LinearGradient>
-            </View>
-          </View>
-
-          <View style={styles.footerRow}>
-            <Avatar uri={userA?.profilePicThumb || userA?.profilePic} name={userA?.username} size={26} />
-            <Avatar uri={userB?.profilePicThumb || userB?.profilePic} name={userB?.username} size={26} style={styles.overlapAvatar} />
-            {prize > 0 && (
-              <View style={styles.prizePill}>
-                <CoinIcon size={12} color="#FFD54F" />
-                <Text style={styles.prizeText}>{prize}</Text>
-              </View>
-            )}
-          </View>
-
-          <Text style={styles.cta}>Tap through to vote — fans decide the winner</Text>
+      <View style={styles.card}>
+        <View style={styles.livePill}>
+          <View style={styles.liveDot} />
+          <Text style={styles.livePillText}>BATTLE LIVE</Text>
         </View>
-      )}
+
+        <Text style={styles.title} numberOfLines={2}>
+          {frame.title || contestTitle || 'Battle'}
+        </Text>
+
+        {/* Both entries, side by side, with the VS badge between them. */}
+        <View style={styles.row}>
+          <VsSide uri={frame.left.uri} isVideo={frame.isVideo} label={frame.left.username} />
+          <VsSide uri={frame.right.uri} isVideo={frame.isVideo} label={frame.right.username} />
+
+          {/* Overlaps the gap between the two halves, like the feed card. */}
+          <View pointerEvents="none" style={styles.vsBadge}>
+            <LinearGradient
+              colors={['#FF4D7E', '#FF8A4D']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.vsBadgeGradient}
+            >
+              <Text style={styles.vsBadgeText}>VS</Text>
+            </LinearGradient>
+          </View>
+        </View>
+
+        <View style={styles.footerRow}>
+          <Avatar uri={frame.left.avatarUri} name={frame.left.username} size={26} />
+          <Avatar uri={frame.right.avatarUri} name={frame.right.username} size={26} style={styles.overlapAvatar} />
+          {frame.prize > 0 && (
+            <View style={styles.prizePill}>
+              <CoinIcon size={12} color="#FFD54F" />
+              <Text style={styles.prizeText}>{frame.prize}</Text>
+            </View>
+          )}
+        </View>
+
+        <Text style={styles.cta}>Tap through to vote — fans decide the winner</Text>
+      </View>
     </LinearGradient>
   );
 };
