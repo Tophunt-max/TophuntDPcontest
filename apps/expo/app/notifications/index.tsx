@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { View, FlatList, StyleSheet, RefreshControl, Text, useColorScheme, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { AppImage as Image } from '@/src/components/ui/AppImage';
 import { Stack, useRouter } from 'expo-router';
 import { useAuth } from '@/src/hooks/useAuth';
@@ -116,6 +117,7 @@ export default function NotificationsScreen() {
     const bg = isDark ? Colors.dark.background : Colors.light.background;
     const textColor = isDark ? '#FFFFFF' : '#101014';
     const subTextColor = isDark ? '#9BA1A6' : '#6B7280';
+    const borderColor = isDark ? '#23262D' : '#EEF0F4';
 
     // Realtime HEAD (latest page) + paginated TAIL (older pages).
     const [head, setHead] = useState<NotificationItem[]>([]);
@@ -214,15 +216,22 @@ export default function NotificationsScreen() {
     const keyExtractor = useCallback((item: NotificationItem) => item.id, []);
 
     return (
-        <View style={[styles.container, { backgroundColor: bg }]}>
-            <Stack.Screen
-                options={{
-                    title: 'Notifications',
-                    headerShadowVisible: false,
-                    headerStyle: { backgroundColor: bg },
-                    headerTintColor: textColor,
-                }}
-            />
+        <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['top', 'left', 'right']}>
+            {/* Navigator header stays off app-wide; this screen draws its own. */}
+            <Stack.Screen options={{ headerShown: false }} />
+
+            <View style={[styles.header, { borderBottomColor: borderColor }]}>
+                <TouchableOpacity
+                    onPress={() => router.back()}
+                    style={styles.backBtn}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Go back"
+                >
+                    <Ionicons name="chevron-back" size={26} color={textColor} />
+                </TouchableOpacity>
+                <Text style={[styles.headerTitle, { color: textColor }]}>Notification</Text>
+            </View>
 
             {loading && notifications.length === 0 ? (
                 <NotificationSkeleton count={8} />
@@ -267,13 +276,31 @@ export default function NotificationsScreen() {
                     updateCellsBatchingPeriod={50}
                 />
             )}
-        </View>
+        </SafeAreaView>
     );
 }
 
 const styles = StyleSheet.create({
     container: {
         flex: 1,
+    },
+    header: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 12,
+        paddingVertical: 12,
+        borderBottomWidth: StyleSheet.hairlineWidth,
+    },
+    backBtn: {
+        width: 40,
+        height: 40,
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginRight: 2,
+    },
+    headerTitle: {
+        fontSize: 20,
+        fontFamily: 'Urbanist-Bold',
     },
     listContent: {
         paddingTop: 10,
