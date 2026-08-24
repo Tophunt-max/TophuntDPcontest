@@ -59,7 +59,19 @@ export const USER_UPLOAD_FOLDERS = [
   "avatars",
   "profile",
   "chat",
+  // Contest entry media. The client sends "contests" (see
+  // apps/expo/src/services/contests/uploadMedia.ts); "contest-entries" is kept
+  // for older builds already in the wild that send that instead.
+  //
+  // "contests" was MISSING when this allow-list was introduced, which rejected
+  // every contest entry upload with a 400 — so no photo or video battle could be
+  // created or joined at all. `test/uploadFolders.test.ts` now pins every folder
+  // the client actually sends so a folder can never be locked out again.
+  "contests",
   "contest-entries",
+  // Manual UPI/QR deposit screenshots (apps/expo/app/wallet/deposit.tsx). Also
+  // missing, which blocked every manual top-up.
+  "deposits",
   "reports",
   "misc",
 ] as const;
