@@ -1,39 +1,45 @@
 name: Deploy Worker
 
-# Deploys were entirely manual (`cd apps/worker && npm run deploy`), which means
-# whatever was on one person's laptop reached production, with no record of what
-# shipped and no verification afterwards.
+# MANUAL deploy path — run it from the Actions tab.
 #
-# This runs the same gates as CI, deploys, then SMOKE TESTS the deployment. The
-# smoke test matters more than the deploy: /health/deep exercises D1, KV and R2
-# and reports missing secrets, so a deploy that "succeeded" but cannot reach its
+# Automatic production deploys are owned by Cloudflare Workers Builds, which is
+# connected to this repository and deploys on every push to main. (An earlier
+# audit recorded that integration as broken, which is why this workflow was first
+# written to deploy on push; it is green now, so running both would deploy twice
+# and race.) This workflow exists for the cases Workers Builds does not cover:
+#
+#   - deploying to STAGING
+#   - re-deploying a specific commit
+#   - deploying when the Cloudflare-side build is unavailable
+#
+# It runs the same gates as CI, deploys, then SMOKE TESTS the result. The smoke
+# test matters more than the deploy: /health/deep exercises D1, KV and R2 and
+# reports missing secrets, so a deploy that "succeeded" but cannot reach its
 # database fails here instead of in front of users.
 #
 # Required repository secrets:
-#   CLOUDFLARE_API_TOKEN   — token with Workers Scripts:Edit + D1:Edit
+#   CLOUDFLARE_API_TOKEN   — needs Workers Scripts:Edit, D1:Edit AND
+#                            User → Memberships:Read (wrangler resolves the
+#                            account membership before deploying; without it the
+#                            deploy exits 1 with "Unable to get membership roles")
 #   CLOUDFLARE_ACCOUNT_ID
 # Optional:
 #   WORKER_HEALTH_URL          production /health/deep URL (skips smoke test if unset)
 #   WORKER_HEALTH_URL_STAGING  staging equivalent
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'apps/worker/**'
-      - '.github/workflows/deploy-worker.yml'
   workflow_dispatch:
     inputs:
       environment:
         description: Which environment to deploy
         required: true
-        default: production
+        default: staging
         type: choice
-        options: [production, staging]
+        options: [staging, production]
 
 concurrency:
   # Never let two deploys race. `cancel-in-progress: false` is deliberate: a
   # half-cancelled deploy is worse than a queued one.
-  group: deploy-worker-${{ github.event.inputs.environment || 'production' }}
+  group: deploy-worker-${{ inputs.environment }}
   cancel-in-progress: false
 
 permissions:
@@ -41,9 +47,9 @@ permissions:
 
 jobs:
   deploy:
-    name: Deploy (${{ github.event.inputs.environment || 'production' }})
+    name: Deploy (${{ inputs.environment }})
     runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.environment || 'production' }}
+    environment: ${{ inputs.environment }}
     defaults:
       run:
         working-directory: apps/worker
@@ -69,7 +75,7 @@ jobs:
 
       - name: Deploy
         run: |
-          if [ "${{ github.event.inputs.environment }}" = "staging" ]; then
+          if [ "${{ inputs.environment }}" = "staging" ]; then
             npx wrangler deploy --env staging
           else
             npx wrangler deploy
@@ -82,7 +88,7 @@ jobs:
       # (src/db/autoMigrate.ts), so this both warms the isolate and triggers them.
       - name: Smoke test the deployment
         env:
-          HEALTH_URL: ${{ github.event.inputs.environment == 'staging' && secrets.WORKER_HEALTH_URL_STAGING || secrets.WORKER_HEALTH_URL }}
+          HEALTH_URL: ${{ inputs.environment == 'staging' && secrets.WORKER_HEALTH_URL_STAGING || secrets.WORKER_HEALTH_URL }}
         run: |
           if [ -z "$HEALTH_URL" ]; then
             echo "::warning::No health URL configured — skipping the smoke test. Set WORKER_HEALTH_URL to enable it."

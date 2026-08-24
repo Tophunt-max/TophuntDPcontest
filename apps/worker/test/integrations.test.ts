@@ -59,7 +59,15 @@ describe('secretBox', () => {
   it('refuses to decrypt tampered ciphertext instead of returning garbage', async () => {
     const e = env();
     const sealed = await sealSecret(e as any, 'original');
-    const tampered = { ...sealed, ciphertext: sealed.ciphertext.replace(/.$/, 'A') };
+
+    // Flip a bit in the ciphertext BYTES. The obvious version of this — replacing
+    // the last base64 character with 'A' — is a no-op whenever that character is
+    // already 'A', so it passed locally and failed in CI roughly one run in 64.
+    // Mutating the decoded bytes always changes the value.
+    const bytes = Buffer.from(sealed.ciphertext, 'base64');
+    bytes[0] ^= 0xff;
+    const tampered = { ...sealed, ciphertext: bytes.toString('base64') };
+    expect(tampered.ciphertext).not.toBe(sealed.ciphertext);
 
     await expect(openSecret(e as any, tampered)).rejects.toThrow();
   });
