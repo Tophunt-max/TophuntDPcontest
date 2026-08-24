@@ -194,6 +194,9 @@ export const votes = sqliteTable(
   },
   (t) => ({
     matchIdx: index("idx_votes_match").on(t.matchId),
+    // voter_uid LEADING — the feed's affinity scan and the daily-task counts all
+    // filter by voter, which the (match_id, ...) indexes below cannot serve.
+    voterCreatedIdx: index("idx_votes_voter_created").on(t.voterUid, t.createdAt),
     matchVoterUnique: uniqueIndex("uniq_votes_match_voter").on(t.matchId, t.voterUid),
     matchDeviceUnique: uniqueIndex("uniq_votes_match_device")
       .on(t.matchId, t.deviceId)
@@ -360,6 +363,10 @@ export const stories = sqliteTable(
   (t) => ({
     userIdx: index("idx_stories_user").on(t.userId),
     expiresIdx: index("idx_stories_expires").on(t.expiresAt),
+    // Lets the story feed's ORDER BY created_at DESC walk an index backwards
+    // instead of sorting every live story. See migration 0022 for why this is
+    // created_at alone rather than (expires_at, created_at).
+    createdIdx: index("idx_stories_created").on(t.createdAt),
   }),
 );
 
@@ -507,14 +514,21 @@ export interface NotificationActor {
 // ---------------------------------------------------------------------------
 // chats + messages
 // ---------------------------------------------------------------------------
-export const chats = sqliteTable("chats", {
-  id: text("id").primaryKey(),
-  users: text("users", { mode: "json" }).$type<string[]>(),
-  usersData: text("users_data", { mode: "json" }),
-  lastMessage: text("last_message", { mode: "json" }),
-  createdAt: integer("created_at").notNull(),
-  updatedAt: integer("updated_at").notNull(),
-});
+export const chats = sqliteTable(
+  "chats",
+  {
+    id: text("id").primaryKey(),
+    users: text("users", { mode: "json" }).$type<string[]>(),
+    usersData: text("users_data", { mode: "json" }),
+    lastMessage: text("last_message", { mode: "json" }),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  // Partial mitigation only: removes the filesort from /read/chats. That query's
+  // real cost is the correlated EXISTS over json_each(users), which no index can
+  // serve — see D1_R2_LOAD_AUDIT.md section 4.
+  (t) => ({ updatedIdx: index("idx_chats_updated").on(t.updatedAt) }),
+);
 
 export const messages = sqliteTable(
   "messages",
@@ -532,13 +546,18 @@ export const messages = sqliteTable(
 // ---------------------------------------------------------------------------
 // shares / profile visits / moderation
 // ---------------------------------------------------------------------------
-export const shares = sqliteTable("shares", {
-  id: text("id").primaryKey(),
-  userId: text("user_id"),
-  targetType: text("target_type"),
-  targetId: text("target_id"),
-  createdAt: integer("created_at").notNull(),
-});
+export const shares = sqliteTable(
+  "shares",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id"),
+    targetType: text("target_type"),
+    targetId: text("target_id"),
+    createdAt: integer("created_at").notNull(),
+  },
+  // Had no index at all, while the daily-tasks screen COUNT(*)s by user+date.
+  (t) => ({ userCreatedIdx: index("idx_shares_user_created").on(t.userId, t.createdAt) }),
+);
 
 export const profileVisits = sqliteTable(
   "profile_visits",
@@ -547,7 +566,12 @@ export const profileVisits = sqliteTable(
     visitorId: text("visitor_id").notNull(),
     createdAt: integer("created_at").notNull(),
   },
-  (t) => ({ pk: primaryKey({ columns: [t.userId, t.visitorId] }) }),
+  (t) => ({
+    pk: primaryKey({ columns: [t.userId, t.visitorId] }),
+    // visitor_id is the TRAILING primary-key column, so the feed's "profiles
+    // this user visited" lookup could not use the PK and scanned the table.
+    visitorIdx: index("idx_profile_visits_visitor").on(t.visitorId, t.createdAt),
+  }),
 );
 
 export const reports = sqliteTable("reports", {

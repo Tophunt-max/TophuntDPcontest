@@ -23,6 +23,7 @@ import m_0018_notifications_production_sql from "../../migrations/0018_notificat
 import m_0019_notification_seen_index_sql from "../../migrations/0019_notification_seen_index.sql";
 import m_0020_deposit_package_sql from "../../migrations/0020_deposit_package.sql";
 import m_0021_bonus_coin_breakdown_sql from "../../migrations/0021_bonus_coin_breakdown.sql";
+import m_0022_hot_path_indexes_sql from "../../migrations/0022_hot_path_indexes.sql";
 
 export interface Migration {
   name: string;
@@ -52,4 +53,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0019_notification_seen_index.sql", sql: m_0019_notification_seen_index_sql },
   { name: "0020_deposit_package.sql", sql: m_0020_deposit_package_sql },
   { name: "0021_bonus_coin_breakdown.sql", sql: m_0021_bonus_coin_breakdown_sql },
+  { name: "0022_hot_path_indexes.sql", sql: m_0022_hot_path_indexes_sql },
 ];
