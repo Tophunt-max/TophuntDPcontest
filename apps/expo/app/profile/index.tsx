@@ -140,6 +140,32 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
     );
   }
 
+  // The profile could not be loaded. Previously this fell through to
+  // `<ProfileHeader user={profile!} />` with `profile` undefined, which crashed on
+  // the first property read — the non-null assertion was hiding a real state.
+  //
+  // Reachable whenever the account does not exist AND, now, when the account has
+  // blocked the viewer: the Worker deliberately reports that case as
+  // indistinguishable from a nonexistent user, so that the person who was blocked
+  // cannot learn that they were. The wording here has to work for both.
+  // Deliberately `!profile` and NOT `isError`. React Query keeps `data` and sets
+  // `isError` on a failed BACKGROUND refetch, so keying this on the error flag
+  // would replace a perfectly good loaded profile with "User not available" after
+  // a single flaky pull-to-refresh. A genuinely absent profile throws rather than
+  // resolving undefined, so `!profile` already covers both real cases.
+  if (!profile) {
+    return (
+      <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
+        <View style={styles.center}>
+          <Text style={[styles.errorText, { color: isDark ? '#fff' : '#000' }]}>User not available</Text>
+          <Text style={styles.errorSubText}>This account doesn&apos;t exist or is no longer available.</Text>
+          <Button title="Go Home" onPress={() => router.replace('/home')} />
+        </View>
+        <BottomNav backgroundColor={bg} isDark={isDark} />
+      </SafeAreaView>
+    );
+  }
+
   // Current tab's battles (photo/video) or saved bookmarks.
   const currentData: any[] =
     activeTab === 'photo' ? (photoMatches || [])
@@ -155,10 +181,13 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
     : activeTab === 'video' ? 'No video battles yet.'
     : 'No saved battles yet.';
 
+  // Set by the Worker on a profile the viewer has blocked.
+  const isBlockedByMe = !!(profile as any)?.isBlockedByMe;
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
       <FlatList
-        data={currentData}
+        data={isBlockedByMe ? [] : currentData}
         keyExtractor={(item: any) => item.id}
         renderItem={({ item }) => <PostCard item={item} isDark={isDark} />}
         refreshControl={
@@ -172,11 +201,20 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
         ListHeaderComponent={
           <>
             <ProfileHeader
-              user={profile!}
+              user={profile}
               isOwnProfile={isOwnProfile}
               onToggleFollow={handleToggleFollow}
               isFollowing={isFollowing}
+              onRefresh={handleRefresh}
             />
+            {/*
+              A blocked profile renders as a notice plus an Unblock button and
+              nothing else. The server already returns empty lists for every
+              sub-resource, so leaving the tabs mounted would show a row of tabs
+              over a permanently empty grid and read as a loading failure.
+            */}
+            {isBlockedByMe ? null : (
+            <>
             {isOwnProfile && (
               <WalletCard
                 Dpcoin={profile?.Dpcoin || 0}
@@ -192,10 +230,12 @@ const ProfileContent = ({ targetUserId }: { targetUserId: string }) => {
               isPrivate={!!profile?.isPrivate}
               showSaved={isOwnProfile}
             />
+            </>
+            )}
           </>
         }
         ListEmptyComponent={
-          !currentLoading ? (
+          isBlockedByMe ? null : !currentLoading ? (
             <View style={{ alignItems: 'center', marginTop: 40 }}>
               <Text style={{ color: isDark ? '#FFF' : '#616161', fontFamily: 'Urbanist-Medium' }}>{emptyText}</Text>
             </View>

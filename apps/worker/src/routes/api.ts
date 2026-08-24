@@ -53,6 +53,14 @@ import { getRazorpayCredentials } from "../lib/integrations";
 import { creditPaymentOrder } from "../lib/coinOrders";
 import { assertClean } from "../lib/moderation";
 import { assertChatMember } from "../lib/chatAuth";
+import {
+  assertMatchInteractionAllowed,
+  assertNotBlocked,
+  assertNotBlockedAny,
+  assertStoryInteractionAllowed,
+  invalidateBlockCache,
+  isBlockedBetween,
+} from "../lib/blocks";
 import { detachTokenFromOtherUsers } from "../lib/pushTokens";
 import { resolvePrefs, serializePrefs } from "../lib/notificationPrefs";
 import {
@@ -283,6 +291,11 @@ apiRoute.post("/", async (c) => {
       }
       const user = await db.select().from(schema.users).where(eq(schema.users.uid, uid)).get();
       if (!user) throw httpsError("not-found", "User document not found.");
+      // Checked BEFORE the entry fee is debited. joinMatch refuses a blocked
+      // invitee, so without this the creator pays to create a private match that
+      // the only person allowed to join can never join — the coins would sit
+      // locked until the auto-cancel refund swept them up.
+      if (invitedUid) await assertNotBlockedAny(env, uid, [String(invitedUid)]);
 
       const totalFee = Number(contest.totalEntryFee || 0);
       // Whole coins only. `perPlayerEntryFee` floors, so a legacy odd entry fee
@@ -452,6 +465,10 @@ apiRoute.post("/", async (c) => {
       // (multi-account self-matching to farm rewards).
       if (userA?.deviceId && deviceId && String(userA.deviceId) === String(deviceId))
         throw httpsError("failed-precondition", "You cannot join a match from the same device as the creator.");
+      // Refused BEFORE the entry fee is debited: a battle is a sustained,
+      // notification-generating interaction, and being forced into one with
+      // someone you blocked is exactly what the block is for.
+      await assertNotBlockedAny(env, uid, [userA?.uid]);
 
       const user = await db.select().from(schema.users).where(eq(schema.users.uid, uid)).get();
       if (!user) throw httpsError("not-found", "User document not found.");
@@ -609,6 +626,10 @@ apiRoute.post("/", async (c) => {
       const userB = match.userB as any;
       if (uid === userA?.uid || (userB && uid === userB.uid))
         throw httpsError("failed-precondition", "Participants cannot vote in their own match.");
+      // A vote decides who takes the prize pot, so someone the voter has blocked
+      // (or who blocked them) must not be able to have their outcome influenced
+      // either way. The match row is already loaded, so this is one extra query.
+      await assertNotBlockedAny(env, uid, [userA?.uid, userB?.uid]);
 
       // validate the vote target is a participant
       if (votedForUid !== userA?.uid && !(userB && votedForUid === userB.uid))
@@ -753,6 +774,10 @@ apiRoute.post("/", async (c) => {
         c.executionCtx.waitUntil(invalidateFollowCaches());
         return c.json({ success: true, isFollowing: false });
       }
+      // Guarded on the FOLLOW branch only. Unfollowing must stay possible
+      // whatever the relationship is — refusing it could strand an edge that
+      // predates the block and leave the user unable to clean it up.
+      await assertNotBlocked(env, uid, targetUserId);
       // Follow: insert edge + bump both counters atomically in a single batch.
       await db.batch([
         db.insert(schema.follows).values({ followerId: uid, followingId: targetUserId, createdAt: now() }),
@@ -773,6 +798,159 @@ apiRoute.post("/", async (c) => {
         ]),
       );
       return c.json({ success: true, isFollowing: true });
+    }
+
+    // ================= BLOCK / MUTE =================
+    // Deliberately NOT toggles, unlike toggleFollow/toggleBookmark. These are
+    // safety actions: a double-tap or a retried request must never quietly undo
+    // a block, so each direction is its own explicit action and both are
+    // idempotent (onConflictDoNothing / an unconditional delete).
+    // See lib/blocks.ts for the enforcement rules.
+    case "blockUser": {
+      await rateLimit(env, `block:${uid}`, 60, 3600);
+      const targetUserId = requiredId(body.targetUserId, "targetUserId", 128);
+      if (targetUserId === uid) throw httpsError("invalid-argument", "You cannot block yourself.");
+      const target = await db
+        .select({ uid: schema.users.uid })
+        .from(schema.users)
+        .where(eq(schema.users.uid, targetUserId))
+        .get();
+      if (!target) throw httpsError("not-found", "User not found.");
+
+      // A block tears down the follow relationship in BOTH directions. Leaving
+      // the edges in place would keep feeding the blocked user's battles into
+      // the blocker's "Following" tab and keep the blocker listed among the
+      // blocked user's followers — i.e. the block would appear not to have
+      // worked. Read the edges first so the counters are only decremented for
+      // edges that actually existed: D1 batches run in order, so a conditional
+      // `WHERE EXISTS (SELECT ... FROM follows ...)` would already see the
+      // delete that precedes it.
+      const [iFollowThem, theyFollowMe] = await Promise.all([
+        db
+          .select({ followerId: schema.follows.followerId })
+          .from(schema.follows)
+          .where(and(eq(schema.follows.followerId, uid), eq(schema.follows.followingId, targetUserId)))
+          .get(),
+        db
+          .select({ followerId: schema.follows.followerId })
+          .from(schema.follows)
+          .where(and(eq(schema.follows.followerId, targetUserId), eq(schema.follows.followingId, uid)))
+          .get(),
+      ]);
+
+      // Each decrement is gated on the edge still existing and is ordered BEFORE
+      // the delete that removes it. That ordering is the point: D1 batches run
+      // sequentially, so an `EXISTS` placed after its own delete would always be
+      // false, while one placed before it sees the state at commit time. This is
+      // what makes the counters safe against a concurrent unfollow — that request
+      // has already decremented, so the row is gone and these become no-ops
+      // instead of decrementing a second time.
+      const edgeExists = (followerId: string, followingId: string) =>
+        sql`EXISTS (SELECT 1 FROM follows WHERE follower_id = ${followerId} AND following_id = ${followingId})`;
+      const stmts: any[] = [
+        db
+          .insert(schema.userBlocks)
+          .values({ blockerId: uid, blockedId: targetUserId, createdAt: now() })
+          .onConflictDoNothing(),
+      ];
+      if (iFollowThem) {
+        stmts.push(
+          db.update(schema.users).set({ followingCount: sql`MAX(${schema.users.followingCount} - 1, 0)` }).where(and(eq(schema.users.uid, uid), edgeExists(uid, targetUserId))),
+          db.update(schema.users).set({ followersCount: sql`MAX(${schema.users.followersCount} - 1, 0)` }).where(and(eq(schema.users.uid, targetUserId), edgeExists(uid, targetUserId))),
+          db.delete(schema.follows).where(and(eq(schema.follows.followerId, uid), eq(schema.follows.followingId, targetUserId))),
+        );
+      }
+      if (theyFollowMe) {
+        stmts.push(
+          db.update(schema.users).set({ followingCount: sql`MAX(${schema.users.followingCount} - 1, 0)` }).where(and(eq(schema.users.uid, targetUserId), edgeExists(targetUserId, uid))),
+          db.update(schema.users).set({ followersCount: sql`MAX(${schema.users.followersCount} - 1, 0)` }).where(and(eq(schema.users.uid, uid), edgeExists(targetUserId, uid))),
+          db.delete(schema.follows).where(and(eq(schema.follows.followerId, targetUserId), eq(schema.follows.followingId, uid))),
+        );
+      }
+      // Belt and braces against the opposite race: a `toggleFollow` that passed
+      // its block check microseconds before the row above was inserted would
+      // otherwise insert an edge AFTER these deletes and leave a follow that
+      // outlives the block. Deleting again after the block row is committed closes
+      // that window; it is a no-op in the normal case.
+      stmts.push(
+        db.delete(schema.follows).where(
+          or(
+            and(eq(schema.follows.followerId, uid), eq(schema.follows.followingId, targetUserId)),
+            and(eq(schema.follows.followerId, targetUserId), eq(schema.follows.followingId, uid)),
+          ),
+        ),
+      );
+      await db.batch(stmts as any);
+
+      // Nothing else is undone. Votes already cast, comments already written and
+      // matches already settled stay exactly as they are — the coin ledger and
+      // contest results reference them, and a prize that has been paid cannot be
+      // retracted because of a later falling-out. Only visibility and the
+      // ability to interact from here on change.
+      c.executionCtx.waitUntil(
+        Promise.all([
+          // Mutual relation → both users' exclusion sets moved.
+          invalidateBlockCache(env, uid, targetUserId),
+          delCache(
+            env,
+            followingCacheKey(uid),
+            followersCacheKey(uid),
+            followingCacheKey(targetUserId),
+            followersCacheKey(targetUserId),
+            userCacheKey(uid),
+            userCacheKey(targetUserId),
+          ),
+        ]),
+      );
+      // No notification, by design: telling someone they have been blocked is
+      // the opposite of what the feature is for.
+      return c.json({ success: true, blocked: true });
+    }
+
+    case "unblockUser": {
+      await rateLimit(env, `block:${uid}`, 60, 3600);
+      const targetUserId = requiredId(body.targetUserId, "targetUserId", 128);
+      await db
+        .delete(schema.userBlocks)
+        .where(and(eq(schema.userBlocks.blockerId, uid), eq(schema.userBlocks.blockedId, targetUserId)));
+      // Follows are NOT restored. They were a separate decision and the user has
+      // to make it again deliberately.
+      c.executionCtx.waitUntil(invalidateBlockCache(env, uid, targetUserId));
+      return c.json({ success: true, blocked: false });
+    }
+
+    case "muteUser": {
+      await rateLimit(env, `mute:${uid}`, 120, 3600);
+      const targetUserId = requiredId(body.targetUserId, "targetUserId", 128);
+      if (targetUserId === uid) throw httpsError("invalid-argument", "You cannot mute yourself.");
+      // Same existence check as blockUser. Without it any string becomes a mute
+      // row, and because the management screen resolves rows through the users
+      // table, a row pointing at no account would be invisible there and could
+      // never be undone.
+      const muteTarget = await db
+        .select({ uid: schema.users.uid })
+        .from(schema.users)
+        .where(eq(schema.users.uid, targetUserId))
+        .get();
+      if (!muteTarget) throw httpsError("not-found", "User not found.");
+      await db
+        .insert(schema.userMutes)
+        .values({ muterId: uid, mutedId: targetUserId, createdAt: now() })
+        .onConflictDoNothing();
+      // One-way and silent: the muted user is never told, keeps following, and
+      // can still message and comment. Only this viewer's feed changes.
+      c.executionCtx.waitUntil(invalidateBlockCache(env, uid));
+      return c.json({ success: true, muted: true });
+    }
+
+    case "unmuteUser": {
+      await rateLimit(env, `mute:${uid}`, 120, 3600);
+      const targetUserId = requiredId(body.targetUserId, "targetUserId", 128);
+      await db
+        .delete(schema.userMutes)
+        .where(and(eq(schema.userMutes.muterId, uid), eq(schema.userMutes.mutedId, targetUserId)));
+      c.executionCtx.waitUntil(invalidateBlockCache(env, uid));
+      return c.json({ success: true, muted: false });
     }
 
     case "claimDailyReward": {
@@ -1340,7 +1518,16 @@ apiRoute.post("/", async (c) => {
       await db.delete(schema.posts).where(eq(schema.posts.id, postId));
       return c.json({ success: true });
     }
-    case "unblockUser": {
+    /**
+     * Re-enable an account an ADMIN disabled (`users.isBlocked`).
+     *
+     * Renamed from `unblockUser` when user-level blocking arrived: that name now
+     * belongs to the user-facing action, and having the two share it would have
+     * meant one word covering both "let this account log in again" and "I no
+     * longer want to hide this person". The rename is safe — this action had no
+     * callers at all (the panel re-enables accounts via PATCH /admin/users/:id).
+     */
+    case "adminUnblockUser": {
       if (!(await isAdmin(c as any))) throw httpsError("permission-denied", "Admin only.");
       const { userId } = body;
       if (!userId) throw httpsError("invalid-argument", "userId is required.");
@@ -1564,6 +1751,9 @@ apiRoute.post("/", async (c) => {
       await rateLimit(env, `startchat:${uid}`, 30, 3600);
       const { otherUserId, otherUserData } = body;
       if (!otherUserId) throw httpsError("invalid-argument", "otherUserId is required.");
+      // Opening a DM is the single most direct way to reach someone, so this is
+      // the guard that matters most.
+      await assertNotBlocked(env, uid, otherUserId);
       // find an existing chat containing both users
       const existing = await env.DB.prepare(
         `SELECT id FROM chats
@@ -1598,15 +1788,20 @@ apiRoute.post("/", async (c) => {
       // Messages were the one social write with no velocity cap (likes are
       // 120/60s, comments 30/60s), which made this a free spam/abuse channel.
       await rateLimit(env, `msg:${uid}`, 60, 60);
+      // Membership is not consent. An existing thread predates any later block,
+      // so the recipients are resolved BEFORE the write (this read was already
+      // happening further down for the realtime fan-out — it is just hoisted)
+      // and the send is refused if a block has appeared since.
+      const chat = await db.select({ users: schema.chats.users }).from(schema.chats).where(eq(schema.chats.id, chatId)).get();
+      const members = ((chat?.users as string[]) || []).filter((u) => u !== uid);
+      await assertNotBlockedAny(env, uid, members);
       const ts = now();
       const messageId = newId();
       await db.insert(schema.messages).values({ id: messageId, chatId, senderId: uid, text, read: false, createdAt: ts });
       await db.update(schema.chats).set({ lastMessage: { text, createdAt: ts, senderId: uid } as any, updatedAt: ts }).where(eq(schema.chats.id, chatId));
       // Instant push: to the chat room + each participant's user channel (chat-list bump).
-      const chat = await db.select({ users: schema.chats.users }).from(schema.chats).where(eq(schema.chats.id, chatId)).get();
       const msg = { id: messageId, chatId, senderId: uid, text, createdAt: ts };
       await publish(env, `chat:${chatId}`, { type: "message", message: msg });
-      const members = ((chat?.users as string[]) || []).filter((u) => u !== uid);
       await publishMany(env, members.map((u) => `user:${u}`), { type: "chat_update", chatId, message: msg });
       return c.json({ success: true });
     }
@@ -1637,6 +1832,7 @@ apiRoute.post("/", async (c) => {
       const { matchId } = body;
       if (!matchId) throw httpsError("invalid-argument", "matchId is required.");
       await rateLimit(env, `like:${uid}`, 120, 60);
+      await assertMatchInteractionAllowed(env, uid, matchId);
       const existing = await db
         .select()
         .from(schema.matchLikes)
@@ -1677,6 +1873,7 @@ apiRoute.post("/", async (c) => {
       if (raw.length > MAX_COMMENT_LEN) throw httpsError("invalid-argument", `Comment is too long (max ${MAX_COMMENT_LEN} characters).`);
       await assertClean(env, raw);
       await rateLimit(env, `comment:${uid}`, 30, 60);
+      await assertMatchInteractionAllowed(env, uid, matchId);
       const commentId = newId();
       const ts = now();
       await db.insert(schema.matchComments).values({ id: commentId, matchId, userId: uid, text: raw, createdAt: ts });
@@ -1701,6 +1898,7 @@ apiRoute.post("/", async (c) => {
     case "shareContest": {
       const { matchId } = body;
       if (!matchId) throw httpsError("invalid-argument", "matchId is required.");
+      await assertMatchInteractionAllowed(env, uid, matchId);
       await db.insert(schema.shares).values({ id: newId(), userId: uid, targetType: "match", targetId: matchId, createdAt: now() });
       const counters = await bumpEngagement(env, matchId, "share", 1);
       await publish(env, `match:${matchId}`, { type: "share", shareCount: counters.share ?? 0 });
@@ -1710,6 +1908,7 @@ apiRoute.post("/", async (c) => {
     case "reactToMatch": {
       const { matchId, type } = body;
       if (!matchId || !type) throw httpsError("invalid-argument", "matchId and type are required.");
+      await assertMatchInteractionAllowed(env, uid, matchId);
       const ins = await db
         .insert(schema.matchReactions)
         .values({ matchId, userId: uid, type, createdAt: now() })
@@ -1734,6 +1933,9 @@ apiRoute.post("/", async (c) => {
         await db.delete(schema.bookmarks).where(and(eq(schema.bookmarks.userId, uid), eq(schema.bookmarks.matchId, matchId)));
         return c.json({ success: true, bookmarked: false });
       }
+      // Guarded on the ADD branch only, so a bookmark saved before a block can
+      // always be removed afterwards.
+      await assertMatchInteractionAllowed(env, uid, matchId);
       await db.insert(schema.bookmarks).values({ userId: uid, matchId, createdAt: now() });
       return c.json({ success: true, bookmarked: true });
     }
@@ -1749,6 +1951,19 @@ apiRoute.post("/", async (c) => {
       await rateLimit(env, `comment:${uid}`, 30, 60);
       await assertClean(env, raw);
       const isMatch = targetType === "matches" || targetType === "contestMatches";
+      // Commenting reaches the owner's notification inbox, so it needs the same
+      // guard as a DM. Both branches resolve the owner(s) of the thing being
+      // commented on and refuse if a block exists in either direction.
+      if (isMatch) {
+        await assertMatchInteractionAllowed(env, uid, targetId);
+      } else {
+        const postOwner = await db
+          .select({ userId: schema.posts.userId })
+          .from(schema.posts)
+          .where(eq(schema.posts.id, targetId))
+          .get();
+        await assertNotBlockedAny(env, uid, [postOwner?.userId]);
+      }
       // Idempotency: the client may pass a stable clientId so a retried submit
       // (flaky network) never posts the same comment twice.
       const clientId = typeof body.clientId === "string" && body.clientId.trim() ? body.clientId.trim().slice(0, 64) : null;
@@ -1828,6 +2043,14 @@ apiRoute.post("/", async (c) => {
         .where(and(eq(schema.commentLikes.commentId, commentId), eq(schema.commentLikes.userId, uid)))
         .get();
       const liked = !existing;
+      // The last engagement write without a block guard. Only the LIKE direction
+      // is checked, so an existing like can always be withdrawn.
+      if (liked) {
+        const author = isMatch
+          ? await db.select({ userId: schema.matchComments.userId }).from(schema.matchComments).where(eq(schema.matchComments.id, commentId)).get()
+          : await db.select({ userId: schema.postComments.userId }).from(schema.postComments).where(eq(schema.postComments.id, commentId)).get();
+        await assertNotBlockedAny(env, uid, [author?.userId]);
+      }
       if (existing) {
         await db.delete(schema.commentLikes).where(and(eq(schema.commentLikes.commentId, commentId), eq(schema.commentLikes.userId, uid)));
       } else {
@@ -1944,12 +2167,16 @@ apiRoute.post("/", async (c) => {
     case "viewStory": {
       const { storyId } = body;
       if (!storyId) throw httpsError("invalid-argument", "storyId is required.");
+      // A view writes the viewer into the author's viewer list, which is a
+      // notification of presence even though it sends no push.
+      await assertStoryInteractionAllowed(env, uid, storyId);
       await db.insert(schema.storyViews).values({ storyId, viewerId: uid, createdAt: now() }).onConflictDoNothing();
       return c.json({ success: true });
     }
     case "reactToStory": {
       const { storyId, emoji } = body;
       if (!storyId) throw httpsError("invalid-argument", "storyId is required.");
+      await assertStoryInteractionAllowed(env, uid, storyId);
       await db
         .insert(schema.storyViews)
         .values({ storyId, viewerId: uid, reaction: emoji, createdAt: now() })
@@ -1981,6 +2208,11 @@ apiRoute.post("/", async (c) => {
       const { targetId } = body;
       if (!targetId || targetId === uid) return c.json({ success: true });
       await rateLimit(env, `pvisit:${uid}`, 120, 60);
+      // Silently dropped rather than refused. This is passive telemetry the
+      // client fires on navigation, so an error would surface as a spurious
+      // failure on a screen the user simply opened — and recording the visit
+      // would feed a blocked account back into the feed's affinity signal.
+      if (await isBlockedBetween(env, uid, targetId)) return c.json({ success: true });
       await db
         .insert(schema.profileVisits)
         .values({ userId: targetId, visitorId: uid, createdAt: now() })

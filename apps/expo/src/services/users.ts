@@ -83,6 +83,38 @@ export const toggleFollowService = async (targetUserId: string) => {
   }
 };
 
+/**
+ * Block / mute.
+ *
+ * Explicit set-and-clear rather than toggles, mirroring the Worker actions: a
+ * double-tap or a retried request must never quietly undo a block.
+ *
+ * Blocking is mutual and hard (neither user sees the other anywhere, and every
+ * interaction between them is refused). Muting is one-way and silent — the muted
+ * user is never told and keeps every ability they had.
+ */
+export const blockUserService = (targetUserId: string) => callApi('blockUser', { targetUserId });
+export const unblockUserService = (targetUserId: string) => callApi('unblockUser', { targetUserId });
+export const muteUserService = (targetUserId: string) => callApi('muteUser', { targetUserId });
+export const unmuteUserService = (targetUserId: string) => callApi('unmuteUser', { targetUserId });
+
+/** Report a user to moderation. First client caller of the `createReport` action. */
+export const reportUserService = (targetUserId: string, reason: string) =>
+  callApi('createReport', { targetType: 'user', targetId: targetUserId, reason });
+
+/** The signed-in user's own block and mute lists (outgoing relations only). */
+export interface BlockedAccount {
+  uid: string;
+  username: string | null;
+  fullName: string | null;
+  profileImageUrl: string | null;
+  profileImageUrlThumb: string | null;
+}
+export async function fetchBlockedAccounts(): Promise<{ blocked: BlockedAccount[]; muted: BlockedAccount[] }> {
+  const res: any = await readApi('/read/blocked');
+  return { blocked: res?.blocked || [], muted: res?.muted || [] };
+}
+
 export const equipBadgeService = async (_userId: string, badge: Badge | null) => {
   try {
     // Was updateDoc(users/{uid}, { equippedBadge }); now a Worker action.

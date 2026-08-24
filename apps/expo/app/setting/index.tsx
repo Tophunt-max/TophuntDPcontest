@@ -161,6 +161,19 @@ export default function SettingScreen() {
           onPress: () => router.push('/setting/notifications'),
         })}
 
+        {/*
+          The durable route back to a blocked account. Once blocked, someone no
+          longer appears in search, suggestions or any feed, so the profile you
+          blocked them from is usually unreachable — without this list the action
+          would be effectively irreversible.
+        */}
+        {renderItem({
+          icon: <Settings_Lock width={24} height={24} color={textColor} />,
+          label: 'Blocked & Muted',
+          onPress: () => router.push('/setting/blocked'),
+          accessibilityHint: 'Review and undo accounts you have blocked or muted',
+        })}
+
         {sectionTitle('PREFERENCES')}
 
         {renderItem({

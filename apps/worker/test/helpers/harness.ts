@@ -22,6 +22,7 @@ import { drizzle } from 'drizzle-orm/d1';
 import * as schema from '../../src/db/schema';
 import { ApiError, errorBody } from '../../src/lib/http';
 import { apiRoute } from '../../src/routes/api';
+import { readRoute } from '../../src/routes/read';
 import { adminRoute } from '../../src/routes/admin';
 import { authRoute } from '../../src/routes/auth';
 
@@ -160,10 +161,15 @@ export function drizzleOf(env: TestEnv) {
 }
 
 /**
- * Mount the real /api route on a fresh Hono app with the same error→HTTP
- * mapping the production entry uses (src/index.ts onError). We can't import
- * src/index.ts directly because it registers Durable Objects that import
+ * Mount the real /api and /read routes on a fresh Hono app with the same
+ * error→HTTP mapping the production entry uses (src/index.ts onError). We can't
+ * import src/index.ts directly because it registers Durable Objects that import
  * `cloudflare:workers` (unavailable in Node), so we replicate just the mapping.
+ *
+ * /read is mounted because several behaviours are only observable across the two:
+ * a write to /api followed by a read from /read is what proves, for example, that
+ * a block actually removes someone from the feed rather than merely recording a
+ * row.
  */
 export function makeApp() {
   const app = new Hono();
@@ -174,6 +180,7 @@ export function makeApp() {
     return c.json(errorBody(new ApiError('internal', 'Internal server error.')), 500);
   });
   app.route('/api', apiRoute);
+  app.route('/read', readRoute);
   // /auth is where the signup bonus is granted, which is a balance change and so
   // has to be provable in a test.
   app.route('/auth', authRoute);

@@ -22,6 +22,10 @@ import Animated, { useSharedValue, useAnimatedStyle, withSpring, withRepeat, wit
 import { startChat } from '@/src/services/messages/messageService';
 import { useFeature } from '@/src/services/appSettings';
 import { Colors } from '@/constants/theme';
+import { UserActionsSheet } from '@/src/components/profile/UserActionsSheet';
+import { useUnblockUser } from '@/src/hooks/useProfileData';
+import { emitToast } from '@/src/lib/toastBridge';
+import { reportError } from '@/src/lib/reportError';
 
 const { width } = Dimensions.get('window');
 
@@ -31,6 +35,43 @@ type ProfileHeaderProps = {
   onToggleFollow: () => void;
   isFollowing?: boolean; 
   onRefresh?: () => void;
+};
+
+/**
+ * A profile the viewer has blocked comes back from the Worker as a deliberately
+ * minimal shell (`isBlockedByMe`) rather than a full profile or a 404 — the user
+ * still has to be able to find the person in order to unblock them. Everything
+ * except the identity and an Unblock button is suppressed.
+ */
+const BlockedProfileNotice: React.FC<{
+  user: UserProfile;
+  isDark: boolean;
+  onUnblock: () => void;
+  busy: boolean;
+}> = ({ user, isDark, onUnblock, busy }) => {
+  const textColor = isDark ? Colors.dark.text : Colors.light.text;
+  const secondary = isDark ? '#A0A0A0' : '#666';
+  return (
+    <View style={styles.blockedContainer}>
+      <View style={[styles.blockedIcon, { backgroundColor: isDark ? '#1F222A' : '#F5F5F5' }]}>
+        <Ionicons name="ban-outline" size={34} color="#FF4D67" />
+      </View>
+      <Text style={[styles.blockedTitle, { color: textColor }]}>@{user.username || 'user'} is blocked</Text>
+      <Text style={[styles.blockedBody, { color: secondary }]}>
+        You won&apos;t see each other&apos;s battles, stories or messages. Unblock to undo this — you will not
+        start following each other again.
+      </Text>
+      <TouchableOpacity
+        style={styles.blockedButton}
+        onPress={onUnblock}
+        disabled={busy}
+        accessibilityRole="button"
+        accessibilityLabel={`Unblock ${user.username || 'user'}`}
+      >
+        {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.blockedButtonText}>Unblock</Text>}
+      </TouchableOpacity>
+    </View>
+  );
 };
 
 const calculateLevelInfo = (xp: number) => {
@@ -59,7 +100,30 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
   const [loading, setLoading] = useState(false);
   const [canClaim, setCanClaim] = useState(false);
   const [isStartingChat, setIsStartingChat] = useState(false);
+  const [actionsVisible, setActionsVisible] = useState(false);
+  const [unblocking, setUnblocking] = useState(false);
   const chatEnabled = useFeature('chat'); // admin feature flag
+
+  // Set by the Worker when the viewer has blocked this account (see the
+  // BlockedProfileNotice comment above).
+  const isBlockedByMe = !!(user as any)?.isBlockedByMe;
+  const isMutedByMe = !!(user as any)?.isMutedByMe;
+  const { mutateAsync: unblockUser } = useUnblockUser();
+
+  const handleUnblock = async () => {
+    if (unblocking) return;
+    setUnblocking(true);
+    try {
+      await unblockUser(user.uid);
+      emitToast(`Unblocked @${user.username || 'user'}.`, 'success');
+      if (onRefresh) onRefresh();
+    } catch (e: any) {
+      reportError(e, { screen: 'profile-header', action: 'unblock', targetUserId: user.uid });
+      emitToast(e?.message || 'Could not unblock. Please try again.', 'error');
+    } finally {
+      setUnblocking(false);
+    }
+  };
 
   const xp = user.xp || 0;
   const levelInfo = calculateLevelInfo(xp);
@@ -154,15 +218,57 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
     });
   };
 
+  // A blocked profile renders the notice INSTEAD of the profile. Falling through
+  // would mean reading stats, XP and badges off the shell, which is all zeroes —
+  // showing someone a fake empty profile is worse than showing them the reason.
+  if (isBlockedByMe) {
+    return (
+      <View style={[styles.container, { backgroundColor }]}>
+        <View style={styles.topBar}>
+          <View style={styles.topBarLeft} />
+          <Text style={[styles.usernameText, { color: textColor }]}>@{user.username || 'username'}</Text>
+          <View style={styles.topBarRight} />
+        </View>
+        <BlockedProfileNotice user={user} isDark={isDark} onUnblock={handleUnblock} busy={unblocking} />
+      </View>
+    );
+  }
+
   return (
     <View style={[styles.container, { backgroundColor }]}>
       <View style={styles.topBar}>
         <View style={styles.topBarLeft} />
         <Text style={[styles.usernameText, { color: textColor }]}>@{user.username || 'username'}</Text>
         <View style={styles.topBarRight}>
-           {isOwnProfile && <TouchableOpacity onPress={() => router.push('/setting')}><Settings_Icon width={24} height={24} color={textColor} /></TouchableOpacity>}
+           {isOwnProfile ? (
+             <TouchableOpacity onPress={() => router.push('/setting')}><Settings_Icon width={24} height={24} color={textColor} /></TouchableOpacity>
+           ) : (
+             // This slot was empty on other people's profiles, which is why there
+             // was nowhere to put Block / Mute / Report.
+             <TouchableOpacity
+               onPress={() => setActionsVisible(true)}
+               accessibilityRole="button"
+               accessibilityLabel="More options"
+               accessibilityHint="Block, mute or report this account"
+               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+             >
+               <Ionicons name="ellipsis-vertical" size={22} color={textColor} />
+             </TouchableOpacity>
+           )}
         </View>
       </View>
+
+      {!isOwnProfile && (
+        <UserActionsSheet
+          visible={actionsVisible}
+          onClose={() => setActionsVisible(false)}
+          targetUserId={user.uid}
+          username={user.username}
+          isBlocked={isBlockedByMe}
+          isMuted={isMutedByMe}
+          isDark={isDark}
+        />
+      )}
 
       <View style={styles.avatarWrapper}>
         <View style={[styles.avatarBorder, { backgroundColor, borderColor: isDark ? '#35383F' : '#eee' }, equippedBadge && { borderColor: '#FFD700', borderWidth: 3 }]}>
@@ -307,6 +413,14 @@ const styles = StyleSheet.create({
   
   messageButton: { paddingVertical: 10, paddingHorizontal: 32, borderRadius: 24 },
   messageButtonText: { fontFamily: 'Urbanist-Bold', fontSize: 14 },
+
+  // Blocked-profile notice
+  blockedContainer: { alignItems: 'center', paddingHorizontal: 32, paddingTop: 40, paddingBottom: 24 },
+  blockedIcon: { width: 76, height: 76, borderRadius: 38, justifyContent: 'center', alignItems: 'center' },
+  blockedTitle: { fontFamily: 'Urbanist-Bold', fontSize: 20, marginTop: 20, textAlign: 'center' },
+  blockedBody: { fontFamily: 'Urbanist-Regular', fontSize: 14, textAlign: 'center', marginTop: 10, lineHeight: 20 },
+  blockedButton: { marginTop: 24, backgroundColor: '#FF4D67', paddingVertical: 12, paddingHorizontal: 40, borderRadius: 24, minWidth: 160, alignItems: 'center' },
+  blockedButtonText: { color: '#fff', fontFamily: 'Urbanist-Bold', fontSize: 15 },
 
   xpContainer: { marginTop: 20, paddingHorizontal: 30, width: '100%' },
   xpHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
