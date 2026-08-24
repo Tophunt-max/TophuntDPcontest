@@ -106,10 +106,18 @@ jobs:
       # This repo handles payment, SMS and Firebase credentials, and admins can
       # now paste credentials into the admin panel. A committed key is the one
       # mistake that cannot be undone by a revert, so it is worth a gate.
+      #
+      # Known false positives are pinned by exact regex in .gitleaks.toml rather
+      # than by excluding files or rules — a permanently-red secret scan teaches
+      # everyone to ignore it, which is worse than not having one.
       - name: gitleaks
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The action's PR comment needs `pull-requests: write`. The findings are
+          # already in the job summary and the SARIF artifact, so read-only
+          # permissions plus no comment is the smaller blast radius.
+          GITLEAKS_ENABLE_COMMENTS: false
 
   audit:
     name: Dependency audit

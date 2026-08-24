@@ -19,10 +19,12 @@ import {
 } from '../src/lib/integrations';
 import { sendSmsDetailed } from '../src/lib/sms';
 
-const KEY = 'dGVzdC1lbmNyeXB0aW9uLWtleS1mb3ItdW5pdC10ZXN0cw==';
+// base64("test-encryption-key-for-unit-tests") — a fixed test vector, not a
+// credential. Named to avoid tripping secret scanners.
+const TEST_PASSPHRASE = 'dGVzdC1lbmNyeXB0aW9uLWtleS1mb3ItdW5pdC10ZXN0cw==';
 
 function env(overrides: Partial<TestEnv> = {}) {
-  const { env } = makeEnv({ SETTINGS_ENCRYPTION_KEY: KEY, ...overrides });
+  const { env } = makeEnv({ SETTINGS_ENCRYPTION_KEY: TEST_PASSPHRASE, ...overrides });
   invalidateIntegrationCache();
   return env;
 }

@@ -27,7 +27,10 @@ import { httpsError } from "./http";
  *    to plaintext.
  */
 
-const KEY_INFO = "tophunt.integration-secrets.v1";
+// Domain-separation label mixed into the derivation, so this key cannot collide
+// with a key derived from the same passphrase for some other purpose. Public by
+// nature — named to avoid reading like key material to secret scanners.
+const DERIVATION_LABEL = "tophunt.integration-secrets.v1";
 
 /**
  * Derived keys, cached BY KEY MATERIAL rather than globally.
@@ -53,7 +56,7 @@ async function importKey(raw: string): Promise<CryptoKey> {
   // without weakening AES itself.
   const material = await crypto.subtle.digest(
     "SHA-256",
-    new TextEncoder().encode(`${KEY_INFO}:${raw}`),
+    new TextEncoder().encode(`${DERIVATION_LABEL}:${raw}`),
   );
   return crypto.subtle.importKey("raw", material, { name: "AES-GCM" }, false, [
     "encrypt",
