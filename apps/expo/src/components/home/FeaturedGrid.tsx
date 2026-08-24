@@ -1,5 +1,12 @@
 import React from 'react';
-import { View, StyleSheet, Text, TouchableOpacity, useColorScheme, Dimensions } from 'react-native';
+import {
+  View,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  Dimensions,
+} from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useRouter } from 'expo-router';
 import { Colors } from '@/constants/theme';
 import { Ionicons } from '@/src/lib/icons';

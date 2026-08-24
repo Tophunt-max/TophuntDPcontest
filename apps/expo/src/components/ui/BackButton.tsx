@@ -1,5 +1,11 @@
 import React, { useCallback } from 'react';
-import { TouchableOpacity, useColorScheme, StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
+import {
+  TouchableOpacity,
+  StyleSheet,
+  type StyleProp,
+  type ViewStyle,
+} from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useRouter } from 'expo-router';
 import { ArrowIcon } from './ArrowIcon';
 

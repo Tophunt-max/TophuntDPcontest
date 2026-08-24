@@ -24,6 +24,15 @@ import m_0019_notification_seen_index_sql from "../../migrations/0019_notificati
 import m_0020_deposit_package_sql from "../../migrations/0020_deposit_package.sql";
 import m_0021_bonus_coin_breakdown_sql from "../../migrations/0021_bonus_coin_breakdown.sql";
 import m_0022_hot_path_indexes_sql from "../../migrations/0022_hot_path_indexes.sql";
+import m_0023_money_integrity_sql from "../../migrations/0023_money_integrity.sql";
+import m_0024_payment_lifecycle_sql from "../../migrations/0024_payment_lifecycle.sql";
+import m_0025_ops_heartbeat_sql from "../../migrations/0025_ops_heartbeat.sql";
+import m_0026_payout_reference_sql from "../../migrations/0026_payout_reference.sql";
+import m_0027_admin_notification_scope_sql from "../../migrations/0027_admin_notification_scope.sql";
+import m_0028_vote_ip_sql from "../../migrations/0028_vote_ip.sql";
+import m_0029_payments_fiat_amount_sql from "../../migrations/0029_payments_fiat_amount.sql";
+import m_0030_account_deletion_sql from "../../migrations/0030_account_deletion.sql";
+import m_0031_integration_secrets_sql from "../../migrations/0031_integration_secrets.sql";
 
 export interface Migration {
   name: string;
@@ -54,4 +63,13 @@ export const MIGRATIONS: Migration[] = [
   { name: "0020_deposit_package.sql", sql: m_0020_deposit_package_sql },
   { name: "0021_bonus_coin_breakdown.sql", sql: m_0021_bonus_coin_breakdown_sql },
   { name: "0022_hot_path_indexes.sql", sql: m_0022_hot_path_indexes_sql },
+  { name: "0023_money_integrity.sql", sql: m_0023_money_integrity_sql },
+  { name: "0024_payment_lifecycle.sql", sql: m_0024_payment_lifecycle_sql },
+  { name: "0025_ops_heartbeat.sql", sql: m_0025_ops_heartbeat_sql },
+  { name: "0026_payout_reference.sql", sql: m_0026_payout_reference_sql },
+  { name: "0027_admin_notification_scope.sql", sql: m_0027_admin_notification_scope_sql },
+  { name: "0028_vote_ip.sql", sql: m_0028_vote_ip_sql },
+  { name: "0029_payments_fiat_amount.sql", sql: m_0029_payments_fiat_amount_sql },
+  { name: "0030_account_deletion.sql", sql: m_0030_account_deletion_sql },
+  { name: "0031_integration_secrets.sql", sql: m_0031_integration_secrets_sql },
 ];

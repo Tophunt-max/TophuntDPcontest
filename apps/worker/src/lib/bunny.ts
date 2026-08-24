@@ -12,6 +12,7 @@
  */
 import type { Env } from "../types";
 import { httpsError } from "./http";
+import { getIntegrations, resolveSecret } from "./integrations";
 
 const BUNNY_API_BASE = "https://video.bunnycdn.com";
 /** Bunny's TUS endpoint. Same for every library. */
@@ -31,22 +32,40 @@ export interface BunnyConfig {
   cdnHostname: string;
 }
 
-/** All three of key, library id and pull-zone host must be present. */
-export function bunnyConfig(env: Env): BunnyConfig | null {
-  const apiKey = (env.BUNNY_STREAM_API_KEY || "").trim();
-  const libraryId = (env.BUNNY_LIBRARY_ID || "").trim();
-  const cdnHostname = (env.BUNNY_CDN_HOSTNAME || "").trim().replace(/^https?:\/\//, "").replace(/\/$/, "");
+/**
+ * All three of key, library id and pull-zone host must be present.
+ *
+ * The library id and hostname are admin-panel settings (so a library can be
+ * swapped without a deploy) and fall back to the environment for deployments that
+ * predate those settings. The API key is resolved through the encrypted
+ * credential store, never read from plain config.
+ */
+export async function bunnyConfig(env: Env): Promise<BunnyConfig | null> {
+  const [integrations, apiKeyRaw] = await Promise.all([
+    getIntegrations(env),
+    resolveSecret(env, "BUNNY_STREAM_API_KEY"),
+  ]);
+  const apiKey = (apiKeyRaw || "").trim();
+  const libraryId = (integrations.video.libraryId || env.BUNNY_LIBRARY_ID || "").trim();
+  const cdnHostname = (integrations.video.cdnHostname || env.BUNNY_CDN_HOSTNAME || "")
+    .trim()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/$/, "");
   if (!apiKey || !libraryId || !cdnHostname) return null;
   return { apiKey, libraryId, cdnHostname };
 }
 
-export function bunnyConfigured(env: Env): boolean {
-  return bunnyConfig(env) !== null;
+export async function bunnyConfigured(env: Env): Promise<boolean> {
+  const integrations = await getIntegrations(env);
+  // An operator can force the R2 path even with valid Bunny credentials present,
+  // which is the switch you want during an incident.
+  if (integrations.video.provider === "r2") return false;
+  return (await bunnyConfig(env)) !== null;
 }
 
 /** Throwing accessor for handlers that require Bunny. */
-function requireBunny(env: Env): BunnyConfig {
-  const cfg = bunnyConfig(env);
+async function requireBunny(env: Env): Promise<BunnyConfig> {
+  const cfg = await bunnyConfig(env);
   if (!cfg) throw httpsError("failed-precondition", "Video uploads are not configured.");
   return cfg;
 }
@@ -78,24 +97,24 @@ export function thumbnailUrl(cfg: BunnyConfig, guid: string): string {
 // Env-taking convenience wrappers, so route handlers never juggle the config
 // object. All return null when Bunny is not configured.
 
-export function bunnyPlaybackUrl(env: Env, guid: string): string | null {
-  const cfg = bunnyConfig(env);
+export async function bunnyPlaybackUrl(env: Env, guid: string): Promise<string | null> {
+  const cfg = await bunnyConfig(env);
   return cfg ? playbackUrl(cfg, guid) : null;
 }
 
-export function bunnyMp4Url(env: Env, guid: string, height = 720): string | null {
-  const cfg = bunnyConfig(env);
+export async function bunnyMp4Url(env: Env, guid: string, height = 720): Promise<string | null> {
+  const cfg = await bunnyConfig(env);
   return cfg ? mp4Url(cfg, guid, height) : null;
 }
 
-export function bunnyThumbnailUrl(env: Env, guid: string): string | null {
-  const cfg = bunnyConfig(env);
+export async function bunnyThumbnailUrl(env: Env, guid: string): Promise<string | null> {
+  const cfg = await bunnyConfig(env);
   return cfg ? thumbnailUrl(cfg, guid) : null;
 }
 
 /** True when a URL is served by our Bunny pull zone. */
-export function isBunnyUrl(env: Env, url: string | null | undefined): boolean {
-  const cfg = bunnyConfig(env);
+export async function isBunnyUrl(env: Env, url: string | null | undefined): Promise<boolean> {
+  const cfg = await bunnyConfig(env);
   if (!cfg || !url) return false;
   try {
     return new URL(url).hostname === cfg.cdnHostname;
@@ -110,8 +129,8 @@ export function isBunnyUrl(env: Env, url: string | null | undefined): boolean {
  * This is what lets contest matches keep two participant videos without any
  * change to the userA/userB JSON: the guid travels inside the existing mediaUrl.
  */
-export function guidFromUrl(env: Env, url: string | null | undefined): string | null {
-  if (!isBunnyUrl(env, url)) return null;
+export async function guidFromUrl(env: Env, url: string | null | undefined): Promise<string | null> {
+  if (!(await isBunnyUrl(env, url))) return null;
   try {
     const first = new URL(url as string).pathname.split("/").filter(Boolean)[0];
     // Bunny guids are UUIDs.
@@ -179,7 +198,7 @@ export interface CreatedVideo {
  * API key.
  */
 export async function createVideo(env: Env, title: string): Promise<CreatedVideo> {
-  const cfg = requireBunny(env);
+  const cfg = await requireBunny(env);
 
   const res = await bunnyFetch(cfg, "/videos", {
     method: "POST",
@@ -214,7 +233,7 @@ export async function createVideo(env: Env, title: string): Promise<CreatedVideo
  * Avoids downloading and re-uploading: Bunny fetches the R2 object itself.
  */
 export async function fetchVideoFromUrl(env: Env, guid: string, sourceUrl: string): Promise<void> {
-  const cfg = requireBunny(env);
+  const cfg = await requireBunny(env);
   const res = await bunnyFetch(cfg, `/videos/${guid}/fetch`, {
     method: "POST",
     body: JSON.stringify({ url: sourceUrl }),
@@ -232,7 +251,7 @@ export async function fetchVideoFromUrl(env: Env, guid: string, sourceUrl: strin
  * logged because silently skipping it grows storage cost forever.
  */
 export async function deleteVideo(env: Env, guid: string): Promise<void> {
-  const cfg = bunnyConfig(env);
+  const cfg = await bunnyConfig(env);
   if (!cfg || !guid) return;
   try {
     const res = await bunnyFetch(cfg, `/videos/${guid}`, { method: "DELETE" });
@@ -247,7 +266,7 @@ export async function deleteVideo(env: Env, guid: string): Promise<void> {
 
 /** Fetch a video's current metadata (status polling / reconciliation). */
 export async function getVideo(env: Env, guid: string): Promise<any | null> {
-  const cfg = bunnyConfig(env);
+  const cfg = await bunnyConfig(env);
   if (!cfg || !guid) return null;
   try {
     const res = await bunnyFetch(cfg, `/videos/${guid}`, { method: "GET" });

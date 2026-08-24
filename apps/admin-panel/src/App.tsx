@@ -30,6 +30,7 @@ const Notifications = lazy(() => import("@/pages/Notifications"));
 const Rewards = lazy(() => import("@/pages/Rewards"));
 const AppControl = lazy(() => import("@/pages/AppControl"));
 const AppSettings = lazy(() => import("@/pages/AppSettings"));
+const Integrations = lazy(() => import("@/pages/Integrations"));
 const Logs = lazy(() => import("@/pages/Logs"));
 
 const queryClient = new QueryClient({
@@ -86,6 +87,7 @@ function ProtectedApp() {
           <Route path="/rewards" component={Rewards} />
           <Route path="/app-control" component={AppControl} />
           <Route path="/app-settings" component={AppSettings} />
+          <Route path="/integrations" component={Integrations} />
           <Route component={() => <Redirect to="/dashboard" />} />
         </Switch>
       </Suspense>

@@ -302,17 +302,21 @@ export default function RenderHtml({ html, isDark }: Props) {
   const quoteBg = isDark ? 'rgba(255,59,48,0.08)' : 'rgba(255,59,48,0.05)';
   const chipBg = isDark ? '#151517' : '#F7F7FA';
 
-  if (!html || !html.trim()) {
-    return <Text style={{ color: subColor, fontFamily: FONT_SANS }}>No content available.</Text>;
-  }
-
-  const cleaned = html
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<iframe[\s\S]*?<\/iframe>/gi, '')
-    .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
-    .replace(/<svg[\s\S]*?<\/svg>/gi, '');
+  // NOTE: all hooks must run before any early return. The empty-content guard
+  // used to sit above these useMemos, so mounting with content and then without
+  // it changed the number of hooks between renders — React's "rendered fewer
+  // hooks than expected" crash, and the reason blog posts could blank the screen.
+  const cleaned = React.useMemo(
+    () =>
+      (html || '')
+        .replace(/<!--[\s\S]*?-->/g, '')
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/<iframe[\s\S]*?<\/iframe>/gi, '')
+        .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
+        .replace(/<svg[\s\S]*?<\/svg>/gi, ''),
+    [html],
+  );
 
   // Extract the Table of Contents and strip its raw markup (rendered as a card).
   const tocItems = React.useMemo(() => extractTocItems(cleaned), [cleaned]);
@@ -320,6 +324,10 @@ export default function RenderHtml({ html, isDark }: Props) {
   const blocks = React.useMemo(() => parseBlocks(body), [body]);
   // Match the article column: capped at 800, minus the sheet's 20px side padding.
   const contentWidth = Math.min(width, 800) - 40;
+
+  if (!html || !html.trim()) {
+    return <Text style={{ color: subColor, fontFamily: FONT_SANS }}>No content available.</Text>;
+  }
 
   const renderSegs = (segs: InlineSeg[], baseColor: string, baseFont: any) =>
     segs.map((s, i) => {

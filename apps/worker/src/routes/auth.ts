@@ -11,6 +11,7 @@ import { httpsError } from "../lib/http";
 import { optionalAuth } from "../middleware/auth";
 import {
   createAuthUser,
+  createCustomToken,
   getUserByEmail,
   updateAuthUser,
   deleteAuthUser,
@@ -19,7 +20,7 @@ import { getRewardSettings } from "../lib/settings";
 import { setOtp, generateOtp, verifyOtp } from "../lib/otp";
 import { validatePasswordStrength } from "../lib/password";
 import { rateLimit, enforceSendCooldown, markSent, clientIp } from "../lib/rateLimit";
-import { assertIdentifiersAvailable } from "../lib/userIdentifiers";
+import { assertIdentifiersAvailable, validateUsername } from "../lib/userIdentifiers";
 
 /** Per-recipient cooldown between OTP sends (seconds). */
 const OTP_SEND_COOLDOWN = 60;
@@ -28,7 +29,7 @@ const OTP_SEND_COOLDOWN = 60;
  * password must actually be changed. */
 const PWRESET_VERIFIED_TTL = 10 * 60;
 const pwVerifiedKey = (phone: string) => `pwverified:${phone}`;
-import { sendSms } from "../lib/twilio";
+import { sendSms } from "../lib/sms";
 import { sendEmail } from "../lib/email";
 import { newId, now } from "../lib/ids";
 
@@ -39,14 +40,8 @@ const DISPOSABLE_DOMAINS = new Set([
   "temp-mail.io", "yopmail.net", "cool.fr.nf", "jetable.org", "temporarily.de",
   "tempmailo.com", "smailpro.com", "trashmail.com", "luxusmail.org",
 ]);
-const RESERVED_USERNAMES = new Set([
-  "admin", "administrator", "root", "system", "support", "help", "info",
-  "contact", "webmaster", "security", "privacy", "policy", "terms", "login",
-  "logout", "signin", "signup", "register", "auth", "user", "users", "profile",
-  "settings", "config", "api", "dev", "test", "null", "undefined", "true",
-  "false", "void", "anon", "anonymous", "official", "staff", "moderator",
-]);
-const USERNAME_REGEX = /^[a-zA-Z0-9_.]+$/;
+// The username policy (reserved names, charset, length) is shared with every
+// other write path that can set a username — see lib/userIdentifiers.ts.
 
 function normalizePhone(phone?: string | null): string | null {
   if (!phone) return null;
@@ -56,16 +51,6 @@ function isDisposableEmail(email: string): boolean {
   const domain = email.split("@")[1];
   return domain ? DISPOSABLE_DOMAINS.has(domain.toLowerCase()) : false;
 }
-function validateUsername(username: string): string {
-  const lower = username.toLowerCase();
-  if (lower.length < 3) throw httpsError("invalid-argument", "Username must be at least 3 characters long.");
-  if (lower.length > 30) throw httpsError("invalid-argument", "Username must be less than 30 characters long.");
-  if (!USERNAME_REGEX.test(username))
-    throw httpsError("invalid-argument", "Username can only contain letters, numbers, underscores, and dots.");
-  if (RESERVED_USERNAMES.has(lower)) throw httpsError("invalid-argument", "This username is reserved and cannot be used.");
-  return lower;
-}
-
 async function createUserProfile(env: Env, uid: string, data: any, signupBonus: number) {
   const db = getDb(env);
   const ts = now();
@@ -273,6 +258,106 @@ authRoute.post("/", async (c) => {
       });
     }
 
+    // ---- Phone sign-in (OTP -> Firebase custom token) ----
+    /**
+     * Send a login code to a phone number.
+     *
+     * Separate from `sendOtpToPhone` (password reset) so the two cannot be used
+     * against each other: a code issued for a reset must not sign anybody in, and
+     * a login code must not authorise a password change. They use different OTP
+     * scopes and different cooldown keys.
+     *
+     * Unlike password reset, this deliberately does NOT require an existing
+     * account — verifying a phone number is how new users sign up here. It still
+     * returns the same response either way, so it is not a registration oracle.
+     */
+    case "sendPhoneLoginOtp": {
+      const normalizedPhone = normalizePhone(body.phone);
+      if (!normalizedPhone || !/^\+?\d{7,15}$/.test(normalizedPhone)) {
+        throw httpsError("invalid-argument", "Enter a valid phone number.");
+      }
+      // Each SMS costs real money, so the caps here are about spend as much as
+      // security: per-IP burst, per-number cooldown, and a per-number daily cap.
+      await rateLimit(env, `loginotp:${ip}`, 15, 3600, { failClosed: true });
+      await rateLimit(env, `loginotp_num:${normalizedPhone}`, 8, 86_400, { failClosed: true });
+      await enforceSendCooldown(env, "phone", normalizedPhone, OTP_SEND_COOLDOWN);
+
+      const otp = generateOtp();
+      await setOtp(env, "phone", `login:${normalizedPhone}`, { otp, createdAt: now() });
+      await markSent(env, "phone", normalizedPhone, OTP_SEND_COOLDOWN);
+      const sent = await sendSms(
+        env,
+        normalizedPhone,
+        `${otp} is your TopHunt login code. It expires in 10 minutes. Do not share it with anyone.`,
+        otp,
+      );
+      // Be honest when delivery failed: silently returning success here made
+      // "the OTP never arrived" indistinguishable from a wrong number.
+      if (!sent) {
+        throw httpsError(
+          "internal",
+          "We couldn't send the code right now. Please try again in a moment.",
+        );
+      }
+      return c.json({ success: true, cooldownSeconds: OTP_SEND_COOLDOWN });
+    }
+
+    /**
+     * Verify a login code and return a Firebase custom token.
+     *
+     * This replaces client-side Firebase phone auth, which depended on an
+     * unmaintained reCAPTCHA package (and a WebView dependency that is not even
+     * installed, so it could not work on a real device) and bypassed all of our
+     * own OTP rate limiting.
+     *
+     * The client exchanges the returned token via `signInWithCustomToken`.
+     */
+    case "phoneSignIn": {
+      const normalizedPhone = normalizePhone(body.phone);
+      if (!normalizedPhone || !body.code) {
+        throw httpsError("invalid-argument", "Phone number and code are required.");
+      }
+      await rateLimit(env, `phonesignin:${normalizedPhone}`, 15, 3600, { failClosed: true });
+      await rateLimit(env, `phonesignin_ip:${ip}`, 40, 3600, { failClosed: true });
+
+      // Single-use, attempt-limited, constant-time compared, fixed lifetime.
+      await verifyOtp(env, "phone", `login:${normalizedPhone}`, String(body.code));
+
+      const existing = await db
+        .select({ uid: schema.users.uid, signupCompleted: schema.users.signupCompleted, isBlocked: schema.users.isBlocked, status: schema.users.status })
+        .from(schema.users)
+        .where(eq(schema.users.phone, normalizedPhone))
+        .get();
+
+      if (existing?.isBlocked || existing?.status === "blocked") {
+        throw httpsError("permission-denied", "This account has been blocked.");
+      }
+      // A deleted account's phone number is cleared, so this cannot resurrect one.
+      if (existing?.status === "deleted") {
+        throw httpsError("permission-denied", "This account has been deleted.");
+      }
+
+      let uid = existing?.uid;
+      let isNewUser = false;
+
+      if (!uid) {
+        // Create the Firebase identity now so the custom token has a subject; the
+        // D1 profile is created by `createProfile` once the user finishes signup.
+        uid = await createAuthUser(env, { phone: normalizedPhone });
+        isNewUser = true;
+      }
+
+      const customToken = await createCustomToken(env, uid);
+      return c.json({
+        success: true,
+        customToken,
+        uid,
+        isNewUser,
+        signupCompleted: !isNewUser && !!existing?.signupCompleted,
+        phone: normalizedPhone,
+      });
+    }
+
     // ---- Forgot-password OTP (SMS) ----
     case "sendOtpToPhone": {
       const normalizedPhone = normalizePhone(body.phone);
@@ -294,13 +379,19 @@ authRoute.post("/", async (c) => {
         const otp = generateOtp();
         await setOtp(env, "pwreset", normalizedPhone, { otp, createdAt: now() });
         await markSent(env, "pwreset", normalizedPhone, OTP_SEND_COOLDOWN);
-        await sendSms(env, normalizedPhone, `Your Password Reset OTP is: ${otp}. Valid for 10 minutes.`);
+        await sendSms(env, normalizedPhone, `${otp} is your TopHunt password reset code. Valid for 10 minutes.`, otp);
       }
       return c.json({ success: true });
     }
     case "verifyOtp": {
       const normalizedPhone = normalizePhone(body.phone);
       if (!normalizedPhone || !body.code) throw httpsError("invalid-argument", "Phone and code are required.");
+      // The per-code 5-attempt counter caps guesses against ONE code; these caps
+      // bound guessing across codes (request a new one, guess 5 more, repeat)
+      // and across accounts from one source. Fail closed: an outage of the
+      // counter store must not open credential brute-forcing.
+      await rateLimit(env, `otpverify:${normalizedPhone}`, 15, 3600, { failClosed: true });
+      await rateLimit(env, `otpverify_ip:${clientIp(c.req.raw.headers)}`, 40, 3600, { failClosed: true });
       // Hardened: attempt-limited, single-use, constant-time compare.
       await verifyOtp(env, "pwreset", normalizedPhone, body.code);
       // Server-set proof that the code matched. updatePasswordWithPhone requires
@@ -312,6 +403,8 @@ authRoute.post("/", async (c) => {
       const normalizedPhone = normalizePhone(body.phone);
       if (!normalizedPhone || !body.newPassword)
         throw httpsError("invalid-argument", "Phone and password required.");
+      await rateLimit(env, `pwreset:${normalizedPhone}`, 10, 3600, { failClosed: true });
+      await rateLimit(env, `pwreset_ip:${clientIp(c.req.raw.headers)}`, 30, 3600, { failClosed: true });
       // Same canonical policy as signup — no weaker rule for reset.
       validatePasswordStrength(body.newPassword);
       // SECURITY: require a prior SUCCESSFUL OTP verification (server-set flag),
@@ -351,6 +444,7 @@ authRoute.post("/", async (c) => {
     case "verifyEmailOtp": {
       if (!uid) throw httpsError("unauthenticated", "User must be logged in.");
       if (!body.otp) throw httpsError("invalid-argument", "OTP is required.");
+      await rateLimit(env, `emailotpverify:${uid}`, 20, 3600, { failClosed: true });
       const rec = await verifyOtp(env, "email", uid, body.otp);
       const newEmail = rec.newEmail as string;
       await updateAuthUser(env, uid, { email: newEmail });
@@ -369,12 +463,13 @@ authRoute.post("/", async (c) => {
       const otp = generateOtp();
       await setOtp(env, "phone", uid, { otp, newPhone, createdAt: now() });
       await markSent(env, "phone", uid, OTP_SEND_COOLDOWN);
-      await sendSms(env, newPhone, `Your TopHunt OTP for phone number update is: ${otp}.`);
+      await sendSms(env, newPhone, `${otp} is your TopHunt code to confirm this phone number.`, otp);
       return c.json({ success: true });
     }
     case "verifyPhoneOtp": {
       if (!uid) throw httpsError("unauthenticated", "User must be logged in.");
       if (!body.otp) throw httpsError("invalid-argument", "OTP is required.");
+      await rateLimit(env, `phoneotpverify:${uid}`, 20, 3600, { failClosed: true });
       const rec = await verifyOtp(env, "phone", uid, body.otp);
       const newPhone = normalizePhone(rec.newPhone as string);
       await db.update(schema.users).set({ phone: newPhone, updatedAt: now() }).where(eq(schema.users.uid, uid));

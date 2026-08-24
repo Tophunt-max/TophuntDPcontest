@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { SocialAuthService, socialProviderAvailability } from '@/src/services/auth/socialAuth';
 import {
   View,
   Text,
@@ -30,7 +31,7 @@ import {
 } from "@/assets/svgs";
 import { BackButton } from "@/src/components/ui/BackButton";
 import { useThemeColor } from "@/hooks/use-theme-color";
-import { useColorScheme } from "@/hooks/use-color-scheme";
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { FormInput } from "@/src/components/inputs/FormInput";
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useSignupStore, SIGNUP_STEP_ROUTE } from "@/src/store/signup";
@@ -64,6 +65,8 @@ let resumePromptShownThisSession = false;
 
 export default function SignupEntryScreen() {
   const router = useRouter();
+  // Hide any provider that cannot complete a sign-in on this platform.
+  const socialAvailable = socialProviderAvailability();
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
@@ -389,18 +392,36 @@ export default function SignupEntryScreen() {
             </View>
 
             <View style={styles.socialButtonsContainer}>
-              {config.facebookLogin && (
-                <TouchableOpacity style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]} onPress={() => addToast("Facebook login coming soon!", "info")}>
+              {/* These were placeholder "coming soon" toasts; they now run the real
+                  sign-in, and are hidden when the provider is not configured for
+                  this platform. */}
+              {config.facebookLogin && socialAvailable.facebook && (
+                <TouchableOpacity
+                  style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]}
+                  onPress={() => void SocialAuthService.facebookLogin(router, addToast).catch(() => {})}
+                  accessibilityRole="button"
+                  accessibilityLabel="Continue with Facebook"
+                >
                     <Facebook_Icon width={24} height={24} />
                 </TouchableOpacity>
               )}
-              {config.googleLogin && (
-                <TouchableOpacity style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]} onPress={() => addToast("Google login coming soon!", "info")}>
+              {config.googleLogin && socialAvailable.google && (
+                <TouchableOpacity
+                  style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]}
+                  onPress={() => void SocialAuthService.googleLogin(router, addToast).catch(() => {})}
+                  accessibilityRole="button"
+                  accessibilityLabel="Continue with Google"
+                >
                     <Google_Icon width={24} height={24} />
                 </TouchableOpacity>
               )}
-              {config.appleLogin && (
-                <TouchableOpacity style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]} onPress={() => addToast("Apple login coming soon!", "info")}>
+              {config.appleLogin && socialAvailable.apple && (
+                <TouchableOpacity
+                  style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]}
+                  onPress={() => void SocialAuthService.appleLogin(router, addToast).catch(() => {})}
+                  accessibilityRole="button"
+                  accessibilityLabel="Continue with Apple"
+                >
                     {isDark ? <Apple_Light width={24} height={24} /> : <Apple_Dark width={24} height={24} />}
                 </TouchableOpacity>
               )}

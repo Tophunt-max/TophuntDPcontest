@@ -1,5 +1,9 @@
 import React from 'react';
-import { View, StyleSheet, useColorScheme } from 'react-native';
+import {
+  View,
+  StyleSheet,
+} from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Skeleton } from '../ui/Skeleton';
 
 /** Shimmer placeholder for a simple contest list (title + prize + chevron). */

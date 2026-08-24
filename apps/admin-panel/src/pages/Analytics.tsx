@@ -43,8 +43,9 @@ export default function Analytics() {
 
           <h3 className="font-bold text-foreground mb-3">Money & Contests</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-            <StatCard icon={IndianRupee} label="Revenue (today)" value={fmtNumber(d?.revenueToday ?? 0)} gradient="gradient-green" />
-            <StatCard icon={IndianRupee} label="Revenue (30d)" value={fmtNumber(d?.revenue30d ?? 0)} gradient="gradient-green" />
+            {/* These cards used to render a COIN count with a ₹ icon. */}
+            <StatCard icon={IndianRupee} label="Revenue (today)" value={`₹${fmtNumber(d?.revenueTodayInr ?? 0)}`} gradient="gradient-green" />
+            <StatCard icon={IndianRupee} label="Revenue (30d)" value={`₹${fmtNumber(d?.revenue30dInr ?? 0)}`} gradient="gradient-green" />
             <StatCard icon={Swords} label="Active Battles" value={fmtNumber(d?.activeMatches ?? 0)} gradient="gradient-purple" />
             <StatCard icon={Trophy} label="Completed Battles" value={fmtNumber(d?.completedMatches ?? 0)} gradient="gradient-blue" />
           </div>
@@ -52,7 +53,7 @@ export default function Analytics() {
           {/* Deposits vs withdrawals chart */}
           <div className="bg-card border border-border rounded-2xl p-5 mb-6">
             <h3 className="font-bold text-foreground mb-1">Deposits vs Withdrawals</h3>
-            <p className="text-xs text-muted-foreground mb-4">Coins in (approved deposits) vs out (paid withdrawals) — last 14 days</p>
+            <p className="text-xs text-muted-foreground mb-4">Rupees in (approved deposits) vs out (paid withdrawals) — last 14 days</p>
             <div className="h-64">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={trends.data ?? []} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>

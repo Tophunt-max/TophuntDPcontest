@@ -1,6 +1,17 @@
 
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, Modal, Dimensions, ActivityIndicator, Alert, useColorScheme } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  Image,
+  TouchableOpacity,
+  Modal,
+  Dimensions,
+  ActivityIndicator,
+  Alert,
+} from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { UserProfile, Badge } from '@/src/types/user';
 import { Settings_Icon, ChatIcon_Light, ChatIcon_Dark } from '@/assets/svgs';
 import { Ionicons } from '@/src/lib/icons';

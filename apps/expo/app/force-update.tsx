@@ -1,5 +1,14 @@
 import React from 'react';
-import { View, Text, StyleSheet, SafeAreaView, useColorScheme, TouchableOpacity, Linking, Platform } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  SafeAreaView,
+  TouchableOpacity,
+  Linking,
+  Platform,
+} from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Colors } from '@/constants/theme';
 import { Ionicons } from '@/src/lib/icons';
 import { useAppConfig, currentAppVersion } from '@/src/services/appSettings';

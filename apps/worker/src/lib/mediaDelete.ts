@@ -17,7 +17,7 @@ import { deleteVideo, guidFromUrl } from "./bunny";
 export async function deleteMediaByUrl(env: Env, publicUrl: string | null | undefined): Promise<void> {
   if (!publicUrl) return;
 
-  const guid = guidFromUrl(env, publicUrl);
+  const guid = await guidFromUrl(env, publicUrl);
   if (guid) {
     await deleteVideo(env, guid);
     try {

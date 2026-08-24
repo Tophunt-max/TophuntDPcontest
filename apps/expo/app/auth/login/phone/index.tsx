@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState } from "react";
 import {
   View,
   Text,
@@ -14,15 +14,14 @@ import {
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { BackButton } from "@/src/components/ui/BackButton";
-import { useColorScheme } from "../../../../hooks/use-color-scheme";
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useToast } from "@/src/components/toast/ToastProvider";
 import { Colors } from '@/constants/theme';
-import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
 import { auth } from "../../../../src/services/firebase/initFirebase";
-import { PhoneAuthProvider, signInWithCredential } from "firebase/auth";
-import { firebaseConfig } from "@/src/firebaseConfig";
-import { readApi } from "../../../../src/services/api";
+import { signInWithCustomToken } from "firebase/auth";
+import { callApi, readApi } from "../../../../src/services/api";
+import { reportError } from "@/src/lib/reportError";
 import { useSignupStore } from "../../../../src/store/signup";
 import { CountryPicker } from "react-native-country-codes-picker";
 import { Ionicons } from "@/src/lib/icons";
@@ -40,31 +39,42 @@ export default function PhoneLoginScreen() {
   const [phoneNumber, setPhoneNumber] = useState("");
   const [countryCode, setCountryCode] = useState("+91");
   const [showCountryPicker, setShowCountryPicker] = useState(false);
-  const [verificationId, setVerificationId] = useState("");
+  // `codeSent` replaces the old Firebase verificationId: the OTP is issued and
+  // verified by our own Worker now, so there is no client-side verification
+  // handle to carry around.
+  const [codeSent, setCodeSent] = useState(false);
   const [verificationCode, setVerificationCode] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
-  const recaptchaVerifier = useRef(null);
+  const [resendIn, setResendIn] = useState(0);
 
+  /**
+   * Request a login code from our backend.
+   *
+   * This previously used Firebase's client-side phone auth via
+   * `expo-firebase-recaptcha` — an unmaintained package that needs
+   * `react-native-webview`, which is not a dependency of this app, so the flow
+   * could not work on a real device at all. It also bypassed our own OTP rate
+   * limiting and DLT-registered SMS gateway.
+   */
   const handleSendOTP = async () => {
-    if (!phoneNumber || phoneNumber.length < 8) {
+    const digits = phoneNumber.replace(/\D/g, "");
+    if (digits.length < 6) {
       addToast("Please enter a valid phone number", "error");
       return;
     }
 
     setIsLoading(true);
     try {
-      const fullPhoneNumber = countryCode + phoneNumber;
-      const phoneProvider = new PhoneAuthProvider(auth);
-      const id = await phoneProvider.verifyPhoneNumber(
-        fullPhoneNumber,
-        recaptchaVerifier.current!
-      );
-      setVerificationId(id);
-      addToast("OTP sent successfully", "success");
+      const res: any = await callApi("sendPhoneLoginOtp", { phone: countryCode + digits });
+      setCodeSent(true);
+      setVerificationCode("");
+      setResendIn(Number(res?.cooldownSeconds) || 60);
+      addToast("We've sent you a 6-digit code", "success");
     } catch (error: any) {
-      console.error("Phone Auth Error:", error);
-      addToast(error.message || "Failed to send OTP", "error");
+      // The server distinguishes "couldn't send" from "too many requests"; pass
+      // its message through rather than inventing one.
+      addToast(error?.message || "Failed to send the code. Please try again.", "error");
     } finally {
       setIsLoading(false);
     }
@@ -78,17 +88,18 @@ export default function PhoneLoginScreen() {
 
     setIsLoading(true);
     try {
-      const credential = PhoneAuthProvider.credential(
-        verificationId,
-        verificationCode
-      );
-      
-      const userCredential = await signInWithCredential(auth, credential);
-      const user = userCredential.user;
+      // The Worker verifies the code (single-use, attempt-limited, fixed
+      // lifetime) and returns a Firebase custom token, which we exchange for a
+      // normal session. The client never sees the OTP secret material.
+      const result: any = await callApi("phoneSignIn", {
+        phone: countryCode + phoneNumber.replace(/\D/g, ""),
+        code: verificationCode,
+      });
+      if (!result?.customToken) throw new Error("Sign-in failed. Please try again.");
 
-      // Normalize phone number for consistent checking
-      const fullPhone = user.phoneNumber || (countryCode + phoneNumber);
-      const normalizedPhone = fullPhone.replace(/[^\d+]/g, "");
+      const userCredential = await signInWithCustomToken(auth, result.customToken);
+      const user = userCredential.user;
+      const normalizedPhone = String(result.phone || countryCode + phoneNumber).replace(/[^\d+]/g, "");
 
       // Look up the profile in D1 (via the Worker), keyed by uid.
       const userData: any = await readApi(`/read/users/${user.uid}`).catch(() => null);
@@ -120,16 +131,27 @@ export default function PhoneLoginScreen() {
         router.replace("/auth/signup/fill-profile");
       }
     } catch (error: any) {
-      console.error("Verification Error:", error);
-      addToast(error.message || "Invalid verification code", "error");
+      // A wrong code is a normal outcome, not a bug — only report the rest.
+      const wrongCode =
+        error?.code === "functions/invalid-argument" || error?.code === "functions/not-found";
+      if (!wrongCode) reportError(error, { flow: "phone-login", step: "verify" });
+      addToast(error?.message || "Invalid verification code", "error");
     } finally {
       setIsLoading(false);
     }
   };
 
+  // Tick the resend cooldown down. The server enforces the real cooldown; this
+  // just stops the user hammering a button that will be refused.
+  React.useEffect(() => {
+    if (resendIn <= 0) return;
+    const timer = setTimeout(() => setResendIn((v) => v - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [resendIn]);
+
   const handleBack = () => {
-    if (verificationId) {
-      setVerificationId("");
+    if (codeSent) {
+      setCodeSent(false);
     } else {
         if (router.canGoBack()) {
             router.back();
@@ -170,16 +192,16 @@ export default function PhoneLoginScreen() {
 
           <View style={styles.contentContainer}>
             <Text style={[styles.title, { color: textColor, fontFamily: 'Urbanist-Bold' }]}>
-              {verificationId ? "Verify OTP" : "Phone Login"}
+              {codeSent ? "Verify OTP" : "Phone Login"}
             </Text>
             
             <Text style={[styles.subtitle, { color: isDark ? '#E0E0E0' : 'gray', fontFamily: 'Urbanist-Regular' }]}>
-              {verificationId 
-                ? `Enter the 6-digit code sent to ${countryCode} ${phoneNumber}` 
+              {codeSent
+                ? `Enter the 6-digit code sent to ${countryCode} ${phoneNumber}`
                 : "Enter your phone number to continue"}
             </Text>
 
-            {!verificationId ? (
+            {!codeSent ? (
               <View style={styles.phoneInputRow}>
                 <TouchableOpacity
                   style={[styles.flagButton, { backgroundColor: isDark ? '#1F222A' : '#FAFAFA', borderColor: isDark ? '#35383F' : '#eee' }]}
@@ -223,19 +245,36 @@ export default function PhoneLoginScreen() {
 
             <View style={{ marginTop: 24 }}>
               <PrimaryButton
-                title={verificationId ? "Verify OTP" : "Send OTP"}
-                onPress={verificationId ? handleVerifyOTP : handleSendOTP}
+                title={codeSent ? "Verify OTP" : "Send OTP"}
+                onPress={codeSent ? handleVerifyOTP : handleSendOTP}
                 isLoading={isLoading}
               />
             </View>
 
-            {verificationId && (
-              <TouchableOpacity 
-                onPress={() => setVerificationId("")}
-                style={styles.resendButton}
-              >
-                <Text style={styles.resendText}>Change Phone Number</Text>
-              </TouchableOpacity>
+            {codeSent && (
+              <>
+                <TouchableOpacity
+                  onPress={handleSendOTP}
+                  disabled={resendIn > 0 || isLoading}
+                  style={styles.resendButton}
+                  accessibilityRole="button"
+                  accessibilityLabel={resendIn > 0 ? `Resend code in ${resendIn} seconds` : "Resend code"}
+                >
+                  <Text style={[styles.resendText, resendIn > 0 && { opacity: 0.5 }]}>
+                    {resendIn > 0 ? `Resend code in ${resendIn}s` : "Resend code"}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => setCodeSent(false)}
+                  style={styles.resendButton}
+                  accessibilityRole="button"
+                  accessibilityLabel="Change phone number"
+                >
+                  <Text style={[styles.resendText, { color: isDark ? '#9BA1A6' : '#6B7280' }]}>
+                    Change Phone Number
+                  </Text>
+                </TouchableOpacity>
+              </>
             )}
           </View>
         </View>
@@ -258,11 +297,6 @@ export default function PhoneLoginScreen() {
         }}
       />
 
-      <FirebaseRecaptchaVerifierModal
-        ref={recaptchaVerifier}
-        firebaseConfig={firebaseConfig}
-        attemptInvisibleVerification={true}
-      />
     </KeyboardAvoidingView>
   );
 }

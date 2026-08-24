@@ -21,6 +21,8 @@ export async function castVote(
     voterUid: string;
     votedForUid: string;
     deviceId?: string | null;
+    /** Recorded for fraud analysis, never used as a blocking dedup key. */
+    ip?: string | null;
     uidA: string;
     uidB: string;
     expiresAt: number;

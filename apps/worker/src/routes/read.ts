@@ -775,8 +775,63 @@ readRoute.get("/leaderboard", optionalAuth, async (c) => {
 });
 
 // ================= APP CONFIG =================
+/**
+ * Public app configuration.
+ *
+ * This endpoint is UNAUTHENTICATED — the app reads it before login to learn about
+ * maintenance mode, minimum version and feature flags. It used to return the
+ * whole `appConfig` document, so anything an admin stored there was public:
+ * `adminAlertEmail` was already leaking, and every new operational setting would
+ * have leaked by default.
+ *
+ * It now projects an explicit allow-list. New settings are private unless they
+ * are deliberately added here.
+ */
 readRoute.get("/app-config", async (c) => {
-  return edgeCached(c, 120, async () => (await getAppConfig(c.env)) || {});
+  return edgeCached(c, 120, async () => {
+    const cfg: any = (await getAppConfig(c.env)) || {};
+    const ads = cfg.ads || {};
+    const withdrawal = cfg.withdrawal || {};
+    return {
+      // Gates the client must honour before/at login.
+      maintenanceMode: !!cfg.maintenanceMode,
+      maintenanceMessage: cfg.maintenanceMessage || "",
+      forceUpdate: !!cfg.forceUpdate,
+      minAppVersion: cfg.minAppVersion || "",
+      announcement: {
+        enabled: !!cfg.announcement?.enabled,
+        message: cfg.announcement?.message || "",
+        link: cfg.announcement?.link || "",
+      },
+      features: cfg.features || {},
+      // Auth method availability, so the client can hide what is not configured.
+      googleLogin: cfg.googleLogin !== false,
+      appleLogin: cfg.appleLogin !== false,
+      facebookLogin: cfg.facebookLogin === true,
+      // Wallet rules the wallet screens render. Deliberately only the limits the
+      // user is subject to — never internal accounting fields.
+      withdrawal: {
+        enabled: withdrawal.enabled !== false,
+        payoutsFrozen: withdrawal.payoutsFrozen === true,
+        minAmount: Number(withdrawal.minAmount ?? 0),
+        maxAmount: Number(withdrawal.maxAmount ?? 0),
+        maxPerDay: Number(withdrawal.maxPerDay ?? 0),
+        conversionRate: Number(withdrawal.conversionRate ?? 1),
+      },
+      paymentGateway: { mode: cfg.paymentGateway?.mode || "auto" },
+      // Whether to show the rewarded-ad task at all.
+      ads: { enabled: ads.enabled === true, reward: Number(ads.reward ?? 0), dailyCap: Number(ads.dailyCap ?? 0) },
+      // Long-form legal copy rendered in-app.
+      legalContent: {
+        privacyPolicy: cfg.legalContent?.privacyPolicy || "",
+        termsOfService: cfg.legalContent?.termsOfService || "",
+        refundPolicy: cfg.legalContent?.refundPolicy || "",
+        communityGuidelines: cfg.legalContent?.communityGuidelines || "",
+      },
+      supportEmail: cfg.supportEmail || "",
+      socialLinks: cfg.socialLinks || {},
+    };
+  });
 });
 
 // ================= WALLET (auth) =================

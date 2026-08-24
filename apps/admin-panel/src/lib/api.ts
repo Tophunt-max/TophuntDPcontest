@@ -224,7 +224,56 @@ export async function req<T>(
 const get = <T>(p: string) => req<T>("GET", p);
 const post = <T>(p: string, b?: unknown) => req<T>("POST", p, b ?? {});
 const patch = <T>(p: string, b?: unknown) => req<T>("PATCH", p, b ?? {});
+const put = <T>(p: string, b?: unknown) => req<T>("PUT", p, b ?? {});
 const del = <T>(p: string) => req<T>("DELETE", p);
+
+// ─── Integrations (SMS / email / payments / video / storage) ─────────────────
+
+export type SecretSource = "panel" | "environment" | "unset";
+
+/**
+ * A credential's STATE — never its value. The API deliberately cannot return a
+ * stored secret; `hint` and `fingerprint` are all that come back.
+ */
+export interface SecretStatus {
+  name: string;
+  label: string;
+  group: "sms" | "email" | "payments" | "video" | "storage" | "auth" | "observability";
+  help?: string;
+  sensitive: boolean;
+  multiline: boolean;
+  configured: boolean;
+  source: SecretSource;
+  hint?: string | null;
+  fingerprint?: string | null;
+  updatedAt?: number | null;
+  updatedBy?: string | null;
+}
+
+export interface IntegrationsConfig {
+  sms: {
+    provider: "twilio" | "msg91" | "fast2sms" | "custom" | "none";
+    from: string;
+    templateId: string;
+    otpVariable: string;
+    route: string;
+    customUrl: string;
+    customMethod: "GET" | "POST";
+    customBody: string;
+  };
+  email: { provider: "resend" | "brevo" | "none"; from: string; replyTo: string };
+  payments: { razorpayKeyId: string };
+  video: { provider: "bunny" | "r2"; libraryId: string; cdnHostname: string };
+  push: { vapidPublicKey: string };
+}
+
+export interface IntegrationsResponse {
+  config: IntegrationsConfig;
+  defaults: IntegrationsConfig;
+  secrets: SecretStatus[];
+  /** False when the server has no encryption key, so credentials can't be saved. */
+  secretStorage: boolean;
+}
 
 // ─── Typed surface over the Worker's /admin endpoints ───────────────────────
 export const api = {
@@ -235,7 +284,10 @@ export const api = {
       posts: number;
       reports: number;
       support: number;
+      /** COINS sold all-time (payments.amount has always held coins). */
       revenue: number;
+      /** Actual money collected, in rupees. */
+      revenueInr: number;
       activeMatches: number;
       liveContests: number;
       pendingWithdrawals: number;
@@ -301,7 +353,18 @@ export const api = {
 
   // referrals + finance trends
   referrals: () => get<any[]>("/admin/referrals"),
-  financeTrends: () => get<{ date: string; deposits: number; withdrawals: number }[]>("/admin/finance-trends"),
+  // `deposits` / `withdrawals` are RUPEES (they used to be coin counts charted as
+  // money); the *Coins fields carry the coin volume.
+  financeTrends: () =>
+    get<{
+      date: string;
+      deposits: number;
+      withdrawals: number;
+      depositsInr: number;
+      withdrawalsInr: number;
+      depositsCoins: number;
+      withdrawalsCoins: number;
+    }[]>("/admin/finance-trends"),
 
   // support
   support: () => get<any[]>("/admin/support"),
@@ -339,6 +402,26 @@ export const api = {
   appSettings: () => get<any>("/admin/app-settings"),
   saveAppSettings: (payload: any) => post("/admin/app-settings", payload),
 
+  // integrations — provider config plus write-only credentials
+  integrations: () => get<IntegrationsResponse>("/admin/integrations"),
+  saveIntegrations: (config: IntegrationsConfig) => put("/admin/integrations", config),
+  /** Store or rotate a credential. The value is encrypted server-side. */
+  setIntegrationSecret: (name: string, value: string) =>
+    put<{ success: boolean; fingerprint: string; hint: string }>(
+      `/admin/integrations/secrets/${encodeURIComponent(name)}`,
+      { value },
+    ),
+  deleteIntegrationSecret: (name: string) =>
+    del<{ success: boolean; fellBackToEnvironment: boolean; message: string }>(
+      `/admin/integrations/secrets/${encodeURIComponent(name)}`,
+    ),
+  /** Exercise a provider with its real credential, server-side. */
+  testIntegration: (provider: string, payload?: { to?: string }) =>
+    post<{ ok: boolean; message?: string; provider?: string; error?: string }>(
+      `/admin/integrations/test/${encodeURIComponent(provider)}`,
+      payload ?? {},
+    ),
+
   // contest matches (battles)
   matches: (status?: string) =>
     get<any[]>(`/admin/matches${status ? `?status=${encodeURIComponent(status)}` : ""}`),
@@ -358,19 +441,45 @@ export const api = {
     return get<any[]>(`/admin/transactions${s ? `?${s}` : ""}`);
   },
   transactionTypes: () => get<string[]>("/admin/transactions/types"),
+  // Revenue is reported in RUPEES; coin counts are separate fields. The old
+  // response summed a coin column and called it revenue.
   revenue: () =>
     get<{
-      totalRevenue: number;
-      paymentCount: number;
+      totalRevenue: number; // rupees (same as grossRevenueInr)
+      grossRevenueInr: number;
+      refundedInr: number;
+      netRevenueInr: number;
+      refundedCount: number;
+      coinsSold: number;
       coinsInCirculation: number;
+      paymentsWithoutRecordedAmount: number;
+      paymentCount: number;
       byType: { type: string; total: number; n: number }[];
-      trend: { date: string; amount: number }[];
-      topSpenders: { userId: string; total: number; username?: string; fullName?: string }[];
+      trend: { date: string; amount: number; revenueInr: number; coins: number }[];
+      topSpenders: {
+        userId: string;
+        total: number;
+        totalInr: number;
+        totalCoins: number;
+        username?: string;
+        fullName?: string;
+      }[];
     }>("/admin/revenue"),
   payments: () => get<any[]>("/admin/payments"),
 
   // fraud
   fraudVotes: () => get<{ deviceId: string; accounts: number; totalVotes: number }[]>("/admin/fraud/votes"),
+  // Many accounts from one network converging on one entry in one match. Only
+  // possible now that the voter IP is recorded.
+  fraudVoteNetworks: (minAccounts = 3) =>
+    get<{
+      matchId: string;
+      ip: string;
+      votedForUid: string;
+      accounts: number;
+      devices: number;
+      totalVotes: number;
+    }[]>(`/admin/fraud/vote-networks?minAccounts=${minAccounts}`),
 
   // comments moderation
   comments: (postId?: string) =>
@@ -384,8 +493,14 @@ export const api = {
   // withdrawals
   withdrawals: (status?: string) =>
     get<any[]>(`/admin/withdrawals${status ? `?status=${encodeURIComponent(status)}` : ""}`),
-  actionWithdrawal: (id: string, action: "approve" | "reject" | "paid", adminNote?: string) =>
-    patch(`/admin/withdrawals/${id}`, { action, adminNote }),
+  // `payoutRef` (bank UTR / RRN) is REQUIRED by the server when marking a
+  // payout paid, so an outgoing rupee can be reconciled against a statement.
+  actionWithdrawal: (
+    id: string,
+    action: "approve" | "reject" | "paid",
+    adminNote?: string,
+    payoutRef?: string,
+  ) => patch(`/admin/withdrawals/${id}`, { action, adminNote, payoutRef }),
 
   // deposits (manual QR/UPI top-ups)
   deposits: (status?: string) =>
@@ -447,7 +562,11 @@ export const api = {
   analytics: () =>
     get<{
       totalUsers: number; newUsersToday: number; newUsers7d: number; newUsers30d: number;
-      dau: number; mau: number; revenueToday: number; revenue7d: number; revenue30d: number;
+      dau: number; mau: number;
+      // Coin counts (labelled "Coins Sold" in the UI).
+      revenueToday: number; revenue7d: number; revenue30d: number;
+      // Real money, in rupees.
+      revenueTodayInr: number; revenue7dInr: number; revenue30dInr: number;
       matchesToday: number; votesToday: number; postsToday: number;
       activeMatches: number; completedMatches: number;
       // previous-period comparators (for week-over-week / day-over-day deltas)

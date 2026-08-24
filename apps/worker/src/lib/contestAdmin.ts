@@ -117,7 +117,17 @@ export function validateContestInput(
   const fee = firstAlias(body, ["totalEntryFee", "entryFishCoins", "entryDpcoin"]);
   if (fee.present || creating) {
     recognized ||= fee.present;
-    values.totalEntryFee = contestInteger(fee.present ? fee.value : 0, "totalEntryFee", 0, 1_000_000);
+    const total = contestInteger(fee.present ? fee.value : 0, "totalEntryFee", 0, 1_000_000);
+    // Two players each pay half. An odd total would charge a fractional number
+    // of coins, and fractions in a whole-number currency accumulate float drift
+    // that makes the ledger impossible to reconcile against balances.
+    if (total % 2 !== 0) {
+      throw httpsError(
+        "invalid-argument",
+        `totalEntryFee must be an even number of coins — each of the two players pays half (got ${total}).`,
+      );
+    }
+    values.totalEntryFee = total;
   }
 
   const reward = firstAlias(body, ["rewardCoins", "prizePool", "winningCoins"]);

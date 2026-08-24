@@ -1,5 +1,9 @@
 import React from 'react';
-import { View, StyleSheet, useColorScheme } from 'react-native';
+import {
+  View,
+  StyleSheet,
+} from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Skeleton, SkeletonCircle } from '../ui/Skeleton';
 
 /** Shimmer placeholder for the wallet screen: balance card + transaction rows. */

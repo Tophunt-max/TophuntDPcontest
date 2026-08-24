@@ -6,7 +6,7 @@ import { Avatar } from '../ui/Avatar';
 import AddIcon from '@/assets/svgs/add_Icon.svg';
 import { auth } from '@/src/services/firebase/initFirebase';
 import { useRouter } from 'expo-router';
-import { useColorScheme } from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Colors } from '@/constants/theme';
 
 interface StoryItemProps {
@@ -153,3 +153,7 @@ const styles = StyleSheet.create({
     borderWidth: 2,
   }
 });
+
+// memo() wraps an anonymous arrow, so React devtools and error stacks would
+// otherwise show <Unknown>.
+StoryItem.displayName = 'StoryItem';

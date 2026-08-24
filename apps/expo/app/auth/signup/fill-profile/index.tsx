@@ -29,6 +29,14 @@ import Svg, { Circle } from 'react-native-svg';
 import { ReanimatedBottomSheet } from "@/src/components/modals/ReanimatedBottomSheet";
 import { callApi } from "@/src/services/api"; // Centralized API Caller
 
+/**
+ * Minimum age.
+ *
+ * Real-money contests and withdrawals put this app squarely in the category that
+ * needs an actual age gate rather than a date picker with a presence check.
+ */
+const MINIMUM_AGE = 18;
+
 const fillProfileSchema = z.object({
   avatarUrl: z.string().min(1, "Please upload a profile picture"),
   fullName: z.string().min(1, "Full name is required"),
@@ -46,7 +54,31 @@ const fillProfileSchema = z.object({
     .regex(/^\d{6,14}$/, "Enter a valid phone number"),
   occupation: z.string().min(1, "Required"),
   gender: z.string().min(1, "Required"),
-  dateOfBirth: z.any().refine((val) => !!val, "Required"),
+  // Age gate. This app pays real money out, so a date of birth that is merely
+  // PRESENT is not enough — under-18 accounts must not be created at all.
+  dateOfBirth: z
+    .any()
+    .refine((val) => !!val, "Date of birth is required")
+    .refine((val) => {
+      const dob = val instanceof Date ? val : new Date(val);
+      return !Number.isNaN(dob.getTime());
+    }, "Enter a valid date of birth")
+    .refine((val) => {
+      const dob = val instanceof Date ? val : new Date(val);
+      // Compare on the calendar, not on 365.25-day arithmetic, so a birthday
+      // today counts as having been reached.
+      const cutoff = new Date();
+      cutoff.setFullYear(cutoff.getFullYear() - MINIMUM_AGE);
+      return dob <= cutoff;
+    }, `You must be at least ${MINIMUM_AGE} years old to use TopHunt`)
+    .refine((val) => {
+      const dob = val instanceof Date ? val : new Date(val);
+      // Catch obvious typos (year 1900, or a future date) that would otherwise
+      // sail through the age check.
+      const oldest = new Date();
+      oldest.setFullYear(oldest.getFullYear() - 120);
+      return dob > oldest && dob <= new Date();
+    }, "Enter a valid date of birth"),
 });
 
 type FillProfileFormValues = z.infer<typeof fillProfileSchema>;

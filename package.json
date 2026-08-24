@@ -1,23 +1,25 @@
 {
-    "name": "instagram-dp-monorepo",
-    "private": true,
-    "version": "1.0.0",
-    "scripts": {
-        "expo:start": "cd apps/expo && npx expo start",
-        "expo:web": "cd apps/expo && npx expo start --web",
-        "expo:build:web": "cd apps/expo && npx expo export",
-        "admin:dev": "cd apps/admin-panel && npm run dev",
-        "admin:build": "cd apps/admin-panel && npm run build",
-        "admin:start": "cd apps/admin-panel && npm run serve",
-        "admin:deploy": "cd apps/admin-panel && npm run deploy",
-        "worker:dev": "cd apps/worker && npm run dev",
-        "worker:deploy": "cd apps/worker && npm run deploy",
-        "lint": "echo \"Lint handled per-app\""
-    },
-    "devDependencies": {
-        "firebase-tools": "^13.0.0"
-    },
-    "dependencies": {
-        "react-native-image-viewing": "^0.2.2"
-    }
+  "name": "tophunt-monorepo",
+  "private": true,
+  "version": "1.0.0",
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "scripts": {
+    "expo:start": "cd apps/expo && npx expo start",
+    "expo:web": "cd apps/expo && npx expo start --web",
+    "expo:build:web": "cd apps/expo && npx expo export -p web",
+    "admin:dev": "cd apps/admin-panel && npm run dev",
+    "admin:build": "cd apps/admin-panel && npm run build",
+    "admin:start": "cd apps/admin-panel && npm run serve",
+    "admin:deploy": "cd apps/admin-panel && npm run deploy",
+    "worker:dev": "cd apps/worker && npm run dev",
+    "worker:deploy": "cd apps/worker && npm run deploy",
+    "worker:test": "cd apps/worker && npm test",
+    "lint": "cd apps/expo && npm run lint",
+    "verify": "npm run verify:worker && npm run verify:admin && npm run verify:expo",
+    "verify:worker": "cd apps/worker && npm run typecheck && npm test && npx wrangler deploy --dry-run --outdir=/tmp/worker-build",
+    "verify:admin": "cd apps/admin-panel && npm run typecheck && npm run build",
+    "verify:expo": "cd apps/expo && npm run typecheck && npm run check:icons && npm test"
+  }
 }

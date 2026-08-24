@@ -1,9 +1,22 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  View, Text, StyleSheet, SafeAreaView, useColorScheme, Image, TouchableOpacity,
-  ScrollView, Dimensions, TextInput, Animated as RNAnimated, FlatList,
-  RefreshControl, Platform, Pressable, ActivityIndicator,
+  View,
+  Text,
+  StyleSheet,
+  SafeAreaView,
+  Image,
+  TouchableOpacity,
+  ScrollView,
+  Dimensions,
+  TextInput,
+  Animated as RNAnimated,
+  FlatList,
+  RefreshControl,
+  Platform,
+  Pressable,
+  ActivityIndicator,
 } from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { BottomNav } from '@/src/components/home/BottomNav';
 import { Ionicons, MaterialCommunityIcons } from '@/src/lib/icons';
 import { ArrowIcon } from '@/src/components/ui/ArrowIcon';

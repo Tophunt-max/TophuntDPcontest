@@ -9,6 +9,7 @@
 import { AwsClient } from "aws4fetch";
 import type { Env } from "../types";
 import { httpsError } from "./http";
+import { getR2Credentials } from "./integrations";
 
 export const ALLOWED_MIME_TYPES = [
   "image/jpeg",
@@ -45,8 +46,49 @@ export interface PresignResult {
 }
 
 /**
+ * Folders a normal end user is allowed to mint an upload key for.
+ *
+ * `contest-banners` is deliberately NOT here: those objects are treated as
+ * deployment-owned by `contestBannerKeyFromPublicUrl` and are deleted by the
+ * contest lifecycle, so letting a user write into that prefix would let them
+ * plant or clobber banner objects.
+ */
+export const USER_UPLOAD_FOLDERS = [
+  "posts",
+  "stories",
+  "avatars",
+  "profile",
+  "chat",
+  "contest-entries",
+  "reports",
+  "misc",
+] as const;
+
+/**
+ * Normalise a caller-supplied folder into a safe R2 key prefix.
+ *
+ * Multi-segment prefixes are supported (the blog importer uses
+ * `blog/imported`), but every segment is individually sanitised, so `..`,
+ * absolute paths, empty segments and encoded traversal all collapse away.
+ */
+export function sanitizeMediaFolder(folder: unknown, fallback = "misc"): string {
+  const raw = typeof folder === "string" ? folder : "";
+  const segments = raw
+    .split("/")
+    .map((segment) => segment.replace(/[^a-zA-Z0-9_-]/g, ""))
+    .filter((segment) => segment.length > 0 && segment !== "." && segment !== "..")
+    .slice(0, 3);
+  return segments.length > 0 ? segments.join("/") : fallback;
+}
+
+/**
  * Create a presigned PUT URL for a client-side upload to R2.
  * Keeps the S3 key layout: `{folder}/{images|videos}/{uuid}{ext}`.
+ *
+ * The folder is validated against `USER_UPLOAD_FOLDERS` rather than being
+ * interpolated raw: this endpoint mints a credential that writes to whatever
+ * key it is given, so an unsanitised prefix let any authenticated user PUT into
+ * deployment-owned paths.
  */
 export async function presignUpload(
   env: Env,
@@ -57,21 +99,31 @@ export async function presignUpload(
   if (!ALLOWED_MIME_TYPES.includes(fileType)) {
     throw httpsError("invalid-argument", "Invalid file type.");
   }
-  if (!env.R2_ACCOUNT_ID || !env.R2_ACCESS_KEY_ID || !env.R2_SECRET_ACCESS_KEY || !env.R2_BUCKET) {
+  // Panel-managed with environment fallback (lib/integrations.ts), so the S3
+  // keys can be rotated without a deploy.
+  const creds = await getR2Credentials(env);
+  if (!creds.accountId || !creds.accessKeyId || !creds.secretAccessKey || !creds.bucket) {
     throw httpsError("internal", "Server storage configuration error.");
+  }
+  const safeFolder = sanitizeMediaFolder(folder);
+  if (!(USER_UPLOAD_FOLDERS as readonly string[]).includes(safeFolder)) {
+    throw httpsError(
+      "invalid-argument",
+      `folder must be one of: ${USER_UPLOAD_FOLDERS.join(", ")}.`,
+    );
   }
 
   const subFolder = fileType.startsWith("video/") ? "videos" : "images";
-  const fileKey = `${folder}/${subFolder}/${crypto.randomUUID()}${extensionFor(fileType)}`;
+  const fileKey = `${safeFolder}/${subFolder}/${crypto.randomUUID()}${extensionFor(fileType)}`;
 
   const client = new AwsClient({
-    accessKeyId: env.R2_ACCESS_KEY_ID,
-    secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+    accessKeyId: creds.accessKeyId,
+    secretAccessKey: creds.secretAccessKey,
     region: "auto",
     service: "s3",
   });
 
-  const endpoint = `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${env.R2_BUCKET}/${fileKey}`;
+  const endpoint = `https://${creds.accountId}.r2.cloudflarestorage.com/${creds.bucket}/${fileKey}`;
   const url = new URL(endpoint);
   url.searchParams.set("X-Amz-Expires", String(expiresIn));
 
@@ -106,7 +158,7 @@ export async function uploadToR2(
   if (!ALLOWED_MIME_TYPES.includes(fileType)) {
     throw httpsError("invalid-argument", "Invalid file type.");
   }
-  const safeFolder = (folder || "misc").replace(/[^a-zA-Z0-9_-]/g, "") || "misc";
+  const safeFolder = sanitizeMediaFolder(folder);
   const subFolder = fileType.startsWith("video/") ? "videos" : "images";
   const fileKey = `${safeFolder}/${subFolder}/${crypto.randomUUID()}${extensionFor(fileType)}`;
 

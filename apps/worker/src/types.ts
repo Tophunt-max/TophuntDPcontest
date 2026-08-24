@@ -72,6 +72,39 @@ export interface Env {
   // error tracking is a no-op and nothing else changes.
   SENTRY_DSN?: string;
   SENTRY_ENVIRONMENT?: string;
+
+  // -------------------------------------------------------------------------
+  // Panel-managed integrations.
+  //
+  // Every credential below can also be set from the admin panel, where it is
+  // stored encrypted in D1 (lib/secretBox.ts). Resolution order is ALWAYS
+  // panel-managed value first, then these environment variables — so an existing
+  // deployment keeps working untouched and credentials can be migrated into the
+  // panel one at a time. `GET /admin/integrations` reports which source is live.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Master key for encrypting panel-managed credentials. Stays a Cloudflare
+   * secret and is NEVER stored in the database — it is what makes the encrypted
+   * rows useless on their own.
+   *
+   * Generate: `openssl rand -base64 32`
+   * Set:      `wrangler secret put SETTINGS_ENCRYPTION_KEY`
+   *
+   * Without it, panel-managed credential WRITES are refused (there is no
+   * plaintext fallback) and the environment variables above are used as before.
+   */
+  SETTINGS_ENCRYPTION_KEY?: string;
+
+  // Alternative SMS gateways (Indian DLT gateways are usually cheaper than
+  // Twilio for OTP traffic). The active provider is an admin-panel setting.
+  MSG91_AUTH_KEY?: string;
+  FAST2SMS_API_KEY?: string;
+  /** Token substituted into a custom gateway's URL/body as {token}. */
+  SMS_CUSTOM_TOKEN?: string;
+
+  // Alternative transactional email provider.
+  BREVO_API_KEY?: string;
 }
 
 /** Authenticated user context attached by the auth middleware. */

@@ -14,6 +14,7 @@ import { createNotification } from "./lib/notify";
 import { drainBroadcastJobs, enqueueBroadcast } from "./lib/broadcast";
 import { finalizeVotes } from "./lib/voteCounter";
 import { settleRefund, settleWinner } from "./lib/contestSettlement";
+import { matchPot, perPlayerEntryFee } from "./lib/money";
 import { deleteMediaByUrl } from "./lib/mediaDelete";
 import { newId, now } from "./lib/ids";
 import { publish } from "./lib/publish";
@@ -45,17 +46,35 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
   const userB = match.userB as any;
   if (!userA || !userB) return;
 
-  let rewardAmount = Number(match.entryFee || 0);
+  // The prize is whatever was SNAPSHOTTED on the match when it was created.
+  // Re-reading the live contest template here is what let an admin edit change
+  // the payout of a match that was already in flight.
+  //
+  // `matchPot` is a hard ceiling regardless of source: a prize can never exceed
+  // the coins the two players actually funded, so settlement cannot mint coins
+  // even if a legacy template row still holds an over-funded reward.
+  const pot = matchPot(match.entryFee);
+  let rewardAmount = match.prizeCoins == null ? null : Math.min(Number(match.prizeCoins), pot);
   let minVotes = match.minVotesRequired == null
     ? null
     : Math.max(0, Number(match.minVotesRequired));
-  if (match.contestId) {
+  if (match.contestId && (rewardAmount == null || minVotes == null)) {
     const contest = await db
       .select({ reward: schema.contests.rewardCoins, minVotes: schema.contests.minVotes })
       .from(schema.contests)
       .where(eq(schema.contests.id, match.contestId))
       .get();
-    if (contest?.reward) rewardAmount = Number(contest.reward);
+    if (rewardAmount == null) {
+      // Legacy match with no snapshot: derive it once, clamp it to the pot, and
+      // persist it so this match settles deterministically from now on.
+      rewardAmount = Math.min(Number(contest?.reward ?? pot), pot);
+      await db.update(schema.contestMatches)
+        .set({ prizeCoins: rewardAmount })
+        .where(and(
+          eq(schema.contestMatches.id, match.id),
+          isNull(schema.contestMatches.prizeCoins),
+        ));
+    }
     if (minVotes == null) {
       if (!contest) {
         throw new Error(`Match ${match.id} has no min-vote snapshot and its template is missing.`);
@@ -71,6 +90,10 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
   }
   if (minVotes == null) {
     throw new Error(`Match ${match.id} has no immutable minimum-vote policy snapshot.`);
+  }
+  if (rewardAmount == null) {
+    // No snapshot and no template (standalone match): the pot is the prize.
+    rewardAmount = pot;
   }
 
   // Finalization is deliberately fail-closed. The per-match actor closes first,
@@ -97,7 +120,7 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
       expectedStatus: "active",
       finalStatus: "cancelled",
       participantUids: [userA.uid, userB.uid],
-      refundPerUser: Number(match.entryFee || 0) / 2,
+      refundPerUser: perPlayerEntryFee(match.entryFee),
       description: "Match voided (same-device entries)",
       completedAt: ts,
     });
@@ -118,7 +141,7 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
       expectedStatus: "active",
       finalStatus: "cancelled",
       participantUids: [userA.uid, userB.uid],
-      refundPerUser: Number(match.entryFee || 0) / 2,
+      refundPerUser: perPlayerEntryFee(match.entryFee),
       description: `Refund: minimum ${minVotes} votes not reached`,
       completedAt: ts,
     });
@@ -140,7 +163,7 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
       expectedStatus: "active",
       finalStatus: "completed",
       participantUids: [userA.uid, userB.uid],
-      refundPerUser: Number(match.entryFee || 0) / 2,
+      refundPerUser: perPlayerEntryFee(match.entryFee),
       description: "Match tied; entry fee refunded",
       completedAt: ts,
     });
@@ -174,7 +197,7 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
 
 async function refundWaitingMatch(env: Env, match: Match): Promise<void> {
   const userA = match.userA as any;
-  const refund = Number(match.entryFee || 0) / 2;
+  const refund = perPlayerEntryFee(match.entryFee);
   const ts = now();
   const settled = await settleRefund(env, {
     matchId: match.id,
@@ -233,7 +256,15 @@ export async function resolveContests(env: Env): Promise<void> {
     const waiting = await db.select().from(schema.contestMatches)
       .where(and(eq(schema.contestMatches.status, "waiting_for_opponent"), lte(schema.contestMatches.expiresAt, nowMs)))
       .limit(PAGE).all();
-    for (const m of waiting) await refundWaitingMatch(env, m);
+    for (const m of waiting) {
+      try {
+        await refundWaitingMatch(env, m);
+      } catch (e) {
+        // One bad row must not abort the whole waiting-match refund sweep — the
+        // active loop above already had this guard; this one did not.
+        console.error("[resolveContests] waiting-match refund deferred", m.id, e);
+      }
+    }
     if (waiting.length < PAGE) break;
   }
 
@@ -318,33 +349,111 @@ export async function processScheduledNotifications(env: Env): Promise<void> {
   }
 }
 
-/** Monthly cron: top-3 by monthlyWins get coins/xp/badge, then reset monthlyWins. */
-export async function monthlyHallOfFame(env: Env): Promise<void> {
+/** `YYYY-MM` of the month that has just ended (the one being settled). */
+export function previousMonthPeriod(at: number = Date.now()): string {
+  const d = new Date(at);
+  // Day 0 of the current month is the last day of the previous month.
+  const prev = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 0));
+  return `${prev.getUTCFullYear()}-${String(prev.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+/**
+ * Monthly cron: top-3 by monthlyWins get coins/xp/badge, then reset monthlyWins.
+ *
+ * Exactly-once per (period, rank). Each winner's payout is claimed in
+ * `idempotency_keys` inside the SAME transaction as the credit, the ledger row
+ * and the XP/badge grant, so:
+ *
+ *  - a double-clicked `/admin/ops/hall-of-fame` pays nobody twice
+ *  - a mid-loop failure does not re-pay the winners already settled on retry
+ *  - `monthly_wins` is only reset when every winner has actually been paid,
+ *    so a failure cannot silently erase the leaderboard it was settling
+ */
+export async function monthlyHallOfFame(env: Env, period = previousMonthPeriod()): Promise<{
+  period: string;
+  paid: number;
+  skipped: number;
+  reset: boolean;
+}> {
   const db = getDb(env);
   const top = await db.select().from(schema.users).orderBy(desc(schema.users.monthlyWins)).limit(3).all();
   const rewards = [1000, 500, 250];
   const badges = ["Gold Hall of Fame", "Silver Hall of Fame", "Bronze Hall of Fame"];
+
+  let paid = 0;
+  let skipped = 0;
+  const failures: string[] = [];
 
   for (let i = 0; i < top.length; i++) {
     const u = top[i];
     if (!u.monthlyWins || u.monthlyWins <= 0) continue;
     const reward = rewards[i];
     const ts = now();
+    const claimKey = `hall_of_fame:${period}:${i + 1}:${u.uid}`;
+    const nonce = crypto.randomUUID();
     const currentBadges = ((u.badges as unknown as any[]) || []).slice();
     if (!currentBadges.includes(badges[i])) currentBadges.push(badges[i]);
-    await db.update(schema.users).set({
-      dpcoin: sql`${schema.users.dpcoin} + ${reward}`,
-      xp: sql`${schema.users.xp} + 500`,
-      badges: currentBadges as any,
-      monthlyWins: 0,
-      updatedAt: ts,
-    }).where(eq(schema.users.uid, u.uid));
-    await db.insert(schema.coinTransactions).values({ id: newId(), uid: u.uid, amount: reward, type: "monthly_hall_of_fame_reward", description: `Hall of Fame rank #${i + 1}`, createdAt: ts });
-    await createNotification(env, u.uid, { title: "Monthly Hall of Fame! 🏆", body: `Congratulations! You ranked #${i + 1} this month. You've earned ${reward} Dpcoins and the ${badges[i]}!`, type: "hall-of-fame", targetId: "profile" });
+
+    try {
+      // The claim row is written first; every money/XP statement after it is
+      // gated on OUR nonce having won that claim. On a replay the pre-existing
+      // row keeps its original nonce, so all three statements no-op.
+      const claimGate = `EXISTS (SELECT 1 FROM idempotency_keys WHERE key = ? AND nonce = ?)`;
+      const results = await env.DB.batch([
+        env.DB.prepare(
+          `INSERT OR IGNORE INTO idempotency_keys (key, nonce, scope, created_at) VALUES (?, ?, ?, ?)`,
+        ).bind(claimKey, nonce, "hall_of_fame", ts),
+        env.DB.prepare(
+          `INSERT OR IGNORE INTO coin_transactions
+             (id, uid, amount, type, description, created_at)
+           SELECT ?, ?, ?, 'monthly_hall_of_fame_reward', ?, ?
+            WHERE ${claimGate}`,
+        ).bind(
+          `hall_of_fame:${period}:${u.uid}`,
+          u.uid,
+          reward,
+          `Hall of Fame rank #${i + 1} (${period})`,
+          ts,
+          claimKey,
+          nonce,
+        ),
+        env.DB.prepare(
+          `UPDATE users
+              SET dpcoin = dpcoin + ?, xp = xp + 500, badges = ?, monthly_wins = 0, updated_at = ?
+            WHERE uid = ? AND ${claimGate}`,
+        ).bind(reward, JSON.stringify(currentBadges), ts, u.uid, claimKey, nonce),
+      ]);
+
+      if (Number(results[2]?.meta?.changes || 0) > 0) {
+        paid++;
+        await createNotification(env, u.uid, {
+          title: "Monthly Hall of Fame! 🏆",
+          body: `Congratulations! You ranked #${i + 1} this month. You've earned ${reward} Dpcoins and the ${badges[i]}!`,
+          type: "hall-of-fame",
+          targetId: "profile",
+        });
+      } else {
+        // Already settled for this period — expected on a manual re-trigger.
+        skipped++;
+      }
+    } catch (e) {
+      console.error("[monthlyHallOfFame] payout failed", period, u.uid, e);
+      failures.push(u.uid);
+    }
+  }
+
+  if (failures.length > 0) {
+    // Do NOT reset the leaderboard: the unpaid winners' monthly_wins are the
+    // only record of who is still owed. Throwing surfaces this in the cron
+    // failure alert so it can be re-run (which is now safe).
+    throw new Error(
+      `Hall of Fame ${period}: ${failures.length} payout(s) failed (${failures.join(", ")}); monthly wins left intact for retry.`,
+    );
   }
 
   // Reset the monthly leaderboard for EVERYONE (not just the top 3) so next
   // month starts clean — otherwise non-winners' monthlyWins accumulate forever
   // and the "monthly" ranking silently becomes an all-time cumulative one.
   await db.update(schema.users).set({ monthlyWins: 0, updatedAt: now() }).where(gt(schema.users.monthlyWins, 0));
+  return { period, paid, skipped, reset: true };
 }

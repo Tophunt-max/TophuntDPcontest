@@ -18,8 +18,8 @@ import {
   KeyboardAvoidingView,
   Platform,
   Keyboard,
-  useColorScheme
 } from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AppImage as Image } from '@/src/components/ui/AppImage';

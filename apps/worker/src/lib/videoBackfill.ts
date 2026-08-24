@@ -41,7 +41,7 @@ function isR2Video(url: unknown): url is string {
  */
 async function backfillStories(env: Env, limit: number, result: BackfillResult): Promise<void> {
   const db = getDb(env);
-  const cfg = bunnyConfig(env)!;
+  const cfg = (await bunnyConfig(env))!;
 
   const rows = await db
     .select({ id: schema.stories.id, userId: schema.stories.userId, mediaUrl: schema.stories.mediaUrl })
@@ -101,7 +101,7 @@ async function backfillStories(env: Env, limit: number, result: BackfillResult):
  */
 async function backfillMatches(env: Env, limit: number, result: BackfillResult): Promise<void> {
   const db = getDb(env);
-  const cfg = bunnyConfig(env)!;
+  const cfg = (await bunnyConfig(env))!;
 
   const rows = await db
     .select({
@@ -176,7 +176,7 @@ export async function runVideoBackfillBatch(
   env: Env,
   opts: { limit?: number; target?: "stories" | "matches" | "all" } = {},
 ): Promise<BackfillResult> {
-  if (!bunnyConfigured(env)) {
+  if (!(await bunnyConfigured(env))) {
     throw new Error("Bunny Stream is not configured (BUNNY_STREAM_API_KEY / BUNNY_LIBRARY_ID / BUNNY_CDN_HOSTNAME).");
   }
   const limit = Math.min(Math.max(opts.limit ?? 10, 1), 50);
@@ -208,7 +208,7 @@ export async function promoteBackfilledVideo(
     r2SourceUrl: string | null;
   },
 ): Promise<void> {
-  const cfg = bunnyConfig(env);
+  const cfg = await bunnyConfig(env);
   // Not a backfilled video (a normal upload already stored the Bunny URL).
   if (!cfg || !video.r2SourceUrl || !video.targetId) return;
 

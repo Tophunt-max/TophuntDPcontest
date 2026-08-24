@@ -7,10 +7,12 @@
  * the secret key and compares. This is what proves a real payment happened —
  * without it, a client could mint unlimited coins by calling topup directly.
  *
- * Fail-closed: if RAZORPAY_KEY_SECRET is not configured, top-ups are rejected
- * (see the topup handler), never credited for free.
+ * Fail-closed: if no Razorpay key secret is configured — in the admin panel or in
+ * the environment — top-ups are rejected (see the topup handler), never credited
+ * for free.
  */
 import type { Env } from "../types";
+import { getRazorpayCredentials } from "./integrations";
 import { timingSafeEqualHex } from "./timingSafe";
 
 export interface RazorpayProof {
@@ -24,7 +26,8 @@ export interface RazorpayProof {
  * is not configured or any field is missing (caller must fail-closed).
  */
 export async function verifyRazorpaySignature(env: Env, proof: RazorpayProof): Promise<boolean> {
-  const secret = env.RAZORPAY_KEY_SECRET;
+  // Panel-managed credential with environment fallback — see lib/integrations.ts.
+  const { keySecret: secret } = await getRazorpayCredentials(env);
   if (!secret || !proof.orderId || !proof.paymentId || !proof.signature) return false;
 
   const enc = new TextEncoder();
@@ -54,7 +57,7 @@ export async function verifyRazorpayWebhookSignature(
   rawBody: string,
   signature: string | null | undefined,
 ): Promise<boolean> {
-  const secret = env.RAZORPAY_WEBHOOK_SECRET;
+  const { webhookSecret: secret } = await getRazorpayCredentials(env);
   if (!secret || !signature) return false;
 
   const enc = new TextEncoder();

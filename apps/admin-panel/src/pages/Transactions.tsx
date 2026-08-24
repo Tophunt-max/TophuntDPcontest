@@ -49,18 +49,37 @@ export default function Transactions() {
       <PageHeader title="Transactions & Revenue" subtitle="Coin ledger, top-ups and money flow" />
 
       {/* Revenue stat cards */}
+      {/* Money and coins are different units and are labelled as such: "revenue"
+          used to be a coin count rendered with a ₹ icon. */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <StatCard icon={IndianRupee} label="Total Revenue" value={fmtNumber(revenue.data?.totalRevenue ?? 0)} gradient="gradient-green" />
+        <StatCard icon={IndianRupee} label="Net Revenue (₹)" value={`₹${fmtNumber(revenue.data?.netRevenueInr ?? 0)}`} gradient="gradient-green" />
         <StatCard icon={CreditCard} label="Payments" value={fmtNumber(revenue.data?.paymentCount ?? 0)} gradient="gradient-blue" />
-        <StatCard icon={Coins} label="Coins in Circulation" value={fmtNumber(revenue.data?.coinsInCirculation ?? 0)} gradient="gradient-orange" />
-        <StatCard icon={Wallet} label="Transactions" value={fmtNumber(data.length)} gradient="gradient-purple" />
+        <StatCard icon={Coins} label="Coins Sold" value={fmtNumber(revenue.data?.coinsSold ?? 0)} gradient="gradient-orange" />
+        <StatCard icon={Wallet} label="Coins in Circulation" value={fmtNumber(revenue.data?.coinsInCirculation ?? 0)} gradient="gradient-purple" />
       </div>
+
+      {(revenue.data?.refundedInr ?? 0) > 0 || (revenue.data?.paymentsWithoutRecordedAmount ?? 0) > 0 ? (
+        <div className="mb-6 flex flex-wrap gap-3 text-xs">
+          {(revenue.data?.refundedInr ?? 0) > 0 && (
+            <span className="px-3 py-1.5 rounded-lg bg-red-500/10 text-red-600 font-medium">
+              ₹{fmtNumber(revenue.data!.refundedInr)} refunded or charged back across{" "}
+              {fmtNumber(revenue.data!.refundedCount)} payment(s) — excluded from net revenue
+            </span>
+          )}
+          {(revenue.data?.paymentsWithoutRecordedAmount ?? 0) > 0 && (
+            <span className="px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-600 font-medium">
+              {fmtNumber(revenue.data!.paymentsWithoutRecordedAmount)} older payment(s) have no recorded
+              rupee amount, so revenue is understated by that much
+            </span>
+          )}
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
         {/* Revenue trend */}
         <div className="lg:col-span-2 bg-card border border-border rounded-2xl p-5">
           <h3 className="font-bold text-foreground mb-1">Revenue (last 14 days)</h3>
-          <p className="text-xs text-muted-foreground mb-4">Successful top-ups per day</p>
+          <p className="text-xs text-muted-foreground mb-4">Rupees from successful top-ups per day</p>
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={revenue.data?.trend ?? []} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
@@ -85,7 +104,7 @@ export default function Transactions() {
                 <div key={s.userId} className="flex items-center gap-3 p-2 rounded-lg hover:bg-secondary/40">
                   <span className="w-6 h-6 rounded-full bg-secondary flex items-center justify-center text-xs font-bold">{i + 1}</span>
                   <span className="text-sm text-foreground flex-1 truncate">{s.fullName || s.username || s.userId}</span>
-                  <span className="text-sm font-bold text-green-600">{fmtNumber(s.total)}</span>
+                  <span className="text-sm font-bold text-green-600">₹{fmtNumber(s.totalInr)}</span>
                 </div>
               ))
             )}

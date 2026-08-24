@@ -1,5 +1,13 @@
 import React from 'react';
-import { View, Text, StyleSheet, SafeAreaView, FlatList, ActivityIndicator, useColorScheme } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  SafeAreaView,
+  FlatList,
+  ActivityIndicator,
+} from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@/src/lib/icons';
 import { BackButton } from '@/src/components/ui/BackButton';

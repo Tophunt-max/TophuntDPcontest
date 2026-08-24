@@ -14,7 +14,7 @@ import { z } from 'zod';
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColor } from "@/hooks/use-theme-color";
-import { useColorScheme } from "@/hooks/use-color-scheme";
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { NewPassWordDark, NewPassWordLight, Eye_Open, Eye_Close } from "@/assets/svgs";
 import { BackButton } from "@/src/components/ui/BackButton";
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";

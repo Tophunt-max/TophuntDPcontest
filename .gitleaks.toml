@@ -1,0 +1,28 @@
+# gitleaks configuration.
+#
+# The default ruleset is kept in full — this only carves out two specific
+# false positives that the broad `generic-api-key` heuristic flags because the
+# identifier contains "KEY". Both are allow-listed by an EXACT regex rather than
+# by path or by rule, so a genuine credential added to the same file still fails
+# the scan.
+#
+# A permanently-red secret scan is worse than no secret scan, because everyone
+# learns to ignore it. That is why these are pinned narrowly instead of disabling
+# the rule or excluding a directory.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Non-credential constants misdetected as generic API keys"
+regexes = [
+  # A domain-separation label mixed into the settings key derivation
+  # (apps/worker/src/lib/secretBox.ts). It is a fixed public string, not key
+  # material — changing it would only invalidate existing ciphertext.
+  '''tophunt\.integration-secrets\.v1''',
+
+  # Test vector for the encryption round-trip in
+  # apps/worker/test/integrations.test.ts. It is base64 of the literal text
+  # "test-encryption-key-for-unit-tests" and encrypts nothing real.
+  '''dGVzdC1lbmNyeXB0aW9uLWtleS1mb3ItdW5pdC10ZXN0cw==''',
+]

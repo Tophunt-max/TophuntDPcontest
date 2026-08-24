@@ -15,6 +15,7 @@
 import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { newId, now } from "./ids";
+import { getSentryDsn } from "./integrations";
 
 export interface CaptureContext {
   requestId?: string;
@@ -83,8 +84,11 @@ function parseDsn(dsn: string): { endpoint: string; publicKey: string } | null {
  */
 export async function captureError(env: Env, err: unknown, ctx: CaptureContext = {}): Promise<void> {
   try {
-    if (!env.SENTRY_DSN) return;
-    const parsed = parseDsn(env.SENTRY_DSN);
+    // Panel-managed with environment fallback, so error tracking can be turned on
+    // after the fact without a deploy.
+    const dsn = await getSentryDsn(env);
+    if (!dsn) return;
+    const parsed = parseDsn(dsn);
     if (!parsed) return;
 
     const error = err instanceof Error ? err : new Error(typeof err === "string" ? err : "Unknown error");

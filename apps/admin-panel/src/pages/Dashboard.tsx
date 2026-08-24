@@ -130,7 +130,7 @@ export default function Dashboard() {
         {/* Finance trends: deposits vs withdrawals (14 days) */}
         <div className="bg-card border border-border rounded-2xl p-5">
           <h3 className="font-bold text-foreground mb-1">Deposits vs Withdrawals</h3>
-          <p className="text-xs text-muted-foreground mb-4">Approved deposits &amp; processed payouts (coins, last 14 days)</p>
+          <p className="text-xs text-muted-foreground mb-4">Approved deposits &amp; processed payouts (₹, last 14 days)</p>
           <div className="h-64">
             {financeData.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
@@ -171,6 +171,10 @@ export default function Dashboard() {
             <div className="flex items-center justify-between text-sm mt-2">
               <span className="text-muted-foreground">Successful payments</span>
               <span className="font-bold text-foreground">{fmtNumber(revenue.data?.paymentCount)}</span>
+            </div>
+            <div className="flex items-center justify-between text-sm mt-2">
+              <span className="text-muted-foreground">Net revenue (₹)</span>
+              <span className="font-bold text-foreground">₹{fmtNumber(revenue.data?.netRevenueInr)}</span>
             </div>
           </div>
         </div>

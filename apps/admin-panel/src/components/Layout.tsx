@@ -5,6 +5,7 @@ import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { fmtDateTime } from "@/lib/format";
 import {
+  Plug,
   LayoutDashboard,
   BarChart3,
   Users,
@@ -84,6 +85,7 @@ const nav = [
   { href: "/rewards", label: "Rewards & Gamification", icon: Gift, section: "system" },
   { href: "/app-control", label: "App Control", icon: SlidersHorizontal, section: "system" },
   { href: "/app-settings", label: "App Settings", icon: Settings, section: "system" },
+  { href: "/integrations", label: "Integrations", icon: Plug, section: "system" },
 ];
 
 const sections: Record<string, string> = {

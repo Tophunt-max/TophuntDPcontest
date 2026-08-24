@@ -155,6 +155,11 @@ export const contestMatches = sqliteTable(
     rewardAmount: real("reward_amount").default(0),
     // Immutable eligibility threshold captured when the match is created/activated.
     minVotesRequired: integer("min_votes_required"),
+    // Immutable prize snapshot captured at match creation. Settlement pays THIS,
+    // not the live contest template, so editing a template can never change the
+    // prize of a match that is already in flight. NULL = legacy row, fall back
+    // to the template at settlement time.
+    prizeCoins: real("prize_coins"),
     // Unique token used to make status + financial settlement one atomic D1 batch.
     settlementId: text("settlement_id"),
     // { fire: n, heart: n, laugh: n } quick-reaction counters
@@ -190,10 +195,17 @@ export const votes = sqliteTable(
     voterUid: text("voter_uid").notNull(),
     votedForUid: text("voted_for_uid").notNull(),
     deviceId: text("device_id"),
+    /**
+     * Voter IP, for fraud investigation only — never a blocking dedup key,
+     * because carrier NAT puts huge numbers of legitimate users behind one
+     * address. Without it the fraud view could only correlate device ids.
+     */
+    ip: text("ip"),
     createdAt: integer("created_at").notNull(),
   },
   (t) => ({
     matchIdx: index("idx_votes_match").on(t.matchId),
+    matchIpIdx: index("idx_votes_match_ip").on(t.matchId, t.ip),
     // voter_uid LEADING — the feed's affinity scan and the daily-task counts all
     // filter by voter, which the (match_id, ...) indexes below cannot serve.
     voterCreatedIdx: index("idx_votes_voter_created").on(t.voterUid, t.createdAt),
@@ -243,13 +255,32 @@ export const coinTransactions = sqliteTable(
 // ---------------------------------------------------------------------------
 // payments  (idempotency for top-ups)
 // ---------------------------------------------------------------------------
-export const payments = sqliteTable("payments", {
-  id: text("id").primaryKey(), // paymentId
-  userId: text("user_id").notNull(),
-  amount: real("amount").notNull(),
-  status: text("status").default("success"),
-  createdAt: integer("created_at").notNull(),
-});
+export const payments = sqliteTable(
+  "payments",
+  {
+    id: text("id").primaryKey(), // paymentId
+    userId: text("user_id").notNull(),
+    /**
+     * LEGACY: this column holds COINS, not money, despite the name. Kept for
+     * backwards compatibility with existing rows and readers; new code should
+     * use `coins` (same value, honest name) and `amountPaise` (actual money).
+     */
+    amount: real("amount").notNull(),
+    /** Coins credited by this payment. */
+    coins: real("coins"),
+    /**
+     * What the user actually PAID, in integer paise. This is the only column
+     * revenue reporting reads — summing `amount` reported coin counts as rupees.
+     */
+    amountPaise: integer("amount_paise"),
+    source: text("source"), // razorpay | manual_deposit
+    status: text("status").default("success"), // success | refunded | disputed
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    statusCreatedIdx: index("idx_payments_status_created").on(t.status, t.createdAt),
+  }),
+);
 
 // ---------------------------------------------------------------------------
 // payment_orders  (persistent record of Razorpay orders for reconciliation)
@@ -269,10 +300,24 @@ export const paymentOrders = sqliteTable(
     bonusCoins: real("bonus_coins").default(0), // how much of `coins` was bonus — display/reporting only
     amountPaise: integer("amount_paise").notNull(), // expected amount (paise)
     currency: text("currency").notNull().default("INR"),
-    status: text("status").notNull().default("created"), // created | paid | failed
+    // created | paid | refunded | disputed | expired | failed
+    //
+    // Only `created` and `expired` may transition to `paid` — see
+    // CREDITABLE_ORDER_STATUSES in lib/coinOrders.ts. A refunded or disputed
+    // order must never be re-credited by a late duplicate webhook.
+    status: text("status").notNull().default("created"),
     paymentId: text("payment_id"),
-    source: text("source"), // callback | webhook
+    source: text("source"), // callback | webhook | reconciliation
     creditedAt: integer("credited_at"),
+    // Clawback trail, written by the refund/dispute webhook.
+    refundedAt: integer("refunded_at"),
+    refundedAmountPaise: integer("refunded_amount_paise"),
+    clawedBackCoins: real("clawed_back_coins"),
+    /** Coins we could NOT recover (user had already spent them). Needs review. */
+    clawbackShortfall: real("clawback_shortfall"),
+    // Reconciliation bookkeeping so the sweeper never hammers the gateway.
+    reconcileAttempts: integer("reconcile_attempts").notNull().default(0),
+    reconciledAt: integer("reconciled_at"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
@@ -605,10 +650,19 @@ export const adminNotifications = sqliteTable(
     title: text("title"),
     message: text("message"),
     link: text("link"),
+    /**
+     * Who should see this: "finance" (payouts, clawbacks, chargebacks, cron
+     * failures — full admins only) or "moderation" (reports, support — anyone
+     * with panel access, including moderators). Defaults to the stricter value.
+     */
+    scope: text("scope").notNull().default("finance"),
     isRead: integer("is_read", { mode: "boolean" }).default(false),
     createdAt: integer("created_at").notNull(),
   },
-  (t) => ({ createdIdx: index("idx_admin_notif_created").on(t.createdAt) }),
+  (t) => ({
+    createdIdx: index("idx_admin_notif_created").on(t.createdAt),
+    scopeIdx: index("idx_admin_notif_scope").on(t.scope, t.createdAt),
+  }),
 );
 
 // ---------------------------------------------------------------------------
@@ -689,6 +743,14 @@ export const withdrawals = sqliteTable(
     status: text("status").notNull().default("pending"), // pending | approved | rejected | paid
     adminNote: text("admin_note"),
     processedBy: text("processed_by"), // admin uid who actioned it
+    /**
+     * Bank reference (UTR / RRN / NEFT ref) for the actual transfer. Required to
+     * mark a payout paid: without it, "we marked it paid" and "the bank sent it"
+     * were unrelated facts and no outgoing rupee could be reconciled against a
+     * statement. Unique across withdrawals.
+     */
+    payoutRef: text("payout_ref"),
+    paidAt: integer("paid_at"),
     // true = coins were already deducted (escrowed) at request time. Legacy rows
     // (created before this model) are 0 and are deducted on admin approval.
     reserved: integer("reserved", { mode: "boolean" }).notNull().default(false),
@@ -800,6 +862,112 @@ export const errorLogs = sqliteTable(
   (t) => ({
     createdIdx: index("idx_error_logs_created").on(t.createdAt),
     levelIdx: index("idx_error_logs_level").on(t.level),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// integration_secrets  (panel-managed third-party credentials, ENCRYPTED)
+//
+// API keys for the SMS gateway, email provider, payment gateway and video CDN
+// used to be Cloudflare secrets only, so changing a provider or rotating a key
+// meant CLI access and a deploy. They are now settable from the admin panel —
+// but stored as AES-256-GCM ciphertext, with the encryption key itself remaining
+// a Cloudflare secret. The database alone therefore reveals nothing, and the API
+// never returns a stored value: only a fingerprint and a masked hint.
+// ---------------------------------------------------------------------------
+export const integrationSecrets = sqliteTable("integration_secrets", {
+  /** Credential name from the allow-list in lib/integrations.ts. */
+  name: text("name").primaryKey(),
+  ciphertext: text("ciphertext").notNull(),
+  iv: text("iv").notNull(),
+  /** Short SHA-256 prefix, so an admin can confirm WHICH value is stored. */
+  fingerprint: text("fingerprint"),
+  /** Masked display form, e.g. `••••3f9a`. */
+  hint: text("hint"),
+  updatedBy: text("updated_by"),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+// ---------------------------------------------------------------------------
+// account_deletions  (compliance record for self-service account deletion)
+// The users row is anonymised rather than deleted, because the ledger, contest
+// history and votes reference the uid and must be retained. This table records
+// that the deletion happened and holds no personal data.
+// ---------------------------------------------------------------------------
+export const accountDeletions = sqliteTable(
+  "account_deletions",
+  {
+    uid: text("uid").primaryKey(),
+    reason: text("reason"),
+    forfeitedCoins: real("forfeited_coins").notNull().default(0),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    createdIdx: index("idx_account_deletions_created").on(t.createdAt),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// cron_runs  (cron heartbeat + duration metric + failure trail)
+// One row per scheduled-job run. Without this a cron that stops firing is
+// invisible, and a job that throws only leaves a console.error behind while
+// settlement/refunds/payouts quietly stop.
+// ---------------------------------------------------------------------------
+export const cronRuns = sqliteTable(
+  "cron_runs",
+  {
+    id: text("id").primaryKey(),
+    job: text("job").notNull(),
+    ok: integer("ok", { mode: "boolean" }).notNull().default(true),
+    durationMs: integer("duration_ms"),
+    detail: text("detail", { mode: "json" }),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    jobCreatedIdx: index("idx_cron_runs_job_created").on(t.job, t.createdAt),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// ad_reward_claims  (rewarded-ad daily cap, enforced in D1)
+// The cap used to live only in an eventually-consistent KV counter that failed
+// OPEN on error, so concurrent claims all read the same count and all credited.
+// One row per claim + a COUNT(*) guard inside the crediting transaction makes
+// the cap exact.
+// ---------------------------------------------------------------------------
+export const adRewardClaims = sqliteTable(
+  "ad_reward_claims",
+  {
+    id: text("id").primaryKey(),
+    uid: text("uid").notNull(),
+    day: integer("day").notNull(), // UTC day bucket
+    provider: text("provider"),
+    reward: real("reward").notNull().default(0),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    uidDayIdx: index("idx_ad_reward_uid_day").on(t.uid, t.day),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// idempotency_keys  (atomic, transactional replay protection)
+// Replaces the KV read-then-write claim, which failed OPEN on any KV error and
+// let two simultaneous requests both through. A primary key in D1 is atomic by
+// construction; `nonce` identifies WHICH request won the claim, so a replay is
+// distinguishable from a first attempt even inside the same millisecond.
+// Pruned by retention in the cron.
+// ---------------------------------------------------------------------------
+export const idempotencyKeys = sqliteTable(
+  "idempotency_keys",
+  {
+    key: text("key").primaryKey(),
+    nonce: text("nonce").notNull(),
+    scope: text("scope"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    createdIdx: index("idx_idempotency_created").on(t.createdAt),
   }),
 );
 

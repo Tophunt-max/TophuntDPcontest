@@ -1,5 +1,10 @@
 import React from 'react';
-import { View, StyleSheet, useColorScheme, Dimensions } from 'react-native';
+import {
+  View,
+  StyleSheet,
+  Dimensions,
+} from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Skeleton, SkeletonCircle } from '../ui/Skeleton';
 
 const CARD_W = (Dimensions.get('window').width - 20 * 2 - 12) / 2;

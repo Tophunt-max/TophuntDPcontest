@@ -1,5 +1,15 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Alert, ActivityIndicator, useColorScheme } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TextInput,
+  TouchableOpacity,
+  ScrollView,
+  Alert,
+  ActivityIndicator,
+} from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Ionicons } from '@/src/lib/icons';
@@ -121,7 +131,7 @@ export default function WithdrawScreen() {
                 placeholderTextColor={subTextColor}
                 style={[styles.input, { color: textColor, borderColor: isDark ? '#35383F' : '#EEE' }]}
               />
-              {amt > 0 && <Text style={[styles.cashPreview, { color: primaryColor }]}>You'll receive ≈ ₹{cash.toFixed(2)}</Text>}
+              {amt > 0 && <Text style={[styles.cashPreview, { color: primaryColor }]}>You&apos;ll receive ≈ ₹{cash.toFixed(2)}</Text>}
 
               <Text style={[styles.label, { color: subTextColor, marginTop: 16 }]}>Method</Text>
               <View style={styles.methodRow}>
