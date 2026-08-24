@@ -8,11 +8,22 @@ import { useThemeColor } from '@/hooks/use-theme-color';
 
 const { width } = Dimensions.get('window');
 
+/**
+ * Contest congratulations screen.
+ *
+ * Reached from both the create and the join flow via
+ * `goToCongratulations` (src/lib/contestSuccess.ts). `mode` distinguishes the
+ * two, because the copy is genuinely different: a joiner is immediately live and
+ * being voted on, whereas a creator is waiting for an opponent. Previously this
+ * screen said "you have successfully joined" in both cases — and in fact was
+ * never navigated to at all, so the wording had never been exercised.
+ */
 export default function ContestJoinedScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
-  const contestName = params.contestName as string || "Photo Contest";
-  
+  const contestName = params.contestName as string || "Contest";
+  const isJoining = params.mode !== 'create';
+
   const bgColor = useThemeColor({}, 'background');
   const textColor = useThemeColor({}, 'text');
   const cardBg = useThemeColor({ light: '#FFF', dark: '#1F222A' }, 'background');
@@ -20,7 +31,9 @@ export default function ContestJoinedScreen() {
   const handleShare = async () => {
     try {
       await Share.share({
-        message: `I just joined the ${contestName} battle! Come compete with me and win coins! #PhotoContest`,
+        message: isJoining
+          ? `I just joined the ${contestName} battle on TopHunt! Vote for me and let's win some coins.`
+          : `I just started a ${contestName} battle on TopHunt! Come challenge me and win coins.`,
       });
     } catch (error) {
       console.log(error);
@@ -43,14 +56,16 @@ export default function ContestJoinedScreen() {
 
         <Text style={[styles.title, { color: textColor }]}>Congratulations!</Text>
         <Text style={styles.subtitle}>
-            You have successfully joined the{"\n"}
+            {isJoining ? 'You have successfully joined the' : 'Your battle is live in'}{"\n"}
             <Text style={{ fontWeight: 'bold', color: '#FF4D67' }}>{contestName}</Text>
         </Text>
 
         {/* Info Card */}
         <View style={[styles.infoCard, { backgroundColor: cardBg }]}>
             <Text style={[styles.infoText, { color: textColor }]}>
-                Your entry is now live! Waiting for an opponent to match with you. Good luck!
+                {isJoining
+                  ? 'The battle is now LIVE and fans can vote. Share it to pull in votes — good luck!'
+                  : 'Your entry is now live! Waiting for an opponent to match with you. Good luck!'}
             </Text>
         </View>
 
