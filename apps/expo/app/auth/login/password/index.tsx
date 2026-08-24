@@ -21,13 +21,13 @@ import { signInWithEmailAndPassword } from "firebase/auth";
 import { auth } from "../../../../src/services/firebase/initFirebase";
 import { readApi } from "../../../../src/services/api";
 import {
-  Left_Arrow,
   New_Email_Icon,
   Lock_Icon,
   Eye_Open,
   Eye_Close,
   Checkmark_Icon,
 } from "../../../../assets/svgs";
+import { BackButton } from "@/src/components/ui/BackButton";
 import { useSignupStore } from "../../../../src/store/signup";
 import { useColorScheme } from "../../../../hooks/use-color-scheme";
 import { FormInput } from "@/src/components/inputs/FormInput";
@@ -177,9 +177,7 @@ export default function PasswordLoginScreen() {
         >
           {/* Header */}
           <View style={styles.header}>
-            <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-              <Left_Arrow width={24} height={24} color={textColor} />
-            </TouchableOpacity>
+            <BackButton size={24} color={textColor} style={styles.backButton} />
           </View>
 
           <View style={styles.contentContainer}>

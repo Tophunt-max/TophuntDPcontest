@@ -13,9 +13,7 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import {
-  Left_Arrow,
-} from "../../../../assets/svgs";
+import { BackButton } from "@/src/components/ui/BackButton";
 import { useColorScheme } from "../../../../hooks/use-color-scheme";
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useToast } from "@/src/components/toast/ToastProvider";
@@ -167,13 +165,7 @@ export default function PhoneLoginScreen() {
         >
           {/* Header */}
           <View style={styles.header}>
-            <TouchableOpacity 
-              onPress={handleBack} 
-              style={styles.backButton}
-              hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
-            >
-              <Left_Arrow width={24} height={24} color={textColor} />
-            </TouchableOpacity>
+            <BackButton size={24} color={textColor} onPress={handleBack} style={styles.backButton} />
           </View>
 
           <View style={styles.contentContainer}>

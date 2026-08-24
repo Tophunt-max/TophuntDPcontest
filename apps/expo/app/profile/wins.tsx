@@ -1,14 +1,15 @@
 import React from 'react';
-import { View, Text, StyleSheet, SafeAreaView, FlatList, TouchableOpacity, ActivityIndicator, useColorScheme } from 'react-native';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { View, Text, StyleSheet, SafeAreaView, FlatList, ActivityIndicator, useColorScheme } from 'react-native';
+import { useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@/src/lib/icons';
+import { BackButton } from '@/src/components/ui/BackButton';
 import { useAuth } from '@/src/hooks/useAuth';
 import { useUserWins } from '@/src/hooks/useProfileData';
 import { PostCard } from '@/src/components/home/PostCard';
 import { Colors } from '@/constants/theme';
 
 export default function WinsScreen() {
-  const router = useRouter();
+
   const { user } = useAuth();
   const params = useLocalSearchParams();
   const userId = (params.userId as string) || user?.uid || '';
@@ -24,9 +25,7 @@ export default function WinsScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]}>
       <View style={[styles.header, { borderBottomColor: isDark ? '#23262D' : '#EEF0F4' }]}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} accessibilityRole="button" accessibilityLabel="Go back">
-          <Ionicons name="chevron-back" size={24} color={textColor} />
-        </TouchableOpacity>
+        <BackButton size={24} color={textColor} style={styles.backBtn} />
         <View style={styles.titleWrap}>
           <Ionicons name="trophy" size={16} color="#FFD700" />
           <Text style={[styles.title, { color: textColor }]}>Wins</Text>

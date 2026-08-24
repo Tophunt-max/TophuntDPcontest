@@ -15,7 +15,8 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColor } from "@/hooks/use-theme-color";
 import { useColorScheme } from "@/hooks/use-color-scheme";
-import { Left_Arrow, NewPassWordDark, NewPassWordLight, Eye_Open, Eye_Close } from "@/assets/svgs";
+import { NewPassWordDark, NewPassWordLight, Eye_Open, Eye_Close } from "@/assets/svgs";
+import { BackButton } from "@/src/components/ui/BackButton";
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useToast } from "@/src/components/toast/ToastProvider";
 import { callApi } from '@/src/services/api'; // Consolidated API used
@@ -83,9 +84,7 @@ export default function ResetPasswordScreen() {
         }}
       >
         <View style={styles.container}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-            <Left_Arrow />
-          </TouchableOpacity>
+          <BackButton size={24} color={textColor} style={styles.backButton} />
           <View style={styles.header}>
             <Text style={[styles.title, { color: textColor }]}>Create New Password</Text>
             {colorScheme === 'light' ? <NewPassWordLight/> : <NewPassWordDark/>}

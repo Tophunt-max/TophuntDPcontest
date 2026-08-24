@@ -16,7 +16,8 @@ import { useAuth } from '@/src/hooks/useAuth';
 import { useProfile } from '@/src/hooks/useProfileData'; 
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { PhotoContestSkeleton } from '@/src/components/contests/PhotoContestSkeleton';
-import { Left_Arrow } from '@/assets/svgs';
+import { BackButton } from '@/src/components/ui/BackButton';
+import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
 import { CoinIcon } from '@/src/components/ui/CoinIcon'; 
 import { LinearGradient } from 'expo-linear-gradient';
 
@@ -80,9 +81,7 @@ export default function PhotoContestsScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]} edges={['top']}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={[styles.headerBack, { backgroundColor: cardBg }]}>
-            <Left_Arrow width={22} height={22} fill={textColor} />
-        </TouchableOpacity>
+        <BackButton size={22} color={textColor} style={[styles.headerBack, { backgroundColor: cardBg }]} />
         <Text style={[styles.title, { color: textColor }]}>Photo Contests</Text>
         
         <View style={[styles.walletBadge, { backgroundColor: cardBg }]}>
@@ -158,7 +157,7 @@ export default function PhotoContestsScreen() {
                      style={styles.startBtn}
                    >
                       <Text style={styles.startBtnText}>Enter</Text>
-                      <Ionicons name="arrow-forward" size={16} color="#FFF" />
+                      <ArrowIcon size={16} color="#FFF" variant="arrow" />
                    </LinearGradient>
                 </View>
               </TouchableOpacity>

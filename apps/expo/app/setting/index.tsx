@@ -12,9 +12,9 @@ import {
   Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Ionicons } from '@/src/lib/icons';
+import { BackButton } from '@/src/components/ui/BackButton';
+import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
 import {
-  Left_Arrow,
   Settings_User,
   Settings_Lock,
   Settings_Shield,
@@ -84,9 +84,7 @@ export default function SettingScreen() {
 
   const renderHeader = () => (
     <View style={styles.header}>
-      <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-        <Left_Arrow width={24} height={24} color={textColor} />
-      </TouchableOpacity>
+      <BackButton size={24} color={textColor} style={styles.backButton} />
       <Text style={[styles.headerTitle, { color: textColor }]}>Setting</Text>
     </View>
   );
@@ -108,7 +106,7 @@ export default function SettingScreen() {
       </View>
       <View style={styles.itemRight}>
         {rightElement}
-        {showArrow && <Ionicons name="chevron-forward" size={20} color={textColor} />}
+        {showArrow && <ArrowIcon size={18} direction="right" color={textColor} />}
       </View>
     </TouchableOpacity>
   );

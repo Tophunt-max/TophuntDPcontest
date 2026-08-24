@@ -18,7 +18,8 @@ import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Left_Arrow, Email_Icon, Pencil_Icon } from "@/assets/svgs";
+import { Email_Icon, Pencil_Icon } from "@/assets/svgs";
+import { BackButton } from "@/src/components/ui/BackButton";
 import { Ionicons } from "@/src/lib/icons";
 import { DatePickerField } from "@/src/components/inputs/DatePickerField";
 import { CountryPicker } from "react-native-country-codes-picker";
@@ -186,9 +187,7 @@ const FillProfile: React.FC = () => {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <Left_Arrow width={24} height={24} />
-        </TouchableOpacity>
+        <BackButton size={24} color="#000" style={styles.backButton} />
         <Text style={styles.headerTitle}>Fill Your Profile</Text>
         <View style={{ width: 24 }} />
       </View>

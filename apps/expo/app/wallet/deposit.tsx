@@ -3,6 +3,8 @@ import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Alert,
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@/src/lib/icons';
+import { BackButton } from '@/src/components/ui/BackButton';
+import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
 import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
@@ -98,7 +100,7 @@ export default function DepositScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}><Ionicons name="chevron-back" size={28} color={textColor} /></TouchableOpacity>
+        <BackButton size={26} color={textColor} />
         <Text style={[styles.title, { color: textColor }]}>Add Money</Text>
         <View style={{ width: 28 }} />
       </View>
@@ -182,7 +184,7 @@ export default function DepositScreen() {
             {mode === 'both' && (
               <TouchableOpacity onPress={() => router.replace('/wallet/store')} style={{ marginBottom: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
                 <Text style={{ color: primaryColor, textAlign: 'center', fontFamily: 'Urbanist-Bold' }}>Or pay instantly by card / UPI</Text>
-                <Ionicons name="arrow-forward" size={16} color={primaryColor} />
+                <ArrowIcon size={16} color={primaryColor} variant="arrow" />
               </TouchableOpacity>
             )}
           </>

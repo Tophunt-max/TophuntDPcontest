@@ -10,7 +10,10 @@ import Profile_Dark from './profileDark.svg';
 import Add_Icon from './add_Icon.svg';
 
 // All the svg icons are imported here
+// Directional arrows: consumed only by src/components/ui/ArrowIcon.tsx, which
+// mirrors them for the opposite direction. Import ArrowIcon, not these.
 import Left_Arrow from './left_arrow.svg';
+import Arrow_Right from './arrow_right.svg';
 import App_Logo from './appLogo.svg';
 import Success from './success.svg';
 import Facebook_Icon from './facebook.svg';
@@ -134,6 +137,7 @@ export {
   Discover_Dark,
   Profile_Dark,
   Left_Arrow,
+  Arrow_Right,
   App_Logo,
   Success,
   Toast_Success,

@@ -11,14 +11,14 @@ import {
   useColorScheme,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Ionicons } from '@/src/lib/icons';
 import {
-  Left_Arrow,
   Settings_User,
   Settings_Lock,
   Settings_Shield,
   Settings_Logout,
 } from "@/assets/svgs";
+import { BackButton } from "@/src/components/ui/BackButton";
+import { ArrowIcon } from "@/src/components/ui/ArrowIcon";
 import { signOut } from '../../../src/services/auth';
 import { Colors } from '@/constants/theme';
 
@@ -57,9 +57,7 @@ export default function ManageProfileScreen() {
 
   const renderHeader = () => (
     <View style={styles.header}>
-      <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-        <Left_Arrow width={24} height={24} color={textColor} />
-      </TouchableOpacity>
+      <BackButton size={24} color={textColor} style={styles.backButton} />
       <Text style={[styles.headerTitle, { color: textColor }]}>Manage Profile</Text>
     </View>
   );
@@ -77,7 +75,7 @@ export default function ManageProfileScreen() {
         <Text style={[styles.itemLabel, { color: isDestructive ? '#FF4D67' : textColor }]}>{label}</Text>
       </View>
       <View style={styles.itemRight}>
-        {showArrow && <Ionicons name="chevron-forward" size={20} color={isDestructive ? '#FF4D67' : textColor} />}
+        {showArrow && <ArrowIcon size={18} direction="right" color={isDestructive ? '#FF4D67' : textColor} />}
       </View>
     </TouchableOpacity>
   );
