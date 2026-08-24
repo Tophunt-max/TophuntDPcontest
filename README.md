@@ -101,6 +101,14 @@ All three are configured on the Cloudflare side, so there is no deploy step in t
 repository for them. Nothing else deploys this project — if you see a status from
 another provider, it is a leftover integration and should be disconnected.
 
+> **Why is there a `vercel.json`?**
+> Only to switch Vercel off. A leftover Vercel project is still connected to this
+> repository and was failing on every commit; `git.deploymentEnabled: false` stops
+> it building. It is a stopgap, not configuration — **delete `vercel.json` once the
+> Vercel project itself is deleted** (Vercel dashboard → project → Settings →
+> Delete Project). `vercel.json` is strict JSON and cannot hold a comment, which is
+> why this note lives here.
+
 Manual deploys, for staging or when the Cloudflare-side build is unavailable:
 
 ```bash
