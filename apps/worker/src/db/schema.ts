@@ -262,7 +262,8 @@ export const paymentOrders = sqliteTable(
     orderId: text("order_id").primaryKey(), // Razorpay order id
     userId: text("user_id").notNull(),
     packageId: text("package_id"),
-    coins: real("coins").notNull(), // server-authoritative coins to credit
+    coins: real("coins").notNull(), // server-authoritative coins to credit (bonus INCLUDED)
+    bonusCoins: real("bonus_coins").default(0), // how much of `coins` was bonus — display/reporting only
     amountPaise: integer("amount_paise").notNull(), // expected amount (paise)
     currency: text("currency").notNull().default("INR"),
     status: text("status").notNull().default("created"), // created | paid | failed
@@ -714,9 +715,10 @@ export const deposits = sqliteTable(
   {
     id: text("id").primaryKey(),
     userId: text("user_id").notNull(),
-    amount: real("amount").notNull(), // coins to credit on approval
+    amount: real("amount").notNull(), // coins to credit on approval (bonus INCLUDED)
     payAmount: real("pay_amount").default(0), // INR paid
     packageId: text("package_id"), // coin_packages.id this deposit was priced from
+    bonusCoins: real("bonus_coins").default(0), // how much of `amount` was bonus — display/reporting only
     method: text("method").default("qr"), // qr | upi | bank
     utr: text("utr"), // user-entered bank transaction reference
     screenshotUrl: text("screenshot_url"),

@@ -827,7 +827,8 @@ apiRoute.post("/", async (c) => {
       const priceInr = Number(pkg.priceInr) || 0;
       if (priceInr <= 0) throw httpsError("failed-precondition", "This package is not purchasable.");
       const amountPaise = Math.round(priceInr * 100);
-      const totalCoins = (Number(pkg.coins) || 0) + (Number(pkg.bonusCoins) || 0);
+      const bonusCoins = Number(pkg.bonusCoins) || 0;
+      const totalCoins = (Number(pkg.coins) || 0) + bonusCoins;
       if (totalCoins <= 0) throw httpsError("failed-precondition", "This package has no coins configured.");
 
       // Create the order at Razorpay (HTTP Basic auth = key_id:key_secret).
@@ -861,6 +862,7 @@ apiRoute.post("/", async (c) => {
             userId: uid,
             packageId: String(packageId),
             coins: totalCoins,
+            bonusCoins,
             amountPaise,
             currency: "INR",
             status: "created",
@@ -1060,7 +1062,9 @@ apiRoute.post("/", async (c) => {
         .get();
       if (!pkg) throw httpsError("not-found", "Coin package not found.");
 
-      const amt = (Number(pkg.coins) || 0) + (Number(pkg.bonusCoins) || 0);
+      const baseCoins = Number(pkg.coins) || 0;
+      const bonusCoins = Number(pkg.bonusCoins) || 0;
+      const amt = baseCoins + bonusCoins;
       const payAmount = Number(pkg.priceInr) || 0;
       if (amt <= 0 || payAmount <= 0)
         throw httpsError("failed-precondition", "This coin package is misconfigured.");
@@ -1084,6 +1088,7 @@ apiRoute.post("/", async (c) => {
         amount: amt,
         payAmount,
         packageId: String(packageId),
+        bonusCoins,
         method: method || "qr",
         utr: String(utr).trim(),
         screenshotUrl: screenshotUrl ? String(screenshotUrl) : null,

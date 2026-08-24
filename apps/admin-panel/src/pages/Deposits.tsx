@@ -89,6 +89,9 @@ export default function Deposits() {
             render: (d: any) => (
               <span className="inline-flex items-center gap-1.5 font-bold text-foreground">
                 <Coins size={14} className="text-amber-500" />{fmtNumber(d.amount)}
+                {/* amount already includes the bonus — shown so an approver can
+                    see why the coins exceed the base package. */}
+                {d.bonusCoins ? <span className="text-green-600 font-semibold">(+{fmtNumber(d.bonusCoins)} bonus)</span> : null}
               </span>
             ),
           },

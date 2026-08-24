@@ -79,6 +79,13 @@ export async function creditPaymentOrder(
   if (!Number.isFinite(coins) || coins <= 0 || coins > 1_000_000)
     return { credited: false, reason: "invalid_amount", uid: order.userId };
 
+  // The bonus is already inside `coins` — this is purely so the wallet ledger
+  // can show the user that the package's bonus was actually applied.
+  const bonus = Number(order.bonusCoins) || 0;
+  const base = coins - bonus;
+  const description =
+    bonus > 0 ? `Purchased ${base} Dpcoins + ${bonus} bonus` : `Purchased ${coins} Dpcoins`;
+
   const ts = now();
 
   // Atomic idempotency claim: flip created -> paid. If another path already
@@ -107,7 +114,7 @@ export async function creditPaymentOrder(
       uid: order.userId,
       amount: coins,
       type: "purchase",
-      description: `Purchased ${coins} Dpcoins`,
+      description,
       createdAt: ts,
     }),
   ]);

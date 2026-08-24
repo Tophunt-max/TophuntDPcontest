@@ -2170,6 +2170,7 @@ adminRoute.get("/deposits", async (c) => {
       userId: schema.deposits.userId,
       amount: schema.deposits.amount,
       payAmount: schema.deposits.payAmount,
+      bonusCoins: schema.deposits.bonusCoins,
       method: schema.deposits.method,
       utr: schema.deposits.utr,
       screenshotUrl: schema.deposits.screenshotUrl,
@@ -2303,17 +2304,22 @@ adminRoute.patch("/deposits/:id", async (c) => {
     .run();
   if (claim.meta.changes === 0) throw httpsError("failed-precondition", "Deposit was already processed.");
 
+  // `amount` already includes the package bonus; this just makes it visible in
+  // the ledger and the notification so the user can see the offer was applied.
+  const depBonus = Number(d.bonusCoins) || 0;
+  const bonusSuffix = depBonus > 0 ? ` (incl. ${depBonus} bonus)` : "";
+
   if (action === "approve") {
     await db.batch([
       db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${d.amount}`, updatedAt: ts }).where(eq(schema.users.uid, d.userId)),
       db.insert(schema.payments).values({ id: `dep_${id}`, userId: d.userId, amount: d.amount, status: "success", createdAt: ts }).onConflictDoNothing(),
-      db.insert(schema.coinTransactions).values({ id: newId(), uid: d.userId, amount: d.amount, type: "manual_deposit", description: `Manual deposit approved (UTR ${d.utr || "-"})`, createdAt: ts }),
+      db.insert(schema.coinTransactions).values({ id: newId(), uid: d.userId, amount: d.amount, type: "manual_deposit", description: `Manual deposit approved${bonusSuffix} (UTR ${d.utr || "-"})`, createdAt: ts }),
     ]);
   }
 
   await createNotification(c.env, d.userId, {
     title: action === "approve" ? "Deposit Approved 🎉" : "Deposit Rejected",
-    body: action === "approve" ? `${d.amount} coins have been added to your wallet.` : `Your deposit request was rejected. ${adminNote ? "Reason: " + adminNote : ""}`,
+    body: action === "approve" ? `${d.amount} coins have been added to your wallet${bonusSuffix}.` : `Your deposit request was rejected. ${adminNote ? "Reason: " + adminNote : ""}`,
     type: "deposit",
     targetId: "wallet",
   });
