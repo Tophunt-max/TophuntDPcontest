@@ -33,6 +33,7 @@ import m_0028_vote_ip_sql from "../../migrations/0028_vote_ip.sql";
 import m_0029_payments_fiat_amount_sql from "../../migrations/0029_payments_fiat_amount.sql";
 import m_0030_account_deletion_sql from "../../migrations/0030_account_deletion.sql";
 import m_0031_integration_secrets_sql from "../../migrations/0031_integration_secrets.sql";
+import m_0032_user_blocks_sql from "../../migrations/0032_user_blocks.sql";
 
 export interface Migration {
   name: string;
@@ -72,4 +73,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0029_payments_fiat_amount.sql", sql: m_0029_payments_fiat_amount_sql },
   { name: "0030_account_deletion.sql", sql: m_0030_account_deletion_sql },
   { name: "0031_integration_secrets.sql", sql: m_0031_integration_secrets_sql },
+  { name: "0032_user_blocks.sql", sql: m_0032_user_blocks_sql },
 ];

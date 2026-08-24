@@ -110,6 +110,43 @@ export const follows = sqliteTable(
 );
 
 // ---------------------------------------------------------------------------
+// user_blocks / user_mutes  (migration 0032)
+//
+// Self-serve safety relations between two ordinary users. NOT the same thing as
+// `users.isBlocked`, which is an admin disabling an account.
+//
+// A block is MUTUAL and hard; a mute is ONE-WAY and soft. See lib/blocks.ts for
+// the enforcement rules and migration 0032 for why these are two tables.
+// ---------------------------------------------------------------------------
+export const userBlocks = sqliteTable(
+  "user_blocks",
+  {
+    blockerId: text("blocker_id").notNull(),
+    blockedId: text("blocked_id").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.blockerId, t.blockedId] }),
+    // Blocks are enforced in BOTH directions, so "who blocked me" is as hot as
+    // "who did I block" — but blocked_id is the trailing PK column and cannot
+    // serve that lookup on its own.
+    blockedIdx: index("idx_user_blocks_blocked").on(t.blockedId),
+  }),
+);
+
+export const userMutes = sqliteTable(
+  "user_mutes",
+  {
+    muterId: text("muter_id").notNull(),
+    mutedId: text("muted_id").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  // One-way: only the muter's own reads consult this, so the leading-column
+  // primary key covers every query and no reverse index is needed.
+  (t) => ({ pk: primaryKey({ columns: [t.muterId, t.mutedId] }) }),
+);
+
+// ---------------------------------------------------------------------------
 // contests  (was: contests/{contestId} — admin templates)
 // ---------------------------------------------------------------------------
 export const contests = sqliteTable("contests", {

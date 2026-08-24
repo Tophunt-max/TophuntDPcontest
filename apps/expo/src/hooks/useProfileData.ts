@@ -2,6 +2,14 @@ import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tansta
 import { UserProfile, Post } from '../types/user';
 import { useAuth } from '../services/auth';
 import { callApi, readApi } from '../services/api';
+import {
+  blockUserService,
+  fetchBlockedAccounts,
+  muteUserService,
+  unblockUserService,
+  unmuteUserService,
+} from '../services/users';
+import { bumpSocialGraphVersion } from '../lib/socialGraphVersion';
 
 /**
  * Profile data now comes from the Cloudflare Worker (D1) via /read endpoints.
@@ -148,3 +156,70 @@ export const useToggleFollow = () => {
     },
   });
 };
+
+/**
+ * The signed-in user's block and mute lists (outgoing relations only — who has
+ * blocked *you* is deliberately not knowable).
+ */
+export const useBlockedAccounts = () => {
+  const { user } = useAuth();
+  return useQuery({
+    queryKey: ['blockedAccounts', user?.uid],
+    queryFn: fetchBlockedAccounts,
+    enabled: !!user,
+    staleTime: 30_000,
+  });
+};
+
+/**
+ * React-query keys a block or mute invalidates.
+ *
+ * These are the keys that ACTUALLY exist — verified against the codebase rather
+ * than written from the list of affected surfaces, which is a longer list. The
+ * home feed, the chat list, the notification inbox, the leaderboard and the
+ * comment sheets do not use react-query at all: they hold their data in component
+ * state and reload on mount, tab change or pull-to-refresh. Naming invented keys
+ * like 'feed' or 'chats' here would look like those surfaces were handled while
+ * doing nothing, which is worse than the honest short list.
+ *
+ * Those state-based screens are covered by the server: every one of them refetches
+ * from a `/read` endpoint that now filters, so they correct themselves the next
+ * time they load. The gap is the few seconds a screen that is already mounted
+ * keeps showing stale content — see the note in UserActionsSheet.
+ */
+const QUERY_KEYS_AFFECTED_BY_BLOCK = [
+  'profile', // both users: follower/following counts moved
+  'blockedAccounts',
+  'stories',
+  'highlights',
+  'userMatches',
+  'userPosts',
+  'userBookmarks', // a saved battle involving the blocked user is now hidden
+  'userWins',
+];
+
+function useBlockMutation(fn: (targetUserId: string) => Promise<any>) {
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
+  return useMutation({
+    mutationFn: async (targetUserId: string) => {
+      if (!user) throw new Error('Authentication required');
+      return fn(targetUserId);
+    },
+    onSuccess: () => {
+      // Tells the state-based screens (the home feed) that they are stale. See
+      // socialGraphVersion.ts for why they can't simply be invalidated.
+      bumpSocialGraphVersion();
+      for (const key of QUERY_KEYS_AFFECTED_BY_BLOCK) {
+        // Prefix match, so ['profile', uid] and ['userMatches', uid, 'photo'] are
+        // both covered without naming every uid.
+        queryClient.invalidateQueries({ queryKey: [key] });
+      }
+    },
+  });
+}
+
+export const useBlockUser = () => useBlockMutation(blockUserService);
+export const useUnblockUser = () => useBlockMutation(unblockUserService);
+export const useMuteUser = () => useBlockMutation(muteUserService);
+export const useUnmuteUser = () => useBlockMutation(unmuteUserService);
