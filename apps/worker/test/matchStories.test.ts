@@ -146,6 +146,32 @@ describe('joining a battle', () => {
     expect(aliceStories[0].type).toBe('contest_vs');
   });
 
+  it('gives both users the SAME story, not two different ones', async () => {
+    // This is the actual product requirement: one story, shown to both. There are
+    // two rows only because stories are per-user in this app — each participant
+    // needs it on their own ring — but the two rows must describe the same battle
+    // in the same way, or the client would draw two different frames from them.
+    //
+    // Guard against a future "optimisation" that denormalises per-user opponent
+    // data into each row and lets the two drift apart.
+    const { env } = makeEnv();
+    const matchId = await waitingMatch(env);
+
+    await call(env, 'bob', 'joinMatch', {
+      matchId, mediaUrl: 'bob.jpg', mediaType: 'photo', deviceId: 'device-b',
+    });
+
+    const [a, b] = (await stories(env)) as any[];
+    // Everything that decides what gets DRAWN is identical.
+    expect(a.matchId).toBe(b.matchId);
+    expect(a.type).toBe(b.type);
+    expect(a.contestTitle).toBe(b.contestTitle);
+    expect(a.createdAt).toBe(b.createdAt);
+    expect(a.expiresAt).toBe(b.expiresAt);
+    // Only ownership differs — that is what puts it on both rings.
+    expect(a.userId).not.toBe(b.userId);
+  });
+
   it('carries each participant\'s own entry as the story media', async () => {
     // Each row stands alone if a client only understands `media_url`, and it is
     // the fallback the VS frame uses while the match loads.
