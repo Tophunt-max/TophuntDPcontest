@@ -60,6 +60,22 @@ app.use("*", async (c, next) => {
   c.header("X-Content-Type-Options", "nosniff");
   c.header("X-Frame-Options", "DENY");
   c.header("Referrer-Policy", "no-referrer");
+  // Force HTTPS for a year, including subdomains. Cloudflare terminates TLS, but
+  // without HSTS a first request over http:// is still downgradeable, and this
+  // API carries bearer tokens for wallets and payouts.
+  c.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  // This is a JSON API: it should never execute scripts, embed plugins, be
+  // framed, or be the base for relative URLs. A restrictive CSP costs nothing
+  // here and blunts any reflected-content mistake.
+  c.header(
+    "Content-Security-Policy",
+    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; img-src 'self' data:; media-src 'self'",
+  );
+  // Deny access to device APIs no API response has any reason to request.
+  c.header(
+    "Permissions-Policy",
+    "accelerometer=(), camera=(), geolocation=(), gyroscope=(), microphone=(), payment=(), usb=()",
+  );
   const path = new URL(c.req.url).pathname;
   // Public media must be embeddable cross-origin (blog/app live on other hosts).
   c.header("Cross-Origin-Resource-Policy", path.startsWith("/media/") ? "cross-origin" : "same-site");

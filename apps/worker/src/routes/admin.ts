@@ -55,6 +55,7 @@ import {
   matchPot,
   perPlayerEntryFee,
   roundFiat,
+  toPaise,
   validateCoinPackage,
   WalletReplay,
 } from "../lib/money";
@@ -1351,8 +1352,19 @@ adminRoute.get("/overview", async (c) => {
   const support =
     (await db.select({ v: count() }).from(schema.supportTickets).where(ne(schema.supportTickets.status, "resolved")).get())?.v ?? 0;
   // Money + engagement metrics.
-  const revenue =
-    (await db.select({ v: sql<number>`COALESCE(SUM(${schema.payments.amount}),0)` }).from(schema.payments).where(eq(schema.payments.status, "success")).get())?.v ?? 0;
+  //
+  // `revenue` is COINS SOLD (that is what payments.amount has always held, and
+  // what the dashboard card is labelled). `revenueInr` is the actual money.
+  const money = await db
+    .select({
+      coins: sql<number>`COALESCE(SUM(COALESCE(${schema.payments.coins}, ${schema.payments.amount})),0)`,
+      paise: sql<number>`COALESCE(SUM(${schema.payments.amountPaise}),0)`,
+    })
+    .from(schema.payments)
+    .where(eq(schema.payments.status, "success"))
+    .get();
+  const revenue = Number(money?.coins ?? 0);
+  const revenueInr = roundFiat(Number(money?.paise ?? 0) / 100);
   const activeMatches =
     (await db.select({ v: count() }).from(schema.contestMatches).where(eq(schema.contestMatches.status, "active")).get())?.v ?? 0;
   const liveContests =
@@ -1361,7 +1373,7 @@ adminRoute.get("/overview", async (c) => {
     (await db.select({ v: count() }).from(schema.withdrawals).where(eq(schema.withdrawals.status, "pending")).get())?.v ?? 0;
   const pendingDeposits =
     (await db.select({ v: count() }).from(schema.deposits).where(eq(schema.deposits.status, "pending")).get())?.v ?? 0;
-  return c.json({ users, posts, reports, support, revenue, activeMatches, liveContests, pendingWithdrawals, pendingDeposits });
+  return c.json({ users, posts, reports, support, revenue, revenueInr, activeMatches, liveContests, pendingWithdrawals, pendingDeposits });
 });
 
 adminRoute.get("/device-stats", async (c) => {
@@ -1699,18 +1711,45 @@ adminRoute.get("/transactions/types", async (c) => {
 });
 
 /**
- * Revenue analytics: total top-up revenue, count, coins-in-circulation, a
- * per-type breakdown of the coin ledger, the last-14-day payment trend and the
- * top spenders.
+ * Revenue analytics.
+ *
+ * IMPORTANT: money and coins are different units and are now reported as such.
+ * `payments.amount` holds COINS (it always did), so summing it and calling the
+ * result `totalRevenue` reported a coin count as rupees — every ₹ figure in the
+ * admin panel was wrong. Revenue is read from `payments.amount_paise`, the actual
+ * amount charged, in integer paise.
+ *
+ * Refunded and disputed payments are excluded from revenue, which is only
+ * possible now that the clawback path marks them.
  */
 adminRoute.get("/revenue", async (c) => {
   // Full admins only: revenue and top spenders.
   requireFullAdmin(c);
   const db = getDb(c.env);
-  const totalRevenue =
-    (await db.select({ v: sql<number>`COALESCE(SUM(${schema.payments.amount}),0)` }).from(schema.payments).where(eq(schema.payments.status, "success")).get())?.v ?? 0;
-  const paymentCount =
-    (await db.select({ v: count() }).from(schema.payments).where(eq(schema.payments.status, "success")).get())?.v ?? 0;
+  const successful = eq(schema.payments.status, "success");
+
+  const totals = await db
+    .select({
+      paise: sql<number>`COALESCE(SUM(${schema.payments.amountPaise}),0)`,
+      coins: sql<number>`COALESCE(SUM(COALESCE(${schema.payments.coins}, ${schema.payments.amount})),0)`,
+      n: count(),
+      // Rows predating the split have no fiat value recorded. Surfacing the count
+      // is more honest than silently under-reporting revenue.
+      unpriced: sql<number>`SUM(CASE WHEN ${schema.payments.amountPaise} IS NULL THEN 1 ELSE 0 END)`,
+    })
+    .from(schema.payments)
+    .where(successful)
+    .get();
+
+  const reversed = await db
+    .select({
+      paise: sql<number>`COALESCE(SUM(${schema.payments.amountPaise}),0)`,
+      n: count(),
+    })
+    .from(schema.payments)
+    .where(inArray(schema.payments.status, ["refunded", "disputed"]))
+    .get();
+
   const coinsInCirculation =
     (await db.select({ v: sql<number>`COALESCE(SUM(${schema.users.dpcoin}),0)` }).from(schema.users).get())?.v ?? 0;
 
@@ -1720,35 +1759,78 @@ adminRoute.get("/revenue", async (c) => {
     .groupBy(schema.coinTransactions.type)
     .all();
 
-  // Last 14 days of payment revenue, bucketed by day (UTC).
+  // Last 14 days, bucketed by day (UTC). Both units are returned so the panel
+  // can label each correctly instead of guessing.
   const since = now() - 14 * 86400000;
   const recentPayments = await db
-    .select({ amount: schema.payments.amount, createdAt: schema.payments.createdAt })
+    .select({
+      paise: schema.payments.amountPaise,
+      coins: schema.payments.coins,
+      legacyAmount: schema.payments.amount,
+      createdAt: schema.payments.createdAt,
+    })
     .from(schema.payments)
-    .where(and(eq(schema.payments.status, "success"), gte(schema.payments.createdAt, since)))
+    .where(and(successful, gte(schema.payments.createdAt, since)))
     .all();
-  const dayMap: Record<string, number> = {};
+  const dayMap: Record<string, { paise: number; coins: number }> = {};
   for (let i = 13; i >= 0; i--) {
     const d = new Date(now() - i * 86400000).toISOString().slice(0, 10);
-    dayMap[d] = 0;
+    dayMap[d] = { paise: 0, coins: 0 };
   }
   for (const p of recentPayments) {
     const d = new Date(p.createdAt).toISOString().slice(0, 10);
-    if (dayMap[d] !== undefined) dayMap[d] += Number(p.amount) || 0;
+    if (!dayMap[d]) continue;
+    dayMap[d].paise += Number(p.paise) || 0;
+    dayMap[d].coins += Number(p.coins ?? p.legacyAmount) || 0;
   }
-  const trend = Object.entries(dayMap).map(([date, amount]) => ({ date, amount }));
+  const trend = Object.entries(dayMap).map(([date, v]) => ({
+    date,
+    revenueInr: roundFiat(v.paise / 100),
+    coins: v.coins,
+    // Legacy field name kept for the existing chart; now genuinely rupees.
+    amount: roundFiat(v.paise / 100),
+  }));
 
   const topSpenders = await db
-    .select({ userId: schema.payments.userId, total: sql<number>`COALESCE(SUM(${schema.payments.amount}),0)`, username: schema.users.username, fullName: schema.users.fullName })
+    .select({
+      userId: schema.payments.userId,
+      totalInr: sql<number>`COALESCE(SUM(${schema.payments.amountPaise}),0)`,
+      totalCoins: sql<number>`COALESCE(SUM(COALESCE(${schema.payments.coins}, ${schema.payments.amount})),0)`,
+      username: schema.users.username,
+      fullName: schema.users.fullName,
+    })
     .from(schema.payments)
     .leftJoin(schema.users, eq(schema.users.uid, schema.payments.userId))
-    .where(eq(schema.payments.status, "success"))
+    .where(successful)
     .groupBy(schema.payments.userId)
-    .orderBy(desc(sql`SUM(${schema.payments.amount})`))
+    .orderBy(desc(sql`SUM(${schema.payments.amountPaise})`))
     .limit(10)
     .all();
 
-  return c.json({ totalRevenue, paymentCount, coinsInCirculation, byType, trend, topSpenders });
+  const grossPaise = Number(totals?.paise ?? 0);
+  const refundedPaise = Number(reversed?.paise ?? 0);
+  return c.json({
+    // Money (rupees).
+    totalRevenue: roundFiat(grossPaise / 100),
+    grossRevenueInr: roundFiat(grossPaise / 100),
+    refundedInr: roundFiat(refundedPaise / 100),
+    netRevenueInr: roundFiat((grossPaise - refundedPaise) / 100),
+    refundedCount: Number(reversed?.n ?? 0),
+    // Coins (not money).
+    coinsSold: Number(totals?.coins ?? 0),
+    coinsInCirculation,
+    // Data-quality signal for pre-migration rows with no recorded fiat amount.
+    paymentsWithoutRecordedAmount: Number(totals?.unpriced ?? 0),
+    paymentCount: Number(totals?.n ?? 0),
+    byType,
+    trend,
+    topSpenders: topSpenders.map((s) => ({
+      ...s,
+      totalInr: roundFiat(Number(s.totalInr) / 100),
+      // Legacy field the panel already renders.
+      total: roundFiat(Number(s.totalInr) / 100),
+    })),
+  });
 });
 
 // Raw payment (top-up) list.
@@ -2462,40 +2544,72 @@ adminRoute.get("/referrals", async (c) => {
 });
 
 // ======================= FINANCE TRENDS =======================
-// 14-day daily series of approved deposits and paid/approved withdrawals.
+/**
+ * 14-day daily series of approved deposits and paid/approved withdrawals.
+ *
+ * Deposits and withdrawals are reported in BOTH units. The previous version
+ * summed `deposits.amount` and `withdrawals.amount` — both coin counts — and the
+ * panel charted them as money. The rupee values live in `deposits.pay_amount`
+ * (what the user transferred in) and `withdrawals.cash_amount` (what we pay out).
+ */
 adminRoute.get("/finance-trends", async (c) => {
   // Full admins only: financial trends.
   requireFullAdmin(c);
   const db = getDb(c.env);
   const since = now() - 14 * 86400000;
   const deps = await db
-    .select({ amount: schema.deposits.amount, createdAt: schema.deposits.updatedAt })
+    .select({
+      coins: schema.deposits.amount,
+      inr: schema.deposits.payAmount,
+      createdAt: schema.deposits.updatedAt,
+    })
     .from(schema.deposits)
     .where(and(eq(schema.deposits.status, "approved"), gte(schema.deposits.updatedAt, since)))
     .all();
   const wds = await db
-    .select({ amount: schema.withdrawals.amount, status: schema.withdrawals.status, createdAt: schema.withdrawals.updatedAt })
+    .select({
+      coins: schema.withdrawals.amount,
+      inr: schema.withdrawals.cashAmount,
+      status: schema.withdrawals.status,
+      createdAt: schema.withdrawals.updatedAt,
+    })
     .from(schema.withdrawals)
     .where(and(inArray(schema.withdrawals.status, ["approved", "paid"]), gte(schema.withdrawals.updatedAt, since)))
     .all();
   const days: string[] = [];
-  const depMap: Record<string, number> = {};
-  const wdMap: Record<string, number> = {};
+  const depMap: Record<string, { coins: number; inr: number }> = {};
+  const wdMap: Record<string, { coins: number; inr: number }> = {};
   for (let i = 13; i >= 0; i--) {
     const d = new Date(now() - i * 86400000).toISOString().slice(0, 10);
     days.push(d);
-    depMap[d] = 0;
-    wdMap[d] = 0;
+    depMap[d] = { coins: 0, inr: 0 };
+    wdMap[d] = { coins: 0, inr: 0 };
   }
   for (const r of deps) {
     const d = new Date(r.createdAt).toISOString().slice(0, 10);
-    if (depMap[d] !== undefined) depMap[d] += Number(r.amount) || 0;
+    if (!depMap[d]) continue;
+    depMap[d].coins += Number(r.coins) || 0;
+    depMap[d].inr += Number(r.inr) || 0;
   }
   for (const r of wds) {
     const d = new Date(r.createdAt).toISOString().slice(0, 10);
-    if (wdMap[d] !== undefined) wdMap[d] += Number(r.amount) || 0;
+    if (!wdMap[d]) continue;
+    wdMap[d].coins += Number(r.coins) || 0;
+    wdMap[d].inr += Number(r.inr) || 0;
   }
-  return c.json(days.map((d) => ({ date: d, deposits: depMap[d], withdrawals: wdMap[d] })));
+  return c.json(
+    days.map((d) => ({
+      date: d,
+      // Legacy field names, now unambiguously RUPEES so the existing chart is
+      // finally labelled correctly.
+      deposits: roundFiat(depMap[d].inr),
+      withdrawals: roundFiat(wdMap[d].inr),
+      depositsInr: roundFiat(depMap[d].inr),
+      withdrawalsInr: roundFiat(wdMap[d].inr),
+      depositsCoins: depMap[d].coins,
+      withdrawalsCoins: wdMap[d].coins,
+    })),
+  );
 });
 
 /**
@@ -2545,7 +2659,19 @@ adminRoute.patch("/deposits/:id", async (c) => {
   if (action === "approve") {
     await db.batch([
       db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${d.amount}`, updatedAt: ts }).where(eq(schema.users.uid, d.userId)),
-      db.insert(schema.payments).values({ id: `dep_${id}`, userId: d.userId, amount: d.amount, status: "success", createdAt: ts }).onConflictDoNothing(),
+      db.insert(schema.payments).values({
+        id: `dep_${id}`,
+        userId: d.userId,
+        // `amount` is the legacy coin column; the split fields record the coins
+        // credited and the rupees actually transferred, so revenue reporting can
+        // read real money instead of a coin count.
+        amount: d.amount,
+        coins: d.amount,
+        amountPaise: toPaise(Number(d.payAmount) || 0),
+        source: "manual_deposit",
+        status: "success",
+        createdAt: ts,
+      }).onConflictDoNothing(),
       db.insert(schema.coinTransactions).values({ id: newId(), uid: d.userId, amount: d.amount, type: "manual_deposit", description: `Manual deposit approved${bonusSuffix} (UTR ${d.utr || "-"})`, createdAt: ts }),
     ]);
   }
@@ -2945,9 +3071,21 @@ adminRoute.get("/analytics", async (c) => {
   const dau = (await db.select({ v: sql<number>`COUNT(DISTINCT ${schema.votes.voterUid})` }).from(schema.votes).where(gte(schema.votes.createdAt, nowMs - day)).get())?.v ?? 0;
   const mau = (await db.select({ v: sql<number>`COUNT(DISTINCT ${schema.votes.voterUid})` }).from(schema.votes).where(gte(schema.votes.createdAt, nowMs - 30 * day)).get())?.v ?? 0;
 
+  // `revenue*` are COIN counts (payments.amount is coins) — the dashboard cards
+  // are labelled "Coins Sold". `revenue*Inr` are the real rupee figures.
   const revenueToday = await sum(schema.payments.amount, schema.payments, nowMs - day, eq(schema.payments.status, "success"));
   const revenue7d = await sum(schema.payments.amount, schema.payments, nowMs - 7 * day, eq(schema.payments.status, "success"));
   const revenue30d = await sum(schema.payments.amount, schema.payments, nowMs - 30 * day, eq(schema.payments.status, "success"));
+  const paiseToInr = (v: number) => roundFiat(Number(v || 0) / 100);
+  const revenueTodayInr = paiseToInr(
+    await sum(schema.payments.amountPaise, schema.payments, nowMs - day, eq(schema.payments.status, "success")),
+  );
+  const revenue7dInr = paiseToInr(
+    await sum(schema.payments.amountPaise, schema.payments, nowMs - 7 * day, eq(schema.payments.status, "success")),
+  );
+  const revenue30dInr = paiseToInr(
+    await sum(schema.payments.amountPaise, schema.payments, nowMs - 30 * day, eq(schema.payments.status, "success")),
+  );
 
   const matchesToday = await cnt(schema.contestMatches, schema.contestMatches.createdAt, nowMs - day);
   const votesToday = await cnt(schema.votes, schema.votes.createdAt, nowMs - day);
@@ -2969,6 +3107,7 @@ adminRoute.get("/analytics", async (c) => {
     totalUsers, newUsersToday, newUsers7d, newUsers30d,
     dau, mau,
     revenueToday, revenue7d, revenue30d,
+    revenueTodayInr, revenue7dInr, revenue30dInr,
     matchesToday, votesToday, postsToday,
     activeMatches, completedMatches,
     // deltas

@@ -619,3 +619,38 @@ describe('claimDailyReward', () => {
     expect(Number(ledger[0].amount)).toBe(Number((await getUser(env, 'alice'))?.dpcoin));
   });
 });
+
+
+
+// ===========================================================================
+// A credited order must record BOTH units: the coins granted and the rupees
+// actually charged. Revenue reporting summed the coin column and labelled it
+// rupees, so every money figure an admin saw was wrong.
+describe('payment records money and coins separately', () => {
+  it('stores amount_paise from the order and coins as coins', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', 0);
+    await seedPackage(env, 'p1', 500, 50, 99);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ id: 'order_money' }), { status: 200 })));
+
+    const order = await call(env, 'alice', 'createOrder', { packageId: 'p1' });
+    expect(order.status).toBe(200);
+    const orderId = order.body.orderId;
+    const paymentId = 'pay_test_1';
+    const topup = await call(env, 'alice', 'topup', {
+      orderId, paymentId, signature: sign(orderId, paymentId, 'rzp_test_secret'),
+    });
+    expect(topup.status).toBe(200);
+
+    const payment = await drizzleOf(env).select().from(schema.payments)
+      .where(eq(schema.payments.id, paymentId)).get();
+
+    // 550 coins granted for ₹99.
+    expect(Number(payment?.coins)).toBe(550);
+    expect(Number(payment?.amountPaise)).toBe(9900);
+    expect(payment?.source).toBe('razorpay');
+    // Coins and rupees are genuinely different numbers — the bug was treating
+    // them as the same column.
+    expect(Number(payment?.amountPaise)).not.toBe(Number(payment?.coins));
+  });
+});

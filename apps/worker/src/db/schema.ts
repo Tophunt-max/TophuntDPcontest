@@ -255,13 +255,32 @@ export const coinTransactions = sqliteTable(
 // ---------------------------------------------------------------------------
 // payments  (idempotency for top-ups)
 // ---------------------------------------------------------------------------
-export const payments = sqliteTable("payments", {
-  id: text("id").primaryKey(), // paymentId
-  userId: text("user_id").notNull(),
-  amount: real("amount").notNull(),
-  status: text("status").default("success"),
-  createdAt: integer("created_at").notNull(),
-});
+export const payments = sqliteTable(
+  "payments",
+  {
+    id: text("id").primaryKey(), // paymentId
+    userId: text("user_id").notNull(),
+    /**
+     * LEGACY: this column holds COINS, not money, despite the name. Kept for
+     * backwards compatibility with existing rows and readers; new code should
+     * use `coins` (same value, honest name) and `amountPaise` (actual money).
+     */
+    amount: real("amount").notNull(),
+    /** Coins credited by this payment. */
+    coins: real("coins"),
+    /**
+     * What the user actually PAID, in integer paise. This is the only column
+     * revenue reporting reads — summing `amount` reported coin counts as rupees.
+     */
+    amountPaise: integer("amount_paise"),
+    source: text("source"), // razorpay | manual_deposit
+    status: text("status").default("success"), // success | refunded | disputed
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    statusCreatedIdx: index("idx_payments_status_created").on(t.status, t.createdAt),
+  }),
+);
 
 // ---------------------------------------------------------------------------
 // payment_orders  (persistent record of Razorpay orders for reconciliation)

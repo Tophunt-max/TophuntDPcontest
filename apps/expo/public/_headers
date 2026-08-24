@@ -1,0 +1,23 @@
+# Security headers for the Expo web build (Cloudflare Pages).
+#
+# The web app had none. It handles login, wallet balances and Razorpay checkout,
+# so a downgrade to http:// or an injected script would be expensive.
+#
+# CSP notes:
+#  - Metro's web bundle and Razorpay's checkout both need 'unsafe-inline' for
+#    styles; scripts are restricted to self plus the Razorpay checkout SDK.
+#  - frame-src allows the Razorpay checkout iframe and Firebase auth handlers.
+#  - Framing THIS app is allowed from nowhere, which also protects the
+#    login/payment screens from being embedded.
+/*
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: DENY
+  Permissions-Policy: accelerometer=(), gyroscope=(), usb=()
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://checkout.razorpay.com https://*.gstatic.com https://*.googleapis.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; font-src 'self' data:; connect-src 'self' https://*.workers.dev https://api.tophunt.in https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com wss://*.workers.dev https://securetoken.googleapis.com https://identitytoolkit.googleapis.com https://fcmregistrations.googleapis.com https://lumberjack.razorpay.com https://api.razorpay.com; frame-src https://api.razorpay.com https://checkout.razorpay.com https://*.firebaseapp.com; worker-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'
+
+# The service worker must not be cached, or push registration can go stale.
+/firebase-messaging-sw.js
+  Cache-Control: no-cache
+  Service-Worker-Allowed: /

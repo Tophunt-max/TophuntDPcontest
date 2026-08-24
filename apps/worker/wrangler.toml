@@ -94,6 +94,90 @@ new_sqlite_classes = ["VoteCounter"]
 crons = ["*/10 * * * *", "0 0 1 * *"]
 
 # ---------------------------------------------------------------------------
+# Workers Logs.
+#
+# This is OPT-IN. Without this block the structured JSON log line the Worker
+# emits per request (src/index.ts) is only visible in a live `wrangler tail`
+# session — nothing is retained and nothing is searchable, which is not much use
+# when you need to explain what happened an hour ago.
+#
+# head_sampling_rate = 1 keeps every log. Lower it if invocation volume makes
+# that expensive; errors are additionally persisted to D1 (`error_logs`) and
+# forwarded to Sentry, so they survive sampling either way.
+# ---------------------------------------------------------------------------
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+# ---------------------------------------------------------------------------
+# Staging environment.
+#
+# There was no non-production environment at all: one D1, one R2, one KV pair,
+# one Firebase project. Because the Worker auto-applies pending migrations on the
+# first request of every isolate (src/db/autoMigrate.ts), production WAS the
+# migration test bed — a bad migration had nowhere to fail first.
+#
+# BEFORE FIRST USE, create the staging resources and paste their ids below:
+#   wrangler d1 create tophunt-db-staging
+#   wrangler r2 bucket create tophunt-media-staging
+#   wrangler kv namespace create OTP_KV --env staging
+#   wrangler kv namespace create CACHE_KV --env staging
+# Then set the staging secrets:  wrangler secret put <NAME> --env staging
+# Deploy with:                   wrangler deploy --env staging
+#
+# The ids are intentionally left as placeholders rather than pointing at the
+# production resources: a staging deploy that silently wrote to the production
+# database would be far worse than one that fails fast.
+# ---------------------------------------------------------------------------
+[env.staging]
+name = "tophunt-api-staging"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "tophunt-db-staging"
+database_id = "REPLACE_WITH_STAGING_D1_ID"
+migrations_dir = "migrations"
+
+[[env.staging.r2_buckets]]
+binding = "MEDIA"
+bucket_name = "tophunt-media-staging"
+
+[[env.staging.kv_namespaces]]
+binding = "OTP_KV"
+id = "REPLACE_WITH_STAGING_OTP_KV_ID"
+
+[[env.staging.kv_namespaces]]
+binding = "CACHE_KV"
+id = "REPLACE_WITH_STAGING_CACHE_KV_ID"
+
+[[env.staging.durable_objects.bindings]]
+name = "REALTIME"
+class_name = "RealtimeHub"
+
+[[env.staging.durable_objects.bindings]]
+name = "VOTE_COUNTER"
+class_name = "VoteCounter"
+
+[env.staging.observability]
+enabled = true
+head_sampling_rate = 1
+
+# Staging runs the same cron schedule so scheduled work is exercised too.
+[env.staging.triggers]
+crons = ["*/10 * * * *", "0 0 1 * *"]
+
+[env.staging.vars]
+FIREBASE_PROJECT_ID = "tophuntdpcontest-staging"
+R2_PUBLIC_BASE_URL = "https://tophunt-api-staging.workers.dev/media"
+MEDIA_TRANSFORMATIONS = "false"
+BUNNY_CDN_HOSTNAME = ""
+SENTRY_ENVIRONMENT = "staging"
+# Pages preview deployments get a per-commit subdomain, so they cannot be pinned
+# to an exact origin list. Staging is the environment where that is acceptable —
+# production keeps its explicit allow-list.
+ALLOWED_ORIGINS = "http://localhost:5000,http://localhost:8081,https://tophuntdpcontest-89t.pages.dev,https://tophunt-admin-panel.pages.dev"
+
+# ---------------------------------------------------------------------------
 # Non-secret vars. Secrets (service account, R2 keys, Twilio, email) are set
 # via `wrangler secret put <NAME>` — see apps/worker/.dev.vars.example
 # ---------------------------------------------------------------------------

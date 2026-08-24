@@ -118,7 +118,18 @@ export async function creditPaymentOrder(
   await db.batch([
     db
       .insert(schema.payments)
-      .values({ id: paymentId, userId: order.userId, amount: coins, status: "success", createdAt: ts })
+      .values({
+        id: paymentId,
+        userId: order.userId,
+        // `amount` is the legacy coin column; `coins` and `amountPaise` split the
+        // two so revenue reporting can stop treating coins as rupees.
+        amount: coins,
+        coins,
+        amountPaise: Number(order.amountPaise) || 0,
+        source: "razorpay",
+        status: "success",
+        createdAt: ts,
+      })
       .onConflictDoNothing(),
     db
       .update(schema.users)

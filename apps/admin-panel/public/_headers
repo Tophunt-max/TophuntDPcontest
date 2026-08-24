@@ -1,0 +1,23 @@
+# Security headers for the admin panel (Cloudflare Pages).
+#
+# This app authorises withdrawals, wallet adjustments and role changes, and it
+# shipped with no CSP, no HSTS and no framing protection at all.
+#
+# CSP notes:
+#  - 'unsafe-inline' for style-src is required by the Tailwind/Radix runtime,
+#    which injects style attributes. Scripts are NOT allowed inline.
+#  - connect-src lists the API and Firebase endpoints the panel actually calls.
+#    Anything else — including an injected exfiltration endpoint — is blocked.
+#  - frame-ancestors 'none' prevents clickjacking of the admin UI.
+/*
+  Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), microphone=(), payment=(), usb=()
+  Cross-Origin-Opener-Policy: same-origin
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://*.workers.dev https://api.tophunt.in https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
+
+# Immutable, content-hashed build assets.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

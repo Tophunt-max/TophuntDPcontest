@@ -235,7 +235,10 @@ export const api = {
       posts: number;
       reports: number;
       support: number;
+      /** COINS sold all-time (payments.amount has always held coins). */
       revenue: number;
+      /** Actual money collected, in rupees. */
+      revenueInr: number;
       activeMatches: number;
       liveContests: number;
       pendingWithdrawals: number;
@@ -301,7 +304,18 @@ export const api = {
 
   // referrals + finance trends
   referrals: () => get<any[]>("/admin/referrals"),
-  financeTrends: () => get<{ date: string; deposits: number; withdrawals: number }[]>("/admin/finance-trends"),
+  // `deposits` / `withdrawals` are RUPEES (they used to be coin counts charted as
+  // money); the *Coins fields carry the coin volume.
+  financeTrends: () =>
+    get<{
+      date: string;
+      deposits: number;
+      withdrawals: number;
+      depositsInr: number;
+      withdrawalsInr: number;
+      depositsCoins: number;
+      withdrawalsCoins: number;
+    }[]>("/admin/finance-trends"),
 
   // support
   support: () => get<any[]>("/admin/support"),
@@ -358,19 +372,45 @@ export const api = {
     return get<any[]>(`/admin/transactions${s ? `?${s}` : ""}`);
   },
   transactionTypes: () => get<string[]>("/admin/transactions/types"),
+  // Revenue is reported in RUPEES; coin counts are separate fields. The old
+  // response summed a coin column and called it revenue.
   revenue: () =>
     get<{
-      totalRevenue: number;
-      paymentCount: number;
+      totalRevenue: number; // rupees (same as grossRevenueInr)
+      grossRevenueInr: number;
+      refundedInr: number;
+      netRevenueInr: number;
+      refundedCount: number;
+      coinsSold: number;
       coinsInCirculation: number;
+      paymentsWithoutRecordedAmount: number;
+      paymentCount: number;
       byType: { type: string; total: number; n: number }[];
-      trend: { date: string; amount: number }[];
-      topSpenders: { userId: string; total: number; username?: string; fullName?: string }[];
+      trend: { date: string; amount: number; revenueInr: number; coins: number }[];
+      topSpenders: {
+        userId: string;
+        total: number;
+        totalInr: number;
+        totalCoins: number;
+        username?: string;
+        fullName?: string;
+      }[];
     }>("/admin/revenue"),
   payments: () => get<any[]>("/admin/payments"),
 
   // fraud
   fraudVotes: () => get<{ deviceId: string; accounts: number; totalVotes: number }[]>("/admin/fraud/votes"),
+  // Many accounts from one network converging on one entry in one match. Only
+  // possible now that the voter IP is recorded.
+  fraudVoteNetworks: (minAccounts = 3) =>
+    get<{
+      matchId: string;
+      ip: string;
+      votedForUid: string;
+      accounts: number;
+      devices: number;
+      totalVotes: number;
+    }[]>(`/admin/fraud/vote-networks?minAccounts=${minAccounts}`),
 
   // comments moderation
   comments: (postId?: string) =>
@@ -453,7 +493,11 @@ export const api = {
   analytics: () =>
     get<{
       totalUsers: number; newUsersToday: number; newUsers7d: number; newUsers30d: number;
-      dau: number; mau: number; revenueToday: number; revenue7d: number; revenue30d: number;
+      dau: number; mau: number;
+      // Coin counts (labelled "Coins Sold" in the UI).
+      revenueToday: number; revenue7d: number; revenue30d: number;
+      // Real money, in rupees.
+      revenueTodayInr: number; revenue7dInr: number; revenue30dInr: number;
       matchesToday: number; votesToday: number; postsToday: number;
       activeMatches: number; completedMatches: number;
       // previous-period comparators (for week-over-week / day-over-day deltas)

@@ -72,3 +72,34 @@ BUNNY_WEBHOOK_SECRET=
 # widening the production allow-list.
 # ---------------------------------------------------------------------------
 ALLOWED_ORIGINS=http://localhost:8081,http://localhost:5173
+
+
+# ---------------------------------------------------------------------------
+# Error tracking (optional locally, REQUIRED in production).
+#
+# These are read by src/lib/observability.ts. `captureError` is a no-op without a
+# DSN, which is why they were easy to miss: a fresh deploy silently has no error
+# tracking at all, and the only clue is the absence of events in Sentry.
+#
+# Cron failures, unhandled request errors and clawback problems are all forwarded
+# here, and those are exactly the failures nobody notices from the request path.
+# ---------------------------------------------------------------------------
+SENTRY_DSN=
+SENTRY_ENVIRONMENT=development
+
+# ---------------------------------------------------------------------------
+# Pre-deploy secret checklist. Every one of these is fail-CLOSED in code, which
+# means a missing value does not crash the Worker — it quietly disables a
+# user-visible flow. `GET /health/deep` reports which of them are absent.
+#
+#   FIREBASE_SERVICE_ACCOUNT   admin user operations, custom tokens
+#   R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET
+#                              presigned uploads
+#   RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET
+#                              top-ups AND the payment reconciliation sweep
+#   RAZORPAY_WEBHOOK_SECRET    webhook 503s without it -> paid-but-uncredited
+#   TWILIO_* / RESEND_API_KEY / EMAIL_FROM
+#                              OTP delivery
+#   ADMIN_PROXY_SECRET         server-to-server admin calls
+#   SENTRY_DSN                 error tracking
+# ---------------------------------------------------------------------------
