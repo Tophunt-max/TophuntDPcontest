@@ -21,6 +21,7 @@ import { formatClockTime } from '@/src/lib/formatTime';
 import { videoSourceFor } from '@/src/lib/videoSource';
 import type { StoryViewer } from '@/src/types/stories';
 import { auth } from '@/src/services/firebase/initFirebase';
+import { CloseIcon } from '@/src/components/ui/CloseIcon';
 
 const { width, height } = Dimensions.get('window');
 const DEFAULT_STORY_DURATION = 5000;
@@ -232,7 +233,7 @@ export default function HighlightView() {
                 <Text style={styles.username}>{highlightData.username}</Text>
                 <Text style={styles.timeAgo}>{highlightData.name}</Text>
             </View>
-            <Pressable pointerEvents="auto" onPress={() => router.back()} style={styles.closeButton}><Ionicons name="close" size={28} color="white" /></Pressable>
+            <Pressable pointerEvents="auto" onPress={() => router.back()} style={styles.closeButton} accessibilityRole="button" accessibilityLabel="Close highlight"><CloseIcon size={28} color="white" /></Pressable>
           </View>
         </View>
 
@@ -255,7 +256,7 @@ export default function HighlightView() {
               <View style={styles.sheetHandle} />
               <Text style={styles.sheetTitle}>Viewers ({viewers.length})</Text>
               <Pressable onPress={() => toggleViewers(false)} style={styles.sheetClose}>
-                  <Ionicons name="close-circle" size={24} color="#666" />
+                  <CloseIcon variant="circle" size={24} color="#666" />
               </Pressable>
           </View>
           <FlatList

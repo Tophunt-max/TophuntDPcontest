@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity, Linking } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@/src/lib/icons';
 import { useAppConfig } from '@/src/services/appSettings';
+import { CloseIcon } from '@/src/components/ui/CloseIcon';
 
 /**
  * Admin-controlled announcement banner. Shows when appConfig.announcement is
@@ -27,8 +28,13 @@ export function AnnouncementBanner() {
       >
         <Ionicons name="megaphone" size={18} color="#FFF" />
         <Text style={styles.text} numberOfLines={2}>{message}</Text>
-        <TouchableOpacity onPress={() => setDismissedMsg(message)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-          <Ionicons name="close" size={18} color="#FFF" />
+        <TouchableOpacity
+          onPress={() => setDismissedMsg(message)}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          accessibilityRole="button"
+          accessibilityLabel="Dismiss announcement"
+        >
+          <CloseIcon size={18} color="#FFF" />
         </TouchableOpacity>
       </TouchableOpacity>
     </View>

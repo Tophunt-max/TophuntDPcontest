@@ -13,6 +13,7 @@ import { useAuth } from '@/src/hooks/useAuth';
 import { useProfile } from '@/src/hooks/useProfileData';
 import { useToast } from '@/src/components/toast/ToastProvider';
 import { Colors } from '@/constants/theme';
+import { CloseIcon } from '@/src/components/ui/CloseIcon';
 
 interface CoinPackage {
   id: string;
@@ -140,8 +141,13 @@ export default function CoinStoreScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} hitSlop={10}>
-          <Ionicons name="close" size={28} color={textColor} />
+        <TouchableOpacity
+          onPress={() => router.back()}
+          hitSlop={10}
+          accessibilityRole="button"
+          accessibilityLabel="Close store"
+        >
+          <CloseIcon size={28} color={textColor} />
         </TouchableOpacity>
         <Text style={[styles.title, { color: textColor }]}>Dpcoin Store</Text>
         <View style={{ width: 28 }} />

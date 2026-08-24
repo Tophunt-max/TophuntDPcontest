@@ -3,11 +3,15 @@ inclusion: fileMatch
 fileMatchPattern: 'apps/expo/**'
 ---
 
-# Expo app — directional arrows
+# Expo app — shared icons
 
-Every arrow and chevron in the Expo app renders one of two SVGs through
-`apps/expo/src/components/ui/ArrowIcon.tsx`. Do not use the Ionicons shim for a
-directional icon, and do not import the raw assets.
+Two icon families are owned by one component each. Do not use the Ionicons shim
+for them, and do not import their raw assets.
+
+| Family | Owner | Assets |
+|---|---|---|
+| Arrows / chevrons | `src/components/ui/ArrowIcon.tsx` | `left_arrow.svg`, `arrow_right.svg` |
+| Close / dismiss | `src/components/ui/CloseIcon.tsx` | `close.svg`, `close_circle_outline.svg` |
 
 ## Use
 
@@ -17,10 +21,13 @@ directional icon, and do not import the raw assets.
 | Row disclosure indicator (`>`) | `<ArrowIcon direction="right" />` |
 | "Proceed" arrow in a CTA (`→`) | `<ArrowIcon variant="arrow" />` |
 | Calendar / carousel stepper | `<ArrowIcon direction="left" \| "right" />` |
+| Dismiss a screen, sheet or banner | `<CloseIcon />` |
+| Clear a field, remove a chip | `<CloseIcon variant="circle" />` |
 
 ```tsx
 import { BackButton } from '@/src/components/ui/BackButton';
 import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
+import { CloseIcon } from '@/src/components/ui/CloseIcon';
 ```
 
 ## Do not
@@ -28,8 +35,21 @@ import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
 ```tsx
 <Ionicons name="chevron-back" />      // ❌ blocked by npm run check:icons
 <Ionicons name="arrow-forward" />     // ❌
+<Ionicons name="close-circle" />      // ❌
 import { Left_Arrow } from '@/assets/svgs';  // ❌ ArrowIcon owns the assets
 ```
+
+## Close is not back
+
+A close (`X`) button dismisses the thing in front of you; a back chevron
+navigates to the previous screen. The story viewers and `wallet/store` use `X`
+because they are overlays, and swapping in a chevron would misrepresent what the
+control does. Keep the two distinct.
+
+`CloseIcon` is deliberately icon-only, with no pressable wrapper: close controls
+sit in wildly different layouts (a story overlay, an inline text field, a banner
+row), each with its own hit area and handler. Only the glyph is shared. The
+wrapper must carry `accessibilityRole="button"` and an `accessibilityLabel`.
 
 ## The two variants are not interchangeable
 

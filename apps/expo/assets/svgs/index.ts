@@ -14,6 +14,9 @@ import Add_Icon from './add_Icon.svg';
 // mirrors them for the opposite direction. Import ArrowIcon, not these.
 import Left_Arrow from './left_arrow.svg';
 import Arrow_Right from './arrow_right.svg';
+// Close glyphs: consumed only by src/components/ui/CloseIcon.tsx.
+import Close_X from './close.svg';
+import Close_Circle_Outline from './close_circle_outline.svg';
 import App_Logo from './appLogo.svg';
 import Success from './success.svg';
 import Facebook_Icon from './facebook.svg';
@@ -138,6 +141,8 @@ export {
   Profile_Dark,
   Left_Arrow,
   Arrow_Right,
+  Close_X,
+  Close_Circle_Outline,
   App_Logo,
   Success,
   Toast_Success,
