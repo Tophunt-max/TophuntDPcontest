@@ -4,6 +4,7 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@/src/lib/icons';
 import { BackButton } from '@/src/components/ui/BackButton';
+import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
 import { ContestListSkeleton } from '@/src/components/skeletons/ContestListSkeleton';
 import * as ImagePicker from 'expo-image-picker';
 import { useVideoPlayer, VideoView } from 'expo-video';
@@ -187,7 +188,7 @@ export default function VideoContestScreen() {
                   </View>
                   <LinearGradient colors={[BRAND_PRIMARY, '#FF8A9B']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.startBtn}>
                     <Text style={styles.startBtnText}>Enter</Text>
-                    <Ionicons name="arrow-forward" size={16} color="#FFF" />
+                    <ArrowIcon size={16} color="#FFF" variant="arrow" />
                   </LinearGradient>
                 </View>
               </TouchableOpacity>

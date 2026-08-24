@@ -12,6 +12,7 @@
     "build:seo": "node scripts/build-seo-worker.mjs",
     "lint": "expo lint",
     "typecheck": "node scripts/typecheck.mjs",
+    "check:icons": "node scripts/check-icons.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

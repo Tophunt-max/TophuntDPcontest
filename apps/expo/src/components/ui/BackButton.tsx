@@ -12,7 +12,7 @@ import { ArrowIcon } from './ArrowIcon';
  * present. This component is now the one place that decides what "back" looks
  * and behaves like — always `left_arrow.svg` (via ArrowIcon), never Ionicons.
  *
- * `size` acts as the glyph HEIGHT; see ArrowIcon for why.
+ * `size` is the glyph height; see ArrowIcon for the sizing rules.
  */
 export type BackButtonProps = {
     /** Glyph height in px. Default 24. */
@@ -25,15 +25,21 @@ export type BackButtonProps = {
     accessibilityLabel?: string;
     /** Set false to render just the icon with no touch handling. */
     pressable?: boolean;
+    /** Disables the press while leaving the icon visible. */
+    disabled?: boolean;
+    /** Test handle for e2e/unit selectors. */
+    testID?: string;
 };
 
-export function BackButton({
+function BackButtonComponent({
     size = 24,
     color,
     onPress,
     style,
     accessibilityLabel = 'Go back',
     pressable = true,
+    disabled = false,
+    testID,
 }: BackButtonProps) {
     const router = useRouter();
     const isDark = useColorScheme() === 'dark';
@@ -45,34 +51,50 @@ export function BackButton({
             onPress();
             return;
         }
-        router.back();
+        // `back()` throws if this is the first screen in the stack (deep link,
+        // notification tap). Fall back to the app root so the button is never a
+        // dead end.
+        if (router.canGoBack()) {
+            router.back();
+        } else {
+            router.replace('/home');
+        }
     }, [onPress, router]);
 
-    const icon = <ArrowIcon size={size} color={tint} direction="left" />;
+    const icon = <ArrowIcon size={size} color={tint} variant="chevron" direction="left" />;
 
     if (!pressable) return icon;
 
     return (
         <TouchableOpacity
             onPress={handlePress}
+            disabled={disabled}
             style={[styles.button, style]}
-            hitSlop={8}
+            hitSlop={HIT_SLOP}
             accessibilityRole="button"
             accessibilityLabel={accessibilityLabel}
+            accessibilityState={{ disabled }}
+            testID={testID}
         >
             {icon}
         </TouchableOpacity>
     );
 }
 
+// Hoisted: a fresh object here would break TouchableOpacity's prop equality.
+const HIT_SLOP = { top: 8, bottom: 8, left: 8, right: 8 } as const;
+
 const styles = StyleSheet.create({
     button: {
-        // Comfortably above the 44pt minimum once hitSlop is counted.
+        // 40 + 8pt hitSlop each side clears the 44pt minimum touch target.
         minWidth: 40,
         height: 40,
         alignItems: 'center',
         justifyContent: 'center',
     },
 });
+
+export const BackButton = React.memo(BackButtonComponent);
+BackButton.displayName = 'BackButton';
 
 export default BackButton;

@@ -1,38 +1,76 @@
 import React from 'react';
-import { type StyleProp, type ViewStyle } from 'react-native';
-import { Left_Arrow } from '@/assets/svgs';
+import { StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
+import { Left_Arrow, Arrow_Right } from '@/assets/svgs';
 
 /**
- * The one arrow glyph in the app.
+ * The only directional arrow in the app.
  *
- * `assets/svgs/left_arrow.svg` is the only chevron asset the project ships, so
- * a right-pointing arrow is the same file mirrored on the X axis rather than a
- * second asset that could drift out of sync with it. Everything that needs a
- * directional chevron — back buttons, the date picker's month stepper — goes
- * through here, so `left_arrow.svg` has exactly one importer.
+ * The project ships exactly two arrow assets and each covers both of its
+ * directions by being mirrored on the X axis, so there is no second file to
+ * drift out of sync:
  *
- * The asset's viewBox is 10x16, so `size` behaves as the glyph HEIGHT: the SVG
- * keeps its aspect ratio inside the box and ends up ~0.63x as wide.
+ *   variant="chevron"  left_arrow.svg   `<`  /  mirrored `>`
+ *   variant="arrow"    arrow_right.svg  `→`  /  mirrored `←`
+ *
+ * The two variants are not interchangeable. A chevron is a navigation or
+ * disclosure affordance ("go back", "this row opens"); an arrow has a shaft and
+ * reads as "proceed", which is why it belongs in call-to-action buttons. Using
+ * a mirrored chevron for a CTA would render `>` where the design wants `→`.
+ *
+ * Both assets stroke with `currentColor`, so `color` is what themes them —
+ * `fill` does nothing.
+ *
+ * SIZING: `size` is the bounding box, and because both assets preserve their
+ * aspect ratio the rendered glyph height is `size`. The chevron's viewBox is
+ * 10x16, so it ends up ~0.63x as wide as it is tall; the arrow's is square.
+ *
+ * Arrows here are decorative — the label or the pressable wrapping them carries
+ * the meaning — so they are hidden from screen readers to avoid double
+ * announcements.
  */
 export type ArrowIconProps = {
-    /** Glyph height in px. Default 24. */
+    /** Bounding box in px; also the rendered glyph height. Default 24. */
     size?: number;
-    /** Stroke colour. `left_arrow.svg` strokes with `currentColor`. */
+    /** Stroke colour. Both assets stroke with `currentColor`. */
     color?: string;
-    /** Which way the chevron points. Default 'left'. */
+    /** Which way it points. Default 'left' for chevron, 'right' for arrow. */
     direction?: 'left' | 'right';
+    /** 'chevron' for navigation/disclosure, 'arrow' for CTAs. Default 'chevron'. */
+    variant?: 'chevron' | 'arrow';
     style?: StyleProp<ViewStyle>;
 };
 
-export function ArrowIcon({ size = 24, color, direction = 'left', style }: ArrowIconProps) {
+// Hoisted so a mirrored arrow doesn't allocate a new style object per render —
+// these render inside list rows, where that adds up.
+const styles = StyleSheet.create({
+    mirrored: { transform: [{ scaleX: -1 }] },
+});
+
+function ArrowIconComponent({ size = 24, color, direction, variant = 'chevron', style }: ArrowIconProps) {
+    // Each asset already points the way its variant is most often used, so the
+    // default direction differs and neither common case pays for a transform.
+    const isChevron = variant === 'chevron';
+    const dir = direction ?? (isChevron ? 'left' : 'right');
+    const Glyph = isChevron ? Left_Arrow : Arrow_Right;
+    const needsMirror = isChevron ? dir === 'right' : dir === 'left';
+
     return (
-        <Left_Arrow
+        <Glyph
             width={size}
             height={size}
             color={color}
-            style={[direction === 'right' && { transform: [{ scaleX: -1 }] }, style]}
+            style={needsMirror ? [styles.mirrored, style] : style}
+            accessible={false}
+            importantForAccessibility="no-hide-descendants"
+            // Lets the parent Touchable own the press area rather than the SVG
+            // swallowing taps aimed at its edges.
+            pointerEvents="none"
         />
     );
 }
+
+/** Props are primitives, so memoising cuts re-renders in long lists for free. */
+export const ArrowIcon = React.memo(ArrowIconComponent);
+ArrowIcon.displayName = 'ArrowIcon';
 
 export default ArrowIcon;

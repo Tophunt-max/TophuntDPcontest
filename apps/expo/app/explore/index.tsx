@@ -6,6 +6,7 @@ import {
 } from 'react-native';
 import { BottomNav } from '@/src/components/home/BottomNav';
 import { Ionicons, MaterialCommunityIcons } from '@/src/lib/icons';
+import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
 import { CoinIcon } from '@/src/components/ui/CoinIcon';
 import { Skeleton, SkeletonCircle } from '@/src/components/ui/Skeleton';
 import { useRouter } from 'expo-router';
@@ -346,7 +347,7 @@ export default function DiscoverScreen() {
             )}
             <View style={styles.templateCta}>
               <Text style={styles.templateCtaText}>Start Battle</Text>
-              <Ionicons name="arrow-forward" size={12} color={colorForType(item.type)} />
+              <ArrowIcon size={12} color={colorForType(item.type)} variant="arrow" />
             </View>
           </View>
         </LinearGradient>
@@ -450,7 +451,7 @@ export default function DiscoverScreen() {
           <LinearGradient colors={isMyMatch ? ['#9AA0AA', '#7E848E'] : grad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.arenaCta}>
             <Ionicons name={isMyMatch ? 'hourglass' : 'flash'} size={16} color="#FFF" />
             <Text style={styles.arenaCtaText}>{isMyMatch ? 'Waiting for a rival' : 'Join Battle'}</Text>
-            {!isMyMatch && <Ionicons name="arrow-forward" size={16} color="#FFF" />}
+            {!isMyMatch && <ArrowIcon size={16} color="#FFF" variant="arrow" />}
           </LinearGradient>
         </View>
       </ScaleTouchable>

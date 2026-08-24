@@ -52,6 +52,9 @@ jobs:
       # Gates on OUR app code being type-clean; ignores unfixable third-party
       # node_modules type errors (see scripts/typecheck.mjs).
       - run: npm run typecheck
+      # Keeps every arrow/chevron routed through src/components/ui/ArrowIcon so
+      # the app cannot drift back to a mix of Ionicons and raw SVG imports.
+      - run: npm run check:icons
       - run: npm test
       # A duplicate `const` in app/story/view/[userId].tsx once reached main
       # because nothing in CI bundled. This step is that missing gate.

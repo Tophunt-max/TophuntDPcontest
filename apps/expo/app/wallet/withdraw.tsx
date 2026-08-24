@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Ionicons } from '@/src/lib/icons';
 import { BackButton } from '@/src/components/ui/BackButton';
+import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
 import { CoinIcon } from '@/src/components/ui/CoinIcon';
 import * as Haptics from 'expo-haptics';
 
@@ -161,7 +162,7 @@ export default function WithdrawScreen() {
               <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
                   <Text style={[styles.histAmount, { color: textColor }]}>{w.amount} coins</Text>
-                  <Ionicons name="arrow-forward" size={13} color={subTextColor} />
+                  <ArrowIcon size={13} color={subTextColor} variant="arrow" />
                   <Text style={[styles.histAmount, { color: textColor }]}>₹{Number(w.cashAmount || 0).toFixed(2)}</Text>
                 </View>
                 <Text style={[styles.hint, { color: subTextColor }]}>{String(w.method || '').toUpperCase()}</Text>
