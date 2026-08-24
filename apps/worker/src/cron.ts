@@ -16,6 +16,7 @@ import { finalizeVotes } from "./lib/voteCounter";
 import { settleRefund, settleWinner } from "./lib/contestSettlement";
 import { matchPot, perPlayerEntryFee } from "./lib/money";
 import { deleteMediaByUrl } from "./lib/mediaDelete";
+import { deleteVsImageByPublicUrl } from "./lib/r2";
 import { newId, now } from "./lib/ids";
 import { publish } from "./lib/publish";
 
@@ -288,11 +289,9 @@ export async function resolveContests(env: Env): Promise<void> {
 
   // expired story cleanup — also delete the R2 media of expired PERSONAL
   // ("user") stories so R2 storage doesn't grow forever. Contest stories
-  // (contest_announcement / contest_vs) reuse the match's media, so we must NOT
-  // delete their objects here — doing so would blank out the battle itself. This
-  // is also why the head-to-head story composes its layout on the client instead
-  // of generating an image: a generated object would have no owner in this sweep.
-  // R2 DELETE ops are free.
+  // (contest_announcement / contest_vs) carry each participant's OWN entry as
+  // their media, so we must NOT delete their objects here — doing so would blank
+  // out the battle itself. R2 DELETE ops are free.
   const expiredUserStories = await db
     .select({ mediaUrl: schema.stories.mediaUrl })
     .from(schema.stories)
@@ -304,6 +303,48 @@ export async function resolveContests(env: Env): Promise<void> {
     // 24h, so an R2-only delete here would leak a video object per story.
     if (s.mediaUrl) await deleteMediaByUrl(env, s.mediaUrl).catch(() => {});
   }
+
+  // The one contest-story object that IS ours to delete: the composite VS card.
+  //
+  // Unlike a participant's entry, the card is generated for the story and nothing
+  // else displays it, so when the battle stories expire it becomes unreachable.
+  // It is not covered by the sweep above (that is `type = 'user'` only) and no
+  // other code path deletes it, so without this every battle that generated a
+  // card would leave a permanent full-screen JPEG in the bucket.
+  //
+  // The column is cleared in the same pass. A match outlives its stories, and a
+  // client that later reads a `vs_image_url` pointing at a deleted object would
+  // render an empty frame; null puts it back on the live layout, which still
+  // works from the match itself.
+  const expiredVsStories = await db
+    .select({ matchId: schema.stories.matchId })
+    .from(schema.stories)
+    .where(and(lte(schema.stories.expiresAt, nowMs), eq(schema.stories.type, "contest_vs")))
+    .limit(500)
+    .all();
+  // Both participants hold a row for the same battle, so the ids arrive in pairs.
+  const expiredMatchIds = [...new Set(expiredVsStories.map((s) => s.matchId).filter(Boolean) as string[])];
+  for (const matchId of expiredMatchIds) {
+    try {
+      const m = await db
+        .select({ vsImageUrl: schema.contestMatches.vsImageUrl })
+        .from(schema.contestMatches)
+        .where(eq(schema.contestMatches.id, matchId))
+        .get();
+      if (!m?.vsImageUrl) continue;
+      await db
+        .update(schema.contestMatches)
+        .set({ vsImageUrl: null })
+        .where(eq(schema.contestMatches.id, matchId))
+        .run();
+      await deleteVsImageByPublicUrl(env, m.vsImageUrl);
+    } catch (e) {
+      // A card left behind costs storage; a throw here would stop the rest of the
+      // schedule, including match settlement.
+      console.error("[cron] battle card cleanup failed (continuing)", matchId, e);
+    }
+  }
+
   await db.delete(schema.stories).where(lte(schema.stories.expiresAt, nowMs));
 
   // due scheduled/segmented broadcasts

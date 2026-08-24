@@ -34,6 +34,7 @@ import m_0029_payments_fiat_amount_sql from "../../migrations/0029_payments_fiat
 import m_0030_account_deletion_sql from "../../migrations/0030_account_deletion.sql";
 import m_0031_integration_secrets_sql from "../../migrations/0031_integration_secrets.sql";
 import m_0032_user_blocks_sql from "../../migrations/0032_user_blocks.sql";
+import m_0033_match_vs_image_sql from "../../migrations/0033_match_vs_image.sql";
 
 export interface Migration {
   name: string;
@@ -74,4 +75,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0030_account_deletion.sql", sql: m_0030_account_deletion_sql },
   { name: "0031_integration_secrets.sql", sql: m_0031_integration_secrets_sql },
   { name: "0032_user_blocks.sql", sql: m_0032_user_blocks_sql },
+  { name: "0033_match_vs_image.sql", sql: m_0033_match_vs_image_sql },
 ];

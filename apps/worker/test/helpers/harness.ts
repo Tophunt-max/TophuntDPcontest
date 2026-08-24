@@ -110,8 +110,39 @@ export function fakeKV() {
   };
 }
 
+/**
+ * Minimal R2 bucket stand-in.
+ *
+ * Records every key put and deleted, because storage side effects are otherwise
+ * invisible to a test: the handlers deliberately treat an R2 failure as
+ * non-fatal, so a delete that never happens produces exactly the same response
+ * body as one that did. Cleaning up an object nobody references is a pure cost
+ * concern, and cost regressions are the kind that go unnoticed for months.
+ */
+export function fakeR2() {
+  const objects = new Map<string, { body: any; httpMetadata?: any }>();
+  const deleted: string[] = [];
+  return {
+    _objects: objects,
+    /** Keys passed to delete(), in order, including keys that did not exist. */
+    _deleted: deleted,
+    async put(key: string, body: any, opts?: any) {
+      objects.set(key, { body, httpMetadata: opts?.httpMetadata });
+      return { key };
+    },
+    async get(key: string) {
+      return objects.get(key) ?? null;
+    },
+    async delete(key: string) {
+      deleted.push(key);
+      objects.delete(key);
+    },
+  };
+}
+
 export interface TestEnv {
   DB: any;
+  MEDIA: ReturnType<typeof fakeR2>;
   CACHE_KV: ReturnType<typeof fakeKV>;
   OTP_KV: ReturnType<typeof fakeKV>;
   RAZORPAY_KEY_ID: string;
@@ -130,6 +161,7 @@ export function makeEnv(overrides: Partial<TestEnv> = {}): { env: TestEnv; db: S
 
   const env: TestEnv = {
     DB: new D1Shim(sqlite),
+    MEDIA: fakeR2(),
     CACHE_KV: fakeKV(),
     OTP_KV: fakeKV(),
     RAZORPAY_KEY_ID: 'rzp_test_key',

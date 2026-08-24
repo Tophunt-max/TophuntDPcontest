@@ -18,6 +18,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Keyboard,
+  Share,
 } from 'react-native';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -49,6 +50,8 @@ import { prefetchImages } from '@/src/lib/mediaPrefetch';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { isVideoStory, isVsStory, storyMediaKind, type StoryViewer } from '@/src/types/stories';
 import { StoryVsFrame } from '@/src/components/stories/StoryVsFrame';
+import { VsCaptureBoundary } from '@/src/components/stories/VsCaptureBoundary';
+import { useVsStoryCard } from '@/src/hooks/useVsStoryCard';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
 
 const { width, height } = Dimensions.get('window');
@@ -153,6 +156,41 @@ export default function StoryView() {
 
   const isMyStory = currentUserStories?.userId === auth.currentUser?.uid;
   const isMentioned = currentStory?.mentions?.includes(auth.currentUser?.uid || '');
+
+  // The composite VS card for a battle story: captured from the frame below once
+  // it has painted, and used to share the battle as an image rather than a link.
+  // `canGenerate` is `isMyStory` because a `contest_vs` story only ever exists on
+  // the two participants' own reels — so "my own battle story" is exactly the
+  // permission the server checks, established without needing the match loaded.
+  const isVsCurrent = !!currentStory && isVsStory(currentStory);
+  const { shotRef: vsShotRef, onCaptureReady: onVsCaptureReady, shareCard } = useVsStoryCard({
+    matchId: isVsCurrent ? currentStory!.matchId : null,
+    canGenerate: isVsCurrent && isMyStory,
+    setPaused: setIsPaused,
+  });
+
+  /**
+   * Share the current story.
+   *
+   * This button existed with no `onPress` at all, so the paper-plane did nothing.
+   * A battle shares as the head-to-head image where the device can produce one;
+   * everything else, and every device that cannot, shares the text and link that
+   * the rest of the app already sends.
+   */
+  const handleShareStory = useCallback(() => {
+    const who = currentUserStories?.username ? `@${currentUserStories.username}` : 'someone';
+    const message = isVsCurrent
+      ? `${currentStory?.contestTitle || 'A battle'} is live on TopHunt — tap through to vote.\n\nhttps://tophunt.in`
+      : `Check out ${who}'s story on TopHunt.\n\nhttps://tophunt.in`;
+    void shareCard(async () => {
+      try {
+        await Share.share({ message });
+      } catch (e) {
+        // A dismissed share sheet rejects on some platforms; that is not an error.
+        console.warn('[StoryView] share failed', e);
+      }
+    });
+  }, [shareCard, isVsCurrent, currentStory?.contestTitle, currentUserStories?.username]);
 
   // videoSourceFor resolves the platform-correct URL and enables the disk cache,
   // so re-watching a story does not refetch it.
@@ -506,11 +544,19 @@ export default function StoryView() {
               `mediaUrl` is only the fallback for one side.
             */}
             {isVsStory(currentStory) ? (
-                <StoryVsFrame
-                    matchId={currentStory.matchId!}
-                    fallbackMediaUrl={currentStory.mediaUrl}
-                    contestTitle={currentStory.contestTitle}
-                />
+                // Wrapped so the frame can be screenshotted into the single image
+                // that gets shared and, once captured, becomes the story itself for
+                // both participants. The wrapper is a plain View on every platform
+                // — it exists to keep the frame from being flattened away on
+                // Android — so nothing about the rendering changes.
+                <VsCaptureBoundary innerRef={vsShotRef}>
+                    <StoryVsFrame
+                        matchId={currentStory.matchId!}
+                        fallbackMediaUrl={currentStory.mediaUrl}
+                        contestTitle={currentStory.contestTitle}
+                        onCaptureReady={onVsCaptureReady}
+                    />
+                </VsCaptureBoundary>
             ) : !isVideoStory(currentStory) ? (
                 <Image source={{ uri: currentStory.mediaUrl }} style={styles.media} contentFit="contain" />
             ) : (
@@ -607,7 +653,12 @@ export default function StoryView() {
                     <TouchableOpacity style={styles.likeBtn} onPress={() => handleReaction('❤️')}>
                         <Ionicons name="heart-outline" size={28} color="white" />
                     </TouchableOpacity>
-                    <TouchableOpacity style={styles.shareBtn}>
+                    <TouchableOpacity
+                        style={styles.shareBtn}
+                        onPress={handleShareStory}
+                        accessibilityRole="button"
+                        accessibilityLabel={isVsCurrent ? 'Share this battle' : 'Share this story'}
+                    >
                         <Ionicons name="paper-plane-outline" size={28} color="white" />
                     </TouchableOpacity>
                 </View>
@@ -622,6 +673,16 @@ export default function StoryView() {
                     <Pressable style={styles.actionBtn} onPress={() => toggleViewers(true)}>
                         <Viewers_Icon width={28} height={28} />
                         <Text style={styles.actionText}>{viewers.length}</Text>
+                    </Pressable>
+                    {/*
+                      Own-story actions had no share at all, which meant the one
+                      person most likely to want to post their battle elsewhere —
+                      a participant looking at their own new battle — was the only
+                      one who couldn't.
+                    */}
+                    <Pressable style={styles.actionBtn} onPress={handleShareStory} accessibilityRole="button" accessibilityLabel={isVsCurrent ? 'Share this battle' : 'Share this story'}>
+                        <Ionicons name="paper-plane-outline" size={26} color="white" />
+                        <Text style={styles.actionText}>Share</Text>
                     </Pressable>
                     <Pressable style={styles.actionBtn} onPress={handleDeleteStory}>
                         <Delete_Icon width={24} height={24} />

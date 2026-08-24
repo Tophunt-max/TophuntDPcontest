@@ -1,0 +1,43 @@
+-- A single composite "VS" image for a battle, shareable outside the app.
+--
+-- The head-to-head story frame is composed at render time from the two entries
+-- (see apps/expo/src/components/stories/StoryVsFrame.tsx). That works inside the
+-- app but produces nothing you can hand to WhatsApp or Instagram, which want one
+-- image file. This column holds that file once it exists.
+--
+-- Why the image is produced on the CLIENT and merely recorded here:
+--
+--   The Worker cannot compose images. lib/media.ts only builds Cloudflare Image
+--   *Resizing* URLs, and resizing cannot combine two sources — overlaying needs
+--   the Images `draw` API, which is not bound. It is inert regardless until the
+--   media custom domain exists (`transformationsAvailable`). Doing it in-Worker
+--   would mean shipping a WASM image decoder and then fetching, decoding,
+--   re-encoding and re-uploading on the paid-join hot path.
+--
+--   So the joining client captures the rendered card and uploads it, and
+--   `setMatchVsImage` records the result here after checking the caller is a
+--   participant and the url is our own media origin.
+--
+-- Deliberately on `contest_matches`, and NEVER copied onto the two `stories`
+-- rows. Both participants' stories already point at the match, so one column is
+-- one thing to keep consistent — but the stronger reasons are that copying it
+-- breaks two existing guarantees:
+--
+--   blocking: /read/matches/:id returns nothing when a participant is blocked by
+--   the viewer, which is what makes the story fall back to the single entry the
+--   row itself carries. A row carrying the composite would show the blocked user.
+--
+--   ownership: account deletion deletes the R2 objects named by the departing
+--   user's `stories.media_url`. If both rows named this image, one participant
+--   leaving would delete the image the other's live story was displaying.
+--
+-- So `stories.media_url` stays each user's own entry, and this column is the only
+-- reference to the card. `cron.ts` deletes the object and clears this column when
+-- the battle's stories expire — it is the one contest-story object that has an
+-- owner in cleanup, because nothing else displays it.
+--
+-- Nullable and stays nullable. Generation is best-effort — the capture needs a
+-- native module that older installs will not have, and never runs for video
+-- battles — so every reader must treat its absence as normal and fall back to the
+-- live-rendered frame.
+ALTER TABLE contest_matches ADD COLUMN vs_image_url TEXT;

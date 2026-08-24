@@ -523,6 +523,13 @@ const mapMatch = (r: any) => ({
   shareCount: r.shareCount,
   winnerUid: r.winnerUid,
   rewardAmount: r.rewardAmount,
+  /**
+   * The composite head-to-head image, once a client has produced one
+   * (migration 0033). Null is normal and permanent for battles created before
+   * this existed, or where capture is unavailable — every reader must fall back
+   * to laying the two entries out itself.
+   */
+  vsImageUrl: r.vsImageUrl ?? null,
   minVotesRequired: r.minVotesRequired,
   endingSoonNotified: r.endingSoonNotified,
   createdAt: r.createdAt,
