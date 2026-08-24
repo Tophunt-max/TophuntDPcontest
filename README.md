@@ -89,18 +89,33 @@ in. `GET /health/deep` reports exactly which secrets and providers are missing.
 
 ## Deploying
 
-```bash
-# Worker (or push to main — .github/workflows/deploy-worker.yml)
-cd apps/worker && npm run deploy
+**Everything is deployed by Cloudflare, automatically, on push to `main`:**
 
-# Admin panel
+| What | By | Check name |
+|---|---|---|
+| `apps/worker` | Cloudflare Workers Builds | `Workers Builds: tophunt-api` |
+| `apps/expo` (web) | Cloudflare Pages | `Cloudflare Pages: tophuntdpcontest` |
+| `apps/admin-panel` | Cloudflare Pages | `Cloudflare Pages: tophunt-admin-panel` |
+
+All three are configured on the Cloudflare side, so there is no deploy step in this
+repository for them. Nothing else deploys this project — if you see a status from
+another provider, it is a leftover integration and should be disconnected.
+
+Manual deploys, for staging or when the Cloudflare-side build is unavailable:
+
+```bash
+cd apps/worker && npm run deploy          # or: Actions → Deploy Worker
 cd apps/admin-panel && npm run deploy
 ```
 
-The deploy workflow re-runs the gates, deploys, then smoke-tests `/health/deep` and
-fails if the deployment cannot reach its dependencies. There is a `staging`
-environment in `wrangler.toml`; its resource ids are placeholders until you create
-them (deliberately, so a staging deploy cannot silently write to production).
+`.github/workflows/deploy-worker.yml` is **manual only** (`workflow_dispatch`) so it
+cannot race with Workers Builds. It re-runs the gates, deploys, then smoke-tests
+`/health/deep` and fails if the deployment cannot reach its dependencies. Its API
+token needs `Workers Scripts:Edit`, `D1:Edit` **and** `User → Memberships:Read`.
+
+There is a `staging` environment in `wrangler.toml`; its resource ids are
+placeholders until you create them (deliberately, so a staging deploy cannot
+silently write to production).
 
 ## Operations
 
