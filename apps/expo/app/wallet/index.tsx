@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@/src/lib/icons';
 import { BackButton } from '@/src/components/ui/BackButton';
+import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
 import { CoinIcon } from '@/src/components/ui/CoinIcon';
 import { WalletSkeleton } from '@/src/components/skeletons/WalletSkeleton';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -456,7 +457,7 @@ export default function WalletScreen() {
                                 <Text style={[styles.referTitle, { color: isDark ? '#fff' : '#101010' }]}>Refer & Earn</Text>
                                 <Text style={styles.referDesc}>{referralCode ? <>Your code: <Text style={{fontWeight: '800', color: '#FF4D67'}}>{referralCode}</Text></> : 'Invite friends & earn bonus coins!'}</Text>
                             </View>
-                            <Ionicons name="chevron-forward" size={20} color={subTextColor} />
+                            <ArrowIcon size={18} direction="right" color={subTextColor} />
                         </View>
                     </TouchableOpacity>
                 </Animated.View>

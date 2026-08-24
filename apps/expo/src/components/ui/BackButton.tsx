@@ -1,7 +1,7 @@
 import React, { useCallback } from 'react';
 import { TouchableOpacity, useColorScheme, StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Left_Arrow } from '@/assets/svgs';
+import { ArrowIcon } from './ArrowIcon';
 
 /**
  * The single back arrow for the whole app.
@@ -10,11 +10,9 @@ import { Left_Arrow } from '@/assets/svgs';
  * Ionicons shim, others rendered `Left_Arrow` from assets directly, with hit
  * areas ranging from "none" to 40x40 and accessibility labels only sometimes
  * present. This component is now the one place that decides what "back" looks
- * and behaves like — always the asset SVG, never Ionicons.
+ * and behaves like — always `left_arrow.svg` (via ArrowIcon), never Ionicons.
  *
- * `left_arrow.svg` is 10x16, so `size` acts as the glyph HEIGHT (the SVG keeps
- * its aspect ratio inside the box and ends up ~0.63x as wide). That matches how
- * the Ionicons chevron sized itself, so drop-in replacements look right.
+ * `size` acts as the glyph HEIGHT; see ArrowIcon for why.
  */
 export type BackButtonProps = {
     /** Glyph height in px. Default 24. */
@@ -50,7 +48,7 @@ export function BackButton({
         router.back();
     }, [onPress, router]);
 
-    const icon = <Left_Arrow width={size} height={size} color={tint} />;
+    const icon = <ArrowIcon size={size} color={tint} direction="left" />;
 
     if (!pressable) return icon;
 

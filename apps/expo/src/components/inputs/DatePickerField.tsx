@@ -11,10 +11,12 @@ import {
 } from 'react-native';
 import { Control, Controller, FieldValues, Path } from 'react-hook-form';
 import DateTimePickerBase from 'react-native-ui-datepicker';
-// The lib's prop union is over-strict for our single-date usage; alias as any.
-const DateTimePicker = DateTimePickerBase as unknown as React.ComponentType<any>;
 import dayjs from 'dayjs';
 import { Ionicons } from '@/src/lib/icons';
+import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
+
+// The lib's prop union is over-strict for our single-date usage; alias as any.
+const DateTimePicker = DateTimePickerBase as unknown as React.ComponentType<any>;
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -118,8 +120,8 @@ export const DatePickerField = <T extends FieldValues>({
                         weekdayTextStyle={styles.weekdayText}
                         headerButtonStyle={styles.headerButton}
                         controlsProps={{
-                          prevIcon: <Ionicons name="chevron-back" size={16} color="#212121" />,
-                          nextIcon: <Ionicons name="chevron-forward" size={16} color="#212121" />,
+                          prevIcon: <ArrowIcon size={16} color="#212121" direction="left" />,
+                          nextIcon: <ArrowIcon size={16} color="#212121" direction="right" />,
                         }}
                       />
                     </View>

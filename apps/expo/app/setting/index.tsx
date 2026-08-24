@@ -12,8 +12,8 @@ import {
   Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Ionicons } from '@/src/lib/icons';
 import { BackButton } from '@/src/components/ui/BackButton';
+import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
 import {
   Settings_User,
   Settings_Lock,
@@ -106,7 +106,7 @@ export default function SettingScreen() {
       </View>
       <View style={styles.itemRight}>
         {rightElement}
-        {showArrow && <Ionicons name="chevron-forward" size={20} color={textColor} />}
+        {showArrow && <ArrowIcon size={18} direction="right" color={textColor} />}
       </View>
     </TouchableOpacity>
   );

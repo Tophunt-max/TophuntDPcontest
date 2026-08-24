@@ -11,7 +11,6 @@ import {
   useColorScheme,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Ionicons } from '@/src/lib/icons';
 import {
   Settings_User,
   Settings_Lock,
@@ -19,6 +18,7 @@ import {
   Settings_Logout,
 } from "@/assets/svgs";
 import { BackButton } from "@/src/components/ui/BackButton";
+import { ArrowIcon } from "@/src/components/ui/ArrowIcon";
 import { signOut } from '../../../src/services/auth';
 import { Colors } from '@/constants/theme';
 
@@ -75,7 +75,7 @@ export default function ManageProfileScreen() {
         <Text style={[styles.itemLabel, { color: isDestructive ? '#FF4D67' : textColor }]}>{label}</Text>
       </View>
       <View style={styles.itemRight}>
-        {showArrow && <Ionicons name="chevron-forward" size={20} color={isDestructive ? '#FF4D67' : textColor} />}
+        {showArrow && <ArrowIcon size={18} direction="right" color={isDestructive ? '#FF4D67' : textColor} />}
       </View>
     </TouchableOpacity>
   );
