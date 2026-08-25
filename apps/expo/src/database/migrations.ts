@@ -1,20 +1,39 @@
-import { schemaMigrations } from '@nozbe/watermelondb/Schema/migrations';
+import { schemaMigrations, addColumns } from '@nozbe/watermelondb/Schema/migrations';
 
 /**
  * Schema migrations for the local stories cache.
  *
- * `schema.ts` is still at version 1, so there is nothing to migrate *from* yet
- * and the list is intentionally empty. When you bump the schema version, add a
- * matching entry here:
- *
- *   migrations: [
- *     { toVersion: 2, steps: [addColumns({ table: 'stories', columns: [...] })] },
- *   ]
+ * These MUST stay in lockstep with `schema.ts`: the adapter migrates an existing
+ * on-device database from its stored version up to the schema version, applying
+ * each step. A column added to `schema.ts` without a matching `addColumns` step
+ * here throws for every user who already has a cache, while the reverse leaves
+ * the new column missing on upgraded devices — either way the stories layer then
+ * falls back to the network (see `adapter.ts` onSetUpError), which is safe but
+ * defeats the cache.
  *
  * Note `Migration` is not an export of `@nozbe/watermelondb` — migrations must
  * be built through `schemaMigrations()`, which returns the validated shape the
  * adapter expects.
  */
 export const migrations = schemaMigrations({
-  migrations: [],
+  migrations: [
+    {
+      // v2 adds the contest-story fields to the stories table. Existing cached
+      // rows get NULLs, which is correct: a plain `user` story has no match, no
+      // contest type and no title, and a battle story that predates this upgrade
+      // is re-fetched from the network on the next feed load and re-saved WITH
+      // these fields, at which point it renders as a proper VS frame.
+      toVersion: 2,
+      steps: [
+        addColumns({
+          table: 'stories',
+          columns: [
+            { name: 'match_id', type: 'string', isOptional: true, isIndexed: true },
+            { name: 'type', type: 'string', isOptional: true },
+            { name: 'contest_title', type: 'string', isOptional: true },
+          ],
+        }),
+      ],
+    },
+  ],
 });

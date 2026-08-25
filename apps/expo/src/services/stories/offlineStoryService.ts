@@ -41,8 +41,15 @@ async function findOrNull<T extends Model>(
   }
 }
 
-/** Copies a server Story onto a local StoryModel. Never sets `updatedAt`. */
-function applyStoryFields(record: StoryModel, story: Story): void {
+/**
+ * Copies a server Story onto a local StoryModel. Never sets `updatedAt`.
+ *
+ * Exported for the round-trip test in test/storyCache.test.ts. That test exists
+ * because the field that broke battle stories — `matchId`/`type` being silently
+ * dropped here — is exactly the kind of omission nothing else can catch: the code
+ * compiled, ran, and cached a story that simply came back missing two fields.
+ */
+export function applyStoryFields(record: StoryModel, story: Story): void {
   record.userId = story.userId;
   record.username = story.username || '';
   record.avatarUrl = story.avatarUrl || '';
@@ -56,6 +63,14 @@ function applyStoryFields(record: StoryModel, story: Story): void {
   record.overlayText = story.overlayText;
   record.textPosition = story.textPosition ? JSON.stringify(story.textPosition) : undefined;
   record.mentions = story.mentions ? JSON.stringify(story.mentions) : undefined;
+  // Contest-story fields. These were previously dropped on the way into the
+  // cache, so a battle story served from the cache came back without its
+  // `matchId`/`type` and the viewer rendered it as a single photo — showing only
+  // that user's own entry instead of the merged VS frame. `?? undefined` keeps a
+  // null from the API out of a non-null local column.
+  record.matchId = story.matchId ?? undefined;
+  record.type = story.type ?? undefined;
+  record.contestTitle = story.contestTitle ?? undefined;
   record.isSynced = true;
 }
 
@@ -69,8 +84,8 @@ function applyUserStoryFields(record: UserStoryModel, userStories: UserStories):
   record.stories = JSON.stringify(userStories.stories.map((s) => s.id));
 }
 
-/** Map a cached StoryModel back to the API-shaped Story. */
-function mapStoryModelToStory(storyModel: StoryModel): Story {
+/** Map a cached StoryModel back to the API-shaped Story. Exported for tests. */
+export function mapStoryModelToStory(storyModel: StoryModel): Story {
   return {
     id: storyModel.id,
     userId: storyModel.userId,
@@ -84,6 +99,11 @@ function mapStoryModelToStory(storyModel: StoryModel): Story {
     overlayText: storyModel.overlayText,
     textPosition: storyModel.getTextPosition(),
     mentions: storyModel.getMentions(),
+    // Restore the contest-story fields so a cached battle story still resolves
+    // through isVsStory() to the head-to-head frame.
+    type: storyModel.type as Story['type'],
+    matchId: storyModel.matchId ?? null,
+    contestTitle: storyModel.contestTitle ?? null,
   };
 }
 
