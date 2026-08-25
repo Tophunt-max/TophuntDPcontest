@@ -31,6 +31,20 @@ import { getSharing, getViewShot } from '@/src/lib/vsNativeModules';
 const CARD_MIME = 'image/jpeg';
 
 /**
+ * A uri the share sheet can actually attach: a local capture, not a remote link.
+ *
+ * The capture is `file://` on native (view-shot tmpfile) and `blob:` on web
+ * (html-to-image object URL); both are the local, freshly-produced image. A
+ * remote `https://` url — e.g. an already-recorded card read back from the API —
+ * is deliberately excluded: a share sheet cannot attach a URL as a file, and
+ * trying would either fail or, worse, share a bare link where the caller's own
+ * text fallback does that job better.
+ */
+function isLocalCaptureUri(uri: string | null | undefined): uri is string {
+  return typeof uri === 'string' && (uri.startsWith('file://') || uri.startsWith('blob:'));
+}
+
+/**
  * Whether a capture can be attempted at all.
  *
  * False on web, and false on any build whose native side predates the module —
@@ -116,14 +130,17 @@ export async function uploadAndRecordVsCard(localUri: string, matchId: string): 
  * fails. `fallbackShare` is the caller's existing text-and-link share.
  */
 export async function shareVsCard(opts: {
-  /** A local `file://` uri from `captureVsCard`. Remote urls cannot be attached. */
+  /**
+   * A local capture uri from `captureVsCard` — `file://` on native, `blob:` on
+   * web. Remote (`https://`) urls cannot be attached as a file and are ignored.
+   */
   imageUri?: string | null;
   fallbackShare: () => Promise<void> | void;
 }): Promise<void> {
   const { imageUri, fallbackShare } = opts;
   const mod = getSharing();
 
-  if (imageUri && imageUri.startsWith('file://') && typeof mod?.shareAsync === 'function') {
+  if (isLocalCaptureUri(imageUri) && typeof mod?.shareAsync === 'function') {
     try {
       const available = typeof mod.isAvailableAsync === 'function' ? await mod.isAvailableAsync() : true;
       if (available) {
