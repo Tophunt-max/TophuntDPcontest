@@ -70,8 +70,20 @@ export const SECRET_DEFINITIONS: SecretDefinition[] = [
   { name: "RAZORPAY_WEBHOOK_SECRET", label: "Razorpay Webhook Secret", group: "payments", envKey: "RAZORPAY_WEBHOOK_SECRET", help: "Without this the webhook returns 503 and paid orders are only credited by the reconciliation sweep." },
 
   // ---- Video (Bunny Stream) ----------------------------------------------
-  { name: "BUNNY_STREAM_API_KEY", label: "Bunny Stream API Key", group: "video", envKey: "BUNNY_STREAM_API_KEY" },
-  { name: "BUNNY_WEBHOOK_SECRET", label: "Bunny Webhook Secret", group: "video", envKey: "BUNNY_WEBHOOK_SECRET" },
+  {
+    name: "BUNNY_STREAM_API_KEY",
+    label: "Bunny Stream API Key",
+    group: "video",
+    envKey: "BUNNY_STREAM_API_KEY",
+    help: "Bunny dashboard → Stream → your library → API. Stays server-side; never shipped to the app.",
+  },
+  {
+    name: "BUNNY_WEBHOOK_SECRET",
+    label: "Bunny Webhook Secret",
+    group: "video",
+    envKey: "BUNNY_WEBHOOK_SECRET",
+    help: "Optional. If set, the encode webhook is only accepted when it presents this value (as an X-Bunny-Signature header, a Bearer token, or ?secret= on the URL). Add the SAME value to your Bunny webhook URL, e.g. https://<worker-host>/webhook/bunny?secret=…",
+  },
 
   // ---- Storage (R2 S3 API, used for presigned uploads) -------------------
   { name: "R2_ACCESS_KEY_ID", label: "R2 Access Key ID", group: "storage", envKey: "R2_ACCESS_KEY_ID", sensitive: true },

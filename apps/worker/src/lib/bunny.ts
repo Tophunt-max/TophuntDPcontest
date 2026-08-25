@@ -55,6 +55,19 @@ export async function bunnyConfig(env: Env): Promise<BunnyConfig | null> {
   return { apiKey, libraryId, cdnHostname };
 }
 
+/**
+ * Optional webhook shared-secret, panel-managed with environment fallback.
+ *
+ * Resolved through the same store as every other credential — NOT read straight
+ * from `env` — so a value saved in the admin panel actually takes effect. The
+ * `/webhook/bunny` handler had been reading `env.BUNNY_WEBHOOK_SECRET` directly,
+ * which meant a secret entered in the panel was encrypted, stored, and then
+ * silently ignored.
+ */
+export async function getBunnyWebhookSecret(env: Env): Promise<string | null> {
+  return resolveSecret(env, "BUNNY_WEBHOOK_SECRET");
+}
+
 export async function bunnyConfigured(env: Env): Promise<boolean> {
   const integrations = await getIntegrations(env);
   // An operator can force the R2 path even with valid Bunny credentials present,

@@ -32,6 +32,7 @@ import { cronHealth, pruneOpsTables, runCronJob } from "./lib/ops";
 import { integrationHealth } from "./routes/integrations";
 import { reconcilePaymentOrders } from "./lib/coinOrders";
 import { reconcileVideos } from "./lib/videoReconcile";
+import { resolveSecret, getRazorpayCredentials } from "./lib/integrations";
 import { pruneNotifications } from "./lib/notify";
 import {
   contentRangeHeader,
@@ -179,12 +180,21 @@ app.get("/health/deep", async (c) => {
   // Secrets whose absence silently breaks a user-visible flow. The code is
   // correctly fail-closed on each, which is exactly why they must be surfaced:
   // without them the app looks healthy and simply refuses to work.
+  //
+  // Panel-managed credentials are resolved through the credential store (panel
+  // value first, env fallback), NOT read from `env` directly — otherwise a key
+  // configured in the admin panel is reported "missing" here even though it is
+  // live, turning a healthy deploy red.
+  const [faSvc, rzp] = await Promise.all([
+    resolveSecret(c.env, "FIREBASE_SERVICE_ACCOUNT"),
+    getRazorpayCredentials(c.env),
+  ]);
   const requiredSecrets: Record<string, unknown> = {
-    FIREBASE_SERVICE_ACCOUNT: c.env.FIREBASE_SERVICE_ACCOUNT,
+    FIREBASE_SERVICE_ACCOUNT: faSvc,
     FIREBASE_PROJECT_ID: c.env.FIREBASE_PROJECT_ID,
-    RAZORPAY_KEY_ID: c.env.RAZORPAY_KEY_ID,
-    RAZORPAY_KEY_SECRET: c.env.RAZORPAY_KEY_SECRET,
-    RAZORPAY_WEBHOOK_SECRET: c.env.RAZORPAY_WEBHOOK_SECRET,
+    RAZORPAY_KEY_ID: rzp.keyId,
+    RAZORPAY_KEY_SECRET: rzp.keySecret,
+    RAZORPAY_WEBHOOK_SECRET: rzp.webhookSecret,
     R2_PUBLIC_BASE_URL: c.env.R2_PUBLIC_BASE_URL,
     ALLOWED_ORIGINS: c.env.ALLOWED_ORIGINS,
   };

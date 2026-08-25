@@ -20,7 +20,7 @@ import { getRazorpayCredentials } from "../lib/integrations";
 import { createNotification } from "../lib/notify";
 import { timingSafeEqualSecret } from "../lib/timingSafe";
 import { newId, now } from "../lib/ids";
-import { bunnyConfigured } from "../lib/bunny";
+import { bunnyConfigured, getBunnyWebhookSecret } from "../lib/bunny";
 import { applyBunnyEncodeResult } from "../lib/videoReconcile";
 
 export const webhookRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -224,7 +224,9 @@ webhookRoute.post("/bunny", async (c) => {
   // configured we require it, so the endpoint can be locked down; otherwise the
   // handler is safe because it only ever trusts data re-fetched from Bunny's API
   // below, never the values in the request body.
-  const configuredSecret = (c.env.BUNNY_WEBHOOK_SECRET || "").trim();
+  // Panel-managed with env fallback — a secret saved in the admin panel must
+  // actually take effect, which reading env directly did not honour.
+  const configuredSecret = ((await getBunnyWebhookSecret(c.env)) || "").trim();
   if (configuredSecret) {
     const presented =
       c.req.header("X-Bunny-Signature") ||
