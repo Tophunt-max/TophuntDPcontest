@@ -3,6 +3,7 @@ import { Env } from "../types";
 import { getDb, schema } from "../db";
 import { eq, sql } from "drizzle-orm";
 import { newId, now } from "./ids";
+import { putVerifiedImage } from "./r2";
 
 const OWN_HOST = /(^|\.)tophunt\.in$/i;
 const PHOTON_HOST = /(^|\.)wp\.com$/i;
@@ -209,16 +210,21 @@ async function sha256Hex(input: string | ArrayBuffer): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-const IMG_EXT: Record<string, string> = {
-  "image/jpeg": ".jpg",
-  "image/jpg": ".jpg",
-  "image/png": ".png",
-  "image/gif": ".gif",
-  "image/webp": ".webp",
-  "image/svg+xml": ".svg",
-  "image/avif": ".avif",
-};
-
+/**
+ * Mirror one archived image into R2, or return null to leave the original URL in
+ * place.
+ *
+ * The extension and the stored content type come from the bytes via
+ * `putVerifiedImage`, not from the remote `Content-Type`. The old local `IMG_EXT`
+ * map (a drifting duplicate of one in routes/admin.ts) accepted `image/svg+xml`
+ * and fell back to `.img` for anything else, so an archive host could get a
+ * scriptable SVG or an arbitrary blob written into our bucket and served from our
+ * own media URL.
+ *
+ * Returning null on an unrecognised image is the right failure mode for a bulk
+ * importer: the post still renders against the original remote URL and one odd
+ * asset does not abort a run of hundreds.
+ */
 async function fetchToR2(url: string, env: Env) {
   try {
     const res = await fetch(url, { headers: { "User-Agent": "TopHuntArchiveImporter/1.0" }, redirect: "follow" });
@@ -228,12 +234,8 @@ async function fetchToR2(url: string, env: Env) {
     const buf = await res.arrayBuffer();
     if (buf.byteLength < 100) return null;
     const hash = await sha256Hex(buf);
-    const ext = IMG_EXT[ct] || ".img";
-    const key = `blog/imported/${hash}${ext}`;
-    const publicUrl = `${env.R2_PUBLIC_BASE_URL.replace(/\/$/, "")}/${key}`;
-    const existing = await env.MEDIA.head(key);
-    if (!existing) await env.MEDIA.put(key, buf, { httpMetadata: { contentType: ct } });
-    return publicUrl;
+    const stored = await putVerifiedImage(env, "blog/imported", buf, hash);
+    return stored?.publicUrl ?? null;
   } catch {
     return null;
   }

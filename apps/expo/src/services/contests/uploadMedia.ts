@@ -39,6 +39,10 @@ export const contestMediaService = {
         // rather than failing the whole submission.
         console.warn('[contestMedia] Bunny upload failed, falling back to R2:', e);
       }
+      // 'video/mp4' here means "a video is expected", not "this file is an mp4".
+      // uploadToR2 reads the real container from the file header, so an iOS .mov
+      // is now uploaded and stored as video/quicktime instead of being
+      // mislabelled as mp4.
       return (await uploadToR2(uri, 'video/mp4', 'contests', onProgress)) as string;
     }
 

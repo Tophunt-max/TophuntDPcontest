@@ -46,6 +46,7 @@ import {
 import {
   contestBannerKeyFromPublicUrl,
   deleteContestBannerByPublicUrl,
+  putVerifiedImage,
   sanitizeMediaFolder,
   uploadToR2,
 } from "../lib/r2";
@@ -295,26 +296,19 @@ async function invalidateContestCaches(env: Env, id: string): Promise<void> {
   await delCache(env, ...contestListCacheKeys(), contestDetailCacheKey(id));
 }
 
-function detectedContestBannerMime(bytes: Uint8Array): typeof CONTEST_BANNER_MIME_TYPES[number] | null {
-  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
-  if (
-    bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47 &&
-    bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a
-  ) return "image/png";
-  if (
-    bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
-    bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50
-  ) return "image/webp";
-  return null;
-}
-
-adminRoute.post("/media/contest-banner", async (c) => {
-  requireFullAdmin(c);
+/**
+ * Shared pre-read guards for the two admin image uploads.
+ *
+ * Both routes had an identical 25-line block plus their own local magic-byte
+ * sniffer. The sniffer now lives in `lib/mediaTypes.ts` and is applied inside
+ * `uploadToR2`, so what is left here is the declared-type and size screening that
+ * should happen before the body is read at all.
+ */
+function assertAdminImageUpload(c: any): string {
   const fileType = (c.req.header("Content-Type") || "").split(";")[0].trim().toLowerCase();
   if (!CONTEST_BANNER_MIME_TYPES.includes(fileType as any)) {
-    throw httpsError("invalid-argument", "Contest banners must be JPEG, PNG, or WebP images.");
+    throw httpsError("invalid-argument", "Must be a JPEG, PNG, or WebP image.");
   }
-
   const contentLength = c.req.header("Content-Length");
   if (contentLength !== undefined) {
     const declaredBytes = Number(contentLength);
@@ -325,15 +319,25 @@ adminRoute.post("/media/contest-banner", async (c) => {
       throw httpsError("invalid-argument", "File too large (max 5MB).");
     }
   }
+  return fileType;
+}
 
+async function readAdminImageBody(c: any): Promise<ArrayBuffer> {
   const body = await c.req.arrayBuffer();
   if (!body.byteLength) throw httpsError("invalid-argument", "Empty upload.");
   if (body.byteLength > CONTEST_BANNER_MAX_BYTES) throw httpsError("invalid-argument", "File too large (max 5MB).");
-  if (detectedContestBannerMime(new Uint8Array(body)) !== fileType) {
-    throw httpsError("invalid-argument", "File contents do not match the declared image type.");
-  }
+  return body;
+}
 
-  const uploaded = await uploadToR2(c.env, fileType, "contest-banners", body);
+adminRoute.post("/media/contest-banner", async (c) => {
+  requireFullAdmin(c);
+  const fileType = assertAdminImageUpload(c);
+  const body = await readAdminImageBody(c);
+
+  // Passing the exact declared type as the allow-list keeps the strict
+  // behaviour these routes always had: the panel sends the browser's own
+  // `file.type`, so the bytes must match it exactly, not merely be some image.
+  const uploaded = await uploadToR2(c.env, fileType, "contest-banners", body, [fileType]);
   await logAudit(c, "contest.banner.upload", "contest-banner", uploaded.fileKey, { publicUrl: uploaded.publicUrl });
   return c.json(uploaded);
 });
@@ -343,30 +347,10 @@ adminRoute.post("/media/contest-banner", async (c) => {
 // reading a single URL, but it's now an uploaded image (no external hosting).
 adminRoute.post("/media/payment-qr", async (c) => {
   requireFullAdmin(c);
-  const fileType = (c.req.header("Content-Type") || "").split(";")[0].trim().toLowerCase();
-  if (!CONTEST_BANNER_MIME_TYPES.includes(fileType as any)) {
-    throw httpsError("invalid-argument", "QR image must be a JPEG, PNG, or WebP.");
-  }
+  const fileType = assertAdminImageUpload(c);
+  const body = await readAdminImageBody(c);
 
-  const contentLength = c.req.header("Content-Length");
-  if (contentLength !== undefined) {
-    const declaredBytes = Number(contentLength);
-    if (!Number.isSafeInteger(declaredBytes) || declaredBytes < 0) {
-      throw httpsError("invalid-argument", "Invalid Content-Length.");
-    }
-    if (declaredBytes > CONTEST_BANNER_MAX_BYTES) {
-      throw httpsError("invalid-argument", "File too large (max 5MB).");
-    }
-  }
-
-  const body = await c.req.arrayBuffer();
-  if (!body.byteLength) throw httpsError("invalid-argument", "Empty upload.");
-  if (body.byteLength > CONTEST_BANNER_MAX_BYTES) throw httpsError("invalid-argument", "File too large (max 5MB).");
-  if (detectedContestBannerMime(new Uint8Array(body)) !== fileType) {
-    throw httpsError("invalid-argument", "File contents do not match the declared image type.");
-  }
-
-  const uploaded = await uploadToR2(c.env, fileType, "payment-qr", body);
+  const uploaded = await uploadToR2(c.env, fileType, "payment-qr", body, [fileType]);
   await logAudit(c, "payment.qr.upload", "payment-qr", uploaded.fileKey, { publicUrl: uploaded.publicUrl });
   return c.json(uploaded);
 });
@@ -917,16 +901,6 @@ async function sha256Hex(input: string | ArrayBuffer): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-const IMG_EXT: Record<string, string> = {
-  "image/jpeg": ".jpg",
-  "image/jpg": ".jpg",
-  "image/png": ".png",
-  "image/gif": ".gif",
-  "image/webp": ".webp",
-  "image/svg+xml": ".svg",
-  "image/avif": ".avif",
-};
-
 /** Bound on a single imported image so one URL cannot exhaust Worker memory. */
 const MAX_IMPORT_IMAGE_BYTES = 15 * 1024 * 1024;
 
@@ -955,16 +929,26 @@ adminRoute.post("/media/fetch-to-r2", async (c) => {
   );
 
   const hash = await sha256Hex(buf);
-  const ext = IMG_EXT[ct] || ".img";
-  const key = `${baseFolder}/${hash}${ext}`;
-  const publicUrl = `${c.env.R2_PUBLIC_BASE_URL.replace(/\/$/, "")}/${key}`;
-
-  // Skip re-upload if we already have this exact image.
-  const existing = await c.env.MEDIA.head(key);
-  if (!existing) {
-    await c.env.MEDIA.put(key, buf, { httpMetadata: { contentType: ct } });
+  // `putVerifiedImage` decides the extension and the stored content type from the
+  // bytes. The remote `Content-Type` (`ct`) is not trusted for either: this used
+  // to map `image/svg+xml` to `.svg` and fall back to a `.img` extension for
+  // anything unrecognised, which meant a hostile archive host could place a
+  // scriptable SVG — or simply an arbitrary blob — into our bucket.
+  const stored = await putVerifiedImage(c.env, baseFolder, buf, hash);
+  if (!stored) {
+    throw httpsError(
+      "invalid-argument",
+      `That URL returned ${ct || "unknown"} data that is not a JPEG, PNG, WebP or GIF image.`,
+    );
   }
-  return c.json({ url: publicUrl, hash, key, cached: !!existing, bytes: buf.byteLength });
+  return c.json({
+    url: stored.publicUrl,
+    hash,
+    key: stored.key,
+    cached: stored.cached,
+    bytes: buf.byteLength,
+    contentType: stored.contentType,
+  });
 });
 
 /**

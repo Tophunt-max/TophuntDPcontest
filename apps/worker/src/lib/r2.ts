@@ -1,49 +1,32 @@
 /**
- * R2 presigned uploads — replaces the AWS S3 presigned-URL pipeline
- * (storage/presignedUrl.ts + stories generateStoryUploadUrl).
+ * R2 object writes and the URL→key mapping that guards deletes.
  *
- * R2 exposes an S3-compatible API, so we sign a PUT URL with aws4fetch and the
- * client PUTs the file directly. The returned publicUrl is served from the R2
- * public bucket / custom domain (R2_PUBLIC_BASE_URL).
+ * Everything the app uploads goes through `uploadToR2`, which writes via the
+ * MEDIA binding from inside the Worker. The client cannot PUT to R2 directly:
+ * R2's S3 endpoint has no CORS policy for our origin, and — more importantly —
+ * bytes that never pass through us cannot be validated. See `lib/mediaTypes.ts`.
  */
-import { AwsClient } from "aws4fetch";
 import type { Env } from "../types";
 import { httpsError } from "./http";
-import { getR2Credentials } from "./integrations";
+import {
+  ALLOWED_MEDIA_MIME_TYPES,
+  IMAGE_MIME_TYPES,
+  extensionForMime,
+  kindOf,
+  sniffMediaMime,
+  verifyMediaBytes,
+  type MediaKind,
+  type MediaMime,
+} from "./mediaTypes";
 
-export const ALLOWED_MIME_TYPES = [
-  "image/jpeg",
-  "image/png",
-  "image/gif",
-  "image/webp",
-  "video/mp4",
-  "video/quicktime",
-];
+/**
+ * Kept as a named export because tests and older call sites refer to it.
+ * `lib/mediaTypes.ts` is the source of truth.
+ */
+export const ALLOWED_MIME_TYPES: readonly string[] = ALLOWED_MEDIA_MIME_TYPES;
 
-export function extensionFor(mimeType: string): string {
-  switch (mimeType) {
-    case "image/jpeg":
-      return ".jpg";
-    case "image/png":
-      return ".png";
-    case "image/gif":
-      return ".gif";
-    case "image/webp":
-      return ".webp";
-    case "video/mp4":
-      return ".mp4";
-    case "video/quicktime":
-      return ".mov";
-    default:
-      return "";
-  }
-}
-
-export interface PresignResult {
-  uploadUrl: string;
-  fileKey: string;
-  publicUrl: string;
-}
+/** @deprecated Use `extensionForMime` from `lib/mediaTypes`. */
+export const extensionFor = extensionForMime;
 
 /**
  * Folders a normal end user is allowed to mint an upload key for.
@@ -80,6 +63,64 @@ export const USER_UPLOAD_FOLDERS = [
   "misc",
 ] as const;
 
+export type UserUploadFolder = (typeof USER_UPLOAD_FOLDERS)[number];
+
+/**
+ * Which media families each destination accepts.
+ *
+ * The folder allow-list already stopped a user writing into deployment-owned
+ * prefixes, but it said nothing about WHAT could land in an allowed prefix — so a
+ * video could be stored as an avatar and an avatar as a contest video. Only two
+ * places in the product actually play video (stories and contest entries), and
+ * everything else is a photograph, so the default is image-only and video is
+ * granted explicitly.
+ *
+ * `deposits` being image-only matters beyond tidiness: an admin opens those to
+ * read a UPI reference number off a screenshot, and a 30-second clip in that
+ * queue is a way to waste an operator's time and our egress. `avatars` being
+ * image-only is what stops an 80 MB "profile picture" that every follower list
+ * would then try to fetch.
+ */
+const MEDIA_KINDS_BY_FOLDER: Record<string, readonly MediaKind[]> = {
+  // Feed posts and DMs carry either.
+  posts: ["image", "video"],
+  chat: ["image", "video"],
+  // apps/expo/app/story/create/index.tsx offers both.
+  stories: ["image", "video"],
+  // Photo battles and video battles share this prefix.
+  contests: ["image", "video"],
+  "contest-entries": ["image", "video"],
+  // Profile imagery.
+  avatars: ["image"],
+  profile: ["image"],
+  // A UPI payment screenshot an admin has to read.
+  deposits: ["image"],
+  // Abuse-report evidence is a screenshot.
+  reports: ["image"],
+  // Locally captured composite battle card (src/lib/vsImage.ts) — always JPEG.
+  "vs-cards": ["image"],
+  // Deployment-owned, written only by the admin routes.
+  "contest-banners": ["image"],
+  "payment-qr": ["image"],
+  // Unclassified fallback: the safe family only.
+  misc: ["image"],
+};
+
+/**
+ * The exact mime types a folder may receive. Unknown folders get images only —
+ * failing closed, so adding a folder to `USER_UPLOAD_FOLDERS` without thinking
+ * about video cannot silently open a video path.
+ */
+export function allowedMimesForFolder(folder: string): readonly MediaMime[] {
+  const kinds = MEDIA_KINDS_BY_FOLDER[folder] ?? (["image"] as const);
+  return ALLOWED_MEDIA_MIME_TYPES.filter((mime) => kinds.includes(kindOf(mime) as MediaKind));
+}
+
+/** True when a folder accepts video at all (used for the pre-read size cap). */
+export function folderAcceptsVideo(folder: string): boolean {
+  return (MEDIA_KINDS_BY_FOLDER[folder] ?? []).includes("video");
+}
+
 /**
  * Normalise a caller-supplied folder into a safe R2 key prefix.
  *
@@ -98,90 +139,86 @@ export function sanitizeMediaFolder(folder: unknown, fallback = "misc"): string 
 }
 
 /**
- * Create a presigned PUT URL for a client-side upload to R2.
- * Keeps the S3 key layout: `{folder}/{images|videos}/{uuid}{ext}`.
+ * Upload bytes to R2 through the Worker, storing the type we VERIFIED rather
+ * than the one we were told.
  *
- * The folder is validated against `USER_UPLOAD_FOLDERS` rather than being
- * interpolated raw: this endpoint mints a credential that writes to whatever
- * key it is given, so an unsanitised prefix let any authenticated user PUT into
- * deployment-owned paths.
- */
-export async function presignUpload(
-  env: Env,
-  fileType: string,
-  folder: string,
-  expiresIn = 3600,
-): Promise<PresignResult> {
-  if (!ALLOWED_MIME_TYPES.includes(fileType)) {
-    throw httpsError("invalid-argument", "Invalid file type.");
-  }
-  // Panel-managed with environment fallback (lib/integrations.ts), so the S3
-  // keys can be rotated without a deploy.
-  const creds = await getR2Credentials(env);
-  if (!creds.accountId || !creds.accessKeyId || !creds.secretAccessKey || !creds.bucket) {
-    throw httpsError("internal", "Server storage configuration error.");
-  }
-  const safeFolder = sanitizeMediaFolder(folder);
-  if (!(USER_UPLOAD_FOLDERS as readonly string[]).includes(safeFolder)) {
-    throw httpsError(
-      "invalid-argument",
-      `folder must be one of: ${USER_UPLOAD_FOLDERS.join(", ")}.`,
-    );
-  }
-
-  const subFolder = fileType.startsWith("video/") ? "videos" : "images";
-  const fileKey = `${safeFolder}/${subFolder}/${crypto.randomUUID()}${extensionFor(fileType)}`;
-
-  const client = new AwsClient({
-    accessKeyId: creds.accessKeyId,
-    secretAccessKey: creds.secretAccessKey,
-    region: "auto",
-    service: "s3",
-  });
-
-  const endpoint = `https://${creds.accountId}.r2.cloudflarestorage.com/${creds.bucket}/${fileKey}`;
-  const url = new URL(endpoint);
-  url.searchParams.set("X-Amz-Expires", String(expiresIn));
-
-  const signed = await client.sign(url.toString(), {
-    method: "PUT",
-    headers: { "Content-Type": fileType },
-    aws: { signQuery: true },
-  });
-
-  const publicBase = env.R2_PUBLIC_BASE_URL.replace(/\/$/, "");
-  return {
-    uploadUrl: signed.url,
-    fileKey,
-    publicUrl: `${publicBase}/${fileKey}`,
-  };
-}
-
-/**
- * Upload bytes to R2 THROUGH the Worker (server-side put via the binding).
+ * The signature intentionally takes a buffer and not a `ReadableStream`. It used
+ * to accept either, but a stream cannot be inspected without consuming it, and
+ * "validate the content" is not an option that can coexist with "stream it
+ * straight through". Every caller already had the whole body in memory, bounded
+ * by a size cap checked before this point.
  *
- * This is the production upload path: the client sends the file to the Worker
- * (same origin as the API, so no S3/CORS issues in the browser) and we write it
- * to R2 here. Keeps the same `{folder}/{images|videos}/{uuid}{ext}` key layout
- * as the presigned flow, and returns a Worker-served public URL.
+ * Validation lives HERE, at the single choke point in front of the bucket,
+ * rather than in each route. The previous arrangement had the admin banner route
+ * sniffing magic bytes correctly while `/upload` — reachable by every signed-in
+ * user — checked only a query string. Putting the check in the shared writer
+ * means a future route cannot accidentally skip it.
+ *
+ * Key layout is unchanged (`{folder}/{images|videos}/{uuid}{ext}`) except that
+ * both the `images|videos` segment and the extension are now derived from the
+ * detected type, so a URL's extension always matches its content.
+ *
+ * @param declaredType What the caller claims the body is. Cross-checked for
+ *   family agreement only; the detected type wins.
+ * @param allowed Exact mime types this destination accepts. Pass a single-entry
+ *   list to demand an exact match.
  */
 export async function uploadToR2(
   env: Env,
-  fileType: string,
+  declaredType: string,
   folder: string,
-  body: ArrayBuffer | ReadableStream,
-): Promise<{ publicUrl: string; fileKey: string }> {
-  if (!ALLOWED_MIME_TYPES.includes(fileType)) {
-    throw httpsError("invalid-argument", "Invalid file type.");
-  }
-  const safeFolder = sanitizeMediaFolder(folder);
-  const subFolder = fileType.startsWith("video/") ? "videos" : "images";
-  const fileKey = `${safeFolder}/${subFolder}/${crypto.randomUUID()}${extensionFor(fileType)}`;
+  body: ArrayBuffer | Uint8Array,
+  allowed: readonly string[] = ALLOWED_MEDIA_MIME_TYPES,
+): Promise<{ publicUrl: string; fileKey: string; contentType: MediaMime }> {
+  const contentType = verifyMediaBytes(body, declaredType, allowed);
 
-  await env.MEDIA.put(fileKey, body, { httpMetadata: { contentType: fileType } });
+  const safeFolder = sanitizeMediaFolder(folder);
+  const subFolder = kindOf(contentType) === "video" ? "videos" : "images";
+  const fileKey = `${safeFolder}/${subFolder}/${crypto.randomUUID()}${extensionForMime(contentType)}`;
+
+  await env.MEDIA.put(fileKey, body, { httpMetadata: { contentType } });
 
   const publicBase = env.R2_PUBLIC_BASE_URL.replace(/\/$/, "");
-  return { fileKey, publicUrl: `${publicBase}/${fileKey}` };
+  return { fileKey, publicUrl: `${publicBase}/${fileKey}`, contentType };
+}
+
+/**
+ * Store an image fetched by the server (blog/archive importer) after verifying
+ * its bytes, de-duplicated by content hash.
+ *
+ * The importer previously trusted the remote `Content-Type`, mapped
+ * `image/svg+xml` to `.svg`, and fell back to a `.img` extension for anything
+ * unrecognised — so a hostile or simply broken archive host could place an SVG,
+ * or an arbitrary blob with an arbitrary content type, into our bucket. Both maps
+ * (routes/admin.ts and lib/importer.ts) had drifted into duplicates of each
+ * other; this replaces them.
+ *
+ * Returns `null` when the bytes are not a supported raster image, so the
+ * importer can skip that one asset and carry on rather than failing an import.
+ */
+export async function putVerifiedImage(
+  env: Env,
+  folder: string,
+  body: ArrayBuffer,
+  contentHash: string,
+): Promise<{ publicUrl: string; key: string; cached: boolean; contentType: MediaMime } | null> {
+  const detected = sniffImage(body);
+  if (!detected) return null;
+
+  const safeFolder = sanitizeMediaFolder(folder, "blog/imported");
+  const key = `${safeFolder}/${contentHash}${extensionForMime(detected)}`;
+  const publicUrl = `${env.R2_PUBLIC_BASE_URL.replace(/\/$/, "")}/${key}`;
+
+  const existing = await env.MEDIA.head(key);
+  if (!existing) await env.MEDIA.put(key, body, { httpMetadata: { contentType: detected } });
+  return { publicUrl, key, cached: !!existing, contentType: detected };
+}
+
+/** Detected type, but only if it is a raster image. */
+function sniffImage(body: ArrayBuffer): MediaMime | null {
+  const detected = sniffMediaMime(body);
+  if (!detected || !(IMAGE_MIME_TYPES as readonly string[]).includes(detected)) return null;
+  return detected;
 }
 
 /**

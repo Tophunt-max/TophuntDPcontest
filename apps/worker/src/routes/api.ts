@@ -13,7 +13,7 @@ import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
 import { requireAuth, isAdmin } from "../middleware/auth";
 import { requireFullAdmin as requireFullAdminAction, writeAdminAudit } from "../lib/adminAuthz";
-import { presignUpload, vsImageKeyFromPublicUrl, deleteVsImageByPublicUrl } from "../lib/r2";
+import { vsImageKeyFromPublicUrl, deleteVsImageByPublicUrl } from "../lib/r2";
 import { deleteMediaByUrl } from "../lib/mediaDelete";
 
 import { createNotification, sendPushNotification } from "../lib/notify";
@@ -161,14 +161,33 @@ apiRoute.post("/", async (c) => {
   try {
   switch (action) {
     // ================= STORAGE (R2) =================
-    case "getPresignedUrl": {
-      // Minting an upload credential is cheap for us but each one is a write
-      // into our own bucket, so it needs the same budget as /upload itself.
-      await rateLimit(env, `presign:${uid}`, 60, 3600, { failClosed: true });
-      const { fileType, folder } = body;
-      if (!fileType || !folder) throw httpsError("invalid-argument", "fileType and folder are required.");
-      return c.json(await presignUpload(env, fileType, folder));
-    }
+    //
+    // `getPresignedUrl` and `getStoryUrl` are GONE, deliberately.
+    //
+    // They minted a signed S3 PUT URL and handed it to the client, which then
+    // uploaded straight to R2. That has two properties we cannot live with now
+    // that uploads are content-validated:
+    //
+    //   1. The bytes never pass through the Worker, so there is nothing to
+    //      inspect. A signed URL is an unconditional write primitive for whatever
+    //      key it names — the only check possible is on the declared type at
+    //      minting time, which is the exact check that turned out to be worthless.
+    //   2. `presignUpload` applied no size limit at all (the 80 MB cap lived in
+    //      the `/upload` handler), so one credential could store an object of any
+    //      size in our bucket.
+    //
+    // Keeping them as a "fallback" would have made the validation optional, and
+    // an optional check on an endpoint every signed-in user can reach is not a
+    // check. Nothing calls them: the app uploads exclusively via `POST /upload`
+    // (apps/expo/src/lib/uploadToR2.ts) and has since the presigned path was
+    // found to CORS-fail in the browser. An old build that still sent these gets
+    // a clear `unimplemented` rather than a silent 500.
+    case "getPresignedUrl":
+    case "getStoryUrl":
+      throw httpsError(
+        "failed-precondition",
+        "Direct-to-R2 uploads are no longer supported. Please update the app.",
+      );
 
     // ================= VIDEO (Bunny Stream) =================
     /**
@@ -850,11 +869,7 @@ apiRoute.post("/", async (c) => {
     }
 
     // ================= STORIES =================
-    case "getStoryUrl": {
-      const { fileType } = body;
-      if (!fileType) throw httpsError("invalid-argument", "fileType is required.");
-      return c.json(await presignUpload(env, fileType, "stories"));
-    }
+    // `getStoryUrl` is handled with `getPresignedUrl` above.
     case "createStory": {
       await rateLimit(env, `story:${uid}`, 40, 3600);
       const { mediaUrl, mediaType, overlayText, textPosition, mentions, visibility } = body;
