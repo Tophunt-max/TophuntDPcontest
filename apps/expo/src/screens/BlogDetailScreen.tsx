@@ -17,7 +17,10 @@ import { blogService, BlogPost } from '@/src/services/blog/blogService';
 import RenderHtml from '@/src/components/blog/RenderHtml';
 import { Header } from '@/src/components/home/Header';
 import { useWebSeo } from '@/src/lib/webSeo';
+import { shareOrigin } from '@/src/lib/share';
 
+// SEO canonical points at the authoritative site on purpose — a canonical URL
+// must be stable across deployments, so it is NOT the current host.
 const SITE_ORIGIN = 'https://tophunt.in';
 
 const stripTags = (html?: string) =>
@@ -98,7 +101,9 @@ export default function BlogDetailScreen() {
   const onShare = async () => {
     if (!post) return;
     try {
-      await Share.share({ message: `${post.title}\n\nhttps://tophunt.in/${post.slug}` });
+      // Share the post on whatever host the app is served from — same automatic
+      // origin the battle share uses — instead of a hard-coded domain.
+      await Share.share({ message: `${post.title}\n\n${shareOrigin()}/${post.slug}` });
     } catch {
       /* cancelled */
     }
