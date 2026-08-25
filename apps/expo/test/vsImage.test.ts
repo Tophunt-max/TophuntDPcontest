@@ -183,6 +183,24 @@ describe('shareVsCard', () => {
     expect(fallbackShare).toHaveBeenCalledTimes(1);
   });
 
+  it('shares a web blob: capture the same way it shares a native file://', async () => {
+    // The web build produces a `blob:` object URL from html-to-image rather than a
+    // `file://` tmpfile. It is just as local and attachable, so it must take the
+    // image path, not the text fallback — this is the whole point of enabling the
+    // composite on web.
+    const shareAsync = vi.fn().mockResolvedValue(undefined);
+    sharing = { isAvailableAsync: async () => true, shareAsync };
+    const fallbackShare = vi.fn();
+
+    await shareVsCard({ imageUri: 'blob:https://app.tophunt.in/9f2c-abc', fallbackShare });
+
+    expect(shareAsync).toHaveBeenCalledWith(
+      'blob:https://app.tophunt.in/9f2c-abc',
+      expect.objectContaining({ mimeType: 'image/jpeg' }),
+    );
+    expect(fallbackShare).not.toHaveBeenCalled();
+  });
+
   it('falls back when the device reports no share sheet', async () => {
     const shareAsync = vi.fn();
     sharing = { isAvailableAsync: async () => false, shareAsync };
