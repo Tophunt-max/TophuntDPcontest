@@ -16,7 +16,7 @@ import { appSchema, tableSchema } from '@nozbe/watermelondb';
  *   are safe to own ourselves.
  */
 export const schema = appSchema({
-  version: 1,
+  version: 2,
   tables: [
     tableSchema({
       name: 'stories',
@@ -32,6 +32,15 @@ export const schema = appSchema({
         { name: 'overlay_text', type: 'string', isOptional: true },
         { name: 'text_position', type: 'string', isOptional: true }, // JSON
         { name: 'mentions', type: 'string', isOptional: true }, // JSON
+        // Contest-story fields (schema v2). Without these three, a battle story
+        // read back from the cache lost what marks it as a battle: the viewer's
+        // `isVsStory()` needs both `type` and `match_id`, so a cached story fell
+        // through to the plain single-photo branch and showed only that user's
+        // own entry instead of the merged head-to-head frame. All optional
+        // because a normal `user` story carries none of them.
+        { name: 'match_id', type: 'string', isOptional: true, isIndexed: true },
+        { name: 'type', type: 'string', isOptional: true }, // StoryKind
+        { name: 'contest_title', type: 'string', isOptional: true },
         { name: 'is_synced', type: 'boolean', isIndexed: true },
         { name: 'updated_at', type: 'number' },
       ],

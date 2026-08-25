@@ -28,6 +28,14 @@ export class StoryModel extends Model {
   @field('text_position') textPosition?: string; // JSON: { x, y }
   @field('mentions') mentions?: string; // JSON: string[]
 
+  // Contest-story fields (schema v2). A battle story needs both `matchId` and
+  // `type` to render as a head-to-head frame instead of a single photo — see
+  // `isVsStory` in src/types/stories.ts. Optional because a `user` story has
+  // neither.
+  @field('match_id') matchId?: string;
+  @field('type') type?: string; // StoryKind
+  @field('contest_title') contestTitle?: string;
+
   // Auto-touched by WatermelonDB on every write. Do not assign manually.
   @readonly @date('updated_at') updatedAt!: Date;
 
