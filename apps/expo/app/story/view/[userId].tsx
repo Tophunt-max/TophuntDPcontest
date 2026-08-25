@@ -53,15 +53,23 @@ import { StoryVsFrame } from '@/src/components/stories/StoryVsFrame';
 import { VsCaptureBoundary } from '@/src/components/stories/VsCaptureBoundary';
 import { useVsStoryCard } from '@/src/hooks/useVsStoryCard';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 
 const { width, height } = Dimensions.get('window');
 const DEFAULT_STORY_DURATION = 5000;
+// Vertical space the top (progress + author row) and bottom (reply bar) chrome
+// occupy, so the photo can be inset clear of them. Approximate on purpose — the
+// goal is only that no image content sits hidden behind the chrome.
+const CHROME_TOP = 72;
+const CHROME_BOTTOM = 96;
 const REACTION_EMOJIS = ['❤️', '🙌', '🔥', '😂', '😮', '😢', '👏', '🎉'];
 
 export default function StoryView() {
   const { userId } = useLocalSearchParams<{ userId: string }>();
   const router = useRouter();
   const queryClient = useQueryClient();
+  const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const isDarkTheme = colorScheme === 'dark';
   const backgroundColorTheme = isDarkTheme ? Colors.dark.background : Colors.light.background;
@@ -558,10 +566,28 @@ export default function StoryView() {
                     />
                 </VsCaptureBoundary>
             ) : !isVideoStory(currentStory) ? (
-                <Image source={{ uri: currentStory.mediaUrl }} style={styles.media} contentFit="contain" />
+                // Sit the photo BETWEEN the header and the reply bar, not under
+                // them: a tall screenshot used to fill the whole screen so its top
+                // and bottom were hidden behind the chrome. `contain` inside a
+                // safe-inset box shows the whole image, and filling the flex
+                // parent (rather than a fixed Dimensions height) means the web
+                // build respects the real viewport instead of overflowing it.
+                <View style={[styles.mediaSafe, { paddingTop: insets.top + CHROME_TOP, paddingBottom: insets.bottom + CHROME_BOTTOM }]}>
+                    <Image source={{ uri: currentStory.mediaUrl }} style={styles.mediaFill} contentFit="contain" />
+                </View>
             ) : (
-                <VideoView player={player} style={styles.media} contentFit="contain" />
+                <View style={[styles.mediaSafe, { paddingTop: insets.top + CHROME_TOP, paddingBottom: insets.bottom + CHROME_BOTTOM }]}>
+                    <VideoView player={player} style={styles.mediaFill} contentFit="contain" />
+                </View>
             )}
+            {/*
+              Scrims behind the top/bottom chrome. contentFit="contain" letterboxes
+              a photo whose edges then reach the screen edges, so white progress
+              bars and the reply field can land on a light part of the image and
+              vanish. These keep them legible without cropping the photo.
+            */}
+            <LinearGradient pointerEvents="none" colors={['rgba(0,0,0,0.5)', 'transparent']} style={styles.scrimTop} />
+            <LinearGradient pointerEvents="none" colors={['transparent', 'rgba(0,0,0,0.6)']} style={styles.scrimBottom} />
             {isLoading && <View style={styles.loader}><ActivityIndicator size="large" color="white" /></View>}
             
             {/* Saved Overlays */}
@@ -746,7 +772,13 @@ export default function StoryView() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
   mediaContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  // Kept for any legacy full-bleed use; the photo/video branch now uses the
+  // safe-inset styles below so the chrome never hides content.
   media: { width: width, height: height },
+  mediaSafe: { ...StyleSheet.absoluteFillObject },
+  mediaFill: { flex: 1, width: '100%' },
+  scrimTop: { position: 'absolute', top: 0, left: 0, right: 0, height: 140 },
+  scrimBottom: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 170 },
   loader: { position: 'absolute' },
   overlay: { ...StyleSheet.absoluteFillObject },
   pauseOverlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.3)' },

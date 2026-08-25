@@ -11,6 +11,7 @@ import {
 import React, { useState, useEffect } from "react";
 import { router } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
+import { useImageAdjuster } from "@/src/components/media/useImageAdjuster";
 import * as Location from 'expo-location';
 import { useSignupStore } from "../../../../src/store/signup";
 import { FormInput } from "@/src/components/inputs/FormInput";
@@ -106,6 +107,7 @@ const CircularProgress = ({ progress, size = 60 }: { progress: number, size?: nu
 const FillProfile: React.FC = () => {
   const { data: signupData, setMultiple, setField, setStep } = useSignupStore();
   const { addToast } = useToast();
+  const { adjust, host: adjusterHost } = useImageAdjuster();
   
   const [isGenderPickerVisible, setGenderPickerVisibility] = useState(false);
   const [isOccupationPickerVisible, setOccupationPickerVisibility] = useState(false);
@@ -191,17 +193,21 @@ const FillProfile: React.FC = () => {
   }, [phone, countryCode, isPhoneLocked]);
 
   const pickAvatar = async () => {
-    const img = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, aspect: [1, 1], quality: 0.5 });
+    const img = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.5 });
     if (!img.canceled && img.assets) {
-      const selectedImage = img.assets[0];
-      setLocalAvatarUri(selectedImage.uri);
+      const picked = img.assets[0].uri;
+      // Crop to 1:1 with the cross-platform adjuster (native allowsEditing does
+      // not run on web). Cancel keeps the original so it is never a dead end.
+      const adjusted = await adjust(picked, 1);
+      const finalUri = adjusted ?? picked;
+      setLocalAvatarUri(finalUri);
       // Defer the actual upload to the final step. During signup the account
       // (and its auth token) doesn't exist yet for email signups, so uploading
       // now would hit the authenticated /upload endpoint and 401 ("Upload
       // failed"). We keep the local URI and upload it in `congratulations`
       // once the account is created and the user is signed in.
-      setValue("avatarUrl", selectedImage.uri);
-      setField("avatarUrl", selectedImage.uri);
+      setValue("avatarUrl", finalUri);
+      setField("avatarUrl", finalUri);
       trigger("avatarUrl");
     }
   };
@@ -218,6 +224,7 @@ const FillProfile: React.FC = () => {
 
   return (
     <SafeAreaView style={styles.container}>
+      {adjusterHost}
       <View style={styles.header}>
         <BackButton size={24} color="#000" style={styles.backButton} />
         <Text style={styles.headerTitle}>Fill Your Profile</Text>
