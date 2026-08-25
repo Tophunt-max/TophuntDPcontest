@@ -28,6 +28,7 @@ export const CRON_STALE_AFTER_MS: Record<string, number> = {
   pruneErrorLogs: 35 * 60 * 1000,
   pruneNotifications: 35 * 60 * 1000,
   pruneIdempotencyKeys: 35 * 60 * 1000,
+  reconcileVideos: 35 * 60 * 1000,
   // Monthly: allow a couple of days of slack.
   monthlyHallOfFame: 34 * 24 * 60 * 60 * 1000,
 };

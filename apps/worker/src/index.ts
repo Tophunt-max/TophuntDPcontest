@@ -31,6 +31,7 @@ import { captureError, logErrorToDb, pruneErrorLogs } from "./lib/observability"
 import { cronHealth, pruneOpsTables, runCronJob } from "./lib/ops";
 import { integrationHealth } from "./routes/integrations";
 import { reconcilePaymentOrders } from "./lib/coinOrders";
+import { reconcileVideos } from "./lib/videoReconcile";
 import { pruneNotifications } from "./lib/notify";
 import {
   contentRangeHeader,
@@ -458,6 +459,9 @@ export default {
             });
             // Retention: heartbeat rows and expired replay claims.
             await runCronJob(env, "pruneIdempotencyKeys", () => pruneOpsTables(env));
+            // Safety net for the Bunny encode webhook: promote videos stuck in
+            // `processing` (a lost webhook) and close abandoned uploads (cost).
+            await runCronJob(env, "reconcileVideos", () => reconcileVideos(env));
           })(),
         );
         break;

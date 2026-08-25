@@ -40,6 +40,7 @@ import {
 import { PanGestureHandler } from 'react-native-gesture-handler';
 import Animated, { useSharedValue, useAnimatedStyle, withSpring, runOnJS } from 'react-native-reanimated';
 import { useImageAdjuster } from '@/src/components/media/useImageAdjuster';
+import { validateVideo, STORY_MAX_VIDEO_SEC } from '@/src/lib/videoValidation';
 
 /** Story frame aspect (width / height) — matches the 9:16 story viewer. */
 const STORY_ASPECT = 9 / 16;
@@ -243,6 +244,16 @@ export default function AddStoryScreen() {
     if (result.canceled) return;
     const asset = result.assets[0];
     if (asset.type === 'video') {
+      // Reject an over-long / oversized clip now, before a long mobile upload
+      // that the server would only reject at the end.
+      const check = validateVideo(
+        { durationMs: asset.duration, fileSize: asset.fileSize },
+        { maxDurationSec: STORY_MAX_VIDEO_SEC },
+      );
+      if (!check.ok) {
+        Alert.alert('Video too long', check.message);
+        return;
+      }
       setMedia({ uri: asset.uri, type: 'video' });
       return;
     }

@@ -16,6 +16,7 @@ import { useThemeColor } from '@/hooks/use-theme-color';
 import { LinearGradient } from 'expo-linear-gradient';
 import { goToCongratulations } from '@/src/lib/contestSuccess';
 import { getDeviceId } from '@/src/lib/deviceId';
+import { validateVideo, CONTEST_MAX_VIDEO_SEC } from '@/src/lib/videoValidation';
 
 const BRAND_PRIMARY = '#FF4D67';
 
@@ -111,9 +112,21 @@ export default function VideoContestScreen() {
       mediaTypes: ['videos'],
       allowsEditing: true,
       quality: 1,
-      videoMaxDuration: 30,
+      videoMaxDuration: CONTEST_MAX_VIDEO_SEC,
     });
-    if (!result.canceled) setMedia(result.assets[0].uri);
+    if (result.canceled) return;
+    const asset = result.assets[0];
+    // `videoMaxDuration` only caps in-app recording; a library-picked clip can
+    // still be longer, so validate the chosen asset explicitly.
+    const check = validateVideo(
+      { durationMs: asset.duration, fileSize: asset.fileSize },
+      { maxDurationSec: CONTEST_MAX_VIDEO_SEC },
+    );
+    if (!check.ok) {
+      Alert.alert('Video too long', check.message);
+      return;
+    }
+    setMedia(asset.uri);
   };
 
   const handleAction = async () => {
