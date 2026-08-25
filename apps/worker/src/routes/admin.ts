@@ -65,6 +65,9 @@ import { fetchExternalImage } from "../lib/safeFetch";
 import { enforceAdminIdempotency } from "../lib/idempotency";
 import { registerIntegrationRoutes } from "./integrations";
 import { assertIdentifiersAvailable, validateUsername } from "../lib/userIdentifiers";
+import { computeDeepHealth } from "../lib/health";
+import { computeMoneyHealth } from "../lib/moneyHealth";
+import { cronHealth } from "../lib/ops";
 
 /**
  * Record a sensitive admin action in the audit trail. Best-effort — never
@@ -2752,9 +2755,46 @@ adminRoute.get("/logs/stats", async (c) => {
 adminRoute.delete("/logs", async (c) => {
   // Full admins only: destroys the error trail.
   requireFullAdmin(c);
-  requireFullAdmin(c);
   await c.env.DB.prepare("DELETE FROM error_logs").run();
   return c.json({ success: true });
+});
+
+
+// ======================= SYSTEM HEALTH (admin console) =======================
+//
+// Authenticated mirrors of the operational health signals, for the admin
+// panel's one-stop System Health page. These never mutate anything.
+
+/**
+ * Deep health, behind the admin gate and always 200.
+ *
+ * Same computation as the public `/health/deep` (see lib/health.ts) — D1, KV,
+ * R2, required secrets, integrations and cron — but returned as 200 with the
+ * payload even when unhealthy, so the panel's Bearer-auth client (which throws
+ * on non-2xx) can render the red state instead of treating it as a request
+ * error.
+ */
+adminRoute.get("/health", async (c) => {
+  requireFullAdmin(c);
+  return c.json(await computeDeepHealth(c.env));
+});
+
+/**
+ * Money-flow integrity: ledger-vs-balance drift, stranded/stuck orders, clawback
+ * shortfalls, negative balances, and the pending money queues. Read-only.
+ */
+adminRoute.get("/money-health", async (c) => {
+  requireFullAdmin(c);
+  return c.json(await computeMoneyHealth(c.env));
+});
+
+/**
+ * Per-job cron status (last run, ok/fail, duration, stale). Previously only
+ * visible inside the public /health/deep; surfaced here for the console.
+ */
+adminRoute.get("/ops/cron-health", async (c) => {
+  requireFullAdmin(c);
+  return c.json(await cronHealth(c.env));
 });
 
 

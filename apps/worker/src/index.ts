@@ -28,11 +28,10 @@ import { assertAccountNotBlocked } from "./middleware/auth";
 import { resolveContests, monthlyHallOfFame } from "./cron";
 import { ensureMigrated } from "./db/autoMigrate";
 import { captureError, logErrorToDb, pruneErrorLogs } from "./lib/observability";
-import { cronHealth, pruneOpsTables, runCronJob } from "./lib/ops";
-import { integrationHealth } from "./routes/integrations";
+import { pruneOpsTables, runCronJob } from "./lib/ops";
 import { reconcilePaymentOrders } from "./lib/coinOrders";
 import { reconcileVideos } from "./lib/videoReconcile";
-import { resolveSecret, getRazorpayCredentials } from "./lib/integrations";
+import { computeDeepHealth } from "./lib/health";
 import { pruneNotifications } from "./lib/notify";
 import {
   contentRangeHeader,
@@ -150,100 +149,11 @@ app.get("/health", (c) => c.json({ ok: true, ts: Date.now() }));
  * watch the status code. Never leaks secret VALUES — only whether they are set.
  */
 app.get("/health/deep", async (c) => {
-  const checks: Record<string, { ok: boolean; detail?: string; ms?: number }> = {};
-
-  const timed = async (name: string, fn: () => Promise<void>) => {
-    const start = Date.now();
-    try {
-      await fn();
-      checks[name] = { ok: true, ms: Date.now() - start };
-    } catch (e: any) {
-      checks[name] = { ok: false, ms: Date.now() - start, detail: e?.message || "failed" };
-    }
-  };
-
-  await timed("d1", async () => {
-    const row = await c.env.DB.prepare("SELECT 1 AS ok").first<{ ok: number }>();
-    if (!row || row.ok !== 1) throw new Error("unexpected D1 response");
-  });
-  await timed("kv_cache", async () => {
-    await c.env.CACHE_KV.get("health:probe");
-  });
-  await timed("kv_otp", async () => {
-    await c.env.OTP_KV.get("health:probe");
-  });
-  await timed("r2", async () => {
-    // `head` on a key that need not exist still proves the binding works.
-    await c.env.MEDIA.head("health/probe");
-  });
-
-  // Secrets whose absence silently breaks a user-visible flow. The code is
-  // correctly fail-closed on each, which is exactly why they must be surfaced:
-  // without them the app looks healthy and simply refuses to work.
-  //
-  // Panel-managed credentials are resolved through the credential store (panel
-  // value first, env fallback), NOT read from `env` directly — otherwise a key
-  // configured in the admin panel is reported "missing" here even though it is
-  // live, turning a healthy deploy red.
-  const [faSvc, rzp] = await Promise.all([
-    resolveSecret(c.env, "FIREBASE_SERVICE_ACCOUNT"),
-    getRazorpayCredentials(c.env),
-  ]);
-  const requiredSecrets: Record<string, unknown> = {
-    FIREBASE_SERVICE_ACCOUNT: faSvc,
-    FIREBASE_PROJECT_ID: c.env.FIREBASE_PROJECT_ID,
-    RAZORPAY_KEY_ID: rzp.keyId,
-    RAZORPAY_KEY_SECRET: rzp.keySecret,
-    RAZORPAY_WEBHOOK_SECRET: rzp.webhookSecret,
-    R2_PUBLIC_BASE_URL: c.env.R2_PUBLIC_BASE_URL,
-    ALLOWED_ORIGINS: c.env.ALLOWED_ORIGINS,
-  };
-  const missingSecrets = Object.entries(requiredSecrets)
-    .filter(([, v]) => v == null || String(v).trim() === "")
-    .map(([k]) => k);
-  checks.secrets = {
-    ok: missingSecrets.length === 0,
-    detail: missingSecrets.length ? `missing: ${missingSecrets.join(", ")}` : undefined,
-  };
-
-  // Third-party integrations: an unconfigured SMS gateway means nobody can sign
-  // up, and an unconfigured payment secret means every top-up fails closed. Both
-  // look perfectly healthy from the request path.
-  try {
-    const providers = await integrationHealth(c.env);
-    const missing = Object.entries(providers)
-      .filter(([, ok]) => !ok)
-      .map(([name]) => name);
-    checks.integrations = {
-      // Video is optional (the app falls back to R2), so it does not fail the
-      // check on its own.
-      ok: missing.filter((m) => m !== "bunnyVideo").length === 0,
-      detail: missing.length ? `not configured: ${missing.join(", ")}` : undefined,
-    };
-  } catch (e: any) {
-    checks.integrations = { ok: false, detail: e?.message || "integration check failed" };
-  }
-
-  // Is the cron actually running? A stalled cron means settlement, refunds and
-  // payment reconciliation have stopped, which no request-path check would show.
-  let crons: Awaited<ReturnType<typeof cronHealth>> = [];
-  try {
-    crons = await cronHealth(c.env);
-    const stale = crons.filter((j) => j.stale).map((j) => j.job);
-    const failing = crons.filter((j) => j.lastOk === false).map((j) => j.job);
-    checks.cron = {
-      ok: stale.length === 0 && failing.length === 0,
-      detail:
-        [stale.length ? `stale: ${stale.join(", ")}` : "", failing.length ? `failing: ${failing.join(", ")}` : ""]
-          .filter(Boolean)
-          .join("; ") || undefined,
-    };
-  } catch (e: any) {
-    checks.cron = { ok: false, detail: e?.message || "cron health query failed" };
-  }
-
-  const ok = Object.values(checks).every((check) => check.ok);
-  return c.json({ ok, ts: Date.now(), checks, crons }, ok ? 200 : 503);
+  // Shared with the admin panel's System Health console (GET /admin/health) so
+  // the two never disagree — see lib/health.ts. Public + 503-on-unhealthy here
+  // for uptime monitors.
+  const health = await computeDeepHealth(c.env);
+  return c.json(health, health.ok ? 200 : 503);
 });
 
 /**

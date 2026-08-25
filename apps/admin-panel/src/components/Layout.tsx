@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import { fmtDateTime } from "@/lib/format";
 import {
   Plug,
+  Activity,
   LayoutDashboard,
   BarChart3,
   Users,
@@ -82,6 +83,7 @@ const nav = [
   { href: "/audit-log", label: "Audit & Security", icon: ShieldAlert, section: "moderation" },
   { href: "/logs", label: "Error Logs", icon: ScrollText, section: "moderation" },
   { href: "/notifications", label: "Notifications", icon: Bell, section: "engagement" },
+  { href: "/system-health", label: "System Health", icon: Activity, section: "system" },
   { href: "/rewards", label: "Rewards & Gamification", icon: Gift, section: "system" },
   { href: "/app-control", label: "App Control", icon: SlidersHorizontal, section: "system" },
   { href: "/app-settings", label: "App Settings", icon: Settings, section: "system" },
