@@ -20,15 +20,8 @@ import { getRazorpayCredentials } from "../lib/integrations";
 import { createNotification } from "../lib/notify";
 import { timingSafeEqualSecret } from "../lib/timingSafe";
 import { newId, now } from "../lib/ids";
-import {
-  bunnyConfigured,
-  bunnyMp4Url,
-  bunnyPlaybackUrl,
-  bunnyThumbnailUrl,
-  getVideo,
-  mapBunnyStatus,
-} from "../lib/bunny";
-import { promoteBackfilledVideo } from "../lib/videoBackfill";
+import { bunnyConfigured } from "../lib/bunny";
+import { applyBunnyEncodeResult } from "../lib/videoReconcile";
 
 export const webhookRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -265,92 +258,20 @@ webhookRoute.post("/bunny", async (c) => {
     if (!existing) return c.json({ ok: true, ignored: "unknown_video" });
     if (existing.status === "ready") return c.json({ ok: true, ignored: "already_ready" });
 
-    // Re-fetch from Bunny rather than trusting the body: this endpoint may be
-    // unauthenticated, so the request payload is not a source of truth.
-    const meta = await getVideo(c.env, guid);
-    const status = mapBunnyStatus(
-      typeof meta?.status === "number" ? meta.status : Number(evt?.Status),
-    );
-
-    const ts = now();
-    if (status === "processing") {
-      await db
-        .update(schema.videos)
-        .set({ status, updatedAt: ts })
-        .where(eq(schema.videos.id, guid))
-        .run();
-      return c.json({ ok: true, status });
-    }
-
-    if (status === "failed") {
-      await db
-        .update(schema.videos)
-        .set({ status, errorMessage: "Bunny reported encoding failure", updatedAt: ts })
-        .where(eq(schema.videos.id, guid))
-        .run();
-      return c.json({ ok: true, status });
-    }
-
-    // ready
-    const durationSec =
-      typeof meta?.length === "number" && Number.isFinite(meta.length)
-        ? Math.round(meta.length)
-        : null;
-    await db
-      .update(schema.videos)
-      .set({
-        status: "ready",
-        thumbnailUrl: await bunnyThumbnailUrl(c.env, guid),
-        playbackUrl: await bunnyPlaybackUrl(c.env, guid),
-        mp4Url: await bunnyMp4Url(c.env, guid),
-        durationSec: durationSec ?? undefined,
-        updatedAt: ts,
-      })
-      .where(eq(schema.videos.id, guid))
-      .run();
-
-    const owner = await db
-      .select({
-        ownerUid: schema.videos.ownerUid,
-        targetType: schema.videos.targetType,
-        targetId: schema.videos.targetId,
-        targetSide: schema.videos.targetSide,
-        r2SourceUrl: schema.videos.r2SourceUrl,
-      })
-      .from(schema.videos)
-      .where(eq(schema.videos.id, guid))
-      .get();
-
-    // Backfilled videos cut over HERE, not at enqueue time: only now does the
-    // Bunny playlist actually exist, so only now is it safe to repoint the
-    // story / contest entry away from its R2 original.
-    if (owner?.r2SourceUrl) {
-      try {
-        await promoteBackfilledVideo(c.env, { id: guid, ...owner });
-      } catch (e) {
-        console.error("[webhook/bunny] promote failed", guid, e);
-      }
-    }
-
-    // Let the uploader know their video went live (best-effort, never blocks ack).
-    if (owner?.ownerUid) {
-      c.executionCtx.waitUntil(
-        createNotification(c.env, owner.ownerUid, {
-          title: "Video ready 🎬",
-          body:
-            owner.targetType === "story"
-              ? "Your story video has finished processing."
-              : "Your contest video has finished processing.",
-          type: "video_ready",
-          targetId: guid,
-        }).catch(() => {}),
-      );
-    }
-
-    return c.json({ ok: true, status: "ready" });
+    // Apply the transition through the SAME code the reconcile cron uses, so the
+    // webhook and the safety-net poll can never disagree about what a status
+    // means. It re-fetches from Bunny rather than trusting this (possibly
+    // unauthenticated) request body, and fires the owner notification in the
+    // background so this handler still acks fast.
+    const status = await applyBunnyEncodeResult(c.env, guid, {
+      statusHint: Number(evt?.Status),
+      scheduleNotify: (p) => c.executionCtx.waitUntil(p),
+    });
+    return c.json({ ok: true, status });
   } catch (e) {
     // Ack anyway — retries would just repeat the same internal failure, and the
-    // status is reconcilable by polling Bunny.
+    // status is reconcilable by polling Bunny (the reconcile cron does exactly
+    // that).
     console.error("[webhook/bunny] processing failed", e);
     return c.json({ ok: true, error: "internal" });
   }
