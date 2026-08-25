@@ -14,3 +14,12 @@ export const startChat = async (otherUserId: string, otherUserData: any): Promis
     throw error;
   }
 };
+
+/**
+ * Post a text message into an existing chat (Worker `/api sendMessage`, which
+ * enforces membership, block checks and a velocity cap). Used by the share sheet
+ * to send a battle link straight into a DM.
+ */
+export const sendMessage = async (chatId: string, text: string): Promise<void> => {
+  await callApi('sendMessage', { chatId, text });
+};

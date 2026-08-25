@@ -10,7 +10,6 @@ import {
   Pressable,
   Platform,
   ScrollView,
-  Share as RNShare
 } from 'react-native';
 import { Portal } from 'react-native-paper';
 import { Ionicons } from '@/src/lib/icons';
@@ -31,8 +30,18 @@ import {
 import * as Icons from '@/assets/svgs';
 import { fetchSuggestedUsers } from '@/src/services/users';
 import { contestService } from '@/src/services/contests/contestService';
+import { startChat, sendMessage } from '@/src/services/messages/messageService';
 import { useToast } from '../toast/ToastProvider';
-import * as Clipboard from 'expo-clipboard';
+import {
+  battleUrl,
+  battleCaption,
+  platformShareUrl,
+  openShareUrl,
+  shareBattle,
+  downloadBattleImage,
+  copyBattleLink,
+  type ShareMatchLike,
+} from '@/src/lib/share';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SHEET_HEIGHT = SCREEN_HEIGHT * 0.75;
@@ -52,13 +61,19 @@ interface ShareSheetProps {
   onDismiss: () => void;
   isDark: boolean;
   matchId: string;
+  /** The battle, if the caller already has it — avoids a fetch and gives the
+   *  freshest handles/title. The composite image (`vsImageUrl`) is still fetched
+   *  on open since a feed item may not carry it yet. */
+  match?: ShareMatchLike;
 }
 
-export const ShareSheet = ({ visible, onDismiss, isDark, matchId }: ShareSheetProps) => {
+export const ShareSheet = ({ visible, onDismiss, isDark, matchId, match: matchProp }: ShareSheetProps) => {
   const translateY = useSharedValue(SHEET_HEIGHT);
   const opacity = useSharedValue(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [users, setUsers] = useState<any[]>([]);
+  const [match, setMatch] = useState<ShareMatchLike | null>(matchProp ?? null);
+  const [busy, setBusy] = useState(false);
   const { addToast } = useToast();
 
   const backgroundColor = isDark ? '#1F222A' : '#FFFFFF';
@@ -67,100 +82,142 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId }: ShareSheetPr
   const inputBg = isDark ? '#1F222A' : '#F5F5F5';
   const borderColor = isDark ? '#35383F' : '#EEEEEE';
 
+  const url = battleUrl(matchId);
+  const caption = battleCaption(match ?? {}, url);
+  const vsImageUrl = match?.vsImageUrl ?? null;
+
   useEffect(() => {
     if (visible) {
       translateY.value = withSpring(0, { damping: 20, stiffness: 90 });
       opacity.value = withTiming(1, { duration: 300 });
       loadUsers();
-    } else {
-      translateY.value = withSpring(SHEET_HEIGHT);
-      opacity.value = withTiming(0, { duration: 300 });
+      // Pull the match detail so we have the composite VS image + latest handles.
+      let alive = true;
+      (async () => {
+        try {
+          const detail = await contestService.getMatchById(matchId);
+          if (alive && detail) setMatch(detail as ShareMatchLike);
+        } catch {
+          /* keep whatever the caller passed */
+        }
+      })();
+      return () => { alive = false; };
     }
-  }, [visible]);
+    translateY.value = withSpring(SHEET_HEIGHT);
+    opacity.value = withTiming(0, { duration: 300 });
+  }, [visible, matchId]);
 
   const loadUsers = async () => {
     try {
-      const suggestedUsers = await fetchSuggestedUsers();
-      setUsers(suggestedUsers);
+      setUsers(await fetchSuggestedUsers());
     } catch (e) {
       console.error(e);
     }
   };
 
-  const handleShareSuccess = async () => {
-    try {
-      await contestService.shareMatch(matchId);
-      // We don't add toast here because the action might close the modal
-    } catch (e) {
-      console.error("Failed to increment share count:", e);
-    }
-  };
-
-  const onShareAction = async (platformName: string) => {
-    try {
-      const shareUrl = `https://tophunt.app/battle/${matchId}`;
-      const message = `Check out this battle on TopHunt!\n\n${shareUrl}`;
-      
-      const result = await RNShare.share({
-        message,
-        url: shareUrl,
-        title: 'Share Battle'
-      });
-
-      if (result.action === RNShare.sharedAction) {
-        await handleShareSuccess();
-        addToast(`Shared to ${platformName}!`, 'success');
-        closeSheet();
-      }
-    } catch (error: any) {
-      addToast(error.message, 'error');
-    }
-  };
-
-  const onCopyLink = async () => {
-    const shareUrl = `https://tophunt.app/battle/${matchId}`;
-    await Clipboard.setStringAsync(shareUrl);
-    await handleShareSuccess();
-    addToast("Link copied to clipboard!", 'success');
-    closeSheet();
+  /** Best-effort share-count bump; never blocks the UX. */
+  const bumpShare = () => {
+    contestService.shareMatch(matchId).catch((e) => console.warn('[share] count bump failed', e));
   };
 
   const closeSheet = useCallback(() => {
     translateY.value = withSpring(SHEET_HEIGHT, { damping: 20, stiffness: 90 }, (finished) => {
-      if (finished) {
-        runOnJS(onDismiss)();
-      }
+      if (finished) runOnJS(onDismiss)();
     });
     opacity.value = withTiming(0, { duration: 300 });
   }, [onDismiss]);
 
+  /** Open the OS share sheet with the VS image + caption (platform-appropriate). */
+  const doOSShare = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const outcome = await shareBattle({ vsImageUrl, caption, url });
+      if (outcome === 'shared' || outcome === 'copied') {
+        bumpShare();
+        addToast(outcome === 'copied' ? 'Copied — paste to share' : 'Shared!', 'success');
+        closeSheet();
+      } else if (outcome === 'failed') {
+        addToast('Could not open the share sheet. Try “Copy link”.', 'error');
+      }
+      // 'dismissed' → user backed out, stay silent.
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, vsImageUrl, caption, url, closeSheet]);
+
+  /** A specific app: use its prefilled web/app intent, else fall back to the OS sheet. */
+  const onPlatform = useCallback(async (platformId: string) => {
+    const intent = platformShareUrl(platformId, caption, url);
+    if (intent) {
+      const ok = await openShareUrl(intent);
+      if (ok) {
+        bumpShare();
+        closeSheet();
+        return;
+      }
+    }
+    await doOSShare();
+  }, [caption, url, doOSShare, closeSheet]);
+
+  /** Send the battle straight into a DM with the tapped user. */
+  const onSendToUser = useCallback(async (u: any) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const chatId = await startChat(u.id, { displayName: u.name, photoURL: u.avatar });
+      await sendMessage(chatId, caption);
+      bumpShare();
+      addToast(`Sent to ${String(u.name || 'user').split(' ')[0]}`, 'success');
+      closeSheet();
+    } catch (e: any) {
+      addToast(e?.message || 'Could not send the message.', 'error');
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, caption, closeSheet]);
+
+  const onCopyLink = useCallback(async () => {
+    await copyBattleLink(url);
+    bumpShare();
+    addToast('Link copied to clipboard!', 'success');
+    closeSheet();
+  }, [url, closeSheet]);
+
+  const onDownload = useCallback(async () => {
+    if (!vsImageUrl) {
+      addToast('The VS image isn’t ready yet — open the battle story once to generate it.', 'info');
+      return;
+    }
+    const ok = await downloadBattleImage(vsImageUrl);
+    addToast(
+      ok ? (Platform.OS === 'web' ? 'Image downloaded' : 'Choose “Save image”') : 'Could not save the image.',
+      ok ? 'success' : 'error',
+    );
+  }, [vsImageUrl]);
+
   const gesture = Gesture.Pan()
     .onUpdate((event) => {
-      if (event.translationY > 0) {
-        translateY.value = event.translationY;
-      }
+      if (event.translationY > 0) translateY.value = event.translationY;
     })
     .onEnd((event) => {
-      if (event.translationY > 150 || event.velocityY > 500) {
-        runOnJS(closeSheet)();
-      } else {
-        translateY.value = withSpring(0, { damping: 20, stiffness: 90 });
-      }
+      if (event.translationY > 150 || event.velocityY > 500) runOnJS(closeSheet)();
+      else translateY.value = withSpring(0, { damping: 20, stiffness: 90 });
     });
 
-  const animatedStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: translateY.value }],
-  }));
-
+  const animatedStyle = useAnimatedStyle(() => ({ transform: [{ translateY: translateY.value }] }));
   const backdropStyle = useAnimatedStyle(() => ({
     opacity: interpolate(translateY.value, [0, SHEET_HEIGHT], [0.5, 0], Extrapolation.CLAMP),
   }));
 
-  if (!visible && translateY.value === SHEET_HEIGHT) return null;
+  // Parent flips `visible` to false only AFTER the close animation finishes (see
+  // closeSheet → onDismiss), so gating on `visible` keeps the slide-out visible
+  // and avoids reading a shared value during render.
+  if (!visible) return null;
 
-  const filteredUsers = users.filter(u => 
-    u.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
-    u.username.toLowerCase().includes(searchQuery.toLowerCase())
+  const q = searchQuery.trim().toLowerCase();
+  const filteredUsers = users.filter((u) =>
+    !q || String(u.name || '').toLowerCase().includes(q) || String(u.username || '').toLowerCase().includes(q),
   );
 
   return (
@@ -180,7 +237,7 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId }: ShareSheetPr
               <View style={[styles.searchBar, { backgroundColor: inputBg, borderColor }]}>
                 <Ionicons name="search" size={20} color={subTextColor} />
                 <TextInput
-                  placeholder="Search"
+                  placeholder="Search people to send to"
                   placeholderTextColor={subTextColor}
                   style={[styles.searchInput, { color: textColor }]}
                   value={searchQuery}
@@ -192,11 +249,17 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId }: ShareSheetPr
             <View style={{ height: 110 }}>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.userListHorizontal}>
                     {filteredUsers.length > 0 ? filteredUsers.map(user => (
-                        <TouchableOpacity key={user.id} style={styles.userItem} onPress={() => onShareAction(user.name)}>
+                        <TouchableOpacity key={user.id} style={styles.userItem} onPress={() => onSendToUser(user)} disabled={busy}>
                             <View style={styles.userAvatarWrapper}>
-                                <Image source={{ uri: user.avatar }} style={styles.userAvatar} />
+                                {user.avatar ? (
+                                  <Image source={{ uri: user.avatar }} style={styles.userAvatar} />
+                                ) : (
+                                  <View style={[styles.userAvatar, styles.avatarFallback]}>
+                                    <Text style={styles.avatarInitial}>{String(user.name || 'U').charAt(0).toUpperCase()}</Text>
+                                  </View>
+                                )}
                             </View>
-                            <Text style={[styles.userName, { color: textColor }]} numberOfLines={1}>{user.name.split(' ')[0]}</Text>
+                            <Text style={[styles.userName, { color: textColor }]} numberOfLines={1}>{String(user.name || 'User').split(' ')[0]}</Text>
                         </TouchableOpacity>
                     )) : (
                         [1,2,3,4,5,6].map(i => (
@@ -214,7 +277,7 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId }: ShareSheetPr
                     {SOCIAL_PLATFORMS.map(platform => {
                         const SocialIcon = platform.icon;
                         return (
-                            <TouchableOpacity key={platform.id} style={styles.socialItem} onPress={() => onShareAction(platform.name)}>
+                            <TouchableOpacity key={platform.id} style={styles.socialItem} onPress={() => onPlatform(platform.id)} disabled={busy}>
                                 <View style={[styles.socialIconCircle, { backgroundColor: platform.color }]}>
                                     <SocialIcon width={28} height={28} color={platform.id === 'sc' ? '#000' : '#FFF'} />
                                 </View>
@@ -226,23 +289,23 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId }: ShareSheetPr
             </View>
 
             <View style={[styles.bottomActions, { borderTopColor: borderColor }]}>
-                <TouchableOpacity style={styles.actionBtn} onPress={onCopyLink}>
+                <TouchableOpacity style={styles.actionBtn} onPress={onCopyLink} disabled={busy}>
                     <View style={[styles.actionIconCircle, { backgroundColor: isDark ? '#2A2E38' : '#F5F5F5' }]}>
                         <Icons.Link_Icon width={28} height={28} color={textColor} />
                     </View>
                     <Text style={[styles.actionLabel, { color: textColor }]}>Copy link</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.actionBtn} onPress={() => onShareAction('Other App')}>
+                <TouchableOpacity style={styles.actionBtn} onPress={doOSShare} disabled={busy}>
                     <View style={[styles.actionIconCircle, { backgroundColor: isDark ? '#2A2E38' : '#F5F5F5' }]}>
                         <Icons.Share_Icon width={28} height={28} color={textColor} />
                     </View>
                     <Text style={[styles.actionLabel, { color: textColor }]}>Share to...</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.actionBtn} onPress={() => { addToast("Feature coming soon!", 'info'); }}>
+                <TouchableOpacity style={styles.actionBtn} onPress={onDownload} disabled={busy}>
                     <View style={[styles.actionIconCircle, { backgroundColor: isDark ? '#2A2E38' : '#F5F5F5' }]}>
                         <Icons.Download_Icon width={28} height={28} color={textColor} />
                     </View>
-                    <Text style={[styles.actionLabel, { color: textColor }]}>Download</Text>
+                    <Text style={[styles.actionLabel, { color: textColor }]}>Save image</Text>
                 </TouchableOpacity>
             </View>
           </Animated.View>
@@ -264,6 +327,8 @@ const styles = StyleSheet.create({
   userItem: { alignItems: 'center', marginRight: 20, width: 60 },
   userAvatarWrapper: { width: 56, height: 56, borderRadius: 28, marginBottom: 6, overflow: 'hidden', backgroundColor: '#eee' },
   userAvatar: { width: '100%', height: '100%' },
+  avatarFallback: { backgroundColor: '#7C3AED', alignItems: 'center', justifyContent: 'center' },
+  avatarInitial: { color: '#fff', fontFamily: 'Urbanist-Bold', fontSize: 22 },
   userName: { fontFamily: 'Urbanist-Medium', fontSize: 11, textAlign: 'center' },
   socialSection: { paddingVertical: 15, borderTopWidth: 1 },
   socialScrollContent: { paddingLeft: 16 },

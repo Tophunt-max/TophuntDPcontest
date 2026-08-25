@@ -757,7 +757,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
       </View>
       
       <CommentSheet postId={item.id} visible={showComments} onDismiss={() => setShowComments(false)} isDark={isDark} isContestMatch={true} />
-      <ShareSheet visible={showShare} onDismiss={() => setShowShare(false)} isDark={isDark} matchId={item.id} />
+      <ShareSheet visible={showShare} onDismiss={() => setShowShare(false)} isDark={isDark} matchId={item.id} match={item} />
     </View>
   );
 });
