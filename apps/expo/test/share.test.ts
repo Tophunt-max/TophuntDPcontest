@@ -6,7 +6,7 @@
  * "platform" button doing the same generic thing. The pure builders are where
  * that correctness lives, so they are tested directly.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 
 // react-native + expo native modules can't load in Node; the builders under test
 // don't touch them, but the module imports them at top level, so stub them.
@@ -14,9 +14,11 @@ vi.mock('react-native', () => ({ Platform: { OS: 'web' }, Share: {}, Linking: {}
 vi.mock('expo-clipboard', () => ({ setStringAsync: async () => {} }));
 vi.mock('expo-image-manipulator', () => ({ ImageManipulator: {}, SaveFormat: { JPEG: 'jpeg' } }));
 vi.mock('@/src/lib/vsNativeModules', () => ({ getSharing: () => null }));
+// Native fallback origin when there's no window.location.
+vi.mock('@/src/services/api', () => ({ API_BASE_URL: 'https://tophunt-api.example.workers.dev' }));
 
 import {
-  SHARE_ORIGIN,
+  shareOrigin,
   battleUrl,
   battleCaption,
   whatsappShareUrl,
@@ -26,6 +28,11 @@ import {
   platformShareUrl,
 } from '@/src/lib/share';
 
+// Node/vitest has no window by default; each test sets/clears it explicitly.
+afterEach(() => {
+  delete (globalThis as any).window;
+});
+
 const match = {
   id: 'm1',
   title: 'Best Smile',
@@ -34,16 +41,30 @@ const match = {
   vsImageUrl: 'https://cdn.test/vs-cards/images/m1.jpg',
 };
 
-describe('battleUrl', () => {
-  it('points at the real App-Links host, not tophunt.app', () => {
+describe('shareOrigin / battleUrl', () => {
+  it('uses whatever host the web app is served from — not a hard-coded domain', () => {
+    (globalThis as any).window = { location: { origin: 'https://tophuntdpcontest-89t.pages.dev' } };
+    expect(shareOrigin()).toBe('https://tophuntdpcontest-89t.pages.dev');
     const url = battleUrl('m1');
-    expect(url).toBe(`${SHARE_ORIGIN}/battle/m1`);
+    expect(url).toBe('https://tophuntdpcontest-89t.pages.dev/battle/m1');
+    // The old wrong host must never come back.
     expect(url).not.toContain('tophunt.app');
-    expect(url).toContain('/battle/');
+  });
+
+  it('follows a different host automatically (custom domain / staging)', () => {
+    (globalThis as any).window = { location: { origin: 'https://app.example.com/' } };
+    expect(battleUrl('m1')).toBe('https://app.example.com/battle/m1');
+  });
+
+  it('falls back to the deployment API origin when there is no browser location (native)', () => {
+    // no window
+    expect(shareOrigin()).toBe('https://tophunt-api.example.workers.dev');
+    expect(battleUrl('m1')).toContain('/battle/m1');
   });
 
   it('encodes the id', () => {
-    expect(battleUrl('a/b?c')).toBe(`${SHARE_ORIGIN}/battle/a%2Fb%3Fc`);
+    (globalThis as any).window = { location: { origin: 'https://h.test' } };
+    expect(battleUrl('a/b?c')).toBe('https://h.test/battle/a%2Fb%3Fc');
   });
 });
 

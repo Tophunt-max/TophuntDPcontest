@@ -2,6 +2,7 @@ import { Platform, Share as RNShare, Linking } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { getSharing } from '@/src/lib/vsNativeModules';
+import { API_BASE_URL } from '@/src/services/api';
 
 /**
  * One correct implementation of "share this battle", used by the share sheet and
@@ -17,12 +18,35 @@ import { getSharing } from '@/src/lib/vsNativeModules';
  */
 
 /**
- * Where a shared link points. `app.tophunt.in` is the verified App-Links host
- * (see app.json intentFilters), so on a device with the app installed the link
- * opens the app straight to the battle; in a browser it opens the web build's
- * /battle/:id page. Overridable per build via EXPO_PUBLIC_SHARE_ORIGIN.
+ * The origin a shared link points at — derived, never hard-coded to one domain.
+ *
+ * On web this is simply whatever host the app is being served from
+ * (`window.location.origin`), so a share link always points back to the same
+ * deployment the user is actually on — pages.dev, a custom domain, staging,
+ * anything — with nothing to keep in sync.
+ *
+ * On native there is no browser location, so it takes (in order) an explicit
+ * `EXPO_PUBLIC_SHARE_ORIGIN` for the public web host, then falls back to the
+ * configured API origin, so the host is still derived from the running
+ * deployment rather than guessed.
  */
-export const SHARE_ORIGIN = (process.env.EXPO_PUBLIC_SHARE_ORIGIN || 'https://app.tophunt.in').replace(/\/$/, '');
+export function shareOrigin(): string {
+  if (
+    typeof window !== 'undefined' &&
+    window.location &&
+    window.location.origin &&
+    /^https?:/.test(window.location.origin)
+  ) {
+    return window.location.origin.replace(/\/$/, '');
+  }
+  const configured = (process.env.EXPO_PUBLIC_SHARE_ORIGIN || '').trim();
+  if (configured) return configured.replace(/\/$/, '');
+  try {
+    return new URL(API_BASE_URL).origin;
+  } catch {
+    return '';
+  }
+}
 
 const CARD_MIME = 'image/jpeg';
 
@@ -34,9 +58,9 @@ export interface ShareMatchLike {
   vsImageUrl?: string | null;
 }
 
-/** Canonical, openable URL for a battle. */
+/** Canonical, openable URL for a battle, on whatever host the app is served from. */
 export function battleUrl(matchId: string): string {
-  return `${SHARE_ORIGIN}/battle/${encodeURIComponent(matchId)}`;
+  return `${shareOrigin()}/battle/${encodeURIComponent(matchId)}`;
 }
 
 /**
