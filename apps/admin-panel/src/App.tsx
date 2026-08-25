@@ -32,6 +32,7 @@ const AppControl = lazy(() => import("@/pages/AppControl"));
 const AppSettings = lazy(() => import("@/pages/AppSettings"));
 const Integrations = lazy(() => import("@/pages/Integrations"));
 const Logs = lazy(() => import("@/pages/Logs"));
+const SystemHealth = lazy(() => import("@/pages/SystemHealth"));
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000, retry: 1, refetchOnWindowFocus: false } },
@@ -88,6 +89,7 @@ function ProtectedApp() {
           <Route path="/app-control" component={AppControl} />
           <Route path="/app-settings" component={AppSettings} />
           <Route path="/integrations" component={Integrations} />
+          <Route path="/system-health" component={SystemHealth} />
           <Route component={() => <Redirect to="/dashboard" />} />
         </Switch>
       </Suspense>

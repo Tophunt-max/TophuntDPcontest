@@ -267,6 +267,43 @@ export interface IntegrationsConfig {
   push: { vapidPublicKey: string };
 }
 
+// ---- system health -------------------------------------------------------
+export interface HealthCheck {
+  ok: boolean;
+  detail?: string;
+  ms?: number;
+}
+export interface CronJobHealth {
+  job: string;
+  lastRunAt: number | null;
+  lastOk: boolean | null;
+  lastDurationMs: number | null;
+  stale: boolean;
+}
+export interface DeepHealth {
+  ok: boolean;
+  ts: number;
+  checks: Record<string, HealthCheck>;
+  crons: CronJobHealth[];
+}
+export interface LedgerDriftSample {
+  uid: string;
+  balance: number;
+  ledger: number;
+  diff: number;
+}
+export interface MoneyHealth {
+  ok: boolean;
+  ts: number;
+  ledgerDrift: { count: number; samples: LedgerDriftSample[] };
+  negativeBalances: { count: number; samples: { uid: string; balance: number }[] };
+  strandedPaidOrders: number;
+  stuckCreatedOrders: number;
+  clawbackShortfalls: { count: number; coins: number };
+  pendingDeposits: { count: number; oldestAgeMs: number | null };
+  pendingWithdrawals: { count: number; oldestAgeMs: number | null };
+}
+
 export interface IntegrationsResponse {
   config: IntegrationsConfig;
   defaults: IntegrationsConfig;
@@ -577,4 +614,9 @@ export const api = {
   // ops (manual cron triggers)
   opsResolveContests: () => post("/admin/ops/resolve-contests"),
   opsHallOfFame: () => post("/admin/ops/hall-of-fame"),
+
+  // system health console
+  systemHealth: () => get<DeepHealth>("/admin/health"),
+  moneyHealth: () => get<MoneyHealth>("/admin/money-health"),
+  cronHealth: () => get<CronJobHealth[]>("/admin/ops/cron-health"),
 };
