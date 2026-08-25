@@ -15,6 +15,7 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
+import { useImageAdjuster } from "@/src/components/media/useImageAdjuster";
 import { useAuth } from "@/src/hooks/useAuth";
 import { useProfile } from "@/src/hooks/useProfileData";
 import { uploadToR2 } from "@/src/lib/uploadToR2";
@@ -66,6 +67,7 @@ export default function EditProfileScreen() {
   const router = useRouter();
   const { user: authUser } = useAuth();
   const { data: profile, isLoading: profileLoading, refetch } = useProfile(authUser?.uid || '');
+  const { adjust, host: adjusterHost } = useImageAdjuster();
   
   const [isOccupationPickerVisible, setOccupationPickerVisibility] = useState(false);
   const [showCountryPicker, setShowCountryPicker] = useState(false);
@@ -140,26 +142,21 @@ export default function EditProfileScreen() {
     if (useCamera) {
         const permission = await ImagePicker.requestCameraPermissionsAsync();
         if (permission.granted) {
-            result = await ImagePicker.launchCameraAsync({
-                allowsEditing: true,
-                aspect: [1, 1],
-                quality: 0.5,
-            });
+            // Crop with the cross-platform 1:1 adjuster below instead of the
+            // native-only allowsEditing UI.
+            result = await ImagePicker.launchCameraAsync({ quality: 0.5 });
         } else {
             Alert.alert("Permission Denied", "Camera permission is required to take a photo.");
             return;
         }
     } else {
-        result = await ImagePicker.launchImageLibraryAsync({
-            mediaTypes: ['images'],
-            allowsEditing: true,
-            aspect: [1, 1],
-            quality: 0.5,
-        });
+        result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.5 });
     }
 
     if (result && !result.canceled && result.assets) {
-        setLocalAvatarUri(result.assets[0].uri);
+        const picked = result.assets[0].uri;
+        const adjusted = await adjust(picked, 1);
+        setLocalAvatarUri(adjusted ?? picked);
     }
   };
 
@@ -305,6 +302,7 @@ export default function EditProfileScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
+      {adjusterHost}
       <View style={styles.header}>
         <BackButton size={24} color="#000" />
         <Text style={styles.headerTitle}>Edit Profile</Text>

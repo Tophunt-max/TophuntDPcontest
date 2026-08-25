@@ -2,6 +2,7 @@ import React from 'react';
 import { View, Image, TouchableOpacity, StyleSheet, ViewStyle } from 'react-native';
 import { Ionicons } from '@/src/lib/icons';
 import * as ImagePicker from 'expo-image-picker';
+import { useImageAdjuster } from '@/src/components/media/useImageAdjuster';
 
 interface AvatarPickerProps {
   uri: string | null;
@@ -10,34 +11,36 @@ interface AvatarPickerProps {
 }
 
 export const AvatarPicker: React.FC<AvatarPickerProps> = ({ uri, onPick, style }) => {
-  const handlePick = async () => {
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.8,
-    });
+  const { adjust, host } = useImageAdjuster();
 
-    if (!result.canceled) {
-      onPick(result.assets[0].uri);
-    }
+  const handlePick = async () => {
+    // No `allowsEditing`: that crop UI only runs on native. The 1:1 adjuster
+    // below crops on every platform, so web users can frame their avatar too.
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8 });
+    if (result.canceled) return;
+    const picked = result.assets[0].uri;
+    const adjusted = await adjust(picked, 1);
+    onPick(adjusted ?? picked);
   };
 
   return (
-    <View style={[styles.container, style]}>
-      <TouchableOpacity onPress={handlePick} style={styles.touchable}>
-        {uri ? (
-          <Image source={{ uri }} style={styles.image} />
-        ) : (
-          <View style={styles.placeholder}>
-             <Ionicons name="person" size={60} color="#BDBDBD" />
+    <>
+      <View style={[styles.container, style]}>
+        <TouchableOpacity onPress={handlePick} style={styles.touchable}>
+          {uri ? (
+            <Image source={{ uri }} style={styles.image} />
+          ) : (
+            <View style={styles.placeholder}>
+               <Ionicons name="person" size={60} color="#BDBDBD" />
+            </View>
+          )}
+          <View style={styles.editBadge}>
+            <Ionicons name="pencil" size={14} color="#fff" />
           </View>
-        )}
-        <View style={styles.editBadge}>
-          <Ionicons name="pencil" size={14} color="#fff" />
-        </View>
-      </TouchableOpacity>
-    </View>
+        </TouchableOpacity>
+      </View>
+      {host}
+    </>
   );
 };
 

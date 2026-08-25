@@ -39,6 +39,10 @@ import {
 } from '@/assets/svgs';
 import { PanGestureHandler } from 'react-native-gesture-handler';
 import Animated, { useSharedValue, useAnimatedStyle, withSpring, runOnJS } from 'react-native-reanimated';
+import { useImageAdjuster } from '@/src/components/media/useImageAdjuster';
+
+/** Story frame aspect (width / height) — matches the 9:16 story viewer. */
+const STORY_ASPECT = 9 / 16;
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
 
 const { width, height } = Dimensions.get('window');
@@ -64,6 +68,7 @@ const CircularProgress = ({ progress }: { progress: number }) => {
 
 export default function AddStoryScreen() {
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  const { adjust, host: adjusterHost } = useImageAdjuster();
   const [media, setMedia] = useState<{ uri: string, type: 'image' | 'video' } | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -235,16 +240,25 @@ export default function AddStoryScreen() {
 
   const pickFromGallery = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images', 'videos'], quality: 0.8 });
-    if (!result.canceled) {
-      setMedia({ uri: result.assets[0].uri, type: result.assets[0].type === 'video' ? 'video' : 'image' });
+    if (result.canceled) return;
+    const asset = result.assets[0];
+    if (asset.type === 'video') {
+      setMedia({ uri: asset.uri, type: 'video' });
+      return;
     }
+    // Let the user frame the photo to 9:16 before it becomes the story. On cancel
+    // we keep the original so choosing a photo is never a dead end.
+    const adjusted = await adjust(asset.uri, STORY_ASPECT);
+    setMedia({ uri: adjusted ?? asset.uri, type: 'image' });
   };
 
   const takePicture = async () => {
     if (!cameraRef.current || !isCameraReady) return;
     try {
         const photo = await cameraRef.current.takePictureAsync({ quality: 0.8 });
-        if (photo) setMedia({ uri: photo.uri, type: 'image' });
+        if (!photo) return;
+        const adjusted = await adjust(photo.uri, STORY_ASPECT);
+        setMedia({ uri: adjusted ?? photo.uri, type: 'image' });
     } catch (e: any) {
         console.error("Capture Error:", e);
     }
@@ -329,7 +343,9 @@ export default function AddStoryScreen() {
   return (
     <View style={styles.container}>
       <StatusBar hidden />
-      
+      {/* Full-screen crop overlay; renders nothing until a photo is being adjusted. */}
+      {adjusterHost}
+
       {!isUploading && (
         <SafeAreaView style={styles.header}>
           <TouchableOpacity
