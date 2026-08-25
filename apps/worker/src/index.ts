@@ -38,6 +38,7 @@ import {
   resolveRange,
   unsatisfiedRangeHeader,
 } from "./lib/httpRange";
+import { applyPublicMediaCors, preflightMediaCorsHeaders } from "./lib/mediaCors";
 
 // Durable Object for real-time WebSocket push.
 export { RealtimeHub } from "./realtime";
@@ -95,6 +96,12 @@ app.use("*", async (c, next) => {
 app.use("*", async (c, next) => {
   // WebSocket upgrades must not be wrapped by CORS (immutable 101 response).
   if (c.req.header("Upgrade") === "websocket") return next();
+  // Public media is a different CORS surface from the credentialed API: it serves
+  // itself `Access-Control-Allow-Origin: *` from within the /media handler (see
+  // lib/mediaCors.ts). Running the API's origin-restricted policy here too would
+  // override that `*` with an ALLOWED_ORIGINS-based value and re-break
+  // cross-origin canvas reads from the app/blog origins. So media opts out.
+  if (new URL(c.req.url).pathname.startsWith("/media/")) return next();
   const origins = (c.env.ALLOWED_ORIGINS || "*").split(",").map((s) => s.trim());
   const mw = cors({
     origin: origins.length === 1 && origins[0] === "*" ? "*" : origins,
@@ -234,6 +241,11 @@ app.get("/health/deep", async (c) => {
  * domain: R2_PUBLIC_BASE_URL points at "<worker>/media". Keys are content-hash
  * addressed, so responses are immutable and cached for a year.
  */
+// Preflight for cross-origin media reads. Rarely hit — a plain <img crossorigin>
+// or simple GET does not preflight — but a ranged cross-origin fetch can, and the
+// global CORS middleware skips /media, so media answers its own.
+app.options("/media/*", () => new Response(null, { status: 204, headers: preflightMediaCorsHeaders() }));
+
 app.on(["GET", "HEAD"], "/media/*", async (c) => {
   const url = new URL(c.req.url);
   const key = decodeURIComponent(url.pathname.replace(/^\/media\//, "")).replace(/^\/+/, "");
@@ -259,6 +271,11 @@ app.on(["GET", "HEAD"], "/media/*", async (c) => {
     // Advertised unconditionally so players know they may seek. Without this,
     // AVPlayer/ExoPlayer fall back to downloading the whole file.
     headers.set("Accept-Ranges", "bytes");
+    // Public, cross-origin-readable. Baked in HERE (not via middleware) so the
+    // header is stored in the edge cache with the object and a cache hit carries
+    // it too. This is what lets a web canvas / html-to-image capture read an
+    // entry image without tainting — the VS card on web depends on it.
+    applyPublicMediaCors(headers);
     return headers;
   };
 
