@@ -9,13 +9,19 @@
 #  - frame-src allows the Razorpay checkout iframe and Firebase auth handlers.
 #  - Framing THIS app is allowed from nowhere, which also protects the
 #    login/payment screens from being embedded.
+#  - connect-src needs blob: because on web the image/video picker hands us a
+#    blob: URI and uploadToR2() does fetch(uri) to read it back into a Blob.
+#    fetch() is governed by connect-src, so without blob: every contest entry,
+#    story, avatar and deposit-slip upload died with "Failed to fetch".
+#    img-src/media-src already allowed blob:, which is why previews rendered
+#    fine and made this look like a network bug instead of a CSP one.
 /*
   Strict-Transport-Security: max-age=31536000; includeSubDomains
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   X-Frame-Options: DENY
   Permissions-Policy: accelerometer=(), gyroscope=(), usb=()
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://checkout.razorpay.com https://*.gstatic.com https://*.googleapis.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; font-src 'self' data:; connect-src 'self' https://*.workers.dev https://api.tophunt.in https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com wss://*.workers.dev https://securetoken.googleapis.com https://identitytoolkit.googleapis.com https://fcmregistrations.googleapis.com https://lumberjack.razorpay.com https://api.razorpay.com; frame-src https://api.razorpay.com https://checkout.razorpay.com https://*.firebaseapp.com; worker-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://checkout.razorpay.com https://*.gstatic.com https://*.googleapis.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; font-src 'self' data:; connect-src 'self' blob: https://*.workers.dev https://api.tophunt.in https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com wss://*.workers.dev https://securetoken.googleapis.com https://identitytoolkit.googleapis.com https://fcmregistrations.googleapis.com https://lumberjack.razorpay.com https://api.razorpay.com; frame-src https://api.razorpay.com https://checkout.razorpay.com https://*.firebaseapp.com; worker-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'
 
 # The service worker must not be cached, or push registration can go stale.
 /firebase-messaging-sw.js
