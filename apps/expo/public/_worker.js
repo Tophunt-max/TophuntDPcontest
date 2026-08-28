@@ -124,6 +124,123 @@ function withSecurityHeaders(res, { document = false } = {}) {
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
+// ---------------------------------------------------------------------------
+// Route classification.
+//
+// SEO used to exist only for the blog; every other route — including the home
+// page — was served as a bare shell with a generic <title>TopHunt</title> and no
+// description, canonical or Open Graph tags at all. Two consequences:
+//
+//  1. Nothing but blog posts could rank, the landing page least of all.
+//  2. Share previews were blank everywhere. WhatsApp, Facebook, Telegram and
+//     Twitter do NOT execute JavaScript, so `src/lib/webSeo.ts` (which sets meta
+//     after hydration) is invisible to them. A shared battle link — the thing
+//     `src/lib/share.ts` exists to produce — unfurled as a bare url.
+//
+// The table below is the source of truth for what is public. Anything NOT listed
+// here and not a blog post or battle is treated as PRIVATE and gets
+// `noindex, nofollow`, which is the safe default: this app has wallet, deposit,
+// withdrawal, chat, settings and auth screens, and a crawler that indexes
+// `/wallet/withdraw` or an OTP screen is a problem, not a win.
+//
+// `description` is what shows in a search result and in a share preview, so it is
+// written per route rather than falling back to one site-wide sentence.
+// ---------------------------------------------------------------------------
+const PUBLIC_ROUTES = {
+  '/': {
+    title: 'TopHunt — Photo & Video Contests, Quizzes and Giveaways',
+    description:
+      'Enter photo and video battles, vote for your favourites and win coins. Plus daily quiz answers, giveaway guides and the latest offers.',
+    priority: '1.0',
+  },
+  '/home': {
+    title: 'Home',
+    description:
+      'Live photo and video battles, trending entries and the contests you can enter right now on TopHunt.',
+    priority: '0.9',
+  },
+  '/explore': {
+    title: 'Explore Contests',
+    description:
+      'Browse every live photo and video contest on TopHunt, discover new creators and find a battle to join.',
+    priority: '0.9',
+  },
+  '/explore/leaderboard': {
+    title: 'Leaderboard',
+    description:
+      'The top TopHunt players by wins and votes — see who is leading this month and how you compare.',
+    priority: '0.8',
+  },
+  '/blog': {
+    title: 'Blog',
+    description:
+      'Read the latest TopHunt articles — contest answers, quiz solutions, giveaway guides and offer updates.',
+    priority: '0.8',
+  },
+  '/legal/privacy': {
+    title: 'Privacy Policy',
+    description: 'How TopHunt collects, uses, stores and deletes your personal data, and the choices you have.',
+    priority: '0.4',
+  },
+  '/legal/terms': {
+    title: 'Terms & Conditions',
+    description: 'The terms that govern your use of TopHunt, including contests, coins and account rules.',
+    priority: '0.4',
+  },
+  '/legal/refund': {
+    title: 'Refund Policy',
+    description: 'When a TopHunt coin purchase can be refunded, and how to request one.',
+    priority: '0.4',
+  },
+  '/legal/guidelines': {
+    title: 'Community Guidelines',
+    description: 'What is and is not allowed on TopHunt — content standards, fair play and how we enforce them.',
+    priority: '0.4',
+  },
+};
+
+/**
+ * Route prefixes that must never be indexed.
+ *
+ * Anything unlisted also gets noindex (fail-closed), so this list is really
+ * documentation of WHY: each one is either a signed-in-only screen, a
+ * transactional flow, or a transient redirect target that would make a terrible
+ * search result.
+ */
+const PRIVATE_PREFIXES = [
+  '/auth', //         login, signup, OTP, password reset
+  '/wallet', //       balances, deposits, withdrawals, coin store
+  '/setting', //      account settings, blocked list, account deletion
+  '/messages', //     direct messages
+  '/notifications',
+  '/profile', //      the signed-in user's own profile and its edit screens
+  '/story', //        24h stories — expire, so they would be instant soft-404s
+  '/contest', //      entry/creation flows, all of which require a session
+  '/onboarding',
+  '/splash', //       transient redirect target
+  '/force-update',
+  '/maintenance',
+];
+
+/** True when a path is a signed-in / transactional screen. */
+function isPrivatePath(path) {
+  const clean = path.replace(/\/+$/, '') || '/';
+  return PRIVATE_PREFIXES.some((p) => clean === p || clean.startsWith(`${p}/`));
+}
+
+/** The public route entry for a path, tolerating a trailing slash. */
+function publicRouteFor(path) {
+  const clean = path.replace(/\/+$/, '') || '/';
+  return PUBLIC_ROUTES[clean] ? { path: clean, ...PUBLIC_ROUTES[clean] } : null;
+}
+
+/** `/battle/<id>` -> id. */
+function battleIdFromPath(path) {
+  const segments = path.replace(/\/+$/, '').split('/').filter(Boolean);
+  if (segments.length === 2 && segments[0] === 'battle') return segments[1];
+  return null;
+}
+
 // Top-level app routes that must NEVER be treated as a blog permalink. Mirrors
 // the folders/files under apps/expo/app/.
 const RESERVED = new Set([
@@ -184,6 +301,7 @@ export default {
       return withSecurityHeaders(await env.ASSETS.fetch(request));
     }
 
+    // --- blog post (either /blog/<slug> or the root permalink /<slug>) ------
     const slug = blogSlugFromPath(path);
     if (slug) {
       try {
@@ -196,20 +314,56 @@ export default {
       } catch (_err) {
         // fall through to plain SPA shell on any failure
       }
+      // A one-segment path that is not a real post is a 404, not the home page.
+      // Left indexable-by-default it would let any typo'd url become a
+      // thin duplicate of the app shell.
+      return injectSeo(await fetchShell(env, origin), {
+        title: `Not found | ${SITE_NAME}`,
+        description: DEFAULT_DESCRIPTION,
+        robots: 'noindex, follow',
+      });
     }
 
-    // /blog listing gets a static, sensible title/description.
-    if (path === '/blog' || path === '/blog/') {
+    // --- shared battle: /battle/<id> ---------------------------------------
+    const battleId = battleIdFromPath(path);
+    if (battleId) {
+      const shell = await fetchShell(env, origin);
       try {
-        const shell = await fetchShell(env, origin);
-        return injectListSeo(shell, origin);
+        const match = await fetchMatch(apiBase, battleId);
+        if (match && (match.userA || match.userB)) return injectBattleSeo(shell, match, origin, battleId);
       } catch (_err) {
-        /* fall through */
+        /* fall through to a generic, still-noindex battle page */
       }
+      return injectSeo(shell, {
+        title: `Battle | ${SITE_NAME}`,
+        description: 'Vote on a head-to-head battle on TopHunt.',
+        canonical: `${origin}/battle/${encodeURIComponent(battleId)}`,
+        robots: 'noindex, follow',
+      });
     }
 
-    // Default: SPA shell (client-side routing takes over).
-    return fetchShell(env, origin);
+    // --- curated public routes --------------------------------------------
+    const route = publicRouteFor(path);
+    if (route) {
+      return injectSeo(await fetchShell(env, origin), {
+        title: route.title,
+        description: route.description,
+        canonical: `${origin}${route.path === '/' ? '/' : route.path}`,
+        type: 'website',
+        robots: 'index, follow',
+        jsonLd: route.path === '/' ? siteJsonLd(origin) : undefined,
+      });
+    }
+
+    // --- everything else: signed-in / transactional screens ----------------
+    // Fail closed. An unlisted route is assumed private, so adding a screen
+    // cannot silently expose it to search — it has to be added to PUBLIC_ROUTES
+    // deliberately.
+    return injectSeo(await fetchShell(env, origin), {
+      title: SITE_NAME,
+      description: DEFAULT_DESCRIPTION,
+      robots: 'noindex, nofollow',
+    });
   },
 };
 
@@ -235,9 +389,9 @@ async function fetchShell(env, origin) {
   const headers = new Headers(res.headers);
   headers.set('cache-control', 'public, max-age=0, must-revalidate');
   // Document security headers are applied here, at the single place every HTML
-  // response originates. `injectPostSeo` / `injectListSeo` run an HTMLRewriter
-  // over this response, which carries its headers through, so both the plain SPA
-  // shell and the SEO-rewritten blog pages are covered by this one call.
+  // response originates. `injectSeo` runs an HTMLRewriter over this response,
+  // which carries its headers through, so the plain shell and every
+  // SEO-rewritten route are all covered by this one call.
   return withSecurityHeaders(new Response(res.body, { status: res.status, headers }), {
     document: true,
   });
@@ -281,20 +435,7 @@ function injectPostSeo(shellResp, post, origin, canonicalPath) {
   const fullTitle = /tophunt/i.test(title) ? title : `${title} | ${SITE_NAME}`;
   const bodyText = stripHtml(post.content || post.excerpt || '');
   const description = truncate(post.metaDescription || post.excerpt || bodyText || DEFAULT_DESCRIPTION, 160);
-  // Prefer the original permalink as canonical if it lives on this site;
-  // otherwise self-canonical to the current site path.
-  let canonical = `${origin}${canonicalPath}`;
-  if (post.canonicalUrl && /^https?:\/\//i.test(post.canonicalUrl)) {
-    try {
-      const cu = new URL(post.canonicalUrl);
-      const site = new URL(origin);
-      if (cu.hostname.replace(/^www\./, '') === site.hostname.replace(/^www\./, '')) {
-        canonical = cu.toString();
-      }
-    } catch (_e) {
-      /* keep self-canonical */
-    }
-  }
+  const canonical = canonicalForPost(post, origin, canonicalPath);
   const image = post.coverImageUrl || '';
   const published = post.publishedAt || post.createdAt;
   const publishedIso = published ? new Date(Number(published)).toISOString() : undefined;
@@ -318,87 +459,223 @@ function injectPostSeo(shellResp, post, origin, canonicalPath) {
     ...(tags.length ? { keywords: tags.join(', ') } : {}),
   };
 
-  const head =
-    `\n<meta name="description" content="${esc(description)}">` +
-    `\n<link rel="canonical" href="${esc(canonical)}">` +
-    `\n<meta property="og:type" content="article">` +
-    `\n<meta property="og:site_name" content="${esc(SITE_NAME)}">` +
-    `\n<meta property="og:title" content="${esc(fullTitle)}">` +
-    `\n<meta property="og:description" content="${esc(description)}">` +
-    `\n<meta property="og:url" content="${esc(canonical)}">` +
-    (image ? `\n<meta property="og:image" content="${esc(image)}">` : '') +
-    (publishedIso ? `\n<meta property="article:published_time" content="${esc(publishedIso)}">` : '') +
-    tags.map((t) => `\n<meta property="article:tag" content="${esc(t)}">`).join('') +
-    `\n<meta name="twitter:card" content="${image ? 'summary_large_image' : 'summary'}">` +
-    `\n<meta name="twitter:title" content="${esc(fullTitle)}">` +
-    `\n<meta name="twitter:description" content="${esc(description)}">` +
-    (image ? `\n<meta name="twitter:image" content="${esc(image)}">` : '') +
-    `\n<script type="application/ld+json">${JSON.stringify(jsonLd).replace(/</g, '\\u003c')}</script>`;
-
-  // Content block for crawlers that don't execute JS (and as a semantic anchor).
-  const noscript =
-    `<noscript><article>` +
-    `<h1>${esc(post.title)}</h1>` +
-    (image ? `<img src="${esc(image)}" alt="${esc(post.title)}" width="1200" />` : '') +
-    (post.excerpt ? `<p>${esc(post.excerpt)}</p>` : '') +
-    (post.content || '') +
-    `</article></noscript>`;
-
-  return new HTMLRewriter()
-    .on('title', {
-      element(el) {
-        el.setInnerContent(fullTitle);
-      },
-    })
-    .on('meta[name="description"]', { element(el) { el.remove(); } })
-    .on('link[rel="canonical"]', { element(el) { el.remove(); } })
-    .on('meta[property^="og:"]', { element(el) { el.remove(); } })
-    .on('meta[name^="twitter:"]', { element(el) { el.remove(); } })
-    .on('head', {
-      element(el) {
-        el.append(head, { html: true });
-      },
-    })
-    .on('body', {
-      element(el) {
-        el.append(noscript, { html: true });
-      },
-    })
-    .transform(shellResp);
+  return injectSeo(shellResp, {
+    title: fullTitle,
+    description,
+    canonical,
+    image,
+    type: 'article',
+    robots: 'index, follow',
+    extraHead:
+      (publishedIso ? `\n<meta property="article:published_time" content="${esc(publishedIso)}">` : '') +
+      tags.map((t) => `\n<meta property="article:tag" content="${esc(t)}">`).join(''),
+    jsonLd,
+    // Content block for crawlers that don't execute JS (and as a semantic anchor).
+    noscript:
+      `<noscript><article>` +
+      `<h1>${esc(post.title)}</h1>` +
+      (image ? `<img src="${esc(image)}" alt="${esc(post.title)}" width="1200" />` : '') +
+      (post.excerpt ? `<p>${esc(post.excerpt)}</p>` : '') +
+      (post.content || '') +
+      `</article></noscript>`,
+  });
 }
 
-function injectListSeo(shellResp, origin) {
-  const title = `Blog | ${SITE_NAME}`;
-  const description = truncate(
-    'Read the latest TopHunt articles — contest answers, quiz solutions, giveaway guides and offer updates.',
-    160,
-  );
-  const canonical = `${origin}/blog`;
+/**
+ * The canonical url for a post: the stored permalink when it is usable, else a
+ * self-canonical to the path being served.
+ *
+ * The stored value cannot be trusted verbatim. The archive importer wrote
+ * `blog_posts.canonical_url` by joining a `/blog/` prefix onto a path that
+ * already contained one, so every imported post carried
+ * `https://tophunt.in/blog/blog/<slug>/` — a path this app has no route for. It
+ * only "resolved" because the SPA catch-all returns index.html with a 200 for
+ * anything, so it looked fine while telling Google the real page was a duplicate
+ * of a URL that renders nothing. A wrong canonical is worse than no canonical:
+ * it actively points ranking at a dead path.
+ *
+ * So the stored value is used only if it is on this site AND its path is a shape
+ * this app actually serves (`/<slug>` or `/blog/<slug>`). Anything else falls back
+ * to a self-canonical, and the repeated-prefix case is repaired rather than
+ * discarded so the original permalink is still honoured.
+ */
+function canonicalForPost(post, origin, canonicalPath) {
+  const self = `${origin}${canonicalPath}`;
+  const stored = post.canonicalUrl;
+  if (!stored || !/^https?:\/\//i.test(stored)) return self;
+
+  let cu;
+  let site;
+  try {
+    cu = new URL(stored);
+    site = new URL(origin);
+  } catch (_e) {
+    return self;
+  }
+  if (cu.hostname.replace(/^www\./, '') !== site.hostname.replace(/^www\./, '')) return self;
+
+  // Collapse a repeated /blog/ prefix: /blog/blog/x -> /blog/x.
+  let pathname = cu.pathname.replace(/^(?:\/blog)+(?=\/)/, '/blog');
+  const segments = pathname.replace(/\/+$/, '').split('/').filter(Boolean);
+  const servable =
+    (segments.length === 1 && !RESERVED.has(segments[0])) ||
+    (segments.length === 2 && segments[0] === 'blog');
+  if (!servable) return self;
+
+  return `${site.origin}${pathname}`;
+}
+
+/** Public battle snapshot. Same endpoint the app uses; works unauthenticated. */
+async function fetchMatch(apiBase, id) {
+  const res = await fetch(`${apiBase}/read/matches/${encodeURIComponent(id)}`, {
+    headers: { accept: 'application/json' },
+    cf: { cacheTtl: 60, cacheEverything: true },
+  });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+/** Organization + WebSite, so the brand can earn a knowledge panel and sitelinks. */
+function siteJsonLd(origin) {
+  return {
+    '@context': 'https://schema.org',
+    '@graph': [
+      {
+        '@type': 'Organization',
+        '@id': `${origin}/#organization`,
+        name: SITE_NAME,
+        url: origin,
+        logo: { '@type': 'ImageObject', url: `${origin}/favicon.png` },
+      },
+      {
+        '@type': 'WebSite',
+        '@id': `${origin}/#website`,
+        url: origin,
+        name: SITE_NAME,
+        description: DEFAULT_DESCRIPTION,
+        publisher: { '@id': `${origin}/#organization` },
+      },
+    ],
+  };
+}
+
+/**
+ * The one place document SEO is written.
+ *
+ * Every route type funnels through here — blog posts, battles, curated public
+ * routes and the noindex default — so a tag cannot be present on one kind of page
+ * and quietly missing on another. It replaces two near-identical copies of this
+ * meta block that had already drifted (the blog list emitted no `twitter:image`
+ * and no robots tag at all).
+ *
+ * Existing tags are REMOVED before appending. The Expo shell ships its own
+ * `<title>` and the client sets more after hydration; without the removals a
+ * crawler sees two of each and picks whichever it likes.
+ */
+function injectSeo(shellResp, opts) {
+  const { description, canonical, image, type = 'website', robots = 'index, follow', jsonLd, noscript } = opts;
+  const title = /tophunt/i.test(opts.title) ? opts.title : `${opts.title} | ${SITE_NAME}`;
+  const desc = truncate(description || DEFAULT_DESCRIPTION, 160);
+
   const head =
-    `\n<meta name="description" content="${esc(description)}">` +
-    `\n<link rel="canonical" href="${esc(canonical)}">` +
-    `\n<meta property="og:type" content="website">` +
+    `\n<meta name="robots" content="${esc(robots)}">` +
+    `\n<meta name="description" content="${esc(desc)}">` +
+    (canonical ? `\n<link rel="canonical" href="${esc(canonical)}">` : '') +
+    `\n<meta property="og:type" content="${esc(type)}">` +
     `\n<meta property="og:site_name" content="${esc(SITE_NAME)}">` +
     `\n<meta property="og:title" content="${esc(title)}">` +
-    `\n<meta property="og:description" content="${esc(description)}">` +
-    `\n<meta property="og:url" content="${esc(canonical)}">` +
-    `\n<meta name="twitter:card" content="summary">` +
+    `\n<meta property="og:description" content="${esc(desc)}">` +
+    (canonical ? `\n<meta property="og:url" content="${esc(canonical)}">` : '') +
+    (image ? `\n<meta property="og:image" content="${esc(image)}">` : '') +
+    `\n<meta name="twitter:card" content="${image ? 'summary_large_image' : 'summary'}">` +
     `\n<meta name="twitter:title" content="${esc(title)}">` +
-    `\n<meta name="twitter:description" content="${esc(description)}">`;
-  return new HTMLRewriter()
+    `\n<meta name="twitter:description" content="${esc(desc)}">` +
+    (image ? `\n<meta name="twitter:image" content="${esc(image)}">` : '') +
+    (opts.extraHead || '') +
+    (jsonLd
+      ? `\n<script type="application/ld+json">${JSON.stringify(jsonLd).replace(/</g, '\\u003c')}</script>`
+      : '');
+
+  const rewriter = new HTMLRewriter()
     .on('title', { element(el) { el.setInnerContent(title); } })
     .on('meta[name="description"]', { element(el) { el.remove(); } })
+    .on('meta[name="robots"]', { element(el) { el.remove(); } })
     .on('link[rel="canonical"]', { element(el) { el.remove(); } })
     .on('meta[property^="og:"]', { element(el) { el.remove(); } })
     .on('meta[name^="twitter:"]', { element(el) { el.remove(); } })
-    .on('head', { element(el) { el.append(head, { html: true }); } })
-    .transform(shellResp);
+    .on('head', { element(el) { el.append(head, { html: true }); } });
+
+  if (noscript) rewriter.on('body', { element(el) { el.append(noscript, { html: true }); } });
+  return rewriter.transform(shellResp);
 }
 
+/**
+ * A shared battle — the target of every share link (src/lib/share.ts).
+ *
+ * `noindex, follow` is deliberate, and it is the interesting decision here.
+ * These pages are worth rich OG tags (that is the whole point of sharing one)
+ * but they are not worth indexing: they are machine-generated, near-identical,
+ * two-photos-and-a-vote-count pages that would multiply with every battle
+ * created. At volume that is textbook thin content, and it dilutes the pages that
+ * should rank. OG unfurling does not require indexing, so this gets the product
+ * benefit without the SEO cost.
+ *
+ * The image preference order matters: the composite VS card is the only image
+ * that shows BOTH entries, so it makes by far the best preview. It does not always
+ * exist (it needs a native capture), hence the fallbacks.
+ */
+function injectBattleSeo(shellResp, match, origin, battleId) {
+  const a = match.userA || {};
+  const b = match.userB || {};
+  const nameA = a.username ? `@${a.username}` : 'someone';
+  const nameB = b.username ? `@${b.username}` : 'a rival';
+  const contest = (match.title || '').trim();
+  const versus = b.username || a.username ? `${nameA} vs ${nameB}` : 'A head-to-head battle';
+  const title = contest ? `${contest} — ${versus}` : versus;
+
+  const settled = match.status === 'completed' || match.status === 'ended';
+  const description = settled
+    ? `${versus} went head to head on TopHunt${contest ? ` in ${contest}` : ''}. See who won.`
+    : `${versus} are going head to head${contest ? ` in ${contest}` : ''}. Vote for your favourite on TopHunt.`;
+
+  const image = match.vsImageUrl || a.mediaUrlOptimized || a.mediaUrl || b.mediaUrlOptimized || b.mediaUrl || '';
+
+  return injectSeo(shellResp, {
+    title,
+    description,
+    canonical: `${origin}/battle/${encodeURIComponent(battleId)}`,
+    image,
+    type: 'article',
+    robots: 'noindex, follow',
+    // Non-JS crawlers and social scrapers that read the body get the essentials.
+    noscript:
+      `<noscript><article>` +
+      `<h1>${esc(title)}</h1>` +
+      (image ? `<img src="${esc(image)}" alt="${esc(versus)}" width="1200" />` : '') +
+      `<p>${esc(description)}</p>` +
+      `</article></noscript>`,
+  });
+}
+
+/**
+ * robots.txt.
+ *
+ * The `Disallow` list is belt-and-braces alongside the `noindex` tags: a meta tag
+ * only works if the crawler fetched and rendered the page, and these paths should
+ * not be crawled in the first place. Crawl budget spent re-fetching
+ * `/wallet/withdraw` is budget not spent on the 4,000+ blog posts.
+ *
+ * Note that `noindex` and `Disallow` do not substitute for each other — a
+ * disallowed URL can still be indexed from external links, which is exactly why
+ * both exist here.
+ */
 function robotsTxt(origin) {
   return [
     'User-agent: *',
     'Allow: /',
+    ...PRIVATE_PREFIXES.map((p) => `Disallow: ${p}/`),
+    // Shared battles are fine to fetch (that is how a preview gets built) but
+    // carry noindex; keeping them crawlable is what lets the unfurl work.
     '',
     `Sitemap: ${origin}/sitemap.xml`,
     '',
@@ -415,8 +692,12 @@ async function getSitemap(request, env, ctx, apiBase, origin) {
   const push = (loc, lastmod, priority) =>
     urls.push({ loc: `${origin}${loc}`, lastmod, priority });
 
-  push('/', undefined, '0.9');
-  push('/blog', undefined, '0.8');
+  // Every curated public route, straight from the same table the document
+  // handler uses — so a route cannot be given SEO meta and then left out of the
+  // sitemap (or listed here while actually serving noindex).
+  for (const [path, route] of Object.entries(PUBLIC_ROUTES)) {
+    push(path, undefined, route.priority);
+  }
 
   // Paginate through published posts via the public API.
   let cursor = null;
