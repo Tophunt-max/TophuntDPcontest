@@ -65,7 +65,7 @@ Do baatein jo aage har jagah maayne rakhti hain:
 | `R2_PUBLIC_BASE_URL` | `https://media.tophunt.in` | |
 | `R2_LEGACY_BASE_URLS` | purana `<worker>/media` base | delete path ke liye, §5 |
 | `MEDIA_TRANSFORMATIONS` | `"false"` | **jaan-boojh kar** — §6 |
-| `ALLOWED_ORIGINS` | `tophunt.in`, `www.tophunt.in`, `admin.tophunt.in` | purane `*.pages.dev` origins hata diye |
+| `ALLOWED_ORIGINS` | `tophunt.in`, `admin.tophunt.in` | purane `*.pages.dev` origins hata diye; koi `www` nahi |
 
 ### Clients
 | File | Change |
@@ -105,7 +105,13 @@ pehle se live ho.
 6. **Media backfill** — §5.
 7. **Transformations enable + flag flip** — §6.
 8. **`tophunt.in`** (apex) — Pages project `tophuntdpcontest` → Custom domains.
-   `www.tophunt.in` ke liye ek Redirect Rule → apex.
+   **Koi `www` nahi.** `www.tophunt.in` ka DNS record nahi hai (NXDOMAIN) aur
+   jaan-boojh kar nahi banaya gaya — site sirf apex par hai. Iska matlab hai ki
+   agar koi `www.tophunt.in` type kare to use DNS error milega. Agar aage kabhi
+   www chahiye, to teen cheezein ek saath karni hongi: DNS record, apex par
+   Redirect Rule, **aur** `ALLOWED_ORIGINS` me `https://www.tophunt.in` — kyunki
+   redirect `fetch()` ko nahi bachata, jo request www par shuru hoti hai wo wahi
+   Origin bhejti hai.
 9. **`admin.tophunt.in`** — Pages project `tophunt-admin-panel` → Custom domains.
 10. **Firebase** → Authentication → Settings → Authorized domains me `tophunt.in`
     aur `admin.tophunt.in` add karo. Iske bina in hosts par login/OTP block ho
@@ -310,7 +316,7 @@ content resolve ho jaata hai.
 - [ ] `api.tophunt.in` → Worker `tophunt-api` custom domain
 - [ ] `media.tophunt.in` → R2 bucket `tophunt-media` custom domain
 - [ ] `tophunt.in` (apex) → Pages `tophuntdpcontest`
-- [ ] `www.tophunt.in` → Redirect Rule to apex
+- [x] ~~`www.tophunt.in`~~ — jaan-boojh kar nahi banaya, site apex-only hai
 - [ ] `admin.tophunt.in` → Pages `tophunt-admin-panel`
 - [ ] Zone par Transformations enable (§6)
 

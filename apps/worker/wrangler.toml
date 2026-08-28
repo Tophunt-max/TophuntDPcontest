@@ -309,16 +309,17 @@ BUNNY_CDN_HOSTNAME = ""
 # This was previously "*", i.e. wide-open CORS on an API that moves wallets,
 # deposits and withdrawals.
 #
-# Only the two production browser origins are listed:
+# Exactly the two production browser origins:
 #   https://tophunt.in        user web app (apex — there is no `app.` host)
-#   https://www.tophunt.in    the www redirect's own origin, see below
 #   https://admin.tophunt.in  admin panel
 #
-# `www` is included even though it only ever redirects to the apex: a redirect
-# is followed by the browser for navigations, but a `fetch()` that starts on
-# https://www.tophunt.in sends THAT origin, and a user who lands on www before
-# the redirect rule runs (or who has it bookmarked) would otherwise get an
-# opaque CORS failure instead of a working app.
+# `https://www.tophunt.in` is NOT here, and should not be added back unless a www
+# record is actually created. There is no such DNS record — it is NXDOMAIN — so no
+# browser can ever send that Origin, and an allow-list entry for a host that
+# cannot exist is not harmless: it is a claim about the deployment that a reader
+# will believe. If a www redirect is ever added, note that a redirect does not
+# help a `fetch()` — a request that STARTS on www sends that origin — so the
+# entry would have to come back at the same time.
 #
 # The `*.pages.dev` origins are intentionally GONE. Keeping them would leave the
 # unauthenticated-domain path to this API open after cutover, and Pages serves
@@ -333,4 +334,4 @@ BUNNY_CDN_HOSTNAME = ""
 #
 # For local development, override this in `.dev.vars` (which takes precedence
 # over these vars under `wrangler dev`) rather than adding localhost here.
-ALLOWED_ORIGINS = "https://tophunt.in,https://www.tophunt.in,https://admin.tophunt.in"
+ALLOWED_ORIGINS = "https://tophunt.in,https://admin.tophunt.in"
