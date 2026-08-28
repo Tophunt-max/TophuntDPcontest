@@ -47,6 +47,8 @@ export default function BlogListScreen() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [hasMore, setHasMore] = useState(true);
+  // Distinct from "loaded, and there are none". See blogService.getPosts.
+  const [failed, setFailed] = useState(false);
 
   const load = useCallback(
     async (category: string | null, replace: boolean, cursorParam: number | null = null) => {
@@ -58,43 +60,64 @@ export default function BlogListScreen() {
     [],
   );
 
+  /**
+   * One place that owns the loading/failed pair.
+   *
+   * `finally` matters as much as the `catch`: every one of these paths used to
+   * call `setLoading(false)` on the line after an un-awaited-failure, so a throw
+   * left the skeleton spinning forever with no way back.
+   */
+  const loadFirstPage = useCallback(
+    async (category: string | null, mode: 'initial' | 'refresh') => {
+      if (mode === 'refresh') setRefreshing(true);
+      else setLoading(true);
+      setFailed(false);
+      setCursor(null);
+      setHasMore(true);
+      try {
+        // Categories are best-effort and never throw, so they cannot stop posts.
+        setCategories(await blogService.getCategories());
+        await load(category, true);
+      } catch (error) {
+        console.error('Error loading the blog list:', error);
+        setFailed(true);
+        setPosts([]);
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [load],
+  );
+
   useEffect(() => {
-    (async () => {
-      setLoading(true);
-      const cats = await blogService.getCategories();
-      setCategories(cats);
-      await load(null, true);
-      setLoading(false);
-    })();
-  }, []);
+    loadFirstPage(null, 'initial');
+  }, [loadFirstPage]);
 
   const onSelectCategory = async (cat: string | null) => {
     if (cat === activeCategory) return;
     setActiveCategory(cat);
-    setLoading(true);
     setPosts([]);
-    setCursor(null);
-    setHasMore(true);
-    await load(cat, true);
-    setLoading(false);
+    await loadFirstPage(cat, 'initial');
   };
 
   const onEndReached = async () => {
-    if (loadingMore || !hasMore || loading) return;
+    if (loadingMore || !hasMore || loading || failed) return;
     setLoadingMore(true);
-    await load(activeCategory, false, cursor);
-    setLoadingMore(false);
+    try {
+      await load(activeCategory, false, cursor);
+    } catch (error) {
+      // Keep the pages already on screen; just stop trying to extend them.
+      console.error('Error loading more blog posts:', error);
+      setHasMore(false);
+    } finally {
+      setLoadingMore(false);
+    }
   };
 
-  const onRefresh = async () => {
-    setRefreshing(true);
-    setCursor(null);
-    setHasMore(true);
-    const cats = await blogService.getCategories();
-    setCategories(cats);
-    await load(activeCategory, true);
-    setRefreshing(false);
-  };
+  const onRefresh = () => loadFirstPage(activeCategory, 'refresh');
+
+  const onRetry = () => loadFirstPage(activeCategory, 'initial');
 
   const formatDate = (ts?: number) => {
     if (!ts) return '';
@@ -193,10 +216,27 @@ export default function BlogListScreen() {
           onEndReachedThreshold={0.5}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={primaryColor} />}
           ListEmptyComponent={
-            <View style={styles.center}>
-              <Ionicons name="newspaper-outline" size={48} color={subTextColor} style={{ opacity: 0.5 }} />
-              <Text style={{ color: subTextColor, marginTop: 12 }}>No posts yet.</Text>
-            </View>
+            failed ? (
+              <View style={styles.center}>
+                <Ionicons name="cloud-offline-outline" size={48} color={subTextColor} style={{ opacity: 0.5 }} />
+                <Text style={[styles.emptyTitle, { color: textColor }]}>Couldn&apos;t load the blog</Text>
+                <Text style={[styles.emptyBody, { color: subTextColor }]}>
+                  Check your connection and try again.
+                </Text>
+                <TouchableOpacity
+                  onPress={onRetry}
+                  style={[styles.retryBtn, { backgroundColor: primaryColor }]}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.retryText}>Retry</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={styles.center}>
+                <Ionicons name="newspaper-outline" size={48} color={subTextColor} style={{ opacity: 0.5 }} />
+                <Text style={{ color: subTextColor, marginTop: 12 }}>No posts yet.</Text>
+              </View>
+            )
           }
           ListFooterComponent={
             loadingMore ? <ActivityIndicator style={{ marginVertical: 20 }} color={primaryColor} /> : null
@@ -233,6 +273,10 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     elevation: 3,
   },
+  emptyTitle: { fontSize: 17, fontWeight: '700', marginTop: 14 },
+  emptyBody: { fontSize: 14, marginTop: 6, textAlign: 'center', paddingHorizontal: 32 },
+  retryBtn: { marginTop: 18, paddingHorizontal: 26, paddingVertical: 11, borderRadius: 22 },
+  retryText: { color: '#FFF', fontSize: 14, fontWeight: '700' },
   cardImage: { width: '100%', height: 170 },
   featuredImage: { width: '100%', height: 220 },
   placeholder: { alignItems: 'center', justifyContent: 'center' },

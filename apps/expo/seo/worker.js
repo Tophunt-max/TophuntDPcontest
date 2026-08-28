@@ -66,7 +66,11 @@ const DEFAULT_DESCRIPTION =
 // invokes the default export; a named string export is inert there.
 export const CONTENT_SECURITY_POLICY =
   "default-src 'self'; " +
-  "script-src 'self' 'unsafe-inline' https://checkout.razorpay.com https://*.gstatic.com https://*.googleapis.com; " +
+  // static.cloudflareinsights.com is Cloudflare Web Analytics. Pages INJECTS its
+  // beacon into every HTML response when the feature is on for the project, so
+  // it is not optional from the app's side: leaving it out produced a CSP
+  // violation on every single page load.
+  "script-src 'self' 'unsafe-inline' https://checkout.razorpay.com https://*.gstatic.com https://*.googleapis.com https://static.cloudflareinsights.com; " +
   "style-src 'self' 'unsafe-inline'; " +
   "img-src 'self' data: blob: https:; " +
   "media-src 'self' blob: https:; " +
@@ -76,7 +80,9 @@ export const CONTENT_SECURITY_POLICY =
   'https://tophunt-api-staging.weadown-in.workers.dev wss://tophunt-api-staging.weadown-in.workers.dev ' +
   'https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com ' +
   'https://securetoken.googleapis.com https://identitytoolkit.googleapis.com ' +
-  'https://fcmregistrations.googleapis.com https://lumberjack.razorpay.com https://api.razorpay.com; ' +
+  'https://fcmregistrations.googleapis.com https://lumberjack.razorpay.com https://api.razorpay.com ' +
+  // The analytics beacon POSTs its payload back to this host.
+  'https://cloudflareinsights.com; ' +
   'frame-src https://api.razorpay.com https://checkout.razorpay.com https://*.firebaseapp.com; ' +
   "worker-src 'self'; " +
   "frame-ancestors 'none'; " +
