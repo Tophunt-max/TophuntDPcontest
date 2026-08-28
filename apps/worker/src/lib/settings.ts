@@ -40,6 +40,18 @@ export async function getAppConfig(env: Env): Promise<any> {
   return readSetting(env, "appConfig");
 }
 
+/**
+ * The most recent SEO audit, or null before the first run.
+ *
+ * Stored as a settings blob rather than in its own table: the dashboard only ever
+ * wants the latest result, and a full audit is one JSON document. Run *history*
+ * is already covered by `cron_runs`, which records each audit's score summary.
+ */
+export async function getSeoAudit(env: Env): Promise<any | null> {
+  const data = await readSetting(env, "seoAudit");
+  return data && (data as any).ranAt ? data : null;
+}
+
 export interface RewardedAdConfig {
   /** Master switch. Rewarded ads are OFF until an admin turns them on. */
   enabled: boolean;

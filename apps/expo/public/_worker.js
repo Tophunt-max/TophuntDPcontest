@@ -535,7 +535,19 @@ async function fetchMatch(apiBase, id) {
   return res.json();
 }
 
-/** Organization + WebSite, so the brand can earn a knowledge panel and sitelinks. */
+/**
+ * Organization + WebSite + SoftwareApplication for the landing page.
+ *
+ * These are the entity claims answer engines use to attribute a statement to a
+ * named publisher; without them the site is an anonymous source and is much less
+ * likely to be cited.
+ *
+ * SoftwareApplication is included because there IS a real published mobile app
+ * (`in.tophunt.app`), so the claim is true. Note what is deliberately absent:
+ * `aggregateRating` and `offers`. Rating markup that does not correspond to
+ * ratings visible on the page is misleading structured data and a manual-action
+ * risk — the temptation to add a 4.8 here is exactly the thing not to do.
+ */
 function siteJsonLd(origin) {
   return {
     '@context': 'https://schema.org',
@@ -546,6 +558,8 @@ function siteJsonLd(origin) {
         name: SITE_NAME,
         url: origin,
         logo: { '@type': 'ImageObject', url: `${origin}/favicon.png` },
+        email: 'support@tophunt.in',
+        areaServed: 'IN',
       },
       {
         '@type': 'WebSite',
@@ -553,6 +567,17 @@ function siteJsonLd(origin) {
         url: origin,
         name: SITE_NAME,
         description: DEFAULT_DESCRIPTION,
+        inLanguage: 'en-IN',
+        publisher: { '@id': `${origin}/#organization` },
+      },
+      {
+        '@type': 'SoftwareApplication',
+        '@id': `${origin}/#app`,
+        name: SITE_NAME,
+        applicationCategory: 'EntertainmentApplication',
+        operatingSystem: 'Android, iOS',
+        url: origin,
+        installUrl: 'https://play.google.com/store/apps/details?id=in.tophunt.app',
         publisher: { '@id': `${origin}/#organization` },
       },
     ],

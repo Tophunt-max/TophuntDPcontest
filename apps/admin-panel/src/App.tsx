@@ -22,6 +22,7 @@ const Posts = lazy(() => import("@/pages/Posts"));
 const Stories = lazy(() => import("@/pages/Stories"));
 const Comments = lazy(() => import("@/pages/Comments"));
 const Blog = lazy(() => import("@/pages/Blog"));
+const Seo = lazy(() => import("@/pages/Seo"));
 const Reports = lazy(() => import("@/pages/Reports"));
 const Support = lazy(() => import("@/pages/Support"));
 const Moderation = lazy(() => import("@/pages/Moderation"));
@@ -79,6 +80,7 @@ function ProtectedApp() {
           <Route path="/stories" component={Stories} />
           <Route path="/comments" component={Comments} />
           <Route path="/blog" component={Blog} />
+          <Route path="/seo" component={Seo} />
           <Route path="/reports" component={Reports} />
           <Route path="/support" component={Support} />
           <Route path="/moderation" component={Moderation} />

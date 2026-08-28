@@ -25,7 +25,7 @@ import { webhookRoute } from "./routes/webhook";
 import { uploadRoute } from "./routes/upload";
 import { verifyIdToken } from "./lib/firebaseAuth";
 import { assertAccountNotBlocked } from "./middleware/auth";
-import { resolveContests, monthlyHallOfFame } from "./cron";
+import { resolveContests, monthlyHallOfFame, seoAuditJob } from "./cron";
 import { ensureMigrated } from "./db/autoMigrate";
 import { captureError, logErrorToDb, pruneErrorLogs } from "./lib/observability";
 import { pruneOpsTables, runCronJob } from "./lib/ops";
@@ -390,6 +390,11 @@ export default {
             // Safety net for the Bunny encode webhook: promote videos stuck in
             // `processing` (a lost webhook) and close abandoned uploads (cost).
             await runCronJob(env, "reconcileVideos", () => reconcileVideos(env));
+
+            // Self-throttling: only re-audits if the stored result is older than
+            // 6h, so hanging it off the 10-minute tick costs one settings read
+            // on the other ticks.
+            await runCronJob(env, "seoAudit", () => seoAuditJob(env));
           })(),
         );
         break;

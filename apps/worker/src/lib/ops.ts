@@ -29,6 +29,9 @@ export const CRON_STALE_AFTER_MS: Record<string, number> = {
   pruneNotifications: 35 * 60 * 1000,
   pruneIdempotencyKeys: 35 * 60 * 1000,
   reconcileVideos: 35 * 60 * 1000,
+  // Runs on the 10-minute tick but only re-audits every 6h, so allow a full
+  // interval plus slack before calling it stale.
+  seoAudit: 8 * 60 * 60 * 1000,
   // Monthly: allow a couple of days of slack.
   monthlyHallOfFame: 34 * 24 * 60 * 60 * 1000,
 };

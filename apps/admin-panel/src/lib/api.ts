@@ -250,6 +250,44 @@ export interface SecretStatus {
   updatedBy?: string | null;
 }
 
+// --- SEO audit (worker: src/lib/seoAudit.ts) -------------------------------
+export type SeoSeverity = "critical" | "high" | "medium" | "low";
+
+export interface SeoIssue {
+  id: string;
+  category: string;
+  severity: SeoSeverity;
+  title: string;
+  detail: string;
+  affected: string[];
+  affectedCount: number;
+  suggestion?: string;
+}
+
+export interface SeoCategoryScore {
+  id: string;
+  label: string;
+  /** null means the category has no data source — render it, never fake it. */
+  score: number | null;
+  status: "ok" | "warn" | "fail" | "not_configured";
+  checksRun: number;
+  checksPassed: number;
+  note?: string;
+}
+
+export interface SeoAudit {
+  /** null before the first audit has ever run. */
+  ranAt: number | null;
+  durationMs?: number;
+  origin?: string;
+  overall?: number | null;
+  categories?: SeoCategoryScore[];
+  issues?: SeoIssue[];
+  passed?: { id: string; category: string; title: string }[];
+  totals?: Record<SeoSeverity, number>;
+  scope?: { posts: number; publicRoutes: number; probes: number };
+}
+
 export interface IntegrationsConfig {
   sms: {
     provider: "twilio" | "msg91" | "fast2sms" | "custom" | "none";
@@ -617,6 +655,11 @@ export const api = {
 
   // system health console
   systemHealth: () => get<DeepHealth>("/admin/health"),
+
   moneyHealth: () => get<MoneyHealth>("/admin/money-health"),
   cronHealth: () => get<CronJobHealth[]>("/admin/ops/cron-health"),
+
+  // SEO
+  seoAudit: () => get<SeoAudit>("/admin/seo"),
+  seoScan: () => post<{ message: string }>("/admin/seo/scan"),
 };
