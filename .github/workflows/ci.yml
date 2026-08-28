@@ -77,7 +77,13 @@ jobs:
       - run: npm test
       # A duplicate `const` in app/story/view/[userId].tsx once reached main
       # because nothing in CI bundled. This step is that missing gate.
-      - run: npx expo export -p web
+      # `npm run build`, not a bare `expo export`. The export alone produces a
+      # deployable site, so a bare export passes while skipping
+      # scripts/verify-web-build.mjs — which is what asserts the SEO edge Worker
+      # is in the output and that the two copies of the CSP agree. CI ran the bare
+      # export, so it never checked either, and the SEO layer was missing from
+      # production without a single failing job.
+      - run: npm run build
 
   admin-panel:
     name: Admin panel (typecheck + build)

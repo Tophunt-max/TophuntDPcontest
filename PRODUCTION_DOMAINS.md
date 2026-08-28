@@ -72,7 +72,7 @@ Do baatein jo aage har jagah maayne rakhti hain:
 |---|---|
 | `apps/expo/eas.json` | teeno profiles me `EXPO_PUBLIC_API_URL` + `EXPO_PUBLIC_SHARE_ORIGIN` |
 | `apps/expo/src/services/api.ts` | `FALLBACK_API_URL = https://api.tophunt.in` |
-| `apps/expo/seo/worker.js` | `DEFAULT_API_BASE = https://api.tophunt.in` (+ security headers, §4) |
+| `apps/expo/public/_worker.js` | `DEFAULT_API_BASE = https://api.tophunt.in` (+ security headers, §4) |
 | `apps/expo/app.json` | `app.tophunt.in` hataya (applinks + Android intent filter) |
 | `apps/admin-panel/.env.production` | `VITE_API_URL = https://api.tophunt.in` |
 | `apps/admin-panel/vite.config.ts` | fallback bhi wahi |
@@ -125,17 +125,30 @@ pehle se live ho.
 
 ## 4. Web app ke security headers — ek zaroori baat
 
+> ### ⚠️ SEO worker `public/` me hi rehna chahiye
+>
+> Pehle ye `seo/worker.js` me tha aur ek alag post-build script use `dist/_worker.js`
+> par copy karti thi. **Do jagah wo script chalti hi nahi thi** — Cloudflare Pages ka
+> build command (`npx expo export --platform web`) aur `ci.yml` (`npx expo export -p web`).
+> Nateeja: production har crawler ko khaali SPA shell deta tha — koi per-post title
+> ya description nahi, koi canonical nahi, aur `/sitemap.xml` + `/robots.txt` XML/text
+> ki jagah HTML. **Ek bhi job fail nahi hui.**
+>
+> Ab worker `public/_worker.js` me hai, jise `expo export` khud copy karta hai
+> (jaise `public/_headers` aur `public/_redirects`). Install karna ab ek skip-hone-wala
+> step nahi hai. `scripts/verify-web-build.mjs` output me uski maujoodgi assert karta hai.
+
 Expo web Pages **advanced mode** me chalta hai (`dist/_worker.js`). Cloudflare
 `_headers` ko **static asset responses** par lagata hai, aur advanced mode me HTML
 document ek Function-generated response hota hai — to `public/_headers` ka CSP /
 HSTS / framing **document tak pahunchta hi nahi tha**. Ye chup-chaap fail hone
 wali cheez hai: file maujood hai, deploy green hai, bas header nahi aata.
 
-Isliye document policy ab `apps/expo/seo/worker.js` me hai
+Isliye document policy ab `apps/expo/public/_worker.js` me hai
 (`CONTENT_SECURITY_POLICY` + `withSecurityHeaders`), aur wahi actually browser tak
 jaati hai. `public/_headers` static assets ke liye bana hua hai.
 
-Dono copies same rehni chahiye — `scripts/build-seo-worker.mjs` drift par **build
+Dono copies same rehni chahiye — `scripts/verify-web-build.mjs` drift par **build
 fail** kar deta hai, to ek jagah badalke doosri bhoolna deploy nahi ho paayega.
 
 Verify (cutover ke baad):
@@ -221,9 +234,9 @@ cd apps/worker && npx wrangler deploy
 cd apps/admin-panel
 npm run build && npx wrangler pages deploy dist --project-name tophunt-admin-panel --branch main
 
-# Expo web — `npm run build` hi chalao, bare `expo export` NAHI:
-# warna dist/_worker.js install nahi hoga, SEO edge layer deploy nahi hogi, aur
-# document par security headers bhi nahi aayenge (§4).
+# Expo web. SEO worker `public/_worker.js` me hai, to `expo export` use khud
+# copy kar leta hai — bare export se bhi deployment sahi banta hai.
+# `npm run build` isliye behtar hai ki wo verify bhi karta hai (§4).
 cd apps/expo
 npm run build
 npx wrangler pages deploy dist --project-name tophuntdpcontest --branch main
@@ -233,7 +246,7 @@ cd apps/expo && npx eas update --branch production
 ```
 
 ### Pages env vars (Production)
-`apps/expo/seo/worker.js` ke defaults ab production values hain, to Pages par
+`apps/expo/public/_worker.js` ke defaults ab production values hain, to Pages par
 **kuch set karna zaroori nahi**. Staging/preview Pages project par override karo,
 warna uska sitemap aur canonical tags production origin advertise karenge:
 
