@@ -39,6 +39,10 @@
 #    URL, and that is connect-src, not img-src.
 #  - The legacy `tophunt-api.weadown-in.workers.dev` host stays until the media
 #    backfill has run: pre-cutover rows still hold absolute URLs on it.
+#  - static.cloudflareinsights.com / cloudflareinsights.com are Cloudflare Web
+#    Analytics. Pages injects that beacon into every HTML response when the
+#    feature is enabled for the project, so omitting it means a CSP violation
+#    on every page load — the app cannot opt out from its own side.
 #  - Hosts are pinned exactly rather than via https://*.workers.dev. That
 #    wildcard authorised every Cloudflare customer's Worker as a destination for
 #    a page that handles logins and wallet balances. The staging Worker is named
@@ -49,7 +53,7 @@
   Referrer-Policy: strict-origin-when-cross-origin
   X-Frame-Options: DENY
   Permissions-Policy: accelerometer=(), gyroscope=(), usb=()
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://checkout.razorpay.com https://*.gstatic.com https://*.googleapis.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; font-src 'self' data:; connect-src 'self' blob: https://api.tophunt.in wss://api.tophunt.in https://media.tophunt.in https://tophunt-api.weadown-in.workers.dev wss://tophunt-api.weadown-in.workers.dev https://tophunt-api-staging.weadown-in.workers.dev wss://tophunt-api-staging.weadown-in.workers.dev https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com https://fcmregistrations.googleapis.com https://lumberjack.razorpay.com https://api.razorpay.com; frame-src https://api.razorpay.com https://checkout.razorpay.com https://*.firebaseapp.com; worker-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://checkout.razorpay.com https://*.gstatic.com https://*.googleapis.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; font-src 'self' data:; connect-src 'self' blob: https://api.tophunt.in wss://api.tophunt.in https://media.tophunt.in https://tophunt-api.weadown-in.workers.dev wss://tophunt-api.weadown-in.workers.dev https://tophunt-api-staging.weadown-in.workers.dev wss://tophunt-api-staging.weadown-in.workers.dev https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com https://fcmregistrations.googleapis.com https://lumberjack.razorpay.com https://api.razorpay.com https://cloudflareinsights.com; frame-src https://api.razorpay.com https://checkout.razorpay.com https://*.firebaseapp.com; worker-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'
 
 # The service worker must not be cached, or push registration can go stale.
 /firebase-messaging-sw.js

@@ -15,12 +15,40 @@ compatibility_flags = ["nodejs_compat"]
 # account, otherwise the deploy fails with "Could not find zone". The first
 # deploy after adding this provisions the record; later deploys are no-ops.
 #
-# `workers_dev` is deliberately left ENABLED (the default). The Worker also
-# serves `/media/*`, and every media URL written to D1 before the custom-domain
-# cutover is an ABSOLUTE url on the workers.dev host (see lib/r2.ts and
-# R2_LEGACY_BASE_URLS below). Disabling workers.dev would 404 all of that media
-# for any row not yet rewritten and for every already-shipped mobile build.
 # ---------------------------------------------------------------------------
+# `workers_dev` MUST stay `true`, and MUST stay written down explicitly.
+#
+# This was previously left implicit with a comment claiming workers.dev was
+# "enabled (the default)". It was not. Adding `routes` makes wrangler stop
+# publishing the workers.dev route, so the first deploy after the custom domain
+# landed took `tophunt-api.weadown-in.workers.dev` completely dark — every path
+# on it answered Cloudflare error 1042 (no route) before the Worker even ran.
+#
+# That host is not legacy decoration. Two things still depend on it:
+#
+#  1. EVERY media url in D1 is absolute and still on `<that host>/media/...`
+#     until scripts/media-domain-backfill.sql has been run. With the host dead,
+#     every avatar, post, story, contest banner, deposit screenshot and blog
+#     cover image in the product renders blank.
+#  2. EVERY already-installed mobile build has that host baked in as
+#     EXPO_PUBLIC_API_URL (eas.json, at the time it was built). Those apps do not
+#     re-read config; they cannot reach the API at all until their users take an
+#     `eas update`. This is the more serious half, and it is invisible from a
+#     browser.
+#
+# So: not a default to rely on. `R2_LEGACY_BASE_URLS` below is the other half of
+# the same compatibility promise, and the two must be removed together — after
+# the backfill has run AND no build old enough to use this host is still in use.
+# ---------------------------------------------------------------------------
+workers_dev = true
+
+# Preview URLs are per-version hostnames pointing at THIS Worker — production D1,
+# production R2, production secrets. They default to the value of `workers_dev`,
+# so re-enabling the line above would silently switch them on too. Off: an
+# unauthenticated extra hostname onto production is not something to acquire as a
+# side effect of a compatibility fix.
+preview_urls = false
+
 routes = [{ pattern = "api.tophunt.in", custom_domain = true }]
 
 # Pin the bundler to this package's own tsconfig. Without this, esbuild walks up
