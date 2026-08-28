@@ -19,7 +19,10 @@ remains is Cloudflare / Firebase / app-store configuration.
 
 Two invariants worth knowing before touching anything here:
 
-- The Worker's `/media/*` route and `workers_dev` must stay enabled. Media urls
+- The Worker's `/media/*` route and `workers_dev = true` must stay. Note that
+  adding `routes` makes wrangler stop publishing the workers.dev route unless
+  `workers_dev` is set explicitly — that already caused one outage, blanking all
+  media and cutting off every installed mobile build. Media urls
   are stored ABSOLUTE in D1, so pre-cutover rows and already-shipped mobile
   builds still point at the workers.dev host. `R2_LEGACY_BASE_URLS` is the
   matching half on the delete side.

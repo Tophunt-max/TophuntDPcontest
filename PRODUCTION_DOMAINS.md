@@ -32,6 +32,25 @@ Do baatein jo aage har jagah maayne rakhti hain:
   possible ho jaate hain. Worker ka `/media/*` route **phir bhi rehta hai** —
   kyunki purane D1 rows aur pehle se shipped mobile builds usi par hain.
 
+> ### ⚠️ `workers_dev = true` ko mat hataao
+>
+> `wrangler.toml` me `routes` add karne se wrangler workers.dev route publish
+> karna **band** kar deta hai. Ye ek baar ho chuka hai: custom domain wale deploy
+> ne `tophunt-api.weadown-in.workers.dev` ko poora band kar diya (har path par
+> Cloudflare `error code: 1042`), aur uska nateeja tha —
+>
+> 1. **Poore app ka media blank.** Har media url D1 me absolute hai aur backfill
+>    (§5) chalne tak usi host par hai — avatars, posts, stories, contest banners,
+>    deposit screenshots, payment QR, blog covers.
+> 2. **Har installed mobile build offline.** Un builds me `EXPO_PUBLIC_API_URL`
+>    wahi purana host baked hai. Wo config dobara nahi padhte — user ke
+>    `eas update` lene tak API tak pahunch hi nahi sakte. Ye zyada gambhir hai
+>    aur browser se **dikhta bhi nahi**.
+>
+> Isliye ab wo line explicitly likhi hui hai, default par bharosa nahi hai.
+> Hatane se pehle dono cheezein sach honi chahiye: backfill chal gaya ho, **aur**
+> itne purane app builds use me na hon.
+
 ---
 
 ## 2. Code me kya ho chuka hai (reference)
@@ -41,7 +60,8 @@ Do baatein jo aage har jagah maayne rakhti hain:
 |---|---|---|
 | `routes` | `[{ pattern = "api.tophunt.in", custom_domain = true }]` | Cloudflare hi DNS + cert banata hai |
 | `routes` (staging) | `[]` | **zaroori** — `routes` inheritable key hai; iske bina `--env staging` deploy production hostname hijack kar leta |
-| `workers_dev` | enabled (default) | legacy `/media` urls isi host par hain |
+| `workers_dev` | `true` — **explicitly likha hua** | niche warning padho |
+| `preview_urls` | `false` | `workers_dev` ki value follow karta hai; production DB par extra hostname nahi chahiye |
 | `R2_PUBLIC_BASE_URL` | `https://media.tophunt.in` | |
 | `R2_LEGACY_BASE_URLS` | purana `<worker>/media` base | delete path ke liye, §5 |
 | `MEDIA_TRANSFORMATIONS` | `"false"` | **jaan-boojh kar** — §6 |
