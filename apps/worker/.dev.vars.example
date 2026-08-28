@@ -20,7 +20,10 @@ TWILIO_PHONE_NUMBER=+1xxxxxxxxxx
 
 # Email (Resend or compatible HTTP email API)
 RESEND_API_KEY=re_xxxxxxxx
-EMAIL_FROM=TopHunt <no-reply@tophuntdpcontest.com>
+# Must be on a domain you have verified with the provider, with SPF + DKIM
+# records published. `tophunt.in` is the production sender domain; lib/email.ts
+# falls back to "TopHunt <no-reply@tophunt.in>" when this is unset.
+EMAIL_FROM=TopHunt <no-reply@tophunt.in>
 
 
 # Shared secret for server-to-server admin calls from the admin Next.js API

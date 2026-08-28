@@ -91,11 +91,16 @@ in. `GET /health/deep` reports exactly which secrets and providers are missing.
 
 **Everything is deployed by Cloudflare, automatically, on push to `main`:**
 
-| What | By | Check name |
-|---|---|---|
-| `apps/worker` | Cloudflare Workers Builds | `Workers Builds: tophunt-api` |
-| `apps/expo` (web) | Cloudflare Pages | `Cloudflare Pages: tophuntdpcontest` |
-| `apps/admin-panel` | Cloudflare Pages | `Cloudflare Pages: tophunt-admin-panel` |
+| What | By | Check name | Production host |
+|---|---|---|---|
+| `apps/worker` | Cloudflare Workers Builds | `Workers Builds: tophunt-api` | `https://api.tophunt.in` |
+| `apps/expo` (web) | Cloudflare Pages | `Cloudflare Pages: tophuntdpcontest` | `https://tophunt.in` |
+| `apps/admin-panel` | Cloudflare Pages | `Cloudflare Pages: tophunt-admin-panel` | `https://admin.tophunt.in` |
+
+Media is served from `https://media.tophunt.in` (the `tophunt-media` R2 bucket's
+own custom domain), not from the Worker. Connecting these hostnames, the media URL
+backfill and the Transformations switch are all covered by
+[`PRODUCTION_DOMAINS.md`](PRODUCTION_DOMAINS.md).
 
 All three are configured on the Cloudflare side, so there is no deploy step in this
 repository for them. Nothing else deploys this project — if you see a status from

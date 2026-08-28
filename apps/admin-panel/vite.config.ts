@@ -5,9 +5,11 @@ import path from "path";
 
 // The admin panel talks directly to the tophunt-api Cloudflare Worker.
 // In dev, /api|/read|/admin|/auth are proxied to the Worker; in production the
-// Worker URL is baked in via VITE_API_URL (set by CI / build env).
-const WORKER_URL =
-  process.env.VITE_API_URL ?? "https://tophunt-api.weadown-in.workers.dev";
+// Worker URL is baked in via VITE_API_URL (.env.production / CI build env).
+//
+// The fallback is the production API on purpose: a build with no VITE_API_URL
+// should reach a working backend rather than a hostname that no longer resolves.
+const WORKER_URL = process.env.VITE_API_URL ?? "https://api.tophunt.in";
 
 export default defineConfig({
   base: "/",

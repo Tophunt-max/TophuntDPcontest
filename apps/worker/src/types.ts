@@ -15,7 +15,15 @@ export interface Env {
 
   // --- Plain vars ---
   FIREBASE_PROJECT_ID: string;
+  /** Base url new media is written under, e.g. "https://media.tophunt.in". */
   R2_PUBLIC_BASE_URL: string;
+  /**
+   * Comma-separated media bases this deployment ALSO owns — the hosts that
+   * `R2_PUBLIC_BASE_URL` used to be. Media urls are stored absolute, so without
+   * this a domain change makes every pre-cutover url unrecognisable to the
+   * url→key mapping that authorises deletes. See `ownedMediaBases` in lib/r2.ts.
+   */
+  R2_LEGACY_BASE_URLS?: string;
   ALLOWED_ORIGINS: string;
   // "true" once Cloudflare Transformations is enabled on the media zone. While
   // this is off, lib/media.ts returns original URLs for every *Thumb /

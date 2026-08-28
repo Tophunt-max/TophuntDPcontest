@@ -47,7 +47,7 @@ node import.mjs --dry-run --limit=10   # parse a few and inspect the output
 ## Full import (resumable)
 
 ```bash
-WORKER_URL=https://tophunt-api.<subdomain>.workers.dev \
+WORKER_URL=https://api.tophunt.in \
 ADMIN_PROXY_SECRET=<secret> \
 node import.mjs --concurrency=3 --batch=20
 ```

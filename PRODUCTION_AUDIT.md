@@ -97,8 +97,8 @@ allowMethods: ["GET", "POST", "OPTIONS"],
 
 The panel is genuinely cross-origin in production — confirmed, not assumed:
 
-- `apps/admin-panel/vite.config.ts:10,22` bakes an **absolute** `VITE_API_URL`
-  (`https://tophunt-api.weadown-in.workers.dev`) into the bundle.
+- `apps/admin-panel/vite.config.ts` bakes an **absolute** `VITE_API_URL`
+  (now `https://api.tophunt.in`) into the bundle.
 - The Vite `proxy` block only exists for the dev server.
 - `apps/admin-panel/public/_redirects` is `/*  /index.html  200` — a plain SPA fallback,
   **no** `/admin/* → worker` proxy rule.

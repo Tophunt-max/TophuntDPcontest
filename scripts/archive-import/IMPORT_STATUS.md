@@ -81,7 +81,7 @@ toh already-updated posts apne aap exclude ho jaate hain. **Koi post dobara upda
 Environment variables (importer ke liye):
 
 ```bash
-export WORKER_URL="https://tophunt-api.weadown-in.workers.dev"
+export WORKER_URL="https://api.tophunt.in"
 export ADMIN_PROXY_SECRET="<secret — chat me diya gaya tha>"
 export ARCHIVE_DOMAIN="tophunt.in"
 ```

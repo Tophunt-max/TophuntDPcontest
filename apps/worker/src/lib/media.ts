@@ -61,6 +61,11 @@ export function imgVariant(env: Env, url: string | null | undefined, opts: ImgOp
   if (!url || typeof url !== "string") return url;
   if (!transformationsAvailable(env)) return url; // see transformationsAvailable
   const base = (env.R2_PUBLIC_BASE_URL || "").replace(/\/$/, "");
+  // Only the CURRENT base, deliberately — not the legacy bases from
+  // R2_LEGACY_BASE_URLS. Those are Worker-proxied paths on hosts where
+  // /cdn-cgi/image/ cannot resolve, so building a variant for them would 404.
+  // A pre-cutover row therefore keeps serving its original until
+  // scripts/media-domain-backfill.sql rewrites it onto the media domain.
   if (!base || !url.startsWith(base)) return url; // only transform our own media
   if (VIDEO_RE.test(url)) return url; // never transform videos
   if (url.includes("/cdn-cgi/image/")) return url; // already transformed

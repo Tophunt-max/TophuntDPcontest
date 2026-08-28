@@ -3,7 +3,8 @@
 // No firebase-admin, no Firestore.
 //
 // Env required (put in apps/admin/.env.local or export before running):
-//   WORKER_URL          e.g. https://tophunt-api.<subdomain>.workers.dev
+//   WORKER_URL          production https://api.tophunt.in
+//                       staging    https://tophunt-api-staging.weadown-in.workers.dev
 //   ADMIN_PROXY_SECRET  same value set on the Worker via `wrangler secret put`
 import fs from "node:fs";
 import path from "node:path";

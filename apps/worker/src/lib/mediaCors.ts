@@ -10,8 +10,8 @@
  * make credentialed calls with the user's token.
  *
  * Media is the opposite: content-hash-addressed, immutable, unauthenticated
- * bytes that the app (on pages.dev), the blog (on another host) and any share
- * target legitimately load cross-origin. It is already fully public — a GET with
+ * bytes that the app (on tophunt.in), the admin panel (on admin.tophunt.in) and
+ * any share target legitimately load cross-origin. It is already fully public — a GET with
  * the URL returns the bytes to anyone, the only secret is the unguessable key —
  * so allowing cross-origin *reads* adds no exposure. What it enables is the thing
  * that was quietly broken: a `<canvas>`/`html-to-image` capture on web can only

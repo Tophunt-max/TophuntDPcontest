@@ -198,7 +198,14 @@ all N viewers GET the uncached `/read/matches/:id`.
 
 ## 9. All media is served through the Worker
 
-`wrangler.toml:102`
+> **Status: addressed in config.** `R2_PUBLIC_BASE_URL` is now
+> `https://media.tophunt.in`, the R2 bucket's own domain, so new media skips the
+> Worker entirely. Existing rows are moved over by
+> `apps/worker/scripts/media-domain-backfill.sql`; until that runs they still take
+> the path described here. `PRODUCTION_DOMAINS.md` §5. §11 below is unblocked by
+> the same change but still needs Transformations enabled on the zone (§6 there).
+
+At the time of this audit:
 
 ```toml
 R2_PUBLIC_BASE_URL = "https://tophunt-api.weadown-in.workers.dev/media"
@@ -234,10 +241,16 @@ a key that includes the byte range.
 
 ## 11. Thumbnails serve full-size originals
 
-`wrangler.toml:116` — `MEDIA_TRANSFORMATIONS = "false"`, and
-`lib/media.ts:47-57` requires a non-`workers.dev` host with no path prefix.
-Neither holds, so `thumbUrl()` / `optimizedUrl()` / `profileImageUrlThumb`
-currently **return the original URL**.
+`MEDIA_TRANSFORMATIONS = "false"`, and `lib/media.ts` requires a
+non-`workers.dev` host with no path prefix. At audit time neither held, so
+`thumbUrl()` / `optimizedUrl()` / `profileImageUrlThumb` **return the original URL**.
+
+> **Status: half addressed.** The host condition now holds
+> (`https://media.tophunt.in` — real zone, no path prefix). The flag stays
+> `"false"` until Transformations is enabled on the zone in the dashboard, because
+> `/cdn-cgi/image/` on a zone without it errors rather than falling back to the
+> original — flipping the flag first would break every thumbnail in the product.
+> `PRODUCTION_DOMAINS.md` §6.
 
 Client-side upload optimisation is good (`imageOptimize.ts:40-48`: avatars capped
 at 512px, stories at 1920px), which limits the damage. But a 1920px story image

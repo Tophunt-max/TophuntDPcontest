@@ -222,27 +222,92 @@ function sniffImage(body: ArrayBuffer): MediaMime | null {
 }
 
 /**
+ * Every base url whose objects live in OUR bucket: the current
+ * `R2_PUBLIC_BASE_URL` first, then anything in `R2_LEGACY_BASE_URLS`.
+ *
+ * Why this list exists at all
+ * ---------------------------
+ * `uploadToR2` stores media urls ABSOLUTE in D1. That is the right trade for
+ * reads — a row is self-describing and needs no base to render — but it means
+ * changing `R2_PUBLIC_BASE_URL` (Worker `/media` proxy → `media.tophunt.in`)
+ * does not rewrite a single existing row. Those rows keep LOADING, because the
+ * Worker's `/media/*` route stays. What silently stops working is the reverse
+ * direction: the url→key mapping every delete path depends on.
+ *
+ * With a single base, a pre-cutover url matched no base and fell through to a
+ * bare-pathname guess, which produced `media/stories/images/x.jpg` for a real
+ * key of `stories/images/x.jpg` — a delete that hit nothing and reported
+ * success. Banner and battle-card deletes were worse: they compare the host
+ * exactly, so they returned `null` and never deleted anything on the old host.
+ * The visible symptom is nothing at all, while the bucket keeps growing and
+ * media outlives the record that referenced it.
+ *
+ * Entries are normalised (trailing slashes stripped) and de-duplicated, so
+ * listing the current base in `R2_LEGACY_BASE_URLS` too is harmless.
+ */
+export function ownedMediaBases(env: Env): string[] {
+  const configured = [env.R2_PUBLIC_BASE_URL, ...String(env.R2_LEGACY_BASE_URLS ?? "").split(",")];
+  const bases: string[] = [];
+  for (const entry of configured) {
+    const base = String(entry ?? "")
+      .trim()
+      .replace(/\/+$/, "");
+    if (!base || bases.includes(base)) continue;
+    try {
+      new URL(base);
+    } catch {
+      continue; // a malformed entry must not break the well-formed ones
+    }
+    bases.push(base);
+  }
+  return bases;
+}
+
+/**
+ * Return the R2 key for a url that is BOTH owned by this deployment (any of its
+ * media bases) and inside `ownedPrefix`, else null.
+ *
+ * The prefix check is the security property: it is what stops a caller-supplied
+ * url from naming an arbitrary object. `fileName` must be a single path segment,
+ * so no traversal and no reaching into another prefix.
+ */
+function ownedKeyFromPublicUrl(env: Env, publicUrl: string, ownedPrefix: string): string | null {
+  let candidate: URL;
+  try {
+    candidate = new URL(publicUrl);
+  } catch {
+    return null;
+  }
+  // Credentials, query and fragment are all ways to make a url that LOOKS like
+  // one of ours while resolving elsewhere; none of our own urls carry them.
+  if (candidate.username || candidate.password || candidate.search || candidate.hash) return null;
+
+  for (const baseUrl of ownedMediaBases(env)) {
+    let base: URL;
+    try {
+      base = new URL(baseUrl);
+    } catch {
+      continue;
+    }
+    if (candidate.protocol !== base.protocol || candidate.host !== base.host) continue;
+
+    const prefix = `${base.pathname.replace(/\/+$/, "")}/${ownedPrefix}`;
+    if (!candidate.pathname.startsWith(prefix)) continue;
+
+    const fileName = candidate.pathname.slice(prefix.length);
+    if (!fileName || fileName.includes("/") || fileName === "." || fileName === "..") continue;
+    return `${ownedPrefix}${fileName}`;
+  }
+  return null;
+}
+
+/**
  * Return the R2 key only when a URL is owned by this deployment and lives in
  * the fixed contest-banner image prefix. External URLs and lookalike hosts or
  * paths are never mapped to local objects.
  */
 export function contestBannerKeyFromPublicUrl(env: Env, publicUrl: string): string | null {
-  try {
-    const base = new URL(env.R2_PUBLIC_BASE_URL.replace(/\/$/, ""));
-    const candidate = new URL(publicUrl);
-    if (candidate.protocol !== base.protocol || candidate.host !== base.host) return null;
-    if (candidate.username || candidate.password || candidate.search || candidate.hash) return null;
-
-    const basePath = base.pathname.replace(/\/$/, "");
-    const ownedPrefix = `${basePath}/contest-banners/images/`;
-    if (!candidate.pathname.startsWith(ownedPrefix)) return null;
-
-    const fileName = candidate.pathname.slice(ownedPrefix.length);
-    if (!fileName || fileName.includes("/") || fileName === "." || fileName === "..") return null;
-    return `contest-banners/images/${fileName}`;
-  } catch {
-    return null;
-  }
+  return ownedKeyFromPublicUrl(env, publicUrl, "contest-banners/images/");
 }
 
 /**
@@ -271,22 +336,7 @@ export function contestBannerKeyFromPublicUrl(env: Env, publicUrl: string): stri
  * which appears attributed to them on their own half of the frame.
  */
 export function vsImageKeyFromPublicUrl(env: Env, publicUrl: string): string | null {
-  try {
-    const base = new URL((env.R2_PUBLIC_BASE_URL || "").replace(/\/$/, ""));
-    const candidate = new URL(publicUrl);
-    if (candidate.protocol !== base.protocol || candidate.host !== base.host) return null;
-    if (candidate.username || candidate.password || candidate.search || candidate.hash) return null;
-
-    const basePath = base.pathname.replace(/\/$/, "");
-    const ownedPrefix = `${basePath}/vs-cards/images/`;
-    if (!candidate.pathname.startsWith(ownedPrefix)) return null;
-
-    const fileName = candidate.pathname.slice(ownedPrefix.length);
-    if (!fileName || fileName.includes("/") || fileName === "." || fileName === "..") return null;
-    return `vs-cards/images/${fileName}`;
-  } catch {
-    return null;
-  }
+  return ownedKeyFromPublicUrl(env, publicUrl, "vs-cards/images/");
 }
 
 /**
@@ -328,17 +378,78 @@ export async function deleteContestBannerByPublicUrl(env: Env, publicUrl: string
   }
 }
 
-/** Delete an object from R2 given its public URL (used by deleteStory). */
-export async function deleteByPublicUrl(env: Env, publicUrl: string): Promise<void> {
+/**
+ * The R2 key a media url refers to, or null when the url is not ours.
+ *
+ * Recognised shapes, in order:
+ *  1. Any base in `ownedMediaBases` — the current public base and every legacy
+ *     one. This is the case that covers a domain cutover: a url written before
+ *     the switch resolves to the same key as one written after it.
+ *  2. R2's own endpoints (`*.r2.dev`, `*.r2.cloudflarestorage.com`), for rows
+ *     predating a public base being configured at all. The S3-style endpoint
+ *     puts the bucket in the path, so that segment is stripped.
+ *
+ * Anything else returns null DELIBERATELY, where the previous implementation
+ * fell back to `new URL(url).pathname` for any host. That fallback was both
+ * wrong and unsafe: wrong because a proxied base like `<worker>/media` left the
+ * `media/` prefix in the key so the delete missed, and unsafe because it turned
+ * a stored third-party url (an external avatar, an imported image) into a key in
+ * OUR bucket — a `stories/images/x.jpg` path on any host would delete our object
+ * of that name. Failing closed can leak storage; guessing can delete live media
+ * belonging to someone else's record.
+ */
+export function mediaKeyFromPublicUrl(env: Env, publicUrl: string): string | null {
+  const url = String(publicUrl ?? "").trim();
+  if (!url) return null;
+
+  for (const base of ownedMediaBases(env)) {
+    if (url.startsWith(`${base}/`)) {
+      const key = url.slice(base.length + 1);
+      return key || null;
+    }
+  }
+
+  let parsed: URL;
   try {
-    const base = env.R2_PUBLIC_BASE_URL.replace(/\/$/, "");
-    let key = publicUrl.startsWith(base)
-      ? publicUrl.slice(base.length + 1)
-      : new URL(publicUrl).pathname.replace(/^\//, "");
-    // If the path still contains the bucket name (S3-style URL), strip it.
-    if (key.startsWith(`${env.R2_BUCKET}/`)) key = key.slice(env.R2_BUCKET.length + 1);
-    if (key) await env.MEDIA.delete(key);
+    parsed = new URL(url);
   } catch {
-    /* best-effort */
+    return null;
+  }
+  const host = parsed.hostname.toLowerCase();
+  let key = decodeURIComponent(parsed.pathname).replace(/^\/+/, "");
+  if (host.endsWith(".r2.cloudflarestorage.com")) {
+    const bucket = String(env.R2_BUCKET ?? "");
+    if (bucket && key.startsWith(`${bucket}/`)) key = key.slice(bucket.length + 1);
+    return key || null;
+  }
+  if (host.endsWith(".r2.dev")) return key || null;
+  return null;
+}
+
+/**
+ * Delete an object from R2 given its public URL (used by deleteStory).
+ *
+ * Best-effort by design — a storage cleanup must not fail the caller's request —
+ * but an unrecognised url is LOGGED rather than swallowed. The failure mode this
+ * whole path has is invisibility: bytes nobody references and nobody is looking
+ * for. A log line is what makes a missed base show up as a fixable
+ * `R2_LEGACY_BASE_URLS` entry instead of a slow, unexplained storage bill.
+ */
+export async function deleteByPublicUrl(env: Env, publicUrl: string): Promise<void> {
+  const key = mediaKeyFromPublicUrl(env, publicUrl);
+  if (!key) {
+    if (publicUrl) {
+      // Expected for genuinely third-party urls (a Google/Apple sign-in avatar,
+      // an imported image left on its origin). Worth a line anyway: if the host
+      // IS one of ours, this is the signature of a media base missing from
+      // R2_LEGACY_BASE_URLS, and that is otherwise invisible.
+      console.warn("[r2] skipping delete — url is not on a known media base", publicUrl);
+    }
+    return;
+  }
+  try {
+    await env.MEDIA.delete(key);
+  } catch (e) {
+    console.error("[r2] media delete failed (continuing)", key, e);
   }
 }

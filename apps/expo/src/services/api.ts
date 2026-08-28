@@ -23,15 +23,18 @@ import { emitToast } from '@/src/lib/toastBridge';
  *  - One code path. Token attachment and error mapping were duplicated three
  *    times; they now live in a single `request()` core.
  *
- * Set EXPO_PUBLIC_API_URL to the deployed Worker URL
- * (e.g. https://tophunt-api.<subdomain>.workers.dev).
+ * Set EXPO_PUBLIC_API_URL to the deployed Worker URL (production:
+ * https://api.tophunt.in).
  */
 
 // The Worker base URL MUST be provided via EXPO_PUBLIC_API_URL (set per
 // environment in eas.json / .env). We keep a last-resort fallback so the app
 // never fetches an undefined URL, but warn loudly in development when the env
 // var is missing so staging/dev builds don't silently hit production.
-const FALLBACK_API_URL = 'https://tophunt-api.weadown-in.workers.dev';
+//
+// This is also the realtime WebSocket origin (src/services/realtime.ts rewrites
+// http -> ws), so it must be the API host — never the web host.
+const FALLBACK_API_URL = 'https://api.tophunt.in';
 
 if (!process.env.EXPO_PUBLIC_API_URL && __DEV__) {
   console.warn(
