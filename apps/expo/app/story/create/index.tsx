@@ -39,7 +39,7 @@ import {
 } from '@/assets/svgs';
 import { PanGestureHandler } from 'react-native-gesture-handler';
 import Animated, { useSharedValue, useAnimatedStyle, withSpring, runOnJS } from 'react-native-reanimated';
-import { useImageAdjuster } from '@/src/components/media/useImageAdjuster';
+import { useReadjustablePhoto } from '@/src/components/media/useImageAdjuster';
 import { validateVideo, STORY_MAX_VIDEO_SEC } from '@/src/lib/videoValidation';
 
 /** Story frame aspect (width / height) — matches the 9:16 story viewer. */
@@ -69,7 +69,7 @@ const CircularProgress = ({ progress }: { progress: number }) => {
 
 export default function AddStoryScreen() {
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
-  const { adjust, host: adjusterHost } = useImageAdjuster();
+  const { adjustPicked, readjust, canReadjust, forget, host: adjusterHost } = useReadjustablePhoto(STORY_ASPECT);
   const [media, setMedia] = useState<{ uri: string, type: 'image' | 'video' } | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -259,8 +259,7 @@ export default function AddStoryScreen() {
     }
     // Let the user frame the photo to 9:16 before it becomes the story. On cancel
     // we keep the original so choosing a photo is never a dead end.
-    const adjusted = await adjust(asset.uri, STORY_ASPECT);
-    setMedia({ uri: adjusted ?? asset.uri, type: 'image' });
+    setMedia({ uri: await adjustPicked(asset.uri), type: 'image' });
   };
 
   const takePicture = async () => {
@@ -268,11 +267,24 @@ export default function AddStoryScreen() {
     try {
         const photo = await cameraRef.current.takePictureAsync({ quality: 0.8 });
         if (!photo) return;
-        const adjusted = await adjust(photo.uri, STORY_ASPECT);
-        setMedia({ uri: adjusted ?? photo.uri, type: 'image' });
+        setMedia({ uri: await adjustPicked(photo.uri), type: 'image' });
     } catch (e: any) {
         console.error("Capture Error:", e);
     }
+  };
+
+  /**
+   * Reopen the adjuster on the ORIGINAL photo.
+   *
+   * Closing the adjuster used to be final: `adjust` was only reachable in the
+   * instant after picking, so the only way back was to discard the story and pick
+   * the photo again. Re-cropping starts from the original, never from the previous
+   * crop, so it is lossless however many times it is used.
+   */
+  const handleReadjust = async () => {
+    if (!media || media.type !== 'image') return;
+    const next = await readjust();
+    if (next) setMedia({ uri: next, type: 'image' });
   };
 
   const handleUpload = async () => {
@@ -360,7 +372,7 @@ export default function AddStoryScreen() {
       {!isUploading && (
         <SafeAreaView style={styles.header}>
           <TouchableOpacity
-            onPress={() => media ? setMedia(null) : router.back()}
+            onPress={() => { if (media) { setMedia(null); forget(); } else { router.back(); } }}
             accessibilityRole="button"
             accessibilityLabel={media ? 'Discard selected media' : 'Close'}
           >
@@ -369,6 +381,11 @@ export default function AddStoryScreen() {
           
           {media && (
               <View style={styles.topTools}>
+                  {media.type === 'image' && canReadjust && (
+                    <TouchableOpacity onPress={handleReadjust} style={styles.toolBtn} accessibilityRole="button" accessibilityLabel="Adjust photo">
+                        <Ionicons name="crop-outline" size={26} color="white" />
+                    </TouchableOpacity>
+                  )}
                   <TouchableOpacity onPress={() => toggleMusicSheet(true)} style={styles.toolBtn}>
                       <Music_Icon_Story width={28} height={28} />
                   </TouchableOpacity>

@@ -1,8 +1,8 @@
 import React from 'react';
-import { View, Image, TouchableOpacity, StyleSheet, ViewStyle } from 'react-native';
+import { View, Image, Text, TouchableOpacity, StyleSheet, ViewStyle } from 'react-native';
 import { Ionicons } from '@/src/lib/icons';
 import * as ImagePicker from 'expo-image-picker';
-import { useImageAdjuster } from '@/src/components/media/useImageAdjuster';
+import { useReadjustablePhoto } from '@/src/components/media/useImageAdjuster';
 
 interface AvatarPickerProps {
   uri: string | null;
@@ -11,16 +11,26 @@ interface AvatarPickerProps {
 }
 
 export const AvatarPicker: React.FC<AvatarPickerProps> = ({ uri, onPick, style }) => {
-  const { adjust, host } = useImageAdjuster();
+  const { adjustPicked, readjust, canReadjust, host } = useReadjustablePhoto(1);
 
   const handlePick = async () => {
     // No `allowsEditing`: that crop UI only runs on native. The 1:1 adjuster
     // below crops on every platform, so web users can frame their avatar too.
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8 });
     if (result.canceled) return;
-    const picked = result.assets[0].uri;
-    const adjusted = await adjust(picked, 1);
-    onPick(adjusted ?? picked);
+    onPick(await adjustPicked(result.assets[0].uri));
+  };
+
+  /**
+   * Reopen the adjuster on the ORIGINAL pick.
+   *
+   * Only offered once a photo has been picked in this session: an avatar already
+   * on the profile has no original to re-crop from, and re-cropping the stored
+   * (already cropped) upload would compound the crop instead of replacing it.
+   */
+  const handleReadjust = async () => {
+    const next = await readjust();
+    if (next) onPick(next);
   };
 
   return (
@@ -38,6 +48,11 @@ export const AvatarPicker: React.FC<AvatarPickerProps> = ({ uri, onPick, style }
             <Ionicons name="pencil" size={14} color="#fff" />
           </View>
         </TouchableOpacity>
+        {canReadjust && (
+          <TouchableOpacity onPress={handleReadjust} style={styles.adjustLink} accessibilityRole="button" accessibilityLabel="Adjust photo">
+            <Text style={styles.adjustLinkText}>Adjust photo</Text>
+          </TouchableOpacity>
+        )}
       </View>
       {host}
     </>
@@ -52,6 +67,8 @@ const styles = StyleSheet.create({
   touchable: {
     position: 'relative',
   },
+  adjustLink: { marginTop: 10, paddingVertical: 4, paddingHorizontal: 10 },
+  adjustLinkText: { color: '#FF4D67', fontSize: 13, fontWeight: '700' },
   image: {
     width: 120,
     height: 120,

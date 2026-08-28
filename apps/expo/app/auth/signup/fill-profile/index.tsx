@@ -11,7 +11,7 @@ import {
 import React, { useState, useEffect } from "react";
 import { router } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
-import { useImageAdjuster } from "@/src/components/media/useImageAdjuster";
+import { useReadjustablePhoto } from "@/src/components/media/useImageAdjuster";
 import * as Location from 'expo-location';
 import { useSignupStore } from "../../../../src/store/signup";
 import { FormInput } from "@/src/components/inputs/FormInput";
@@ -107,7 +107,7 @@ const CircularProgress = ({ progress, size = 60 }: { progress: number, size?: nu
 const FillProfile: React.FC = () => {
   const { data: signupData, setMultiple, setField, setStep } = useSignupStore();
   const { addToast } = useToast();
-  const { adjust, host: adjusterHost } = useImageAdjuster();
+  const { adjustPicked, readjust, canReadjust, host: adjusterHost } = useReadjustablePhoto(1);
   
   const [isGenderPickerVisible, setGenderPickerVisibility] = useState(false);
   const [isOccupationPickerVisible, setOccupationPickerVisibility] = useState(false);
@@ -195,11 +195,10 @@ const FillProfile: React.FC = () => {
   const pickAvatar = async () => {
     const img = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.5 });
     if (!img.canceled && img.assets) {
-      const picked = img.assets[0].uri;
       // Crop to 1:1 with the cross-platform adjuster (native allowsEditing does
-      // not run on web). Cancel keeps the original so it is never a dead end.
-      const adjusted = await adjust(picked, 1);
-      const finalUri = adjusted ?? picked;
+      // not run on web). Cancel keeps the original, and the original stays
+      // remembered so "Adjust" can reopen it — cancelling is recoverable.
+      const finalUri = await adjustPicked(img.assets[0].uri);
       setLocalAvatarUri(finalUri);
       // Defer the actual upload to the final step. During signup the account
       // (and its auth token) doesn't exist yet for email signups, so uploading
@@ -210,6 +209,16 @@ const FillProfile: React.FC = () => {
       setField("avatarUrl", finalUri);
       trigger("avatarUrl");
     }
+  };
+
+  /** Reopen the adjuster on the ORIGINAL pick and re-apply it everywhere. */
+  const handleReadjust = async () => {
+    const next = await readjust();
+    if (!next) return;
+    setLocalAvatarUri(next);
+    setValue("avatarUrl", next);
+    setField("avatarUrl", next);
+    trigger("avatarUrl");
   };
 
   const onSubmit = async (data: FillProfileFormValues) => {
@@ -242,6 +251,11 @@ const FillProfile: React.FC = () => {
                 </View>
              )}
           </TouchableOpacity>
+          {canReadjust && !isUploading && (
+            <TouchableOpacity onPress={handleReadjust} style={styles.adjustLink} accessibilityRole="button" accessibilityLabel="Adjust photo">
+              <Text style={styles.adjustLinkText}>Adjust photo</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         <FormInput control={control} name="fullName" placeholder="Full Name" errorMessage={errors.fullName?.message} />
@@ -327,6 +341,8 @@ const styles = StyleSheet.create({
   backButton: { padding: 5 },
   scrollContent: { paddingHorizontal: 24, paddingBottom: 40 },
   avatarContainer: { alignItems: "center", marginVertical: 30 },
+  adjustLink: { marginTop: 10, alignSelf: 'center', paddingVertical: 4, paddingHorizontal: 10 },
+  adjustLinkText: { color: '#ff4466', fontSize: 13, fontFamily: 'Urbanist-Bold' },
   avatarWrapper: { position: "relative" },
   avatar: { width: 140, height: 140, borderRadius: 70, backgroundColor: '#F5F5F5' },
   uploadOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: 70, justifyContent: 'center', alignItems: 'center' },

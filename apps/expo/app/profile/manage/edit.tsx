@@ -15,7 +15,7 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
-import { useImageAdjuster } from "@/src/components/media/useImageAdjuster";
+import { useReadjustablePhoto } from "@/src/components/media/useImageAdjuster";
 import { useAuth } from "@/src/hooks/useAuth";
 import { useProfile } from "@/src/hooks/useProfileData";
 import { uploadToR2 } from "@/src/lib/uploadToR2";
@@ -67,7 +67,7 @@ export default function EditProfileScreen() {
   const router = useRouter();
   const { user: authUser } = useAuth();
   const { data: profile, isLoading: profileLoading, refetch } = useProfile(authUser?.uid || '');
-  const { adjust, host: adjusterHost } = useImageAdjuster();
+  const { adjustPicked, readjust, canReadjust, forget, host: adjusterHost } = useReadjustablePhoto(1);
   
   const [isOccupationPickerVisible, setOccupationPickerVisibility] = useState(false);
   const [showCountryPicker, setShowCountryPicker] = useState(false);
@@ -154,10 +154,21 @@ export default function EditProfileScreen() {
     }
 
     if (result && !result.canceled && result.assets) {
-        const picked = result.assets[0].uri;
-        const adjusted = await adjust(picked, 1);
-        setLocalAvatarUri(adjusted ?? picked);
+        setLocalAvatarUri(await adjustPicked(result.assets[0].uri));
     }
+  };
+
+  /**
+   * Reopen the adjuster on the ORIGINAL photo.
+   *
+   * Closing the adjuster used to be final — the only way to re-frame was to pick
+   * the photo again, which on this screen meant re-opening the camera. Cropping
+   * always restarts from the original, so it never compounds.
+   */
+  const handleReadjust = async () => {
+    setShowImageOptions(false);
+    const next = await readjust();
+    if (next) setLocalAvatarUri(next);
   };
 
   const handleSendEmailOtp = async () => {
@@ -451,8 +462,15 @@ export default function EditProfileScreen() {
             <Text style={[styles.modalOptionText, { marginLeft: 12 }]}>Choose from Library</Text>
         </TouchableOpacity>
 
+        {canReadjust && (
+          <TouchableOpacity style={styles.modalOption} onPress={handleReadjust}>
+              <Ionicons name="crop-outline" size={24} color="#000" />
+              <Text style={[styles.modalOptionText, { marginLeft: 12 }]}>Adjust Photo</Text>
+          </TouchableOpacity>
+        )}
+
         {localAvatarUri && (
-          <TouchableOpacity style={[styles.modalOption, { borderBottomWidth: 0 }]} onPress={() => { setLocalAvatarUri(null); setShowImageOptions(false); }}>
+          <TouchableOpacity style={[styles.modalOption, { borderBottomWidth: 0 }]} onPress={() => { setLocalAvatarUri(null); forget(); setShowImageOptions(false); }}>
               <Ionicons name="trash-outline" size={24} color="red" />
               <Text style={[styles.modalOptionText, { marginLeft: 12, color: 'red' }]}>Remove Photo</Text>
           </TouchableOpacity>
