@@ -29,7 +29,7 @@ const OTP_SEND_COOLDOWN = 60;
  * password must actually be changed. */
 const PWRESET_VERIFIED_TTL = 10 * 60;
 const pwVerifiedKey = (phone: string) => `pwverified:${phone}`;
-import { sendSms } from "../lib/sms";
+import { sendSms, smsConfigured } from "../lib/sms";
 import { sendEmail } from "../lib/email";
 import { now } from "../lib/ids";
 
@@ -389,6 +389,21 @@ authRoute.post("/", async (c) => {
       // can't be used as an SMS bomber (real Twilio spend) or a resend spammer.
       await rateLimit(env, `otpsend:${ip}`, 15, 3600);
       await enforceSendCooldown(env, "pwreset", normalizedPhone, OTP_SEND_COOLDOWN);
+
+      // A misconfigured gateway is NOT the same thing as an unknown number, and
+      // must not hide behind the anti-enumeration success below. With no gateway
+      // the code is stored, "we sent you a code" is returned, and the client
+      // walks the user to an OTP screen to wait for an SMS that can never
+      // arrive — a dead end with no diagnostic anywhere. This reveals nothing
+      // about the account: it is a property of the deployment, not of the phone
+      // number, and it is returned for every input alike.
+      if (!(await smsConfigured(env))) {
+        console.error("[auth] sendOtpToPhone: no SMS gateway configured");
+        throw httpsError(
+          "failed-precondition",
+          "SMS is temporarily unavailable. Please reset your password using your email instead.",
+        );
+      }
 
       // Anti-enumeration: only actually send an SMS if the phone belongs to a
       // real account, but ALWAYS return the same generic success so a caller

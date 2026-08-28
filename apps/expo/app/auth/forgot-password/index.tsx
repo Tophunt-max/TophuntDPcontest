@@ -74,7 +74,16 @@ export default function ForgotPasswordScreen() {
                 // genuine client errors (e.g. malformed email / network).
                 if (e?.code && e.code !== "auth/user-not-found") throw e;
             });
-            addToast("If an account exists, a reset link has been sent to your email.", "success");
+            // Deliberately "if" and not "has been sent": Firebase only sends when
+            // the address has a PASSWORD credential, so a user who signed up with
+            // Google, Apple or phone gets nothing — and with email-enumeration
+            // protection on, the call succeeds either way and we genuinely do not
+            // know. Claiming delivery we cannot observe is what sent people to
+            // check an inbox that was never going to receive anything.
+            addToast(
+              "If that email has a password account, a reset link is on its way. Signed up with Google, Apple or phone? Use that method to sign in.",
+              "info",
+            );
             router.push("/auth/forgot-password/success");
         } else {
             await callApi('sendOtpToPhone', { phone: data.phoneNumber });
