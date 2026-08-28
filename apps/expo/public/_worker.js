@@ -699,18 +699,26 @@ async function getSitemap(request, env, ctx, apiBase, origin) {
     push(path, undefined, route.priority);
   }
 
-  // Paginate through published posts via the public API.
+  // Every published post, from the slug-only endpoint.
+  //
+  // This used to walk `/read/blog` at 50 posts per page — ~87 sequential
+  // subrequests for the current catalogue. A Worker has a subrequest ceiling, so
+  // the loop was cut short and the sitemap silently shipped 2,452 of 4,338 urls:
+  // no error, no warning, ~1,880 posts never advertised to Google.
+  // `/read/blog/sitemap` returns slug + lastmod only, so the whole catalogue is
+  // one subrequest. The loop is kept so growth past that endpoint's cap costs a
+  // second request rather than truncating again.
   let cursor = null;
-  const MAX_PAGES = 200; // safety cap (~10k posts at 50/page)
+  const MAX_PAGES = 12; // 12 x 10k posts, and it bounds the subrequest count
+  let truncated = true;
   for (let i = 0; i < MAX_PAGES; i++) {
-    const u = new URL(`${apiBase}/read/blog`);
-    u.searchParams.set('limit', '50');
+    const u = new URL(`${apiBase}/read/blog/sitemap`);
     if (cursor) u.searchParams.set('cursor', String(cursor));
     let data;
     try {
       const res = await fetch(u.toString(), {
         headers: { accept: 'application/json' },
-        cf: { cacheTtl: 300, cacheEverything: true },
+        cf: { cacheTtl: 900, cacheEverything: true },
       });
       if (!res.ok) break;
       data = await res.json();
@@ -719,21 +727,36 @@ async function getSitemap(request, env, ctx, apiBase, origin) {
     }
     const posts = (data && data.posts) || [];
     for (const p of posts) {
-      const lastmod = p.publishedAt || p.createdAt;
-      push(
-        `/${p.slug}`,
-        lastmod ? new Date(Number(lastmod)).toISOString() : undefined,
-        '0.7',
-      );
+      if (!p.slug) continue;
+      push(`/${p.slug}`, p.lastmod ? new Date(Number(p.lastmod)).toISOString() : undefined, '0.7');
     }
     cursor = data && data.nextCursor;
-    if (!cursor || posts.length === 0) break;
+    if (!cursor || posts.length === 0) {
+      truncated = false;
+      break;
+    }
+  }
+
+  // A sitemap may hold 50,000 urls. Past that it has to become a sitemap index,
+  // and quietly serving the first 50k instead is the same silent-truncation
+  // failure this endpoint was introduced to remove — so say so in the output,
+  // where whoever opens the sitemap will actually see it.
+  const OVER_LIMIT = urls.length > 50000;
+  if (truncated || OVER_LIMIT) {
+    console.warn(
+      `[sitemap] incomplete: ${urls.length} urls, truncated=${truncated}, overLimit=${OVER_LIMIT}`,
+    );
   }
 
   const body =
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
+    (truncated || OVER_LIMIT
+      ? `<!-- INCOMPLETE: ${urls.length} urls (truncated=${truncated}, over 50k=${OVER_LIMIT}). ` +
+        `Split into a sitemap index. -->\n`
+      : '') +
     `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
     urls
+      .slice(0, 50000)
       .map(
         (u) =>
           `  <url><loc>${esc(u.loc)}</loc>` +
@@ -744,12 +767,21 @@ async function getSitemap(request, env, ctx, apiBase, origin) {
       .join('\n') +
     `\n</urlset>\n`;
 
+  // NEVER cache a sitemap we know is incomplete.
+  //
+  // The api and the web app deploy independently, so there is a window where this
+  // Worker is new but `/read/blog/sitemap` is not live yet. Without this, one
+  // request landing in that window would pin a nine-url sitemap into the edge
+  // cache for an hour — and the sitemap is exactly the artefact nobody re-checks.
+  // An incomplete answer is still served (better than a 500) but it is
+  // short-lived and not stored, so it repairs itself on the next request.
+  const complete = !truncated && !OVER_LIMIT;
   const response = new Response(body, {
     headers: {
       'content-type': 'application/xml; charset=utf-8',
-      'cache-control': 'public, max-age=3600',
+      'cache-control': complete ? 'public, max-age=3600' : 'public, max-age=60',
     },
   });
-  ctx.waitUntil(cache.put(cacheKey, response.clone()));
+  if (complete) ctx.waitUntil(cache.put(cacheKey, response.clone()));
   return response;
 }

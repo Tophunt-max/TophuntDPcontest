@@ -177,6 +177,32 @@ export function makeEnv(overrides: Partial<TestEnv> = {}): { env: TestEnv; db: S
   return { env, db: sqlite };
 }
 
+/**
+ * `caches` is a Workers global with no Node equivalent, so any endpoint using
+ * `edgeCached` (blog categories, the blog sitemap feed, …) previously threw
+ * `ReferenceError: caches is not defined` and returned 500 in tests — which is why
+ * none of them had any.
+ *
+ * This is an always-miss, never-store stub: it makes those endpoints reachable
+ * while keeping every test deterministic, since a real cache would let one test's
+ * response satisfy the next one's request.
+ */
+if (!(globalThis as any).caches) {
+  (globalThis as any).caches = {
+    default: {
+      async match() {
+        return undefined;
+      },
+      async put() {
+        /* discard */
+      },
+      async delete() {
+        return false;
+      },
+    },
+  };
+}
+
 /** A no-op ExecutionContext that swallows waitUntil rejections. */
 export function fakeCtx() {
   return {

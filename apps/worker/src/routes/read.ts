@@ -67,10 +67,19 @@ async function cachePut(env: Env, key: string, data: any, ttlSec: number): Promi
  * endpoints. Only use for responses that are identical for every caller.
  */
 async function edgeCached<T>(c: any, ttlSec: number, producer: () => Promise<T>): Promise<Response> {
-  const cache = (caches as any).default as Cache;
+  // `caches` is a runtime-provided global. Reading `.default` from OUTSIDE the
+  // try meant any runtime without the Cache API threw a ReferenceError and 500'd
+  // the endpoint — the exact opposite of the fail-open the catch below claims.
+  // The access belongs inside.
+  let cache: Cache | null = null;
+  try {
+    cache = ((caches as any)?.default as Cache) ?? null;
+  } catch {
+    cache = null;
+  }
   const cacheKey = new Request(new URL(c.req.url).toString(), { method: "GET" });
   try {
-    const hit = await cache.match(cacheKey);
+    const hit = cache ? await cache.match(cacheKey) : null;
     if (hit) return hit;
   } catch {
     /* cache unavailable — fall through */
@@ -79,7 +88,7 @@ async function edgeCached<T>(c: any, ttlSec: number, producer: () => Promise<T>)
   const res = c.json(data) as Response;
   res.headers.set("Cache-Control", `public, max-age=${ttlSec}`);
   try {
-    c.executionCtx.waitUntil(cache.put(cacheKey, res.clone()));
+    if (cache) c.executionCtx.waitUntil(cache.put(cacheKey, res.clone()));
   } catch {
     /* best-effort */
   }
@@ -1957,6 +1966,56 @@ readRoute.get("/blog/categories", async (c) =>
       .orderBy(desc(sql`count(*)`))
       .all();
     return rows.filter((r) => r.category);
+  }),
+);
+
+/**
+ * Every published post's slug + lastmod, and nothing else — for the SEO Worker's
+ * sitemap. MUST stay registered above `/blog/:slug`, or "sitemap" is matched as a
+ * post slug.
+ *
+ * Why this exists instead of reusing `/read/blog`: that endpoint returns whole
+ * post rows, so it caps `limit` at 50 — sensibly, since 50 full articles is
+ * already a large response. But a sitemap needs EVERY post, and at 50 per page
+ * ~4,300 posts meant ~87 sequential subrequests from the sitemap Worker. A Worker
+ * has a subrequest ceiling, so the walk was silently cut short: the live sitemap
+ * carried 2,452 of 4,338 urls and simply stopped. Nothing errored — Google was
+ * just never told about ~1,880 posts.
+ *
+ * Two columns per row instead of ~20 makes a much larger page safe, so the whole
+ * catalogue is one subrequest and one indexed D1 query
+ * (`idx_blog_status_published` covers `status` + `published_at` exactly). Kept
+ * paginated anyway so growth past `MAX_LIMIT` degrades into a second request
+ * rather than silent truncation again.
+ *
+ * `lastmod` prefers `updated_at` so an edited post is re-crawled.
+ */
+readRoute.get("/blog/sitemap", async (c) =>
+  edgeCached(c, 900, async () => {
+    const db = getDb(c.env);
+    const MAX_LIMIT = 10000;
+    const limit = Math.min(Math.max(parseInt(c.req.query("limit") || String(MAX_LIMIT), 10) || MAX_LIMIT, 1), MAX_LIMIT);
+    const cursor = c.req.query("cursor") ? parseInt(c.req.query("cursor")!, 10) : null;
+
+    const conds = [eq(schema.blogPosts.status, "published")];
+    if (cursor) conds.push(lt(schema.blogPosts.publishedAt, cursor));
+
+    const rows = await db
+      .select({
+        slug: schema.blogPosts.slug,
+        publishedAt: schema.blogPosts.publishedAt,
+        updatedAt: schema.blogPosts.updatedAt,
+      })
+      .from(schema.blogPosts)
+      .where(and(...conds))
+      .orderBy(desc(schema.blogPosts.publishedAt))
+      .limit(limit)
+      .all();
+
+    return {
+      posts: rows.map((r) => ({ slug: r.slug, lastmod: r.updatedAt || r.publishedAt || null })),
+      nextCursor: rows.length === limit ? rows[rows.length - 1].publishedAt : null,
+    };
   }),
 );
 
