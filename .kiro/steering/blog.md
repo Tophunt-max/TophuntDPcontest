@@ -26,10 +26,16 @@ Archive / Wayback Machine) and serves them from the new stack:
 
 | Thing | URL |
 |---|---|
-| Worker API | `https://tophunt-api.weadown-in.workers.dev` |
-| Admin panel | `https://tophunt-admin-panel.pages.dev` (menu → CONTENT → Blog) |
-| Public blog API | `https://tophunt-api.weadown-in.workers.dev/read/blog` |
-| Media (images) | `https://tophunt-api.weadown-in.workers.dev/media/<key>` |
+| Public blog | `https://tophunt.in/blog` (+ root permalinks `https://tophunt.in/<slug>`) |
+| Worker API | `https://api.tophunt.in` |
+| Admin panel | `https://admin.tophunt.in` (menu → CONTENT → Blog) |
+| Public blog API | `https://api.tophunt.in/read/blog` |
+| Media (images) | `https://media.tophunt.in/<key>` |
+
+Pre-cutover rows still hold media urls on the old
+`https://tophunt-api.weadown-in.workers.dev/media/<key>` host, including inside
+`blog_posts.content` HTML. They keep working; `apps/worker/scripts/media-domain-backfill.sql`
+moves them over. See [`PRODUCTION_DOMAINS.md`](../../PRODUCTION_DOMAINS.md) §5.
 
 ---
 
@@ -129,11 +135,16 @@ by the admin panel) **or** the header `X-Admin-Secret: <ADMIN_PROXY_SECRET>`
 |---|---|---|
 | GET | `/media/*` | serve an R2 object (immutable, 1‑year cache) |
 
-**Why `/media` instead of a custom domain:** the account has no
-`tophuntdpcontest.com` zone, so R2 is served through the Worker.
-`R2_PUBLIC_BASE_URL = https://tophunt-api.weadown-in.workers.dev/media`
-(set in `apps/worker/wrangler.toml`). Image keys are content‑hash addressed
-(`blog/imported/<sha256>.<ext>`), so they're safe to cache forever.
+**New media comes from `media.tophunt.in`, not this route.**
+`R2_PUBLIC_BASE_URL = https://media.tophunt.in` (in `apps/worker/wrangler.toml`),
+which is the R2 bucket's own custom domain: no Worker invocation per image, and a
+zone root so Cloudflare Transformations can resolve.
+
+`/media/*` stays anyway, permanently. Media urls are stored ABSOLUTE, so every
+row written before the cutover — and every already-shipped mobile build — still
+points here. Removing the route would 404 all of it. Image keys are content-hash
+addressed (`blog/imported/<sha256>.<ext>`), so they're safe to cache forever
+either way.
 
 ---
 
@@ -158,7 +169,7 @@ by the admin panel) **or** the header `X-Admin-Secret: <ADMIN_PROXY_SECRET>`
 
 ### Environment
 ```bash
-export WORKER_URL="https://tophunt-api.weadown-in.workers.dev"
+export WORKER_URL="https://api.tophunt.in"
 export ADMIN_PROXY_SECRET="<the worker's admin secret>"   # see §8
 # optional: export ARCHIVE_DOMAIN="tophunt.in"
 ```

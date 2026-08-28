@@ -6,7 +6,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { StoryVsFrame } from '@/src/components/stories/StoryVsFrame';
 
 /**
- * Public landing for a shared battle: `https://app.tophunt.in/battle/<id>`.
+ * Public landing for a shared battle: `https://tophunt.in/battle/<id>`.
  *
  * This is the target of every share link (see src/lib/share.ts). On a device
  * with the app installed the verified App Link (app.json intentFilters) opens

@@ -157,10 +157,18 @@ app.get("/health/deep", async (c) => {
 });
 
 /**
- * Public media — serves R2 objects (blog images imported from the archive,
- * user uploads) directly from the Worker. This avoids needing a custom R2
- * domain: R2_PUBLIC_BASE_URL points at "<worker>/media". Keys are content-hash
- * addressed, so responses are immutable and cached for a year.
+ * Public media — serves R2 objects (blog images imported from the archive, user
+ * uploads) directly from the Worker. Keys are content-hash addressed, so
+ * responses are immutable and cached for a year.
+ *
+ * This route is a LEGACY PATH, and it must stay. New media is served from the
+ * bucket's own custom domain (`R2_PUBLIC_BASE_URL = https://media.tophunt.in`),
+ * which is cheaper (no Worker invocation per image), lets the CDN serve the
+ * ranged requests video players make, and is a zone root so Transformations can
+ * resolve. But every media url written before that cutover is stored ABSOLUTE in
+ * D1 on `<worker>/media` — and is baked into already-shipped mobile builds — so
+ * removing this route would 404 all of it. `R2_LEGACY_BASE_URLS` is the matching
+ * half of the same compatibility promise on the delete side.
  */
 // Preflight for cross-origin media reads. Rarely hit — a plain <img crossorigin>
 // or simple GET does not preflight — but a ranged cross-origin fetch can, and the

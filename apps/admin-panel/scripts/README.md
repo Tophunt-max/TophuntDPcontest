@@ -9,9 +9,13 @@ These operational scripts talk to the Cloudflare Worker's `/admin` endpoints
 Add to `apps/admin/.env.local` (or export before running):
 
 ```
-WORKER_URL=https://tophunt-api.<your-subdomain>.workers.dev
+WORKER_URL=https://api.tophunt.in
 ADMIN_PROXY_SECRET=<same value set on the Worker via `wrangler secret put ADMIN_PROXY_SECRET`>
 ```
+
+For staging, point `WORKER_URL` at `https://tophunt-api-staging.weadown-in.workers.dev`
+instead — staging has no custom domain. Double-check which one is set before
+running anything that writes: these scripts talk to whatever `WORKER_URL` says.
 
 ## Scripts
 

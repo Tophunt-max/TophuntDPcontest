@@ -21,8 +21,7 @@
         "NSLocationWhenInUseUsageDescription": "TopHunt uses your location only to show contests and entries near you. You can decline and still use the app."
       },
       "associatedDomains": [
-        "applinks:tophunt.in",
-        "applinks:app.tophunt.in"
+        "applinks:tophunt.in"
       ]
     },
     "android": {
@@ -60,10 +59,6 @@
             {
               "scheme": "https",
               "host": "tophunt.in"
-            },
-            {
-              "scheme": "https",
-              "host": "app.tophunt.in"
             }
           ],
           "category": [

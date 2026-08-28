@@ -3,11 +3,24 @@
 # This app authorises withdrawals, wallet adjustments and role changes, and it
 # shipped with no CSP, no HSTS and no framing protection at all.
 #
+# Unlike the user web app, this project is a plain static SPA — no `_worker.js`,
+# no Pages Functions — so every response IS a static asset response and these
+# rules do apply to the HTML document. (The Expo app runs in advanced mode, where
+# `_headers` does not reach documents, so its policy lives in seo/worker.js.)
+#
 # CSP notes:
 #  - 'unsafe-inline' for style-src is required by the Tailwind/Radix runtime,
 #    which injects style attributes. Scripts are NOT allowed inline.
 #  - connect-src lists the API and Firebase endpoints the panel actually calls.
 #    Anything else — including an injected exfiltration endpoint — is blocked.
+#    It is exactly one API host: https://api.tophunt.in. No WebSocket entry,
+#    because this app has no realtime subscription (the user app does), and no
+#    media host, because it only ever *displays* media via <img>, which img-src
+#    covers — deposit screenshots are never fetch()ed.
+#  - https://*.workers.dev is deliberately GONE. On a page that can move money,
+#    that wildcard made every Cloudflare customer's Worker a permitted
+#    destination for stolen data. In local dev the Worker is reached through the
+#    Vite proxy (same-origin, covered by 'self'), so nothing needs it.
 #  - frame-ancestors 'none' prevents clickjacking of the admin UI.
 /*
   Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
@@ -16,7 +29,7 @@
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), microphone=(), payment=(), usb=()
   Cross-Origin-Opener-Policy: same-origin
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://*.workers.dev https://api.tophunt.in https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://api.tophunt.in https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
 
 # Immutable, content-hashed build assets.
 /assets/*

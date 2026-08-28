@@ -61,7 +61,13 @@ This is the single strongest technical reason to move video to Bunny.
 
 ## 2.2 `R2_PUBLIC_BASE_URL` points at the Worker itself
 
-`wrangler.toml [vars]`:
+> **Status: addressed in config.** `R2_PUBLIC_BASE_URL` is now
+> `https://media.tophunt.in` and `R2_LEGACY_BASE_URLS` carries the base below, so
+> the delete paths still recognise pre-cutover urls. The R2 custom domain itself is
+> a dashboard step — see `PRODUCTION_DOMAINS.md` §3 and the backfill in §5. The
+> analysis below is what the problem was.
+
+`wrangler.toml [vars]`, before:
 
 ```toml
 R2_PUBLIC_BASE_URL = "https://tophunt-api.weadown-in.workers.dev/media"
@@ -392,8 +398,11 @@ What remains blocking is **external provisioning, not code**:
 1. **Phase 0 needs a real custom domain** attached to the `tophunt-media` R2 bucket,
    with Cloudflare Transformations enabled on that zone. Until then the
    `/cdn-cgi/image/` URLs in `lib/media.ts` cannot resolve and Phase 1b is moot.
-   `PRODUCTION_DOMAINS.md` names `media.tophuntdpcontest.com` as the intended host;
-   it is still not connected.
+   The host is `media.tophunt.in` (an earlier revision of this file said
+   `media.tophuntdpcontest.com`, which was never the plan). The config now points
+   at it and the D1 backfill is written; connecting the domain and enabling
+   Transformations on the zone remain dashboard actions — `PRODUCTION_DOMAINS.md`
+   §3, §5 and §6.
 2. **Phase 2 needs a Bunny Stream account** (library id + API key + pull-zone
    hostname) before any of `2a`–`2f` can be built or tested.
 

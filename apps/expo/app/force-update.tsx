@@ -21,12 +21,20 @@ export default function ForceUpdateScreen() {
   const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
   const textColor = isDark ? '#FFFFFF' : '#212121';
 
+  // Store links. `config.updateUrl` (admin panel → App Control) wins, and is the
+  // only way to get a working iOS link until the App Store listing exists — the
+  // fallback below is the store home page, not this app.
+  //
+  // The Android package MUST match app.json → android.package. It previously read
+  // `com.tophunt.app`, which is not this app's id, so the one button on the
+  // force-update screen opened a Play Store "item not found" page — for users who
+  // by definition cannot use the app until they update.
   const openStore = () => {
     const url =
       config?.updateUrl ||
       (Platform.OS === 'ios'
         ? 'https://apps.apple.com/'
-        : 'https://play.google.com/store/apps/details?id=com.tophunt.app');
+        : 'https://play.google.com/store/apps/details?id=in.tophunt.app');
     Linking.openURL(url).catch(() => {});
   };
 

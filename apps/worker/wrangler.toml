@@ -3,6 +3,26 @@ main = "src/index.ts"
 compatibility_date = "2024-11-27"
 compatibility_flags = ["nodejs_compat"]
 
+# ---------------------------------------------------------------------------
+# Production API hostname.
+#
+# `custom_domain = true` makes Cloudflare create/own the DNS record and the
+# certificate for this hostname and route the whole host to this Worker — it is
+# NOT a zone route pattern, so no `zone_name` is needed and nothing else on the
+# zone can shadow it.
+#
+# Prerequisite: the `tophunt.in` zone must already exist in the same Cloudflare
+# account, otherwise the deploy fails with "Could not find zone". The first
+# deploy after adding this provisions the record; later deploys are no-ops.
+#
+# `workers_dev` is deliberately left ENABLED (the default). The Worker also
+# serves `/media/*`, and every media URL written to D1 before the custom-domain
+# cutover is an ABSOLUTE url on the workers.dev host (see lib/r2.ts and
+# R2_LEGACY_BASE_URLS below). Disabling workers.dev would 404 all of that media
+# for any row not yet rewritten and for every already-shipped mobile build.
+# ---------------------------------------------------------------------------
+routes = [{ pattern = "api.tophunt.in", custom_domain = true }]
+
 # Pin the bundler to this package's own tsconfig. Without this, esbuild walks up
 # the monorepo and picks up the root tsconfig.json (which extends
 # "expo/tsconfig.base" — not resolvable from the worker), emitting a build
@@ -132,6 +152,14 @@ head_sampling_rate = 1
 [env.staging]
 name = "tophunt-api-staging"
 
+# MUST be present and empty. `routes` is an INHERITABLE key in wrangler config:
+# without this line the staging environment inherits the top-level
+# `api.tophunt.in` custom domain, and `wrangler deploy --env staging` would
+# repoint the production API hostname at the staging Worker — pointing real
+# users' traffic at the staging database. Staging is reached on its
+# workers.dev host instead.
+routes = []
+
 [[env.staging.d1_databases]]
 binding = "DB"
 database_name = "tophunt-db-staging"
@@ -168,7 +196,16 @@ crons = ["*/10 * * * *", "0 0 1 * *"]
 
 [env.staging.vars]
 FIREBASE_PROJECT_ID = "tophuntdpcontest-staging"
-R2_PUBLIC_BASE_URL = "https://tophunt-api-staging.workers.dev/media"
+# Staging keeps media on the Worker proxy: there is no staging custom domain, and
+# a second R2 custom domain is not worth a hostname. The host here was previously
+# "tophunt-api-staging.workers.dev", which does not resolve — workers.dev hosts
+# are always `<worker>.<account-subdomain>.workers.dev`, so every staging upload
+# was handed back a dead url.
+R2_PUBLIC_BASE_URL = "https://tophunt-api-staging.weadown-in.workers.dev/media"
+# Nothing to keep compatible on staging; its bucket is disposable.
+R2_LEGACY_BASE_URLS = ""
+# Cannot be enabled on a *.workers.dev host with a /media path prefix — see the
+# production block. Staging therefore always serves originals.
 MEDIA_TRANSFORMATIONS = "false"
 BUNNY_CDN_HOSTNAME = ""
 SENTRY_ENVIRONMENT = "staging"
@@ -183,20 +220,53 @@ ALLOWED_ORIGINS = "http://localhost:5000,http://localhost:8081,https://tophuntdp
 # ---------------------------------------------------------------------------
 [vars]
 FIREBASE_PROJECT_ID = "tophuntdpcontest"
-R2_PUBLIC_BASE_URL = "https://tophunt-api.weadown-in.workers.dev/media"
+
+# Public media origin — the R2 bucket's own custom domain, NOT the Worker.
+#
+# Serving media straight from R2 removes a Worker invocation per image, lets the
+# CDN satisfy the ranged requests video players make (which the Worker route has
+# to bypass the cache for — see index.ts), and is a zone root, which is the one
+# thing `/cdn-cgi/image/` needs in order to resolve at all.
+#
+# Prerequisite: R2 -> bucket `tophunt-media` -> Settings -> Public access ->
+# Custom domain -> media.tophunt.in.
+R2_PUBLIC_BASE_URL = "https://media.tophunt.in"
+
+# Media bases this deployment ALSO owns, comma-separated.
+#
+# Media urls are stored ABSOLUTE in D1 (lib/r2.ts), so changing
+# R2_PUBLIC_BASE_URL does not rewrite existing rows. Those rows keep loading
+# (the Worker's /media/* route stays), but the url -> R2-key mapping that guards
+# every delete would stop recognising them, and an unrecognised url means the
+# object is silently never deleted — orphaned bytes accrue forever, and a
+# contest banner or battle card is left readable after its record is gone.
+#
+# Listing the old base here keeps `deleteByPublicUrl`,
+# `contestBannerKeyFromPublicUrl` and `vsImageKeyFromPublicUrl` correct for both
+# hosts. Keep it until `scripts/media-domain-backfill.sql` has been run AND no
+# app build old enough to have written such a url is still in the wild.
+R2_LEGACY_BASE_URLS = "https://tophunt-api.weadown-in.workers.dev/media"
 
 # Cloudflare Transformations (Image Resizing) switch for the media origin.
 #
-# Keep "false" until BOTH are true:
-#   1. R2_PUBLIC_BASE_URL points at a real custom domain on a Cloudflare zone
-#      (a *.workers.dev host can never work), with no path prefix — the
-#      /cdn-cgi/image/ route only resolves at a zone root; and
-#   2. "Transformations" is enabled for that zone in the dashboard.
+# The media origin now satisfies both CODE preconditions in
+# lib/media.ts -> transformationsAvailable(): media.tophunt.in is a real zone
+# host (not *.workers.dev) and has no path prefix. What is left is the DASHBOARD
+# half, which no deploy can assert:
 #
-# While this is "false", lib/media.ts returns the ORIGINAL url for every
-# mediaUrlThumb / mediaUrlOptimized / profileImageUrlThumb field, so the app
-# consumes them safely today. Flipping this to "true" turns them into real
-# resized variants with no client release needed.
+#   Zone tophunt.in -> Speed -> Optimization -> Transformations -> enable
+#   (check the per-transformation pricing beyond the free monthly allowance)
+#
+# This stays "false" until that is done, and it is deliberate rather than
+# pending. `/cdn-cgi/image/...` on a zone WITHOUT Transformations enabled does
+# not fall back to the original — it errors. Shipping "true" first would turn
+# every thumbnail, feed image and avatar in the product into a broken image the
+# moment the Worker deployed, i.e. a config flag would own an outage.
+#
+# While "false", lib/media.ts returns the ORIGINAL url for every mediaUrlThumb /
+# mediaUrlOptimized / profileImageUrlThumb field, so those fields are already
+# safe to consume. Flip to "true" AFTER enabling it on the zone and redeploy —
+# no client release is needed, that is the whole point of the indirection.
 MEDIA_TRANSFORMATIONS = "false"
 
 # Bunny Stream pull-zone hostname, e.g. "vz-1a2b3c4d-e5f.b-cdn.net".
@@ -209,14 +279,30 @@ BUNNY_CDN_HOSTNAME = ""
 # CORS allow-list (comma-separated, exact origin match — no wildcards).
 #
 # This was previously "*", i.e. wide-open CORS on an API that moves wallets,
-# deposits and withdrawals. Both the current live *.pages.dev origins and the
-# planned custom domains are listed so the DNS cutover needs no redeploy.
+# deposits and withdrawals.
+#
+# Only the two production browser origins are listed:
+#   https://tophunt.in        user web app (apex — there is no `app.` host)
+#   https://www.tophunt.in    the www redirect's own origin, see below
+#   https://admin.tophunt.in  admin panel
+#
+# `www` is included even though it only ever redirects to the apex: a redirect
+# is followed by the browser for navigations, but a `fetch()` that starts on
+# https://www.tophunt.in sends THAT origin, and a user who lands on www before
+# the redirect rule runs (or who has it bookmarked) would otherwise get an
+# opaque CORS failure instead of a working app.
+#
+# The `*.pages.dev` origins are intentionally GONE. Keeping them would leave the
+# unauthenticated-domain path to this API open after cutover, and Pages serves
+# the same build on both hosts, so nothing legitimate needs them once DNS is
+# live. Re-add them temporarily ONLY if you need to run old and new hosts in
+# parallel during the switch, and remove them again afterwards.
 #
 # Native iOS/Android builds send no Origin header, so this only affects the web
-# app and the admin panel. Note that Pages *preview* deployments get per-commit
-# subdomains and are therefore NOT allowed against production — point them at a
+# app and the admin panel. Pages *preview* deployments get per-commit subdomains
+# and can therefore never be allowed against production — point them at the
 # staging Worker instead.
 #
 # For local development, override this in `.dev.vars` (which takes precedence
 # over these vars under `wrangler dev`) rather than adding localhost here.
-ALLOWED_ORIGINS = "https://tophuntdpcontest-89t.pages.dev,https://tophunt-admin-panel.pages.dev,https://app.tophuntdpcontest.com,https://admin.tophuntdpcontest.com"
+ALLOWED_ORIGINS = "https://tophunt.in,https://www.tophunt.in,https://admin.tophunt.in"

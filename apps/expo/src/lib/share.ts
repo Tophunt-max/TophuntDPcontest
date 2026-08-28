@@ -22,13 +22,19 @@ import { API_BASE_URL } from '@/src/services/api';
  *
  * On web this is simply whatever host the app is being served from
  * (`window.location.origin`), so a share link always points back to the same
- * deployment the user is actually on — pages.dev, a custom domain, staging,
+ * deployment the user is actually on — tophunt.in, a preview host, staging,
  * anything — with nothing to keep in sync.
  *
  * On native there is no browser location, so it takes (in order) an explicit
  * `EXPO_PUBLIC_SHARE_ORIGIN` for the public web host, then falls back to the
  * configured API origin, so the host is still derived from the running
  * deployment rather than guessed.
+ *
+ * `EXPO_PUBLIC_SHARE_ORIGIN` is SET for every native build profile in eas.json
+ * and is not really optional there. Since the API moved to its own hostname
+ * (`api.tophunt.in`), the fallback produces `https://api.tophunt.in/battle/<id>`
+ * — a host that answers JSON and does not serve the app at all. Before the
+ * split, api and web happened to share a host, so the fallback looked fine.
  */
 export function shareOrigin(): string {
   if (
@@ -65,7 +71,7 @@ export function battleUrl(matchId: string): string {
 
 /**
  * Human caption with both handles and the link, e.g.
- * `Best Smile — @alice vs @bob. Vote now on TopHunt 👇\nhttps://app.tophunt.in/battle/m1`.
+ * `Best Smile — @alice vs @bob. Vote now on TopHunt 👇\nhttps://tophunt.in/battle/m1`.
  */
 export function battleCaption(match: ShareMatchLike, url: string): string {
   const a = match?.userA?.username ? `@${match.userA.username}` : 'someone';
