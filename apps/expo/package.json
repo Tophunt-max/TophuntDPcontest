@@ -8,13 +8,13 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "build": "expo export -p web && node scripts/build-seo-worker.mjs",
-    "build:seo": "node scripts/build-seo-worker.mjs",
+    "build": "expo export -p web && node scripts/verify-web-build.mjs",
     "lint": "expo lint",
     "typecheck": "node scripts/typecheck.mjs",
     "check:icons": "node scripts/check-icons.mjs",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "verify:web": "node scripts/verify-web-build.mjs"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",

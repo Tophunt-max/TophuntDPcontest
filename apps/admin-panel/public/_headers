@@ -6,7 +6,7 @@
 # Unlike the user web app, this project is a plain static SPA — no `_worker.js`,
 # no Pages Functions — so every response IS a static asset response and these
 # rules do apply to the HTML document. (The Expo app runs in advanced mode, where
-# `_headers` does not reach documents, so its policy lives in seo/worker.js.)
+# `_headers` does not reach documents, so its policy lives in public/_worker.js.)
 #
 # CSP notes:
 #  - 'unsafe-inline' for style-src is required by the Tailwind/Radix runtime,

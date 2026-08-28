@@ -15,9 +15,15 @@
  *   - /robots.txt   (points at the sitemap, allows crawling)
  *   - /sitemap.xml  (all published posts + key routes, built from the API)
  *
- * Deployment: this file is copied to `dist/_worker.js` after `expo export`
- * (see scripts/build-seo-worker.mjs). In advanced mode ALL requests hit this
- * Worker; static files and the SPA fallback are served via `env.ASSETS`.
+ * Deployment: this file lives in `public/`, so `expo export` copies it to
+ * `dist/_worker.js` by itself and Cloudflare Pages switches into advanced mode.
+ * That is deliberate. It previously lived in `seo/` and was copied by a separate
+ * post-build script, which both the Pages build command and CI forgot to run — so
+ * production served a bare SPA shell to every crawler and nothing failed.
+ * `scripts/verify-web-build.mjs` now asserts it made it into the output.
+ *
+ * In advanced mode ALL requests hit this Worker; static files and the SPA
+ * fallback are served via `env.ASSETS`.
  *
  * Config (optional Pages env vars — the defaults below are the production
  * values, so a Pages project with neither var set is already correct):
@@ -47,7 +53,7 @@ const DEFAULT_DESCRIPTION =
 // `curl -I https://tophunt.in/` simply has no CSP on it.
 //
 // `public/_headers` is kept for the static assets it does cover. The CSP string
-// below and the one in that file must stay identical; scripts/build-seo-worker.mjs
+// below and the one in that file must stay identical; scripts/verify-web-build.mjs
 // fails the build if they drift.
 //
 // connect-src notes (the list that the domain cutover actually changes):
@@ -61,7 +67,7 @@ const DEFAULT_DESCRIPTION =
 //    authorised every Cloudflare customer's Worker as a destination for a page
 //    that handles logins and wallet balances.
 // ---------------------------------------------------------------------------
-// Exported so scripts/build-seo-worker.mjs can compare it against public/_headers
+// Exported so scripts/verify-web-build.mjs can compare it against public/_headers
 // and fail the build if the two policies drift. The Workers runtime only ever
 // invokes the default export; a named string export is inert there.
 export const CONTENT_SECURITY_POLICY =
