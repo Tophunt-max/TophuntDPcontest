@@ -43,10 +43,13 @@ import Animated, {
 import { ImageViewer } from '@/src/components/ui/ImageViewer';
 import * as Haptics from 'expo-haptics';
 import { getDeviceId } from '@/src/lib/deviceId';
+import { useReadjustablePhoto } from '@/src/components/media/useImageAdjuster';
 
 const PINK_ACCENT = '#FFB1BD';
 const PRIMARY_COLOR = '#FF4D67';
 const SECONDARY_COLOR = '#FF758C';
+/** Contest entries render at 4:5 (`previewImg` aspectRatio 0.8), so crop to that. */
+const ENTRY_ASPECT = 0.8;
 
 export default function BattleSetupScreen() {
   const router = useRouter();
@@ -65,6 +68,10 @@ export default function BattleSetupScreen() {
   const [loading, setLoading] = useState(true);
   const [selectedContest, setSelectedContest] = useState<any>(null);
   const [media, setMedia] = useState<string | null>(null);
+  // Contest entries are displayed at 4:5 (see `previewImg`), so that is what the
+  // entry is cropped to — cropping to any other ratio just moves the cropping
+  // decision to the renderer, where the user has no say in it.
+  const { adjustPicked, readjust, canReadjust, host: adjusterHost } = useReadjustablePhoto(ENTRY_ASPECT);
   const [uploading, setUploading] = useState(false);
 
   const [showRulesModal, setShowRulesModal] = useState(false);
@@ -162,14 +169,27 @@ export default function BattleSetupScreen() {
   };
 
   const pickImage = async () => {
+    // No `allowsEditing`: that crop UI is native-only, so on web a contest entry
+    // could not be framed at all and a tall photo was cropped arbitrarily by the
+    // layout. `ImageAdjuster` crops on every platform. Every other picker in the
+    // app was moved across for this reason; this screen — the one that decides
+    // what a battle actually looks like — had been missed.
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
-      allowsEditing: true,
       quality: 0.8,
     });
     if (!result.canceled) {
-        setMedia(result.assets[0].uri);
+        setMedia(await adjustPicked(result.assets[0].uri));
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+  };
+
+  /** Reopen the adjuster on the ORIGINAL pick, so repeated crops never compound. */
+  const handleReadjust = async () => {
+    const next = await readjust();
+    if (next) {
+      setMedia(next);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
   };
 
@@ -474,12 +494,19 @@ export default function BattleSetupScreen() {
               )}
            </TouchableOpacity>
            
-           {/* Re-add Upload Button if media is present, to allow changing */}
            {media && (
-               <TouchableOpacity onPress={pickImage} style={styles.changePhotoBtn}>
-                   <Ionicons name="sync-outline" size={15} color={PRIMARY_COLOR} />
-                   <Text style={[styles.changePhotoText, { color: PRIMARY_COLOR }]}>Change Photo</Text>
-               </TouchableOpacity>
+               <View style={styles.photoActionsRow}>
+                   {canReadjust && (
+                       <TouchableOpacity onPress={handleReadjust} style={styles.changePhotoBtn} accessibilityRole="button" accessibilityLabel="Adjust photo">
+                           <Ionicons name="crop-outline" size={15} color={PRIMARY_COLOR} />
+                           <Text style={[styles.changePhotoText, { color: PRIMARY_COLOR }]}>Adjust</Text>
+                       </TouchableOpacity>
+                   )}
+                   <TouchableOpacity onPress={pickImage} style={styles.changePhotoBtn} accessibilityRole="button" accessibilityLabel="Change photo">
+                       <Ionicons name="sync-outline" size={15} color={PRIMARY_COLOR} />
+                       <Text style={[styles.changePhotoText, { color: PRIMARY_COLOR }]}>Change Photo</Text>
+                   </TouchableOpacity>
+               </View>
            )}
         </View>
 
@@ -581,6 +608,9 @@ export default function BattleSetupScreen() {
         title={selectedContest?.name || selectedContest?.title ? `${selectedContest.name || selectedContest.title} Rules` : "Contest Rules"}
       />
       
+      {/* Full-screen crop overlay; renders nothing until a photo is being adjusted. */}
+      {adjusterHost}
+
       {/* Full Screen Image Viewer */}
       {media && (
         <ImageViewer
@@ -939,9 +969,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  photoActionsRow: { flexDirection: 'row', justifyContent: 'center', gap: 10 },
   changePhotoBtn: {
     marginTop: 12,
-    alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
