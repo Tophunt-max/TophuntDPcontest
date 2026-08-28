@@ -26,9 +26,11 @@ export default function SuccessScreen() {
     >
       <View style={styles.content}>
         <Success />
-        <Text style={[styles.title, { color: textColor }]}>Email Sent!</Text>
+        <Text style={[styles.title, { color: textColor }]}>Check your email</Text>
         <Text style={[styles.subtitle, { color: textColor }]}>
-          Please check your email. A password reset link has been sent to your inbox.
+          If that address has a password account, a reset link is on its way — check
+          your spam folder too. Nothing arriving? You may have signed up with
+          Google, Apple or your phone number; sign in with that method instead.
         </Text>
       </View>
       <PrimaryButton

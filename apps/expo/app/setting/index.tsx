@@ -6,8 +6,6 @@ import {
   SafeAreaView,
   TouchableOpacity,
   ScrollView,
-  Alert,
-  Platform,
 } from 'react-native';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useRouter } from 'expo-router';
@@ -25,6 +23,7 @@ import {
   Settings_Alert,
 } from '@/assets/svgs';
 import { signOut } from '../../src/services/auth';
+import { useConfirm } from '@/src/components/modals/ConfirmDialog';
 import { Colors } from '@/constants/theme';
 import {
   setThemePreference,
@@ -71,6 +70,8 @@ export default function SettingScreen() {
     void setThemePreference(next);
   };
 
+  const { confirm, dialog: confirmDialog } = useConfirm();
+
   const performLogout = async () => {
     try {
       await signOut();
@@ -78,22 +79,29 @@ export default function SettingScreen() {
     } catch (error: any) {
       reportError(error, { screen: 'settings', action: 'logout' });
       emitToast(error?.message || 'Could not log out. Please try again.', 'error');
+      // Rethrow so the dialog stops its spinner and closes rather than sitting
+      // there as if the sign-out were still in flight.
+      throw error;
     }
   };
 
+  /**
+   * One confirmation for both platforms.
+   *
+   * This used to branch: `Alert.alert` on native (fine) and `window.confirm` on
+   * web, because a multi-button Alert is a no-op there. The browser dialog worked
+   * but was unstyleable, announced the hostname, and could not stay open while
+   * the sign-out request ran — so the screen looked idle and invited a second tap.
+   * `onConfirm` keeps the dialog up with a spinner until sign-out finishes.
+   */
   const handleLogout = () => {
-    // Alert.alert is a no-op on web, so confirm there instead of silently doing
-    // nothing (or logging the user out with no confirmation).
-    if (Platform.OS === 'web') {
-      // eslint-disable-next-line no-alert
-      if (typeof window !== 'undefined' && !window.confirm('Log out of TopHunt?')) return;
-      void performLogout();
-      return;
-    }
-    Alert.alert('Logout', 'Are you sure you want to log out?', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Logout', onPress: performLogout, style: 'destructive' },
-    ]);
+    void confirm({
+      title: 'Log out?',
+      message: 'You will need to sign in again to enter contests or claim rewards.',
+      confirmLabel: 'Log out',
+      destructive: true,
+      onConfirm: performLogout,
+    });
   };
 
   const renderHeader = () => (
@@ -145,6 +153,7 @@ export default function SettingScreen() {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]}>
+      {confirmDialog}
       {renderHeader()}
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.contentContainer}>
         {sectionTitle('ACCOUNT')}

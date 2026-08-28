@@ -77,8 +77,22 @@ export default function LoginWelcomeScreen() {
         setIsConfigLoading(false);
       },
       30000,
+      // Without this the failure path never cleared `isConfigLoading`, so any
+      // config fetch error — CORS, offline, API blip — left this screen on
+      // "Connecting…" FOREVER with no error and no way to sign in.
+      () => setIsConfigLoading(false),
     );
-    return () => unsubscribe();
+
+    // Belt and braces: `poll` only reports an error once a request actually
+    // fails. A request that never settles reports nothing, so bound the gate by
+    // time too. The defaults above are permissive, so the worst case is briefly
+    // offering a provider the admin has disabled — infinitely better than
+    // locking every user out of the app.
+    const gate = setTimeout(() => setIsConfigLoading(false), 2500);
+    return () => {
+      clearTimeout(gate);
+      unsubscribe();
+    };
   }, []);
 
   const handleSocialLogin = async (provider: string) => {

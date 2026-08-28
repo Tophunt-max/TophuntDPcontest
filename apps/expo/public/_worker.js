@@ -272,12 +272,43 @@ const RESERVED = new Set([
   'firebase-messaging-sw.js',
 ]);
 
+/**
+ * Hosts that serve this build but are not the canonical site.
+ *
+ * The project's own `*.pages.dev` alias stays publicly reachable forever, and it
+ * is NOT a working deployment: the API's CORS allow-list is pinned to
+ * `tophunt.in` and `admin.tophunt.in`, so the app loads there and then every
+ * request is blocked by the browser. The visible result was the login screen
+ * stuck on "Connecting…" with no error — the app appears broken rather than
+ * "you are on the wrong URL".
+ *
+ * Redirecting is better than re-adding the origin to the allow-list: it leaves
+ * one canonical host, removes a duplicate-content surface, and means a bookmark
+ * or an old share link lands somewhere that works.
+ *
+ * Per-commit PREVIEW deployments (`<hash>.<project>.pages.dev`) are deliberately
+ * NOT redirected — redirecting them would make it impossible to test a build
+ * before it is promoted.
+ */
+const CANONICAL_ALIASES = new Set([
+  'tophuntdpcontest-89t.pages.dev',
+  'tophuntdpcontest.pages.dev',
+]);
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = decodeURIComponent(url.pathname);
     const apiBase = (env && env.SEO_API_BASE) || DEFAULT_API_BASE;
     const origin = (env && env.SEO_SITE_ORIGIN) || DEFAULT_SITE_ORIGIN;
+
+    // --- canonical host ----------------------------------------------------
+    if (CANONICAL_ALIASES.has(url.hostname)) {
+      const target = new URL(url.pathname + url.search, origin);
+      // 301: this is permanent, and a permanent redirect is what consolidates
+      // any ranking the alias picked up onto the real host.
+      return Response.redirect(target.toString(), 301);
+    }
 
     // --- robots.txt --------------------------------------------------------
     if (path === '/robots.txt') {

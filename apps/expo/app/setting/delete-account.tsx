@@ -18,6 +18,7 @@ import { signOut } from '@/src/services/auth';
 import { emitToast } from '@/src/lib/toastBridge';
 import { reportError } from '@/src/lib/reportError';
 import { Ionicons } from '@/src/lib/icons';
+import { useConfirm } from '@/src/components/modals/ConfirmDialog';
 
 /**
  * Delete account.
@@ -80,8 +81,31 @@ export default function DeleteAccountScreen() {
     };
   }, []);
 
+  const { confirm, dialog: confirmDialog } = useConfirm();
+
   const confirmed = confirmText.trim().toUpperCase() === CONFIRM_WORD;
   const canDelete = !!eligibility?.deletable && confirmed && !deleting;
+
+  /**
+   * Last gate before an irreversible server call.
+   *
+   * Typing DELETE proves intent about the *word*; this proves intent about the
+   * *moment*, which is the one that gets mis-clicked. Deliberately a real dialog
+   * and not `Alert.alert`: a multi-button Alert is a no-op on web, so on the web
+   * build this confirmation would not have existed at all.
+   */
+  const askThenDelete = () => {
+    if (!canDelete) return;
+    void confirm({
+      title: 'Delete your account?',
+      message:
+        'This is permanent. Your profile, entries, stories and remaining coin balance are removed and cannot be restored.',
+      confirmLabel: 'Delete forever',
+      cancelLabel: 'Keep my account',
+      destructive: true,
+      onConfirm: performDelete,
+    });
+  };
 
   const performDelete = async () => {
     if (!canDelete) return;
@@ -97,11 +121,14 @@ export default function DeleteAccountScreen() {
       reportError(e, { screen: 'delete-account' });
       emitToast(e?.message || 'Could not delete your account. Please try again.', 'error');
       setDeleting(false);
+      // Rethrow so the confirmation dialog closes instead of spinning forever.
+      throw e;
     }
   };
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]}>
+      {confirmDialog}
       <View style={styles.header}>
         <BackButton size={24} color={textColor} style={styles.backButton} />
         <Text style={[styles.headerTitle, { color: textColor }]}>Delete Account</Text>
@@ -210,7 +237,7 @@ export default function DeleteAccountScreen() {
 
                 <TouchableOpacity
                   style={[styles.deleteBtn, !canDelete && styles.deleteBtnDisabled]}
-                  onPress={performDelete}
+                  onPress={askThenDelete}
                   disabled={!canDelete}
                   accessibilityRole="button"
                   accessibilityLabel="Permanently delete my account"
