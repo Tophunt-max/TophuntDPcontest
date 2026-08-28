@@ -18,6 +18,8 @@ import { matchPot, perPlayerEntryFee } from "./lib/money";
 import { deleteMediaByUrl } from "./lib/mediaDelete";
 import { deleteVsImageByPublicUrl } from "./lib/r2";
 import { newId, now } from "./lib/ids";
+import { runSeoAudit } from "./lib/seoAudit";
+import { getSeoAudit, invalidateSetting } from "./lib/settings";
 import { publish } from "./lib/publish";
 
 type Match = typeof schema.contestMatches.$inferSelect;
@@ -500,4 +502,57 @@ export async function monthlyHallOfFame(env: Env, period = previousMonthPeriod()
   // and the "monthly" ranking silently becomes an all-time cumulative one.
   await db.update(schema.users).set({ monthlyWins: 0, updatedAt: now() }).where(gt(schema.users.monthlyWins, 0));
   return { period, paid, skipped, reset: true };
+}
+
+
+// ---------------------------------------------------------------------------
+// SEO audit
+// ---------------------------------------------------------------------------
+
+/** Re-audit at most this often. */
+const SEO_AUDIT_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Refresh the SEO audit, but only if the stored one is stale.
+ *
+ * This sits on the 10-minute tick because that is the only frequent schedule the
+ * Worker has, but an audit makes ~15 HTTP requests to our own site and reads every
+ * published post, so running it every ten minutes would be pure waste — the inputs
+ * change on the order of days. The freshness guard is what makes hanging it off a
+ * fast cron acceptable.
+ *
+ * Returns a small summary rather than the whole audit: the return value is stored
+ * in `cron_runs.detail`, which is meant for a glanceable trail, and this doubles as
+ * the score history the dashboard's single stored snapshot cannot give.
+ */
+export async function seoAuditJob(
+  env: Env,
+  opts: { force?: boolean } = {},
+): Promise<{ skipped: true; ageMs: number } | { overall: number | null; critical: number; high: number; posts: number; ms: number }> {
+  if (!opts.force) {
+    const existing = await getSeoAudit(env).catch(() => null);
+    const ageMs = existing?.ranAt ? Date.now() - Number(existing.ranAt) : Infinity;
+    if (ageMs < SEO_AUDIT_INTERVAL_MS) return { skipped: true, ageMs };
+  }
+
+  const audit = await runSeoAudit(env);
+  const db = getDb(env);
+  await db
+    .insert(schema.settings)
+    .values({ id: "seoAudit", data: audit as any, updatedAt: now() })
+    .onConflictDoUpdate({
+      target: schema.settings.id,
+      set: { data: audit as any, updatedAt: now() },
+    });
+  // The settings reader caches for 60s; without this the dashboard can show the
+  // previous audit for a minute after a manual re-scan and look broken.
+  await invalidateSetting(env, "seoAudit");
+
+  return {
+    overall: audit.overall,
+    critical: audit.totals.critical,
+    high: audit.totals.high,
+    posts: audit.scope.posts,
+    ms: audit.durationMs,
+  };
 }

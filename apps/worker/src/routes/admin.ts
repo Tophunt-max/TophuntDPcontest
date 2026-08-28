@@ -16,7 +16,7 @@ import { httpsError, ApiError } from "../lib/http";
 import { timingSafeEqualSecret } from "../lib/timingSafe";
 import { verifyIdToken, bearerToken } from "../lib/firebaseAuth";
 import { assertAccountNotBlocked } from "../middleware/auth";
-import { getAppConfig, getGamificationSettings, invalidateSetting } from "../lib/settings";
+import { getAppConfig, getGamificationSettings, getSeoAudit, invalidateSetting } from "../lib/settings";
 import { deleteAuthUser, updateAuthUser, setCustomClaims, getUserByEmail } from "../lib/firebaseAdmin";
 import { createNotification } from "../lib/notify";
 import { enqueueBroadcast } from "../lib/broadcast";
@@ -24,7 +24,7 @@ import { finalizeVotes } from "../lib/voteCounter";
 import { settleRefund, settleWinner } from "../lib/contestSettlement";
 import { refundRejectedWithdrawal } from "../lib/payouts";
 import { publish } from "../lib/publish";
-import { resolveContests, monthlyHallOfFame } from "../cron";
+import { resolveContests, monthlyHallOfFame, seoAuditJob } from "../cron";
 import { newId, now } from "../lib/ids";
 import { discoverUrls, processBatch } from "../lib/importerTask";
 import { runVideoBackfillBatch } from "../lib/videoBackfill";
@@ -2795,6 +2795,33 @@ adminRoute.get("/money-health", async (c) => {
 adminRoute.get("/ops/cron-health", async (c) => {
   requireFullAdmin(c);
   return c.json(await cronHealth(c.env));
+});
+
+// ============================== SEO AUDIT ==================================
+/**
+ * Latest stored SEO audit, or `{ ranAt: null }` before the first cron run.
+ *
+ * Deliberately returns 200 even when the audit is full of critical findings — same
+ * reasoning as /health above: the panel throws on a non-2xx response and would
+ * render a request error instead of the report it is asking for.
+ */
+adminRoute.get("/seo", async (c) => {
+  requireFullAdmin(c);
+  const audit = await getSeoAudit(c.env);
+  return c.json(audit ?? { ranAt: null });
+});
+
+/**
+ * Re-scan now.
+ *
+ * A scan makes ~15 subrequests to our own public site and reads every published
+ * post, so it is a real cost — hence full-admin only, and audited.
+ */
+adminRoute.post("/seo/scan", async (c) => {
+  requireFullAdmin(c);
+  const result = await seoAuditJob(c.env, { force: true });
+  await logAudit(c, "seo.scan", "seo", null, result as Record<string, unknown>);
+  return c.json({ message: "SEO scan complete", ...result });
 });
 
 

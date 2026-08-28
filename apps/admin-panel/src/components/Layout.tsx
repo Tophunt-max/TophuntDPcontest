@@ -35,6 +35,7 @@ import {
   Menu,
   X,
   ChevronRight,
+  Search,
 } from "lucide-react";
 
 /** Short beep via Web Audio API — no asset needed. */
@@ -77,6 +78,7 @@ const nav = [
   { href: "/stories", label: "Stories", icon: Clapperboard, section: "content" },
   { href: "/comments", label: "Comments", icon: MessageCircle, section: "content" },
   { href: "/blog", label: "Blog", icon: FileText, section: "content" },
+  { href: "/seo", label: "SEO", icon: Search, section: "content" },
   { href: "/reports", label: "Reports", icon: Flag, section: "moderation" },
   { href: "/support", label: "Support Tickets", icon: MessageSquare, section: "moderation" },
   { href: "/moderation", label: "Moderation", icon: ShieldBan, section: "moderation" },
