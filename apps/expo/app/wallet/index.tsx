@@ -5,12 +5,12 @@ import {
   StyleSheet,
   FlatList,
   TouchableOpacity,
-  Alert,
   Share,
   Modal,
   ActivityIndicator,
   Dimensions,
-} from 'react-native';
+} from "react-native";
+import { Alert } from '@/src/lib/appAlert';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';

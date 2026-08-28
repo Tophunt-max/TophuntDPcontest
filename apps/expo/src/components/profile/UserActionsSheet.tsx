@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Platform, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Platform } from 'react-native';
+import { Alert } from '@/src/lib/appAlert';
 import { Ionicons } from '@/src/lib/icons';
 import { ReanimatedBottomSheet } from '@/src/components/modals/ReanimatedBottomSheet';
 import { useBlockUser, useMuteUser, useUnblockUser, useUnmuteUser } from '@/src/hooks/useProfileData';

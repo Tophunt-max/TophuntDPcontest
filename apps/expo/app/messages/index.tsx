@@ -10,9 +10,9 @@ import {
   Platform,
   Keyboard,
   Animated,
-  Alert,
   RefreshControl,
-} from 'react-native';
+} from "react-native";
+import { Alert } from '@/src/lib/appAlert';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { emitToast } from '@/src/lib/toastBridge';
 import { reportError } from '@/src/lib/reportError';

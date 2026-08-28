@@ -1,5 +1,6 @@
 import React, { useState, memo, useEffect, useCallback, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert, Pressable, ActivityIndicator, AccessibilityInfo } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Pressable, ActivityIndicator, AccessibilityInfo } from 'react-native';
+import { Alert } from '@/src/lib/appAlert';
 import { AppImage as ExpoImage } from '../ui/AppImage';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { Ionicons, MaterialCommunityIcons } from '@/src/lib/icons';

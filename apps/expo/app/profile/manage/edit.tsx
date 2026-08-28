@@ -7,12 +7,12 @@ import {
   ScrollView,
   StyleSheet,
   ActivityIndicator,
-  Alert,
   TextInput,
   Dimensions,
   KeyboardAvoidingView,
   Platform,
 } from "react-native";
+import { Alert } from '@/src/lib/appAlert';
 import { useRouter } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
 import { useReadjustablePhoto } from "@/src/components/media/useImageAdjuster";

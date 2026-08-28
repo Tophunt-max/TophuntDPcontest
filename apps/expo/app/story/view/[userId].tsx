@@ -14,12 +14,12 @@ import {
   Modal,
   TextInput,
   TouchableOpacity,
-  Alert,
   KeyboardAvoidingView,
   Platform,
   Keyboard,
   Share,
-} from 'react-native';
+} from "react-native";
+import { Alert } from '@/src/lib/appAlert';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
