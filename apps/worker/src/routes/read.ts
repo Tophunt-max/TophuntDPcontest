@@ -26,6 +26,8 @@ import {
   cachePutJson,
 } from "../lib/cache";
 import { getLiveTally, getViewerVote } from "../lib/voteCounter";
+import { rateLimit } from "../lib/rateLimit";
+import { searchTracks } from "../lib/music";
 import { assertChatMember } from "../lib/chatAuth";
 import {
   blockedUidsFor,
@@ -1633,6 +1635,37 @@ readRoute.get("/chats/:id/messages", requireAuth, async (c) => {
   return c.json(rows.map((m) => ({ id: m.id, chatId: m.chatId, senderId: m.senderId, text: m.text, createdAt: m.createdAt })));
 });
 
+
+// ================= MUSIC (story soundtracks) =================
+/**
+ * Catalogue search for the story editor's music picker.
+ *
+ * This endpoint exists because the editor could not search at all on the web: it
+ * called `itunes.apple.com` directly and the site's CSP `connect-src` does not
+ * list that host, so the browser blocked every request. The client caught the
+ * failure with a `console.error` and left the picker empty, which is what "music
+ * not working" was. `api.tophunt.in` is already an allowed origin, so proxying is
+ * what makes the feature reachable — and it adds a shared cache and one place to
+ * change provider (see lib/music.ts).
+ *
+ * `requireAuth` and a rate limit, because an unauthenticated proxy to a third
+ * party on our own domain is an open relay someone else can spend our request
+ * budget on. Only signed-in users can post a story, so only they need to search.
+ *
+ * Never fails: an unreachable provider returns an empty list, because a broken
+ * search must degrade the picker rather than break the editor.
+ */
+readRoute.get("/music/search", requireAuth, async (c) => {
+  const uid = c.get("user")!.uid;
+  await rateLimit(c.env, `music:${uid}`, 60, 60);
+  const q = c.req.query("q") || "";
+  const limit = parseInt(c.req.query("limit") || "20", 10) || 20;
+  const items = await searchTracks(c.env, q, limit);
+  // Publicly cacheable: the response is identical for every user (no per-viewer
+  // field), and lib/music.ts already caches upstream in KV.
+  c.header("Cache-Control", "public, max-age=600");
+  return c.json({ items });
+});
 
 // ================= COMMENTS (posts, matches or blog articles) =================
 readRoute.get("/comments", optionalAuth, async (c) => {

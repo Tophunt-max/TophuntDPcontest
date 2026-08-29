@@ -80,7 +80,14 @@ export const createStoryRecord = async (
   overlayText?: string | null,
   textPosition?: { x: number; y: number } | null,
   mentions?: string[],
-) => {
+  /**
+   * Chosen soundtrack. ONLY the track id is sent: the Worker re-resolves the
+   * title, artist, artwork and preview URL from the provider and stores those.
+   * Sending a preview URL from here would let any client have an arbitrary URL
+   * loaded by every viewer's browser. See apps/worker/src/lib/music.ts.
+   */
+  musicTrackId?: string | null,
+): Promise<{ storyId: string; musicAttached: boolean }> => {
   const user = auth.currentUser;
   if (!user) throw new Error('User not authenticated');
   const data: any = await callApi('createStory', {
@@ -90,8 +97,14 @@ export const createStoryRecord = async (
     overlayText,
     textPosition,
     mentions,
+    musicTrackId: musicTrackId || undefined,
   });
-  if (data && data.success) return data.storyId;
+  if (data && data.success) {
+    // `musicAttached` is false when a track WAS chosen but the provider lookup
+    // failed. The story is published either way — the caller decides whether to
+    // mention the loss, which is better than silently posting a silent story.
+    return { storyId: data.storyId, musicAttached: !!data.musicAttached };
+  }
   throw new Error(data?.message || 'Failed to create story record on server.');
 };
 

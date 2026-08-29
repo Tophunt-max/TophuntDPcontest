@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -20,34 +20,33 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { AppImage as Image } from '@/src/components/ui/AppImage';
 import { useVideoPlayer, VideoView } from 'expo-video';
+import { useAudioPlayer } from 'expo-audio';
 import { Ionicons } from '@/src/lib/icons';
 import { uploadToR2 } from '@/src/lib/uploadToR2';
 import { optimizeImageForUpload } from '@/src/lib/imageOptimize';
 import { createStoryRecord, searchUsers } from '@/src/services/stories/storyService';
+import { searchMusic, DEFAULT_MUSIC_QUERY, type MusicTrack } from '@/src/services/stories/musicService';
 import { uploadVideoToBunny } from '@/src/services/video/bunnyUpload';
 import { useQueryClient } from '@tanstack/react-query';
 import Svg, { Circle } from 'react-native-svg';
-import { auth } from '@/src/services/firebase/initFirebase';
-import { 
-    Gallery_Icon, 
-    Sticker_Icon, 
-    Music_Icon_Story, 
-    Close_Circle_Icon, 
-    Music_Play_Icon, 
-    Music_Pause_Icon,
-    Mention_Icon
-} from '@/assets/svgs';
+import { LinearGradient } from 'expo-linear-gradient';
+// Only the icons that are still hand-rolled SVGs. The toolbar and the music
+// transport now come from src/lib/icons.tsx — see the comment on the toolbar.
+import { Gallery_Icon, Close_Circle_Icon } from '@/assets/svgs';
 import { PanGestureHandler } from 'react-native-gesture-handler';
 import Animated, { useSharedValue, useAnimatedStyle, withSpring, runOnJS } from 'react-native-reanimated';
 import { useReadjustablePhoto } from '@/src/components/media/useImageAdjuster';
 import { validateVideo, STORY_MAX_VIDEO_SEC } from '@/src/lib/videoValidation';
+import { CloseIcon } from '@/src/components/ui/CloseIcon';
 
 /** Story frame aspect (width / height) — matches the 9:16 story viewer. */
 const STORY_ASPECT = 9 / 16;
-import { CloseIcon } from '@/src/components/ui/CloseIcon';
 
 const { width, height } = Dimensions.get('window');
 const STICKERS = ['🔥', '❤️', '😂', '😍', '✨', '💯', '📍', '🎂', '🎉', '🍕', '🌈', '👑'];
+/** One size for every toolbar icon, so the row reads as a single set. */
+const ICON_SIZE = 26;
+const ACCENT = '#ff4466';
 
 const CircularProgress = ({ progress }: { progress: number }) => {
   const size = 120;
@@ -86,9 +85,10 @@ export default function AddStoryScreen() {
   // Music States
   const [showMusicPicker, setShowMusicPicker] = useState(false);
   const [musicSearch, setMusicSearch] = useState('');
-  const [musicList, setMusicList] = useState<any[]>([]);
+  const [musicList, setMusicList] = useState<MusicTrack[]>([]);
   const [isLoadingMusic, setIsLoadingMusic] = useState(false);
-  const [selectedMusic, setSelectedMusic] = useState<any | null>(null);
+  const [musicError, setMusicError] = useState<string | null>(null);
+  const [selectedMusic, setSelectedMusic] = useState<MusicTrack | null>(null);
   const [isMusicPlaying, setIsMusicPlaying] = useState(true);
 
   // Mention State
@@ -123,22 +123,42 @@ export default function AddStoryScreen() {
     player.play();
   });
 
-  const musicPlayer = useVideoPlayer(selectedMusic?.previewUrl || '', (p) => {
-      p.loop = true;
-      if (isMusicPlaying) p.play();
-      else p.pause();
-  });
+  /**
+   * Preview of the chosen track.
+   *
+   * `expo-audio`, not a 0x0 `VideoView` fed to `useVideoPlayer`. The old approach
+   * mounted a hidden video surface to play an audio file, which meant the
+   * soundtrack was tied to a view in the tree, and it also created a player for
+   * `''` whenever nothing was selected.
+   *
+   * Autoplay: choosing a track is itself a user gesture, so the browser's
+   * autoplay policy is satisfied by the time this is asked to play. It is only
+   * ever started from the picker's own `onPress`, never on mount.
+   */
+  const musicPlayer = useAudioPlayer(selectedMusic ? { uri: selectedMusic.previewUrl } : null);
 
   useEffect(() => {
       if (selectedMusic) {
+          // A story cannot have two soundtracks. Muting the clip is what makes
+          // the chosen track audible rather than layered under the original.
           player.muted = true;
+          musicPlayer.loop = true;
           if (isMusicPlaying) musicPlayer.play();
           else musicPlayer.pause();
       } else {
           player.muted = false;
-          musicPlayer.pause();
+          try { musicPlayer.pause(); } catch { /* nothing loaded yet */ }
       }
   }, [selectedMusic, isMusicPlaying, player, musicPlayer]);
+
+  // Stop the preview when leaving the screen. Without this the track keeps
+  // playing over whatever the user navigated to — the single most obvious way an
+  // audio feature feels broken.
+  useEffect(() => {
+      return () => {
+          try { musicPlayer.pause(); } catch { /* already gone */ }
+      };
+  }, [musicPlayer]);
 
   // Mention Search Logic
   useEffect(() => {
@@ -178,33 +198,36 @@ export default function AddStoryScreen() {
       setIsEditingText(true);
   };
 
-  const searchMusic = async (query: string) => {
-      if (!query) return;
+  /**
+   * Run a catalogue search.
+   *
+   * The previous version called `itunes.apple.com` directly — which the site's
+   * CSP blocks on the web — and swallowed the failure into `console.error`, so
+   * the picker sat empty forever with nothing to react to. It now goes through
+   * our Worker and, crucially, SHOWS what happened: a failed request is a
+   * message with a Retry, not an empty list that looks like "no results".
+   */
+  const runMusicSearch = useCallback(async (query: string) => {
+      const q = query.trim();
+      if (!q) { setMusicList([]); setMusicError(null); return; }
       setIsLoadingMusic(true);
+      setMusicError(null);
       try {
-          const response = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&limit=20`);
-          const data = await response.json();
-          const results = data.results.map((item: any) => ({
-              id: item.trackId.toString(),
-              title: item.trackName,
-              artist: item.artistName,
-              cover: item.artworkUrl100,
-              previewUrl: item.previewUrl
-          }));
-          setMusicList(results);
-      } catch (error) {
-          console.error("Music search error:", error);
+          setMusicList(await searchMusic(q));
+      } catch (e: any) {
+          setMusicList([]);
+          setMusicError(e?.message || 'Could not load music. Check your connection.');
       } finally {
           setIsLoadingMusic(false);
       }
-  };
+  }, []);
 
   useEffect(() => {
       const delaySearch = setTimeout(() => {
-          if (musicSearch) searchMusic(musicSearch);
-      }, 500);
+          if (musicSearch.trim()) void runMusicSearch(musicSearch);
+      }, 400);
       return () => clearTimeout(delaySearch);
-  }, [musicSearch]);
+  }, [musicSearch, runMusicSearch]);
 
   const animatedTextStyle = useAnimatedStyle(() => ({ transform: [{ translateX: textX.value }, { translateY: textY.value }], position: 'absolute', zIndex: 100 }));
   const animatedStickerStyle = useAnimatedStyle(() => ({ transform: [{ translateX: stickerX.value }, { translateY: stickerY.value }], position: 'absolute', zIndex: 101 }));
@@ -221,7 +244,7 @@ export default function AddStoryScreen() {
       if (show) { 
           setShowMusicPicker(true); 
           musicSheetY.value = withSpring(0);
-          if (musicList.length === 0) searchMusic('Top Hits');
+          if (musicList.length === 0) void runMusicSearch(DEFAULT_MUSIC_QUERY);
       } else { 
           musicSheetY.value = withSpring(height, {}, () => { runOnJS(setShowMusicPicker)(false); }); 
       }
@@ -323,19 +346,31 @@ export default function AddStoryScreen() {
       }
 
       const textPos = { x: textX.value / width, y: textY.value / height };
-      
-      const storyId = await createStoryRecord(
-          mediaUrl, 
-          media.type, 
-          visibility, 
+
+      const { musicAttached } = await createStoryRecord(
+          mediaUrl,
+          media.type,
+          visibility,
           storyText || null,
           storyText ? textPos : null,
-          mentions
-      ); 
-      
-      console.log("Story Record Created:", storyId);
+          mentions,
+          // Only the id. The server resolves and stores the rest.
+          selectedMusic?.id ?? null,
+      );
+
+      // Stop the preview before navigating, or it plays on over the home feed.
+      try { musicPlayer.pause(); } catch { /* nothing loaded */ }
       await queryClient.invalidateQueries({ queryKey: ['stories'] });
       router.replace('/home');
+      // Told AFTER the story is safely published, and only when a track was
+      // actually chosen and lost. Silently publishing a silent story is what made
+      // this feature feel broken rather than degraded.
+      if (selectedMusic && !musicAttached) {
+        Alert.alert(
+          'Posted without music',
+          'Your story is up, but the track could not be attached. You can delete it and try again.',
+        );
+      }
     } catch (error: any) {
       console.error("Story Creation Error:", error);
       Alert.alert("Upload Failed", error.message);
@@ -369,6 +404,21 @@ export default function AddStoryScreen() {
       {/* Full-screen crop overlay; renders nothing until a photo is being adjusted. */}
       {adjusterHost}
 
+      {/*
+        Scrim behind the toolbar. The bar is absolutely positioned over the photo
+        and its controls are white, so on any light image the whole row — close,
+        the tools and "Next" — became invisible. A top-down gradient keeps them
+        legible without painting a hard band across the frame.
+        `pointerEvents="none"` so it never eats a tap meant for the toolbar.
+      */}
+      {!isUploading && (
+        <LinearGradient
+          colors={['rgba(0,0,0,0.55)', 'rgba(0,0,0,0)']}
+          style={styles.headerScrim}
+          pointerEvents="none"
+        />
+      )}
+
       {!isUploading && (
         <SafeAreaView style={styles.header}>
           <TouchableOpacity
@@ -379,24 +429,62 @@ export default function AddStoryScreen() {
             <CloseIcon size={30} color="white" />
           </TouchableOpacity>
           
+          {/*
+            Toolbar icons come from the app's own icon registry (src/lib/icons.tsx),
+            not from assets/svgs. Three reasons the hand-rolled SVGs were wrong here:
+
+              - every one of them hardcodes `stroke="white"` and accepts no colour,
+                so they cannot respond to a state (active/inactive) or a background;
+              - they were a mismatched set — a music note, a plain smiley and a
+                person outline at different optical weights, which is why the row
+                read as a random assortment of shapes;
+              - the crop button used `<Ionicons name="crop-outline">`, a name that
+                was NOT in the registry, so it silently rendered the blank-Circle
+                fallback. scripts/audit-icon-names.mjs now fails CI on that class
+                of bug; it found the same break on two other screens.
+
+            Each button also carries a visible-on-press active tint and an
+            accessibility label — they had neither, and an unlabelled icon-only
+            control is unusable with a screen reader.
+          */}
           {media && (
               <View style={styles.topTools}>
                   {media.type === 'image' && canReadjust && (
                     <TouchableOpacity onPress={handleReadjust} style={styles.toolBtn} accessibilityRole="button" accessibilityLabel="Adjust photo">
-                        <Ionicons name="crop-outline" size={26} color="white" />
+                        <Ionicons name="crop-outline" size={ICON_SIZE} color="white" />
                     </TouchableOpacity>
                   )}
-                  <TouchableOpacity onPress={() => toggleMusicSheet(true)} style={styles.toolBtn}>
-                      <Music_Icon_Story width={28} height={28} />
+                  <TouchableOpacity
+                    onPress={() => toggleMusicSheet(true)}
+                    style={styles.toolBtn}
+                    accessibilityRole="button"
+                    accessibilityLabel={selectedMusic ? `Change music, currently ${selectedMusic.title}` : 'Add music'}
+                  >
+                      <Ionicons name="musical-notes" size={ICON_SIZE} color={selectedMusic ? ACCENT : 'white'} />
                   </TouchableOpacity>
-                  <TouchableOpacity onPress={() => toggleStickerSheet(true)} style={styles.toolBtn}>
-                      <Sticker_Icon width={28} height={28} />
+                  <TouchableOpacity
+                    onPress={() => toggleStickerSheet(true)}
+                    style={styles.toolBtn}
+                    accessibilityRole="button"
+                    accessibilityLabel={selectedSticker ? 'Change sticker' : 'Add a sticker'}
+                  >
+                      <Ionicons name="happy" size={ICON_SIZE} color={selectedSticker ? ACCENT : 'white'} />
                   </TouchableOpacity>
-                  <TouchableOpacity onPress={startMentionMode} style={styles.toolBtn}>
-                      <Mention_Icon width={28} height={28} />
+                  <TouchableOpacity
+                    onPress={startMentionMode}
+                    style={styles.toolBtn}
+                    accessibilityRole="button"
+                    accessibilityLabel="Mention someone"
+                  >
+                      <Ionicons name="at" size={ICON_SIZE} color="white" />
                   </TouchableOpacity>
-                  <TouchableOpacity onPress={() => setIsEditingText(true)} style={styles.toolBtn}>
-                      <Text style={styles.aaText}>Aa</Text>
+                  <TouchableOpacity
+                    onPress={() => setIsEditingText(true)}
+                    style={styles.toolBtn}
+                    accessibilityRole="button"
+                    accessibilityLabel={storyText ? 'Edit text' : 'Add text'}
+                  >
+                      <Ionicons name="text" size={ICON_SIZE} color={storyText ? ACCENT : 'white'} />
                   </TouchableOpacity>
               </View>
           )}
@@ -444,7 +532,6 @@ export default function AddStoryScreen() {
           <View style={styles.previewContainer}>
             {media.type === 'image' ? <Image source={{ uri: media.uri }} style={styles.previewMedia} contentFit="cover" /> : <VideoView player={player} style={styles.previewMedia} contentFit="cover" />}
             
-            <VideoView player={musicPlayer} style={{ width: 0, height: 0, position: 'absolute' }} />
 
             {/* Text Overlay */}
             {storyText !== '' && !isEditingText && !isUploading && (
@@ -477,10 +564,23 @@ export default function AddStoryScreen() {
                 <PanGestureHandler onGestureEvent={(e) => { musicX.value = e.nativeEvent.absoluteX - 100; musicY.value = e.nativeEvent.absoluteY - 30; }}>
                     <Animated.View style={animatedMusicStyle}>
                         <View style={styles.musicSticker}>
-                            <TouchableOpacity onPress={() => setIsMusicPlaying(!isMusicPlaying)}>
-                                {isMusicPlaying ? <Music_Pause_Icon width={40} height={40} /> : <Music_Play_Icon width={40} height={40} />}
+                            {/*
+                              Registry icons rather than the music_play/music_pause
+                              SVGs, which baked in `#FF3B30` — a different red from
+                              the app's `#ff4466` accent, so the transport button
+                              never quite matched anything around it.
+                            */}
+                            <TouchableOpacity
+                              onPress={() => setIsMusicPlaying(!isMusicPlaying)}
+                              style={styles.musicTransport}
+                              accessibilityRole="button"
+                              accessibilityLabel={isMusicPlaying ? 'Pause preview' : 'Play preview'}
+                            >
+                                <Ionicons name={isMusicPlaying ? 'pause' : 'play'} size={20} color="#fff" />
                             </TouchableOpacity>
-                            <Image source={{ uri: selectedMusic.cover }} style={styles.musicCover} />
+                            {selectedMusic.artworkUrl
+                              ? <Image source={{ uri: selectedMusic.artworkUrl }} style={styles.musicCover} />
+                              : <View style={[styles.musicCover, styles.musicThumbFallback]}><Ionicons name="musical-notes" size={18} color="#999" /></View>}
                             <View style={{ flex: 1 }}>
                                 <Text style={styles.musicTitle} numberOfLines={1}>{selectedMusic.title}</Text>
                                 <Text style={styles.musicArtist} numberOfLines={1}>{selectedMusic.artist}</Text>
@@ -553,13 +653,59 @@ export default function AddStoryScreen() {
                             <Ionicons name="search" size={20} color="#999" />
                             <TextInput style={styles.musicSearchInput} placeholder="Search music..." value={musicSearch} onChangeText={setMusicSearch} />
                         </View>
-                        <FlatList data={musicList} keyExtractor={item => item.id} renderItem={({ item }) => (
-                            <TouchableOpacity style={styles.musicItem} onPress={() => { setSelectedMusic(item); setIsMusicPlaying(true); toggleMusicSheet(false); }}>
-                                <Image source={{ uri: item.cover }} style={styles.musicThumb} />
+                        <FlatList
+                          data={musicList}
+                          keyExtractor={item => item.id}
+                          keyboardShouldPersistTaps="handled"
+                          renderItem={({ item }) => (
+                            <TouchableOpacity
+                              style={styles.musicItem}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Use ${item.title} by ${item.artist}`}
+                              onPress={() => {
+                                // Selecting IS the user gesture that satisfies the
+                                // browser's autoplay policy, so the preview may
+                                // start from here — but never on mount.
+                                setSelectedMusic(item);
+                                setIsMusicPlaying(true);
+                                toggleMusicSheet(false);
+                              }}
+                            >
+                                {item.artworkUrl
+                                  ? <Image source={{ uri: item.artworkUrl }} style={styles.musicThumb} />
+                                  : <View style={[styles.musicThumb, styles.musicThumbFallback]}><Ionicons name="musical-notes" size={20} color="#999" /></View>}
                                 <View style={{ flex: 1 }}><Text style={styles.musicItemTitle} numberOfLines={1}>{item.title}</Text><Text style={styles.musicItemArtist} numberOfLines={1}>{item.artist}</Text></View>
-                                <Ionicons name="play-circle" size={30} color="#ff4466" />
+                                <Ionicons name="play-circle" size={30} color={ACCENT} />
                             </TouchableOpacity>
-                        )} ListEmptyComponent={isLoadingMusic ? <ActivityIndicator color="#ff4466" /> : <Text style={styles.emptyText}>No music found</Text>} />
+                          )}
+                          /*
+                            Three distinct states, where there used to be one. The old
+                            empty component said "No music found" for a blocked
+                            request, a provider outage and a genuinely obscure search
+                            term alike — so the CSP failure looked like a search
+                            result, which is why nobody could tell music was broken.
+                          */
+                          ListEmptyComponent={
+                            isLoadingMusic ? (
+                              <ActivityIndicator color={ACCENT} style={{ marginTop: 40 }} />
+                            ) : musicError ? (
+                              <View style={styles.musicStateBox}>
+                                <Text style={styles.emptyText}>{musicError}</Text>
+                                <TouchableOpacity
+                                  onPress={() => runMusicSearch(musicSearch.trim() || DEFAULT_MUSIC_QUERY)}
+                                  style={styles.musicRetryBtn}
+                                  accessibilityRole="button"
+                                >
+                                  <Text style={styles.musicRetryText}>Retry</Text>
+                                </TouchableOpacity>
+                              </View>
+                            ) : (
+                              <Text style={styles.emptyText}>
+                                {musicSearch.trim() ? `No results for "${musicSearch.trim()}"` : 'Search for a song'}
+                              </Text>
+                            )
+                          }
+                        />
                     </Animated.View>
                 </View>
             </Modal>
@@ -573,9 +719,13 @@ export default function AddStoryScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: 'black' },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 15, paddingVertical: 10, zIndex: 10, position: 'absolute', top: 0, width: '100%' },
-  topTools: { flexDirection: 'row', alignItems: 'center', gap: 20 },
-  toolBtn: { padding: 5 },
-  aaText: { color: 'white', fontSize: 24, fontFamily: 'Urbanist-Bold' },
+  headerScrim: { position: 'absolute', top: 0, left: 0, right: 0, height: 140, zIndex: 9 },
+  topTools: { flexDirection: 'row', alignItems: 'center', gap: 18 },
+  // 44px minimum touch target. These were `padding: 5` around a 26px glyph, i.e.
+  // 36px — under the platform guidance on both iOS and Android, and noticeably
+  // fiddly next to each other in a row.
+  toolBtn: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
+  musicTransport: { width: 34, height: 34, borderRadius: 17, backgroundColor: ACCENT, alignItems: 'center', justifyContent: 'center' },
   nextButton: { paddingHorizontal: 15 },
   nextButtonText: { color: '#0095f6', fontSize: 18, fontWeight: 'bold' },
   disabledButton: { opacity: 0.5 },
@@ -639,5 +789,9 @@ const styles = StyleSheet.create({
   musicCover: { width: 40, height: 40, borderRadius: 6, marginRight: 10 },
   musicTitle: { fontSize: 14, fontFamily: 'Urbanist-Bold', color: '#000' },
   musicArtist: { fontSize: 12, color: '#666', fontFamily: 'Urbanist-Medium' },
-  emptyText: { textAlign: 'center', color: '#999', marginTop: 50, fontFamily: 'Urbanist-Medium' }
+  emptyText: { textAlign: 'center', color: '#999', marginTop: 50, fontFamily: 'Urbanist-Medium', paddingHorizontal: 20 },
+  musicStateBox: { alignItems: 'center', gap: 16 },
+  musicThumbFallback: { backgroundColor: '#F0F0F0', alignItems: 'center', justifyContent: 'center' },
+  musicRetryBtn: { minHeight: 44, paddingHorizontal: 24, justifyContent: 'center', borderRadius: 22, backgroundColor: ACCENT },
+  musicRetryText: { color: '#fff', fontFamily: 'Urbanist-Bold', fontSize: 15 }
 });

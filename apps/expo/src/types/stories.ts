@@ -40,6 +40,19 @@ export interface Story {
   overlayText?: string;
   textPosition?: { x: number; y: number } | null;
   mentions?: string[];
+  // --- soundtrack ---
+  // Resolved SERVER-SIDE from the track id the author picked; the client never
+  // supplies these (apps/worker/src/lib/music.ts explains why). All five are
+  // absent on stories with no music, which is most of them.
+  //
+  // `musicPreviewUrl` is a third-party CDN link and CAN be dead by the time a
+  // story is watched. Treat that as "no music" and still show the story — it is
+  // not broken because its audio is gone.
+  musicTrackId?: string | null;
+  musicTitle?: string | null;
+  musicArtist?: string | null;
+  musicArtworkUrl?: string | null;
+  musicPreviewUrl?: string | null;
   // --- contest stories ---
   /** Absent on older rows. */
   type?: StoryKind;
