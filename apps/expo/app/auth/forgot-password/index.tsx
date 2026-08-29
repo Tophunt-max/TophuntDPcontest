@@ -18,8 +18,7 @@ import { ForgotPassword_Light, ForgotPassword_Dark, Sms_Icon, Email_Icon } from 
 import { BackButton } from "@/src/components/ui/BackButton";
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useToast } from "@/src/components/toast/ToastProvider";
-import { sendPasswordResetEmail } from "firebase/auth";
-import { auth } from "@/src/services/firebase/initFirebase";
+import { requestPasswordReset, describeNoPasswordAccount } from "@/src/services/auth/passwordReset";
 import { callApi } from '@/src/services/api'; // Consolidated API used
 import { FormInput } from "@/src/components/inputs/FormInput";
 import { useForm } from "react-hook-form";
@@ -60,31 +59,38 @@ export default function ForgotPasswordScreen() {
         return;
     }
 
-    // SECURITY: never reveal whether an account exists (account enumeration).
-    // We no longer pre-check the user via getUserByIdentifier and no longer show
-    // a "User not found" error. Both channels behave identically for any input:
-    //  - email → Firebase sendPasswordResetEmail (silently no-ops for unknown
-    //    addresses),
-    //  - phone → the Worker only sends an SMS when the number is registered but
-    //    always returns success, so we proceed to the OTP screen regardless.
+    // The PHONE channel still hides existence, because the Worker genuinely does
+    // not tell us: it only sends an SMS for a registered number but always
+    // returns success, so there is nothing to report either way.
+    //
+    // The EMAIL channel no longer hides it. Firebase Email Enumeration Protection
+    // is off on this project, so anyone can enumerate accounts directly with the
+    // API key that ships in the bundle — the silence protected nothing, while
+    // costing every user who mistyped their address or signed up with Google the
+    // ability to find out why no mail arrived. See services/auth/passwordReset.ts
+    // for the evidence and for how this stays correct if protection is enabled.
     try {
         if (activeTab === "email") {
-            await sendPasswordResetEmail(auth, data.email).catch((e) => {
-                // Suppress user-not-found so existence isn't leaked; surface only
-                // genuine client errors (e.g. malformed email / network).
-                if (e?.code && e.code !== "auth/user-not-found") throw e;
+            const outcome = await requestPasswordReset(data.email);
+            if (outcome.status === "no-password-account") {
+                // Keep the user on this screen: the fix is to change what they
+                // typed or to use a different sign-in method, and both happen
+                // here. Sending them to a "check your email" screen would be the
+                // original bug.
+                const message = describeNoPasswordAccount(outcome.email, outcome.providers);
+                setError("email", { type: "manual", message });
+                addToast(message, "error");
+                return;
+            }
+            // Firebase accepted it, so this is now a statement of fact rather
+            // than a hedge. The address is carried through so the confirmation
+            // screen can show it — a typo is invisible otherwise — and so a
+            // resend does not need it retyped.
+            addToast(`Reset link sent to ${outcome.email}.`, "success");
+            router.push({
+                pathname: "/auth/forgot-password/success",
+                params: { email: outcome.email },
             });
-            // Deliberately "if" and not "has been sent": Firebase only sends when
-            // the address has a PASSWORD credential, so a user who signed up with
-            // Google, Apple or phone gets nothing — and with email-enumeration
-            // protection on, the call succeeds either way and we genuinely do not
-            // know. Claiming delivery we cannot observe is what sent people to
-            // check an inbox that was never going to receive anything.
-            addToast(
-              "If that email has a password account, a reset link is on its way. Signed up with Google, Apple or phone? Use that method to sign in.",
-              "info",
-            );
-            router.push("/auth/forgot-password/success");
         } else {
             await callApi('sendOtpToPhone', { phone: data.phoneNumber });
             router.push({
