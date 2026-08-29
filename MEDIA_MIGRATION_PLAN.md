@@ -79,6 +79,25 @@ is free.
 
 ## 2.3 Image optimization is fully built but unused, and cannot work yet
 
+> **RESOLVED.** Both problems below are fixed and Transformations is live.
+> Problem 1 is stale: the Expo client now reads the variant fields in ~10 places
+> (`PostCard.tsx`, `leaderboard.tsx`, `StoryItem.tsx`, `connections.tsx`,
+> `blog/index.tsx`, `vsStory.ts`, …), each with an `|| mediaUrl` fallback.
+> Problem 2 is fixed by the domain: `MEDIA_TRANSFORMATIONS = "true"`, verified on
+> production by the `cf-resized: … f=true` response header. Two things were also
+> found while enabling it, both now fixed:
+>
+> - Urls on a legacy base were excluded from optimisation *permanently*, because
+>   `imgVariant` only matched the current base. They are now canonicalised first
+>   (`lib/r2.ts#canonicalMediaUrl`), so optimisation no longer waits on the manual
+>   D1 backfill.
+> - The presets used `fit=cover`, which **upscales** a source narrower than the
+>   target. On a real 645x1440 portrait entry the 1080 preset was 84,436 B vs
+>   50,638 B with `scale-down` — 67% larger and blurrier, on the most common shape
+>   in a DP contest. All three presets now use `scale-down`.
+>
+> See `PRODUCTION_DOMAINS.md` §6.
+
 `apps/worker/src/lib/media.ts` provides `thumbUrl` (320px), `optimizedUrl` (1080px)
 and `avatarUrl` (128px), and `routes/read.ts` attaches the results as
 `mediaUrlThumb`, `mediaUrlOptimized`, `profileImageUrlThumb` and `imageThumb` in 12+
@@ -513,10 +532,14 @@ videos it can actually see, and only until they report ready or failed.
 
 ## Not done
 
-- **Phase 0 steps 1-3** (attach `media.tophunt.in` to the bucket, repoint
-  `R2_PUBLIC_BASE_URL`, enable Transformations) — dashboard/DNS work. The var is
-  deliberately **not** flipped: doing so before DNS is live would break every
-  image and video.
+- ~~**Phase 0 steps 1-3**~~ — **DONE.** `media.tophunt.in` is attached and serving
+  (`curl -I` = 200), `R2_PUBLIC_BASE_URL` points at it, Transformations is enabled
+  on the zone and `MEDIA_TRANSFORMATIONS = "true"`. Verified against production
+  rather than assumed — the `cf-resized` response header is the proof. The D1
+  backfill (`scripts/media-domain-backfill.sql`) is still worth running, but it is
+  no longer a prerequisite for delivery: the read path canonicalises legacy urls
+  onto the media domain, so the backfill is data hygiene now. `PRODUCTION_DOMAINS.md`
+  §5 and §6.
 - **Phase 1c** — now **done client-side** instead. The plan put the max-dimension
   cap on `POST /upload`, but a Worker cannot resize an image without
   Transformations or the Images binding, both of which are blocked on the domain
@@ -614,5 +637,8 @@ Notes worth keeping in mind when touching this code:
 - **A "Clear cache" action** — `clearVideoCache()` and `videoCacheSize()` exist and
   are unused; they need a settings screen, and `clearVideoCacheAsync` only works
   when no player is active.
-- **Flipping `MEDIA_TRANSFORMATIONS`** once the media domain is live, which turns
-  the already-adopted `*Thumb` fields into real 320px variants.
+- ~~**Flipping `MEDIA_TRANSFORMATIONS`**~~ — **DONE**, see "Not done" above and
+  `PRODUCTION_DOMAINS.md` §6. Remaining media work is now: run the D1 backfill
+  (hygiene), decide on an R2/zone cache rule for `contest-banners/images/` (new
+  uploads bypass the proxy's `no-store`), and re-import the blog images the
+  importer left on Wayback/`i0.wp.com`, which no backfill can move.

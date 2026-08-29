@@ -7,6 +7,12 @@ export interface BlogPost {
   excerpt?: string;
   content?: string;
   coverImageUrl?: string;
+  /**
+   * Card-sized variant of `coverImageUrl` from the Worker. Identical to the full
+   * url when Transformations is off, so always read it as
+   * `coverImageUrlThumb || coverImageUrl`.
+   */
+  coverImageUrlThumb?: string;
   category?: string;
   tags?: string[];
   author?: string;

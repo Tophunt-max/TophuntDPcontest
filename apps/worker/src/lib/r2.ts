@@ -264,6 +264,66 @@ export function ownedMediaBases(env: Env): string[] {
 }
 
 /**
+ * The same object's url on the CURRENT media base, for a url on any base we own.
+ * Anything else — third-party hosts, malformed strings — is returned untouched.
+ *
+ * Why this exists
+ * ---------------
+ * `ownedMediaBases` fixed the WRITE side of a domain cutover (deletes keep
+ * working on both hosts). This is the READ side of the same problem. Urls are
+ * stored absolute, so a row written before the cutover still names the Worker
+ * proxy, and two things follow from that which no amount of waiting fixes:
+ *
+ *  1. `/cdn-cgi/image/` cannot resolve on the old base (not a zone root — see
+ *     lib/media.ts#transformationsAvailable), so every pre-cutover image was
+ *     permanently excluded from Transformations. A 66 KB avatar rendered into a
+ *     96px circle, forever, because of where its url happened to point.
+ *  2. Every byte still costs a Worker invocation, because it routes through the
+ *     `/media/*` proxy instead of the CDN.
+ *
+ * Both are properties of the STRING, not of the object: the key is identical and
+ * the bucket is the same one, so the current base serves the very same bytes.
+ * Rewriting at the boundary therefore decouples optimisation and egress cost
+ * from `scripts/media-domain-backfill.sql`, which is deliberately manual and may
+ * not have run yet. The backfill remains worth running — it makes what is stored
+ * canonical, so this function stops being load-bearing — but nothing waits on it.
+ *
+ * Deliberately narrow: only the `ownedMediaBases` prefixes are rewritten, by
+ * plain string surgery. The `*.r2.dev` / `*.r2.cloudflarestorage.com` shapes that
+ * `mediaKeyFromPublicUrl` also tolerates are left alone, because recovering a key
+ * from those requires percent-decoding, and re-encoding it into a new url is a
+ * way to corrupt keys containing `%` or `+` for no benefit — they are rare, and
+ * deletes already handle them.
+ */
+export function canonicalMediaUrl(env: Env, publicUrl: string | null | undefined): string | null | undefined {
+  if (!publicUrl || typeof publicUrl !== "string") return publicUrl;
+
+  // NOT `ownedMediaBases()[0]`: that list drops malformed entries, so if
+  // R2_PUBLIC_BASE_URL were empty or unparseable the first element would be a
+  // LEGACY base and this would rewrite good urls onto the old host — the exact
+  // inversion of the intent. Resolve the target independently and bail without it.
+  const current = String(env.R2_PUBLIC_BASE_URL ?? "")
+    .trim()
+    .replace(/\/+$/, "");
+  if (!current) return publicUrl;
+  try {
+    new URL(current);
+  } catch {
+    return publicUrl;
+  }
+
+  for (const base of ownedMediaBases(env)) {
+    // The trailing slash matters: without it `https://media.tophunt.in` would
+    // also prefix-match a lookalike host like `https://media.tophunt.in.evil.example/x`.
+    if (!publicUrl.startsWith(`${base}/`)) continue;
+    const key = publicUrl.slice(base.length + 1);
+    if (!key) return publicUrl;
+    return `${current}/${key}`;
+  }
+  return publicUrl;
+}
+
+/**
  * Return the R2 key for a url that is BOTH owned by this deployment (any of its
  * media bases) and inside `ownedPrefix`, else null.
  *

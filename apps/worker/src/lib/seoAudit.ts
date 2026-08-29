@@ -928,10 +928,14 @@ function runImage(r: Report, x: { posts: any[] }): void {
   r.check(
     "image",
     "image.legacy_host",
-    "medium",
-    "Images are served from the media domain",
-    "These posts still reference the old Worker-proxied media host. Every such image costs a Worker " +
-      "invocation and cannot be served as a resized Transformations variant.",
+    "low",
+    "Stored image urls are on the media domain",
+    "These posts still STORE the old Worker-proxied media host. Delivery is no longer affected — " +
+      "routes/read.ts canonicalises cover and in-content urls onto the media domain on the way out, " +
+      "so they are CDN-served and optimised — which is why this is low rather than medium. What " +
+      "remains is data hygiene: the rewrite is per-response work, anything reading these columns " +
+      "directly (exports, admin tools, D1 queries) still sees the old host, and the rewrite cannot " +
+      "be retired until the stored values are canonical.",
     legacy,
     legacy.length,
     "Run apps/worker/scripts/media-domain-backfill.sql (PRODUCTION_DOMAINS.md §5).",
