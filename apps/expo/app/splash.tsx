@@ -10,7 +10,6 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useRouter } from 'expo-router';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { auth } from '../src/services/firebase/initFirebase';
-import * as Font from 'expo-font';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Animated, { 
   useSharedValue, 
@@ -94,15 +93,12 @@ export default function SplashScreen() {
             setSplashImage(config.splashImageUrl);
         }
 
-        // 2. Load text fonts. Icons are now SVG (lucide) via src/lib/icons.tsx —
-        // no icon fonts needed, so nothing to preload for them.
-        await Font.loadAsync({
-            'Urbanist-Regular': require('../assets/fonts/Urbanist-Regular.ttf'),
-            'Urbanist-Bold': require('../assets/fonts/Urbanist-Bold.ttf'),
-            'Urbanist-Medium': require('../assets/fonts/Urbanist-Medium.ttf'),
-            'Urbanist-SemiBold': require('../assets/fonts/Urbanist-SemiBold.ttf'),
-        });
-        
+        // Fonts are NOT loaded here. They are loaded by the root layout
+        // (app/_layout.tsx), which is the only component that mounts for every
+        // route — loading them here meant they were missing on any route opened
+        // directly, because this screen never mounts in that case. Icons are SVG
+        // (lucide, via src/lib/icons.tsx), so there is no icon font to preload
+        // either.
         console.log("Assets loaded successfully.");
       } catch (e) {
         console.warn('Splash Error:', e);

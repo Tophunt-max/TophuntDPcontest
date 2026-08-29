@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -20,8 +20,13 @@ import {
   Settings_Document,
   Settings_Info,
   Settings_Logout,
-  Settings_Alert,
+  Settings_Shield,
 } from '@/assets/svgs';
+// Two rows need glyphs the `settings/*.svg` set does not carry a themeable
+// version of. `notification.svg` and `delete_icon.svg` exist but both hardcode
+// `stroke="white"`, so they are invisible in light mode and cannot take the
+// destructive red — the lucide shim themes correctly via `color`.
+import { Ionicons } from '@/src/lib/icons';
 import { signOut } from '../../src/services/auth';
 import { useConfirm } from '@/src/components/modals/ConfirmDialog';
 import { Colors } from '@/constants/theme';
@@ -45,6 +50,12 @@ import { reportError } from '@/src/lib/reportError';
  *
  * Added: Delete Account (required by both app stores) and a real, persisted theme
  * preference.
+ *
+ * Keep every row's icon distinct. Three rows once rendered the same alert circle
+ * (Notifications, Refund Policy, Delete Account) and two rendered the same
+ * padlock (Blocked & Muted, Privacy Policy). A duplicated glyph costs more than
+ * it looks: the icon column stops being something you can scan and the eye has
+ * to fall back to reading every label.
  */
 
 const THEME_LABELS: Record<ThemePreference, string> = {
@@ -52,6 +63,23 @@ const THEME_LABELS: Record<ThemePreference, string> = {
   light: 'Light',
   dark: 'Dark',
 };
+
+/**
+ * Appearance options, shown as an expanding list rather than applied by cycling
+ * the row.
+ *
+ * Tapping the row used to advance system -> light -> dark. That hid the feature
+ * twice over: the row carried no affordance saying it was interactive, and
+ * nothing revealed that a third option existed — reaching `dark` from `light`
+ * meant tapping twice and passing through a state you did not want, with the
+ * whole app repainting each time. A disclosure list states the options up front
+ * and each tap is the choice itself.
+ */
+const THEME_OPTIONS: { value: ThemePreference; hint?: string }[] = [
+  { value: 'system', hint: 'Match my device setting' },
+  { value: 'light' },
+  { value: 'dark' },
+];
 
 export default function SettingScreen() {
   const router = useRouter();
@@ -62,12 +90,13 @@ export default function SettingScreen() {
   const secondary = isDark ? '#A0A0A0' : '#666';
 
   const themePreference = useThemePreference();
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
 
-  /** Cycle system → light → dark. Three states need no extra UI surface. */
-  const cycleTheme = () => {
-    const next: ThemePreference =
-      themePreference === 'system' ? 'light' : themePreference === 'light' ? 'dark' : 'system';
+  const chooseTheme = (next: ThemePreference) => {
     void setThemePreference(next);
+    // Collapse on choose: the row's value text now shows the result, so leaving
+    // the list open would just repeat what the user can already see.
+    setAppearanceOpen(false);
   };
 
   const { confirm, dialog: confirmDialog } = useConfirm();
@@ -165,7 +194,9 @@ export default function SettingScreen() {
         })}
 
         {renderItem({
-          icon: <Settings_Alert width={24} height={24} color={textColor} />,
+          // A bell, not the alert circle this used to share with Refund Policy and
+          // Delete Account — three rows rendered the same glyph.
+          icon: <Ionicons name="notifications-outline" size={24} color={textColor} />,
           label: 'Notifications',
           onPress: () => router.push('/setting/notifications'),
         })}
@@ -189,12 +220,57 @@ export default function SettingScreen() {
           icon: <Settings_Moon width={24} height={24} color={textColor} />,
           label: 'Appearance',
           rightElement: (
-            <Text style={[styles.valueText, { color: secondary }]}>{THEME_LABELS[themePreference]}</Text>
+            <>
+              <Text style={[styles.valueText, { color: secondary }]}>
+                {THEME_LABELS[themePreference]}
+              </Text>
+              <Ionicons
+                name={appearanceOpen ? 'chevron-up' : 'chevron-down'}
+                size={18}
+                color={textColor}
+              />
+            </>
           ),
-          onPress: cycleTheme,
+          onPress: () => setAppearanceOpen((open) => !open),
           showArrow: false,
-          accessibilityHint: 'Switches between system, light and dark appearance',
+          accessibilityHint: appearanceOpen
+            ? 'Collapses the appearance options'
+            : 'Shows the system, light and dark appearance options',
         })}
+
+        {appearanceOpen && (
+          // `radiogroup` rather than a list of buttons, so a screen reader
+          // announces these as one choice with three mutually exclusive options.
+          <View style={styles.themeOptions} accessibilityRole="radiogroup">
+            {THEME_OPTIONS.map(({ value, hint }) => {
+              const active = themePreference === value;
+              return (
+                <TouchableOpacity
+                  key={value}
+                  style={styles.themeOption}
+                  onPress={() => chooseTheme(value)}
+                  activeOpacity={0.7}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: active }}
+                  accessibilityLabel={THEME_LABELS[value]}
+                  accessibilityHint={hint}
+                >
+                  <View style={styles.themeOptionText}>
+                    <Text
+                      style={[styles.themeOptionLabel, { color: active ? '#FF4D67' : textColor }]}
+                    >
+                      {THEME_LABELS[value]}
+                    </Text>
+                    {!!hint && (
+                      <Text style={[styles.themeOptionHint, { color: secondary }]}>{hint}</Text>
+                    )}
+                  </View>
+                  {active && <Ionicons name="checkmark" size={20} color="#FF4D67" />}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        )}
 
         {sectionTitle('SUPPORT')}
 
@@ -219,7 +295,9 @@ export default function SettingScreen() {
         })}
 
         {renderItem({
-          icon: <Settings_Lock width={24} height={24} color={textColor} />,
+          // A shield. The padlock here was the same asset as "Blocked & Muted",
+          // and the two rows sit close enough to read as related.
+          icon: <Settings_Shield width={24} height={24} color={textColor} />,
           label: 'Privacy Policy',
           onPress: () => router.push('/legal/privacy'),
         })}
@@ -240,7 +318,9 @@ export default function SettingScreen() {
         })}
 
         {renderItem({
-          icon: <Settings_Alert width={24} height={24} color="#FF4D67" />,
+          // A bin. An alert circle reads as "warning", which is also what the
+          // Notifications row showed — this row deletes, and should look like it.
+          icon: <Ionicons name="trash-outline" size={24} color="#FF4D67" />,
           label: 'Delete Account',
           destructive: true,
           onPress: () => router.push('/setting/delete-account'),
@@ -308,6 +388,29 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontFamily: 'Urbanist-SemiBold',
     marginRight: 6,
+  },
+  // Indented to the icon column's inner edge (24 icon + 15 gap) so the options
+  // read as belonging to the Appearance row above them rather than as new rows.
+  themeOptions: {
+    paddingLeft: 39,
+  },
+  themeOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+  },
+  themeOptionText: {
+    flex: 1,
+  },
+  themeOptionLabel: {
+    fontSize: 16,
+    fontFamily: 'Urbanist-SemiBold',
+  },
+  themeOptionHint: {
+    fontSize: 12,
+    fontFamily: 'Urbanist-Regular',
+    marginTop: 2,
   },
   separator: {
     height: 1,
