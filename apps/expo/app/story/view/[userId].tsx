@@ -702,9 +702,18 @@ export default function StoryView() {
                 >
                     <Ionicons name={isMuted ? 'volume-mute' : 'volume-high'} size={16} color="white" />
                     <Text style={styles.musicPillText} numberOfLines={1}>
-                        {currentStory.musicTitle
-                            ? `${currentStory.musicTitle}${currentStory.musicArtist ? ` · ${currentStory.musicArtist}` : ''}`
-                            : 'Music'}
+                        {/*
+                          While muted, say so in words. A crossed-out speaker next to a
+                          song title reads as a now-playing label, so viewers waited for
+                          audio that was deliberately silent and reported the music as
+                          broken. Naming the action is the whole fix — the track is
+                          already playing, just muted, and one tap turns it on.
+                        */}
+                        {isMuted
+                            ? `Tap for sound${currentStory.musicTitle ? ` · ${currentStory.musicTitle}` : ''}`
+                            : currentStory.musicTitle
+                                ? `${currentStory.musicTitle}${currentStory.musicArtist ? ` · ${currentStory.musicArtist}` : ''}`
+                                : 'Music'}
                     </Text>
                 </Pressable>
             )}
