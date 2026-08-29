@@ -269,3 +269,52 @@ export async function openShareUrl(intentUrl: string): Promise<boolean> {
 export async function copyBattleLink(url: string): Promise<void> {
   await Clipboard.setStringAsync(url);
 }
+
+// ---------------------------------------------------------------------------
+// Sharing the APP itself (Settings -> Share TopHunt)
+// ---------------------------------------------------------------------------
+
+/**
+ * A shareable origin for the app, or null when we do not have one worth sending.
+ *
+ * `shareOrigin()` has two failure modes that are fine for a battle link (the
+ * caller already has a match to fall back on) but not for "share the app", where
+ * the URL is the entire payload:
+ *
+ *  - it can return `''` when there is no browser location and no configured
+ *    origin, and
+ *  - on native it falls back to the API origin, which since the hostname split is
+ *    `https://api.tophunt.in` — a host that answers JSON and does not serve the
+ *    app. Inviting a friend to a JSON endpoint is worse than not offering to.
+ *
+ * Returning null lets the Settings row hide itself rather than share a dead link.
+ */
+export function appShareOrigin(): string | null {
+  const origin = shareOrigin();
+  if (!origin) return null;
+  try {
+    const host = new URL(origin).hostname.toLowerCase();
+    // Any api.* host serves the API, not the app.
+    if (host === 'api.tophunt.in' || host.startsWith('api.')) return null;
+  } catch {
+    return null;
+  }
+  return origin;
+}
+
+/** True when "Share TopHunt" can produce a link that actually opens the app. */
+export function canShareApp(): boolean {
+  return appShareOrigin() !== null;
+}
+
+/**
+ * Share the app itself. Reuses the battle share path — nothing in it is
+ * battle-specific once no image is passed — so web/native behaviour and the
+ * never-throws contract are identical.
+ */
+export async function shareApp(): Promise<ShareOutcome> {
+  const origin = appShareOrigin();
+  if (!origin) return 'failed';
+  const caption = `Join me on TopHunt — enter photo and video contests and vote on live battles 👇\n${origin}`;
+  return shareBattle({ caption, url: origin });
+}
