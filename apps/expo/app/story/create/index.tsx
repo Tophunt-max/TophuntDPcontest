@@ -24,7 +24,7 @@ import { useAudioPlayer } from 'expo-audio';
 import { Ionicons } from '@/src/lib/icons';
 import { uploadToR2 } from '@/src/lib/uploadToR2';
 import { optimizeImageForUpload } from '@/src/lib/imageOptimize';
-import { createStoryRecord, searchUsers } from '@/src/services/stories/storyService';
+import { createStoryRecord, fetchStories, searchUsers } from '@/src/services/stories/storyService';
 import {
   searchMusic,
   fetchMusicCatalog,
@@ -409,7 +409,20 @@ export default function AddStoryScreen() {
 
       // Stop the preview before navigating, or it plays on over the home feed.
       try { musicPlayer.pause(); } catch { /* nothing loaded */ }
-      await queryClient.invalidateQueries({ queryKey: ['stories'] });
+      // A plain invalidate is not enough: `fetchStories` is cache-first, so
+      // re-running it just returns the existing local rows — without the story
+      // just published, and without the music metadata the server resolved from
+      // the track id (the client never sees title/artist/preview). Force the
+      // network read so both land in the cache and the viewer can play the track.
+      //
+      // The story is already published by this point, so a refresh failure must
+      // NOT fall through to the "Upload Failed" alert below — degrade to an
+      // invalidate and let the next read pick it up.
+      try {
+        queryClient.setQueryData(['stories'], await fetchStories({ forceRefresh: true }));
+      } catch {
+        await queryClient.invalidateQueries({ queryKey: ['stories'] });
+      }
       router.replace('/home');
       // Told AFTER the story is safely published, and only when a track was
       // actually chosen and lost. Silently publishing a silent story is what made

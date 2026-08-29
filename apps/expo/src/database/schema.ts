@@ -16,7 +16,7 @@ import { appSchema, tableSchema } from '@nozbe/watermelondb';
  *   are safe to own ourselves.
  */
 export const schema = appSchema({
-  version: 2,
+  version: 3,
   tables: [
     tableSchema({
       name: 'stories',
@@ -41,6 +41,18 @@ export const schema = appSchema({
         { name: 'match_id', type: 'string', isOptional: true, isIndexed: true },
         { name: 'type', type: 'string', isOptional: true }, // StoryKind
         { name: 'contest_title', type: 'string', isOptional: true },
+        // Soundtrack fields (schema v3). The same omission as the contest fields
+        // above, one feature later: without these the cache read a story back
+        // with no `music_preview_url`, and the viewer gates BOTH the audio player
+        // and the music pill on that one value — so a story published with a
+        // track played silently and showed no pill. The client only ever sends a
+        // track id; title/artist/artwork/preview are resolved server-side, so the
+        // cache is the only local copy and dropping it loses them outright.
+        { name: 'music_track_id', type: 'string', isOptional: true },
+        { name: 'music_title', type: 'string', isOptional: true },
+        { name: 'music_artist', type: 'string', isOptional: true },
+        { name: 'music_artwork_url', type: 'string', isOptional: true },
+        { name: 'music_preview_url', type: 'string', isOptional: true },
         { name: 'is_synced', type: 'boolean', isIndexed: true },
         { name: 'updated_at', type: 'number' },
       ],

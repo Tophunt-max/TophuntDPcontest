@@ -35,5 +35,26 @@ export const migrations = schemaMigrations({
         }),
       ],
     },
+    {
+      // v3 adds the soundtrack fields. Existing cached rows get NULLs, which
+      // reads as "no music" — the same shape as a story published without a
+      // track, so nothing renders wrongly in the meantime. Those rows are
+      // re-fetched and re-saved WITH the music on the next forced feed refresh
+      // (or when they expire after 24h), at which point the pill and audio
+      // appear.
+      toVersion: 3,
+      steps: [
+        addColumns({
+          table: 'stories',
+          columns: [
+            { name: 'music_track_id', type: 'string', isOptional: true },
+            { name: 'music_title', type: 'string', isOptional: true },
+            { name: 'music_artist', type: 'string', isOptional: true },
+            { name: 'music_artwork_url', type: 'string', isOptional: true },
+            { name: 'music_preview_url', type: 'string', isOptional: true },
+          ],
+        }),
+      ],
+    },
   ],
 });

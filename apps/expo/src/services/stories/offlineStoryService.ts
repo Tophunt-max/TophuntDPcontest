@@ -71,6 +71,16 @@ export function applyStoryFields(record: StoryModel, story: Story): void {
   record.matchId = story.matchId ?? undefined;
   record.type = story.type ?? undefined;
   record.contestTitle = story.contestTitle ?? undefined;
+  // Soundtrack fields. Dropped here until schema v3, which is why a story
+  // published with music played silently and showed no pill when it came back
+  // from the cache. The server resolves title/artist/artwork/preview from the
+  // track id and the client never re-derives them, so the cache is the only
+  // local copy — omitting them loses the music entirely rather than degrading it.
+  record.musicTrackId = story.musicTrackId ?? undefined;
+  record.musicTitle = story.musicTitle ?? undefined;
+  record.musicArtist = story.musicArtist ?? undefined;
+  record.musicArtworkUrl = story.musicArtworkUrl ?? undefined;
+  record.musicPreviewUrl = story.musicPreviewUrl ?? undefined;
   record.isSynced = true;
 }
 
@@ -104,6 +114,13 @@ export function mapStoryModelToStory(storyModel: StoryModel): Story {
     type: storyModel.type as Story['type'],
     matchId: storyModel.matchId ?? null,
     contestTitle: storyModel.contestTitle ?? null,
+    // Restore the soundtrack so a cached story still renders the music pill and
+    // feeds a source to the viewer's audio player.
+    musicTrackId: storyModel.musicTrackId ?? null,
+    musicTitle: storyModel.musicTitle ?? null,
+    musicArtist: storyModel.musicArtist ?? null,
+    musicArtworkUrl: storyModel.musicArtworkUrl ?? null,
+    musicPreviewUrl: storyModel.musicPreviewUrl ?? null,
   };
 }
 
