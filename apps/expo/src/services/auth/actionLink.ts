@@ -28,6 +28,37 @@ import { auth } from '@/src/services/firebase/initFirebase';
 
 export type ActionMode = 'resetPassword' | 'verifyEmail' | 'recoverEmail' | 'unknown';
 
+/**
+ * Decide whether the params currently on screen are a Firebase action link that
+ * must be taken over by the handler route.
+ *
+ * MATCHED ON THE PAYLOAD, NOT THE PATH — the same correction the Cloudflare
+ * worker needed. The first attempt keyed on `/__/auth/action`, Firebase's default
+ * path, and the link still landed on the login screen: the console's action URL
+ * can be ANY url on the domain (`https://tophunt.in/`, `/auth/login`, anything),
+ * and Firebase just appends its query to whatever is configured. The path belongs
+ * to whoever edits the console; `oobCode` plus a known `mode` is the actual
+ * contract, and nothing else in this app uses either parameter.
+ *
+ * This is the net for the cases the worker never sees: a native deep link, and
+ * any in-app navigation that carries the params without a server round trip.
+ *
+ * Returns null when there is nothing to do — including when the handler is
+ * already showing, which is what stops this from fighting the worker's redirect.
+ */
+export function actionLinkRedirect(
+  params: { mode?: unknown; oobCode?: unknown },
+  alreadyOnHandler: boolean,
+): { mode: ActionMode; oobCode: string } | null {
+  if (alreadyOnHandler) return null;
+  const oobCode = typeof params?.oobCode === 'string' ? params.oobCode : '';
+  if (!oobCode) return null;
+  const mode = parseMode(typeof params?.mode === 'string' ? params.mode : undefined);
+  // An unknown mode with a code is still forwarded: the handler can say the link
+  // is unusable, which is strictly better than silently showing the login screen.
+  return { mode, oobCode };
+}
+
 /** Firebase's own mode strings, normalised. */
 export function parseMode(raw?: string | null): ActionMode {
   switch (raw) {

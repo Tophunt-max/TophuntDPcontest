@@ -29,6 +29,7 @@ dayjs.extend(utc);
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { ToastProvider } from '@/src/components/toast/ToastProvider';
 import { ConfirmHost } from '@/src/components/modals/ConfirmHost';
+import { useFirebaseActionLink } from '@/src/hooks/useFirebaseActionLink';
 import { lightTheme, darkTheme } from '@/constants/theme';
 import '@/src/services/firebase/initFirebase'; // Import to initialize Firebase
 import '@/src/database'; // Initialize WatermelonDB
@@ -139,6 +140,13 @@ function RootLayoutNav() {
   const { user, loading } = useAuth(); // Get user auth state
   const segments = useSegments();
   const router = useRouter();
+
+  // A Firebase email action link (?mode=…&oobCode=…) can land on ANY route,
+  // because the console's action URL is free-form. Claim it for the handler
+  // before anything else renders, or a password reset ends up on the login
+  // screen with no way to set a password. Declared first so it wins the race
+  // against the auth gate below.
+  useFirebaseActionLink();
   
   // Hook to handle notification listeners
   useEffect(() => {
