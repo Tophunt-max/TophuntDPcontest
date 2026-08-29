@@ -1,0 +1,203 @@
+name: Set settings encryption key
+
+# Sets `SETTINGS_ENCRYPTION_KEY` on the Worker without needing a terminal.
+#
+# WHY THIS EXISTS
+#
+# Until that secret is present, `lib/secretBox.ts` REFUSES to store any
+# panel-managed credential (it will not fall back to plaintext), so the admin
+# panel shows "Credentials cannot be saved yet" and every credential field —
+# Bunny Stream, Razorpay, SMS, email — is stuck read-only. The documented fix is
+# `wrangler secret put SETTINGS_ENCRYPTION_KEY`, which assumes CLI access. This
+# workflow is that same command, runnable from the Actions tab on a phone.
+#
+# HOW THE KEY STAYS SECRET
+#
+# It is generated inside the runner and piped straight into wrangler over stdin.
+# It is never echoed, never written to a file, and never passed as a workflow
+# input — dispatch inputs are visible in the run UI, so accepting a key that way
+# would defeat the point. Consequence, stated plainly: you will never see this
+# value, so you cannot back it up. See "IF YOU WANT A KEY YOU CAN BACK UP" below.
+#
+# WHAT ROTATION COSTS
+#
+# The key is not a password you can change freely. Credentials are sealed with
+# AES-256-GCM under a key derived from it, so replacing it makes every existing
+# row in `integration_secrets` undecryptable and each credential has to be
+# re-entered in the panel. That is why this workflow REFUSES to overwrite an
+# existing key unless you explicitly ask it to rotate.
+#
+# IF YOU WANT A KEY YOU CAN BACK UP
+#
+# Do it in the Cloudflare dashboard instead — Workers & Pages -> tophunt-api ->
+# Settings -> Variables and Secrets -> Add -> type "Secret", name
+# SETTINGS_ENCRYPTION_KEY — and paste a long random value you have saved in a
+# password manager. Any passphrase length works: `importKey()` derives a fixed
+# 256-bit key via SHA-256, so a pasted base64 string and a long phrase are
+# equally valid.
+#
+# Required repository secrets (already present — deploy-worker.yml uses them):
+#   CLOUDFLARE_API_TOKEN     needs Workers Scripts:Edit + User -> Memberships:Read
+#   CLOUDFLARE_ACCOUNT_ID
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Which Worker to set the key on
+        required: true
+        default: production
+        type: choice
+        options: [production, staging]
+      confirm:
+        description: Type SET-KEY to proceed
+        required: true
+        default: ""
+        type: string
+      rotate:
+        description: >-
+          Replace an existing key. Destroys access to every credential already
+          stored in the panel — they must all be re-entered. Leave unchecked
+          unless that is what you want.
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  # Two concurrent runs could each generate a key and race to write it, leaving
+  # ciphertext sealed under a key that is no longer live.
+  group: set-encryption-key-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  set-key:
+    name: Set key (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    defaults:
+      run:
+        working-directory: apps/worker
+    steps:
+      # Guard first, before any cloud credential is in scope. Compared via `env:`
+      # rather than `${{ }}` inside the script, so a crafted input cannot break
+      # out of the shell on a job that holds a Workers:Edit token.
+      - name: Check confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "SET-KEY" ]; then
+            echo "::error::Confirmation failed. Re-run and type exactly SET-KEY in the confirm box."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/worker/package-lock.json
+      - run: npm ci
+
+      # `wrangler secret list` returns the NAMES of bound secrets, never values,
+      # so this is a safe existence check.
+      - name: Check whether a key is already set
+        id: existing
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          if [ "$ENVIRONMENT" = "staging" ]; then
+            ENV_FLAG="--env staging"
+          else
+            ENV_FLAG=""
+          fi
+          echo "env_flag=$ENV_FLAG" >> "$GITHUB_OUTPUT"
+
+          # `secret list` returns names only, never values, so this is safe to
+          # capture and print.
+          set +e
+          listing=$(npx wrangler secret list $ENV_FLAG 2>&1)
+          rc=$?
+          set -e
+          echo "$listing"
+
+          # A failed listing must ABORT, not be treated as "no key present".
+          # Assuming absent on an auth or network error is the one mistake that
+          # silently overwrites a live key and orphans every stored credential.
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::Could not read the Worker's secret list (wrangler exited $rc). Refusing to continue, because treating this as 'no key set' risks overwriting a live key. Check that CLOUDFLARE_API_TOKEN has Workers Scripts:Edit and User -> Memberships:Read, and that the Worker exists in this environment."
+            exit 1
+          fi
+
+          if echo "$listing" | grep -q 'SETTINGS_ENCRYPTION_KEY'; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "A SETTINGS_ENCRYPTION_KEY is already bound to this Worker."
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "No SETTINGS_ENCRYPTION_KEY on this Worker yet."
+          fi
+
+      - name: Refuse to clobber an existing key
+        if: steps.existing.outputs.present == 'true' && inputs.rotate != true
+        run: |
+          echo "::error::This Worker already has a SETTINGS_ENCRYPTION_KEY. Overwriting it would make every credential already stored in the panel undecryptable. If that is genuinely what you want, re-run with the 'rotate' box checked, then re-enter every credential in Integrations."
+          exit 1
+
+      - name: Warn about rotation
+        if: steps.existing.outputs.present == 'true' && inputs.rotate == true
+        run: |
+          echo "::warning::Rotating the key. Every credential in the admin panel must now be re-entered — stored ciphertext can no longer be decrypted."
+
+      # The whole point of the workflow. `set +x` guarantees the value is not
+      # traced, printf avoids appending a newline, and the key exists only as a
+      # shell variable in this one step.
+      - name: Generate and set the key
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ENV_FLAG: ${{ steps.existing.outputs.env_flag }}
+        run: |
+          set +x
+          # node rather than openssl: setup-node already guarantees this runtime,
+          # and randomBytes is the same CSPRNG. 32 bytes -> 44 base64 chars.
+          KEY="$(node -e 'process.stdout.write(require("crypto").randomBytes(32).toString("base64"))')"
+          if [ "${#KEY}" -lt 40 ]; then
+            echo "::error::Key generation produced an unexpectedly short value. Aborting rather than storing a weak key."
+            exit 1
+          fi
+          # Wrangler reads the value from stdin when stdin is not a TTY, which is
+          # always the case in Actions. printf avoids appending a newline.
+          printf '%s' "$KEY" | npx wrangler secret put SETTINGS_ENCRYPTION_KEY $ENV_FLAG
+          unset KEY
+          echo "Key generated (32 random bytes, base64) and stored as a Worker secret."
+
+      # Proves the binding landed, by name only.
+      - name: Verify the secret is bound
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ENV_FLAG: ${{ steps.existing.outputs.env_flag }}
+        run: |
+          listing=$(npx wrangler secret list $ENV_FLAG 2>&1 || true)
+          if echo "$listing" | grep -q 'SETTINGS_ENCRYPTION_KEY'; then
+            echo "✅ SETTINGS_ENCRYPTION_KEY is bound to the Worker."
+          else
+            echo "::error::The secret does not appear in 'wrangler secret list'. It was not stored — check the CLOUDFLARE_API_TOKEN scopes (Workers Scripts:Edit and User -> Memberships:Read)."
+            exit 1
+          fi
+
+      - name: What to do next
+        run: |
+          echo "### Encryption key set ✅" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "A secret takes effect on the next Worker start, so give it a few seconds." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Reload **admin.tophunt.in/integrations** — the amber \"Credentials cannot be saved yet\" banner should be gone." >> "$GITHUB_STEP_SUMMARY"
+          echo "2. In **Video (Bunny Stream)**, fill in the Library ID *and* the pull-zone hostname, set delivery to Bunny Stream, then press **Save settings**. Saving with delivery on Bunny and either field blank is rejected on purpose." >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Paste the **Bunny Stream API Key** and press the Save under it. This is the step the missing key was blocking." >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Press **Test connection** — it calls the real Bunny API, so a green result means the credential works." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "The key itself was never displayed and cannot be retrieved. To hold a copy yourself, set it from the Cloudflare dashboard instead (see the comment at the top of this workflow)." >> "$GITHUB_STEP_SUMMARY"
