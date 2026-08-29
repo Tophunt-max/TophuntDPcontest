@@ -87,6 +87,12 @@ export const createStoryRecord = async (
    * loaded by every viewer's browser. See apps/worker/src/lib/music.ts.
    */
   musicTrackId?: string | null,
+  /**
+   * Where in the track to start, in ms. Sent only alongside a track — an offset
+   * without a song is meaningless. The server sanitises it and every reader is
+   * defensive, so an out-of-range value degrades to 0:00 rather than to silence.
+   */
+  musicStartMs?: number | null,
 ): Promise<{ storyId: string; musicAttached: boolean }> => {
   const user = auth.currentUser;
   if (!user) throw new Error('User not authenticated');
@@ -98,6 +104,9 @@ export const createStoryRecord = async (
     textPosition,
     mentions,
     musicTrackId: musicTrackId || undefined,
+    // Omitted entirely for "from the beginning", so the field means the same
+    // thing on the wire as it does in the column.
+    musicStartMs: musicTrackId && musicStartMs ? musicStartMs : undefined,
   });
   if (data && data.success) {
     // `musicAttached` is false when a track WAS chosen but the provider lookup

@@ -272,3 +272,33 @@ export async function lookupTrack(env: Env, trackId: string): Promise<MusicTrack
   if (track) await cachePutJson(env, cacheKey, track, 24 * 60 * 60);
   return track;
 }
+
+
+/**
+ * Sanitise a client-supplied music start offset (migration 0037).
+ *
+ * Returns whole, non-negative milliseconds strictly inside a provider preview, or
+ * null for "from the beginning" — which is also what a missing, malformed or
+ * out-of-range value becomes.
+ *
+ * This is a sanity bound, not a trust boundary. It cannot be exact: the catalogue
+ * stores no track duration, and the window a story plays depends on a video length
+ * only the client knows, so the precise clamp belongs to the editor. What this
+ * prevents is a stored offset that could only ever produce silence — a story that
+ * plays nothing is indistinguishable from music being broken, which is the failure
+ * mode worth designing against.
+ *
+ * `null` rather than `0` for the default so the column keeps meaning "never set",
+ * matching every row that predates it. Readers treat null and 0 identically.
+ */
+export function sanitiseMusicStartMs(value: unknown): number | null {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return null;
+  const ms = Math.round(n);
+  if (ms <= 0) return null;
+  // At or past the end of the preview there is nothing left to play, so fall back
+  // to the start rather than storing an offset that yields silence.
+  const limitMs = PREVIEW_SECONDS * 1000;
+  if (ms >= limitMs) return null;
+  return ms;
+}

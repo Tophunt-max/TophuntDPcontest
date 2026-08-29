@@ -42,7 +42,7 @@ vi.mock('../src/lib/voteCounter', () => ({
 
 import { makeEnv, makeApp, fakeCtx, drizzleOf, type TestEnv } from './helpers/harness';
 import * as schema from '../src/db/schema';
-import { normalizeTrack } from '../src/lib/music';
+import { normalizeTrack, sanitiseMusicStartMs } from '../src/lib/music';
 
 const app = makeApp();
 let env: TestEnv;
@@ -426,5 +426,122 @@ describe('the curated music catalogue', () => {
     const row = (await storyRows())[0];
     expect(row.musicTitle).toBe(known.title);
     expect(row.musicPreviewUrl).toBe(known.previewUrl);
+  });
+});
+
+
+// --- which part of the track plays (migration 0037) -------------------------
+describe('sanitiseMusicStartMs', () => {
+  it('keeps a sensible offset', () => {
+    expect(sanitiseMusicStartMs(12_000)).toBe(12_000);
+  });
+
+  it('rounds to whole milliseconds', () => {
+    expect(sanitiseMusicStartMs(12_000.6)).toBe(12_001);
+  });
+
+  it('treats the very beginning as "never set"', () => {
+    // null, not 0, so the column keeps meaning the same thing it does for every
+    // row that predates it.
+    expect(sanitiseMusicStartMs(0)).toBeNull();
+  });
+
+  it('refuses a negative offset', () => {
+    expect(sanitiseMusicStartMs(-4_000)).toBeNull();
+  });
+
+  it('refuses an offset at or past the end of a preview', () => {
+    // Storing this would publish a story that plays silence, which is
+    // indistinguishable from the music being broken.
+    expect(sanitiseMusicStartMs(30_000)).toBeNull();
+    expect(sanitiseMusicStartMs(45_000)).toBeNull();
+  });
+
+  it('accepts an offset just inside the preview', () => {
+    expect(sanitiseMusicStartMs(29_999)).toBe(29_999);
+  });
+
+  it('handles junk without throwing', () => {
+    expect(sanitiseMusicStartMs(undefined)).toBeNull();
+    expect(sanitiseMusicStartMs(null)).toBeNull();
+    expect(sanitiseMusicStartMs('nonsense')).toBeNull();
+    expect(sanitiseMusicStartMs(NaN)).toBeNull();
+    expect(sanitiseMusicStartMs(Infinity)).toBeNull();
+    expect(sanitiseMusicStartMs({})).toBeNull();
+  });
+
+  it('accepts a numeric string, because JSON bodies are not typed', () => {
+    expect(sanitiseMusicStartMs('12000')).toBe(12_000);
+  });
+});
+
+describe('createStory stores the chosen start offset', () => {
+  it('persists the offset alongside the track', async () => {
+    stubFetch([{ body: { results: [providerRow()] } }]);
+
+    const res = await call('poster', 'createStory', {
+      mediaUrl: 'https://media.test/a.jpg',
+      mediaType: 'photo',
+      musicTrackId: '1440857781',
+      musicStartMs: 12_000,
+    });
+
+    expect(res.status).toBe(200);
+    expect((await storyRows())[0].musicStartMs).toBe(12_000);
+  });
+
+  it('defaults to null when the author never scrubbed', async () => {
+    stubFetch([{ body: { results: [providerRow()] } }]);
+
+    await call('poster', 'createStory', {
+      mediaUrl: 'https://media.test/a.jpg',
+      mediaType: 'photo',
+      musicTrackId: '1440857781',
+    });
+
+    expect((await storyRows())[0].musicStartMs).toBeNull();
+  });
+
+  it('sanitises an out-of-range offset instead of storing silence', async () => {
+    stubFetch([{ body: { results: [providerRow()] } }]);
+
+    await call('poster', 'createStory', {
+      mediaUrl: 'https://media.test/a.jpg',
+      mediaType: 'photo',
+      musicTrackId: '1440857781',
+      musicStartMs: 999_999,
+    });
+
+    expect((await storyRows())[0].musicStartMs).toBeNull();
+  });
+
+  it('does not keep an offset when no track attached', async () => {
+    // An offset that outlived the song it refers to would be meaningless.
+    await call('poster', 'createStory', {
+      mediaUrl: 'https://media.test/a.jpg',
+      mediaType: 'photo',
+      musicStartMs: 12_000,
+    });
+
+    const row = (await storyRows())[0];
+    expect(row.musicTrackId).toBeNull();
+    expect(row.musicStartMs).toBeNull();
+  });
+
+  it('drops the offset when the track lookup fails', async () => {
+    // The story still publishes — just without music, so without a start either.
+    stubFetch([{ body: { results: [] } }]);
+
+    const res = await call('poster', 'createStory', {
+      mediaUrl: 'https://media.test/a.jpg',
+      mediaType: 'photo',
+      musicTrackId: '9999999999',
+      musicStartMs: 12_000,
+    });
+
+    expect(res.body.musicAttached).toBe(false);
+    const row = (await storyRows())[0];
+    expect(row.musicPreviewUrl).toBeNull();
+    expect(row.musicStartMs).toBeNull();
   });
 });

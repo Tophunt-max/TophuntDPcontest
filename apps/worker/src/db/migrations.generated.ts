@@ -38,6 +38,7 @@ import m_0033_match_vs_image_sql from "../../migrations/0033_match_vs_image.sql"
 import m_0034_blog_comments_sql from "../../migrations/0034_blog_comments.sql";
 import m_0035_story_music_sql from "../../migrations/0035_story_music.sql";
 import m_0036_music_catalog_sql from "../../migrations/0036_music_catalog.sql";
+import m_0037_story_music_start_sql from "../../migrations/0037_story_music_start.sql";
 
 export interface Migration {
   name: string;
@@ -82,4 +83,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0034_blog_comments.sql", sql: m_0034_blog_comments_sql },
   { name: "0035_story_music.sql", sql: m_0035_story_music_sql },
   { name: "0036_music_catalog.sql", sql: m_0036_music_catalog_sql },
+  { name: "0037_story_music_start.sql", sql: m_0037_story_music_start_sql },
 ];

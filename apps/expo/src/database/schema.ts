@@ -16,7 +16,7 @@ import { appSchema, tableSchema } from '@nozbe/watermelondb';
  *   are safe to own ourselves.
  */
 export const schema = appSchema({
-  version: 3,
+  version: 4,
   tables: [
     tableSchema({
       name: 'stories',
@@ -53,6 +53,10 @@ export const schema = appSchema({
         { name: 'music_artist', type: 'string', isOptional: true },
         { name: 'music_artwork_url', type: 'string', isOptional: true },
         { name: 'music_preview_url', type: 'string', isOptional: true },
+        // Which part of the track plays (schema v4). Optional and a number, so an
+        // absent value reads as null and means "from the beginning" — the same
+        // thing it means in the column and on the wire.
+        { name: 'music_start_ms', type: 'number', isOptional: true },
         { name: 'is_synced', type: 'boolean', isIndexed: true },
         { name: 'updated_at', type: 'number' },
       ],

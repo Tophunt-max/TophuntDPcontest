@@ -12,6 +12,8 @@ import {
   FlatList,
   PanResponder,
   Platform,
+  Pressable,
+  type GestureResponderEvent,
 } from "react-native";
 import { Alert } from '@/src/lib/appAlert';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -32,6 +34,19 @@ import {
   type MusicCategory,
 } from '@/src/services/stories/musicService';
 import { nextPreview, audibleTrack, shouldPlay } from '@/src/services/stories/musicPreview';
+import {
+  PREVIEW_FALLBACK_MS,
+  DEFAULT_STORY_WINDOW_MS,
+  clampStartMs,
+  fractionToStart,
+  startToFraction,
+  usableWindowMs,
+  maxStartMs,
+  windowEndMs,
+  shouldLoopBack,
+  pressOffsetX,
+  formatClipTime,
+} from '@/src/services/stories/musicTrim';
 import { uploadVideoToBunny } from '@/src/services/video/bunnyUpload';
 import { useQueryClient } from '@tanstack/react-query';
 import Svg, { Circle } from 'react-native-svg';
@@ -39,7 +54,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 // Only the icons that are still hand-rolled SVGs. The toolbar and the music
 // transport now come from src/lib/icons.tsx — see the comment on the toolbar.
 import { Gallery_Icon, Close_Circle_Icon } from '@/assets/svgs';
-import { PanGestureHandler } from 'react-native-gesture-handler';
+import { PanGestureHandler, State as GestureState } from 'react-native-gesture-handler';
 import Animated, { useSharedValue, useAnimatedStyle, withSpring, runOnJS } from 'react-native-reanimated';
 import { useReadjustablePhoto } from '@/src/components/media/useImageAdjuster';
 import { validateVideo, STORY_MAX_VIDEO_SEC } from '@/src/lib/videoValidation';
@@ -108,6 +123,21 @@ export default function AddStoryScreen() {
    * to hear a track before committing to it.
    */
   const [previewTrack, setPreviewTrack] = useState<MusicTrack | null>(null);
+  /**
+   * Which part of the track the story plays, in ms from its start.
+   *
+   * Every story used to begin at 0:00, so the recognisable part of a song could
+   * not be used at all — a five-second story against a thirty-second preview.
+   */
+  const [musicStartMs, setMusicStartMs] = useState(0);
+  const [showTrimSheet, setShowTrimSheet] = useState(false);
+  /** Measured preview length. 0 until the player reports one. */
+  const [trackDurationMs, setTrackDurationMs] = useState(0);
+  /** How long the story itself will show — the length of the window being cut. */
+  const [clipDurationMs, setClipDurationMs] = useState(DEFAULT_STORY_WINDOW_MS);
+  /** Width of the scrubber, measured rather than assumed. */
+  const [trimWidth, setTrimWidth] = useState(0);
+  const trimBaseRef = useRef(0);
 
   // Mention State
   const [showMentions, setShowMentions] = useState(false);
@@ -178,6 +208,73 @@ export default function AddStoryScreen() {
       if (shouldPlayMusic) musicPlayer.play();
       else musicPlayer.pause();
   }, [nowAudible, shouldPlayMusic, player, musicPlayer]);
+
+  /**
+   * Trim window: keep playback inside [start, start+clip].
+   *
+   * `loop` on the player restarts at 0:00, which is outside the chosen window, so
+   * the window has to be enforced here rather than left to the player. The same
+   * tick learns the preview's real length — the scrubber's range depends on it and
+   * it is not known until the audio loads.
+   *
+   * An audition from the picker is heard from its own beginning: the author has not
+   * chosen a part of THAT track yet, and starting it mid-song would misrepresent it.
+   */
+  const trimStartMs = previewTrack ? 0 : musicStartMs;
+  useEffect(() => {
+      if (!nowAudible || !shouldPlayMusic) return;
+      let cancelled = false;
+      const tick = () => {
+          if (cancelled) return;
+          const dur = musicPlayer.duration;
+          if (Number.isFinite(dur) && dur > 0) {
+              const ms = Math.round(dur * 1000);
+              setTrackDurationMs((cur) => (cur === ms ? cur : ms));
+          }
+          if (trimStartMs > 0 || !previewTrack) {
+              const cur = musicPlayer.currentTime * 1000;
+              if (shouldLoopBack(cur, trimStartMs, clipDurationMs, trackDurationMs)) {
+                  void musicPlayer.seekTo(trimStartMs / 1000);
+              }
+          }
+      };
+      // Seek immediately so the first pass starts where the author chose, then poll:
+      // expo-audio exposes position but no "reached time" event.
+      if (trimStartMs > 0) void musicPlayer.seekTo(trimStartMs / 1000);
+      const id = setInterval(tick, 200);
+      return () => { cancelled = true; clearInterval(id); };
+  }, [nowAudible, shouldPlayMusic, musicPlayer, trimStartMs, clipDurationMs, trackDurationMs, previewTrack]);
+
+  /**
+   * The story's own length, which is the length of the window being cut. A video
+   * plays for its full duration; a photo uses the viewer's fixed timer.
+   */
+  useEffect(() => {
+      if (media?.type !== 'video') {
+          setClipDurationMs(DEFAULT_STORY_WINDOW_MS);
+          return;
+      }
+      const read = () => {
+          const d = player.duration;
+          if (Number.isFinite(d) && d > 0) setClipDurationMs(Math.round(d * 1000));
+      };
+      read();
+      const id = setInterval(read, 300);
+      return () => clearInterval(id);
+  }, [media?.type, player]);
+
+  // A start offset belongs to one track. Keeping it across a change would silently
+  // apply a position chosen for another song.
+  useEffect(() => {
+      setMusicStartMs(0);
+      setTrackDurationMs(0);
+  }, [selectedMusic?.id]);
+
+  // Never let a measured duration leave the offset out of range — a shorter track
+  // than the last one would otherwise keep a start that plays silence.
+  useEffect(() => {
+      setMusicStartMs((cur) => clampStartMs(cur, clipDurationMs, trackDurationMs));
+  }, [clipDurationMs, trackDurationMs]);
 
   // Stop the preview when leaving the screen. Without this the track keeps
   // playing over whatever the user navigated to — the single most obvious way an
@@ -322,6 +419,22 @@ export default function AddStoryScreen() {
       }
   };
 
+  const trimSheetY = useSharedValue(height);
+  const animatedTrimSheetStyle = useAnimatedStyle(() => ({ transform: [{ translateY: trimSheetY.value }] }));
+
+  const toggleTrimSheet = (show: boolean) => {
+      if (show) {
+          setShowTrimSheet(true);
+          // Auditioning would override the trim preview, and the point of this sheet
+          // is hearing the window that will actually be used.
+          setPreviewTrack(null);
+          setIsMusicPlaying(true);
+          trimSheetY.value = withSpring(0);
+      } else {
+          trimSheetY.value = withSpring(height, {}, () => { runOnJS(setShowTrimSheet)(false); });
+      }
+  };
+
   /**
    * Audition a row without attaching it. Tapping the same row again stops, so the
    * one button is both play and pause.
@@ -444,6 +557,9 @@ export default function AddStoryScreen() {
           mentions,
           // Only the id. The server resolves and stores the rest.
           selectedMusic?.id ?? null,
+          // Re-clamped at the last moment: the measured durations may have arrived
+          // after the author set this, and a stale offset would publish silence.
+          selectedMusic ? clampStartMs(musicStartMs, clipDurationMs, trackDurationMs) : null,
       );
 
       // Stop the preview before navigating, or it plays on over the home feed.
@@ -692,6 +808,19 @@ export default function AddStoryScreen() {
                               the toolbar's music button again — the attached track
                               looked final once it was on the story.
                             */}
+                            {/*
+                              Pick WHICH PART of the song plays. Without this every
+                              story started at 0:00, so the recognisable few seconds
+                              of a track were unreachable.
+                            */}
+                            <TouchableOpacity
+                              onPress={() => toggleTrimSheet(true)}
+                              style={{ padding: 5 }}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Choose which part of ${selectedMusic.title} plays, currently from ${formatClipTime(musicStartMs)}`}
+                            >
+                                <Ionicons name="cut" size={20} color="#fff" />
+                            </TouchableOpacity>
                             <TouchableOpacity
                               onPress={() => toggleMusicSheet(true)}
                               style={{ padding: 5 }}
@@ -759,6 +888,135 @@ export default function AddStoryScreen() {
                         <FlatList data={STICKERS} numColumns={4} keyExtractor={item => item} renderItem={({ item }) => (
                             <TouchableOpacity style={styles.stickerItem} onPress={() => { setSelectedSticker(item); toggleStickerSheet(false); }}><Text style={{ fontSize: 40 }}>{item}</Text></TouchableOpacity>
                         )} />
+                    </Animated.View>
+                </View>
+            </Modal>
+
+            {/*
+              Trim Modal — which part of the track the story plays.
+
+              The scrubber responds to BOTH a tap and a drag. A tap alone is enough
+              to use the feature, which matters because drag support varies by
+              platform; the drag is the finer control on top, not the only way in.
+            */}
+            <Modal visible={showTrimSheet} transparent animationType="none">
+                <View style={styles.modalOverlay}>
+                    <Animated.View style={[styles.sheet, styles.trimSheet, animatedTrimSheetStyle]}>
+                        <View style={styles.sheetHandle} />
+                        <View style={styles.sheetHeader}>
+                            <Text style={styles.sheetTitle}>Trim music</Text>
+                            <TouchableOpacity onPress={() => toggleTrimSheet(false)} accessibilityRole="button" accessibilityLabel="Done trimming">
+                                <CloseIcon variant="circle" size={24} color="#666" />
+                            </TouchableOpacity>
+                        </View>
+
+                        {selectedMusic && (() => {
+                          // Derived here so the markup below reads as layout only.
+                          const trackMs = trackDurationMs || PREVIEW_FALLBACK_MS;
+                          const windowMs = usableWindowMs(clipDurationMs, trackMs);
+                          const canMove = maxStartMs(clipDurationMs, trackMs) > 0;
+                          const windowW = trimWidth > 0 ? Math.max(28, (windowMs / trackMs) * trimWidth) : 0;
+                          const travel = Math.max(0, trimWidth - windowW);
+                          const left = travel * startToFraction(musicStartMs, clipDurationMs, trackMs);
+                          const setFromX = (x: number | null) => {
+                            if (travel <= 0 || x === null) return;
+                            // The tap positions the START of the window, offset by half
+                            // its width so the window lands under the finger rather
+                            // than to the right of it.
+                            setMusicStartMs(
+                              fractionToStart((x - windowW / 2) / travel, clipDurationMs, trackMs),
+                            );
+                          };
+                          return (
+                            <>
+                              <View style={styles.trimNowPlaying}>
+                                {selectedMusic.artworkUrl
+                                  ? <Image source={{ uri: selectedMusic.artworkUrl }} style={styles.musicThumb} />
+                                  : <View style={[styles.musicThumb, styles.musicThumbFallback]}><Ionicons name="musical-notes" size={20} color="#999" /></View>}
+                                <View style={{ flex: 1 }}>
+                                  <Text style={styles.musicItemTitle} numberOfLines={1}>{selectedMusic.title}</Text>
+                                  <Text style={styles.musicItemArtist} numberOfLines={1}>{selectedMusic.artist}</Text>
+                                </View>
+                                <TouchableOpacity
+                                  onPress={() => setIsMusicPlaying(!isMusicPlaying)}
+                                  style={styles.musicTransport}
+                                  accessibilityRole="button"
+                                  accessibilityLabel={isMusicPlaying ? 'Pause preview' : 'Play preview'}
+                                >
+                                  <Ionicons name={isMusicPlaying ? 'pause' : 'play'} size={20} color="#fff" />
+                                </TouchableOpacity>
+                              </View>
+
+                              <Text style={styles.trimHint}>
+                                {canMove
+                                  ? 'Drag or tap to choose the part that plays.'
+                                  : 'This clip uses the whole track.'}
+                              </Text>
+
+                              <View
+                                style={styles.trimTrack}
+                                onLayout={(e) => setTrimWidth(e.nativeEvent.layout.width)}
+                              >
+                                {/* Tap layer. Sits under the draggable window so a drag
+                                    on the window is not also read as a tap. */}
+                                <Pressable
+                                  style={StyleSheet.absoluteFill}
+                                  // `locationX` is native-only; web supplies offsetX.
+                                  // See pressOffsetX — reading one of them made this
+                                  // scrubber dead on the other platform.
+                                  onPress={(e: GestureResponderEvent) => setFromX(pressOffsetX(e.nativeEvent))}
+                                  accessibilityRole="adjustable"
+                                  accessibilityLabel="Music start position"
+                                  accessibilityValue={{ text: formatClipTime(musicStartMs) }}
+                                />
+                                {trimWidth > 0 && (
+                                  <PanGestureHandler
+                                    onHandlerStateChange={(e) => {
+                                      // Capture the offset the drag started from, so
+                                      // translationX can be applied as a delta.
+                                      if (e.nativeEvent.state === GestureState.BEGAN) {
+                                        trimBaseRef.current = musicStartMs;
+                                      }
+                                    }}
+                                    onGestureEvent={(e) => {
+                                      if (travel <= 0) return;
+                                      const deltaMs =
+                                        (e.nativeEvent.translationX / travel) *
+                                        maxStartMs(clipDurationMs, trackMs);
+                                      setMusicStartMs(
+                                        clampStartMs(trimBaseRef.current + deltaMs, clipDurationMs, trackMs),
+                                      );
+                                    }}
+                                  >
+                                    <View style={[styles.trimWindow, { left, width: windowW }]}>
+                                      <View style={styles.trimGrip} />
+                                      <View style={styles.trimGrip} />
+                                    </View>
+                                  </PanGestureHandler>
+                                )}
+                              </View>
+
+                              <View style={styles.trimTimes}>
+                                <Text style={styles.trimTimeText}>{formatClipTime(musicStartMs)}</Text>
+                                <Text style={styles.trimTimeText}>
+                                  {`${Math.round(windowMs / 1000)}s clip`}
+                                </Text>
+                                <Text style={styles.trimTimeText}>
+                                  {formatClipTime(windowEndMs(musicStartMs, clipDurationMs, trackMs))}
+                                </Text>
+                              </View>
+
+                              <TouchableOpacity
+                                style={styles.trimDoneBtn}
+                                onPress={() => toggleTrimSheet(false)}
+                                accessibilityRole="button"
+                                accessibilityLabel="Use this part"
+                              >
+                                <Text style={styles.trimDoneText}>Done</Text>
+                              </TouchableOpacity>
+                            </>
+                          );
+                        })()}
                     </Animated.View>
                 </View>
             </Modal>
@@ -978,6 +1236,44 @@ const styles = StyleSheet.create({
   // Padding, not just the icon's own bounds: this is a button nested inside the
   // row's press target, so it needs a reliably tappable area of its own.
   musicPreviewBtn: { paddingVertical: 6, paddingLeft: 10, paddingRight: 2 },
+
+  // --- trim sheet ---
+  // Shorter than the picker: it holds one track and a scrubber, and a half-height
+  // sheet keeps the story itself visible behind it.
+  trimSheet: { height: undefined, paddingBottom: 28 },
+  trimNowPlaying: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14 },
+  trimHint: { fontSize: 13, color: '#666', fontFamily: 'Urbanist-Medium', marginBottom: 10 },
+  trimTrack: {
+    height: 56,
+    borderRadius: 12,
+    backgroundColor: '#F1F1F3',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  trimWindow: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: ACCENT,
+    backgroundColor: 'rgba(255,68,102,0.18)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 6,
+  },
+  trimGrip: { width: 3, height: 22, borderRadius: 2, backgroundColor: ACCENT },
+  trimTimes: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 },
+  trimTimeText: { fontSize: 12, color: '#666', fontFamily: 'Urbanist-SemiBold' },
+  trimDoneBtn: {
+    marginTop: 18,
+    backgroundColor: ACCENT,
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  trimDoneText: { color: '#fff', fontSize: 15, fontFamily: 'Urbanist-Bold' },
   musicThumb: { width: 50, height: 50, borderRadius: 8, marginRight: 15 },
   musicItemTitle: { fontSize: 16, fontFamily: 'Urbanist-Bold', color: '#000' },
   musicItemArtist: { fontSize: 14, color: '#666', fontFamily: 'Urbanist-Medium' },

@@ -81,6 +81,10 @@ export function applyStoryFields(record: StoryModel, story: Story): void {
   record.musicArtist = story.musicArtist ?? undefined;
   record.musicArtworkUrl = story.musicArtworkUrl ?? undefined;
   record.musicPreviewUrl = story.musicPreviewUrl ?? undefined;
+  // Losing this would silently reset every cached story to 0:00 — the music would
+  // still play, so the loss would look like the trim never worked rather than like
+  // a cache bug.
+  record.musicStartMs = story.musicStartMs ?? undefined;
   record.isSynced = true;
 }
 
@@ -121,6 +125,7 @@ export function mapStoryModelToStory(storyModel: StoryModel): Story {
     musicArtist: storyModel.musicArtist ?? null,
     musicArtworkUrl: storyModel.musicArtworkUrl ?? null,
     musicPreviewUrl: storyModel.musicPreviewUrl ?? null,
+    musicStartMs: storyModel.musicStartMs ?? null,
   };
 }
 

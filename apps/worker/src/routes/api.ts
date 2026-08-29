@@ -52,7 +52,7 @@ import { verifyRazorpaySignature } from "../lib/payments";
 import { getRazorpayCredentials } from "../lib/integrations";
 import { creditPaymentOrder } from "../lib/coinOrders";
 import { assertClean } from "../lib/moderation";
-import { lookupTrack } from "../lib/music";
+import { lookupTrack, sanitiseMusicStartMs } from "../lib/music";
 import { assertChatMember } from "../lib/chatAuth";
 import { publishVsStories, storyMediaType } from "../lib/matchStories";
 import {
@@ -873,7 +873,7 @@ apiRoute.post("/", async (c) => {
     // `getStoryUrl` is handled with `getPresignedUrl` above.
     case "createStory": {
       await rateLimit(env, `story:${uid}`, 40, 3600);
-      const { mediaUrl, mediaType, overlayText, textPosition, mentions, visibility, musicTrackId } = body;
+      const { mediaUrl, mediaType, overlayText, textPosition, mentions, visibility, musicTrackId, musicStartMs } = body;
       if (!mediaUrl) throw httpsError("invalid-argument", "mediaUrl is required.");
       await assertClean(env, overlayText);
       const user = await db.select({ username: schema.users.username, avatar: schema.users.profileImageUrl }).from(schema.users).where(eq(schema.users.uid, uid)).get();
@@ -889,6 +889,14 @@ apiRoute.post("/", async (c) => {
       // would be the wrong trade, and `stories.music_*` is nullable precisely so
       // this path is normal rather than exceptional.
       const track = musicTrackId ? await lookupTrack(env, String(musicTrackId)) : null;
+      // Where in the track to start (migration 0037). Sanitised, not trusted:
+      // whole non-negative ms inside a provider preview. We cannot bound it any
+      // tighter here — the catalogue stores no duration and the story's window
+      // depends on a video length only the client knows — so the exact clamp is
+      // the editor's job and every reader is defensive about the result. Stored
+      // only when a track actually attached, so an offset can never outlive the
+      // song it refers to.
+      const startMs = track ? sanitiseMusicStartMs(musicStartMs) : null;
       await db.insert(schema.stories).values({
         id: storyId, userId: uid, username: user?.username, avatarUrl: user?.avatar,
         mediaUrl, mediaType: mediaType || "photo", visibility: visibility || "public",
@@ -898,6 +906,7 @@ apiRoute.post("/", async (c) => {
         musicArtist: track?.artist ?? null,
         musicArtworkUrl: track?.artworkUrl ?? null,
         musicPreviewUrl: track?.previewUrl ?? null,
+        musicStartMs: startMs,
         type: "user", createdAt: ts, expiresAt: ts + 24 * 60 * 60 * 1000,
       });
       // `musicAttached` lets the client tell "I chose a track and it saved" from
