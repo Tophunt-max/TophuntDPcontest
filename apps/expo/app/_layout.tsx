@@ -1,6 +1,7 @@
 import { ThemeProvider } from '@react-navigation/native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { useFonts } from 'expo-font';
 import React, { useEffect } from 'react';
 import 'react-native-reanimated';
 import { QueryClient, QueryClientProvider, QueryCache, MutationCache, onlineManager, focusManager } from '@tanstack/react-query';
@@ -251,6 +252,47 @@ function RootLayoutNav() {
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
+
+  /**
+   * Text fonts.
+   *
+   * These load HERE because the root layout is the only component that mounts on
+   * every route. They used to load inside `app/splash.tsx`, which works from a
+   * cold start (index -> splash always runs first) but silently fails the moment
+   * a route is opened directly — a refresh, a bookmark, a shared link or a search
+   * result all mount the target screen WITHOUT ever mounting the splash route, so
+   * `Font.loadAsync` never ran.
+   *
+   * The failure was invisible in code review and obvious on screen: the ~400
+   * `fontFamily: 'Urbanist-*'` styles across the app fell back to the browser's
+   * default face, so every text-bearing screen rendered in the wrong typeface for
+   * anyone who did not enter through the splash.
+   */
+  const [fontsLoaded, fontError] = useFonts({
+    'Urbanist-Regular': require('../assets/fonts/Urbanist-Regular.ttf'),
+    'Urbanist-Medium': require('../assets/fonts/Urbanist-Medium.ttf'),
+    'Urbanist-SemiBold': require('../assets/fonts/Urbanist-SemiBold.ttf'),
+    'Urbanist-Bold': require('../assets/fonts/Urbanist-Bold.ttf'),
+  });
+
+  // A font that fails to load must be reported, not absorbed. The bug above was
+  // only ever visible to someone looking at the screen; the fallback itself never
+  // said anything, which is why it survived.
+  useEffect(() => {
+    if (fontError) reportError(fontError, { scope: 'root-layout', asset: 'urbanist-fonts' });
+  }, [fontError]);
+
+  /*
+   * Hold the first paint until the fonts resolve, so text never renders in the
+   * fallback face and then reflows once the real one arrives.
+   *
+   * `fontError` counts as resolved on purpose: a missing font must degrade to the
+   * system face, never leave a blank app. Blocking is safe here because the web
+   * build is a SPA (`web.output: "single"`) whose crawlable meta is injected by
+   * the edge worker in `public/_worker.js` — no indexed content depends on this
+   * render. On native the OS splash is still up, so there is nothing to flash.
+   */
+  if (!fontsLoaded && !fontError) return null;
 
   return (
     <ErrorBoundary>
