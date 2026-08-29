@@ -6,9 +6,9 @@ import {
   StyleSheet,
   Dimensions,
   ActivityIndicator,
-  Alert,
   Platform,
 } from "react-native";
+import { Alert } from '@/src/lib/appAlert';
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Success } from "@/assets/svgs";

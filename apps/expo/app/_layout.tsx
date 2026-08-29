@@ -28,6 +28,7 @@ dayjs.extend(utc);
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { ToastProvider } from '@/src/components/toast/ToastProvider';
+import { ConfirmHost } from '@/src/components/modals/ConfirmHost';
 import { lightTheme, darkTheme } from '@/constants/theme';
 import '@/src/services/firebase/initFirebase'; // Import to initialize Firebase
 import '@/src/database'; // Initialize WatermelonDB
@@ -252,6 +253,12 @@ export default function RootLayout() {
               <ToastProvider>
                 <ThemeProvider value={colorScheme === 'dark' ? darkTheme : lightTheme}>
                   <RootLayoutNav />
+                  {/*
+                    Hosts the confirmation dialog for `src/lib/appAlert.ts`. Must
+                    live inside ThemeProvider (it is themed) and be mounted for
+                    the whole session, since any screen can raise a confirmation.
+                  */}
+                  <ConfirmHost />
                   <StatusBar style="auto" />
                 </ThemeProvider>
               </ToastProvider>

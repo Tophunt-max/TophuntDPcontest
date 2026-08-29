@@ -12,8 +12,8 @@ import {
   Dimensions,
   Pressable,
   ActivityIndicator,
-  Alert,
-} from 'react-native';
+} from "react-native";
+import { Alert } from '@/src/lib/appAlert';
 import { Portal } from 'react-native-paper';
 import Animated, {
   useSharedValue,

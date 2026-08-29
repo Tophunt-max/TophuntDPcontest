@@ -9,8 +9,8 @@ import {
   Modal,
   Dimensions,
   ActivityIndicator,
-  Alert,
-} from 'react-native';
+} from "react-native";
+import { Alert } from '@/src/lib/appAlert';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { UserProfile, Badge } from '@/src/types/user';
 import { Settings_Icon, ChatIcon_Light, ChatIcon_Dark } from '@/assets/svgs';

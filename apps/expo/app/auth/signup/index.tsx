@@ -9,10 +9,10 @@ import {
   Platform,
   ScrollView,
   Dimensions,
-  Alert,
   ActivityIndicator,
   Linking,
 } from "react-native";
+import { Alert } from '@/src/lib/appAlert';
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useForm } from "react-hook-form";
