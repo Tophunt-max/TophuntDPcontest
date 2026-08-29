@@ -25,7 +25,12 @@ import { Ionicons } from '@/src/lib/icons';
 import { uploadToR2 } from '@/src/lib/uploadToR2';
 import { optimizeImageForUpload } from '@/src/lib/imageOptimize';
 import { createStoryRecord, searchUsers } from '@/src/services/stories/storyService';
-import { searchMusic, DEFAULT_MUSIC_QUERY, type MusicTrack } from '@/src/services/stories/musicService';
+import {
+  searchMusic,
+  fetchMusicCatalog,
+  type MusicTrack,
+  type MusicCategory,
+} from '@/src/services/stories/musicService';
 import { uploadVideoToBunny } from '@/src/services/video/bunnyUpload';
 import { useQueryClient } from '@tanstack/react-query';
 import Svg, { Circle } from 'react-native-svg';
@@ -88,6 +93,10 @@ export default function AddStoryScreen() {
   const [musicList, setMusicList] = useState<MusicTrack[]>([]);
   const [isLoadingMusic, setIsLoadingMusic] = useState(false);
   const [musicError, setMusicError] = useState<string | null>(null);
+  const [catalog, setCatalog] = useState<MusicCategory[]>([]);
+  const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  const [isLoadingCatalog, setIsLoadingCatalog] = useState(false);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
   const [selectedMusic, setSelectedMusic] = useState<MusicTrack | null>(null);
   const [isMusicPlaying, setIsMusicPlaying] = useState(true);
 
@@ -213,12 +222,41 @@ export default function AddStoryScreen() {
       setIsLoadingMusic(true);
       setMusicError(null);
       try {
-          setMusicList(await searchMusic(q));
+          const { tracks, providerFailed } = await searchMusic(q);
+          setMusicList(tracks);
+          // "Nothing matched and we could not ask further" is a different fact
+          // from "no such song", and the user can act on it (retry) — so it is
+          // reported instead of rendering as an empty list.
+          if (tracks.length === 0 && providerFailed) {
+              setMusicError('Could not search right now. Browse the categories below, or try again.');
+          }
       } catch (e: any) {
           setMusicList([]);
           setMusicError(e?.message || 'Could not load music. Check your connection.');
       } finally {
           setIsLoadingMusic(false);
+      }
+  }, []);
+
+  /**
+   * Load the curated catalogue the sheet opens on.
+   *
+   * This is what makes music appear at all. The picker used to run a live
+   * "Top Hits" search against the provider on every open; that API throttles per
+   * source IP and the Worker's egress is shared, so it returned zero results and
+   * the sheet was permanently blank with nothing to explain why.
+   */
+  const loadCatalog = useCallback(async () => {
+      setIsLoadingCatalog(true);
+      setCatalogError(null);
+      try {
+          const cats = await fetchMusicCatalog();
+          setCatalog(cats);
+          setActiveCategory((prev) => prev ?? cats[0]?.key ?? null);
+      } catch (e: any) {
+          setCatalogError(e?.message || 'Could not load music. Check your connection.');
+      } finally {
+          setIsLoadingCatalog(false);
       }
   }, []);
 
@@ -228,6 +266,17 @@ export default function AddStoryScreen() {
       }, 400);
       return () => clearTimeout(delaySearch);
   }, [musicSearch, runMusicSearch]);
+
+  /**
+   * Which list the sheet is showing: search results, or the curated catalogue.
+   *
+   * Derived from the text box rather than kept in state, so the two can never
+   * disagree — clearing the search always returns to browsing.
+   */
+  const isSearching = musicSearch.trim().length > 0;
+  const visibleTracks = isSearching
+    ? musicList
+    : (catalog.find((c) => c.key === activeCategory)?.tracks ?? catalog[0]?.tracks ?? []);
 
   const animatedTextStyle = useAnimatedStyle(() => ({ transform: [{ translateX: textX.value }, { translateY: textY.value }], position: 'absolute', zIndex: 100 }));
   const animatedStickerStyle = useAnimatedStyle(() => ({ transform: [{ translateX: stickerX.value }, { translateY: stickerY.value }], position: 'absolute', zIndex: 101 }));
@@ -244,7 +293,7 @@ export default function AddStoryScreen() {
       if (show) { 
           setShowMusicPicker(true); 
           musicSheetY.value = withSpring(0);
-          if (musicList.length === 0) void runMusicSearch(DEFAULT_MUSIC_QUERY);
+          if (catalog.length === 0) void loadCatalog();
       } else { 
           musicSheetY.value = withSpring(height, {}, () => { runOnJS(setShowMusicPicker)(false); }); 
       }
@@ -652,9 +701,48 @@ export default function AddStoryScreen() {
                         <View style={styles.musicSearchContainer}>
                             <Ionicons name="search" size={20} color="#999" />
                             <TextInput style={styles.musicSearchInput} placeholder="Search music..." value={musicSearch} onChangeText={setMusicSearch} />
+                            {musicSearch.length > 0 && (
+                              <TouchableOpacity onPress={() => setMusicSearch('')} accessibilityRole="button" accessibilityLabel="Clear search" hitSlop={8}>
+                                <CloseIcon variant="circle" size={18} color="#999" />
+                              </TouchableOpacity>
+                            )}
                         </View>
+
+                        {/*
+                          Category chips. With no search term the sheet browses the
+                          curated catalogue, which is the whole point: it used to run
+                          a live provider search on open, get throttled to zero
+                          results, and show nothing at all.
+                        */}
+                        {!isSearching && catalog.length > 0 && (
+                          <View style={styles.categoryRow}>
+                            <FlatList
+                              horizontal
+                              data={catalog}
+                              keyExtractor={(c) => c.key}
+                              showsHorizontalScrollIndicator={false}
+                              keyboardShouldPersistTaps="handled"
+                              renderItem={({ item }) => {
+                                const active = item.key === activeCategory;
+                                return (
+                                  <TouchableOpacity
+                                    onPress={() => setActiveCategory(item.key)}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={`${item.label} music`}
+                                    accessibilityState={{ selected: active }}
+                                    style={[styles.categoryChip, active && styles.categoryChipActive]}
+                                  >
+                                    <Text style={[styles.categoryChipText, active && styles.categoryChipTextActive]}>
+                                      {item.label}
+                                    </Text>
+                                  </TouchableOpacity>
+                                );
+                              }}
+                            />
+                          </View>
+                        )}
                         <FlatList
-                          data={musicList}
+                          data={visibleTracks}
                           keyExtractor={item => item.id}
                           keyboardShouldPersistTaps="handled"
                           renderItem={({ item }) => (
@@ -685,14 +773,21 @@ export default function AddStoryScreen() {
                             term alike — so the CSP failure looked like a search
                             result, which is why nobody could tell music was broken.
                           */
+                          /*
+                            Five distinct states where there used to be one. The old
+                            empty component said "No music found" for a CSP-blocked
+                            request, a throttled provider and an obscure search term
+                            alike — so a permanently broken picker was
+                            indistinguishable from an unlucky search.
+                          */
                           ListEmptyComponent={
-                            isLoadingMusic ? (
+                            (isSearching ? isLoadingMusic : isLoadingCatalog) ? (
                               <ActivityIndicator color={ACCENT} style={{ marginTop: 40 }} />
-                            ) : musicError ? (
+                            ) : (isSearching ? musicError : catalogError) ? (
                               <View style={styles.musicStateBox}>
-                                <Text style={styles.emptyText}>{musicError}</Text>
+                                <Text style={styles.emptyText}>{isSearching ? musicError : catalogError}</Text>
                                 <TouchableOpacity
-                                  onPress={() => runMusicSearch(musicSearch.trim() || DEFAULT_MUSIC_QUERY)}
+                                  onPress={() => (isSearching ? runMusicSearch(musicSearch) : loadCatalog())}
                                   style={styles.musicRetryBtn}
                                   accessibilityRole="button"
                                 >
@@ -701,7 +796,7 @@ export default function AddStoryScreen() {
                               </View>
                             ) : (
                               <Text style={styles.emptyText}>
-                                {musicSearch.trim() ? `No results for "${musicSearch.trim()}"` : 'Search for a song'}
+                                {isSearching ? `No results for "${musicSearch.trim()}"` : 'No music available right now.'}
                               </Text>
                             )
                           }
@@ -793,5 +888,10 @@ const styles = StyleSheet.create({
   musicStateBox: { alignItems: 'center', gap: 16 },
   musicThumbFallback: { backgroundColor: '#F0F0F0', alignItems: 'center', justifyContent: 'center' },
   musicRetryBtn: { minHeight: 44, paddingHorizontal: 24, justifyContent: 'center', borderRadius: 22, backgroundColor: ACCENT },
-  musicRetryText: { color: '#fff', fontFamily: 'Urbanist-Bold', fontSize: 15 }
+  musicRetryText: { color: '#fff', fontFamily: 'Urbanist-Bold', fontSize: 15 },
+  categoryRow: { marginBottom: 14 },
+  categoryChip: { paddingHorizontal: 16, minHeight: 36, justifyContent: 'center', borderRadius: 18, backgroundColor: '#F2F2F5', marginRight: 8 },
+  categoryChipActive: { backgroundColor: ACCENT },
+  categoryChipText: { fontSize: 14, fontFamily: 'Urbanist-SemiBold', color: '#555' },
+  categoryChipTextActive: { color: '#fff' }
 });

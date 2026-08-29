@@ -116,6 +116,14 @@ afterEach(() => {
 
 const storyRows = () => drizzleOf(env).select().from(schema.stories).all();
 
+/**
+ * A query that cannot match the curated catalogue, so the PROVIDER fallback is
+ * what gets exercised. The catalogue ships seeded by migration 0036 and the test
+ * harness applies every migration — so a short query like "x" now matches real
+ * curated rows and never reaches the provider at all.
+ */
+const MISS = 'zzq-no-such-track-zzq';
+
 // --- the track lands on the story ------------------------------------------
 describe('createStory with a soundtrack', () => {
   it('resolves the track and stores it on the row', async () => {
@@ -268,16 +276,20 @@ describe('GET /read/music/search', () => {
     stubFetch([
       { body: { results: [providerRow({ trackId: 1, previewUrl: undefined }), providerRow({ trackId: 2 })] } },
     ]);
-    const res = await read('poster', '/music/search?q=x');
+    const res = await read('poster', `/music/search?q=${MISS}`);
     expect(res.body.items.map((t: any) => t.id)).toEqual(['2']);
   });
 
   it('returns an empty list — not an error — when the provider is unreachable', async () => {
     // A failed search has to degrade the picker, not break the editor.
     stubFetch([new Error('offline')]);
-    const res = await read('poster', '/music/search?q=x');
+    const res = await read('poster', `/music/search?q=${MISS}`);
     expect(res.status).toBe(200);
     expect(res.body.items).toEqual([]);
+    // …but it must SAY so. An empty array alone is what made a throttled provider
+    // indistinguishable from "no such song" — the bug that left the picker blank.
+    expect(res.body.providerFailed).toBe(true);
+    expect(res.body.source).toBe('none');
   });
 
   it('does not call the provider for an empty query', async () => {
@@ -323,5 +335,96 @@ describe('normalizeTrack', () => {
 
   it('returns null artwork rather than an empty string when there is none', () => {
     expect(normalizeTrack(providerRow({ artworkUrl100: undefined }))?.artworkUrl).toBeNull();
+  });
+});
+
+
+// --- the curated catalogue -------------------------------------------------
+/**
+ * The catalogue is the fix for the picker being permanently empty.
+ *
+ * The first version asked Apple's iTunes Search API for "Top Hits" every time the
+ * sheet opened. That works from a laptop and returns NOTHING from the deployed
+ * Worker: the API throttles per source IP and a Worker's egress address is shared
+ * with a very large amount of other traffic, so it answers "200 OK, zero results".
+ * Because an empty result and a throttled request were the same response, the
+ * sheet showed an empty state and there was no way to tell why.
+ *
+ * So the properties that matter are: the catalogue needs NO outbound request, it
+ * is what search consults first, and a curated pick must attach to a story
+ * without the provider being involved at all.
+ */
+describe('the curated music catalogue', () => {
+  it('serves browsable categories without any outbound request', async () => {
+    const { impl } = stubFetch([{ body: { results: [] } }]);
+
+    const res = await read('poster', '/music/catalog');
+
+    expect(res.status).toBe(200);
+    expect(res.body.categories.length).toBeGreaterThan(0);
+    // The entire point: nothing to rate-limit, nothing to be throttled.
+    expect(impl).not.toHaveBeenCalled();
+  });
+
+  it('gives every category a label and at least one playable track', async () => {
+    stubFetch([{ body: { results: [] } }]);
+    const res = await read('poster', '/music/catalog');
+    for (const cat of res.body.categories) {
+      expect(cat.key).toBeTruthy();
+      expect(cat.label).toBeTruthy();
+      expect(cat.tracks.length).toBeGreaterThan(0);
+      for (const t of cat.tracks) {
+        // A track with no preview would be a row that plays nothing when tapped.
+        expect(typeof t.previewUrl).toBe('string');
+        expect(t.previewUrl.length).toBeGreaterThan(0);
+        expect(t.title).toBeTruthy();
+        expect(t.artist).toBeTruthy();
+      }
+    }
+  });
+
+  it('never lists the same track in two categories', async () => {
+    stubFetch([{ body: { results: [] } }]);
+    const res = await read('poster', '/music/catalog');
+    const ids = res.body.categories.flatMap((c: any) => c.tracks.map((t: any) => t.id));
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('requires authentication', async () => {
+    stubFetch([{ body: { results: [] } }]);
+    expect((await read(null, '/music/catalog')).status).toBe(401);
+  });
+
+  it('is searched BEFORE the provider, and answers without calling it', async () => {
+    stubFetch([{ body: { results: [providerRow({ trackId: 999, trackName: 'from provider' })] } }]);
+
+    // Pull a real curated title out of the catalogue and search for it.
+    const catalog = await read('poster', '/music/catalog');
+    const known = catalog.body.categories[0].tracks[0];
+    const { impl } = stubFetch([{ body: { results: [] } }]);
+
+    const res = await read('poster', `/music/search?q=${encodeURIComponent(known.artist)}`);
+
+    expect(res.body.source).toBe('catalog');
+    expect(res.body.items.length).toBeGreaterThan(0);
+    expect(impl).not.toHaveBeenCalled();
+  });
+
+  it('attaches a curated track to a story with no provider call at all', async () => {
+    const catalog = await read('poster', '/music/catalog');
+    const known = catalog.body.categories[0].tracks[0];
+    const { impl } = stubFetch([new Error('provider must not be needed')]);
+
+    const res = await call('poster', 'createStory', {
+      mediaUrl: 'https://media.test/a.jpg',
+      musicTrackId: known.id,
+    });
+
+    // This is the path where a throttled provider used to publish a silent story.
+    expect(res.body.musicAttached).toBe(true);
+    expect(impl).not.toHaveBeenCalled();
+    const row = (await storyRows())[0];
+    expect(row.musicTitle).toBe(known.title);
+    expect(row.musicPreviewUrl).toBe(known.previewUrl);
   });
 });

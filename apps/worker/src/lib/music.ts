@@ -19,7 +19,9 @@
  * one and is a deliberate product limit, not an oversight — see PREVIEW_ONLY
  * below.
  */
+import { and, asc, eq, like, or, sql } from "drizzle-orm";
 import type { Env } from "../types";
+import { getDb, schema } from "../db";
 import { cacheGetJson, cachePutJson } from "./cache";
 
 /**
@@ -100,13 +102,117 @@ async function fetchJson(url: string): Promise<any | null> {
   }
 }
 
+/** One browsable group of curated tracks. */
+export interface MusicCategory {
+  key: string;
+  label: string;
+  tracks: MusicTrack[];
+}
+
+const trackColumns = {
+  id: schema.musicTracks.id,
+  title: schema.musicTracks.title,
+  artist: schema.musicTracks.artist,
+  artworkUrl: schema.musicTracks.artworkUrl,
+  previewUrl: schema.musicTracks.previewUrl,
+};
+
 /**
- * Search the catalogue. Returns [] when the provider is unreachable — never
- * throws, because a failed search must not take down the story editor.
+ * The curated catalogue, grouped into browsable categories.
  *
- * Cached per normalised query. The TTL is long (6h) on purpose: a music
- * catalogue does not move, and the default "Top Hits" query is requested by
- * every user who opens the picker.
+ * This is what the picker shows the moment it opens, and it involves NO outbound
+ * request. The previous design asked the provider for "Top Hits" on every open;
+ * that API throttles per source IP and a Worker's egress is shared, so it
+ * answered "200 OK, zero results" and the sheet was permanently empty. Reading
+ * our own table cannot be rate-limited by someone else's traffic.
+ *
+ * Cached for a day: these rows only change when a migration ships.
+ */
+export async function getCatalog(env: Env): Promise<MusicCategory[]> {
+  const cacheKey = "cache:music:catalog:v1";
+  const cached = await cacheGetJson<MusicCategory[]>(env, cacheKey);
+  if (cached) return cached;
+
+  const db = getDb(env);
+  const cats = await db
+    .select({ key: schema.musicCategories.key, label: schema.musicCategories.label })
+    .from(schema.musicCategories)
+    .orderBy(asc(schema.musicCategories.sortOrder))
+    .all();
+  const tracks = await db
+    .select({ ...trackColumns, category: schema.musicTracks.category })
+    .from(schema.musicTracks)
+    .where(eq(schema.musicTracks.isActive, 1))
+    .orderBy(asc(schema.musicTracks.category), asc(schema.musicTracks.sortOrder))
+    .all();
+
+  const byCategory = new Map<string, MusicTrack[]>();
+  for (const t of tracks) {
+    const { category, ...track } = t as any;
+    if (!byCategory.has(category)) byCategory.set(category, []);
+    byCategory.get(category)!.push(track as MusicTrack);
+  }
+  // A category with no active tracks is dropped rather than rendered as an empty
+  // tab the user can select and find nothing in.
+  const out = cats
+    .map((c) => ({ key: c.key, label: c.label, tracks: byCategory.get(c.key) ?? [] }))
+    .filter((c) => c.tracks.length > 0);
+
+  if (out.length > 0) await cachePutJson(env, cacheKey, out, 24 * 60 * 60);
+  return out;
+}
+
+/** Substring match over the curated catalogue. Never throws. */
+export async function searchCatalog(env: Env, query: string, limit = 20): Promise<MusicTrack[]> {
+  const q = query.trim();
+  if (!q) return [];
+  const needle = `%${q.replace(/[%_]/g, "")}%`;
+  try {
+    const rows = await getDb(env)
+      .select(trackColumns)
+      .from(schema.musicTracks)
+      .where(
+        and(
+          eq(schema.musicTracks.isActive, 1),
+          or(like(schema.musicTracks.title, needle), like(schema.musicTracks.artist, needle)),
+        ),
+      )
+      .orderBy(asc(schema.musicTracks.sortOrder))
+      .limit(Math.min(Math.max(limit, 1), 25))
+      .all();
+    return rows as MusicTrack[];
+  } catch {
+    return [];
+  }
+}
+
+/** One curated track by id, or null. Used before any provider call. */
+export async function findCatalogTrack(env: Env, trackId: string): Promise<MusicTrack | null> {
+  const id = String(trackId ?? "").trim();
+  if (!id) return null;
+  try {
+    const row = await getDb(env)
+      .select(trackColumns)
+      .from(schema.musicTracks)
+      .where(eq(schema.musicTracks.id, id))
+      .get();
+    return (row as MusicTrack) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Search the PROVIDER. Returns [] when it is unreachable — never throws, because
+ * a failed search must not take down the story editor.
+ *
+ * This is now a FALLBACK behind `searchCatalog`, not the primary path. It is kept
+ * because the curated catalogue is deliberately small and a user may look for
+ * something outside it, but it must never be the only way to see any music: the
+ * API throttles per source IP and our egress is shared, so it returns an empty
+ * result often enough that a picker built on it alone appears broken.
+ *
+ * Cached per normalised query.
  */
 export async function searchTracks(env: Env, query: string, limit = 20): Promise<MusicTrack[]> {
   const q = query.trim().slice(0, 80);
@@ -148,6 +254,13 @@ export async function lookupTrack(env: Env, trackId: string): Promise<MusicTrack
   // Apple track ids are numeric. Rejecting anything else here means nothing
   // user-controlled is ever interpolated into the outbound URL.
   if (!/^\d{1,20}$/.test(id)) return null;
+
+  // Curated tracks resolve from our own table, so publishing a story with music
+  // picked from the catalogue makes NO outbound request at all. That matters more
+  // here than anywhere else: a throttled provider on this path means the story
+  // publishes silently without its soundtrack.
+  const curated = await findCatalogTrack(env, id);
+  if (curated) return curated;
 
   const cacheKey = `cache:music:track:${id}`;
   const cached = await cacheGetJson<MusicTrack>(env, cacheKey);
