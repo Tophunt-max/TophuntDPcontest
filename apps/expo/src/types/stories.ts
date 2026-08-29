@@ -53,6 +53,12 @@ export interface Story {
   musicArtist?: string | null;
   musicArtworkUrl?: string | null;
   musicPreviewUrl?: string | null;
+  /**
+   * Where in the track the story starts, in ms (migration 0037). Null or absent
+   * means from the beginning — treat the two identically. A value at or past the
+   * end of the preview must degrade to 0:00 rather than to no audio.
+   */
+  musicStartMs?: number | null;
   // --- contest stories ---
   /** Absent on older rows. */
   type?: StoryKind;

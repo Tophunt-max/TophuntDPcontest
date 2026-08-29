@@ -26,6 +26,11 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AppImage as Image } from '@/src/components/ui/AppImage';
 import { useVideoPlayer, VideoView, createVideoPlayer } from 'expo-video';
 import { useAudioPlayer } from 'expo-audio';
+import {
+  DEFAULT_STORY_WINDOW_MS,
+  clampStartMs,
+  shouldLoopBack,
+} from '@/src/services/stories/musicTrim';
 import { Ionicons } from '@/src/lib/icons';
 import { 
     fetchStories, 
@@ -58,7 +63,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 
 const { width, height } = Dimensions.get('window');
-const DEFAULT_STORY_DURATION = 5000;
+// Shared with the editor's music trimmer: the window it cuts has to be the window
+// this screen plays, or a trimmed soundtrack ends early or runs past what the
+// author auditioned.
+const DEFAULT_STORY_DURATION = DEFAULT_STORY_WINDOW_MS;
 // Vertical space the top (progress + author row) and bottom (reply bar) chrome
 // occupy, so the photo can be inset clear of them. Approximate on purpose — the
 // goal is only that no image content sits hidden behind the chrome.
@@ -224,6 +232,14 @@ export default function StoryView() {
   const musicUrl = currentStory?.musicPreviewUrl || null;
   const musicPlayer = useAudioPlayer(musicUrl ? { uri: musicUrl } : null);
   const [isMuted, setIsMuted] = useState(true);
+  /**
+   * Where in the track this story starts (migration 0037). Null and 0 mean the
+   * same thing — from the beginning — which is also what an offset past the end of
+   * the preview degrades to, so a bad value plays the song rather than silence.
+   */
+  const musicStartMs = Math.max(0, currentStory?.musicStartMs ?? 0);
+  /** Measured preview length; 0 until the audio loads. */
+  const [musicDurationMs, setMusicDurationMs] = useState(0);
 
   // Follow the SAME pause lifecycle as the video and the progress bar: a
   // long-press that freezes the story must freeze its music too, and the track
@@ -240,6 +256,39 @@ export default function StoryView() {
     if (isPaused || showHighlightModal || isKeyboardVisible || showViewers) musicPlayer.pause();
     else musicPlayer.play();
   }, [musicUrl, musicPlayer, player, isMuted, isPaused, showHighlightModal, isKeyboardVisible, showViewers]);
+
+  /**
+   * Play the part of the track the author chose.
+   *
+   * `loop` restarts at 0:00, which is outside that window, so a story lasting
+   * longer than the trimmed section would drift back to the top of the song. The
+   * window is therefore enforced here — expo-audio reports position but has no
+   * "reached time" event, hence the poll.
+   *
+   * The offset is re-derived from the measured duration rather than trusted: a
+   * preview can be replaced by a shorter one, and seeking past the end would play
+   * nothing at all. `shouldLoopBack` treats that as "return to start".
+   */
+  useEffect(() => {
+    if (!musicUrl) return;
+    let cancelled = false;
+    const startSec = () => clampStartMs(musicStartMs, duration, musicDurationMs) / 1000;
+    if (musicStartMs > 0) { try { void musicPlayer.seekTo(startSec()); } catch { /* not loaded */ } }
+    const id = setInterval(() => {
+      if (cancelled) return;
+      const d = musicPlayer.duration;
+      if (Number.isFinite(d) && d > 0) {
+        const ms = Math.round(d * 1000);
+        setMusicDurationMs((cur) => (cur === ms ? cur : ms));
+      }
+      if (musicStartMs <= 0) return;
+      const cur = musicPlayer.currentTime * 1000;
+      if (shouldLoopBack(cur, musicStartMs, duration, musicDurationMs)) {
+        try { void musicPlayer.seekTo(startSec()); } catch { /* not loaded */ }
+      }
+    }, 250);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [musicUrl, musicPlayer, musicStartMs, duration, musicDurationMs]);
 
   // Stop on unmount and whenever the current story changes, so the previous
   // story's track never bleeds into the next one.

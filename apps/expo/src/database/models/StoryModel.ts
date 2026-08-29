@@ -46,6 +46,10 @@ export class StoryModel extends Model {
   @field('music_artwork_url') musicArtworkUrl?: string;
   @field('music_preview_url') musicPreviewUrl?: string;
 
+  // Which part of the track plays (schema v4). Undefined means from the
+  // beginning; the viewer seeks here before starting the soundtrack.
+  @field('music_start_ms') musicStartMs?: number;
+
   // Auto-touched by WatermelonDB on every write. Do not assign manually.
   @readonly @date('updated_at') updatedAt!: Date;
 

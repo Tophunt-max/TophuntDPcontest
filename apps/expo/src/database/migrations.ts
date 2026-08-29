@@ -56,5 +56,17 @@ export const migrations = schemaMigrations({
         }),
       ],
     },
+    {
+      // v4 adds the music start offset. Existing rows get NULL, which is exactly
+      // right: a story cached before this upgrade plays from the beginning, which
+      // is what it did when it was created.
+      toVersion: 4,
+      steps: [
+        addColumns({
+          table: 'stories',
+          columns: [{ name: 'music_start_ms', type: 'number', isOptional: true }],
+        }),
+      ],
+    },
   ],
 });

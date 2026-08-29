@@ -458,6 +458,11 @@ export const stories = sqliteTable(
     musicArtist: text("music_artist"),
     musicArtworkUrl: text("music_artwork_url"),
     musicPreviewUrl: text("music_preview_url"),
+    // Where in the track the story starts, in ms. NULL means from the beginning
+    // — the correct value for a story whose author never scrubbed, and for every
+    // row predating migration 0037. Readers treat NULL and 0 identically. Clamped
+    // in createStory against the window the story actually plays.
+    musicStartMs: integer("music_start_ms"),
     createdAt: integer("created_at").notNull(),
     expiresAt: integer("expires_at").notNull(),
   },

@@ -1,0 +1,39 @@
+-- Which PART of a track a story plays.
+--
+-- 0035 attached a soundtrack but always played it from 0:00. A story is short —
+-- five seconds for a photo, the clip's own length for a video — against a preview
+-- stream of about thirty, so the recognisable part of a song was unreachable. The
+-- editor now lets the author scrub to a start point; this is where it goes.
+--
+-- MILLISECONDS, INTEGER, NULLABLE.
+--
+--   NULL means "from the beginning" and is the correct value for every row that
+--   predates this column and for every story whose author never touched the
+--   scrubber. Readers must treat NULL and 0 identically rather than special-casing
+--   one of them.
+--
+-- WHY ONLY A START, NOT A START AND AN END:
+--
+--   The end is not the author's to choose — it is fixed by how long the story
+--   shows, which the viewer already knows (photo: its own timer, video: the clip's
+--   duration). Storing an end as well would let the two disagree, and the viewer
+--   would have to decide which one wins. One value cannot contradict itself.
+--
+-- WHAT THE SERVER CAN AND CANNOT CHECK:
+--
+--   `createStory` sanitises this to a whole, non-negative number of milliseconds
+--   within the length of a provider preview (30s — see music_tracks.preview_url).
+--   It cannot do better: the catalogue stores no track duration, and the story's
+--   own window depends on the video's length, which only the client knows. The
+--   exact window clamp therefore happens in the editor, which has both durations.
+--
+--   That is deliberately not treated as a trust boundary. A bad offset here is not
+--   a security problem — it is our own catalogue and the value only ever feeds a
+--   `seekTo` — but it would produce a story that plays silence, which is
+--   indistinguishable from the music being broken. So every reader is defensive
+--   too: a start at or past the end of a preview degrades to 0:00, never to no
+--   audio at all.
+ALTER TABLE stories ADD COLUMN music_start_ms INTEGER;
+
+-- No index, for the same reason as 0035: never a filter or a sort key, only ever
+-- read as part of a story row that has already been located.

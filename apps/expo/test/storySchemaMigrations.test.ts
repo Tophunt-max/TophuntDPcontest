@@ -81,6 +81,8 @@ describe('local cache schema ↔ migrations', () => {
       'music_artist',
       'music_artwork_url',
       'music_preview_url',
+      // v4: which part of the track plays.
+      'music_start_ms',
     ];
     const declared = schemaColumns('stories');
     const migrated = migratedColumns('stories');

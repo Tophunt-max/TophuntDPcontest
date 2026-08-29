@@ -215,3 +215,60 @@ describe('offline story cache — soundtrack', () => {
     expect(out.contestTitle).toBe('Best Smile');
   });
 });
+
+
+/**
+ * The trim offset has to survive the cache too (schema v4).
+ *
+ * Its failure mode is quieter than the rest of the music fields: losing it does
+ * not silence the story, it resets every cached story to 0:00. The music still
+ * plays, so the loss looks like the trim feature never worked rather than like a
+ * cache bug — which is precisely why it needs pinning here.
+ */
+describe('offline story cache — music start offset', () => {
+  const trimmed: Story = {
+    id: 's4',
+    userId: 'dan',
+    username: 'dan',
+    avatarUrl: '',
+    mediaUrl: 'dan.jpg',
+    mediaType: 'image',
+    createdAt: 1_700_000_000_000,
+    expiresAt: 1_700_086_400_000,
+    seen: false,
+    type: 'user',
+    musicTrackId: 't-7',
+    musicTitle: 'Husn',
+    musicArtist: 'Anuv Jain',
+    musicPreviewUrl: 'https://cdn.example/husn.m4a',
+    musicStartMs: 12_000,
+  };
+
+  it('round-trips the offset', () => {
+    expect(roundTrip(trimmed).musicStartMs).toBe(12_000);
+  });
+
+  it('persists it onto the record, not just the returned object', () => {
+    const record = fakeRecord();
+    applyStoryFields(record, trimmed);
+    expect(record.musicStartMs).toBe(12_000);
+  });
+
+  it('keeps 0:00 as null rather than inventing an offset', () => {
+    expect(roundTrip({ ...trimmed, musicStartMs: undefined }).musicStartMs ?? null).toBeNull();
+    expect(roundTrip({ ...trimmed, musicStartMs: null }).musicStartMs ?? null).toBeNull();
+  });
+
+  it('does not write null into the optional local column', () => {
+    const record = fakeRecord();
+    applyStoryFields(record, { ...trimmed, musicStartMs: null });
+    expect(record.musicStartMs).toBeUndefined();
+  });
+
+  it('keeps the offset alongside the rest of the soundtrack', () => {
+    const out = roundTrip(trimmed);
+    expect(out.musicPreviewUrl).toBe('https://cdn.example/husn.m4a');
+    expect(out.musicTitle).toBe('Husn');
+    expect(out.musicStartMs).toBe(12_000);
+  });
+});
