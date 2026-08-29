@@ -25,6 +25,33 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Turn a thrown request error into something an admin can act on.
+ *
+ * The case that matters: when the browser blocks a request before it is sent
+ * (CORS policy, DNS failure, offline), `fetch` rejects with a bare
+ * `TypeError: Failed to fetch` and no status. Surfacing that string verbatim
+ * sent people looking for a server outage when the actual cause was the panel
+ * being opened on a host the API's allow-list does not include — so name that
+ * possibility here instead of leaking the raw message.
+ *
+ * `uploadBinary` reports the same class of failure as `ApiError` with status 0.
+ */
+export function describeError(e: unknown): string {
+  const transport =
+    (e instanceof ApiError && e.status === 0) ||
+    (e instanceof TypeError && /failed to fetch|networkerror|load failed/i.test(e.message));
+  if (transport) {
+    return `Could not reach the API at ${BASE || window.location.origin}. Check your connection, and confirm this admin host is allowed by the API's CORS allow-list.`;
+  }
+  if (e instanceof ApiError) {
+    if (e.status === 401) return "Your session expired. Sign in again.";
+    if (e.status === 403) return e.message || "Your account does not have access to this.";
+    return e.message || `Request failed (${e.status}).`;
+  }
+  return e instanceof Error && e.message ? e.message : "Something went wrong.";
+}
+
 export type BlogStatus = "published" | "draft";
 
 /** Lightweight row returned by GET /admin/blog. Full content/tags are detail-only. */

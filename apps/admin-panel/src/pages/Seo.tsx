@@ -11,7 +11,7 @@ import {
   ShieldQuestion,
   XCircle,
 } from "lucide-react";
-import { api, type SeoAudit, type SeoIssue, type SeoSeverity } from "@/lib/api";
+import { api, describeError, type SeoAudit, type SeoIssue, type SeoSeverity } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
 import { PageHeader, fmtDateTime, fmtNumber } from "@/lib/format";
 import { toast } from "@/lib/toast";
@@ -185,7 +185,7 @@ export default function Seo() {
       toast.success(r?.message || "SEO scan complete");
       qc.invalidateQueries({ queryKey: ["seo-audit"] });
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(describeError(e)),
   });
 
   const data = audit.data;
@@ -249,6 +249,22 @@ export default function Seo() {
           {Array.from({ length: 8 }).map((_, i) => (
             <div key={i} className="rounded-2xl border border-border bg-card h-[132px] animate-pulse" />
           ))}
+        </div>
+      ) : audit.isError ? (
+        // Distinct from the empty state below. `GET /admin/seo` answers 200 with
+        // `{ ranAt: null }` when no audit exists, so reaching here means the
+        // request itself failed — claiming "no audit has run yet" would send the
+        // reader off to run a scan that cannot possibly succeed.
+        <div className="rounded-2xl border border-destructive/30 bg-destructive/5 p-6 text-sm flex flex-col gap-3 sm:flex-row sm:items-center">
+          <XCircle className="text-destructive shrink-0" size={18} />
+          <p className="flex-1">Could not load the SEO audit: {describeError(audit.error)}</p>
+          <button
+            type="button"
+            onClick={() => audit.refetch()}
+            className="h-9 px-3 rounded-lg border border-border bg-card text-sm font-medium hover:bg-muted/40 shrink-0"
+          >
+            Retry
+          </button>
         </div>
       ) : !hasRun ? (
         <div className="rounded-2xl border border-border bg-card p-10 text-center">

@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, type BlogListItem, type BlogPostDetail, type BlogStatus, type BlogWritePayload } from "@/lib/api";
+import { api, describeError, type BlogListItem, type BlogPostDetail, type BlogStatus, type BlogWritePayload } from "@/lib/api";
 import { Table } from "@/components/ui/Table";
 import { Badge } from "@/components/ui/Badge";
 import { StatCard } from "@/components/ui/StatCard";
@@ -144,7 +144,7 @@ export default function Blog() {
       {posts.isError && (
         <div className="mb-4 flex flex-col gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm sm:flex-row sm:items-center">
           <AlertCircle className="text-destructive" size={18} />
-          <p className="flex-1">Could not load blog posts: {(posts.error as Error).message}</p>
+          <p className="flex-1">Could not load blog posts: {describeError(posts.error)}</p>
           <Button size="sm" type="button" variant="outline" onClick={() => posts.refetch()}>Retry</Button>
         </div>
       )}
@@ -310,7 +310,7 @@ function ImportStatus() {
         toast.success("Import complete!");
       }
     } catch (e: any) {
-      toast.error(e.message || "Import failed");
+      toast.error(describeError(e));
     } finally {
       setImporting(false);
       refresh();
@@ -323,7 +323,7 @@ function ImportStatus() {
       toast.success(`Marked ${data.requeued || 0} ${status} rows for retry`);
       await runImport(status);
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(describeError(e)),
   });
 
   const by = summary.data?.byStatus || {};
