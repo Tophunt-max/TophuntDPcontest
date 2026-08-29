@@ -195,6 +195,8 @@ const ionicons: Record<string, LucideIcon> = {
   // it is the "Adjust photo" button on THREE screens — story create, contest
   // photo setup and profile edit — so all three showed a meaningless circle.
   'crop-outline': ic('Crop'), 'crop': ic('Crop'),
+  // Exchange the soundtrack on a story for another track.
+  'swap-horizontal': ic('ArrowLeftRight'), 'swap-horizontal-outline': ic('ArrowLeftRight'),
   'compass-outline': ic('Compass'), 'compass': ic('Compass'),
   'help': ic('CircleHelp'), 'help-outline': ic('CircleHelp'), 'help-circle-outline': ic('CircleHelp'),
   'hand-left': ic('Hand'), 'hand-left-outline': ic('Hand'), 'hand-right': ic('Hand'),
@@ -225,7 +227,7 @@ const ionicons: Record<string, LucideIcon> = {
   'paper-plane-outline': ic('Send'), 'paper-plane': ic('Send'), 'send': ic('Send'),
   'pencil': ic('Pencil'), 'pencil-outline': ic('Pencil'), 'create-outline': ic('SquarePen'),
   'people': ic('Users'), 'people-outline': ic('Users'), 'person': ic('User'), 'person-outline': ic('User'), 'person-circle-outline': ic('CircleUser'),
-  'play': ic('Play'), 'play-circle': ic('PlayCircle'), 'pause': ic('Pause'),
+  'play': ic('Play'), 'play-circle': ic('PlayCircle'), 'pause': ic('Pause'), 'pause-circle': ic('PauseCircle'),
   'podium': ic('Award'), 'podium-outline': ic('Award'),
   'pricetags-outline': ic('Tags'), 'pricetag-outline': ic('Tag'),
   'qr-code-outline': ic('QrCode'), 'qr-code': ic('QrCode'),

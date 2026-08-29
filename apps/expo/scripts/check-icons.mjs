@@ -154,24 +154,56 @@ for (const [set, keys] of Object.entries(NAME_MAPS)) {
     }
 }
 
-const USAGE = new RegExp(
-    `<(${Object.keys(NAME_MAPS).join('|')})\\b[^>]*?\\bname=\\{?["']([^"']+)["']`,
-    'gs',
-);
+const SETS = Object.keys(NAME_MAPS).join('|');
+
+/** `name="play"` or `name={"play"}` — a single literal. */
+const USAGE_LITERAL = new RegExp(`<(${SETS})\\b[^>]*?\\bname=\\{?["']([^"']+)["']`, 'gs');
+
+/**
+ * `name={cond ? 'pause-circle' : 'play-circle'}` — EVERY literal in the expression.
+ *
+ * This was the blind spot: `USAGE_LITERAL` needs a quote immediately after
+ * `name=`, so a ternary matched nothing at all and neither branch was checked. A
+ * conditional icon is the most likely place to find an unmapped name — play/pause
+ * and mute/unmute pairs are exactly how toggles are written — and `pause-circle`
+ * reached the story music picker that way, rendering as a blank circle.
+ *
+ * `[^}]*` stops at the first closing brace, so a name built from a template or a
+ * nested expression is skipped rather than guessed at. Missing one is acceptable;
+ * inventing a violation is not.
+ */
+const USAGE_EXPR = new RegExp(`<(${SETS})\\b[^>]*?\\bname=\\{([^}]*)\\}`, 'gs');
+const QUOTED = /['"]([^'"]+)['"]/g;
+
+/** Same (file, line, name) reported by both patterns is one problem, not two. */
+const seen = new Set();
+function checkName(rel, code, index, set, name) {
+    if (NAME_MAPS[set].has(name)) return;
+    const line = code.slice(0, index).split('\n').length;
+    const key = `${rel}:${line}:${set}:${name}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    violations.push({
+        rel,
+        line,
+        found: `<${set} name="${name}">`,
+        fix: `"${name}" is not in the ${set} map, so it renders as a blank circle. Add it to ${SHIM}.`,
+    });
+}
 
 for (const file of files) {
     const rel = relative(ROOT, file);
     if (rel === SHIM) continue;
     const code = stripComments(readFileSync(file, 'utf8'));
-    for (const match of code.matchAll(USAGE)) {
-        const [, set, name] = match;
-        if (NAME_MAPS[set].has(name)) continue;
-        violations.push({
-            rel,
-            line: code.slice(0, match.index).split('\n').length,
-            found: `<${set} name="${name}">`,
-            fix: `"${name}" is not in the ${set} map, so it renders as a blank circle. Add it to ${SHIM}.`,
-        });
+
+    for (const match of code.matchAll(USAGE_LITERAL)) {
+        checkName(rel, code, match.index, match[1], match[2]);
+    }
+    for (const match of code.matchAll(USAGE_EXPR)) {
+        const [, set, expr] = match;
+        for (const lit of expr.matchAll(QUOTED)) {
+            checkName(rel, code, match.index, set, lit[1]);
+        }
     }
 }
 
