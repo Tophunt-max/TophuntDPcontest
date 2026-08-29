@@ -312,27 +312,42 @@ export default {
 
     // --- Firebase email action links ---------------------------------------
     // Firebase's email templates use a customised action URL on this domain, and
-    // once that is customised Firebase stops handling the link itself: it just
-    // forwards the browser to `/__/auth/action?mode=…&oobCode=…` and expects the
-    // app to complete the flow. Nothing served that path, so a password reset
-    // link opened the app, matched no route and fell through to the welcome/login
-    // screen — the mail arrived, the link "worked", and resetting the password was
-    // impossible.
+    // once that is customised Firebase stops handling the link itself: it forwards
+    // the browser with `mode=…&oobCode=…` in the query and expects the app to
+    // complete the flow. Nothing handled that, so a password reset link opened the
+    // app, matched no route and fell through to the welcome/login screen — the
+    // mail arrived, the link "worked", and resetting the password was impossible.
     //
-    // The redirect exists because a path segment starting with `__` cannot be
-    // expressed as an expo-router file route. A 302 (not 301) because this is a
-    // routing detail, not a canonical-URL statement, and these links are
-    // single-use — a cached permanent redirect would be pinned in browsers for a
-    // path whose handling may well move.
+    // MATCHED ON THE PAYLOAD, NOT THE PATH. The first attempt at this keyed on
+    // `/__/auth/action`, Firebase's default path — and the link still landed on
+    // login, because the console's action URL can be ANY url on this domain
+    // (`https://tophunt.in/`, `/auth/login`, anything), and Firebase simply
+    // appends its query to whatever is configured. The path is the operator's
+    // choice and can be changed in a console at any time; `oobCode` plus a known
+    // `mode` is unambiguous and is the actual contract. Nothing else in this app
+    // uses either parameter.
+    //
+    // The `/__/auth/action` path is still special-cased below so that a link with
+    // a missing or unrecognised mode reaches the handler and gets a real error
+    // instead of the login screen.
     //
     // `url.search` is forwarded verbatim: `oobCode` is the entire credential, and
-    // re-encoding it is how it would get corrupted.
+    // re-encoding it is how it gets corrupted — producing
+    // "auth/invalid-action-code", which reads exactly like an expired link.
+    //
+    // 302, not 301: this is a routing detail rather than a canonical-URL
+    // statement, and these links are single-use — a cached permanent redirect
+    // would pin a path whose handling may well move.
     //
     // `/__/auth/handler` is deliberately NOT redirected. That is the OAuth
     // popup/redirect endpoint, it belongs to `authDomain`
     // (tophuntdpcontest.firebaseapp.com), and it needs Firebase's own hosted
     // files — capturing it here would break social sign-in.
-    if (path === '/__/auth/action') {
+    const ACTION_MODES = new Set(['resetPassword', 'verifyEmail', 'recoverEmail']);
+    const oobCode = url.searchParams.get('oobCode');
+    const actionMode = url.searchParams.get('mode');
+    const isActionPayload = !!oobCode && ACTION_MODES.has(actionMode);
+    if ((isActionPayload || path === '/__/auth/action') && path !== '/auth/action') {
       return Response.redirect(new URL('/auth/action' + url.search, url.origin).toString(), 302);
     }
 

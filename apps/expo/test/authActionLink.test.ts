@@ -82,6 +82,53 @@ describe('the /__/auth/action redirect in public/_worker.js', () => {
     expect(res.headers.get('location')).toBe('https://tophunt.in/auth/action?mode=resetPassword&oobCode=ABC123');
   });
 
+  /**
+   * The regression that made the first fix useless.
+   *
+   * Keying on `/__/auth/action` was wrong: the Firebase console's action URL is
+   * free-form, so Firebase appends its query to WHATEVER path an operator typed
+   * there. The link kept landing on the login screen after a fix that verified
+   * green, because the real link was never on the path being matched.
+   *
+   * Every shape below is a plausible console value, and each one must reach the
+   * handler on the strength of the payload alone.
+   */
+  it.each([
+    ['the site root', 'https://tophunt.in/?mode=resetPassword&oobCode=ABC123'],
+    ['the bare origin', 'https://tophunt.in?mode=resetPassword&oobCode=ABC123'],
+    ['the login screen', 'https://tophunt.in/auth/login?mode=resetPassword&oobCode=ABC123'],
+    ['an invented path', 'https://tophunt.in/reset-password?mode=resetPassword&oobCode=ABC123'],
+    ['a path that looks like a blog permalink', 'https://tophunt.in/some-slug?mode=resetPassword&oobCode=ABC123'],
+  ])('claims an action link arriving at %s', async (_label, url) => {
+    const res = await get(url);
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('/auth/action?');
+    expect(res.headers.get('location')).toContain('oobCode=ABC123');
+  });
+
+  it('claims verifyEmail and recoverEmail links too', async () => {
+    for (const mode of ['verifyEmail', 'recoverEmail']) {
+      const res = await get(`https://tophunt.in/?mode=${mode}&oobCode=ABC123`);
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toContain(`mode=${mode}`);
+    }
+  });
+
+  it('ignores an oobCode without a known mode, and a mode without a code', async () => {
+    // Both halves are required, so an unrelated `?mode=` on some future screen
+    // cannot hijack a page.
+    expect((await get('https://tophunt.in/?oobCode=ABC123')).status).not.toBe(302);
+    expect((await get('https://tophunt.in/?mode=resetPassword')).status).not.toBe(302);
+    expect((await get('https://tophunt.in/?mode=darkTheme&oobCode=ABC123')).status).not.toBe(302);
+  });
+
+  it('does not redirect the handler route onto itself', async () => {
+    // The handler carries exactly these params, so without the guard every load
+    // of it would redirect forever.
+    const res = await get('https://tophunt.in/auth/action?mode=resetPassword&oobCode=ABC123');
+    expect(res.status).not.toBe(302);
+  });
+
   it('preserves the oobCode byte for byte, including characters that re-encode badly', async () => {
     // Real oobCodes are long, mixed-case base64url — they contain - . and _.
     const code = 'AB-cd_EF12.34-xyz_QQ';
@@ -182,5 +229,51 @@ describe('messageForActionError', () => {
     const { messageForActionError } = await import('@/src/services/auth/actionLink');
     expect(messageForActionError(undefined)).toMatch(/request a new password reset email/i);
     expect(messageForActionError('auth/something-new')).toBeTruthy();
+  });
+});
+
+
+// --- 5. the client-side net ------------------------------------------------
+/**
+ * The worker only sees links that arrive as a fresh HTTP navigation. A NATIVE
+ * deep link never reaches it, and neither does an in-app navigation that already
+ * carries the params — so the same payload rule has to exist on the client.
+ */
+describe('actionLinkRedirect (client net)', () => {
+  it('claims a link regardless of which route it landed on', async () => {
+    const { actionLinkRedirect } = await import('@/src/services/auth/actionLink');
+    expect(actionLinkRedirect({ mode: 'resetPassword', oobCode: 'ABC' }, false)).toEqual({
+      mode: 'resetPassword',
+      oobCode: 'ABC',
+    });
+  });
+
+  it('does nothing when the handler is already showing', async () => {
+    // This is what keeps it from fighting the worker's redirect: by the time the
+    // app boots, the browser is already on /auth/action.
+    const { actionLinkRedirect } = await import('@/src/services/auth/actionLink');
+    expect(actionLinkRedirect({ mode: 'resetPassword', oobCode: 'ABC' }, true)).toBeNull();
+  });
+
+  it('does nothing without an oobCode', async () => {
+    const { actionLinkRedirect } = await import('@/src/services/auth/actionLink');
+    expect(actionLinkRedirect({ mode: 'resetPassword' }, false)).toBeNull();
+    expect(actionLinkRedirect({ mode: 'resetPassword', oobCode: '' }, false)).toBeNull();
+    expect(actionLinkRedirect({}, false)).toBeNull();
+  });
+
+  it('still forwards a code whose mode is unrecognised', async () => {
+    // The handler can then say the link is unusable. Showing the login screen
+    // instead — the original bug — tells the user nothing at all.
+    const { actionLinkRedirect } = await import('@/src/services/auth/actionLink');
+    expect(actionLinkRedirect({ mode: 'somethingNew', oobCode: 'ABC' }, false)).toEqual({
+      mode: 'unknown',
+      oobCode: 'ABC',
+    });
+  });
+
+  it('ignores non-string params rather than coercing them', async () => {
+    const { actionLinkRedirect } = await import('@/src/services/auth/actionLink');
+    expect(actionLinkRedirect({ mode: 'resetPassword', oobCode: ['a', 'b'] as any }, false)).toBeNull();
   });
 });
