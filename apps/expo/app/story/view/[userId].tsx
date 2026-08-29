@@ -31,6 +31,16 @@ import {
   clampStartMs,
   shouldLoopBack,
 } from '@/src/services/stories/musicTrim';
+import {
+  STARTS_MUTED,
+  AUTOPLAY_PROBE_MS,
+  AUTOPLAY_CONFIRM_MS,
+  shouldProbeAutoplay,
+  autoplayRefused,
+  isMutedNow,
+  toggleMute,
+  musicPillLabel,
+} from '@/src/services/stories/musicAutoplay';
 import { Ionicons } from '@/src/lib/icons';
 import { 
     fetchStories, 
@@ -216,22 +226,26 @@ export default function StoryView() {
   });
 
   /**
-   * The story's soundtrack.
+   * The story's soundtrack, and it starts AUDIBLE.
    *
-   * The author could already attach music in the editor, but nothing ever played
-   * it back — the track was chosen, shown on a sticker, and then simply not part
-   * of watching the story.
+   * It used to start muted on every platform. That could never fail — a muted play
+   * is never blocked — but nobody heard a soundtrack without first finding and
+   * tapping the pill, which reads as the music being broken.
    *
-   * Muted by default, and that is not a nicety: browsers refuse to autoplay audio
-   * without a prior user gesture, and a player that is *blocked* is
-   * indistinguishable from one that is broken. Starting muted always succeeds, so
-   * every viewer gets a working control instead of some getting silence and no
-   * explanation. `isMuted` starts true on every platform so the behaviour is the
-   * same one to test everywhere.
+   * Asking for sound is safe here because a refusal is detected rather than
+   * assumed: see the probe below and src/services/stories/musicAutoplay.ts. In
+   * practice web rarely refuses, because reaching this screen means the user
+   * tapped a story and that gesture gives the document sticky activation; a cold
+   * deep link with no interaction is the case that genuinely fails, and it falls
+   * back to muted playback with a visible control.
    */
   const musicUrl = currentStory?.musicPreviewUrl || null;
   const musicPlayer = useAudioPlayer(musicUrl ? { uri: musicUrl } : null);
-  const [isMuted, setIsMuted] = useState(true);
+  /** The viewer asked for quiet. Sticky across stories — see musicAutoplay.ts. */
+  const [userMuted, setUserMuted] = useState(STARTS_MUTED);
+  /** The browser refused sound for THIS story. Reset when the story changes. */
+  const [soundBlocked, setSoundBlocked] = useState(false);
+  const isMuted = isMutedNow({ userMuted, soundBlocked });
   /**
    * Where in the track this story starts (migration 0037). Null and 0 mean the
    * same thing — from the beginning — which is also what an offset past the end of
@@ -256,6 +270,64 @@ export default function StoryView() {
     if (isPaused || showHighlightModal || isKeyboardVisible || showViewers) musicPlayer.pause();
     else musicPlayer.play();
   }, [musicUrl, musicPlayer, player, isMuted, isPaused, showHighlightModal, isKeyboardVisible, showViewers]);
+
+  /**
+   * Did the sound actually start?
+   *
+   * expo-audio's web backend calls `media.play()` without awaiting the promise and
+   * sets its own `isPlaying = true` regardless, so a refusal is swallowed twice —
+   * `player.playing` would claim success while nothing plays. `paused` reads the
+   * media element itself, so it is the only honest signal.
+   *
+   * Without this the story would sit silent behind a live-speaker pill: strictly
+   * worse than starting muted, because nothing suggests there is anything to tap.
+   */
+  const musicIntendedToPlay = !(isPaused || showHighlightModal || isKeyboardVisible || showViewers);
+  useEffect(() => {
+    if (!shouldProbeAutoplay({
+      hasMusic: !!musicUrl,
+      muted: isMuted,
+      intendedToPlay: musicIntendedToPlay,
+      alreadyBlocked: soundBlocked,
+    })) return;
+
+    // Baseline for the progress check. Sampled now so a seek to the trim offset
+    // that has already happened does not read as playback.
+    let startedAt = 0;
+    try { startedAt = musicPlayer.currentTime; } catch { /* nothing loaded */ }
+
+    const check = (confirmed: boolean) => {
+      let paused = false;
+      let now = startedAt;
+      try {
+        paused = musicPlayer.paused;
+        now = musicPlayer.currentTime;
+      } catch { return; /* nothing loaded */ }
+      const refused = autoplayRefused({
+        paused,
+        progressed: now > startedAt + 0.05,
+        confirmed,
+        muted: isMuted,
+        intendedToPlay: musicIntendedToPlay,
+      });
+      if (!refused) return;
+      // Fall back to a play that cannot be refused, and let the pill offer sound.
+      setSoundBlocked(true);
+    };
+
+    // Two windows: `paused` is conclusive early, a stalled clock only later.
+    const fast = setTimeout(() => check(false), AUTOPLAY_PROBE_MS);
+    const slow = setTimeout(() => check(true), AUTOPLAY_CONFIRM_MS);
+    return () => { clearTimeout(fast); clearTimeout(slow); };
+  }, [musicUrl, musicPlayer, isMuted, musicIntendedToPlay, soundBlocked]);
+
+  // Each story gets its own attempt at sound: a refusal on the first one is not a
+  // property of the next, and by then the viewer has almost certainly tapped.
+  // `userMuted` is deliberately NOT reset — quietly restoring sound after someone
+  // asked for quiet is worse than never autoplaying.
+  useEffect(() => {
+    setSoundBlocked(false);
+  }, [currentStory?.id]);
 
   /**
    * Play the part of the track the author chose.
@@ -683,15 +755,22 @@ export default function StoryView() {
             {isLoading && <View style={styles.loader}><ActivityIndicator size="large" color="white" /></View>}
             
             {/*
-              Soundtrack pill. Doubles as the mute control, because audio starts
-              muted (browsers block unprompted autoplay) and a viewer otherwise
-              has no way to know the story HAS music, let alone turn it on.
-              Tapping toggles sound; it does not pause the story.
+              Soundtrack pill. Sound starts on, so most of the time this is a
+              now-playing label that doubles as a mute control. It only asks to be
+              tapped when the browser refused unmuted playback — the one case that
+              still needs a gesture. Tapping toggles sound; it does not pause the
+              story.
             */}
             {musicUrl && (
                 <Pressable
                     pointerEvents="auto"
-                    onPress={() => setIsMuted((m) => !m)}
+                    onPress={() => {
+                        // Turning sound on clears a refusal too: this tap IS the
+                        // gesture the browser was waiting for.
+                        const next = toggleMute({ userMuted, soundBlocked });
+                        setUserMuted(next.userMuted);
+                        setSoundBlocked(next.soundBlocked);
+                    }}
                     style={[styles.musicPill, { top: insets.top + CHROME_TOP + 8 }]}
                     accessibilityRole="button"
                     accessibilityLabel={
@@ -702,18 +781,7 @@ export default function StoryView() {
                 >
                     <Ionicons name={isMuted ? 'volume-mute' : 'volume-high'} size={16} color="white" />
                     <Text style={styles.musicPillText} numberOfLines={1}>
-                        {/*
-                          While muted, say so in words. A crossed-out speaker next to a
-                          song title reads as a now-playing label, so viewers waited for
-                          audio that was deliberately silent and reported the music as
-                          broken. Naming the action is the whole fix — the track is
-                          already playing, just muted, and one tap turns it on.
-                        */}
-                        {isMuted
-                            ? `Tap for sound${currentStory.musicTitle ? ` · ${currentStory.musicTitle}` : ''}`
-                            : currentStory.musicTitle
-                                ? `${currentStory.musicTitle}${currentStory.musicArtist ? ` · ${currentStory.musicArtist}` : ''}`
-                                : 'Music'}
+                        {musicPillLabel(isMuted, currentStory.musicTitle, currentStory.musicArtist)}
                     </Text>
                 </Pressable>
             )}
