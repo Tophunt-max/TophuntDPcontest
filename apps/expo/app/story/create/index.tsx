@@ -31,6 +31,7 @@ import {
   type MusicTrack,
   type MusicCategory,
 } from '@/src/services/stories/musicService';
+import { nextPreview, audibleTrack, shouldPlay } from '@/src/services/stories/musicPreview';
 import { uploadVideoToBunny } from '@/src/services/video/bunnyUpload';
 import { useQueryClient } from '@tanstack/react-query';
 import Svg, { Circle } from 'react-native-svg';
@@ -99,6 +100,14 @@ export default function AddStoryScreen() {
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [selectedMusic, setSelectedMusic] = useState<MusicTrack | null>(null);
   const [isMusicPlaying, setIsMusicPlaying] = useState(true);
+  /**
+   * The row being auditioned in the picker, which is NOT the same thing as the
+   * track attached to the story. Keeping them apart is the point: the list's play
+   * button used to be a bare icon inside the row's own `onPress`, so the only
+   * thing it could do was select the track and close the sheet — there was no way
+   * to hear a track before committing to it.
+   */
+  const [previewTrack, setPreviewTrack] = useState<MusicTrack | null>(null);
 
   // Mention State
   const [showMentions, setShowMentions] = useState(false);
@@ -144,21 +153,31 @@ export default function AddStoryScreen() {
    * autoplay policy is satisfied by the time this is asked to play. It is only
    * ever started from the picker's own `onPress`, never on mount.
    */
-  const musicPlayer = useAudioPlayer(selectedMusic ? { uri: selectedMusic.previewUrl } : null);
+  /**
+   * One player, and a single rule for what it should be playing: a row being
+   * auditioned in the picker wins over the track already attached to the story.
+   * Two players would let a preview and the attached track overlap.
+   */
+  // Rules live in musicPreview.ts so they can be tested without rendering this
+  // screen — see test/musicPreview.test.ts.
+  const nowAudible = audibleTrack(previewTrack, selectedMusic);
+  const musicPlayer = useAudioPlayer(nowAudible ? { uri: nowAudible.previewUrl } : null);
+  const shouldPlayMusic = shouldPlay(previewTrack, selectedMusic, isMusicPlaying);
 
   useEffect(() => {
-      if (selectedMusic) {
-          // A story cannot have two soundtracks. Muting the clip is what makes
-          // the chosen track audible rather than layered under the original.
-          player.muted = true;
-          musicPlayer.loop = true;
-          if (isMusicPlaying) musicPlayer.play();
-          else musicPlayer.pause();
-      } else {
-          player.muted = false;
+      // A story cannot have two soundtracks. Muting the clip is what makes the
+      // chosen track audible rather than layered under the original — and it has
+      // to apply while auditioning too, or a video's own audio plays over the
+      // track being previewed.
+      try { player.muted = !!nowAudible; } catch { /* no source loaded */ }
+      if (!nowAudible) {
           try { musicPlayer.pause(); } catch { /* nothing loaded yet */ }
+          return;
       }
-  }, [selectedMusic, isMusicPlaying, player, musicPlayer]);
+      musicPlayer.loop = true;
+      if (shouldPlayMusic) musicPlayer.play();
+      else musicPlayer.pause();
+  }, [nowAudible, shouldPlayMusic, player, musicPlayer]);
 
   // Stop the preview when leaving the screen. Without this the track keeps
   // playing over whatever the user navigated to — the single most obvious way an
@@ -295,8 +314,28 @@ export default function AddStoryScreen() {
           musicSheetY.value = withSpring(0);
           if (catalog.length === 0) void loadCatalog();
       } else { 
+          // An audition belongs to the open sheet. Leaving it running would keep
+          // playing a track the user did not attach, over the story they are still
+          // editing.
+          setPreviewTrack(null);
           musicSheetY.value = withSpring(height, {}, () => { runOnJS(setShowMusicPicker)(false); }); 
       }
+  };
+
+  /**
+   * Audition a row without attaching it. Tapping the same row again stops, so the
+   * one button is both play and pause.
+   */
+  const togglePreview = (track: MusicTrack) => {
+      setPreviewTrack((current) => nextPreview(current, track));
+  };
+
+  /** Attach a track to the story and stop auditioning. */
+  const chooseTrack = (track: MusicTrack) => {
+      setPreviewTrack(null);
+      setSelectedMusic(track);
+      setIsMusicPlaying(true);
+      toggleMusicSheet(false);
   };
 
   const stickerPanResponder = useRef(PanResponder.create({
@@ -647,7 +686,26 @@ export default function AddStoryScreen() {
                                 <Text style={styles.musicTitle} numberOfLines={1}>{selectedMusic.title}</Text>
                                 <Text style={styles.musicArtist} numberOfLines={1}>{selectedMusic.artist}</Text>
                             </View>
-                            <TouchableOpacity onPress={() => { setSelectedMusic(null); setIsMusicPlaying(false); }} style={{ padding: 5 }}>
+                            {/*
+                              Change the track, rather than only remove it. Swapping
+                              songs previously meant removing the sticker and finding
+                              the toolbar's music button again — the attached track
+                              looked final once it was on the story.
+                            */}
+                            <TouchableOpacity
+                              onPress={() => toggleMusicSheet(true)}
+                              style={{ padding: 5 }}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Change music, currently ${selectedMusic.title}`}
+                            >
+                                <Ionicons name="swap-horizontal" size={22} color="#fff" />
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              onPress={() => { setSelectedMusic(null); setIsMusicPlaying(false); }}
+                              style={{ padding: 5 }}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Remove music ${selectedMusic.title}`}
+                            >
                                 <Close_Circle_Icon width={32} height={32} />
                             </TouchableOpacity>
                         </View>
@@ -764,19 +822,46 @@ export default function AddStoryScreen() {
                               accessibilityRole="button"
                               accessibilityLabel={`Use ${item.title} by ${item.artist}`}
                               onPress={() => {
-                                // Selecting IS the user gesture that satisfies the
-                                // browser's autoplay policy, so the preview may
-                                // start from here — but never on mount.
-                                setSelectedMusic(item);
-                                setIsMusicPlaying(true);
-                                toggleMusicSheet(false);
+                                // Tapping the ROW attaches the track. Hearing it first
+                                // is the transport button's job — see below.
+                                chooseTrack(item);
                               }}
                             >
                                 {item.artworkUrl
                                   ? <Image source={{ uri: item.artworkUrl }} style={styles.musicThumb} />
                                   : <View style={[styles.musicThumb, styles.musicThumbFallback]}><Ionicons name="musical-notes" size={20} color="#999" /></View>}
                                 <View style={{ flex: 1 }}><Text style={styles.musicItemTitle} numberOfLines={1}>{item.title}</Text><Text style={styles.musicItemArtist} numberOfLines={1}>{item.artist}</Text></View>
-                                <Ionicons name="play-circle" size={30} color={ACCENT} />
+                                {/* The track already attached, so reopening the picker
+                                    to change it shows what is currently on the story. */}
+                                {selectedMusic?.id === item.id && (
+                                  <Ionicons name="checkmark-circle" size={22} color={ACCENT} style={{ marginRight: 4 }} />
+                                )}
+                                {/*
+                                  A real button, not decoration. This was a bare
+                                  `play-circle` icon sitting inside the row's own
+                                  `onPress`, so the only thing tapping it could do was
+                                  attach the track and dismiss the sheet — pressing
+                                  play was indistinguishable from choosing. Now it
+                                  auditions the track in place and leaves the sheet
+                                  open, and tapping it again stops.
+                                */}
+                                <TouchableOpacity
+                                  onPress={() => togglePreview(item)}
+                                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                                  style={styles.musicPreviewBtn}
+                                  accessibilityRole="button"
+                                  accessibilityLabel={
+                                    previewTrack?.id === item.id
+                                      ? `Stop preview of ${item.title}`
+                                      : `Preview ${item.title} by ${item.artist}`
+                                  }
+                                >
+                                    <Ionicons
+                                      name={previewTrack?.id === item.id ? 'pause-circle' : 'play-circle'}
+                                      size={30}
+                                      color={ACCENT}
+                                    />
+                                </TouchableOpacity>
                             </TouchableOpacity>
                           )}
                           /*
@@ -890,6 +975,9 @@ const styles = StyleSheet.create({
   musicSearchContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F5F5F5', borderRadius: 10, paddingHorizontal: 12, height: 45, marginBottom: 20 },
   musicSearchInput: { flex: 1, marginLeft: 10, fontFamily: 'Urbanist-Medium', fontSize: 16 },
   musicItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#F0F0F0' },
+  // Padding, not just the icon's own bounds: this is a button nested inside the
+  // row's press target, so it needs a reliably tappable area of its own.
+  musicPreviewBtn: { paddingVertical: 6, paddingLeft: 10, paddingRight: 2 },
   musicThumb: { width: 50, height: 50, borderRadius: 8, marginRight: 15 },
   musicItemTitle: { fontSize: 16, fontFamily: 'Urbanist-Bold', color: '#000' },
   musicItemArtist: { fontSize: 14, color: '#666', fontFamily: 'Urbanist-Medium' },
