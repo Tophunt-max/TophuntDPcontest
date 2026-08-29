@@ -214,6 +214,11 @@ export async function deleteOwnAccount(
     db.delete(schema.stories).where(eq(schema.stories.userId, uid)),
     db.delete(schema.postComments).where(eq(schema.postComments.userId, uid)),
     db.delete(schema.matchComments).where(eq(schema.matchComments.userId, uid)),
+    // Blog comments too. These are the only deletable content the user leaves on
+    // a PUBLIC, search-indexed page, so missing them here would be the most
+    // visible possible failure of "delete my account" — the anonymised username
+    // would keep appearing under articles.
+    db.delete(schema.blogComments).where(eq(schema.blogComments.userId, uid)),
     db.delete(schema.postLikes).where(eq(schema.postLikes.userId, uid)),
     db.delete(schema.commentLikes).where(eq(schema.commentLikes.userId, uid)),
     db.delete(schema.matchLikes).where(eq(schema.matchLikes.userId, uid)),

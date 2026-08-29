@@ -31,6 +31,7 @@ import { runVideoBackfillBatch } from "../lib/videoBackfill";
 import {
   blogListCacheKey,
   blogPostCacheKey,
+  commentsCacheKey,
   contestDetailCacheKey,
   contestListCacheKeys,
   delCache,
@@ -2159,11 +2160,42 @@ adminRoute.post("/broadcast", async (c) => {
 });
 
 // ======================= COMMENTS MODERATION =======================
-// Recent post comments (with author + optional ?postId= filter).
+// Recent comments (with author + optional ?postId= filter).
+//
+// `?target=blog` switches to `blog_comments`. Blog comments NEED a moderation
+// surface more than app-feed ones do, because they sit on pages that search
+// engines index: spam there is not just visible to followers, it is published.
+// The two are separate lists rather than a merged feed so the "Post" column
+// keeps a single meaning and a delete can never hit the wrong table.
 adminRoute.get("/comments", async (c) => {
   const db = getDb(c.env);
   const postId = c.req.query("postId");
   const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 300);
+  if (c.req.query("target") === "blog") {
+    const rows = await db
+      .select({
+        id: schema.blogComments.id,
+        postId: schema.blogComments.postId,
+        userId: schema.blogComments.userId,
+        text: schema.blogComments.text,
+        likeCount: schema.blogComments.likeCount,
+        createdAt: schema.blogComments.createdAt,
+        username: schema.users.username,
+        fullName: schema.users.fullName,
+        // The article title/slug, so a moderator can see WHAT was commented on
+        // instead of an opaque id — and can open the public page to check context.
+        postTitle: schema.blogPosts.title,
+        postSlug: schema.blogPosts.slug,
+      })
+      .from(schema.blogComments)
+      .leftJoin(schema.users, eq(schema.users.uid, schema.blogComments.userId))
+      .leftJoin(schema.blogPosts, eq(schema.blogPosts.id, schema.blogComments.postId))
+      .where(postId ? eq(schema.blogComments.postId, postId) : (undefined as any))
+      .orderBy(desc(schema.blogComments.createdAt))
+      .limit(limit)
+      .all();
+    return c.json(rows.map((r) => ({ ...r, createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null })));
+  }
   const conds: any[] = [];
   if (postId) conds.push(eq(schema.postComments.postId, postId));
   const rows = await db
@@ -2189,6 +2221,16 @@ adminRoute.get("/comments", async (c) => {
 adminRoute.delete("/comments/:id", async (c) => {
   const db = getDb(c.env);
   const id = c.req.param("id");
+  if (c.req.query("target") === "blog") {
+    const row = await db.select({ postId: schema.blogComments.postId }).from(schema.blogComments).where(eq(schema.blogComments.id, id)).get();
+    await db.delete(schema.blogComments).where(eq(schema.blogComments.id, id));
+    // Drop the cached thread, otherwise the removed comment stays on the public
+    // page for the rest of the TTL — the one place a moderator expects a delete
+    // to be immediate, since anyone can be looking at that url.
+    if (row?.postId) await delCache(c.env, commentsCacheKey("blog", row.postId));
+    await logAudit(c, "blogComment.delete", "blogComment", id);
+    return c.json({ message: "Comment deleted" });
+  }
   const comment = await db.select({ postId: schema.postComments.postId }).from(schema.postComments).where(eq(schema.postComments.id, id)).get();
   await db.delete(schema.postComments).where(eq(schema.postComments.id, id));
   // Keep the post's denormalized counter honest.

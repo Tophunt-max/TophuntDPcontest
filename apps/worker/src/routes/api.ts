@@ -2100,7 +2100,7 @@ apiRoute.post("/", async (c) => {
       return c.json({ success: true, bookmarked: true });
     }
 
-    // ================= GENERIC COMMENTS (posts or matches) =================
+    // ============ GENERIC COMMENTS (posts, matches or blog articles) ============
     case "addComment": {
       const { targetType, targetId } = body;
       const raw = typeof body.text === "string" ? body.text.trim() : "";
@@ -2111,11 +2111,25 @@ apiRoute.post("/", async (c) => {
       await rateLimit(env, `comment:${uid}`, 30, 60);
       await assertClean(env, raw);
       const isMatch = targetType === "matches" || targetType === "contestMatches";
+      const isBlog = targetType === "blog";
       // Commenting reaches the owner's notification inbox, so it needs the same
-      // guard as a DM. Both branches resolve the owner(s) of the thing being
-      // commented on and refuse if a block exists in either direction.
+      // guard as a DM. Both social branches resolve the owner(s) of the thing
+      // being commented on and refuse if a block exists in either direction.
       if (isMatch) {
         await assertMatchInteractionAllowed(env, uid, targetId);
+      } else if (isBlog) {
+        // A blog article has no owner uid to block (`blog_posts.author` is free
+        // text), so the guard here is about the TARGET instead: the article must
+        // exist and be published. Without it any string could be used as a
+        // targetId, producing comment rows attached to nothing — invisible on
+        // every read path, so never moderated and never deleted — and a draft
+        // could quietly collect public comments before anyone can see them.
+        const article = await db
+          .select({ id: schema.blogPosts.id, status: schema.blogPosts.status })
+          .from(schema.blogPosts)
+          .where(eq(schema.blogPosts.id, targetId))
+          .get();
+        if (!article || article.status !== "published") throw httpsError("not-found", "Post not found.");
       } else {
         const postOwner = await db
           .select({ userId: schema.posts.userId })
@@ -2132,10 +2146,18 @@ apiRoute.post("/", async (c) => {
       if (clientId) {
         const dupe = isMatch
           ? await db.select({ id: schema.matchComments.id }).from(schema.matchComments).where(eq(schema.matchComments.id, commentId)).get()
-          : await db.select({ id: schema.postComments.id }).from(schema.postComments).where(eq(schema.postComments.id, commentId)).get();
+          : isBlog
+            ? await db.select({ id: schema.blogComments.id }).from(schema.blogComments).where(eq(schema.blogComments.id, commentId)).get()
+            : await db.select({ id: schema.postComments.id }).from(schema.postComments).where(eq(schema.postComments.id, commentId)).get();
         if (dupe) return c.json({ success: true, commentId, duplicate: true });
       }
-      if (isMatch) {
+      if (isBlog) {
+        // No counter to bump and no notification to send: nothing renders a
+        // per-article comment count, and `blog_posts.author` is a display string,
+        // not a uid, so there is no inbox this could reach. The cache bust below
+        // is what makes the new comment visible.
+        await db.insert(schema.blogComments).values({ id: commentId, postId: targetId, userId: uid, text: raw, createdAt: ts }).onConflictDoNothing();
+      } else if (isMatch) {
         await db.insert(schema.matchComments).values({ id: commentId, matchId: targetId, userId: uid, text: raw, createdAt: ts }).onConflictDoNothing();
         const cCounters = await bumpEngagement(env, targetId, "comment", 1);
         // Push so both the open comment sheet and the feed card update instantly.
@@ -2172,7 +2194,12 @@ apiRoute.post("/", async (c) => {
     case "deleteComment": {
       const { targetType, targetId, commentId } = body;
       if (!commentId) throw httpsError("invalid-argument", "commentId is required.");
-      if (targetType === "matches" || targetType === "contestMatches") {
+      if (targetType === "blog") {
+        const row = await db.select().from(schema.blogComments).where(eq(schema.blogComments.id, commentId)).get();
+        if (!row) throw httpsError("not-found", "Comment not found.");
+        if (row.userId !== uid && !(await isAdmin(c as any))) throw httpsError("permission-denied", "Not allowed.");
+        await db.delete(schema.blogComments).where(eq(schema.blogComments.id, commentId));
+      } else if (targetType === "matches" || targetType === "contestMatches") {
         const row = await db.select().from(schema.matchComments).where(eq(schema.matchComments.id, commentId)).get();
         if (!row) throw httpsError("not-found", "Comment not found.");
         if (row.userId !== uid && !(await isAdmin(c as any))) throw httpsError("permission-denied", "Not allowed.");
@@ -2191,12 +2218,19 @@ apiRoute.post("/", async (c) => {
     }
 
     case "likeComment": {
-      // Toggle a like on a single comment (match or post). Returns the new
-      // liked state + absolute like count so the client can reconcile instantly.
+      // Toggle a like on a single comment (match, post or blog article). Returns
+      // the new liked state + absolute like count so the client can reconcile
+      // instantly.
+      //
+      // `blog` MUST be handled explicitly, not left to fall through to the post
+      // branch: the shared client service passes targetType straight through, so
+      // without this the `comment_likes` row would be written while the counter
+      // UPDATE matched no row — a like that persists but always reads back as 0.
       const { commentId, targetType } = body;
       if (!commentId) throw httpsError("invalid-argument", "commentId is required.");
       await rateLimit(env, `clike:${uid}`, 120, 60);
       const isMatch = targetType === "matches" || targetType === "contestMatches";
+      const isBlogComment = targetType === "blog";
       const existing = await db
         .select()
         .from(schema.commentLikes)
@@ -2208,7 +2242,9 @@ apiRoute.post("/", async (c) => {
       if (liked) {
         const author = isMatch
           ? await db.select({ userId: schema.matchComments.userId }).from(schema.matchComments).where(eq(schema.matchComments.id, commentId)).get()
-          : await db.select({ userId: schema.postComments.userId }).from(schema.postComments).where(eq(schema.postComments.id, commentId)).get();
+          : isBlogComment
+            ? await db.select({ userId: schema.blogComments.userId }).from(schema.blogComments).where(eq(schema.blogComments.id, commentId)).get()
+            : await db.select({ userId: schema.postComments.userId }).from(schema.postComments).where(eq(schema.postComments.id, commentId)).get();
         await assertNotBlockedAny(env, uid, [author?.userId]);
       }
       if (existing) {
@@ -2218,7 +2254,13 @@ apiRoute.post("/", async (c) => {
       }
       const delta = liked ? 1 : -1;
       let likeCount = 0;
-      if (isMatch) {
+      if (isBlogComment) {
+        await db.update(schema.blogComments)
+          .set({ likeCount: sql`MAX(COALESCE(${schema.blogComments.likeCount}, 0) + ${delta}, 0)` })
+          .where(eq(schema.blogComments.id, commentId));
+        const row = await db.select({ likeCount: schema.blogComments.likeCount }).from(schema.blogComments).where(eq(schema.blogComments.id, commentId)).get();
+        likeCount = row?.likeCount ?? 0;
+      } else if (isMatch) {
         await db.update(schema.matchComments)
           .set({ likeCount: sql`MAX(COALESCE(${schema.matchComments.likeCount}, 0) + ${delta}, 0)` })
           .where(eq(schema.matchComments.id, commentId));

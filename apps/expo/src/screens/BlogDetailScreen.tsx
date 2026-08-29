@@ -15,6 +15,7 @@ import { AppImage as Image } from '@/src/components/ui/AppImage';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { blogService, BlogPost } from '@/src/services/blog/blogService';
 import RenderHtml from '@/src/components/blog/RenderHtml';
+import BlogComments from '@/src/components/blog/BlogComments';
 import { Header } from '@/src/components/home/Header';
 import { useWebSeo } from '@/src/lib/webSeo';
 import { shareOrigin } from '@/src/lib/share';
@@ -203,6 +204,11 @@ export default function BlogDetailScreen() {
                   ))}
                 </View>
               )}
+
+              {/* Reader comments. Keyed on the post ROW id, not the slug — and
+                  mounted only once a post is resolved, so it never fetches a
+                  thread for an article that turned out to be a 404. */}
+              <BlogComments postId={post.id} isDark={isDark} />
 
               {/* Footer CTA */}
               <View style={[styles.footer, { borderTopColor: isDark ? '#232327' : '#EEEEF2' }]}>

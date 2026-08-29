@@ -41,9 +41,21 @@ export const contestDetailCacheKey = (id: string) => `cache:contest:detail:${id}
  * Comment list for one target. `targetType` is normalised so the "matches" /
  * "contestMatches" aliases and every caller (reader + all writers) resolve to
  * the SAME key — a key mismatch is the classic stale-cache bug.
+ *
+ * `blog` gets its own kind rather than falling into the "post" default. Blog
+ * comments live in a different table with a different id space, so sharing the
+ * prefix would mean a blog article and a social post could name the same key —
+ * and the payload shapes differ too (the blog thread carries a `total`), so a
+ * collision would not merely serve the wrong thread, it would serve a body the
+ * reader cannot interpret.
  */
 export const commentsCacheKey = (targetType: string, targetId: string) => {
-  const kind = targetType === "matches" || targetType === "contestMatches" ? "match" : "post";
+  const kind =
+    targetType === "matches" || targetType === "contestMatches"
+      ? "match"
+      : targetType === "blog"
+        ? "blog"
+        : "post";
   return `cache:comments:${kind}:${targetId}`;
 };
 /**
