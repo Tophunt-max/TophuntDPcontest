@@ -1,0 +1,194 @@
+name: Media domain backfill
+
+# Move stored media urls off the Worker proxy and onto the media domain:
+#
+#   https://tophunt-api.weadown-in.workers.dev/media/<key>  ->  https://media.tophunt.in/<key>
+#
+# apps/worker/scripts/media-domain-backfill.sql has existed for a while and had
+# never been run, so every pre-cutover row still pointed at the Worker proxy —
+# blog covers, contest participant snapshots, chat avatars, the UPI QR. Those all
+# still LOADED, which is why it went unnoticed: the `/media/*` route keeps serving
+# them. They just cost a Worker invocation per image and can never be served as a
+# resized Transformations variant, because `/cdn-cgi/image/` only resolves at the
+# root of a zone and `*.workers.dev` is not one.
+#
+# WHY A WORKFLOW AND NOT A MIGRATION — this is the same reasoning the SQL file
+# gives, and it still holds. Files in migrations/ are applied automatically on the
+# first request to a fresh isolate, so as a migration this would fire the moment
+# the code shipped and, if the custom domain were not ready, would silently
+# repoint every image and video in the product at a dead host. It has to stay a
+# deliberate, operator-gated action.
+#
+# WHY A WORKFLOW AT ALL, THEN — the SQL needs `wrangler d1 execute --remote`,
+# which needs a Cloudflare token. That token lives here as a secret and nowhere
+# else, so in practice "run it manually" meant "nobody could run it". This keeps
+# the gating (manual dispatch, explicit confirmation, verified precondition) while
+# making it actually runnable.
+#
+# `workflow_dispatch` ONLY. Never on push, never on a schedule.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'report = read-only counts. backfill = rewrite the urls.'
+        type: choice
+        required: true
+        default: report
+        options:
+          - report
+          - backfill
+      confirm:
+        description: 'For backfill ONLY: type BACKFILL to confirm. Ignored for report.'
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+# Two of these running at once would race on the same rows.
+concurrency:
+  group: media-domain-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    name: ${{ inputs.mode }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/worker
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/worker/package-lock.json
+
+      - run: npm ci
+
+      # Fail before touching anything if the confirmation is missing. Checked
+      # first so a mistyped dispatch cannot get as far as reading the database.
+      - name: Require explicit confirmation for a write
+        if: inputs.mode == 'backfill'
+        # Through env, not `${{ }}` inside the script: a free-text input
+        # interpolated into a shell command is a script-injection hole, and this
+        # job holds a Cloudflare token with D1 write access.
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "BACKFILL" ]; then
+            echo "::error::mode=backfill requires confirm=BACKFILL. Nothing was changed."
+            exit 1
+          fi
+          echo "Confirmed."
+
+      - name: Count what is still on the legacy host
+        id: before
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler d1 execute tophunt-db --remote \
+            --file=scripts/media-domain-report.sql | tee /tmp/before.txt
+
+      # The precondition the SQL file states as a manual `curl -I <some-existing-key>`.
+      #
+      # Automated here, and with a key read out of the database rather than one
+      # picked by hand: "use a key you know exists" is the step most likely to be
+      # done badly, and getting it wrong is exactly how every image in the product
+      # ends up pointing at a host that serves nothing. A 404 here stops the run.
+      - name: Verify the media domain serves a real object
+        if: inputs.mode == 'backfill'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute tophunt-db --remote --json --command \
+            "SELECT cover_image_url AS u FROM blog_posts WHERE cover_image_url LIKE '%tophunt-api.weadown-in.workers.dev/media/%' LIMIT 1" \
+            > /tmp/key.json || true
+
+          URL=$(node -e "
+            const fs=require('fs');
+            let out='';
+            try {
+              const j=JSON.parse(fs.readFileSync('/tmp/key.json','utf8'));
+              const rows=(Array.isArray(j)?j:[j]).flatMap(r=>r.results||[]);
+              out=(rows[0]&&rows[0].u)||'';
+            } catch {}
+            process.stdout.write(out);
+          ")
+
+          if [ -z "$URL" ]; then
+            echo "No legacy blog cover to sample — nothing to verify against, and likely nothing to rewrite."
+            echo "Re-run with mode=report to confirm the counts are already 0."
+            exit 1
+          fi
+
+          KEY="${URL#*/media/}"
+          echo "Sampling key: $KEY"
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' "https://media.tophunt.in/$KEY")
+          echo "https://media.tophunt.in/$KEY -> $CODE"
+          if [ "$CODE" != "200" ]; then
+            echo "::error::media.tophunt.in does not serve that object ($CODE). Refusing to rewrite urls onto a host that cannot serve them."
+            exit 1
+          fi
+
+      # Note the restore point BEFORE mutating. D1 Time Travel covers 30 days, but
+      # only if someone knows which bookmark to go back to — and the moment after
+      # a bad backfill is the worst time to be looking for it.
+      - name: Record a Time Travel restore point
+        if: inputs.mode == 'backfill'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler d1 time-travel info tophunt-db | tee /tmp/bookmark.txt
+
+      - name: Rewrite the urls
+        if: inputs.mode == 'backfill'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler d1 execute tophunt-db --remote \
+            --file=scripts/media-domain-backfill.sql
+
+      - name: Confirm every count is now zero
+        if: inputs.mode == 'backfill'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler d1 execute tophunt-db --remote \
+            --file=scripts/media-domain-report.sql | tee /tmp/after.txt
+
+      - name: Summary
+        if: always()
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          {
+            echo "## Media domain backfill — \`$MODE\`"
+            echo
+            echo "### Legacy urls before"
+            echo '```'
+            cat /tmp/before.txt 2>/dev/null || echo '(not run)'
+            echo '```'
+            if [ "$MODE" = "backfill" ]; then
+              echo "### Legacy urls after"
+              echo '```'
+              cat /tmp/after.txt 2>/dev/null || echo '(not run)'
+              echo '```'
+              echo "### Rollback"
+              echo 'D1 Time Travel, using the bookmark recorded before the rewrite:'
+              echo '```'
+              cat /tmp/bookmark.txt 2>/dev/null || echo '(not recorded)'
+              echo '```'
+              echo 'Nothing user-visible breaks either way: `/media/*` keeps serving the old urls'
+              echo 'and `R2_LEGACY_BASE_URLS` keeps deletes correct on both hosts.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
