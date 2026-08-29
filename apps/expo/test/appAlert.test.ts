@@ -155,7 +155,28 @@ describe('decisions become a dialog', () => {
     warn.mockRestore();
   });
 
-  it('falls back to the browser dialog if no host is mounted, rather than losing the decision', () => {
+  it('retries once before falling back, for the host-not-yet-mounted race', async () => {
+    // ConfirmHost registers in an effect and React flushes effects in tree order,
+    // so a screen raising a confirmation from its OWN mount effect runs first.
+    // This happened in production: the signup resume prompt fell through to the
+    // browser dialog. The retry must catch a host that appears a tick later.
+    confirmHostMounted = false;
+    const onDelete = vi.fn();
+    Alert.alert('Delete Story', 'Sure?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: onDelete },
+    ]);
+    expect(confirms).toHaveLength(1); // first attempt, rejected
+
+    confirmHostMounted = true; // host mounts
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(confirms).toHaveLength(2); // retried, accepted
+    confirms[1].onConfirm();
+    expect(onDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the browser dialog when no host ever appears', async () => {
     confirmHostMounted = false;
     const onDelete = vi.fn();
     vi.stubGlobal('window', { confirm: () => true });
@@ -164,10 +185,11 @@ describe('decisions become a dialog', () => {
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: onDelete },
     ]);
+    await new Promise((r) => setTimeout(r, 0));
     expect(onDelete).toHaveBeenCalledTimes(1);
   });
 
-  it('honours a declined browser fallback', () => {
+  it('honours a declined browser fallback', async () => {
     confirmHostMounted = false;
     const onDelete = vi.fn();
     const onCancel = vi.fn();
@@ -177,6 +199,7 @@ describe('decisions become a dialog', () => {
       { text: 'Cancel', style: 'cancel', onPress: onCancel },
       { text: 'Delete', style: 'destructive', onPress: onDelete },
     ]);
+    await new Promise((r) => setTimeout(r, 0));
     expect(onDelete).not.toHaveBeenCalled();
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
