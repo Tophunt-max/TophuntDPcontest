@@ -139,7 +139,21 @@ new_sqlite_classes = ["VoteCounter"]
 #   0 0 1 * *     -> monthlyHallOfFame
 # ---------------------------------------------------------------------------
 [triggers]
-crons = ["*/10 * * * *", "0 0 1 * *"]
+#   */10 * * * *  -> the operational sweep (settlement, refunds, pruning)
+#   0 */6 * * *   -> SEO audit. Has its OWN schedule on purpose, see below.
+#   0 0 1 * *     -> monthlyHallOfFame
+#
+# The SEO audit is not on the 10-minute tick. It was, and it never ran once: a
+# Worker invocation has a hard subrequest ceiling (50 on this plan — independently
+# confirmed by the sitemap walk stopping at exactly 49 API pages), the sweep
+# already spends most of it on D1, and the audit adds ~21 more. It blew the limit
+# every time. Worse, it could not even report that: `runCronJob` records a failure
+# row, and writing that row is itself a subrequest, so the failure was unrecordable
+# and the job simply showed as "never ran".
+#
+# Its own trigger gives it a fresh budget — and means a future failure IS recorded
+# instead of vanishing.
+crons = ["*/10 * * * *", "0 */6 * * *", "0 0 1 * *"]
 
 # ---------------------------------------------------------------------------
 # Workers Logs.
@@ -220,7 +234,7 @@ head_sampling_rate = 1
 
 # Staging runs the same cron schedule so scheduled work is exercised too.
 [env.staging.triggers]
-crons = ["*/10 * * * *", "0 0 1 * *"]
+crons = ["*/10 * * * *", "0 */6 * * *", "0 0 1 * *"]
 
 [env.staging.vars]
 FIREBASE_PROJECT_ID = "tophuntdpcontest-staging"
