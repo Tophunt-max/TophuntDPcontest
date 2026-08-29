@@ -52,6 +52,7 @@ import { verifyRazorpaySignature } from "../lib/payments";
 import { getRazorpayCredentials } from "../lib/integrations";
 import { creditPaymentOrder } from "../lib/coinOrders";
 import { assertClean } from "../lib/moderation";
+import { lookupTrack } from "../lib/music";
 import { assertChatMember } from "../lib/chatAuth";
 import { publishVsStories, storyMediaType } from "../lib/matchStories";
 import {
@@ -872,19 +873,36 @@ apiRoute.post("/", async (c) => {
     // `getStoryUrl` is handled with `getPresignedUrl` above.
     case "createStory": {
       await rateLimit(env, `story:${uid}`, 40, 3600);
-      const { mediaUrl, mediaType, overlayText, textPosition, mentions, visibility } = body;
+      const { mediaUrl, mediaType, overlayText, textPosition, mentions, visibility, musicTrackId } = body;
       if (!mediaUrl) throw httpsError("invalid-argument", "mediaUrl is required.");
       await assertClean(env, overlayText);
       const user = await db.select({ username: schema.users.username, avatar: schema.users.profileImageUrl }).from(schema.users).where(eq(schema.users.uid, uid)).get();
       const ts = now();
       const storyId = newId();
+      // Music: only the track ID is accepted, and every stored field is resolved
+      // here from the provider. A client-supplied preview URL would be embedded
+      // as a media load in every viewer's browser — a way to log the IP and
+      // user-agent of everyone who watches the story, from a domain they trust.
+      //
+      // A lookup failure attaches no music and still creates the story. The user
+      // has already waited through a media upload; losing it over a soundtrack
+      // would be the wrong trade, and `stories.music_*` is nullable precisely so
+      // this path is normal rather than exceptional.
+      const track = musicTrackId ? await lookupTrack(env, String(musicTrackId)) : null;
       await db.insert(schema.stories).values({
         id: storyId, userId: uid, username: user?.username, avatarUrl: user?.avatar,
         mediaUrl, mediaType: mediaType || "photo", visibility: visibility || "public",
         overlayText: overlayText || null, textPosition: textPosition || null, mentions: mentions || null,
+        musicTrackId: track?.id ?? null,
+        musicTitle: track?.title ?? null,
+        musicArtist: track?.artist ?? null,
+        musicArtworkUrl: track?.artworkUrl ?? null,
+        musicPreviewUrl: track?.previewUrl ?? null,
         type: "user", createdAt: ts, expiresAt: ts + 24 * 60 * 60 * 1000,
       });
-      return c.json({ success: true, storyId });
+      // `musicAttached` lets the client tell "I chose a track and it saved" from
+      // "the provider was down", instead of silently publishing a silent story.
+      return c.json({ success: true, storyId, musicAttached: !!track });
     }
     case "deleteStory": {
       const { storyId } = body;

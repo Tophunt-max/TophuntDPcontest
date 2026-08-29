@@ -448,6 +448,16 @@ export const stories = sqliteTable(
     contestTitle: text("contest_title"),
     // 'r2' | 'bunny' | null. See contestMatches.videoProvider.
     videoProvider: text("video_provider"),
+    // Music attached to the story. Resolved SERVER-SIDE from `musicTrackId` in
+    // createStory — never accepted from the client, because a client-supplied
+    // preview URL would be embedded as a media load in every viewer's browser.
+    // See migrations/0035_story_music.sql. Readers must treat a dead
+    // `musicPreviewUrl` as "no music" and still show the story.
+    musicTrackId: text("music_track_id"),
+    musicTitle: text("music_title"),
+    musicArtist: text("music_artist"),
+    musicArtworkUrl: text("music_artwork_url"),
+    musicPreviewUrl: text("music_preview_url"),
     createdAt: integer("created_at").notNull(),
     expiresAt: integer("expires_at").notNull(),
   },

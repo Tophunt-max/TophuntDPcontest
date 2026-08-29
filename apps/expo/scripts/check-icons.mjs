@@ -15,9 +15,18 @@
  * the 16 close buttons mixed `close` and `close-circle` at seven sizes. Both are
  * easy to reintroduce by copy-pasting an existing screen.
  *
- * Two things are checked:
+ * Three things are checked:
  *   1. No owned icon name is requested from the Ionicons shim.
  *   2. Nothing imports or renders the raw assets except their owner component.
+ *   3. Every icon NAME used anywhere actually resolves in src/lib/icons.tsx.
+ *
+ * Check 3 exists because the shim falls back to a neutral `Circle` for an unknown
+ * name. That fallback is the right runtime behaviour — a typo must never crash a
+ * screen — but it is SILENT, so an unmapped name renders as a meaningless circle
+ * and reads as a deliberate design choice. Eight of them had accumulated,
+ * including `crop-outline`, which is the "Adjust photo" button on three separate
+ * screens: story create, contest photo setup and profile edit all showed a bare
+ * circle where a crop icon belonged.
  *
  * CI cannot run `expo lint` as a gate because the project carries pre-existing
  * lint errors, so this runs as its own step. Same idea as scripts/typecheck.mjs.
@@ -104,6 +113,65 @@ for (const file of files) {
                 fix: rule.fix,
             });
         }
+    }
+}
+
+// --- check 3: every icon name resolves ------------------------------------
+//
+// The name -> component maps live in the shim as object literals, so they are
+// read out of its source rather than imported: importing it would pull in
+// `lucide-react-native` and React Native itself into a plain Node script.
+
+/** Quoted keys of one `const <name>: Record<string, LucideIcon> = { … }` block. */
+function shimMapKeys(source, varName) {
+    const start = source.indexOf(`const ${varName}: Record<string, LucideIcon> = {`);
+    if (start === -1) return null;
+    let depth = 0;
+    let i = source.indexOf('{', start);
+    const from = i;
+    for (; i < source.length; i++) {
+        if (source[i] === '{') depth++;
+        else if (source[i] === '}') {
+            depth--;
+            if (depth === 0) break;
+        }
+    }
+    return new Set([...source.slice(from, i + 1).matchAll(/'([^']+)'\s*:/g)].map((m) => m[1]));
+}
+
+const shimSource = readFileSync(join(ROOT, SHIM), 'utf8');
+const NAME_MAPS = {
+    Ionicons: shimMapKeys(shimSource, 'ionicons'),
+    MaterialCommunityIcons: shimMapKeys(shimSource, 'mci'),
+    FontAwesome5: shimMapKeys(shimSource, 'fa5'),
+    Feather: shimMapKeys(shimSource, 'feather'),
+};
+
+for (const [set, keys] of Object.entries(NAME_MAPS)) {
+    if (!keys) {
+        console.error(`❌ Could not parse the ${set} map out of ${SHIM}. Did its shape change?`);
+        process.exit(1);
+    }
+}
+
+const USAGE = new RegExp(
+    `<(${Object.keys(NAME_MAPS).join('|')})\\b[^>]*?\\bname=\\{?["']([^"']+)["']`,
+    'gs',
+);
+
+for (const file of files) {
+    const rel = relative(ROOT, file);
+    if (rel === SHIM) continue;
+    const code = stripComments(readFileSync(file, 'utf8'));
+    for (const match of code.matchAll(USAGE)) {
+        const [, set, name] = match;
+        if (NAME_MAPS[set].has(name)) continue;
+        violations.push({
+            rel,
+            line: code.slice(0, match.index).split('\n').length,
+            found: `<${set} name="${name}">`,
+            fix: `"${name}" is not in the ${set} map, so it renders as a blank circle. Add it to ${SHIM}.`,
+        });
     }
 }
 

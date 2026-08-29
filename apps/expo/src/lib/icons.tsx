@@ -23,6 +23,8 @@ import ArrowLeft from 'lucide-react-native/icons/arrow-left';
 import ArrowLeftRight from 'lucide-react-native/icons/arrow-left-right';
 import ArrowRight from 'lucide-react-native/icons/arrow-right';
 import ArrowUp from 'lucide-react-native/icons/arrow-up';
+import AtSign from 'lucide-react-native/icons/at-sign';
+import AudioLines from 'lucide-react-native/icons/audio-lines';
 import Award from 'lucide-react-native/icons/award';
 import Ban from 'lucide-react-native/icons/ban';
 import Banknote from 'lucide-react-native/icons/banknote';
@@ -45,9 +47,12 @@ import Clapperboard from 'lucide-react-native/icons/clapperboard';
 import Clock from 'lucide-react-native/icons/clock';
 import Cloud from 'lucide-react-native/icons/cloud';
 import CloudOff from 'lucide-react-native/icons/cloud-off';
+import CircleHelp from 'lucide-react-native/icons/circle-question-mark';
 import Coins from 'lucide-react-native/icons/coins';
+import Compass from 'lucide-react-native/icons/compass';
 import Copy from 'lucide-react-native/icons/copy';
 import CreditCard from 'lucide-react-native/icons/credit-card';
+import Crop from 'lucide-react-native/icons/crop';
 import Crown from 'lucide-react-native/icons/crown';
 import Dices from 'lucide-react-native/icons/dices';
 import Download from 'lucide-react-native/icons/download';
@@ -91,6 +96,7 @@ import MessageCircle from 'lucide-react-native/icons/message-circle';
 import MessagesSquare from 'lucide-react-native/icons/messages-square';
 import Mic from 'lucide-react-native/icons/mic';
 import Moon from 'lucide-react-native/icons/moon';
+import Music from 'lucide-react-native/icons/music';
 import MoreHorizontal from 'lucide-react-native/icons/ellipsis';
 import MoreVertical from 'lucide-react-native/icons/ellipsis-vertical';
 import Newspaper from 'lucide-react-native/icons/newspaper';
@@ -122,6 +128,7 @@ import Sparkles from 'lucide-react-native/icons/sparkles';
 import Sprout from 'lucide-react-native/icons/sprout';
 import SquarePen from 'lucide-react-native/icons/square-pen';
 import Star from 'lucide-react-native/icons/star';
+import Sticker from 'lucide-react-native/icons/sticker';
 import Sun from 'lucide-react-native/icons/sun';
 import SwitchCamera from 'lucide-react-native/icons/switch-camera';
 import Swords from 'lucide-react-native/icons/swords';
@@ -137,12 +144,14 @@ import TrendingUp from 'lucide-react-native/icons/trending-up';
 import TriangleAlert from 'lucide-react-native/icons/triangle-alert';
 import Trophy from 'lucide-react-native/icons/trophy';
 import Tv from 'lucide-react-native/icons/tv';
+import Type from 'lucide-react-native/icons/type';
 import Upload from 'lucide-react-native/icons/upload';
 import UploadCloud from 'lucide-react-native/icons/cloud-upload';
 import User from 'lucide-react-native/icons/user';
 import Users from 'lucide-react-native/icons/users';
 import Video from 'lucide-react-native/icons/video';
 import VideoOff from 'lucide-react-native/icons/video-off';
+import Vote from 'lucide-react-native/icons/vote';
 import Volume2 from 'lucide-react-native/icons/volume-2';
 import VolumeX from 'lucide-react-native/icons/volume-x';
 import Wallet from 'lucide-react-native/icons/wallet';
@@ -165,7 +174,7 @@ export interface IconProps {
 type LucideIcon = React.ComponentType<any>;
 
 // name -> component lookup (built from the per-icon imports above).
-const I: Record<string, LucideIcon> = { AlarmClock, AlertCircle, ArrowDown, ArrowLeft, ArrowLeftRight, ArrowRight, ArrowUp, Award, Ban, Banknote, Bell, Bookmark, Calendar, Camera, ChartColumn, ChartLine, Check, CheckCheck, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleCheck, CircleUser, Clapperboard, Clock, Cloud, CloudOff, Coins, Copy, CreditCard, Crown, Dices, Download, Expand, Eye, EyeOff, FerrisWheel, File, FileText, Filter, Flame, Frown, Gamepad2, Gem, Gift, Globe, Hand, Heart, HeartCrack, HeartHandshake, Home, Hourglass, Image, Images, IndianRupee, Info, Landmark, LayoutGrid, Link, List, Lock, LockOpen, LogIn, LogOut, Mail, MapPin, Medal, Megaphone, Menu, MessageCircle, MessagesSquare, Mic, Moon, MoreHorizontal, MoreVertical, Newspaper, Palette, PartyPopper, Pause, Pencil, Phone, Play, PlayCircle, Plus, PlusCircle, QrCode, Receipt, RefreshCw, Rocket, RotateCw, ScanLine, Search, Send, Settings, Share2, Shield, ShieldCheck, SlidersHorizontal, Smartphone, Smile, Sparkles, Sprout, SquarePen, Star, Sun, SwitchCamera, Swords, Tag, Tags, Target, Ticket, Timer, TrafficCone, Trash2, TrendingDown, TrendingUp, TriangleAlert, Trophy, Tv, Upload, UploadCloud, User, Users, Video, VideoOff, Volume2, VolumeX, Wallet, Wand2, Wifi, WifiOff, Wrench, X, XCircle, Zap };
+const I: Record<string, LucideIcon> = { AlarmClock, AlertCircle, ArrowDown, ArrowLeft, ArrowLeftRight, ArrowRight, ArrowUp, AtSign, AudioLines, Award, Ban, Banknote, Bell, Bookmark, Calendar, Camera, ChartColumn, ChartLine, Check, CheckCheck, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleCheck, CircleHelp, CircleUser, Clapperboard, Clock, Cloud, CloudOff, Coins, Compass, Copy, CreditCard, Crop, Crown, Dices, Download, Expand, Eye, EyeOff, FerrisWheel, File, FileText, Filter, Flame, Frown, Gamepad2, Gem, Gift, Globe, Hand, Heart, HeartCrack, HeartHandshake, Home, Hourglass, Image, Images, IndianRupee, Info, Landmark, LayoutGrid, Link, List, Lock, LockOpen, LogIn, LogOut, Mail, MapPin, Medal, Megaphone, Menu, MessageCircle, MessagesSquare, Mic, Moon, MoreHorizontal, MoreVertical, Music, Newspaper, Palette, PartyPopper, Pause, Pencil, Phone, Play, PlayCircle, Plus, PlusCircle, QrCode, Receipt, RefreshCw, Rocket, RotateCw, ScanLine, Search, Send, Settings, Share2, Shield, ShieldCheck, SlidersHorizontal, Smartphone, Smile, Sparkles, Sprout, SquarePen, Star, Sticker, Sun, SwitchCamera, Swords, Tag, Tags, Target, Ticket, Timer, TrafficCone, Trash2, TrendingDown, TrendingUp, TriangleAlert, Trophy, Tv, Type, Upload, UploadCloud, User, Users, Video, VideoOff, Volume2, VolumeX, Vote, Wallet, Wand2, Wifi, WifiOff, Wrench, X, XCircle, Zap };
 
 // Resolve an icon by its lucide PascalCase name, falling back safely.
 const ic = (n: string): LucideIcon => I[n] || Circle;
@@ -181,6 +190,22 @@ const ionicons: Record<string, LucideIcon> = {
   'card-outline': ic('CreditCard'), 'card': ic('CreditCard'), 'cash-outline': ic('Banknote'), 'cash': ic('Banknote'),
   'checkmark': ic('Check'), 'checkmark-done': ic('CheckCheck'), 'checkmark-circle': ic('CheckCircle2'), 'checkmark-circle-outline': ic('CheckCircle2'),
   'close': ic('X'), 'close-circle': ic('XCircle'), 'close-circle-outline': ic('XCircle'),
+  // Added after an audit (scripts/audit-icon-names.mjs) found these in use and
+  // resolving to the blank-Circle fallback. `crop-outline` was the worst of them:
+  // it is the "Adjust photo" button on THREE screens — story create, contest
+  // photo setup and profile edit — so all three showed a meaningless circle.
+  'crop-outline': ic('Crop'), 'crop': ic('Crop'),
+  'compass-outline': ic('Compass'), 'compass': ic('Compass'),
+  'help': ic('CircleHelp'), 'help-outline': ic('CircleHelp'), 'help-circle-outline': ic('CircleHelp'),
+  'hand-left': ic('Hand'), 'hand-left-outline': ic('Hand'), 'hand-right': ic('Hand'),
+  'ban-outline': ic('Ban'), 'ban': ic('Ban'),
+  // Story editor toolbar.
+  'musical-notes': ic('Music'), 'musical-notes-outline': ic('Music'),
+  'at-outline': ic('AtSign'), 'at': ic('AtSign'),
+  'text-outline': ic('Type'), 'text': ic('Type'),
+  'happy': ic('Smile'), 'sticker-outline': ic('Sticker'),
+  'volume-high': ic('Volume2'), 'volume-high-outline': ic('Volume2'),
+  'volume-mute': ic('VolumeX'), 'volume-mute-outline': ic('VolumeX'),
   'cloud-offline-outline': ic('CloudOff'), 'cloud-upload-outline': ic('UploadCloud'), 'cloud-done-outline': ic('Cloud'),
   'construct-outline': ic('Wrench'), 'copy-outline': ic('Copy'), 'copy': ic('Copy'),
   'document-text-outline': ic('FileText'), 'document-outline': ic('File'), 'download-outline': ic('Download'), 'download': ic('Download'),
@@ -260,6 +285,9 @@ const mci: Record<string, LucideIcon> = {
   'human-male': ic('User'), 'human-female': ic('User'), 'account': ic('User'), 'account-outline': ic('User'),
   'network-off': ic('WifiOff'), 'network': ic('Wifi'), 'wifi-off': ic('WifiOff'),
   'chart-line': ic('ChartLine'), 'chart-bar': ic('ChartColumn'),
+  'vote-outline': ic('Vote'), 'vote': ic('Vote'),
+  'music': ic('Music'), 'music-note': ic('Music'), 'waveform': ic('AudioLines'),
+  'sticker-emoji': ic('Sticker'), 'at': ic('AtSign'), 'format-text': ic('Type'), 'crop': ic('Crop'),
 };
 
 // --- FontAwesome5 name -> lucide -------------------------------------------

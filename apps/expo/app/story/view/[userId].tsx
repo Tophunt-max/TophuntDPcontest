@@ -25,6 +25,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AppImage as Image } from '@/src/components/ui/AppImage';
 import { useVideoPlayer, VideoView, createVideoPlayer } from 'expo-video';
+import { useAudioPlayer } from 'expo-audio';
 import { Ionicons } from '@/src/lib/icons';
 import { 
     fetchStories, 
@@ -205,6 +206,48 @@ export default function StoryView() {
   const player = useVideoPlayer(currentStory?.mediaType === 'video' ? videoSourceFor(currentStory.mediaUrl) : null, (player) => {
     player.loop = false;
   });
+
+  /**
+   * The story's soundtrack.
+   *
+   * The author could already attach music in the editor, but nothing ever played
+   * it back — the track was chosen, shown on a sticker, and then simply not part
+   * of watching the story.
+   *
+   * Muted by default, and that is not a nicety: browsers refuse to autoplay audio
+   * without a prior user gesture, and a player that is *blocked* is
+   * indistinguishable from one that is broken. Starting muted always succeeds, so
+   * every viewer gets a working control instead of some getting silence and no
+   * explanation. `isMuted` starts true on every platform so the behaviour is the
+   * same one to test everywhere.
+   */
+  const musicUrl = currentStory?.musicPreviewUrl || null;
+  const musicPlayer = useAudioPlayer(musicUrl ? { uri: musicUrl } : null);
+  const [isMuted, setIsMuted] = useState(true);
+
+  // Follow the SAME pause lifecycle as the video and the progress bar: a
+  // long-press that freezes the story must freeze its music too, and the track
+  // has to stop the moment the story advances or the screen closes. Anything else
+  // leaves audio running under the next story.
+  useEffect(() => {
+    // A story has one soundtrack. When the author attached music, the clip's own
+    // audio is muted so the two do not play over each other — the same rule the
+    // editor applies while previewing.
+    try { player.muted = !!musicUrl; } catch { /* no source loaded */ }
+    if (!musicUrl) return;
+    musicPlayer.loop = true;
+    musicPlayer.muted = isMuted;
+    if (isPaused || showHighlightModal || isKeyboardVisible || showViewers) musicPlayer.pause();
+    else musicPlayer.play();
+  }, [musicUrl, musicPlayer, player, isMuted, isPaused, showHighlightModal, isKeyboardVisible, showViewers]);
+
+  // Stop on unmount and whenever the current story changes, so the previous
+  // story's track never bleeds into the next one.
+  useEffect(() => {
+    return () => {
+      try { musicPlayer.pause(); } catch { /* nothing loaded */ }
+    };
+  }, [musicPlayer, currentStory?.id]);
 
   // Keyboard Listeners
   useEffect(() => {
@@ -590,6 +633,33 @@ export default function StoryView() {
             <LinearGradient pointerEvents="none" colors={['transparent', 'rgba(0,0,0,0.6)']} style={styles.scrimBottom} />
             {isLoading && <View style={styles.loader}><ActivityIndicator size="large" color="white" /></View>}
             
+            {/*
+              Soundtrack pill. Doubles as the mute control, because audio starts
+              muted (browsers block unprompted autoplay) and a viewer otherwise
+              has no way to know the story HAS music, let alone turn it on.
+              Tapping toggles sound; it does not pause the story.
+            */}
+            {musicUrl && (
+                <Pressable
+                    pointerEvents="auto"
+                    onPress={() => setIsMuted((m) => !m)}
+                    style={[styles.musicPill, { top: insets.top + CHROME_TOP + 8 }]}
+                    accessibilityRole="button"
+                    accessibilityLabel={
+                        isMuted
+                            ? `Turn on sound: ${currentStory.musicTitle || 'music'}`
+                            : `Mute ${currentStory.musicTitle || 'music'}`
+                    }
+                >
+                    <Ionicons name={isMuted ? 'volume-mute' : 'volume-high'} size={16} color="white" />
+                    <Text style={styles.musicPillText} numberOfLines={1}>
+                        {currentStory.musicTitle
+                            ? `${currentStory.musicTitle}${currentStory.musicArtist ? ` · ${currentStory.musicArtist}` : ''}`
+                            : 'Music'}
+                    </Text>
+                </Pressable>
+            )}
+
             {/* Saved Overlays */}
             {currentStory.overlayText && (
                 <View style={[styles.textBubble, { 
@@ -799,6 +869,20 @@ const styles = StyleSheet.create({
   floatingReaction: { position: 'absolute', width: '100%', alignItems: 'center', bottom: height * 0.4 },
   textBubble: { backgroundColor: 'rgba(0,0,0,0.5)', paddingHorizontal: 15, paddingVertical: 8, borderRadius: 10 },
   overlayTextDisplay: { color: 'white', fontSize: 24, fontFamily: 'Urbanist-Bold', textAlign: 'center' },
+  musicPill: {
+    position: 'absolute',
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    maxWidth: width * 0.7,
+    minHeight: 34,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    zIndex: 30,
+  },
+  musicPillText: { color: 'white', fontSize: 13, fontFamily: 'Urbanist-SemiBold', flexShrink: 1 },
   reactionContainer: { position: 'absolute', bottom: 100, width: '100%', flexDirection: 'row', justifyContent: 'center', flexWrap: 'wrap', gap: 15, paddingHorizontal: 20 },
   reactionBtn: { backgroundColor: 'rgba(255,255,255,0.2)', padding: 10, borderRadius: 25 },
   
