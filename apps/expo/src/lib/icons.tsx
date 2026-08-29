@@ -197,6 +197,8 @@ const ionicons: Record<string, LucideIcon> = {
   'crop-outline': ic('Crop'), 'crop': ic('Crop'),
   // Exchange the soundtrack on a story for another track.
   'swap-horizontal': ic('ArrowLeftRight'), 'swap-horizontal-outline': ic('ArrowLeftRight'),
+  // Opens the trim sheet: which part of the track the story plays.
+  'cut': ic('Scissors'), 'cut-outline': ic('Scissors'),
   'compass-outline': ic('Compass'), 'compass': ic('Compass'),
   'help': ic('CircleHelp'), 'help-outline': ic('CircleHelp'), 'help-circle-outline': ic('CircleHelp'),
   'hand-left': ic('Hand'), 'hand-left-outline': ic('Hand'), 'hand-right': ic('Hand'),
