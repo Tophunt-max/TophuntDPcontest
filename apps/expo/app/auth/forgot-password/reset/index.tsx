@@ -20,16 +20,16 @@ import { BackButton } from "@/src/components/ui/BackButton";
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useToast } from "@/src/components/toast/ToastProvider";
 import { callApi } from '@/src/services/api'; // Consolidated API used
+import { validatePassword } from '@/src/lib/passwordPolicy';
 
 // Mirror the server-side policy (worker lib/password.ts) so the user gets
 // inline feedback instead of a round-trip rejection.
-const passwordSchema = z
-  .string()
-  .min(8, 'Password must be at least 8 characters long')
-  .regex(/[a-z]/, 'Password must contain at least one lowercase letter')
-  .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
-  .regex(/\d/, 'Password must contain at least one number')
-  .regex(/[^a-zA-Z0-9]/, 'Password must contain at least one special character');
+//
+// This used to be an inline Zod schema carrying the same four character-class
+// rules but NO maximum length, while the Worker enforces 128. A longer password
+// therefore passed every check the user could see and was then rejected by the
+// API with a message from a different layer. Both now read from one module.
+// (See src/lib/passwordPolicy.ts.)
 
 export default function ResetPasswordScreen() {
   const router = useRouter();
@@ -48,7 +48,11 @@ export default function ResetPasswordScreen() {
 
   const handleResetPassword = async () => {
     try {
-      passwordSchema.parse(newPassword);
+      const policyError = validatePassword(newPassword);
+      if (policyError) {
+        addToast({ type: 'error', text: policyError });
+        return;
+      }
       if (newPassword !== confirmPassword) {
         addToast({ type: 'error', text: 'Passwords do not match.' });
         return;
