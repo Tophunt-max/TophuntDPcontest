@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, type IntegrationsResponse, type SecretStatus } from "@/lib/api";
+import { api, describeError, type IntegrationsResponse, type SecretStatus } from "@/lib/api";
 import { PageHeader, fmtDateTime } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import {
@@ -94,7 +94,7 @@ function SecretRow({
       toast.success(`${secret.label} saved`);
       onSaved();
     } catch (e: any) {
-      toast.error(e.message);
+      toast.error(describeError(e));
     } finally {
       setBusy(false);
     }
@@ -107,7 +107,7 @@ function SecretRow({
       toast.success(res.message || "Removed");
       onSaved();
     } catch (e: any) {
-      toast.error(e.message);
+      toast.error(describeError(e));
     } finally {
       setBusy(false);
     }
@@ -200,7 +200,7 @@ function TestButton({
     mutationFn: () => api.testIntegration(provider, needsTarget ? { to: target } : {}),
     onSuccess: (res: any) =>
       setResult({ ok: !!res.ok, message: res.message || (res.ok ? "Working" : "Failed") }),
-    onError: (e: any) => setResult({ ok: false, message: e.message }),
+    onError: (e: any) => setResult({ ok: false, message: describeError(e) }),
   });
 
   return (
@@ -281,7 +281,7 @@ function Card({
 
 export default function Integrations() {
   const qc = useQueryClient();
-  const { data, isLoading } = useQuery<IntegrationsResponse>({
+  const { data, isLoading, isError, error, refetch } = useQuery<IntegrationsResponse>({
     queryKey: ["integrations"],
     queryFn: api.integrations,
   });
@@ -297,7 +297,7 @@ export default function Integrations() {
       toast.success("Integration settings saved");
       qc.invalidateQueries({ queryKey: ["integrations"] });
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => toast.error(describeError(e)),
   });
 
   const byGroup = useMemo(() => {
@@ -307,6 +307,25 @@ export default function Integrations() {
   }, [data]);
 
   const refresh = () => qc.invalidateQueries({ queryKey: ["integrations"] });
+
+  // A failed load must not render as "Loading…" forever. `cfg` only becomes
+  // non-null once a response arrives, so without an explicit error branch any
+  // rejected request left this page spinning with nothing to retry.
+  if (isError) {
+    return (
+      <div className="rounded-2xl border border-destructive/30 bg-destructive/5 p-6 text-sm flex flex-col gap-3 sm:flex-row sm:items-center">
+        <AlertTriangle className="text-destructive shrink-0" size={18} />
+        <p className="flex-1">Could not load integrations: {describeError(error)}</p>
+        <button
+          type="button"
+          onClick={() => refetch()}
+          className="h-9 px-3 rounded-lg border border-border bg-card text-sm font-medium hover:bg-muted/40 shrink-0"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   if (isLoading || !cfg) {
     return <div className="text-sm text-muted-foreground py-10 text-center">Loading…</div>;

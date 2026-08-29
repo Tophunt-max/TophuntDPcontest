@@ -106,7 +106,11 @@ app.use("*", async (c, next) => {
   const origins = (c.env.ALLOWED_ORIGINS || "*").split(",").map((s) => s.trim());
   const mw = cors({
     origin: origins.length === 1 && origins[0] === "*" ? "*" : origins,
-    allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    // PUT belongs here: the admin panel saves integration config and rotates
+    // credentials with PUT (`saveIntegrations`, `setIntegrationSecret`). Omitting
+    // it made those calls fail preflight with a bare `TypeError: Failed to fetch`,
+    // which reads like a network outage rather than a policy rejection.
+    allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowHeaders: ["Content-Type", "Authorization"],
     exposeHeaders: ["X-Next-Cursor", "X-Request-Id"],
     maxAge: 86400,
