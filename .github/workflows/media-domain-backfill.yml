@@ -5,12 +5,25 @@ name: Media domain backfill
 #   https://tophunt-api.weadown-in.workers.dev/media/<key>  ->  https://media.tophunt.in/<key>
 #
 # apps/worker/scripts/media-domain-backfill.sql has existed for a while and had
-# never been run, so every pre-cutover row still pointed at the Worker proxy —
+# never been run, so every pre-cutover row still STORES the Worker proxy host —
 # blog covers, contest participant snapshots, chat avatars, the UPI QR. Those all
 # still LOADED, which is why it went unnoticed: the `/media/*` route keeps serving
-# them. They just cost a Worker invocation per image and can never be served as a
-# resized Transformations variant, because `/cdn-cgi/image/` only resolves at the
-# root of a zone and `*.workers.dev` is not one.
+# them.
+#
+# WHAT THIS IS AND IS NOT, as of the Transformations cutover: delivery is already
+# fixed WITHOUT this. `routes/read.ts` canonicalises legacy urls onto the media
+# domain on the way out (`lib/media.ts#cdnUrl`, `lib/r2.ts#canonicalMediaUrl`) —
+# same key, same bucket — so those images are CDN-served and optimised today. This
+# workflow is therefore DATA HYGIENE, not a fix for a user-visible problem:
+#
+#   - the read-path rewrite is per-response work, and can only be retired once the
+#     stored values are canonical;
+#   - anything reading these columns directly — a D1 query, an export, an admin
+#     tool, an already-shipped app build — still sees the old host;
+#   - `R2_LEGACY_BASE_URLS` cannot be removed until the stored data is clean.
+#
+# So it is worth running, but it is not urgent and nothing breaks if it waits.
+# `seoAudit`'s `image.legacy_host` is `low` severity for exactly this reason.
 #
 # WHY A WORKFLOW AND NOT A MIGRATION — this is the same reasoning the SQL file
 # gives, and it still holds. Files in migrations/ are applied automatically on the
