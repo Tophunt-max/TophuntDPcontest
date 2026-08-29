@@ -131,3 +131,87 @@ describe('story cache round-trip', () => {
     expect(out.createdAt).toBe(1_700_000_000_000);
   });
 });
+
+
+/**
+ * The same failure mode as the battle fields above, one feature later.
+ *
+ * A story published with a soundtrack neither played nor showed its music pill.
+ * The server resolves title/artist/artwork/preview from the track id the client
+ * sends and returns them in the feed, but the cache wrote none of them — and the
+ * cache is what the viewer reads. `musicPreviewUrl` is the value the viewer gates
+ * on twice: it is the audio player's source AND the condition for rendering the
+ * pill, so dropping it silenced the track and hid the label in one go.
+ *
+ * These fields are optional on `Story`, so the omission type-checked — which is
+ * exactly why it needs a test rather than a compiler.
+ */
+describe('offline story cache — soundtrack', () => {
+  const musicStory: Story = {
+    id: 's3',
+    userId: 'carol',
+    username: 'carol',
+    avatarUrl: '',
+    mediaUrl: 'carol.jpg',
+    mediaType: 'image',
+    createdAt: 1_700_000_000_000,
+    expiresAt: 1_700_086_400_000,
+    seen: false,
+    type: 'user',
+    musicTrackId: 't-99',
+    musicTitle: 'Sunflower',
+    musicArtist: 'Post Malone',
+    musicArtworkUrl: 'https://cdn.example/art.jpg',
+    musicPreviewUrl: 'https://cdn.example/preview.mp3',
+  };
+
+  it('round-trips every music field through the cache', () => {
+    const out = roundTrip(musicStory);
+    expect(out.musicTrackId).toBe('t-99');
+    expect(out.musicTitle).toBe('Sunflower');
+    expect(out.musicArtist).toBe('Post Malone');
+    expect(out.musicArtworkUrl).toBe('https://cdn.example/art.jpg');
+    expect(out.musicPreviewUrl).toBe('https://cdn.example/preview.mp3');
+  });
+
+  it('keeps the preview url the viewer gates the player and pill on', () => {
+    // Guarded on its own: this single field decides both whether audio plays and
+    // whether the pill renders, so losing it is what made music look absent.
+    expect(roundTrip(musicStory).musicPreviewUrl).toBeTruthy();
+  });
+
+  it('persists music onto the record, not just into the returned object', () => {
+    // Asserts the WRITE half. A mapper that read the fields back off the input
+    // story rather than the record would pass the round-trip test above while
+    // still writing nothing to WatermelonDB.
+    const record = fakeRecord();
+    applyStoryFields(record, musicStory);
+    expect(record.musicPreviewUrl).toBe('https://cdn.example/preview.mp3');
+    expect(record.musicTitle).toBe('Sunflower');
+    expect(record.musicTrackId).toBe('t-99');
+  });
+
+  it('leaves a story with no music with null music fields', () => {
+    const out = roundTrip({ ...musicStory, musicTrackId: undefined, musicTitle: undefined, musicArtist: undefined, musicArtworkUrl: undefined, musicPreviewUrl: undefined });
+    expect(out.musicPreviewUrl ?? null).toBeNull();
+    expect(out.musicTitle ?? null).toBeNull();
+  });
+
+  it('does not write undefined-as-null into non-null local columns', () => {
+    // The local columns are optional; `?? undefined` (not `?? null`) is what keeps
+    // a null from the API out of them, matching how matchId/type are handled.
+    const record = fakeRecord();
+    applyStoryFields(record, { ...musicStory, musicPreviewUrl: null as any, musicTitle: null as any });
+    expect(record.musicPreviewUrl).toBeUndefined();
+    expect(record.musicTitle).toBeUndefined();
+  });
+
+  it('still preserves music alongside the battle fields', () => {
+    // A contest story can carry a soundtrack too — the two feature sets must not
+    // clobber each other in the shared serializer.
+    const out = roundTrip({ ...musicStory, type: 'contest_vs', matchId: 'm7', contestTitle: 'Best Smile' });
+    expect(isVsStory(out)).toBe(true);
+    expect(out.musicPreviewUrl).toBe('https://cdn.example/preview.mp3');
+    expect(out.contestTitle).toBe('Best Smile');
+  });
+});

@@ -12,6 +12,7 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Header } from '@/src/components/home/Header';
 import { StoriesBar } from '@/src/components/stories/StoriesBar';
+import { fetchStories } from '@/src/services/stories/storyService';
 import { PostCard } from '@/src/components/home/PostCard';
 import { BottomNav } from '@/src/components/home/BottomNav';
 import { useQueryClient } from '@tanstack/react-query';
@@ -114,7 +115,17 @@ export default function HomeScreen() {
   );
 
   const onRefresh = useCallback(async () => {
-    await queryClient.invalidateQueries({ queryKey: ['stories'] });
+    // Pull-to-refresh has to reach the network. `fetchStories` is cache-first,
+    // so a bare invalidate just re-runs it and hands back the same local rows —
+    // the gesture appeared to do nothing for the tray. Seeding the shared
+    // ['stories'] cache with a forced read also re-saves rows that were cached
+    // before a schema upgrade, which is how stories cached without the music
+    // columns get their soundtrack back.
+    try {
+      queryClient.setQueryData(['stories'], await fetchStories({ forceRefresh: true }));
+    } catch {
+      await queryClient.invalidateQueries({ queryKey: ['stories'] });
+    }
     await loadFeed(feedTab, true);
   }, [queryClient, loadFeed, feedTab]);
 

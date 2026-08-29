@@ -36,6 +36,16 @@ export class StoryModel extends Model {
   @field('type') type?: string; // StoryKind
   @field('contest_title') contestTitle?: string;
 
+  // Soundtrack fields (schema v3). `musicPreviewUrl` is the one the viewer
+  // actually gates on — it feeds the audio player AND decides whether the music
+  // pill renders — so losing it here made a story with a track look and sound
+  // like one without. Optional because most stories have no music.
+  @field('music_track_id') musicTrackId?: string;
+  @field('music_title') musicTitle?: string;
+  @field('music_artist') musicArtist?: string;
+  @field('music_artwork_url') musicArtworkUrl?: string;
+  @field('music_preview_url') musicPreviewUrl?: string;
+
   // Auto-touched by WatermelonDB on every write. Do not assign manually.
   @readonly @date('updated_at') updatedAt!: Date;
 
