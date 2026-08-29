@@ -11,7 +11,7 @@ import { getDb, schema, type NotificationActor } from "../db";
 import { httpsError } from "../lib/http";
 import { requireAuth, optionalAuth } from "../middleware/auth";
 import { getAppConfig } from "../lib/settings";
-import { enrichMatchMedia, avatarUrl, thumbUrl, optimizedUrl } from "../lib/media";
+import { enrichMatchMedia, avatarUrl, thumbUrl, optimizedUrl, cdnUrl, canonicalizeMediaHtml } from "../lib/media";
 import {
   userCacheKey,
   blogPostCacheKey,
@@ -581,12 +581,22 @@ const mapNotification = (env: Env, r: any) => ({
   createdAt: r.createdAt, // epoch ms
 });
 
-const mapBlogPost = (r: any, opts: { withContent?: boolean } = {}) => ({
+/**
+ * Blog rows are permanent, so their media urls are the ones most likely to
+ * predate the media domain cutover — including the `<img src>` urls embedded in
+ * `content` HTML by the importer. Canonicalising on the way out moves them off
+ * the Worker proxy without waiting for `scripts/media-domain-backfill.sql`.
+ *
+ * `coverImageUrlThumb` is additive: the list view renders a card-sized image and
+ * was downloading the full-resolution original to do it.
+ */
+const mapBlogPost = (env: Env, r: any, opts: { withContent?: boolean } = {}) => ({
   id: r.id,
   slug: r.slug,
   title: r.title,
   excerpt: r.excerpt,
-  coverImageUrl: r.coverImageUrl,
+  coverImageUrl: cdnUrl(env, r.coverImageUrl),
+  coverImageUrlThumb: thumbUrl(env, r.coverImageUrl),
   category: r.category,
   tags: r.tags || [],
   author: r.author,
@@ -595,7 +605,7 @@ const mapBlogPost = (r: any, opts: { withContent?: boolean } = {}) => ({
   createdAt: r.createdAt,
   ...(opts.withContent
     ? {
-        content: r.content,
+        content: canonicalizeMediaHtml(env, r.content),
         metaTitle: r.metaTitle || r.title,
         metaDescription: r.metaDescription || r.excerpt,
         canonicalUrl: r.canonicalUrl,
@@ -1854,7 +1864,10 @@ async function attachUsers(c: any, userIds: string[]) {
   for (const u of rows) {
     map[u.uid] = {
       username: u.username || u.fullName || "User",
-      avatarUrl: u.avatar || null,
+      // Canonicalised onto the current media base so a pre-cutover row is served
+      // by the CDN rather than a Worker invocation. Third-party sign-in avatars
+      // pass through untouched.
+      avatarUrl: cdnUrl(c.env, u.avatar) || null,
       // Small variant for avatar rows. Identical to avatarUrl until
       // Transformations is enabled — see lib/media.ts transformationsAvailable().
       avatarUrlThumb: avatarUrl(c.env, u.avatar) || null,
@@ -1896,6 +1909,12 @@ readRoute.get("/stories/feed", requireAuth, async (c) => {
     (grouped[s.userId] ||= []).push({
       ...s,
       seen: false,
+      // Canonicalised, not just varianted. Story VIDEO never gets a variant, and
+      // video on the proxy path is the most expensive media in the system: players
+      // always send Range, and `index.ts` bypasses the edge cache for ranged
+      // responses, so every seek is an uncached R2 GET plus an invocation.
+      mediaUrl: cdnUrl(c.env, (s as any).mediaUrl),
+      avatarUrl: cdnUrl(c.env, (s as any).avatarUrl),
       mediaUrlThumb: thumbUrl(c.env, (s as any).mediaUrl),
       mediaUrlOptimized: optimizedUrl(c.env, (s as any).mediaUrl),
     });
@@ -2040,7 +2059,7 @@ readRoute.get("/blog", async (c) => {
     .all();
 
   const nextCursor = rows.length === limit ? rows[rows.length - 1].publishedAt : null;
-  const payload = { posts: rows.map((r) => mapBlogPost(r)), nextCursor };
+  const payload = { posts: rows.map((r) => mapBlogPost(c.env, r)), nextCursor };
   if (cacheable) {
     await cachePut(c.env, cacheKey, payload, 120);
     c.header("Cache-Control", "public, max-age=60");
@@ -2143,7 +2162,7 @@ readRoute.get("/blog/:slug", async (c) => {
     .where(eq(schema.blogPosts.id, row.id))
     .run()
     .catch(() => {});
-  const payload = mapBlogPost(row, { withContent: true });
+  const payload = mapBlogPost(c.env, row, { withContent: true });
   await cachePutJson(c.env, cacheKey, payload, 120);
   return c.json(payload);
 });

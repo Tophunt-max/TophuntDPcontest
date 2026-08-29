@@ -135,7 +135,10 @@ export default function BlogListScreen() {
       <TouchableOpacity activeOpacity={0.9} style={[styles.card, { backgroundColor: cardBg }]} onPress={() => openPost(item)}>
         {item.coverImageUrl ? (
           <Image
-            source={{ uri: item.coverImageUrl }}
+            // Card-sized variant, falling back to the full image when the Worker
+            // is not building variants. This list was downloading full-resolution
+            // covers to render them a few hundred pixels wide.
+            source={{ uri: item.coverImageUrlThumb || item.coverImageUrl }}
             style={featured ? styles.featuredImage : styles.cardImage}
             contentFit="cover"
             transition={200}

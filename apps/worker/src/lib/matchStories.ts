@@ -43,6 +43,7 @@
  */
 import { and, eq } from "drizzle-orm";
 import type { Env } from "../types";
+import { canonicalMediaUrl } from "./r2";
 import { getDb, schema } from "../db";
 import { newId } from "./ids";
 
@@ -97,10 +98,15 @@ export async function publishVsStories(
     id: newId(),
     userId: p.uid,
     username: p.username || "Anonymous",
-    avatarUrl: p.profilePic || "",
+    // Canonicalised onto the current media base. These values are copied out of
+    // the match's participant snapshot, so for any match created before the media
+    // domain cutover they still name the Worker proxy — and this function runs at
+    // JOIN time, which means a pre-cutover match was minting brand-new rows on the
+    // old host indefinitely. Canonicalising here breaks that propagation chain.
+    avatarUrl: canonicalMediaUrl(env, p.profilePic) || "",
     // The participant's own entry, so a client that only understands
     // `media_url` still shows something true rather than nothing.
-    mediaUrl: p.mediaUrl || "",
+    mediaUrl: canonicalMediaUrl(env, p.mediaUrl) || "",
     mediaType: storyMediaType(p.mediaType),
     type: "contest_vs",
     matchId,

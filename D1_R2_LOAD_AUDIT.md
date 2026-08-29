@@ -198,12 +198,20 @@ all N viewers GET the uncached `/read/matches/:id`.
 
 ## 9. All media is served through the Worker
 
-> **Status: addressed in config.** `R2_PUBLIC_BASE_URL` is now
-> `https://media.tophunt.in`, the R2 bucket's own domain, so new media skips the
-> Worker entirely. Existing rows are moved over by
-> `apps/worker/scripts/media-domain-backfill.sql`; until that runs they still take
-> the path described here. `PRODUCTION_DOMAINS.md` §5. §11 below is unblocked by
-> the same change but still needs Transformations enabled on the zone (§6 there).
+> **Status: RESOLVED.** `R2_PUBLIC_BASE_URL` is `https://media.tophunt.in`, the R2
+> bucket's own domain, so new media skips the Worker entirely — and existing rows
+> no longer wait on the backfill either: `routes/read.ts` canonicalises legacy urls
+> onto the media domain on the way out (`lib/media.ts#cdnUrl`,
+> `lib/r2.ts#canonicalMediaUrl`), same key, same bucket, same bytes. Running
+> `scripts/media-domain-backfill.sql` is still recommended so the stored values are
+> canonical and the rewrite can eventually be retired, but it no longer gates cost
+> or delivery. `PRODUCTION_DOMAINS.md` §5.
+>
+> Note the one exception, by design: `contest-banners/images/` and
+> `vs-cards/images/` keep their stored url. Those objects are deleted while their
+> urls may still be referenced, and the delete path purges the colo entry for the
+> stored url only — a canonicalised url would be a second cache entry nobody
+> purges. See `PROXY_ONLY_PREFIXES` in `lib/media.ts`.
 
 At the time of this audit:
 
@@ -235,9 +243,20 @@ Worker invocation**, for the whole duration of every video watched.
 
 This is the largest R2 operation driver the moment video gets real usage.
 
-**Fix:** finish the Bunny Stream cutover (`MEDIA_MIGRATION_PLAN.md` already
-plans it) so video leaves R2 entirely. If video must stay on R2, cache 206s under
-a key that includes the byte range.
+> **Status: largely resolved for R2-served video.** Video urls are now
+> canonicalised onto `media.tophunt.in` on the read path (story `mediaUrl`, match
+> participant `mediaUrl`), so the CDN satisfies ranges itself and the Worker is out
+> of the loop — no invocation, no per-chunk R2 GET. This mattered more than the
+> image work: video is the one case a variant helper can never cover, which is why
+> `cdnUrl` is deliberately separate from `imgVariant` and independent of
+> `MEDIA_TRANSFORMATIONS`.
+>
+> The `/media/*` route keeps the ranged-request cache bypass exactly as described,
+> and that is still correct — it remains the path for already-shipped app builds
+> holding absolute legacy urls, which no server-side rewrite can reach.
+
+**Remaining fix:** finish the Bunny Stream cutover (`MEDIA_MIGRATION_PLAN.md`
+already plans it) so video leaves R2 entirely.
 
 ## 11. Thumbnails serve full-size originals
 
@@ -245,21 +264,41 @@ a key that includes the byte range.
 non-`workers.dev` host with no path prefix. At audit time neither held, so
 `thumbUrl()` / `optimizedUrl()` / `profileImageUrlThumb` **return the original URL**.
 
-> **Status: half addressed.** The host condition now holds
-> (`https://media.tophunt.in` — real zone, no path prefix). The flag stays
-> `"false"` until Transformations is enabled on the zone in the dashboard, because
-> `/cdn-cgi/image/` on a zone without it errors rather than falling back to the
-> original — flipping the flag first would break every thumbnail in the product.
-> `PRODUCTION_DOMAINS.md` §6.
+> **Status: RESOLVED.** Host condition holds (`https://media.tophunt.in` — real
+> zone, no path prefix), Transformations is enabled on the zone, and
+> `MEDIA_TRANSFORMATIONS = "true"`. Verified on production rather than assumed: the
+> `cf-resized: … f=true` response header is only emitted when the resizing pipeline
+> actually ran. `PRODUCTION_DOMAINS.md` §6.
+>
+> Measured on real production objects (WebP, `Accept: image/webp`):
+>
+> | Asset | Was served | Now | Saving |
+> |---|---|---|---|
+> | Feed contest entry → 320px thumb | 97,068 B | 15,278 B | 84% |
+> | Feed contest entry → 1080px | 97,068 B | 50,638 B | 48% |
+> | Avatar (rendered at 96px) | 65,757 B | 2,738 B | 96% |
+> | Blog cover → 320px card | 13,875 B | 4,792 B | 65% |
+>
+> Two bugs were found in the process, both fixed:
+>
+> 1. `imgVariant` only matched the CURRENT base, so every pre-cutover row was
+>    excluded from optimisation permanently. Urls are canonicalised first now.
+> 2. The presets used `fit=cover`, which **upscales** a source narrower than the
+>    target. The 1080 preset on a 645x1440 portrait entry produced 84,436 B —
+>    *larger* than `scale-down`'s 50,638 B, and blurrier. Portrait is the common
+>    shape in a DP contest, so this was the normal case. All presets are
+>    `scale-down` now.
 
 Client-side upload optimisation is good (`imageOptimize.ts:40-48`: avatars capped
 at 512px, stories at 1920px), which limits the damage. But a 1920px story image
 is what gets served into a grid thumbnail — wasted bandwidth on every feed
 render, and a slower app.
 
-**Fix:** same as §9 — a custom domain on a Cloudflare zone, then flip
-`MEDIA_TRANSFORMATIONS` to `"true"`. `lib/media.ts` is already written so that
-this needs **no client release**.
+**Fix (done):** same as §9 — a custom domain on a Cloudflare zone, then flip
+`MEDIA_TRANSFORMATIONS` to `"true"`. `lib/media.ts` was already written so that
+this needed **no client release**, and it did not: the Expo client had already
+adopted the `*Thumb` / `*Optimized` fields with `|| mediaUrl` fallbacks, so the
+flag alone turned them into real variants.
 
 ---
 

@@ -231,13 +231,18 @@ describe('content checks detect real defects', () => {
     expect(issue(audit, 'onpage.internal_links')).toBeDefined();
   });
 
-  it('flags media still on the legacy Worker host', async () => {
+  it('flags media still STORED on the legacy Worker host, at low severity', async () => {
+    // Severity is deliberately low, not medium: routes/read.ts canonicalises these
+    // urls onto the media domain on the way out, so delivery and optimisation are
+    // no longer affected and only the stored value is stale. Pinned so the
+    // severity cannot drift back up without the reasoning being revisited.
     stubSite();
     await seedPost({ coverImageUrl: 'https://tophunt-api.weadown-in.workers.dev/media/blog/imported/x.jpg' });
     const audit = await runSeoAudit(env);
 
     const found = issue(audit, 'image.legacy_host');
     expect(found).toBeDefined();
+    expect(found!.severity).toBe('low');
     expect(found!.suggestion).toMatch(/media-domain-backfill/);
   });
 

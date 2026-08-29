@@ -19,6 +19,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  canonicalMediaUrl,
   contestBannerKeyFromPublicUrl,
   mediaKeyFromPublicUrl,
   ownedMediaBases,
@@ -149,5 +150,74 @@ describe('vsImageKeyFromPublicUrl', () => {
     // one of our cards, whichever host it claims.
     expect(vsImageKeyFromPublicUrl(env(), `${CURRENT}/stories/images/c.jpg`)).toBeNull();
     expect(vsImageKeyFromPublicUrl(env(), 'https://evil.example/vs-cards/images/c.jpg')).toBeNull();
+  });
+});
+
+
+/**
+ * The READ-side counterpart to `ownedMediaBases`. Where that keeps DELETES
+ * correct across a domain change, this keeps delivery correct: it maps a url on
+ * any base we own onto the current one, so a pre-cutover row is served by the CDN
+ * and can be transformed instead of being stuck on the Worker proxy until a
+ * manual D1 backfill runs.
+ */
+describe('canonicalMediaUrl', () => {
+  it('rewrites a legacy-base url onto the current base, key intact', () => {
+    expect(canonicalMediaUrl(env(), `${LEGACY}/stories/images/abc.jpg`)).toBe(
+      `${CURRENT}/stories/images/abc.jpg`,
+    );
+  });
+
+  it('is a no-op for a url already on the current base', () => {
+    const url = `${CURRENT}/stories/images/abc.jpg`;
+    expect(canonicalMediaUrl(env(), url)).toBe(url);
+  });
+
+  it('preserves nested keys and percent-encoding verbatim', () => {
+    // String surgery on the base only — the key is never decoded, so a key with
+    // a `%` or `+` in it cannot be corrupted on the way through.
+    expect(canonicalMediaUrl(env(), `${LEGACY}/blog/imported/a%2Bb%20c.jpg`)).toBe(
+      `${CURRENT}/blog/imported/a%2Bb%20c.jpg`,
+    );
+  });
+
+  it('leaves third-party urls untouched', () => {
+    for (const url of [
+      'https://lh3.googleusercontent.com/a/default-user=s96-c',
+      'https://web.archive.org/web/2020id_/https://tophunt.in/x.jpg',
+    ]) {
+      expect(canonicalMediaUrl(env(), url)).toBe(url);
+    }
+  });
+
+  it('refuses a lookalike host that merely prefix-matches a base', () => {
+    const url = `${CURRENT}.evil.example/stories/images/abc.jpg`;
+    expect(canonicalMediaUrl(env(), url)).toBe(url);
+  });
+
+  it('refuses the bare base with no key', () => {
+    expect(canonicalMediaUrl(env(), LEGACY)).toBe(LEGACY);
+    expect(canonicalMediaUrl(env(), `${LEGACY}/`)).toBe(`${LEGACY}/`);
+  });
+
+  it('never rewrites onto a LEGACY base when the current base is unusable', () => {
+    // ownedMediaBases() drops malformed entries, so with a blank or broken
+    // R2_PUBLIC_BASE_URL its first element is a legacy base. Taking [0] blindly
+    // would move good urls onto the old host — the exact inversion of the intent.
+    const good = `${CURRENT}/stories/images/abc.jpg`;
+    expect(canonicalMediaUrl(env({ R2_PUBLIC_BASE_URL: '' }), good)).toBe(good);
+    expect(canonicalMediaUrl(env({ R2_PUBLIC_BASE_URL: 'not-a-url' }), good)).toBe(good);
+  });
+
+  it('tolerates a trailing slash on the configured base', () => {
+    expect(canonicalMediaUrl(env({ R2_PUBLIC_BASE_URL: `${CURRENT}/` }), `${LEGACY}/a/b.jpg`)).toBe(
+      `${CURRENT}/a/b.jpg`,
+    );
+  });
+
+  it('passes null/undefined/empty through unchanged', () => {
+    for (const v of [null, undefined, '']) {
+      expect(canonicalMediaUrl(env(), v as any)).toBe(v);
+    }
   });
 });

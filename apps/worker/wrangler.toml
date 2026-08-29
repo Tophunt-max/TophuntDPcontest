@@ -291,25 +291,42 @@ R2_LEGACY_BASE_URLS = "https://tophunt-api.weadown-in.workers.dev/media"
 
 # Cloudflare Transformations (Image Resizing) switch for the media origin.
 #
-# The media origin now satisfies both CODE preconditions in
-# lib/media.ts -> transformationsAvailable(): media.tophunt.in is a real zone
-# host (not *.workers.dev) and has no path prefix. What is left is the DASHBOARD
-# half, which no deploy can assert:
+# ENABLED. Both halves of the prerequisite are now satisfied:
 #
-#   Zone tophunt.in -> Speed -> Optimization -> Transformations -> enable
-#   (check the per-transformation pricing beyond the free monthly allowance)
+#   CODE     — lib/media.ts -> transformationsAvailable(): media.tophunt.in is a
+#              real zone host (not *.workers.dev) and has no path prefix.
+#   DASHBOARD — Transformations is enabled on zone tophunt.in. Verified against
+#              production rather than assumed, because no deploy can assert it:
 #
-# This stays "false" until that is done, and it is deliberate rather than
-# pending. `/cdn-cgi/image/...` on a zone WITHOUT Transformations enabled does
-# not fall back to the original — it errors. Shipping "true" first would turn
-# every thumbnail, feed image and avatar in the product into a broken image the
-# moment the Worker deployed, i.e. a config flag would own an outage.
+#     $ curl -sI "https://media.tophunt.in/cdn-cgi/image/width=320,quality=70,\
+#         format=auto/blog/imported/<sha>.jpg"
+#     HTTP/2 200
+#     cf-resized: internal=ok/h q=0 n=12+0 c=2+7 v=2026.8.6 l=5999 f=true
+#     content-length: 5999          # original is 13875
 #
-# While "false", lib/media.ts returns the ORIGINAL url for every mediaUrlThumb /
-# mediaUrlOptimized / profileImageUrlThumb field, so those fields are already
-# safe to consume. Flip to "true" AFTER enabling it on the zone and redeploy —
-# no client release is needed, that is the whole point of the indirection.
-MEDIA_TRANSFORMATIONS = "false"
+#   The `cf-resized` response header is the proof: it is only emitted when the
+#   resizing pipeline actually ran. Re-running that curl is the check to repeat
+#   before ever trusting this flag again.
+#
+# Why the order matters, if this is ever revisited: `/cdn-cgi/image/...` on a
+# zone WITHOUT Transformations enabled does not fall back to the original — it
+# ERRORS. Setting this "true" before the dashboard is done turns every thumbnail,
+# feed image and avatar in the product into a broken image the moment the Worker
+# deploys, i.e. a config flag would own an outage. Never flip this on the
+# strength of the code preconditions alone.
+#
+# Rollback is this line back to "false" plus a deploy: every helper in
+# lib/media.ts then returns the ORIGINAL url again and mediaUrlThumb ==
+# mediaUrl. No client release is needed in either direction — that is the whole
+# point of the indirection, and the Expo client reads every variant field with an
+# `|| mediaUrl` fallback.
+#
+# COST: transformations are billed per unique transformation beyond the free
+# monthly allowance. Bounded here by content-hashed / UUID keys and a fixed set
+# of three variants (320/1080/128), so the unique count tracks distinct images
+# and not requests, and repeat views are cache hits. Worth watching in
+# Cloudflare -> Images -> Transformations after this ships.
+MEDIA_TRANSFORMATIONS = "true"
 
 # Bunny Stream pull-zone hostname, e.g. "vz-1a2b3c4d-e5f.b-cdn.net".
 # Not a secret. Empty disables the Bunny path entirely: `createVideoUpload` is

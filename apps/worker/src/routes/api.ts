@@ -13,7 +13,7 @@ import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
 import { requireAuth, isAdmin } from "../middleware/auth";
 import { requireFullAdmin as requireFullAdminAction, writeAdminAudit } from "../lib/adminAuthz";
-import { vsImageKeyFromPublicUrl, deleteVsImageByPublicUrl } from "../lib/r2";
+import { vsImageKeyFromPublicUrl, deleteVsImageByPublicUrl, canonicalMediaUrl } from "../lib/r2";
 import { deleteMediaByUrl } from "../lib/mediaDelete";
 
 import { createNotification, sendPushNotification } from "../lib/notify";
@@ -334,9 +334,16 @@ apiRoute.post("/", async (c) => {
       const entryTransactionId = `contest_entry:${matchId}:${uid}`;
       const joinIdA = generateJoinId();
       const expiresAt = ts + (contest.autoCancelHours || 24) * 60 * 60 * 1000;
+      // Media urls are canonicalised onto the current media base BEFORE being
+      // frozen into the snapshot. These two columns are the feed's media and they
+      // are permanent, so a legacy-host url written here is one the manual D1
+      // backfill has to come back for — and `user.profileImageUrl` is read from a
+      // row that may well predate the domain cutover, which is how old hosts kept
+      // propagating into brand-new records long after the cutover.
       const userASnapshot = {
         uid, joinId: joinIdA, username: user.username || "Anonymous",
-        profilePic: user.profileImageUrl || "", mediaUrl, mediaType: mediaType || "photo",
+        profilePic: canonicalMediaUrl(env, user.profileImageUrl) || "",
+        mediaUrl: canonicalMediaUrl(env, mediaUrl), mediaType: mediaType || "photo",
         caption: caption || "", votes: 0, deviceId: deviceId || "",
       };
 
@@ -463,8 +470,9 @@ apiRoute.post("/", async (c) => {
       // `storyMediaType` matters: this used to write "photo", which the story
       // viewer does not recognise as an image, so it rendered blank.
       await db.insert(schema.stories).values({
-        id: newId(), userId: uid, username: user.username || "Anonymous", avatarUrl: user.profileImageUrl || "",
-        mediaUrl, mediaType: storyMediaType(mediaType), type: "contest_announcement", matchId,
+        id: newId(), userId: uid, username: user.username || "Anonymous",
+        avatarUrl: canonicalMediaUrl(env, user.profileImageUrl) || "",
+        mediaUrl: canonicalMediaUrl(env, mediaUrl), mediaType: storyMediaType(mediaType), type: "contest_announcement", matchId,
         contestTitle: contest.title || "Contest", createdAt: ts, expiresAt: ts + 24 * 60 * 60 * 1000,
       }).catch(() => {});
 
@@ -528,9 +536,11 @@ apiRoute.post("/", async (c) => {
       const prizeSnapshot = match.prizeCoins == null
         ? Math.min(Number(contestPolicy?.reward ?? 0), matchPot(match.entryFee))
         : Number(match.prizeCoins);
+      // Canonicalised for the same reason as userASnapshot in startMatch.
       const userBSnapshot = {
         uid, joinId: joinIdB, username: user.username || "Anonymous",
-        profilePic: user.profileImageUrl || "", mediaUrl, mediaType: mediaType || "photo",
+        profilePic: canonicalMediaUrl(env, user.profileImageUrl) || "",
+        mediaUrl: canonicalMediaUrl(env, mediaUrl), mediaType: mediaType || "photo",
         caption: caption || "", votes: 0, deviceId: deviceId || "",
       };
 
@@ -898,8 +908,11 @@ apiRoute.post("/", async (c) => {
       // song it refers to.
       const startMs = track ? sanitiseMusicStartMs(musicStartMs) : null;
       await db.insert(schema.stories).values({
-        id: storyId, userId: uid, username: user?.username, avatarUrl: user?.avatar,
-        mediaUrl, mediaType: mediaType || "photo", visibility: visibility || "public",
+        id: storyId, userId: uid, username: user?.username,
+        // `user.avatar` is a snapshot of a users row that may predate the media
+        // domain cutover; canonicalise so a new story never reintroduces an old host.
+        avatarUrl: canonicalMediaUrl(env, user?.avatar),
+        mediaUrl: canonicalMediaUrl(env, mediaUrl), mediaType: mediaType || "photo", visibility: visibility || "public",
         overlayText: overlayText || null, textPosition: textPosition || null, mentions: mentions || null,
         musicTrackId: track?.id ?? null,
         musicTitle: track?.title ?? null,
@@ -2317,7 +2330,11 @@ apiRoute.post("/", async (c) => {
       ]);
       for (const [k, v] of Object.entries(fields)) {
         if (k === "action" || k === "uid" || v === undefined) continue;
-        if (k === "avatarUrl" || k === "profileImageUrl") set.profileImageUrl = v;
+        // Canonicalised at the source: `users.profile_image_url` is the row every
+        // avatar snapshot elsewhere is copied FROM, so normalising it here stops
+        // one legacy url seeding many. Third-party avatars (Google/Apple sign-in)
+        // are not ours and pass through untouched.
+        if (k === "avatarUrl" || k === "profileImageUrl") set.profileImageUrl = canonicalMediaUrl(env, v as string);
         else if (k === "username") set.username = String(v).toLowerCase();
         else if (k === "phone") set.phone = normalizePhone(v as string);
         else if (COLUMN_KEYS.has(k)) set[k] = v;

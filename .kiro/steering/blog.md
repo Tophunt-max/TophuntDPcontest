@@ -146,6 +146,20 @@ points here. Removing the route would 404 all of it. Image keys are content-hash
 addressed (`blog/imported/<sha256>.<ext>`), so they're safe to cache forever
 either way.
 
+**But the API no longer HANDS OUT legacy urls.** `mapBlogPost` in
+`routes/read.ts` canonicalises `coverImageUrl` onto the media domain and rewrites
+our own hosts inside the stored `content` HTML (`canonicalizeMediaHtml`), and adds
+a card-sized `coverImageUrlThumb`. So a pre-cutover post is CDN-served and
+optimised without waiting for `scripts/media-domain-backfill.sql`. The backfill is
+still worth running — anything reading `blog_posts` directly still sees the old
+host — but it is data hygiene, not a delivery fix. `seoAudit`'s
+`image.legacy_host` is `low` severity for exactly this reason.
+
+Third-party image hosts in post content are left **exactly as stored**. The
+importer is allowed to fall back to the Wayback/origin url when fetch-to-R2 fails,
+and those bytes are not in our bucket — nothing server-side can serve or optimise
+them. Moving them onto R2 needs a re-import (`/admin/media/fetch-to-r2`).
+
 ---
 
 ## 5. The importer — `scripts/archive-import/import.mjs`

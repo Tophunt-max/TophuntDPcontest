@@ -163,9 +163,23 @@ curl -sI https://tophunt.in/ | grep -i "content-security-policy\|strict-transpor
 Media urls D1 me **absolute** store hote hain, to domain badalne se purane rows
 apne aap nahi badalte.
 
-**Iske bina kya hoga:** purana media chalta rahega (Worker `/media/*` route se),
-par har request ek Worker invocation rahegi aur uska koi resized variant nahi
-milega. To ye correctness ka issue nahi, cost + performance ka hai.
+**Iske bina kya hoga — ye ab badal gaya hai.** Pehle purane rows Worker `/media/*`
+route se serve hote the, har request ek invocation, koi resized variant nahi. Ab
+`routes/read.ts` response banate waqt in urls ko current media base par
+**canonicalise** kar deta hai (`lib/media.ts#cdnUrl`, `lib/r2.ts#canonicalMediaUrl`),
+kyunki key aur bucket dono same hain. To delivery, cost aur optimisation ke liye
+backfill ka **intezaar nahi** karna padta.
+
+Backfill phir bhi karna chahiye, teen wajah se:
+
+1. Ye rewrite har response par hota hai — stored value canonical ho to ye code
+   aage chalkar hataya ja sakta hai.
+2. Jo cheez in columns ko **seedha** padhti hai (D1 query, export, admin tool,
+   purana shipped app build) usko abhi bhi purana host dikhta hai.
+3. `R2_LEGACY_BASE_URLS` tabhi hataya ja sakta hai jab stored data saaf ho.
+
+Yaani ye pehle cost + performance ka issue tha; **ab sirf data hygiene ka hai.**
+`seoAudit` ka `image.legacy_host` isi wajah se `medium` se `low` kar diya gaya hai.
 
 **Delete ka issue already fix hai:** `R2_LEGACY_BASE_URLS` ki wajah se
 `deleteByPublicUrl`, `contestBannerKeyFromPublicUrl` aur `vsImageKeyFromPublicUrl`
@@ -200,26 +214,105 @@ media ek dead host par point kar deta.
 
 ---
 
-## 6. Transformations (image resizing)
+## 6. Transformations (image resizing) — ✅ ENABLED
 
-`MEDIA_TRANSFORMATIONS` abhi `"false"` hai. Code ki dono condition ab poori hoti
-hain (`media.tophunt.in` real zone host hai, path prefix nahi hai). Baaki sirf
-dashboard hai:
+`MEDIA_TRANSFORMATIONS = "true"`. Dono halves ho chuke hain:
 
-1. Zone `tophunt.in` → Speed → Optimization → **Transformations** enable karo.
-   (Free monthly allowance ke baad per-transformation billing hai — plan check kar lo.)
-2. Backfill (§5) ho chuka ho.
-3. `wrangler.toml` me `MEDIA_TRANSFORMATIONS = "true"` karo, `wrangler deploy`.
+- **Code:** `media.tophunt.in` real zone host hai, path prefix nahi — `lib/media.ts`
+  `transformationsAvailable()` ki teeno condition poori.
+- **Dashboard:** zone `tophunt.in` par Transformations enabled hai. Ye **verify**
+  kiya gaya tha, maana nahi gaya:
 
-**Ulta kram mat karo.** Transformations disabled zone par `/cdn-cgi/image/...`
-original par fall back nahi karta — error deta hai. Flag pehle `true` kiya to
-product ke saare thumbnails, feed images aur avatars deploy ke saath hi tut
-jaayenge. Client release ki zaroorat nahi — `lib/media.ts` isiliye aise likha hai.
+```bash
+curl -sI "https://media.tophunt.in/cdn-cgi/image/width=320,quality=70,format=auto/<key>"
+# HTTP/2 200
+# cf-resized: internal=ok/h ... l=5999 f=true     ← ye header hi proof hai
+# content-length: 5999                            (original 13875)
+```
+
+`cf-resized` header sirf tab aata hai jab resizing pipeline sach me chala. Flag par
+dobara bharosa karne se pehle yahi curl repeat karo.
+
+**Kram ulta mat karo (agar future me phir se chhua jaaye).** Transformations
+disabled zone par `/cdn-cgi/image/...` original par fall back nahi karta — **error**
+deta hai. Flag pehle `true` kiya to product ke saare thumbnails, feed images aur
+avatars deploy ke saath hi tut jaayenge.
+
+**Rollback:** `"false"` + deploy. Bas. Har helper phir original url return karta
+hai aur `mediaUrlThumb === mediaUrl`. Client release kisi bhi direction me nahi
+chahiye — Expo har variant field ko `|| mediaUrl` fallback ke saath padhta hai.
+
+**Cost:** free monthly allowance ke baad per-transformation billing. Yahan bounded
+hai — keys content-hashed/UUID hain aur sirf 3 variants (320/1080/128), to unique
+count distinct images ke saath badhta hai, requests ke saath nahi. Deploy ke baad
+Cloudflare → Images → Transformations me usage dekh lena.
+
+**`fit=scale-down`, `cover` nahi** (`lib/media.ts`). Height diye bina `cover` aur
+`scale-down` me sirf ek farak hai: source target se **patla** ho to `cover`
+**upscale** kar deta hai. Real 645x1440 portrait entry par naapa gaya:
+
+| 1080 preset | Size |
+|---|---|
+| `fit=cover` | 84,436 B (1080 tak upscale, koi naya detail nahi) |
+| `fit=scale-down` | **50,638 B** (645 par hi, WebP me re-encode) |
+
+DP contest me portrait entry normal hai, exception nahi — to purana default common
+case me 67% bada aur blurry image bhej raha tha.
 
 Verify:
 ```bash
-curl -s "https://api.tophunt.in/read/users/<uid>" | grep -o 'profileImageUrlThumb[^,]*'
-# cdn-cgi/image wala url dikhna chahiye, original nahi
+curl -s "https://api.tophunt.in/read/matches?limit=1" | grep -o 'cdn-cgi/image[^"]*' | head -3
+# cdn-cgi/image wale urls dikhne chahiye
+```
+
+---
+
+## 6a. R2 bucket par CORS — **abhi PENDING, karna zaroori hai**
+
+`media.tophunt.in` par koi CORS policy set nahi hai. Verify:
+
+```bash
+curl -sI -H "Origin: https://tophunt.in" https://media.tophunt.in/<key> | grep -i access-control
+# ABHI: kuch nahi aata
+
+curl -sI -H "Origin: https://tophunt.in" \
+  https://tophunt-api.weadown-in.workers.dev/media/<key> | grep -i access-control
+# access-control-allow-origin: *      ← Worker route ye khud add karta hai (lib/mediaCors.ts)
+```
+
+**Kya tootta hai:** sirf **web** par VS-card capture. `apps/expo/src/lib/vsNativeModules.web.ts`
+`html-to-image` se canvas par battle frame draw karta hai; jo image CORS headers ke
+bina aati hai wo canvas ko **taint** kar deti hai aur export throw karta hai. Code
+gracefully degrade karta hai (story live render hoti rehti hai, share text link par
+gir jaata hai) — to crash nahi, par web par feature chup-chaap band.
+
+**Ye naya issue nahi hai.** `uploadToR2` naye media ko pehle se `R2_PUBLIC_BASE_URL`
+par likhta hai, to jo matches abhi ban rahe hain (yaani jo actually capture hote
+hain) unke liye ye already toota hua tha. Read-path canonicalisation isko purane
+matches tak bhi extend kar deti hai. Native (Android/iOS) par koi asar nahi —
+`react-native-view-shot` painted pixels copy karta hai, CORS lagu nahi hota.
+
+**Fix** — R2 → bucket `tophunt-media` → Settings → CORS policy:
+
+```json
+[
+  {
+    "AllowedOrigins": ["https://tophunt.in", "https://admin.tophunt.in"],
+    "AllowedMethods": ["GET", "HEAD"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["Content-Length", "Content-Range", "Accept-Ranges", "ETag"],
+    "MaxAgeSeconds": 86400
+  }
+]
+```
+
+`ExposeHeaders` `/media/*` route se match karta hai (`lib/mediaCors.ts`) — video
+player ko ranged responses ke liye `Content-Range` aur `Accept-Ranges` chahiye.
+
+Iske baad verify:
+```bash
+curl -sI -H "Origin: https://tophunt.in" https://media.tophunt.in/<key> | grep -i access-control
+# access-control-allow-origin: https://tophunt.in
 ```
 
 ---
@@ -331,13 +424,16 @@ content resolve ho jaata hai.
 - [ ] `tophunt.in` (apex) → Pages `tophuntdpcontest`
 - [x] ~~`www.tophunt.in`~~ — jaan-boojh kar nahi banaya, site apex-only hai
 - [ ] `admin.tophunt.in` → Pages `tophunt-admin-panel`
-- [ ] Zone par Transformations enable (§6)
+- [x] Zone par Transformations enable (§6) — verified via `cf-resized` header
+- [ ] **R2 bucket `tophunt-media` par CORS policy (§6a)** — web VS-card capture
+      iske bina chup-chaap band rehta hai
 
 **Deploy**
 - [ ] Worker deploy, `GET https://api.tophunt.in/health/deep` = 200
-- [ ] `curl -I https://media.tophunt.in/<key>` = 200
-- [ ] Media backfill chalao, report ke saare counts 0 (§5)
-- [ ] `MEDIA_TRANSFORMATIONS = "true"` + redeploy (§6)
+- [x] `curl -I https://media.tophunt.in/<key>` = 200 — verified
+- [x] `MEDIA_TRANSFORMATIONS = "true"` (§6) — deploy ke saath live hoga
+- [ ] Media backfill chalao, report ke saare counts 0 (§5) — **delivery block nahi
+      karta** (read path canonicalise karta hai), data hygiene ke liye hai
 - [ ] Admin panel build + deploy
 - [ ] Expo web `npm run build` + deploy
 - [ ] `eas update --branch production`
