@@ -18,6 +18,10 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { goToCongratulations } from '@/src/lib/contestSuccess';
 import { getDeviceId } from '@/src/lib/deviceId';
 import { validateVideo, CONTEST_MAX_VIDEO_SEC } from '@/src/lib/videoValidation';
+import { ContestCountdownBadge, ContestEntryBadge } from '@/src/components/contests/ContestBadges';
+import { useCountdown } from '@/src/hooks/useCountdown';
+import { entryFeePerPlayer, rewardCoins } from '@/src/lib/contestPricing';
+import { hasEnded } from '@/src/lib/countdown';
 
 const BRAND_PRIMARY = '#FF4D67';
 
@@ -136,13 +140,24 @@ export default function VideoContestScreen() {
       return;
     }
 
-    const fee = selectedContest.entryFishCoins || selectedContest.entryFee || 0;
+    // Was `entryFishCoins || entryFee`, both of which are the pot for BOTH
+    // players — so this gate demanded twice the real price, and disagreed with
+    // the price the card in this very file advertises.
+    const fee = entryFeePerPlayer(selectedContest);
     // Profile balance is stored as `Dpcoin` (there is no `coins` field), so the
     // old `profile?.coins` read was always undefined and blocked every entry.
     const userCoins = (profile as any)?.Dpcoin ?? (profile as any)?.coins ?? 0;
     if (userCoins < fee) {
         Alert.alert("Insufficient Coins", `Need ${fee} Coins. Current: ${userCoins}`);
         return;
+    }
+
+    // The list this contest came from is cached for 60s and this screen may have
+    // been open far longer, so re-check the window before uploading and paying.
+    // The Worker refuses too; this turns a failed submit into a clear message.
+    if (hasEnded(selectedContest.endsAt)) {
+      Alert.alert("Contest closed", "This contest has closed and is no longer accepting entries.");
+      return;
     }
 
     setUploading(true);
@@ -194,53 +209,14 @@ export default function VideoContestScreen() {
           data={contests}
           keyExtractor={(item) => item.id}
           contentContainerStyle={{ padding: 16 }}
-          renderItem={({ item }) => {
-            const reward = item.winningCoins || item.rewardCoins || 0;
-            const fee = item.entryFishCoins || item.totalEntryFee || 0;
-            return (
-              <TouchableOpacity
-                activeOpacity={0.92}
-                style={[styles.contestCard, { backgroundColor: cardBg }]}
-                onPress={() => setSelectedContest(item)}
-              >
-                <ImageBackground
-                  // No banner -> no source; cardBanner's own background colour
-                  // is the placeholder (was a via.placeholder.com request).
-                  source={item.bannerUrl ? { uri: item.bannerUrl } : undefined}
-                  style={styles.cardBanner}
-                  imageStyle={styles.cardBannerImg}
-                >
-                  <LinearGradient colors={['rgba(0,0,0,0.05)', 'rgba(0,0,0,0.85)']} style={styles.bannerGradient}>
-                    <View style={styles.topRow}>
-                      <View style={styles.livePill}>
-                        <View style={styles.livePillDot} />
-                        <Text style={styles.livePillText}>LIVE</Text>
-                      </View>
-                      <View style={styles.feeBadge}>
-                        <Ionicons name="videocam" size={13} color="#FFF" />
-                        <Text style={styles.feeText}>{fee} Coins</Text>
-                      </View>
-                    </View>
-                    <Text style={styles.cardTitle} numberOfLines={2}>{item.title || item.name}</Text>
-                  </LinearGradient>
-                </ImageBackground>
-
-                <View style={styles.cardFooter}>
-                  <View style={styles.rewardInfo}>
-                    <Text style={[styles.rewardLabel, { color: subTextColor }]}>WINNER GETS</Text>
-                    <View style={styles.rewardValueRow}>
-                      <Ionicons name="trophy" size={16} color="#FFB800" />
-                      <Text style={styles.rewardValue}>{reward} Coins</Text>
-                    </View>
-                  </View>
-                  <LinearGradient colors={[BRAND_PRIMARY, '#FF8A9B']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.startBtn}>
-                    <Text style={styles.startBtnText}>Enter</Text>
-                    <ArrowIcon size={16} color="#FFF" variant="arrow" />
-                  </LinearGradient>
-                </View>
-              </TouchableOpacity>
-            );
-          }}
+          renderItem={({ item }) => (
+            <VideoContestCard
+              item={item}
+              cardBg={cardBg}
+              subTextColor={subTextColor}
+              onEnter={() => setSelectedContest(item)}
+            />
+          )}
         />
       ) : (
         <ScrollView contentContainerStyle={{ padding: 20 }}>
@@ -278,6 +254,86 @@ export default function VideoContestScreen() {
         </ScrollView>
       )}
     </SafeAreaView>
+  );
+}
+
+/**
+ * One video contest in the list. Mirrors ContestCard in ../photo/index.tsx —
+ * a real component because it runs `useCountdown`.
+ *
+ * The fee here was `entryFishCoins || totalEntryFee`, both of which are the
+ * TOTAL pot for both players, so the card quoted double the real cost.
+ * `ContestEntryBadge` shows the per-player figure, or FREE when there is none.
+ */
+function VideoContestCard({
+  item,
+  cardBg,
+  subTextColor,
+  onEnter,
+}: {
+  item: any;
+  cardBg: string;
+  subTextColor: string;
+  onEnter: () => void;
+}) {
+  const { ended } = useCountdown(item?.endsAt);
+  const reward = rewardCoins(item);
+
+  return (
+    <TouchableOpacity
+      activeOpacity={0.92}
+      style={[styles.contestCard, { backgroundColor: cardBg }, ended && styles.contestCardEnded]}
+      disabled={ended}
+      onPress={onEnter}
+    >
+      <ImageBackground
+        // No banner -> no source; cardBanner's own background colour
+        // is the placeholder (was a via.placeholder.com request).
+        source={item.bannerUrl ? { uri: item.bannerUrl } : undefined}
+        style={styles.cardBanner}
+        imageStyle={styles.cardBannerImg}
+      >
+        <LinearGradient colors={['rgba(0,0,0,0.05)', 'rgba(0,0,0,0.85)']} style={styles.bannerGradient}>
+          <View style={styles.topRow}>
+            {ended ? (
+              <View style={[styles.livePill, styles.endedPill]}>
+                <Ionicons name="lock-closed" size={10} color="#FFF" />
+                <Text style={styles.livePillText}>CLOSED</Text>
+              </View>
+            ) : (
+              <View style={styles.livePill}>
+                <View style={styles.livePillDot} />
+                <Text style={styles.livePillText}>LIVE</Text>
+              </View>
+            )}
+            <View style={styles.badgeRow}>
+              <ContestCountdownBadge endsAt={item.endsAt} />
+              <ContestEntryBadge contest={item} />
+            </View>
+          </View>
+          <Text style={styles.cardTitle} numberOfLines={2}>{item.title || item.name}</Text>
+        </LinearGradient>
+      </ImageBackground>
+
+      <View style={styles.cardFooter}>
+        <View style={styles.rewardInfo}>
+          <Text style={[styles.rewardLabel, { color: subTextColor }]}>WINNER GETS</Text>
+          <View style={styles.rewardValueRow}>
+            <Ionicons name="trophy" size={16} color="#FFB800" />
+            <Text style={styles.rewardValue}>{reward} Coins</Text>
+          </View>
+        </View>
+        <LinearGradient
+          colors={ended ? ['#9AA0AA', '#7E848E'] : [BRAND_PRIMARY, '#FF8A9B']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.startBtn}
+        >
+          <Text style={styles.startBtnText}>{ended ? 'Closed' : 'Enter'}</Text>
+          {!ended && <ArrowIcon size={16} color="#FFF" variant="arrow" />}
+        </LinearGradient>
+      </View>
+    </TouchableOpacity>
   );
 }
 
@@ -319,18 +375,9 @@ const styles = StyleSheet.create({
   },
   livePillDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#FFF' },
   livePillText: { color: '#FFF', fontSize: 10, fontFamily: 'Urbanist-Bold', letterSpacing: 0.5 },
-  feeBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    paddingHorizontal: 11,
-    paddingVertical: 6,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.25)',
-  },
-  feeText: { color: '#FFF', fontSize: 12, fontFamily: 'Urbanist-Bold' },
+  endedPill: { backgroundColor: 'rgba(75,85,99,0.95)' },
+  badgeRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  contestCardEnded: { opacity: 0.6 },
   cardTitle: { fontSize: 22, fontFamily: 'Urbanist-Bold', color: '#FFF' },
   cardFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16 },
   rewardInfo: { flex: 1 },

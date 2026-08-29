@@ -25,7 +25,7 @@ import { webhookRoute } from "./routes/webhook";
 import { uploadRoute } from "./routes/upload";
 import { verifyIdToken } from "./lib/firebaseAuth";
 import { assertAccountNotBlocked } from "./middleware/auth";
-import { resolveContests, monthlyHallOfFame, seoAuditJob } from "./cron";
+import { resolveContests, expireContests, monthlyHallOfFame, seoAuditJob } from "./cron";
 import { ensureMigrated } from "./db/autoMigrate";
 import { captureError, logErrorToDb, pruneErrorLogs } from "./lib/observability";
 import { pruneOpsTables, runCronJob } from "./lib/ops";
@@ -385,6 +385,10 @@ export default {
         ctx.waitUntil(
           (async () => {
             await runCronJob(env, "resolveContests", () => resolveContests(env));
+            // Keep `contests.status` honest once a validity window lapses. The
+            // public list already hides an expired template; this is what stops
+            // the admin panel showing it as Live forever.
+            await runCronJob(env, "expireContests", () => expireContests(env));
             // Money that was captured at the gateway but never credited here
             // (client died AND webhook lost) is invisible without this sweep.
             await runCronJob(env, "reconcilePayments", () => reconcilePaymentOrders(env));

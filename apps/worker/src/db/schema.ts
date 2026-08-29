@@ -160,6 +160,12 @@ export const contests = sqliteTable("contests", {
   autoCancelHours: integer("auto_cancel_hours").default(24),
   minVotes: integer("min_votes").default(0),
   bannerUrl: text("banner_url"), // contest photo/banner shown in the user app
+  // Validity window, epoch ms, both nullable (NULL = unbounded). These are the
+  // TEMPLATE's own lifetime — when it becomes joinable and when it stops being
+  // offered — and are not to be confused with voteDurationDays/autoCancelHours,
+  // which time an individual match. See migrations/0038_contest_validity.sql.
+  startsAt: integer("starts_at"),
+  endsAt: integer("ends_at"),
   extra: text("extra", { mode: "json" }), // any additional template fields
   createdBy: text("created_by"),
   createdAt: integer("created_at").notNull(),

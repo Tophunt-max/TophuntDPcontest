@@ -47,6 +47,49 @@ const CONTEST_STATUSES: ContestStatus[] = ["live", "upcoming", "paused", "ended"
 const MAX_BANNER_BYTES = 5 * 1024 * 1024;
 const BANNER_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
+/**
+ * The Worker stores the validity window as epoch milliseconds, but
+ * `<input type="datetime-local">` speaks LOCAL wall-clock with no offset
+ * ("2026-09-01T18:30"). These two convert between them.
+ *
+ * `msToLocalInput` is deliberately not `toISOString().slice(0, 16)`. That
+ * renders the UTC instant, so an admin in IST would open a contest that ends at
+ * 23:00 local, be shown 17:30, and — by saving a form they never edited — move
+ * the deadline five and a half hours earlier.
+ */
+const pad2 = (value: number) => String(value).padStart(2, "0");
+
+function msToLocalInput(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined) return "";
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return "";
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}T${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+/**
+ * "" means unbounded and maps to null. An unparseable value returns NaN rather
+ * than null so `validate` can report "that is not a date" instead of silently
+ * clearing the field the admin was trying to set.
+ */
+function localInputToMs(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  // Date() treats an offset-less date-time string as local time, which is
+  // exactly what this input means.
+  return new Date(trimmed).getTime();
+}
+
+/** Coarse "2d 4h" / "in 3h" style gap, for at-a-glance list context. */
+function humanGap(ms: number): string {
+  const totalMinutes = Math.floor(Math.abs(ms) / 60_000);
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
 type DialogMode = "create" | "edit" | "duplicate";
 type DialogState = { mode: DialogMode; contest?: AdminContest } | null;
 type StatusFilter = ContestStatus | "all";
@@ -349,6 +392,43 @@ export default function Contests() {
               ),
             },
             {
+              key: "validity",
+              header: "Validity",
+              render: (contest) => {
+                const nowMs = Date.now();
+                const { startsAt, endsAt } = contest;
+                if (startsAt === null && endsAt === null) {
+                  return <span className="whitespace-nowrap text-xs text-muted-foreground">Always open</span>;
+                }
+                const notYetOpen = startsAt !== null && startsAt > nowMs;
+                const expired = endsAt !== null && endsAt <= nowMs;
+                return (
+                  <div className="whitespace-nowrap text-xs">
+                    {startsAt !== null && (
+                      <p className={notYetOpen ? "font-medium text-amber-600" : "text-muted-foreground"}>
+                        {notYetOpen ? `Opens in ${humanGap(startsAt - nowMs)}` : `From ${fmtDate(startsAt)}`}
+                      </p>
+                    )}
+                    {endsAt !== null && (
+                      <p className={expired ? "font-medium text-destructive" : "text-muted-foreground"}>
+                        {expired ? `Expired ${humanGap(nowMs - endsAt)} ago` : `Ends in ${humanGap(endsAt - nowMs)}`}
+                      </p>
+                    )}
+                    {/* The cron leaves a contest Live while it still has waiting
+                        matches, so "expired but Live" is a real and temporary
+                        state. Surfaced because it otherwise looks like a bug. */}
+                    {expired && (statusOverrides[contest.id] ?? contest.status) === "live" && (
+                      <p className="mt-0.5 text-muted-foreground">
+                        {contest.waitingMatches > 0
+                          ? `Closing after ${contest.waitingMatches} waiting`
+                          : "Closing on next sweep"}
+                      </p>
+                    )}
+                  </div>
+                );
+              },
+            },
+            {
               key: "created",
               header: "Created",
               render: (contest) => <span className="whitespace-nowrap text-muted-foreground">{fmtDate(contest.createdAt)}</span>,
@@ -423,12 +503,20 @@ type ContestFormState = {
   voteDurationDays: string;
   autoCancelHours: string;
   minVotes: string;
+  /** datetime-local strings; "" means unbounded. */
+  startsAt: string;
+  endsAt: string;
 };
 
 type ContestFormErrors = Partial<Record<keyof ContestFormState | "banner", string>>;
 
 function formFromContest(contest: AdminContest | undefined, mode: DialogMode): ContestFormState {
   const duplicate = mode === "duplicate";
+  // A duplicate inherits the window, but never an already-lapsed one: the Worker
+  // rejects creating a contest that is born expired, and silently carrying a
+  // stale date over is how you get a confusing failure on Save.
+  const inheritedEnd = contest?.endsAt ?? null;
+  const staleWindow = duplicate && inheritedEnd !== null && inheritedEnd <= Date.now();
   return {
     title: contest ? `${contest.title || contest.name || "Untitled"}${duplicate ? " (copy)" : ""}` : "",
     description: contest?.description || "",
@@ -441,6 +529,8 @@ function formFromContest(contest: AdminContest | undefined, mode: DialogMode): C
     voteDurationDays: String(contest?.voteDurationDays ?? 1),
     autoCancelHours: String(contest?.autoCancelHours ?? 24),
     minVotes: String(contest?.minVotes ?? 0),
+    startsAt: staleWindow ? "" : msToLocalInput(contest?.startsAt ?? null),
+    endsAt: staleWindow ? "" : msToLocalInput(inheritedEnd),
   };
 }
 
@@ -543,6 +633,50 @@ function ContestDialog({
     const autoCancelHours = integer("autoCancelHours", "Waiting auto-cancel", 1, 168);
     const minVotes = integer("minVotes", "Minimum votes", 0, 1_000_000);
 
+    // Validity window. Empty is valid and means unbounded, so only a non-empty
+    // value is ever checked. These mirror the Worker's own rules so the admin
+    // gets the error next to the field instead of as a red banner after a
+    // round-trip that may also have uploaded a banner.
+    const startsAt = localInputToMs(form.startsAt);
+    const endsAt = localInputToMs(form.endsAt);
+    const timestamp = (key: "startsAt" | "endsAt", label: string, value: number | null) => {
+      if (value === null) return;
+      if (!Number.isFinite(value)) {
+        next[key] = `${label} is not a valid date and time.`;
+        return;
+      }
+      // The Worker rejects anything before 2001 as a seconds-vs-milliseconds
+      // mistake, and no real contest is scheduled last century anyway.
+      if (value < 1_000_000_000_000) next[key] = `${label} must be a date after 2001.`;
+    };
+    timestamp("startsAt", "Opens at", startsAt);
+    timestamp("endsAt", "Closes at", endsAt);
+
+    /**
+     * A datetime-local input cannot express seconds, so a deadline set out of
+     * band (a seed script, curl, the ISO alias) is truncated the moment the
+     * dialog renders it. Re-parsing the truncated text would then diff as a
+     * change and quietly pull the deadline up to 59s earlier on an edit that was
+     * only meant to touch the title. If the field still displays the stored
+     * value, send the stored value back unchanged.
+     */
+    const preserveUntouched = (key: 'startsAt' | 'endsAt', parsed: number | null): number | null => {
+      const stored = contest?.[key] ?? null;
+      if (stored === null) return parsed;
+      return msToLocalInput(stored) === form[key] ? stored : parsed;
+    };
+
+    if (!next.startsAt && !next.endsAt) {
+      if (startsAt !== null && endsAt !== null && endsAt <= startsAt) {
+        next.endsAt = "Closing time must be after the opening time.";
+      } else if (endsAt !== null && endsAt <= Date.now() && !isEdit) {
+        // Only on create: ending a running contest early is a legitimate edit,
+        // but a brand-new contest that is already expired would never appear in
+        // the app at all.
+        next.endsAt = "Closing time must be in the future.";
+      }
+    }
+
     if (Object.values(next).some(Boolean)) return { errors: next, payload: null };
     return {
       errors: next,
@@ -558,6 +692,8 @@ function ContestDialog({
         voteDurationDays,
         autoCancelHours,
         minVotes,
+        startsAt: preserveUntouched('startsAt', startsAt),
+        endsAt: preserveUntouched('endsAt', endsAt),
       },
     };
   };
@@ -599,6 +735,11 @@ function ContestDialog({
           voteDurationDays: Number(initial.voteDurationDays),
           autoCancelHours: Number(initial.autoCancelHours),
           minVotes: Number(initial.minVotes),
+          // The stored values, not the minute-truncated form text, so an
+          // untouched window never shows up in the diff. Matches what
+          // `preserveUntouched` puts in the payload.
+          startsAt: contest.startsAt ?? localInputToMs(initial.startsAt),
+          endsAt: contest.endsAt ?? localInputToMs(initial.endsAt),
         };
         const patch: Partial<ContestWritePayload> = {};
         for (const key of Object.keys(payload) as Array<keyof ContestWritePayload>) {
@@ -773,6 +914,59 @@ function ContestDialog({
             </section>
 
             <section className="space-y-4 border-t border-border pt-5">
+              <FormSectionTitle
+                title="Validity"
+                description="When this contest is offered in the app. Leave a field empty for no limit. Times are in your own timezone."
+              />
+              <div className="grid gap-4 sm:grid-cols-2">
+                <DateTimeField
+                  label="Opens at"
+                  value={form.startsAt}
+                  error={errors.startsAt}
+                  disabled={saving}
+                  hint="Empty = immediately"
+                  onChange={(value) => set("startsAt", value)}
+                  onClear={() => set("startsAt", "")}
+                />
+                <DateTimeField
+                  label="Closes at"
+                  value={form.endsAt}
+                  error={errors.endsAt}
+                  disabled={saving}
+                  hint="Empty = never expires"
+                  onChange={(value) => set("endsAt", value)}
+                  onClear={() => set("endsAt", "")}
+                  presets={[
+                    { label: "+24h", hours: 24 },
+                    { label: "+3d", hours: 72 },
+                    { label: "+7d", hours: 168 },
+                    { label: "+30d", hours: 720 },
+                  ]}
+                  onPreset={(hours) => set("endsAt", msToLocalInput(Date.now() + hours * 3_600_000))}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                A contest set to Live with a future opening time stays hidden until then — you do not have to flip the
+                status by hand. Once the closing time passes it disappears from the app immediately and the status moves
+                to Ended automatically.
+              </p>
+              {/* Users see a live countdown to this moment, so it is worth being
+                  explicit that it is not the per-match voting timer below. */}
+              {form.endsAt && !errors.endsAt && (
+                <InlineNote>
+                  Participants will see a countdown to {form.endsAt.replace("T", " ")}. This closes the contest itself —
+                  the vote duration below still governs how long each individual battle runs.
+                </InlineNote>
+              )}
+              {isEdit && contest && contest.endsAt !== null && contest.endsAt <= Date.now() && (
+                <InlineWarning>
+                  This contest has already passed its closing time, so the app is no longer offering it. Clear or extend
+                  the closing time to bring it back.
+                </InlineWarning>
+              )}
+            </section>
+
+            <section className="space-y-4 border-t border-border pt-5">
               <FormSectionTitle title="Economy and match policy" description="All values must be whole numbers within the supported limits." />
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 <NumberField label="Total entry fee" value={form.totalEntryFee} min={0} max={1_000_000} error={errors.totalEntryFee} disabled={saving} onChange={(value) => set("totalEntryFee", value)} />
@@ -874,6 +1068,82 @@ function NumberField({
         onChange={(event) => onChange(event.target.value)}
       />
     </Field>
+  );
+}
+
+function DateTimeField({
+  label,
+  value,
+  hint,
+  error,
+  disabled,
+  onChange,
+  onClear,
+  presets,
+  onPreset,
+}: {
+  label: string;
+  value: string;
+  hint: string;
+  error?: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+  onClear: () => void;
+  presets?: { label: string; hours: number }[];
+  onPreset?: (hours: number) => void;
+}) {
+  return (
+    <Field label={label} error={error} hint={hint}>
+      <div className="space-y-2">
+        <div className="flex gap-2">
+          <Input
+            type="datetime-local"
+            value={value}
+            disabled={disabled}
+            aria-invalid={!!error}
+            onChange={(event) => onChange(event.target.value)}
+          />
+          {value && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              disabled={disabled}
+              onClick={onClear}
+              aria-label={`Clear ${label}`}
+              title={`Clear ${label}`}
+              className="shrink-0 text-muted-foreground"
+            >
+              <X />
+            </Button>
+          )}
+        </div>
+        {presets && onPreset && (
+          <div className="flex flex-wrap gap-1.5">
+            {presets.map((preset) => (
+              <button
+                key={preset.label}
+                type="button"
+                disabled={disabled}
+                onClick={() => onPreset(preset.hours)}
+                className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground disabled:opacity-50"
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </Field>
+  );
+}
+
+function InlineNote({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex gap-2 rounded-xl border border-border bg-secondary/50 p-3 text-xs text-muted-foreground">
+      <Clock3 className="mt-0.5 size-4 shrink-0" />
+      <span>{children}</span>
+    </div>
   );
 }
 

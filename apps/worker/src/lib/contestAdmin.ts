@@ -22,7 +22,17 @@ const CONTEST_CANONICAL_EXTRA_KEYS = [
   "minVotes",
   "createdBy",
   "createdAt",
+  // Validity window and every alias it is accepted under. These are physical
+  // columns now, so a copy left behind in `extra` would be a second, silently
+  // stale source of truth for the same value.
+  "startsAt",
+  "startAt",
+  "startDate",
+  "endsAt",
+  "endAt",
   "endDate",
+  "validUntil",
+  "expiresAt",
   "totalMatches",
   "waitingMatches",
   "activeMatches",
@@ -56,6 +66,120 @@ function contestText(value: unknown, field: string, maxLength: number): string |
     throw httpsError("invalid-argument", `${field} must be a string of at most ${maxLength} characters.`);
   }
   return value;
+}
+
+/**
+ * A validity-window bound, normalised to epoch milliseconds.
+ *
+ * `null` / `""` mean "unbounded" and are preserved as null rather than coerced
+ * to 0 — `new Date("")` is Invalid Date and `Number(null)` is 0, and either
+ * silently turns "no expiry" into "expired in 1970", which would hide every
+ * contest it was applied to.
+ *
+ * Accepts an epoch-ms number (what our own admin panel and app send back), a
+ * numeric string, or an ISO-8601 string (what a hand-written curl or the seed
+ * scripts are most likely to send).
+ *
+ * A string form WITHOUT an explicit offset — "2026-09-01T18:30" or
+ * "2026-09-01" — resolves against the Worker's timezone, which is UTC. That is
+ * not the same as the identical text typed into the admin panel, where it means
+ * the admin's local time. Send epoch ms, or include an offset ("...+05:30"), if
+ * the distinction matters.
+ */
+function contestTimestamp(value: unknown, field: string): number | null {
+  if (value === null || value === undefined || (typeof value === "string" && !value.trim())) return null;
+  if (typeof value === "boolean") {
+    throw httpsError("invalid-argument", `${field} must be null, epoch milliseconds, or an ISO-8601 date string.`);
+  }
+
+  let ms: number;
+  if (typeof value === "number") {
+    ms = value;
+  } else if (typeof value === "string") {
+    const trimmed = value.trim();
+    // A bare integer string is epoch ms; anything else goes through Date so
+    // "2026-09-01T18:30:00.000Z" and "2026-09-01" both work.
+    ms = /^-?\d+$/.test(trimmed) ? Number(trimmed) : new Date(trimmed).getTime();
+  } else {
+    throw httpsError("invalid-argument", `${field} must be null, epoch milliseconds, or an ISO-8601 date string.`);
+  }
+
+  if (!Number.isFinite(ms) || !Number.isInteger(ms)) {
+    throw httpsError("invalid-argument", `${field} must be null, epoch milliseconds, or an ISO-8601 date string.`);
+  }
+  // Reject seconds-based timestamps outright. A caller sending 1788000000 means
+  // 2026, but as milliseconds it is 1970 — so it would be accepted, stored, and
+  // instantly expire the contest. The floor is 2001-09-09, comfortably below any
+  // date this product can be configured with and far above any plausible
+  // seconds value.
+  if (ms < 1_000_000_000_000) {
+    throw httpsError(
+      "invalid-argument",
+      `${field} must be in epoch MILLISECONDS (got ${ms}, which is before 2001 — seconds were probably sent).`,
+    );
+  }
+  // ~year 10000. Guards against overflow nonsense being stored forever.
+  if (ms > 253_402_300_799_000) {
+    throw httpsError("invalid-argument", `${field} is too far in the future.`);
+  }
+  return ms;
+}
+
+/**
+ * The window must be orderable and must leave the contest some life.
+ *
+ * Called with the MERGED values on PATCH, exactly like assertPrizeFundedByPot:
+ * a patch that only moves `startsAt` past an untouched `endsAt` is just as
+ * broken as one that sets both the wrong way round, and the validator only ever
+ * sees the request body.
+ */
+export function assertContestWindow(
+  startsAt: number | null,
+  endsAt: number | null,
+  opts: { requireFuture?: boolean } = {},
+): void {
+  if (startsAt !== null && endsAt !== null && endsAt <= startsAt) {
+    throw httpsError("invalid-argument", "The contest end time must be after its start time.");
+  }
+  // Only enforced on create. An admin ending a running contest early sets
+  // endsAt to a moment that may already have passed by the time the request
+  // lands, and that is a legitimate "close this now" — but a contest CREATED
+  // already expired is always a mistake, and one that is invisible afterwards
+  // because the app never lists it.
+  if (opts.requireFuture && endsAt !== null && endsAt <= Date.now()) {
+    throw httpsError("invalid-argument", "The contest end time must be in the future.");
+  }
+}
+
+/**
+ * Refuse to take a player's coins for a contest that is outside its validity
+ * window.
+ *
+ * `GET /read/contests` hiding an out-of-window contest is presentation, not
+ * enforcement: the detail endpoint does not filter, a list response is cached
+ * for 60s, and a screen fetched before the deadline can submit after it. Without
+ * this the window would only be a suggestion, and the two flows that debit an
+ * entry fee — `startMatch` and `joinMatch` — would happily charge for a contest
+ * that has closed, or one scheduled to open next week that was saved as `live`
+ * up front (which is exactly the workflow the admin panel recommends).
+ *
+ * `status === 'live'` is checked separately by both callers and is deliberately
+ * left there: it is a different question, and the cron only reconciles it to the
+ * window every 10 minutes.
+ */
+export function assertContestOpenNow(
+  contest: { startsAt?: number | null; endsAt?: number | null },
+  action: "new matches" | "opponents",
+): void {
+  const nowMs = Date.now();
+  const startsAt = contest.startsAt ?? null;
+  const endsAt = contest.endsAt ?? null;
+  if (startsAt !== null && startsAt > nowMs) {
+    throw httpsError("failed-precondition", `This contest has not opened yet, so it is not accepting ${action}.`);
+  }
+  if (endsAt !== null && endsAt <= nowMs) {
+    throw httpsError("failed-precondition", `This contest has closed, so it is no longer accepting ${action}.`);
+  }
 }
 
 export function contestBannerUrl(value: unknown): string | null {
@@ -176,6 +300,21 @@ export function validateContestInput(
   if (banner.present || creating) {
     recognized ||= banner.present;
     values.bannerUrl = contestBannerUrl(banner.present ? banner.value : null);
+  }
+
+  // Validity window. Default null on create — "no expiry", which is how every
+  // contest that existed before this feature behaves, so seed scripts and any
+  // older client that posts without these keys are unaffected.
+  const startsAt = firstAlias(body, ["startsAt", "startAt", "startDate"]);
+  if (startsAt.present || creating) {
+    recognized ||= startsAt.present;
+    values.startsAt = contestTimestamp(startsAt.present ? startsAt.value : null, "startsAt");
+  }
+
+  const endsAt = firstAlias(body, ["endsAt", "endAt", "endDate", "validUntil", "expiresAt"]);
+  if (endsAt.present || creating) {
+    recognized ||= endsAt.present;
+    values.endsAt = contestTimestamp(endsAt.present ? endsAt.value : null, "endsAt");
   }
 
   for (const [field, maxLength] of [["description", 1000], ["rules", 5000]] as const) {

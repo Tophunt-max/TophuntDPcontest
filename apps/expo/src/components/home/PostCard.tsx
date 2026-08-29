@@ -17,6 +17,7 @@ import { useToast } from '../toast/ToastProvider';
 import { engagementService } from '@/src/services/contests/engagementService';
 import { Avatar } from '../ui/Avatar';
 import { useVideoStatus } from '@/src/hooks/useVideoStatus';
+import { useCountdown } from '@/src/hooks/useCountdown';
 import { videoSourceFor } from '@/src/lib/videoSource';
 import * as Haptics from 'expo-haptics';
 import LottieView from 'lottie-react-native';
@@ -414,39 +415,13 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
     opacity: heartScale.value > 0.1 ? 1 : 0,
   }));
 
-  const getTimeRemaining = useCallback(() => {
-    if (!item.expiresAt) return 'Ended';
-    const endDate = item.expiresAt.toDate ? item.expiresAt.toDate() : new Date(item.expiresAt);
-    const diff = endDate.getTime() - Date.now();
-    if (diff <= 0) return 'Ended';
-    // Live countdown — the most significant units, seconds ticking under an hour.
-    const totalSec = Math.floor(diff / 1000);
-    const d = Math.floor(totalSec / 86400);
-    const h = Math.floor((totalSec % 86400) / 3600);
-    const m = Math.floor((totalSec % 3600) / 60);
-    const s = totalSec % 60;
-    if (d > 0) return `${d}d ${h}h ${m}m`;
-    if (h > 0) return `${h}h ${m}m ${s}s`;
-    if (m > 0) return `${m}m ${s}s`;
-    return `${s}s`;
-  }, [item.expiresAt]);
+  // Shared with the contest cards — see src/hooks/useCountdown.ts. A match with
+  // no expiresAt has always been treated as closed here (unlike a contest with
+  // no endsAt, which never expires), so that mapping is kept explicit.
+  const countdown = useCountdown(item.expiresAt);
+  const timeRemaining = countdown.label ?? 'Ended';
 
-  const [timeRemaining, setTimeRemaining] = useState(getTimeRemaining());
-  useEffect(() => {
-    // Tick every second for a live countdown feel.
-    const timer = setInterval(() => setTimeRemaining(getTimeRemaining()), 1000);
-    const endDate = item.expiresAt?.toDate ? item.expiresAt.toDate() : new Date(item.expiresAt);
-    const msUntilEnd = endDate.getTime() - Date.now();
-    const endTimer = Number.isFinite(msUntilEnd) && msUntilEnd > 0
-      ? setTimeout(() => setTimeRemaining('Ended'), Math.min(msUntilEnd + 50, 2_147_000_000))
-      : null;
-    return () => {
-      clearInterval(timer);
-      if (endTimer) clearTimeout(endTimer);
-    };
-  }, [getTimeRemaining, item.expiresAt]);
-
-  const votingClosed = matchStatus !== 'active' || timeRemaining === 'Ended';
+  const votingClosed = matchStatus !== 'active' || countdown.ended || countdown.label === null;
   const votingDisabled = isVoting || hasVoted || votingClosed;
 
   // Pulse the little "live" dot in the countdown while voting is still open.
@@ -463,11 +438,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
   }, [votingClosed, livePulse]);
 
   // Urgency: highlight the countdown chip in the final hour of an open battle.
-  const endMs = item.expiresAt
-    ? (item.expiresAt.toDate ? item.expiresAt.toDate() : new Date(item.expiresAt)).getTime()
-    : 0;
-  const msLeft = endMs - Date.now();
-  const isUrgent = !votingClosed && msLeft > 0 && msLeft < 3_600_000;
+  const isUrgent = !votingClosed && countdown.urgent;
 
   const isVideo = item.type === 'video';
   const isALeading = votesA > votesB;

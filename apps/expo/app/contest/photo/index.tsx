@@ -20,6 +20,9 @@ import { BackButton } from '@/src/components/ui/BackButton';
 import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
 import { CoinIcon } from '@/src/components/ui/CoinIcon'; 
 import { LinearGradient } from 'expo-linear-gradient';
+import { ContestCountdownBadge, ContestEntryBadge } from '@/src/components/contests/ContestBadges';
+import { useCountdown } from '@/src/hooks/useCountdown';
+import { rewardCoins } from '@/src/lib/contestPricing';
 
 const BRAND_PRIMARY = '#FF4D67'; 
 const BRAND_SECONDARY = '#FF758C';
@@ -108,65 +111,109 @@ export default function PhotoContestsScreen() {
               <Text style={[styles.emptySubText, { color: subTextColor }]}>New battles drop regularly — check back soon.</Text>
             </View>
           }
-          renderItem={({ item }) => {
-            const displayFee = item.entryFishCoins || 0;
-            const reward = item.rewardCoins || item.winningCoins || 0;
-            return (
-              <TouchableOpacity 
-                activeOpacity={0.92}
-                style={[styles.contestCard, { backgroundColor: cardBg }]}
-                onPress={() => navigateToSetup(item)}
-              >
-                <ImageBackground 
-                  // No banner -> no source; cardBanner's own background colour
-                  // is the placeholder (was a via.placeholder.com request).
-                  source={item.bannerUrl ? { uri: item.bannerUrl } : undefined}
-                  style={styles.cardBanner}
-                  imageStyle={styles.cardBannerImg}
-                >
-                  <LinearGradient 
-                    colors={['rgba(0,0,0,0.05)', 'rgba(0,0,0,0.85)']} 
-                    style={styles.bannerGradient}
-                  >
-                    <View style={styles.topRow}>
-                      <View style={styles.livePill}>
-                        <View style={styles.livePillDot} />
-                        <Text style={styles.livePillText}>LIVE</Text>
-                      </View>
-                      <View style={styles.feeBadge}>
-                         <Ionicons name="ticket-outline" size={13} color="#FFF" />
-                         <Text style={styles.feeText}>{displayFee} Coins</Text>
-                      </View>
-                    </View>
-                    <Text style={styles.cardTitle} numberOfLines={2}>{item.title || item.name}</Text>
-                  </LinearGradient>
-                </ImageBackground>
-                
-                <View style={styles.cardFooter}>
-                   <View style={styles.rewardInfo}>
-                      <Text style={[styles.rewardLabel, { color: subTextColor }]}>WINNER GETS</Text>
-                      <View style={styles.rewardValueRow}>
-                        <Ionicons name="trophy" size={16} color="#FFB800" />
-                        <Text style={styles.rewardValue}>{reward} Coins</Text>
-                      </View>
-                   </View>
-                   <LinearGradient
-                     colors={[BRAND_PRIMARY, BRAND_SECONDARY]}
-                     start={{ x: 0, y: 0 }}
-                     end={{ x: 1, y: 1 }}
-                     style={styles.startBtn}
-                   >
-                      <Text style={styles.startBtnText}>Enter</Text>
-                      <ArrowIcon size={16} color="#FFF" variant="arrow" />
-                   </LinearGradient>
-                </View>
-              </TouchableOpacity>
-            );
-          }}
+          renderItem={({ item }) => (
+            <ContestCard
+              item={item}
+              cardBg={cardBg}
+              subTextColor={subTextColor}
+              onEnter={() => navigateToSetup(item)}
+            />
+          )}
           contentContainerStyle={{ padding: 20, paddingBottom: 100, flexGrow: 1 }}
         />
       )}
     </SafeAreaView>
+  );
+}
+
+/**
+ * One photo contest in the list.
+ *
+ * Extracted from an inline `renderItem` because it runs `useCountdown`, and a
+ * hook inside a per-item render helper would change hook order as the list
+ * changes.
+ *
+ * Two fixes ride along:
+ *  - the fee shown was `entryFishCoins`, which is the TOTAL pot for both
+ *    players, so this screen advertised exactly double what a player is charged.
+ *    `ContestEntryBadge` uses the per-player figure the Worker sends, and shows
+ *    FREE instead of "0 Coins" when there is no fee.
+ *  - the "LIVE" pill was unconditional. A contest with a closing time now shows
+ *    the time left, and an expired one (still listable for up to 60s because of
+ *    the response cache) refuses the tap instead of dead-ending at setup.
+ */
+function ContestCard({
+  item,
+  cardBg,
+  subTextColor,
+  onEnter,
+}: {
+  item: any;
+  cardBg: string;
+  subTextColor: string;
+  onEnter: () => void;
+}) {
+  const { ended } = useCountdown(item?.endsAt);
+  const reward = rewardCoins(item);
+
+  return (
+    <TouchableOpacity
+      activeOpacity={0.92}
+      style={[styles.contestCard, { backgroundColor: cardBg }, ended && styles.contestCardEnded]}
+      disabled={ended}
+      onPress={onEnter}
+    >
+      <ImageBackground
+        // No banner -> no source; cardBanner's own background colour
+        // is the placeholder (was a via.placeholder.com request).
+        source={item.bannerUrl ? { uri: item.bannerUrl } : undefined}
+        style={styles.cardBanner}
+        imageStyle={styles.cardBannerImg}
+      >
+        <LinearGradient
+          colors={['rgba(0,0,0,0.05)', 'rgba(0,0,0,0.85)']}
+          style={styles.bannerGradient}
+        >
+          <View style={styles.topRow}>
+            {ended ? (
+              <View style={[styles.livePill, styles.endedPill]}>
+                <Ionicons name="lock-closed" size={10} color="#FFF" />
+                <Text style={styles.livePillText}>CLOSED</Text>
+              </View>
+            ) : (
+              <View style={styles.livePill}>
+                <View style={styles.livePillDot} />
+                <Text style={styles.livePillText}>LIVE</Text>
+              </View>
+            )}
+            <View style={styles.badgeRow}>
+              <ContestCountdownBadge endsAt={item.endsAt} />
+              <ContestEntryBadge contest={item} />
+            </View>
+          </View>
+          <Text style={styles.cardTitle} numberOfLines={2}>{item.title || item.name}</Text>
+        </LinearGradient>
+      </ImageBackground>
+
+      <View style={styles.cardFooter}>
+        <View style={styles.rewardInfo}>
+          <Text style={[styles.rewardLabel, { color: subTextColor }]}>WINNER GETS</Text>
+          <View style={styles.rewardValueRow}>
+            <Ionicons name="trophy" size={16} color="#FFB800" />
+            <Text style={styles.rewardValue}>{reward} Coins</Text>
+          </View>
+        </View>
+        <LinearGradient
+          colors={ended ? ['#9AA0AA', '#7E848E'] : [BRAND_PRIMARY, BRAND_SECONDARY]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.startBtn}
+        >
+          <Text style={styles.startBtnText}>{ended ? 'Closed' : 'Enter'}</Text>
+          {!ended && <ArrowIcon size={16} color="#FFF" variant="arrow" />}
+        </LinearGradient>
+      </View>
+    </TouchableOpacity>
   );
 }
 
@@ -269,18 +316,9 @@ const styles = StyleSheet.create({
   },
   livePillDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#FFF' },
   livePillText: { color: '#FFF', fontSize: 10, fontFamily: 'Urbanist-Bold', letterSpacing: 0.5 },
-  feeBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    paddingHorizontal: 11,
-    paddingVertical: 6,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.25)'
-  },
-  feeText: { color: '#FFF', fontSize: 12, fontFamily: 'Urbanist-Bold' },
+  endedPill: { backgroundColor: 'rgba(75,85,99,0.95)' },
+  badgeRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  contestCardEnded: { opacity: 0.6 },
   cardTitle: { fontSize: 22, fontFamily: 'Urbanist-Bold', color: '#FFF' },
   cardFooter: {
     flexDirection: 'row',

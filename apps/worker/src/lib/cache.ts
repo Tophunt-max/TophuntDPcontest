@@ -38,6 +38,21 @@ export const contestListCacheKeys = () => [
 /** Public detail for one contest template. */
 export const contestDetailCacheKey = (id: string) => `cache:contest:detail:${id}`;
 /**
+ * Drop every public cache entry a contest write can invalidate.
+ *
+ * Lives here rather than in routes/admin.ts because the cron sweep also mutates
+ * contest rows (it ends expired ones), and a second copy of this list is how
+ * one writer ends up forgetting a key and serving a contest the app should no
+ * longer see.
+ */
+export async function invalidateContestCaches(env: Env, id?: string | string[]): Promise<void> {
+  const ids = id === undefined ? [] : Array.isArray(id) ? id : [id];
+  // The three list keys are shared by every contest, so they are collected once
+  // rather than re-deleted per id — a batch of 200 expiries would otherwise
+  // spend 600 redundant writes against KV's daily quota.
+  await delCache(env, ...contestListCacheKeys(), ...ids.map(contestDetailCacheKey));
+}
+/**
  * Comment list for one target. `targetType` is normalised so the "matches" /
  * "contestMatches" aliases and every caller (reader + all writers) resolve to
  * the SAME key — a key mismatch is the classic stale-cache bug.

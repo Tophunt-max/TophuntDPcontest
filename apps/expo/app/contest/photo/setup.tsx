@@ -44,6 +44,8 @@ import { ImageViewer } from '@/src/components/ui/ImageViewer';
 import * as Haptics from 'expo-haptics';
 import { getDeviceId } from '@/src/lib/deviceId';
 import { useReadjustablePhoto } from '@/src/components/media/useImageAdjuster';
+import { entryFeePerPlayer, rewardCoins } from '@/src/lib/contestPricing';
+import { hasEnded } from '@/src/lib/countdown';
 
 const PINK_ACCENT = '#FFB1BD';
 const PRIMARY_COLOR = '#FF4D67';
@@ -233,9 +235,23 @@ export default function BattleSetupScreen() {
       return;
     }
 
-    const totalEntryFee = selectedContest.totalEntryFee || selectedContest.entryFishCoins || selectedContest.entryFee || 0;
-    const fee = totalEntryFee / 2;
+    // Shared with every contest card — and, more importantly, floored the same
+    // way the Worker charges. Plain `total / 2` on an odd total quotes half a
+    // coin more than is actually taken, which showed as "Insufficient Coins" to
+    // a user holding exactly enough.
+    const fee = entryFeePerPlayer(selectedContest);
     const userCoins = profile?.coins || profile?.Dpcoin || 0;
+
+    // This screen can be open for far longer than the 60s the contest list is
+    // cached for — pick a photo, crop it, adjust it — so the closing time is
+    // re-checked here rather than trusted from whenever the list was fetched.
+    // The Worker refuses the entry too; this makes it a clear message instead of
+    // a failed upload.
+    if (hasEnded(selectedContest.endsAt)) {
+      addToast('This contest has closed and is no longer accepting entries.', 'error');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      return;
+    }
 
     // Logic for "Get Coins" flow
     if (userCoins < fee) {
@@ -316,10 +332,8 @@ export default function BattleSetupScreen() {
 
   if (!selectedContest) return null;
 
-  // Added check for entryFee as well
-  const totalEntryFee = selectedContest.totalEntryFee || selectedContest.entryFishCoins || selectedContest.entryFee || 0;
-  const fee = totalEntryFee / 2;
-  const winningReward = selectedContest.rewardCoins || selectedContest.winningCoins || 0;
+  const fee = entryFeePerPlayer(selectedContest);
+  const winningReward = rewardCoins(selectedContest);
   const userCoins = profile?.coins || profile?.Dpcoin || 0;
   const hasInsufficientCoins = userCoins < fee;
 
