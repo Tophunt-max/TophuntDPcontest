@@ -15,6 +15,7 @@ import type { Env } from "../types";
 import { cronHealth } from "./ops";
 import { resolveSecret, getRazorpayCredentials } from "./integrations";
 import { integrationHealth } from "../routes/integrations";
+import { mediaRouting } from "./mediaRouting";
 
 export interface HealthCheck {
   ok: boolean;
@@ -82,8 +83,9 @@ export async function computeDeepHealth(env: Env): Promise<DeepHealth> {
     detail: missingSecrets.length ? `missing: ${missingSecrets.join(", ")}` : undefined,
   };
 
-  // Third-party integrations. Video is optional (the app falls back to R2), so
-  // it does not fail the check on its own.
+  // Third-party integrations. Video is optional (see the `media_routing` check
+  // below, which is where the video provider is actually judged), so an
+  // unconfigured Bunny does not fail this on its own.
   try {
     const providers = await integrationHealth(env);
     const missing = Object.entries(providers)
@@ -95,6 +97,30 @@ export async function computeDeepHealth(env: Env): Promise<DeepHealth> {
     };
   } catch (e: any) {
     checks.integrations = { ok: false, detail: e?.message || "integration check failed" };
+  }
+
+  // Which store new video is going to, and whether that was a decision.
+  //
+  // Worth its own line because the two ways of running on R2 are indistinguishable
+  // from outside and mean opposite things. An operator who deliberately selected
+  // R2 is fine. An operator who selected Bunny and did not finish wiring it is
+  // ALSO silently serving the R2 path — same behaviour, but a half-finished
+  // cutover nobody is being told about, and the video library they think they are
+  // filling is empty. Only the second fails the check.
+  try {
+    const routing = await mediaRouting(env);
+    const ok = routing.reason !== "not-configured";
+    checks.media_routing = {
+      ok,
+      detail:
+        routing.reason === "bunny-live"
+          ? "video: bunny (R2 refuses video)"
+          : routing.reason === "provider-setting"
+            ? "video: r2 (legacy path, selected in the admin panel)"
+            : "video provider is set to bunny but its config is incomplete — video is silently falling back to R2",
+    };
+  } catch (e: any) {
+    checks.media_routing = { ok: false, detail: e?.message || "media routing check failed" };
   }
 
   // Is the cron actually running? A stalled cron means settlement, refunds and

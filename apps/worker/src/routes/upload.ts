@@ -12,6 +12,12 @@
  * inspected — which is the reason the presigned-PUT alternative was removed
  * rather than kept as a fallback. See `lib/mediaTypes.ts` for what is enforced.
  *
+ * IMAGES ONLY, once Bunny Stream is live. Video is uploaded by the client
+ * directly to Bunny via the `createVideoUpload` action; this endpoint refuses it
+ * so a stale build cannot put a video back into the image bucket. Until Bunny is
+ * provisioned the legacy video path stays open — `lib/mediaRouting.ts` owns that
+ * decision and explains why it is a setting rather than a deletion.
+ *
  * POST /upload?folder=<folder>&fileType=<mime>
  *   body: raw file bytes
  *   auth: Firebase Bearer token
@@ -29,9 +35,9 @@ import {
   uploadToR2,
   USER_UPLOAD_FOLDERS,
   sanitizeMediaFolder,
-  allowedMimesForFolder,
-  folderAcceptsVideo,
+  isUserUploadFolder,
 } from "../lib/r2";
+import { allowedMimesForUpload, assertR2AcceptsKind } from "../lib/mediaRouting";
 import {
   ALLOWED_MEDIA_MIME_TYPES,
   MAX_IMAGE_BYTES,
@@ -78,13 +84,23 @@ uploadRoute.post("/", async (c) => {
   // this a caller chose their own key prefix, including deployment-owned ones
   // like `contest-banners/`.
   const folder = sanitizeMediaFolder(requestedFolder);
-  if (!(USER_UPLOAD_FOLDERS as readonly string[]).includes(folder)) {
+  if (!isUserUploadFolder(folder)) {
     throw httpsError("invalid-argument", `folder must be one of: ${USER_UPLOAD_FOLDERS.join(", ")}.`);
   }
 
-  // What this destination accepts. An image-only folder rejects a video here,
-  // before we spend memory buffering it.
-  const allowed = allowedMimesForFolder(folder);
+  // This bucket is for images. Once Bunny owns video this rejects it outright,
+  // with a message naming `createVideoUpload` — checked BEFORE the generic
+  // per-folder message below, because "use the other action" is actionable and
+  // "contests accepts JPEG, PNG, WebP, GIF only" sends the reader to look at
+  // their file. See lib/mediaRouting.ts for why this is a switch, not a deletion.
+  const kind = kindOf(declaredType);
+  if (!kind) throw httpsError("invalid-argument", "Invalid or missing file type.");
+  await assertR2AcceptsKind(c.env, kind, folder);
+
+  // What this destination accepts right now — the storage rule for the prefix,
+  // narrowed by the live video provider. An image-only folder rejects a video
+  // here, before we spend memory buffering it.
+  const allowed = await allowedMimesForUpload(c.env, folder);
   if (!allowed.includes(declaredType as any)) {
     throw httpsError(
       "invalid-argument",
@@ -93,8 +109,11 @@ uploadRoute.post("/", async (c) => {
   }
 
   // Per-family cap instead of one 80 MB limit for everything: an avatar has no
-  // business being video-sized.
-  const maxBytes = folderAcceptsVideo(folder) && kindOf(declaredType) === "video" ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
+  // business being video-sized. Keyed off what is ACTUALLY allowed, so a video
+  // that will be refused anyway is bounded by the image cap rather than being
+  // buffered up to 80 MB first.
+  const videoAllowed = allowed.some((mime) => kindOf(mime) === "video");
+  const maxBytes = videoAllowed && kind === "video" ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
   const maxLabel = `${Math.round(maxBytes / (1024 * 1024))}MB`;
 
   // Reject on the declared length first. Reading 200 MB into a Worker only to

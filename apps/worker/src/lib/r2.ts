@@ -5,6 +5,11 @@
  * MEDIA binding from inside the Worker. The client cannot PUT to R2 directly:
  * R2's S3 endpoint has no CORS policy for our origin, and — more importantly —
  * bytes that never pass through us cannot be validated. See `lib/mediaTypes.ts`.
+ *
+ * This bucket holds IMAGES. Video lives in Bunny Stream — `lib/mediaRouting.ts`
+ * owns that decision, `lib/bunny.ts` implements it. What each prefix is for, who
+ * may write it, and how it is cached and expired is declared once in
+ * `lib/mediaCategories.ts`; this file no longer keeps its own copy of any of it.
  */
 import type { Env } from "../types";
 import { httpsError } from "./http";
@@ -12,12 +17,21 @@ import {
   ALLOWED_MEDIA_MIME_TYPES,
   IMAGE_MIME_TYPES,
   extensionForMime,
-  kindOf,
   sniffMediaMime,
   verifyMediaBytes,
-  type MediaKind,
   type MediaMime,
 } from "./mediaTypes";
+import {
+  allowedMimesForCategory,
+  BANNER_PREFIX,
+  BLOG_IMPORT_PREFIX,
+  buildMediaKey,
+  categoryEverAcceptedVideo,
+  isSafeRelativeKey,
+  isUserWritablePrefix,
+  USER_UPLOAD_PREFIXES,
+  VS_CARD_PREFIX,
+} from "./mediaCategories";
 
 /**
  * Kept as a named export because tests and older call sites refer to it.
@@ -29,96 +43,44 @@ export const ALLOWED_MIME_TYPES: readonly string[] = ALLOWED_MEDIA_MIME_TYPES;
 export const extensionFor = extensionForMime;
 
 /**
- * Folders a normal end user is allowed to mint an upload key for.
+ * Prefixes a normal end user may name as an upload destination.
  *
- * `contest-banners` is deliberately NOT here: those objects are treated as
- * deployment-owned by `contestBannerKeyFromPublicUrl` and are deleted by the
- * contest lifecycle, so letting a user write into that prefix would let them
- * plant or clobber banner objects.
+ * Re-exported from `lib/mediaCategories.ts`, where it is DERIVED from the writer
+ * of each category rather than hand-maintained. It used to be a literal array
+ * here, and the two times it was wrong were both total, silent outages of a
+ * feature: the first version omitted `contests` and `contest-entries`, so every
+ * photo and video battle entry was rejected with a 400 and no battle could be
+ * created or joined; it also omitted `deposits`, which blocked every manual
+ * top-up. Deriving it means adding a category cannot leave the allow-list behind.
+ *
+ * The name is kept for `routes/upload.ts` and `test/uploadFolders.test.ts`.
  */
-export const USER_UPLOAD_FOLDERS = [
-  "posts",
-  "stories",
-  "avatars",
-  "profile",
-  "chat",
-  // Contest entry media. The client sends "contests" (see
-  // apps/expo/src/services/contests/uploadMedia.ts); "contest-entries" is kept
-  // for older builds already in the wild that send that instead.
-  //
-  // These two were MISSING when this allow-list was introduced, which rejected
-  // every contest entry upload with a 400 — so no photo or video battle could be
-  // created or joined at all. `test/uploadFolders.test.ts` now pins every folder
-  // the client actually sends so a folder can never be locked out again.
-  "contests",
-  "contest-entries",
-  // Manual UPI/QR deposit screenshots (apps/expo/app/wallet/deposit.tsx). Also
-  // missing, which blocked every manual top-up.
-  "deposits",
-  "reports",
-  // Composite head-to-head battle cards, captured and uploaded by the joining
-  // client (see `setMatchVsImage`). Its own prefix rather than reusing `stories`
-  // so `vsImageKeyFromPublicUrl` can verify a recorded url really is one of these.
-  "vs-cards",
-  "misc",
-] as const;
+export const USER_UPLOAD_FOLDERS = USER_UPLOAD_PREFIXES;
 
-export type UserUploadFolder = (typeof USER_UPLOAD_FOLDERS)[number];
+export type UserUploadFolder = string;
 
 /**
- * Which media families each destination accepts.
+ * The exact mime types a folder may receive, ignoring the video provider.
  *
- * The folder allow-list already stopped a user writing into deployment-owned
- * prefixes, but it said nothing about WHAT could land in an allowed prefix — so a
- * video could be stored as an avatar and an avatar as a contest video. Only two
- * places in the product actually play video (stories and contest entries), and
- * everything else is a photograph, so the default is image-only and video is
- * granted explicitly.
- *
- * `deposits` being image-only matters beyond tidiness: an admin opens those to
- * read a UPI reference number off a screenshot, and a 30-second clip in that
- * queue is a way to waste an operator's time and our egress. `avatars` being
- * image-only is what stops an 80 MB "profile picture" that every follower list
- * would then try to fetch.
- */
-const MEDIA_KINDS_BY_FOLDER: Record<string, readonly MediaKind[]> = {
-  // Feed posts and DMs carry either.
-  posts: ["image", "video"],
-  chat: ["image", "video"],
-  // apps/expo/app/story/create/index.tsx offers both.
-  stories: ["image", "video"],
-  // Photo battles and video battles share this prefix.
-  contests: ["image", "video"],
-  "contest-entries": ["image", "video"],
-  // Profile imagery.
-  avatars: ["image"],
-  profile: ["image"],
-  // A UPI payment screenshot an admin has to read.
-  deposits: ["image"],
-  // Abuse-report evidence is a screenshot.
-  reports: ["image"],
-  // Locally captured composite battle card (src/lib/vsImage.ts) — always JPEG.
-  "vs-cards": ["image"],
-  // Deployment-owned, written only by the admin routes.
-  "contest-banners": ["image"],
-  "payment-qr": ["image"],
-  // Unclassified fallback: the safe family only.
-  misc: ["image"],
-};
-
-/**
- * The exact mime types a folder may receive. Unknown folders get images only —
- * failing closed, so adding a folder to `USER_UPLOAD_FOLDERS` without thinking
- * about video cannot silently open a video path.
+ * Prefer `allowedMimesForUpload` from `lib/mediaRouting.ts` at an upload site:
+ * this answers "what is this prefix for", which is images, and knows nothing
+ * about whether the legacy R2 video path is still open.
  */
 export function allowedMimesForFolder(folder: string): readonly MediaMime[] {
-  const kinds = MEDIA_KINDS_BY_FOLDER[folder] ?? (["image"] as const);
-  return ALLOWED_MEDIA_MIME_TYPES.filter((mime) => kinds.includes(kindOf(mime) as MediaKind));
+  return allowedMimesForCategory(folder);
 }
 
-/** True when a folder accepts video at all (used for the pre-read size cap). */
+/**
+ * True when a folder could ever hold video. Used ONLY to pick the pre-read size
+ * cap, never to authorise — see `assertR2AcceptsKind`.
+ */
 export function folderAcceptsVideo(folder: string): boolean {
-  return (MEDIA_KINDS_BY_FOLDER[folder] ?? []).includes("video");
+  return categoryEverAcceptedVideo(folder);
+}
+
+/** True when `POST /upload` may write to this prefix. */
+export function isUserUploadFolder(folder: string): boolean {
+  return isUserWritablePrefix(folder);
 }
 
 /**
@@ -154,27 +116,34 @@ export function sanitizeMediaFolder(folder: unknown, fallback = "misc"): string 
  * user — checked only a query string. Putting the check in the shared writer
  * means a future route cannot accidentally skip it.
  *
- * Key layout is unchanged (`{folder}/{images|videos}/{uuid}{ext}`) except that
- * both the `images|videos` segment and the extension are now derived from the
- * detected type, so a URL's extension always matches its content.
+ * Key layout: `{prefix}/{YYYY}/{MM}/{uuid}{ext}`, built by `buildMediaKey` — see
+ * `lib/mediaCategories.ts` for why the month shard is there. The extension comes
+ * from the DETECTED type, so a URL's extension always matches its content.
+ *
+ * The old layout inserted an `images|videos` segment. That segment separated two
+ * families which no longer share this bucket, and objects written under it are
+ * still served and still deleted correctly — `categoryForKey` and
+ * `isSafeRelativeKey` both match on the category prefix, so the two layouts
+ * coexist and nothing needed to be moved or rewritten.
  *
  * @param declaredType What the caller claims the body is. Cross-checked for
  *   family agreement only; the detected type wins.
- * @param allowed Exact mime types this destination accepts. Pass a single-entry
- *   list to demand an exact match.
+ * @param allowed Exact mime types this destination accepts. Defaults to IMAGES
+ *   ONLY — a caller that genuinely still needs the legacy video path has to say
+ *   so, which is what stops a new upload site from quietly reopening it. Pass a
+ *   single-entry list to demand an exact match.
  */
 export async function uploadToR2(
   env: Env,
   declaredType: string,
   folder: string,
   body: ArrayBuffer | Uint8Array,
-  allowed: readonly string[] = ALLOWED_MEDIA_MIME_TYPES,
+  allowed: readonly string[] = IMAGE_MIME_TYPES,
 ): Promise<{ publicUrl: string; fileKey: string; contentType: MediaMime }> {
   const contentType = verifyMediaBytes(body, declaredType, allowed);
 
   const safeFolder = sanitizeMediaFolder(folder);
-  const subFolder = kindOf(contentType) === "video" ? "videos" : "images";
-  const fileKey = `${safeFolder}/${subFolder}/${crypto.randomUUID()}${extensionForMime(contentType)}`;
+  const fileKey = buildMediaKey(safeFolder, extensionForMime(contentType));
 
   await env.MEDIA.put(fileKey, body, { httpMetadata: { contentType } });
 
@@ -205,7 +174,11 @@ export async function putVerifiedImage(
   const detected = sniffImage(body);
   if (!detected) return null;
 
-  const safeFolder = sanitizeMediaFolder(folder, "blog/imported");
+  // Deliberately NOT `buildMediaKey`: this key is the content hash, which is what
+  // makes re-importing the same asset a no-op. A month shard in front of it would
+  // give identical bytes a different key each month and turn the dedup below into
+  // a slow way of storing duplicates.
+  const safeFolder = sanitizeMediaFolder(folder, BLOG_IMPORT_PREFIX);
   const key = `${safeFolder}/${contentHash}${extensionForMime(detected)}`;
   const publicUrl = `${env.R2_PUBLIC_BASE_URL.replace(/\/$/, "")}/${key}`;
 
@@ -328,8 +301,15 @@ export function canonicalMediaUrl(env: Env, publicUrl: string | null | undefined
  * media bases) and inside `ownedPrefix`, else null.
  *
  * The prefix check is the security property: it is what stops a caller-supplied
- * url from naming an arbitrary object. `fileName` must be a single path segment,
- * so no traversal and no reaching into another prefix.
+ * url from naming an arbitrary object. What follows the prefix is validated by
+ * `isSafeRelativeKey` — bounded depth, no `.`/`..`, and a charset with no `/`,
+ * `%` or `\` — so there is no traversal and no reaching into another prefix.
+ *
+ * This used to require a SINGLE path segment. That was equivalent for the old
+ * flat layout, but it would reject every date-sharded key, and the failure mode
+ * was invisible: `contestBannerKeyFromPublicUrl` would return null, the delete
+ * would quietly hit nothing and report success, and every new banner and battle
+ * card would leak into the bucket while deleted banners stayed readable.
  */
 function ownedKeyFromPublicUrl(env: Env, publicUrl: string, ownedPrefix: string): string | null {
   let candidate: URL;
@@ -354,20 +334,25 @@ function ownedKeyFromPublicUrl(env: Env, publicUrl: string, ownedPrefix: string)
     const prefix = `${base.pathname.replace(/\/+$/, "")}/${ownedPrefix}`;
     if (!candidate.pathname.startsWith(prefix)) continue;
 
-    const fileName = candidate.pathname.slice(prefix.length);
-    if (!fileName || fileName.includes("/") || fileName === "." || fileName === "..") continue;
-    return `${ownedPrefix}${fileName}`;
+    const rest = candidate.pathname.slice(prefix.length);
+    if (!isSafeRelativeKey(rest)) continue;
+    return `${ownedPrefix}${rest}`;
   }
   return null;
 }
 
 /**
- * Return the R2 key only when a URL is owned by this deployment and lives in
- * the fixed contest-banner image prefix. External URLs and lookalike hosts or
- * paths are never mapped to local objects.
+ * Return the R2 key only when a URL is owned by this deployment and lives under
+ * the `contest-banners/` prefix. External URLs and lookalike hosts or paths are
+ * never mapped to local objects.
+ *
+ * The gate is the CATEGORY prefix, not `contest-banners/images/`. It has to be:
+ * that literal describes one key layout, and a banner written under any other —
+ * including every date-sharded one — would map to null and silently never be
+ * deleted. Depth and charset after the prefix are bounded by `isSafeRelativeKey`.
  */
 export function contestBannerKeyFromPublicUrl(env: Env, publicUrl: string): string | null {
-  return ownedKeyFromPublicUrl(env, publicUrl, "contest-banners/images/");
+  return ownedKeyFromPublicUrl(env, publicUrl, `${BANNER_PREFIX}/`);
 }
 
 /**
@@ -381,8 +366,12 @@ export function contestBannerKeyFromPublicUrl(env: Env, publicUrl: string): stri
  * fixed-prefix checks as `contestBannerKeyFromPublicUrl`, for the same reason.
  *
  * Note carefully what this does and does not prove. It proves the object lives in
- * our bucket under `vs-cards/images/`. It does NOT prove the pixels are a genuine
- * capture of the battle — a participant can upload any image to that prefix.
+ * our bucket under `vs-cards/`. It does NOT prove the pixels are a genuine capture
+ * of the battle — a participant can upload any image to that prefix.
+ *
+ * Gating on the category rather than `vs-cards/images/` grants no extra reach: every
+ * key under it is minted server-side by `buildMediaKey`, so a caller cannot name a
+ * path we would not have created, and `isSafeRelativeKey` bounds depth and charset.
  *
  * That residual risk is real and worth stating plainly rather than waving at: the
  * recorded card is what the OTHER participant's story displays, on their own reel,
@@ -396,7 +385,7 @@ export function contestBannerKeyFromPublicUrl(env: Env, publicUrl: string): stri
  * which appears attributed to them on their own half of the frame.
  */
 export function vsImageKeyFromPublicUrl(env: Env, publicUrl: string): string | null {
-  return ownedKeyFromPublicUrl(env, publicUrl, "vs-cards/images/");
+  return ownedKeyFromPublicUrl(env, publicUrl, `${VS_CARD_PREFIX}/`);
 }
 
 /**
@@ -411,7 +400,7 @@ export function vsImageKeyFromPublicUrl(env: Env, publicUrl: string): string | n
  * Best-effort by design — the record already succeeded, and failing the caller's
  * request over a storage cleanup would turn a cost problem into a user-visible
  * one. The prefix check is what keeps this from being a delete-arbitrary-key
- * primitive: a url outside `vs-cards/images/` maps to no key and is ignored.
+ * primitive: a url outside `vs-cards/` maps to no key and is ignored.
  */
 export async function deleteVsImageByPublicUrl(env: Env, publicUrl: string): Promise<void> {
   const key = vsImageKeyFromPublicUrl(env, publicUrl);

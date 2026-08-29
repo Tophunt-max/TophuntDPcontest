@@ -27,6 +27,7 @@
  */
 import type { Env } from "../types";
 import { canonicalMediaUrl, ownedMediaBases } from "./r2";
+import { isProxyOnlyKey } from "./mediaCategories";
 
 export interface ImgOpts {
   width?: number;
@@ -38,26 +39,6 @@ export interface ImgOpts {
 
 const VIDEO_RE = /\.(mp4|mov|webm|m4v)(\?|$)/i;
 
-/**
- * Prefixes whose objects are deleted while their urls may still be referenced.
- * These keep their stored url and are never moved or transformed.
- *
- * Cache identity is the reason. `index.ts` serves `contest-banners/images/` with
- * `no-store` and `deleteContestBannerByPublicUrl` purges the colo entry for that
- * exact url, because a banner must stop being visible when its contest is edited
- * or removed. Both mechanisms are keyed to the url as stored: a canonicalised url
- * is a different cache entry that no delete path purges, and a
- * `/cdn-cgi/image/...` variant is a third one. Moving these would trade a Worker
- * invocation for "deleted media is still served", which is not a trade worth
- * making on the two smallest, coldest prefixes in the bucket.
- *
- * NOTE the pre-existing gap this does not close: newly uploaded banners are
- * already written to `R2_PUBLIC_BASE_URL` by `uploadToR2`, so they bypass the
- * `no-store` proxy regardless of anything here. Closing that needs an R2/zone
- * cache rule for the prefix — see PRODUCTION_DOMAINS.md.
- */
-const PROXY_ONLY_PREFIXES = ["contest-banners/images/", "vs-cards/images/"] as const;
-
 /** The R2 key, if `url` sits on the current media base; else null. */
 function keyOnCurrentBase(env: Env, url: string): { base: string; key: string } | null {
   const base = String(env.R2_PUBLIC_BASE_URL ?? "")
@@ -67,7 +48,12 @@ function keyOnCurrentBase(env: Env, url: string): { base: string; key: string } 
   const canonical = canonicalMediaUrl(env, url);
   if (typeof canonical !== "string" || !canonical.startsWith(`${base}/`)) return null;
   const key = canonical.slice(base.length + 1);
-  if (!key || PROXY_ONLY_PREFIXES.some((p) => key.startsWith(p))) return null;
+  // Proxy-only prefixes keep their stored url: their cache identity is that
+  // exact url, and both the `no-store` policy in index.ts and the colo purge in
+  // deleteContestBannerByPublicUrl are keyed to it. Declared per-category in
+  // lib/mediaCategories.ts — this was a literal list of two "<prefix>/images/"
+  // strings, which matches none of the date-sharded keys written today.
+  if (!key || isProxyOnlyKey(key)) return null;
   return { base, key };
 }
 

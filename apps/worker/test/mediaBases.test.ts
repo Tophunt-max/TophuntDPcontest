@@ -121,9 +121,38 @@ describe('contestBannerKeyFromPublicUrl', () => {
     expect(contestBannerKeyFromPublicUrl(env(), `${LEGACY}/vs-cards/images/b.jpg`)).toBeNull();
   });
 
-  it('rejects traversal, nested paths and lookalike hosts', () => {
-    expect(contestBannerKeyFromPublicUrl(env(), `${CURRENT}/contest-banners/images/a/b.jpg`)).toBeNull();
+  /**
+   * Date-sharded keys must map, or new banners silently stop being deletable.
+   *
+   * This is the case that made the gate worth revisiting. It used to require a
+   * SINGLE path segment after the prefix, which was equivalent while keys were
+   * flat — and would have rejected every `{prefix}/{YYYY}/{MM}/{uuid}` key the
+   * moment the layout gained a month shard. Nothing would have thrown: the mapper
+   * returns null, the delete hits nothing and reports success, and every new
+   * banner leaks while deleted ones stay readable behind a live URL.
+   */
+  it('maps a date-sharded banner key', () => {
+    expect(contestBannerKeyFromPublicUrl(env(), `${CURRENT}/contest-banners/2026/08/b.jpg`)).toBe(
+      'contest-banners/2026/08/b.jpg',
+    );
+    expect(contestBannerKeyFromPublicUrl(env(), `${LEGACY}/contest-banners/2026/08/b.jpg`)).toBe(
+      'contest-banners/2026/08/b.jpg',
+    );
+  });
+
+  it('rejects traversal, over-deep paths, empty segments and lookalike hosts', () => {
+    // Deeper than `{YYYY}/{MM}/{file}` is not a shape this deployment mints.
+    expect(
+      contestBannerKeyFromPublicUrl(env(), `${CURRENT}/contest-banners/2026/08/a/b.jpg`),
+    ).toBeNull();
+    // Trailing slash leaves an empty final segment.
     expect(contestBannerKeyFromPublicUrl(env(), `${CURRENT}/contest-banners/images/`)).toBeNull();
+    expect(contestBannerKeyFromPublicUrl(env(), `${CURRENT}/contest-banners/`)).toBeNull();
+    // Traversal, raw and percent-encoded. `URL.pathname` is not decoded, so the
+    // encoded form arrives literally and is refused by the segment charset rather
+    // than needing a case of its own.
+    expect(contestBannerKeyFromPublicUrl(env(), `${CURRENT}/contest-banners/../avatars/b.jpg`)).toBeNull();
+    expect(contestBannerKeyFromPublicUrl(env(), `${CURRENT}/contest-banners/%2e%2e/b.jpg`)).toBeNull();
     expect(
       contestBannerKeyFromPublicUrl(env(), 'https://evil.example/contest-banners/images/b.jpg'),
     ).toBeNull();

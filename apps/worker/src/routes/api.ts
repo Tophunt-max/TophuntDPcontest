@@ -71,6 +71,7 @@ import {
   bunnyPlaybackUrl,
   bunnyThumbnailUrl,
 } from "../lib/bunny";
+import { mediaRouting } from "../lib/mediaRouting";
 import { getAppConfig, getRewardedAdConfig } from "../lib/settings";
 import { getSettings } from "../lib/gamification";
 import { sendEmail } from "../lib/email";
@@ -198,11 +199,19 @@ apiRoute.post("/", async (c) => {
      * API key stays server-side. The client uploads the bytes itself, then the
      * encoding webhook flips the row to 'ready'.
      *
-     * Returns `configured: false` instead of throwing when Bunny is not set up,
-     * so the client can fall back to the existing R2 upload path.
+     * Returns `configured: false` instead of throwing when Bunny is not set up.
+     *
+     * `r2Fallback` tells the client what to do with that: `true` means the legacy
+     * `POST /upload` video path is still open, `false` means it is closed and
+     * retrying there would only produce a confusing rejection. The client used to
+     * infer this — it fell back on ANY failure, including a Bunny outage while R2
+     * was closed to video, which turned one clear error into two.
      */
     case "createVideoUpload": {
-      if (!(await bunnyConfigured(env))) return c.json({ configured: false });
+      if (!(await bunnyConfigured(env))) {
+        const routing = await mediaRouting(env);
+        return c.json({ configured: false, r2Fallback: routing.r2AcceptsVideo });
+      }
 
       // Without this, anyone can create unlimited video objects in our Bunny
       // account. 10/hour is far above real usage and far below abuse.
@@ -691,7 +700,7 @@ apiRoute.post("/", async (c) => {
      *      without this its creator could claim the card before an opponent
      *      exists, permanently;
      *   2. only a participant may set it;
-     *   3. the url must be an object in our own bucket under `vs-cards/images/`,
+     *   3. the url must be an object in our own bucket under `vs-cards/`,
      *      so a story can never be pointed at an arbitrary remote image;
      *   4. first writer wins — never overwrite. Both clients plausibly try, and
      *      silently swapping the image under a story that is already being viewed
