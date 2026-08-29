@@ -230,6 +230,14 @@ export interface PushOptions {
  * Prunes tokens FCM reports as permanently invalid, retries once on a transient
  * failure, and records anything still failing to `error_logs` — previously a
  * transient 503 silently dropped the notification with no trace.
+ *
+ * This is the "push only, no in-app row" path, used for ephemeral nudges that do
+ * not belong in the notification centre. It STILL honours the user's
+ * preferences: it used to read `fcm_tokens` alone and go straight to delivery,
+ * so every push sent through here ignored the master push switch, the category
+ * toggle and quiet hours. A user who had turned notifications off was still
+ * woken at 3am, which makes the settings screen a lie and is the kind of thing
+ * app review rejects.
  */
 export async function sendPushNotification(
   env: Env,
@@ -242,14 +250,19 @@ export async function sendPushNotification(
 ): Promise<void> {
   try {
     const db = getDb(env);
+    // Tokens and preferences in one query, as createNotification does.
     const user = await db
-      .select({ fcmTokens: schema.users.fcmTokens })
+      .select({ fcmTokens: schema.users.fcmTokens, prefs: schema.users.notificationPrefs })
       .from(schema.users)
       .where(eq(schema.users.uid, userId))
       .get();
 
     const tokens: string[] = (user?.fcmTokens as string[]) || [];
     if (!tokens.length) return;
+
+    // Checked AFTER the token check purely to avoid the work for a user with no
+    // devices; the two orders are otherwise equivalent.
+    if (!shouldSendPush(resolvePrefs(user?.prefs), type)) return;
 
     await deliverToTokens(env, userId, tokens, title, body, type, data, options);
   } catch (e) {
