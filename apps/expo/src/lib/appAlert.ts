@@ -99,7 +99,7 @@ function webAlert(title: string, message?: string, buttons?: AlertButton[]): voi
     );
   }
 
-  const shown = requestConfirm({
+  const request = {
     title,
     message,
     confirmLabel: action?.text || 'OK',
@@ -107,15 +107,33 @@ function webAlert(title: string, message?: string, buttons?: AlertButton[]): voi
     destructive: action?.style === 'destructive',
     onConfirm: () => action?.onPress?.(),
     onCancel: () => cancel?.onPress?.(),
-  });
+  };
 
-  if (!shown) {
-    // ConfirmHost is not mounted (very early startup, or a tree that skips the
-    // root layout). Falling back to the browser dialog is ugly but keeps the
-    // decision reachable — losing it silently is what this module exists to stop.
+  if (requestConfirm(request)) return;
+
+  /**
+   * Retry on the next macrotask before giving up.
+   *
+   * `ConfirmHost` registers itself in an effect, and React flushes effects in
+   * tree order — so a screen that raises a confirmation from its own mount
+   * effect runs BEFORE the host further down the root layout has registered.
+   * That is not hypothetical: the signup "Resume your signup?" prompt fires on
+   * mount and lost this race in production, falling through to the browser
+   * dialog. Deferring one tick puts us after the effect flush.
+   *
+   * The host is intentionally not hoisted above the navigator to fix this
+   * instead: it renders a Modal, and on web a later sibling wins the stacking
+   * order, so moving it earlier risks the dialog appearing *behind* the app.
+   */
+  setTimeout(() => {
+    if (requestConfirm(request)) return;
+
+    // Genuinely no host — a tree that skips the root layout. The browser dialog
+    // is ugly, but losing a decision the user has to make is what this module
+    // exists to prevent.
     const ok = typeof window !== 'undefined' ? window.confirm(`${title}${message ? `\n\n${message}` : ''}`) : false;
     (ok ? action : cancel)?.onPress?.();
-  }
+  }, 0);
 }
 
 export const Alert = {
