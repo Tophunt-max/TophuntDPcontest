@@ -8,6 +8,7 @@ import { Hono } from "hono";
 import { and, or, eq, desc, asc, gt, lt, sql, inArray, notInArray, isNull, like } from "drizzle-orm";
 import type { Env, Variables } from "../types";
 import { getDb, schema, type NotificationActor } from "../db";
+import { perPlayerEntryFee } from "../lib/money";
 import { httpsError } from "../lib/http";
 import { requireAuth, optionalAuth } from "../middleware/auth";
 import { getAppConfig } from "../lib/settings";
@@ -506,11 +507,29 @@ const mapContest = (r: any) => ({
   totalEntryFee: r.totalEntryFee,
   entryFishCoins: r.totalEntryFee,
   entryDpcoin: r.totalEntryFee,
+  // What ONE player is actually charged, computed by the same function the
+  // ledger uses. totalEntryFee is the pot for both players, and every screen
+  // was halving it by hand — inconsistently, so two of them advertised double
+  // the real price. Serve the number instead of asking each card to derive it.
+  entryFeePerPlayer: perPlayerEntryFee(r.totalEntryFee),
   rewardCoins: r.rewardCoins,
   winningCoins: r.rewardCoins,
   voteDurationDays: r.voteDurationDays,
   autoCancelHours: r.autoCancelHours,
   minVotes: r.minVotes,
+  // Validity window as ABSOLUTE epoch milliseconds, deliberately not a
+  // precomputed "seconds remaining": this response is cached for 60s (KV +
+  // Cache-Control below), so a relative figure would be served up to a minute
+  // stale and every client's countdown would be wrong by that much. Null on
+  // either side means unbounded. The app counts down against endsAt itself.
+  startsAt: r.startsAt ?? null,
+  endsAt: r.endsAt ?? null,
+  // Free vs paid is derived, not stored twice. Derived from the PER-PLAYER fee
+  // rather than the pot so it can never contradict the price shown next to it:
+  // perPlayerEntryFee floors, so a legacy odd total of 1 charges nobody
+  // anything, and testing the pot instead would label that contest "paid" and
+  // then quote it at 0 coins.
+  isFree: perPlayerEntryFee(r.totalEntryFee) <= 0,
   createdBy: r.createdBy,
   createdAt: r.createdAt,
 });
@@ -628,10 +647,28 @@ readRoute.get("/contests", optionalAuth, async (c) => {
   }
 
   const db = getDb(c.env);
-  const conds = [eq(schema.contests.status, "live")];
+  // Only templates that are live AND inside their validity window. Both edges
+  // are nullable and NULL means unbounded, so every contest created before
+  // migration 0038 still matches — this filter must not silently empty the
+  // Start a New Battle rail for existing data.
+  //
+  // A scheduled contest (startsAt in the future) can therefore be saved as
+  // 'live' up front and it stays hidden until its moment arrives, instead of an
+  // admin having to be awake to flip the status by hand.
+  const nowMs = Date.now();
+  const conds = [
+    eq(schema.contests.status, "live"),
+    or(isNull(schema.contests.startsAt), lt(schema.contests.startsAt, nowMs)),
+    or(isNull(schema.contests.endsAt), gt(schema.contests.endsAt, nowMs)),
+  ];
   if (type) conds.push(eq(schema.contests.type, type));
   const rows = await db.select().from(schema.contests).where(and(...conds)).all();
   const contests = rows.map(mapContest);
+  // 60s, as before — but the window is evaluated per cache MISS, so a contest
+  // can appear or disappear up to a minute late. That is why the app also
+  // counts down locally and disables an entry whose endsAt has passed: the
+  // last-minute case is handled client-side rather than by shortening the TTL
+  // for every request.
   await cachePutJson(c.env, key, contests, 60);
   c.header("Cache-Control", "public, max-age=60");
   return c.json(contests);

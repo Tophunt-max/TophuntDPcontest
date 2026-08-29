@@ -33,7 +33,7 @@ import {
   followersCacheKey,
   followingCacheKey,
 } from "../lib/cache";
-import { createContestExtra, validateContestInput } from "../lib/contestAdmin";
+import { assertContestOpenNow, createContestExtra, validateContestInput } from "../lib/contestAdmin";
 import { parsePayoutDestination, readWithdrawalPolicy } from "../lib/payouts";
 import {
   checkDeletionEligibility,
@@ -310,6 +310,9 @@ apiRoute.post("/", async (c) => {
       if (contest.status !== "live") {
         throw httpsError("failed-precondition", "This contest is not currently accepting new matches.");
       }
+      // Checked BEFORE the entry fee is debited, and here rather than only in
+      // the read filter — see assertContestOpenNow.
+      assertContestOpenNow(contest, "new matches");
       const user = await db.select().from(schema.users).where(eq(schema.users.uid, uid)).get();
       if (!user) throw httpsError("not-found", "User document not found.");
       // Checked BEFORE the entry fee is debited. joinMatch refuses a blocked
@@ -514,6 +517,8 @@ apiRoute.post("/", async (c) => {
             minVotes: schema.contests.minVotes,
             status: schema.contests.status,
             reward: schema.contests.rewardCoins,
+            startsAt: schema.contests.startsAt,
+            endsAt: schema.contests.endsAt,
           }).from(schema.contests).where(eq(schema.contests.id, match.contestId)).get()
         : null;
       if (match.contestId && !contestPolicy) {
@@ -522,6 +527,10 @@ apiRoute.post("/", async (c) => {
       if (contestPolicy && contestPolicy.status !== "live") {
         throw httpsError("failed-precondition", "This contest is not currently accepting opponents.");
       }
+      // A battle must not outlive the contest it belongs to: joining now would
+      // start a vote that runs past the contest's own closing time. The
+      // creator's waiting match is refunded by the existing auto-cancel sweep.
+      if (contestPolicy) assertContestOpenNow(contestPolicy, "opponents");
       const voteDays = Number(contestPolicy?.voteDays || 1);
       const minVotesRequired = Math.max(
         0,

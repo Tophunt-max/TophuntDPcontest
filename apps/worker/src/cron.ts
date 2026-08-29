@@ -7,9 +7,10 @@
  * Firestore triggers had no equivalent here; the notification side effects that
  * used to fire from onDocument triggers are emitted explicitly via createNotification.
  */
-import { and, eq, lte, gt, desc, sql, asc, isNull } from "drizzle-orm";
+import { and, eq, lte, gt, desc, sql, asc, isNull, isNotNull } from "drizzle-orm";
 import type { Env } from "./types";
 import { getDb, schema } from "./db";
+import { invalidateContestCaches } from "./lib/cache";
 import { createNotification } from "./lib/notify";
 import { drainBroadcastJobs, enqueueBroadcast } from "./lib/broadcast";
 import { finalizeVotes } from "./lib/voteCounter";
@@ -357,6 +358,81 @@ export async function resolveContests(env: Env): Promise<void> {
   await drainBroadcastJobs(env).catch((e) =>
     console.error("[cron] broadcast drain failed", e),
   );
+}
+
+/**
+ * Close contest templates whose validity window has run out.
+ *
+ * `GET /read/contests` already hides an expired template, so this is not what
+ * stops users joining — it is what keeps `status` honest. Without it the admin
+ * panel would list a contest as "Live" forever after it stopped being offered,
+ * which is the kind of drift that makes an operator distrust the whole screen.
+ *
+ * Deliberately refuses to end a contest that still has a waiting match, for the
+ * same reason `PATCH /admin/contests/:id` refuses: that match's creator has
+ * already paid, and its contest row is where the settlement terms live.
+ *
+ * That deferral is bounded, and only because the window is enforced on the WRITE
+ * path too (`assertContestOpenNow` in startMatch/joinMatch): no new waiting
+ * match can be created against an expired contest, so the set this is waiting on
+ * can only shrink. Each member drains on its own clock — `autoCancelHours`,
+ * capped at 168h by validation — and is refunded, after which a later tick ends
+ * the contest. Were the window only a read-side filter, every late entry would
+ * re-arm this and the sweep could defer indefinitely.
+ */
+export async function expireContests(env: Env): Promise<{ ended: number; deferred: number; failed: number }> {
+  const db = getDb(env);
+  const nowMs = now();
+
+  // `ends_at <= now` never matches a NULL, so unbounded contests are excluded by
+  // SQL's own NULL semantics; isNotNull is here to say so out loud.
+  const due = await db
+    .select({ id: schema.contests.id })
+    .from(schema.contests)
+    .where(and(
+      eq(schema.contests.status, "live"),
+      isNotNull(schema.contests.endsAt),
+      lte(schema.contests.endsAt, nowMs),
+    ))
+    .limit(200)
+    .all();
+
+  const endedIds: string[] = [];
+  // Tracked apart from `deferred` so the cron_runs detail can distinguish "this
+  // contest is legitimately waiting on a match" from "the write failed". Rolled
+  // into one number, a persistently failing UPDATE looks exactly like normal
+  // operation.
+  let failed = 0;
+  for (const row of due) {
+    // Re-check status and the waiting-match guard inside the UPDATE so an admin
+    // editing the same contest in this window cannot be silently overwritten.
+    const res = await db
+      .update(schema.contests)
+      .set({ status: "ended" })
+      .where(and(
+        eq(schema.contests.id, row.id),
+        eq(schema.contests.status, "live"),
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${schema.contestMatches}
+          WHERE ${schema.contestMatches.contestId} = ${row.id}
+            AND ${schema.contestMatches.status} = 'waiting_for_opponent'
+        )`,
+      ))
+      .run()
+      .catch((e) => {
+        console.error("[cron] expireContests update failed (continuing)", row.id, e);
+        failed += 1;
+        return null;
+      });
+    if (res?.meta.changes) endedIds.push(row.id);
+  }
+
+  // One invalidation for the whole batch, including each contest's DETAIL key —
+  // GET /read/contests/:id does not filter by status, so without this a closed
+  // contest keeps reporting itself as live for up to the 60s cache TTL.
+  if (endedIds.length > 0) await invalidateContestCaches(env, endedIds);
+
+  return { ended: endedIds.length, deferred: due.length - endedIds.length - failed, failed };
 }
 
 /** Send any pending scheduled notifications whose send_at has passed. */

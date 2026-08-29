@@ -32,11 +32,11 @@ import {
   blogListCacheKey,
   blogPostCacheKey,
   commentsCacheKey,
-  contestDetailCacheKey,
-  contestListCacheKeys,
   delCache,
+  invalidateContestCaches,
 } from "../lib/cache";
 import {
+  assertContestWindow,
   contestBannerUrl,
   cleanContestExtra,
   createContestExtra,
@@ -296,10 +296,6 @@ async function cleanupUnattachedContestBanners(c: any, urls: string[]): Promise<
   }
 }
 
-async function invalidateContestCaches(env: Env, id: string): Promise<void> {
-  await delCache(env, ...contestListCacheKeys(), contestDetailCacheKey(id));
-}
-
 /**
  * Shared pre-read guards for the two admin image uploads.
  *
@@ -430,6 +426,13 @@ adminRoute.patch("/contests/:id", async (c) => {
     hasOwn(values, "rewardCoins") ? values.rewardCoins : Number(current.rewardCoins ?? 0),
   );
 
+  // Same reason as above: a PATCH that only moves one edge of the window has to
+  // be checked against the edge already in the database.
+  assertContestWindow(
+    hasOwn(values, "startsAt") ? values.startsAt : (current.startsAt ?? null),
+    hasOwn(values, "endsAt") ? values.endsAt : (current.endsAt ?? null),
+  );
+
   const matches = await contestMatchCounts(db, id);
   if (hasOwn(values, "status") && current.status === "live" && values.status !== "live" && matches.waiting) {
     throw httpsError("failed-precondition", "Cannot move a live contest while waiting matches exist.");
@@ -449,6 +452,7 @@ adminRoute.patch("/contests/:id", async (c) => {
   const set: Record<string, any> = {};
   for (const field of [
     "title", "type", "status", "totalEntryFee", "rewardCoins", "voteDurationDays", "autoCancelHours", "minVotes", "bannerUrl",
+    "startsAt", "endsAt",
   ]) {
     if (hasOwn(values, field)) set[field] = values[field];
   }
@@ -1525,6 +1529,8 @@ adminRoute.get("/contests", async (c) => {
       voteDurationDays: schema.contests.voteDurationDays,
       autoCancelHours: schema.contests.autoCancelHours,
       minVotes: schema.contests.minVotes,
+      startsAt: schema.contests.startsAt,
+      endsAt: schema.contests.endsAt,
       extra: schema.contests.extra,
       createdBy: schema.contests.createdBy,
       createdAt: schema.contests.createdAt,
@@ -1562,6 +1568,8 @@ adminRoute.get("/contests", async (c) => {
       voteDurationDays: row.voteDurationDays,
       autoCancelHours: row.autoCancelHours,
       minVotes: row.minVotes,
+      startsAt: row.startsAt ?? null,
+      endsAt: row.endsAt ?? null,
       description: typeof extra.description === "string" ? extra.description : null,
       rules: typeof extra.rules === "string" ? extra.rules : null,
       createdBy: row.createdBy,
@@ -1642,6 +1650,7 @@ adminRoute.post("/contests", async (c) => {
   // A prize larger than the pot the two players fund would mint coins on every
   // settled match. Enforced here and on PATCH against the MERGED values.
   assertPrizeFundedByPot(values.totalEntryFee, values.rewardCoins);
+  assertContestWindow(values.startsAt, values.endsAt, { requireFuture: true });
 
   const id = newId();
   const user = c.get("user");
@@ -1659,6 +1668,8 @@ adminRoute.post("/contests", async (c) => {
     autoCancelHours: values.autoCancelHours,
     minVotes: values.minVotes,
     bannerUrl: values.bannerUrl,
+    startsAt: values.startsAt,
+    endsAt: values.endsAt,
     extra,
     createdBy,
     createdAt,

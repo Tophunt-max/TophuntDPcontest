@@ -33,6 +33,9 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useToast } from '@/src/components/toast/ToastProvider';
 import { Colors } from '@/constants/theme';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
+import { ContestCountdownBadge, ContestEntryBadge } from '@/src/components/contests/ContestBadges';
+import { useCountdown } from '@/src/hooks/useCountdown';
+import { isFreeContest, rewardCoins } from '@/src/lib/contestPricing';
 
 const { width } = Dimensions.get('window');
 const PAD = 20;
@@ -42,6 +45,13 @@ const PEOPLE_CARD_W = (CONTENT_W - GRID_GAP) / 2;
 const TEMPLATE_W = 168;
 
 type TabKey = 'all' | 'photo' | 'video' | 'users';
+type PriceKey = 'all' | 'free' | 'paid';
+
+const PRICE_FILTERS: { key: PriceKey; label: string; icon: string }[] = [
+  { key: 'all', label: 'Any entry', icon: 'infinite' },
+  { key: 'free', label: 'Free', icon: 'gift' },
+  { key: 'paid', label: 'Paid', icon: 'diamond' },
+];
 
 const TABS: {
   key: TabKey;
@@ -105,6 +115,10 @@ export default function DiscoverScreen() {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<TabKey>('all');
+  // Free vs paid is the first thing people decide before browsing battles, and
+  // there was previously no way to express it — nor even to tell which was
+  // which from a card.
+  const [priceFilter, setPriceFilter] = useState<PriceKey>('all');
 
   const activeMeta = TABS.find(t => t.key === activeTab)!;
   const activeColor = activeMeta.color;
@@ -201,8 +215,12 @@ export default function DiscoverScreen() {
     if (activeTab === 'video') return t === 'video';
     return false;
   };
+  const matchPrice = (c: any) => {
+    if (priceFilter === 'all') return true;
+    return priceFilter === 'free' ? isFreeContest(c) : !isFreeContest(c);
+  };
   const filteredContests = availableContests.filter(c =>
-    matchType(c.type) && (!q || c.title?.toLowerCase().includes(q))
+    matchType(c.type) && matchPrice(c) && (!q || c.title?.toLowerCase().includes(q))
   );
   const filteredMatches = waitingMatches.filter(m =>
     matchType(m.type) && (!q || m.title?.toLowerCase().includes(q) || m.userA?.username?.toLowerCase().includes(q))
@@ -322,56 +340,49 @@ export default function DiscoverScreen() {
           );
         })}
       </ScrollView>
+
+      {/* Entry-price filter. Hidden on People, where it means nothing. */}
+      {activeTab !== 'users' && (
+        <View style={styles.priceRow}>
+          {PRICE_FILTERS.map(pf => {
+            const isActive = priceFilter === pf.key;
+            return (
+              <TouchableOpacity
+                key={pf.key}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityState={{ selected: isActive }}
+                onPress={() => {
+                  if (Platform.OS !== 'web') Haptics.selectionAsync().catch(() => {});
+                  setPriceFilter(pf.key);
+                }}
+                style={[
+                  styles.priceChip,
+                  { backgroundColor: isActive ? activeColor : chipBg, borderColor: isActive ? activeColor : borderColor },
+                ]}
+              >
+                <Ionicons name={pf.icon} size={13} color={isActive ? '#FFF' : subText} />
+                <Text style={[styles.priceChipText, { color: isActive ? '#FFF' : subText }]}>{pf.label}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      )}
     </View>
   );
 
   // ================================================================
   // TEMPLATE CARD (start a battle)
   // ================================================================
-  const renderTemplate = (item: any) => {
-    if (!item || !item.title) return null;
-    const isVideo = item.type === 'video';
-    const prize = Number(item.rewardCoins ?? item.winningCoins ?? 0);
-    const entry = item.totalEntryFee ? Math.round(Number(item.totalEntryFee) / 2) : 0;
-    return (
-      <ScaleTouchable
-        style={styles.templateCard}
-        onPress={() => handleAction(() => router.push({
-          pathname: isVideo ? '/contest/video' : '/contest/photo',
-          params: { contestId: item.id },
-        }))}
-      >
-        <LinearGradient colors={gradForType(item.type)} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.templateInner}>
-          <MaterialCommunityIcons
-            name={isVideo ? 'movie-open-star' : 'image-filter-hdr'}
-            size={72} color="rgba(255,255,255,0.14)" style={styles.templateWm}
-          />
-          <View style={styles.templateIcon}>
-            <MaterialCommunityIcons name={isVideo ? 'movie-open-play' : 'image-multiple'} size={20} color="#FFF" />
-          </View>
-          {prize > 0 && (
-            <View style={styles.templatePrize}>
-              <CoinIcon size={11} color="#FFF" />
-              <Text style={styles.templatePrizeText}>{prize}</Text>
-            </View>
-          )}
-          <View style={{ flex: 1, justifyContent: 'flex-end' }}>
-            <Text style={styles.templateTitle} numberOfLines={2}>{item.title}</Text>
-            {entry > 0 && (
-              <View style={styles.templateEntry}>
-                <CoinIcon size={11} color="#FFF" />
-                <Text style={styles.templateEntryText}>Entry {entry}</Text>
-              </View>
-            )}
-            <View style={styles.templateCta}>
-              <Text style={styles.templateCtaText}>Start Battle</Text>
-              <ArrowIcon size={12} color={colorForType(item.type)} variant="arrow" />
-            </View>
-          </View>
-        </LinearGradient>
-      </ScaleTouchable>
-    );
-  };
+  const renderTemplate = (item: any) => (
+    <TemplateCard
+      item={item}
+      onStart={() => handleAction(() => router.push({
+        pathname: item.type === 'video' ? '/contest/video' : '/contest/photo',
+        params: { contestId: item.id },
+      }))}
+    />
+  );
 
   // ================================================================
   // VERSUS / LIVE BATTLE CARD
@@ -537,7 +548,23 @@ export default function DiscoverScreen() {
         </View>
         {filteredContests.length === 0 ? (
           <View style={{ paddingHorizontal: PAD }}>
-            <EmptyState icon="albums-outline" text="No templates available." border={borderColor} sub={subText} compact />
+            <EmptyState
+              icon="albums-outline"
+              // Distinguish "your filter hid everything" from "there is nothing
+              // to show" — the old single message made an active Free/Paid or
+              // Photo/Video filter look like an empty product.
+              text={
+                priceFilter === 'free' ? 'No free battles open right now.'
+                : priceFilter === 'paid' ? 'No paid battles open right now.'
+                : 'No battles available right now.'
+              }
+              border={borderColor}
+              sub={subText}
+              actionText={priceFilter !== 'all' ? 'Show any entry' : undefined}
+              actionColor={activeColor}
+              onAction={() => setPriceFilter('all')}
+              compact
+            />
           </View>
         ) : (
           <FlatList
@@ -632,6 +659,71 @@ function ScaleTouchable({ children, onPress, style, disabled }: any) {
         {children}
       </Pressable>
     </RNAnimated.View>
+  );
+}
+
+/**
+ * One "Start a New Battle" template card.
+ *
+ * A real component rather than the render function it used to be, because it now
+ * runs `useCountdown` — hooks cannot live in a helper the FlatList calls per
+ * item, since the hook order would shift as the list is filtered.
+ *
+ * What it fixes: the card advertised neither "free" nor "paid" (the entry badge
+ * was rendered only when the fee was above zero, so free battles showed no
+ * pricing at all) and there was no countdown anywhere, so an admin-set closing
+ * time was invisible to users.
+ */
+function TemplateCard({ item, onStart }: { item: any; onStart: () => void }) {
+  const isVideo = item?.type === 'video';
+  const { ended } = useCountdown(item?.endsAt);
+  const prize = rewardCoins(item);
+
+  if (!item || !item.title) return null;
+
+  return (
+    <ScaleTouchable
+      style={styles.templateCard}
+      // The list is cached for 60s server-side, so a contest can still be here
+      // for up to a minute after it closed. Refuse the tap rather than let a
+      // user reach a setup screen that would fail on submit.
+      disabled={ended}
+      onPress={ended ? undefined : onStart}
+    >
+      <LinearGradient
+        colors={ended ? ['#6B7280', '#4B5563'] : gradForType(item.type)}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.templateInner}
+      >
+        <MaterialCommunityIcons
+          name={isVideo ? 'movie-open-star' : 'image-filter-hdr'}
+          size={72} color="rgba(255,255,255,0.14)" style={styles.templateWm}
+        />
+        <View style={styles.templateIcon}>
+          <MaterialCommunityIcons name={isVideo ? 'movie-open-play' : 'image-multiple'} size={20} color="#FFF" />
+        </View>
+        {prize > 0 && (
+          <View style={styles.templatePrize}>
+            <CoinIcon size={11} color="#FFF" />
+            <Text style={styles.templatePrizeText}>{prize}</Text>
+          </View>
+        )}
+        <View style={{ flex: 1, justifyContent: 'flex-end' }}>
+          <Text style={styles.templateTitle} numberOfLines={2}>{item.title}</Text>
+          {/* Always exactly one of FREE / a coin price, plus the closing
+              countdown when the admin set one. */}
+          <View style={styles.templateMetaRow}>
+            <ContestEntryBadge contest={item} size="sm" />
+            <ContestCountdownBadge endsAt={item.endsAt} size="sm" />
+          </View>
+          <View style={styles.templateCta}>
+            <Text style={styles.templateCtaText}>{ended ? 'Closed' : 'Start Battle'}</Text>
+            {!ended && <ArrowIcon size={12} color={colorForType(item.type)} variant="arrow" />}
+          </View>
+        </View>
+      </LinearGradient>
+    </ScaleTouchable>
   );
 }
 
@@ -761,6 +853,9 @@ const styles = StyleSheet.create({
   liveBadgeText: { color: '#FFF', fontSize: 9, fontFamily: 'Urbanist-Black', letterSpacing: 0.5 },
 
   // Template card
+  priceRow: { flexDirection: 'row', gap: 8, paddingHorizontal: PAD, paddingTop: 10 },
+  priceChip: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 100, borderWidth: 1 },
+  priceChipText: { fontSize: 12, fontFamily: 'Urbanist-Bold' },
   templateCard: {
     width: TEMPLATE_W, height: 208, borderRadius: 24, overflow: 'hidden',
     shadowColor: '#000', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.15, shadowRadius: 10, elevation: 5,
@@ -771,8 +866,7 @@ const styles = StyleSheet.create({
   templatePrize: { position: 'absolute', top: 16, right: 16, flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(0,0,0,0.28)', paddingHorizontal: 9, paddingVertical: 5, borderRadius: 100 },
   templatePrizeText: { color: '#FFF', fontSize: 11, fontFamily: 'Urbanist-Black' },
   templateTitle: { color: '#FFF', fontSize: 17, fontFamily: 'Urbanist-Bold', marginBottom: 6, lineHeight: 20 },
-  templateEntry: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 10 },
-  templateEntryText: { color: 'rgba(255,255,255,0.9)', fontSize: 11, fontFamily: 'Urbanist-Bold' },
+  templateMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 10, flexWrap: 'wrap' },
   templateCta: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', backgroundColor: '#FFF', paddingHorizontal: 14, paddingVertical: 7, borderRadius: 100, gap: 6 },
   templateCtaText: { fontSize: 12, fontFamily: 'Urbanist-Bold', color: '#121212' },
 

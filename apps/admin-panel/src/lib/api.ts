@@ -122,6 +122,15 @@ export interface AdminContest {
   voteDurationDays: number;
   autoCancelHours: number;
   minVotes: number;
+  /**
+   * Validity window in epoch milliseconds; null means unbounded.
+   *
+   * The contest is only offered in the app between these two instants. Not to be
+   * confused with voteDurationDays/autoCancelHours, which time an individual
+   * match after two users have already started one.
+   */
+  startsAt: number | null;
+  endsAt: number | null;
   description: string | null;
   rules: string | null;
   createdBy: string | null;
@@ -143,6 +152,8 @@ export interface ContestWritePayload {
   voteDurationDays: number;
   autoCancelHours: number;
   minVotes: number;
+  startsAt: number | null;
+  endsAt: number | null;
 }
 
 export interface ContestBannerUpload {
