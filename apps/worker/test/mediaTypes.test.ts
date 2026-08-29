@@ -28,7 +28,14 @@ import {
   sniffMediaMime,
   verifyMediaBytes,
 } from '../src/lib/mediaTypes';
-import { uploadToR2, allowedMimesForFolder, folderAcceptsVideo, USER_UPLOAD_FOLDERS } from '../src/lib/r2';
+import {
+  uploadToR2,
+  putVerifiedImage,
+  allowedMimesForFolder,
+  folderAcceptsVideo,
+  USER_UPLOAD_FOLDERS,
+} from '../src/lib/r2';
+import { allowedMimesForCategory, isUserWritablePrefix } from '../src/lib/mediaCategories';
 import { fakeR2 } from './helpers/harness';
 
 const bytes = (...values: number[]) => new Uint8Array(values);
@@ -150,27 +157,63 @@ describe('folder policy', () => {
     }
   });
 
-  it.each(['avatars', 'deposits', 'vs-cards', 'profile', 'reports', 'misc'])(
-    '%s accepts images only',
+  /**
+   * R2 holds images. Every prefix, including the five that used to take video.
+   *
+   * This is the storage rule, asked without reference to the video provider —
+   * which is why it is `allowedMimesForFolder` and not `allowedMimesForUpload`.
+   */
+  it.each([...USER_UPLOAD_FOLDERS])('%s accepts images only', (folder) => {
+    expect(allowedMimesForFolder(folder)).toEqual([...IMAGE_MIME_TYPES]);
+    for (const video of VIDEO_MIME_TYPES) {
+      expect(allowedMimesForFolder(folder)).not.toContain(video);
+    }
+  });
+
+  /**
+   * The legacy video escape hatch, which is what keeps the cutover from being an
+   * outage: until Bunny is provisioned, `lib/mediaRouting.ts` passes
+   * `allowLegacyVideo` and the five prefixes the app actually offered video in
+   * accept it again. Pinned because deleting this branch is a planned follow-up,
+   * and it must be deleted deliberately rather than by a refactor.
+   */
+  it.each(['stories', 'contests', 'contest-entries', 'posts', 'chat'])(
+    '%s takes video back only when the legacy path is explicitly allowed',
     (folder) => {
-      expect(folderAcceptsVideo(folder)).toBe(false);
-      expect(allowedMimesForFolder(folder)).toEqual([...IMAGE_MIME_TYPES]);
+      expect(folderAcceptsVideo(folder)).toBe(true);
+      expect(allowedMimesForCategory(folder, { allowLegacyVideo: true })).toContain('video/mp4');
     },
   );
 
-  it.each(['stories', 'contests', 'contest-entries', 'posts', 'chat'])(
-    '%s accepts video, because the app offers it there',
+  it.each(['avatars', 'deposits', 'vs-cards', 'profile', 'reports', 'misc'])(
+    '%s refuses video even with the legacy path allowed',
     (folder) => {
-      expect(folderAcceptsVideo(folder)).toBe(true);
-      expect(allowedMimesForFolder(folder)).toContain('video/mp4');
+      // An avatar was never allowed to be a video and must not become one just
+      // because the cutover is unfinished. `deposits` matters beyond tidiness: an
+      // admin reads a UPI reference off those, and a clip in that queue wastes an
+      // operator's time and our egress.
+      expect(folderAcceptsVideo(folder)).toBe(false);
+      expect(allowedMimesForCategory(folder, { allowLegacyVideo: true })).toEqual([...IMAGE_MIME_TYPES]);
     },
   );
 
   it('fails closed for a folder nobody classified', () => {
-    // Adding a folder to USER_UPLOAD_FOLDERS without a policy entry must not
-    // silently open a video path.
+    // Adding a category without thinking about this must not open a video path,
+    // even with the legacy allowance switched on.
     expect(folderAcceptsVideo('some-folder-added-later')).toBe(false);
     expect(allowedMimesForFolder('some-folder-added-later')).toEqual([...IMAGE_MIME_TYPES]);
+    expect(allowedMimesForCategory('some-folder-added-later', { allowLegacyVideo: true })).toEqual([
+      ...IMAGE_MIME_TYPES,
+    ]);
+  });
+
+  it('never exposes a deployment-owned prefix to POST /upload', () => {
+    // The allow-list is derived from each category's `writer`, so an admin- or
+    // server-written prefix cannot appear here by omission.
+    for (const prefix of ['contest-banners', 'payment-qr', 'blog/imported']) {
+      expect(USER_UPLOAD_FOLDERS as readonly string[]).not.toContain(prefix);
+      expect(isUserWritablePrefix(prefix)).toBe(false);
+    }
   });
 
   it('classifies every folder a user can write to', () => {
@@ -196,28 +239,59 @@ describe('uploadToR2', () => {
     expect(contentType).toBe('image/png');
     expect(e.MEDIA._objects.get(fileKey).httpMetadata.contentType).toBe('image/png');
     // The extension follows the bytes too, so a URL never misrepresents its content.
-    expect(fileKey).toMatch(/^avatars\/images\/[0-9a-f-]+\.png$/);
+    expect(fileKey).toMatch(/^avatars\/\d{4}\/\d{2}\/[0-9a-f-]+\.png$/);
   });
 
-  it('files video under videos/ and image under images/ by content', async () => {
+  /**
+   * Keys carry a `{YYYY}/{MM}` shard, and no `images|videos` segment.
+   *
+   * The shard is what makes R2 lifecycle rules, Cloudflare cache rules and
+   * `wrangler r2 object list` bounded operations instead of full-prefix scans —
+   * see lib/mediaCategories.ts. The dropped segment separated two families that
+   * no longer share this bucket.
+   */
+  it('shards new keys by month', async () => {
     const e = env();
-    // Both declared as mp4; only one of them IS one. The .mov still lands under
-    // videos/ with the right extension because the sub-prefix follows the bytes.
-    const mp4 = await uploadToR2(e, 'video/mp4', 'stories', MP4);
-    expect(mp4.fileKey).toMatch(/^stories\/videos\/[0-9a-f-]+\.mp4$/);
+    const { fileKey } = await uploadToR2(e, 'image/jpeg', 'stories', JPEG);
 
-    const mov = await uploadToR2(e, 'video/mp4', 'stories', MOV);
-    expect(mov.fileKey).toMatch(/^stories\/videos\/[0-9a-f-]+\.mov$/);
-
-    const image = await uploadToR2(e, 'image/jpeg', 'stories', JPEG);
-    expect(image.fileKey).toMatch(/^stories\/images\/[0-9a-f-]+\.jpg$/);
+    expect(fileKey).toMatch(/^stories\/\d{4}\/\d{2}\/[0-9a-f-]+\.jpg$/);
+    expect(fileKey).not.toContain('/images/');
   });
 
-  it('refuses a family mismatch even in a folder that allows both', async () => {
-    // `stories` accepts images AND videos, so the allow-list alone cannot catch
-    // this — the declared-vs-detected family check is what does.
+  /** Content-hash keys stay flat, or the deduplication they exist for stops working. */
+  it('does not shard the content-hash importer prefix', async () => {
     const e = env();
-    await expect(uploadToR2(e, 'image/jpeg', 'stories', MP4)).rejects.toThrow(
+    const first = await putVerifiedImage(e, 'blog/imported', PNG.buffer as ArrayBuffer, 'abc123');
+    const second = await putVerifiedImage(e, 'blog/imported', PNG.buffer as ArrayBuffer, 'abc123');
+
+    expect(first?.key).toBe('blog/imported/abc123.png');
+    expect(second?.key).toBe(first?.key);
+    expect(second?.cached).toBe(true);
+    expect(e.MEDIA._objects.size).toBe(1);
+  });
+
+  it('refuses video by default, in every folder', async () => {
+    // R2 is images-only: the default allow-list carries no video type, so a video
+    // is rejected on the allow-list even in a folder that used to take one. The
+    // routing gate in `POST /upload` produces the actionable message; this is the
+    // backstop at the choke point in front of the bucket.
+    const e = env();
+    for (const folder of ['stories', 'contests', 'posts', 'chat', 'avatars']) {
+      await expect(uploadToR2(e, 'video/mp4', folder, MP4)).rejects.toThrow(/not allowed here/i);
+      await expect(uploadToR2(e, 'video/mp4', folder, MOV)).rejects.toThrow(/not allowed here/i);
+    }
+    expect(e.MEDIA._objects.size).toBe(0);
+  });
+
+  it('refuses a family mismatch when the legacy video path is open', async () => {
+    // During cutover `stories` accepts images AND videos, so the allow-list alone
+    // cannot catch a video offered as an image — the declared-vs-detected family
+    // check is what does. Passing the legacy list explicitly is what recreates
+    // that window now that it is not the default.
+    const e = env();
+    const legacy = allowedMimesForCategory('stories', { allowLegacyVideo: true });
+
+    await expect(uploadToR2(e, 'image/jpeg', 'stories', MP4, legacy)).rejects.toThrow(
       /is a video, but an image was expected/i,
     );
     expect(e.MEDIA._objects.size).toBe(0);

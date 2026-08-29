@@ -15,11 +15,12 @@
  * Resumability comes from the `video_provider IS NULL` filter: enqueued rows are
  * marked `migrating`, so re-running never re-enqueues the same row.
  */
-import { and, eq, isNull, like, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { bunnyConfigured, createVideo, fetchVideoFromUrl, playbackUrl, bunnyConfig } from "./bunny";
 import { now } from "./ids";
+import { mediaKeyFromPublicUrl } from "./r2";
 
 export interface BackfillResult {
   scanned: number;
@@ -29,11 +30,31 @@ export interface BackfillResult {
   errors: string[];
 }
 
-/** Videos live under the `/videos/` key prefix in R2 (see lib/r2.ts). */
-const R2_VIDEO_MARKER = "/videos/";
-
-function isR2Video(url: unknown): url is string {
-  return typeof url === "string" && url.includes(R2_VIDEO_MARKER);
+/**
+ * Is this media URL still an R2 original rather than a Bunny playback URL?
+ *
+ * Defined by OWNERSHIP, not by key shape. It used to be
+ * `url.includes("/videos/")`, matching the old `{folder}/videos/{uuid}` layout —
+ * and the current layout has no such segment, so that test silently stopped
+ * matching anything written after the change. The backfill would have reported
+ * `scanned: 0` and looked complete while every recently uploaded video stayed
+ * un-migratable, which matters most precisely because the legacy R2 path is the
+ * only video path running until Bunny is provisioned.
+ *
+ * The two conditions:
+ *  - the URL maps to a key in OUR bucket (`mediaKeyFromPublicUrl` covers the
+ *    current base and every legacy base, and both key layouts), and
+ *  - it is not HLS. Redundant while Bunny is on its own pull zone, but explicit
+ *    so that attaching a Bunny host to `R2_LEGACY_BASE_URLS` could never make the
+ *    backfill try to migrate Bunny videos into Bunny.
+ *
+ * Callers pair this with a `media_type = 'video'` / `type = 'video'` filter, so
+ * "not HLS and in our bucket" is sufficient to mean "R2 video original".
+ */
+function isR2Video(env: Env, url: unknown): url is string {
+  if (typeof url !== "string" || !url) return false;
+  if (/\.m3u8(\?|$)/i.test(url)) return false;
+  return mediaKeyFromPublicUrl(env, url) !== null;
 }
 
 /**
@@ -50,7 +71,10 @@ async function backfillStories(env: Env, limit: number, result: BackfillResult):
       and(
         isNull(schema.stories.videoProvider),
         eq(schema.stories.mediaType, "video"),
-        like(schema.stories.mediaUrl, `%${R2_VIDEO_MARKER}%`),
+        // No key-shape prefilter. `videoProvider IS NULL` plus `mediaType =
+        // 'video'` already scopes this to un-migrated video stories; the old
+        // `LIKE '%/videos/%'` narrowed it to one key layout and silently excluded
+        // everything written under the current one.
       ),
     )
     .limit(limit)
@@ -59,7 +83,7 @@ async function backfillStories(env: Env, limit: number, result: BackfillResult):
   result.scanned += rows.length;
 
   for (const row of rows) {
-    if (!isR2Video(row.mediaUrl)) continue;
+    if (!isR2Video(env, row.mediaUrl)) continue;
     try {
       const created = await createVideo(env, `story-${row.id}`);
       await fetchVideoFromUrl(env, created.guid, row.mediaUrl);
@@ -127,7 +151,7 @@ async function backfillMatches(env: Env, limit: number, result: BackfillResult):
 
     for (const { side, participant } of sides) {
       const mediaUrl = participant?.mediaUrl;
-      if (!isR2Video(mediaUrl)) continue;
+      if (!isR2Video(env, mediaUrl)) continue;
       try {
         const created = await createVideo(env, `match-${row.id}-${side}`);
         await fetchVideoFromUrl(env, created.guid, mediaUrl);
@@ -249,7 +273,7 @@ export async function promoteBackfilledVideo(
       .from(schema.contestMatches)
       .where(eq(schema.contestMatches.id, video.targetId))
       .get();
-    const stillOnR2 = [after?.userA, after?.userB].some((p: any) => isR2Video(p?.mediaUrl));
+    const stillOnR2 = [after?.userA, after?.userB].some((p: any) => isR2Video(env, p?.mediaUrl));
     if (!stillOnR2) {
       await db
         .update(schema.contestMatches)

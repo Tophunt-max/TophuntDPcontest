@@ -170,15 +170,38 @@ describe('imgVariant — on state', () => {
     expect(cdnUrl(env(), url)).toBe(url);
   });
 
-  it('never transforms deletion-lifecycle prefixes', () => {
-    // A variant is a cache entry no delete path purges; see PROXY_ONLY_PREFIXES.
-    for (const prefix of ['contest-banners/images', 'vs-cards/images']) {
+  /**
+   * Proxy-only prefixes keep their stored URL, in BOTH key layouts.
+   *
+   * The legacy entries are `<prefix>/images/...` and the current ones are
+   * `<prefix>/{YYYY}/{MM}/...`. This used to enumerate only the legacy shape,
+   * which is exactly the blind spot that made the change to a registry lookup
+   * worth making: keyed off the literal `"contest-banners/images/"`, a
+   * date-sharded banner would have been canonicalised and transformed — producing
+   * cache entries that no delete path purges, for the one prefix whose whole point
+   * is that a removed banner stops being visible.
+   */
+  it('never transforms proxy-only prefixes, in either key layout', () => {
+    for (const key of [
+      'contest-banners/images/abc.jpg',
+      'contest-banners/2026/08/abc.jpg',
+      'vs-cards/images/abc.jpg',
+      'vs-cards/2026/08/abc.jpg',
+    ]) {
       for (const base of [CURRENT, LEGACY]) {
-        const url = `${base}/${prefix}/abc.jpg`;
+        const url = `${base}/${key}`;
         expect(thumbUrl(env(), url)).toBe(url);
         expect(cdnUrl(env(), url)).toBe(url);
       }
     }
+  });
+
+  it('does transform a normal prefix in the new layout', () => {
+    // The counterpart to the above: sharding must not accidentally opt everything
+    // out of variants by failing to resolve to a category.
+    const url = `${CURRENT}/stories/2026/08/abc.jpg`;
+    expect(thumbUrl(env(), url)).not.toBe(url);
+    expect(thumbUrl(env(), url)).toContain('/cdn-cgi/image/');
   });
 
   it('stays off for the staging origin even with the flag on', () => {

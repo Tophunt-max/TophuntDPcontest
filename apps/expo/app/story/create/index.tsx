@@ -47,7 +47,7 @@ import {
   pressOffsetX,
   formatClipTime,
 } from '@/src/services/stories/musicTrim';
-import { uploadVideoToBunny } from '@/src/services/video/bunnyUpload';
+import { uploadVideo } from '@/src/services/media/uploadVideo';
 import { useQueryClient } from '@tanstack/react-query';
 import Svg, { Circle } from 'react-native-svg';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -516,32 +516,23 @@ export default function AddStoryScreen() {
     setIsUploading(true);
     setUploadProgress(0);
     try {
-      // Videos prefer Bunny Stream (resumable upload + adaptive bitrate).
-      // uploadVideoToBunny returns null when Bunny is not configured on the
-      // server, in which case we fall through to the existing R2 path.
-      let mediaUrl: string | null = null;
+      // Video goes to Bunny Stream, photos to R2. `uploadVideo` owns the
+      // pre-cutover R2 fallback and, importantly, does NOT retry on R2 when Bunny
+      // is live and fails — that retry used to turn a Bunny error into a confusing
+      // file-type rejection, and could quietly land a video in the image bucket.
+      let mediaUrl: string;
       if (media.type === 'video') {
-        try {
-          const bunny = await uploadVideoToBunny(media.uri, {
-            title: `story-${Date.now()}`,
-            targetType: 'story',
-            onProgress: setUploadProgress,
-          });
-          if (bunny) mediaUrl = bunny.playbackUrl;
-        } catch (e) {
-          console.warn('Bunny story upload failed, falling back to R2:', e);
-        }
-      }
-
-      if (!mediaUrl) {
-        const isVideo = media.type === 'video';
-        const fileType = isVideo ? 'video/mp4' : 'image/jpeg';
-        // Photos are downscaled to the 1080x1920 story spec first; video bytes
-        // are never touched here.
-        const source = isVideo
-          ? media.uri
-          : await optimizeImageForUpload(media.uri, 'story');
-        mediaUrl = (await uploadToR2(source, fileType, 'stories', (p: number) => {
+        mediaUrl = await uploadVideo(media.uri, {
+          title: `story-${Date.now()}`,
+          targetType: 'story',
+          r2Folder: 'stories',
+          onProgress: setUploadProgress,
+        });
+      } else {
+        // Downscaled to the 1080x1920 story spec first. Video bytes are never
+        // touched on the client.
+        const source = await optimizeImageForUpload(media.uri, 'story');
+        mediaUrl = (await uploadToR2(source, 'image/jpeg', 'stories', (p: number) => {
           setUploadProgress(p);
         })) as string;
       }

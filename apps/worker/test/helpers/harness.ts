@@ -133,6 +133,17 @@ export function fakeR2() {
     async get(key: string) {
       return objects.get(key) ?? null;
     },
+    /**
+     * Present because real code branches on it: `putVerifiedImage` heads the key
+     * first and skips the write when the object already exists, which is the
+     * content-hash deduplication. Without `head` here that path threw
+     * "env.MEDIA.head is not a function" instead of being exercised, so the dedup
+     * was untestable — and `lib/health.ts` heads `health/probe` too.
+     */
+    async head(key: string) {
+      const existing = objects.get(key);
+      return existing ? { key, size: 0, httpMetadata: existing.httpMetadata } : null;
+    },
     async delete(key: string) {
       deleted.push(key);
       objects.delete(key);

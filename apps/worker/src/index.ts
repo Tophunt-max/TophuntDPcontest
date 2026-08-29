@@ -40,6 +40,7 @@ import {
   unsatisfiedRangeHeader,
 } from "./lib/httpRange";
 import { applyPublicMediaCors, preflightMediaCorsHeaders } from "./lib/mediaCors";
+import { cachePolicyForKey } from "./lib/mediaCategories";
 
 // Durable Object for real-time WebSocket push.
 export { RealtimeHub } from "./realtime";
@@ -186,7 +187,12 @@ app.on(["GET", "HEAD"], "/media/*", async (c) => {
   // Contest banners have an explicit deletion lifecycle. Never place them in
   // the distributed Cache API or immutable browser caches, otherwise a removed
   // banner can remain public in another colo for up to a year.
-  const hasDeletionLifecycle = key.startsWith("contest-banners/images/");
+  //
+  // Resolved from the category registry rather than a literal prefix. The literal
+  // was `"contest-banners/images/"`, which stopped matching the moment the key
+  // layout gained a date shard — and the symptom would have been exactly the
+  // year-long stale banner this line exists to prevent.
+  const hasDeletionLifecycle = cachePolicyForKey(key) === "no-store";
 
   const isHead = c.req.method === "HEAD";
   const rangeHeader = c.req.header("range");
