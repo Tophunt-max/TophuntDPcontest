@@ -400,6 +400,7 @@ export async function describeUsers(env: Env, uids: string[]): Promise<
           username: schema.users.username,
           fullName: schema.users.fullName,
           profileImageUrl: schema.users.profileImageUrl,
+          status: schema.users.status,
         })
         .from(schema.users)
         .where(inArray(schema.users.uid, chunk))
@@ -407,8 +408,21 @@ export async function describeUsers(env: Env, uids: string[]): Promise<
     ),
   );
   const rows = pages.flat();
-  const byUid = new Map(rows.map((r: any) => [r.uid, r]));
-  // A relation can outlive the account it points at (deleted user); skip those
-  // rather than rendering an empty row the user cannot act on.
+  // A relation can outlive the account it points at; skip those rather than
+  // rendering a row the user cannot act on.
+  //
+  // Checking `status` matters as much as the row's existence: account deletion
+  // ANONYMISES the users row rather than removing it (see lib/accountDeletion.ts),
+  // so a deleted account is still found by the query above and, without this
+  // filter, surfaced as a permanent "Deleted user" entry. Deletion now clears
+  // these rows itself, but relations orphaned before that still exist — this is
+  // what makes them disappear without needing a backfill migration.
+  const byUid = new Map(
+    rows
+      .filter((r: any) => r.status !== "deleted")
+      // `status` was selected only to apply that filter — it is not part of this
+      // function's contract, so it does not go out to the client.
+      .map(({ status: _status, ...user }: any) => [user.uid, user]),
+  );
   return capped.map((uid) => byUid.get(uid)).filter(Boolean) as any;
 }

@@ -24,8 +24,10 @@ export type NotificationCategory = "social" | "contest" | "wallet" | "admin";
  * muted, so an unmapped new type errs towards silence rather than spam.
  *
  * Keep in sync with `apps/expo/src/services/notifications/notificationMeta.ts`.
+ * Exported so that sync is enforced by a test rather than by a comment — see
+ * `apps/expo/test/notificationCategoryParity.test.ts`.
  */
-const CATEGORY_BY_TYPE: Record<string, NotificationCategory> = {
+export const CATEGORY_BY_TYPE: Record<string, NotificationCategory> = {
   // --- social ---
   follow: "social",
   profile_visit: "social",
@@ -36,6 +38,10 @@ const CATEGORY_BY_TYPE: Record<string, NotificationCategory> = {
   reaction: "social",
   share: "social",
   message: "social",
+  // XP/badge progress (lib/gamification.ts). `social` is where the fallback
+  // already put it; listing it makes that a decision rather than an accident.
+  // It is not `wallet` — levelling up awards a badge, not coins.
+  level_up: "social",
 
   // --- contest ---
   vote: "contest",
@@ -43,6 +49,11 @@ const CATEGORY_BY_TYPE: Record<string, NotificationCategory> = {
   video_ready: "contest",
   match_status: "contest",
   contest_match_live: "contest",
+  // "<user> joined your battle, voting is now open" (routes/api.ts). Was
+  // unmapped, so it fell back to `social` — muting likes and follows silently
+  // muted the one notification telling you your own battle had started, and it
+  // was posted to the `social` Android channel.
+  match_active: "contest",
   contest_announcement: "contest",
   contest_entry_fee: "contest",
   "contest-win": "contest",
@@ -133,10 +144,40 @@ function bool(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
-/** Hour in 0-23, or null. */
+/**
+ * Hour in 0-23, or null.
+ *
+ * Deliberately does NOT coerce with `Number()` first. `Number(null)`,
+ * `Number("")`, `Number(false)` and `Number([])` are all `0` — a perfectly
+ * valid hour — so a coercing implementation turns "quiet hours off" (`null`)
+ * into "quiet from midnight to midnight". That is the exact shape the settings
+ * screen's `Off` preset sends, so switching quiet hours off silently persisted
+ * a window instead of clearing one.
+ */
 function hour(value: unknown): number | null {
-  const n = Number(value);
+  const n = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
   return Number.isInteger(n) && n >= 0 && n <= 23 ? n : null;
+}
+
+/**
+ * Quiet hours are a pair: either both bounds are set and distinct, or the
+ * feature is off. Normalising here keeps every consumer — the gate, the stored
+ * JSON and the settings UI's "which preset is active" check — reading the same
+ * state.
+ *
+ * A zero-length window (`start === end`) can never be "inside" quiet hours, so
+ * it already meant off; collapsing it to `null` also HEALS rows written by the
+ * coercion bug described above, which stored `{quietStart: 0, quietEnd: 0}`.
+ * Without this, users who had already tapped `Off` would stay stuck showing
+ * "quiet from 12am to 12am" even after the parsing fix.
+ */
+function quietWindow(rawStart: unknown, rawEnd: unknown): { quietStart: number | null; quietEnd: number | null } {
+  const quietStart = hour(rawStart);
+  const quietEnd = hour(rawEnd);
+  if (quietStart === null || quietEnd === null || quietStart === quietEnd) {
+    return { quietStart: null, quietEnd: null };
+  }
+  return { quietStart, quietEnd };
 }
 
 /** Parse the stored JSON into a fully-populated prefs object. */
@@ -150,8 +191,7 @@ export function resolvePrefs(raw: unknown): NotificationPrefs {
     wallet: bool(p.wallet, true),
     admin: bool(p.admin, true),
     push: bool(p.push, true),
-    quietStart: hour(p.quietStart),
-    quietEnd: hour(p.quietEnd),
+    ...quietWindow(p.quietStart, p.quietEnd),
     // Clamp to the real range of world offsets (-12:00 .. +14:00).
     utcOffsetMinutes:
       Number.isFinite(offset) && offset >= -720 && offset <= 840 ? Math.trunc(offset) : 0,

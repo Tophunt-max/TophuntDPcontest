@@ -5,6 +5,7 @@ import { httpsError } from "./http";
 import { deleteAuthUser } from "./firebaseAdmin";
 import { deleteMediaByUrl } from "./mediaDelete";
 import { newId, now } from "./ids";
+import { invalidateBlockCache } from "./blocks";
 
 /**
  * Self-service account deletion.
@@ -149,6 +150,24 @@ export async function deleteOwnAccount(
     if (row.url) mediaUrls.add(row.url);
   }
 
+  // Users on the other side of a block/mute involving this account, read BEFORE
+  // those rows are deleted below. Each of them holds a KV-cached relations blob
+  // that still lists this uid, and that cache outlives the rows — so without
+  // invalidating it the deleted account would keep being filtered out of their
+  // feed (or keep appearing in their blocked list) until the TTL expired.
+  //
+  // Outgoing mutes are deliberately absent: a mute is one-way and only the
+  // muter's own cache records it, so the people THIS user muted have nothing
+  // cached about them. Their rows are still deleted, just not invalidated.
+  const [blockedByThisUser, blockersOfThisUser, mutersOfThisUser] = await Promise.all([
+    db.select({ uid: schema.userBlocks.blockedId }).from(schema.userBlocks).where(eq(schema.userBlocks.blockerId, uid)).all(),
+    db.select({ uid: schema.userBlocks.blockerId }).from(schema.userBlocks).where(eq(schema.userBlocks.blockedId, uid)).all(),
+    db.select({ uid: schema.userMutes.muterId }).from(schema.userMutes).where(eq(schema.userMutes.mutedId, uid)).all(),
+  ]);
+  const staleRelationCaches = new Set<string>(
+    [...blockedByThisUser, ...blockersOfThisUser, ...mutersOfThisUser].map((r) => r.uid),
+  );
+
   // A short, stable pseudonym so remaining references render sensibly and the
   // unique index on `username` is still satisfied.
   const suffix = uid.slice(-6).toLowerCase().replace(/[^a-z0-9]/g, "") || newId().slice(0, 6);
@@ -240,6 +259,15 @@ export async function deleteOwnAccount(
     db.delete(schema.notifications).where(eq(schema.notifications.recipientId, uid)),
     db.delete(schema.shares).where(eq(schema.shares.userId, uid)),
     db.delete(schema.supportTickets).where(eq(schema.supportTickets.userId, uid)),
+    // Blocks and mutes, in BOTH directions. These were previously left behind,
+    // and because the `users` row survives anonymisation they did not fall out
+    // of anyone's list on their own: another user's Blocked & Muted screen kept
+    // showing a permanent, un-actionable "Deleted user" entry. Unblocking it was
+    // the only way to clear it, which is a strange thing to ask of someone.
+    db.delete(schema.userBlocks).where(eq(schema.userBlocks.blockerId, uid)),
+    db.delete(schema.userBlocks).where(eq(schema.userBlocks.blockedId, uid)),
+    db.delete(schema.userMutes).where(eq(schema.userMutes.muterId, uid)),
+    db.delete(schema.userMutes).where(eq(schema.userMutes.mutedId, uid)),
     // 4) Compliance record of the deletion itself.
     db.insert(schema.accountDeletions).values({
       uid,
@@ -248,6 +276,14 @@ export async function deleteOwnAccount(
       createdAt: ts,
     }),
   ]);
+
+  // Drop the relations caches that now reference deleted rows — this user's own,
+  // plus every counterparty collected above. Best-effort: a stale cache expires
+  // on its own TTL, so a KV hiccup must not fail a deletion that has already
+  // committed.
+  await invalidateBlockCache(env, uid, ...staleRelationCaches).catch((e) => {
+    console.error("[deleteOwnAccount] block cache invalidation failed", uid, e);
+  });
 
   // 5) Remove the login so the identity can never authenticate again. This is
   //    the step that actually makes the deletion real to the user.

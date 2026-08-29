@@ -141,7 +141,11 @@ export function getNotificationTag(type: NotificationType | undefined): Notifica
 
 export type NotificationCategory = "social" | "contest" | "wallet" | "admin";
 
-const CATEGORY_BY_TYPE: Record<string, NotificationCategory> = {
+/**
+ * Exported so the parity with the worker's copy is enforced by a test rather
+ * than by the comment above — see `test/notificationCategoryParity.test.ts`.
+ */
+export const CATEGORY_BY_TYPE: Record<string, NotificationCategory> = {
   // social
   follow: "social",
   profile_visit: "social",
@@ -152,12 +156,14 @@ const CATEGORY_BY_TYPE: Record<string, NotificationCategory> = {
   reaction: "social",
   share: "social",
   message: "social",
+  level_up: "social",
   // contest
   vote: "contest",
   photo: "contest",
   video_ready: "contest",
   match_status: "contest",
   contest_match_live: "contest",
+  match_active: "contest",
   contest_announcement: "contest",
   contest_entry_fee: "contest",
   "contest-win": "contest",
