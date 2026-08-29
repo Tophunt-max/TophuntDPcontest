@@ -364,6 +364,15 @@ export default {
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     await ensureMigrated(env).catch((e) => console.error("[migrate] cron auto-migration failed", e));
     switch (event.cron) {
+      // SEO audit — its own invocation, for its own subrequest budget.
+      //
+      // It probes ~16 of our own public URLs plus D1 and the settings store, and
+      // sharing the 10-minute sweep's budget meant it exceeded the ceiling every
+      // time and could not even record the failure (writing that row needs a
+      // subrequest too), so it showed as "never ran". See wrangler.toml [triggers].
+      case "0 */6 * * *":
+        ctx.waitUntil(runCronJob(env, "seoAudit", () => seoAuditJob(env)).then(() => undefined));
+        break;
       case "0 0 1 * *":
         ctx.waitUntil(runCronJob(env, "monthlyHallOfFame", () => monthlyHallOfFame(env)).then(() => undefined));
         break;
@@ -390,11 +399,6 @@ export default {
             // Safety net for the Bunny encode webhook: promote videos stuck in
             // `processing` (a lost webhook) and close abandoned uploads (cost).
             await runCronJob(env, "reconcileVideos", () => reconcileVideos(env));
-
-            // Self-throttling: only re-audits if the stored result is older than
-            // 6h, so hanging it off the 10-minute tick costs one settings read
-            // on the other ticks.
-            await runCronJob(env, "seoAudit", () => seoAuditJob(env));
           })(),
         );
         break;

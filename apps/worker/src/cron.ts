@@ -515,11 +515,16 @@ const SEO_AUDIT_INTERVAL_MS = 6 * 60 * 60 * 1000;
 /**
  * Refresh the SEO audit, but only if the stored one is stale.
  *
- * This sits on the 10-minute tick because that is the only frequent schedule the
- * Worker has, but an audit makes ~15 HTTP requests to our own site and reads every
- * published post, so running it every ten minutes would be pure waste — the inputs
- * change on the order of days. The freshness guard is what makes hanging it off a
- * fast cron acceptable.
+ * The audit has its OWN 6-hourly cron trigger (see wrangler.toml [triggers]), not
+ * a slot on the 10-minute sweep. It was on the sweep first and never ran once: a
+ * Worker invocation has a hard subrequest ceiling, the sweep already spends most
+ * of it on D1, and this adds ~21 more. It exceeded the limit every time — and could not
+ * report that either, because `runCronJob` writes its failure row through another
+ * subrequest, so the job showed as "never ran" rather than "failed".
+ *
+ * The freshness guard below is kept even though the schedule now matches it: it
+ * makes the manual "Re-scan" trigger and any overlapping run cheap instead of
+ * duplicating a full audit.
  *
  * Returns a small summary rather than the whole audit: the return value is stored
  * in `cron_runs.detail`, which is meant for a glanceable trail, and this doubles as
