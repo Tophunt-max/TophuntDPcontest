@@ -1634,7 +1634,7 @@ readRoute.get("/chats/:id/messages", requireAuth, async (c) => {
 });
 
 
-// ================= COMMENTS (posts or matches) =================
+// ================= COMMENTS (posts, matches or blog articles) =================
 readRoute.get("/comments", optionalAuth, async (c) => {
   const db = getDb(c.env);
   const uid = c.get("user")?.uid;
@@ -1643,6 +1643,11 @@ readRoute.get("/comments", optionalAuth, async (c) => {
   if (!targetId) return c.json({ items: [], nextCursor: null });
 
   const isMatch = targetType === "matches" || targetType === "contestMatches";
+  // Blog threads are public UGC on an indexed page and read by signed-out
+  // visitors; `optionalAuth` already allows that, so the only extra this branch
+  // needs is a `total` for the "Comments (N)" heading (there is no denormalised
+  // counter on blog_posts — see migrations/0034_blog_comments.sql).
+  const isBlog = targetType === "blog";
   const limit = Math.min(Math.max(parseInt(c.req.query("limit") || "20", 10) || 20, 1), 50);
 
   // Keyset (cursor) pagination — Instagram-style "load older on scroll". The
@@ -1666,7 +1671,7 @@ readRoute.get("/comments", optionalAuth, async (c) => {
   // and never baked into the shared cache. Comment like COUNTS are eventually
   // consistent within the TTL — the same trade-off the feed makes for votes.
   const cacheKey = commentsCacheKey(targetType, targetId);
-  let payload: { items: any[]; nextCursor: string | null } | null = isFirstPage
+  let payload: { items: any[]; nextCursor: string | null; total?: number } | null = isFirstPage
     ? await cacheGet(c.env, cacheKey)
     : null;
 
@@ -1675,7 +1680,9 @@ readRoute.get("/comments", optionalAuth, async (c) => {
       cursorAt != null && Number.isFinite(cursorAt)
         ? isMatch
           ? or(lt(schema.matchComments.createdAt, cursorAt), and(eq(schema.matchComments.createdAt, cursorAt), lt(schema.matchComments.id, cursorId)))
-          : or(lt(schema.postComments.createdAt, cursorAt), and(eq(schema.postComments.createdAt, cursorAt), lt(schema.postComments.id, cursorId)))
+          : isBlog
+            ? or(lt(schema.blogComments.createdAt, cursorAt), and(eq(schema.blogComments.createdAt, cursorAt), lt(schema.blogComments.id, cursorId)))
+            : or(lt(schema.postComments.createdAt, cursorAt), and(eq(schema.postComments.createdAt, cursorAt), lt(schema.postComments.id, cursorId)))
         : undefined;
 
     const rows = isMatch
@@ -1691,18 +1698,31 @@ readRoute.get("/comments", optionalAuth, async (c) => {
           .orderBy(desc(schema.matchComments.createdAt), desc(schema.matchComments.id))
           .limit(limit + 1)
           .all()
-      : await db
-          .select({
-            id: schema.postComments.id, userId: schema.postComments.userId, text: schema.postComments.text,
-            likes: schema.postComments.likeCount, createdAt: schema.postComments.createdAt,
-            username: schema.users.username, userAvatar: schema.users.profileImageUrl,
-          })
-          .from(schema.postComments)
-          .leftJoin(schema.users, eq(schema.postComments.userId, schema.users.uid))
-          .where(and(eq(schema.postComments.postId, targetId), keyset))
-          .orderBy(desc(schema.postComments.createdAt), desc(schema.postComments.id))
-          .limit(limit + 1)
-          .all();
+      : isBlog
+        ? await db
+            .select({
+              id: schema.blogComments.id, userId: schema.blogComments.userId, text: schema.blogComments.text,
+              likes: schema.blogComments.likeCount, createdAt: schema.blogComments.createdAt,
+              username: schema.users.username, userAvatar: schema.users.profileImageUrl,
+            })
+            .from(schema.blogComments)
+            .leftJoin(schema.users, eq(schema.blogComments.userId, schema.users.uid))
+            .where(and(eq(schema.blogComments.postId, targetId), keyset))
+            .orderBy(desc(schema.blogComments.createdAt), desc(schema.blogComments.id))
+            .limit(limit + 1)
+            .all()
+        : await db
+            .select({
+              id: schema.postComments.id, userId: schema.postComments.userId, text: schema.postComments.text,
+              likes: schema.postComments.likeCount, createdAt: schema.postComments.createdAt,
+              username: schema.users.username, userAvatar: schema.users.profileImageUrl,
+            })
+            .from(schema.postComments)
+            .leftJoin(schema.users, eq(schema.postComments.userId, schema.users.uid))
+            .where(and(eq(schema.postComments.postId, targetId), keyset))
+            .orderBy(desc(schema.postComments.createdAt), desc(schema.postComments.id))
+            .limit(limit + 1)
+            .all();
 
     const hasMore = rows.length > limit;
     const pageRows = hasMore ? rows.slice(0, limit) : rows;
@@ -1710,6 +1730,19 @@ readRoute.get("/comments", optionalAuth, async (c) => {
     const nextCursor = hasMore && last ? `${last.createdAt}_${last.id}` : null;
     const items = pageRows.map((r: any) => ({ ...r, postId: targetId, likes: r.likes ?? 0, likedByMe: false }));
     payload = { items, nextCursor };
+    // One extra COUNT, blog only, and only on a cache miss. It is a thread total
+    // rather than `items.length` because the heading has to be right on page one
+    // of a long thread — and it is deliberately NOT recomputed after the blocked
+    // -author filter below, since the number must not tell a signed-in viewer how
+    // many comments the people they blocked have written.
+    if (isBlog) {
+      const countRow = await db
+        .select({ n: sql<number>`COUNT(*)` })
+        .from(schema.blogComments)
+        .where(eq(schema.blogComments.postId, targetId))
+        .get();
+      payload.total = Number(countRow?.n ?? 0);
+    }
     if (isFirstPage) await cachePut(c.env, cacheKey, payload, 30);
   }
 
@@ -1733,11 +1766,11 @@ readRoute.get("/comments", optionalAuth, async (c) => {
     const likedSet = new Set<string>((likedRows as Array<{ commentId: string }>).map((r) => r.commentId));
     items = items.map((r: any) => ({ ...r, likedByMe: likedSet.has(r.id) }));
     c.header("Cache-Control", "private, no-store");
-    return c.json({ items, nextCursor: payload.nextCursor });
+    return c.json({ items, nextCursor: payload.nextCursor, ...(payload.total != null ? { total: payload.total } : {}) });
   }
 
   c.header("Cache-Control", "public, max-age=10");
-  return c.json({ items, nextCursor: payload.nextCursor });
+  return c.json({ items, nextCursor: payload.nextCursor, ...(payload.total != null ? { total: payload.total } : {}) });
 });
 
 // ================= STORIES =================

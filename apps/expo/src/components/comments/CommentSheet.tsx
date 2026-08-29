@@ -32,6 +32,7 @@ import {
 import * as Icons from '@/assets/svgs';
 import { CommentSkeleton } from './CommentSkeleton';
 import { commentService, Comment } from '@/src/services/comments/commentService';
+import { mergeComments } from '@/src/services/comments/commentUtils';
 import { useAuth } from '@/src/hooks/useAuth';
 import { useRouter } from 'expo-router';
 import { Colors } from '@/constants/theme';
@@ -49,18 +50,6 @@ interface CommentSheetProps {
   isDark: boolean;
   isContestMatch?: boolean;
 }
-
-/** Merge server comments into the current list by id, newest-first. */
-const mergeComments = (existing: Comment[], incoming: Comment[]): Comment[] => {
-  const map = new Map<string, Comment>();
-  for (const c of existing) map.set(c.id, c);
-  for (const c of incoming) map.set(c.id, { ...map.get(c.id), ...c, pending: false });
-  return Array.from(map.values()).sort((a, b) => {
-    const byTime = Number(b.createdAt) - Number(a.createdAt);
-    if (byTime !== 0) return byTime;
-    return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
-  });
-};
 
 export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatch = false }: CommentSheetProps) => {
   const { user } = useAuth();

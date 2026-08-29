@@ -19,6 +19,13 @@ export interface Comment {
 export interface CommentPage {
   items: Comment[];
   nextCursor: string | null;
+  /**
+   * Total comments on the thread, independent of the page size. Only the `blog`
+   * target returns it — nothing else needs a count, and `blog_posts` has no
+   * denormalised counter — so it is optional and callers must not assume
+   * `items.length` is the total when it is absent.
+   */
+  total?: number;
 }
 
 /** Simple client dedup token so a retried post never double-creates. */
@@ -26,8 +33,15 @@ const clientToken = (): string =>
   `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 
 /**
- * Comments live in D1 (post_comments / match_comments) behind the Worker.
- * `collectionName` maps to targetType: 'posts' | 'matches' | 'contestMatches'.
+ * Comments live in D1 (post_comments / match_comments / blog_comments) behind
+ * the Worker. `collectionName` maps to targetType:
+ * 'posts' | 'matches' | 'contestMatches' | 'blog'.
+ *
+ * The value is passed straight through to the Worker, which branches on it for
+ * every operation — so a new target type must be handled on BOTH sides. An
+ * unhandled one silently falls into the Worker's `posts` branch and writes
+ * against the wrong table.
+ *
  * The list is cursor-paginated (Instagram-style "load older on scroll").
  */
 export const commentService = {
@@ -46,7 +60,11 @@ export const commentService = {
     });
     // Tolerate both the paginated shape and a legacy bare array.
     if (Array.isArray(res)) return { items: res as Comment[], nextCursor: null };
-    return { items: (res?.items as Comment[]) || [], nextCursor: res?.nextCursor ?? null };
+    return {
+      items: (res?.items as Comment[]) || [],
+      nextCursor: res?.nextCursor ?? null,
+      ...(typeof res?.total === 'number' ? { total: res.total } : {}),
+    };
   },
 
   /**

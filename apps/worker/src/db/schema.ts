@@ -752,6 +752,30 @@ export const blogPosts = sqliteTable(
 );
 
 // ---------------------------------------------------------------------------
+// blog_comments  (reader comments on a blog article)
+// ---------------------------------------------------------------------------
+// Deliberately NOT `post_comments`: that table's `post_id` refers to the in-app
+// social feed (`posts`), whose denormalised `comment_count` and delete-cascade
+// are keyed on that meaning. See migrations/0034_blog_comments.sql for the full
+// reasoning, including why there is no `blog_posts.comment_count` and no
+// `parent_id`.
+export const blogComments = sqliteTable(
+  "blog_comments",
+  {
+    id: text("id").primaryKey(),
+    postId: text("post_id").notNull(), // blog_posts.id
+    userId: text("user_id").notNull(),
+    text: text("text"),
+    likeCount: integer("like_count").default(0),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    postIdx: index("idx_blog_comments_post").on(t.postId, t.createdAt),
+    userIdx: index("idx_blog_comments_user").on(t.userId),
+  }),
+);
+
+// ---------------------------------------------------------------------------
 // blog_import_log  (per-URL state for the resumable Wayback archive importer)
 // ---------------------------------------------------------------------------
 export const blogImportLog = sqliteTable(

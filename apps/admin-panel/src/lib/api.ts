@@ -556,10 +556,19 @@ export const api = {
       totalVotes: number;
     }[]>(`/admin/fraud/vote-networks?minAccounts=${minAccounts}`),
 
-  // comments moderation
-  comments: (postId?: string) =>
-    get<any[]>(`/admin/comments${postId ? `?postId=${encodeURIComponent(postId)}` : ""}`),
-  deleteComment: (id: string) => del(`/admin/comments/${id}`),
+  // comments moderation. `target: "blog"` switches to reader comments on blog
+  // articles (blog_comments), which are separate rows in a separate table — the
+  // target MUST be passed to the delete as well, or the id will be looked up in
+  // the wrong table and the delete will no-op.
+  comments: (postId?: string, target?: "blog") => {
+    const qs = new URLSearchParams();
+    if (postId) qs.set("postId", postId);
+    if (target) qs.set("target", target);
+    const q = qs.toString();
+    return get<any[]>(`/admin/comments${q ? `?${q}` : ""}`);
+  },
+  deleteComment: (id: string, target?: "blog") =>
+    del(`/admin/comments/${id}${target ? `?target=${target}` : ""}`),
 
   // followers
   userFollowers: (id: string) => get<any[]>(`/admin/users/${id}/followers`),
