@@ -79,7 +79,18 @@ describe('searchMusic', () => {
     readApi.mockResolvedValueOnce({ items: [track(), track({ id: '2', title: 'Another' })] });
     const { searchMusic } = await import('@/src/services/stories/musicService');
     const out = await searchMusic('queen');
-    expect(out.map((t) => t.id)).toEqual(['1440857781', '2']);
+    expect(out.tracks.map((t) => t.id)).toEqual(['1440857781', '2']);
+    expect(out.providerFailed).toBe(false);
+  });
+
+  it('reports providerFailed so an unanswerable search is not shown as "no results"', async () => {
+    // The distinction that was missing: a throttled provider and a genuinely
+    // obscure song both used to arrive as an empty array.
+    readApi.mockResolvedValueOnce({ items: [], source: 'none', providerFailed: true });
+    const { searchMusic } = await import('@/src/services/stories/musicService');
+    const out = await searchMusic('something obscure');
+    expect(out.tracks).toEqual([]);
+    expect(out.providerFailed).toBe(true);
   });
 
   it('THROWS when the request fails, instead of looking like "no results"', async () => {
@@ -92,7 +103,7 @@ describe('searchMusic', () => {
 
   it('does not call the server for an empty query', async () => {
     const { searchMusic } = await import('@/src/services/stories/musicService');
-    expect(await searchMusic('   ')).toEqual([]);
+    expect(await searchMusic('   ')).toEqual({ tracks: [], providerFailed: false });
     expect(readApi).not.toHaveBeenCalled();
   });
 
@@ -100,13 +111,70 @@ describe('searchMusic', () => {
     // Offering one would give the user a row that plays nothing when tapped.
     readApi.mockResolvedValueOnce({ items: [track({ id: 'a', previewUrl: '' }), track({ id: 'b' })] });
     const { searchMusic } = await import('@/src/services/stories/musicService');
-    expect((await searchMusic('x')).map((t) => t.id)).toEqual(['b']);
+    expect((await searchMusic('x')).tracks.map((t) => t.id)).toEqual(['b']);
   });
 
   it('tolerates a malformed body rather than throwing on `.filter`', async () => {
     readApi.mockResolvedValueOnce({} as any);
     const { searchMusic } = await import('@/src/services/stories/musicService');
-    expect(await searchMusic('x')).toEqual([]);
+    expect(await searchMusic('x')).toEqual({ tracks: [], providerFailed: false });
+  });
+});
+
+/**
+ * The catalogue is what makes music appear at all.
+ *
+ * The picker used to run a live "Top Hits" search against the provider every time
+ * it opened. That works from a laptop and returns NOTHING from the deployed
+ * Worker: the API throttles per source IP and a Worker's egress is shared, so it
+ * answered "200 OK, zero results" and the sheet stayed blank — with no error,
+ * because an empty result and a throttled request were the same response.
+ */
+describe('fetchMusicCatalog', () => {
+  it('asks our own Worker for the curated catalogue', async () => {
+    readApi.mockResolvedValueOnce({ categories: [{ key: 'trending', label: 'Trending', tracks: [track()] }] });
+    const { fetchMusicCatalog } = await import('@/src/services/stories/musicService');
+
+    const cats = await fetchMusicCatalog();
+
+    const [path] = readApi.mock.calls[0] as any[];
+    expect(path).toBe('/read/music/catalog');
+    expect(cats).toHaveLength(1);
+    expect(cats[0]).toMatchObject({ key: 'trending', label: 'Trending' });
+    expect(cats[0].tracks).toHaveLength(1);
+  });
+
+  it('drops a category with no playable track', async () => {
+    // A chip that opens onto an empty list is worse than no chip.
+    readApi.mockResolvedValueOnce({
+      categories: [
+        { key: 'a', label: 'A', tracks: [track()] },
+        { key: 'b', label: 'B', tracks: [] },
+        { key: 'c', label: 'C', tracks: [track({ id: 'x', previewUrl: '' })] },
+      ],
+    });
+    const { fetchMusicCatalog } = await import('@/src/services/stories/musicService');
+    expect((await fetchMusicCatalog()).map((c) => c.key)).toEqual(['a']);
+  });
+
+  it('drops a category missing a key or label', async () => {
+    readApi.mockResolvedValueOnce({
+      categories: [{ label: 'No key', tracks: [track()] }, { key: 'ok', label: 'Ok', tracks: [track({ id: '2' })] }],
+    });
+    const { fetchMusicCatalog } = await import('@/src/services/stories/musicService');
+    expect((await fetchMusicCatalog()).map((c) => c.key)).toEqual(['ok']);
+  });
+
+  it('THROWS on transport failure so the sheet can offer a retry', async () => {
+    readApi.mockRejectedValueOnce(new Error('Failed to fetch'));
+    const { fetchMusicCatalog } = await import('@/src/services/stories/musicService');
+    await expect(fetchMusicCatalog()).rejects.toThrow(/failed to fetch/i);
+  });
+
+  it('tolerates a malformed body', async () => {
+    readApi.mockResolvedValueOnce({} as any);
+    const { fetchMusicCatalog } = await import('@/src/services/stories/musicService');
+    expect(await fetchMusicCatalog()).toEqual([]);
   });
 });
 

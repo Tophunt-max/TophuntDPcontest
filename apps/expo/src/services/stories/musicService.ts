@@ -24,24 +24,57 @@ export interface MusicTrack {
   previewUrl: string;
 }
 
-/** The query used when the picker first opens. */
-export const DEFAULT_MUSIC_QUERY = 'Top Hits';
+/** One browsable group of curated tracks. */
+export interface MusicCategory {
+  key: string;
+  label: string;
+  tracks: MusicTrack[];
+}
+
+export interface MusicSearchResult {
+  tracks: MusicTrack[];
+  /**
+   * True when nothing matched AND the provider fallback could not answer — as
+   * opposed to "there is genuinely no such song". Collapsing those two into an
+   * empty array is what made a throttled provider look like an empty search box.
+   */
+  providerFailed: boolean;
+}
+
+const playable = (items: any): MusicTrack[] =>
+  (Array.isArray(items) ? items : []).filter(
+    (t: any) => t && typeof t.previewUrl === 'string' && t.previewUrl,
+  );
 
 /**
- * Search the catalogue.
+ * The curated catalogue the picker shows as soon as it opens.
+ *
+ * This replaced a live "Top Hits" search against the provider, which could not
+ * work: that API throttles per source IP, our Worker's egress is shared, and it
+ * answered "200 OK, zero results" — so the sheet was permanently empty with no
+ * error to show. The catalogue is our own data, so there is nothing to throttle.
+ *
+ * THROWS on transport failure; the caller renders that as a retry.
+ */
+export const fetchMusicCatalog = async (): Promise<MusicCategory[]> => {
+  const res: any = await readApi('/read/music/catalog');
+  const categories = Array.isArray(res?.categories) ? res.categories : [];
+  return categories
+    .map((c: any) => ({ key: c?.key, label: c?.label, tracks: playable(c?.tracks) }))
+    // A category with no playable track would be a tab that opens onto nothing.
+    .filter((c: MusicCategory) => c.key && c.label && c.tracks.length > 0);
+};
+
+/**
+ * Search: our curated catalogue first, then the provider for anything outside it.
  *
  * THROWS on transport failure, deliberately — the same distinction the blog list
- * had to learn. "I could not reach the server" and "there are no results for
- * this" are different facts, and only the caller can render them differently. The
- * old code collapsed both into an empty list, which is why a blocked request was
- * indistinguishable from an obscure search term.
+ * had to learn. "I could not reach the server" and "there are no results for this"
+ * are different facts, and only the caller can render them differently.
  */
-export const searchMusic = async (query: string, limit = 20): Promise<MusicTrack[]> => {
+export const searchMusic = async (query: string, limit = 20): Promise<MusicSearchResult> => {
   const q = query.trim();
-  if (!q) return [];
+  if (!q) return { tracks: [], providerFailed: false };
   const res: any = await readApi('/read/music/search', { q, limit });
-  const items = Array.isArray(res?.items) ? res.items : [];
-  // A track with no preview cannot be played; the Worker already drops these, so
-  // this is belt-and-braces against an older deployment.
-  return items.filter((t: any) => t && typeof t.previewUrl === 'string' && t.previewUrl);
+  return { tracks: playable(res?.items), providerFailed: !!res?.providerFailed };
 };

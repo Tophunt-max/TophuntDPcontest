@@ -27,7 +27,7 @@ import {
 } from "../lib/cache";
 import { getLiveTally, getViewerVote } from "../lib/voteCounter";
 import { rateLimit } from "../lib/rateLimit";
-import { searchTracks } from "../lib/music";
+import { searchTracks, searchCatalog, getCatalog } from "../lib/music";
 import { assertChatMember } from "../lib/chatAuth";
 import {
   blockedUidsFor,
@@ -1660,11 +1660,40 @@ readRoute.get("/music/search", requireAuth, async (c) => {
   await rateLimit(c.env, `music:${uid}`, 60, 60);
   const q = c.req.query("q") || "";
   const limit = parseInt(c.req.query("limit") || "20", 10) || 20;
-  const items = await searchTracks(c.env, q, limit);
-  // Publicly cacheable: the response is identical for every user (no per-viewer
-  // field), and lib/music.ts already caches upstream in KV.
+
+  // Our own catalogue first. It is authoritative, instant, and cannot be
+  // throttled by other traffic sharing our egress IP.
+  const curated = await searchCatalog(c.env, q, limit);
+  if (curated.length > 0) {
+    c.header("Cache-Control", "public, max-age=600");
+    return c.json({ items: curated, source: "catalog" });
+  }
+
+  // Nothing curated matched, so widen to the provider. `providerFailed`
+  // distinguishes "we asked and got nothing back" from "there is genuinely no
+  // such song" — collapsing those into an empty array is exactly why a throttled
+  // provider looked like an empty search box for so long.
+  const provider = await searchTracks(c.env, q, limit);
   c.header("Cache-Control", "public, max-age=600");
-  return c.json({ items });
+  return c.json({
+    items: provider,
+    source: provider.length > 0 ? "provider" : "none",
+    ...(provider.length === 0 && q.trim() ? { providerFailed: true } : {}),
+  });
+});
+
+/**
+ * The curated catalogue, grouped for browsing.
+ *
+ * This is what the picker loads when it opens, and it is the reason music shows
+ * up at all: the previous design asked the provider for "Top Hits" on every open,
+ * which is IP-throttled and answered "200 OK, zero results" from the Worker.
+ */
+readRoute.get("/music/catalog", requireAuth, async (c) => {
+  const categories = await getCatalog(c.env);
+  // Identical for every user and only changes when a migration ships.
+  c.header("Cache-Control", "public, max-age=3600");
+  return c.json({ categories });
 });
 
 // ================= COMMENTS (posts, matches or blog articles) =================

@@ -762,6 +762,42 @@ export const blogPosts = sqliteTable(
 );
 
 // ---------------------------------------------------------------------------
+// music catalogue  (curated soundtracks for the story picker)
+// ---------------------------------------------------------------------------
+// Read at runtime INSTEAD of calling the provider. The picker's first version
+// asked Apple's iTunes Search API for "Top Hits" whenever it opened, which worked
+// from a laptop and returned nothing from the deployed Worker: that API throttles
+// per source IP and a Worker's egress is shared, so the response was "200 OK,
+// zero results" and the sheet came up empty. See migrations/0036_music_catalog.sql.
+export const musicCategories = sqliteTable("music_categories", {
+  key: text("key").primaryKey(),
+  label: text("label").notNull(),
+  sortOrder: integer("sort_order").notNull().default(0),
+});
+
+export const musicTracks = sqliteTable(
+  "music_tracks",
+  {
+    // The provider's track id — the same value a client sends as `musicTrackId`,
+    // so a curated pick needs no outbound lookup when a story is created.
+    id: text("id").primaryKey(),
+    title: text("title").notNull(),
+    artist: text("artist").notNull(),
+    artworkUrl: text("artwork_url"),
+    // Apple's public 30-second preview. We host no audio; this is a link, and it
+    // can rotate — readers must treat a dead one as "no music".
+    previewUrl: text("preview_url").notNull(),
+    category: text("category").notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    // Retire a track without deleting a row that live stories still reference.
+    isActive: integer("is_active").notNull().default(1),
+  },
+  (t) => ({
+    categoryIdx: index("idx_music_tracks_category").on(t.category, t.isActive, t.sortOrder),
+  }),
+);
+
+// ---------------------------------------------------------------------------
 // blog_comments  (reader comments on a blog article)
 // ---------------------------------------------------------------------------
 // Deliberately NOT `post_comments`: that table's `post_id` refers to the in-app
