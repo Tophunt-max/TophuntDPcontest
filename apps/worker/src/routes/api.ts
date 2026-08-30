@@ -21,7 +21,7 @@ import { enqueueBroadcast } from "../lib/broadcast";
 import { setCustomClaims } from "../lib/firebaseAdmin";
 import { publish, publishMany } from "../lib/publish";
 import { castVote, bumpEngagement } from "../lib/voteCounter";
-import { rateLimit } from "../lib/rateLimit";
+import { consumeRateLimit, rateLimit } from "../lib/rateLimit";
 import { assertIdentifiersAvailable, normalizePhone } from "../lib/userIdentifiers";
 import { enforceIdempotency, releaseIdempotency } from "../lib/idempotency";
 import {
@@ -214,8 +214,22 @@ apiRoute.post("/", async (c) => {
       }
 
       // Without this, anyone can create unlimited video objects in our Bunny
-      // account. 10/hour is far above real usage and far below abuse.
-      await rateLimit(env, `vidup:${uid}`, 10, 3600);
+      // account. The cap is charged BEFORE the object is created, deliberately —
+      // charging afterwards would let a burst of parallel requests all pass the
+      // check and create objects before any of them paid.
+      //
+      // Raised from 10 because the budget is spent on ATTEMPTS, not on posted
+      // videos: every retry against a flaky connection burns one, so a user who
+      // never managed to post anything could still lock themselves out for an
+      // hour — and this message was the only thing they'd see. 30/hour is still
+      // far below abuse and now sits above the 60/hour image cap in spirit
+      // (a story is one video, not thirty).
+      if (!(await consumeRateLimit(env, `vidup:${uid}`, 30, 3600))) {
+        throw httpsError(
+          "resource-exhausted",
+          "You've started too many video uploads in the last hour. Please try again later.",
+        );
+      }
 
       const { title, targetType } = body;
       if (targetType && !["story", "contest_entry"].includes(String(targetType)))

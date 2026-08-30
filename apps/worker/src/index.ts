@@ -338,10 +338,25 @@ app.route("/webhook", webhookRoute);
 // attaches the request-id so support can correlate a user report to a log line.
 app.onError((err, c) => {
   const requestId = c.get("requestId");
+  const errPath = new URL(c.req.url).pathname;
   if (err instanceof ApiError) {
+    // A 5xx ApiError is OUR fault and used to return from here completely
+    // unrecorded — no error_logs row, no Sentry event, only an ephemeral
+    // console line. That is how a failing Bunny library stayed invisible: the
+    // upload broke for every user, `/health/deep` still reported Bunny as
+    // "configured" (it only checks that the credentials EXIST), and the admin
+    // panel's Error Logs page was empty, so there was nothing to diagnose from.
+    //
+    // 4xx stays unlogged on purpose — those are the client's problem and are
+    // ordinary traffic, so recording them would bury exactly this kind of fault.
+    if (err.status >= 500) {
+      const apiErrCtx = { requestId, path: errPath, method: c.req.method, status: err.status };
+      c.executionCtx.waitUntil(logErrorToDb(c.env, err, apiErrCtx));
+      c.executionCtx.waitUntil(captureError(c.env, err, apiErrCtx));
+    }
     return c.json({ ...errorBody(err), requestId }, err.status);
   }
-  const path = new URL(c.req.url).pathname;
+  const path = errPath;
   console.error(
     JSON.stringify({
       level: "error",

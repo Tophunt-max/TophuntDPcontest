@@ -196,6 +196,31 @@ export async function reconcileVideos(env: Env): Promise<ReconcileResult> {
 
   for (const v of abandoned) {
     try {
+      // ASK BUNNY FIRST. `uploading` means "we never heard that the bytes
+      // landed" — which is NOT the same as "the bytes never landed". The client's
+      // `videoUploadComplete` call is explicitly best-effort (bunnyUpload.ts
+      // swallows its failure on the grounds that the webhook reconciles), so a
+      // lost call plus a lost webhook leaves a fully uploaded, encoded video
+      // sitting in a row that still says `uploading`.
+      //
+      // Deleting on that evidence destroyed a real video that a story was already
+      // pointing at, leaving a permanently broken playlist URL and no trace of
+      // why. Silent, unrecoverable, and it only shows up under exactly the double
+      // failure this sweep exists to clean up after.
+      const meta = await getVideo(env, v.id);
+      const uploadedBytes = Number(meta?.storageSize ?? 0) > 0;
+      const encodeStarted = Number(meta?.status ?? 0) > 0;
+
+      if (meta && (uploadedBytes || encodeStarted)) {
+        // Real content. Promote it through the shared transition instead, which
+        // also fills in the poster/duration the lost webhook never delivered.
+        const outcome = await applyBunnyEncodeResult(env, v.id);
+        result.processingChecked += 1;
+        if (outcome === "ready") result.promotedReady += 1;
+        else if (outcome === "failed") result.promotedFailed += 1;
+        continue;
+      }
+
       await deleteVideo(env, v.id); // best-effort, 404-safe
       await db
         .update(schema.videos)
@@ -204,6 +229,8 @@ export async function reconcileVideos(env: Env): Promise<ReconcileResult> {
         .run();
       result.abandoned += 1;
     } catch (e) {
+      // Leave the row `uploading` so the next pass retries. Better a Bunny object
+      // that lingers another 10 minutes than one deleted on incomplete evidence.
       console.error("[videoReconcile] abandoned cleanup failed", v.id, e);
     }
   }

@@ -123,6 +123,9 @@ describe('reconcileVideos — abandoned uploads', () => {
     const { env } = makeEnv();
     const db = drizzleOf(env);
     await seedVideo(db, { id: 'vid-aband', status: 'uploading', createdAt: Date.now() - (UPLOAD_ABANDON_MS + 60_000) });
+    // What a created-but-never-uploaded Bunny object looks like: no bytes, encode
+    // never started. Stated explicitly because deletion now depends on this answer.
+    getVideoMock.mockResolvedValue({ status: 0, storageSize: 0 });
 
     const res = await reconcileVideos(env);
 
@@ -131,6 +134,27 @@ describe('reconcileVideos — abandoned uploads', () => {
     const row = await db.select().from(schema.videos).where(eq('vid-aband')).get();
     expect(row?.status).toBe('failed');
     expect(row?.errorMessage).toMatch(/abandoned/i);
+  });
+
+  it('never deletes an uploading row whose bytes actually reached Bunny', async () => {
+    // The data-loss case. `uploading` means "we were never TOLD the bytes landed",
+    // not "they didn't" — `videoUploadComplete` is best-effort on the client, so
+    // losing it AND the webhook leaves a fully encoded video in an `uploading`
+    // row. Deleting on that evidence destroyed a real video that a story was
+    // already pointing at, leaving a dead playlist URL and no trace of the cause.
+    const { env } = makeEnv();
+    const db = drizzleOf(env);
+    await seedVideo(db, { id: 'vid-good', status: 'uploading', createdAt: Date.now() - (UPLOAD_ABANDON_MS + 60_000) });
+    getVideoMock.mockResolvedValue({ status: 4, length: 9, storageSize: 1_234_567 });
+
+    const res = await reconcileVideos(env);
+
+    expect(deleteVideoMock).not.toHaveBeenCalled();
+    expect(res.abandoned).toBe(0);
+    expect(res.promotedReady).toBe(1);
+    const row = await db.select().from(schema.videos).where(eq('vid-good')).get();
+    expect(row?.status).toBe('ready');
+    expect(row?.playbackUrl).toBe('https://cdn.test/vid-good/playlist.m3u8');
   });
 
   it('leaves a recent uploading row alone (slow connection, still going)', async () => {

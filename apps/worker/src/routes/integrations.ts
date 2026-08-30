@@ -17,7 +17,7 @@ import {
 import { secretStorageAvailable } from "../lib/secretBox";
 import { sendSmsDetailed, smsConfigured } from "../lib/sms";
 import { emailConfigured, sendEmailDetailed } from "../lib/email";
-import { bunnyConfig } from "../lib/bunny";
+import { bunnyConfig, mp4Url } from "../lib/bunny";
 
 /**
  * /admin/integrations — one place to configure every third-party service.
@@ -216,16 +216,54 @@ export function registerIntegrationRoutes(
             message: "Bunny needs an API key, a numeric Library ID and the pull-zone hostname.",
           });
         }
-        const res = await fetch(`https://video.bunnycdn.com/library/${cfg.libraryId}/videos?itemsPerPage=1`, {
+        // 10 rather than 1: the probe below needs an ENCODED video to test
+        // against, and the newest one often isn't finished yet.
+        const res = await fetch(`https://video.bunnycdn.com/library/${cfg.libraryId}/videos?itemsPerPage=10`, {
           headers: { AccessKey: cfg.apiKey, Accept: "application/json" },
         });
         const text = await res.text();
-        await writeAdminAudit(c.env, c.get("user"), "integrations.test", "bunny", cfg.libraryId, { ok: res.ok });
+        if (!res.ok) {
+          await writeAdminAudit(c.env, c.get("user"), "integrations.test", "bunny", cfg.libraryId, { ok: false });
+          return c.json({
+            ok: false,
+            message: `Bunny rejected the request (${res.status}): ${text.slice(0, 200)}`,
+          });
+        }
+
+        // A valid key proves we can CREATE videos. It says nothing about whether
+        // anyone can WATCH them on the web, and those are separate switches.
+        //
+        // Chrome has no native HLS, so the web build rewrites Bunny's playlist URL
+        // to `/play_720p.mp4` (see the client's lib/videoSource.ts). That file only
+        // exists if "MP4 Fallback" is enabled on the library. With it off, uploads
+        // succeed, encoding succeeds, the credential test passes — and every video
+        // on tophunt.in is a dead player, with nothing anywhere saying why. So the
+        // test fetches the exact URL the browser will ask for.
+        let playback = "";
+        try {
+          const items: any[] = JSON.parse(text)?.items || [];
+          // status >= 3 is Bunny's "playable" (see mapBunnyStatus).
+          const encoded = items.find((v) => Number(v?.status) >= 3 && Number(v?.status) !== 5 && v?.guid);
+          if (!encoded) {
+            playback = " No encoded video to verify web playback against yet — re-test after a video finishes.";
+          } else {
+            const probe = await fetch(mp4Url(cfg, String(encoded.guid)), { method: "HEAD" });
+            playback = probe.ok
+              ? " MP4 fallback is on, so web playback works."
+              : ` WARNING: MP4 fallback returned ${probe.status} — videos will NOT play on the website. ` +
+                `Enable "MP4 Fallback" in the Bunny library's encoding settings.`;
+          }
+        } catch {
+          playback = " Could not verify the MP4 fallback used for web playback.";
+        }
+
+        await writeAdminAudit(c.env, c.get("user"), "integrations.test", "bunny", cfg.libraryId, { ok: true });
         return c.json({
-          ok: res.ok,
-          message: res.ok
-            ? `Connected to Bunny library ${cfg.libraryId}.`
-            : `Bunny rejected the request (${res.status}): ${text.slice(0, 200)}`,
+          // Deliberately still `ok: true` — creating videos genuinely works, and
+          // the message carries the playback caveat. Failing the whole test would
+          // imply the credentials are wrong, which is a different repair.
+          ok: true,
+          message: `Connected to Bunny library ${cfg.libraryId}.${playback}`,
         });
       }
 

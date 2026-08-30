@@ -88,6 +88,40 @@ describe('uploadVideo', () => {
     expect(r2Mock.impl).toHaveBeenCalledTimes(1);
   });
 
+  it('surfaces a 4xx from createVideoUpload without re-uploading to R2', async () => {
+    // The rate limit (10 video uploads/hour) is the one users actually hit. A 4xx
+    // is an answer from PAST the `bunnyConfigured()` gate — the action returns 200
+    // with `configured: false` when Bunny is off — so Bunny is live, R2 is closed,
+    // and the fallback would push the whole file over mobile data to be refused.
+    const rateLimited = Object.assign(new Error('You have started too many video uploads'), {
+      code: 'functions/resource-exhausted',
+      status: 429,
+    });
+    bunnyMock.impl.mockResolvedValue({ status: 'unavailable', error: rateLimited });
+
+    await expect(uploadVideo('file://v.mp4', opts)).rejects.toThrow(/too many video uploads/i);
+    expect(r2Mock.impl).not.toHaveBeenCalled();
+  });
+
+  it('reports the real failure, not R2\'s "update the app", when the fallback is refused', async () => {
+    // The exact bug users saw on /story/create: a current build asked Bunny, got no
+    // answer, retried R2, and R2's message for STALE clients became the visible
+    // error — telling them to update an already-current app and hiding the cause.
+    bunnyMock.impl.mockResolvedValue({
+      status: 'unavailable',
+      error: new Error('The server took too long to respond. Please try again.'),
+    });
+    r2Mock.impl.mockRejectedValue(
+      new Error(
+        'Videos are no longer uploaded to this endpoint. Use the createVideoUpload action, ' +
+          'which uploads directly to Bunny Stream. Please update the app.',
+      ),
+    );
+
+    await expect(uploadVideo('file://v.mp4', opts)).rejects.toThrow(/took too long to respond/i);
+    await expect(uploadVideo('file://v.mp4', opts)).rejects.not.toThrow(/update the app/i);
+  });
+
   it('refuses rather than guessing when the server closed both paths', async () => {
     bunnyMock.impl.mockResolvedValue({ status: 'not-configured', r2Fallback: false });
 

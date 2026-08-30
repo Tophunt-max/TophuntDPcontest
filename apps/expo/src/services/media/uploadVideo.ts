@@ -28,7 +28,16 @@ import { uploadVideoToBunny } from '@/src/services/video/bunnyUpload';
  *    path and it is not an error.
  *  - `not-configured` + no fallback  → nothing can accept it. Surface that.
  *  - a thrown error                  → Bunny is live and failed. Propagate it.
+ *  - `unavailable`                   → the question went unanswered. R2 MAY be
+ *    right, so it is still tried, but its answer never becomes the user-facing
+ *    error — see the branch below for why that distinction is the whole point.
  */
+
+/** Keep `throw` on a value we know is an Error, whatever the transport handed us. */
+function asError(error: unknown): Error {
+  if (error instanceof Error) return error;
+  return new Error(typeof error === 'string' ? error : 'Could not start the video upload.');
+}
 export interface UploadVideoOptions {
   /** Bunny library title, and the fallback R2 upload's log label. */
   title?: string;
@@ -46,12 +55,35 @@ export async function uploadVideo(uri: string, options: UploadVideoOptions): Pro
   if (outcome.status === 'uploaded') return outcome.playbackUrl;
 
   if (outcome.status === 'unavailable') {
-    // The routing question could not be asked. Try R2: before cutover it accepts
-    // this and the upload succeeds, which is what the previous catch-all did. If
-    // Bunny IS live, R2 answers with a `failed-precondition` and the user sees
-    // that rather than a silent success into the wrong bucket.
-    console.warn('[uploadVideo] createVideoUpload failed; attempting R2:', outcome.error);
-    return (await uploadToR2(uri, 'video/mp4', r2Folder, onProgress)) as string;
+    const cause = asError(outcome.error);
+    const status = (outcome.error as { status?: number } | null | undefined)?.status;
+
+    // A 4xx is an ANSWER, not a lost question, and it is specifically an answer
+    // from past the `bunnyConfigured()` gate — `createVideoUpload` returns 200
+    // with `configured: false` when Bunny is off, so it can only reach a
+    // deliberate rejection when Bunny is LIVE. R2 is therefore already closed to
+    // video and the fallback cannot succeed. Skipping it matters beyond
+    // tidiness: `uploadToR2` sends the entire file before the Worker can refuse
+    // it, so the old path pushed a whole video over mobile data to earn a
+    // rejection. The rate limit (10 video uploads/hour) lands here.
+    if (typeof status === 'number' && status >= 400 && status < 500) throw cause;
+
+    // No response at all (timeout, dropped tunnel) or a 5xx. NOW the routing
+    // question is genuinely unanswered, and before cutover R2 is where this
+    // belongs — so still try it.
+    console.warn('[uploadVideo] createVideoUpload failed; attempting R2:', cause);
+    try {
+      return (await uploadToR2(uri, 'video/mp4', r2Folder, onProgress)) as string;
+    } catch (fallbackError) {
+      // Once Bunny is live, R2 replies "Videos are no longer uploaded to this
+      // endpoint... Please update the app." That sentence describes OUR routing,
+      // aimed at a stale build — and this build is not stale, it asked Bunny
+      // first and got no answer. Letting it surface told users to update an
+      // already-current app and hid the actual failure, so the original error
+      // wins. This is the bug the fallback was written to avoid and then caused.
+      console.warn('[uploadVideo] R2 fallback also rejected:', fallbackError);
+      throw cause;
+    }
   }
 
   if (!outcome.r2Fallback) {
