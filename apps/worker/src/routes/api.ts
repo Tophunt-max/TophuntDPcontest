@@ -214,16 +214,17 @@ apiRoute.post("/", async (c) => {
       }
 
       // Without this, anyone can create unlimited video objects in our Bunny
-      // account. 10/hour is far above real usage and far below abuse.
+      // account. The cap is charged BEFORE the object is created, deliberately —
+      // charging afterwards would let a burst of parallel requests all pass the
+      // check and create objects before any of them paid.
       //
-      // Worth knowing: the budget is spent on ATTEMPTS, not on completed videos —
-      // the object is created here, before a single byte is uploaded. So a user
-      // fighting a flaky connection burns it without ever posting anything, and
-      // this message is then the only thing they see. Hence the specific wording
-      // rather than `rateLimit`'s generic "Too many requests. Please slow down.",
-      // which gave no hint that video uploads have their own, much tighter cap
-      // than the 60/hour on image uploads.
-      if (!(await consumeRateLimit(env, `vidup:${uid}`, 10, 3600))) {
+      // Raised from 10 because the budget is spent on ATTEMPTS, not on posted
+      // videos: every retry against a flaky connection burns one, so a user who
+      // never managed to post anything could still lock themselves out for an
+      // hour — and this message was the only thing they'd see. 30/hour is still
+      // far below abuse and now sits above the 60/hour image cap in spirit
+      // (a story is one video, not thirty).
+      if (!(await consumeRateLimit(env, `vidup:${uid}`, 30, 3600))) {
         throw httpsError(
           "resource-exhausted",
           "You've started too many video uploads in the last hour. Please try again later.",

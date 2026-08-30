@@ -62,6 +62,7 @@ import {
 import { Colors } from '@/constants/theme';
 import { formatClockTime } from '@/src/lib/formatTime';
 import { videoSourceFor } from '@/src/lib/videoSource';
+import { useVideoStatus } from '@/src/hooks/useVideoStatus';
 import { prefetchImages } from '@/src/lib/mediaPrefetch';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { isVideoStory, isVsStory, storyMediaKind, type StoryViewer } from '@/src/types/stories';
@@ -98,6 +99,16 @@ export default function StoryView() {
   const [progress] = useState(new Animated.Value(0));
   const [isPaused, setIsPaused] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  /**
+   * The player reported it cannot play this source.
+   *
+   * Needed because `isLoading` was only ever cleared by `readyToPlay`, and the
+   * progress animation was started from that same branch — so a video that failed
+   * to load left a spinner up forever AND never advanced the story. A Bunny video
+   * hits exactly that during its 10-60s encode, as does one whose MP4 fallback is
+   * missing on the web.
+   */
+  const [videoError, setVideoError] = useState(false);
   const [duration, setDuration] = useState(DEFAULT_STORY_DURATION);
   const [showViewers, setShowViewers] = useState(false);
   const [viewers, setViewers] = useState<StoryViewer[]>([]);
@@ -224,6 +235,20 @@ export default function StoryView() {
   const player = useVideoPlayer(currentStory?.mediaType === 'video' ? videoSourceFor(currentStory.mediaUrl) : null, (player) => {
     player.loop = false;
   });
+
+  /**
+   * Only used to EXPLAIN a playback failure, never to gate the player.
+   *
+   * Gating on it (as the feed's PostCard does) would put an API round trip in
+   * front of every video story, including the overwhelming majority that are long
+   * since encoded — a real cost paid on every view to cover the first minute of
+   * one. So the player is still mounted optimistically and this is consulted only
+   * once `statusChange` reports an error, to say "still processing" instead of a
+   * bare "unavailable".
+   */
+  const { isProcessing: videoStillEncoding } = useVideoStatus(
+    currentStory?.mediaType === 'video' ? currentStory.mediaUrl : null,
+  );
 
   /**
    * The story's soundtrack, and it starts AUDIBLE.
@@ -428,6 +453,7 @@ export default function StoryView() {
     if (currentStory) {
       markStoryAsSeen(currentStory.id);
       setIsLoading(true);
+      setVideoError(false);
       // Everything that is not a video advances on a fixed timer. This used to
       // test `=== 'image'`, which excluded the `"photo"` the contest flows wrote —
       // so contest stories never started their progress bar and never advanced.
@@ -609,10 +635,21 @@ export default function StoryView() {
                 const videoDuration = (player.duration || 5) * 1000;
                 setDuration(videoDuration);
                 setIsLoading(false);
+                setVideoError(false);
                 if (!isPaused && !showHighlightModal) {
                     player.play();
                     startAnimation(videoDuration);
                 }
+            } else if (status.status === 'error') {
+                // Fall back to the behaviour of a non-video story: drop the
+                // spinner, explain briefly, and RUN THE TIMER so the story still
+                // advances. Without this branch the viewer was a dead end — the
+                // one thing a full-screen story must never be, since the progress
+                // bar is also how the user gets out to the next one.
+                setIsLoading(false);
+                setVideoError(true);
+                setDuration(DEFAULT_STORY_DURATION);
+                if (!isPaused && !showHighlightModal) startAnimation(DEFAULT_STORY_DURATION);
             }
         });
         return () => subscription.remove();
@@ -753,6 +790,25 @@ export default function StoryView() {
             <LinearGradient pointerEvents="none" colors={['rgba(0,0,0,0.5)', 'transparent']} style={styles.scrimTop} />
             <LinearGradient pointerEvents="none" colors={['transparent', 'rgba(0,0,0,0.6)']} style={styles.scrimBottom} />
             {isLoading && <View style={styles.loader}><ActivityIndicator size="large" color="white" /></View>}
+            {/*
+              Shown instead of a spinner that would never resolve. Bunny needs
+              10-60s to encode, so a story opened right after posting is the common
+              case here and deserves an honest label rather than "unavailable".
+            */}
+            {videoError && (
+                <View pointerEvents="none" style={styles.videoErrorBox}>
+                    <Ionicons
+                        name={videoStillEncoding ? 'hourglass-outline' : 'videocam-off'}
+                        size={34}
+                        color="rgba(255,255,255,0.9)"
+                    />
+                    <Text style={styles.videoErrorText}>
+                        {videoStillEncoding
+                            ? 'Still processing — check back in a moment'
+                            : 'This video could not be played'}
+                    </Text>
+                </View>
+            )}
             
             {/*
               Soundtrack pill. Sound starts on, so most of the time this is a
@@ -976,6 +1032,8 @@ const styles = StyleSheet.create({
   scrimTop: { position: 'absolute', top: 0, left: 0, right: 0, height: 140 },
   scrimBottom: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 170 },
   loader: { position: 'absolute' },
+  videoErrorBox: { position: 'absolute', alignItems: 'center', gap: 10, paddingHorizontal: 32 },
+  videoErrorText: { color: 'rgba(255,255,255,0.9)', fontSize: 14, textAlign: 'center' },
   overlay: { ...StyleSheet.absoluteFillObject },
   pauseOverlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.3)' },
   pauseLottie: { width: 120, height: 120 },

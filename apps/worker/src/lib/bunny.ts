@@ -185,20 +185,92 @@ export function tusSignature(
 // Management API
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-attempt budget for a Bunny API call.
+ *
+ * There was none, which is the failure mode that hurts: a hung upstream held the
+ * Worker request until the CLIENT's 20s timeout fired, so the user saw a generic
+ * "server took too long" and the Worker went on waiting. 10s is far above Bunny's
+ * normal sub-second response and well inside the client's budget, so a stall now
+ * surfaces as a retryable error while there is still time to retry it.
+ */
+const BUNNY_TIMEOUT_MS = 10_000;
+
+/**
+ * Backoff between retries. Two is enough: this runs inside a request a user is
+ * watching a spinner for, and 0.3s + 1.2s of delay is the most that can be spent
+ * before the client's own timeout becomes the binding constraint.
+ */
+const BUNNY_RETRY_DELAYS_MS = [300, 1200];
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Is this failure worth another attempt?
+ *
+ * 5xx and 429 are Bunny telling us to come back; a network error or a timeout
+ * means we never got an answer. A 4xx is our request being wrong and will fail
+ * identically forever, so retrying it only burns the user's time.
+ */
+function bunnyRetryable(res: Response | null): boolean {
+  if (!res) return true; // threw: network error or timeout
+  return res.status === 429 || res.status >= 500;
+}
+
+/**
+ * One Bunny Management API call, with a timeout and bounded retries.
+ *
+ * WHY RETRY AT ALL — the video upload had exactly one shot at `POST /videos`. A
+ * single transient Bunny blip therefore failed the whole upload, and because the
+ * client treats a failed `createVideoUpload` as "routing unknown", that surfaced
+ * to the user as an unrelated message about updating their app. The TUS transfer
+ * has retried since day one (`RETRY_DELAYS` in the client); the call that STARTS
+ * it did not, which is backwards — creation is the cheapest thing to repeat.
+ *
+ * KNOWN TRADE-OFF: `POST /videos` is not idempotent and Bunny has no idempotency
+ * key, so retrying a request that actually succeeded but whose response was lost
+ * creates a second, empty video object. That is accepted deliberately — an object
+ * with no bytes uploaded costs nothing to store and is invisible to users,
+ * whereas the alternative is a failed upload for a real person. Retries are kept
+ * at two to bound how much clutter a sustained Bunny outage can produce.
+ */
 async function bunnyFetch(
   cfg: BunnyConfig,
   path: string,
   init: RequestInit & { method: string },
 ): Promise<Response> {
-  return fetch(`${BUNNY_API_BASE}/library/${cfg.libraryId}${path}`, {
-    ...init,
-    headers: {
-      AccessKey: cfg.apiKey,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      ...(init.headers || {}),
-    },
-  });
+  const url = `${BUNNY_API_BASE}/library/${cfg.libraryId}${path}`;
+  const headers = {
+    AccessKey: cfg.apiKey,
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    ...(init.headers || {}),
+  };
+
+  let lastError: unknown = null;
+
+  for (let attempt = 0; ; attempt++) {
+    let res: Response | null = null;
+    try {
+      res = await fetch(url, { ...init, headers, signal: AbortSignal.timeout(BUNNY_TIMEOUT_MS) });
+      if (!bunnyRetryable(res)) return res;
+    } catch (e) {
+      lastError = e;
+    }
+
+    // Out of attempts: hand back the response so the caller can log the real
+    // status, or rethrow the transport error if we never got one at all.
+    if (attempt >= BUNNY_RETRY_DELAYS_MS.length) {
+      if (res) return res;
+      throw lastError instanceof Error ? lastError : new Error("Bunny request failed");
+    }
+
+    console.warn(
+      `[bunny] ${init.method} ${path} attempt ${attempt + 1} failed ` +
+        `(${res ? `status ${res.status}` : (lastError as Error)?.name || "network error"}); retrying`,
+    );
+    await sleep(BUNNY_RETRY_DELAYS_MS[attempt]);
+  }
 }
 
 export interface CreatedVideo {
@@ -218,10 +290,24 @@ export interface CreatedVideo {
 export async function createVideo(env: Env, title: string): Promise<CreatedVideo> {
   const cfg = await requireBunny(env);
 
-  const res = await bunnyFetch(cfg, "/videos", {
-    method: "POST",
-    body: JSON.stringify({ title: title.slice(0, 200) }),
-  });
+  // `bunnyFetch` rethrows when every attempt failed at the transport level (DNS,
+  // reset, timeout). Caught here so it becomes the same clear `internal` as an
+  // error RESPONSE does, instead of escaping as a bare Error and reaching the user
+  // as "Internal server error." with the cause left in the stack.
+  let res: Response;
+  try {
+    res = await bunnyFetch(cfg, "/videos", {
+      method: "POST",
+      body: JSON.stringify({ title: title.slice(0, 200) }),
+    });
+  } catch (e) {
+    await logErrorToDb(env, new Error(`[bunny] createVideo unreachable: ${(e as Error)?.message || e}`), {
+      path: "bunny:createVideo",
+    });
+    console.error("[bunny] createVideo unreachable after retries", e);
+    throw httpsError("internal", "Could not reach the video service. Please try again in a moment.");
+  }
+
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
     // Persisted, not just console'd. The client is told something deliberately
