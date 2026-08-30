@@ -21,7 +21,7 @@ import { enqueueBroadcast } from "../lib/broadcast";
 import { setCustomClaims } from "../lib/firebaseAdmin";
 import { publish, publishMany } from "../lib/publish";
 import { castVote, bumpEngagement } from "../lib/voteCounter";
-import { rateLimit } from "../lib/rateLimit";
+import { consumeRateLimit, rateLimit } from "../lib/rateLimit";
 import { assertIdentifiersAvailable, normalizePhone } from "../lib/userIdentifiers";
 import { enforceIdempotency, releaseIdempotency } from "../lib/idempotency";
 import {
@@ -215,7 +215,20 @@ apiRoute.post("/", async (c) => {
 
       // Without this, anyone can create unlimited video objects in our Bunny
       // account. 10/hour is far above real usage and far below abuse.
-      await rateLimit(env, `vidup:${uid}`, 10, 3600);
+      //
+      // Worth knowing: the budget is spent on ATTEMPTS, not on completed videos —
+      // the object is created here, before a single byte is uploaded. So a user
+      // fighting a flaky connection burns it without ever posting anything, and
+      // this message is then the only thing they see. Hence the specific wording
+      // rather than `rateLimit`'s generic "Too many requests. Please slow down.",
+      // which gave no hint that video uploads have their own, much tighter cap
+      // than the 60/hour on image uploads.
+      if (!(await consumeRateLimit(env, `vidup:${uid}`, 10, 3600))) {
+        throw httpsError(
+          "resource-exhausted",
+          "You've started too many video uploads in the last hour. Please try again later.",
+        );
+      }
 
       const { title, targetType } = body;
       if (targetType && !["story", "contest_entry"].includes(String(targetType)))

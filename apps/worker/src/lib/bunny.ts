@@ -13,6 +13,7 @@
 import type { Env } from "../types";
 import { httpsError } from "./http";
 import { getIntegrations, resolveSecret } from "./integrations";
+import { logErrorToDb } from "./observability";
 
 const BUNNY_API_BASE = "https://video.bunnycdn.com";
 /** Bunny's TUS endpoint. Same for every library. */
@@ -167,6 +168,10 @@ async function sha256Hex(input: string): Promise<string> {
  *
  * `SHA256(libraryId + apiKey + expirationTime + videoId)` — the field ORDER is
  * significant and Bunny rejects any other arrangement.
+ *
+ * `expirationTime` is a UNIX timestamp in SECONDS and must be byte-identical to
+ * the `AuthorizationExpire` header the client sends, since Bunny recomputes this
+ * hash from the header value. Both come from `createVideo`, so they cannot drift.
  */
 export function tusSignature(
   cfg: BunnyConfig,
@@ -219,18 +224,40 @@ export async function createVideo(env: Env, title: string): Promise<CreatedVideo
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
+    // Persisted, not just console'd. The client is told something deliberately
+    // vague, so the upstream status is the ONLY thing that distinguishes "the API
+    // key was revoked" (401) from "wrong library id" (404) from "Bunny is having
+    // an outage" (5xx) — and a console line in a Worker is gone by the time
+    // anyone reads the bug report. Awaited: this is the error path, so one extra
+    // D1 write costs nothing anybody is waiting on, and `logErrorToDb` is
+    // fail-open so it cannot mask the error it is describing.
+    await logErrorToDb(env, new Error(`[bunny] createVideo failed ${res.status}: ${detail.slice(0, 500)}`), {
+      path: "bunny:createVideo",
+      status: res.status,
+    });
     console.error(`[bunny] createVideo failed ${res.status}: ${detail.slice(0, 300)}`);
-    throw httpsError("internal", "Could not start the video upload.");
+    throw httpsError("internal", "Could not start the video upload. Please try again in a moment.");
   }
 
   const body: any = await res.json().catch(() => null);
   const guid: string | undefined = body?.guid;
   if (!guid) {
+    await logErrorToDb(env, new Error("[bunny] createVideo returned no guid"), {
+      path: "bunny:createVideo",
+      status: res.status,
+    });
     console.error("[bunny] createVideo returned no guid", body);
-    throw httpsError("internal", "Could not start the video upload.");
+    throw httpsError("internal", "Could not start the video upload. Please try again in a moment.");
   }
 
-  const expirationTime = Date.now() + TUS_EXPIRY_SECONDS * 1000;
+  // SECONDS, per Bunny's TUS docs: `AuthorizationExpire` is "UNIX timestamp (in
+  // seconds) when the upload expires". This was `Date.now() + ms`, which Bunny
+  // reads as a date ~58,000 years out — it PASSES the expiry check, so uploads
+  // worked and the bug was invisible, but the credential never actually expired.
+  // `TUS_EXPIRY_SECONDS` existed precisely to bound that window, so the signature
+  // was effectively a permanent write token for the video id. The signature is
+  // derived from this same value, so the two stay consistent either way.
+  const expirationTime = Math.floor(Date.now() / 1000) + TUS_EXPIRY_SECONDS;
   return {
     guid,
     libraryId: cfg.libraryId,
