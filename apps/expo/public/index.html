@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<!--
+  The web document shell.
+
+  WHY THIS FILE EXISTS AT ALL, AND WHY IT IS NOT `app/+html.tsx`
+  =============================================================
+  `+html.tsx` is the documented way to customise this, and it is silently
+  IGNORED here: it only applies to static rendering (`web.output: "static"`).
+  This app is a single-page build (`app.json` -> `expo.web.output: "single"`),
+  and that path builds index.html from the CLI's own template instead —
+  `createTemplateHtmlAsync`, which calls `getTemplateIndexHtmlAsync`:
+
+      "Attempt to read the `index.html` from the local project before falling
+       back on the template `index.html`"
+
+  ...where "the local project" means the `public/` folder. So this file is the
+  override, and `app/+html.tsx` would be dead code (it was tried first, and the
+  built output still contained Expo's default reset verbatim).
+
+  The CLI substitutes the language and title placeholders below and appends the
+  script and CSS tags. Both placeholders must stay.
+
+  CAUTION: it substitutes them with `String.prototype.replace(string, ...)`,
+  which replaces only the FIRST occurrence. So the placeholder tokens must not be
+  written anywhere above the tags that use them — including in this comment.
+  Spelling them out here consumed the substitution and shipped a page whose title
+  was the raw placeholder text, which is why they are described in words instead.
+
+  WHAT WAS ACTUALLY WRONG
+  =======================
+  The stock template ships this reset:
+
+      html, body { height: 100% }
+      body       { overflow: hidden }
+      #root      { display: flex; height: 100%; flex: 1 }
+
+  `overflow: hidden` assumes every screen scrolls itself with a `<ScrollView>`.
+  Most of ours do not — they are a `flex: 1` container with
+  `justifyContent: 'center'`, which is right on a phone, where content is
+  shorter than the screen.
+
+  On a desktop browser it is not. Sizes derived from window WIDTH (the login
+  illustration is `width * 0.6`) grow with the viewport, so on a wide window the
+  content becomes taller than the browser's visible height. `#root` is pinned to
+  exactly `height: 100%` so it cannot expand — and because the content is
+  CENTERED it overflows symmetrically, half above the top and half below the
+  bottom. `overflow: hidden` then clips both ends with no scrollbar to recover
+  them.
+
+  Measured on the live site, /auth/login at 1280x577: content ran from -219px to
+  796px. 219px cut off the top, 219px off the bottom, nothing scrollable. That is
+  the "screen is half visible and won't scroll" report.
+
+  WHY `min-height` IS THE FIX AND ENABLING SCROLL ALONE IS NOT
+  ===========================================================
+  Scrolling can only reach content BELOW the viewport. The 219px above y=0 would
+  stay unreachable forever. The container has to GROW instead of overflowing, so
+  `#root` gets `min-height: 100%` rather than `height: 100%`. A screen taller
+  than the viewport then makes `#root` taller, its content lays out from the top
+  instead of overflowing both ways, and body scrolling reaches all of it.
+
+  WHY THIS DOES NOT BREAK SCREENS THAT DO USE A ScrollView
+  =======================================================
+  react-native-web renders `<ScrollView>` with `overflow-y: auto` and
+  `flex-basis: 0%`. Because its overflow is not `visible`, CSS resolves its
+  automatic minimum size (`min-height: auto`) to 0 instead of its content
+  height — so a ScrollView contributes nothing to its parent's intrinsic height
+  and cannot stretch `#root`. `min-height: 100%` therefore keeps `#root` at
+  exactly viewport height on those screens and the ScrollView keeps scrolling
+  internally, with its fixed headers and tab bars intact.
+
+  Net effect: screens that fit are unchanged, ScrollView screens are unchanged,
+  and screens that were silently clipped now scroll. Verified in a real browser
+  across both kinds at several viewport sizes.
+-->
+<html lang="%LANG_ISO_CODE%">
+  <head>
+    <meta charset="utf-8" />
+    <meta httpEquiv="X-UA-Compatible" content="IE=edge" />
+    <!--
+      Unchanged from the stock template. No `maximum-scale`/`user-scalable=no`,
+      deliberately: pinch-zoom is an accessibility feature, and iOS does not
+      zoom on input focus as long as font sizes stay >= 16px.
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+    <title>%WEB_TITLE%</title>
+    <!-- The `react-native-web` recommended style reset: https://necolas.github.io/react-native-web/docs/setup/#root-element -->
+    <style id="expo-reset">
+      /* Full-height document, so a screen that fits still fills the window. */
+      html,
+      body {
+        height: 100%;
+      }
+      /*
+        NOT `overflow: hidden` — see the note above; hiding it is what made
+        over-tall screens unrecoverable. `overflow-x` stays hidden so a stray
+        full-width child can never produce a horizontal scrollbar.
+      */
+      body {
+        overflow-y: auto;
+        overflow-x: hidden;
+        /* Momentum scrolling on iOS Safari, which body scroll lacks by default. */
+        -webkit-overflow-scrolling: touch;
+      }
+      /*
+        min-height, not height. This one word is the fix: it lets a screen taller
+        than the viewport expand the root instead of overflowing out of both ends.
+      */
+      #root {
+        display: flex;
+        min-height: 100%;
+        flex: 1;
+      }
+    </style>
+  </head>
+
+  <body>
+    <!-- Use static rendering with Expo Router to support running without JavaScript. -->
+    <noscript>
+      You need to enable JavaScript to run this app.
+    </noscript>
+    <!-- The root element for your Expo app. -->
+    <div id="root"></div>
+  </body>
+</html>

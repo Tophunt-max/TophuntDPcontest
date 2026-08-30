@@ -4,7 +4,8 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  Dimensions,
+  ScrollView,
+  useWindowDimensions,
   ActivityIndicator,
 } from "react-native";
 import { useRouter, useLocalSearchParams } from "expo-router";
@@ -23,8 +24,7 @@ import { useToast } from "../../../src/components/toast/ToastProvider";
 import { Colors } from "@/constants/theme";
 import { SocialAuthService, socialProviderAvailability } from "../../../src/services/auth/socialAuth";
 import { readApi, poll } from "../../../src/services/api";
-
-const { width } = Dimensions.get("window");
+import { designWidth, PHONE_MAX_WIDTH } from "@/src/lib/layout";
 
 interface AuthConfig {
   googleLogin: boolean;
@@ -40,6 +40,13 @@ export default function LoginWelcomeScreen() {
   const redirect = params.redirect as string | undefined;
 
   const insets = useSafeAreaInsets();
+  // `useWindowDimensions` rather than a module-scope `Dimensions.get('window')`:
+  // the latter is captured once when the bundle loads, so resizing a desktop
+  // browser left the illustration sized for whatever window the user arrived with.
+  const { width: windowWidth } = useWindowDimensions();
+  // Clamped, or a wide window makes the art tall enough to push the content past
+  // the viewport — which is what made this screen unreadable on desktop.
+  const artWidth = designWidth(windowWidth);
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
@@ -135,19 +142,43 @@ export default function LoginWelcomeScreen() {
   }
 
   return (
-    <View
-      style={[
-        styles.container,
-        { backgroundColor, paddingTop: insets.top, paddingBottom: insets.bottom },
-      ]}
-    >
-      <View style={styles.contentContainer}>
+    <View style={[styles.container, { backgroundColor }]}>
+      {/*
+        The content has to be able to SCROLL, not just be centred.
+        `contentContainerStyle` (not `style`) is what carries the centring, and it
+        uses `flexGrow: 1` rather than `flex: 1` — `flex: 1` sets `flex-basis: 0`,
+        which collapses the container and reintroduces the very bug this fixes.
+        With `flexGrow`, the content box is max(content, viewport): still centred
+        when it fits, scrollable when it does not.
+
+        Before this, the screen was a fixed-height centred View. When the content
+        grew taller than the window — routine in a desktop browser — it overflowed
+        symmetrically and the web build's `body { overflow: hidden }` clipped
+        219px off the TOP and the BOTTOM, unreachable, with no scrollbar.
+      */}
+      <ScrollView
+        contentContainerStyle={[
+          styles.contentContainer,
+          // Insets move onto the scrolling content so the safe area is respected
+          // without shrinking the scroll viewport itself.
+          { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 },
+        ]}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
+        {/*
+          A phone-width column, centred. Without the cap, every full-width child
+          here — the four social buttons and the password button — stretched the
+          entire 1280px of a desktop window, which reads as a broken page rather
+          than a deliberate one. Below 420px (every phone) this changes nothing.
+        */}
+        <View style={styles.column}>
         {/* Welcome Illustration */}
         <View style={styles.illustrationContainer}>
            {isDark ? (
-             <Connect_Dark width={width * 0.6} height={width * 0.4} />
+             <Connect_Dark width={artWidth * 0.6} height={artWidth * 0.4} />
            ) : (
-             <Connect_Light width={width * 0.6} height={width * 0.4} />
+             <Connect_Light width={artWidth * 0.6} height={artWidth * 0.4} />
            )}
         </View>
 
@@ -237,7 +268,8 @@ export default function LoginWelcomeScreen() {
             <Text style={[styles.signupText, { fontFamily: 'Urbanist-Bold' }]}>Sign up</Text>
           </TouchableOpacity>
         </View>
-      </View>
+        </View>
+      </ScrollView>
     </View>
   );
 }
@@ -247,9 +279,18 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   contentContainer: {
-    flex: 1,
+    // flexGrow, NOT flex. See the ScrollView above: `flex: 1` implies
+    // `flex-basis: 0`, which collapses a scroll container's content box back to
+    // the viewport height and restores the clipping this screen was fixed for.
+    flexGrow: 1,
     paddingHorizontal: 24,
     justifyContent: "center",
+    alignItems: "center",
+  },
+  // Caps the layout at phone width on a desktop window; a no-op on phones.
+  column: {
+    width: "100%",
+    maxWidth: PHONE_MAX_WIDTH,
     alignItems: "center",
   },
   illustrationContainer: {

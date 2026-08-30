@@ -5,7 +5,8 @@ import {
   StyleSheet,
   FlatList,
   Image,
-  Dimensions,
+  ScrollView,
+  useWindowDimensions,
   TouchableOpacity,
 } from 'react-native';
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -13,8 +14,7 @@ import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getAppConfig } from '../../src/services/appSettings';
 import { Colors } from '@/constants/theme';
-
-const { width } = Dimensions.get('window');
+import { designWidth, PHONE_MAX_WIDTH } from '@/src/lib/layout';
 
 const DEFAULT_ONBOARDING = [
   {
@@ -42,7 +42,17 @@ export default function OnboardingScreen() {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
-  
+
+  // Reactive, so a desktop resize re-lays out the pages instead of leaving them
+  // sized for the window the user first loaded.
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  // Bounded by HEIGHT as well as width. Width alone is not enough: a wide but
+  // short desktop window (1280x577 is typical) gave a 336px-tall image that, with
+  // its 40px margin, left no room for the title and description — the whole point
+  // of an onboarding slide — so they sat below the fold on a screen most people
+  // never think to scroll. 32% of the window keeps the copy visible.
+  const artSize = Math.min(designWidth(windowWidth) * 0.8, windowHeight * 0.32);
+
   const [currentIndex, setCurrentIndex] = useState(0);
   const [onboardingData, setOnboardingData] = useState<any[]>(DEFAULT_ONBOARDING);
   const flatListRef = useRef<FlatList>(null);
@@ -92,12 +102,35 @@ export default function OnboardingScreen() {
   const viewConfig = useRef({ viewAreaCoveragePercentThreshold: 50 }).current;
 
   const renderItem = ({ item }: { item: any }) => (
-    <View style={styles.itemContainer}>
-      <Image source={item.image} style={styles.image} resizeMode="contain" />
-      <View style={styles.textContainer}>
-        <Text style={[styles.title, isDark && styles.textDark]}>{item.title}</Text>
-        <Text style={[styles.description, { color: isDark ? '#E0E0E0' : '#616161' }]}>{item.description}</Text>
-      </View>
+    // The page must be exactly the window width for `pagingEnabled` to land on
+    // slide boundaries. That is why this is `windowWidth` and not clamped — and
+    // why it has to come from `useWindowDimensions()`: read once at module scope,
+    // resizing a desktop browser left every page the old width and paging drifted
+    // progressively further off-slide.
+    <View style={[styles.itemContainer, { width: windowWidth }]}>
+      {/*
+        Each slide scrolls vertically on its own. The art is tall, and on a short
+        or zoomed window the description and the Next button were simply cut off
+        with no way to reach them — the FlatList clips its pages, so there was not
+        even a clue that anything was missing.
+      */}
+      <ScrollView
+        style={styles.itemScroll}
+        contentContainerStyle={styles.itemScrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        <Image
+          source={item.image}
+          // Clamped: at 1280px wide this was a 1024x1024 image, which on its own
+          // is taller than most desktop viewports.
+          style={[styles.image, { width: artSize, height: artSize }]}
+          resizeMode="contain"
+        />
+        <View style={styles.textContainer}>
+          <Text style={[styles.title, isDark && styles.textDark]}>{item.title}</Text>
+          <Text style={[styles.description, { color: isDark ? '#E0E0E0' : '#616161' }]}>{item.description}</Text>
+        </View>
+      </ScrollView>
     </View>
   );
 
@@ -117,6 +150,7 @@ export default function OnboardingScreen() {
       />
 
       <View style={styles.footer}>
+        <View style={styles.footerInner}>
         <View style={styles.pagination}>
           {onboardingData.map((_, index) => (
             <View
@@ -139,6 +173,7 @@ export default function OnboardingScreen() {
                 <Text style={[styles.skipButtonText, isDark && styles.textDark]}>Skip</Text>
             </TouchableOpacity>
         </View>
+        </View>
       </View>
     </View>
   );
@@ -146,13 +181,32 @@ export default function OnboardingScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  itemContainer: { width: width, alignItems: 'center', paddingHorizontal: 20, paddingTop: 80 },
-  image: { width: width * 0.8, height: width * 0.8, marginBottom: 40 },
+  // Width is applied inline from `useWindowDimensions` — a StyleSheet is created
+  // once at module load, so a width baked in here could never track a resize.
+  itemContainer: { alignItems: 'center' },
+  itemScroll: { flex: 1 },
+  // flexGrow, not flex: inside a ScrollView `flex: 1` sets `flex-basis: 0` and
+  // collapses the content box back to the viewport, which is exactly the clipping
+  // being fixed. `justifyContent: center` keeps a short slide centred as before.
+  itemScrollContent: {
+    flexGrow: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+    // Was 80. With the slide now centred and vertical space at a premium on a
+    // short window, a fixed 80px head start only pushed the copy off screen.
+    paddingTop: 24,
+    paddingBottom: 24,
+  },
+  image: { marginBottom: 24 },
   textContainer: { alignItems: 'center', paddingHorizontal: 10 },
   title: { fontSize: 28, fontFamily: 'Urbanist-Bold', textAlign: 'center', marginBottom: 16, color: '#212121' },
   description: { fontSize: 16, fontFamily: 'Urbanist-Regular', textAlign: 'center', lineHeight: 24 },
   textDark: { color: '#fff' },
   footer: { paddingHorizontal: 24, paddingBottom: 40, alignItems: 'center' },
+  // Caps Next/Skip at phone width instead of letting them span a 1280px window.
+  // A no-op below 420px, i.e. on every phone.
+  footerInner: { width: '100%', maxWidth: PHONE_MAX_WIDTH, alignItems: 'center' },
   pagination: { flexDirection: 'row', marginBottom: 40 },
   dot: { height: 8, borderRadius: 4, marginHorizontal: 4 },
   activeDot: { width: 24, backgroundColor: '#FF4D67' },

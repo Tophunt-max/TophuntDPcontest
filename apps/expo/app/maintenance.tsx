@@ -4,12 +4,14 @@ import {
   Text,
   StyleSheet,
   SafeAreaView,
+  ScrollView,
   TouchableOpacity,
 } from 'react-native';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Colors } from '@/constants/theme';
 import { Ionicons } from '@/src/lib/icons';
 import { useAppConfig } from '@/src/services/appSettings';
+import { PHONE_MAX_WIDTH } from '@/src/lib/layout';
 
 export default function MaintenanceScreen() {
   const colorScheme = useColorScheme();
@@ -21,7 +23,13 @@ export default function MaintenanceScreen() {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]}>
-      <View style={styles.content}>
+      {/*
+        Scrollable: the maintenance message is admin-editable, so its length is not
+        known here. A long one pushed the centred content past a short window and
+        was clipped at both ends, hiding the very explanation this screen exists
+        to give.
+      */}
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.iconContainer}>
           <Ionicons name="construct-outline" size={100} color="#FF4D67" />
         </View>
@@ -48,7 +56,7 @@ export default function MaintenanceScreen() {
         >
           <Text style={styles.refreshText}>Check Again</Text>
         </TouchableOpacity>
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -58,10 +66,17 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   content: {
-    flex: 1,
+    // flexGrow, not flex — inside a ScrollView `flex: 1` sets `flex-basis: 0`,
+    // collapsing the content box back to the viewport and re-clipping the content.
+    flexGrow: 1,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 30,
+    paddingVertical: 24,
+    // Caps the card and button at phone width on a desktop window; no-op on phones.
+    width: '100%',
+    maxWidth: PHONE_MAX_WIDTH,
+    alignSelf: 'center',
   },
   iconContainer: {
     marginBottom: 30,

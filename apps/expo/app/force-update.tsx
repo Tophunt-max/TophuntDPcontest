@@ -4,6 +4,7 @@ import {
   Text,
   StyleSheet,
   SafeAreaView,
+  ScrollView,
   TouchableOpacity,
   Linking,
   Platform,
@@ -12,6 +13,7 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Colors } from '@/constants/theme';
 import { Ionicons } from '@/src/lib/icons';
 import { useAppConfig, currentAppVersion } from '@/src/services/appSettings';
+import { PHONE_MAX_WIDTH } from '@/src/lib/layout';
 
 export default function ForceUpdateScreen() {
   const colorScheme = useColorScheme();
@@ -40,7 +42,13 @@ export default function ForceUpdateScreen() {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]}>
-      <View style={styles.content}>
+      {/*
+        Scrollable, because this screen is a hard gate: the user cannot use the app
+        until they press Update. On a short window the centred content overflowed
+        and the button was clipped off the bottom with nothing to scroll — leaving
+        no way forward at all.
+      */}
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.iconContainer}>
           <Ionicons name="rocket-outline" size={100} color="#7C3AED" />
         </View>
@@ -62,14 +70,16 @@ export default function ForceUpdateScreen() {
           <Ionicons name="download-outline" size={20} color="#FFF" />
           <Text style={styles.updateText}>Update Now</Text>
         </TouchableOpacity>
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  content: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 30 },
+  // flexGrow, not flex — inside a ScrollView `flex: 1` sets `flex-basis: 0`,
+  // collapsing the content box back to the viewport and re-clipping the content.
+  content: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 30, paddingVertical: 24, width: '100%', maxWidth: PHONE_MAX_WIDTH, alignSelf: 'center' },
   iconContainer: { marginBottom: 30, backgroundColor: '#7C3AED15', padding: 30, borderRadius: 100 },
   title: { fontSize: 28, fontFamily: 'Urbanist-Bold', marginBottom: 16, textAlign: 'center' },
   description: { fontSize: 16, fontFamily: 'Urbanist-Regular', textAlign: 'center', lineHeight: 24, marginBottom: 30 },

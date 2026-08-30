@@ -1,12 +1,11 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Share, Dimensions, Image } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Share, ScrollView, useWindowDimensions, Image } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@/src/lib/icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useThemeColor } from '@/hooks/use-theme-color';
-
-const { width } = Dimensions.get('window');
+import { designWidth } from '@/src/lib/layout';
 
 /**
  * Contest congratulations screen.
@@ -20,6 +19,9 @@ const { width } = Dimensions.get('window');
  */
 export default function ContestJoinedScreen() {
   const router = useRouter();
+  // Reactive, unlike the module-scope `Dimensions.get('window')` this replaced,
+  // which was captured at bundle load and never tracked a desktop resize.
+  const { width: windowWidth } = useWindowDimensions();
   const params = useLocalSearchParams();
   const contestName = params.contestName as string || "Contest";
   const isJoining = params.mode !== 'create';
@@ -41,8 +43,16 @@ export default function ContestJoinedScreen() {
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: bgColor }]}>
-      <View style={styles.content}>
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: bgColor }]}>
+      {/*
+        Scrollable, because this screen carries the two actions a user needs after
+        joining (Share, Go to Home). Centred in a fixed-height View they were
+        clipped off a short window with no scrollbar, stranding the user on a
+        congratulations screen with no way out.
+      */}
+      <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
+      {/* Clamped: `width * 0.9` of a 1280px window is a 1152px-wide column. */}
+      <View style={[styles.content, { width: designWidth(windowWidth) * 0.9 }]}>
         
         {/* Success Icon */}
         <View style={styles.iconContainer}>
@@ -87,13 +97,18 @@ export default function ContestJoinedScreen() {
         </TouchableOpacity>
 
       </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  content: { width: width * 0.9, alignItems: 'center' },
+  safeArea: { flex: 1 },
+  // flexGrow, not flex — inside a ScrollView `flex: 1` sets `flex-basis: 0`,
+  // collapsing the content box back to the viewport and re-clipping the content.
+  container: { flexGrow: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 24 },
+  // Width is applied inline from `useWindowDimensions` so it tracks a resize.
+  content: { alignItems: 'center' },
   
   iconContainer: { marginBottom: 30, shadowColor: '#4CAF50', shadowOpacity: 0.3, shadowRadius: 15, elevation: 10 },
   successCircle: { width: 120, height: 120, borderRadius: 60, justifyContent: 'center', alignItems: 'center' },

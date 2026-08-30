@@ -1,6 +1,6 @@
 
 import React, { useCallback, useEffect, useState } from "react";
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColor } from "@/hooks/use-theme-color";
@@ -83,7 +83,18 @@ export default function SuccessScreen() {
         },
       ]}
     >
-      <View style={styles.content}>
+      {/*
+        Only the message scrolls; "Back to Login" below stays pinned, so the way
+        out of this screen is always on screen. Previously the whole thing was a
+        fixed-height centred View — on a short window the illustration and the
+        spam-folder hint (the part users actually need) were clipped at both ends
+        with nothing to scroll.
+      */}
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+      >
         <Success />
         <Text style={[styles.title, { color: textColor }]}>Check your email</Text>
 
@@ -121,7 +132,7 @@ export default function SuccessScreen() {
             A password reset link has been sent. Check your spam or junk folder too.
           </Text>
         )}
-      </View>
+      </ScrollView>
 
       <PrimaryButton title="Back to Login" onPress={() => router.replace("/auth/login")} />
     </View>
@@ -134,10 +145,16 @@ const styles = StyleSheet.create({
     padding: 24,
     justifyContent: "center",
   },
-  content: {
+  scroll: {
     flex: 1,
+  },
+  content: {
+    // flexGrow, not flex — inside a ScrollView `flex: 1` sets `flex-basis: 0`,
+    // collapsing the content box back to the viewport and re-clipping the content.
+    flexGrow: 1,
     justifyContent: "center",
     alignItems: "center",
+    paddingVertical: 12,
   },
   title: {
     fontSize: 24,

@@ -4,7 +4,8 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  Dimensions,
+  ScrollView,
+  useWindowDimensions,
   ActivityIndicator,
   Platform,
 } from "react-native";
@@ -19,12 +20,14 @@ import { callApi } from "@/src/services/api"; // Consolidated API used
 import { uploadToR2 } from "@/src/lib/uploadToR2";
 import { optimizeImageForUpload } from '@/src/lib/imageOptimize';
 import { signInWithEmailAndPassword, sendEmailVerification } from "firebase/auth";
-
-const { width } = Dimensions.get('window');
+import { designWidth } from "@/src/lib/layout";
 
 export default function CongratulationsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  // Reactive, unlike the module-scope `Dimensions.get('window')` this replaced,
+  // which was captured at bundle load and never tracked a desktop resize.
+  const { width: windowWidth } = useWindowDimensions();
   const { data: signupData, reset: resetStore } = useSignupStore();
   const [isLoading, setIsLoading] = useState(true);
   const [statusMessage, setStatusMessage] = useState("Finalizing your account...");
@@ -180,8 +183,20 @@ export default function CongratulationsScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={[styles.modalContainer, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
-          <View style={styles.card}>
+      {/*
+        Scrollable: the card holds the only way forward ("Go to Homepage"), and a
+        centred fixed-height card clipped it off both ends of a short window with
+        no scrollbar — leaving a brand-new user stranded immediately after signup.
+      */}
+      <ScrollView
+        contentContainerStyle={[
+          styles.modalContainer,
+          { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 },
+        ]}
+        showsVerticalScrollIndicator={false}
+      >
+          {/* Clamped: `width * 0.85` of a 1280px window is an 1088px-wide card. */}
+          <View style={[styles.card, { width: designWidth(windowWidth) * 0.85 }]}>
               <View style={styles.iconContainer}>
                  <Success width={180} height={180} />
               </View>
@@ -191,7 +206,7 @@ export default function CongratulationsScreen() {
                   <Text style={styles.buttonText}>Go to Homepage</Text>
               </TouchableOpacity>
           </View>
-      </View>
+      </ScrollView>
     </View>
   );
 }
@@ -200,8 +215,11 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' },
   loadingText: { marginTop: 10, color: '#fff', fontSize: 16 },
-  modalContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', width: '100%' },
-  card: { width: width * 0.85, backgroundColor: '#fff', borderRadius: 40, padding: 40, alignItems: 'center' },
+  // flexGrow, not flex — inside a ScrollView `flex: 1` sets `flex-basis: 0`,
+  // collapsing the content box back to the viewport and re-clipping the content.
+  modalContainer: { flexGrow: 1, justifyContent: 'center', alignItems: 'center', width: '100%' },
+  // Width is applied inline from `useWindowDimensions` so it tracks a resize.
+  card: { backgroundColor: '#fff', borderRadius: 40, padding: 40, alignItems: 'center' },
   iconContainer: { marginBottom: 30 },
   title: { fontSize: 24, fontWeight: 'bold', color: '#FF4D67', marginBottom: 16, textAlign: 'center' },
   subtitle: { fontSize: 16, color: '#212121', marginBottom: 30, textAlign: 'center' },
