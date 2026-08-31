@@ -43,6 +43,25 @@ export const PROCESSING_STALE_MS = 15 * 60 * 1000;
  */
 export const UPLOAD_ABANDON_MS = 2 * 60 * 60 * 1000;
 
+/**
+ * How stale an unfinished row may be before `videoStatus` re-checks it against
+ * Bunny on demand.
+ *
+ * The cron above is the safety net for a LOST webhook, but it deliberately waits
+ * 15 minutes before spending a Bunny call — and it only runs every 10. That is
+ * the right trade for a background sweep and the wrong one for the person
+ * staring at a "Processing…" overlay: if the webhook is not configured at all
+ * (it is optional, and set up in Bunny's dashboard, not by this code), their
+ * video is playable within a minute but the app keeps saying "processing" for up
+ * to ~25 minutes.
+ *
+ * So the status endpoint the client already polls does its own live check, and
+ * this bounds the cost: each check bumps `updatedAt` (every branch of
+ * `applyBunnyEncodeResult` writes it), so a client polling every 5s produces at
+ * most one Bunny call per video per window no matter how many viewers there are.
+ */
+export const LIVE_STATUS_RECHECK_MS = 15 * 1000;
+
 /** Bound the Bunny API calls per tick so reconciliation can never run long. */
 const BATCH = 25;
 

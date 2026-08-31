@@ -77,6 +77,7 @@ import {
   bunnyPlaybackUrl,
   bunnyThumbnailUrl,
 } from "../lib/bunny";
+import { applyBunnyEncodeResult, LIVE_STATUS_RECHECK_MS } from "../lib/videoReconcile";
 import { mediaRouting } from "../lib/mediaRouting";
 import { getAppConfig, getRewardedAdConfig } from "../lib/settings";
 import { getSettings } from "../lib/gamification";
@@ -342,18 +343,42 @@ apiRoute.post("/", async (c) => {
         .filter((v: any) => typeof v === "string" && v)
         .slice(0, 50);
       if (!ids.length) return c.json({ videos: [] });
-      const rows = await db
-        .select({
-          id: schema.videos.id,
-          status: schema.videos.status,
-          thumbnailUrl: schema.videos.thumbnailUrl,
-          durationSec: schema.videos.durationSec,
-          playbackUrl: schema.videos.playbackUrl,
-          mp4Url: schema.videos.mp4Url,
-        })
-        .from(schema.videos)
-        .where(inArray(schema.videos.id, ids))
-        .all();
+      const columns = {
+        id: schema.videos.id,
+        status: schema.videos.status,
+        thumbnailUrl: schema.videos.thumbnailUrl,
+        durationSec: schema.videos.durationSec,
+        playbackUrl: schema.videos.playbackUrl,
+        mp4Url: schema.videos.mp4Url,
+        updatedAt: schema.videos.updatedAt,
+      };
+      let rows = await db.select(columns).from(schema.videos).where(inArray(schema.videos.id, ids)).all();
+
+      // Ask Bunny directly for anything still unfinished and not checked in the
+      // last window. Bunny's encode webhook is OPTIONAL and configured in their
+      // dashboard, so on a deployment without it the only thing that ever cleared
+      // this state was the 15-minutes-stale cron — a video playable in a minute
+      // kept showing "Processing…" for up to ~25. This makes the overlay clear
+      // within one client poll of the encode actually finishing.
+      //
+      // Bounded three ways: only unfinished rows, only past the recheck window
+      // (each check bumps `updatedAt`, so viewers cannot amplify it), and at most
+      // a few per request. Fail-open — a Bunny blip must still return the row we
+      // have, never break the poll the overlay depends on.
+      const cutoff = now() - LIVE_STATUS_RECHECK_MS;
+      const unfinished = rows
+        .filter((r) => (r.status === "processing" || r.status === "uploading") && Number(r.updatedAt ?? 0) < cutoff)
+        .slice(0, 3);
+      if (unfinished.length && (await bunnyConfigured(env))) {
+        await Promise.all(
+          unfinished.map((r) =>
+            applyBunnyEncodeResult(env, r.id).catch((e) => {
+              console.error("[videoStatus] live recheck failed", r.id, e);
+            }),
+          ),
+        );
+        rows = await db.select(columns).from(schema.videos).where(inArray(schema.videos.id, ids)).all();
+      }
       return c.json({ videos: rows });
     }
 
