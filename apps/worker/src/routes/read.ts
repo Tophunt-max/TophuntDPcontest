@@ -78,21 +78,26 @@ interface LiveUserFields {
   verified: boolean;
   /** The user's CURRENT profile photo (raw url, un-canonicalised); null when none. */
   avatar: string | null;
+  /** The user's CURRENT username (handle shown across the app). */
+  username: string | null;
+  /** Fallback display name when the username is empty. */
+  fullName: string | null;
 }
 
 /**
- * The current verified flag AND profile photo for a batch of uids, in ONE query.
+ * The current verified flag, profile photo AND username/name for a batch of
+ * uids, in ONE query.
  *
- * Two things about a user drift after a snapshot captures them: the admin
- * verified badge, and — the reason this exists beyond the badge — their PROFILE
- * PHOTO. Almost every surface renders a person from a SNAPSHOT taken at write
- * time (a battle's userA/userB blob, a chat member list, a notification actor),
- * so a user who verifies, un-verifies, or simply CHANGES THEIR PHOTO never
- * reaches those surfaces — the old face is frozen there forever. Baking the
- * fresh values into each snapshot would only move the staleness around; instead
- * every read that shows a person looks both up live, in one batched query, and
- * injects them, so the badge and the avatar are always current no matter how old
- * the snapshot is.
+ * Three things about a user drift after a snapshot captures them: the admin
+ * verified badge, their PROFILE PHOTO, and their USERNAME. Almost every surface
+ * renders a person from a SNAPSHOT taken at write time (a battle's userA/userB
+ * blob, a chat member list, a notification actor), so a user who verifies,
+ * un-verifies, changes their photo, or RENAMES themselves never reaches those
+ * surfaces — the old value is frozen there forever. Baking the fresh values into
+ * each snapshot would only move the staleness around; instead every read that
+ * shows a person looks them up live, in one batched query, and injects them, so
+ * the badge, avatar and name are always current no matter how old the snapshot
+ * is.
  */
 async function liveUserFields(
   env: Env,
@@ -102,11 +107,22 @@ async function liveUserFields(
   if (!unique.length) return new Map();
   try {
     const rows = await getDb(env)
-      .select({ uid: schema.users.uid, verified: schema.users.verified, avatar: schema.users.profileImageUrl })
+      .select({
+        uid: schema.users.uid,
+        verified: schema.users.verified,
+        avatar: schema.users.profileImageUrl,
+        username: schema.users.username,
+        fullName: schema.users.fullName,
+      })
       .from(schema.users)
       .where(inArray(schema.users.uid, unique))
       .all();
-    return new Map(rows.map((r) => [r.uid, { verified: !!r.verified, avatar: r.avatar ?? null }]));
+    return new Map(
+      rows.map((r) => [
+        r.uid,
+        { verified: !!r.verified, avatar: r.avatar ?? null, username: r.username ?? null, fullName: r.fullName ?? null },
+      ]),
+    );
   } catch (e) {
     // This enrichment is cosmetic; a lookup failure must degrade to the snapshot
     // as-is, never break the read it decorates.
@@ -117,7 +133,7 @@ async function liveUserFields(
 
 /**
  * Refresh both participants of each battle from a single live lookup — the
- * verified badge AND the profile photo.
+ * verified badge, the profile photo AND the username.
  *
  * `enrichMatchMedia` has already derived `profilePicThumb` from the SNAPSHOT's
  * (possibly stale) `profilePic` by the time this runs, so both the canonical url
@@ -125,6 +141,8 @@ async function liveUserFields(
  * would reach the fallback field but not the one the client actually prefers.
  * An empty string (not null) clears a removed photo, matching the snapshot's own
  * `profilePic: "" ` convention so the client falls through to local initials.
+ * The username is likewise refreshed so a rename shows on the feed; it falls
+ * back to fullName, then to whatever the snapshot already had.
  *
  * Mutates the mapped match objects in place (their userA/userB are fresh copies
  * from mapMatch, not the cached row), so it is safe to run before the page is
@@ -145,6 +163,7 @@ async function enrichParticipants(env: Env, matches: any[]): Promise<void> {
       verified: u.verified,
       profilePic: cdnUrl(env, u.avatar) ?? "",
       profilePicThumb: avatarUrl(env, u.avatar) ?? "",
+      username: u.username || u.fullName || p.username,
     };
   };
   for (const m of matches) {
@@ -1265,7 +1284,9 @@ readRoute.get("/notifications", requireAuth, async (c) => {
         next.actors = r.actors.map((a: any) => {
           if (!a?.uid) return a;
           const u = liveActors.get(a.uid);
-          return u ? { ...a, avatarUrl: cdnUrl(c.env, u.avatar) ?? null } : a;
+          return u
+            ? { ...a, avatarUrl: cdnUrl(c.env, u.avatar) ?? null, username: u.username || u.fullName || a.username }
+            : a;
         });
       }
       // Refresh the row image ONLY when it is the actor's avatar (an actor-driven
@@ -1925,11 +1946,11 @@ readRoute.get("/chats", requireAuth, async (c) => {
       : chats.filter((chat: any) => !(chat.users as string[]).some((u) => u !== uid && blocked.has(u)));
 
   // `users_data` is a snapshot captured when the chat was created, so it carries
-  // neither the verified flag NOR a current photo. Stamp both live off the
-  // members' current rows, so a blue check and an avatar in the conversation list
-  // stay correct even for a chat opened months ago — a member who changed their
-  // photo (or was verified/un-verified) shows their current one, not the frozen
-  // one from chat creation.
+  // a stale verified flag, photo AND name. Stamp all three live off the members'
+  // current rows, so the conversation list stays correct even for a chat opened
+  // months ago — a member who changed their photo, renamed themselves, or was
+  // verified/un-verified shows their current values, not the ones frozen at chat
+  // creation.
   const memberUids = visible.flatMap((chat: any) => (chat.users as string[]) || []);
   const liveMembers = await liveUserFields(c.env, memberUids);
   if (liveMembers.size) {
@@ -1939,7 +1960,12 @@ readRoute.get("/chats", requireAuth, async (c) => {
           if (!m?.uid) return m;
           const u = liveMembers.get(m.uid);
           if (!u) return m;
-          return { ...m, verified: u.verified, photoURL: cdnUrl(c.env, u.avatar) ?? null };
+          return {
+            ...m,
+            verified: u.verified,
+            photoURL: cdnUrl(c.env, u.avatar) ?? null,
+            displayName: u.username || u.fullName || m.displayName,
+          };
         });
       }
     }

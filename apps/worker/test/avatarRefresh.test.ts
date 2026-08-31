@@ -179,3 +179,72 @@ describe('a changed profile photo reaches snapshot-backed surfaces', () => {
     expect(n.image).toBe(banner);
   });
 });
+
+
+describe('a changed username reaches snapshot-backed surfaces', () => {
+  it('refreshes a battle participant username on the feed', async () => {
+    const { env } = makeEnv();
+    // alice renamed herself to alice_new; the match snapshot still says alice_old.
+    await seedUser(env, 'alice', { username: 'alice_new' });
+    await seedUser(env, 'bob', { username: 'bob' });
+    const ts = Date.now();
+    await drizzleOf(env)
+      .insert(schema.contestMatches)
+      .values({
+        id: 'mu1',
+        status: 'active',
+        userA: { uid: 'alice', username: 'alice_old', profilePic: '' },
+        userB: { uid: 'bob', username: 'bob', profilePic: '' },
+        totalVotes: 0,
+        createdAt: ts,
+      } as any);
+
+    const res = await read(env, 'bob', '/matches/mu1');
+    expect(res.body.userA.username).toBe('alice_new');
+    expect(res.body.userA.username).not.toBe('alice_old');
+  });
+
+  it('falls back to fullName when the username is empty', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', { username: null, fullName: 'Alice Cooper' });
+    await seedUser(env, 'bob', { username: 'bob' });
+    const ts = Date.now();
+    await drizzleOf(env)
+      .insert(schema.contestMatches)
+      .values({
+        id: 'mu2',
+        status: 'active',
+        userA: { uid: 'alice', username: 'alice_old', profilePic: '' },
+        userB: { uid: 'bob', username: 'bob', profilePic: '' },
+        totalVotes: 0,
+        createdAt: ts,
+      } as any);
+
+    const res = await read(env, 'bob', '/matches/mu2');
+    expect(res.body.userA.username).toBe('Alice Cooper');
+  });
+
+  it('refreshes a chat member displayName from the users_data snapshot', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', { username: 'alice_new' });
+    await seedUser(env, 'bob', { username: 'bob' });
+    const ts = Date.now();
+    await drizzleOf(env)
+      .insert(schema.chats)
+      .values({
+        id: 'chatu1',
+        users: ['alice', 'bob'],
+        usersData: [
+          { uid: 'alice', displayName: 'alice_old', photoURL: null },
+          { uid: 'bob', displayName: 'bob', photoURL: null },
+        ],
+        createdAt: ts,
+        updatedAt: ts,
+      } as any);
+
+    const res = await read(env, 'bob', '/chats');
+    const chat = res.body.find((c: any) => c.id === 'chatu1');
+    const alice = chat.usersData.find((m: any) => m.uid === 'alice');
+    expect(alice.displayName).toBe('alice_new');
+  });
+});
