@@ -19,6 +19,8 @@ import BlogComments from '@/src/components/blog/BlogComments';
 import { Header } from '@/src/components/home/Header';
 import { useWebSeo } from '@/src/lib/webSeo';
 import { shareOrigin } from '@/src/lib/share';
+import { NotFoundView } from '@/src/components/ui/NotFoundView';
+import { reportError } from '@/src/lib/reportError';
 
 // SEO canonical points at the authoritative site on purpose — a canonical URL
 // must be stable across deployments, so it is NOT the current host.
@@ -37,8 +39,35 @@ const ACCENT = '#FF3B30';
  * Shared blog post screen, rendered by BOTH /blog/[slug] and the root-level
  * permalink /[slug] (original tophunt.in URLs). The post is resolved from the
  * `slug` route param. Designed as a clean, editorial reading experience.
+ *
+ * ## `permalink` and why the not-found state depends on it
+ *
+ * `/blog/<slug>` is unambiguously a blog URL: if the post is gone it was deleted or
+ * unpublished, and "Post not found — Browse the blog" is the right answer.
+ *
+ * The root route is not. `app/[slug].tsx` catches EVERY unknown single-segment
+ * path, so `/settings`, `/privacy` or any typo lands here instead of on
+ * `app/+not-found.tsx`, and each one was told "Post not found" with the blog as
+ * its only exit. Two things were wrong with that: the copy asserts the site once
+ * had an article at that address, and — the part that actually costs us — nothing
+ * was reported, so a broken internal link to a one-segment path was invisible.
+ * Reporting unmatched routes is the entire reason `+not-found.tsx` exists, and
+ * this path bypassed it.
+ *
+ * So on the permalink route an unresolved slug is treated as what it almost always
+ * is: a 404. It reports, and it offers home first with the blog as a second
+ * option, because an old post permalink is the other real possibility.
  */
-export default function BlogDetailScreen() {
+interface Props {
+  /**
+   * True when rendered by the root-level `/[slug]` catch-all rather than
+   * `/blog/[slug]`. Passed explicitly instead of inferred from the pathname so the
+   * routing decision stays visible in the route file that makes it.
+   */
+  permalink?: boolean;
+}
+
+export default function BlogDetailScreen({ permalink = false }: Props) {
   const router = useRouter();
   const { slug } = useLocalSearchParams<{ slug: string }>();
   const isDark = useColorScheme() === 'dark';
@@ -63,18 +92,52 @@ export default function BlogDetailScreen() {
       setLoading(true);
       setNotFound(false);
       const data = await blogService.getPost(String(slug));
-      if (data) setPost(data);
-      else setNotFound(true);
+      if (data) {
+        setPost(data);
+      } else {
+        setNotFound(true);
+        /*
+         * Report only the permalink case.
+         *
+         * On this route an unresolved slug is an unmatched ROUTE, and surfacing
+         * those is why `+not-found.tsx` exists — single-segment paths were the one
+         * gap in that coverage, so a broken internal link to `/wallets` or
+         * `/settings` produced nothing at all.
+         *
+         * `/blog/<slug>` is deliberately silent: a post that was deleted or
+         * unpublished is ordinary content churn, and crawlers hold onto old slugs
+         * for months. That would be steady noise carrying no action.
+         *
+         * `reportError` already dedupes for 10s and caps at 12 events/minute, so a
+         * bot walking the URL space cannot turn this into a flood.
+         */
+        if (permalink) {
+          reportError(new Error(`Unmatched route: /${slug}`), {
+            screen: 'not-found',
+            pathname: `/${slug}`,
+            via: 'root-permalink',
+          });
+        }
+      }
       setLoading(false);
     })();
-  }, [slug]);
+  }, [slug, permalink]);
 
   const readMins = useMemo(() => {
     const words = (post?.content || '').replace(/<[^>]+>/g, ' ').split(/\s+/).filter(Boolean).length;
     return Math.max(1, Math.round(words / 200));
   }, [post]);
 
-  // Keep the browser tab title + meta in sync on client-side navigation.
+  /*
+   * Keep the browser tab title + meta in sync on client-side navigation.
+   *
+   * The not-found branch used to report `title: 'Blog'`, so navigating to a typo
+   * left the tab reading "Blog | TopHunt" — announcing a section the user never
+   * asked for. There is no `robots` here because there is nothing to set it for:
+   * crawlers read the INITIAL html, and the edge Worker already serves
+   * `noindex, follow` for an unresolved one-segment path (see
+   * `public/_worker.js`). Only a human client-side navigation reaches this.
+   */
   useWebSeo(
     useMemo(
       () =>
@@ -86,8 +149,10 @@ export default function BlogDetailScreen() {
               image: post.coverImageUrl,
               type: 'article' as const,
             }
-          : { title: 'Blog', type: 'website' as const },
-      [post],
+          : notFound
+            ? { title: 'Page not found', type: 'website' as const }
+            : { title: 'Blog', type: 'website' as const },
+      [post, notFound],
     ),
   );
 
@@ -125,18 +190,24 @@ export default function BlogDetailScreen() {
           <ActivityIndicator size="large" color={ACCENT} />
         </View>
       ) : notFound || !post ? (
-        <View style={styles.center}>
-          <Text style={{ fontSize: 44 }}>{'\uD83D\uDCC4'}</Text>
-          <Text style={{ color: textColor, marginTop: 14, fontSize: 20, fontWeight: '800', fontFamily: FONT_SANS }}>
-            Post not found
-          </Text>
-          <Text style={{ color: subTextColor, marginTop: 6, fontFamily: FONT_SANS }}>
-            This page isn’t available.
-          </Text>
-          <TouchableOpacity onPress={goToBlog} style={[styles.cta, { marginTop: 22 }]}>
-            <Text style={styles.ctaText}>Browse the blog</Text>
-          </TouchableOpacity>
-        </View>
+        permalink ? (
+          // An unknown one-segment path: a mistyped or dead link, not a missing
+          // article. Home first, blog second — the slug could still be an old
+          // tophunt.in post permalink.
+          <NotFoundView
+            title="This page doesn't exist"
+            message="The link you followed may be broken or the page may have moved."
+            primary={{ label: 'Go to Home', onPress: () => router.replace('/home') }}
+            secondary={{ label: 'Browse the blog', onPress: goToBlog }}
+          />
+        ) : (
+          <NotFoundView
+            title="Post not found"
+            message="This article may have been removed, or the link may be wrong."
+            primary={{ label: 'Browse the blog', onPress: goToBlog }}
+            secondary={{ label: 'Go to Home', onPress: () => router.replace('/home') }}
+          />
+        )
       ) : (
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
           <View style={styles.columnWrap}>

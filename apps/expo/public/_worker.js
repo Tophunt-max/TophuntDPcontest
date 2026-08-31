@@ -241,6 +241,43 @@ function battleIdFromPath(path) {
   return null;
 }
 
+/**
+ * Short paths that people and crawlers guess, mapped to the real route.
+ *
+ * Two reasons each of these is worth a redirect rather than a 404:
+ *
+ *  - `/settings` is a real feature one character away from its real URL. The app's
+ *    route is the SINGULAR `/setting`, so the plural — which is what most sites
+ *    use and what anyone would type — resolved to nothing. Worse, a one-segment
+ *    path is claimed by the blog permalink catch-all, so it rendered the blog's
+ *    "Post not found" rather than a 404.
+ *  - `/privacy`, `/terms`, `/refund` and `/guidelines` are the conventional short
+ *    URLs for exactly the documents published at `/legal/*`. App-store reviewers
+ *    and payment providers type these by hand when checking compliance, and an
+ *    empty-looking response there is the kind of thing that stalls a submission.
+ *
+ * 301, so any link equity consolidates onto the canonical path. That is also why
+ * every key here is folded into `RESERVED` below: a path that redirects must never
+ * ALSO be resolvable as a blog slug, or the two would disagree about what lives at
+ * that URL depending on which check ran first.
+ *
+ * MUST stay declared above `RESERVED` — that set spreads these keys at
+ * initialisation, and a `const` referenced before its own initialiser is a
+ * temporal-dead-zone ReferenceError, which here would mean the Worker throwing on
+ * every single request.
+ */
+const PATH_ALIASES = new Map([
+  ['/settings', '/setting'],
+  ['/privacy', '/legal/privacy'],
+  ['/privacy-policy', '/legal/privacy'],
+  ['/terms', '/legal/terms'],
+  ['/terms-of-service', '/legal/terms'],
+  ['/refund', '/legal/refund'],
+  ['/refund-policy', '/legal/refund'],
+  ['/guidelines', '/legal/guidelines'],
+  ['/community-guidelines', '/legal/guidelines'],
+]);
+
 // Top-level app routes that must NEVER be treated as a blog permalink. Mirrors
 // the folders/files under apps/expo/app/.
 const RESERVED = new Set([
@@ -270,6 +307,10 @@ const RESERVED = new Set([
   'favicon.png',
   'favicon.ico',
   'firebase-messaging-sw.js',
+  // Every PATH_ALIASES key, so an aliased path is never ALSO a candidate blog
+  // slug. Derived rather than typed out twice — the two lists disagreeing is the
+  // failure this guards against, and a hand-copied list is how they would.
+  ...[...PATH_ALIASES.keys()].map((p) => p.replace(/^\//, '')),
 ]);
 
 /**
@@ -295,6 +336,12 @@ const CANONICAL_ALIASES = new Set([
   'tophuntdpcontest.pages.dev',
 ]);
 
+/** The alias target for a path, tolerating a trailing slash. Null when none. */
+function aliasFor(path) {
+  const clean = path.replace(/\/+$/, '') || '/';
+  return PATH_ALIASES.get(clean) || null;
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -308,6 +355,14 @@ export default {
       // 301: this is permanent, and a permanent redirect is what consolidates
       // any ranking the alias picked up onto the real host.
       return Response.redirect(target.toString(), 301);
+    }
+
+    // --- short-path aliases ------------------------------------------------
+    // Before the blog-permalink check, which would otherwise claim these
+    // single-segment paths and answer "Post not found". See PATH_ALIASES.
+    const alias = aliasFor(path);
+    if (alias) {
+      return Response.redirect(new URL(alias + url.search, origin).toString(), 301);
     }
 
     // --- Firebase email action links ---------------------------------------
