@@ -260,7 +260,7 @@ const FillProfile: React.FC = () => {
 
         <FormInput control={control} name="fullName" placeholder="Full Name" errorMessage={errors.fullName?.message} />
         
-        <FormInput control={control} name="username" placeholder="Username" errorMessage={errors.username?.message} rightIcon={usernameChecking ? <ActivityIndicator size="small" color="#ff4466" /> : null} />
+        <FormInput control={control} name="username" placeholder="Username" autoCapitalize="words" autoCorrect={false} errorMessage={errors.username?.message} rightIcon={usernameChecking ? <ActivityIndicator size="small" color="#ff4466" /> : null} />
         
         <FormInput control={control} name="email" placeholder="Email" rightIcon={<Email_Icon width={20} height={20} color="#9E9E9E" />} editable={!isEmailLocked} style={isEmailLocked ? styles.readOnlyInput : null} errorMessage={errors.email?.message} />
 

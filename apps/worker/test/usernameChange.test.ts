@@ -53,12 +53,13 @@ const usernameOf = async (env: TestEnv, uid: string) =>
   (await drizzleOf(env).select({ u: schema.users.username }).from(schema.users).where(eq(schema.users.uid, uid)).get())?.u;
 
 describe('username change via updateProfile', () => {
-  it('changes to an available username, stored lowercase', async () => {
+  it('changes to an available username, PRESERVING the typed case', async () => {
     const { env } = makeEnv();
     await seedUser(env, 'alice', 'alice');
     const r = await call(env, 'alice', 'updateProfile', { fullName: 'Alice', username: 'Alice_New' });
     expect(r.status).toBe(200);
-    expect(await usernameOf(env, 'alice')).toBe('alice_new');
+    // Display case kept — no more forced lowercase.
+    expect(await usernameOf(env, 'alice')).toBe('Alice_New');
   });
 
   it('rejects taking a username already used by someone else', async () => {
@@ -71,12 +72,23 @@ describe('username change via updateProfile', () => {
     expect(await usernameOf(env, 'alice')).toBe('alice');
   });
 
-  it('lets a user keep their own username (case-insensitive, not a self-collision)', async () => {
+  it('rejects a name that differs from an existing one ONLY by case (Alice == alice)', async () => {
     const { env } = makeEnv();
     await seedUser(env, 'alice', 'alice');
-    const r = await call(env, 'alice', 'updateProfile', { fullName: 'Alice', username: 'ALICE' });
+    await seedUser(env, 'bob', 'bob');
+    // bob tries to take "Alice" while "alice" exists — case-insensitive collision.
+    const r = await call(env, 'bob', 'updateProfile', { fullName: 'Bob', username: 'Alice' });
+    expect(r.status).toBe(409);
+    expect(await usernameOf(env, 'bob')).toBe('bob');
+  });
+
+  it('lets a user re-case their OWN username (alice -> Alice)', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', 'alice');
+    const r = await call(env, 'alice', 'updateProfile', { fullName: 'Alice', username: 'Alice' });
     expect(r.status).toBe(200);
-    expect(await usernameOf(env, 'alice')).toBe('alice');
+    // Their own row, so no self-collision — and the new case is stored.
+    expect(await usernameOf(env, 'alice')).toBe('Alice');
   });
 
   it('rejects a reserved username', async () => {

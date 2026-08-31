@@ -4,7 +4,7 @@
  * Firebase Auth stays the source of truth (via Identity Toolkit REST).
  */
 import { Hono } from "hono";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
@@ -61,9 +61,14 @@ function isDisposableEmail(email: string): boolean {
 async function createUserProfile(env: Env, uid: string, data: any, signupBonus: number) {
   const db = getDb(env);
   const ts = now();
+  // Validate + PRESERVE the typed case for display. Uniqueness stays
+  // case-insensitive (assertIdentifiersAvailable + the COLLATE NOCASE index),
+  // but the row stores "Alice", not "alice". Idempotent for the `create` path,
+  // which already validated.
+  const username = data.username ? validateUsername(String(data.username)) : null;
   // Reject duplicates before writing (defense-in-depth with the DB unique index).
   await assertIdentifiersAvailable(env, uid, {
-    username: data.username,
+    username,
     email: data.email,
     phone: data.phone,
   });
@@ -108,7 +113,7 @@ async function createUserProfile(env: Env, uid: string, data: any, signupBonus: 
     .values({
       uid,
       email: data.email ? String(data.email).toLowerCase() : null,
-      username: data.username ? String(data.username).toLowerCase() : null,
+      username,
       fullName: data.fullName ?? null,
       profileImageUrl: data.avatarUrl ?? null,
       dob: data.dob ?? null,
@@ -130,7 +135,7 @@ async function createUserProfile(env: Env, uid: string, data: any, signupBonus: 
         // Deliberately does NOT include `dpcoin`: a repeated signup for an
         // existing uid must never re-grant the welcome bonus.
         email: data.email ? String(data.email).toLowerCase() : null,
-        username: data.username ? String(data.username).toLowerCase() : null,
+        username,
         fullName: data.fullName ?? null,
         profileImageUrl: data.avatarUrl ?? null,
         updatedAt: ts,
@@ -195,7 +200,12 @@ authRoute.post("/", async (c) => {
       if (!exists) {
         const col =
           type === "email" ? schema.users.email : type === "phone" ? schema.users.phone : schema.users.username;
-        const row = await db.select({ uid: schema.users.uid }).from(schema.users).where(eq(col, value)).get();
+        // Username availability is case-insensitive: "Alice" is taken if "alice"
+        // exists (matches the COLLATE NOCASE unique index). email/phone are
+        // already normalised, so a plain equality is correct for them.
+        const predicate =
+          type === "username" ? sql`lower(${col}) = lower(${value})` : eq(col, value);
+        const row = await db.select({ uid: schema.users.uid }).from(schema.users).where(predicate).get();
         exists = !!row;
       }
       return c.json({ exists });

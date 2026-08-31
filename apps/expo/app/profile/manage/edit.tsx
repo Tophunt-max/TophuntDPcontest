@@ -405,8 +405,9 @@ export default function EditProfileScreen() {
     try {
       let finalAvatarUrl = profile?.profileImageUrl;
       const avatarChanged = !!localAvatarUri && localAvatarUri !== profile?.profileImageUrl;
-      const usernameChanged =
-        (data.username || "").trim().toLowerCase() !== String(currentUsername || "").toLowerCase();
+      // Case-sensitive: a rename OR just a case change (alice -> Alice) should
+      // still propagate to the feed/chat snapshots the server refreshes.
+      const usernameChanged = (data.username || "").trim() !== String(currentUsername || "");
 
       if (avatarChanged) {
         const optimizedAvatar = await optimizeImageForUpload(localAvatarUri!, "avatar");
@@ -541,7 +542,12 @@ export default function EditProfileScreen() {
           control={control}
           name="username"
           placeholder="Username"
-          autoCapitalize="none"
+          // Auto-capitalise the first letter (usernames have no spaces, so
+          // "words" only ever caps the leading character). The case the user
+          // ends up with is preserved for display; uniqueness is case-insensitive
+          // on the server, so "Alice" and "alice" can't both exist.
+          autoCapitalize="words"
+          autoCorrect={false}
           errorMessage={errors.username?.message}
           rightIcon={
             usernameChecking ? (

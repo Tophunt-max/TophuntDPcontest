@@ -11,7 +11,7 @@
  *   - routes/auth.ts   → createUserProfile (signup: create / createProfile)
  *   - routes/api.ts    → updateProfile (profile edit)
  */
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { httpsError } from "./http";
@@ -52,7 +52,11 @@ export function validateUsername(username: string): string {
   if (!USERNAME_REGEX.test(value))
     throw httpsError("invalid-argument", "Username can only contain letters, numbers, underscores, and dots.");
   if (RESERVED_USERNAMES.has(lower)) throw httpsError("invalid-argument", "This username is reserved and cannot be used.");
-  return lower;
+  // Return the value with its ORIGINAL case preserved for display. Uniqueness is
+  // still case-insensitive — the DB unique index is COLLATE NOCASE (migration
+  // 0041) and assertIdentifiersAvailable compares lower()=lower() — so "Alice"
+  // and "alice" are the same name, but "Alice" is what is shown.
+  return value;
 }
 
 /**
@@ -66,11 +70,13 @@ export async function assertIdentifiersAvailable(
   ids: { username?: string | null; email?: string | null; phone?: string | null },
 ): Promise<void> {
   const db = getDb(env);
-  const checks: Array<{ col: any; val: string | null; field: string }> = [
+  const checks: Array<{ col: any; val: string | null; field: string; caseInsensitive?: boolean }> = [
     {
       col: schema.users.username,
-      val: ids.username ? String(ids.username).toLowerCase() : null,
+      // Compared case-insensitively (see below), so keep the typed case here.
+      val: ids.username ? String(ids.username).trim() : null,
       field: "Username",
+      caseInsensitive: true,
     },
     {
       col: schema.users.email,
@@ -79,12 +85,16 @@ export async function assertIdentifiersAvailable(
     },
     { col: schema.users.phone, val: normalizePhone(ids.phone), field: "Phone number" },
   ];
-  for (const { col, val, field } of checks) {
+  for (const { col, val, field, caseInsensitive } of checks) {
     if (!val) continue;
+    // Username uniqueness is case-insensitive ("Alice" == "alice"), matching the
+    // COLLATE NOCASE unique index; email/phone are already normalised so a plain
+    // equality is right for them.
+    const predicate = caseInsensitive ? sql`lower(${col}) = lower(${val})` : eq(col, val);
     const row = await db
       .select({ uid: schema.users.uid })
       .from(schema.users)
-      .where(eq(col, val))
+      .where(predicate)
       .get();
     if (row && row.uid !== uid) throw httpsError("already-exists", `${field} is already in use.`);
   }
