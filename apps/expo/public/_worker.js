@@ -96,7 +96,10 @@ export const CONTENT_SECURITY_POLICY =
   // The analytics beacon POSTs its payload back to this host.
   'https://cloudflareinsights.com; ' +
   'frame-src https://api.razorpay.com https://checkout.razorpay.com https://*.firebaseapp.com; ' +
-  "worker-src 'self'; " +
+  // `blob:` is required by hls.js, which plays Bunny HLS on the web: it spawns
+  // its demuxer in a Web Worker created from a blob URL. Without this the worker
+  // is blocked and playback degrades to the main thread (or fails outright).
+  "worker-src 'self' blob:; " +
   "frame-ancestors 'none'; " +
   "base-uri 'self'; " +
   "object-src 'none'";

@@ -61,7 +61,8 @@ import {
 } from '@/assets/svgs';
 import { Colors } from '@/constants/theme';
 import { formatClockTime } from '@/src/lib/formatTime';
-import { videoSourceFor, videoSourceWithMp4 } from '@/src/lib/videoSource';
+import { videoSourceFor } from '@/src/lib/videoSource';
+import { useHlsVideo } from '@/src/hooks/useHlsVideo';
 import { useVideoStatus } from '@/src/hooks/useVideoStatus';
 import { prefetchImages } from '@/src/lib/mediaPrefetch';
 import { Avatar } from '@/src/components/ui/Avatar';
@@ -248,17 +249,21 @@ export default function StoryView() {
     currentStory?.mediaType === 'video' ? currentStory.mediaUrl : null,
   );
 
-  // Resolves the platform-correct URL and enables the disk cache, so re-watching
-  // a story does not refetch it. On web it prefers the server-resolved MP4 over a
-  // guessed `play_720p.mp4`, which 404s when that rendition was never encoded.
-  const player = useVideoPlayer(
-    currentStory?.mediaType === 'video'
-      ? videoSourceWithMp4(currentStory.mediaUrl, serverMp4Url)
-      : null,
-    (player) => {
-      player.loop = false;
-    },
+  /**
+   * Resolves the platform-correct playback path (and enables the disk cache on
+   * native, so re-watching a story does not refetch it).
+   *
+   * On web this returns a null source and attaches hls.js to expo-video's own
+   * `<video>` element, so the browser plays the same HLS playlist native does —
+   * no dependency on Bunny's MP4 Fallback being enabled or on a specific
+   * rendition existing. `hostRef` goes on the View wrapping <VideoView>.
+   */
+  const { hostRef: videoHostRef, playerSource } = useHlsVideo(
+    currentStory?.mediaType === 'video' ? currentStory.mediaUrl : null,
   );
+  const player = useVideoPlayer(playerSource, (player) => {
+    player.loop = false;
+  });
 
   /**
    * The story's soundtrack, and it starts AUDIBLE.
@@ -799,7 +804,7 @@ export default function StoryView() {
                 // on web is the browser's own bar — a scrubber, volume slider,
                 // fullscreen and an overflow menu pinned across the bottom of a
                 // full-screen story, directly on top of the reply row.
-                <View style={styles.mediaSafe}>
+                <View ref={videoHostRef} style={styles.mediaSafe}>
                     <VideoView
                         player={player}
                         style={styles.mediaFill}

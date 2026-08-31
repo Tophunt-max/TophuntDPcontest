@@ -19,7 +19,7 @@ import { Avatar } from '../ui/Avatar';
 import { VerifiedBadge } from '../ui/VerifiedBadge';
 import { useVideoStatus } from '@/src/hooks/useVideoStatus';
 import { useCountdown } from '@/src/hooks/useCountdown';
-import { videoSourceFor } from '@/src/lib/videoSource';
+import { useHlsVideo } from '@/src/hooks/useHlsVideo';
 import * as Haptics from 'expo-haptics';
 import LottieView from 'lottie-react-native';
 import Animated, { 
@@ -66,12 +66,13 @@ const VideoMedia = ({ uri, style }: { uri: string; style: any }) => {
   // playlist to play, so show the poster frame instead of mounting a player that
   // would just error. R2 videos report status null and skip all of this.
   const { isProcessing, isFailed, thumbnailUrl } = useVideoStatus(uri);
-  // videoSourceFor picks the right URL for the platform (HLS on native, Bunny's
-  // MP4 fallback on web) AND enables expo-video's disk cache, so the same clip is
-  // not re-downloaded every time this card scrolls back into view.
-  const source = videoSourceFor(uri);
+  // Resolves playback per platform: the HLS playlist (plus expo-video's disk
+  // cache) on native, and on web hls.js attached to the player's own <video>, so
+  // the browser plays that same playlist instead of a guessed `play_720p.mp4`
+  // that 404s whenever Bunny never encoded that rendition.
+  const { hostRef, playerSource } = useHlsVideo(uri);
 
-  const player = useVideoPlayer(isProcessing || isFailed ? null : source, (p) => {
+  const player = useVideoPlayer(isProcessing || isFailed ? null : playerSource, (p) => {
     p.loop = true;
     p.muted = true;
     p.play();
@@ -97,7 +98,13 @@ const VideoMedia = ({ uri, style }: { uri: string; style: any }) => {
     );
   }
 
-  return <VideoView player={player} style={style} contentFit="cover" nativeControls={false} />;
+  // The wrapper carries `hostRef` so hls.js can find the <video> on web; on
+  // native the ref is undefined and this is an inert View.
+  return (
+    <View ref={hostRef} style={style}>
+      <VideoView player={player} style={StyleSheet.absoluteFill} contentFit="cover" nativeControls={false} />
+    </View>
+  );
 };
 
 const BattleMedia = ({ isVideo, uri, style }: { isVideo: boolean; uri?: string; style: any }) =>
