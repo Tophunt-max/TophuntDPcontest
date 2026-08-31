@@ -84,33 +84,48 @@ async function sendViaBrevo(env: Env, from: string, replyTo: string, opts: SendO
   return { ok: true, provider: "brevo", id };
 }
 
+/** Maileroo's v2 API address shape: { address, display_name }. */
+function mailerooAddress(value: string): { address: string; display_name: string } {
+  const { email, name } = parseAddress(value);
+  return { address: email, display_name: name || "" };
+}
+
 /**
- * Maileroo (smtp.maileroo.com) — HTTP email API.
+ * Maileroo — the v2 Email API (smtp.maileroo.com/api/v2).
  *
- * Contract, from the provider's docs: POST multipart/form-data to
- * `https://smtp.maileroo.com/send`, authenticated with an `X-API-Key` header.
- * Fields are `from` ("Name <addr>"), `to`, `subject`, and at least one of `html`
- * / `plain`. The response is JSON `{ success, message, data }`, so — like the SMS
- * gateways — an HTTP 200 carrying `success: false` is treated as the failure it
- * is rather than reported as sent.
+ * The dashboard's "Sending Keys" are v2 credentials: they authenticate the JSON
+ * API at `/api/v2/emails` with `Authorization: Bearer <key>`. The older
+ * multipart `/send` endpoint (X-API-Key) does NOT accept them — a Sending Key
+ * used there comes back as "invalid API key", which is exactly the trap this
+ * hit. So this speaks v2: JSON body, Bearer auth.
+ *
+ *   { from:{address,display_name}, to:[{...}], subject, html, plain, reply_to? }
+ *
+ * Response is `{ success, message, data:{ reference_id } }`, so — like the SMS
+ * gateways — an HTTP 200 carrying `success:false` is the failure it is, not a
+ * send.
  */
 async function sendViaMaileroo(env: Env, from: string, replyTo: string, opts: SendOpts): Promise<EmailResult> {
   const key = await resolveSecret(env, "MAILEROO_API_KEY");
   if (!key) return { ok: false, provider: "maileroo", error: "Maileroo API key is not configured." };
 
-  const form = new FormData();
-  form.append("from", from);
-  form.append("to", opts.to);
-  form.append("subject", opts.subject);
-  form.append("html", opts.html);
-  // Maileroo needs at least one body; we always have html, plain is a bonus.
-  if (opts.text) form.append("plain", opts.text);
-  if (replyTo) form.append("reply_to", replyTo);
+  const payloadReq: Record<string, unknown> = {
+    from: mailerooAddress(from),
+    to: [mailerooAddress(opts.to)],
+    subject: opts.subject,
+    html: opts.html,
+    // At least one body is required; we always have html, plain is a bonus.
+    ...(opts.text ? { plain: opts.text } : {}),
+    ...(replyTo ? { reply_to: [mailerooAddress(replyTo)] } : {}),
+  };
 
-  const res = await fetch("https://smtp.maileroo.com/send", {
+  const res = await fetch("https://smtp.maileroo.com/api/v2/emails", {
     method: "POST",
-    headers: { "X-API-Key": key },
-    body: form,
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payloadReq),
   });
   const body = await res.text();
   let payload: any = null;

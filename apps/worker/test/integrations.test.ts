@@ -351,7 +351,7 @@ describe('SMS gateway dispatch', () => {
 });
 
 describe('email gateway dispatch', () => {
-  it('sends through Maileroo with the key, from and both bodies', async () => {
+  it('sends through Maileroo v2 with a Bearer key and a structured JSON body', async () => {
     const e = env();
     await putSecret(e as any, 'MAILEROO_API_KEY', 'maileroo-key', null);
     await saveIntegrations(e as any, {
@@ -371,16 +371,18 @@ describe('email gateway dispatch', () => {
     expect(result.provider).toBe('maileroo');
     expect(result.id).toBe('ref_9');
     const [url, init] = fetchMock.mock.calls[0] as any;
-    expect(url).toBe('https://smtp.maileroo.com/send');
-    expect((init.headers as any)['X-API-Key']).toBe('maileroo-key');
-    // multipart FormData carrying the message.
-    const form = init.body as FormData;
-    expect(form.get('from')).toBe('TopHunt <no-reply@tophunt.in>');
-    expect(form.get('to')).toBe('user@example.com');
-    expect(form.get('subject')).toBe('Your code');
-    expect(form.get('html')).toBe('<b>123456</b>');
-    expect(form.get('plain')).toBe('123456');
-    expect(form.get('reply_to')).toBe('help@tophunt.in');
+    // v2 JSON endpoint, Bearer auth — NOT the legacy /send + X-API-Key, which is
+    // what rejects a modern Sending Key as "invalid API key".
+    expect(url).toBe('https://smtp.maileroo.com/api/v2/emails');
+    expect((init.headers as any).Authorization).toBe('Bearer maileroo-key');
+    expect((init.headers as any)['Content-Type']).toBe('application/json');
+    const sent = JSON.parse(init.body);
+    expect(sent.from).toEqual({ address: 'no-reply@tophunt.in', display_name: 'TopHunt' });
+    expect(sent.to).toEqual([{ address: 'user@example.com', display_name: '' }]);
+    expect(sent.subject).toBe('Your code');
+    expect(sent.html).toBe('<b>123456</b>');
+    expect(sent.plain).toBe('123456');
+    expect(sent.reply_to).toEqual([{ address: 'help@tophunt.in', display_name: '' }]);
   });
 
   it('treats a Maileroo 200 with success:false as a failure', async () => {
