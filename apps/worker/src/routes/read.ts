@@ -72,55 +72,84 @@ const publiclyVisibleUser = sql`(${schema.users.status} IS NULL OR ${schema.user
 const isHiddenAccountStatus = (status: string | null | undefined): boolean =>
   !!status && (PUBLICLY_HIDDEN_STATUSES as readonly string[]).includes(status);
 
+/** The live, per-user fields that a SNAPSHOT froze and must not be trusted for. */
+interface LiveUserFields {
+  /** The admin verified badge. */
+  verified: boolean;
+  /** The user's CURRENT profile photo (raw url, un-canonicalised); null when none. */
+  avatar: string | null;
+}
+
 /**
- * Which of these uids carry the admin verified badge.
+ * The current verified flag AND profile photo for a batch of uids, in ONE query.
  *
- * The blue check lives on the live `users` row, but most surfaces render a name
- * from a SNAPSHOT captured at write time — a battle's userA/userB blob, a comment
- * row, a chat member list, a story, a notification actor. Embedding `verified`
- * into each snapshot would make it go stale the moment an admin verifies or
- * un-verifies someone (the same trap denormalised usernames have). So instead
- * every read that shows a name looks the flag up live, in ONE batched query, and
- * injects it — the badge is therefore always current no matter how old the
- * snapshot is.
+ * Two things about a user drift after a snapshot captures them: the admin
+ * verified badge, and — the reason this exists beyond the badge — their PROFILE
+ * PHOTO. Almost every surface renders a person from a SNAPSHOT taken at write
+ * time (a battle's userA/userB blob, a chat member list, a notification actor),
+ * so a user who verifies, un-verifies, or simply CHANGES THEIR PHOTO never
+ * reaches those surfaces — the old face is frozen there forever. Baking the
+ * fresh values into each snapshot would only move the staleness around; instead
+ * every read that shows a person looks both up live, in one batched query, and
+ * injects them, so the badge and the avatar are always current no matter how old
+ * the snapshot is.
  */
-async function verifiedUidSet(
+async function liveUserFields(
   env: Env,
   uids: (string | null | undefined)[],
-): Promise<Set<string>> {
+): Promise<Map<string, LiveUserFields>> {
   const unique = [...new Set(uids.filter((u): u is string => !!u))];
-  if (!unique.length) return new Set();
+  if (!unique.length) return new Map();
   try {
     const rows = await getDb(env)
-      .select({ uid: schema.users.uid })
+      .select({ uid: schema.users.uid, verified: schema.users.verified, avatar: schema.users.profileImageUrl })
       .from(schema.users)
-      .where(and(inArray(schema.users.uid, unique), eq(schema.users.verified, true)))
+      .where(inArray(schema.users.uid, unique))
       .all();
-    return new Set(rows.map((r) => r.uid));
+    return new Map(rows.map((r) => [r.uid, { verified: !!r.verified, avatar: r.avatar ?? null }]));
   } catch (e) {
-    // The badge is cosmetic; a lookup failure must degrade to "no badge", never
-    // break the read it decorates.
-    console.error("[read] verified lookup failed", e);
-    return new Set();
+    // This enrichment is cosmetic; a lookup failure must degrade to the snapshot
+    // as-is, never break the read it decorates.
+    console.error("[read] live user lookup failed", e);
+    return new Map();
   }
 }
 
 /**
- * Stamp `verified` onto both participants of each battle, from a single lookup.
+ * Refresh both participants of each battle from a single live lookup — the
+ * verified badge AND the profile photo.
+ *
+ * `enrichMatchMedia` has already derived `profilePicThumb` from the SNAPSHOT's
+ * (possibly stale) `profilePic` by the time this runs, so both the canonical url
+ * and its thumb are overwritten from the current row — otherwise a photo change
+ * would reach the fallback field but not the one the client actually prefers.
+ * An empty string (not null) clears a removed photo, matching the snapshot's own
+ * `profilePic: "" ` convention so the client falls through to local initials.
  *
  * Mutates the mapped match objects in place (their userA/userB are fresh copies
  * from mapMatch, not the cached row), so it is safe to run before the page is
- * cached — the flag then travels with the cached copy.
+ * cached — the fresh fields then travel with the cached copy.
  */
-async function enrichParticipantsVerified(env: Env, matches: any[]): Promise<void> {
-  const verified = await verifiedUidSet(
+async function enrichParticipants(env: Env, matches: any[]): Promise<void> {
+  const live = await liveUserFields(
     env,
     matches.flatMap((m) => [m?.userA?.uid, m?.userB?.uid]),
   );
-  if (!verified.size) return;
+  if (!live.size) return;
+  const apply = (p: any) => {
+    if (!p?.uid) return p;
+    const u = live.get(p.uid);
+    if (!u) return p;
+    return {
+      ...p,
+      verified: u.verified,
+      profilePic: cdnUrl(env, u.avatar) ?? "",
+      profilePicThumb: avatarUrl(env, u.avatar) ?? "",
+    };
+  };
   for (const m of matches) {
-    if (m?.userA?.uid) m.userA = { ...m.userA, verified: verified.has(m.userA.uid) };
-    if (m?.userB?.uid) m.userB = { ...m.userB, verified: verified.has(m.userB.uid) };
+    m.userA = apply(m.userA);
+    m.userB = apply(m.userB);
   }
 }
 
@@ -440,7 +469,7 @@ async function servePersonalizedFeed(
     candidates = rows
       .map((r) => ({ ...enrichMatchMedia(c.env, mapMatch(r)), _base: rankBaseScore(r, now, w) }))
       .sort((a, b) => b._base - a._base);
-    await enrichParticipantsVerified(c.env, candidates);
+    await enrichParticipants(c.env, candidates);
     await cachePut(c.env, candKey, candidates, 45);
   }
 
@@ -843,7 +872,7 @@ readRoute.get("/matches", optionalAuth, async (c) => {
       .offset(offset)
       .all();
     matches = rows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m));
-    await enrichParticipantsVerified(c.env, matches);
+    await enrichParticipants(c.env, matches);
     nextCursor = rows.length === limit ? offset + limit : null;
   } else {
     // Keyset pagination by createdAt — stable and index-friendly.
@@ -856,7 +885,7 @@ readRoute.get("/matches", optionalAuth, async (c) => {
       .limit(limit)
       .all();
     matches = rows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m));
-    await enrichParticipantsVerified(c.env, matches);
+    await enrichParticipants(c.env, matches);
     nextCursor = rows.length === limit ? rows[rows.length - 1].createdAt : null;
   }
 
@@ -890,7 +919,7 @@ readRoute.get("/matches/:id", optionalAuth, async (c) => {
     if ((pa && blocked.has(pa)) || (pb && blocked.has(pb))) return c.json(null);
   }
   const out: any = mapMatch(row);
-  await enrichParticipantsVerified(c.env, [out]);
+  await enrichParticipants(c.env, [out]);
   // For LIVE battles, surface the authoritative vote tally straight from the
   // per-match VoteCounter DO — D1 only holds the last (up to 5s) flushed
   // snapshot. Read-only (no flush, no D1 write); fail-open to the D1 snapshot.
@@ -1216,6 +1245,38 @@ readRoute.get("/notifications", requireAuth, async (c) => {
         // claim more actors than it can name.
         actorCount: Math.max(kept.length, (r.actorCount ?? 1) - (actors.length - kept.length)),
       };
+    });
+  }
+
+  // Each grouped actor's avatarUrl — and, for a single-actor row, the `image`
+  // that drives the row avatar — is a snapshot of the actor's photo at the time
+  // the notification was written. Refresh them live so a follower/liker/commenter
+  // who has since changed their photo shows their current face. Only actor-driven
+  // rows carry an actorId, so an admin/broadcast row's own image is left alone.
+  const actorUids = page.flatMap((r: any) => [
+    r.actorId,
+    ...(Array.isArray(r.actors) ? r.actors.map((a: any) => a?.uid) : []),
+  ]);
+  const liveActors = await liveUserFields(c.env, actorUids);
+  if (liveActors.size) {
+    page = page.map((r: any) => {
+      const next: any = { ...r };
+      if (Array.isArray(r.actors)) {
+        next.actors = r.actors.map((a: any) => {
+          if (!a?.uid) return a;
+          const u = liveActors.get(a.uid);
+          return u ? { ...a, avatarUrl: cdnUrl(c.env, u.avatar) ?? null } : a;
+        });
+      }
+      // Refresh the row image ONLY when it is the actor's avatar (an actor-driven
+      // row whose image was set). Never invent one where there wasn't, so a
+      // like/comment row that has no image stays imageless and keeps deriving its
+      // avatar from `actors`.
+      if (r.actorId && r.image != null) {
+        const u = liveActors.get(r.actorId);
+        if (u) next.image = cdnUrl(c.env, u.avatar) ?? null;
+      }
+      return next;
     });
   }
 
@@ -1617,7 +1678,7 @@ readRoute.get("/users/:id/matches", optionalAuth, async (c) => {
     .limit(limit)
     .all();
   let base = (rows as any[]).map((r) => enrichMatchMedia(c.env, mapMatch(r)));
-  await enrichParticipantsVerified(c.env, base);
+  await enrichParticipants(c.env, base);
 
   if (viewer) {
     c.header("Cache-Control", "private, no-store");
@@ -1864,17 +1925,22 @@ readRoute.get("/chats", requireAuth, async (c) => {
       : chats.filter((chat: any) => !(chat.users as string[]).some((u) => u !== uid && blocked.has(u)));
 
   // `users_data` is a snapshot captured when the chat was created, so it carries
-  // no verified flag. Stamp it live off the members' current rows, so a blue
-  // check in the conversation list stays correct even for a chat opened months
-  // ago (and disappears if the user is un-verified).
+  // neither the verified flag NOR a current photo. Stamp both live off the
+  // members' current rows, so a blue check and an avatar in the conversation list
+  // stay correct even for a chat opened months ago — a member who changed their
+  // photo (or was verified/un-verified) shows their current one, not the frozen
+  // one from chat creation.
   const memberUids = visible.flatMap((chat: any) => (chat.users as string[]) || []);
-  const verifiedMembers = await verifiedUidSet(c.env, memberUids);
-  if (verifiedMembers.size) {
+  const liveMembers = await liveUserFields(c.env, memberUids);
+  if (liveMembers.size) {
     for (const chat of visible) {
       if (Array.isArray(chat.usersData)) {
-        chat.usersData = chat.usersData.map((m: any) =>
-          m?.uid ? { ...m, verified: verifiedMembers.has(m.uid) } : m,
-        );
+        chat.usersData = chat.usersData.map((m: any) => {
+          if (!m?.uid) return m;
+          const u = liveMembers.get(m.uid);
+          if (!u) return m;
+          return { ...m, verified: u.verified, photoURL: cdnUrl(c.env, u.avatar) ?? null };
+        });
       }
     }
   }

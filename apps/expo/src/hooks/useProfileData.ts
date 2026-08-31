@@ -223,3 +223,42 @@ export const useBlockUser = () => useBlockMutation(blockUserService);
 export const useUnblockUser = () => useBlockMutation(unblockUserService);
 export const useMuteUser = () => useBlockMutation(muteUserService);
 export const useUnmuteUser = () => useBlockMutation(unmuteUserService);
+
+/**
+ * React-query keys that carry a rendered copy of the signed-in user's avatar.
+ *
+ * The server now refreshes the photo on every `/read` (it looks the current
+ * value up live rather than trusting the snapshot each surface froze), so these
+ * screens only need a reason to refetch. Same honest short list as
+ * QUERY_KEYS_AFFECTED_BY_BLOCK: the home feed, chat inbox, notification list and
+ * leaderboard are state-based, not react-query, so they are NOT listed here —
+ * they are covered by getSocialGraphVersion() (see below) and by reloading on
+ * focus/pull-to-refresh against a server that already returns the new photo.
+ */
+const QUERY_KEYS_SHOWING_OWN_AVATAR = [
+  'profile',
+  'userMatches', // the user's own battles show their face on both cards
+  'userPosts',
+  'userWins',
+  'userBookmarks',
+  'stories',
+  'highlights',
+];
+
+/**
+ * Propagate the signed-in user's just-changed profile photo across the session.
+ *
+ * The edit screen already refetches its own `['profile', uid]`, but the new
+ * photo also appears on the user's battles, stories and — via the state-based
+ * home feed — their own cards there. Invalidate the react-query surfaces and
+ * bump the feed version so the already-mounted feed reloads on next focus; the
+ * server returns the fresh photo, so a reload is all any surface needs.
+ */
+export function propagateOwnAvatarChange(queryClient: ReturnType<typeof useQueryClient>): void {
+  for (const key of QUERY_KEYS_SHOWING_OWN_AVATAR) {
+    queryClient.invalidateQueries({ queryKey: [key] });
+  }
+  // The home feed is not react-query; it reloads on focus when this version
+  // moves. A changed avatar is exactly a "what the feed renders has changed".
+  bumpSocialGraphVersion();
+}

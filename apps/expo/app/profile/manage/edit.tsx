@@ -17,7 +17,8 @@ import { useRouter } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
 import { useReadjustablePhoto } from "@/src/components/media/useImageAdjuster";
 import { useAuth } from "@/src/hooks/useAuth";
-import { useProfile } from "@/src/hooks/useProfileData";
+import { useProfile, propagateOwnAvatarChange } from "@/src/hooks/useProfileData";
+import { useQueryClient } from "@tanstack/react-query";
 import { uploadToR2 } from "@/src/lib/uploadToR2";
 import { optimizeImageForUpload } from '@/src/lib/imageOptimize';
 import { FormInput } from "@/src/components/inputs/FormInput";
@@ -92,6 +93,7 @@ const occupations = ["Student", "Engineer", "Doctor", "Artist", "Teacher", "Deve
 export default function EditProfileScreen() {
   const router = useRouter();
   const { user: authUser } = useAuth();
+  const queryClient = useQueryClient();
   const { data: profile, isLoading: profileLoading, refetch } = useProfile(authUser?.uid || '');
   const { adjustPicked, readjust, canReadjust, forget, host: adjusterHost } = useReadjustablePhoto(1);
   
@@ -355,9 +357,10 @@ export default function EditProfileScreen() {
     setIsLoading(true);
     try {
       let finalAvatarUrl = profile?.profileImageUrl;
+      const avatarChanged = !!localAvatarUri && localAvatarUri !== profile?.profileImageUrl;
 
-      if (localAvatarUri && localAvatarUri !== profile?.profileImageUrl) {
-        const optimizedAvatar = await optimizeImageForUpload(localAvatarUri, "avatar");
+      if (avatarChanged) {
+        const optimizedAvatar = await optimizeImageForUpload(localAvatarUri!, "avatar");
         finalAvatarUrl = await uploadToR2(optimizedAvatar, "image/jpeg", "avatars") as string;
       }
 
@@ -387,6 +390,12 @@ export default function EditProfileScreen() {
        * Verify button still there.
        */
       refetch();
+
+      // A new photo also lives on the user's battles, stories and feed cards —
+      // and on every other person's device via the snapshots the server now
+      // refreshes live. Locally, nudge the surfaces that show the user's OWN face
+      // so their session reflects the change without waiting for a cold reload.
+      if (avatarChanged) propagateOwnAvatarChange(queryClient);
 
       const identifierPending =
         (!!data.email && data.email !== currentEmail) ||
