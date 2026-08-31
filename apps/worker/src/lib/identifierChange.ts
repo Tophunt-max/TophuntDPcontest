@@ -16,6 +16,7 @@ import { sendSms, smsConfigured } from "./sms";
 import { createNotification } from "./notify";
 import { delCache, userCacheKey } from "./cache";
 import { assertRecentAuth, clearReauthGrant } from "./reauth";
+import { verificationCodeEmail, identifierChangedEmail } from "./emailTemplates";
 import { now } from "./ids";
 
 /**
@@ -249,17 +250,7 @@ export async function requestEmailChange(
   await markSent(env, "email", uid, OTP_SEND_COOLDOWN);
   await markSent(env, "emailto", email, OTP_SEND_COOLDOWN);
 
-  const sent = await sendEmail(env, {
-    to: email,
-    subject: "Verify your new email address",
-    text:
-      `${otp} is your TopHunt code to confirm this email address. It expires in 10 minutes.\n\n` +
-      `If you did not request this, ignore this email — your address has not been changed.`,
-    html:
-      `<h3>Confirm your new email address</h3>` +
-      `<p>Your code is <b>${otp}</b>. It expires in 10 minutes.</p>` +
-      `<p>If you did not request this, you can ignore this email — your address has not been changed.</p>`,
-  });
+  const sent = await sendEmail(env, { to: email, ...verificationCodeEmail(otp) });
 
   // Be honest when delivery failed, and leave the user able to retry AT ONCE.
   // Keeping the stored code and the cooldown after a failed send is what turned
@@ -503,16 +494,7 @@ async function afterIdentifierChange(
   if (change.kind === "email") {
     await sendEmail(env, {
       to: change.oldValue,
-      subject: "Your TopHunt email address was changed",
-      text:
-        `The email address on your TopHunt account was just changed to ${masked}.\n\n` +
-        `If you did this, no action is needed. If you did NOT, contact support immediately — ` +
-        `someone else may have access to your account.`,
-      html:
-        `<h3>Your email address was changed</h3>` +
-        `<p>The email address on your TopHunt account was just changed to <b>${masked}</b>.</p>` +
-        `<p>If you did this, no action is needed. If you did <b>not</b>, contact support ` +
-        `immediately — someone else may have access to your account.</p>`,
+      ...identifierChangedEmail("email", masked),
     }).catch((e) => console.error("[identifierChange] old-email alert failed", uid, e));
   } else {
     await sendSms(

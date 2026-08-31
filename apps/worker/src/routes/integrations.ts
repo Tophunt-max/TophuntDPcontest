@@ -17,6 +17,7 @@ import {
 import { secretStorageAvailable } from "../lib/secretBox";
 import { sendSmsDetailed, smsConfigured } from "../lib/sms";
 import { emailConfigured, sendEmailDetailed } from "../lib/email";
+import { testEmail } from "../lib/emailTemplates";
 import { bunnyConfig, mp4Url } from "../lib/bunny";
 
 /**
@@ -169,12 +170,7 @@ export function registerIntegrationRoutes(
       case "email": {
         const to = String(body?.to ?? "").trim();
         if (!to) throw httpsError("invalid-argument", "A destination email address is required for the test.");
-        const result = await sendEmailDetailed(c.env, {
-          to,
-          subject: "TopHunt email test",
-          html: "<p>This is a test from the TopHunt admin panel. If you received it, transactional email is working.</p>",
-          text: "This is a test from the TopHunt admin panel.",
-        });
+        const result = await sendEmailDetailed(c.env, { to, ...testEmail() });
         await writeAdminAudit(c.env, c.get("user"), "integrations.test", "email", result.provider, {
           ok: result.ok,
         });

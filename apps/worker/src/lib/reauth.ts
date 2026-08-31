@@ -6,6 +6,7 @@ import { generateOtp, setOtp, verifyOtp, deleteOtp } from "./otp";
 import { clearSendCooldown, enforceSendCooldown, markSent, rateLimit } from "./rateLimit";
 import { sendEmail, emailConfigured } from "./email";
 import { sendSms, smsConfigured } from "./sms";
+import { securityCodeEmail } from "./emailTemplates";
 import { now } from "./ids";
 
 /**
@@ -237,19 +238,7 @@ export async function sendReauthChallenge(
           `${otp} is your TopHunt security code. It expires in 10 minutes. If you did not request it, someone may be trying to change your account — do not share it.`,
           otp,
         )
-      : await sendEmail(env, {
-          to: target.destination,
-          subject: "Your TopHunt security code",
-          text:
-            `${otp} is your TopHunt security code. It expires in 10 minutes.\n\n` +
-            `We asked for this because someone is trying to change or delete your account. ` +
-            `If that was not you, do not share this code — and change your password.`,
-          html:
-            `<h3>Confirm it's you</h3>` +
-            `<p>Your security code is <b>${otp}</b>. It expires in 10 minutes.</p>` +
-            `<p>We asked for this because someone is trying to change or delete your account. ` +
-            `If that was not you, <b>do not share this code</b> — and change your password.</p>`,
-        });
+      : await sendEmail(env, { to: target.destination, ...securityCodeEmail(otp) });
 
   if (!sent) {
     // Same contract as the identifier-change sends: report the failure and leave

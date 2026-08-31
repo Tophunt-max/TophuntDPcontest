@@ -37,6 +37,7 @@ const PWRESET_VERIFIED_TTL = 10 * 60;
 const pwVerifiedKey = (phone: string) => `pwverified:${phone}`;
 import { sendSms, smsConfigured } from "../lib/sms";
 import { sendEmail } from "../lib/email";
+import { welcomeEmail } from "../lib/emailTemplates";
 import { now } from "../lib/ids";
 
 const DISPOSABLE_DOMAINS = new Set([
@@ -139,6 +140,20 @@ async function createUserProfile(env: Env, uid: string, data: any, signupBonus: 
   );
   if (bonusLedger) profileStatements.push(bonusLedger);
   await db.batch(profileStatements as any);
+
+  // Welcome the new account, best-effort. Only for email signups (phone-only
+  // accounts have no address), and never fatal — a signup must not fail because
+  // a welcome mail bounced.
+  if (data.email) {
+    try {
+      await sendEmail(env, {
+        to: String(data.email).toLowerCase(),
+        ...welcomeEmail(data.fullName || data.username || ""),
+      });
+    } catch (e) {
+      console.error("[auth] welcome email failed", uid, e);
+    }
+  }
 }
 
 export const authRoute = new Hono<{ Bindings: Env; Variables: Variables }>();

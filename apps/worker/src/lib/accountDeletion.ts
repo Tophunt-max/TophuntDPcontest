@@ -16,6 +16,8 @@ import {
 } from "./cache";
 import { getAppConfig } from "./settings";
 import { publish } from "./publish";
+import { sendEmail } from "./email";
+import { accountDeletionScheduledEmail } from "./emailTemplates";
 import { DELETED_STATUS, PENDING_DELETION_STATUS, parseGraceDays } from "./accountStatus";
 
 /**
@@ -341,6 +343,34 @@ export async function requestAccountDeletion(
 
   // Out of every public listing and cached profile from this moment on.
   await invalidateUserCaches(env, uid);
+
+  // Confirm by email, with the date the deletion can still be cancelled by. The
+  // in-app notice disappears with the account it is attached to, so an email is
+  // the one record of "you asked to delete this, here's how to undo it" that
+  // survives — and the alarm for a deletion the owner did NOT request. Read the
+  // address AFTER the anonymise-nothing request write (the row is untouched
+  // here), best-effort so a mail hiccup never fails the request.
+  try {
+    const account = await db
+      .select({ email: schema.users.email })
+      .from(schema.users)
+      .where(eq(schema.users.uid, uid))
+      .get();
+    if (account?.email) {
+      const when = new Date(scheduledFor).toLocaleDateString("en-GB", {
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+        timeZone: "UTC",
+      });
+      await sendEmail(env, {
+        to: account.email,
+        ...accountDeletionScheduledEmail(when),
+      });
+    }
+  } catch (e) {
+    console.error("[accountDeletion] scheduled-deletion email failed", uid, e);
+  }
 
   return {
     scheduledFor,
