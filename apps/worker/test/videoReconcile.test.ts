@@ -25,7 +25,15 @@ vi.mock('../src/lib/bunny', async (importOriginal) => {
     deleteVideo: (...a: any[]) => deleteVideoMock(...a),
     bunnyThumbnailUrl: async (_e: any, g: string) => `https://cdn.test/${g}/thumbnail.jpg`,
     bunnyPlaybackUrl: async (_e: any, g: string) => `https://cdn.test/${g}/playlist.m3u8`,
-    bunnyMp4Url: async (_e: any, g: string) => `https://cdn.test/${g}/play_720p.mp4`,
+    // Only the base-url construction is stubbed (it needs real Bunny config);
+    // the DECISION of which rendition to link runs the real `pickMp4Height`, so
+    // this still exercises the contract that we never link a rendition Bunny did
+    // not encode. See videoStatusLive.test.ts for that function's own cases.
+    bunnyMp4UrlFor: async (_e: any, g: string, meta: any) => {
+      if (meta && meta.hasMP4Fallback === false) return null;
+      const height = actual.pickMp4Height(meta?.availableResolutions);
+      return height == null ? null : `https://cdn.test/${g}/play_${height}p.mp4`;
+    },
   };
 });
 

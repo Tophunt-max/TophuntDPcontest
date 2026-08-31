@@ -45,6 +45,7 @@ vi.mock('../src/lib/voteCounter', () => ({
 
 import { makeEnv, makeApp, fakeCtx, drizzleOf, type TestEnv } from './helpers/harness';
 import { LIVE_STATUS_RECHECK_MS } from '../src/lib/videoReconcile';
+import { pickMp4Height } from '../src/lib/bunny';
 import * as schema from '../src/db/schema';
 
 const app = makeApp();
@@ -181,5 +182,38 @@ describe('videoStatus live recheck', () => {
 
     expect(getVideoMock).not.toHaveBeenCalled();
     expect(res.body.videos[0].status).toBe('processing');
+  });
+});
+
+/**
+ * Which MP4 rendition we link on web.
+ *
+ * `mp4Url` was hardcoded to 720p. Bunny only produces the renditions the library
+ * enabled and never upscales, so for a library capped at 480p — or a source
+ * smaller than 720 lines — `play_720p.mp4` does not exist. The url 404s and the
+ * web player, which has no native HLS to fall back to, reports the video as
+ * unplayable. Indistinguishable from a broken upload to the person watching.
+ */
+describe('pickMp4Height', () => {
+  it('picks the best rendition Bunny actually encoded', () => {
+    expect(pickMp4Height('240p,360p,480p')).toBe(480);
+    expect(pickMp4Height('240p,360p,480p,720p')).toBe(720);
+    expect(pickMp4Height('720p,1080p')).toBe(1080);
+  });
+
+  it('tolerates whitespace and bare numbers', () => {
+    expect(pickMp4Height(' 360p , 480p ')).toBe(480);
+    expect(pickMp4Height('360,480')).toBe(480);
+  });
+
+  it('falls back to 720p when Bunny reported no list at all', () => {
+    // Older API responses omit it; keep the previous behaviour rather than
+    // dropping the url entirely.
+    expect(pickMp4Height(undefined)).toBe(720);
+    expect(pickMp4Height('')).toBe(720);
+  });
+
+  it('returns null when the list has nothing we recognise', () => {
+    expect(pickMp4Height('144p')).toBe(null);
   });
 });

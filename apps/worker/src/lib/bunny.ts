@@ -103,6 +103,53 @@ export function mp4Url(cfg: BunnyConfig, guid: string, height = 720): string {
   return `https://${cfg.cdnHostname}/${guid}/play_${height}p.mp4`;
 }
 
+/** MP4 heights we are willing to link, best first. */
+const MP4_HEIGHTS = [1080, 720, 480, 360, 240] as const;
+
+/**
+ * Pick an MP4 height that Bunny ACTUALLY encoded for this video.
+ *
+ * `mp4Url` defaulted to 720p for every video, which is a guess: Bunny only
+ * produces the renditions the library has enabled, and it never upscales — so a
+ * library capped at 480p, or a source clip shorter than 720 lines, has no
+ * `play_720p.mp4` at all. The URL then 404s and the web player, which has no
+ * native HLS to fall back to, reports the video as unplayable. That is
+ * indistinguishable from a broken upload from the user's side.
+ *
+ * `availableResolutions` is Bunny's own comma-separated list ("240p,360p,480p"),
+ * so this picks the best height that is really there. Returns null when the list
+ * is present but contains nothing we recognise; falls back to 720p when Bunny
+ * gave us no list at all (older API responses), which preserves the previous
+ * behaviour rather than dropping the URL.
+ */
+export function pickMp4Height(availableResolutions: unknown): number | null {
+  const raw = typeof availableResolutions === "string" ? availableResolutions.trim() : "";
+  if (!raw) return 720;
+  const heights = new Set(
+    raw
+      .split(",")
+      .map((s) => parseInt(String(s).trim().replace(/p$/i, ""), 10))
+      .filter((n) => Number.isFinite(n)),
+  );
+  for (const h of MP4_HEIGHTS) if (heights.has(h)) return h;
+  return null;
+}
+
+/**
+ * The progressive MP4 url for a video, derived from what Bunny really encoded.
+ *
+ * Returns null when the library has MP4 Fallback switched OFF (`hasMP4Fallback`
+ * false) or when no recognised rendition exists — linking a file that is not
+ * there is worse than admitting there is no MP4, because the client can then say
+ * something true instead of "could not be played".
+ */
+export async function bunnyMp4UrlFor(env: Env, guid: string, meta: any): Promise<string | null> {
+  if (meta && meta.hasMP4Fallback === false) return null;
+  const height = pickMp4Height(meta?.availableResolutions);
+  if (height == null) return null;
+  return bunnyMp4Url(env, guid, height);
+}
+
 /** Auto-generated poster frame. */
 export function thumbnailUrl(cfg: BunnyConfig, guid: string): string {
   return `https://${cfg.cdnHostname}/${guid}/thumbnail.jpg`;

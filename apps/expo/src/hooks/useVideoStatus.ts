@@ -34,6 +34,13 @@ export interface UseVideoStatusResult {
   isFailed: boolean;
   thumbnailUrl: string | null;
   durationSec: number | null;
+  /**
+   * The progressive MP4 the Worker resolved from Bunny's real
+   * `availableResolutions` — the url web playback should use, instead of guessing
+   * `play_720p.mp4` (which 404s whenever that rendition was never encoded). Null
+   * when the library has MP4 Fallback off, or for non-Bunny media.
+   */
+  mp4Url: string | null;
 }
 
 export function useVideoStatus(mediaUrl?: string | null): UseVideoStatusResult {
@@ -67,6 +74,7 @@ export function useVideoStatus(mediaUrl?: string | null): UseVideoStatusResult {
       isFailed: false,
       thumbnailUrl: null,
       durationSec: null,
+      mp4Url: null,
     };
   }
 
@@ -79,5 +87,6 @@ export function useVideoStatus(mediaUrl?: string | null): UseVideoStatusResult {
     isFailed: status === 'failed',
     thumbnailUrl: data?.thumbnailUrl || bunnyThumbnailFromUrl(mediaUrl),
     durationSec: data?.durationSec ?? null,
+    mp4Url: data?.mp4Url ?? null,
   };
 }

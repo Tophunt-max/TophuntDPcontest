@@ -61,7 +61,7 @@ import {
 } from '@/assets/svgs';
 import { Colors } from '@/constants/theme';
 import { formatClockTime } from '@/src/lib/formatTime';
-import { videoSourceFor } from '@/src/lib/videoSource';
+import { videoSourceFor, videoSourceWithMp4 } from '@/src/lib/videoSource';
 import { useVideoStatus } from '@/src/hooks/useVideoStatus';
 import { prefetchImages } from '@/src/lib/mediaPrefetch';
 import { Avatar } from '@/src/components/ui/Avatar';
@@ -231,24 +231,33 @@ export default function StoryView() {
     });
   }, [shareCard, isVsCurrent, currentStory?.contestTitle, currentUserStories?.username]);
 
-  // videoSourceFor resolves the platform-correct URL and enables the disk cache,
-  // so re-watching a story does not refetch it.
-  const player = useVideoPlayer(currentStory?.mediaType === 'video' ? videoSourceFor(currentStory.mediaUrl) : null, (player) => {
-    player.loop = false;
-  });
-
   /**
-   * Only used to EXPLAIN a playback failure, never to gate the player.
+   * Consulted for TWO things: to explain a playback failure, and — on web — to
+   * get the MP4 url Bunny actually encoded.
    *
-   * Gating on it (as the feed's PostCard does) would put an API round trip in
-   * front of every video story, including the overwhelming majority that are long
-   * since encoded — a real cost paid on every view to cover the first minute of
-   * one. So the player is still mounted optimistically and this is consulted only
-   * once `statusChange` reports an error, to say "still processing" instead of a
-   * bare "unavailable".
+   * It never GATES the player. Gating on it (as the feed's PostCard does) would
+   * put an API round trip in front of every video story, including the
+   * overwhelming majority that are long since encoded — a real cost paid on every
+   * view to cover the first minute of one. So the player is still mounted
+   * optimistically; this is consulted once `statusChange` reports an error, to say
+   * "still processing" instead of a bare "unavailable".
+   *
+   * Must sit ABOVE `useVideoPlayer` because the source depends on `mp4Url`.
    */
-  const { isProcessing: videoStillEncoding } = useVideoStatus(
+  const { isProcessing: videoStillEncoding, mp4Url: serverMp4Url } = useVideoStatus(
     currentStory?.mediaType === 'video' ? currentStory.mediaUrl : null,
+  );
+
+  // Resolves the platform-correct URL and enables the disk cache, so re-watching
+  // a story does not refetch it. On web it prefers the server-resolved MP4 over a
+  // guessed `play_720p.mp4`, which 404s when that rendition was never encoded.
+  const player = useVideoPlayer(
+    currentStory?.mediaType === 'video'
+      ? videoSourceWithMp4(currentStory.mediaUrl, serverMp4Url)
+      : null,
+    (player) => {
+      player.loop = false;
+    },
   );
 
   /**
@@ -288,8 +297,10 @@ export default function StoryView() {
   useEffect(() => {
     // A story has one soundtrack. When the author attached music, the clip's own
     // audio is muted so the two do not play over each other — the same rule the
-    // editor applies while previewing.
-    try { player.muted = !!musicUrl; } catch { /* no source loaded */ }
+    // editor applies while previewing. WITHOUT music the clip owns the sound, so
+    // it follows the same mute state the sound button shows; otherwise that button
+    // would be a control that visibly changes nothing.
+    try { player.muted = musicUrl ? true : isMuted; } catch { /* no source loaded */ }
     if (!musicUrl) return;
     musicPlayer.loop = true;
     musicPlayer.muted = isMuted;
@@ -778,8 +789,25 @@ export default function StoryView() {
                     <Image source={{ uri: currentStory.mediaUrl }} style={styles.mediaFill} contentFit="contain" />
                 </View>
             ) : (
-                <View style={[styles.mediaSafe, { paddingTop: insets.top + CHROME_TOP, paddingBottom: insets.bottom + CHROME_BOTTOM }]}>
-                    <VideoView player={player} style={styles.mediaFill} contentFit="contain" />
+                // Video is FULL-BLEED, like Instagram: no chrome padding, so a
+                // 9:16 clip fills the screen edge to edge and the header/reply bar
+                // float over it on their gradients. (Photos keep the padded box —
+                // see the note above; a tall screenshot has to stay fully visible.)
+                //
+                // `nativeControls={false}` is the other half of looking like a
+                // story rather than a web page: expo-video defaults them ON, which
+                // on web is the browser's own bar — a scrubber, volume slider,
+                // fullscreen and an overflow menu pinned across the bottom of a
+                // full-screen story, directly on top of the reply row.
+                <View style={styles.mediaSafe}>
+                    <VideoView
+                        player={player}
+                        style={styles.mediaFill}
+                        contentFit="contain"
+                        nativeControls={false}
+                        allowsFullscreen={false}
+                        allowsPictureInPicture={false}
+                    />
                 </View>
             )}
             {/*
@@ -840,6 +868,32 @@ export default function StoryView() {
                     <Text style={styles.musicPillText} numberOfLines={1}>
                         {musicPillLabel(isMuted, currentStory.musicTitle, currentStory.musicArtist)}
                     </Text>
+                </Pressable>
+            )}
+
+            {/*
+              Sound button for a video story with NO soundtrack — the Instagram
+              control. Without it a clip's own audio had no toggle at all: the pill
+              above only exists when the author attached music, so a plain video was
+              either audible or (if the browser refused unmuted autoplay) silent
+              with nothing on screen to say so or fix it.
+            */}
+            {isVideoStory(currentStory) && !musicUrl && (
+                <Pressable
+                    pointerEvents="auto"
+                    onPress={() => {
+                        // Turning sound on doubles as the gesture a browser wants
+                        // before it will allow unmuted playback.
+                        const next = toggleMute({ userMuted, soundBlocked });
+                        setUserMuted(next.userMuted);
+                        setSoundBlocked(next.soundBlocked);
+                    }}
+                    style={[styles.soundButton, { top: insets.top + CHROME_TOP + 8 }]}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel={isMuted ? 'Turn on sound' : 'Mute video'}
+                >
+                    <Ionicons name={isMuted ? 'volume-mute' : 'volume-high'} size={18} color="white" />
                 </Pressable>
             )}
 
@@ -1074,6 +1128,22 @@ const styles = StyleSheet.create({
     zIndex: 30,
   },
   musicPillText: { color: 'white', fontSize: 13, fontFamily: 'Urbanist-SemiBold', flexShrink: 1 },
+  /**
+   * Round, translucent sound toggle in the top-right — the Instagram story
+   * control. Right-aligned so it never collides with the soundtrack pill (which
+   * sits on the left) and clears the close button, which lives in the header row
+   * above this offset.
+   */
+  soundButton: {
+    position: 'absolute',
+    right: 16,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
   reactionContainer: { position: 'absolute', bottom: 100, width: '100%', flexDirection: 'row', justifyContent: 'center', flexWrap: 'wrap', gap: 15, paddingHorizontal: 20 },
   reactionBtn: { backgroundColor: 'rgba(255,255,255,0.2)', padding: 10, borderRadius: 25 },
   

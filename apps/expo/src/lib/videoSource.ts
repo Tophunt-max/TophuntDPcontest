@@ -96,3 +96,25 @@ export function videoSourceFor(url: string | null | undefined): VideoSource {
   if (!cachingSupported(uri)) return uri;
   return { uri, useCaching: true };
 }
+
+/**
+ * Like `videoSourceFor`, but prefers an MP4 url the SERVER resolved.
+ *
+ * `playableVideoUrl` has to guess on web — it rewrites the playlist to
+ * `play_720p.mp4` — and that guess is wrong whenever Bunny did not encode a 720p
+ * rendition (the library is capped lower, or the source was smaller; Bunny never
+ * upscales). The file 404s and the web player, with no native HLS to fall back
+ * to, just says the video cannot be played.
+ *
+ * The Worker knows the truth: it reads Bunny's own `availableResolutions` and
+ * stores the real url on the `videos` row, exposed as `mp4Url` by
+ * `useVideoStatus`. When we have it, use it verbatim on web and stop guessing.
+ * Native still takes the HLS playlist — that is where adaptive bitrate lives.
+ */
+export function videoSourceWithMp4(
+  url: string | null | undefined,
+  serverMp4Url: string | null | undefined,
+): VideoSource {
+  if (Platform.OS === 'web' && isHlsUrl(url) && serverMp4Url) return serverMp4Url;
+  return videoSourceFor(url);
+}

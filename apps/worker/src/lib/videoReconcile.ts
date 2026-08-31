@@ -19,7 +19,7 @@ import { getDb, schema } from "../db";
 import { now } from "./ids";
 import {
   bunnyConfigured,
-  bunnyMp4Url,
+  bunnyMp4UrlFor,
   bunnyPlaybackUrl,
   bunnyThumbnailUrl,
   deleteVideo,
@@ -114,7 +114,10 @@ export async function applyBunnyEncodeResult(
       status: "ready",
       thumbnailUrl: await bunnyThumbnailUrl(env, guid),
       playbackUrl: await bunnyPlaybackUrl(env, guid),
-      mp4Url: await bunnyMp4Url(env, guid),
+      // Derived from what Bunny ACTUALLY encoded, not a hardcoded 720p guess —
+      // see bunnyMp4UrlFor. Null when the library has MP4 Fallback off, which the
+      // web player needs to know rather than being handed a 404.
+      mp4Url: await bunnyMp4UrlFor(env, guid, meta),
       durationSec: durationSec ?? undefined,
       updatedAt: ts,
     })
