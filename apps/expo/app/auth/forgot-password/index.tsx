@@ -22,6 +22,8 @@ import { requestPasswordReset, describeNoPasswordAccount } from "@/src/services/
 import { callApi } from '@/src/services/api'; // Consolidated API used
 import { FormInput } from "@/src/components/inputs/FormInput";
 import { useForm } from "react-hook-form";
+import { CountryPicker } from "react-native-country-codes-picker";
+import { Ionicons } from "@/src/lib/icons";
 
 export default function ForgotPasswordScreen() {
   const router = useRouter();
@@ -34,6 +36,14 @@ export default function ForgotPasswordScreen() {
   const [activeTab, setActiveTab] = useState<"email" | "sms">("email");
   const [loading, setLoading] = useState(false);
   const [userInfo, setUserInfo] = useState<{name: string, avatar: string | null} | null>(null);
+  // The number is stored in E.164 (dial code + digits) by phone login and signup,
+  // and the reset lookup matches it exactly. Sending the bare local number here —
+  // which this screen used to do — missed that lookup, and because the response is
+  // the same whether or not a number is registered (anti-enumeration), the user
+  // was walked to the code screen to wait for an SMS that was never sent. So this
+  // has to prepend the SAME dial code the login screen does.
+  const [countryCode, setCountryCode] = useState("+91");
+  const [showCountryPicker, setShowCountryPicker] = useState(false);
 
   const { control, handleSubmit, watch, setError, clearErrors } = useForm({
     defaultValues: {
@@ -92,10 +102,13 @@ export default function ForgotPasswordScreen() {
                 params: { email: outcome.email },
             });
         } else {
-            await callApi('sendOtpToPhone', { phone: data.phoneNumber });
+            const fullPhone = countryCode + String(data.phoneNumber).replace(/\D/g, "");
+            await callApi('sendOtpToPhone', { phone: fullPhone });
+            // Carry the FULL number forward so verify and reset key the same value
+            // the code was issued against.
             router.push({
                 pathname: "/auth/forgot-password/otp",
-                params: { phoneNumber: data.phoneNumber },
+                params: { phoneNumber: fullPhone },
             });
         }
     } catch (error: any) {
@@ -164,13 +177,26 @@ export default function ForgotPasswordScreen() {
                     autoCapitalize="none"
                 />
             ) : (
-                <FormInput
-                    control={control}
-                    name="phoneNumber"
-                    placeholder="Enter your phone number"
-                    icon={<Sms_Icon width={20} height={20} color={activeTab === 'sms' ? '#ff4466' : '#9E9E9E'} />}
-                    keyboardType="phone-pad"
-                />
+                <View style={styles.phoneRow}>
+                    <TouchableOpacity
+                        style={styles.dialButton}
+                        onPress={() => setShowCountryPicker(true)}
+                        accessibilityRole="button"
+                        accessibilityLabel="Select country code"
+                    >
+                        <Text style={styles.dialText}>{countryCode}</Text>
+                        <Ionicons name="chevron-down" size={12} color="#9E9E9E" style={{ marginLeft: 4 }} />
+                    </TouchableOpacity>
+                    <View style={{ flex: 1 }}>
+                        <FormInput
+                            control={control}
+                            name="phoneNumber"
+                            placeholder="Enter your phone number"
+                            icon={<Sms_Icon width={20} height={20} color={activeTab === 'sms' ? '#ff4466' : '#9E9E9E'} />}
+                            keyboardType="phone-pad"
+                        />
+                    </View>
+                </View>
             )}
         </View>
 
@@ -185,11 +211,43 @@ export default function ForgotPasswordScreen() {
         </View>
 
       </ScrollView>
+
+      <CountryPicker
+        lang="en"
+        show={showCountryPicker}
+        pickerButtonOnPress={(item) => {
+          setCountryCode(item.dial_code);
+          setShowCountryPicker(false);
+        }}
+        onBackdropPress={() => setShowCountryPicker(false)}
+        style={{ modal: { height: 500 } }}
+      />
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
+  phoneRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  dialButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    height: 56,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#EEEEEE",
+    backgroundColor: "#FAFAFA",
+  },
+  dialText: {
+    fontSize: 16,
+    fontFamily: "Urbanist-Medium",
+    color: "#000",
+  },
   header: {
     flexDirection: "row",
     alignItems: "center",

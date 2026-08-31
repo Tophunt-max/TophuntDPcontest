@@ -94,7 +94,11 @@ export default function OtpVerificationScreen() {
     }
   };
   
-  const formattedPhoneNumber = `+${phoneNumber?.substring(0, 2)}******${phoneNumber?.substring(phoneNumber.length - 2)}`;
+  // The number now arrives in E.164 (e.g. +919876543210), so it is masked as-is
+  // rather than re-adding a leading "+" (which produced "++91******10").
+  const formattedPhoneNumber = phoneNumber
+    ? `${phoneNumber.substring(0, 3)}******${phoneNumber.substring(phoneNumber.length - 2)}`
+    : "";
 
   return (
     <KeyboardAvoidingView

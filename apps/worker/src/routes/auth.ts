@@ -17,9 +17,9 @@ import {
   deleteAuthUser,
 } from "../lib/firebaseAdmin";
 import { getRewardSettings } from "../lib/settings";
-import { setOtp, generateOtp, verifyOtp } from "../lib/otp";
+import { setOtp, generateOtp, verifyOtp, deleteOtp } from "../lib/otp";
 import { validatePasswordStrength } from "../lib/password";
-import { rateLimit, enforceSendCooldown, markSent, clientIp } from "../lib/rateLimit";
+import { rateLimit, enforceSendCooldown, markSent, clearSendCooldown, clientIp } from "../lib/rateLimit";
 import { assertIdentifiersAvailable, validateUsername } from "../lib/userIdentifiers";
 import {
   confirmEmailChange,
@@ -323,6 +323,11 @@ authRoute.post("/", async (c) => {
       // Be honest when delivery failed: silently returning success here made
       // "the OTP never arrived" indistinguishable from a wrong number.
       if (!sent) {
+        // Clear the cooldown that `markSent` started BEFORE the send, so the user
+        // can retry at once instead of being told to wait 60s for a code that was
+        // never dispatched. The cooldown has to be set before the send to close a
+        // double-send race, which is why it needs undoing here.
+        await clearSendCooldown(env, "phone", normalizedPhone);
         throw httpsError(
           "internal",
           "We couldn't send the code right now. Please try again in a moment.",
@@ -343,7 +348,7 @@ authRoute.post("/", async (c) => {
      */
     case "phoneSignIn": {
       const normalizedPhone = normalizePhone(body.phone);
-      if (!normalizedPhone || !body.code) {
+      if (!normalizedPhone || !/^\+?\d{7,15}$/.test(normalizedPhone) || !body.code) {
         throw httpsError("invalid-argument", "Phone number and code are required.");
       }
       await rateLimit(env, `phonesignin:${normalizedPhone}`, 15, 3600, { failClosed: true });
@@ -374,6 +379,18 @@ authRoute.post("/", async (c) => {
         // D1 profile is created by `createProfile` once the user finishes signup.
         uid = await createAuthUser(env, { phone: normalizedPhone });
         isNewUser = true;
+      } else {
+        // Signing in with a code sent to this number proves control of it, so the
+        // number is now verified. Best-effort: a login must never fail on this,
+        // and the identifier-change flow is the other place that sets the flag.
+        try {
+          await db
+            .update(schema.users)
+            .set({ phoneVerified: true, phoneVerifiedAt: now() })
+            .where(eq(schema.users.uid, uid));
+        } catch (e) {
+          console.error("[auth] phoneSignIn: could not mark phone verified", uid, e);
+        }
       }
 
       const customToken = await createCustomToken(env, uid);
@@ -390,10 +407,15 @@ authRoute.post("/", async (c) => {
     // ---- Forgot-password OTP (SMS) ----
     case "sendOtpToPhone": {
       const normalizedPhone = normalizePhone(body.phone);
-      if (!normalizedPhone) throw httpsError("invalid-argument", "Invalid phone format.");
-      // Abuse controls: per-IP burst cap + strict per-number cooldown so this
-      // can't be used as an SMS bomber (real Twilio spend) or a resend spammer.
-      await rateLimit(env, `otpsend:${ip}`, 15, 3600);
+      if (!normalizedPhone || !/^\+?\d{7,15}$/.test(normalizedPhone))
+        throw httpsError("invalid-argument", "Enter a valid phone number.");
+      // Abuse controls, matched to sendPhoneLoginOtp because both spend real SMS
+      // money: per-IP burst, per-number DAILY cap, and a per-number cooldown — all
+      // fail-closed, so a KV outage cannot remove the spend limits. The per-number
+      // daily cap was missing here, so a registered number could be texted roughly
+      // once a minute all day; the per-IP cap was also not fail-closed.
+      await rateLimit(env, `otpsend:${ip}`, 15, 3600, { failClosed: true });
+      await rateLimit(env, `otpsend_num:${normalizedPhone}`, 8, 86_400, { failClosed: true });
       await enforceSendCooldown(env, "pwreset", normalizedPhone, OTP_SEND_COOLDOWN);
 
       // A misconfigured gateway is NOT the same thing as an unknown number, and
@@ -423,13 +445,29 @@ authRoute.post("/", async (c) => {
         const otp = generateOtp();
         await setOtp(env, "pwreset", normalizedPhone, { otp, createdAt: now() });
         await markSent(env, "pwreset", normalizedPhone, OTP_SEND_COOLDOWN);
-        await sendSms(env, normalizedPhone, `${otp} is your TopHunt password reset code. Valid for 10 minutes.`, otp);
+        const sent = await sendSms(env, normalizedPhone, `${otp} is your TopHunt password reset code. Valid for 10 minutes.`, otp);
+        // A delivery failure to a REGISTERED number was reported as success, so
+        // the user was walked to the code screen to wait for an SMS that never
+        // came. Report it, and clear the cooldown + code so the retry is
+        // immediate. This does not weaken anti-enumeration: an UNKNOWN number
+        // never reaches here and still returns the same generic success below.
+        if (!sent) {
+          await Promise.all([
+            deleteOtp(env, "pwreset", normalizedPhone),
+            clearSendCooldown(env, "pwreset", normalizedPhone),
+          ]);
+          throw httpsError(
+            "internal",
+            "We couldn't send the code right now. Please try again in a moment.",
+          );
+        }
       }
       return c.json({ success: true });
     }
     case "verifyOtp": {
       const normalizedPhone = normalizePhone(body.phone);
-      if (!normalizedPhone || !body.code) throw httpsError("invalid-argument", "Phone and code are required.");
+      if (!normalizedPhone || !/^\+?\d{7,15}$/.test(normalizedPhone) || !body.code)
+        throw httpsError("invalid-argument", "Phone and code are required.");
       // The per-code 5-attempt counter caps guesses against ONE code; these caps
       // bound guessing across codes (request a new one, guess 5 more, repeat)
       // and across accounts from one source. Fail closed: an outage of the
@@ -445,7 +483,7 @@ authRoute.post("/", async (c) => {
     }
     case "updatePasswordWithPhone": {
       const normalizedPhone = normalizePhone(body.phone);
-      if (!normalizedPhone || !body.newPassword)
+      if (!normalizedPhone || !/^\+?\d{7,15}$/.test(normalizedPhone) || !body.newPassword)
         throw httpsError("invalid-argument", "Phone and password required.");
       await rateLimit(env, `pwreset:${normalizedPhone}`, 10, 3600, { failClosed: true });
       await rateLimit(env, `pwreset_ip:${clientIp(c.req.raw.headers)}`, 30, 3600, { failClosed: true });
