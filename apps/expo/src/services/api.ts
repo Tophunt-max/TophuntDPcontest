@@ -51,6 +51,14 @@ const DEFAULT_TIMEOUT_MS = 20_000;
 const READ_RETRIES = 2;
 
 // Actions handled by the /auth route (was the `authHandler` callable).
+//
+// Membership here decides ROUTING: an action in this set goes to the public
+// `/auth` endpoint (no Firebase token required); anything else goes to `/api`,
+// which is behind requireApiAuth and rejects a tokenless request with "User must
+// be logged in." So every PRE-LOGIN action MUST be listed here — otherwise the
+// screen that runs before sign-in (phone login, password reset) fails on its
+// very first call. `sendPhoneLoginOtp` was missing, which broke "Send OTP" on
+// the phone-login screen with exactly that error.
 const AUTH_ACTIONS = new Set([
   'check',
   'create',
@@ -63,6 +71,7 @@ const AUTH_ACTIONS = new Set([
   'verifyEmailOtp',
   'sendPhoneOtp',
   'verifyPhoneOtp',
+  'sendPhoneLoginOtp',
   'phoneSignIn',
 ]);
 
