@@ -377,12 +377,16 @@ describe('email gateway dispatch', () => {
     expect((init.headers as any).Authorization).toBe('Bearer maileroo-key');
     expect((init.headers as any)['Content-Type']).toBe('application/json');
     const sent = JSON.parse(init.body);
+    // A named From keeps its display_name; a bare address OMITS it entirely —
+    // Maileroo's v2 validator rejects an empty-string display_name outright.
     expect(sent.from).toEqual({ address: 'no-reply@tophunt.in', display_name: 'TopHunt' });
-    expect(sent.to).toEqual([{ address: 'user@example.com', display_name: '' }]);
+    expect(sent.to).toEqual([{ address: 'user@example.com' }]);
     expect(sent.subject).toBe('Your code');
     expect(sent.html).toBe('<b>123456</b>');
     expect(sent.plain).toBe('123456');
-    expect(sent.reply_to).toEqual([{ address: 'help@tophunt.in', display_name: '' }]);
+    expect(sent.reply_to).toEqual([{ address: 'help@tophunt.in' }]);
+    // The SDK always sends a 24-char hex reference id; we mirror that.
+    expect(sent.reference_id).toMatch(/^[0-9a-f]{24}$/);
   });
 
   it('treats a Maileroo 200 with success:false as a failure', async () => {

@@ -84,10 +84,25 @@ async function sendViaBrevo(env: Env, from: string, replyTo: string, opts: SendO
   return { ok: true, provider: "brevo", id };
 }
 
-/** Maileroo's v2 API address shape: { address, display_name }. */
-function mailerooAddress(value: string): { address: string; display_name: string } {
+/**
+ * Maileroo's v2 API address shape.
+ *
+ * `display_name` is OMITTED when there is no name, never sent as "". Maileroo's
+ * own SDK rejects an empty-string display name (it must be null or non-empty),
+ * and the v2 API validates the same way — so sending `display_name: ""` for a
+ * bare `to` address is itself a rejection, which is an easy trap now that the
+ * request actually reaches the v2 validator.
+ */
+function mailerooAddress(value: string): { address: string; display_name?: string } {
   const { email, name } = parseAddress(value);
-  return { address: email, display_name: name || "" };
+  return name ? { address: email, display_name: name } : { address: email };
+}
+
+/** A 24-char hex reference id, matching Maileroo's SDK (idempotency + tracking). */
+function mailerooReferenceId(): string {
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 /**
@@ -113,6 +128,8 @@ async function sendViaMaileroo(env: Env, from: string, replyTo: string, opts: Se
     from: mailerooAddress(from),
     to: [mailerooAddress(opts.to)],
     subject: opts.subject,
+    // The SDK always sends one; the API uses it for idempotency and tracking.
+    reference_id: mailerooReferenceId(),
     html: opts.html,
     // At least one body is required; we always have html, plain is a bonus.
     ...(opts.text ? { plain: opts.text } : {}),
