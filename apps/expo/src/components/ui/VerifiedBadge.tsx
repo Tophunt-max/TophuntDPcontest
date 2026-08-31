@@ -1,21 +1,52 @@
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
-import { Ionicons } from '@/src/lib/icons';
+import Svg, { Path } from 'react-native-svg';
 
 /**
- * The blue check for an admin-verified account.
+ * The Instagram-style verified badge.
  *
- * An admin could mark a user verified from the panel — the flag was written to
- * `users.verified` and the PANEL rendered a tick — but the app never read it, so
- * the one place the badge is actually for showed nothing. This is the shared
- * renderer, so every surface (profile, lists, leaderboard) shows the same mark
- * rather than each one inventing its own.
+ * NOT a plain check-in-a-circle — that reads as Twitter/X. Instagram's mark is a
+ * scalloped SEAL: a smooth rosette (a circle with soft rounded bumps) in its blue
+ * (#0095F6) with a white tick. So this draws that shape rather than reusing an
+ * icon-font glyph, and one shared renderer means every surface (profile, feed,
+ * comments, chat, leaderboard, stories…) shows the identical mark.
  *
- * `verified` is deliberately the only input. It is set exclusively by
- * `PATCH /admin/users/:id/profile`; it is NOT the email/phone `emailVerified`
- * flag, which is a different fact about contactability and must never be
- * conflated with an editorial blue check.
+ * `verified` is the only input. It is set exclusively by the admin panel
+ * (PATCH /admin/users/:id/profile → users.verified) and is deliberately NOT the
+ * email/phone `emailVerified` flag, which is a different fact about
+ * contactability and must never be conflated with this editorial blue check.
  */
+
+/** Instagram blue. */
+const SEAL_COLOR = '#0095F6';
+
+/**
+ * The scalloped seal outline, generated once on a 40×40 canvas.
+ *
+ * Built procedurally rather than as a hand-typed path so the rosette is exactly
+ * symmetric: the radius follows `base + amp·cos(lobes·θ)`, a sinusoid that traces
+ * a smooth flower/seal edge. Sampled finely enough to look round at the 12–20px
+ * sizes the badge actually renders at. `LOBES = 8` and a gentle amplitude match
+ * Instagram's soft scallop rather than a spiky burst.
+ */
+const SEAL_PATH = (() => {
+  const cx = 20;
+  const cy = 20;
+  const base = 16.5;
+  const amp = 2.2;
+  const lobes = 8;
+  const steps = 120;
+  let d = '';
+  for (let i = 0; i <= steps; i++) {
+    const t = (i / steps) * Math.PI * 2;
+    const r = base + amp * Math.cos(lobes * t);
+    const x = cx + r * Math.cos(t);
+    const y = cy + r * Math.sin(t);
+    d += `${i === 0 ? 'M' : 'L'}${x.toFixed(2)} ${y.toFixed(2)} `;
+  }
+  return d + 'Z';
+})();
+
 export function VerifiedBadge({
   verified,
   size = 16,
@@ -33,13 +64,24 @@ export function VerifiedBadge({
       accessibilityRole="image"
       accessibilityLabel="Verified account"
     >
-      <Ionicons name="checkmark-circle" size={size} color="#1D9BF0" />
+      <Svg width={size} height={size} viewBox="0 0 40 40">
+        <Path d={SEAL_PATH} fill={SEAL_COLOR} />
+        {/* The tick, stroked with round caps so it stays clean at small sizes. */}
+        <Path
+          d="M13.2 20.4 L17.8 25 L27 14.8"
+          stroke="#FFFFFF"
+          strokeWidth={3.4}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          fill="none"
+        />
+      </Svg>
     </View>
   );
 }
 
+export default VerifiedBadge;
+
 const styles = StyleSheet.create({
   wrap: { marginLeft: 4, justifyContent: 'center' },
 });
-
-export default VerifiedBadge;
