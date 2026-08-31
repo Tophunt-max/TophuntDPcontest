@@ -337,7 +337,7 @@ export interface IntegrationsConfig {
     customMethod: "GET" | "POST";
     customBody: string;
   };
-  email: { provider: "resend" | "brevo" | "none"; from: string; replyTo: string };
+  email: { provider: "resend" | "brevo" | "maileroo" | "none"; from: string; replyTo: string };
   payments: { razorpayKeyId: string };
   video: { provider: "bunny" | "r2"; libraryId: string; cdnHostname: string };
   push: { vapidPublicKey: string };

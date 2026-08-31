@@ -375,8 +375,13 @@ export default function Integrations() {
   const smsSecrets = (byGroup.sms ?? []).filter((s) =>
     (smsSecretsFor[cfg.sms.provider] ?? []).includes(s.name),
   );
-  const emailSecrets = (byGroup.email ?? []).filter((s) =>
-    cfg.email.provider === "brevo" ? s.name === "BREVO_API_KEY" : s.name === "RESEND_API_KEY",
+  const emailSecretFor: Record<string, string> = {
+    resend: "RESEND_API_KEY",
+    brevo: "BREVO_API_KEY",
+    maileroo: "MAILEROO_API_KEY",
+  };
+  const emailSecrets = (byGroup.email ?? []).filter(
+    (s) => s.name === (emailSecretFor[cfg.email.provider] ?? "RESEND_API_KEY"),
   );
 
   return (
@@ -583,6 +588,7 @@ export default function Integrations() {
                 <option value="none">Disabled</option>
                 <option value="resend">Resend</option>
                 <option value="brevo">Brevo</option>
+                <option value="maileroo">Maileroo</option>
               </select>
             </div>
             <div>

@@ -113,8 +113,9 @@ export interface Env {
   /** Token substituted into a custom gateway's URL/body as {token}. */
   SMS_CUSTOM_TOKEN?: string;
 
-  // Alternative transactional email provider.
+  // Alternative transactional email providers.
   BREVO_API_KEY?: string;
+  MAILEROO_API_KEY?: string;
 }
 
 /** Authenticated user context attached by the auth middleware. */

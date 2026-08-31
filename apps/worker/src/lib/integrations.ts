@@ -65,6 +65,7 @@ export const SECRET_DEFINITIONS: SecretDefinition[] = [
   // ---- Email --------------------------------------------------------------
   { name: "RESEND_API_KEY", label: "Resend API Key", group: "email", envKey: "RESEND_API_KEY" },
   { name: "BREVO_API_KEY", label: "Brevo API Key", group: "email", envKey: "BREVO_API_KEY" },
+  { name: "MAILEROO_API_KEY", label: "Maileroo Sending Key", group: "email", envKey: "MAILEROO_API_KEY", help: "Maileroo dashboard → your domain → Sending Keys. Sends via smtp.maileroo.com." },
 
   // ---- Payments -----------------------------------------------------------
   { name: "RAZORPAY_KEY_SECRET", label: "Razorpay Key Secret", group: "payments", envKey: "RAZORPAY_KEY_SECRET", help: "Signature verification AND payment reconciliation use this." },
@@ -118,7 +119,7 @@ export function secretDefinition(name: string): SecretDefinition {
 // ---------------------------------------------------------------------------
 
 export type SmsProvider = "twilio" | "msg91" | "fast2sms" | "hanuotp" | "custom" | "none";
-export type EmailProvider = "resend" | "brevo" | "none";
+export type EmailProvider = "resend" | "brevo" | "maileroo" | "none";
 export type VideoProvider = "bunny" | "r2";
 
 export interface IntegrationsConfig {
@@ -197,7 +198,7 @@ function mergeConfig(raw: any): IntegrationsConfig {
   const smsProvider = ["twilio", "msg91", "fast2sms", "hanuotp", "custom", "none"].includes(sms.provider)
     ? (sms.provider as SmsProvider)
     : DEFAULT_INTEGRATIONS.sms.provider;
-  const emailProvider = ["resend", "brevo", "none"].includes(email.provider)
+  const emailProvider = ["resend", "brevo", "maileroo", "none"].includes(email.provider)
     ? (email.provider as EmailProvider)
     : DEFAULT_INTEGRATIONS.email.provider;
   const videoProvider = ["bunny", "r2"].includes(video.provider)

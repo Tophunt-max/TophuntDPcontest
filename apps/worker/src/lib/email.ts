@@ -84,6 +84,48 @@ async function sendViaBrevo(env: Env, from: string, replyTo: string, opts: SendO
   return { ok: true, provider: "brevo", id };
 }
 
+/**
+ * Maileroo (smtp.maileroo.com) — HTTP email API.
+ *
+ * Contract, from the provider's docs: POST multipart/form-data to
+ * `https://smtp.maileroo.com/send`, authenticated with an `X-API-Key` header.
+ * Fields are `from` ("Name <addr>"), `to`, `subject`, and at least one of `html`
+ * / `plain`. The response is JSON `{ success, message, data }`, so — like the SMS
+ * gateways — an HTTP 200 carrying `success: false` is treated as the failure it
+ * is rather than reported as sent.
+ */
+async function sendViaMaileroo(env: Env, from: string, replyTo: string, opts: SendOpts): Promise<EmailResult> {
+  const key = await resolveSecret(env, "MAILEROO_API_KEY");
+  if (!key) return { ok: false, provider: "maileroo", error: "Maileroo API key is not configured." };
+
+  const form = new FormData();
+  form.append("from", from);
+  form.append("to", opts.to);
+  form.append("subject", opts.subject);
+  form.append("html", opts.html);
+  // Maileroo needs at least one body; we always have html, plain is a bonus.
+  if (opts.text) form.append("plain", opts.text);
+  if (replyTo) form.append("reply_to", replyTo);
+
+  const res = await fetch("https://smtp.maileroo.com/send", {
+    method: "POST",
+    headers: { "X-API-Key": key },
+    body: form,
+  });
+  const body = await res.text();
+  let payload: any = null;
+  try {
+    payload = JSON.parse(body);
+  } catch {
+    /* opaque body — fall back to the status code below */
+  }
+  if (!res.ok || payload?.success === false) {
+    return { ok: false, provider: "maileroo", error: `Maileroo: ${payload?.message || body.slice(0, 300)}` };
+  }
+  const id = payload?.data?.reference_id || payload?.reference_id || payload?.data?.id;
+  return { ok: true, provider: "maileroo", id: id ? String(id) : undefined };
+}
+
 /** Send an email through the configured provider. Never throws. */
 export async function sendEmailDetailed(env: Env, opts: SendOpts): Promise<EmailResult> {
   try {
@@ -95,6 +137,8 @@ export async function sendEmailDetailed(env: Env, opts: SendOpts): Promise<Email
         return await sendViaResend(env, from, replyTo, opts);
       case "brevo":
         return await sendViaBrevo(env, from, replyTo, opts);
+      case "maileroo":
+        return await sendViaMaileroo(env, from, replyTo, opts);
       case "none":
       default: {
         // Unconfigured provider but a Resend key present = a deployment that
@@ -124,5 +168,6 @@ export async function sendEmail(
 export async function emailConfigured(env: Env): Promise<boolean> {
   const cfg = await getIntegrations(env);
   if (cfg.email.provider === "brevo") return !!(await resolveSecret(env, "BREVO_API_KEY"));
+  if (cfg.email.provider === "maileroo") return !!(await resolveSecret(env, "MAILEROO_API_KEY"));
   return !!(await resolveSecret(env, "RESEND_API_KEY"));
 }

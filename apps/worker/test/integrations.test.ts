@@ -18,6 +18,7 @@ import {
   DEFAULT_INTEGRATIONS,
 } from '../src/lib/integrations';
 import { sendSmsDetailed } from '../src/lib/sms';
+import { sendEmailDetailed, emailConfigured } from '../src/lib/email';
 
 // base64("test-encryption-key-for-unit-tests") — a fixed test vector, not a
 // credential. Named to avoid tripping secret scanners.
@@ -346,5 +347,73 @@ describe('SMS gateway dispatch', () => {
     const result = await sendSmsDetailed(e as any, '9876543210', 'x', '123456');
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/network down/);
+  });
+});
+
+describe('email gateway dispatch', () => {
+  it('sends through Maileroo with the key, from and both bodies', async () => {
+    const e = env();
+    await putSecret(e as any, 'MAILEROO_API_KEY', 'maileroo-key', null);
+    await saveIntegrations(e as any, {
+      email: { ...DEFAULT_INTEGRATIONS.email, provider: 'maileroo', from: 'TopHunt <no-reply@tophunt.in>', replyTo: 'help@tophunt.in' },
+    });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ success: true, data: { reference_id: 'ref_9' } }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await sendEmailDetailed(e as any, {
+      to: 'user@example.com',
+      subject: 'Your code',
+      html: '<b>123456</b>',
+      text: '123456',
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.provider).toBe('maileroo');
+    expect(result.id).toBe('ref_9');
+    const [url, init] = fetchMock.mock.calls[0] as any;
+    expect(url).toBe('https://smtp.maileroo.com/send');
+    expect((init.headers as any)['X-API-Key']).toBe('maileroo-key');
+    // multipart FormData carrying the message.
+    const form = init.body as FormData;
+    expect(form.get('from')).toBe('TopHunt <no-reply@tophunt.in>');
+    expect(form.get('to')).toBe('user@example.com');
+    expect(form.get('subject')).toBe('Your code');
+    expect(form.get('html')).toBe('<b>123456</b>');
+    expect(form.get('plain')).toBe('123456');
+    expect(form.get('reply_to')).toBe('help@tophunt.in');
+  });
+
+  it('treats a Maileroo 200 with success:false as a failure', async () => {
+    const e = env();
+    await putSecret(e as any, 'MAILEROO_API_KEY', 'maileroo-key', null);
+    await saveIntegrations(e as any, { email: { ...DEFAULT_INTEGRATIONS.email, provider: 'maileroo', from: 'a@b.com' } });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ success: false, message: 'domain not verified' }), { status: 200 })));
+
+    const result = await sendEmailDetailed(e as any, { to: 'u@e.com', subject: 's', html: '<p>h</p>' });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/domain not verified/);
+  });
+
+  it('reports a missing Maileroo key rather than sending', async () => {
+    const e = env();
+    await saveIntegrations(e as any, { email: { ...DEFAULT_INTEGRATIONS.email, provider: 'maileroo', from: 'a@b.com' } });
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await sendEmailDetailed(e as any, { to: 'u@e.com', subject: 's', html: '<p>h</p>' });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/API key is not configured/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('reports Maileroo ready in the health check once its key is set', async () => {
+    const e = env();
+    await saveIntegrations(e as any, { email: { ...DEFAULT_INTEGRATIONS.email, provider: 'maileroo', from: 'a@b.com' } });
+    expect(await emailConfigured(e as any)).toBe(false);
+    await putSecret(e as any, 'MAILEROO_API_KEY', 'maileroo-key', null);
+    invalidateIntegrationCache();
+    expect(await emailConfigured(e as any)).toBe(true);
   });
 });
