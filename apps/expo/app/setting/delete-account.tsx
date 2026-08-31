@@ -22,6 +22,8 @@ import { emitToast } from '@/src/lib/toastBridge';
 import { reportError } from '@/src/lib/reportError';
 import { Ionicons } from '@/src/lib/icons';
 import { useConfirm } from '@/src/components/modals/ConfirmDialog';
+import { ReauthPrompt } from '@/src/components/modals/ReauthPrompt';
+import { isReauthRequired } from '@/src/services/auth/reauth';
 
 /**
  * Delete account.
@@ -108,6 +110,7 @@ export default function DeleteAccountScreen() {
   const [confirmText, setConfirmText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [showReauth, setShowReauth] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -201,9 +204,20 @@ export default function DeleteAccountScreen() {
       );
       router.replace('/auth/login');
     } catch (e: any) {
+      setSubmitting(false);
+      /**
+       * The server refused because the session is not recent enough.
+       *
+       * Not an error to report: it is the security gate doing its job, and the
+       * user's next step is to confirm who they are — not to see a red toast about
+       * a failure they did not cause. `ReauthPrompt` re-runs this on success.
+       */
+      if (isReauthRequired(e)) {
+        setShowReauth(true);
+        throw e;
+      }
       reportError(e, { screen: 'delete-account' });
       emitToast(e?.message || 'Could not delete your account. Please try again.', 'error');
-      setSubmitting(false);
       // Rethrow so the confirmation dialog closes instead of spinning forever.
       throw e;
     }
@@ -482,6 +496,16 @@ export default function DeleteAccountScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]}>
       {confirmDialog}
+      <ReauthPrompt
+        visible={showReauth}
+        onClose={() => setShowReauth(false)}
+        reason="delete your account"
+        onVerified={() => {
+          setShowReauth(false);
+          // The grant is now held server-side, so the same request goes through.
+          void submitRequest().catch(() => {});
+        }}
+      />
       <View style={styles.header}>
         <BackButton size={24} color={textColor} style={styles.backButton} />
         <Text style={[styles.headerTitle, { color: textColor }]}>Delete Account</Text>

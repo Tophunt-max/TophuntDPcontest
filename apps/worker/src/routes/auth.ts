@@ -482,7 +482,7 @@ authRoute.post("/", async (c) => {
     // header for the full list of what was wrong and why each part matters.
     case "sendEmailOtp": {
       if (!uid) throw httpsError("unauthenticated", "User must be logged in.");
-      const result = await requestEmailChange(env, uid, body.newEmail, ip);
+      const result = await requestEmailChange(env, c.get("user"), body.newEmail, ip);
       return c.json({ success: true, ...result });
     }
     case "verifyEmailOtp": {
@@ -494,7 +494,7 @@ authRoute.post("/", async (c) => {
 
     case "sendPhoneOtp": {
       if (!uid) throw httpsError("unauthenticated", "User must be logged in.");
-      const result = await requestPhoneChange(env, uid, body.newPhone, ip);
+      const result = await requestPhoneChange(env, c.get("user"), body.newPhone, ip);
       return c.json({ success: true, ...result });
     }
     case "verifyPhoneOtp": {

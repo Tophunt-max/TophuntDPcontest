@@ -21,7 +21,7 @@ import { enqueueBroadcast } from "../lib/broadcast";
 import { setCustomClaims } from "../lib/firebaseAdmin";
 import { publish, publishMany } from "../lib/publish";
 import { castVote, bumpEngagement } from "../lib/voteCounter";
-import { consumeRateLimit, rateLimit } from "../lib/rateLimit";
+import { clientIp, consumeRateLimit, rateLimit } from "../lib/rateLimit";
 import { assertIdentifiersAvailable, normalizePhone } from "../lib/userIdentifiers";
 import { enforceIdempotency, releaseIdempotency } from "../lib/idempotency";
 import {
@@ -41,6 +41,11 @@ import {
   requestAccountDeletion,
 } from "../lib/accountDeletion";
 import { exportUserData } from "../lib/accountExport";
+import {
+  assertRecentAuthForDeletion,
+  confirmReauthChallenge,
+  sendReauthChallenge,
+} from "../lib/reauth";
 import {
   adjustUserWallet,
   assertCoinAmount,
@@ -2613,6 +2618,13 @@ apiRoute.post("/", async (c) => {
       if (body.confirm !== true) {
         throw httpsError("invalid-argument", "Account deletion must be confirmed.");
       }
+      // Prove it is still the account holder. Typing DELETE proves intent about
+      // the word and the confirm dialog proves intent about the moment; neither
+      // proves anything about WHO. Without this the requirement for destroying an
+      // account was a session of any age — a stolen token, or a phone left
+      // unlocked. Firebase's own recent-login rule does not apply here, because
+      // this path never touches the client SDK.
+      await assertRecentAuthForDeletion(env, c.get("user"));
       const result = await requestAccountDeletion(env, uid, {
         reason: body.reason,
         source: body.source === "web" ? "web" : "app",
@@ -2620,7 +2632,33 @@ apiRoute.post("/", async (c) => {
       return c.json({ success: true, ...result });
     }
 
-    /** Change of mind, during the grace period. Puts the account back in service. */
+    /**
+     * Send a security code to the identifier already on the account, to prove the
+     * caller is still its owner before a destructive or credential-level action.
+     *
+     * Goes to the CURRENT email or phone, never to one the request supplied — a
+     * caller who picks the destination has proved nothing.
+     */
+    case "sendReauthOtp": {
+      const challenge = await sendReauthChallenge(env, uid, clientIp(c.req.raw.headers));
+      return c.json({ success: true, ...challenge });
+    }
+
+    /** Verify that code and open a short window in which the action may proceed. */
+    case "verifyReauthOtp": {
+      const result = await confirmReauthChallenge(env, uid, body.otp);
+      return c.json({ success: true, ...result });
+    }
+
+    /**
+     * Change of mind, during the grace period. Puts the account back in service.
+     *
+     * Deliberately NOT behind re-authentication. Cancelling is the non-destructive
+     * direction, and it is the only way back from a deletion someone did not mean
+     * to start — putting a code in front of it would make the recovery path harder
+     * than the destructive one, which is how a grace period stops being a safety
+     * net.
+     */
     case "cancelAccountDeletion": {
       await rateLimit(env, `canceldeletion:${uid}`, 10, 3600);
       const result = await cancelAccountDeletion(env, uid);
@@ -2656,6 +2694,7 @@ apiRoute.post("/", async (c) => {
       if (body.confirm !== true) {
         throw httpsError("invalid-argument", "Account deletion must be confirmed.");
       }
+      await assertRecentAuthForDeletion(env, c.get("user"));
       const result = await requestAccountDeletion(env, uid, { reason: body.reason });
       return c.json({
         success: true,

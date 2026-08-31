@@ -37,6 +37,11 @@ export const SELF_SERVICE_ACTIONS: ReadonlySet<string> = new Set([
   "cancelAccountDeletion",
   "deleteAccount",
   "exportMyData",
+  // The re-authentication challenge has to be reachable wherever the actions it
+  // guards are reachable. Leaving it out would gate deletion behind a step a
+  // blocked account could not take, which is the same dead end by a longer route.
+  "sendReauthOtp",
+  "verifyReauthOtp",
 ]);
 
 /**

@@ -71,6 +71,11 @@ export async function verifyIdToken(token: string, env: Env): Promise<AuthUser> 
       email: payload.email as string | undefined,
       // custom claim set via Identity Toolkit (setAdminRole)
       role: (payload.role as string | undefined) ?? undefined,
+      // Discarded until now, which meant the backend had no way to tell a session
+      // signed in seconds ago from one signed in last month — so "prove it's you
+      // before you delete the account" was not expressible. See lib/reauth.ts.
+      authTime:
+        typeof payload.auth_time === "number" ? (payload.auth_time as number) : undefined,
     };
   } catch {
     throw httpsError("unauthenticated", "Invalid or expired authentication token.");

@@ -120,6 +120,20 @@ export interface AuthUser {
   uid: string;
   email?: string;
   role?: string;
+  /**
+   * When the user last actually SIGNED IN, in seconds since epoch (the `auth_time`
+   * claim). Not the token's issue time.
+   *
+   * The distinction is the whole point: `iat` moves every hour when the SDK
+   * silently refreshes the token, but `auth_time` only moves when a human proves
+   * who they are again. That makes it the one claim a stolen token cannot
+   * freshen, which is what lib/reauth.ts gates sensitive actions on.
+   *
+   * Optional because a custom-token sign-in (our phone OTP path) still sets it,
+   * but a malformed or unusually old token may not — and a missing value is
+   * treated as "not recent", never as "fine".
+   */
+  authTime?: number;
 }
 
 /** Hono context variables. */

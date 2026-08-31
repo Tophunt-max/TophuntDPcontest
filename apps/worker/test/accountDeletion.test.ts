@@ -16,11 +16,22 @@
 import { vi, describe, it, expect } from 'vitest';
 import { eq } from 'drizzle-orm';
 
-// Bypass Firebase token verification: the bearer token is the uid.
+/**
+ * Bypass Firebase token verification: the bearer token is the uid.
+ *
+ * A `#stale` suffix produces a token with NO `auth_time`, i.e. a session too old
+ * to satisfy the re-authentication gate on deletion. Plain uids read as having
+ * just signed in.
+ */
 vi.mock('../src/lib/firebaseAuth', () => ({
   verifyIdToken: async (token: string) => {
-    const [uid, role] = token.split(':');
-    return { uid, role: role || 'user' };
+    const stale = token.endsWith('#stale');
+    const [uid, role] = (stale ? token.slice(0, -'#stale'.length) : token).split(':');
+    return {
+      uid,
+      role: role || 'user',
+      ...(stale ? {} : { authTime: Math.floor(Date.now() / 1000) }),
+    };
   },
   bearerToken: (h?: string | null) => (h && h.startsWith('Bearer ') ? h.slice(7) : null),
 }));

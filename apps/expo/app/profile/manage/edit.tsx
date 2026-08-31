@@ -31,6 +31,8 @@ import { Ionicons } from "@/src/lib/icons";
 import { CountryPicker } from "react-native-country-codes-picker";
 import { callApi } from "@/src/services/api"; // Centralized Worker API Caller
 import { ReanimatedBottomSheet } from "@/src/components/modals/ReanimatedBottomSheet";
+import { ReauthPrompt } from "@/src/components/modals/ReauthPrompt";
+import { isReauthRequired } from "@/src/services/auth/reauth";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -105,6 +107,16 @@ export default function EditProfileScreen() {
    */
   const [emailCooldown, setEmailCooldown] = useState(0);
   const [phoneCooldown, setPhoneCooldown] = useState(0);
+
+  /**
+   * Which identifier change is waiting on "confirm it's you", if any.
+   *
+   * Moving an email or phone number is a credential change, so the server requires
+   * a recent sign-in. Remembering WHICH one was refused is what lets the flow
+   * resume by itself once the user has verified, instead of making them find the
+   * Verify button again and wonder whether the first attempt did anything.
+   */
+  const [reauthFor, setReauthFor] = useState<'email' | 'phone' | null>(null);
 
   useEffect(() => {
     if (emailCooldown <= 0 && phoneCooldown <= 0) return;
@@ -222,6 +234,12 @@ export default function EditProfileScreen() {
         setEmailCooldown(Number(res?.cooldownSeconds) || 60);
         return true;
     } catch (error: any) {
+        // The session is not recent enough to move a credential. Not an error the
+        // user caused, so it gets the "confirm it's you" step rather than an alert.
+        if (isReauthRequired(error)) {
+            setReauthFor('email');
+            return false;
+        }
         Alert.alert("Couldn't send the code", error?.message || "Please try again in a moment.");
         return false;
     } finally {
@@ -266,6 +284,10 @@ export default function EditProfileScreen() {
         setPhoneCooldown(Number(res?.cooldownSeconds) || 60);
         return true;
     } catch (error: any) {
+        if (isReauthRequired(error)) {
+            setReauthFor('phone');
+            return false;
+        }
         Alert.alert("Couldn't send the code", error?.message || "Please try again in a moment.");
         return false;
     } finally {
@@ -584,6 +606,20 @@ export default function EditProfileScreen() {
           </TouchableOpacity>
         )}
       </ReanimatedBottomSheet>
+
+      {/* "Confirm it's you" — required before a credential change. Resumes the
+          change that was refused, so the user does not have to start over. */}
+      <ReauthPrompt
+        visible={reauthFor !== null}
+        onClose={() => setReauthFor(null)}
+        reason={reauthFor === 'phone' ? 'change your phone number' : 'change your email address'}
+        onVerified={() => {
+          const pending = reauthFor;
+          setReauthFor(null);
+          if (pending === 'email') void handleSendEmailOtp();
+          else if (pending === 'phone') void handleSendPhoneOtp();
+        }}
+      />
 
       {/* Email OTP Verification Modal */}
       <ReanimatedBottomSheet 

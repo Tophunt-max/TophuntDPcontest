@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import type { Env } from "../types";
+import type { AuthUser, Env } from "../types";
 import { getDb, schema } from "../db";
 import { httpsError } from "./http";
 import { setOtp, generateOtp, verifyOtp, deleteOtp } from "./otp";
@@ -15,6 +15,7 @@ import { sendEmail, emailConfigured } from "./email";
 import { sendSms, smsConfigured } from "./sms";
 import { createNotification } from "./notify";
 import { delCache, userCacheKey } from "./cache";
+import { assertRecentAuth, clearReauthGrant } from "./reauth";
 import { now } from "./ids";
 
 /**
@@ -185,10 +186,16 @@ export interface ChangeRequestResult {
  */
 export async function requestEmailChange(
   env: Env,
-  uid: string,
+  user: AuthUser,
   rawEmail: unknown,
   ip: string,
 ): Promise<ChangeRequestResult> {
+  const uid = user.uid;
+  // Prove it is still the account holder BEFORE anything else. The code below goes
+  // to the NEW address, which proves the caller controls that address — it says
+  // nothing about whether they own this account. Without this gate, a session of
+  // any age could move the credentials to an address of its choosing.
+  await assertRecentAuth(env, user);
   const email = assertValidEmail(rawEmail);
   const current = await readIdentifiers(env, uid);
 
@@ -306,10 +313,12 @@ export async function confirmEmailChange(
 
 export async function requestPhoneChange(
   env: Env,
-  uid: string,
+  user: AuthUser,
   rawPhone: unknown,
   ip: string,
 ): Promise<ChangeRequestResult> {
+  const uid = user.uid;
+  await assertRecentAuth(env, user);
   const phone = assertValidPhone(rawPhone);
   const current = await readIdentifiers(env, uid);
 
@@ -422,6 +431,17 @@ async function afterIdentifierChange(
   const label = change.kind === "email" ? "email address" : "phone number";
   const masked =
     change.kind === "email" ? maskEmail(change.newValue) : maskPhone(change.newValue);
+
+  /**
+   * Burn the re-authentication grant.
+   *
+   * The grant was proof of control over the identifier that has just been
+   * replaced. Letting it stand would mean one code, sent to an address the user no
+   * longer uses, keeps authorising changes for the rest of its ten minutes — so a
+   * single compromised inbox could be walked through email, then phone, then
+   * deletion. Each credential change re-proves.
+   */
+  await clearReauthGrant(env, uid);
 
   // The public profile is served from a shared KV entry, so the old address would
   // keep being returned until its TTL lapsed.

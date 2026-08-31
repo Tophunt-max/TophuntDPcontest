@@ -31,9 +31,17 @@ function key(scope: string, id: string): string {
   return `otp:${scope}:${id}`;
 }
 
+/**
+ * OTP purposes. Scopes are separate namespaces on purpose: a code issued to prove
+ * ownership of a NEW phone number must not be accepted as proof of identity for a
+ * deletion, and vice versa. Reusing one scope for two meanings is how a
+ * confirmation code becomes an authorisation token.
+ */
+export type OtpScope = "pwreset" | "email" | "phone" | "reauth";
+
 export async function setOtp(
   env: Env,
-  scope: "pwreset" | "email" | "phone",
+  scope: OtpScope,
   id: string,
   record: OtpRecord,
   ttlSeconds = TEN_MIN,
@@ -49,7 +57,7 @@ export async function setOtp(
 
 export async function getOtp(
   env: Env,
-  scope: "pwreset" | "email" | "phone",
+  scope: OtpScope,
   id: string,
 ): Promise<OtpRecord | null> {
   return env.OTP_KV.get<OtpRecord>(key(scope, id), "json");
@@ -57,7 +65,7 @@ export async function getOtp(
 
 export async function deleteOtp(
   env: Env,
-  scope: "pwreset" | "email" | "phone",
+  scope: OtpScope,
   id: string,
 ): Promise<void> {
   await env.OTP_KV.delete(key(scope, id));
@@ -89,7 +97,7 @@ function safeEqual(a: string, b: string): boolean {
  */
 export async function verifyOtp(
   env: Env,
-  scope: "pwreset" | "email" | "phone",
+  scope: OtpScope,
   id: string,
   code: string | undefined,
 ): Promise<OtpRecord> {
