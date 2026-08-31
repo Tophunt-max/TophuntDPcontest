@@ -23,6 +23,18 @@
  *  4. welcomeEmail            — after a new account finishes signup
  *  5. accountDeletionScheduledEmail — deletion requested, with the cancel date
  *  6. testEmail               — the admin-panel "Test connection" probe
+ *  7. coinsAddedEmail         — a top-up / manual deposit landed in the wallet
+ *  8. coinsReversedEmail      — a payment was refunded/charged back; coins pulled
+ *  9. withdrawalDecisionEmail — payout approved / paid / rejected
+ * 10. contestWinEmail         — won a battle, with the prize credited
+ * 11. contestRefundEmail      — a battle voided/tied/cancelled; entry fee back
+ * 12. passwordChangedEmail    — security alert after the password was changed
+ *
+ * The financial ones (7–11) are receipts a user expects to keep: a wallet or
+ * payout event that exists only as an in-app toast is one they cannot find later
+ * when they need proof, and a chargeback that silently makes a balance negative
+ * reads as theft. The security one (12) is the account-takeover tripwire — the
+ * one email whose absence means a compromise goes unnoticed.
  */
 
 export interface RenderedEmail {
@@ -337,6 +349,226 @@ export function testEmail(supportEmail = DEFAULT_SUPPORT_EMAIL): RenderedEmail {
       [
         "This is a test from the TopHunt admin panel.",
         "If you received it, your transactional email provider is configured correctly.",
+      ],
+      supportEmail,
+    ),
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// 7. Coins added — a top-up / manual deposit was credited to the wallet.
+// ---------------------------------------------------------------------------
+export function coinsAddedEmail(coins: number | null | undefined, supportEmail = DEFAULT_SUPPORT_EMAIL): RenderedEmail {
+  const n = Math.round(Number(coins) || 0);
+  return {
+    subject: `${n} Dpcoins added to your ${BRAND.name} wallet`,
+    html: layout({
+      preview: `${n} Dpcoins are now in your wallet.`,
+      heading: "Coins added 🎉",
+      paragraphs: [
+        `<b>${esc(n)} Dpcoins</b> have been added to your ${BRAND.name} wallet.`,
+        "You can use them to enter battles right away. This email is your receipt for the top-up.",
+      ],
+      note: "If you did NOT make this purchase, contact support immediately.",
+      supportEmail,
+    }),
+    text: plain(
+      [
+        `${n} Dpcoins have been added to your ${BRAND.name} wallet.`,
+        "You can use them to enter battles right away. This email is your receipt for the top-up.",
+        "If you did NOT make this purchase, contact support immediately.",
+      ],
+      supportEmail,
+    ),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 8. Coins reversed — a payment was refunded / charged back, coins pulled back.
+// ---------------------------------------------------------------------------
+export function coinsReversedEmail(
+  coins: number | null | undefined,
+  reason: string | null | undefined,
+  supportEmail = DEFAULT_SUPPORT_EMAIL,
+): RenderedEmail {
+  const n = Math.round(Number(coins) || 0);
+  const why = reason ? ` because a payment was ${reason}` : "";
+  return {
+    subject: `${n} Dpcoins were reversed on your ${BRAND.name} wallet`,
+    html: layout({
+      preview: `${n} Dpcoins were removed from your wallet.`,
+      heading: "Coins reversed",
+      paragraphs: [
+        `<b>${esc(n)} Dpcoins</b> have been removed from your ${BRAND.name} wallet${esc(why)}.`,
+        "If this pushed your balance below zero, top up to bring it back to positive before you can withdraw again.",
+      ],
+      note: "Think this is a mistake? Reply to your bank about the original charge, then contact us so we can help.",
+      supportEmail,
+    }),
+    text: plain(
+      [
+        `${n} Dpcoins have been removed from your ${BRAND.name} wallet${why}.`,
+        "If this pushed your balance below zero, top up to bring it back to positive before you can withdraw again.",
+        "Think this is a mistake? Contact us so we can help.",
+      ],
+      supportEmail,
+    ),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 9. Withdrawal decision — payout approved / paid / rejected.
+// ---------------------------------------------------------------------------
+export function withdrawalDecisionEmail(
+  status: "approved" | "paid" | "rejected",
+  amount: number | null | undefined,
+  note: string | null | undefined = "",
+  supportEmail = DEFAULT_SUPPORT_EMAIL,
+): RenderedEmail {
+  const n = Math.round(Number(amount) || 0);
+  if (status === "rejected") {
+    return {
+      subject: `Your ${BRAND.name} payout request was rejected`,
+      html: layout({
+        preview: `Your payout of ${n} Dpcoins was not approved.`,
+        heading: "Payout request rejected",
+        paragraphs: [
+          `Your request to withdraw <b>${esc(n)} Dpcoins</b> was not approved, and the coins have been returned to your wallet.`,
+          ...(note ? [`Reason: ${esc(note)}`] : []),
+          "You can raise a new request from the wallet screen once any issue is resolved.",
+        ],
+        supportEmail,
+      }),
+      text: plain(
+        [
+          `Your request to withdraw ${n} Dpcoins was not approved, and the coins have been returned to your wallet.`,
+          ...(note ? [`Reason: ${note}`] : []),
+          "You can raise a new request from the wallet screen once any issue is resolved.",
+        ],
+        supportEmail,
+      ),
+    };
+  }
+  const paid = status === "paid";
+  return {
+    subject: paid ? `Your ${BRAND.name} payout has been sent 💸` : `Your ${BRAND.name} payout was approved`,
+    html: layout({
+      preview: paid
+        ? `Your payout of ${n} Dpcoins has been sent.`
+        : `Your payout of ${n} Dpcoins was approved and is being processed.`,
+      heading: paid ? "Payout sent 💸" : "Payout approved",
+      paragraphs: paid
+        ? [
+            `Your payout of <b>${esc(n)} Dpcoins</b> has been sent to your registered account.`,
+            "Depending on your bank or UPI provider it can take a little while to appear. This email is your receipt.",
+          ]
+        : [
+            `Your request to withdraw <b>${esc(n)} Dpcoins</b> was approved and is now being processed.`,
+            "We'll let you know once the money is on its way.",
+          ],
+      supportEmail,
+    }),
+    text: plain(
+      paid
+        ? [
+            `Your payout of ${n} Dpcoins has been sent to your registered account.`,
+            "Depending on your bank or UPI provider it can take a little while to appear. This email is your receipt.",
+          ]
+        : [
+            `Your request to withdraw ${n} Dpcoins was approved and is now being processed.`,
+            "We'll let you know once the money is on its way.",
+          ],
+      supportEmail,
+    ),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 10. Contest win — won a battle, with the prize credited.
+// ---------------------------------------------------------------------------
+export function contestWinEmail(
+  battleTitle: string | null | undefined,
+  coins: number | null | undefined,
+  supportEmail = DEFAULT_SUPPORT_EMAIL,
+): RenderedEmail {
+  const n = Math.round(Number(coins) || 0);
+  const title = battleTitle || "your battle";
+  return {
+    subject: `You won! ${n} Dpcoins added on ${BRAND.name} 🏆`,
+    html: layout({
+      preview: `You won "${title}" and earned ${n} Dpcoins.`,
+      heading: "You won! 🏆",
+      paragraphs: [
+        `Congratulations — you won the battle <b>"${esc(title)}"</b>.`,
+        `<b>${esc(n)} Dpcoins</b> have been added to your wallet as your prize. This email is your receipt.`,
+        "Keep the streak going — enter your next battle from the app.",
+      ],
+      supportEmail,
+    }),
+    text: plain(
+      [
+        `Congratulations — you won the battle "${title}".`,
+        `${n} Dpcoins have been added to your wallet as your prize. This email is your receipt.`,
+        "Keep the streak going — enter your next battle from the app.",
+      ],
+      supportEmail,
+    ),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 11. Contest refund — a battle voided / tied / cancelled; entry fee returned.
+// ---------------------------------------------------------------------------
+export function contestRefundEmail(
+  battleTitle: string | null | undefined,
+  reason: string | null | undefined,
+  supportEmail = DEFAULT_SUPPORT_EMAIL,
+): RenderedEmail {
+  const title = battleTitle || "your battle";
+  const why = reason || "the battle did not complete";
+  return {
+    subject: `Your ${BRAND.name} entry fee was refunded`,
+    html: layout({
+      preview: `Your entry fee for "${title}" was refunded.`,
+      heading: "Entry fee refunded",
+      paragraphs: [
+        `The battle <b>"${esc(title)}"</b> did not complete — ${esc(why)}.`,
+        "Your entry fee has been refunded to your wallet in full. This email is your receipt.",
+      ],
+      supportEmail,
+    }),
+    text: plain(
+      [
+        `The battle "${title}" did not complete — ${why}.`,
+        "Your entry fee has been refunded to your wallet in full. This email is your receipt.",
+      ],
+      supportEmail,
+    ),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 12. Password changed — security alert after the password was changed.
+// ---------------------------------------------------------------------------
+export function passwordChangedEmail(supportEmail = DEFAULT_SUPPORT_EMAIL): RenderedEmail {
+  return {
+    subject: `Your ${BRAND.name} password was changed`,
+    html: layout({
+      preview: "The password on your account was just changed.",
+      heading: "Your password was changed",
+      paragraphs: [
+        `The password on your ${BRAND.name} account was just changed.`,
+        "If you made this change, no action is needed.",
+      ],
+      note: "If you did NOT change it, someone may have access to your account — reset your password immediately and contact support.",
+      supportEmail,
+    }),
+    text: plain(
+      [
+        `The password on your ${BRAND.name} account was just changed.`,
+        "If you made this change, no action is needed.",
+        "If you did NOT change it, someone may have access to your account — reset your password immediately and contact support.",
       ],
       supportEmail,
     ),

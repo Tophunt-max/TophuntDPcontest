@@ -18,6 +18,8 @@ import { verifyRazorpayWebhookSignature } from "../lib/payments";
 import { clawbackPaymentOrder, creditPaymentOrder } from "../lib/coinOrders";
 import { getRazorpayCredentials } from "../lib/integrations";
 import { createNotification } from "../lib/notify";
+import { sendUserEmail } from "../lib/email";
+import { coinsAddedEmail, coinsReversedEmail } from "../lib/emailTemplates";
 import { timingSafeEqualSecret } from "../lib/timingSafe";
 import { newId, now } from "../lib/ids";
 import { bunnyConfigured, getBunnyWebhookSecret } from "../lib/bunny";
@@ -33,6 +35,9 @@ async function notifyClawback(env: Env, uid: string, coins: number, what: string
     type: "purchase",
     targetId: "wallet",
   });
+  // A clawback can push a balance negative and block withdrawals — the user is
+  // owed a durable record of why, not just an in-app toast they may miss.
+  await sendUserEmail(env, uid, coinsReversedEmail(coins, what));
 }
 
 /**
@@ -177,14 +182,18 @@ webhookRoute.post("/razorpay", async (c) => {
         });
         if (res.credited && res.uid) {
           // Notify the user their coins landed (best-effort; don't block the ack).
+          const creditedUid = res.uid;
+          const creditedCoins = res.coins;
           c.executionCtx.waitUntil(
-            createNotification(c.env, res.uid, {
+            createNotification(c.env, creditedUid, {
               title: "Coins Added 🎉",
-              body: `${res.coins} Dpcoins have been added to your wallet.`,
+              body: `${creditedCoins} Dpcoins have been added to your wallet.`,
               type: "purchase",
               targetId: "wallet",
             }).catch(() => {}),
           );
+          // A top-up is a purchase — send a receipt the user can keep.
+          c.executionCtx.waitUntil(sendUserEmail(c.env, creditedUid, coinsAddedEmail(creditedCoins)));
         } else if (!res.credited && res.reason !== "already") {
           console.warn(`[webhook/razorpay] order ${orderId} not credited: ${res.reason}`);
         }

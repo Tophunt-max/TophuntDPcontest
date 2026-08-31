@@ -7,6 +7,7 @@ import {
 import { auth } from '@/src/services/firebase/initFirebase';
 import { validatePassword } from '@/src/lib/passwordPolicy';
 import { providerLabel } from './passwordReset';
+import { callApi } from '@/src/services/api';
 
 /**
  * Changing the password of an ALREADY SIGNED-IN user.
@@ -168,5 +169,14 @@ export async function changePassword(
       messageForChangePasswordError(e?.code) || e?.message || 'Could not update your password.',
       e?.code,
     );
+  }
+
+  // Fire the "your password was changed" security email. The password change has
+  // already succeeded by this point, so this is strictly best-effort: a failure
+  // here (offline, server blip) must NOT surface as a failed password change.
+  try {
+    await callApi('notifyPasswordChanged', {});
+  } catch {
+    /* non-fatal — the password is already changed */
   }
 }

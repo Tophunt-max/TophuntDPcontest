@@ -18,7 +18,8 @@ import {
   DEFAULT_INTEGRATIONS,
 } from '../src/lib/integrations';
 import { sendSmsDetailed } from '../src/lib/sms';
-import { sendEmailDetailed, emailConfigured } from '../src/lib/email';
+import { sendEmailDetailed, emailConfigured, sendUserEmail } from '../src/lib/email';
+import { coinsAddedEmail } from '../src/lib/emailTemplates';
 
 // base64("test-encryption-key-for-unit-tests") — a fixed test vector, not a
 // credential. Named to avoid tripping secret scanners.
@@ -421,5 +422,59 @@ describe('email gateway dispatch', () => {
     await putSecret(e as any, 'MAILEROO_API_KEY', 'maileroo-key', null);
     invalidateIntegrationCache();
     expect(await emailConfigured(e as any)).toBe(true);
+  });
+});
+
+// ===========================================================================
+// The shared helper every transactional receipt (payout, prize, clawback) uses:
+// resolve the user's address from their uid, send best-effort, never throw.
+describe('sendUserEmail (uid -> address)', () => {
+  async function seedUser(e: TestEnv, uid: string, email: string | null) {
+    const ts = Date.now();
+    await drizzleOf(e).insert(schema.users).values({
+      uid, username: uid, fullName: uid, email, status: 'active', dpcoin: 0, createdAt: ts, updatedAt: ts,
+    } as any);
+  }
+  async function withMaileroo(e: TestEnv) {
+    await putSecret(e as any, 'MAILEROO_API_KEY', 'maileroo-key', null);
+    await saveIntegrations(e as any, { email: { ...DEFAULT_INTEGRATIONS.email, provider: 'maileroo', from: 'TopHunt <no-reply@tophunt.in>' } });
+    invalidateIntegrationCache();
+  }
+
+  it('looks up the address on the user row and sends there', async () => {
+    const e = env();
+    await withMaileroo(e);
+    await seedUser(e, 'alice', 'alice@example.com');
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ success: true, data: { reference_id: 'r1' } }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await sendUserEmail(e as any, 'alice', coinsAddedEmail(500));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const sent = JSON.parse((fetchMock.mock.calls[0] as any)[1].body);
+    expect(sent.to).toEqual([{ address: 'alice@example.com' }]);
+    expect(sent.subject).toContain('500');
+  });
+
+  it('is a silent no-op for an account with no email on file', async () => {
+    const e = env();
+    await withMaileroo(e);
+    await seedUser(e, 'bob', null);
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await sendUserEmail(e as any, 'bob', coinsAddedEmail(500));
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('never throws when the provider fails (best-effort)', async () => {
+    const e = env();
+    await withMaileroo(e);
+    await seedUser(e, 'carol', 'carol@example.com');
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('network down'); }));
+
+    // Must resolve, not reject — a receipt failure cannot break the money write.
+    await expect(sendUserEmail(e as any, 'carol', coinsAddedEmail(500))).resolves.toBeUndefined();
   });
 });

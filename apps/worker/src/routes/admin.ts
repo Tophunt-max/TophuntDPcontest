@@ -21,6 +21,13 @@ import { assertAccountNotBlocked } from "../middleware/auth";
 import { getAppConfig, getGamificationSettings, getSeoAudit, invalidateSetting } from "../lib/settings";
 import { deleteAuthUser, updateAuthUser, setCustomClaims, getUserByEmail } from "../lib/firebaseAdmin";
 import { createNotification } from "../lib/notify";
+import { sendUserEmail } from "../lib/email";
+import {
+  withdrawalDecisionEmail,
+  coinsAddedEmail,
+  contestWinEmail,
+  contestRefundEmail,
+} from "../lib/emailTemplates";
 import { enqueueBroadcast } from "../lib/broadcast";
 import { finalizeVotes } from "../lib/voteCounter";
 import { settleRefund, settleWinner } from "../lib/contestSettlement";
@@ -2092,6 +2099,9 @@ adminRoute.post("/matches/:id/declare-winner", async (c) => {
 
   await createNotification(c.env, winnerUid, { title: "You Won! 🏆", body: `You won the battle "${m.title}" and earned ${rewardAmount} Dpcoins!`, type: "contest-win", targetId: id });
   await createNotification(c.env, loserUid, { title: "Battle Ended", body: `The battle "${m.title}" has concluded.`, type: "contest-loss", targetId: id });
+  // The winner just received a prize — send a receipt. (No email for the loser:
+  // a "you lost" email is noise, not a record anyone needs.)
+  c.executionCtx.waitUntil(sendUserEmail(c.env, winnerUid, contestWinEmail(m.title, rewardAmount)));
   await logAudit(c, "match.declare-winner", "match", id, { winnerUid, rewardAmount, forced: !!body.winnerUid });
   return c.json({ message: "Winner declared", winnerUid, rewardAmount });
 });
@@ -2136,7 +2146,11 @@ adminRoute.post("/matches/:id/cancel", async (c) => {
   });
   if (!settled) throw httpsError("failed-precondition", "Match could not be cancelled.");
   for (const u of [userA, userB]) {
-    if (u?.uid) await createNotification(c.env, u.uid, { title: "Battle Cancelled", body: `The battle "${m.title}" was cancelled by an admin and your entry fee was refunded.`, type: "contest-refund", targetId: "wallet" });
+    if (u?.uid) {
+      await createNotification(c.env, u.uid, { title: "Battle Cancelled", body: `The battle "${m.title}" was cancelled by an admin and your entry fee was refunded.`, type: "contest-refund", targetId: "wallet" });
+      // Entry fee moved back — send the refund receipt.
+      c.executionCtx.waitUntil(sendUserEmail(c.env, u.uid, contestRefundEmail(m.title, "it was cancelled by an admin")));
+    }
   }
   await logAudit(c, "match.cancel", "match", id, {
     refundPerUser: perPlayerEntryFee(m.entryFee),
@@ -2585,6 +2599,11 @@ adminRoute.patch("/withdrawals/:id", async (c) => {
     type: "withdrawal",
     targetId: "wallet",
   });
+  // Real money moved (or was denied) — the user is owed a durable receipt, not
+  // just an in-app toast. `status` is "approved" | "paid" | "rejected".
+  c.executionCtx.waitUntil(
+    sendUserEmail(c.env, w.userId, withdrawalDecisionEmail(status as "approved" | "paid" | "rejected", w.amount, adminNote || "")),
+  );
   await logAudit(c, `withdrawal.${action}`, "withdrawal", id, {
     amount: w.amount,
     from: fromStatus,
@@ -2809,6 +2828,10 @@ adminRoute.patch("/deposits/:id", async (c) => {
     type: "deposit",
     targetId: "wallet",
   });
+  // An approved manual deposit credits coins — same receipt as a card top-up.
+  if (action === "approve") {
+    c.executionCtx.waitUntil(sendUserEmail(c.env, d.userId, coinsAddedEmail(Number(d.amount) || 0)));
+  }
   await logAudit(c, `deposit.${action}`, "deposit", id, { amount: d.amount, utr: d.utr });
   return c.json({ message: `Deposit ${status}` });
 });

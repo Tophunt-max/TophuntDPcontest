@@ -12,6 +12,8 @@ import type { Env } from "./types";
 import { getDb, schema } from "./db";
 import { invalidateContestCaches } from "./lib/cache";
 import { createNotification } from "./lib/notify";
+import { sendUserEmail } from "./lib/email";
+import { contestWinEmail, contestRefundEmail } from "./lib/emailTemplates";
 import { drainBroadcastJobs, enqueueBroadcast } from "./lib/broadcast";
 import { finalizeVotes } from "./lib/voteCounter";
 import { settleRefund, settleWinner } from "./lib/contestSettlement";
@@ -154,6 +156,11 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
     const message = `The battle ended with ${totalVotes} of ${minVotes} required votes. Entry fees were refunded.`;
     await createNotification(env, userA.uid, { title: "Battle Voided", body: message, type: "contest-refund", targetId: "wallet" });
     await createNotification(env, userB.uid, { title: "Battle Voided", body: message, type: "contest-refund", targetId: "wallet" });
+    // Entry fees moved back — receipt to both. Awaited (no request to outlive in
+    // cron) and best-effort, so a mail blip never stalls settlement.
+    const voidReason = `it did not reach the minimum ${minVotes} votes`;
+    await sendUserEmail(env, userA.uid, contestRefundEmail(match.title, voidReason));
+    await sendUserEmail(env, userB.uid, contestRefundEmail(match.title, voidReason));
     return;
   }
 
@@ -175,6 +182,8 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
     await publishMatchStatus(env, match.id, "completed", votesA, votesB);
     await createNotification(env, userA.uid, { title: "It's a Tie!", body: "The match ended in a tie. Entry fees refunded.", type: "contest-tie", targetId: "wallet" });
     await createNotification(env, userB.uid, { title: "It's a Tie!", body: "The match ended in a tie. Entry fees refunded.", type: "contest-tie", targetId: "wallet" });
+    await sendUserEmail(env, userA.uid, contestRefundEmail(match.title, "it ended in a tie"));
+    await sendUserEmail(env, userB.uid, contestRefundEmail(match.title, "it ended in a tie"));
     return;
   }
 
@@ -197,6 +206,8 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
   await publishMatchStatus(env, match.id, "completed", votesA, votesB, winnerUid);
   await createNotification(env, winnerUid, { title: "You Won! 🏆", body: `Victory! You won the battle "${match.title}" and earned ${rewardAmount} Dpcoins!`, type: "contest-win", targetId: match.id });
   await createNotification(env, loserUid, { title: "Battle Ended", body: `The battle "${match.title}" has concluded. You played well!`, type: "contest-loss", targetId: match.id });
+  // Prize credited to the winner — send a receipt. No "you lost" email.
+  await sendUserEmail(env, winnerUid, contestWinEmail(match.title, rewardAmount));
 }
 
 async function refundWaitingMatch(env: Env, match: Match): Promise<void> {

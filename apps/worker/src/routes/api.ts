@@ -80,7 +80,8 @@ import {
 import { mediaRouting } from "../lib/mediaRouting";
 import { getAppConfig, getRewardedAdConfig } from "../lib/settings";
 import { getSettings } from "../lib/gamification";
-import { sendEmail } from "../lib/email";
+import { sendEmail, sendUserEmail } from "../lib/email";
+import { passwordChangedEmail } from "../lib/emailTemplates";
 import { newId, now, generateJoinId } from "../lib/ids";
 
 /** Fire-and-forget admin email alert (only if an alert address is configured). */
@@ -2383,6 +2384,21 @@ apiRoute.post("/", async (c) => {
         likeCount = row?.likeCount ?? 0;
       }
       return c.json({ success: true, liked, likeCount });
+    }
+
+    // ================= SECURITY =================
+    //
+    // Fired by the client right after Firebase confirms an in-app password
+    // change (src/services/auth/changePassword.ts). Firebase owns the password,
+    // so the server never sees the change itself — this is the client telling us
+    // it happened so we can send the "your password was changed" tripwire email,
+    // the one alert whose absence lets an account takeover go unnoticed. Auth is
+    // already enforced by this route, so it can only ever email the caller's own
+    // address; there is nothing to spoof. Best-effort and never fatal — a mail
+    // blip must not make a completed password change look failed to the client.
+    case "notifyPasswordChanged": {
+      c.executionCtx.waitUntil(sendUserEmail(env, uid, passwordChangedEmail()));
+      return c.json({ success: true });
     }
 
     // ================= PROFILE =================

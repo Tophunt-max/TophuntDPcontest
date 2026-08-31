@@ -7,6 +7,8 @@
  * encrypted (lib/integrations.ts), never in plain config.
  */
 import type { Env } from "../types";
+import { eq } from "drizzle-orm";
+import { getDb, schema } from "../db";
 import { getIntegrations, resolveSecret } from "./integrations";
 
 export interface EmailResult {
@@ -202,4 +204,38 @@ export async function emailConfigured(env: Env): Promise<boolean> {
   if (cfg.email.provider === "brevo") return !!(await resolveSecret(env, "BREVO_API_KEY"));
   if (cfg.email.provider === "maileroo") return !!(await resolveSecret(env, "MAILEROO_API_KEY"));
   return !!(await resolveSecret(env, "RESEND_API_KEY"));
+}
+
+
+/**
+ * Send a rendered template to a user by uid, best-effort.
+ *
+ * The transactional emails fired from handlers (a payout decision, a prize, a
+ * clawback) only have the uid to hand, and none of them may break — or even
+ * slow — the financial write they follow. So this resolves the address itself,
+ * silently no-ops when the account has no email on file, and can never throw:
+ * `sendEmail` already swallows provider failures, and the lookup is guarded. A
+ * missing email is normal (phone-only accounts), not an error.
+ *
+ * Fire-and-forget friendly: pass the returned promise to `waitUntil` in a
+ * request handler, or `await` it in cron where there is no request to outlive.
+ */
+export async function sendUserEmail(
+  env: Env,
+  uid: string,
+  rendered: { subject: string; html: string; text: string },
+): Promise<void> {
+  try {
+    if (!uid) return;
+    const row = await getDb(env)
+      .select({ email: schema.users.email })
+      .from(schema.users)
+      .where(eq(schema.users.uid, uid))
+      .get();
+    const to = (row?.email || "").trim();
+    if (!to) return;
+    await sendEmail(env, { to, subject: rendered.subject, html: rendered.html, text: rendered.text });
+  } catch (e) {
+    console.error("[email] sendUserEmail failed", e);
+  }
 }
