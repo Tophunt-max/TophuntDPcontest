@@ -380,12 +380,82 @@ describe('email validation', () => {
     expect(sentEmails).toEqual([]);
   });
 
-  it('refuses an address the account already has', async () => {
+  /**
+   * Sending a code to the address ALREADY on the account is not an error — it is
+   * the only way to verify an address that was never confirmed. This used to throw
+   * "That is already your email address", which left an unverified email
+   * un-verifiable: the one endpoint that could send a code refused to send one to
+   * the address that needed it.
+   */
+  it('sends a verify-only code for the address already on file', async () => {
     const { env } = makeEnv();
     await seedUser(env, 'alice');
+
     const res = await auth(env, 'alice', 'sendEmailOtp', { newEmail: 'ALICE@example.com' });
-    expect(res.status).toBe(400);
-    expect(sentEmails).toEqual([]);
+
+    expect(res.status).toBe(200);
+    expect(res.body.verifyOnly).toBe(true);
+    expect(sentEmails.length).toBe(1);
+    expect(sentEmails[0].to).toBe('alice@example.com');
+  });
+});
+
+describe('verifying the identifier already on the account', () => {
+  /**
+   * The profile screen shows "Not verified — tap to send a code" for an address
+   * that was never confirmed. That hint was inert, because the only path to a code
+   * refused an unchanged address. This is the whole point of the verify-only path.
+   */
+  it('marks an unchanged email verified without moving it or alerting anyone', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice');
+    expect((await userRow(env, 'alice'))?.emailVerified).toBe(false);
+
+    const sent = await auth(env, 'alice', 'sendEmailOtp', { newEmail: 'alice@example.com' });
+    expect(sent.body.verifyOnly).toBe(true);
+    const confirmed = await auth(env, 'alice', 'verifyEmailOtp', { otp: lastEmailCode() });
+
+    expect(confirmed.status).toBe(200);
+    expect(confirmed.body.verifyOnly).toBe(true);
+    const row = await userRow(env, 'alice');
+    expect(row?.email).toBe('alice@example.com');
+    expect(row?.emailVerified).toBe(true);
+    expect(row?.emailVerifiedAt).toBeGreaterThan(0);
+    // Nothing moved, so Firebase is untouched and no security alert is sent.
+    expect(authUpdates).toEqual([]);
+    expect(sentEmails.length).toBe(1); // only the code itself
+  });
+
+  it('marks an unchanged phone verified the same way', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', { phone: '+919999900001' });
+
+    const sent = await auth(env, 'alice', 'sendPhoneOtp', { newPhone: '+91 99999 00001' });
+    expect(sent.body.verifyOnly).toBe(true);
+    const confirmed = await auth(env, 'alice', 'verifyPhoneOtp', { otp: lastSmsCode() });
+
+    expect(confirmed.status).toBe(200);
+    expect(confirmed.body.verifyOnly).toBe(true);
+    const row = await userRow(env, 'alice');
+    expect(row?.phone).toBe('+919999900001');
+    expect(row?.phoneVerified).toBe(true);
+    expect(authUpdates).toEqual([]);
+  });
+
+  /**
+   * The re-auth gate protects credential MOVEMENT. Proving the identifier you
+   * already have takes nothing away from anyone, so it must not require a recent
+   * sign-in — otherwise a stale session could never clear its own "unverified"
+   * warning.
+   */
+  it('does not require re-authentication for a verify-only send', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice');
+
+    const res = await auth(env, 'alice#stale', 'sendEmailOtp', { newEmail: 'alice@example.com' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.verifyOnly).toBe(true);
   });
 });
 

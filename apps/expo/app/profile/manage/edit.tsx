@@ -41,26 +41,44 @@ const DISPOSABLE_DOMAINS = [
   'mailinator.com', 'getnada.com', 'dispostable.com', 'throwawaymail.com'
 ];
 
+/**
+ * Save covers the PROFILE. Email and phone are not part of it.
+ *
+ * Those two are credentials: they move only after a code sent to the destination
+ * is confirmed, through their own Verify buttons. Leaving them in this schema as
+ * required fields meant they gated everything else — a user with no phone number
+ * on file could not save a new display name or photo, because the form refused to
+ * submit until they filled in a field that Save does not even send. Same for a
+ * required `occupation`.
+ *
+ * They stay in the schema so the inline format errors still work while typing;
+ * they are simply optional, and validated only when non-empty.
+ */
 const editProfileSchema = z.object({
   fullName: z.string().min(1, "Please fill in your full name"),
-  email: z.string()
-    .min(1, "Email is required")
+  email: z
+    .string()
     .email("Invalid email address")
     .refine((email) => {
         const domain = email.split('@')[1];
         return !DISPOSABLE_DOMAINS.includes(domain);
-    }, { message: "Temporary/Fake emails are not allowed" }),
+    }, { message: "Temporary/Fake emails are not allowed" })
+    .optional()
+    .or(z.literal("")),
   // Digits only, but NOT exactly 10. This used to be `.length(10)`, which is an
   // Indian mobile number — while the screen has a country picker offering every
   // dial code. Anyone whose national number is not 10 digits could not save their
   // number at all, and never saw the Verify button. The server validates the full
   // number (dial code included) against 7-15 digits, so the real bound lives
   // there; this only has to catch obvious typos.
-  phone: z.string()
+  phone: z
+    .string()
     .min(6, "Please enter a valid phone number")
     .max(14, "Please enter a valid phone number")
-    .regex(/^[0-9]+$/, "Phone number must contain only digits"),
-  occupation: z.string().min(1, "Please select your occupation"),
+    .regex(/^[0-9]+$/, "Phone number must contain only digits")
+    .optional()
+    .or(z.literal("")),
+  occupation: z.string().optional(),
   bio: z.string().max(150, "Bio must be less than 150 characters").optional(),
   facebook: z.string().optional(),
   twitter: z.string().optional(),
@@ -222,7 +240,11 @@ export default function EditProfileScreen() {
     const isValid = await trigger("email");
     if (!isValid) return false;
 
-    if (!watchedEmail || watchedEmail === currentEmail) return false;
+    // Deliberately NOT skipping when the address is unchanged. Sending a code to
+    // the address already on file is how an unverified one becomes verified, and
+    // this early return was what made the "Not verified — tap to send a code" hint
+    // do nothing at all when tapped.
+    if (!watchedEmail) return false;
 
     setIsSendingEmailOtp(true);
     try {
@@ -257,7 +279,12 @@ export default function EditProfileScreen() {
           // Using callApi with 'verifyEmailOtp' action
           const result: any = await callApi('verifyEmailOtp', { otp: emailOtp });
           if (result.success) {
-              Alert.alert("Success", "Email updated successfully!");
+              Alert.alert(
+                "Success",
+                result.verifyOnly
+                  ? "Your email address is now verified."
+                  : "Email updated successfully!",
+              );
               setShowEmailOtpModal(false);
               setEmailOtp("");
               refetch();
@@ -274,7 +301,8 @@ export default function EditProfileScreen() {
     if (!isValid) return false;
 
     const fullPhone = countryCode + watchedPhone;
-    if (!watchedPhone || fullPhone === currentPhone) return false;
+    // Same as email: an unchanged number still needs a way to be verified.
+    if (!watchedPhone) return false;
 
     setIsSendingPhoneOtp(true);
     try {
@@ -305,7 +333,12 @@ export default function EditProfileScreen() {
           // Using callApi with 'verifyPhoneOtp' action
           const result: any = await callApi('verifyPhoneOtp', { otp: phoneOtp });
           if (result.success) {
-              Alert.alert("Success", "Phone number updated successfully!");
+              Alert.alert(
+                "Success",
+                result.verifyOnly
+                  ? "Your phone number is now verified."
+                  : "Phone number updated successfully!",
+              );
               setShowPhoneOtpModal(false);
               setPhoneOtp("");
               refetch();
@@ -339,47 +372,32 @@ export default function EditProfileScreen() {
       });
 
       /**
-       * Identifiers are NOT saved by the call above — they move only after a code
-       * sent to the new address or number is confirmed. So all this does is start
-       * that verification.
+       * Save is done. It does NOT touch email or phone.
        *
-       * This used to be `if (email changed) … else if (phone changed) …`, which
-       * meant editing BOTH in one go silently dropped the phone change while the
-       * alert said "Profile details updated". Only one code can be collected at a
-       * time, so the honest version starts with the email and says plainly that
-       * the number is still waiting — the Verify button next to it stays live, so
-       * there is somewhere to continue.
+       * Those are credentials, and they move through their own Verify buttons —
+       * each of which sends a code to the destination and collects it. Save used to
+       * try to start that flow as a side effect, which produced two bad outcomes:
+       * editing both identifiers at once silently dropped one of them, and a
+       * profile edit that had nothing to do with either could not complete until a
+       * code was dealt with. Name, photo, bio and socials now save on their own,
+       * immediately, and the screen closes.
+       *
+       * A pending identifier edit is not lost by closing — it was never saved
+       * locally to begin with, and the field reloads from the account with its
+       * Verify button still there.
        */
-      const emailChanged = data.email !== currentEmail;
-      const phoneChanged = (countryCode + data.phone) !== currentPhone;
-
       refetch();
 
-      if (emailChanged) {
-        const sent = await handleSendEmailOtp();
-        if (sent) {
-          Alert.alert(
-            "Confirm your email",
-            phoneChanged
-              ? "Your other details are saved. Enter the code we sent to your new email — then tap Verify next to your phone number to change that too."
-              : "Your other details are saved. Enter the code we sent to your new email address to finish the change.",
-          );
-        }
-        return;
-      }
+      const identifierPending =
+        (!!data.email && data.email !== currentEmail) ||
+        (!!data.phone && countryCode + data.phone !== currentPhone);
 
-      if (phoneChanged) {
-        const sent = await handleSendPhoneOtp();
-        if (sent) {
-          Alert.alert(
-            "Confirm your number",
-            "Your other details are saved. Enter the code we sent by SMS to finish the change.",
-          );
-        }
-        return;
-      }
-
-      Alert.alert("Success", "Profile updated successfully!");
+      Alert.alert(
+        "Success",
+        identifierPending
+          ? "Profile updated. Your email and phone number are unchanged — tap Verify next to one to confirm the new value."
+          : "Profile updated successfully!",
+      );
       router.back();
     } catch (error: any) {
       console.error("Update error", error);
@@ -396,7 +414,7 @@ export default function EditProfileScreen() {
     return <View style={styles.center}><ActivityIndicator size="large" color="#ff4466" /></View>;
   }
 
-  const isEmailChanged = watchedEmail !== currentEmail && watchedEmail?.length > 5;
+  const isEmailChanged = watchedEmail !== currentEmail && (watchedEmail?.length ?? 0) > 5;
   // Length is validated by the schema (and re-validated on the server against the
   // full number including the dial code). Hardcoding 10 here meant the Verify
   // button never appeared for any country whose numbers are not 10 digits.
@@ -414,6 +432,19 @@ export default function EditProfileScreen() {
   const phoneVerified = (profile as any)?.phoneVerified === true;
   const showEmailUnverified = !!currentEmail && !emailVerified && !isEmailChanged;
   const showPhoneUnverified = !!currentPhone && !phoneVerified && !isPhoneChanged;
+
+  /**
+   * When to offer Verify.
+   *
+   * Two situations need it, and only the first was covered: a value the user has
+   * just EDITED, and a value already on the account that has never been CONFIRMED.
+   * Missing the second is why the email row showed a plain icon while the phone row
+   * showed Verify — the phone was new (so "changed") and the email was merely
+   * unverified. The hint underneath said "tap to send a code" and was the only
+   * affordance, which is easy to miss and reads as a warning rather than an action.
+   */
+  const canVerifyEmail = (isEmailChanged || showEmailUnverified) && !errors.email;
+  const canVerifyPhone = (isPhoneChanged || showPhoneUnverified) && !errors.phone;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -461,12 +492,16 @@ export default function EditProfileScreen() {
             name="email"
             placeholder="Email"
             rightIcon={
-                isSendingEmailOtp ? 
-                <View style={{ paddingRight: 10 }}><ActivityIndicator size="small" color="#ff4466" /></View> : 
-                isEmailChanged ?
+                isSendingEmailOtp ?
+                <View style={{ paddingRight: 10 }}><ActivityIndicator size="small" color="#ff4466" /></View> :
+                canVerifyEmail ?
                 <TouchableOpacity onPress={handleSendEmailOtp} style={styles.verifyBtnWrapper}>
                     <Text style={styles.verifyBtnInline}>Verify</Text>
                 </TouchableOpacity> :
+                emailVerified ?
+                <View style={{ paddingRight: 10 }}>
+                    <Ionicons name="checkmark-circle" size={20} color="#22A45D" />
+                </View> :
                 <View style={{ paddingRight: 10 }}><Email_Icon width={20} height={20} color="#9E9E9E" /></View>
             }
             keyboardType="email-address"
@@ -502,12 +537,16 @@ export default function EditProfileScreen() {
                         keyboardType="phone-pad"
                         errorMessage={errors.phone?.message}
                         rightIcon={
-                            isSendingPhoneOtp ? 
-                            <View style={{ paddingRight: 10 }}><ActivityIndicator size="small" color="#ff4466" /></View> : 
-                            isPhoneChanged ?
+                            isSendingPhoneOtp ?
+                            <View style={{ paddingRight: 10 }}><ActivityIndicator size="small" color="#ff4466" /></View> :
+                            canVerifyPhone ?
                             <TouchableOpacity onPress={handleSendPhoneOtp} style={styles.verifyBtnWrapper}>
                                 <Text style={styles.verifyBtnInline}>Verify</Text>
                             </TouchableOpacity> :
+                            phoneVerified ?
+                            <View style={{ paddingRight: 10 }}>
+                                <Ionicons name="checkmark-circle" size={20} color="#22A45D" />
+                            </View> :
                             null
                         }
                     />

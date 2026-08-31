@@ -174,6 +174,11 @@ export interface ChangeRequestResult {
   cooldownSeconds: number;
   /** Masked destination, so the client can say where the code went. */
   sentTo: string;
+  /**
+   * True when the identifier is not moving — the user is proving the one already
+   * on the account. The client wording differs ("confirm" vs "change").
+   */
+  verifyOnly: boolean;
 }
 
 /**
@@ -191,20 +196,36 @@ export async function requestEmailChange(
   ip: string,
 ): Promise<ChangeRequestResult> {
   const uid = user.uid;
-  // Prove it is still the account holder BEFORE anything else. The code below goes
-  // to the NEW address, which proves the caller controls that address — it says
-  // nothing about whether they own this account. Without this gate, a session of
-  // any age could move the credentials to an address of its choosing.
-  await assertRecentAuth(env, user);
   const email = assertValidEmail(rawEmail);
   const current = await readIdentifiers(env, uid);
 
-  if (current.email && normalizeEmail(current.email) === email) {
-    throw httpsError("invalid-argument", "That is already your email address.");
+  /**
+   * Same address as the one already on the account = PROVE it, don't move it.
+   *
+   * This used to throw "That is already your email address", which made an
+   * unverified address impossible to verify: the only endpoint that could send a
+   * code refused to send one to the address that needed it. So an account whose
+   * email was never confirmed — the typo at signup, the address Firebase password
+   * reset targets — was stuck unverified forever, and the "Not verified" hint the
+   * profile screen shows had nothing behind it.
+   *
+   * Nothing moves on this path, so it deliberately skips the re-authentication
+   * gate and the uniqueness check below. Neither has anything to protect: the
+   * address is already theirs, the code goes to it rather than to somewhere of the
+   * caller's choosing, and the outcome takes nothing away from the account holder.
+   */
+  const verifyOnly = !!current.email && normalizeEmail(current.email) === email;
+
+  if (!verifyOnly) {
+    // Prove it is still the account holder BEFORE anything else. The code below
+    // goes to the NEW address, which proves the caller controls that address — it
+    // says nothing about whether they own this account. Without this gate, a
+    // session of any age could move the credentials to an address of its choosing.
+    await assertRecentAuth(env, user);
+    // Refuse a taken address up front rather than at confirm time, where the code
+    // is already spent and (previously) the Firebase login had already moved.
+    await assertIdentifiersAvailable(env, uid, { email });
   }
-  // Refuse a taken address up front rather than at confirm time, where the code
-  // is already spent and (previously) the Firebase login had already moved.
-  await assertIdentifiersAvailable(env, uid, { email });
 
   // Fail before storing anything if we cannot actually deliver.
   if (!(await emailConfigured(env))) {
@@ -224,7 +245,7 @@ export async function requestEmailChange(
   await enforceSendCooldown(env, "emailto", email, OTP_SEND_COOLDOWN);
 
   const otp = generateOtp();
-  await setOtp(env, "email", uid, { otp, newEmail: email, createdAt: now() });
+  await setOtp(env, "email", uid, { otp, newEmail: email, verifyOnly, createdAt: now() });
   await markSent(env, "email", uid, OTP_SEND_COOLDOWN);
   await markSent(env, "emailto", email, OTP_SEND_COOLDOWN);
 
@@ -253,7 +274,7 @@ export async function requestEmailChange(
     throw httpsError("internal", "We couldn't send the code right now. Please try again in a moment.");
   }
 
-  return { cooldownSeconds: OTP_SEND_COOLDOWN, sentTo: maskEmail(email) };
+  return { cooldownSeconds: OTP_SEND_COOLDOWN, sentTo: maskEmail(email), verifyOnly };
 }
 
 /**
@@ -268,19 +289,25 @@ export async function confirmEmailChange(
   env: Env,
   uid: string,
   code: unknown,
-): Promise<{ email: string }> {
+): Promise<{ email: string; verifyOnly: boolean }> {
   const db = getDb(env);
   const before = await readIdentifiers(env, uid);
   const rec = await verifyOtp(env, "email", uid, code as string | undefined);
   const email = assertValidEmail(rec.newEmail);
+  // Carried on the OTP record rather than recomputed, so a change cannot quietly
+  // become a verify-only (or the reverse) if the row moved in between.
+  const verifyOnly = rec.verifyOnly === true;
 
-  // Re-check availability. The code was issued up to ten minutes ago and someone
-  // else may have taken the address since — this is the window the send-time
-  // check cannot cover.
-  await assertIdentifiersAvailable(env, uid, { email });
+  if (!verifyOnly) {
+    // Re-check availability. The code was issued up to ten minutes ago and someone
+    // else may have taken the address since — this is the window the send-time
+    // check cannot cover.
+    await assertIdentifiersAvailable(env, uid, { email });
+  }
 
   const ts = now();
-  await updateAuthUser(env, uid, { email });
+  // Nothing to move, and nothing to roll back, when the address is already ours.
+  if (!verifyOnly) await updateAuthUser(env, uid, { email });
   try {
     await db
       .update(schema.users)
@@ -289,7 +316,7 @@ export async function confirmEmailChange(
   } catch (e) {
     // Put the login back where it was. Without this the account is left in a
     // state no screen can explain and no user can undo.
-    if (before.email) {
+    if (!verifyOnly && before.email) {
       await updateAuthUser(env, uid, { email: before.email }).catch((rollbackError) =>
         console.error("[identifierChange] email rollback FAILED", uid, rollbackError),
       );
@@ -298,13 +325,20 @@ export async function confirmEmailChange(
     throw httpsError("internal", "We couldn't update your email address. Please try again.");
   }
 
-  await afterIdentifierChange(env, uid, {
-    kind: "email",
-    oldValue: before.email,
-    newValue: email,
-  });
+  if (verifyOnly) {
+    // No alert and no burned grant: nothing changed, so there is nobody to warn
+    // and no credential whose proof has gone stale. Only the cached profile needs
+    // dropping, because `emailVerified` is part of what it serves.
+    await delCache(env, userCacheKey(uid)).catch(() => {});
+  } else {
+    await afterIdentifierChange(env, uid, {
+      kind: "email",
+      oldValue: before.email,
+      newValue: email,
+    });
+  }
 
-  return { email };
+  return { email, verifyOnly };
 }
 
 // ---------------------------------------------------------------------------
@@ -318,14 +352,18 @@ export async function requestPhoneChange(
   ip: string,
 ): Promise<ChangeRequestResult> {
   const uid = user.uid;
-  await assertRecentAuth(env, user);
   const phone = assertValidPhone(rawPhone);
   const current = await readIdentifiers(env, uid);
 
-  if (current.phone && normalizePhone(current.phone) === phone) {
-    throw httpsError("invalid-argument", "That is already your phone number.");
+  // Same number as the one on file = prove it, don't move it. See the equivalent
+  // branch in `requestEmailChange` for why this skips the gate and the uniqueness
+  // check.
+  const verifyOnly = !!current.phone && normalizePhone(current.phone) === phone;
+
+  if (!verifyOnly) {
+    await assertRecentAuth(env, user);
+    await assertIdentifiersAvailable(env, uid, { phone });
   }
-  await assertIdentifiersAvailable(env, uid, { phone });
 
   if (!(await smsConfigured(env))) {
     throw httpsError("internal", "SMS delivery is not available right now. Please try again later.");
@@ -340,7 +378,7 @@ export async function requestPhoneChange(
   await enforceSendCooldown(env, "phoneto", phone, OTP_SEND_COOLDOWN);
 
   const otp = generateOtp();
-  await setOtp(env, "phone", uid, { otp, newPhone: phone, createdAt: now() });
+  await setOtp(env, "phone", uid, { otp, newPhone: phone, verifyOnly, createdAt: now() });
   await markSent(env, "phone", uid, OTP_SEND_COOLDOWN);
   await markSent(env, "phoneto", phone, OTP_SEND_COOLDOWN);
 
@@ -359,7 +397,7 @@ export async function requestPhoneChange(
     throw httpsError("internal", "We couldn't send the code right now. Please try again in a moment.");
   }
 
-  return { cooldownSeconds: OTP_SEND_COOLDOWN, sentTo: maskPhone(phone) };
+  return { cooldownSeconds: OTP_SEND_COOLDOWN, sentTo: maskPhone(phone), verifyOnly };
 }
 
 /**
@@ -381,13 +419,14 @@ export async function confirmPhoneChange(
   env: Env,
   uid: string,
   code: unknown,
-): Promise<{ phone: string }> {
+): Promise<{ phone: string; verifyOnly: boolean }> {
   const db = getDb(env);
   const before = await readIdentifiers(env, uid);
   const rec = await verifyOtp(env, "phone", uid, code as string | undefined);
   const phone = assertValidPhone(rec.newPhone);
+  const verifyOnly = rec.verifyOnly === true;
 
-  await assertIdentifiersAvailable(env, uid, { phone });
+  if (!verifyOnly) await assertIdentifiersAvailable(env, uid, { phone });
 
   const ts = now();
   await db
@@ -395,17 +434,20 @@ export async function confirmPhoneChange(
     .set({ phone, phoneVerified: true, phoneVerifiedAt: ts, updatedAt: ts })
     .where(eq(schema.users.uid, uid));
 
-  await updateAuthUser(env, uid, { phoneNumber: phone }).catch((e) =>
-    console.error("[identifierChange] Firebase phone sync failed (D1 is authoritative)", uid, e),
-  );
+  if (!verifyOnly) {
+    await updateAuthUser(env, uid, { phoneNumber: phone }).catch((e) =>
+      console.error("[identifierChange] Firebase phone sync failed (D1 is authoritative)", uid, e),
+    );
+    await afterIdentifierChange(env, uid, {
+      kind: "phone",
+      oldValue: before.phone,
+      newValue: phone,
+    });
+  } else {
+    await delCache(env, userCacheKey(uid)).catch(() => {});
+  }
 
-  await afterIdentifierChange(env, uid, {
-    kind: "phone",
-    oldValue: before.phone,
-    newValue: phone,
-  });
-
-  return { phone };
+  return { phone, verifyOnly };
 }
 
 // ---------------------------------------------------------------------------
