@@ -26,6 +26,7 @@ import { uploadRoute } from "./routes/upload";
 import { verifyIdToken } from "./lib/firebaseAuth";
 import { assertAccountNotBlocked } from "./middleware/auth";
 import { resolveContests, expireContests, monthlyHallOfFame, seoAuditJob } from "./cron";
+import { purgeScheduledDeletions } from "./lib/accountDeletion";
 import { ensureMigrated } from "./db/autoMigrate";
 import { captureError, logErrorToDb, pruneErrorLogs } from "./lib/observability";
 import { pruneOpsTables, runCronJob } from "./lib/ops";
@@ -428,6 +429,17 @@ export default {
             // Safety net for the Bunny encode webhook: promote videos stuck in
             // `processing` (a lost webhook) and close abandoned uploads (cost).
             await runCronJob(env, "reconcileVideos", () => reconcileVideos(env));
+            // Erasure. Deletion requests whose grace period has lapsed are purged
+            // here, a few per tick — a purge spans D1, R2, Bunny, KV and Firebase,
+            // so an unbounded drain would blow the subrequest budget and fail the
+            // whole batch rather than the one account that did not fit.
+            //
+            // This is also what makes deletion resumable: `deletion_requests.phase`
+            // records how far the last attempt got, and each tick continues from
+            // there instead of starting over.
+            await runCronJob(env, "purgeScheduledDeletions", () =>
+              purgeScheduledDeletions(env),
+            );
           })(),
         );
         break;

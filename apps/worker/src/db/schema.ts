@@ -85,6 +85,10 @@ export const users = sqliteTable(
     emailIdx: uniqueIndex("idx_users_email").on(t.email),
     phoneIdx: uniqueIndex("idx_users_phone").on(t.phone),
     monthlyWinsIdx: index("idx_users_monthly_wins").on(t.monthlyWins),
+    // Public read paths exclude accounts that are pending deletion or already
+    // anonymised. Before migration 0039 `status` was never queried, so that
+    // filter would have turned every user listing into a table scan.
+    statusIdx: index("idx_users_status").on(t.status),
   }),
 );
 
@@ -1031,6 +1035,60 @@ export const accountDeletions = sqliteTable(
   },
   (t) => ({
     createdIdx: index("idx_account_deletions_created").on(t.createdAt),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// deletion_requests  (migration 0039) — the account-deletion state machine
+//
+// `account_deletions` above records that an account WAS purged. This records
+// that one was ASKED to be, which is a different and longer-lived fact:
+//
+//   - A request is always accepted. Deletion used to be REFUSED outright while a
+//     payout or contest was in flight, and the client hid its delete button in
+//     response — so the one flow both app stores mandate could simply be
+//     unavailable. Now the request is recorded and `scheduled_for` moves.
+//   - There is a grace period. Signing in during it cancels the request, which
+//     is the only defence against a mistap or a stolen phone destroying an
+//     account irreversibly.
+//   - `phase` makes the purge resumable. The work spans two D1 batches plus R2,
+//     Bunny, KV and Firebase; a failure part-way used to leave an account half
+//     deleted with nothing recording how far it got.
+// ---------------------------------------------------------------------------
+export const deletionRequests = sqliteTable(
+  "deletion_requests",
+  {
+    uid: text("uid").primaryKey(),
+    /** pending | processing | completed | cancelled */
+    status: text("status").notNull().default("pending"),
+    reason: text("reason"),
+    requestedAt: integer("requested_at").notNull(),
+    /** When the purge becomes due. Only ever pushed further out, never pulled in. */
+    scheduledFor: integer("scheduled_for").notNull(),
+    /** Machine-readable code for why the purge has not run yet (see DeferralCode). */
+    deferredReason: text("deferred_reason"),
+    deferredUntil: integer("deferred_until"),
+    /** Resumable progress: snapshots | media | content | social | auth | done */
+    phase: text("phase"),
+    /**
+     * Storage objects to purge, captured in the first phase while the rows that
+     * reference them still exist — the `posts` / `stories` rows are deleted two
+     * phases later, so without this a crash in between would orphan the objects.
+     */
+    mediaUrls: text("media_urls", { mode: "json" }).$type<string[]>(),
+    attempts: integer("attempts").notNull().default(0),
+    lastError: text("last_error"),
+    /** Balance when the request was made, so the quoted forfeiture is stable. */
+    balanceAtRequest: real("balance_at_request").notNull().default(0),
+    /** app | web | admin */
+    source: text("source").notNull().default("app"),
+    cancelledAt: integer("cancelled_at"),
+    completedAt: integer("completed_at"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => ({
+    dueIdx: index("idx_deletion_requests_due").on(t.status, t.scheduledFor),
   }),
 );
 

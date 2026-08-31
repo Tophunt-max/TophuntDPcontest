@@ -77,6 +77,66 @@ describe("legal content", () => {
     expect(out.refundPolicy).toBe("Write to ops@tophunt.in please.");
   });
 
+  /**
+   * The privacy policy states how long data survives a deletion request, and an
+   * operator can change that number from the admin panel. A hardcoded figure would
+   * become a false statement the first time anyone touched the setting — and this
+   * is the one document where a false statement is a regulatory problem rather
+   * than a typo.
+   */
+  it("states the configured deletion grace period, never the raw token", () => {
+    const configured = resolveLegalContent({ accountDeletionGraceDays: 7 });
+    expect(configured.privacyPolicy).toContain("grace period of 7 days");
+    for (const key of LEGAL_DOC_KEYS) {
+      expect(configured[key]).not.toContain("{{DELETION_GRACE_DAYS}}");
+    }
+
+    // Unset, or nonsense, falls back to the same default the server enforces.
+    for (const cfg of [{}, { accountDeletionGraceDays: "soon" }, { accountDeletionGraceDays: null }]) {
+      const out = resolveLegalContent(cfg);
+      expect(out.privacyPolicy).toContain("grace period of 30 days");
+      expect(out.privacyPolicy).not.toContain("{{DELETION_GRACE_DAYS}}");
+    }
+
+    // Clamped the same way lib/accountDeletion.ts clamps it, so the document can
+    // never promise a window the server will not honour.
+    expect(resolveLegalContent({ accountDeletionGraceDays: 900 }).privacyPolicy).toContain(
+      "grace period of 90 days",
+    );
+  });
+
+  /**
+   * The policy used to say deletion was BLOCKED during an unfinished contest,
+   * which described the old behaviour: the request was refused and the user was
+   * told to come back later. Deletion is now always accepted and merely deferred,
+   * so that sentence became untrue — and a privacy policy that overstates when we
+   * refuse erasure is exactly the kind of claim a regulator reads closely.
+   */
+  it("does not claim deletion can be refused", () => {
+    const out = resolveLegalContent({});
+    expect(out.privacyPolicy).not.toContain("Deletion is blocked");
+    expect(out.privacyPolicy).toContain("we still accept your deletion request");
+  });
+
+  /**
+   * Everything lib/accountDeletion.ts retains has to be disclosed here. The
+   * retention list in the deletion routine and the list in this document are two
+   * copies of one fact, and the copy users read is this one.
+   */
+  it("discloses every category of retained data", () => {
+    const out = resolveLegalContent({});
+    for (const claim of [
+      "Coin transactions",
+      "Votes and contests",
+      "Referral records",
+      "Reports you filed",
+      "Conversations you were part of",
+      "Administrative audit records",
+    ]) {
+      expect(out.privacyPolicy, `privacy policy does not disclose: ${claim}`).toContain(claim);
+    }
+  });
+
   it("stamps every bundled document with the current revision date", () => {
     // The date is rendered as "Last updated" on each screen, so a document whose
     // text was edited without bumping the constant would display a stale date.

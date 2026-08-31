@@ -71,6 +71,8 @@ export const LEGAL_DOC_KEYS: readonly LegalDocKey[] = [
  */
 export const LEGAL_LAST_UPDATED = "31 August 2026";
 
+import { parseGraceDays } from "../lib/accountStatus";
+
 const FALLBACK_SUPPORT_EMAIL = "support@tophunt.in";
 
 const TERMS_OF_SERVICE = `**Last updated: ${LEGAL_LAST_UPDATED}**
@@ -254,25 +256,30 @@ Some of these providers operate outside India. Where data crosses a border it st
 
 While your account is open, we keep your data for as long as it is useful for the purposes above.
 
-When you delete your account, we anonymise it and delete your own content — profile, photo, bio, contact details, posts, stories, comments, likes, saved items, followers, notifications, and your login. Media files are removed from storage.
+When you ask us to delete your account, it closes immediately: nobody can find you, view your profile or see your posts from that moment on. Your data is then permanently erased after a grace period of {{DELETION_GRACE_DAYS}} days. If you change your mind, sign in before that date and choose to keep your account — everything comes back. Once the grace period ends, erasure cannot be undone.
 
-**What survives deletion, and why:**
+Erasure deletes your own content: profile, photo, bio, contact details, posts, stories, comments (including comments on our blog), likes, reactions, saved items, highlights, followers and who you follow, notifications, support tickets, blocks and mutes, and your login. Photos and videos are removed from storage, including videos you uploaded but never published.
+
+**What survives erasure, and why:**
 
 - **Coin transactions, payments, payment orders, deposits and withdrawals** — accounting and tax records we are legally required to retain. They stay keyed to an identifier that is no longer linked to your name, email or phone.
-- **Votes and contests you took part in** — other entrants' results are computed from them. Removing your votes would silently change someone else's outcome.
+- **Votes and contests you took part in** — other entrants' results are computed from them. Removing your votes would silently change someone else's outcome. The contest record survives, but your name, photo and contest entry image are removed from it.
+- **Referral records** — the person who referred you, or whom you referred, earned a bonus that has to stay explainable.
+- **Reports you filed** — these are evidence about someone else's conduct, and are kept for moderation.
+- **Conversations you were part of** — the messages you sent are deleted and your name and photo are replaced, but the other person keeps their side of the conversation.
 - **Administrative audit records** — the log of actions our own staff took.
 
 None of these remain linked to your identity. Retained financial records are kept for the period Indian tax and accounting law requires, and then deleted.
 
-Deletion is blocked while you are in an unfinished contest. That is why the Delete Account screen sometimes tells you to wait: your entry is part of a live result.
+If you have a payout being processed, or you are in a contest that has not finished, we still accept your deletion request and close your account straight away — we simply wait for that one thing to settle before erasing the data, because someone else's payment or result depends on it. You are never asked to come back and try again later.
 
 ## 6. Your rights
 
 You can:
 
 - **See and correct** your data — most of it directly in Edit Profile.
-- **Delete your account** — Settings, then Delete Account. It is permanent.
-- **Get a copy** of your data — write to {{SUPPORT_EMAIL}}.
+- **Delete your account** — Settings, then Delete Account. Available at any time, including if your account has been blocked.
+- **Get a copy** of your data — tap "Download a copy of my data" on the Delete Account screen, or write to {{SUPPORT_EMAIL}}.
 - **Withdraw consent** for location or notifications — in your device settings, at any time.
 - **Object to or restrict** a use we base on legitimate interest — write to us and we will consider it and reply.
 - **Complain** — to us first at {{SUPPORT_EMAIL}}, and to your data protection authority if we do not resolve it.
@@ -489,14 +496,22 @@ const BUNDLED: LegalContent = {
 };
 
 /**
- * Substitute the configured support address into a document.
+ * Substitute configured values into a document.
  *
- * Kept as a token rather than hardcoded so the address lives in exactly one place
- * (`appConfig.supportEmail`, the same value the Settings screen uses). Admin-authored
- * documents get the same treatment, so an operator can use the token too.
+ * Kept as tokens rather than hardcoded so each value lives in exactly one place
+ * (`appConfig.supportEmail` / `appConfig.accountDeletionGraceDays`, the same
+ * values the app itself reads). Admin-authored documents get the same treatment,
+ * so an operator can use the tokens too.
+ *
+ * The grace period matters here specifically: the privacy policy states how long
+ * data survives a deletion request, and an operator can change that number in the
+ * panel. A hardcoded figure in the policy would become a false statement the first
+ * time anyone touched the setting.
  */
-function interpolate(text: string, supportEmail: string): string {
-  return text.replace(/\{\{SUPPORT_EMAIL\}\}/g, supportEmail);
+function interpolate(text: string, supportEmail: string, graceDays: number): string {
+  return text
+    .replace(/\{\{SUPPORT_EMAIL\}\}/g, supportEmail)
+    .replace(/\{\{DELETION_GRACE_DAYS\}\}/g, String(graceDays));
 }
 
 /**
@@ -514,12 +529,15 @@ export function resolveLegalContent(cfg: any): LegalContent {
   const stored = (cfg?.legalContent ?? {}) as Partial<Record<LegalDocKey, unknown>>;
   const supportEmail =
     (typeof cfg?.supportEmail === "string" && cfg.supportEmail.trim()) || FALLBACK_SUPPORT_EMAIL;
+  // Same parser the deletion routine enforces, so the policy cannot promise a
+  // window the server will not honour.
+  const graceDays = parseGraceDays(cfg?.accountDeletionGraceDays);
 
   const out = {} as LegalContent;
   for (const key of LEGAL_DOC_KEYS) {
     const value = stored[key];
     const custom = typeof value === "string" ? value.trim() : "";
-    out[key] = interpolate(custom || BUNDLED[key], supportEmail);
+    out[key] = interpolate(custom || BUNDLED[key], supportEmail, graceDays);
   }
   return out;
 }

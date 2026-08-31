@@ -27,6 +27,7 @@ const Reports = lazy(() => import("@/pages/Reports"));
 const Support = lazy(() => import("@/pages/Support"));
 const Moderation = lazy(() => import("@/pages/Moderation"));
 const AuditLog = lazy(() => import("@/pages/AuditLog"));
+const AccountDeletions = lazy(() => import("@/pages/AccountDeletions"));
 const Notifications = lazy(() => import("@/pages/Notifications"));
 const Rewards = lazy(() => import("@/pages/Rewards"));
 const AppControl = lazy(() => import("@/pages/AppControl"));
@@ -85,6 +86,7 @@ function ProtectedApp() {
           <Route path="/support" component={Support} />
           <Route path="/moderation" component={Moderation} />
           <Route path="/audit-log" component={AuditLog} />
+          <Route path="/account-deletions" component={AccountDeletions} />
           <Route path="/logs" component={Logs} />
           <Route path="/notifications" component={Notifications} />
           <Route path="/rewards" component={Rewards} />

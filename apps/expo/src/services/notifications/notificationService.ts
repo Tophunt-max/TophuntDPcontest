@@ -227,11 +227,26 @@ class NotificationService {
         } catch (e) {
             console.warn('[notifications] could not detach push token on logout:', e);
         } finally {
-            try {
-                await AsyncStorage.removeItem(PUSH_TOKEN_KEY);
-            } catch {
-                /* ignore */
-            }
+            await this.forgetLocalPushToken();
+        }
+    }
+
+    /**
+     * Drop this device's cached token WITHOUT calling the server.
+     *
+     * For sign-outs where the account is already out of service — a deletion
+     * request, or a purge that has already removed the Firebase login. The
+     * authenticated detach call cannot succeed then, and letting it fail on a
+     * near-expired token makes the API layer announce "Your session expired"
+     * over the top of whatever the user was actually doing. The server clears
+     * `fcmTokens` on both of those paths anyway, so only the local copy is left
+     * to deal with.
+     */
+    async forgetLocalPushToken(): Promise<void> {
+        try {
+            await AsyncStorage.removeItem(PUSH_TOKEN_KEY);
+        } catch {
+            /* ignore */
         }
     }
 

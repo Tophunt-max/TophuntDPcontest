@@ -4,17 +4,36 @@ import type { Env, Variables } from "../types";
 import { verifyIdToken, bearerToken } from "../lib/firebaseAuth";
 import { httpsError } from "../lib/http";
 import { getDb, schema } from "../db";
+import {
+  BLOCKED_STATUS,
+  DELETED_STATUS,
+  PENDING_DELETION_ALLOWED_ACTIONS,
+  PENDING_DELETION_STATUS,
+  SELF_SERVICE_ACTIONS,
+} from "../lib/accountStatus";
 
 type MW = { Bindings: Env; Variables: Variables };
 
-/** Reject an already-issued token as soon as its D1 account is blocked. */
-export async function assertAccountNotBlocked(env: Env, uid: string): Promise<void> {
-  const account = await getDb(env)
+interface AccountState {
+  status: string | null;
+  isBlocked: boolean | null;
+}
+
+function readAccountState(env: Env, uid: string): Promise<AccountState | undefined> {
+  return getDb(env)
     .select({ status: schema.users.status, isBlocked: schema.users.isBlocked })
     .from(schema.users)
     .where(eq(schema.users.uid, uid))
-    .get();
-  if (account?.isBlocked || account?.status === "blocked") {
+    .get() as Promise<AccountState | undefined>;
+}
+
+/** Reject an already-issued token as soon as its D1 account is blocked. */
+export async function assertAccountNotBlocked(env: Env, uid: string): Promise<void> {
+  const account = await readAccountState(env, uid);
+  if (account?.status === DELETED_STATUS) {
+    throw httpsError("permission-denied", "This account has been deleted.");
+  }
+  if (account?.isBlocked || account?.status === BLOCKED_STATUS) {
     throw httpsError("permission-denied", "This account has been blocked.");
   }
 }
@@ -28,6 +47,63 @@ export const requireAuth = createMiddleware<MW>(async (c, next) => {
   // Firebase ID tokens may remain valid for up to an hour after an account is
   // disabled. D1 is the immediate source of truth for immediate revocation.
   await assertAccountNotBlocked(c.env, user.uid);
+
+  c.set("user", user);
+  await next();
+});
+
+/**
+ * Auth for `/api`, which is action-aware.
+ *
+ * `requireAuth` cannot serve this route, because two of the checks depend on
+ * WHICH action is being called and the action name lives in the request body:
+ *
+ *  1. A blocked account must still be able to delete itself. `requireAuth`
+ *     rejected it with a 403 before the router saw the action, the client
+ *     rendered that as an error, and the delete button never appeared — leaving
+ *     blocked users with no in-app deletion path, which is the exact thing both
+ *     app stores require to exist.
+ *  2. An account that is pending deletion must be able to cancel, and nothing
+ *     else. It is already hidden from every public surface and described to the
+ *     user as deleted, so it must not still be able to post or spend.
+ *
+ * Reading the body here is safe: Hono caches the parsed JSON, so the handler's
+ * own `c.req.json()` does not re-read the stream.
+ */
+export const requireApiAuth = createMiddleware<MW>(async (c, next) => {
+  const token = bearerToken(c.req.header("Authorization"));
+  if (!token) throw httpsError("unauthenticated", "User must be logged in.");
+  const user = await verifyIdToken(token, c.env);
+
+  const body = await c.req.json<any>().catch(() => ({}));
+  const action = typeof body?.action === "string" ? body.action : "";
+
+  // Firebase ID tokens stay valid for up to an hour after an account is
+  // disabled, so D1 is the source of truth for immediate revocation.
+  const account = await readAccountState(c.env, user.uid);
+
+  // Anonymised is terminal. No action, self-service or otherwise, gets back in —
+  // there is no longer an account to act on, and `deleteAccount` in particular
+  // must not restart a purge that has already completed.
+  if (account?.status === DELETED_STATUS) {
+    throw httpsError("permission-denied", "This account has been deleted.");
+  }
+
+  if (!SELF_SERVICE_ACTIONS.has(action)) {
+    if (account?.isBlocked || account?.status === BLOCKED_STATUS) {
+      throw httpsError("permission-denied", "This account has been blocked.");
+    }
+  }
+
+  if (
+    account?.status === PENDING_DELETION_STATUS &&
+    !PENDING_DELETION_ALLOWED_ACTIONS.has(action)
+  ) {
+    throw httpsError(
+      "failed-precondition",
+      "Your account is scheduled for deletion. Cancel the deletion to use TopHunt again.",
+    );
+  }
 
   c.set("user", user);
   await next();

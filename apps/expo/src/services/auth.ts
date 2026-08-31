@@ -17,14 +17,39 @@ export const signupWithEmail = async (email: string, password: string) => {
   }
 };
 
-export const signOut = async () => {
+export interface SignOutOptions {
+  /**
+   * Skip the authenticated call that detaches this device's push token.
+   *
+   * Set this when the account is already gone or out of service — after a
+   * deletion request, or after the server has deleted the Firebase login. The
+   * detach call cannot succeed in that state, and its failure is not harmless:
+   * if the cached ID token is close to expiry the request goes out unauthorised,
+   * the API layer reads the 401 as an expired session, and the user is shown
+   * "Your session expired. Please sign in again." — an error toast, fired
+   * immediately before the success toast for the thing they just did on purpose.
+   *
+   * There is nothing lost by skipping it. The server clears `fcmTokens` as part
+   * of both the deletion request and the purge, which is the same end state this
+   * call exists to reach.
+   */
+  skipPushTokenUnregister?: boolean;
+}
+
+export const signOut = async (options: SignOutOptions = {}) => {
   console.log("[AuthService] signOut called");
 
-  // Detach this device's push token FIRST, while the ID token is still valid —
-  // the Worker call needs auth. Skipping this left the token on the user row
-  // forever, so a shared or resold phone kept receiving the previous account's
-  // notifications. Best-effort: never block logout on it.
-  await notificationService.unregisterPushToken();
+  if (!options.skipPushTokenUnregister) {
+    // Detach this device's push token FIRST, while the ID token is still valid —
+    // the Worker call needs auth. Skipping this left the token on the user row
+    // forever, so a shared or resold phone kept receiving the previous account's
+    // notifications. Best-effort: never block logout on it.
+    await notificationService.unregisterPushToken();
+  } else {
+    // Still drop the local copy, so the next account on this device registers a
+    // fresh token instead of reusing one the server has already forgotten.
+    await notificationService.forgetLocalPushToken();
+  }
 
   try {
     await firebaseSignOut(auth);

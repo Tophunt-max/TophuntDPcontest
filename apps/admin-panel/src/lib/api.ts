@@ -362,6 +362,40 @@ export interface DeepHealth {
   checks: Record<string, HealthCheck>;
   crons: CronJobHealth[];
 }
+export type DeletionRequestStatus = "pending" | "processing" | "completed" | "cancelled";
+export interface AccountDeletionRequest {
+  uid: string;
+  status: DeletionRequestStatus;
+  reason: string | null;
+  requestedAt: number;
+  scheduledFor: number;
+  deferredReason: string | null;
+  deferredUntil: number | null;
+  /** How far the purge got: snapshots | media | content | social | auth | done. */
+  phase: string | null;
+  attempts: number;
+  lastError: string | null;
+  balanceAtRequest: number;
+  source: string;
+  cancelledAt: number | null;
+  completedAt: number | null;
+  /** Grace period has lapsed but the purge has not finished — needs attention. */
+  isOverdue: boolean;
+}
+export interface AccountDeletionsResponse {
+  requests: AccountDeletionRequest[];
+  stats: {
+    pending: number;
+    processing: number;
+    completed: number;
+    cancelled: number;
+    /** Due but unpurged. Non-zero means the sweep is behind or a purge is failing. */
+    overdue: number;
+    /** Requests carrying a `lastError` and not yet complete. */
+    failing: number;
+    forfeitedCoinsTotal: number;
+  };
+}
 export interface LedgerDriftSample {
   uid: string;
   balance: number;
@@ -633,6 +667,15 @@ export const api = {
   // audit log
   auditLog: (action?: string) =>
     get<any[]>(`/admin/audit-log${action ? `?action=${encodeURIComponent(action)}` : ""}`),
+
+  // account deletions (compliance + purge health)
+  accountDeletions: (params?: { status?: string; limit?: number }) => {
+    const s = new URLSearchParams();
+    if (params?.status) s.set("status", params.status);
+    if (params?.limit) s.set("limit", String(params.limit));
+    const qs = s.toString();
+    return get<AccountDeletionsResponse>(`/admin/account-deletions${qs ? `?${qs}` : ""}`);
+  },
 
   // error logs (observability)
   logs: (params?: { level?: string; q?: string; limit?: number }) => {

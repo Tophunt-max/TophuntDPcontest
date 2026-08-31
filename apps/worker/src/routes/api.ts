@@ -11,7 +11,7 @@ import { eq, and, or, desc, sql, count, like, gte, lt, ne, isNull, inArray } fro
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
-import { requireAuth, isAdmin } from "../middleware/auth";
+import { requireApiAuth, isAdmin } from "../middleware/auth";
 import { requireFullAdmin as requireFullAdminAction, writeAdminAudit } from "../lib/adminAuthz";
 import { vsImageKeyFromPublicUrl, deleteVsImageByPublicUrl, canonicalMediaUrl } from "../lib/r2";
 import { deleteMediaByUrl } from "../lib/mediaDelete";
@@ -36,10 +36,11 @@ import {
 import { assertContestOpenNow, createContestExtra, validateContestInput } from "../lib/contestAdmin";
 import { parsePayoutDestination, readWithdrawalPolicy } from "../lib/payouts";
 import {
+  cancelAccountDeletion,
   checkDeletionEligibility,
-  deleteOwnAccount,
-  purgeDeletedAccountMedia,
+  requestAccountDeletion,
 } from "../lib/accountDeletion";
+import { exportUserData } from "../lib/accountExport";
 import {
   adjustUserWallet,
   assertCoinAmount,
@@ -127,7 +128,13 @@ const MAX_COMMENT_LEN = 500;
 export const apiRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 // All /api actions require a valid Firebase ID token (matches callable auth).
-apiRoute.use("*", requireAuth);
+//
+// `requireApiAuth`, not `requireAuth`: two of its checks depend on which action
+// is being called. A BLOCKED account must still reach the deletion actions (the
+// generic 403 was what hid the delete button from the users most likely to want
+// it), and an account PENDING deletion must reach cancellation and nothing else.
+// See lib/accountStatus.ts for both lists.
+apiRoute.use("*", requireApiAuth);
 
 const notPorted = (action: string, file: string): never => {
   throw httpsError(
@@ -2527,11 +2534,14 @@ apiRoute.post("/", async (c) => {
 
     // ================= ACCOUNT DELETION =================
     /**
-     * What deleting the account would do right now: whether it is currently
-     * allowed, why not if it isn't, and how many coins would be forfeited.
+     * What deleting the account would do right now: how many coins would be
+     * forfeited, what is still in flight, how long the grace period is, and
+     * whether a request already exists.
      *
      * The client shows this BEFORE asking for confirmation, so the user is never
-     * surprised by a forfeited balance or an unexplained refusal.
+     * surprised by a forfeited balance or an unexplained delay. `deletable` is
+     * always true — see the note on DeletionEligibility for why that field still
+     * exists at all.
      */
     case "accountDeletionStatus": {
       const eligibility = await checkDeletionEligibility(env, uid);
@@ -2539,29 +2549,72 @@ apiRoute.post("/", async (c) => {
     }
 
     /**
-     * Delete the signed-in user's own account. Required by both app stores.
+     * Ask for the account to be deleted. Required by both app stores.
      *
-     * Anonymises the account, removes the user's content and media, and deletes
-     * the Firebase login so the identity can never sign in again. Financial and
-     * contest records are retained against an anonymous uid — see
-     * lib/accountDeletion.ts for exactly what is kept and why.
+     * Always ACCEPTED. The account is taken out of service immediately and the
+     * data is purged once the grace period lapses (and once anything in flight
+     * has settled). Nothing is destroyed by this call, which is what makes
+     * `cancelAccountDeletion` able to mean something.
      */
-    case "deleteAccount": {
-      // Deliberately strict: this is irreversible, so a runaway client or a
-      // stolen token gets very few attempts.
-      await rateLimit(env, `deleteaccount:${uid}`, 3, 3600, { failClosed: true });
-      // Require an explicit confirmation flag so a mis-sent request cannot
-      // destroy an account.
+    case "requestAccountDeletion": {
+      // Deliberately strict. Not because the call is destructive — it no longer
+      // is — but because it takes an account out of service, and a stolen token
+      // should not be able to do that repeatedly.
+      await rateLimit(env, `deleteaccount:${uid}`, 5, 3600, { failClosed: true });
+      // An explicit confirmation flag, so a mis-sent request cannot disable an
+      // account on its own.
       if (body.confirm !== true) {
         throw httpsError("invalid-argument", "Account deletion must be confirmed.");
       }
-      const result = await deleteOwnAccount(env, uid, body.reason);
-      // Storage cleanup happens after the response: the account is already gone
-      // as far as the user is concerned, and R2 deletes are slow and best-effort.
-      c.executionCtx.waitUntil(purgeDeletedAccountMedia(env, result.mediaUrls));
+      const result = await requestAccountDeletion(env, uid, {
+        reason: body.reason,
+        source: body.source === "web" ? "web" : "app",
+      });
+      return c.json({ success: true, ...result });
+    }
+
+    /** Change of mind, during the grace period. Puts the account back in service. */
+    case "cancelAccountDeletion": {
+      await rateLimit(env, `canceldeletion:${uid}`, 10, 3600);
+      const result = await cancelAccountDeletion(env, uid);
+      return c.json({ success: true, ...result });
+    }
+
+    /**
+     * A copy of everything we hold about the caller, as JSON.
+     *
+     * Deliberately sits next to deletion rather than somewhere in settings: the
+     * moment someone is about to erase their account is exactly when they want
+     * their data out, and GDPR Article 15 gives them the right to have it. The
+     * delete screen links straight to this.
+     */
+    case "exportMyData": {
+      // One export is a lot of reads across a dozen tables.
+      await rateLimit(env, `exportdata:${uid}`, 3, 86400);
+      const bundle = await exportUserData(env, uid);
+      return c.json(bundle);
+    }
+
+    /**
+     * Legacy alias for `requestAccountDeletion`, kept for shipped app builds.
+     *
+     * Older clients call this, announce "your account has been deleted" and sign
+     * out. That remains truthful: the account is out of service and invisible
+     * from this point on, exactly as those builds tell the user, and the erasure
+     * itself completes after the grace period. `deletedAt` is kept in the
+     * response shape those builds expect.
+     */
+    case "deleteAccount": {
+      await rateLimit(env, `deleteaccount:${uid}`, 5, 3600, { failClosed: true });
+      if (body.confirm !== true) {
+        throw httpsError("invalid-argument", "Account deletion must be confirmed.");
+      }
+      const result = await requestAccountDeletion(env, uid, { reason: body.reason });
       return c.json({
         success: true,
-        deletedAt: result.deletedAt,
+        deletedAt: result.scheduledFor,
+        scheduledFor: result.scheduledFor,
+        gracePeriodDays: result.gracePeriodDays,
         forfeitedCoins: result.forfeitedCoins,
       });
     }

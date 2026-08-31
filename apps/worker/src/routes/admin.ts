@@ -8,7 +8,8 @@
  * the admin panel keep its existing route URLs while the data moves to D1.
  */
 import { Hono } from "hono";
-import { and, eq, desc, sql, count, ne, like, gte, lt, inArray, or, isNull } from "drizzle-orm";
+import { and, eq, desc, sql, count, ne, like, gte, lt, lte, inArray, or, isNull, isNotNull } from "drizzle-orm";
+import { DELETED_STATUS, PENDING_DELETION_STATUS } from "../lib/accountStatus";
 import { alias } from "drizzle-orm/sqlite-core";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
@@ -695,8 +696,38 @@ adminRoute.patch("/users/:id", async (c) => {
   const id = c.req.param("id");
   const { isBlocked } = await c.req.json<any>();
   const blocked = !!isBlocked;
+
+  /**
+   * Never overwrite a deletion state with a moderation state.
+   *
+   * `status` carries both, and unblocking used to write `'active'`
+   * unconditionally — so unblocking an account that had asked to be deleted
+   * silently cancelled its deletion, putting it back on every public surface
+   * while `deletion_requests` still said pending. An already-anonymised account
+   * would have been resurrected as a browsable "Deleted user" profile.
+   *
+   * `isBlocked` still moves either way: blocking an account that is pending
+   * deletion is legitimate (the two facts are independent), it just must not
+   * rewrite which of them `status` is recording.
+   */
+  const existing = await db
+    .select({ status: schema.users.status })
+    .from(schema.users)
+    .where(eq(schema.users.uid, id))
+    .get();
+  if (!existing) throw httpsError("not-found", "User not found.");
+  if (existing.status === DELETED_STATUS) {
+    throw httpsError("failed-precondition", "This account has been deleted and cannot be modified.");
+  }
+  const nextStatus =
+    existing.status === PENDING_DELETION_STATUS
+      ? PENDING_DELETION_STATUS
+      : blocked
+        ? "blocked"
+        : "active";
+
   const updated = await db.update(schema.users)
-    .set({ isBlocked: blocked, status: blocked ? "blocked" : "active", updatedAt: now() })
+    .set({ isBlocked: blocked, status: nextStatus, updatedAt: now() })
     .where(eq(schema.users.uid, id))
     .run();
   if (updated.meta.changes === 0) throw httpsError("not-found", "User not found.");
@@ -2836,6 +2867,91 @@ adminRoute.get("/logs/stats", async (c) => {
     .where(gte(schema.errorLogs.createdAt, since))
     .get();
   return c.json({ total: total?.n ?? 0, last24h: last24h?.n ?? 0 });
+});
+
+// ======================= ACCOUNT DELETIONS (compliance) =====================
+/**
+ * Deletion requests and completed erasures.
+ *
+ * `account_deletions` has existed since migration 0030 and was WRITE-ONLY: no
+ * endpoint and no panel screen ever read it, so nobody could answer "how many
+ * people are leaving", "why", or — the one that matters operationally — "is a
+ * purge stuck?". A deletion that fails mid-phase now records `last_error` and
+ * `attempts`, and this is where a human sees it. Without that, the phase machine
+ * would retry five times and then go quiet forever.
+ *
+ * Full admins only. The rows are pseudonymous by design, but a deletion reason is
+ * free text a departing user wrote about the product, and the pending list names
+ * accounts that still exist.
+ */
+adminRoute.get("/account-deletions", async (c) => {
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 500);
+  const status = c.req.query("status");
+
+  const conds: any[] = [];
+  if (status) conds.push(eq(schema.deletionRequests.status, status));
+
+  const requests = await db
+    .select()
+    .from(schema.deletionRequests)
+    .where(conds.length ? and(...conds) : (undefined as any))
+    .orderBy(desc(schema.deletionRequests.requestedAt))
+    .limit(limit)
+    .all();
+
+  const ts = Date.now();
+  const [pending, processing, completed, cancelled, overdue, failing] = await Promise.all([
+    db.select({ n: count() }).from(schema.deletionRequests).where(eq(schema.deletionRequests.status, "pending")).get(),
+    db.select({ n: count() }).from(schema.deletionRequests).where(eq(schema.deletionRequests.status, "processing")).get(),
+    db.select({ n: count() }).from(schema.deletionRequests).where(eq(schema.deletionRequests.status, "completed")).get(),
+    db.select({ n: count() }).from(schema.deletionRequests).where(eq(schema.deletionRequests.status, "cancelled")).get(),
+    // Due but still not purged. A non-zero number here means the cron sweep is
+    // behind, or a purge is failing — the two failure modes that are otherwise
+    // completely silent, because a 4xx/5xx never happens on this path.
+    db
+      .select({ n: count() })
+      .from(schema.deletionRequests)
+      .where(
+        and(
+          inArray(schema.deletionRequests.status, ["pending", "processing"]),
+          lte(schema.deletionRequests.scheduledFor, ts),
+        ),
+      )
+      .get(),
+    db
+      .select({ n: count() })
+      .from(schema.deletionRequests)
+      .where(and(isNotNull(schema.deletionRequests.lastError), ne(schema.deletionRequests.status, "completed")))
+      .get(),
+  ]);
+
+  const forfeited = await db
+    .select({ total: sql<number>`COALESCE(SUM(${schema.accountDeletions.forfeitedCoins}), 0)` })
+    .from(schema.accountDeletions)
+    .get();
+
+  return c.json({
+    requests: requests.map((r) => ({
+      ...r,
+      requestedAtIso: r.requestedAt ? new Date(r.requestedAt).toISOString() : null,
+      scheduledForIso: r.scheduledFor ? new Date(r.scheduledFor).toISOString() : null,
+      completedAtIso: r.completedAt ? new Date(r.completedAt).toISOString() : null,
+      cancelledAtIso: r.cancelledAt ? new Date(r.cancelledAt).toISOString() : null,
+      isOverdue:
+        (r.status === "pending" || r.status === "processing") && (r.scheduledFor ?? 0) <= ts,
+    })),
+    stats: {
+      pending: pending?.n ?? 0,
+      processing: processing?.n ?? 0,
+      completed: completed?.n ?? 0,
+      cancelled: cancelled?.n ?? 0,
+      overdue: overdue?.n ?? 0,
+      failing: failing?.n ?? 0,
+      forfeitedCoinsTotal: Number(forfeited?.total ?? 0),
+    },
+  });
 });
 
 adminRoute.delete("/logs", async (c) => {

@@ -42,8 +42,35 @@ import {
   hiddenUidsFor,
   sqlExclusionList,
 } from "../lib/blocks";
+import { DELETED_STATUS, PENDING_DELETION_STATUS } from "../lib/accountStatus";
 
 export const readRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
+
+/**
+ * Accounts that must not appear in any public listing.
+ *
+ * An account that has asked to be deleted, or has already been anonymised, still
+ * has a `users` row — the row is what keeps the financial ledger and other
+ * people's contest results from being orphaned. Nothing here filtered on it, so
+ * a deleted account stayed fully listable: it showed up in search and in Suggested
+ * People as "Deleted user", it could be followed, and its profile was still
+ * fetchable. Telling a user their account is gone while it is still browsable is
+ * the kind of gap that makes the whole deletion promise untrue.
+ *
+ * `status IS NULL` is explicitly allowed: rows created before the column had a
+ * default carry NULL, and a bare `NOT IN` evaluates to NULL for them — which
+ * SQLite treats as false, so every legacy account would have vanished from the
+ * app instead.
+ */
+const PUBLICLY_HIDDEN_STATUSES = [PENDING_DELETION_STATUS, DELETED_STATUS] as const;
+const publiclyVisibleUser = sql`(${schema.users.status} IS NULL OR ${schema.users.status} NOT IN (${sql.join(
+  PUBLICLY_HIDDEN_STATUSES.map((s) => sql`${s}`),
+  sql`, `,
+)}))`;
+
+/** True when this account is out of service and must not be shown to others. */
+const isHiddenAccountStatus = (status: string | null | undefined): boolean =>
+  !!status && (PUBLICLY_HIDDEN_STATUSES as readonly string[]).includes(status);
 
 // --- short-lived KV cache for hot read endpoints (fail-open) ---------------
 async function cacheGet(env: Env, key: string): Promise<any | null> {
@@ -906,6 +933,7 @@ readRoute.get("/leaderboard", optionalAuth, async (c) => {
       equippedBadge: schema.users.equippedBadge,
     })
     .from(schema.users)
+    .where(publiclyVisibleUser)
     .orderBy(desc(orderCol))
     .limit(limit)
     .all();
@@ -1267,7 +1295,11 @@ readRoute.get("/users/suggested", optionalAuth, async (c) => {
       coordinates: schema.users.coordinates,
     })
     .from(schema.users)
-    .where(excluded.length ? notInArray(schema.users.uid, excluded) : undefined)
+    .where(
+      excluded.length
+        ? and(publiclyVisibleUser, notInArray(schema.users.uid, excluded))
+        : publiclyVisibleUser,
+    )
     .limit(limit)
     .all();
   if (hidden.size) c.header("Cache-Control", "private, no-store");
@@ -1290,8 +1322,12 @@ readRoute.get("/users/search", optionalAuth, async (c) => {
     .from(schema.users)
     .where(
       excluded.length
-        ? and(like(schema.users.username, `${q}%`), notInArray(schema.users.uid, excluded))
-        : like(schema.users.username, `${q}%`),
+        ? and(
+            like(schema.users.username, `${q}%`),
+            publiclyVisibleUser,
+            notInArray(schema.users.uid, excluded),
+          )
+        : and(like(schema.users.username, `${q}%`), publiclyVisibleUser),
     )
     .limit(10)
     .all();
@@ -1370,13 +1406,45 @@ readRoute.get("/users/:id", optionalAuth, async (c) => {
     };
   };
 
+  /**
+   * An account that is pending deletion, or already anonymised, reads as "does
+   * not exist" to everyone but its owner.
+   *
+   * Null rather than an error or an empty profile, matching how a block is
+   * handled above: any other answer distinguishes "deleted" from "never existed",
+   * and the owner is the only person entitled to know which.
+   *
+   * The owner still gets the real row, because the app needs it to render the
+   * "scheduled for deletion — cancel?" screen, and that screen is the only way
+   * back from a deletion the user did not mean to start.
+   *
+   * Checked on the CACHED copy too, and used to suppress the cache WRITE. The
+   * shared entry is keyed only by uid, so without the write guard the owner's own
+   * fetch would publish a hidden account's profile for every other viewer to
+   * read — the request path invalidates this key, but re-populating it here would
+   * undo that immediately.
+   */
+  const hiddenAccount = (profile: any): boolean =>
+    viewer !== id && isHiddenAccountStatus(profile?.status);
+
   const key = userCacheKey(id);
-  const cached = await cacheGetJson(c.env, key);
-  if (cached !== null) return c.json(await forViewer(cached));
+  const cached = await cacheGetJson<any>(c.env, key);
+  if (cached !== null) {
+    if (hiddenAccount(cached)) {
+      c.header("Cache-Control", "private, no-store");
+      return c.json(null);
+    }
+    return c.json(await forViewer(cached));
+  }
 
   const db = getDb(c.env);
   const row = await db.select().from(schema.users).where(eq(schema.users.uid, id)).get();
   if (!row) return c.json(null);
+  if (hiddenAccount(row)) {
+    c.header("Cache-Control", "private, no-store");
+    return c.json(null);
+  }
+
   const { fcmTokens, ...safe } = row as any;
   // expose following[] (list of uids) for screens that expect it
   const following = await db.select({ id: schema.follows.followingId }).from(schema.follows).where(eq(schema.follows.followerId, row.uid)).all();
@@ -1386,7 +1454,11 @@ readRoute.get("/users/:id", optionalAuth, async (c) => {
     Object.assign(safe, safe.extra);
   }
   safe.profileImageUrlThumb = avatarUrl(c.env, safe.profileImageUrl);
-  await cachePutJson(c.env, key, safe, 30);
+  if (!isHiddenAccountStatus(row.status)) {
+    await cachePutJson(c.env, key, safe, 30);
+  } else {
+    c.header("Cache-Control", "private, no-store");
+  }
   return c.json(await forViewer(safe));
 });
 
@@ -1570,6 +1642,7 @@ async function listConnections(
       username: schema.users.username,
       fullName: schema.users.fullName,
       profileImageUrl: schema.users.profileImageUrl,
+      status: schema.users.status,
       since: schema.follows.createdAt,
     })
     .from(schema.follows)
@@ -1583,6 +1656,17 @@ async function listConnections(
   const page = (hasMore ? rows.slice(0, limit) : rows)
     // A leftJoin can yield a null user if the follow edge outlived the account.
     .filter((r) => r.id)
+    // Accounts pending deletion or already anonymised are out of service. Their
+    // follow edges are only removed by the purge itself, so between the request
+    // and the purge this list is the one place a "Deleted user" would still be
+    // rendered — and be tappable through to a profile that returns null.
+    //
+    // Filtered in JS rather than added to the WHERE clause on purpose: the query
+    // is keyset-paginated on `follows.created_at`, and `nextCursor` below must
+    // keep naming the real edge that ended the page or pagination breaks. Same
+    // trade-off the block filter above makes — a slightly short page, a correct
+    // cursor.
+    .filter((r) => !isHiddenAccountStatus(r.status))
     .map((r) => ({
       id: r.id,
       username: r.username,
