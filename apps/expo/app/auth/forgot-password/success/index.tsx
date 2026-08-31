@@ -106,7 +106,7 @@ export default function SuccessScreen() {
             <Text style={[styles.email, { color: textColor }]}>{email}</Text>
             <Text style={[styles.hint, { color: textColor }]}>
               It can take a couple of minutes. If it is not in your inbox, check your
-              spam or junk folder — the link comes from noreply@tophuntdpcontest.firebaseapp.com.
+              spam or junk folder — the link comes from noreply@tophunt.in.
             </Text>
 
             <TouchableOpacity
