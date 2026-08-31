@@ -574,6 +574,7 @@ export const api = {
     get<any[]>(`/admin/matches${status ? `?status=${encodeURIComponent(status)}` : ""}`),
   match: (id: string) => get<any>(`/admin/matches/${id}`),
   matchVotes: (id: string) => get<any[]>(`/admin/matches/${id}/votes`),
+  matchVoteAudit: (id: string) => get<any>(`/admin/matches/${id}/vote-audit`),
   declareWinner: (id: string, winnerUid?: string) =>
     post(`/admin/matches/${id}/declare-winner`, winnerUid ? { winnerUid } : {}),
   cancelMatch: (id: string) => post(`/admin/matches/${id}/cancel`),

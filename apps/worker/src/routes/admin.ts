@@ -2029,6 +2029,132 @@ adminRoute.get("/matches/:id/votes", async (c) => {
 });
 
 /**
+ * Vote-fraud analysis for a match — detection, not prevention.
+ *
+ * The vote path already blocks double/self/non-participant/closed votes, and a
+ * single account or device can vote at most once per match. What it CANNOT stop
+ * is one person voting through several real accounts on several devices (or
+ * spoofed device ids) to rig a paid battle and take the opponent's stake — the
+ * per-IP limit is a throttle, not a dedup, because carrier NAT clusters legit
+ * users. So instead of rejecting those votes blindly (which would hit real
+ * voters), we SURFACE the fraud signals here for a human to judge before paying
+ * out or when handling a dispute:
+ *
+ *  - ipClusters:   IPs used by 2+ voters, and which side each favoured. The
+ *                  primary stuffing signal — a handful of same-IP votes deciding
+ *                  a small battle is suspicious; hundreds of IPs on a viral one
+ *                  are not.
+ *  - deviceReuse:  device ids seen on 2+ votes. Per-match dedup makes this rare,
+ *                  so any hit is worth a look (legacy/seed data or a bypass).
+ *  - freshAccounts: voters whose account was created right around the match
+ *                  start — sockpuppets minted just in time to vote.
+ *
+ * Full-admin only: it exposes voter IPs.
+ */
+adminRoute.get("/matches/:id/vote-audit", async (c) => {
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const id = c.req.param("id");
+  const m = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, id)).get();
+  if (!m) throw httpsError("not-found", "Match not found.");
+  const uidA = (m.userA as any)?.uid ?? null;
+  const uidB = (m.userB as any)?.uid ?? null;
+  const matchCreatedAt = Number(m.createdAt) || 0;
+  // Account created within this window before the match started (or after it) is
+  // treated as "fresh" — old enough accounts are almost certainly organic.
+  const FRESH_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+  const rows = await db
+    .select({
+      voterUid: schema.votes.voterUid,
+      votedForUid: schema.votes.votedForUid,
+      deviceId: schema.votes.deviceId,
+      ip: schema.votes.ip,
+      createdAt: schema.votes.createdAt,
+      username: schema.users.username,
+    })
+    .from(schema.votes)
+    .leftJoin(schema.users, eq(schema.users.uid, schema.votes.voterUid))
+    .where(eq(schema.votes.matchId, id))
+    .orderBy(desc(schema.votes.createdAt))
+    .limit(5000)
+    .all();
+
+  // Voter account ages come from a SEPARATE query, not the join above: selecting
+  // users.created_at alongside votes.created_at collides on the shared column
+  // name and silently drops one, so the fresh-account signal would always read
+  // zero. Batch it by uid instead.
+  const voterUids = [...new Set(rows.map((r) => r.voterUid))];
+  const acctRows = voterUids.length
+    ? await db
+        .select({ uid: schema.users.uid, createdAt: schema.users.createdAt })
+        .from(schema.users)
+        .where(inArray(schema.users.uid, voterUids))
+        .all()
+    : [];
+  const acctAge = new Map(acctRows.map((r) => [r.uid, Number(r.createdAt) || 0]));
+
+  const sideOf = (uid: string | null) => (uid === uidA ? "A" : uid === uidB ? "B" : "?");
+  const ipMap = new Map<string, { ip: string; count: number; forA: number; forB: number }>();
+  const devMap = new Map<string, { deviceId: string; count: number; forA: number; forB: number; voters: string[] }>();
+  const freshVoters: Array<{ voterUid: string; username: string | null; side: string; accountCreatedAt: string | null; votedAt: string | null }> = [];
+  let freshA = 0;
+  let freshB = 0;
+
+  for (const r of rows) {
+    const side = sideOf(r.votedForUid);
+    if (r.ip) {
+      const e = ipMap.get(r.ip) || { ip: r.ip, count: 0, forA: 0, forB: 0 };
+      e.count++;
+      if (side === "A") e.forA++;
+      else if (side === "B") e.forB++;
+      ipMap.set(r.ip, e);
+    }
+    if (r.deviceId) {
+      const e = devMap.get(r.deviceId) || { deviceId: r.deviceId, count: 0, forA: 0, forB: 0, voters: [] };
+      e.count++;
+      if (side === "A") e.forA++;
+      else if (side === "B") e.forB++;
+      if (e.voters.length < 10) e.voters.push(r.username || r.voterUid);
+      devMap.set(r.deviceId, e);
+    }
+    const acct = acctAge.get(r.voterUid) ?? 0;
+    const isFresh = acct > 0 && matchCreatedAt > 0 && acct >= matchCreatedAt - FRESH_WINDOW_MS;
+    if (isFresh) {
+      if (side === "A") freshA++;
+      else if (side === "B") freshB++;
+      if (freshVoters.length < 100) {
+        freshVoters.push({
+          voterUid: r.voterUid,
+          username: r.username ?? null,
+          side,
+          accountCreatedAt: acct ? new Date(acct).toISOString() : null,
+          votedAt: r.createdAt ? new Date(r.createdAt).toISOString() : null,
+        });
+      }
+    }
+  }
+
+  const ipClusters = [...ipMap.values()].filter((x) => x.count >= 2).sort((a, b) => b.count - a.count).slice(0, 50);
+  const deviceReuse = [...devMap.values()].filter((x) => x.count >= 2).sort((a, b) => b.count - a.count).slice(0, 50);
+  const clusteredIpVotes = ipClusters.reduce((s, x) => s + x.count, 0);
+
+  return c.json({
+    matchId: id,
+    usernameA: (m.userA as any)?.username ?? null,
+    usernameB: (m.userB as any)?.username ?? null,
+    totalVotes: rows.length,
+    distinctIps: ipMap.size,
+    distinctDevices: devMap.size,
+    // Votes that came from an IP shared by 2+ voters — the headline stuffing number.
+    clusteredIpVotes,
+    ipClusters,
+    deviceReuse,
+    freshAccounts: { withinHours: 24, forA: freshA, forB: freshB, voters: freshVoters },
+  });
+});
+
+/**
  * Force-resolve a match and pay out the winner. `winnerUid` may be provided to
  * override the vote result (dispute resolution); otherwise the winner is
  * decided by the authoritative vote tally. Mirrors the cron payout: reward +

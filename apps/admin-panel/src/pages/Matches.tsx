@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/Badge";
 import { PageHeader, fmtDateTime, fmtNumber } from "@/lib/format";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { toast } from "@/lib/toast";
-import { Trophy, XCircle, Eye, Swords } from "lucide-react";
+import { Trophy, XCircle, Eye, Swords, ShieldAlert, ShieldCheck } from "lucide-react";
 
 const STATUS = ["", "active", "waiting_for_opponent", "completed", "cancelled"];
 
@@ -138,6 +138,7 @@ function IconBtn({ children, title, onClick }: any) {
 function MatchDetail({ id, onClose, onDeclare }: { id: string; onClose: () => void; onDeclare: (uid: string) => void }) {
   const match = useQuery({ queryKey: ["match", id], queryFn: () => api.match(id) });
   const votes = useQuery({ queryKey: ["match-votes", id], queryFn: () => api.matchVotes(id) });
+  const audit = useQuery({ queryKey: ["match-audit", id], queryFn: () => api.matchVoteAudit(id) });
   const m = match.data;
 
   return (
@@ -176,7 +177,10 @@ function MatchDetail({ id, onClose, onDeclare }: { id: string; onClose: () => vo
               <span className="text-muted-foreground">Total votes: {fmtNumber(m.totalVotes)}</span>
             </div>
 
+            <FraudSignals data={audit.data} loading={audit.isLoading} usernameA={m.userA?.username} usernameB={m.userB?.username} />
+
             <h4 className="font-semibold text-sm text-foreground mb-2">Votes ({votes.data?.length ?? 0})</h4>
+
             <div className="border border-border rounded-xl overflow-hidden max-h-52 overflow-y-auto">
               <table className="w-full text-xs">
                 <thead className="bg-secondary/40">
@@ -206,6 +210,138 @@ function MatchDetail({ id, onClose, onDeclare }: { id: string; onClose: () => vo
         )}
         <div className="mt-5 flex justify-end">
           <button onClick={onClose} className="px-4 py-2 rounded-xl bg-secondary text-sm font-medium">Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+/**
+ * Vote-fraud signals for a battle — detection only, for a human to judge before
+ * paying out or when handling a dispute. Nothing here blocks or auto-voids; it
+ * just makes stuffing visible (same-IP clusters, reused devices, freshly-made
+ * accounts) so an admin can decide to cancel+refund or override the winner.
+ */
+function FraudSignals({
+  data,
+  loading,
+  usernameA,
+  usernameB,
+}: {
+  data: any;
+  loading: boolean;
+  usernameA?: string;
+  usernameB?: string;
+}) {
+  if (loading) {
+    return <div className="mb-4 text-xs text-muted-foreground">Analysing votes for fraud signals…</div>;
+  }
+  if (!data) return null;
+
+  const ipClusters: any[] = data.ipClusters ?? [];
+  const deviceReuse: any[] = data.deviceReuse ?? [];
+  const fresh = data.freshAccounts ?? { forA: 0, forB: 0, withinHours: 24 };
+  const total = Number(data.totalVotes) || 0;
+  const clustered = Number(data.clusteredIpVotes) || 0;
+  const clusteredPct = total > 0 ? Math.round((clustered / total) * 100) : 0;
+
+  const hasSignal = ipClusters.length > 0 || deviceReuse.length > 0 || fresh.forA > 0 || fresh.forB > 0;
+  const nameFor = (side: string) => (side === "A" ? usernameA || "A" : side === "B" ? usernameB || "B" : "?");
+  const sideLabel = (a: number, b: number) => {
+    const parts: string[] = [];
+    if (a) parts.push(`${a} → ${usernameA || "A"}`);
+    if (b) parts.push(`${b} → ${usernameB || "B"}`);
+    return parts.join(", ") || "—";
+  };
+
+  return (
+    <div className="mb-5 rounded-xl border border-border overflow-hidden">
+      <div className={`px-3 py-2 flex items-center gap-2 text-sm font-semibold ${hasSignal ? "bg-amber-50 text-amber-700" : "bg-emerald-50 text-emerald-700"}`}>
+        {hasSignal ? <ShieldAlert size={15} /> : <ShieldCheck size={15} />}
+        {hasSignal ? "Vote fraud signals" : "No obvious fraud signals"}
+      </div>
+
+      <div className="p-3 space-y-3 text-xs">
+        <div className="flex flex-wrap gap-x-5 gap-y-1 text-muted-foreground">
+          <span>Total votes: <b className="text-foreground">{total}</b></span>
+          <span>Distinct IPs: <b className="text-foreground">{data.distinctIps ?? 0}</b></span>
+          <span>Distinct devices: <b className="text-foreground">{data.distinctDevices ?? 0}</b></span>
+          <span>
+            From shared IPs: <b className={clusteredPct >= 40 ? "text-amber-600" : "text-foreground"}>{clustered} ({clusteredPct}%)</b>
+          </span>
+        </div>
+
+        {/* IP clusters — the primary stuffing signal. */}
+        <div>
+          <p className="font-semibold text-foreground mb-1">Shared IPs ({ipClusters.length})</p>
+          {ipClusters.length === 0 ? (
+            <p className="text-muted-foreground">No IP was used by more than one voter.</p>
+          ) : (
+            <div className="border border-border rounded-lg overflow-hidden max-h-40 overflow-y-auto">
+              <table className="w-full">
+                <thead className="bg-secondary/40">
+                  <tr>
+                    <th className="text-left px-2 py-1.5">IP</th>
+                    <th className="text-left px-2 py-1.5">Voters</th>
+                    <th className="text-left px-2 py-1.5">Backed</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ipClusters.map((c: any) => (
+                    <tr key={c.ip} className="border-t border-border">
+                      <td className="px-2 py-1.5 font-mono">{c.ip}</td>
+                      <td className={`px-2 py-1.5 font-semibold ${c.count >= 4 ? "text-amber-600" : ""}`}>{c.count}</td>
+                      <td className="px-2 py-1.5 text-muted-foreground">{sideLabel(c.forA, c.forB)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* Device reuse — rare (per-match dedup), so any hit is worth a look. */}
+        {deviceReuse.length > 0 && (
+          <div>
+            <p className="font-semibold text-amber-700 mb-1">Reused devices ({deviceReuse.length})</p>
+            <div className="border border-border rounded-lg overflow-hidden max-h-32 overflow-y-auto">
+              <table className="w-full">
+                <thead className="bg-secondary/40">
+                  <tr>
+                    <th className="text-left px-2 py-1.5">Device</th>
+                    <th className="text-left px-2 py-1.5">Votes</th>
+                    <th className="text-left px-2 py-1.5">Backed</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {deviceReuse.map((c: any) => (
+                    <tr key={c.deviceId} className="border-t border-border">
+                      <td className="px-2 py-1.5 font-mono truncate max-w-[140px]">{c.deviceId}</td>
+                      <td className="px-2 py-1.5 font-semibold text-amber-600">{c.count}</td>
+                      <td className="px-2 py-1.5 text-muted-foreground">{sideLabel(c.forA, c.forB)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Fresh accounts — sockpuppets minted around the match start. */}
+        <div>
+          <p className="font-semibold text-foreground mb-1">
+            New accounts voting (created within {fresh.withinHours ?? 24}h of the battle)
+          </p>
+          {fresh.forA === 0 && fresh.forB === 0 ? (
+            <p className="text-muted-foreground">None — voters are established accounts.</p>
+          ) : (
+            <p className="text-muted-foreground">
+              <span className={fresh.forA >= 3 ? "text-amber-600 font-semibold" : ""}>{fresh.forA} → {nameFor("A")}</span>
+              {"  ·  "}
+              <span className={fresh.forB >= 3 ? "text-amber-600 font-semibold" : ""}>{fresh.forB} → {nameFor("B")}</span>
+            </p>
+          )}
         </div>
       </div>
     </div>
