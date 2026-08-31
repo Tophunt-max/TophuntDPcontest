@@ -189,15 +189,30 @@ function TestButton({
   provider,
   needsTarget,
   placeholder,
+  beforeTest,
 }: {
   provider: string;
   needsTarget?: "phone" | "email";
   placeholder?: string;
+  /**
+   * Run before the test — used to persist unsaved provider/config changes.
+   *
+   * The test runs SERVER-SIDE against the SAVED config, but the provider dropdown
+   * and most fields are unsaved client state until "Save settings" is pressed. A
+   * secret has its own inline Save, so it is easy to save the API key, see "Saved
+   * here", switch the gateway, and then test — testing the OLD saved gateway and
+   * getting "No SMS gateway is configured". Saving first makes Test mean what the
+   * user expects: test what is on screen.
+   */
+  beforeTest?: () => Promise<void>;
 }) {
   const [target, setTarget] = useState("");
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
   const mut = useMutation({
-    mutationFn: () => api.testIntegration(provider, needsTarget ? { to: target } : {}),
+    mutationFn: async () => {
+      if (beforeTest) await beforeTest();
+      return api.testIntegration(provider, needsTarget ? { to: target } : {});
+    },
     onSuccess: (res: any) =>
       setResult({ ok: !!res.ok, message: res.message || (res.ok ? "Working" : "Failed") }),
     onError: (e: any) => setResult({ ok: false, message: describeError(e) }),
@@ -300,6 +315,21 @@ export default function Integrations() {
     onError: (e: any) => toast.error(describeError(e)),
   });
 
+  /**
+   * Do the on-screen settings differ from what is saved?
+   *
+   * The Test buttons run against the SAVED config, so an unsaved provider change
+   * would test the wrong gateway. This drives both a visible "unsaved changes"
+   * hint and an auto-save before any test.
+   */
+  const dirty = useMemo(
+    () => !!cfg && !!data?.config && JSON.stringify(cfg) !== JSON.stringify(data.config),
+    [cfg, data],
+  );
+  const saveIfDirty = async () => {
+    if (dirty) await saveMut.mutateAsync();
+  };
+
   const byGroup = useMemo(() => {
     const map: Record<string, SecretStatus[]> = {};
     for (const s of data?.secrets ?? []) (map[s.group] ??= []).push(s);
@@ -357,10 +387,12 @@ export default function Integrations() {
         action={
           <button
             onClick={() => saveMut.mutate()}
-            disabled={saveMut.isPending}
+            disabled={saveMut.isPending || !dirty}
+            title={dirty ? "You have unsaved changes" : "Nothing to save"}
             className="flex items-center gap-2 gradient-purple text-white text-sm font-semibold px-4 py-2 rounded-xl shadow-lg disabled:opacity-50"
           >
-            <Save size={15} /> Save settings
+            <Save size={15} /> {dirty ? "Save changes" : "Saved"}
+            {dirty && <span className="ml-1 w-2 h-2 rounded-full bg-white/90" aria-hidden />}
           </button>
         }
       />
@@ -395,7 +427,7 @@ export default function Integrations() {
           secrets={smsSecrets}
           disabled={!!noStorage}
           onSaved={refresh}
-          test={<TestButton provider="sms" needsTarget="phone" placeholder="Send a test code to (e.g. 9876543210)" />}
+          test={<TestButton provider="sms" needsTarget="phone" placeholder="Send a test code to (e.g. 9876543210)" beforeTest={saveIfDirty} />}
         >
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="sm:col-span-2">
