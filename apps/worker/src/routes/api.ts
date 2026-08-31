@@ -22,7 +22,7 @@ import { setCustomClaims } from "../lib/firebaseAdmin";
 import { publish, publishMany } from "../lib/publish";
 import { castVote, bumpEngagement } from "../lib/voteCounter";
 import { clientIp, consumeRateLimit, rateLimit } from "../lib/rateLimit";
-import { assertIdentifiersAvailable, normalizePhone } from "../lib/userIdentifiers";
+import { assertIdentifiersAvailable, normalizePhone, validateUsername } from "../lib/userIdentifiers";
 import { enforceIdempotency, releaseIdempotency } from "../lib/idempotency";
 import {
   contestDetailCacheKey,
@@ -2431,7 +2431,10 @@ apiRoute.post("/", async (c) => {
         // one legacy url seeding many. Third-party avatars (Google/Apple sign-in)
         // are not ours and pass through untouched.
         if (k === "avatarUrl" || k === "profileImageUrl") set.profileImageUrl = canonicalMediaUrl(env, v as string);
-        else if (k === "username") set.username = String(v).toLowerCase();
+        // The full username policy — length, charset, reserved names — not just a
+        // lowercase. Editing the username must be held to the same rules signup
+        // is, or the profile-edit path is a way around them.
+        else if (k === "username") set.username = validateUsername(String(v));
         else if (COLUMN_KEYS.has(k)) set[k] = v;
         // Any OTHER real column name is dropped, not stored in `extra`.
         //

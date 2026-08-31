@@ -57,6 +57,14 @@ const DISPOSABLE_DOMAINS = [
  */
 const editProfileSchema = z.object({
   fullName: z.string().min(1, "Please fill in your full name"),
+  // Same policy the server enforces (lib/userIdentifiers.validateUsername) and
+  // signup uses, so the format error shows here before a round trip. Uniqueness
+  // is checked live against the `check` action and again on the server at save.
+  username: z
+    .string()
+    .min(3, "Username must be at least 3 characters")
+    .max(30, "Username must be less than 30 characters")
+    .regex(/^[a-zA-Z0-9_.]+$/, "Only letters, numbers, underscores and dots"),
   email: z
     .string()
     .email("Invalid email address")
@@ -153,6 +161,8 @@ export default function EditProfileScreen() {
     setValue,
     watch,
     trigger,
+    setError,
+    clearErrors,
     formState: { errors },
     reset
   } = useForm<EditProfileFormValues>({
@@ -179,6 +189,7 @@ export default function EditProfileScreen() {
       }
       reset({
         fullName: profile.fullName || "",
+        username: profile.username || "",
         email: profile.email || "",
         phone: localPhone,
         occupation: (profile as any).occupation || "",
@@ -192,6 +203,42 @@ export default function EditProfileScreen() {
   }, [profile, reset]);
 
   const selectedOccupation = watch("occupation");
+
+  // Live username-availability check, debounced. Mirrors the signup screen
+  // (callApi('check', {type:'username'})), with one extra rule: the user's OWN
+  // current username is never "taken" — otherwise saving any other field would
+  // look blocked. The server re-checks uniqueness + policy at save, so this is
+  // only a fast, friendly heads-up.
+  const watchedUsername = watch("username");
+  const currentUsername = (profile as any)?.username as string | undefined;
+  const [usernameChecking, setUsernameChecking] = useState(false);
+  useEffect(() => {
+    const value = (watchedUsername || "").trim().toLowerCase();
+    if (!value || value.length < 3 || !/^[a-zA-Z0-9_.]+$/.test(value)) return; // schema shows the format error
+    if (currentUsername && value === String(currentUsername).toLowerCase()) {
+      clearErrors("username");
+      return;
+    }
+    let cancelled = false;
+    setUsernameChecking(true);
+    const timer = setTimeout(async () => {
+      try {
+        const result: any = await callApi("check", { type: "username", value });
+        if (cancelled) return;
+        if (result?.exists) setError("username", { type: "manual", message: "This username is taken. Try another!" });
+        else clearErrors("username");
+      } catch {
+        /* a check failure must not block typing; the server is the final word */
+      } finally {
+        if (!cancelled) setUsernameChecking(false);
+      }
+    }, 500);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      setUsernameChecking(false);
+    };
+  }, [watchedUsername, currentUsername, setError, clearErrors]);
 
   const pickImage = async (useCamera: boolean) => {
     setShowImageOptions(false);
@@ -358,6 +405,8 @@ export default function EditProfileScreen() {
     try {
       let finalAvatarUrl = profile?.profileImageUrl;
       const avatarChanged = !!localAvatarUri && localAvatarUri !== profile?.profileImageUrl;
+      const usernameChanged =
+        (data.username || "").trim().toLowerCase() !== String(currentUsername || "").toLowerCase();
 
       if (avatarChanged) {
         const optimizedAvatar = await optimizeImageForUpload(localAvatarUri!, "avatar");
@@ -366,6 +415,7 @@ export default function EditProfileScreen() {
 
       await callApi('updateProfile', {
         fullName: data.fullName,
+        username: data.username,
         occupation: data.occupation,
         bio: data.bio || "",
         facebook: data.facebook || "",
@@ -391,11 +441,12 @@ export default function EditProfileScreen() {
        */
       refetch();
 
-      // A new photo also lives on the user's battles, stories and feed cards —
-      // and on every other person's device via the snapshots the server now
-      // refreshes live. Locally, nudge the surfaces that show the user's OWN face
-      // so their session reflects the change without waiting for a cold reload.
-      if (avatarChanged) propagateOwnAvatarChange(queryClient);
+      // A new photo OR a new username also lives on the user's battles, stories
+      // and feed cards — and on every other person's device via the snapshots the
+      // server now refreshes live. Locally, nudge the surfaces that show the
+      // user's OWN identity so their session reflects the change without waiting
+      // for a cold reload.
+      if (avatarChanged || usernameChanged) propagateOwnAvatarChange(queryClient);
 
       const identifierPending =
         (!!data.email && data.email !== currentEmail) ||
@@ -484,6 +535,23 @@ export default function EditProfileScreen() {
           name="fullName"
           placeholder="Full Name"
           errorMessage={errors.fullName?.message}
+        />
+
+        <FormInput
+          control={control}
+          name="username"
+          placeholder="Username"
+          autoCapitalize="none"
+          errorMessage={errors.username?.message}
+          rightIcon={
+            usernameChecking ? (
+              <View style={{ paddingRight: 10 }}><ActivityIndicator size="small" color="#ff4466" /></View>
+            ) : watchedUsername && watchedUsername.length >= 3 && !errors.username ? (
+              <View style={{ paddingRight: 10 }}>
+                <Ionicons name="checkmark-circle" size={20} color="#22A45D" />
+              </View>
+            ) : null
+          }
         />
 
         <FormInput
