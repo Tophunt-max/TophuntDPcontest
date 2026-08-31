@@ -108,6 +108,8 @@ export interface Env {
   // Twilio for OTP traffic). The active provider is an admin-panel setting.
   MSG91_AUTH_KEY?: string;
   FAST2SMS_API_KEY?: string;
+  /** HanuOTP (api.hanuotp.in) non-DLT OTP gateway API key. */
+  HANUOTP_API_KEY?: string;
   /** Token substituted into a custom gateway's URL/body as {token}. */
   SMS_CUSTOM_TOKEN?: string;
 

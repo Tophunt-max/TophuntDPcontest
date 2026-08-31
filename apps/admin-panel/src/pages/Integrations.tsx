@@ -338,6 +338,7 @@ export default function Integrations() {
     twilio: ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"],
     msg91: ["MSG91_AUTH_KEY"],
     fast2sms: ["FAST2SMS_API_KEY"],
+    hanuotp: ["HANUOTP_API_KEY"],
     custom: ["SMS_CUSTOM_TOKEN"],
     none: [],
   };
@@ -408,11 +409,16 @@ export default function Integrations() {
                 <option value="twilio">Twilio</option>
                 <option value="msg91">MSG91 (India, DLT)</option>
                 <option value="fast2sms">Fast2SMS (India, DLT)</option>
+                <option value="hanuotp">HanuOTP (India, non-DLT OTP)</option>
                 <option value="custom">Custom HTTP gateway</option>
               </select>
             </div>
 
-            {cfg.sms.provider !== "none" && cfg.sms.provider !== "custom" && (
+            {/* HanuOTP is non-DLT: it has no sender ID and its template defaults to
+                "default", so it needs only its API key below. Nothing to show here. */}
+            {cfg.sms.provider !== "none" &&
+              cfg.sms.provider !== "custom" &&
+              cfg.sms.provider !== "hanuotp" && (
               <div>
                 <label className={label}>
                   {cfg.sms.provider === "twilio" ? "Sender number (E.164)" : "DLT sender ID"}
@@ -423,6 +429,22 @@ export default function Integrations() {
                   placeholder={cfg.sms.provider === "twilio" ? "+14155552671" : "TOPHNT"}
                   className={field}
                 />
+              </div>
+            )}
+
+            {cfg.sms.provider === "hanuotp" && (
+              <div className="sm:col-span-2">
+                <label className={label}>Template ID (optional)</label>
+                <input
+                  value={cfg.sms.templateId}
+                  onChange={(e) => setCfg({ ...cfg, sms: { ...cfg.sms, templateId: e.target.value } })}
+                  placeholder="default"
+                  className={field}
+                />
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Sent as <code className="font-mono">templatesid</code>. Leave blank to use{" "}
+                  <code className="font-mono">default</code>. Add the API key below.
+                </p>
               </div>
             )}
 

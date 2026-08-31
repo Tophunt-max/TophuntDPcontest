@@ -328,7 +328,7 @@ export interface SeoAudit {
 
 export interface IntegrationsConfig {
   sms: {
-    provider: "twilio" | "msg91" | "fast2sms" | "custom" | "none";
+    provider: "twilio" | "msg91" | "fast2sms" | "hanuotp" | "custom" | "none";
     from: string;
     templateId: string;
     otpVariable: string;

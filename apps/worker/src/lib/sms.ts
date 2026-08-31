@@ -145,6 +145,83 @@ async function sendViaFast2Sms(env: Env, cfg: Awaited<ReturnType<typeof getInteg
   return { ok: true, provider: "fast2sms", id: payload?.request_id };
 }
 
+/**
+ * HanuOTP (api.hanuotp.in) — an Indian non-DLT OTP gateway.
+ *
+ * Contract, from the provider's docs:
+ *   GET https://api.hanuotp.in/sms-otp.php?number=<mobile>&OTP=<code>&apikey=<key>&templatesid=<id>
+ *
+ * It sends a fixed OTP template, so — like MSG91 and Fast2SMS's DLT route — only
+ * the CODE travels, not the free-text message. `templatesid` defaults to
+ * "default", which is what the docs use; an operator with a named template sets
+ * it in the panel.
+ *
+ * The endpoint host is fixed here rather than configurable: it is the provider's
+ * published API host, and leaving it editable would just be one more field to get
+ * wrong. If HanuOTP ever changes it, that is a code change, not a config one.
+ */
+async function sendViaHanuotp(
+  env: Env,
+  cfg: Awaited<ReturnType<typeof getIntegrations>>,
+  input: SendInput,
+): Promise<SmsResult> {
+  const key = await resolveSecret(env, "HANUOTP_API_KEY");
+  if (!key) return { ok: false, provider: "hanuotp", error: "HanuOTP API key is not configured." };
+
+  // The gateway is template-based, so it needs the bare code. Refuse rather than
+  // send the whole message body as the "OTP", which would deliver a sentence
+  // where the template expects a number.
+  const code = input.code?.trim();
+  if (!code) {
+    return { ok: false, provider: "hanuotp", error: "HanuOTP is an OTP-template gateway and needs the code." };
+  }
+
+  const params = new URLSearchParams({
+    number: toIndianLocal(input.to),
+    OTP: code,
+    apikey: key,
+    templatesid: cfg.sms.templateId || "default",
+  });
+  const url = `https://api.hanuotp.in/sms-otp.php?${params.toString()}`;
+
+  const res = await fetch(url, { method: "GET" });
+  const text = await res.text();
+  if (!res.ok) {
+    return { ok: false, provider: "hanuotp", error: `HanuOTP ${res.status}: ${text.slice(0, 300)}` };
+  }
+
+  // The API answers with JSON. Parse it so an HTTP 200 that actually carries an
+  // error (the same trap MSG91 sets) is treated as the failure it is, rather than
+  // reported to the user as a code that is on its way.
+  let payload: any = null;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    // Not JSON. A bare "OK"/"sent" is success; anything naming an error is not.
+    if (/\b(error|fail|invalid|insufficient|denied)\b/i.test(text)) {
+      return { ok: false, provider: "hanuotp", error: `HanuOTP: ${text.slice(0, 300)}` };
+    }
+    return { ok: true, provider: "hanuotp" };
+  }
+
+  const statusText = String(payload?.status ?? payload?.Status ?? "").toLowerCase();
+  const failed =
+    payload?.status === false ||
+    payload?.success === false ||
+    payload?.return === false ||
+    !!payload?.error ||
+    /error|fail|invalid/.test(statusText);
+  if (failed) {
+    const reason =
+      payload?.message || payload?.msg || payload?.error || statusText || "delivery rejected";
+    return { ok: false, provider: "hanuotp", error: `HanuOTP: ${String(reason).slice(0, 300)}` };
+  }
+
+  const id =
+    payload?.request_id || payload?.requestId || payload?.id || payload?.message_id || payload?.msgid;
+  return { ok: true, provider: "hanuotp", id: id ? String(id) : undefined };
+}
+
 async function sendViaCustom(env: Env, cfg: Awaited<ReturnType<typeof getIntegrations>>, input: SendInput): Promise<SmsResult> {
   const token = (await resolveSecret(env, "SMS_CUSTOM_TOKEN")) ?? "";
   const url = cfg.sms.customUrl;
@@ -195,6 +272,8 @@ export async function sendSmsDetailed(env: Env, to: string, message: string, cod
         return await sendViaMsg91(env, cfg, input);
       case "fast2sms":
         return await sendViaFast2Sms(env, cfg, input);
+      case "hanuotp":
+        return await sendViaHanuotp(env, cfg, input);
       case "custom":
         return await sendViaCustom(env, cfg, input);
       case "none":
@@ -229,6 +308,8 @@ export async function smsConfigured(env: Env): Promise<boolean> {
       return !!(await resolveSecret(env, "MSG91_AUTH_KEY")) && !!cfg.sms.templateId;
     case "fast2sms":
       return !!(await resolveSecret(env, "FAST2SMS_API_KEY"));
+    case "hanuotp":
+      return !!(await resolveSecret(env, "HANUOTP_API_KEY"));
     case "custom":
       return !!cfg.sms.customUrl;
     default:

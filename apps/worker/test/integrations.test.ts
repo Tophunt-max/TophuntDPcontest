@@ -254,6 +254,68 @@ describe('SMS gateway dispatch', () => {
     expect(result.error).toMatch(/DLT template not approved/);
   });
 
+  it('sends through HanuOTP with the code, normalised number and template', async () => {
+    const e = env();
+    await putSecret(e as any, 'HANUOTP_API_KEY', 'hanu-key', null);
+    await saveIntegrations(e as any, {
+      sms: { ...DEFAULT_INTEGRATIONS.sms, provider: 'hanuotp', templateId: 'tpl_42' },
+    });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ status: 'success', request_id: 'hz1' }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await sendSmsDetailed(e as any, '+91 98765-43210', 'ignored for template gateways', '123456');
+
+    expect(result.ok).toBe(true);
+    expect(result.provider).toBe('hanuotp');
+    expect(result.id).toBe('hz1');
+    const [url, init] = fetchMock.mock.calls[0] as any;
+    expect(init?.method ?? 'GET').toBe('GET');
+    expect(url).toContain('api.hanuotp.in/sms-otp.php');
+    // 10-digit local number, the bare code, the key and the template id.
+    expect(url).toContain('number=9876543210');
+    expect(url).toContain('OTP=123456');
+    expect(url).toContain('apikey=hanu-key');
+    expect(url).toContain('templatesid=tpl_42');
+  });
+
+  it('defaults the HanuOTP template id to "default" when blank', async () => {
+    const e = env();
+    await putSecret(e as any, 'HANUOTP_API_KEY', 'hanu-key', null);
+    await saveIntegrations(e as any, { sms: { ...DEFAULT_INTEGRATIONS.sms, provider: 'hanuotp' } });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ status: 'ok' }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await sendSmsDetailed(e as any, '9876543210', 'x', '654321');
+
+    const [url] = fetchMock.mock.calls[0] as any;
+    expect(url).toContain('templatesid=default');
+  });
+
+  it('treats a HanuOTP 200 with an error payload as a failure', async () => {
+    const e = env();
+    await putSecret(e as any, 'HANUOTP_API_KEY', 'hanu-key', null);
+    await saveIntegrations(e as any, { sms: { ...DEFAULT_INTEGRATIONS.sms, provider: 'hanuotp' } });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ status: 'error', message: 'invalid apikey' }), { status: 200 })));
+
+    const result = await sendSmsDetailed(e as any, '9876543210', 'x', '123456');
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/invalid apikey/);
+  });
+
+  it('reports a missing HanuOTP key rather than sending', async () => {
+    const e = env();
+    await saveIntegrations(e as any, { sms: { ...DEFAULT_INTEGRATIONS.sms, provider: 'hanuotp' } });
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await sendSmsDetailed(e as any, '9876543210', 'x', '123456');
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/API key is not configured/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('escapes placeholders in a custom gateway URL', async () => {
     const e = env();
     await putSecret(e as any, 'SMS_CUSTOM_TOKEN', 'tok&en', null);

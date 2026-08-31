@@ -59,6 +59,7 @@ export const SECRET_DEFINITIONS: SecretDefinition[] = [
   { name: "TWILIO_AUTH_TOKEN", label: "Twilio Auth Token", group: "sms", envKey: "TWILIO_AUTH_TOKEN" },
   { name: "MSG91_AUTH_KEY", label: "MSG91 Auth Key", group: "sms", envKey: "MSG91_AUTH_KEY", help: "MSG91 → Settings → API keys" },
   { name: "FAST2SMS_API_KEY", label: "Fast2SMS API Key", group: "sms", envKey: "FAST2SMS_API_KEY" },
+  { name: "HANUOTP_API_KEY", label: "HanuOTP API Key", group: "sms", envKey: "HANUOTP_API_KEY", help: "HanuOTP dashboard → API. Sends non-DLT OTP via api.hanuotp.in." },
   { name: "SMS_CUSTOM_TOKEN", label: "Custom gateway token", group: "sms", envKey: "SMS_CUSTOM_TOKEN", help: "Substituted into the custom gateway URL/body as {token}" },
 
   // ---- Email --------------------------------------------------------------
@@ -116,7 +117,7 @@ export function secretDefinition(name: string): SecretDefinition {
 // Non-secret configuration
 // ---------------------------------------------------------------------------
 
-export type SmsProvider = "twilio" | "msg91" | "fast2sms" | "custom" | "none";
+export type SmsProvider = "twilio" | "msg91" | "fast2sms" | "hanuotp" | "custom" | "none";
 export type EmailProvider = "resend" | "brevo" | "none";
 export type VideoProvider = "bunny" | "r2";
 
@@ -125,7 +126,10 @@ export interface IntegrationsConfig {
     provider: SmsProvider;
     /** Twilio: the purchased number. MSG91/Fast2SMS: the approved sender id. */
     from: string;
-    /** DLT template id (MSG91 `template_id`, Fast2SMS `template_id`). */
+    /**
+     * Template id. MSG91 `template_id`, Fast2SMS `template_id`, HanuOTP
+     * `templatesid` (defaults to "default" when blank).
+     */
     templateId: string;
     /** MSG91 flow variable name that carries the code. */
     otpVariable: string;
@@ -190,7 +194,7 @@ function mergeConfig(raw: any): IntegrationsConfig {
   const payments = raw?.payments ?? {};
   const video = raw?.video ?? {};
   const push = raw?.push ?? {};
-  const smsProvider = ["twilio", "msg91", "fast2sms", "custom", "none"].includes(sms.provider)
+  const smsProvider = ["twilio", "msg91", "fast2sms", "hanuotp", "custom", "none"].includes(sms.provider)
     ? (sms.provider as SmsProvider)
     : DEFAULT_INTEGRATIONS.sms.provider;
   const emailProvider = ["resend", "brevo", "none"].includes(email.provider)
