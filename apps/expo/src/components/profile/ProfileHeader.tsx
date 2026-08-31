@@ -26,6 +26,7 @@ import { UserActionsSheet } from '@/src/components/profile/UserActionsSheet';
 import { useUnblockUser } from '@/src/hooks/useProfileData';
 import { emitToast } from '@/src/lib/toastBridge';
 import { reportError } from '@/src/lib/reportError';
+import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
 
 const { width } = Dimensions.get('window');
 
@@ -238,7 +239,12 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
     <View style={[styles.container, { backgroundColor }]}>
       <View style={styles.topBar}>
         <View style={styles.topBarLeft} />
-        <Text style={[styles.usernameText, { color: textColor }]}>@{user.username || 'username'}</Text>
+        <View style={styles.titleRow}>
+          <Text style={[styles.usernameText, { color: textColor }]} numberOfLines={1}>
+            @{user.username || 'username'}
+          </Text>
+          <VerifiedBadge verified={user.verified} size={16} />
+        </View>
         <View style={styles.topBarRight}>
            {isOwnProfile ? (
              <TouchableOpacity onPress={() => router.push('/setting')}><Settings_Icon width={24} height={24} color={textColor} /></TouchableOpacity>
@@ -285,7 +291,12 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
       </View>
 
       <View style={styles.infoSection}>
-        <Text style={[styles.fullNameText, { color: textColor }]}>{user.fullName || user.username}</Text>
+        <View style={styles.nameRow}>
+          <Text style={[styles.fullNameText, { color: textColor }]} numberOfLines={1}>
+            {user.fullName || user.username}
+          </Text>
+          <VerifiedBadge verified={user.verified} size={20} />
+        </View>
         {user.bio ? <Text style={[styles.bioText, { color: isDark ? '#E0E0E0' : '#666' }]}>{user.bio}</Text> : null}
       </View>
       
@@ -390,7 +401,9 @@ const styles = StyleSheet.create({
   topBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, height: 56 },
   topBarLeft: { width: 40 },
   topBarRight: { width: 40, alignItems: 'flex-end' },
-  usernameText: { fontSize: 18, fontFamily: 'Urbanist-Bold' },
+  usernameText: { fontSize: 18, fontFamily: 'Urbanist-Bold', flexShrink: 1 },
+  titleRow: { flexDirection: 'row', alignItems: 'center', flex: 1, justifyContent: 'center' },
+  nameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', maxWidth: '100%' },
   avatarWrapper: { alignSelf: 'center', marginTop: 10, position: 'relative' },
   avatarBorder: { width: 110, height: 110, borderRadius: 55, borderWidth: 1, padding: 3, justifyContent: 'center', alignItems: 'center' },
   avatarImage: { width: 100, height: 100, borderRadius: 50 },

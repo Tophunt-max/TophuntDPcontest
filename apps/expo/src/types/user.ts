@@ -36,6 +36,13 @@ export interface UserProfile {
   /** Alias for the spendable coin balance used by some screens. */
   coins?: number;
   isAdmin: boolean;
+  /**
+   * Admin-granted blue check (`users.verified`), set from the admin panel.
+   *
+   * Distinct from `emailVerified`/`phoneVerified`, which record that a contact
+   * detail was proven. This one is editorial and only an admin can set it.
+   */
+  verified?: boolean;
   xp?: number;
   level?: number;
   badges?: Badge[];

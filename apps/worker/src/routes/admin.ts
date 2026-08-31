@@ -10,6 +10,7 @@
 import { Hono } from "hono";
 import { and, eq, desc, sql, count, ne, like, gte, lt, lte, inArray, or, isNull, isNotNull } from "drizzle-orm";
 import { DELETED_STATUS, PENDING_DELETION_STATUS } from "../lib/accountStatus";
+import { invalidateUserCaches } from "../lib/accountDeletion";
 import { alias } from "drizzle-orm/sqlite-core";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
@@ -3186,6 +3187,13 @@ adminRoute.patch("/users/:id/profile", async (c) => {
   if (b.verified !== undefined) set.verified = !!b.verified;
   if (b.featured !== undefined) set.featured = !!b.featured;
   await db.update(schema.users).set(set).where(eq(schema.users.uid, id));
+  // The public profile is served from a shared KV entry, so writing the row is
+  // not enough: without this the app keeps serving the pre-edit copy until the
+  // TTL lapses. Granting a blue check and seeing nothing change in the app is
+  // exactly how that looks from the outside.
+  await invalidateUserCaches(c.env, id).catch((e) =>
+    console.error("[admin] profile cache invalidation failed", id, e),
+  );
   await logAudit(c, "user.profile-edit", "user", id, set);
   return c.json({ message: "Profile updated" });
 });

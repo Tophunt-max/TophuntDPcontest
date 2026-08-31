@@ -931,6 +931,7 @@ readRoute.get("/leaderboard", optionalAuth, async (c) => {
       level: schema.users.level,
       badges: schema.users.badges,
       equippedBadge: schema.users.equippedBadge,
+      verified: schema.users.verified,
     })
     .from(schema.users)
     .where(publiclyVisibleUser)
@@ -1292,6 +1293,7 @@ readRoute.get("/users/suggested", optionalAuth, async (c) => {
       fullName: schema.users.fullName,
       username: schema.users.username,
       profileImageUrl: schema.users.profileImageUrl,
+      verified: schema.users.verified,
       coordinates: schema.users.coordinates,
     })
     .from(schema.users)
@@ -1318,7 +1320,12 @@ readRoute.get("/users/search", optionalAuth, async (c) => {
   const blocked = await blockedUidsFor(c.env, uid);
   const excluded = sqlExclusionList(blocked);
   const rows = await db
-    .select({ id: schema.users.uid, username: schema.users.username, avatarUrl: schema.users.profileImageUrl })
+    .select({
+      id: schema.users.uid,
+      username: schema.users.username,
+      avatarUrl: schema.users.profileImageUrl,
+      verified: schema.users.verified,
+    })
     .from(schema.users)
     .where(
       excluded.length
@@ -1660,6 +1667,7 @@ async function listConnections(
       username: schema.users.username,
       fullName: schema.users.fullName,
       profileImageUrl: schema.users.profileImageUrl,
+      verified: schema.users.verified,
       status: schema.users.status,
       since: schema.follows.createdAt,
     })
@@ -1691,6 +1699,7 @@ async function listConnections(
       fullName: r.fullName,
       profileImageUrl: r.profileImageUrl,
       profileImageUrlThumb: avatarUrl(c.env, r.profileImageUrl),
+      verified: !!r.verified,
     }));
   const nextCursor = hasMore ? rows[limit - 1]?.since ?? null : null;
   return { items: page, nextCursor };

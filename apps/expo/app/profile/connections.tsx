@@ -24,6 +24,7 @@ import { useToast } from '@/src/components/toast/ToastProvider';
 import { Colors } from '@/constants/theme';
 import { ThemedView } from '@/components/themed-view';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
+import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
 
 const { width } = Dimensions.get('window');
 const CARD_MARGIN = 16;
@@ -33,6 +34,8 @@ type User = {
     username: string;
     fullName?: string;
     profileImageUrl?: string;
+    /** Admin-granted blue check, from users.verified. */
+    verified?: boolean;
     profileImageUrlThumb?: string | null;
   };
 
@@ -183,7 +186,10 @@ export default function ConnectionsScreen() {
             style={styles.userAvatar}
           />
           <View style={styles.userDetails}>
-              <Text style={[styles.userName, { color: textColor }]} numberOfLines={1}>{item.fullName}</Text>
+              <View style={styles.nameRow}>
+                <Text style={[styles.userName, { color: textColor }]} numberOfLines={1}>{item.fullName}</Text>
+                <VerifiedBadge verified={(item as any).verified} size={14} />
+              </View>
               <Text style={[styles.userHandle, { color: subTextColor }]} numberOfLines={1}>@{item.username}</Text>
           </View>
           {!isCurrentUser && (
@@ -284,7 +290,8 @@ const styles = StyleSheet.create({
       marginRight: 12,
   },
   userDetails: { flex: 1 },
-  userName: { fontSize: 16, fontFamily: 'Urbanist-Bold' },
+  userName: { fontSize: 16, fontFamily: 'Urbanist-Bold', flexShrink: 1 },
+  nameRow: { flexDirection: 'row', alignItems: 'center' },
   userHandle: { fontSize: 14, fontFamily: 'Urbanist-Medium' },
   followBtn: {
       paddingVertical: 8,
