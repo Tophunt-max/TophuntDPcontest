@@ -82,6 +82,12 @@ export const CONTENT_SECURITY_POLICY =
   "media-src 'self' blob: https:; " +
   "font-src 'self' data:; " +
   "connect-src 'self' blob: https://api.tophunt.in wss://api.tophunt.in https://media.tophunt.in " +
+  // Bunny Stream. The client uploads video via TUS straight to
+  // video.bunnycdn.com, and web HLS playback (hls.js) fetches the playlist +
+  // segments from the pull zone (*.b-cdn.net) over XHR — both are governed by
+  // connect-src, NOT media-src, so without these the upload is blocked before it
+  // leaves the page and web playback silently fails.
+  'https://video.bunnycdn.com https://*.b-cdn.net ' +
   'https://tophunt-api.weadown-in.workers.dev wss://tophunt-api.weadown-in.workers.dev ' +
   'https://tophunt-api-staging.weadown-in.workers.dev wss://tophunt-api-staging.weadown-in.workers.dev ' +
   'https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com ' +
