@@ -27,6 +27,7 @@ import * as Haptics from 'expo-haptics';
 import { contestService } from '@/src/services/contests/contestService';
 import { fetchSuggestedUsers, toggleFollowService, searchUsers } from '@/src/services/users';
 import { Avatar } from '@/src/components/ui/Avatar';
+import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
 import { useAuth } from '@/src/hooks/useAuth';
 import { useProfile } from '@/src/hooks/useProfileData';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -442,6 +443,7 @@ export default function DiscoverScreen() {
                 style={styles.arenaNameAvatar}
               />
               <Text style={[styles.arenaName, { color: textColor }]} numberOfLines={1}>@{item.userA?.username || 'user'}</Text>
+              <VerifiedBadge verified={item.userA?.verified} size={12} />
             </View>
           </View>
 
@@ -501,7 +503,10 @@ export default function DiscoverScreen() {
           <LinearGradient colors={['#22C55E', '#16A34A']} style={styles.personRing}>
             <Image source={{ uri: item.avatar }} style={styles.personAvatar} />
           </LinearGradient>
-          <Text style={[styles.personName, { color: textColor }]} numberOfLines={1}>{item.name}</Text>
+          <View style={styles.personNameRow}>
+            <Text style={[styles.personName, { color: textColor }]} numberOfLines={1}>{item.name}</Text>
+            <VerifiedBadge verified={item.verified} size={14} />
+          </View>
           <Text style={[styles.personHandle, { color: subText }]} numberOfLines={1}>@{item.username}</Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -953,7 +958,8 @@ const styles = StyleSheet.create({
   },
   personRing: { width: 76, height: 76, borderRadius: 38, justifyContent: 'center', alignItems: 'center', padding: 3 },
   personAvatar: { width: '100%', height: '100%', borderRadius: 36, borderWidth: 2, borderColor: '#FFF' },
-  personName: { fontSize: 15, fontFamily: 'Urbanist-Bold', marginTop: 12 },
+  personName: { fontSize: 15, fontFamily: 'Urbanist-Bold', flexShrink: 1 },
+  personNameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 12, maxWidth: '100%' },
   personHandle: { fontSize: 13, fontFamily: 'Urbanist-Medium', marginTop: 1 },
   personFollow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 3, paddingVertical: 9, borderRadius: 100, marginTop: 14, width: '100%' },
   personFollowText: { fontSize: 13, fontFamily: 'Urbanist-Bold' },

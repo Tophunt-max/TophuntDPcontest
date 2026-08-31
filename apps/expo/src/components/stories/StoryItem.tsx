@@ -3,6 +3,7 @@ import { StyleSheet, Text, View, Pressable, TouchableOpacity } from 'react-nativ
 import { LinearGradient } from 'expo-linear-gradient';
 import { UserStories } from '@/src/types/stories';
 import { Avatar } from '../ui/Avatar';
+import { VerifiedBadge } from '../ui/VerifiedBadge';
 import AddIcon from '@/assets/svgs/add_Icon.svg';
 import { auth } from '@/src/services/firebase/initFirebase';
 import { useRouter } from 'expo-router';
@@ -80,9 +81,12 @@ export const StoryItem: React.FC<StoryItemProps> = memo(({ item, isCurrentUser, 
           </TouchableOpacity>
         )}
       </View>
-      <Text style={[styles.username, isDark && styles.usernameDark]} numberOfLines={1}>
-        {username}
-      </Text>
+      <View style={styles.usernameRow}>
+        <Text style={[styles.username, isDark && styles.usernameDark]} numberOfLines={1}>
+          {username}
+        </Text>
+        {!isCurrentUser && <VerifiedBadge verified={(item as any)?.verified} size={12} />}
+      </View>
     </Pressable>
   );
 });
@@ -134,11 +138,18 @@ const styles = StyleSheet.create({
     borderRadius: 32,
     backgroundColor: '#EEE',
   },
+  usernameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    maxWidth: 72,
+  },
   username: {
     fontSize: 12,
     fontFamily: 'Urbanist-Regular',
     color: '#262626',
     textAlign: 'center',
+    flexShrink: 1,
   },
   usernameDark: {
       color: '#FFF',

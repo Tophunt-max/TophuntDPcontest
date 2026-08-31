@@ -26,6 +26,7 @@ import { MessageSkeleton } from '@/src/components/messages/MessageSkeleton';
 import { Swipeable } from 'react-native-gesture-handler';
 import { Colors } from '@/constants/theme';
 import { Avatar } from '@/src/components/ui/Avatar';
+import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
 
 // Import Icons from assets
 import { 
@@ -47,6 +48,8 @@ interface UserData {
   displayName: string;
   photoURL: string;
   isOnline?: boolean;
+  /** Live-stamped admin blue check (see worker /read/chats enrichment). */
+  verified?: boolean;
 }
 
 interface ChatItemType {
@@ -267,7 +270,10 @@ export default function MessagesScreen() {
           
           <View style={styles.chatInfo}>
             <View style={styles.chatHeaderRow}>
-              <Text style={[styles.userName, { color: textColor }]}>{otherUser?.displayName || 'User'}</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', flexShrink: 1 }}>
+                <Text style={[styles.userName, { color: textColor }]} numberOfLines={1}>{otherUser?.displayName || 'User'}</Text>
+                <VerifiedBadge verified={(otherUser as any)?.verified} size={14} />
+              </View>
               {unreadCount > 0 && (
                 <View style={styles.badge}>
                   <Text style={styles.badgeText}>{unreadCount}</Text>

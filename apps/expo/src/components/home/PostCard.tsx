@@ -16,6 +16,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useToast } from '../toast/ToastProvider';
 import { engagementService } from '@/src/services/contests/engagementService';
 import { Avatar } from '../ui/Avatar';
+import { VerifiedBadge } from '../ui/VerifiedBadge';
 import { useVideoStatus } from '@/src/hooks/useVideoStatus';
 import { useCountdown } from '@/src/hooks/useCountdown';
 import { videoSourceFor } from '@/src/lib/videoSource';
@@ -513,6 +514,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
                      accessibilityLabel={`Open ${nameA}'s profile`}
                    >
                      <Text style={[styles.nameText, { color: textColor }]} numberOfLines={1}>{nameA}</Text>
+                     <VerifiedBadge verified={item.userA?.verified} size={13} />
                    </TouchableOpacity>
                    <View style={styles.vsPill}><Text style={styles.vsPillText}>VS</Text></View>
                    <TouchableOpacity
@@ -523,6 +525,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
                      accessibilityLabel={`Open ${nameB}'s profile`}
                    >
                      <Text style={[styles.nameText, { color: textColor }]} numberOfLines={1}>{nameB}</Text>
+                     <VerifiedBadge verified={item.userB?.verified} size={13} />
                    </TouchableOpacity>
                </View>
                <Text style={[styles.timeText, { color: subTextColor }]} numberOfLines={1}>{item.title}</Text>
@@ -764,7 +767,7 @@ const styles = StyleSheet.create({
   leadingAvatar: { borderColor: '#FFD700', borderWidth: 2.5 },
   nameContainer: { marginLeft: 10, flex: 1 },
   nameRow: { flexDirection: 'row', alignItems: 'center' },
-  nameTouch: { flexShrink: 1, maxWidth: '42%' },
+  nameTouch: { flexShrink: 1, maxWidth: '42%', flexDirection: 'row', alignItems: 'center' },
   nameText: { fontFamily: 'Urbanist-Bold', fontSize: 16, fontWeight: '800' },
   vsPill: { backgroundColor: '#FF4D67', borderRadius: 6, paddingHorizontal: 5, paddingVertical: 1, marginHorizontal: 6 },
   vsPillText: { fontFamily: 'Urbanist-Bold', fontSize: 9, color: '#FFF', letterSpacing: 0.5 },

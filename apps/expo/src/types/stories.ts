@@ -111,6 +111,8 @@ export interface UserStories {
    * safe to prefer.
    */
   avatarUrlThumb?: string | null;
+  /** Admin-granted blue check on the story author, from users.verified. */
+  verified?: boolean;
   stories: Story[];
   hasUnseen?: boolean;
 }
@@ -120,6 +122,8 @@ export interface StoryViewer {
   uid: string;
   username: string;
   avatarUrl: string;
+  /** Admin-granted blue check on the viewer, from users.verified. */
+  verified?: boolean;
   /** Epoch milliseconds. */
   viewedAt: number;
   reaction: string | null;

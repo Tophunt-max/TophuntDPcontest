@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { Ionicons } from '@/src/lib/icons';
+import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { CoinIcon } from '@/src/components/ui/CoinIcon';
 import { contestService } from '@/src/services/contests/contestService';
@@ -54,9 +55,10 @@ const VsSide: React.FC<{
   uri?: string | null;
   isVideo: boolean;
   label: string;
+  verified?: boolean;
   /** Called when this side's photo has decoded — success only, never on error. */
   onPhotoLoad?: () => void;
-}> = ({ uri, isVideo, label, onPhotoLoad }) => {
+}> = ({ uri, isVideo, label, verified, onPhotoLoad }) => {
   // A story is a glance, not a watch — a paused first frame reads better than two
   // videos competing for attention, and avoids two decoders for one frame.
   const player = useVideoPlayer(isVideo && uri ? uri : null, (p) => {
@@ -84,7 +86,10 @@ const VsSide: React.FC<{
           </View>
         )}
       </View>
-      <Text style={styles.sideLabel} numberOfLines={1}>@{label}</Text>
+      <View style={styles.sideLabelRow}>
+        <Text style={styles.sideLabel} numberOfLines={1}>@{label}</Text>
+        <VerifiedBadge verified={verified} size={13} />
+      </View>
     </View>
   );
 };
@@ -208,12 +213,14 @@ export const StoryVsFrame: React.FC<Props> = ({ matchId, fallbackMediaUrl, conte
             uri={frame.left.uri}
             isVideo={frame.isVideo}
             label={frame.left.username}
+            verified={frame.left.verified}
             onPhotoLoad={frame.isVideo ? undefined : onLeftLoad}
           />
           <VsSide
             uri={frame.right.uri}
             isVideo={frame.isVideo}
             label={frame.right.username}
+            verified={frame.right.verified}
             onPhotoLoad={frame.isVideo ? undefined : onRightLoad}
           />
 
@@ -285,9 +292,10 @@ const styles = StyleSheet.create({
     position: 'absolute', top: 8, right: 8,
     backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 100, padding: 5,
   },
+  sideLabelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 8, maxWidth: '100%' },
   sideLabel: {
     color: '#FFF', fontSize: 13, fontFamily: 'Urbanist-Bold',
-    textAlign: 'center', marginTop: 8, opacity: 0.95,
+    textAlign: 'center', opacity: 0.95, flexShrink: 1,
   },
 
   vsBadge: { position: 'absolute', top: '50%', left: 0, right: 0, alignItems: 'center', marginTop: -22, zIndex: 15 },

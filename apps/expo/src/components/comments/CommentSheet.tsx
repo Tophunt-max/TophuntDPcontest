@@ -37,6 +37,7 @@ import { useAuth } from '@/src/hooks/useAuth';
 import { useRouter } from 'expo-router';
 import { Colors } from '@/constants/theme';
 import { Avatar } from '@/src/components/ui/Avatar';
+import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SHEET_HEIGHT = SCREEN_HEIGHT * 0.75;
@@ -328,12 +329,16 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
           />
         </TouchableOpacity>
         <View style={styles.commentContent}>
-          <View style={styles.commentHeader}>
-            <Text style={[styles.commentUser, { color: textColor }]}>
-              <Text onPress={() => openProfile(item.userId)}>{item.username}</Text>
-              {'  '}
-              <Text style={[styles.commentTime, { color: subTextColor }]}>{formatTime(item.createdAt)}</Text>
+          <View style={[styles.commentHeader, { flexDirection: 'row', alignItems: 'center' }]}>
+            <Text
+              style={[styles.commentUser, { color: textColor, flexShrink: 1 }]}
+              numberOfLines={1}
+              onPress={() => openProfile(item.userId)}
+            >
+              {item.username}
             </Text>
+            <VerifiedBadge verified={(item as any).verified} size={13} />
+            <Text style={[styles.commentTime, { color: subTextColor, marginLeft: 6 }]}>{formatTime(item.createdAt)}</Text>
           </View>
           <Text style={[styles.commentText, { color: textColor }]}>{item.text}</Text>
           <View style={styles.commentFooter}>

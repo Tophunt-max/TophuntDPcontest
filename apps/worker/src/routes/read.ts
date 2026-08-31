@@ -72,6 +72,58 @@ const publiclyVisibleUser = sql`(${schema.users.status} IS NULL OR ${schema.user
 const isHiddenAccountStatus = (status: string | null | undefined): boolean =>
   !!status && (PUBLICLY_HIDDEN_STATUSES as readonly string[]).includes(status);
 
+/**
+ * Which of these uids carry the admin verified badge.
+ *
+ * The blue check lives on the live `users` row, but most surfaces render a name
+ * from a SNAPSHOT captured at write time — a battle's userA/userB blob, a comment
+ * row, a chat member list, a story, a notification actor. Embedding `verified`
+ * into each snapshot would make it go stale the moment an admin verifies or
+ * un-verifies someone (the same trap denormalised usernames have). So instead
+ * every read that shows a name looks the flag up live, in ONE batched query, and
+ * injects it — the badge is therefore always current no matter how old the
+ * snapshot is.
+ */
+async function verifiedUidSet(
+  env: Env,
+  uids: (string | null | undefined)[],
+): Promise<Set<string>> {
+  const unique = [...new Set(uids.filter((u): u is string => !!u))];
+  if (!unique.length) return new Set();
+  try {
+    const rows = await getDb(env)
+      .select({ uid: schema.users.uid })
+      .from(schema.users)
+      .where(and(inArray(schema.users.uid, unique), eq(schema.users.verified, true)))
+      .all();
+    return new Set(rows.map((r) => r.uid));
+  } catch (e) {
+    // The badge is cosmetic; a lookup failure must degrade to "no badge", never
+    // break the read it decorates.
+    console.error("[read] verified lookup failed", e);
+    return new Set();
+  }
+}
+
+/**
+ * Stamp `verified` onto both participants of each battle, from a single lookup.
+ *
+ * Mutates the mapped match objects in place (their userA/userB are fresh copies
+ * from mapMatch, not the cached row), so it is safe to run before the page is
+ * cached — the flag then travels with the cached copy.
+ */
+async function enrichParticipantsVerified(env: Env, matches: any[]): Promise<void> {
+  const verified = await verifiedUidSet(
+    env,
+    matches.flatMap((m) => [m?.userA?.uid, m?.userB?.uid]),
+  );
+  if (!verified.size) return;
+  for (const m of matches) {
+    if (m?.userA?.uid) m.userA = { ...m.userA, verified: verified.has(m.userA.uid) };
+    if (m?.userB?.uid) m.userB = { ...m.userB, verified: verified.has(m.userB.uid) };
+  }
+}
+
 // --- short-lived KV cache for hot read endpoints (fail-open) ---------------
 async function cacheGet(env: Env, key: string): Promise<any | null> {
   try {
@@ -388,6 +440,7 @@ async function servePersonalizedFeed(
     candidates = rows
       .map((r) => ({ ...enrichMatchMedia(c.env, mapMatch(r)), _base: rankBaseScore(r, now, w) }))
       .sort((a, b) => b._base - a._base);
+    await enrichParticipantsVerified(c.env, candidates);
     await cachePut(c.env, candKey, candidates, 45);
   }
 
@@ -790,6 +843,7 @@ readRoute.get("/matches", optionalAuth, async (c) => {
       .offset(offset)
       .all();
     matches = rows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m));
+    await enrichParticipantsVerified(c.env, matches);
     nextCursor = rows.length === limit ? offset + limit : null;
   } else {
     // Keyset pagination by createdAt — stable and index-friendly.
@@ -802,6 +856,7 @@ readRoute.get("/matches", optionalAuth, async (c) => {
       .limit(limit)
       .all();
     matches = rows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m));
+    await enrichParticipantsVerified(c.env, matches);
     nextCursor = rows.length === limit ? rows[rows.length - 1].createdAt : null;
   }
 
@@ -835,6 +890,7 @@ readRoute.get("/matches/:id", optionalAuth, async (c) => {
     if ((pa && blocked.has(pa)) || (pb && blocked.has(pb))) return c.json(null);
   }
   const out: any = mapMatch(row);
+  await enrichParticipantsVerified(c.env, [out]);
   // For LIVE battles, surface the authoritative vote tally straight from the
   // per-match VoteCounter DO — D1 only holds the last (up to 5s) flushed
   // snapshot. Read-only (no flush, no D1 write); fail-open to the D1 snapshot.
@@ -1561,6 +1617,7 @@ readRoute.get("/users/:id/matches", optionalAuth, async (c) => {
     .limit(limit)
     .all();
   let base = (rows as any[]).map((r) => enrichMatchMedia(c.env, mapMatch(r)));
+  await enrichParticipantsVerified(c.env, base);
 
   if (viewer) {
     c.header("Cache-Control", "private, no-store");
@@ -1805,6 +1862,22 @@ readRoute.get("/chats", requireAuth, async (c) => {
     blocked.size === 0
       ? chats
       : chats.filter((chat: any) => !(chat.users as string[]).some((u) => u !== uid && blocked.has(u)));
+
+  // `users_data` is a snapshot captured when the chat was created, so it carries
+  // no verified flag. Stamp it live off the members' current rows, so a blue
+  // check in the conversation list stays correct even for a chat opened months
+  // ago (and disappears if the user is un-verified).
+  const memberUids = visible.flatMap((chat: any) => (chat.users as string[]) || []);
+  const verifiedMembers = await verifiedUidSet(c.env, memberUids);
+  if (verifiedMembers.size) {
+    for (const chat of visible) {
+      if (Array.isArray(chat.usersData)) {
+        chat.usersData = chat.usersData.map((m: any) =>
+          m?.uid ? { ...m, verified: verifiedMembers.has(m.uid) } : m,
+        );
+      }
+    }
+  }
   return c.json(visible);
 });
 
@@ -1947,7 +2020,7 @@ readRoute.get("/comments", optionalAuth, async (c) => {
           .select({
             id: schema.matchComments.id, userId: schema.matchComments.userId, text: schema.matchComments.text,
             likes: schema.matchComments.likeCount, createdAt: schema.matchComments.createdAt,
-            username: schema.users.username, userAvatar: schema.users.profileImageUrl,
+            username: schema.users.username, userAvatar: schema.users.profileImageUrl, verified: schema.users.verified,
           })
           .from(schema.matchComments)
           .leftJoin(schema.users, eq(schema.matchComments.userId, schema.users.uid))
@@ -1960,7 +2033,7 @@ readRoute.get("/comments", optionalAuth, async (c) => {
             .select({
               id: schema.blogComments.id, userId: schema.blogComments.userId, text: schema.blogComments.text,
               likes: schema.blogComments.likeCount, createdAt: schema.blogComments.createdAt,
-              username: schema.users.username, userAvatar: schema.users.profileImageUrl,
+              username: schema.users.username, userAvatar: schema.users.profileImageUrl, verified: schema.users.verified,
             })
             .from(schema.blogComments)
             .leftJoin(schema.users, eq(schema.blogComments.userId, schema.users.uid))
@@ -1972,7 +2045,7 @@ readRoute.get("/comments", optionalAuth, async (c) => {
             .select({
               id: schema.postComments.id, userId: schema.postComments.userId, text: schema.postComments.text,
               likes: schema.postComments.likeCount, createdAt: schema.postComments.createdAt,
-              username: schema.users.username, userAvatar: schema.users.profileImageUrl,
+              username: schema.users.username, userAvatar: schema.users.profileImageUrl, verified: schema.users.verified,
             })
             .from(schema.postComments)
             .leftJoin(schema.users, eq(schema.postComments.userId, schema.users.uid))
@@ -2031,13 +2104,13 @@ readRoute.get("/comments", optionalAuth, async (c) => {
 });
 
 // ================= STORIES =================
-type AttachedUser = { username: string; avatarUrl: string | null; avatarUrlThumb: string | null };
+type AttachedUser = { username: string; avatarUrl: string | null; avatarUrlThumb: string | null; verified: boolean };
 
 async function attachUsers(c: any, userIds: string[]) {
   const db = getDb(c.env);
   if (!userIds.length) return {} as Record<string, AttachedUser>;
   const rows = await db
-    .select({ uid: schema.users.uid, username: schema.users.username, fullName: schema.users.fullName, avatar: schema.users.profileImageUrl })
+    .select({ uid: schema.users.uid, username: schema.users.username, fullName: schema.users.fullName, avatar: schema.users.profileImageUrl, verified: schema.users.verified })
     .from(schema.users)
     .where(inArray(schema.users.uid, userIds))
     .all();
@@ -2056,6 +2129,7 @@ async function attachUsers(c: any, userIds: string[]) {
       // Small variant for avatar rows. Identical to avatarUrl until
       // Transformations is enabled — see lib/media.ts transformationsAvailable().
       avatarUrlThumb: avatarUrl(c.env, u.avatar) || null,
+      verified: !!u.verified,
     };
   }
   return map;
@@ -2109,6 +2183,7 @@ readRoute.get("/stories/feed", requireAuth, async (c) => {
     username: userMap[userId]?.username || "User",
     avatarUrl: userMap[userId]?.avatarUrl ?? null,
     avatarUrlThumb: userMap[userId]?.avatarUrlThumb ?? null,
+    verified: userMap[userId]?.verified ?? false,
     stories: grouped[userId].sort((a, b) => a.createdAt - b.createdAt),
     hasUnseen: true,
   }));
@@ -2137,6 +2212,7 @@ readRoute.get("/users/:id/stories", optionalAuth, async (c) => {
     username: userMap[userId]?.username || "User",
     avatarUrl: userMap[userId]?.avatarUrl ?? null,
     avatarUrlThumb: userMap[userId]?.avatarUrlThumb ?? null,
+    verified: userMap[userId]?.verified ?? false,
     stories: rows.map((s) => ({ ...s, seen: false })),
     hasUnseen: true,
   });
@@ -2157,7 +2233,7 @@ readRoute.get("/stories/:id/viewers", requireAuth, async (c) => {
   const rows = await db
     .select({
       uid: schema.storyViews.viewerId, viewedAt: schema.storyViews.createdAt, reaction: schema.storyViews.reaction,
-      username: schema.users.username, avatarUrl: schema.users.profileImageUrl,
+      username: schema.users.username, avatarUrl: schema.users.profileImageUrl, verified: schema.users.verified,
     })
     .from(schema.storyViews)
     .leftJoin(schema.users, eq(schema.storyViews.viewerId, schema.users.uid))
@@ -2171,6 +2247,7 @@ readRoute.get("/stories/:id/viewers", requireAuth, async (c) => {
     uid: r.uid,
     username: r.username || "Unknown",
     avatarUrl: r.avatarUrl || null,
+    verified: !!r.verified,
     viewedAt: r.viewedAt,
     reaction: r.reaction || null,
   })));

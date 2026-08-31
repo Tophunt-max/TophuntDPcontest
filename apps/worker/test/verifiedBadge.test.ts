@@ -173,6 +173,85 @@ describe('the flag is present wherever a name is rendered', () => {
   });
 
   /**
+   * Battle cards render the participant name from the contest_matches userA/userB
+   * SNAPSHOT, which carries no verified flag. The read enriches it live off the
+   * users row, so the badge stays correct however old the snapshot is.
+   */
+  it('is injected into battle participants (snapshot enriched live)', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', { verified: true });
+    await seedUser(env, 'bob');
+    const ts = Date.now();
+    await drizzleOf(env)
+      .insert(schema.contestMatches)
+      .values({
+        id: 'm1',
+        status: 'active',
+        userA: { uid: 'alice', username: 'alice' },
+        userB: { uid: 'bob', username: 'bob' },
+        totalVotes: 0,
+        createdAt: ts,
+      } as any);
+
+    const res = await read(env, 'bob', '/matches/m1');
+    expect(res.body.userA.verified).toBe(true);
+    expect(res.body.userB.verified).toBe(false);
+  });
+
+  it('is injected into comment authors', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', { verified: true });
+    await seedUser(env, 'bob');
+    const ts = Date.now();
+    await drizzleOf(env)
+      .insert(schema.postComments)
+      .values({ id: 'c1', postId: 'p1', userId: 'alice', text: 'hi', likeCount: 0, createdAt: ts } as any);
+
+    const res = await read(env, 'bob', '/comments?targetType=post&targetId=p1');
+    const mine = res.body.items.find((c: any) => c.userId === 'alice');
+    expect(mine?.verified).toBe(true);
+  });
+
+  it('is injected into chat members from the users_data snapshot', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', { verified: true });
+    await seedUser(env, 'bob');
+    const ts = Date.now();
+    await drizzleOf(env)
+      .insert(schema.chats)
+      .values({
+        id: 'chat1',
+        users: ['alice', 'bob'],
+        usersData: [
+          { uid: 'alice', displayName: 'Alice', photoURL: null },
+          { uid: 'bob', displayName: 'Bob', photoURL: null },
+        ],
+        createdAt: ts,
+        updatedAt: ts,
+      } as any);
+
+    const res = await read(env, 'bob', '/chats');
+    const chat = res.body.find((c: any) => c.id === 'chat1');
+    const alice = chat.usersData.find((m: any) => m.uid === 'alice');
+    const bob = chat.usersData.find((m: any) => m.uid === 'bob');
+    expect(alice.verified).toBe(true);
+    expect(bob.verified).toBe(false);
+  });
+
+  it('is injected into the stories rail', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', { verified: true });
+    const ts = Date.now();
+    await drizzleOf(env)
+      .insert(schema.stories)
+      .values({ id: 's1', userId: 'alice', mediaUrl: 'https://cdn/s.jpg', createdAt: ts, expiresAt: ts + 86400000 } as any);
+
+    const res = await read(env, 'alice', '/stories/feed');
+    const group = res.body.find((g: any) => g.userId === 'alice');
+    expect(group?.verified).toBe(true);
+  });
+
+  /**
    * The blue check is editorial and admin-only. It must never be confused with
    * `emailVerified` / `phoneVerified`, which record that a contact detail was
    * proven and are set by the user's own OTP flow.

@@ -12,6 +12,8 @@ export interface Comment {
   createdAt: any;
   likes: number;
   likedByMe?: boolean;
+  /** Admin-granted blue check on the commenter, from users.verified. */
+  verified?: boolean;
   /** Marks a locally-inserted comment that hasn't been confirmed by the server. */
   pending?: boolean;
 }

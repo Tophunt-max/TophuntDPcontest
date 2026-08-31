@@ -30,6 +30,7 @@ export async function fetchSuggestedUsers(currentUserCoords?: { lat: number; lng
       // Null when unset — the UI renders local initials via <Avatar>. Do not
       // substitute a third-party avatar URL here (it leaks the username).
       avatar: data.profileImageUrl || null,
+      verified: !!data.verified,
       coords: data.coordinates || null,
     }));
 
@@ -67,6 +68,7 @@ export async function searchUsers(q: string) {
       username: d.username || "user",
       // See note in fetchSuggestedUsers — null, not a remote placeholder.
       avatar: d.avatarUrl || d.profileImageUrl || null,
+      verified: !!d.verified,
     }));
   } catch (error) {
     console.error("Error searching users:", error);

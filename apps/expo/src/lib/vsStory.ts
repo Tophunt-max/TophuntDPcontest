@@ -11,6 +11,8 @@
 export interface VsSideData {
   uid?: string;
   username: string;
+  /** Admin-granted blue check on this participant, from the enriched match read. */
+  verified?: boolean;
   /** Best available image/video url for this side. */
   uri: string | null;
   avatarUri: string | null;
@@ -30,6 +32,7 @@ function side(participant: any): VsSideData {
   return {
     uid: participant?.uid,
     username: participant?.username || 'user',
+    verified: !!participant?.verified,
     // Prefer the resized variant; it falls back to the original url itself until
     // Cloudflare Transformations is enabled, so this is always safe.
     uri: participant?.mediaUrlOptimized || participant?.mediaUrl || null,

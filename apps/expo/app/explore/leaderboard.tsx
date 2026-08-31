@@ -6,6 +6,7 @@ import { BackButton } from '@/src/components/ui/BackButton';
 import { LeaderboardSkeleton } from '@/src/components/skeletons/LeaderboardSkeleton';
 import { leaderboardService } from '@/src/services/contests/leaderboardService';
 import { UserProfile } from '@/src/types/user';
+import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Avatar } from '@/src/components/ui/Avatar';
@@ -68,7 +69,10 @@ export default function LeaderboardScreen() {
                 style={styles.podiumAvatar}
             />
             <View style={styles.badgeContainer}><Text style={styles.badgeText}>2</Text></View>
-            <Text style={[styles.podiumName, { color: textColor }]} numberOfLines={1}>{second.fullName}</Text>
+            <View style={styles.podiumNameRow}>
+              <Text style={[styles.podiumName, { color: textColor }]} numberOfLines={1}>{second.fullName}</Text>
+              <VerifiedBadge verified={second.verified} size={13} />
+            </View>
             <Text style={styles.podiumScore}>{getScore(second)}</Text>
         </View>
 
@@ -84,7 +88,10 @@ export default function LeaderboardScreen() {
                 />
                 <View style={[styles.badgeContainer, { backgroundColor: '#FFD700' }]}><Text style={styles.badgeText}>1</Text></View>
             </View>
-            <Text style={[styles.podiumName, { color: textColor, fontWeight: 'bold', fontSize: 16 }]} numberOfLines={1}>{first.fullName}</Text>
+            <View style={styles.podiumNameRow}>
+              <Text style={[styles.podiumName, { color: textColor, fontWeight: 'bold', fontSize: 16 }]} numberOfLines={1}>{first.fullName}</Text>
+              <VerifiedBadge verified={first.verified} size={14} />
+            </View>
             <Text style={[styles.podiumScore, { color: '#FFD700', fontSize: 16 }]}>{getScore(first)}</Text>
         </View>
 
@@ -97,7 +104,10 @@ export default function LeaderboardScreen() {
                 style={styles.podiumAvatar}
             />
             <View style={[styles.badgeContainer, { backgroundColor: '#CD7F32' }]}><Text style={styles.badgeText}>3</Text></View>
-            <Text style={[styles.podiumName, { color: textColor }]} numberOfLines={1}>{third.fullName}</Text>
+            <View style={styles.podiumNameRow}>
+              <Text style={[styles.podiumName, { color: textColor }]} numberOfLines={1}>{third.fullName}</Text>
+              <VerifiedBadge verified={third.verified} size={13} />
+            </View>
             <Text style={styles.podiumScore}>{getScore(third)}</Text>
         </View>
       </View>
@@ -125,7 +135,10 @@ export default function LeaderboardScreen() {
         />
 
         <View style={styles.userInfo}>
-          <Text style={[styles.userName, { color: textColor }]}>{item.fullName}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <Text style={[styles.userName, { color: textColor }]} numberOfLines={1}>{item.fullName}</Text>
+            <VerifiedBadge verified={item.verified} size={14} />
+          </View>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
             {item.level && <View style={styles.levelTag}><Text style={styles.levelTagText}>Lv. {item.level}</Text></View>}
             <Text style={styles.userHandle}>@{item.username}</Text>
@@ -196,7 +209,8 @@ const styles = StyleSheet.create({
   badgeContainer: { position: 'absolute', bottom: 50, backgroundColor: '#C0C0C0', width: 20, height: 20, borderRadius: 10, justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: '#FFF' },
   badgeText: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
   crown: { position: 'absolute', top: -34, left: 29, transform: [{ rotate: '-10deg' }] },
-  podiumName: { fontSize: 13, fontFamily: 'Urbanist-Bold', marginBottom: 2, textAlign: 'center' },
+  podiumName: { fontSize: 13, fontFamily: 'Urbanist-Bold', marginBottom: 2, textAlign: 'center', flexShrink: 1 },
+  podiumNameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', maxWidth: 90 },
   podiumScore: { fontFamily: 'Urbanist-Bold', color: '#FF4D67', fontSize: 14 },
 
   // List Item
@@ -205,7 +219,7 @@ const styles = StyleSheet.create({
   rankText: { fontSize: 16, fontFamily: 'Urbanist-Bold', color: '#9E9E9E' },
   avatar: { width: 44, height: 44, borderRadius: 22, marginRight: 12 },
   userInfo: { flex: 1 },
-  userName: { fontSize: 15, fontFamily: 'Urbanist-Bold' },
+  userName: { fontSize: 15, fontFamily: 'Urbanist-Bold', flexShrink: 1 },
   userHandle: { fontSize: 12, color: '#9E9E9E' },
   levelTag: { backgroundColor: '#FFF8E1', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginRight: 6 },
   levelTagText: { fontSize: 10, color: '#FFD700', fontWeight: 'bold' },

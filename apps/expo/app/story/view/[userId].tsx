@@ -70,6 +70,7 @@ import { StoryVsFrame } from '@/src/components/stories/StoryVsFrame';
 import { VsCaptureBoundary } from '@/src/components/stories/VsCaptureBoundary';
 import { useVsStoryCard } from '@/src/hooks/useVsStoryCard';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
+import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 
@@ -884,7 +885,10 @@ export default function StoryView() {
                   style={styles.avatar}
                 />
                 <View style={styles.userTextContainer}>
-                    <Text style={styles.username}>{currentUserStories.username}</Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <Text style={styles.username} numberOfLines={1}>{currentUserStories.username}</Text>
+                        <VerifiedBadge verified={(currentUserStories as any)?.verified} size={15} />
+                    </View>
                     <Text style={styles.timeAgo}>{formatClockTime(currentStory.createdAt)}</Text>
                 </View>
                 <Pressable pointerEvents="auto" onPress={() => router.back()} style={styles.closeButton} accessibilityRole="button" accessibilityLabel="Close story"><CloseIcon size={28} color="white" /></Pressable>
@@ -1009,7 +1013,10 @@ export default function StoryView() {
                 <View style={[styles.viewerItem, { borderBottomColor: isDarkTheme ? '#35383F' : '#F0F0F0' }]}>
                     <Image source={{ uri: item.avatarUrl }} style={styles.viewerAvatar} />
                     <View style={{ flex: 1 }}>
-                        <Text style={[styles.viewerName, { color: textColorTheme }]}>{item.username}</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                            <Text style={[styles.viewerName, { color: textColorTheme }]} numberOfLines={1}>{item.username}</Text>
+                            <VerifiedBadge verified={(item as any)?.verified} size={13} />
+                        </View>
                         <Text style={[styles.viewTime, { color: isDarkTheme ? '#BDBDBD' : '#666' }]}>{formatClockTime(item.viewedAt)}</Text>
                     </View>
                     {item.reaction && <Text style={{ fontSize: 24 }}>{item.reaction}</Text>}
