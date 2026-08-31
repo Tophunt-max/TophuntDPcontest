@@ -119,6 +119,21 @@ export async function markSent(
   await env.OTP_KV.put(cdKey(scope, id), "1", { expirationTtl: cooldownSec });
 }
 
+/**
+ * Cancel a cooldown, for a send that turned out not to have happened.
+ *
+ * The cooldown has to be recorded BEFORE the provider call — otherwise two
+ * concurrent requests both pass the check and both pay for an SMS. But that means
+ * a failed delivery leaves a cooldown protecting nothing, and the user is told to
+ * wait 60 seconds for a code that was never sent. Callers that report the failure
+ * honestly should clear it so the retry is immediate.
+ */
+export async function clearSendCooldown(env: Env, scope: string, id: string): Promise<void> {
+  await env.OTP_KV.delete(cdKey(scope, id)).catch((e) =>
+    console.error("[rateLimit] cooldown clear failed", scope, id, e),
+  );
+}
+
 /** Best-effort client IP for keying anonymous (pre-login) rate limits. */
 export function clientIp(headers: Headers): string {
   return (

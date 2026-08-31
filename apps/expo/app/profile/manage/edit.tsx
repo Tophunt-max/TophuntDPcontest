@@ -48,9 +48,15 @@ const editProfileSchema = z.object({
         const domain = email.split('@')[1];
         return !DISPOSABLE_DOMAINS.includes(domain);
     }, { message: "Temporary/Fake emails are not allowed" }),
+  // Digits only, but NOT exactly 10. This used to be `.length(10)`, which is an
+  // Indian mobile number — while the screen has a country picker offering every
+  // dial code. Anyone whose national number is not 10 digits could not save their
+  // number at all, and never saw the Verify button. The server validates the full
+  // number (dial code included) against 7-15 digits, so the real bound lives
+  // there; this only has to catch obvious typos.
   phone: z.string()
-    .min(1, "Please fill in your phone number")
-    .length(10, "Phone number must be exactly 10 digits")
+    .min(6, "Please enter a valid phone number")
+    .max(14, "Please enter a valid phone number")
     .regex(/^[0-9]+$/, "Phone number must contain only digits"),
   occupation: z.string().min(1, "Please select your occupation"),
   bio: z.string().max(150, "Bio must be less than 150 characters").optional(),
@@ -88,6 +94,26 @@ export default function EditProfileScreen() {
   const [phoneOtp, setPhoneOtp] = useState("");
   const [isSendingPhoneOtp, setIsSendingPhoneOtp] = useState(false);
   const [isVerifyingPhoneOtp, setIsVerifyingPhoneOtp] = useState(false);
+
+  /**
+   * Seconds left before another code may be requested.
+   *
+   * The server enforces a 60s per-destination cooldown and returns it. Without
+   * mirroring it there was no Resend at all, so a code that never arrived (or was
+   * deleted) left the user with nothing to do but back out and start again — and
+   * every blind retry silently consumed one of their ten hourly sends.
+   */
+  const [emailCooldown, setEmailCooldown] = useState(0);
+  const [phoneCooldown, setPhoneCooldown] = useState(0);
+
+  useEffect(() => {
+    if (emailCooldown <= 0 && phoneCooldown <= 0) return;
+    const timer = setInterval(() => {
+      setEmailCooldown((s) => (s > 0 ? s - 1 : 0));
+      setPhoneCooldown((s) => (s > 0 ? s - 1 : 0));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [emailCooldown, phoneCooldown]);
 
   const {
     control,
@@ -171,20 +197,33 @@ export default function EditProfileScreen() {
     if (next) setLocalAvatarUri(next);
   };
 
-  const handleSendEmailOtp = async () => {
+  /**
+   * Send a code to the new email address.
+   *
+   * Returns whether it actually went out, because `onSubmit` used to call this
+   * WITHOUT awaiting it and then announce "please verify your new email"
+   * regardless — so a rate limit, an invalid address or a dead mail provider
+   * became an unhandled rejection while the user was told to check an inbox
+   * nothing had been sent to.
+   */
+  const handleSendEmailOtp = async (): Promise<boolean> => {
     const isValid = await trigger("email");
-    if (!isValid) return;
+    if (!isValid) return false;
 
-    if (!watchedEmail || watchedEmail === currentEmail) return;
-    
+    if (!watchedEmail || watchedEmail === currentEmail) return false;
+
     setIsSendingEmailOtp(true);
     try {
-        // Using callApi with 'sendEmailOtp' action
-        await callApi('sendEmailOtp', { newEmail: watchedEmail });
+        const res: any = await callApi('sendEmailOtp', { newEmail: watchedEmail });
         setNewEmailToVerify(watchedEmail);
         setShowEmailOtpModal(true);
+        // The server owns the cooldown; mirroring it here is what makes "Resend"
+        // honest instead of a button that fails every time it is pressed.
+        setEmailCooldown(Number(res?.cooldownSeconds) || 60);
+        return true;
     } catch (error: any) {
-        Alert.alert("Error", error.message || "Failed to send OTP.");
+        Alert.alert("Couldn't send the code", error?.message || "Please try again in a moment.");
+        return false;
     } finally {
         setIsSendingEmailOtp(false);
     }
@@ -212,21 +251,23 @@ export default function EditProfileScreen() {
       }
   };
 
-  const handleSendPhoneOtp = async () => {
+  const handleSendPhoneOtp = async (): Promise<boolean> => {
     const isValid = await trigger("phone");
-    if (!isValid) return;
+    if (!isValid) return false;
 
     const fullPhone = countryCode + watchedPhone;
-    if (!watchedPhone || fullPhone === currentPhone) return;
-    
+    if (!watchedPhone || fullPhone === currentPhone) return false;
+
     setIsSendingPhoneOtp(true);
     try {
-        // Using callApi with 'sendPhoneOtp' action
-        await callApi('sendPhoneOtp', { newPhone: fullPhone });
+        const res: any = await callApi('sendPhoneOtp', { newPhone: fullPhone });
         setNewPhoneToVerify(fullPhone);
         setShowPhoneOtpModal(true);
+        setPhoneCooldown(Number(res?.cooldownSeconds) || 60);
+        return true;
     } catch (error: any) {
-        Alert.alert("Error", error.message || "Failed to send SMS.");
+        Alert.alert("Couldn't send the code", error?.message || "Please try again in a moment.");
+        return false;
     } finally {
         setIsSendingPhoneOtp(false);
     }
@@ -275,30 +316,55 @@ export default function EditProfileScreen() {
         profileImageUrl: finalAvatarUrl,
       });
 
-      let alertMsg = "Profile updated successfully!";
-      let needsVerification = false;
+      /**
+       * Identifiers are NOT saved by the call above — they move only after a code
+       * sent to the new address or number is confirmed. So all this does is start
+       * that verification.
+       *
+       * This used to be `if (email changed) … else if (phone changed) …`, which
+       * meant editing BOTH in one go silently dropped the phone change while the
+       * alert said "Profile details updated". Only one code can be collected at a
+       * time, so the honest version starts with the email and says plainly that
+       * the number is still waiting — the Verify button next to it stays live, so
+       * there is somewhere to continue.
+       */
+      const emailChanged = data.email !== currentEmail;
+      const phoneChanged = (countryCode + data.phone) !== currentPhone;
 
-      if (data.email !== currentEmail) {
-          handleSendEmailOtp();
-          alertMsg = "Profile details updated. Please verify your new email to complete the change.";
-          needsVerification = true;
-      } else if ((countryCode + data.phone) !== currentPhone) {
-          handleSendPhoneOtp();
-          alertMsg = "Profile details updated. Please verify your new phone number to complete the change.";
-          needsVerification = true;
+      refetch();
+
+      if (emailChanged) {
+        const sent = await handleSendEmailOtp();
+        if (sent) {
+          Alert.alert(
+            "Confirm your email",
+            phoneChanged
+              ? "Your other details are saved. Enter the code we sent to your new email — then tap Verify next to your phone number to change that too."
+              : "Your other details are saved. Enter the code we sent to your new email address to finish the change.",
+          );
+        }
+        return;
       }
 
-      if (!needsVerification) {
-          Alert.alert("Success", alertMsg);
-          refetch();
-          router.back();
-      } else {
-          Alert.alert("Action Required", alertMsg);
-          refetch();
+      if (phoneChanged) {
+        const sent = await handleSendPhoneOtp();
+        if (sent) {
+          Alert.alert(
+            "Confirm your number",
+            "Your other details are saved. Enter the code we sent by SMS to finish the change.",
+          );
+        }
+        return;
       }
-    } catch (error) {
+
+      Alert.alert("Success", "Profile updated successfully!");
+      router.back();
+    } catch (error: any) {
       console.error("Update error", error);
-      Alert.alert("Error", "Something went wrong. Please try again.");
+      // The server explains itself (a taken username, a banned word, a rate
+      // limit). Replacing that with "Something went wrong" threw away the only
+      // information the user could have acted on.
+      Alert.alert("Couldn't save your profile", error?.message || "Please try again.");
     } finally {
       setIsLoading(false);
     }
@@ -309,7 +375,23 @@ export default function EditProfileScreen() {
   }
 
   const isEmailChanged = watchedEmail !== currentEmail && watchedEmail?.length > 5;
-  const isPhoneChanged = (countryCode + watchedPhone) !== currentPhone && watchedPhone?.length === 10;
+  // Length is validated by the schema (and re-validated on the server against the
+  // full number including the dial code). Hardcoding 10 here meant the Verify
+  // button never appeared for any country whose numbers are not 10 digits.
+  const isPhoneChanged =
+    (countryCode + watchedPhone) !== currentPhone && (watchedPhone?.length ?? 0) >= 6;
+
+  /**
+   * Has the identifier currently on the account actually been proven?
+   *
+   * Nothing surfaced this before, because the backend did not record it. An
+   * address entered at signup and never confirmed looked identical to one the user
+   * had verified — while still being the address Firebase password reset targets.
+   */
+  const emailVerified = (profile as any)?.emailVerified === true;
+  const phoneVerified = (profile as any)?.phoneVerified === true;
+  const showEmailUnverified = !!currentEmail && !emailVerified && !isEmailChanged;
+  const showPhoneUnverified = !!currentPhone && !phoneVerified && !isPhoneChanged;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -368,6 +450,19 @@ export default function EditProfileScreen() {
             keyboardType="email-address"
             errorMessage={errors.email?.message}
             />
+            {showEmailUnverified && (
+              <TouchableOpacity
+                style={styles.unverifiedRow}
+                onPress={handleSendEmailOtp}
+                accessibilityRole="button"
+                accessibilityLabel="Verify your email address now"
+              >
+                <Ionicons name="alert-circle-outline" size={14} color="#F59E0B" />
+                <Text style={styles.unverifiedText}>
+                  Not verified — tap to send a code. Password resets go to this address.
+                </Text>
+              </TouchableOpacity>
+            )}
         </View>
 
         <View>
@@ -396,6 +491,19 @@ export default function EditProfileScreen() {
                     />
                 </View>
             </View>
+            {showPhoneUnverified && (
+              <TouchableOpacity
+                style={styles.unverifiedRow}
+                onPress={handleSendPhoneOtp}
+                accessibilityRole="button"
+                accessibilityLabel="Verify your phone number now"
+              >
+                <Ionicons name="alert-circle-outline" size={14} color="#F59E0B" />
+                <Text style={styles.unverifiedText}>
+                  Not verified — tap to send a code. This number can sign you in.
+                </Text>
+              </TouchableOpacity>
+            )}
         </View>
 
         <View style={{ marginBottom: 20 }}>
@@ -498,6 +606,17 @@ export default function EditProfileScreen() {
                 <TouchableOpacity style={styles.verifyButton} onPress={handleVerifyEmailOtp} disabled={isVerifyingEmailOtp}>
                     {isVerifyingEmailOtp ? <ActivityIndicator color="white" /> : <Text style={styles.verifyButtonText}>Verify & Update Email</Text>}
                 </TouchableOpacity>
+                <TouchableOpacity
+                    onPress={handleSendEmailOtp}
+                    disabled={emailCooldown > 0 || isSendingEmailOtp}
+                    style={styles.resendButton}
+                    accessibilityRole="button"
+                    accessibilityLabel="Send the code again"
+                >
+                    <Text style={[styles.resendText, emailCooldown > 0 && styles.resendTextDisabled]}>
+                        {emailCooldown > 0 ? `Resend code in ${emailCooldown}s` : "Resend code"}
+                    </Text>
+                </TouchableOpacity>
                 <TouchableOpacity onPress={() => setShowEmailOtpModal(false)} style={styles.cancelButton}>
                     <Text style={styles.cancelButtonText}>Cancel</Text>
                 </TouchableOpacity>
@@ -525,6 +644,17 @@ export default function EditProfileScreen() {
                 />
                 <TouchableOpacity style={styles.verifyButton} onPress={handleVerifyPhoneOtp} disabled={isVerifyingPhoneOtp}>
                     {isVerifyingPhoneOtp ? <ActivityIndicator color="white" /> : <Text style={styles.verifyButtonText}>Verify & Update Phone</Text>}
+                </TouchableOpacity>
+                <TouchableOpacity
+                    onPress={handleSendPhoneOtp}
+                    disabled={phoneCooldown > 0 || isSendingPhoneOtp}
+                    style={styles.resendButton}
+                    accessibilityRole="button"
+                    accessibilityLabel="Send the code again"
+                >
+                    <Text style={[styles.resendText, phoneCooldown > 0 && styles.resendTextDisabled]}>
+                        {phoneCooldown > 0 ? `Resend code in ${phoneCooldown}s` : "Resend code"}
+                    </Text>
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => setShowPhoneOtpModal(false)} style={styles.cancelButton}>
                     <Text style={styles.cancelButtonText}>Cancel</Text>
@@ -587,4 +717,16 @@ const styles = StyleSheet.create({
   verifyButtonText: { color: 'white', fontWeight: 'bold', fontSize: 16 },
   cancelButton: { marginTop: 15, alignItems: 'center' },
   cancelButtonText: { color: '#666', fontSize: 14 },
+  resendButton: { alignItems: 'center', paddingVertical: 10 },
+  resendText: { color: '#ff4466', fontSize: 14, fontWeight: '600' },
+  resendTextDisabled: { color: '#9E9E9E', fontWeight: '400' },
+  unverifiedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: -8,
+    marginBottom: 12,
+    paddingHorizontal: 4,
+  },
+  unverifiedText: { flex: 1, color: '#B45309', fontSize: 12 },
 });

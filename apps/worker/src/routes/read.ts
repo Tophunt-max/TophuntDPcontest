@@ -1445,14 +1445,32 @@ readRoute.get("/users/:id", optionalAuth, async (c) => {
     return c.json(null);
   }
 
-  const { fcmTokens, ...safe } = row as any;
+  const { fcmTokens, ...columns } = row as any;
+  /**
+   * Merge `extra` UNDER the real columns, never over them.
+   *
+   * `extra` is a free-form JSON blob holding the fields with no column of their
+   * own (facebook/twitter/instagram). It is written from whatever
+   * `updateProfile` did not recognise — so this merge used to be
+   * `Object.assign(safe, safe.extra)`, letting a key that happened to share a
+   * column's name OVERWRITE that column in the response. A user could set
+   * `{verified: true}` and read back a verified badge; the same trick covered
+   * `dpcoin`, `role`, `followersCount`, `status` and `email`. The database was
+   * never wrong, which is why nobody noticed — the API simply served the
+   * account's own claims about itself as fact, including into the shared KV
+   * cache below, where other viewers would read them too.
+   *
+   * `updateProfile` now refuses to put column names in `extra` at all. This is
+   * the second half of that fix, and the half that also neutralises every row
+   * already carrying a poisoned blob.
+   */
+  const safe: any =
+    columns.extra && typeof columns.extra === "object"
+      ? { ...columns.extra, ...columns }
+      : columns;
   // expose following[] (list of uids) for screens that expect it
   const following = await db.select({ id: schema.follows.followingId }).from(schema.follows).where(eq(schema.follows.followerId, row.uid)).all();
   safe.following = following.map((f) => f.id);
-  // merge extra json fields (facebook/twitter/instagram, etc.) to top level
-  if (safe.extra && typeof safe.extra === "object") {
-    Object.assign(safe, safe.extra);
-  }
   safe.profileImageUrlThumb = avatarUrl(c.env, safe.profileImageUrl);
   if (!isHiddenAccountStatus(row.status)) {
     await cachePutJson(c.env, key, safe, 30);

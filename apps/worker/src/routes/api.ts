@@ -7,7 +7,7 @@
  * count to prevent double-spend / races.
  */
 import { Hono } from "hono";
-import { eq, and, or, desc, sql, count, like, gte, lt, ne, isNull, inArray } from "drizzle-orm";
+import { eq, and, or, desc, sql, count, like, gte, lt, ne, isNull, inArray, getTableColumns } from "drizzle-orm";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
@@ -124,6 +124,31 @@ function getDailyTaskDefs(settings: any): DailyTaskDef[] {
 
 /** Max length of a single comment (server-enforced; UI mirrors this). */
 const MAX_COMMENT_LEN = 500;
+
+/**
+ * Fields `updateProfile` must never touch, because they are CREDENTIALS.
+ *
+ * `users.email` is what Firebase password reset targets and `users.phone` is the
+ * sole lookup key for phone sign-in and phone password reset. Whoever can set
+ * them owns the account, so they only move through the OTP flow in
+ * lib/identifierChange.ts.
+ */
+const IDENTIFIER_KEYS = new Set(["email", "phone", "newEmail", "newPhone"]);
+
+/**
+ * Every real `users` column name, in both its TypeScript and SQL spelling.
+ *
+ * Derived from the schema rather than hand-listed so a column added later is
+ * protected automatically — a hand-maintained denylist is exactly the kind that
+ * silently falls behind. Used to stop unrecognised keys landing in `users.extra`,
+ * which the profile reader merges over the top level.
+ */
+const USER_COLUMN_KEYS = new Set<string>(
+  Object.entries(getTableColumns(schema.users)).flatMap(([tsName, col]) => [
+    tsName,
+    (col as { name: string }).name,
+  ]),
+);
 
 export const apiRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -2364,27 +2389,49 @@ apiRoute.post("/", async (c) => {
       const set: Record<string, any> = { updatedAt: now() };
       const extraPatch: Record<string, any> = {};
       const COLUMN_KEYS = new Set([
-        "fullName", "username", "dob", "phone", "occupation", "gender", "coordinates",
+        "fullName", "username", "dob", "occupation", "gender", "coordinates",
         "bio", "isPrivate", "authProvider", "platform", "equippedBadge", "signupCompleted",
       ]);
       for (const [k, v] of Object.entries(fields)) {
         if (k === "action" || k === "uid" || v === undefined) continue;
+        // `phone` used to be in COLUMN_KEYS, which made this endpoint a
+        // credential-change endpoint by accident. Rejected loudly rather than
+        // dropped: if a client believes it just changed the user's phone number
+        // and we say nothing, the user believes it too.
+        if (IDENTIFIER_KEYS.has(k)) {
+          throw httpsError(
+            "invalid-argument",
+            `${k === "email" ? "Email" : "Phone number"} cannot be changed here. ` +
+              `Use the verification flow — it sends a code to the new ${k === "email" ? "address" : "number"}.`,
+          );
+        }
         // Canonicalised at the source: `users.profile_image_url` is the row every
         // avatar snapshot elsewhere is copied FROM, so normalising it here stops
         // one legacy url seeding many. Third-party avatars (Google/Apple sign-in)
         // are not ours and pass through untouched.
         if (k === "avatarUrl" || k === "profileImageUrl") set.profileImageUrl = canonicalMediaUrl(env, v as string);
         else if (k === "username") set.username = String(v).toLowerCase();
-        else if (k === "phone") set.phone = normalizePhone(v as string);
         else if (COLUMN_KEYS.has(k)) set[k] = v;
+        // Any OTHER real column name is dropped, not stored in `extra`.
+        //
+        // `extra` is merged over the top level by GET /read/users/:id, so an
+        // unrecognised key that happened to share a column's name SHADOWED that
+        // column in the response. A user could send `{verified: true}` here and
+        // read back a verified badge — likewise `dpcoin`, `role`, `followersCount`
+        // or `status`. None of it changed the database, which is why it went
+        // unnoticed, but the API served the account's own claims about itself as
+        // fact. Dropped silently rather than rejected because clients legitimately
+        // echo back whole profile objects, and failing those is a worse trade than
+        // ignoring fields they were never allowed to set.
+        else if (USER_COLUMN_KEYS.has(k)) continue;
         else extraPatch[k] = v;
       }
       // Enforce identifier uniqueness on edits too (createUserProfile already
       // does this at signup). Without it, two users could take the same username
-      // or phone via profile edit — a duplicate-account bug that would otherwise
-      // only surface as a raw UNIQUE-constraint 500.
-      if (set.username || set.phone) {
-        await assertIdentifiersAvailable(env, uid, { username: set.username, phone: set.phone });
+      // via profile edit — a duplicate-account bug that would otherwise only
+      // surface as a raw UNIQUE-constraint 500.
+      if (set.username) {
+        await assertIdentifiersAvailable(env, uid, { username: set.username });
       }
       if (Object.keys(extraPatch).length) {
         const cur = await db.select({ extra: schema.users.extra }).from(schema.users).where(eq(schema.users.uid, uid)).get();

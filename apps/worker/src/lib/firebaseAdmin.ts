@@ -137,6 +137,14 @@ async function idToolkit(env: Env, path: string, body: unknown): Promise<any> {
   if (!res.ok) {
     const msg = json?.error?.message || "Identity Toolkit request failed";
     if (msg.includes("EMAIL_EXISTS")) throw httpsError("already-exists", "Email already registered.");
+    // Previously unmapped, so it surfaced as a raw 500 "internal". That was the
+    // dead end a recycled phone number hit: the number is still attached to an
+    // abandoned Firebase identity, and the new owner's signup failed with an
+    // error that told neither them nor us anything.
+    if (msg.includes("PHONE_NUMBER_EXISTS"))
+      throw httpsError("already-exists", "Phone number already registered.");
+    if (msg.includes("INVALID_PHONE_NUMBER"))
+      throw httpsError("invalid-argument", "Enter a valid phone number.");
     if (msg.includes("EMAIL_NOT_FOUND") || msg.includes("USER_NOT_FOUND"))
       throw httpsError("not-found", "User not found.");
     throw httpsError("internal", msg);
@@ -188,12 +196,30 @@ export async function getUserByEmail(env: Env, email: string): Promise<string | 
 export async function updateAuthUser(
   env: Env,
   uid: string,
-  fields: { password?: string; email?: string; disabled?: boolean },
+  fields: {
+    password?: string;
+    email?: string;
+    disabled?: boolean;
+    /**
+     * E.164 phone number.
+     *
+     * This parameter did not exist, which meant the phone number could never be
+     * synced to the Firebase record — the app writes `users.phone` in D1 and
+     * resolves phone sign-in from there, so the Firebase `phoneNumber` set at
+     * signup was left pointing at the ORIGINAL number forever. That is not
+     * cosmetic drift: the identifier stays reserved on the Firebase side, so when
+     * the number is recycled its next real owner cannot sign up at all
+     * (`accounts` returns PHONE_NUMBER_EXISTS), and a user who "removed" their
+     * number still has it attached to an identity we hold.
+     */
+    phoneNumber?: string;
+  },
 ): Promise<void> {
   await idToolkit(env, "accounts:update", {
     localId: uid,
     ...(fields.password ? { password: fields.password } : {}),
     ...(fields.email ? { email: fields.email } : {}),
+    ...(fields.phoneNumber ? { phoneNumber: fields.phoneNumber } : {}),
     ...(fields.disabled !== undefined ? { disableUser: fields.disabled } : {}),
   });
 }

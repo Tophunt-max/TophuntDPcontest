@@ -22,6 +22,18 @@ export const users = sqliteTable(
     profileImageUrl: text("profile_image_url"),
     dob: text("dob"),
     phone: text("phone"),
+    /**
+     * Has this identifier been PROVEN to belong to the account holder?
+     * (migration 0040)
+     *
+     * Set only by the OTP change flow in lib/identifierChange.ts. Recorded but
+     * deliberately not yet enforced — see the migration for why gating on it
+     * needs its own rollout.
+     */
+    emailVerified: integer("email_verified", { mode: "boolean" }).notNull().default(false),
+    phoneVerified: integer("phone_verified", { mode: "boolean" }).notNull().default(false),
+    emailVerifiedAt: integer("email_verified_at"),
+    phoneVerifiedAt: integer("phone_verified_at"),
     occupation: text("occupation"),
     gender: text("gender"),
     platform: text("platform").default("unknown"),

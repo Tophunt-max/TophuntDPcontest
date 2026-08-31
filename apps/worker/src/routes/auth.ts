@@ -21,6 +21,12 @@ import { setOtp, generateOtp, verifyOtp } from "../lib/otp";
 import { validatePasswordStrength } from "../lib/password";
 import { rateLimit, enforceSendCooldown, markSent, clientIp } from "../lib/rateLimit";
 import { assertIdentifiersAvailable, validateUsername } from "../lib/userIdentifiers";
+import {
+  confirmEmailChange,
+  confirmPhoneChange,
+  requestEmailChange,
+  requestPhoneChange,
+} from "../lib/identifierChange";
 
 /** Per-recipient cooldown between OTP sends (seconds). */
 const OTP_SEND_COOLDOWN = 60;
@@ -462,56 +468,40 @@ authRoute.post("/", async (c) => {
       return c.json({ success: true });
     }
 
-    // ---- Email change OTP ----
+    // ---- Email / phone change ----
+    //
+    // These four handlers used to inline their own logic and each skipped most of
+    // what a credential change needs: no email normalisation or validation, no
+    // uniqueness check (so a duplicate 500'd *after* burning the single-use code),
+    // no per-target rate limit (so one account could text arbitrary numbers at our
+    // expense), no handling of a failed send, no rollback when Firebase and D1
+    // disagreed, and nothing telling the OLD address it had been replaced.
+    //
+    // All of that now lives in ONE place — lib/identifierChange.ts — because the
+    // email and phone paths kept drifting apart from each other. See that file's
+    // header for the full list of what was wrong and why each part matters.
     case "sendEmailOtp": {
       if (!uid) throw httpsError("unauthenticated", "User must be logged in.");
-      if (!body.newEmail) throw httpsError("invalid-argument", "New email is required.");
-      await rateLimit(env, `emailotp:${uid}`, 10, 3600);
-      await enforceSendCooldown(env, "email", uid, OTP_SEND_COOLDOWN);
-      const otp = generateOtp();
-      await setOtp(env, "email", uid, { otp, newEmail: body.newEmail, createdAt: now() });
-      await markSent(env, "email", uid, OTP_SEND_COOLDOWN);
-      await sendEmail(env, {
-        to: body.newEmail,
-        subject: "Verify your new email address",
-        text: `Your OTP for email update is: ${otp}. It will expire in 10 minutes.`,
-        html: `<h3>Email Verification</h3><p>Your OTP for updating your email address is: <b>${otp}</b></p>`,
-      });
-      return c.json({ success: true });
+      const result = await requestEmailChange(env, uid, body.newEmail, ip);
+      return c.json({ success: true, ...result });
     }
     case "verifyEmailOtp": {
       if (!uid) throw httpsError("unauthenticated", "User must be logged in.");
-      if (!body.otp) throw httpsError("invalid-argument", "OTP is required.");
       await rateLimit(env, `emailotpverify:${uid}`, 20, 3600, { failClosed: true });
-      const rec = await verifyOtp(env, "email", uid, body.otp);
-      const newEmail = rec.newEmail as string;
-      await updateAuthUser(env, uid, { email: newEmail });
-      await db.update(schema.users).set({ email: newEmail, updatedAt: now() }).where(eq(schema.users.uid, uid));
-      return c.json({ success: true, email: newEmail });
+      const { email } = await confirmEmailChange(env, uid, body.otp);
+      return c.json({ success: true, email });
     }
 
-    // ---- Phone change OTP ----
     case "sendPhoneOtp": {
       if (!uid) throw httpsError("unauthenticated", "User must be logged in.");
-      if (!body.newPhone) throw httpsError("invalid-argument", "New phone number is required.");
-      const newPhone = normalizePhone(body.newPhone);
-      if (!newPhone) throw httpsError("invalid-argument", "Invalid phone format.");
-      await rateLimit(env, `phoneotp:${uid}`, 10, 3600);
-      await enforceSendCooldown(env, "phone", uid, OTP_SEND_COOLDOWN);
-      const otp = generateOtp();
-      await setOtp(env, "phone", uid, { otp, newPhone, createdAt: now() });
-      await markSent(env, "phone", uid, OTP_SEND_COOLDOWN);
-      await sendSms(env, newPhone, `${otp} is your TopHunt code to confirm this phone number.`, otp);
-      return c.json({ success: true });
+      const result = await requestPhoneChange(env, uid, body.newPhone, ip);
+      return c.json({ success: true, ...result });
     }
     case "verifyPhoneOtp": {
       if (!uid) throw httpsError("unauthenticated", "User must be logged in.");
-      if (!body.otp) throw httpsError("invalid-argument", "OTP is required.");
       await rateLimit(env, `phoneotpverify:${uid}`, 20, 3600, { failClosed: true });
-      const rec = await verifyOtp(env, "phone", uid, body.otp);
-      const newPhone = normalizePhone(rec.newPhone as string);
-      await db.update(schema.users).set({ phone: newPhone, updatedAt: now() }).where(eq(schema.users.uid, uid));
-      return c.json({ success: true, phone: newPhone });
+      const { phone } = await confirmPhoneChange(env, uid, body.otp);
+      return c.json({ success: true, phone });
     }
 
     default:
