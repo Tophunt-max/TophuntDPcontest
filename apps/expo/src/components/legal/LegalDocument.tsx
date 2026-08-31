@@ -3,7 +3,8 @@ import { View, Text, ScrollView, StyleSheet, SafeAreaView, ActivityIndicator, Li
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { BackButton } from '@/src/components/ui/BackButton';
 import { Colors } from '@/constants/theme';
-import { readApi, poll } from '@/src/services/api';
+import { readApi } from '@/src/services/api';
+import { LegalMarkdown } from './LegalMarkdown';
 
 /**
  * Renders a legal document served from admin App Settings.
@@ -12,6 +13,35 @@ import { readApi, poll } from '@/src/services/api';
  * emptiness and failure. Previously each screen duplicated this and rendered
  * "No content available." on a fetch failure — indistinguishable from a genuinely
  * empty policy, and an app-store reviewer seeing that has grounds to reject.
+ *
+ * ## The "not published yet" branch is now a fallback, not a normal state
+ *
+ * `/read/app-config` used to project `legalContent` straight out of the admin
+ * config, so a document nobody had typed arrived as `""` and this component
+ * rendered "Our terms of service has not been published yet." That was live on
+ * tophunt.in for terms, privacy and refund simultaneously.
+ *
+ * The Worker now falls back to documents bundled in its own source
+ * (`apps/worker/src/content/legal.ts`), so in practice `content` is always
+ * non-empty. The empty branch is kept deliberately: it is the only sane thing to
+ * show if a future config ever does return blank text, and deleting it would
+ * substitute a blank screen for an explanation.
+ *
+ * ## Fetched once, from a dedicated endpoint
+ *
+ * This used to `poll('/read/app-config')` every 60 seconds. Both halves of that
+ * were wrong. `app-config` is the app-wide config endpoint, so putting ~28 KB of
+ * legal text in it taxed every client for content only these four screens read —
+ * hence `/read/legal`. And polling a document that changes a few times a year is
+ * pointless: nobody is reading a privacy policy at the moment it is amended, and
+ * `poll` cannot be given a long interval without also making its failure retry
+ * that slow.
+ *
+ * So: fetch once, and retry only on failure, backing off to a cap.
+ *
+ * Content is rendered through `LegalMarkdown` rather than a bare `<Text>`,
+ * because these documents carry headings and bullets and the previous single-Text
+ * render displayed the markup literally.
  */
 export type LegalDocKey =
   | 'privacyPolicy'
@@ -39,23 +69,36 @@ export function LegalDocument({ docKey, title, emptyMessage }: Props) {
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
-    const unsubscribe = poll<any>(
-      () => readApi('/read/app-config'),
-      (data) => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let attempt = 0;
+
+    const load = async () => {
+      try {
+        const data: any = await readApi('/read/legal');
+        if (cancelled) return;
         setContent(data?.legalContent?.[docKey] || '');
         setSupportEmail(data?.supportEmail || '');
         setFailed(false);
         setLoading(false);
-      },
-      60000,
-      () => {
+      } catch {
+        if (cancelled) return;
         // Distinguish "could not load" from "not published": the first is
-        // retryable and the user should know to check their connection.
+        // retryable and the user should know to check their connection. The copy
+        // promises an automatic retry, so there has to be one.
         setFailed(true);
         setLoading(false);
-      },
-    );
-    return () => unsubscribe();
+        attempt += 1;
+        const delay = Math.min(2000 * 2 ** (attempt - 1), 30000);
+        timer = setTimeout(load, delay);
+      }
+    };
+
+    void load();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, [docKey]);
 
   return (
@@ -75,7 +118,12 @@ export function LegalDocument({ docKey, title, emptyMessage }: Props) {
             {`We couldn't load this document. Please check your connection — it will retry automatically.`}
           </Text>
         ) : content ? (
-          <Text style={[styles.content, { color: secondaryTextColor }]}>{content}</Text>
+          <LegalMarkdown
+            content={content}
+            color={secondaryTextColor}
+            headingColor={textColor}
+            accentColor="#FF4D67"
+          />
         ) : (
           <View>
             <Text style={[styles.content, { color: secondaryTextColor }]}>

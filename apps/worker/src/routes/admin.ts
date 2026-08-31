@@ -197,13 +197,46 @@ function isFullAdmin(c: any): boolean {
 registerIntegrationRoutes(adminRoute, requireFullAdmin);
 
 // ---- app settings (settings/appConfig) ----
+
+/**
+ * Merge an app-settings patch into the stored config, one nesting level at a time.
+ *
+ * This used to be `{ ...existing, ...body }`, which is only correct for a patch
+ * whose values are all scalars. `appConfig` is not that shape — `legalContent`,
+ * `withdrawal`, `announcement`, `features` and `ads` are all nested objects, and a
+ * spread REPLACES a nested object rather than merging into it.
+ *
+ * The consequence was data loss on any partial write. Posting
+ * `{ legalContent: { termsOfService: "..." } }` — which is exactly what
+ * `scripts/update-legal-content.mjs` did — silently deleted the privacy policy,
+ * refund policy and community guidelines. Nothing surfaced it: the request
+ * returned 200 and the documents were simply gone until someone opened the app.
+ *
+ * Plain objects merge recursively. Everything else replaces, which matters for
+ * arrays: index-wise merging an array would leave the tail of the old value
+ * behind, so removing an item would be impossible. `null` replaces too, so a
+ * caller can still clear a value deliberately.
+ */
+function mergeSettings(existing: any, patch: any): any {
+  const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+    typeof v === "object" && v !== null && !Array.isArray(v);
+  if (!isPlainObject(existing) || !isPlainObject(patch)) return patch;
+  const out: Record<string, unknown> = { ...existing };
+  for (const [key, value] of Object.entries(patch)) {
+    out[key] = isPlainObject(value) && isPlainObject(existing[key])
+      ? mergeSettings(existing[key], value)
+      : value;
+  }
+  return out;
+}
+
 adminRoute.get("/app-settings", async (c) => c.json((await getAppConfig(c.env)) || {}));
 adminRoute.post("/app-settings", async (c) => {
   requireFullAdmin(c);
   const db = getDb(c.env);
   const body = await c.req.json<any>();
   const existing = (await getAppConfig(c.env)) || {};
-  const merged = { ...existing, ...body };
+  const merged = mergeSettings(existing, body);
   await db
     .insert(schema.settings)
     .values({ id: "appConfig", data: merged, updatedAt: now() })

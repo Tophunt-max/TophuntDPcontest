@@ -462,7 +462,7 @@ export default function AppSettings() {
         <Section
           icon={Scale}
           title="Legal content"
-          blurb="Rendered live in the app. An empty policy is an app-store rejection, so fill these before submitting."
+          blurb="Overrides only. Leave a box empty and the app serves the document bundled with the Worker (apps/worker/src/content/legal.ts) — so a policy is never blank. Clearing a box reverts to the bundled text."
         >
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {(
@@ -480,10 +480,21 @@ export default function AppSettings() {
                   onChange={(e) => setCfg({ ...cfg, legalContent: { ...cfg.legalContent, [key]: e.target.value } })}
                   rows={10}
                   className={`${field} font-mono text-xs leading-relaxed`}
-                  placeholder="Markdown or plain text…"
+                  /*
+                   * The supported syntax, stated exactly. This said "Markdown or
+                   * plain text…" while the app rendered the whole document inside a
+                   * single Text node, so anything written as Markdown reached users
+                   * as literal asterisks. The app now has a renderer, but it
+                   * understands this subset and nothing more — links, tables and
+                   * code fences will show as written.
+                   */
+                  placeholder={"## Heading\n\nParagraph text with **bold** runs.\n\n- bullet\n- bullet"}
                 />
                 <p className={hint}>
-                  {help} {cfg.legalContent[key] ? `${cfg.legalContent[key].length} characters` : "Currently empty."}
+                  {help}{" "}
+                  {cfg.legalContent[key]
+                    ? `Overriding the bundled document — ${cfg.legalContent[key].length} characters.`
+                    : "Using the bundled document."}
                 </p>
               </div>
             ))}

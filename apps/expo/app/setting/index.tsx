@@ -42,7 +42,6 @@ import { useQueryClient } from '@tanstack/react-query';
 import * as Clipboard from 'expo-clipboard';
 import Constants from 'expo-constants';
 import { useAuth } from '@/src/hooks/useAuth';
-import { hasPasswordProvider } from '@/src/services/auth/changePassword';
 import { useAppConfig, currentAppVersion } from '@/src/services/appSettings';
 import { canShareApp, shareApp } from '@/src/lib/share';
 import {
@@ -65,6 +64,12 @@ import {
  * Added: Delete Account (required by both app stores) and a real, persisted theme
  * preference.
  *
+ * Also added: Privacy and Security rows. Both existed as labels on Manage Profile
+ * that pushed this screen — which had no privacy section, and hid Change Password
+ * for accounts without a password provider. The two screens they now open own those
+ * concerns, so Change Password moved into Security rather than sitting here as a
+ * conditional row.
+ *
  * Keep every row's icon distinct. Three rows once rendered the same alert circle
  * (Notifications, Refund Policy, Delete Account) and two rendered the same
  * padlock (Blocked & Muted, Privacy Policy). A duplicated glyph costs more than
@@ -76,8 +81,6 @@ import {
  * Several rows render only when they can actually do something. This is the same
  * rule as above applied to runtime state rather than to code:
  *
- *   Change Password  only for accounts with a `password` provider — a
- *                    Google/Apple/phone-only account has no password to change.
  *   Clear Cache      native only; expo-video's cache APIs are iOS/Android, and on
  *                    web the browser owns the image cache, so the row would
  *                    report "0 B" and free nothing.
@@ -138,11 +141,6 @@ export default function SettingScreen() {
   const { user } = useAuth();
   const { config } = useAppConfig();
   const queryClient = useQueryClient();
-
-  // Only shown for accounts that actually have a password. A Google- or
-  // phone-only account has nothing to change, and the row would lead to a screen
-  // whose only possible outcome is an explanation.
-  const canChangePassword = hasPasswordProvider(user);
 
   const supportEmail = ((config as any)?.supportEmail || '').trim();
 
@@ -337,17 +335,28 @@ export default function SettingScreen() {
         })}
 
         {/*
-          Hidden entirely for social- and phone-only accounts. Showing it to them
-          would lead to a screen whose only possible outcome is an explanation,
-          which is the dead-affordance problem this file exists to avoid.
+          An eye with a stroke through it: this row is about who can SEE you, which
+          is what the screen behind it controls.
         */}
-        {canChangePassword &&
-          renderItem({
-            icon: <Ionicons name="lock-closed-outline" size={24} color={textColor} />,
-            label: 'Change Password',
-            onPress: () => router.push('/setting/change-password'),
-            accessibilityHint: 'Set a new password for your account',
-          })}
+        {renderItem({
+          icon: <Ionicons name="eye-off-outline" size={24} color={textColor} />,
+          label: 'Privacy',
+          onPress: () => router.push('/setting/privacy'),
+          accessibilityHint: 'Private account, blocked accounts and your data',
+        })}
+
+        {/*
+          The padlock, inherited from the Change Password row this replaces.
+          Change Password now lives inside Security, which is where someone worried
+          about their account looks for it, and which — unlike a hidden row — can
+          explain itself to an account that has no password to change.
+        */}
+        {renderItem({
+          icon: <Ionicons name="lock-closed-outline" size={24} color={textColor} />,
+          label: 'Security',
+          onPress: () => router.push('/setting/security'),
+          accessibilityHint: 'Sign-in method, password and signing out',
+        })}
 
         {/*
           The durable route back to a blocked account. Once blocked, someone no

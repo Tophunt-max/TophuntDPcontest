@@ -6,9 +6,7 @@ import {
   SafeAreaView,
   TouchableOpacity,
   ScrollView,
-  Platform,
 } from "react-native";
-import { Alert } from '@/src/lib/appAlert';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useRouter } from 'expo-router';
 import {
@@ -20,6 +18,9 @@ import {
 import { BackButton } from "@/src/components/ui/BackButton";
 import { ArrowIcon } from "@/src/components/ui/ArrowIcon";
 import { signOut } from '../../../src/services/auth';
+import { useConfirm } from '@/src/components/modals/ConfirmDialog';
+import { emitToast } from '@/src/lib/toastBridge';
+import { reportError } from '@/src/lib/reportError';
 import { Colors } from '@/constants/theme';
 
 export default function ManageProfileScreen() {
@@ -30,29 +31,40 @@ export default function ManageProfileScreen() {
   const textColor = isDark ? Colors.dark.text : Colors.light.text;
   const borderColor = isDark ? '#35383F' : '#EEEEEE';
 
+  const { confirm, dialog: confirmDialog } = useConfirm();
+
   const performLogout = async () => {
     try {
       await signOut();
       router.replace('/auth/login');
     } catch (error: any) {
-      console.error("Logout error:", error);
-      Alert.alert("Error", "Failed to logout. Please try again.");
+      reportError(error, { screen: 'manage-profile', action: 'logout' });
+      emitToast(error?.message || 'Could not log out. Please try again.', 'error');
+      // Rethrow so the dialog stops its spinner rather than sitting there as if
+      // the sign-out were still in flight.
+      throw error;
     }
   };
 
+  /**
+   * One confirmation on every platform.
+   *
+   * This used to branch on `Platform.OS === 'web'` and log out IMMEDIATELY there,
+   * with no confirmation at all — because a multi-button `Alert.alert` is a no-op
+   * in the browser. So the most destructive row on the screen was also the only
+   * one that acted on a single mis-tap, and tophunt.in is where most people use
+   * this app. `/setting` already solved this with the shared dialog; this screen
+   * now uses the same one, which also keeps it up with a spinner while sign-out
+   * runs instead of looking idle and inviting a second tap.
+   */
   const handleLogout = () => {
-    if (Platform.OS === 'web') {
-      performLogout();
-    } else {
-      Alert.alert(
-        "Logout",
-        "Are you sure you want to log out?",
-        [
-          { text: "Cancel", style: "cancel" },
-          { text: "Logout", onPress: performLogout, style: "destructive" }
-        ]
-      );
-    }
+    void confirm({
+      title: 'Log out?',
+      message: 'You will need to sign in again to enter contests or claim rewards.',
+      confirmLabel: 'Log out',
+      destructive: true,
+      onConfirm: performLogout,
+    });
   };
 
   const renderHeader = () => (
@@ -82,6 +94,7 @@ export default function ManageProfileScreen() {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]}>
+      {confirmDialog}
       {renderHeader()}
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.contentContainer}>
         
@@ -91,16 +104,25 @@ export default function ManageProfileScreen() {
           onPress: () => router.push('/profile/manage/edit'),
         })}
 
+        {/*
+          These two used to BOTH push '/setting'. Different labels, different
+          icons, one destination — and that destination had no privacy section and
+          hid its only security control (Change Password) for any account without a
+          password provider. So a Google- or phone-only user tapping "Security"
+          landed on a list with nothing security-related on it.
+
+          They now go to the screens the labels promise.
+        */}
         {renderItem({
           icon: Settings_Lock,
           label: 'Privacy Settings',
-          onPress: () => router.push('/setting'),
+          onPress: () => router.push('/setting/privacy'),
         })}
 
         {renderItem({
           icon: Settings_Shield,
           label: 'Security',
-          onPress: () => router.push('/setting'),
+          onPress: () => router.push('/setting/security'),
         })}
 
         {renderItem({

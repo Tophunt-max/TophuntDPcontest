@@ -12,6 +12,7 @@ import { perPlayerEntryFee } from "../lib/money";
 import { httpsError } from "../lib/http";
 import { requireAuth, optionalAuth } from "../middleware/auth";
 import { getAppConfig } from "../lib/settings";
+import { resolveLegalContent } from "../content/legal";
 import { enrichMatchMedia, avatarUrl, thumbUrl, optimizedUrl, cdnUrl, canonicalizeMediaHtml } from "../lib/media";
 import {
   userCacheKey,
@@ -962,15 +963,51 @@ readRoute.get("/app-config", async (c) => {
       paymentGateway: { mode: cfg.paymentGateway?.mode || "auto" },
       // Whether to show the rewarded-ad task at all.
       ads: { enabled: ads.enabled === true, reward: Number(ads.reward ?? 0), dailyCap: Number(ads.dailyCap ?? 0) },
-      // Long-form legal copy rendered in-app.
-      legalContent: {
-        privacyPolicy: cfg.legalContent?.privacyPolicy || "",
-        termsOfService: cfg.legalContent?.termsOfService || "",
-        refundPolicy: cfg.legalContent?.refundPolicy || "",
-        communityGuidelines: cfg.legalContent?.communityGuidelines || "",
-      },
+      // NB: `legalContent` is deliberately NOT here — see GET /read/legal below.
       supportEmail: cfg.supportEmail || "",
       socialLinks: cfg.socialLinks || {},
+    };
+  });
+});
+
+/**
+ * Long-form legal documents.
+ *
+ * ## Why this is not part of /read/app-config
+ *
+ * It was, and that is a mistake worth not repeating. `app-config` is polled by the
+ * whole app — it carries maintenance mode, the minimum version and the feature
+ * flags, so every client fetches it whether or not anyone opens a policy. The four
+ * documents are ~28 KB of text (~10 KB gzipped), which would make every one of
+ * those polls an order of magnitude larger to serve content that four screens read
+ * and nothing else does.
+ *
+ * Split out, the cost falls only on the screen that needs it, and the two can be
+ * cached on their own merits: config changes when an admin flips a switch, legal
+ * text changes a few times a year.
+ *
+ * ## Why the content can never be empty
+ *
+ * `resolveLegalContent` falls back per document to the text bundled in
+ * `src/content/legal.ts`. This endpoint used to project the admin config directly,
+ * so a policy nobody had typed arrived at the client as `""` and the screen
+ * rendered "Our privacy policy has not been published yet." — which is what
+ * tophunt.in/legal/terms, /legal/privacy and /legal/refund were all serving. An
+ * empty privacy policy is an app-store rejection reason, and an empty refund policy
+ * is a Razorpay compliance gap for paid digital goods.
+ */
+readRoute.get("/legal", async (c) => {
+  // 10 minutes rather than the 2 used for app-config. A legal document changes a
+  // handful of times a year, and an admin edit already purges the KV settings
+  // cache; the edge copy expiring is the only wait, and it is the right trade for
+  // not re-serving 28 KB from the origin.
+  return edgeCached(c, 600, async () => {
+    const cfg: any = (await getAppConfig(c.env)) || {};
+    return {
+      legalContent: resolveLegalContent(cfg),
+      // Included so the legal screens can offer a contact link without a second
+      // request to app-config.
+      supportEmail: cfg.supportEmail || "",
     };
   });
 });
