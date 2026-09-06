@@ -195,22 +195,214 @@ async function cachePut(env: Env, key: string, data: any, ttlSec: number): Promi
 }
 
 /**
+ * Read-cache lifetimes, in one table so the pairs are reviewable together.
+ *
+ * THE THING THAT IS EASY TO GET WRONG: the two tiers COMPOSE. A colo that misses
+ * the edge cache when the KV entry is nearly expired promotes that already-old
+ * value into the edge tier for a further `edge` seconds:
+ *
+ *   t=0   KV written (kv=60)
+ *   t=59  colo B misses edge, reads KV (59s old), stores at edge until t=89
+ *   t=89  a viewer in colo B is reading 89-second-old data
+ *
+ * So for a key that NOTHING INVALIDATES, worst-case staleness is `edge + kv`, and
+ * that total — not `kv` — is what has to stay inside whatever bound the endpoint
+ * needs. `ceiling` records that bound and `test/edgeCache.test.ts` asserts it, which
+ * is the only reason the arithmetic cannot quietly drift.
+ *
+ * For a key that IS invalidated, the KV delete is global and makes the next edge
+ * miss reload from D1, so the post-invalidation tail is just `edge`. That tail is
+ * still real: the Cache API cannot be purged, so `edge` is the window in which a
+ * deleted or edited row keeps being served from a colo that had already cached it.
+ * Keep it short enough to wait out — a takedown is the case that matters, not an
+ * edit.
+ */
+export const READ_CACHE_TTLS = {
+  /**
+   * Not invalidated on a scheduled contest ENTERING its window (the filter is
+   * `startsAt < now`), and nothing on the client can surface a contest the payload
+   * omits — so the 60s total is a product requirement, not a cost preference.
+   */
+  contestList: { edge: 20, kv: 40, invalidated: false, ceiling: 60 },
+  /** Invalidated by `invalidateContestCaches` on every mutation of the row. */
+  contestDetail: { edge: 30, kv: 300, invalidated: true, ceiling: 330 },
+  /** Nothing invalidates a page of the list; a new battle appears when it lapses. */
+  matchesPage: { edge: 10, kv: 20, invalidated: false, ceiling: 30 },
+  /**
+   * Standings move when a match resolves; nothing invalidates. 20 + 40 rather than
+   * an even 30 + 30: the same 60s total, but a shorter unpurgeable tail AND a longer
+   * durable tier, and since a KV write only happens on a KV miss the longer half
+   * belongs there.
+   */
+  leaderboard: { edge: 20, kv: 40, invalidated: false, ceiling: 60 },
+  /**
+   * Invalidated by `invalidateBlogReadCache`. The edge tail is deliberately small
+   * because that invalidator also runs for DELETE and UNPUBLISH: a post pulled for
+   * legal reasons must not keep being served from an unpurgeable colo cache for a
+   * minute.
+   */
+  blogList: { edge: 10, kv: 600, invalidated: true, ceiling: 610 },
+  blogPost: { edge: 10, kv: 600, invalidated: true, ceiling: 610 },
+} as const;
+
+/**
+ * The colo's shared cache, or null where the Cache API is unavailable.
+ *
+ * `caches` is a runtime-provided global. Reading `.default` from outside a try
+ * meant any runtime without the Cache API threw a ReferenceError and 500'd the
+ * endpoint — the exact opposite of fail-open — so the access belongs inside one.
+ *
+ * Worth knowing about the null case: the Cache API only performs real work for
+ * Workers on a CUSTOM DOMAIN. On `api.tophunt.in` it is live; on the
+ * `*.workers.dev` host — which app builds predating the custom domain still call
+ * (see R2_LEGACY_BASE_URLS in wrangler.toml) — it is effectively a no-op. That is
+ * exactly why the KV tier below it stays: the edge tier is an accelerator, never
+ * the only cache.
+ */
+function defaultCache(): Cache | null {
+  try {
+    return ((caches as any)?.default as Cache) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Cache-API key for a logical cache entry.
+ *
+ * Same origin, because the Cache API is per-zone and the host has to stay ours,
+ * but a reserved path with the cache key as the only query parameter.
+ *
+ * Deriving the edge key from the SAME string as the KV key is the whole point: the
+ * two tiers can then never disagree about what they hold. Keying on the raw request
+ * url instead — which is what `edgeCached` does, and is fine for endpoints whose
+ * every parameter affects the payload — would let an irrelevant query parameter
+ * mint a duplicate entry, and would let two requests that differ only in a
+ * parameter the payload ignores be told apart when they should not be.
+ */
+function edgeCacheKey(c: any, key: string): Request {
+  const u = new URL(c.req.url);
+  u.pathname = "/__edge";
+  u.search = `?k=${encodeURIComponent(key)}`;
+  return new Request(u.toString(), { method: "GET" });
+}
+
+/** Store a payload in the colo cache. Best-effort; never delays the response. */
+function edgeStore(c: any, cache: Cache, cacheKey: Request, data: unknown, ttlSec: number): void {
+  // Honours the same kill switch as the KV tier. Without this check
+  // `KV_WRITES_DISABLED` would stop the KV write and let the edge write through,
+  // so a test deployment would still be serving cached data from six endpoints —
+  // the opposite of the "caches always miss, values recomputed from D1" contract
+  // that flag exists to provide (see lib/cache.ts).
+  if (kvWritesDisabled(c.env)) return;
+  try {
+    const res = new Response(JSON.stringify(data), {
+      headers: {
+        "Content-Type": "application/json; charset=UTF-8",
+        // The Cache API honours Cache-Control on the response handed to put(),
+        // so this IS the edge ttl.
+        "Cache-Control": `public, max-age=${ttlSec}`,
+      },
+    });
+    // `.catch` on the promise as well as the try/catch: the try only covers a
+    // synchronous throw, and an unhandled rejection from inside waitUntil is
+    // reported as a request failure.
+    c.executionCtx.waitUntil(cache.put(cacheKey, res).catch(() => {}));
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
+ * Two-tier read-through cache: Cloudflare Cache API in front of Workers KV.
+ *
+ * Returns the DATA, not a Response, and that is deliberate. `edgeCached` below
+ * returns early with the whole cached response, which silently skips everything the
+ * handler would otherwise have done — including per-viewer authorization. The
+ * endpoints using this helper all layer a per-viewer pass onto the shared payload:
+ * `/matches` applies the viewer's block filter and hydrates their vote state, and
+ * `/leaderboard` drops accounts the viewer has blocked. A response-level cache there
+ * would either skip that pass or bake one viewer's exclusions into an entry every
+ * other viewer then reads. Handing back data keeps the pass running, and
+ * test/edgeCache.test.ts asserts exactly that.
+ *
+ * ---------------------------------------------------------------------------
+ * Why two tiers and not just the Cache API
+ * ---------------------------------------------------------------------------
+ * The Cache API CANNOT BE INVALIDATED. It is per-colo — an entry written in Mumbai
+ * does not exist in Singapore — and `cache.delete()` only affects the colo running
+ * the code. Purge-by-tag is an Enterprise feature. So for everything whose freshness
+ * comes from an explicit invalidator (a blog publish, a contest update) the edge
+ * tier can only ever be a SHORT accelerator over KV, which is shared across colos
+ * and can be deleted.
+ *
+ * It is also a no-op for a Worker that is not on a custom domain, and app builds
+ * predating `api.tophunt.in` still call the `*.workers.dev` host — a second reason
+ * the KV tier stays rather than being replaced.
+ *
+ * See READ_CACHE_TTLS for how the two lifetimes have to be chosen together; the
+ * short version is that they COMPOSE, so `edge + kv` is the staleness bound for any
+ * key nothing invalidates.
+ *
+ * The loader must not resolve to `null` — a cached `null` is indistinguishable from
+ * a miss. Wrap it, as `/contests/:id` does with `{ contest }`. Use `skipCache` to
+ * compute a value that is returned but never stored.
+ */
+async function edgeCachedJson<T>(
+  c: any,
+  opts: {
+    key: string;
+    edgeTtlSec: number;
+    kvTtlSec: number;
+    load: () => Promise<T>;
+    /**
+     * Return true to serve this value without caching it in either tier.
+     *
+     * Exists for negative results on a key space the CALLER controls. `/blog/:slug`
+     * takes its key straight from the url on an unauthenticated, unthrottled
+     * endpoint, so caching not-found would mint one KV write per novel slug — and
+     * the free plan allows 1,000 KV writes a day for the whole Worker, after which
+     * every cache in the app stops writing. A script walking a thousand made-up
+     * slugs would take the entire application's caching down for the day.
+     */
+    skipCache?: (data: T) => boolean;
+  },
+): Promise<T> {
+  const { key, edgeTtlSec, kvTtlSec, load, skipCache } = opts;
+  const cache = edgeTtlSec > 0 ? defaultCache() : null;
+  const cacheKey = cache ? edgeCacheKey(c, key) : null;
+
+  if (cache && cacheKey) {
+    try {
+      const hit = await cache.match(cacheKey);
+      if (hit) return (await hit.json()) as T;
+    } catch {
+      /* cache unavailable or unparseable — fall through to KV */
+    }
+  }
+
+  const fromKv = await cacheGetJson<T>(c.env, key);
+  if (fromKv !== null && fromKv !== undefined) {
+    if (cache && cacheKey) edgeStore(c, cache, cacheKey, fromKv, edgeTtlSec);
+    return fromKv;
+  }
+
+  const data = await load();
+  if (skipCache?.(data)) return data;
+  await cachePutJson(c.env, key, data, kvTtlSec);
+  if (cache && cacheKey) edgeStore(c, cache, cacheKey, data, edgeTtlSec);
+  return data;
+}
+
+/**
  * Edge-cache a fully-public (user-agnostic) JSON GET at the Cloudflare colo via
  * the Cache API. On a hit the Worker returns immediately WITHOUT touching D1/KV
  * — cutting D1 rows-read and Worker CPU (and therefore billing) for hot public
- * endpoints. Only use for responses that are identical for every caller.
+ * endpoints. Only use for responses that are identical for every caller AND that
+ * need no per-viewer pass at all; otherwise use `edgeCachedJson` above.
  */
 async function edgeCached<T>(c: any, ttlSec: number, producer: () => Promise<T>): Promise<Response> {
-  // `caches` is a runtime-provided global. Reading `.default` from OUTSIDE the
-  // try meant any runtime without the Cache API threw a ReferenceError and 500'd
-  // the endpoint — the exact opposite of the fail-open the catch below claims.
-  // The access belongs inside.
-  let cache: Cache | null = null;
-  try {
-    cache = ((caches as any)?.default as Cache) ?? null;
-  } catch {
-    cache = null;
-  }
+  const cache = defaultCache();
   const cacheKey = new Request(new URL(c.req.url).toString(), { method: "GET" });
   try {
     const hit = cache ? await cache.match(cacheKey) : null;
@@ -974,43 +1166,45 @@ readRoute.get("/contests", optionalAuth, async (c) => {
   }
   const type = typeParam as "photo" | "video" | undefined;
   const key = contestListCacheKey(type ?? "all");
-  const cached = await cacheGetJson<any[]>(c.env, key);
-  if (cached !== null) {
-    c.header("Cache-Control", "public, max-age=60");
-    return c.json(cached);
-  }
-
   const db = getDb(c.env);
-  // Only templates that are live AND inside their validity window. Both edges
-  // are nullable and NULL means unbounded, so every contest created before
-  // migration 0038 still matches — this filter must not silently empty the
-  // Start a New Battle rail for existing data.
+  // Fully public and identical for every caller, so both tiers are safe.
   //
-  // A scheduled contest (startsAt in the future) can therefore be saved as
-  // 'live' up front and it stays hidden until its moment arrives, instead of an
-  // admin having to be awake to flip the status by hand.
-  const nowMs = Date.now();
-  const conds = [
-    eq(schema.contests.status, "live"),
-    or(isNull(schema.contests.startsAt), lt(schema.contests.startsAt, nowMs)),
-    or(isNull(schema.contests.endsAt), gt(schema.contests.endsAt, nowMs)),
-  ];
-  if (type) conds.push(eq(schema.contests.type, type));
-  const rows = await db.select().from(schema.contests).where(and(...conds)).all();
-  const contests = rows.map(mapContest);
-  // STAYS AT 60s. Admin edits are covered by `invalidateContestCaches` (including
-  // the cron that ends expired ones), so a longer ttl looks free — but SCHEDULING
-  // is not covered. The filter above is `startsAt < now`, and nothing invalidates
-  // at the moment a scheduled contest enters its window, so appearance is gated
-  // purely on the next cache miss.
+  // The 60s TOTAL is a product requirement, not a cost preference. Admin edits are
+  // covered by `invalidateContestCaches` (including the cron that ends expired
+  // ones), but SCHEDULING is not: the filter below is `startsAt < now`, and nothing
+  // invalidates at the moment a scheduled contest enters its window, so appearance
+  // is gated purely on a cache miss. The client-side mitigation only helps in the
+  // other direction — it can count down and disable an entry whose `endsAt` has
+  // passed, because that entry is already in the response, but nothing on the client
+  // can surface a contest the payload omits.
   //
-  // The client-side mitigation only helps in the other direction: it can count
-  // down and disable an entry whose `endsAt` has passed, because that entry is
-  // already in the response. Nothing on the client can surface a contest that the
-  // payload omits. For a timed launch that users are waiting on, a five-minute
-  // delay is product-visible, so this ttl stays where it is until a launch
-  // invalidation exists.
-  await cachePutJson(c.env, key, contests, 60);
+  // So the KV ttl came DOWN to 40s to make room for the edge tier: the two compose,
+  // and 20 + 40 is the same 60s ceiling this endpoint had before. See
+  // READ_CACHE_TTLS.
+  const contests = await edgeCachedJson<any[]>(c, {
+    key,
+    edgeTtlSec: READ_CACHE_TTLS.contestList.edge,
+    kvTtlSec: READ_CACHE_TTLS.contestList.kv,
+    load: async () => {
+      // Only templates that are live AND inside their validity window. Both edges
+      // are nullable and NULL means unbounded, so every contest created before
+      // migration 0038 still matches — this filter must not silently empty the
+      // Start a New Battle rail for existing data.
+      //
+      // A scheduled contest (startsAt in the future) can therefore be saved as
+      // 'live' up front and it stays hidden until its moment arrives, instead of an
+      // admin having to be awake to flip the status by hand.
+      const nowMs = Date.now();
+      const conds = [
+        eq(schema.contests.status, "live"),
+        or(isNull(schema.contests.startsAt), lt(schema.contests.startsAt, nowMs)),
+        or(isNull(schema.contests.endsAt), gt(schema.contests.endsAt, nowMs)),
+      ];
+      if (type) conds.push(eq(schema.contests.type, type));
+      const rows = await db.select().from(schema.contests).where(and(...conds)).all();
+      return rows.map(mapContest);
+    },
+  });
   c.header("Cache-Control", "public, max-age=60");
   return c.json(contests);
 });
@@ -1018,22 +1212,25 @@ readRoute.get("/contests", optionalAuth, async (c) => {
 readRoute.get("/contests/:id", optionalAuth, async (c) => {
   const id = c.req.param("id");
   const key = contestDetailCacheKey(id);
-  // Wrap the value so a cached not-found (null) is distinguishable from a miss.
-  const cached = await cacheGetJson<{ contest: ReturnType<typeof mapContest> | null }>(c.env, key);
-  if (cached !== null) {
-    c.header("Cache-Control", "public, max-age=60");
-    return c.json(cached.contest);
-  }
-
   const db = getDb(c.env);
-  const row = await db.select().from(schema.contests).where(eq(schema.contests.id, id)).get();
-  const contest = row ? mapContest(row) : null;
-  // 300s. Unlike the LIST above, a detail lookup is by id and does not filter on
-  // the validity window, so the scheduling gap described there does not apply
-  // here: `invalidateContestCaches` covers every mutation of this row, and the
-  // join path re-reads the contest from D1 and calls `assertContestOpenNow`, so a
-  // stale detail payload can never authorise an entry outside the window.
-  await cachePutJson(c.env, key, { contest }, 300);
+  // Unlike the LIST above, a detail lookup is by id and does not filter on the
+  // validity window, so the scheduling gap described there does not apply:
+  // `invalidateContestCaches` covers every mutation of this row, and the join path
+  // re-reads the contest from D1 and calls `assertContestOpenNow`, so a stale detail
+  // payload can never authorise an entry outside the window. Hence the longer KV
+  // ttl, and an edge tier on top.
+  //
+  // The value is WRAPPED so a cached not-found (null) stays distinguishable from a
+  // cache miss — `edgeCachedJson` treats a bare null as a miss.
+  const { contest } = await edgeCachedJson<{ contest: ReturnType<typeof mapContest> | null }>(c, {
+    key,
+    edgeTtlSec: READ_CACHE_TTLS.contestDetail.edge,
+    kvTtlSec: READ_CACHE_TTLS.contestDetail.kv,
+    load: async () => {
+      const row = await db.select().from(schema.contests).where(eq(schema.contests.id, id)).get();
+      return { contest: row ? mapContest(row) : null };
+    },
+  });
   c.header("Cache-Control", "public, max-age=60");
   return c.json(contest);
 });
@@ -1067,70 +1264,71 @@ readRoute.get("/matches", optionalAuth, async (c) => {
     return servePersonalizedFeed(c, db, { status, type, limit, cursorRaw, uid, following: sort === "following" });
   }
 
-  // Cache each page for 15s. nextCursor is returned via the X-Next-Cursor
-  // header (response body stays a plain array — non-breaking).
+  // The user-agnostic base list for this page, from the colo cache, then KV, then
+  // D1. Every parameter that changes the payload is in the key, so the entry is
+  // safe to share; the viewer's vote state and block filter are layered on AFTER,
+  // onto a copy, which is why this returns data rather than a whole response.
+  //
+  // nextCursor rides in the X-Next-Cursor header (the body stays a plain array —
+  // non-breaking), so it has to be cached alongside the rows.
   const cacheKey = `cache:matches:${status}:${type || "all"}:${sort}:${limit}:${cursorRaw || "0"}`;
-  const cached = await cacheGet(c.env, cacheKey);
-  if (cached) {
-    if (cached.nextCursor != null) c.header("X-Next-Cursor", String(cached.nextCursor));
-    if (uid) {
-      // Per-user data — must never be stored by a shared/edge cache.
-      c.header("Cache-Control", "private, no-store");
-      // Filtered on the way out of the shared page cache, never on the way in.
-      const visible = excludeHiddenMatches(cached.matches, await hiddenUidsFor(c.env, uid));
-      return c.json(await hydrateViewerState(db, visible, uid));
-    }
-    c.header("Cache-Control", "public, max-age=15");
-    return c.json(cached.matches);
-  }
+  const { matches, nextCursor } = await edgeCachedJson<{ matches: any[]; nextCursor: number | null }>(c, {
+    key: cacheKey,
+    // Nothing invalidates this key — a new battle appears when the entry lapses —
+    // so the ttls ARE the freshness policy and they compose. 10 + 20 keeps the same
+    // 30s ceiling this page had before, with the edge tier absorbing the burst of
+    // people opening the same tab. See READ_CACHE_TTLS.
+    edgeTtlSec: READ_CACHE_TTLS.matchesPage.edge,
+    kvTtlSec: READ_CACHE_TTLS.matchesPage.kv,
+    load: async () => {
+      const conds = [eq(schema.contestMatches.status, status)];
+      if (type) conds.push(eq(schema.contestMatches.type, type));
 
-  const conds = [eq(schema.contestMatches.status, status)];
-  if (type) conds.push(eq(schema.contestMatches.type, type));
+      if (sort === "hot") {
+        // Engagement-weighted ranking; paginate by numeric offset.
+        const offset = cursorRaw ? Math.max(parseInt(cursorRaw, 10), 0) : 0;
+        const score = sql`(
+          ${schema.contestMatches.totalVotes}
+          + ${schema.contestMatches.likeCount}
+          + ${schema.contestMatches.commentCount} * 2
+          + ${schema.contestMatches.shareCount} * 3
+        )`;
+        const rows = await db
+          .select()
+          .from(schema.contestMatches)
+          .where(and(...conds))
+          .orderBy(desc(score), desc(schema.contestMatches.createdAt))
+          .limit(limit)
+          .offset(offset)
+          .all();
+        const list = rows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m));
+        await enrichParticipants(c.env, list);
+        return { matches: list, nextCursor: rows.length === limit ? offset + limit : null };
+      }
 
-  let matches: any[];
-  let nextCursor: number | null = null;
-
-  if (sort === "hot") {
-    // Engagement-weighted ranking; paginate by numeric offset.
-    const offset = cursorRaw ? Math.max(parseInt(cursorRaw, 10), 0) : 0;
-    const score = sql`(
-      ${schema.contestMatches.totalVotes}
-      + ${schema.contestMatches.likeCount}
-      + ${schema.contestMatches.commentCount} * 2
-      + ${schema.contestMatches.shareCount} * 3
-    )`;
-    const rows = await db
-      .select()
-      .from(schema.contestMatches)
-      .where(and(...conds))
-      .orderBy(desc(score), desc(schema.contestMatches.createdAt))
-      .limit(limit)
-      .offset(offset)
-      .all();
-    matches = rows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m));
-    await enrichParticipants(c.env, matches);
-    nextCursor = rows.length === limit ? offset + limit : null;
-  } else {
-    // Keyset pagination by createdAt — stable and index-friendly.
-    if (cursorRaw) conds.push(lt(schema.contestMatches.createdAt, parseInt(cursorRaw, 10)));
-    const rows = await db
-      .select()
-      .from(schema.contestMatches)
-      .where(and(...conds))
-      .orderBy(desc(schema.contestMatches.createdAt))
-      .limit(limit)
-      .all();
-    matches = rows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m));
-    await enrichParticipants(c.env, matches);
-    nextCursor = rows.length === limit ? rows[rows.length - 1].createdAt : null;
-  }
+      // Keyset pagination by createdAt — stable and index-friendly.
+      if (cursorRaw) conds.push(lt(schema.contestMatches.createdAt, parseInt(cursorRaw, 10)));
+      const rows = await db
+        .select()
+        .from(schema.contestMatches)
+        .where(and(...conds))
+        .orderBy(desc(schema.contestMatches.createdAt))
+        .limit(limit)
+        .all();
+      const list = rows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m));
+      await enrichParticipants(c.env, list);
+      return {
+        matches: list,
+        nextCursor: rows.length === limit ? rows[rows.length - 1].createdAt : null,
+      };
+    },
+  });
 
   if (nextCursor != null) c.header("X-Next-Cursor", String(nextCursor));
-  // Cache the user-agnostic base list, then layer this viewer's vote state on
-  // top of a fresh copy so the cached page stays shareable.
-  await cachePut(c.env, cacheKey, { matches, nextCursor }, 30);
   if (uid) {
+    // Per-user data — must never be stored by a shared/edge cache.
     c.header("Cache-Control", "private, no-store");
+    // Filtered on the way out of the shared page cache, never on the way in.
     const visible = excludeHiddenMatches(matches, await hiddenUidsFor(c.env, uid));
     return c.json(await hydrateViewerState(db, visible, uid));
   }
@@ -1235,32 +1433,43 @@ readRoute.get("/leaderboard", optionalAuth, async (c) => {
     return excludeHiddenBy(rows, blocked, (r) => r.uid);
   };
 
+  // A rank is a global fact, so this entry is identical for everyone and both tiers
+  // are safe. The per-viewer block filter runs on the way OUT, via visibleRanks.
   const cacheKey = `cache:leaderboard:${by}:${limit}`;
-  const cached = await cacheGet(c.env, cacheKey);
-  if (cached) return c.json(await visibleRanks(cached));
-  const orderCol =
-    by === "votes" ? schema.users.totalVotesReceived : by === "xp" ? schema.users.xp : schema.users.wins;
-  const rows = await db
-    .select({
-      uid: schema.users.uid,
-      username: schema.users.username,
-      fullName: schema.users.fullName,
-      profileImageUrl: schema.users.profileImageUrl,
-      wins: schema.users.wins,
-      totalVotesReceived: schema.users.totalVotesReceived,
-      xp: schema.users.xp,
-      level: schema.users.level,
-      badges: schema.users.badges,
-      equippedBadge: schema.users.equippedBadge,
-      verified: schema.users.verified,
-    })
-    .from(schema.users)
-    .where(publiclyVisibleUser)
-    .orderBy(desc(orderCol))
-    .limit(limit)
-    .all();
-  const enriched = rows.map((r: any) => ({ ...r, profileImageUrlThumb: avatarUrl(c.env, r.profileImageUrl) }));
-  await cachePut(c.env, cacheKey, enriched, 60);
+  const enriched = await edgeCachedJson<any[]>(c, {
+    key: cacheKey,
+    // Nothing invalidates this — the standings move when a match resolves — so the
+    // ttls are the freshness policy and they compose: 30 + 30 keeps the same 60s
+    // ceiling as before. The leaderboard is the most expensive query here (a full
+    // ordered scan of publicly visible users) and the one people refresh most,
+    // which is exactly the shape the edge tier is for.
+    edgeTtlSec: READ_CACHE_TTLS.leaderboard.edge,
+    kvTtlSec: READ_CACHE_TTLS.leaderboard.kv,
+    load: async () => {
+      const orderCol =
+        by === "votes" ? schema.users.totalVotesReceived : by === "xp" ? schema.users.xp : schema.users.wins;
+      const rows = await db
+        .select({
+          uid: schema.users.uid,
+          username: schema.users.username,
+          fullName: schema.users.fullName,
+          profileImageUrl: schema.users.profileImageUrl,
+          wins: schema.users.wins,
+          totalVotesReceived: schema.users.totalVotesReceived,
+          xp: schema.users.xp,
+          level: schema.users.level,
+          badges: schema.users.badges,
+          equippedBadge: schema.users.equippedBadge,
+          verified: schema.users.verified,
+        })
+        .from(schema.users)
+        .where(publiclyVisibleUser)
+        .orderBy(desc(orderCol))
+        .limit(limit)
+        .all();
+      return rows.map((r: any) => ({ ...r, profileImageUrlThumb: avatarUrl(c.env, r.profileImageUrl) }));
+    },
+  });
   // visibleRanks downgrades this to private only if it actually filtered.
   c.header("Cache-Control", "public, max-age=30");
   return c.json(await visibleRanks(enriched));
@@ -2640,27 +2849,36 @@ readRoute.get("/blog", async (c) => {
   // invalidation bounded to one known key instead of up to 50 limit variants.
   const cacheable = !cursor && !category && !q && limit === 12;
   const cacheKey = blogListCacheKey(limit);
-  if (cacheable) {
-    const cached = await cacheGet(c.env, cacheKey);
-    if (cached) return c.json(cached);
-  }
 
-  const rows = await db
-    .select()
-    .from(schema.blogPosts)
-    .where(and(...conds))
-    .orderBy(desc(schema.blogPosts.publishedAt))
-    .limit(limit)
-    .all();
+  const load = async () => {
+    const rows = await db
+      .select()
+      .from(schema.blogPosts)
+      .where(and(...conds))
+      .orderBy(desc(schema.blogPosts.publishedAt))
+      .limit(limit)
+      .all();
+    const nextCursor = rows.length === limit ? rows[rows.length - 1].publishedAt : null;
+    return { posts: rows.map((r) => mapBlogPost(c.env, r)), nextCursor };
+  };
 
-  const nextCursor = rows.length === limit ? rows[rows.length - 1].publishedAt : null;
-  const payload = { posts: rows.map((r) => mapBlogPost(c.env, r)), nextCursor };
-  if (cacheable) {
-    // 600s (was 120s). `invalidateBlogReadCache` drops the list and post keys on
-    // every editorial write, so publishing is still immediate.
-    await cachePut(c.env, cacheKey, payload, 600);
-    c.header("Cache-Control", "public, max-age=60");
-  }
+  // Filtered, paginated or non-default-limit requests are never cached — see the
+  // note above: keeping only the canonical page cacheable is what bounds
+  // invalidation to one known key instead of up to 50 limit variants.
+  if (!cacheable) return c.json(await load());
+
+  // KV keeps the long ttl because `invalidateBlogReadCache` deletes this key on
+  // every editorial write, so publishing is immediate there. The edge tier CANNOT be
+  // purged, so it is much shorter: the window in which a just-published post is
+  // still missing — or a just-deleted one still present — in a colo that had already
+  // cached the old list.
+  const payload = await edgeCachedJson<{ posts: any[]; nextCursor: number | null }>(c, {
+    key: cacheKey,
+    edgeTtlSec: READ_CACHE_TTLS.blogList.edge,
+    kvTtlSec: READ_CACHE_TTLS.blogList.kv,
+    load,
+  });
+  c.header("Cache-Control", "public, max-age=60");
   return c.json(payload);
 });
 
@@ -2736,31 +2954,62 @@ readRoute.get("/blog/:slug", async (c) => {
   const key = c.req.param("slug");
   const cacheKey = blogPostCacheKey(key);
 
-  // Serve the (expensive-to-serialize) full post body from KV when hot. The
-  // view counter still increments on every request — only the payload is
+  // Serve the (expensive-to-serialize) full post body from the colo cache, then KV.
+  // The view counter still increments on every request — only the payload is
   // cached — so analytics stay live while D1 content reads drop. The displayed
-  // viewCount itself may lag by up to the TTL, which is fine for a blog.
-  const cached = await cacheGetJson<{ id: string } & Record<string, any>>(c.env, cacheKey);
-  if (cached) {
-    db.update(schema.blogPosts)
-      .set({ viewCount: sql`${schema.blogPosts.viewCount} + 1` })
-      .where(eq(schema.blogPosts.id, cached.id))
-      .run()
-      .catch(() => {});
-    return c.json(cached);
-  }
+  // viewCount itself may lag by up to the ttl, which is fine for a blog.
+  //
+  // The stored value is WRAPPED as `{ post }` so the loader never returns a bare
+  // null, which `edgeCachedJson` would read as a cache miss.
+  //
+  // A not-found is deliberately NOT cached, via `skipCache`. `key` here comes
+  // straight off the url on an unauthenticated, unthrottled endpoint, so caching
+  // misses would mint one KV write per novel slug — and the free plan allows 1,000
+  // KV writes a day for the entire Worker, after which every cache in the app stops
+  // writing (lib/cache.ts). A script walking made-up slugs would take the whole
+  // application's caching down for the day. There is also no way to clear such an
+  // entry: `invalidateBlogReadCache` only knows the exact slug and id of the post
+  // being edited, so a negative entry under any other spelling would simply sit
+  // there, and the negative EDGE entry could not be purged at all.
+  //
+  // `unwrapPost` also accepts the PREVIOUS shape, where the value WAS the payload.
+  // Those entries have a 600s ttl and so keep arriving for ten minutes after this
+  // deploys; reading one as "no `post` field, therefore not found" would 404 every
+  // hot article in the blog for that window.
+  const unwrapPost = (v: any): { post: Record<string, any> | null } =>
+    v && typeof v === "object" && "post" in v ? { post: v.post } : { post: v ?? null };
 
-  let row = await db.select().from(schema.blogPosts).where(eq(schema.blogPosts.slug, key)).get();
-  if (!row) row = await db.select().from(schema.blogPosts).where(eq(schema.blogPosts.id, key)).get();
-  if (!row || row.status !== "published") return c.json(null);
-  // Best-effort view counter (don't block the response on it).
-  db.update(schema.blogPosts)
-    .set({ viewCount: sql`${schema.blogPosts.viewCount} + 1` })
-    .where(eq(schema.blogPosts.id, row.id))
-    .run()
-    .catch(() => {});
-  const payload = mapBlogPost(c.env, row, { withContent: true });
-  // 600s (was 120s) — invalidated by `invalidateBlogReadCache` on every edit.
-  await cachePutJson(c.env, cacheKey, payload, 600);
-  return c.json(payload);
+  const { post } = unwrapPost(
+    await edgeCachedJson<{ post: Record<string, any> | null }>(c, {
+      key: cacheKey,
+      // KV keeps the long ttl because every editorial write deletes this key. The
+      // edge tier is short because it cannot be purged and that invalidator also
+      // fires for DELETE and UNPUBLISH — a post pulled for legal reasons must not
+      // keep being served from a colo cache for a minute with no way to stop it.
+      edgeTtlSec: READ_CACHE_TTLS.blogPost.edge,
+      kvTtlSec: READ_CACHE_TTLS.blogPost.kv,
+      skipCache: (v) => v.post === null,
+      load: async () => {
+        let row = await db.select().from(schema.blogPosts).where(eq(schema.blogPosts.slug, key)).get();
+        if (!row) row = await db.select().from(schema.blogPosts).where(eq(schema.blogPosts.id, key)).get();
+        if (!row || row.status !== "published") return { post: null };
+        return { post: mapBlogPost(c.env, row, { withContent: true }) };
+      },
+    }),
+  );
+
+  if (!post) return c.json(null);
+  // Best-effort view counter — the payload is cached, the analytics deliberately are
+  // not, so this fires on cache hits too. Handed to `waitUntil` rather than left
+  // floating: on an edge hit nothing else in this handler registers any pending
+  // work, so the isolate could be torn down before an unawaited write lands.
+  c.executionCtx.waitUntil(
+    db
+      .update(schema.blogPosts)
+      .set({ viewCount: sql`${schema.blogPosts.viewCount} + 1` })
+      .where(eq(schema.blogPosts.id, post.id as string))
+      .run()
+      .catch(() => {}),
+  );
+  return c.json(post);
 });
