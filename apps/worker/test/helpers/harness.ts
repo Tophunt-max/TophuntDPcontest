@@ -22,6 +22,7 @@ import { drizzle } from 'drizzle-orm/d1';
 import * as schema from '../../src/db/schema';
 import { ApiError, errorBody } from '../../src/lib/http';
 import { memoReset } from '../../src/lib/memo';
+import { normalizeSpec, windowIdFor } from '../../src/lib/rateLimitWindow';
 import { apiRoute } from '../../src/routes/api';
 import { readRoute } from '../../src/routes/read';
 import { adminRoute } from '../../src/routes/admin';
@@ -92,6 +93,65 @@ class D1Shim {
   }
 }
 
+/**
+ * Stand-in for the RateLimiter Durable Object.
+ *
+ * Needed because `src/rateLimiter.ts` imports `cloudflare:workers`, which cannot
+ * load in Node — the same reason `makeApp()` below cannot import `src/index.ts`.
+ * Without a binding here every `rateLimit()` call would throw inside the client
+ * and take its failure branch, which silently means "allowed" for the fail-open
+ * keys and "refused" for every fail-closed one: money, OTP and upload tests would
+ * fail for a reason that has nothing to do with what they assert.
+ *
+ * The window arithmetic is imported from src/lib/rateLimitWindow rather than
+ * re-derived, so this fake cannot drift from the actor on the one detail where an
+ * off-by-one would be invisible. The rest is a deliberate line-for-line mirror of
+ * `RateLimiter.consume()` — including that specs are consumed in order and the
+ * walk stops at the first denial without refunding earlier ones.
+ *
+ * What this does NOT cover is the actor's SQLite plumbing and its pruning alarm.
+ * That matches the existing policy for VoteCounter (see test/README.md): a DO class
+ * itself needs the workerd runtime.
+ */
+export function fakeRateLimiter() {
+  const counts = new Map<string, number>();
+  const makeStub = (shard: string) => ({
+    async consume(specs: Array<{ key: string; max: number; windowSec: number }>) {
+      if (!Array.isArray(specs) || specs.length === 0) return { allowed: true, deniedKey: null };
+      for (const raw of specs) {
+        const key = String(raw?.key ?? '');
+        if (!key) continue;
+        const { max, windowSec } = normalizeSpec(raw?.max, raw?.windowSec);
+        if (max === 0) return { allowed: false, deniedKey: key };
+        const cell = `${shard}|${key}|${windowIdFor(Date.now(), windowSec)}`;
+        const current = counts.get(cell) ?? 0;
+        if (current >= max) return { allowed: false, deniedKey: key };
+        counts.set(cell, current + 1);
+      }
+      return { allowed: true, deniedKey: null };
+    },
+    async peek(key: string, windowSec: number) {
+      const { windowSec: w } = normalizeSpec(0, windowSec);
+      return counts.get(`${shard}|${key}|${windowIdFor(Date.now(), w)}`) ?? 0;
+    },
+    async reset(key: string) {
+      for (const cell of [...counts.keys()]) {
+        if (cell.startsWith(`${shard}|${key}|`)) counts.delete(cell);
+      }
+    },
+  });
+  return {
+    /** Counter cells, for assertions. Keyed `shard|key|windowId`. */
+    _counts: counts,
+    idFromName(name: string) {
+      return { name } as any;
+    },
+    get(id: { name: string }) {
+      return makeStub(id.name);
+    },
+  };
+}
+
 /** Simple in-memory KV that mimics the bits the handlers use. */
 export function fakeKV() {
   const map = new Map<string, string>();
@@ -157,6 +217,7 @@ export interface TestEnv {
   MEDIA: ReturnType<typeof fakeR2>;
   CACHE_KV: ReturnType<typeof fakeKV>;
   OTP_KV: ReturnType<typeof fakeKV>;
+  RATE_LIMITER: ReturnType<typeof fakeRateLimiter>;
   RAZORPAY_KEY_ID: string;
   RAZORPAY_KEY_SECRET: string;
   R2_PUBLIC_BASE_URL: string;
@@ -183,6 +244,7 @@ export function makeEnv(overrides: Partial<TestEnv> = {}): { env: TestEnv; db: S
     MEDIA: fakeR2(),
     CACHE_KV: fakeKV(),
     OTP_KV: fakeKV(),
+    RATE_LIMITER: fakeRateLimiter(),
     RAZORPAY_KEY_ID: 'rzp_test_key',
     RAZORPAY_KEY_SECRET: 'rzp_test_secret',
     R2_PUBLIC_BASE_URL: 'https://cdn.test',

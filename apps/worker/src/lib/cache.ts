@@ -27,9 +27,10 @@ import { memoDelete } from "./memo";
  *     the password-reset verified flag must persist or auth breaks outright —
  *     and "breaks" here would mean a code that cannot be verified, or a reset
  *     that no longer needs proof.
- *   - RATE LIMITING is never affected either, so this is not a way to turn off
- *     abuse or spend protection. See the note in lib/rateLimit.ts for why keying
- *     it off `failClosed` was wrong.
+ *   - RATE LIMITING cannot be affected: its counters live in the RateLimiter
+ *     Durable Object, not in KV. This flag is not a way to turn off abuse or
+ *     spend protection. (An earlier version of it did exactly that, by keying off
+ *     `failClosed` — see the note in lib/rateLimit.ts for why that was wrong.)
  *   - The Firebase access token and JWKS caches, and the `rzp_order` payment
  *     intent, write through `env.CACHE_KV.put` directly and so keep writing.
  *     They are state, not cache.

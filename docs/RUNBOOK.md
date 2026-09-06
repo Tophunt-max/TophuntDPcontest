@@ -182,3 +182,28 @@ applied automatically on first request and are append-only by policy (CI enforce
 it), so an older Worker runs against a newer schema. That is normally fine because
 migrations only add. If a migration is the problem, fix forward with a new
 migration rather than reverting the file.
+
+### Do NOT `git revert` a commit that added a Durable Object
+
+`wrangler.toml` `[[migrations]]` tags are recorded against the script once applied,
+and a `[[durable_objects.bindings]]` entry pointing at a class the script no longer
+exports is a hard deploy error. So reverting the whole commit that introduced a DO
+class does not roll back — it produces a deploy that will not go out, which is the
+worst thing to discover mid-incident.
+
+To back out a DO-backed feature, keep the plumbing and revert only the behaviour:
+
+| Keep | Revert |
+| --- | --- |
+| the class file (`src/rateLimiter.ts`) | the caller that uses it |
+| its `export {}` in `src/index.ts` | |
+| its `[[durable_objects.bindings]]` blocks (prod + staging) | |
+| its `[[migrations]]` tag | |
+
+For the rate limiter specifically, that means reverting `src/lib/rateLimit.ts` to
+the KV counter and leaving everything else in place. Removing a DO class for real
+needs a `deleted_classes` migration, which is a deliberate, separate deploy — never
+part of an emergency rollback.
+
+`npx wrangler rollback` has no such problem: it redeploys a previous **version** of
+the script, migration state included, and is the right first move in an incident.

@@ -12,6 +12,11 @@ export interface Env {
   // Per-match vote aggregator (SQLite-backed DO) — keeps the high-frequency
   // vote write path off D1's single writer. Typed for native RPC calls.
   VOTE_COUNTER: DurableObjectNamespace<import("./voteCounter").VoteCounter>;
+  // Per-subject rate-limit counters (SQLite-backed DO). One instance per uid /
+  // IP / phone / email, so check-and-increment is atomic for that subject —
+  // which a KV read-then-write on an eventually-consistent store never was.
+  // Typed for native RPC calls. See lib/rateLimit.ts for the client.
+  RATE_LIMITER: DurableObjectNamespace<import("./rateLimiter").RateLimiter>;
 
   // --- Plain vars ---
   FIREBASE_PROJECT_ID: string;

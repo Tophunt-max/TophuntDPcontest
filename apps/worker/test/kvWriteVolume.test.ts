@@ -305,9 +305,10 @@ describe('KV_WRITES_DISABLED', () => {
     const { env } = makeEnv({ KV_WRITES_DISABLED: 'true' });
     const { consumeRateLimit } = await import('../src/lib/rateLimit');
 
-    // This is the invariant the flag's documentation rests on, and the first
-    // version of the flag broke it. Skipping every counter without
-    // `failClosed: true` looked safe, but `failClosed` means "refuse if the
+    // Structurally impossible now that the counters live in the RateLimiter
+    // Durable Object rather than KV — but asserted anyway, because the first
+    // version of this flag DID break it. Skipping every counter without
+    // `failClosed: true` looked safe, yet `failClosed` means "refuse if the
     // counter is unreadable", NOT "this guard protects money" — and `deposit`,
     // `ad` (mints withdrawable coins), `vidup` (Bunny spend), `create` (the only
     // per-IP signup limit) and `exportdata` (PII) are all fail-OPEN by omission.

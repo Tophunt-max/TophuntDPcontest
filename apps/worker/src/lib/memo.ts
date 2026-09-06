@@ -65,8 +65,10 @@
  *
  * That is not a style preference. Those values are consulted to decide whether an
  * action is ALLOWED, and a per-isolate copy that cannot be invalidated would mean
- * "revoked" takes effect everywhere except where it matters. They all live in
- * `OTP_KV` or are counters, and none of them come through here.
+ * "revoked" takes effect everywhere except where it matters. They live in `OTP_KV`,
+ * in D1, or — for the rate-limit counters — in the RateLimiter Durable Object,
+ * which was chosen over any cache precisely because it is strongly consistent.
+ * None of them come through here.
  *
  * Callers that do memoise must keep KV as the durable copy, so a cold isolate (a
  * deploy, a new colo, an eviction) still gets a warm value.

@@ -57,6 +57,18 @@ export async function computeDeepHealth(env: Env): Promise<DeepHealth> {
     // `head` on a key that need not exist still proves the binding works.
     await env.MEDIA.head("health/probe");
   });
+  // The rate limiter is a Durable Object, and EVERY authentication path passes
+  // `failClosed: true` — OTP send and verify, password reset, re-auth, plus
+  // uploads, withdrawals and account deletion. So a limiter that throws is not a
+  // degraded feature, it is "nobody can sign in", and until this probe existed the
+  // deploy workflow's /health/deep smoke test reported such a deploy as fully
+  // healthy. `peek` reads a throwaway key: it proves the binding, the class and the
+  // actor's schema without consuming anyone's budget.
+  await timed("do_rate_limiter", async () => {
+    const ns = env.RATE_LIMITER;
+    if (!ns) throw new Error("RATE_LIMITER binding is not configured");
+    await ns.get(ns.idFromName("health:probe")).peek("health:probe", 60);
+  });
 
   // Secrets whose absence silently breaks a user-visible flow. Panel-managed
   // credentials are resolved through the credential store (panel value first,

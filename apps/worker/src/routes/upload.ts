@@ -46,7 +46,7 @@ import {
   kindOf,
 } from "../lib/mediaTypes";
 import { httpsError } from "../lib/http";
-import { clientIp, rateLimit } from "../lib/rateLimit";
+import { clientIp, rateLimitAll } from "../lib/rateLimit";
 
 /**
  * Upload budget.
@@ -129,10 +129,19 @@ uploadRoute.post("/", async (c) => {
   }
 
   const uid = c.get("user").uid;
-  const opts = { failClosed: true };
-  await rateLimit(c.env, `upload:${uid}`, UPLOADS_PER_HOUR, 3600, opts);
-  await rateLimit(c.env, `upload_day:${uid}`, UPLOADS_PER_DAY, 86_400, opts);
-  await rateLimit(c.env, `upload_ip:${clientIp(c.req.raw.headers)}`, UPLOADS_PER_IP_PER_HOUR, 3600, opts);
+  // One batched call instead of three sequential ones. The two per-user caps share
+  // the uploader's limiter actor and cost a single Durable Object request; the
+  // per-IP cap is a different subject and so is a second. Order is preserved, so
+  // which cap trips first is unchanged.
+  await rateLimitAll(
+    c.env,
+    [
+      { key: `upload:${uid}`, max: UPLOADS_PER_HOUR, windowSec: 3600 },
+      { key: `upload_day:${uid}`, max: UPLOADS_PER_DAY, windowSec: 86_400 },
+      { key: `upload_ip:${clientIp(c.req.raw.headers)}`, max: UPLOADS_PER_IP_PER_HOUR, windowSec: 3600 },
+    ],
+    { failClosed: true },
+  );
 
   const buf = await c.req.arrayBuffer();
   if (!buf || buf.byteLength === 0) throw httpsError("invalid-argument", "Empty upload.");

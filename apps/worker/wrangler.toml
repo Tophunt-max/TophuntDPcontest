@@ -125,6 +125,18 @@ class_name = "RealtimeHub"
 name = "VOTE_COUNTER"
 class_name = "VoteCounter"
 
+# Per-subject rate-limit counters (one instance per uid / IP / phone / email).
+#
+# Moved off KV. A read-then-write against an eventually-consistent store is not a
+# counter — concurrent requests read the same value and each write value+1, so a
+# burst spends one unit of budget and the real limit drifts UP with concurrency,
+# which is backwards for a limiter. It also cost one KV write per check against a
+# free-plan budget of 1,000/day shared with every cache in the app; Durable Objects
+# allow 100,000 requests and 100,000 rows written per day.
+[[durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "RateLimiter"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["RealtimeHub"]
@@ -132,6 +144,13 @@ new_sqlite_classes = ["RealtimeHub"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["VoteCounter"]
+
+# Per-subject rate-limit counters. Never edit v1/v2 — migration tags are applied
+# once and recorded, so an edit changes nothing on this account and everything on a
+# fresh one.
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["RateLimiter"]
 
 # ---------------------------------------------------------------------------
 # Scheduled tasks (replace Firebase onSchedule functions)
@@ -227,6 +246,10 @@ class_name = "RealtimeHub"
 [[env.staging.durable_objects.bindings]]
 name = "VOTE_COUNTER"
 class_name = "VoteCounter"
+
+[[env.staging.durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "RateLimiter"
 
 [env.staging.observability]
 enabled = true
@@ -361,15 +384,15 @@ BUNNY_CDN_HOSTNAME = ""
 #   - Anything in OTP_KV. OTP codes, per-recipient send cooldowns, re-auth grants
 #     and the password-reset verified flag must persist or auth breaks — and one
 #     of those breakages would be a password reset that no longer needs proof.
-#   - RATE LIMITING, of any kind. The first version of this flag skipped every
-#     rate-limit counter without `failClosed: true`, on the reasoning that those
-#     are only engagement throttles. That was wrong: `failClosed` means "refuse if
-#     the counter is unreadable", NOT "this guard protects money", and several
-#     throttles that do guard money or real spend are fail-open by omission —
-#     deposits, rewarded ads (which mint withdrawable coins), video uploads (Bunny
-#     transcode spend), the only per-IP signup limit, and the PII data export. So
-#     rate limiting always counts. It is bounded by user ACTIONS rather than by
-#     request volume or a ttl, so it is a small share of the budget anyway.
+#   - RATE LIMITING, of any kind — its counters are in the RateLimiter Durable
+#     Object now, not in KV, so this flag cannot reach them. The first version of
+#     it skipped every rate-limit counter without `failClosed: true`, on the
+#     reasoning that those are only engagement throttles. That was wrong:
+#     `failClosed` means "refuse if the counter is unreadable", NOT "this guard
+#     protects money", and several throttles that do guard money or real spend are
+#     fail-open by omission — deposits, rewarded ads (which mint withdrawable
+#     coins), video uploads (Bunny transcode spend), the only per-IP signup limit,
+#     and the PII data export.
 #   - The Firebase access token and JWKS caches, or the `rzp_order` payment
 #     intent. Those write through env.CACHE_KV.put directly: they are state, not
 #     cache, and dropping them would break sign-in and top-ups.

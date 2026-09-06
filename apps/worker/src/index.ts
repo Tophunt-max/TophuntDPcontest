@@ -47,6 +47,8 @@ import { cachePolicyForKey } from "./lib/mediaCategories";
 export { RealtimeHub } from "./realtime";
 // Durable Object for production-safe vote aggregation (one per match).
 export { VoteCounter } from "./voteCounter";
+// Durable Object for rate-limit counters (one per throttled subject).
+export { RateLimiter } from "./rateLimiter";
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 

@@ -28,7 +28,7 @@ import { getDb, schema, type NotificationActor } from "../db";
 import { newId, now } from "./ids";
 import { sendFcmToToken } from "./firebaseAdmin";
 import { publish } from "./publish";
-import { consumeRateLimit } from "./rateLimit";
+import { consumeRateLimitAll, type LimitSpec } from "./rateLimit";
 import { logErrorToDb } from "./observability";
 import { isNotificationSuppressed } from "./blocks";
 import {
@@ -498,20 +498,34 @@ export async function createNotification(
     const tokens: string[] = (user?.fcmTokens as string[]) || [];
     if (!tokens.length) return;
 
-    // Anti-spam: cap PUSHES per recipient per type. The row is already written,
-    // so nothing is lost — the device just stops buzzing.
-    if (!(await consumeRateLimit(env, `push:${recipientId}:${n.type}`, PUSH_BURST_MAX, PUSH_BURST_WINDOW_SEC))) {
-      return;
+    // Anti-spam: cap PUSHES per recipient per type, and cap total daily pushes
+    // (notification fatigue). The row is already written, so nothing is lost when
+    // either trips — the device just stops buzzing. Money notifications bypass the
+    // daily cap: being rate-limited out of "your payout was sent" is unacceptable.
+    //
+    // Both keys put the RECIPIENT after the colon on purpose. The per-type key was
+    // `push:{uid}:{type}`, which made the subject `{uid}:{type}` — a different
+    // rate-limit actor per notification type per user, and a different one again
+    // from `pushday:{uid}`. That cost two Durable Object requests per push on two
+    // objects, on the paths that generate the most notifications (likes, comments,
+    // follows). With the type in the ACTION half, both keys share the recipient's
+    // actor and go out as a single batched call.
+    // The type goes in the ACTION half, so any colon inside it would move the
+    // boundary the limiter shards on and send this key to an actor named after part
+    // of the type instead of the recipient. `n.type` is a plain enum-ish string
+    // today, but it is caller-supplied and this is the one character that matters.
+    const pushType = String(n.type ?? "unknown").replace(/:/g, "_");
+    const pushLimits: LimitSpec[] = [
+      { key: `push_${pushType}:${recipientId}`, max: PUSH_BURST_MAX, windowSec: PUSH_BURST_WINDOW_SEC },
+    ];
+    if (!PUSH_CAP_EXEMPT_CATEGORIES.has(category)) {
+      pushLimits.push({
+        key: `pushday:${recipientId}`,
+        max: PUSH_DAILY_MAX,
+        windowSec: PUSH_DAILY_WINDOW_SEC,
+      });
     }
-
-    // Notification fatigue: cap total daily pushes. Money notifications bypass
-    // this — being rate-limited out of "your payout was sent" is unacceptable.
-    if (
-      !PUSH_CAP_EXEMPT_CATEGORIES.has(category) &&
-      !(await consumeRateLimit(env, `pushday:${recipientId}`, PUSH_DAILY_MAX, PUSH_DAILY_WINDOW_SEC))
-    ) {
-      return;
-    }
+    if (!(await consumeRateLimitAll(env, pushLimits))) return;
 
     await deliverToTokens(
       env,

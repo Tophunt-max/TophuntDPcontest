@@ -880,7 +880,12 @@ apiRoute.post("/", async (c) => {
       // Per-IP velocity cap — slows multi-account vote stuffing from one network
       // beyond the per-user and per-match-device guards (max 40 / minute / IP).
       const voteIp = c.req.header("cf-connecting-ip") || c.req.header("x-real-ip") || "";
-      if (voteIp) await rateLimit(env, `vote:ip:${voteIp}`, 40, 60);
+      // `vote_ip:` not `vote:ip:` — the subject is everything after the FIRST
+      // colon, so the old spelling made it `ip:1.2.3.4` while every other per-IP
+      // key (`upload_ip`, `otpsend`, `create`) resolves to the bare address. One IP
+      // therefore owned two limiter actors, and the next per-IP key added would
+      // have picked one of the two spellings at random.
+      if (voteIp) await rateLimit(env, `vote_ip:${voteIp}`, 40, 60);
       const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, matchId)).get();
       if (!match) throw httpsError("not-found", "Match not found.");
       if (match.status !== "active") throw httpsError("failed-precondition", "Battle is not active.");
