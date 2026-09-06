@@ -42,6 +42,8 @@ import m_0037_story_music_start_sql from "../../migrations/0037_story_music_star
 import m_0038_contest_validity_sql from "../../migrations/0038_contest_validity.sql";
 import m_0039_account_deletion_lifecycle_sql from "../../migrations/0039_account_deletion_lifecycle.sql";
 import m_0040_identifier_verification_sql from "../../migrations/0040_identifier_verification.sql";
+import m_0041_username_case_insensitive_sql from "../../migrations/0041_username_case_insensitive.sql";
+import m_0042_contest_product_prizes_sql from "../../migrations/0042_contest_product_prizes.sql";
 
 export interface Migration {
   name: string;
@@ -90,4 +92,6 @@ export const MIGRATIONS: Migration[] = [
   { name: "0038_contest_validity.sql", sql: m_0038_contest_validity_sql },
   { name: "0039_account_deletion_lifecycle.sql", sql: m_0039_account_deletion_lifecycle_sql },
   { name: "0040_identifier_verification.sql", sql: m_0040_identifier_verification_sql },
+  { name: "0041_username_case_insensitive.sql", sql: m_0041_username_case_insensitive_sql },
+  { name: "0042_contest_product_prizes.sql", sql: m_0042_contest_product_prizes_sql },
 ];

@@ -518,6 +518,46 @@ export function contestWinEmail(
 }
 
 // ---------------------------------------------------------------------------
+// 10b. Prize won — a PHYSICAL product, which has to be claimed.
+//
+// A sibling of contestWinEmail rather than a branch inside it, because the two say
+// opposite things. That one is a receipt: the money is already in your wallet,
+// nothing is required of you. This one is a call to action: nothing has been sent
+// yet, and it will not be until the winner supplies an address. Wording it as a
+// receipt would be the most expensive kind of wrong — a winner who reads
+// "congratulations, it's yours" does not go and fill in a form.
+// ---------------------------------------------------------------------------
+export function prizeClaimEmail(
+  battleTitle: string | null | undefined,
+  productTitle: string | null | undefined,
+  supportEmail = DEFAULT_SUPPORT_EMAIL,
+): RenderedEmail {
+  const title = battleTitle || "your battle";
+  const product = productTitle || "your prize";
+  return {
+    subject: `You won ${product}! Claim it on ${BRAND.name} 🎁`,
+    html: layout({
+      preview: `You won ${product} — add your delivery address to claim it.`,
+      heading: "You won a prize! 🎁",
+      paragraphs: [
+        `Congratulations — you won the battle <b>"${esc(title)}"</b>, and your prize is <b>${esc(product)}</b>.`,
+        "<b>One more step:</b> open the app and add your delivery details so we know where to send it. We cannot ship anything until you do.",
+        "Once your address is confirmed we will pack it and share the courier and tracking number with you.",
+      ],
+      supportEmail,
+    }),
+    text: plain(
+      [
+        `Congratulations — you won the battle "${title}", and your prize is ${product}.`,
+        "One more step: open the app and add your delivery details so we know where to send it. We cannot ship anything until you do.",
+        "Once your address is confirmed we will pack it and share the courier and tracking number with you.",
+      ],
+      supportEmail,
+    ),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // 11. Contest refund — a battle voided / tied / cancelled; entry fee returned.
 // ---------------------------------------------------------------------------
 export function contestRefundEmail(

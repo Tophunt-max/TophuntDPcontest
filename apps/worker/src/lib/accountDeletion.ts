@@ -82,7 +82,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * not refuse the request. The distinction is the whole point of this rewrite —
  * see note 1 in the file header.
  */
-export type DeferralCode = "pending_payout" | "active_contest";
+export type DeferralCode = "pending_payout" | "active_contest" | "pending_prize";
 
 export interface DeletionDeferral {
   code: DeferralCode;
@@ -247,6 +247,33 @@ async function findDeferrals(env: Env, uid: string): Promise<DeletionDeferral[]>
       message:
         "You are in a contest that has not finished yet. Your account will be deleted once it is resolved.",
       detail: { matches: liveCount },
+    });
+  }
+
+  // A physical prize that has not reached the winner yet.
+  //
+  // Exactly the same shape of obligation as a pending payout, and deferred for the
+  // same reason: erasure scrubs the delivery address (phaseContent), and scrubbing
+  // the address of a parcel that is packed or already with a courier makes it
+  // undeliverable and untraceable. `unclaimed` is NOT included — nobody is waiting
+  // on us there, the winner simply never supplied an address, and deferring on it
+  // would postpone erasure indefinitely for a prize that may never be claimed.
+  const openClaims = await db
+    .select({ id: schema.prizeClaims.id })
+    .from(schema.prizeClaims)
+    .where(
+      and(
+        eq(schema.prizeClaims.uid, uid),
+        inArray(schema.prizeClaims.status, ["submitted", "approved", "shipped"]),
+      ),
+    )
+    .all();
+  if (openClaims.length > 0) {
+    deferrals.push({
+      code: "pending_prize",
+      message:
+        "A prize you won is still on its way. Your account will be deleted once it has been delivered.",
+      detail: { prizeClaims: openClaims.length },
     });
   }
 
@@ -908,6 +935,30 @@ async function phaseContent(env: Env, uid: string): Promise<void> {
     db.delete(schema.highlights).where(eq(schema.highlights.userId, uid)),
     db.delete(schema.storyViews).where(eq(schema.storyViews.viewerId, uid)),
     db.delete(schema.messages).where(eq(schema.messages.senderId, uid)),
+    // Prize claims are SCRUBBED, not deleted — the same choice `phaseSnapshots`
+    // makes for the users row, and for the same reason. The row records that a
+    // prize was awarded and where it got to, which is an accounting fact about the
+    // business rather than personal data. The delivery address, phone and name are
+    // the personal part, and those are what go.
+    //
+    // By the time this runs, nothing is in flight: `findDeferrals` pushes the purge
+    // out while a claim is submitted / approved / shipped, so the only claims
+    // reachable here are unclaimed, delivered or cancelled.
+    db
+      .update(schema.prizeClaims)
+      .set({
+        recipientName: null,
+        phone: null,
+        addressLine1: null,
+        addressLine2: null,
+        landmark: null,
+        city: null,
+        state: null,
+        postalCode: null,
+        country: null,
+        notes: null,
+      })
+      .where(eq(schema.prizeClaims.uid, uid)),
   ]);
 }
 

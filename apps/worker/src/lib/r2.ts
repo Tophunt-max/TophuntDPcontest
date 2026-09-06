@@ -24,6 +24,7 @@ import {
 import {
   allowedMimesForCategory,
   BANNER_PREFIX,
+  PRODUCT_IMAGE_PREFIX,
   BLOG_IMPORT_PREFIX,
   buildMediaKey,
   categoryEverAcceptedVideo,
@@ -353,6 +354,29 @@ function ownedKeyFromPublicUrl(env: Env, publicUrl: string, ownedPrefix: string)
  */
 export function contestBannerKeyFromPublicUrl(env: Env, publicUrl: string): string | null {
   return ownedKeyFromPublicUrl(env, publicUrl, `${BANNER_PREFIX}/`);
+}
+
+/**
+ * Return the R2 key only when a URL is a prize product image owned by this
+ * deployment. Same authorisation model as `contestBannerKeyFromPublicUrl`, and the
+ * same reason: the value arrives as a string on an admin write, so nothing else
+ * proves the object is ours to delete.
+ */
+export function productImageKeyFromPublicUrl(env: Env, publicUrl: string): string | null {
+  return ownedKeyFromPublicUrl(env, publicUrl, `${PRODUCT_IMAGE_PREFIX}/`);
+}
+
+/** Delete a prize product image and drop its edge-cache entry. */
+export async function deleteProductImageByPublicUrl(env: Env, publicUrl: string): Promise<void> {
+  const key = productImageKeyFromPublicUrl(env, publicUrl);
+  if (!key) return;
+  await env.MEDIA.delete(key);
+  try {
+    const cache = (caches as any).default as Cache;
+    await cache.delete(new Request(publicUrl, { method: "GET" }));
+  } catch (e) {
+    console.error("[cache] product image edge delete failed (continuing)", key, e);
+  }
 }
 
 /**

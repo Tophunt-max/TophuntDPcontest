@@ -26,6 +26,7 @@ import {
   withdrawalDecisionEmail,
   coinsAddedEmail,
   contestWinEmail,
+  prizeClaimEmail,
   contestRefundEmail,
 } from "../lib/emailTemplates";
 import { enqueueBroadcast } from "../lib/broadcast";
@@ -53,9 +54,14 @@ import {
   isRecord,
   validateContestInput,
 } from "../lib/contestAdmin";
+import { normalizePrizeType, publicPrize, resolveMatchPrize } from "../lib/prizes";
+import { PRODUCT_IMAGE_PREFIX } from "../lib/mediaCategories";
+import { formatDeliveryAddress, summariseDeliveryAddress } from "../lib/deliveryAddress";
 import {
   contestBannerKeyFromPublicUrl,
   deleteContestBannerByPublicUrl,
+  productImageKeyFromPublicUrl,
+  deleteProductImageByPublicUrl,
   putVerifiedImage,
   sanitizeMediaFolder,
   uploadToR2,
@@ -325,6 +331,43 @@ async function contestBannerKeyIsAttached(
   );
 }
 
+/**
+ * Is this product image still referenced by anything?
+ *
+ * Checks contests AND prize claims, which is the difference from the banner
+ * version. Settlement copies the image url onto the `prize_claims` row so the
+ * record of what was promised survives the template being edited, and a winner
+ * waiting for delivery is exactly the person who should still be able to see a
+ * picture of it. Deleting the object because no contest points at it any more would
+ * blank the image on a live claim.
+ */
+async function productImageKeyIsAttached(
+  db: ReturnType<typeof getDb>,
+  env: Env,
+  key: string,
+): Promise<boolean> {
+  const [contestRows, claimRows] = await Promise.all([
+    db.select({ url: schema.contests.prizeProductImageUrl }).from(schema.contests).all(),
+    db.select({ url: schema.prizeClaims.productImageUrl }).from(schema.prizeClaims).all(),
+  ]);
+  return [...contestRows, ...claimRows].some(
+    (row) => typeof row.url === "string" && !!row.url && productImageKeyFromPublicUrl(env, row.url) === key,
+  );
+}
+
+async function cleanupUnattachedProductImages(c: any, urls: string[]): Promise<void> {
+  try {
+    const db = getDb(c.env);
+    for (const url of new Set(urls)) {
+      const key = productImageKeyFromPublicUrl(c.env, url);
+      if (!key) continue;
+      if (!(await productImageKeyIsAttached(db, c.env, key))) await deleteProductImageByPublicUrl(c.env, url);
+    }
+  } catch (e) {
+    console.error("[r2] product image cleanup failed (continuing)", e);
+  }
+}
+
 async function cleanupUnattachedContestBanners(c: any, urls: string[]): Promise<void> {
   try {
     const db = getDb(c.env);
@@ -395,6 +438,47 @@ adminRoute.post("/media/payment-qr", async (c) => {
   const uploaded = await uploadToR2(c.env, fileType, "payment-qr", body, [fileType]);
   await logAudit(c, "payment.qr.upload", "payment-qr", uploaded.fileKey, { publicUrl: uploaded.publicUrl });
   return c.json(uploaded);
+});
+
+/**
+ * Upload a photo of a physical prize (migration 0042).
+ *
+ * Deliberately the same helper pair as the contest banner above — the same declared
+ * type / declared length pre-checks before the body is read, the same exact-type
+ * allow-list so the bytes must match what the panel claimed, and the same audit
+ * line. A second, subtly different image intake is how one of them ends up without
+ * a size cap.
+ */
+adminRoute.post("/media/product-image", async (c) => {
+  requireFullAdmin(c);
+  const fileType = assertAdminImageUpload(c);
+  const body = await readAdminImageBody(c);
+
+  const uploaded = await uploadToR2(c.env, fileType, PRODUCT_IMAGE_PREFIX, body, [fileType]);
+  await logAudit(c, "prize.product-image.upload", "product-image", uploaded.fileKey, {
+    publicUrl: uploaded.publicUrl,
+  });
+  return c.json(uploaded);
+});
+
+adminRoute.delete("/media/product-image", async (c) => {
+  requireFullAdmin(c);
+  const body = await c.req.json<unknown>();
+  if (!isRecord(body) || typeof body.url !== "string") {
+    throw httpsError("invalid-argument", "url must be an owned product-image URL.");
+  }
+  const key = productImageKeyFromPublicUrl(c.env, body.url);
+  if (!key) throw httpsError("invalid-argument", "url must be an owned product-image URL.");
+  const db = getDb(c.env);
+  if (await productImageKeyIsAttached(db, c.env, key)) {
+    throw httpsError(
+      "failed-precondition",
+      "Cannot delete an image that is attached to a contest or a prize claim.",
+    );
+  }
+  await deleteProductImageByPublicUrl(c.env, body.url);
+  await logAudit(c, "prize.product-image.delete", "product-image", body.url);
+  return c.json({ success: true });
 });
 
 adminRoute.delete("/media/contest-banner", async (c) => {
@@ -495,6 +579,11 @@ adminRoute.patch("/contests/:id", async (c) => {
   for (const field of [
     "title", "type", "status", "totalEntryFee", "rewardCoins", "voteDurationDays", "autoCancelHours", "minVotes", "bannerUrl",
     "startsAt", "endsAt",
+    // Prize kind + product fields. `validateContestInput` only emits these as a
+    // consistent set — switching to "product" forces rewardCoins to 0, switching
+    // back to "coins" nulls the product columns — so they are safe to copy through
+    // individually here.
+    "prizeType", "prizeProductTitle", "prizeProductImageUrl", "prizeProductValue", "prizeProductDescription",
   ]) {
     if (hasOwn(values, field)) set[field] = values[field];
   }
@@ -518,6 +607,10 @@ adminRoute.patch("/contests/:id", async (c) => {
   }
 
   const oldBanners = contestBannerCandidates(current);
+  // The image being replaced, so it can be reaped if nothing else points at it.
+  const oldProductImages = [current.prizeProductImageUrl].filter(
+    (url): url is string => typeof url === "string" && !!url,
+  );
   const updateConditions: any[] = [eq(schema.contests.id, id)];
   if (current.status === "live" && set.status !== undefined && set.status !== "live") {
     updateConditions.push(sql`NOT EXISTS (
@@ -540,6 +633,29 @@ adminRoute.patch("/contests/:id", async (c) => {
         AND ${schema.contestMatches.status} = 'waiting_for_opponent'
     )`);
   }
+  // Changing WHAT is awarded gets the same protection as changing how much.
+  //
+  // The per-match snapshot shields a battle whose `prize_type` is already set, but
+  // a match created before migration 0042 has NULL there and settlement falls back
+  // to this template — so an edit really can change what an in-flight battle pays.
+  // Same guard, same reason, and re-asserted as SQL below for the same TOCTOU
+  // reason as the others.
+  const prizeChanged =
+    (set.prizeType !== undefined && set.prizeType !== normalizePrizeType(current.prizeType)) ||
+    (set.prizeProductTitle !== undefined && set.prizeProductTitle !== (current.prizeProductTitle ?? null)) ||
+    (set.prizeProductImageUrl !== undefined &&
+      set.prizeProductImageUrl !== (current.prizeProductImageUrl ?? null));
+  if (prizeChanged) {
+    const counts = await contestMatchCounts(db, id);
+    if (counts.active > 0) {
+      throw httpsError("failed-precondition", "Cannot change the prize while active matches exist.");
+    }
+    updateConditions.push(sql`NOT EXISTS (
+      SELECT 1 FROM ${schema.contestMatches}
+      WHERE ${schema.contestMatches.contestId} = ${id}
+        AND ${schema.contestMatches.status} = 'active'
+    )`);
+  }
 
   const updated = await db.update(schema.contests).set(set).where(and(...updateConditions)).run();
   if (updated.meta.changes === 0) {
@@ -548,6 +664,7 @@ adminRoute.patch("/contests/:id", async (c) => {
   await invalidateContestCaches(c.env, id);
   await logAudit(c, "contest.update", "contest", id, set);
   await cleanupUnattachedContestBanners(c, oldBanners);
+  if (hasOwn(set, "prizeProductImageUrl")) await cleanupUnattachedProductImages(c, oldProductImages);
   return c.json({ message: "Contest updated", id });
 });
 
@@ -1598,6 +1715,11 @@ adminRoute.get("/contests", async (c) => {
       bannerUrl: schema.contests.bannerUrl,
       totalEntryFee: schema.contests.totalEntryFee,
       rewardCoins: schema.contests.rewardCoins,
+      prizeType: schema.contests.prizeType,
+      prizeProductTitle: schema.contests.prizeProductTitle,
+      prizeProductImageUrl: schema.contests.prizeProductImageUrl,
+      prizeProductValue: schema.contests.prizeProductValue,
+      prizeProductDescription: schema.contests.prizeProductDescription,
       voteDurationDays: schema.contests.voteDurationDays,
       autoCancelHours: schema.contests.autoCancelHours,
       minVotes: schema.contests.minVotes,
@@ -1637,6 +1759,7 @@ adminRoute.get("/contests", async (c) => {
       entryFishCoins: row.totalEntryFee,
       rewardCoins: row.rewardCoins,
       prizePool: row.rewardCoins,
+      ...publicPrize(row),
       voteDurationDays: row.voteDurationDays,
       autoCancelHours: row.autoCancelHours,
       minVotes: row.minVotes,
@@ -1740,6 +1863,11 @@ adminRoute.post("/contests", async (c) => {
     autoCancelHours: values.autoCancelHours,
     minVotes: values.minVotes,
     bannerUrl: values.bannerUrl,
+    prizeType: values.prizeType,
+    prizeProductTitle: values.prizeProductTitle,
+    prizeProductImageUrl: values.prizeProductImageUrl,
+    prizeProductValue: values.prizeProductValue,
+    prizeProductDescription: values.prizeProductDescription,
     startsAt: values.startsAt,
     endsAt: values.endsAt,
     extra,
@@ -2191,15 +2319,30 @@ adminRoute.post("/matches/:id/declare-winner", async (c) => {
   // never pay more than an automatic one.
   const pot = matchPot(m.entryFee);
   let rewardAmount = m.prizeCoins == null ? null : Math.min(Number(m.prizeCoins), pot);
-  if (rewardAmount == null) {
+  // The prize TEMPLATE is only consulted for a row written before the snapshot
+  // columns existed — same rule as the cron resolver, so a manual declaration and
+  // an automatic one can never disagree about what was promised.
+  let prizeTemplate: any = null;
+  if (rewardAmount == null || m.prizeType == null) {
     if (m.contestId) {
-      const contest = await db.select({ reward: schema.contests.rewardCoins }).from(schema.contests).where(eq(schema.contests.id, m.contestId)).get();
-      rewardAmount = Math.min(Number(contest?.reward ?? pot), pot);
-    } else {
-      rewardAmount = pot;
+      prizeTemplate = await db
+        .select({
+          reward: schema.contests.rewardCoins,
+          prizeType: schema.contests.prizeType,
+          prizeProductTitle: schema.contests.prizeProductTitle,
+          prizeProductImageUrl: schema.contests.prizeProductImageUrl,
+          prizeProductValue: schema.contests.prizeProductValue,
+        })
+        .from(schema.contests)
+        .where(eq(schema.contests.id, m.contestId))
+        .get();
+    }
+    if (rewardAmount == null) {
+      rewardAmount = Math.min(Number(prizeTemplate?.reward ?? pot), pot);
     }
   }
 
+  const prize = resolveMatchPrize(m, prizeTemplate, rewardAmount);
   const ts = now();
   const settled = await settleWinner(c.env, {
     matchId: id,
@@ -2207,9 +2350,12 @@ adminRoute.post("/matches/:id/declare-winner", async (c) => {
     expectedStatus: "active",
     winnerUid,
     loserUid,
-    rewardAmount,
-    description: `Admin-declared victory for "${m.title}"`,
+    rewardAmount: prize.coins,
+    description: prize.product
+      ? `Admin-declared prize: ${prize.product.title} — "${m.title}"`
+      : `Admin-declared victory for "${m.title}"`,
     completedAt: ts,
+    productPrize: prize.product,
   });
   if (!settled) throw httpsError("failed-precondition", "Match was already resolved.");
 
@@ -2223,13 +2369,36 @@ adminRoute.post("/matches/:id/declare-winner", async (c) => {
     winnerUid,
   });
 
-  await createNotification(c.env, winnerUid, { title: "You Won! 🏆", body: `You won the battle "${m.title}" and earned ${rewardAmount} Dpcoins!`, type: "contest-win", targetId: id });
+  if (prize.product) {
+    // A product is not delivered by winning — it has to be claimed, and the claim
+    // needs an address. `targetId` therefore points at the claim, not the battle.
+    await createNotification(c.env, winnerUid, {
+      title: "You Won a Prize! 🎁",
+      body: `You won ${prize.product.title} in "${m.title}". Add your delivery details to claim it.`,
+      type: "prize-claim",
+      targetId: `prize:${id}`,
+    });
+  } else {
+    await createNotification(c.env, winnerUid, { title: "You Won! 🏆", body: `You won the battle "${m.title}" and earned ${prize.coins} Dpcoins!`, type: "contest-win", targetId: id });
+  }
   await createNotification(c.env, loserUid, { title: "Battle Ended", body: `The battle "${m.title}" has concluded.`, type: "contest-loss", targetId: id });
-  // The winner just received a prize — send a receipt. (No email for the loser:
-  // a "you lost" email is noise, not a record anyone needs.)
-  c.executionCtx.waitUntil(sendUserEmail(c.env, winnerUid, contestWinEmail(m.title, rewardAmount)));
-  await logAudit(c, "match.declare-winner", "match", id, { winnerUid, rewardAmount, forced: !!body.winnerUid });
-  return c.json({ message: "Winner declared", winnerUid, rewardAmount });
+  // The winner just received a prize — send a receipt (coins) or a call to action
+  // (product). No email for the loser: a "you lost" email is noise, not a record.
+  c.executionCtx.waitUntil(
+    sendUserEmail(
+      c.env,
+      winnerUid,
+      prize.product ? prizeClaimEmail(m.title, prize.product.title) : contestWinEmail(m.title, prize.coins),
+    ),
+  );
+  await logAudit(c, "match.declare-winner", "match", id, {
+    winnerUid,
+    rewardAmount: prize.coins,
+    prizeType: prize.type,
+    productTitle: prize.product?.title ?? null,
+    forced: !!body.winnerUid,
+  });
+  return c.json({ message: "Winner declared", winnerUid, rewardAmount: prize.coins, prizeType: prize.type });
 });
 
 /**
@@ -3628,4 +3797,248 @@ adminRoute.get("/videos/migration-status", async (c) => {
       matches: pendingMatches?.count ?? 0,
     },
   });
+});
+
+
+// ======================= PRIZE CLAIMS (physical prizes) =======================
+/**
+ * The fulfilment queue for physical prizes (migration 0042).
+ *
+ * Full admins only, and not because of the money — there is none here — but because
+ * every row carries a winner's home address and phone number. That is the most
+ * sensitive data this panel holds, so the LIST view deliberately returns only a
+ * masked one-line summary (`summariseDeliveryAddress`: city, state, PIN, masked
+ * phone). The full address is available from the single-claim endpoint below, which
+ * is the screen an operator is on when they are actually packing a parcel.
+ *
+ * The alternative — shipping the whole address in the list — means every operator
+ * who opens the queue, and every log line or screenshot of it, carries a home
+ * address that nobody needed in order to work the queue.
+ */
+const PRIZE_CLAIM_STATUSES = [
+  "unclaimed",
+  "submitted",
+  "approved",
+  "shipped",
+  "delivered",
+  "cancelled",
+] as const;
+type PrizeClaimStatus = (typeof PRIZE_CLAIM_STATUSES)[number];
+
+/**
+ * Which transitions are legal.
+ *
+ * A state machine rather than a free-form status field, because the timestamps have
+ * to mean something: `shipped_at` on a claim that never had an address is a lie an
+ * admin cannot later untangle, and "delivered" before "approved" hides whether
+ * anyone ever checked the address. `unclaimed` is absent as a TARGET on purpose —
+ * only settlement creates that state, and moving back to it would orphan an address
+ * the winner already gave us.
+ */
+const PRIZE_CLAIM_TRANSITIONS: Record<PrizeClaimStatus, PrizeClaimStatus[]> = {
+  unclaimed: ["cancelled"],
+  submitted: ["approved", "cancelled"],
+  approved: ["shipped", "cancelled"],
+  shipped: ["delivered", "cancelled"],
+  delivered: [],
+  cancelled: [],
+};
+
+adminRoute.get("/prize-claims", async (c) => {
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const status = c.req.query("status");
+  const limit = Math.min(parseInt(c.req.query("limit") || "100", 10) || 100, 500);
+  const conds: any[] = [];
+  if (status && (PRIZE_CLAIM_STATUSES as readonly string[]).includes(status)) {
+    conds.push(eq(schema.prizeClaims.status, status));
+  }
+
+  const rows = await db
+    .select({
+      id: schema.prizeClaims.id,
+      matchId: schema.prizeClaims.matchId,
+      contestId: schema.prizeClaims.contestId,
+      uid: schema.prizeClaims.uid,
+      status: schema.prizeClaims.status,
+      productTitle: schema.prizeClaims.productTitle,
+      productImageUrl: schema.prizeClaims.productImageUrl,
+      productValue: schema.prizeClaims.productValue,
+      recipientName: schema.prizeClaims.recipientName,
+      phone: schema.prizeClaims.phone,
+      city: schema.prizeClaims.city,
+      state: schema.prizeClaims.state,
+      postalCode: schema.prizeClaims.postalCode,
+      courier: schema.prizeClaims.courier,
+      trackingNumber: schema.prizeClaims.trackingNumber,
+      createdAt: schema.prizeClaims.createdAt,
+      submittedAt: schema.prizeClaims.submittedAt,
+      shippedAt: schema.prizeClaims.shippedAt,
+      deliveredAt: schema.prizeClaims.deliveredAt,
+      username: schema.users.username,
+      fullName: schema.users.fullName,
+    })
+    .from(schema.prizeClaims)
+    .leftJoin(schema.users, eq(schema.users.uid, schema.prizeClaims.uid))
+    .where(conds.length ? and(...conds) : (undefined as any))
+    .orderBy(desc(schema.prizeClaims.createdAt))
+    .limit(limit)
+    .all();
+
+  return c.json(
+    rows.map(({ recipientName, phone, city, state, postalCode, ...row }) => ({
+      ...row,
+      // Masked summary only — see the note above this route.
+      deliverySummary: row.status === "unclaimed"
+        ? null
+        : summariseDeliveryAddress({ recipientName, phone, city, state, postalCode }),
+      hasAddress: !!recipientName,
+    })),
+  );
+});
+
+/** One claim, WITH the full delivery address. The packing screen. */
+adminRoute.get("/prize-claims/:id", async (c) => {
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const row = await db
+    .select()
+    .from(schema.prizeClaims)
+    .where(eq(schema.prizeClaims.id, c.req.param("id")))
+    .get();
+  if (!row) throw httpsError("not-found", "Prize claim not found.");
+
+  // Reading a home address is itself worth recording. If an address is ever
+  // misused, the audit log is the only thing that can say who saw it.
+  await logAudit(c, "prize.claim.view", "prize-claim", row.id, { uid: row.uid });
+
+  return c.json({
+    ...row,
+    // Pre-formatted so the panel does not assemble a shipping label itself and
+    // quietly disagree with the app about field order.
+    addressBlock: row.recipientName ? formatDeliveryAddress(row) : null,
+  });
+});
+
+/**
+ * Advance a claim: approve, ship (with courier + tracking), deliver, or cancel.
+ *
+ * The status change is a compare-and-swap on the CURRENT status, so two operators
+ * working the queue at once cannot both move the same claim — the second gets a
+ * `failed-precondition` telling them to refresh, rather than silently overwriting
+ * the first one's decision and its timestamp.
+ */
+adminRoute.post("/prize-claims/:id/status", async (c) => {
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const id = c.req.param("id");
+  const body = await c.req.json<any>();
+
+  const next = String(body?.status || "");
+  if (!(PRIZE_CLAIM_STATUSES as readonly string[]).includes(next)) {
+    throw httpsError("invalid-argument", `status must be one of: ${PRIZE_CLAIM_STATUSES.join(", ")}.`);
+  }
+  const nextStatus = next as PrizeClaimStatus;
+
+  const claim = await db.select().from(schema.prizeClaims).where(eq(schema.prizeClaims.id, id)).get();
+  if (!claim) throw httpsError("not-found", "Prize claim not found.");
+
+  const current = (claim.status || "unclaimed") as PrizeClaimStatus;
+  const allowed = PRIZE_CLAIM_TRANSITIONS[current] ?? [];
+  if (!allowed.includes(nextStatus)) {
+    throw httpsError(
+      "failed-precondition",
+      allowed.length
+        ? `A ${current} claim can only move to: ${allowed.join(", ")}.`
+        : `A ${current} claim is final and cannot be changed.`,
+    );
+  }
+
+  const ts = now();
+  const set: Record<string, any> = { status: nextStatus, updatedAt: ts };
+
+  if (nextStatus === "shipped") {
+    // Refused rather than defaulted. "Shipped" with no courier is a status the
+    // winner can see and act on, and the only two things it needs to be actionable
+    // are who is carrying it and under what number.
+    const courier = String(body?.courier || "").trim();
+    const tracking = String(body?.trackingNumber || "").trim();
+    if (courier.length < 2 || courier.length > 80) {
+      throw httpsError("invalid-argument", "Enter the courier name.");
+    }
+    if (tracking.length < 4 || tracking.length > 120) {
+      throw httpsError("invalid-argument", "Enter the tracking number.");
+    }
+    set.courier = courier;
+    set.trackingNumber = tracking;
+    set.shippedAt = ts;
+  }
+  if (nextStatus === "approved") set.approvedAt = ts;
+  if (nextStatus === "delivered") set.deliveredAt = ts;
+  if (nextStatus === "cancelled") {
+    // A cancellation takes a prize away from someone who won it, so it has to say
+    // why — for the winner's notification and for whoever asks about it later.
+    const note = String(body?.adminNote || "").trim();
+    if (note.length < 4 || note.length > 500) {
+      throw httpsError("invalid-argument", "A reason is required when cancelling a prize claim.");
+    }
+    set.adminNote = note;
+    set.cancelledAt = ts;
+  } else if (typeof body?.adminNote === "string" && body.adminNote.trim()) {
+    set.adminNote = body.adminNote.trim().slice(0, 500);
+  }
+
+  // Compare-and-swap on the status we validated against.
+  const updated = await db
+    .update(schema.prizeClaims)
+    .set(set)
+    .where(and(eq(schema.prizeClaims.id, id), eq(schema.prizeClaims.status, current)))
+    .run();
+  if (updated.meta.changes === 0) {
+    throw httpsError("failed-precondition", "This claim changed while you were working on it. Refresh and try again.");
+  }
+
+  // Best-effort, and after the write: the winner is told what happened to their
+  // prize, but a push failure must not roll back a fulfilment step an operator has
+  // already physically taken.
+  const productTitle = claim.productTitle || "your prize";
+  const message: Record<PrizeClaimStatus, { title: string; body: string } | null> = {
+    unclaimed: null,
+    submitted: null,
+    approved: {
+      title: "Prize confirmed ✅",
+      body: `Your address for ${productTitle} is confirmed. We are packing it now.`,
+    },
+    shipped: {
+      title: "Prize shipped 📦",
+      body: `${productTitle} is on its way via ${set.courier}. Tracking: ${set.trackingNumber}`,
+    },
+    delivered: {
+      title: "Prize delivered 🎉",
+      body: `${productTitle} has been marked delivered. Enjoy!`,
+    },
+    cancelled: {
+      title: "Prize claim cancelled",
+      body: `Your claim for ${productTitle} was cancelled. ${set.adminNote}`,
+    },
+  };
+  const note = message[nextStatus];
+  if (note) {
+    c.executionCtx.waitUntil(
+      createNotification(c.env, claim.uid, {
+        title: note.title,
+        body: note.body,
+        type: "prize-claim",
+        targetId: `prize:${claim.matchId}`,
+      }).catch((e) => console.error("[prize] claim notification failed (continuing)", id, e)),
+    );
+  }
+
+  await logAudit(c, "prize.claim.status", "prize-claim", id, {
+    from: current,
+    to: nextStatus,
+    courier: set.courier ?? null,
+    trackingNumber: set.trackingNumber ?? null,
+  });
+  return c.json({ success: true, id, status: nextStatus });
 });

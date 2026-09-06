@@ -1,4 +1,5 @@
 import { httpsError } from "./http";
+import { PRIZE_TYPES, assertProductPrize } from "./prizes";
 
 const CONTEST_TYPES = ["photo", "video"] as const;
 const CONTEST_STATUSES = ["live", "upcoming", "paused", "ended"] as const;
@@ -36,6 +37,14 @@ const CONTEST_CANONICAL_EXTRA_KEYS = [
   "totalMatches",
   "waitingMatches",
   "activeMatches",
+  // Prize kind and the physical-product fields (migration 0042). Physical columns,
+  // so a copy in `extra` would be a second, silently stale source of truth for what
+  // a contest has promised to give away.
+  "prizeType",
+  "prizeProductTitle",
+  "prizeProductImageUrl",
+  "prizeProductValue",
+  "prizeProductDescription",
 ] as const;
 
 export const hasOwn = (value: object, key: string) => Object.prototype.hasOwnProperty.call(value, key);
@@ -258,6 +267,62 @@ export function validateContestInput(
   if (reward.present || creating) {
     recognized ||= reward.present;
     values.rewardCoins = contestInteger(reward.present ? reward.value : 0, "rewardCoins", 0, 10_000_000);
+  }
+
+  // --- prize kind -----------------------------------------------------------
+  // A contest awards coins OR a physical product, never both. The product fields
+  // are only parsed when the kind says product, so a coin contest cannot carry a
+  // half-filled product that a later PATCH would accidentally activate.
+  const prizeType = firstAlias(body, ["prizeType"]);
+  if (prizeType.present || creating) {
+    recognized ||= prizeType.present;
+    const raw = prizeType.present ? prizeType.value : "coins";
+    if (!PRIZE_TYPES.includes(raw)) {
+      throw httpsError("invalid-argument", `prizeType must be one of: ${PRIZE_TYPES.join(", ")}.`);
+    }
+    values.prizeType = raw;
+  }
+
+  const productTitle = firstAlias(body, ["prizeProductTitle", "productTitle"]);
+  const productImage = firstAlias(body, ["prizeProductImageUrl", "productImageUrl"]);
+  const productValue = firstAlias(body, ["prizeProductValue", "productValue"]);
+  const productDescription = firstAlias(body, ["prizeProductDescription", "productDescription"]);
+  const productTouched =
+    productTitle.present || productImage.present || productValue.present || productDescription.present;
+  recognized ||= productTouched;
+
+  if (values.prizeType === "product") {
+    // Validated as a unit, because "a product prize with no image" is not a state
+    // worth persisting — the image is what every card renders.
+    const product = assertProductPrize({
+      title: productTitle.value,
+      imageUrl: productImage.value,
+      value: productValue.present ? productValue.value : 0,
+      description: productDescription.present ? productDescription.value : undefined,
+    });
+    values.prizeProductTitle = product.title;
+    values.prizeProductImageUrl = product.imageUrl;
+    values.prizeProductValue = product.value;
+    values.prizeProductDescription = product.description;
+    // A product contest pays no coins. Forced rather than merely validated so an
+    // admin switching a coin contest to a product one cannot leave a stale reward
+    // behind that settlement would then credit.
+    values.rewardCoins = 0;
+  } else if (values.prizeType === "coins") {
+    // Clear the product columns on the way back to coins, for the same reason.
+    values.prizeProductTitle = null;
+    values.prizeProductImageUrl = null;
+    values.prizeProductValue = 0;
+    values.prizeProductDescription = null;
+  } else if (productTouched) {
+    // Product fields sent on a PATCH that does not say which kind this is. Refused
+    // rather than guessed: writing them without setting `prizeType` would store a
+    // product nobody is going to be given, and inferring "product" from their
+    // presence would silently change what a live contest awards.
+    throw httpsError(
+      "invalid-argument",
+      "Include prizeType when changing product prize fields.",
+    );
   }
 
   const durationDays = firstAlias(body, ["voteDurationDays"]);

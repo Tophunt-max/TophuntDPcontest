@@ -176,6 +176,26 @@ export const contests = sqliteTable("contests", {
   autoCancelHours: integer("auto_cancel_hours").default(24),
   minVotes: integer("min_votes").default(0),
   bannerUrl: text("banner_url"), // contest photo/banner shown in the user app
+  /**
+   * What the winner actually gets: "coins" | "product" (migration 0042).
+   *
+   * A contest awards one or the other, never both. When this is "product",
+   * `rewardCoins` MUST be 0 — a product prize deliberately does not travel through
+   * the coin path, because `assertPrizeFundedByPot` caps rewardCoins at the pot the
+   * two players funded and a phone has no coin value. Weakening that cap to
+   * describe a physical prize would remove the one rule protecting the coin supply,
+   * so the two prize kinds live in separate columns.
+   *
+   * The entry fees a product contest collects are simply retained — that is what
+   * pays for the product — and with rewardCoins at 0 the pot assertion is satisfied
+   * trivially rather than bypassed.
+   */
+  prizeType: text("prize_type").default("coins"),
+  prizeProductTitle: text("prize_product_title"),
+  prizeProductImageUrl: text("prize_product_image_url"),
+  /** Declared retail value, for display only. Never credited, never spendable. */
+  prizeProductValue: real("prize_product_value").default(0),
+  prizeProductDescription: text("prize_product_description"),
   // Validity window, epoch ms, both nullable (NULL = unbounded). These are the
   // TEMPLATE's own lifetime — when it becomes joinable and when it stops being
   // offered — and are not to be confused with voteDurationDays/autoCancelHours,
@@ -219,6 +239,18 @@ export const contestMatches = sqliteTable(
     // prize of a match that is already in flight. NULL = legacy row, fall back
     // to the template at settlement time.
     prizeCoins: real("prize_coins"),
+    /**
+     * Product-prize half of that same immutable snapshot (migration 0042).
+     *
+     * Same contract as `prizeCoins` above and for the same reason: an admin editing
+     * the template must not be able to change what a battle already in flight is
+     * worth. NULL `prizeType` means "legacy row" and settlement falls back to the
+     * template, exactly as it does for a NULL `prizeCoins`.
+     */
+    prizeType: text("prize_type"),
+    prizeProductTitle: text("prize_product_title"),
+    prizeProductImageUrl: text("prize_product_image_url"),
+    prizeProductValue: real("prize_product_value"),
     // Unique token used to make status + financial settlement one atomic D1 batch.
     settlementId: text("settlement_id"),
     // { fire: n, heart: n, laugh: n } quick-reaction counters
@@ -1327,5 +1359,85 @@ export const broadcastJobs = sqliteTable(
   },
   (t) => ({
     statusIdx: index("idx_broadcast_jobs_status").on(t.status, t.createdAt),
+  }),
+);
+
+
+// ---------------------------------------------------------------------------
+// prize_claims  (migration 0042)
+// ---------------------------------------------------------------------------
+/**
+ * One row per won PHYSICAL prize, and the delivery details needed to send it.
+ *
+ * Created by settlement, never by the winner. The row IS the record that something
+ * is owed, so it has to exist whether or not the winner ever opens the app again —
+ * and it is inserted inside `settleWinner`'s atomic batch, under the same
+ * `settlement_id` gate as the status change, so a claim can never exist for a match
+ * this resolver did not win.
+ *
+ * `id` is deterministic (`prize_claim:<matchId>`), which is what makes that INSERT
+ * exactly-once under replay. `uniq_prize_claims_match` says the same thing a second
+ * way, at the level a human reading the schema can see.
+ *
+ * Coin prizes do NOT appear here. They are credited straight to the wallet with a
+ * `coin_transactions` row, which is its own receipt; a claim would be a second,
+ * redundant state machine over money that has already moved.
+ */
+export const prizeClaims = sqliteTable(
+  "prize_claims",
+  {
+    /** `prize_claim:<matchId>` — deterministic, so the insert is idempotent. */
+    id: text("id").primaryKey(),
+    matchId: text("match_id").notNull(),
+    contestId: text("contest_id"),
+    /** The winner. Every read filters on it; submit requires it to equal the caller. */
+    uid: text("uid").notNull(),
+    /**
+     * unclaimed — won, no delivery details yet. The winner must act.
+     * submitted  — details supplied, waiting on an admin.
+     * approved   — admin accepted the address; being packed.
+     * shipped    — handed to a courier; `courier` / `trackingNumber` are set.
+     * delivered  — terminal, successful.
+     * cancelled  — terminal, unsuccessful. `adminNote` says why.
+     */
+    status: text("status").notNull().default("unclaimed"),
+
+    // Product snapshot, copied from the match at settlement. Denormalised on
+    // purpose: this records what was PROMISED, and must survive the contest
+    // template being edited or deleted long afterwards.
+    productTitle: text("product_title").notNull(),
+    productImageUrl: text("product_image_url"),
+    productValue: real("product_value").default(0),
+
+    // Supplied by the winner. PII — purged by accountDeletion and included in
+    // accountExport. See lib/deliveryAddress.ts for validation and masking.
+    recipientName: text("recipient_name"),
+    phone: text("phone"),
+    addressLine1: text("address_line1"),
+    addressLine2: text("address_line2"),
+    landmark: text("landmark"),
+    city: text("city"),
+    state: text("state"),
+    postalCode: text("postal_code"),
+    country: text("country"),
+    notes: text("notes"),
+
+    // Admin-only fulfilment fields.
+    courier: text("courier"),
+    trackingNumber: text("tracking_number"),
+    adminNote: text("admin_note"),
+
+    createdAt: integer("created_at").notNull(),
+    submittedAt: integer("submitted_at"),
+    approvedAt: integer("approved_at"),
+    shippedAt: integer("shipped_at"),
+    deliveredAt: integer("delivered_at"),
+    cancelledAt: integer("cancelled_at"),
+    updatedAt: integer("updated_at"),
+  },
+  (t) => ({
+    matchUnique: uniqueIndex("uniq_prize_claims_match").on(t.matchId),
+    uidIdx: index("idx_prize_claims_uid").on(t.uid, t.status),
+    statusIdx: index("idx_prize_claims_status").on(t.status, t.createdAt),
   }),
 );

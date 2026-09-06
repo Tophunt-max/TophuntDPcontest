@@ -35,6 +35,7 @@ import {
 } from "../lib/cache";
 import { assertContestOpenNow, createContestExtra, validateContestInput } from "../lib/contestAdmin";
 import { parsePayoutDestination, readWithdrawalPolicy } from "../lib/payouts";
+import { parseDeliveryAddress } from "../lib/deliveryAddress";
 import {
   cancelAccountDeletion,
   checkDeletionEligibility,
@@ -2727,6 +2728,75 @@ apiRoute.post("/", async (c) => {
       await rateLimit(env, `exportdata:${uid}`, 3, 86400);
       const bundle = await exportUserData(env, uid);
       return c.json(bundle);
+    }
+
+    /**
+     * Supply the delivery details for a physical prize this caller won.
+     *
+     * Fail-CLOSED rate limit: this writes a postal address, and an unlimited burst
+     * would let someone rewrite a shipping destination repeatedly to time an
+     * operator's read — an address-swap window. It is also simply not an action a
+     * real person performs more than a handful of times.
+     */
+    case "submitPrizeClaim": {
+      await rateLimit(env, `prizeclaim:${uid}`, 10, 3600, { failClosed: true });
+      const claimId = typeof body.claimId === "string" && body.claimId
+        ? body.claimId
+        : typeof body.matchId === "string" && body.matchId
+          ? `prize_claim:${body.matchId}`
+          : "";
+      if (!claimId) throw httpsError("invalid-argument", "claimId or matchId is required.");
+
+      const address = parseDeliveryAddress(body.delivery ?? body.address ?? body);
+      const ts = now();
+
+      // One conditional UPDATE rather than read-then-write. The `uid` term is the
+      // authorisation — a claim belonging to somebody else matches nothing, and
+      // reports the same "not found" as a claim that does not exist, so this cannot
+      // be used to discover who won what. The status term makes it idempotent-ish:
+      // an address can be supplied while a claim is `unclaimed` or corrected while
+      // it is still only `submitted`, but NOT once an operator has approved or
+      // shipped it — by then the parcel is addressed and a silent change would send
+      // it to the wrong place.
+      const updated = await db
+        .update(schema.prizeClaims)
+        .set({
+          status: "submitted",
+          recipientName: address.recipientName,
+          phone: address.phone,
+          addressLine1: address.addressLine1,
+          addressLine2: address.addressLine2,
+          landmark: address.landmark,
+          city: address.city,
+          state: address.state,
+          postalCode: address.postalCode,
+          country: address.country,
+          notes: address.notes,
+          submittedAt: ts,
+          updatedAt: ts,
+        })
+        .where(and(
+          eq(schema.prizeClaims.id, claimId),
+          eq(schema.prizeClaims.uid, uid),
+          inArray(schema.prizeClaims.status, ["unclaimed", "submitted"]),
+        ))
+        .run();
+
+      if (updated.meta.changes === 0) {
+        // Distinguish the two reasons, but only for a claim this caller owns.
+        const existing = await db
+          .select({ status: schema.prizeClaims.status })
+          .from(schema.prizeClaims)
+          .where(and(eq(schema.prizeClaims.id, claimId), eq(schema.prizeClaims.uid, uid)))
+          .get();
+        if (!existing) throw httpsError("not-found", "Prize claim not found.");
+        throw httpsError(
+          "failed-precondition",
+          "This prize is already being processed, so its address can no longer be changed. Contact support if it is wrong.",
+        );
+      }
+
+      return c.json({ success: true, status: "submitted" });
     }
 
     /**

@@ -957,6 +957,11 @@ describe('deletion completeness across the whole schema', () => {
     // Threads survive for the other participant; the member snapshot is
     // anonymised and the messages are deleted (tested above).
     chats: 'counterparty conversation (snapshot anonymised)',
+    // A record that a prize was awarded and where it ended up — an accounting fact
+    // about the business, in the same class as the coin ledger above. The PERSONAL
+    // part (name, phone, full postal address) is scrubbed in place by phaseContent
+    // and is asserted separately below.
+    prize_claims: 'prize award record (delivery address scrubbed)',
   };
 
   /** Column names that identify a person in this schema. */

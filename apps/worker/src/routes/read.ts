@@ -30,6 +30,7 @@ import {
 } from "../lib/cache";
 import { memoGet, memoPut } from "../lib/memo";
 import { getLiveTally, getViewerVote } from "../lib/voteCounter";
+import { publicPrize } from "../lib/prizes";
 import { rateLimit } from "../lib/rateLimit";
 import { searchTracks, searchCatalog, getCatalog } from "../lib/music";
 import { assertChatMember } from "../lib/chatAuth";
@@ -1040,6 +1041,11 @@ const mapContest = (r: any) => ({
   entryFeePerPlayer: perPlayerEntryFee(r.totalEntryFee),
   rewardCoins: r.rewardCoins,
   winningCoins: r.rewardCoins,
+  // What the winner actually gets. One helper (lib/prizes.ts publicPrize) so every
+  // surface — Explore, both contest lists, the setup screens — reads the prize the
+  // same way, which is the lesson `contestPricing` already taught about entry fees
+  // being computed five different ways.
+  ...publicPrize(r),
   voteDurationDays: r.voteDurationDays,
   autoCancelHours: r.autoCancelHours,
   minVotes: r.minVotes,
@@ -3102,4 +3108,74 @@ readRoute.get("/blog/:slug", async (c) => {
       .catch(() => {}),
   );
   return c.json(post);
+});
+
+
+/**
+ * The caller's own physical prizes, and where each one is up to.
+ *
+ * `requireAuth` plus a `uid` filter is the whole authorisation model — there is no
+ * id in the path, so there is nothing to enumerate. Not cached in either tier: a
+ * winner who has just submitted an address reloads this screen immediately to check
+ * it took, and a stale "unclaimed" there reads as the form having failed.
+ *
+ * The address is echoed back deliberately. It lets the app show what was submitted
+ * and pre-fill a correction, and it is the caller's own data — the same reasoning
+ * that puts it in the data export. Admin-only fields (`adminNote` beyond a
+ * cancellation reason) are not projected.
+ */
+readRoute.get("/prizes", requireAuth, async (c) => {
+  const db = getDb(c.env);
+  const uid = c.get("user").uid;
+  const rows = await db
+    .select()
+    .from(schema.prizeClaims)
+    .where(eq(schema.prizeClaims.uid, uid))
+    .orderBy(desc(schema.prizeClaims.createdAt))
+    .limit(100)
+    .all();
+
+  c.header("Cache-Control", "private, no-store");
+  return c.json(
+    rows.map((r) => ({
+      id: r.id,
+      matchId: r.matchId,
+      contestId: r.contestId,
+      status: r.status,
+      productTitle: r.productTitle,
+      productImageUrl: r.productImageUrl,
+      productValue: r.productValue ?? 0,
+      /** True once the winner has supplied an address. Drives the CTA. */
+      hasAddress: !!r.recipientName,
+      /**
+       * Whether the address can still be corrected. Mirrors exactly the statuses
+       * `submitBoxPrizeClaim` accepts, so the app never offers an edit the server
+       * will refuse — an operator has already addressed the parcel past this point.
+       */
+      canEditAddress: r.status === "unclaimed" || r.status === "submitted",
+      delivery: r.recipientName
+        ? {
+            recipientName: r.recipientName,
+            phone: r.phone,
+            addressLine1: r.addressLine1,
+            addressLine2: r.addressLine2,
+            landmark: r.landmark,
+            city: r.city,
+            state: r.state,
+            postalCode: r.postalCode,
+            country: r.country,
+            notes: r.notes,
+          }
+        : null,
+      courier: r.courier,
+      trackingNumber: r.trackingNumber,
+      // Only meaningful on a cancellation, which is the one case the winner is owed
+      // an explanation for.
+      adminNote: r.status === "cancelled" ? r.adminNote : null,
+      createdAt: r.createdAt,
+      submittedAt: r.submittedAt,
+      shippedAt: r.shippedAt,
+      deliveredAt: r.deliveredAt,
+    })),
+  );
 });

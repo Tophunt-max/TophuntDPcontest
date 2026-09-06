@@ -125,6 +125,8 @@ export interface MediaCategory {
  * incorrect in two of them.
  */
 export const BANNER_PREFIX = "contest-banners";
+/** Photos of the physical products a contest can award (migration 0042). */
+export const PRODUCT_IMAGE_PREFIX = "product-images";
 export const VS_CARD_PREFIX = "vs-cards";
 export const PAYMENT_QR_PREFIX = "payment-qr";
 export const BLOG_IMPORT_PREFIX = "blog/imported";
@@ -299,6 +301,22 @@ export const MEDIA_CATEGORIES: readonly MediaCategory[] = [
 
     proxyOnly: true,
     description: "Contest banners, set from the admin panel. Deleted by the contest lifecycle.",
+  },
+  {
+    prefix: PRODUCT_IMAGE_PREFIX,
+    writer: "admin",
+    kinds: ["image"],
+    // Same lifecycle as a banner — it must stop being visible when the contest that
+    // advertised it is edited or deleted — with one difference that matters: a
+    // product image is COPIED onto every prize_claims row at settlement, so the
+    // object has to outlive the contest for as long as a claim references it. The
+    // attachment check in routes/admin.ts scans claims as well as contests.
+    cache: "no-store",
+    retentionDays: null,
+    dateSharded: true,
+    legacyVideo: false,
+    proxyOnly: true,
+    description: "Photos of physical prizes, set from the admin panel. Referenced by prize claims.",
   },
   {
     prefix: PAYMENT_QR_PREFIX,

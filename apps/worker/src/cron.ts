@@ -13,11 +13,12 @@ import { getDb, schema } from "./db";
 import { invalidateContestCaches } from "./lib/cache";
 import { createNotification } from "./lib/notify";
 import { sendUserEmail } from "./lib/email";
-import { contestWinEmail, contestRefundEmail } from "./lib/emailTemplates";
+import { contestWinEmail, contestRefundEmail, prizeClaimEmail } from "./lib/emailTemplates";
 import { drainBroadcastJobs, enqueueBroadcast } from "./lib/broadcast";
 import { finalizeVotes } from "./lib/voteCounter";
 import { settleRefund, settleWinner } from "./lib/contestSettlement";
 import { matchPot, perPlayerEntryFee } from "./lib/money";
+import { normalizePrizeType, resolveMatchPrize, type PrizeFields } from "./lib/prizes";
 import { deleteMediaByUrl } from "./lib/mediaDelete";
 import { deleteVsImageByPublicUrl } from "./lib/r2";
 import { newId, now } from "./lib/ids";
@@ -64,12 +65,40 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
   let minVotes = match.minVotesRequired == null
     ? null
     : Math.max(0, Number(match.minVotesRequired));
-  if (match.contestId && (rewardAmount == null || minVotes == null)) {
+  // The PRODUCT half of the same snapshot. `prizeType` being null is what marks a
+  // row written before migration 0042, and it is the only reason to fall back to
+  // the template — identical to how `prizeCoins` degrades above.
+  let template: PrizeFields | null = null;
+  const needsPrizeTemplate = match.prizeType == null;
+  if (match.contestId && (rewardAmount == null || minVotes == null || needsPrizeTemplate)) {
     const contest = await db
-      .select({ reward: schema.contests.rewardCoins, minVotes: schema.contests.minVotes })
+      .select({
+        reward: schema.contests.rewardCoins,
+        minVotes: schema.contests.minVotes,
+        prizeType: schema.contests.prizeType,
+        prizeProductTitle: schema.contests.prizeProductTitle,
+        prizeProductImageUrl: schema.contests.prizeProductImageUrl,
+        prizeProductValue: schema.contests.prizeProductValue,
+      })
       .from(schema.contests)
       .where(eq(schema.contests.id, match.contestId))
       .get();
+    template = contest ?? null;
+    if (needsPrizeTemplate && contest) {
+      // Persist the snapshot so this match settles deterministically from now on,
+      // and so an admin editing the template afterwards cannot change what is owed.
+      await db.update(schema.contestMatches)
+        .set({
+          prizeType: normalizePrizeType(contest.prizeType),
+          prizeProductTitle: contest.prizeProductTitle ?? null,
+          prizeProductImageUrl: contest.prizeProductImageUrl ?? null,
+          prizeProductValue: contest.prizeProductValue ?? null,
+        })
+        .where(and(
+          eq(schema.contestMatches.id, match.id),
+          isNull(schema.contestMatches.prizeType),
+        ));
+    }
     if (rewardAmount == null) {
       // Legacy match with no snapshot: derive it once, clamp it to the pot, and
       // persist it so this match settles deterministically from now on.
@@ -191,23 +220,48 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
   const loserUid = votesA > votesB ? userB.uid : userA.uid;
   const ts = now();
 
+  // Coins or a product, never both. `resolveMatchPrize` prefers the match's own
+  // snapshot and only consults the template for a pre-0042 row.
+  const prize = resolveMatchPrize(match, template, rewardAmount);
+
   const settled = await settleWinner(env, {
     matchId: match.id,
     contestId: match.contestId,
     expectedStatus: "active",
     winnerUid,
     loserUid,
-    rewardAmount,
-    description: `Victory reward for "${match.title}"`,
+    rewardAmount: prize.coins,
+    description: prize.product
+      ? `Prize won: ${prize.product.title} — "${match.title}"`
+      : `Victory reward for "${match.title}"`,
     completedAt: ts,
+    productPrize: prize.product,
   });
   if (!settled) return;
 
   await publishMatchStatus(env, match.id, "completed", votesA, votesB, winnerUid);
-  await createNotification(env, winnerUid, { title: "You Won! 🏆", body: `Victory! You won the battle "${match.title}" and earned ${rewardAmount} Dpcoins!`, type: "contest-win", targetId: match.id });
+  if (prize.product) {
+    // A product is not delivered by winning — it has to be claimed, and the claim
+    // needs an address. So the notification's job is to get the winner to that
+    // form, and `targetId` points at the claim rather than the battle.
+    await createNotification(env, winnerUid, {
+      title: "You Won a Prize! 🎁",
+      body: `You won ${prize.product.title} in "${match.title}". Add your delivery details to claim it.`,
+      type: "prize-claim",
+      targetId: `prize:${match.id}`,
+    });
+  } else {
+    await createNotification(env, winnerUid, { title: "You Won! 🏆", body: `Victory! You won the battle "${match.title}" and earned ${prize.coins} Dpcoins!`, type: "contest-win", targetId: match.id });
+  }
   await createNotification(env, loserUid, { title: "Battle Ended", body: `The battle "${match.title}" has concluded. You played well!`, type: "contest-loss", targetId: match.id });
-  // Prize credited to the winner — send a receipt. No "you lost" email.
-  await sendUserEmail(env, winnerUid, contestWinEmail(match.title, rewardAmount));
+  // Prize awarded to the winner — send a receipt. No "you lost" email.
+  await sendUserEmail(
+    env,
+    winnerUid,
+    prize.product
+      ? prizeClaimEmail(match.title, prize.product.title)
+      : contestWinEmail(match.title, prize.coins),
+  );
 }
 
 async function refundWaitingMatch(env: Env, match: Match): Promise<void> {

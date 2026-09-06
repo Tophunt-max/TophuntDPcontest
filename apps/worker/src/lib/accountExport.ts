@@ -172,6 +172,21 @@ export async function exportUserData(env: Env, uid: string): Promise<UserDataExp
     won: row.winner_uid === uid,
   }));
 
+  // Physical prizes won, INCLUDING the delivery address the user gave us.
+  //
+  // Included verbatim rather than masked, unlike the way this file omits push
+  // tokens: an address is the user's own personal data and Article 15 is precisely
+  // the right to receive it. The push-token exclusion is a different case — those
+  // are device credentials someone holding the export file could act on, and are
+  // not personal data at all.
+  const prizeClaims = await db
+    .select()
+    .from(schema.prizeClaims)
+    .where(eq(schema.prizeClaims.uid, uid))
+    .orderBy(desc(schema.prizeClaims.createdAt))
+    .limit(CAP)
+    .all();
+
   return {
     meta: {
       uid,
@@ -207,6 +222,7 @@ export async function exportUserData(env: Env, uid: string): Promise<UserDataExp
     supportTickets: capped(supportTickets),
     votesCast: capped(votesCast),
     contestEntries: capped(contestEntries),
+    prizeClaims: capped(prizeClaims),
     messagesSent: capped(messagesSent),
     notifications: capped(notifications),
     deletionRequest: deletionRequest ?? null,
