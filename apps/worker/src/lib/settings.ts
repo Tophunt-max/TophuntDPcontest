@@ -5,24 +5,65 @@
 import { eq } from "drizzle-orm";
 import type { Env } from "../types";
 import { getDb, schema } from "../db";
+import { kvWritesDisabled } from "./cache";
+import { memoDelete, memoGet, memoPut } from "./memo";
 
-const CACHE_TTL = 60; // seconds
+/**
+ * KV lifetime.
+ *
+ * Raised from 60s. Freshness here does NOT come from the ttl — every admin write
+ * calls `invalidateSetting`, which deletes the key — so the ttl is only a
+ * backstop against a missed invalidation. At 60s it was an expensive backstop:
+ * `getAppConfig` / `getGamificationSettings` are called from 14 places including
+ * the feed ranker and `/app-config` (which the app polls hard), so the key was
+ * re-written up to 1,440 times a day per settings id purely to re-cache a blob
+ * that had not changed.
+ */
+const CACHE_TTL = 600;
+
+/**
+ * Isolate-memory lifetime — the layer that actually removes the writes.
+ *
+ * Short on purpose. An admin edit deletes the KV key but cannot reach another
+ * isolate's memory, so this value IS the worst-case delay before a config change
+ * is live everywhere. 30s is under the 60s that the old KV ttl already imposed on
+ * every reader, so no caller sees staler config than it did before.
+ */
+const MEMO_TTL = 30;
 
 async function readSetting(env: Env, id: string): Promise<any> {
   const cacheKey = `settings:${id}`;
-  const cached = await env.CACHE_KV.get(cacheKey, "json");
-  if (cached) return cached;
+
+  const memo = memoGet<any>(cacheKey);
+  if (memo !== undefined) return memo;
+
+  // A KV read throwing used to 500 the request. Settings are read on hot paths
+  // (and on the feed), so a transport blip degrading to "read it from D1" is the
+  // behaviour every other cache in this codebase already has.
+  let cached: any = null;
+  try {
+    cached = await env.CACHE_KV.get(cacheKey, "json");
+  } catch (e) {
+    console.error("[settings] cache read failed (continuing)", id, e);
+  }
+  if (cached) {
+    memoPut(cacheKey, cached, MEMO_TTL);
+    return cached;
+  }
 
   const db = getDb(env);
   const row = await db.select().from(schema.settings).where(eq(schema.settings.id, id)).get();
   const data = row?.data ?? {};
+  memoPut(cacheKey, data, MEMO_TTL);
   // Never let a KV write failure (e.g. the daily put() quota being exhausted)
   // break config reads — we already have the data from D1. Fail open: skip the
   // cache write and just serve the fresh value.
-  try {
-    await env.CACHE_KV.put(cacheKey, JSON.stringify(data), { expirationTtl: CACHE_TTL });
-  } catch (e) {
-    console.error("[settings] cache write failed (continuing)", e);
+  if (!kvWritesDisabled(env)) {
+    try {
+      await env.CACHE_KV.put(cacheKey, JSON.stringify(data), { expirationTtl: CACHE_TTL });
+    } catch (e) {
+      console.error("[settings] cache write failed (continuing)", e);
+    }
   }
   return data;
 }
@@ -89,7 +130,16 @@ export async function getRewardedAdConfig(env: Env): Promise<RewardedAdConfig> {
   };
 }
 
-/** Invalidate a cached setting (call after admin updates it). */
+/**
+ * Invalidate a cached setting (call after admin updates it).
+ *
+ * Drops the isolate copy as well as the KV key. Without the `memoDelete` the
+ * admin panel would write a setting, re-read it on the very next request, and be
+ * served the pre-edit value out of the same isolate's memory — which reads as
+ * "the save did not work".
+ */
 export async function invalidateSetting(env: Env, id: string): Promise<void> {
-  await env.CACHE_KV.delete(`settings:${id}`);
+  const cacheKey = `settings:${id}`;
+  memoDelete(cacheKey);
+  await env.CACHE_KV.delete(cacheKey);
 }

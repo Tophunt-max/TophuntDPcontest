@@ -47,6 +47,7 @@ import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { httpsError } from "./http";
 import { cacheGetJson, cachePutJson, delCache } from "./cache";
+import { memoGet, memoPut } from "./memo";
 
 /** Per-user cached exclusion sets (see rule 2 above). */
 export const blockCacheKey = (uid: string) => `cache:blocks:${uid}`;
@@ -57,6 +58,24 @@ export const blockCacheKey = (uid: string) => `cache:blocks:${uid}`;
  * freshness mechanism.
  */
 const BLOCK_CACHE_TTL = 300;
+
+/**
+ * Isolate-memory lifetime in front of that KV entry.
+ *
+ * This lookup runs on nearly every read, and the common case — a user with no
+ * blocks at all — is an empty object that was costing a KV write every 5 minutes
+ * per active user to keep cached. Memoising it removes both the read and the
+ * write for the duration.
+ *
+ * Kept much shorter than `BLOCK_CACHE_TTL` because `invalidateBlockCache` cannot
+ * reach another isolate's memory: this value is the worst-case window in which a
+ * just-created block is still invisible to a cached READ. That window already
+ * existed — KV deletes are only eventually consistent, which is rule 2 above —
+ * and it remains bounded by the thing that actually matters: the write-path
+ * guards (`assertNotBlocked` and friends) never consult this cache at all, so no
+ * interaction between two blocked users is ever authorised from a stale copy.
+ */
+const BLOCK_MEMO_TTL = 20;
 
 /**
  * Hard ceiling on how many relations are loaded per user.
@@ -172,12 +191,19 @@ async function loadRelations(env: Env, uid: string): Promise<BlockRelations> {
 export async function getRelations(env: Env, uid: string | undefined): Promise<BlockRelations> {
   if (!uid) return EMPTY;
   try {
-    const cached = await cacheGetJson<BlockRelations>(env, blockCacheKey(uid));
-    if (cached) return cached;
+    const key = blockCacheKey(uid);
+    const memo = memoGet<BlockRelations>(key);
+    if (memo) return memo;
+    const cached = await cacheGetJson<BlockRelations>(env, key);
+    if (cached) {
+      memoPut(key, cached, BLOCK_MEMO_TTL);
+      return cached;
+    }
     const fresh = await loadRelations(env, uid);
     // Cached even when empty — the common case is a user with no blocks at all,
     // and that is exactly the lookup worth not repeating on every request.
-    await cachePutJson(env, blockCacheKey(uid), fresh, BLOCK_CACHE_TTL);
+    memoPut(key, fresh, BLOCK_MEMO_TTL);
+    await cachePutJson(env, key, fresh, BLOCK_CACHE_TTL);
     return fresh;
   } catch (e) {
     console.error("[blocks] getRelations failed (continuing unfiltered)", uid, e);

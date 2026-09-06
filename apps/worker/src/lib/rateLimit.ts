@@ -11,6 +11,7 @@
  */
 import type { Env } from "../types";
 import { httpsError } from "./http";
+import { kvWritesDisabled } from "./cache";
 
 /**
  * Consume one unit from `key`'s budget and report whether it was allowed.
@@ -40,6 +41,22 @@ export async function consumeRateLimit(
   windowSec: number,
   options: RateLimitOptions = {},
 ): Promise<boolean> {
+  // Testing kill switch, and the ONE place it is allowed to change a decision.
+  //
+  // Each call here costs a KV write, and the hot keys are per-action — `like`,
+  // `comment`, `vote`, `msg`, `pvisit` — so on the free plan's 1,000 writes/day
+  // this is one of the two things that empties the quota. `KV_WRITES_DISABLED`
+  // turns the counter off for a test session.
+  //
+  // It applies to fail-OPEN keys ONLY. Those are the engagement throttles, whose
+  // stated trade-off is already "a blip must not stop people using the app", so
+  // switching them off costs nothing but bot protection in a deployment with no
+  // real users. The fail-CLOSED keys are the opposite: payouts, deposits, OTP
+  // sends, uploads, credential probing, account deletion. Letting a config flag
+  // silently remove those would hand an unlimited burst to exactly the endpoints
+  // that cost money — so they keep writing, and they are low-volume by nature.
+  if (!options.failClosed && kvWritesDisabled(env)) return true;
+
   try {
     const windowId = Math.floor(Date.now() / 1000 / windowSec);
     const cacheKey = `rl:${key}:${windowId}`;

@@ -250,6 +250,11 @@ R2_LEGACY_BASE_URLS = ""
 # production block. Staging therefore always serves originals.
 MEDIA_TRANSFORMATIONS = "false"
 BUNNY_CDN_HOSTNAME = ""
+# Staging shares the same free-plan KV quota as production (the limit is
+# per-ACCOUNT, not per-namespace), so a test run here can take production's cache
+# writes down with it. Off by default so staging behaves like production; flip to
+# "true" for a heavy session. See the production block for the full scope.
+KV_WRITES_DISABLED = "false"
 SENTRY_ENVIRONMENT = "staging"
 # Pages preview deployments get a per-commit subdomain, so they cannot be pinned
 # to an exact origin list. Staging is the environment where that is acceptable —
@@ -334,6 +339,38 @@ MEDIA_TRANSFORMATIONS = "true"
 # deploy before the Bunny account exists.
 # The API key and library id are SECRETS — `wrangler secret put`, never here.
 BUNNY_CDN_HOSTNAME = ""
+
+# ---------------------------------------------------------------------------
+# KV write kill switch. TESTING ONLY — keep this "false" in production.
+#
+# The Workers FREE plan allows 100,000 KV reads but only 1,000 KV WRITES per day,
+# and once the write quota is gone every `put` returns 429 until 00:00 UTC. That
+# is not a theoretical limit: with no real users at all, one person exercising the
+# app exhausted it in about three hours and Cloudflare emailed to say KV was
+# blocked. Reads were at 17.5k of 100k — under 1% — while writes were the whole
+# budget, because several caches here were being written once per REQUEST rather
+# than once per value.
+#
+# Set to "true" to run a test session at zero KV write cost: every cache read
+# misses and the value is recomputed from D1, which is the fail-open path those
+# caches already take when KV is unavailable. The app works; it is just uncached.
+#
+# What it does NOT switch off, deliberately:
+#   - Anything in OTP_KV. OTP codes, per-recipient send cooldowns, re-auth grants
+#     and the password-reset verified flag must persist or auth breaks — and one
+#     of those breakages would be a password reset that no longer needs proof.
+#   - Fail-CLOSED rate limits: payouts, deposits, OTP sends, uploads, credential
+#     probing, account deletion. An unlimited burst on those costs real money, so
+#     a config flag is not allowed to remove them. The fail-OPEN engagement
+#     throttles (likes, comments, votes, messages, profile visits) DO honour it —
+#     those are the high-volume writers and their documented trade-off is already
+#     that a KV blip must not stop people using the app.
+#
+# The real fix for production is the Workers Paid plan ($5/mo — 1M writes/day);
+# this switch is what makes testing possible in the meantime. See lib/cache.ts
+# `kvWritesDisabled` for the code path.
+# ---------------------------------------------------------------------------
+KV_WRITES_DISABLED = "false"
 
 # CORS allow-list (comma-separated, exact origin match — no wildcards).
 #

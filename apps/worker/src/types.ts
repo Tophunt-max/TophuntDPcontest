@@ -29,6 +29,20 @@ export interface Env {
   // this is off, lib/media.ts returns original URLs for every *Thumb /
   // *Optimized field. See transformationsAvailable().
   MEDIA_TRANSFORMATIONS?: string;
+  /**
+   * "true" to skip every CACHE_KV write. TESTING ONLY.
+   *
+   * The Workers free plan allows 1,000 KV writes/day, which one person
+   * exercising the app can exhaust in a few hours — after which every `put` in
+   * the Worker fails with 429 until 00:00 UTC. This makes a test session cost
+   * zero writes: caches simply always miss and values are recomputed from D1.
+   *
+   * Does NOT affect OTP_KV (OTP codes, send cooldowns, re-auth grants, the
+   * password-reset verified flag) and does NOT affect fail-closed rate limits
+   * (payouts, deposits, OTP sends, uploads, account deletion). See
+   * `kvWritesDisabled` in lib/cache.ts for the full scope.
+   */
+  KV_WRITES_DISABLED?: string;
 
   // --- Secrets (wrangler secret put) ---
   // Firebase Admin service account (JSON string) used for Identity Toolkit + FCM.
