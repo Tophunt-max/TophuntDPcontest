@@ -276,6 +276,8 @@ interface Probe {
   path: string;
   status: number;
   contentType: string;
+  /** `Location`, for probes taken with `redirect: "manual"`. */
+  location?: string | null;
   body: string;
   ok: boolean;
 }
@@ -287,17 +289,30 @@ interface Probe {
  * navigations, so a probe without it measures the raw shell and every on-page
  * check would report a false failure.
  */
-async function probe(origin: string, path: string, accept = "text/html"): Promise<Probe> {
+async function probe(
+  origin: string,
+  path: string,
+  accept = "text/html",
+  /**
+   * `manual` reports the redirect itself rather than its destination.
+   *
+   * Needed because several checks here are ABOUT the redirect: the whole
+   * one-url-per-post guarantee is a set of 301s, and following them would make a
+   * missing redirect indistinguishable from a working one.
+   */
+  redirect: "follow" | "manual" = "follow",
+): Promise<Probe> {
   try {
     const res = await fetch(`${origin}${path}`, {
       headers: { accept, "user-agent": "TopHuntSeoAudit/1.0" },
-      redirect: "follow",
+      redirect,
     });
     const body = await res.text();
     return {
       path,
       status: res.status,
       contentType: res.headers.get("content-type") || "",
+      location: res.headers.get("location") || null,
       body,
       ok: res.ok,
     };
@@ -374,15 +389,42 @@ export async function runSeoAudit(env: Env): Promise<SeoAudit> {
     AUDITED_PUBLIC_ROUTES.map((p) => probe(origin, p)),
   );
   const privateProbes = await Promise.all(AUDITED_PRIVATE_ROUTES.map((p) => probe(origin, p)));
-  const [robots, sitemap, notFound, samplePost] = await Promise.all([
-    probe(origin, "/robots.txt", "text/plain"),
-    probe(origin, "/sitemap.xml", "application/xml"),
-    probe(origin, "/this-path-should-not-exist-seo-audit", "text/html"),
-    posts.length ? probe(origin, `/blog/${posts[0].slug}`) : Promise.resolve(null as any),
-  ]);
-  const probeCount = routeProbes.length + privateProbes.length + 3 + (samplePost ? 1 : 0);
+  const sampleSlug = posts.length ? posts[0].slug : null;
+  const [robots, sitemap, notFound, samplePost, archive, prefixed, slashed, legacy, bogusSitemap] =
+    await Promise.all([
+      probe(origin, "/robots.txt", "text/plain"),
+      probe(origin, "/sitemap.xml", "application/xml"),
+      probe(origin, "/this-path-should-not-exist-seo-audit", "text/html"),
+      // The CANONICAL url, which is the root permalink. Probing `/blog/<slug>` here
+      // would measure the redirect's destination and quietly pass even if the
+      // canonical shape regressed.
+      sampleSlug ? probe(origin, `/${sampleSlug}`) : Promise.resolve(null as any),
+      probe(origin, "/blog/archive"),
+      // Both historical url shapes for a post. `manual`, because the 301 IS the
+      // property being checked.
+      sampleSlug ? probe(origin, `/blog/${sampleSlug}`, "text/html", "manual") : Promise.resolve(null as any),
+      sampleSlug ? probe(origin, `/${sampleSlug}/`, "text/html", "manual") : Promise.resolve(null as any),
+      probe(origin, "/wp-login.php", "text/html", "manual"),
+      probe(origin, "/sitemap_index.xml", "application/xml", "manual"),
+    ]);
+  const probeCount =
+    routeProbes.length + privateProbes.length + 6 + (samplePost ? 1 : 0) + (prefixed ? 2 : 0);
 
-  runTechnical(r, { origin, robots, sitemap, notFound, routeProbes, privateProbes, posts });
+  runTechnical(r, {
+    origin,
+    robots,
+    sitemap,
+    notFound,
+    routeProbes,
+    privateProbes,
+    posts,
+    samplePost,
+    archive,
+    prefixed,
+    slashed,
+    legacy,
+    bogusSitemap,
+  });
   runOnPage(r, { origin, hostname, posts, routeProbes, samplePost });
   runProgrammatic(r, { posts, samplePost });
   runContent(r, { posts });
@@ -437,9 +479,29 @@ function runTechnical(
     routeProbes: Probe[];
     privateProbes: Probe[];
     posts: any[];
+    samplePost: Probe | null;
+    archive: Probe;
+    prefixed: Probe | null;
+    slashed: Probe | null;
+    legacy: Probe;
+    bogusSitemap: Probe;
   },
 ): void {
-  const { origin, robots, sitemap, notFound, routeProbes, privateProbes, posts } = x;
+  const {
+    origin,
+    robots,
+    sitemap,
+    notFound,
+    routeProbes,
+    privateProbes,
+    posts,
+    samplePost,
+    archive,
+    prefixed,
+    slashed,
+    legacy,
+    bogusSitemap,
+  } = x;
 
   r.check(
     "technical",
@@ -489,7 +551,12 @@ function runTechnical(
   );
 
   const sitemapUrls = (sitemap.body.match(/<url>/g) || []).length;
-  const expected = posts.length + AUDITED_PUBLIC_ROUTES.length;
+  // The sitemap also lists the crawlable archive: one page per 100 posts, plus one
+  // or more pages per category. Category pages are not counted here, so `expected`
+  // is a FLOOR — the sitemap legitimately holds more, and only a shortfall is a
+  // defect.
+  const archivePages = Math.max(Math.ceil(posts.length / 100), 1);
+  const expected = posts.length + AUDITED_PUBLIC_ROUTES.length + archivePages;
   // 2% tolerance: a post published between the sitemap's cache fill and this run
   // is not a defect.
   const shortfall = expected - sitemapUrls;
@@ -498,7 +565,8 @@ function runTechnical(
     "tech.sitemap.complete",
     "high",
     "sitemap.xml lists every public URL",
-    `The sitemap holds ${sitemapUrls} URLs but ${expected} are expected (${posts.length} posts + ${AUDITED_PUBLIC_ROUTES.length} routes). ` +
+    `The sitemap holds ${sitemapUrls} URLs but at least ${expected} are expected (${posts.length} posts + ` +
+      `${AUDITED_PUBLIC_ROUTES.length} routes + ${archivePages} archive pages, before category archives). ` +
       "Missing URLs are simply never advertised to search engines.",
     sitemapIsXml && shortfall > Math.ceil(expected * 0.02) ? [`${shortfall} URLs missing`] : [],
     sitemapIsXml && shortfall > Math.ceil(expected * 0.02) ? shortfall : 0,
@@ -565,9 +633,117 @@ function runTechnical(
     "tech.404.noindex",
     "medium",
     "Unknown paths are not indexable",
-    "This SPA answers every path with 200, so a typo'd URL becomes an indexable duplicate of the shell " +
-      "unless it is explicitly marked noindex.",
+    "A typo'd URL must not become an indexable duplicate of the app shell. The SPA catch-all claims every " +
+      "one-segment path, so this is the only thing standing between us and an unbounded set of them.",
     notFoundRobots.includes("noindex") ? [] : [notFound.path],
+  );
+
+  // ---- one url per page ----------------------------------------------------
+  //
+  // This block is the audit for the change that took this site from 92 indexed
+  // pages to a catalogue that can be indexed at all. Each check below corresponds
+  // to a measured production failure, and every one of them was invisible: the
+  // pages rendered perfectly in a browser in all four broken states.
+
+  // The single most important assertion in this file. `/sitemap.xml` submits a url;
+  // the page at that url declares its canonical. If the two strings differ, the
+  // submitted url is by definition an "alternate page" and Google will not index
+  // it — which is precisely what happened for every post in the catalogue, over a
+  // trailing slash.
+  const sampleCanonical = samplePost ? canonicalOf(samplePost.body) : null;
+  const canonicalInSitemap = !!sampleCanonical && sitemap.body.includes(`<loc>${sampleCanonical}</loc>`);
+  r.check(
+    "technical",
+    "tech.canonical.sitemap_match",
+    "critical",
+    "A post's canonical URL is the exact URL in the sitemap",
+    "The canonical tag on a post does not appear verbatim in sitemap.xml. Every submitted URL then reports " +
+      "as 'Alternate page with proper canonical tag' and is not indexed — even when the difference is only a " +
+      "trailing slash.",
+    !samplePost || canonicalInSitemap ? [] : [`${sampleCanonical ?? "(no canonical)"} not in sitemap.xml`],
+    !samplePost || canonicalInSitemap ? 0 : posts.length,
+    "Both must derive from post.slug: the sitemap emits /<slug> and canonicalForPost must self-canonicalise " +
+      "to the same string. Never emit a stored canonical_url.",
+  );
+
+  const badRedirects: string[] = [];
+  const isPermanentTo = (p: Probe | null, target: string) =>
+    !p || (p.status === 301 && (p.location || "").replace(/\/$/, "") === target);
+  if (samplePost) {
+    const target = `${origin}${samplePost.path}`;
+    if (!isPermanentTo(prefixed, target)) {
+      badRedirects.push(`${prefixed?.path} → ${prefixed?.status} ${prefixed?.location ?? ""}`.trim());
+    }
+    if (!isPermanentTo(slashed, target)) {
+      badRedirects.push(`${slashed?.path} → ${slashed?.status} ${slashed?.location ?? ""}`.trim());
+    }
+  }
+  r.check(
+    "technical",
+    "tech.permalink.one_url",
+    "high",
+    "Every historical URL shape 301s onto the permalink",
+    "/blog/<slug> and /<slug>/ must permanently redirect to /<slug>. When they answer 200 instead, one post " +
+      "occupies several crawlable URLs and the duplicates compete with the canonical one.",
+    badRedirects,
+  );
+
+  r.check(
+    "technical",
+    "tech.404.status",
+    "high",
+    "An unknown URL answers with a 404 status",
+    "A dead URL returning 200 is a soft 404: Google has to infer non-existence from the content, files it " +
+      "under 'Soft 404', and keeps re-crawling it forever.",
+    notFound.status === 404 ? [] : [`${notFound.path} → ${notFound.status}`],
+  );
+
+  const legacyHandled = legacy.status === 410 || legacy.status === 404;
+  r.check(
+    "technical",
+    "tech.legacy.gone",
+    "medium",
+    "Retired WordPress URLs answer 410",
+    "The old site's URL space (/wp-*, *.php, /feed, /author/*, /category/*, date archives) must not answer " +
+      "200 with the app shell. That is an effectively unbounded set of soft 404s competing for crawl budget " +
+      "with the real articles.",
+    legacyHandled ? [] : [`${legacy.path} → ${legacy.status}`],
+  );
+
+  const bogusIsHtml = bogusSitemap.status === 200 && bogusSitemap.contentType.includes("text/html");
+  r.check(
+    "technical",
+    "tech.sitemap.bogus_404",
+    "medium",
+    "A non-existent sitemap URL fails cleanly",
+    "Only /sitemap.xml exists. A WordPress-era sitemap URL that answers 200 with an HTML document is what " +
+      "Search Console reports as \"Couldn't fetch\" against a submitted sitemap.",
+    bogusIsHtml ? [`${bogusSitemap.path} → 200 text/html`] : [],
+  );
+
+  // ---- the crawlable archive ----------------------------------------------
+  //
+  // /blog is a FlatList, so the rendered page contains no anchors to any article.
+  // These pages are the only internal link path into the catalogue, and they are
+  // listed in the sitemap so that path is actually crawled.
+  const archiveLinks = archive.ok ? internalLinkCount(archive.body, new URL(origin).hostname) : 0;
+  r.check(
+    "technical",
+    "tech.archive.reachable",
+    "high",
+    "The crawlable article archive responds",
+    "/blog/archive is the only page that links to individual articles. If it is down, ~4,400 posts have no " +
+      "internal links at all and depend entirely on the sitemap for discovery.",
+    archive.ok ? [] : [`/blog/archive → ${archive.status || "network error"}`],
+  );
+  r.check(
+    "technical",
+    "tech.archive.links",
+    "high",
+    "The archive actually contains links to posts",
+    "The archive page responded but carries almost no internal links, so it cannot do the one job it exists " +
+      "for. A rendered-but-empty archive looks fine and passes every other check here.",
+    archive.ok && archiveLinks < 10 ? [`/blog/archive → ${archiveLinks} internal links`] : [],
   );
 
   const brokenRoutes = routeProbes.filter((p) => !p.ok).map((p) => `${p.path} → ${p.status || "network error"}`);
@@ -751,15 +927,20 @@ function runOnPage(
 
   if (samplePost) {
     const canonical = canonicalOf(samplePost.body) || "";
-    const doubled = /\/blog\/blog\//.test(canonical);
+    // The canonical must be the SELF url — the root permalink, no trailing slash,
+    // no /blog/ prefix. Every other shape observed in production pointed somewhere
+    // that either duplicated this page or did not exist: /blog/blog/<slug>/ (no
+    // route), /<slug>/ (a redirect), and de-duplicated "-2" slugs whose stored
+    // permalink resolved to a noindex 404.
+    const expected = `${x.origin}${samplePost.path}`;
     r.check(
       "onPage",
       "onpage.post.canonical_shape",
       "critical",
-      "Post canonical URLs point at a real route",
-      "A canonical pointing at a path the app does not serve tells search engines the real page is a " +
-        "duplicate of something that renders nothing.",
-      doubled ? [canonical] : [],
+      "A post's canonical URL is its own permalink",
+      "A canonical that is not this page's own URL tells search engines to index something else — and when " +
+        "that target is a redirect or a path the app does not serve, the post is removed rather than demoted.",
+      canonical === expected ? [] : [`${samplePost.path} declares ${canonical || "(none)"}`],
     );
   }
 }
@@ -771,16 +952,19 @@ function runOnPage(
 function runProgrammatic(r: Report, x: { posts: any[]; samplePost: Probe | null }): void {
   const { posts, samplePost } = x;
 
-  // Every post is reachable at BOTH /blog/<slug> and /<slug>. That is a
-  // programmatic surface of ~4.5k pages with two URLs each, and canonical tags
-  // are the only thing preventing it being duplicate content.
+  // Posts used to be SERVED at both /blog/<slug> and /<slug>, a programmatic
+  // surface of ~4.5k pages with two live urls each. That is now collapsed by a 301
+  // (see tech.permalink.one_url), so what is left to check here is that the page
+  // declares a canonical at all — an un-canonicalised programmatic page is the one
+  // shape that still turns query-string and case variants into duplicates.
   r.check(
     "programmatic",
-    "prog.dual_path.canonical",
+    "prog.post.canonical",
     "critical",
-    "Both URL shapes for a post resolve to one canonical",
-    "Posts are served at /blog/<slug> and /<slug>. Without a canonical on both, that is ~2 duplicates per post.",
-    samplePost && canonicalOf(samplePost.body) ? [] : ["/blog/<slug>"],
+    "Post pages declare a canonical URL",
+    "A programmatic page with no canonical lets every URL variant that reaches it — query strings, casing, " +
+      "an old inbound link — compete as a separate page.",
+    samplePost && canonicalOf(samplePost.body) ? [] : ["/<slug>"],
   );
 
   const dupSlugs = duplicates(posts.map((p) => p.slug.toLowerCase()));

@@ -27,6 +27,13 @@ npm run test:watch
   throws.
 - **contestService.voteOnMatch** — attaches the stable device id (and respects an
   explicit one) for server-side vote de-duplication.
+- **blogIndexing** — the SEO contract of `public/_worker.js`, driven through the
+  real worker via `test/helpers/edgeWorker.ts`: the canonical tag is byte-identical
+  to the sitemap `<loc>`, every historical URL shape 301s onto the permalink in one
+  hop, dead URLs answer 404/410 instead of 200, an unreachable API answers 503 (not
+  404), the archive pages carry real links, and imported `/blog/blog/` links are
+  rewritten. See `BLOG_INDEXING.md` — each assertion corresponds to a measured
+  production failure that no build, typecheck or manual smoke test would catch.
 
 ## Not covered here
 
