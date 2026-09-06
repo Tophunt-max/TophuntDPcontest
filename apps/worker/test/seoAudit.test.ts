@@ -42,11 +42,44 @@ function goodHtml(opts: { canonical: string; robots?: string; jsonLd?: string[];
 }
 
 /**
- * Stub every probe the engine makes. Returning a healthy document for everything
- * means any failure a test sees comes from the D1 content it seeded, not the site.
+ * Slugs seeded so far, read LAZILY by the sitemap stub.
+ *
+ * `tech.canonical.sitemap_match` compares the sampled post's canonical tag against
+ * the sitemap body, so a stub emitting placeholder `<loc>x</loc>` entries would
+ * report the healthy site as broken. Reading this at fetch time rather than at
+ * `stubSite()` time is what lets tests keep calling `stubSite()` before `seedPost()`.
+ */
+const seededSlugs: string[] = [];
+
+/** An archive page with real links, which is what /blog/archive must return. */
+function archiveHtml(slugs: string[]) {
+  const links = (slugs.length ? slugs : Array.from({ length: 12 }, (_, i) => `filler-${i}`))
+    .concat(Array.from({ length: 12 }, (_, i) => `more-${i}`))
+    .map((s) => `<a href="https://tophunt.in/${s}">${s}</a>`)
+    .join('');
+  return (
+    `<!doctype html><html lang="en-IN"><head>` +
+    `<title>All articles | TopHunt</title>` +
+    `<meta name="robots" content="index, follow">` +
+    `<meta name="description" content="A complete index of every TopHunt article, long enough to be useful.">` +
+    `<link rel="canonical" href="https://tophunt.in/blog/archive">` +
+    `<meta property="og:title" content="All articles">` +
+    `<meta name="twitter:card" content="summary">` +
+    `</head><body><ol>${links}</ol></body></html>`
+  );
+}
+
+/**
+ * Stub every probe the engine makes, modelling a CORRECT site.
+ *
+ * Returning a healthy response for everything means any failure a test sees comes
+ * from the D1 content it seeded, not the site. "Healthy" now includes the
+ * one-url-per-page behaviour the engine checks: the historical URL shapes 301, an
+ * unknown path is a 404, the retired WordPress space is 410, a bogus sitemap URL is
+ * a 404, and /blog/archive carries real links.
  */
 function stubSite(over: Record<string, { body?: string; status?: number; contentType?: string }> = {}, postCount = 1) {
-  vi.stubGlobal('fetch', async (input: any) => {
+  vi.stubGlobal('fetch', async (input: any, init?: any) => {
     const url = new URL(typeof input === 'string' ? input : input.url);
     const path = url.pathname;
     const o = over[path];
@@ -63,10 +96,39 @@ function stubSite(over: Record<string, { body?: string; status?: number; content
       });
     }
     if (path === '/sitemap.xml') {
-      const urls = Array.from({ length: postCount + 9 }, () => '<url><loc>x</loc></url>').join('');
-      return new Response(`<?xml version="1.0"?><urlset>${urls}</urlset>`, {
+      // Real post locs first, so the canonical/sitemap agreement check has
+      // something true to compare against; filler makes up the expected count
+      // (posts + 9 routes + 1 archive page).
+      const locs = seededSlugs.map((s) => `<url><loc>https://tophunt.in/${s}</loc></url>`);
+      const filler = Array.from({ length: Math.max(postCount + 10 - locs.length, 0) }, () => '<url><loc>x</loc></url>');
+      return new Response(`<?xml version="1.0"?><urlset>${locs.join('')}${filler.join('')}</urlset>`, {
         status: 200,
         headers: { 'content-type': 'application/xml' },
+      });
+    }
+    // A non-existent sitemap URL must not answer 200 with an HTML document.
+    if (/^\/(wp-)?sitemap[-_].*\.xml$/.test(path)) {
+      return new Response('404 Not Found\n', { status: 404, headers: { 'content-type': 'text/plain' } });
+    }
+    // The retired WordPress URL space.
+    if (/^\/wp-|\.php$|^\/feed|^\/author|^\/category|^\/tag/.test(path)) {
+      return new Response('410 Gone\n', { status: 410, headers: { 'content-type': 'text/plain' } });
+    }
+    if (path === '/blog/archive') {
+      return new Response(archiveHtml(seededSlugs), { status: 200, headers: { 'content-type': 'text/html' } });
+    }
+    // Both historical shapes for a post permanently redirect onto the permalink.
+    const prefixed = /^\/blog\/(?!archive)(.+)$/.exec(path);
+    const slashed = /^\/(.+)\/$/.exec(path);
+    const redirectTo = prefixed?.[1] ?? slashed?.[1];
+    if (redirectTo && seededSlugs.includes(redirectTo)) {
+      const location = `https://tophunt.in/${redirectTo}`;
+      if (init?.redirect === 'manual') {
+        return new Response(null, { status: 301, headers: { location } });
+      }
+      return new Response(goodHtml({ canonical: location }), {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
       });
     }
     if (path.startsWith('/wallet') || path.startsWith('/auth') || path.startsWith('/setting')) {
@@ -76,8 +138,9 @@ function stubSite(over: Record<string, { body?: string; status?: number; content
       });
     }
     if (path.includes('should-not-exist')) {
+      // 404, not 200: a dead URL answering 200 is the soft-404 the engine now flags.
       return new Response(goodHtml({ canonical: 'https://tophunt.in/', robots: 'noindex, follow' }), {
-        status: 200,
+        status: 404,
         headers: { 'content-type': 'text/html' },
       });
     }
@@ -92,6 +155,7 @@ const LONG_BODY = `<h1>Title</h1>${'<p>word '.repeat(400)}</p><a href="/blog/oth
 
 async function seedPost(over: Record<string, any> = {}) {
   const now = Date.now();
+  if ((over.status ?? 'published') === 'published') seededSlugs.push(over.slug ?? 'a-good-post');
   await drizzleOf(env)
     .insert(schema.blogPosts)
     .values({
@@ -116,6 +180,7 @@ const cat = (a: Awaited<ReturnType<typeof runSeoAudit>>, id: string) => a.catego
 const issue = (a: Awaited<ReturnType<typeof runSeoAudit>>, id: string) => a.issues.find((i) => i.id === id);
 
 beforeEach(() => {
+  seededSlugs.length = 0;
   ({ env } = makeEnv({ SEO_SITE_ORIGIN: 'https://tophunt.in' } as any));
 });
 afterEach(() => vi.unstubAllGlobals());
@@ -246,15 +311,76 @@ describe('content checks detect real defects', () => {
     expect(found!.suggestion).toMatch(/media-domain-backfill/);
   });
 
-  it('flags a doubled /blog/blog/ canonical as critical', async () => {
+  /**
+   * The engine now probes the post's CANONICAL url (`/<slug>`), not `/blog/<slug>`.
+   * Probing the prefixed shape measured the redirect's destination, so a broken
+   * canonical shape would have passed.
+   */
+  it.each([
+    ['a doubled /blog/blog/ prefix', 'https://tophunt.in/blog/blog/dbl/'],
+    ['a trailing slash', 'https://tophunt.in/dbl/'],
+    ['the /blog/ prefix', 'https://tophunt.in/blog/dbl'],
+    ['a slug that does not exist', 'https://tophunt.in/tcl-is-a-global-top-____-tv-brand/'],
+  ])('flags %s in a post canonical as critical', async (_label, canonical) => {
     await seedPost({ slug: 'dbl' });
+    stubSite({ '/dbl': { body: goodHtml({ canonical }) } });
+    const audit = await runSeoAudit(env);
+
+    // Every one of these was live in production, and the trailing-slash variant
+    // alone accounted for ~87% of the catalogue.
+    const found = issue(audit, 'onpage.post.canonical_shape');
+    expect(found?.severity).toBe('critical');
+  });
+
+  it('flags a canonical that is absent from the sitemap', async () => {
+    await seedPost({ slug: 'dbl' });
+    stubSite({ '/dbl': { body: goodHtml({ canonical: 'https://tophunt.in/dbl/' }) } });
+    const audit = await runSeoAudit(env);
+
+    const found = issue(audit, 'tech.canonical.sitemap_match');
+    expect(found?.severity).toBe('critical');
+    expect(found!.suggestion).toMatch(/post\.slug/);
+  });
+
+  it('passes the canonical checks when the tag matches the sitemap exactly', async () => {
+    stubSite();
+    await seedPost({ slug: 'a-good-post' });
+    const audit = await runSeoAudit(env);
+
+    expect(issue(audit, 'tech.canonical.sitemap_match')).toBeUndefined();
+    expect(issue(audit, 'onpage.post.canonical_shape')).toBeUndefined();
+    expect(issue(audit, 'tech.permalink.one_url')).toBeUndefined();
+  });
+
+  it.each([
+    ['a 200 on an unknown path', 'tech.404.status', { '/this-path-should-not-exist-seo-audit': { status: 200 } }],
+    ['a 200 on a retired WordPress path', 'tech.legacy.gone', { '/wp-login.php': { status: 200 } }],
+    [
+      'an HTML 200 at a non-existent sitemap url',
+      'tech.sitemap.bogus_404',
+      { '/sitemap_index.xml': { status: 200, contentType: 'text/html' } },
+    ],
+    ['an archive page with no links', 'tech.archive.links', { '/blog/archive': { body: goodHtml({ canonical: 'https://tophunt.in/blog/archive' }) } }],
+  ])('flags %s', async (_label, id, over) => {
+    stubSite(over as any);
+    await seedPost();
+    const audit = await runSeoAudit(env);
+    expect(issue(audit, id as string)).toBeDefined();
+  });
+
+  it('flags a post URL shape that answers 200 instead of redirecting', async () => {
+    await seedPost({ slug: 'dbl' });
+    // Both shapes serve the page rather than 301-ing onto the permalink, which is
+    // two live urls per post across the whole catalogue.
     stubSite({
-      '/blog/dbl': { body: goodHtml({ canonical: 'https://tophunt.in/blog/blog/dbl/' }) },
+      '/blog/dbl': { body: goodHtml({ canonical: 'https://tophunt.in/dbl' }) },
+      '/dbl/': { body: goodHtml({ canonical: 'https://tophunt.in/dbl' }) },
     });
     const audit = await runSeoAudit(env);
 
-    const found = issue(audit, 'onpage.post.canonical_shape');
-    expect(found?.severity).toBe('critical');
+    const found = issue(audit, 'tech.permalink.one_url');
+    expect(found).toBeDefined();
+    expect(found!.affected).toHaveLength(2);
   });
 
   it('excludes drafts from every content check', async () => {
@@ -352,7 +478,8 @@ describe('AI search / GEO', () => {
 
   it('flags content that is invisible without JavaScript', async () => {
     await seedPost({ slug: 'nojs' });
-    stubSite({ '/blog/nojs': { body: goodHtml({ canonical: 'https://tophunt.in/blog/nojs/', noscript: false }) } });
+    // Stubbed on the canonical url, which is what the engine probes.
+    stubSite({ '/nojs': { body: goodHtml({ canonical: 'https://tophunt.in/nojs', noscript: false }) } });
     const audit = await runSeoAudit(env);
 
     const found = issue(audit, 'geo.crawlable_without_js');

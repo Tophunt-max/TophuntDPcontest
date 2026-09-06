@@ -767,7 +767,23 @@ export const blogPosts = sqliteTable(
     // SEO (must never be missing — populated from source or derived from content):
     metaTitle: text("meta_title"),
     metaDescription: text("meta_description"),
-    canonicalUrl: text("canonical_url"), // the original tophunt.in permalink
+    // PROVENANCE ONLY — never emitted as rel=canonical.
+    //
+    // This is the permalink the archive importer read off the archived WordPress
+    // page, and the edge Worker used to serve it verbatim as the canonical tag.
+    // Sampled against production that disagreed with `/sitemap.xml` on 40 of 40
+    // posts: 35 differed only by a trailing slash, and 5 pointed at urls that do
+    // not exist (de-duplicated "-2" slugs kept the original permalink; placeholder
+    // titles produced canonicals like `/tcl-is-a-global-top-____-tv-brand/`, which
+    // serves "Not found" with noindex). A canonical aimed at a noindex 404 does not
+    // demote a post, it removes it — Search Console indexed 92 of 4,475 urls.
+    //
+    // The Worker now always self-canonicalises to `https://tophunt.in/<slug>`, the
+    // same string the sitemap advertises, so the two cannot drift. This column is
+    // kept because it is genuine provenance and it is the fallback dedup key for
+    // re-imports (`originalUrl || canonicalUrl` in lib/importerTask.ts) — do NOT
+    // "normalise" it to the serving url, which would destroy both of those.
+    canonicalUrl: text("canonical_url"),
     // Provenance for imports + dedup:
     source: text("source").default("admin"), // 'admin' | 'archive'
     originalUrl: text("original_url"), // original tophunt.in permalink (import dedup key)

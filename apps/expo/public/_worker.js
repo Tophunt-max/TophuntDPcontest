@@ -276,6 +276,11 @@ function battleIdFromPath(path) {
  * every single request.
  */
 const PATH_ALIASES = new Map([
+  // `/index.html` is a REAL file in the build, so it answered 200 with the app —
+  // a byte-identical duplicate of `/` on a second url, and one with no canonical
+  // tag of its own. It is also the one url the missing-asset 404 below must not
+  // claim, since the file genuinely exists. A 301 settles both.
+  ['/index.html', '/'],
   ['/settings', '/setting'],
   ['/privacy', '/legal/privacy'],
   ['/privacy-policy', '/legal/privacy'],
@@ -351,6 +356,170 @@ function aliasFor(path) {
   return PATH_ALIASES.get(clean) || null;
 }
 
+/**
+ * Second segments under `/blog` that are real routes rather than a post slug.
+ *
+ * Everything else under `/blog/` is redirected to the root permalink, so this set
+ * is what stops `/blog/archive/page/3` from being read as a post called
+ * "archive" and 301'd to `/archive`.
+ */
+const BLOG_SUBROUTES = new Set(['archive']);
+
+/** Posts per crawlable archive page. */
+const ARCHIVE_PER_PAGE = 100;
+
+/**
+ * Paths that belonged to the original WordPress site and are permanently gone.
+ *
+ * Every one of these currently answers **200 with the SPA shell**, because the
+ * Pages SPA fallback (`public/_redirects`: `/* /index.html 200`) has no notion of
+ * "this url was never real". Google fetches `/wp-login.php`, gets a 200 HTML
+ * document, and files it under "Soft 404" — then keeps re-fetching it, because a
+ * 200 is an assertion that the page exists. The old site's url space is large
+ * (feeds, date archives, author/category/tag archives, every `.php` entry point),
+ * so this was an effectively unbounded set of 200s competing for crawl budget with
+ * ~4,400 real articles.
+ *
+ * 410 rather than 404, deliberately: these are not "missing, maybe later", they
+ * are gone for good, and 410 is the signal Google acts on fastest. Nothing here
+ * can ever be served by this app.
+ *
+ * Verified safe before adding `/wp-content/`: every `og:image` and every in-body
+ * `<img src>` sampled across the catalogue resolves to `media.tophunt.in`, so no
+ * live image is served from this origin's `/wp-content/` path.
+ *
+ * Every pattern is deliberately narrow enough that it CANNOT swallow a post
+ * permalink. Post urls are a single path segment at the root, so:
+ *
+ *  - the `wp-` rule is an explicit list of real WordPress entry points rather than
+ *    `wp-[a-z-]+`, which would have 410'd a future post slugged `wp-vs-something`;
+ *  - the taxonomy rules require a sub-path, so a post slugged exactly `tag` or
+ *    `author` still resolves (and 404s on its own merits if it does not exist);
+ *  - `.php` is safe unconditionally because `blogSlugFromPath` rejects any segment
+ *    containing a dot, so no post can ever live at one.
+ *
+ * Checked against the live catalogue when this was written: none of the 4,475 urls
+ * in the sitemap matches any pattern here.
+ */
+const LEGACY_GONE = [
+  // Real WordPress paths, named explicitly. `/wp-admin/`, `/wp-content/…`,
+  // `/wp-includes/…`, `/wp-json/…`, `/wp-login.php`, `/wp-cron.php`.
+  /^\/wp-(admin|content|includes|json|login|cron|comments-post|signup|activate|links-opml|trackback|config|load|settings|blog-header)(\/|\.php|$)/i,
+  /\.php$/i, //                       /xmlrpc.php and every other php entry point
+  /^\/(comments\/)?feed(\/|$)/i, //   RSS/Atom feeds
+  /^\/author\/.+/i, //                taxonomy archives — a sub-path is required
+  /^\/category\/.+/i,
+  /^\/tag\/.+/i,
+  /^\/page\/\d+$/i, //                WordPress home pagination
+  /^\/(19|20)\d\d\/\d{1,2}(\/|$)/, // date archives: /2023/07/…
+];
+
+/** True when the path belonged to the retired WordPress install. */
+function isLegacyGone(path) {
+  const clean = path.replace(/\/+$/, '') || '/';
+  return LEGACY_GONE.some((re) => re.test(clean));
+}
+
+/**
+ * Top-level segments that are real app routes, so an unmatched path beneath one is
+ * a live screen rather than a 404.
+ *
+ * `blog` is excluded on purpose: `/blog` itself is in PUBLIC_ROUTES and every
+ * other shape under it is either an archive route or redirected to a permalink, so
+ * anything left really is a dead url and should say so.
+ */
+function isAppRouteRoot(segment) {
+  return segment !== 'blog' && RESERVED.has(segment);
+}
+
+/** A path whose last segment carries a file extension (`/a/b.xml`, `/x.php`). */
+function hasFileExtension(path) {
+  const last = path.replace(/\/+$/, '').split('/').pop() || '';
+  return /\.[a-z0-9]{1,8}$/i.test(last);
+}
+
+/** 301 to a path on `base`, preserving the query string. */
+function redirect301(pathAndQuery, base) {
+  return Response.redirect(new URL(pathAndQuery, base).toString(), 301);
+}
+
+/**
+ * The single canonical url shape for a post is the ROOT permalink `/<slug>`, with
+ * no trailing slash — the same string `/sitemap.xml` advertises. This returns the
+ * redirect target for every other shape that resolves to the same post.
+ *
+ * Two shapes existed in the wild and both had to go:
+ *
+ *  - `/blog/<slug>`, which this Worker served with a 200 and a canonical pointing
+ *    at `/<slug>`. Legitimate, but it doubled the crawlable url space for ~4,400
+ *    posts and made "Alternate page with proper canonical tag" the single largest
+ *    exclusion bucket in Search Console.
+ *  - `/blog/blog/<slug>`, which the archive importer wrote into thousands of
+ *    in-body links. Nothing serves that path, so it fell through to the
+ *    fail-closed branch and answered 200 + `noindex, nofollow` — every internal
+ *    link Google followed landed on a dead end that also refused to be indexed.
+ *
+ * Only a run of `blog` segments is collapsed. `/blog/a/b` is not a mangled
+ * permalink, so it is left to 404 rather than guessed at.
+ */
+function blogPermalinkRedirect(rawPath) {
+  const segments = rawPath.replace(/\/+$/, '').split('/').filter(Boolean);
+  if (segments.length < 2 || segments[0] !== 'blog') return null;
+  if (BLOG_SUBROUTES.has(segments[1])) return null;
+  if (!segments.slice(1, -1).every((s) => s === 'blog')) return null;
+  const slug = segments[segments.length - 1];
+  if (!slug || RESERVED.has(slug) || slug.includes('.')) return null;
+  return `/${slug}`;
+}
+
+/**
+ * The one path shape allowed to answer 200 for a given page.
+ *
+ * Composes both normalisations so a url needing each — `/blog/blog/<slug>/`, which
+ * is what thousands of imported in-body links look like — is fixed in ONE 301
+ * instead of being handed down a chain of them.
+ */
+function canonicalPathFor(rawPath) {
+  const trimmed = rawPath.replace(/\/+$/, '') || '/';
+  return blogPermalinkRedirect(trimmed) || trimmed;
+}
+
+/**
+ * `/blog/archive[/page/<n>][/category/<c>]` -> a page descriptor, else null.
+ *
+ * `page1` reports that the url named page 1 explicitly (`/blog/archive/page/1`),
+ * which is the same content as `/blog/archive` and is redirected rather than
+ * served — a paginated set that answers on two urls is the duplicate-content
+ * problem this whole change exists to remove.
+ */
+function archiveRouteFromPath(path) {
+  const segments = path.replace(/\/+$/, '').split('/').filter(Boolean);
+  if (segments.length < 2 || segments[0] !== 'blog' || segments[1] !== 'archive') return null;
+
+  let rest = segments.slice(2);
+  let category = null;
+  if (rest[0] === 'category') {
+    if (!rest[1]) return null;
+    category = rest[1];
+    rest = rest.slice(2);
+  }
+  let page = 1;
+  let page1 = false;
+  if (rest.length) {
+    if (rest.length !== 2 || rest[0] !== 'page' || !/^\d+$/.test(rest[1])) return null;
+    page = parseInt(rest[1], 10);
+    if (page < 1) return null;
+    page1 = page === 1;
+  }
+  return { page, category, page1 };
+}
+
+/** The url path for an archive page, matching `archiveRouteFromPath`. */
+function archivePath(page, category) {
+  const base = category ? `/blog/archive/category/${encodeURIComponent(category)}` : '/blog/archive';
+  return page > 1 ? `${base}/page/${page}` : base;
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -415,6 +584,29 @@ export default {
       return Response.redirect(new URL('/auth/action' + url.search, url.origin).toString(), 302);
     }
 
+    // --- retired WordPress url space ---------------------------------------
+    // 410 Gone, and checked BEFORE the normalising redirect so `/wp-admin/`
+    // answers in one hop rather than 301-ing to `/wp-admin` first. See LEGACY_GONE:
+    // all of these answered 200 with the SPA shell, which tells Google the page
+    // exists and is worth re-crawling forever.
+    if (isLegacyGone(path)) {
+      return gonePage(origin, isDocumentRequest(request, path));
+    }
+
+    // --- one url per page --------------------------------------------------
+    // Trailing slashes and the `/blog/` prefix are collapsed in a SINGLE redirect.
+    // Doing them as two rules chained `/blog/<slug>/` -> `/blog/<slug>` ->
+    // `/<slug>`, and a redirect hop is not free: every extra hop is another fetch
+    // out of the crawl budget for ~4,400 posts whose in-body links all carry both.
+    //
+    // `url.pathname` (raw) rather than the decoded `path`: rebuilding a redirect
+    // target from a decoded path re-encodes it, which mangles any slug containing
+    // a percent-escape.
+    const normalized = canonicalPathFor(url.pathname);
+    if (normalized !== url.pathname) {
+      return redirect301(normalized + url.search, url.origin);
+    }
+
     // --- robots.txt --------------------------------------------------------
     if (path === '/robots.txt') {
       return withSecurityHeaders(
@@ -429,31 +621,61 @@ export default {
       return withSecurityHeaders(await getSitemap(request, env, ctx, apiBase, origin));
     }
 
-    // Only HTML navigations get SEO treatment. Everything else (JS/CSS/images/
-    // API-less asset fetches) is served straight from static assets.
-    const accept = request.headers.get('accept') || '';
-    const isHtmlNav = request.method === 'GET' && accept.includes('text/html');
-    if (!isHtmlNav) {
-      return withSecurityHeaders(await env.ASSETS.fetch(request));
+    // --- crawlable blog archive --------------------------------------------
+    // Served BEFORE the document/asset split because these pages are generated
+    // here in full and never touch the SPA shell — see getArchivePage.
+    const archive = archiveRouteFromPath(path);
+    if (archive) {
+      // `/blog/archive/page/1` is `/blog/archive` under another name.
+      if (archive.page1) {
+        return redirect301(archivePath(1, archive.category) + url.search, url.origin);
+      }
+      return getArchivePage(archive, apiBase, origin);
     }
 
-    // --- blog post (either /blog/<slug> or the root permalink /<slug>) ------
+    // Only document requests get SEO treatment. Everything else (JS/CSS/images/
+    // API-less asset fetches) is served straight from static assets.
+    if (!isDocumentRequest(request, path)) {
+      const asset = await env.ASSETS.fetch(request);
+      // Pages' SPA fallback (`public/_redirects`: `/* /index.html 200`) answers a
+      // MISSING asset with index.html and a 200. For a stale hashed bundle from a
+      // previous deploy, or a `/wp-content/…` image url left in imported content,
+      // that is an html document served under a `.js`/`.jpg` url — a soft 404 that
+      // Google reports and re-crawls. A missing asset is a 404.
+      const servedHtml = (asset.headers.get('content-type') || '').includes('text/html');
+      if (servedHtml && hasFileExtension(path)) return notFoundAsset();
+      return withSecurityHeaders(asset);
+    }
+
+    // A document url carrying a file extension is not a route this app has. The
+    // case that matters is `/sitemap_index.xml`, `/post-sitemap.xml` and friends —
+    // WordPress-era sitemap urls that are still submitted in Search Console. They
+    // answered 200 with an HTML document, which is reported as "Couldn't fetch"
+    // against a sitemap and as a soft 404 against a page. Only `/sitemap.xml` and
+    // `/robots.txt` exist, and both were handled above.
+    if (hasFileExtension(path)) {
+      return notFoundAsset();
+    }
+
+    // --- blog post at the root permalink /<slug> ---------------------------
     const slug = blogSlugFromPath(path);
     if (slug) {
-      try {
-        const post = await fetchPost(apiBase, slug);
-        if (post && post.title) {
-          const shell = await fetchShell(env, origin);
-          const canonicalPath = `/${post.slug || slug}`;
-          return injectPostSeo(shell, post, origin, canonicalPath);
-        }
-      } catch (_err) {
-        // fall through to plain SPA shell on any failure
+      const { post, ok } = await fetchPost(apiBase, slug);
+      if (post && post.title) {
+        return injectPostSeo(await fetchShell(env, origin), post, origin, `/${post.slug || slug}`);
       }
-      // A one-segment path that is not a real post is a 404, not the home page.
-      // Left indexable-by-default it would let any typo'd url become a
-      // thin duplicate of the app shell.
-      return injectSeo(await fetchShell(env, origin), {
+      // The API could not be reached, or answered 5xx. This is NOT a 404: telling
+      // Google a real article is gone because an upstream had a bad minute is how
+      // an indexed page gets dropped. 503 + Retry-After asks for a redelivery and
+      // leaves the index untouched.
+      if (!ok) {
+        return unavailablePage(env, origin);
+      }
+      // A one-segment path that is not a real post is a 404 WITH a 404 status.
+      // It used to be a 200: `app/[slug].tsx` claims every unknown one-segment
+      // path, and the SPA fallback answers all of them, so every typo'd or retired
+      // permalink was a soft 404 that Google re-crawls indefinitely.
+      return injectSeo(await fetchShell(env, origin, 404), {
         title: `Not found | ${SITE_NAME}`,
         description: DEFAULT_DESCRIPTION,
         robots: 'noindex, follow',
@@ -481,6 +703,10 @@ export default {
     // --- curated public routes --------------------------------------------
     const route = publicRouteFor(path);
     if (route) {
+      // `/blog` is the one public route with a crawl problem of its own: the list
+      // is a FlatList, so the rendered page contains no anchors to any article.
+      // Give it a noscript index and a link into the archive.
+      const noscript = route.path === '/blog' ? await blogIndexNoscript(apiBase, origin) : undefined;
       return injectSeo(await fetchShell(env, origin), {
         title: route.title,
         description: route.description,
@@ -488,6 +714,7 @@ export default {
         type: 'website',
         robots: 'index, follow',
         jsonLd: route.path === '/' ? siteJsonLd(origin) : undefined,
+        noscript,
       });
     }
 
@@ -495,8 +722,17 @@ export default {
     // Fail closed. An unlisted route is assumed private, so adding a screen
     // cannot silently expose it to search — it has to be added to PUBLIC_ROUTES
     // deliberately.
-    return injectSeo(await fetchShell(env, origin), {
-      title: SITE_NAME,
+    //
+    // The STATUS, though, has to distinguish two things this branch had merged.
+    // `/wallet/withdraw` and `/messages/chat/<id>` are live screens: they are
+    // noindex, but they exist, and answering 404 for a screen a signed-in user is
+    // looking at is wrong. `/foo/bar` does not exist, and answering 200 for it is
+    // the soft-404 pattern. The first segment decides — RESERVED mirrors the
+    // folders under `app/`, so it is exactly the set of real route roots.
+    const firstSegment = path.replace(/\/+$/, '').split('/').filter(Boolean)[0] || '';
+    const realScreen = isAppRouteRoot(firstSegment);
+    return injectSeo(await fetchShell(env, origin, realScreen ? undefined : 404), {
+      title: realScreen ? SITE_NAME : `Not found | ${SITE_NAME}`,
       description: DEFAULT_DESCRIPTION,
       robots: 'noindex, nofollow',
     });
@@ -507,18 +743,44 @@ export default {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * The root permalink `/<slug>` -> slug. One segment only.
+ *
+ * `/blog/<slug>` used to resolve here too. It is now 301'd to `/<slug>` before
+ * this is reached (blogPermalinkRedirect), so a post has exactly one url that
+ * answers 200 — which is the entire point: two live urls per post is what made
+ * "Alternate page with proper canonical tag" the largest exclusion bucket in
+ * Search Console for this site.
+ */
 function blogSlugFromPath(path) {
-  const clean = path.replace(/\/+$/, '');
-  const segments = clean.split('/').filter(Boolean);
-  if (segments.length === 2 && segments[0] === 'blog') return segments[1];
-  if (segments.length === 1) {
-    const s = segments[0];
-    if (!RESERVED.has(s) && !s.includes('.')) return s;
-  }
-  return null;
+  const segments = path.replace(/\/+$/, '').split('/').filter(Boolean);
+  if (segments.length !== 1) return null;
+  const s = segments[0];
+  if (RESERVED.has(s) || s.includes('.')) return null;
+  return s;
 }
 
-async function fetchShell(env, origin) {
+/**
+ * True when this request is for an HTML document rather than a static asset.
+ *
+ * `Accept: text/html` alone was too narrow. Plenty of fetchers — including some
+ * Google surfaces, most SEO tools and every `curl` — send a wildcard `Accept`
+ * header, and those requests fell through to `env.ASSETS.fetch`, which returns the
+ * raw SPA shell:
+ * `<title>TopHunt</title>`, no description, no canonical, no content. The page
+ * "worked" and was completely invisible.
+ *
+ * A path with no file extension is a route, so it is treated as a document
+ * whatever the client asked for. A path WITH an extension is an asset even when
+ * the client says it wants html, which is what keeps `/x.js` out of the SEO path.
+ */
+function isDocumentRequest(request, path) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') return false;
+  if (hasFileExtension(path)) return false;
+  return true;
+}
+
+async function fetchShell(env, origin, status) {
   // Always serve the SPA entry document for HTML navigations.
   const res = await env.ASSETS.fetch(new Request(`${origin}/index.html`));
   // Ensure HTML pages aren't cached too long so crawlers pick up fresh meta.
@@ -528,18 +790,39 @@ async function fetchShell(env, origin) {
   // response originates. `injectSeo` runs an HTMLRewriter over this response,
   // which carries its headers through, so the plain shell and every
   // SEO-rewritten route are all covered by this one call.
-  return withSecurityHeaders(new Response(res.body, { status: res.status, headers }), {
+  //
+  // `status` lets a caller serve the shell under a real 404: the SPA renders its
+  // own not-found screen from the same document, so the human sees the app while
+  // the crawler is told the truth about the url.
+  return withSecurityHeaders(new Response(res.body, { status: status || res.status, headers }), {
     document: true,
   });
 }
 
+/**
+ * Fetch a post, distinguishing "no such post" from "could not ask".
+ *
+ * The difference is the difference between a 404 and a 503, and getting it wrong
+ * in either direction is expensive: a 404 on a transient upstream failure drops a
+ * ranked article out of the index, and a 200 on a genuinely missing post is the
+ * soft-404 that put thousands of urls in that bucket to begin with.
+ *
+ * `ok: false` means the request itself failed (network error or upstream 5xx).
+ * `ok: true, post: null` is an authoritative "this post does not exist" — the API
+ * answers 404 for a missing or unpublished slug.
+ */
 async function fetchPost(apiBase, slug) {
-  const res = await fetch(`${apiBase}/read/blog/${encodeURIComponent(slug)}`, {
-    headers: { accept: 'application/json' },
-    cf: { cacheTtl: 300, cacheEverything: true },
-  });
-  if (!res.ok) return null;
-  return res.json();
+  try {
+    const res = await fetch(`${apiBase}/read/blog/${encodeURIComponent(slug)}`, {
+      headers: { accept: 'application/json' },
+      cf: { cacheTtl: 300, cacheEverything: true },
+    });
+    if (res.status >= 500) return { post: null, ok: false };
+    if (!res.ok) return { post: null, ok: true };
+    return { post: await res.json(), ok: true };
+  } catch (_err) {
+    return { post: null, ok: false };
+  }
 }
 
 function esc(str) {
@@ -566,10 +849,54 @@ function truncate(str, n) {
   return s.slice(0, n - 1).replace(/\s+\S*$/, '') + '\u2026';
 }
 
+/**
+ * Rewrite on-site links inside imported article HTML to the canonical url shape.
+ *
+ * The archive importer's link rewriting only un-Waybacked hrefs; it never mapped
+ * them onto this app's routes. So every imported article carries roughly eight
+ * in-body links of the form `https://tophunt.in/blog/blog/<slug>/` — a doubled
+ * prefix that no route serves. Measured live, that path answered **200 with
+ * `noindex, nofollow`**: every internal link Googlebot followed out of an article
+ * arrived at a page that both existed and refused to be indexed. Across ~4,400
+ * posts that is tens of thousands of crawls spent proving nothing, and it is why
+ * the articles have no usable internal link graph.
+ *
+ * Three rewrites, in order:
+ *  1. Any run of `/blog` segments before a slug collapses to the root permalink,
+ *     so `…/blog/blog/x/` and `…/blog/x/` both become `…/x`.
+ *  2. The percent-encoded form of the same thing, which is how the imported
+ *     Facebook/Twitter/Pinterest share buttons embed the page url.
+ *  3. A trailing slash on any remaining on-site href, so an internal link goes
+ *     straight to the canonical url instead of through a 301.
+ *
+ * Done at the edge as well as in the database (migration 0042) because the two
+ * cover different windows: the migration fixes what is stored, this fixes anything
+ * imported before the importer change lands, and neither depends on the other
+ * having run.
+ */
+function normalizeContentLinks(html) {
+  if (!html) return html;
+  const SITE = /https?:\/\/(?:www\.)?tophunt\.in/i;
+  return (
+    String(html)
+      // 1. https://tophunt.in/blog[/blog…]/<rest>  ->  https://tophunt.in/<rest>
+      .replace(
+        new RegExp(`(${SITE.source})((?:/blog)+)/([^"'\\s<>]+)`, 'gi'),
+        (_m, host, _prefix, rest) => `${host}/${rest.replace(/\/+$/, '')}`,
+      )
+      // 2. The same url percent-encoded inside a share link's query string.
+      .replace(/(https?%3A%2F%2F(?:www\.)?tophunt\.in)((?:%2Fblog)+)%2F/gi, '$1%2F')
+      // 3. href="https://tophunt.in/x/" -> href="https://tophunt.in/x". Requires a
+      //    non-slash character before the slash, so the home page url survives.
+      .replace(new RegExp(`href="(${SITE.source}/[^"]*[^/"])/+"`, 'gi'), 'href="$1"')
+  );
+}
+
 function injectPostSeo(shellResp, post, origin, canonicalPath) {
   const title = post.metaTitle || post.title;
   const fullTitle = /tophunt/i.test(title) ? title : `${title} | ${SITE_NAME}`;
-  const bodyText = stripHtml(post.content || post.excerpt || '');
+  const content = normalizeContentLinks(post.content || '');
+  const bodyText = stripHtml(content || post.excerpt || '');
   const description = truncate(post.metaDescription || post.excerpt || bodyText || DEFAULT_DESCRIPTION, 160);
   const canonical = canonicalForPost(post, origin, canonicalPath);
   const image = post.coverImageUrl || '';
@@ -612,53 +939,49 @@ function injectPostSeo(shellResp, post, origin, canonicalPath) {
       `<h1>${esc(post.title)}</h1>` +
       (image ? `<img src="${esc(image)}" alt="${esc(post.title)}" width="1200" />` : '') +
       (post.excerpt ? `<p>${esc(post.excerpt)}</p>` : '') +
-      (post.content || '') +
+      content +
+      // A crawlable route back into the catalogue. Without it an article is a leaf:
+      // the blog list renders no anchors at all, so following links out of a post
+      // was the only way through the site and every one of them was a dead
+      // `/blog/blog/…` url.
+      `<nav><a href="${esc(origin)}/blog/archive">All articles</a> · ` +
+      `<a href="${esc(origin)}/blog">Blog</a></nav>` +
       `</article></noscript>`,
   });
 }
 
 /**
- * The canonical url for a post: the stored permalink when it is usable, else a
- * self-canonical to the path being served.
+ * The canonical url for a post: ALWAYS the self-referencing root permalink.
  *
- * The stored value cannot be trusted verbatim. The archive importer wrote
- * `blog_posts.canonical_url` by joining a `/blog/` prefix onto a path that
- * already contained one, so every imported post carried
- * `https://tophunt.in/blog/blog/<slug>/` — a path this app has no route for. It
- * only "resolved" because the SPA catch-all returns index.html with a 200 for
- * anything, so it looked fine while telling Google the real page was a duplicate
- * of a URL that renders nothing. A wrong canonical is worse than no canonical:
- * it actively points ranking at a dead path.
+ * ## Why the stored `canonical_url` is now ignored entirely
  *
- * So the stored value is used only if it is on this site AND its path is a shape
- * this app actually serves (`/<slug>` or `/blog/<slug>`). Anything else falls back
- * to a self-canonical, and the repeated-prefix case is repaired rather than
- * discarded so the original permalink is still honoured.
+ * This function used to prefer `blog_posts.canonical_url` — the permalink lifted
+ * off the archived WordPress page — whenever it was on this host and looked
+ * servable. Measured against production, that made the canonical tag disagree with
+ * the sitemap on **every single post**: 0 of 40 sampled urls matched. Two shapes
+ * of disagreement, both fatal:
+ *
+ *  - 35/40 differed only by a trailing slash. `/sitemap.xml` advertises
+ *    `https://tophunt.in/<slug>`; the page it points at declared
+ *    `https://tophunt.in/<slug>/`. So for ~4,400 posts, the url submitted to Google
+ *    said "the real page is somewhere else". Search Console reported exactly that,
+ *    as "Alternate page with proper canonical tag", and indexed 92 pages.
+ *  - 5/40 pointed somewhere that does not exist at all: slugs the importer had
+ *    de-duplicated with a `-2` suffix kept the ORIGINAL permalink, and archived
+ *    pages with placeholder titles produced canonicals like
+ *    `/tcl-is-a-global-top-____-tv-brand/` (live check: "Not found", `noindex`).
+ *    A canonical aimed at a noindex 404 does not demote the post, it removes it.
+ *
+ * A self-canonical cannot drift from the sitemap, because both are now derived
+ * from the same thing — `post.slug`. That is the whole property worth having here,
+ * and no editorial value is lost: the original permalink is still recorded in
+ * `blog_posts.original_url` for provenance, and every historical url shape is
+ * 301'd onto this one (blogPermalinkRedirect + the trailing-slash normaliser), so
+ * the redirect chain consolidates the link equity that the canonical tag was
+ * supposed to.
  */
 function canonicalForPost(post, origin, canonicalPath) {
-  const self = `${origin}${canonicalPath}`;
-  const stored = post.canonicalUrl;
-  if (!stored || !/^https?:\/\//i.test(stored)) return self;
-
-  let cu;
-  let site;
-  try {
-    cu = new URL(stored);
-    site = new URL(origin);
-  } catch (_e) {
-    return self;
-  }
-  if (cu.hostname.replace(/^www\./, '') !== site.hostname.replace(/^www\./, '')) return self;
-
-  // Collapse a repeated /blog/ prefix: /blog/blog/x -> /blog/x.
-  let pathname = cu.pathname.replace(/^(?:\/blog)+(?=\/)/, '/blog');
-  const segments = pathname.replace(/\/+$/, '').split('/').filter(Boolean);
-  const servable =
-    (segments.length === 1 && !RESERVED.has(segments[0])) ||
-    (segments.length === 2 && segments[0] === 'blog');
-  if (!servable) return self;
-
-  return `${site.origin}${pathname}`;
+  return `${origin}${canonicalPath}`;
 }
 
 /** Public battle snapshot. Same endpoint the app uses; works unauthenticated. */
@@ -843,6 +1166,398 @@ function robotsTxt(origin) {
   ].join('\n');
 }
 
+// ---------------------------------------------------------------------------
+// Standalone documents.
+//
+// Everything below builds a COMPLETE html document rather than rewriting the SPA
+// shell, and that is the load-bearing decision for the archive pages.
+//
+// The obvious implementation of "give /blog crawlable links" is to inject anchors
+// into the shell. It does not work: the shell boots React Native Web, which mounts
+// into the root element and replaces its contents, so anything injected there is
+// gone the moment the bundle runs. Injecting into `<noscript>` survives but is a
+// weaker signal, and injecting a visible block outside the root would sit
+// underneath a full-screen app.
+//
+// A separate, genuinely static document has none of those problems: no bundle, no
+// hydration, no layout fight. It is also the right artefact on its own terms — an
+// archive index is a list of links, it loads in a few kilobytes, and it works for
+// a reader with JavaScript off.
+// ---------------------------------------------------------------------------
+
+/** Shared chrome for the generated documents. Kept small and inline on purpose. */
+const PAGE_CSS = `
+:root{color-scheme:light dark;--fg:#111114;--dim:#6a6a73;--bg:#fff;--line:#e6e6ea;--accent:#ff3b30}
+@media (prefers-color-scheme:dark){:root{--fg:#f2f2f5;--dim:#9b9ba3;--bg:#0d0d0f;--line:#26262b}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+.wrap{max-width:820px;margin:0 auto;padding:28px 20px 64px}
+a{color:inherit}
+h1{font-size:26px;line-height:1.25;margin:0 0 6px}
+p.lede{color:var(--dim);margin:0 0 22px}
+nav.crumbs{font-size:14px;color:var(--dim);margin:0 0 18px}
+nav.crumbs a{color:var(--accent);text-decoration:none;font-weight:600}
+ul.cats{list-style:none;display:flex;flex-wrap:wrap;gap:8px;padding:0;margin:0 0 24px}
+ul.cats a{display:inline-block;padding:6px 12px;border:1px solid var(--line);border-radius:999px;font-size:13px;font-weight:600;text-decoration:none}
+ol.posts{list-style:none;padding:0;margin:0}
+ol.posts li{padding:11px 0;border-bottom:1px solid var(--line)}
+ol.posts a{text-decoration:none;font-weight:600}
+ol.posts a:hover{color:var(--accent)}
+ol.posts time{display:block;font-size:12.5px;color:var(--dim);margin-top:3px}
+nav.pager{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:28px}
+nav.pager a,nav.pager span{padding:7px 12px;border:1px solid var(--line);border-radius:8px;font-size:14px;text-decoration:none}
+nav.pager span[aria-current]{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700}
+footer{margin-top:34px;font-size:14px;color:var(--dim)}
+footer a{color:var(--accent);text-decoration:none;font-weight:600}
+`.trim();
+
+/**
+ * A complete, self-contained html response.
+ *
+ * `robots` defaults to `noindex, follow` because every caller except the archive
+ * is an error page, and an error page that is indexable is a thin duplicate
+ * waiting to happen.
+ */
+function staticPage(opts) {
+  const {
+    origin,
+    title,
+    description = DEFAULT_DESCRIPTION,
+    canonical,
+    robots = 'noindex, follow',
+    status = 200,
+    cacheControl = 'public, max-age=0, must-revalidate',
+    head = '',
+    body,
+    headers: extraHeaders,
+  } = opts;
+  const fullTitle = /tophunt/i.test(title) ? title : `${title} | ${SITE_NAME}`;
+  const html =
+    `<!doctype html><html lang="en-IN"><head>` +
+    `<meta charset="utf-8">` +
+    `<meta name="viewport" content="width=device-width,initial-scale=1">` +
+    `<title>${esc(fullTitle)}</title>` +
+    `<meta name="robots" content="${esc(robots)}">` +
+    `<meta name="description" content="${esc(truncate(description, 160))}">` +
+    (canonical ? `<link rel="canonical" href="${esc(canonical)}">` : '') +
+    `<meta property="og:type" content="website">` +
+    `<meta property="og:site_name" content="${esc(SITE_NAME)}">` +
+    `<meta property="og:title" content="${esc(fullTitle)}">` +
+    `<meta property="og:description" content="${esc(truncate(description, 160))}">` +
+    (canonical ? `<meta property="og:url" content="${esc(canonical)}">` : '') +
+    `<link rel="icon" href="${esc(origin)}/favicon.ico">` +
+    head +
+    `<style>${PAGE_CSS}</style>` +
+    `</head><body><div class="wrap">${body}` +
+    `<footer><a href="${esc(origin)}/">TopHunt</a> · <a href="${esc(origin)}/blog">Blog</a>` +
+    ` · <a href="${esc(origin)}/blog/archive">All articles</a></footer>` +
+    `</div></body></html>`;
+
+  return withSecurityHeaders(
+    new Response(html, {
+      status,
+      headers: {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': cacheControl,
+        ...(extraHeaders || {}),
+      },
+    }),
+    { document: true },
+  );
+}
+
+/** 410 for the retired WordPress url space. Plain text for non-document fetches. */
+function gonePage(origin, isDocument) {
+  if (!isDocument) {
+    return withSecurityHeaders(
+      new Response('410 Gone\n', {
+        status: 410,
+        headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'public, max-age=3600' },
+      }),
+    );
+  }
+  return staticPage({
+    origin,
+    status: 410,
+    robots: 'noindex, nofollow',
+    title: 'Page removed',
+    description: 'This address belonged to the old TopHunt website and no longer exists.',
+    cacheControl: 'public, max-age=3600',
+    body:
+      `<h1>This page no longer exists</h1>` +
+      `<p class="lede">The address you followed belonged to the previous version of this site ` +
+      `and has been permanently removed. The articles themselves are all still here.</p>` +
+      `<nav class="pager"><a href="${esc(origin)}/blog/archive">Browse all articles</a>` +
+      `<a href="${esc(origin)}/">Go to TopHunt</a></nav>`,
+  });
+}
+
+/** 404 for an asset or a bogus `.xml`/`.php`-style url. Never html. */
+function notFoundAsset() {
+  return withSecurityHeaders(
+    new Response('404 Not Found\n', {
+      status: 404,
+      headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
+    }),
+  );
+}
+
+/**
+ * 503 for "the API did not answer", used where a 404 would be a lie.
+ *
+ * `Retry-After` is what turns this from an outage into a rescheduled crawl: Google
+ * retries a 503 and leaves the url's existing index status alone, whereas a 404
+ * starts the removal clock on a page that is perfectly fine.
+ */
+async function unavailablePage(env, origin) {
+  const shell = await fetchShell(env, origin, 503);
+  const res = injectSeo(shell, {
+    title: `Temporarily unavailable | ${SITE_NAME}`,
+    description: DEFAULT_DESCRIPTION,
+    robots: 'noindex, follow',
+  });
+  const headers = new Headers(res.headers);
+  headers.set('retry-after', '120');
+  headers.set('cache-control', 'no-store');
+  return new Response(res.body, { status: 503, headers });
+}
+
+/** One page of the archive feed. `{ ok:false }` when the API could not be asked. */
+async function fetchArchive(apiBase, page, category) {
+  const u = new URL(`${apiBase}/read/blog/archive`);
+  u.searchParams.set('page', String(page));
+  u.searchParams.set('per', String(ARCHIVE_PER_PAGE));
+  if (category) u.searchParams.set('category', category);
+  try {
+    const res = await fetch(u.toString(), {
+      headers: { accept: 'application/json' },
+      cf: { cacheTtl: 900, cacheEverything: true },
+    });
+    if (!res.ok) return { ok: false };
+    const data = await res.json();
+    if (!data || !Array.isArray(data.posts)) return { ok: false };
+    return { ok: true, data };
+  } catch (_e) {
+    return { ok: false };
+  }
+}
+
+/** Distinct categories with counts. Best-effort: the archive works without them. */
+async function fetchCategories(apiBase) {
+  try {
+    const res = await fetch(`${apiBase}/read/blog/categories`, {
+      headers: { accept: 'application/json' },
+      cf: { cacheTtl: 900, cacheEverything: true },
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data) ? data.filter((c) => c && c.category) : [];
+  } catch (_e) {
+    return [];
+  }
+}
+
+/**
+ * A crawlable index of the catalogue: `/blog/archive[/category/<c>][/page/<n>]`.
+ *
+ * This is the fix for the largest structural problem the blog had. `/blog` is a
+ * React Native `FlatList`, so it renders `TouchableOpacity` — a live fetch of the
+ * production page found ZERO `<a href>` pointing at any article. With no internal
+ * links, the sitemap was the only way Google could learn a url existed and there
+ * was no path for authority to reach an article at all, which is what ~4,400 posts
+ * sitting in "Crawled – currently not indexed" looks like from the inside.
+ *
+ * Every page here is indexable and listed in `/sitemap.xml`, so each post gains a
+ * real inbound link from a page Google crawls. `rel=prev`/`rel=next` and the
+ * numbered pager give the set a shape a crawler can walk end to end.
+ */
+async function getArchivePage(route, apiBase, origin) {
+  const { page, category } = route;
+  const [{ ok, data }, categories] = await Promise.all([
+    fetchArchive(apiBase, page, category),
+    fetchCategories(apiBase),
+  ]);
+
+  if (!ok) {
+    return staticPage({
+      origin,
+      status: 503,
+      title: 'Archive temporarily unavailable',
+      description: 'The TopHunt article archive could not be loaded. Please try again shortly.',
+      cacheControl: 'no-store',
+      headers: { 'retry-after': '120' },
+      body:
+        `<h1>Archive temporarily unavailable</h1>` +
+        `<p class="lede">We could not load the article list. Please try again in a moment.</p>`,
+    });
+  }
+
+  const totalPages = Math.max(Number(data.totalPages) || 1, 1);
+  const total = Number(data.total) || 0;
+
+  // A page past the end is not an empty archive page, it is a url that does not
+  // exist. Serving it with a 200 would mint an unbounded set of thin, indexable
+  // near-duplicates — the exact failure mode being repaired everywhere else here.
+  if (page > totalPages || data.posts.length === 0) {
+    return staticPage({
+      origin,
+      status: 404,
+      robots: 'noindex, nofollow',
+      title: 'Archive page not found',
+      description: 'That archive page does not exist.',
+      body:
+        `<h1>No such archive page</h1>` +
+        `<p class="lede">That page number is past the end of the archive.</p>` +
+        `<nav class="pager"><a href="${esc(origin)}/blog/archive">Start at page 1</a></nav>`,
+    });
+  }
+
+  const canonical = `${origin}${archivePath(page, category)}`;
+  const label = category ? `${category} articles` : 'All articles';
+  const heading = page > 1 ? `${label} — page ${page} of ${totalPages}` : label;
+  const description = category
+    ? `Every TopHunt article filed under ${category} — ${total} in total.`
+    : `A complete index of all ${total} TopHunt articles: quiz answers, giveaway guides and offer updates.`;
+
+  const dateOf = (ts) => {
+    if (!ts) return null;
+    try {
+      return new Date(Number(ts)).toISOString().slice(0, 10);
+    } catch (_e) {
+      return null;
+    }
+  };
+
+  const items = data.posts
+    .map((p) => {
+      if (!p.slug) return '';
+      const d = dateOf(p.publishedAt);
+      return (
+        `<li><a href="${esc(origin)}/${esc(p.slug)}">${esc(p.title || p.slug)}</a>` +
+        (d ? `<time datetime="${esc(d)}">${esc(d)}</time>` : '') +
+        `</li>`
+      );
+    })
+    .join('');
+
+  // Window the numbered pager so page 40 of 45 is still a short document.
+  const from = Math.max(1, page - 2);
+  const to = Math.min(totalPages, page + 2);
+  const numbered = [];
+  for (let n = from; n <= to; n++) {
+    numbered.push(
+      n === page
+        ? `<span aria-current="page">${n}</span>`
+        : `<a href="${esc(origin)}${esc(archivePath(n, category))}">${n}</a>`,
+    );
+  }
+
+  const prevHref = page > 1 ? `${origin}${archivePath(page - 1, category)}` : null;
+  const nextHref = page < totalPages ? `${origin}${archivePath(page + 1, category)}` : null;
+
+  const catList = categories.length
+    ? `<ul class="cats">` +
+      (category ? `<li><a href="${esc(origin)}/blog/archive">All</a></li>` : '') +
+      categories
+        .filter((c) => c.category !== category)
+        .map(
+          (c) =>
+            `<li><a href="${esc(origin)}${esc(archivePath(1, c.category))}">` +
+            `${esc(c.category)}${c.count ? ` (${c.count})` : ''}</a></li>`,
+        )
+        .join('') +
+      `</ul>`
+    : '';
+
+  const jsonLd = {
+    '@context': 'https://schema.org',
+    '@graph': [
+      {
+        '@type': 'CollectionPage',
+        '@id': canonical,
+        url: canonical,
+        name: heading,
+        description,
+        isPartOf: { '@type': 'WebSite', '@id': `${origin}/#website` },
+      },
+      {
+        '@type': 'BreadcrumbList',
+        itemListElement: [
+          { '@type': 'ListItem', position: 1, name: 'TopHunt', item: `${origin}/` },
+          { '@type': 'ListItem', position: 2, name: 'Blog', item: `${origin}/blog` },
+          { '@type': 'ListItem', position: 3, name: 'Archive', item: `${origin}/blog/archive` },
+          ...(category
+            ? [{ '@type': 'ListItem', position: 4, name: category, item: `${origin}${archivePath(1, category)}` }]
+            : []),
+        ],
+      },
+    ],
+  };
+
+  return staticPage({
+    origin,
+    title: heading,
+    description,
+    canonical,
+    robots: 'index, follow',
+    // Archive pages change only when posts are published, so they tolerate a real
+    // cache lifetime — unlike the SPA shell, which must revalidate for its meta.
+    cacheControl: 'public, max-age=900',
+    head:
+      (prevHref ? `<link rel="prev" href="${esc(prevHref)}">` : '') +
+      (nextHref ? `<link rel="next" href="${esc(nextHref)}">` : '') +
+      `<script type="application/ld+json">${JSON.stringify(jsonLd).replace(/</g, '\\u003c')}</script>`,
+    body:
+      `<nav class="crumbs"><a href="${esc(origin)}/">TopHunt</a> › ` +
+      `<a href="${esc(origin)}/blog">Blog</a> › ` +
+      (category ? `<a href="${esc(origin)}/blog/archive">Archive</a> › ${esc(category)}` : `Archive`) +
+      `</nav>` +
+      `<h1>${esc(heading)}</h1>` +
+      `<p class="lede">${esc(description)}</p>` +
+      catList +
+      `<ol class="posts" start="${(page - 1) * ARCHIVE_PER_PAGE + 1}">${items}</ol>` +
+      `<nav class="pager">` +
+      (prevHref ? `<a rel="prev" href="${esc(prevHref)}">← Previous</a>` : '') +
+      (from > 1 ? `<a href="${esc(origin)}${esc(archivePath(1, category))}">1 …</a>` : '') +
+      numbered.join('') +
+      (to < totalPages
+        ? `<a href="${esc(origin)}${esc(archivePath(totalPages, category))}">… ${totalPages}</a>`
+        : '') +
+      (nextHref ? `<a rel="next" href="${esc(nextHref)}">Next →</a>` : '') +
+      `</nav>`,
+  });
+}
+
+/**
+ * A `<noscript>` index of recent posts for `/blog`, plus the route into the
+ * archive.
+ *
+ * The blog list screen renders no anchors, so this is the only thing on `/blog`
+ * that a crawler can follow. It is deliberately modest — the archive pages are
+ * where the catalogue is actually exposed — but it means the one url most likely
+ * to be crawled first is not a dead end.
+ */
+async function blogIndexNoscript(apiBase, origin) {
+  const { ok, data } = await fetchArchive(apiBase, 1, null);
+  const links =
+    ok && data.posts.length
+      ? `<ul>` +
+        data.posts
+          .slice(0, 40)
+          .filter((p) => p.slug)
+          .map((p) => `<li><a href="${esc(origin)}/${esc(p.slug)}">${esc(p.title || p.slug)}</a></li>`)
+          .join('') +
+        `</ul>`
+      : '';
+  return (
+    `<noscript><section>` +
+    `<h2>Latest articles</h2>` +
+    links +
+    `<p><a href="${esc(origin)}/blog/archive">Browse all ${ok ? esc(data.total) : ''} articles</a></p>` +
+    `</section></noscript>`
+  );
+}
+
 async function getSitemap(request, env, ctx, apiBase, origin) {
   const cache = caches.default;
   const cacheKey = new Request(`${origin}/sitemap.xml`, { method: 'GET' });
@@ -870,6 +1585,7 @@ async function getSitemap(request, env, ctx, apiBase, origin) {
   // one subrequest. The loop is kept so growth past that endpoint's cap costs a
   // second request rather than truncating again.
   let cursor = null;
+  let postCount = 0;
   const MAX_PAGES = 12; // 12 x 10k posts, and it bounds the subrequest count
   let truncated = true;
   for (let i = 0; i < MAX_PAGES; i++) {
@@ -890,12 +1606,35 @@ async function getSitemap(request, env, ctx, apiBase, origin) {
     for (const p of posts) {
       if (!p.slug) continue;
       push(`/${p.slug}`, p.lastmod ? new Date(Number(p.lastmod)).toISOString() : undefined, '0.7');
+      postCount++;
     }
     cursor = data && data.nextCursor;
     if (!cursor || posts.length === 0) {
       truncated = false;
       break;
     }
+  }
+
+  // Every archive page, so the pages that carry the internal links are themselves
+  // crawled. Listing only `/blog/archive` would leave pages 2..n discoverable only
+  // by walking `rel=next` from page 1 — which works, eventually, and is exactly the
+  // sort of "eventually" that leaves 4,000 posts unindexed for months.
+  //
+  // The page count is derived from the posts already collected above rather than
+  // asked for separately: one fewer subrequest, and it cannot disagree with the
+  // post urls in the same document.
+  const archivePages = Math.max(Math.ceil(postCount / ARCHIVE_PER_PAGE), 1);
+  for (let n = 1; n <= archivePages; n++) {
+    push(archivePath(n, null), undefined, n === 1 ? '0.7' : '0.5');
+  }
+
+  // Category archives, which is where the topical clustering lives. Page 1 of each
+  // is listed; deeper pages are reachable via rel=next.
+  const categories = await fetchCategories(apiBase);
+  for (const c of categories) {
+    push(archivePath(1, c.category), undefined, '0.5');
+    const pages = Math.min(Math.ceil(Number(c.count || 0) / ARCHIVE_PER_PAGE), 50);
+    for (let n = 2; n <= pages; n++) push(archivePath(n, c.category), undefined, '0.4');
   }
 
   // A sitemap may hold 50,000 urls. Past that it has to become a sitemap index,

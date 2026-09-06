@@ -2948,6 +2948,81 @@ readRoute.get("/blog/sitemap", async (c) =>
   }),
 );
 
+/**
+ * A page of the blog archive: slug + title only, addressed by PAGE NUMBER.
+ *
+ * This is the feed behind the crawlable archive pages the SEO Worker renders at
+ * `/blog/archive/page/<n>`, and it exists because of a specific indexing failure:
+ * the blog list screen is a React Native `FlatList`, so it renders
+ * `TouchableOpacity`, not `<a href>`. A crawler fetching `/blog` found ZERO links
+ * to any post. With ~4,400 posts and no internal links, the sitemap was the only
+ * discovery path and there was no way for link equity to reach an article at all —
+ * which is what "Crawled – currently not indexed" looks like at this scale.
+ *
+ * Why offset pagination when everything else here is cursor-paginated: a crawlable
+ * archive needs STABLE, GUESSABLE, LINKABLE urls. `?cursor=1739383` is neither —
+ * it cannot be put in a sitemap, `rel=next` cannot be computed without fetching
+ * the previous page, and the url changes meaning as the catalogue grows. Page
+ * numbers are addressable, so page 7 is a real url with a real canonical.
+ *
+ * The usual objection to OFFSET — that deep offsets scan — is bounded here:
+ * `idx_blog_status_published` covers `status` + `published_at`, the row is two
+ * columns wide, and the deepest page is ~4,500 rows in. Correctness needs a total
+ * order, so `id` breaks ties: `published_at` is nullable (the importer writes NULL
+ * when the archived date is unknown) and duplicate values are common, and without
+ * a tiebreak SQLite may order ties differently between two queries — which for
+ * OFFSET pagination means a post silently appearing on two pages, or on none.
+ */
+readRoute.get("/blog/archive", async (c) =>
+  edgeCached(c, 900, async () => {
+    const db = getDb(c.env);
+    const perPage = Math.min(Math.max(parseInt(c.req.query("per") || "100", 10) || 100, 1), 500);
+    const page = Math.max(parseInt(c.req.query("page") || "1", 10) || 1, 1);
+    const category = c.req.query("category") || null;
+
+    const conds = [eq(schema.blogPosts.status, "published")];
+    if (category) conds.push(eq(schema.blogPosts.category, category));
+
+    const counted = await db
+      .select({ total: sql<number>`count(*)` })
+      .from(schema.blogPosts)
+      .where(and(...conds))
+      .get();
+    const total = Number(counted?.total || 0);
+    const totalPages = Math.max(Math.ceil(total / perPage), 1);
+
+    const rows = await db
+      .select({
+        slug: schema.blogPosts.slug,
+        title: schema.blogPosts.title,
+        category: schema.blogPosts.category,
+        publishedAt: schema.blogPosts.publishedAt,
+        updatedAt: schema.blogPosts.updatedAt,
+      })
+      .from(schema.blogPosts)
+      .where(and(...conds))
+      .orderBy(desc(schema.blogPosts.publishedAt), asc(schema.blogPosts.id))
+      .limit(perPage)
+      .offset((page - 1) * perPage)
+      .all();
+
+    return {
+      page,
+      perPage,
+      total,
+      totalPages,
+      category,
+      posts: rows.map((r) => ({
+        slug: r.slug,
+        title: r.title,
+        category: r.category || null,
+        publishedAt: r.publishedAt || null,
+        lastmod: r.updatedAt || r.publishedAt || null,
+      })),
+    };
+  }),
+);
+
 // Single post by slug (falls back to id). Increments view count fire-and-forget.
 readRoute.get("/blog/:slug", async (c) => {
   const db = getDb(c.env);
@@ -2998,7 +3073,22 @@ readRoute.get("/blog/:slug", async (c) => {
     }),
   );
 
-  if (!post) return c.json(null);
+  // 404, not `200 null`.
+  //
+  // This endpoint answered "no such post" with HTTP 200 and a `null` body, and the
+  // SEO Worker in front of it turned that into a 200 HTML page reading "Not found".
+  // Every dead or misspelled slug was therefore a SOFT 404: Google has to guess
+  // from the content that the page does not exist, files it under "Soft 404", and
+  // keeps re-crawling it. With ~4,400 imported permalinks and a catch-all route
+  // that claims every one-segment path, that was an unbounded space of 200s.
+  //
+  // Safe for the app: `blogService.getPost` catches the thrown `ApiCallError` and
+  // returns null, which is the same not-found state the 200 produced. The Worker's
+  // `fetchPost` already treats a non-ok response as no post.
+  //
+  // The body stays `null` so any caller that reads the body before the status sees
+  // an unchanged shape.
+  if (!post) return c.json(null, 404);
   // Best-effort view counter — the payload is cached, the analytics deliberately are
   // not, so this fires on cache hits too. Handed to `waitUntil` rather than left
   // floating: on an edge hit nothing else in this handler registers any pending

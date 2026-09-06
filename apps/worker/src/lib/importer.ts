@@ -270,12 +270,52 @@ async function migrateCover(ogImage: string | null, firstContentImgR2: string | 
   return wb ? await fetchToR2(wb, env) : null;
 }
 
+/**
+ * The canonical on-site url shape for a post: the root permalink, no trailing
+ * slash — the same string `/sitemap.xml` advertises and the same string the SEO
+ * Worker emits as `rel=canonical`.
+ *
+ * The archived WordPress pages link to each other as `/blog/<slug>/`, and a bug in
+ * an earlier import wrote thousands of them as `/blog/blog/<slug>/`. Nothing serves
+ * that doubled path: measured on production it answered 200 with
+ * `noindex, nofollow`, so every internal link Googlebot followed out of an article
+ * landed on a page that existed and refused to be indexed. Normalising here means
+ * a newly imported post ships with a working link graph instead of needing the
+ * edge Worker and a migration to repair it afterwards.
+ */
+function canonicalOnSitePath(pathname: string) {
+  const segments = pathname.replace(/\/+$/, "").split("/").filter(Boolean);
+  if (!segments.length) return "/";
+  const plain = `/${segments.join("/")}`;
+  // Only a run of `blog` segments in front of a single slug is a mangled permalink.
+  // `/blog/archive/page/2` is a real route and must survive untouched — this mirrors
+  // `blogPermalinkRedirect` in apps/expo/public/_worker.js.
+  if (segments.length < 2 || segments[0] !== "blog") return plain;
+  if (!segments.slice(1, -1).every((s) => s === "blog")) return plain;
+  return `/${segments[segments.length - 1]}`;
+}
+
 function rewriteLinks(contentEl: any) {
   for (const a of contentEl.querySelectorAll("a[href]")) {
     const href = a.getAttribute("href");
     const orig = originalFromWayback(href);
     if (orig) a.setAttribute("href", orig);
-    else if (href.startsWith("/web/")) a.removeAttribute("href");
+    else if (href.startsWith("/web/")) {
+      a.removeAttribute("href");
+      continue;
+    }
+
+    // Point every on-site link at the url that actually answers 200.
+    const resolved = a.getAttribute("href");
+    if (!resolved || !/^https?:\/\//i.test(resolved)) continue;
+    let u: URL;
+    try {
+      u = new URL(resolved);
+    } catch {
+      continue;
+    }
+    if (!OWN_HOST.test(u.hostname)) continue;
+    a.setAttribute("href", `https://tophunt.in${canonicalOnSitePath(u.pathname)}${u.search}${u.hash}`);
   }
 }
 
