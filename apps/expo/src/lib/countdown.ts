@@ -52,9 +52,18 @@ export function deadlineMs(value: Deadline): number | null {
 /**
  * Human countdown to `value`, or `ENDED` once it has passed.
  *
- * Shows the two or three most significant units and only ticks seconds under an
- * hour, so a week-long contest does not repaint a jittering seconds digit for
- * six days.
+ * Shows AT MOST TWO units, and only ticks seconds under an hour.
+ *
+ * It used to show three ("12d 23h 59m"), which was the main reason the countdown
+ * chip was hard to read: eleven characters of dense figures inside a small pill,
+ * and the least significant unit was the one nobody needed — the minutes are
+ * noise when the answer is "next week". Two units caps every label at seven
+ * characters ("12d 23h", "23h 59m", "59m 59s", "59s"), which is both legible at
+ * badge size and narrow enough that the chip stops fighting for room with
+ * whatever sits beside it.
+ *
+ * Seconds are kept below an hour on purpose: that is the phase where a ticking
+ * digit is information rather than decoration.
  *
  * A null deadline returns null, meaning "no countdown to show" — distinct from
  * `ENDED`, which means "there was a deadline and it is behind us". Callers use
@@ -72,8 +81,8 @@ export function formatTimeRemaining(value: Deadline, nowMs: number = Date.now())
   const h = Math.floor((totalSec % 86400) / 3600);
   const m = Math.floor((totalSec % 3600) / 60);
   const s = totalSec % 60;
-  if (d > 0) return `${d}d ${h}h ${m}m`;
-  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
   if (m > 0) return `${m}m ${s}s`;
   return `${s}s`;
 }
