@@ -5,12 +5,44 @@
 import { eq } from "drizzle-orm";
 import type { Env } from "../types";
 import { getDb, schema } from "../db";
+import { delCache, kvWritesDisabled } from "./cache";
 
-const CACHE_TTL = 60; // seconds
+/**
+ * KV lifetime.
+ *
+ * Raised from 60s, which is where the write saving comes from. Freshness does NOT
+ * depend on the ttl — every admin write calls `invalidateSetting`, which DELETES
+ * the key, and a KV delete is visible to every isolate. So the ttl is only a
+ * backstop against a missed invalidation, and at 60s it was an expensive one:
+ * `getAppConfig` / `getGamificationSettings` are called from 14 places including
+ * the feed ranker and `/app-config` (which the app polls hard), so the key was
+ * re-written up to 1,440 times a day per settings id purely to re-cache a blob
+ * that had not changed. At 600s that is ~144.
+ *
+ * NOT memoised in isolate memory, deliberately, even though this is the hottest
+ * read in the Worker. Isolate memory cannot be invalidated from another isolate,
+ * and `appConfig` carries `payoutsFrozen` — the emergency switch that blocks all
+ * new payout requests during a suspected-fraud incident. An in-memory copy would
+ * mean that switch takes effect everywhere except the isolates already serving
+ * traffic, for as long as its ttl. Since the write saving comes from the ttl above
+ * and NOT from memoising, a memo here would buy KV reads (which sit at under 1% of
+ * their quota) at the price of delaying a fraud kill-switch. That is not a trade
+ * worth making.
+ */
+const CACHE_TTL = 600;
 
 async function readSetting(env: Env, id: string): Promise<any> {
   const cacheKey = `settings:${id}`;
-  const cached = await env.CACHE_KV.get(cacheKey, "json");
+
+  // A KV read throwing used to 500 the request. Settings are read on hot paths
+  // (and on the feed), so a transport blip degrading to "read it from D1" is the
+  // behaviour every other cache in this codebase already has.
+  let cached: any = null;
+  try {
+    cached = await env.CACHE_KV.get(cacheKey, "json");
+  } catch (e) {
+    console.error("[settings] cache read failed (continuing)", id, e);
+  }
   if (cached) return cached;
 
   const db = getDb(env);
@@ -19,10 +51,12 @@ async function readSetting(env: Env, id: string): Promise<any> {
   // Never let a KV write failure (e.g. the daily put() quota being exhausted)
   // break config reads — we already have the data from D1. Fail open: skip the
   // cache write and just serve the fresh value.
-  try {
-    await env.CACHE_KV.put(cacheKey, JSON.stringify(data), { expirationTtl: CACHE_TTL });
-  } catch (e) {
-    console.error("[settings] cache write failed (continuing)", e);
+  if (!kvWritesDisabled(env)) {
+    try {
+      await env.CACHE_KV.put(cacheKey, JSON.stringify(data), { expirationTtl: CACHE_TTL });
+    } catch (e) {
+      console.error("[settings] cache write failed (continuing)", e);
+    }
   }
   return data;
 }
@@ -89,7 +123,19 @@ export async function getRewardedAdConfig(env: Env): Promise<RewardedAdConfig> {
   };
 }
 
-/** Invalidate a cached setting (call after admin updates it). */
+/**
+ * Invalidate a cached setting (call after admin updates it).
+ *
+ * This is what makes the long `CACHE_TTL` above safe: a delete reaches every
+ * isolate, so an admin edit is live immediately rather than after the ttl.
+ *
+ * Goes through `delCache` rather than `env.CACHE_KV.delete` so it also clears the
+ * isolate memo. Settings are not memoised today and deliberately so (see
+ * CACHE_TTL), which makes this inert right now — but lib/memo.ts states
+ * "delCache clears the memo" as the invariant that makes memoising a key safe at
+ * all, and a hand-rolled delete here is exactly the hole the next person to
+ * memoise something would not think to look for.
+ */
 export async function invalidateSetting(env: Env, id: string): Promise<void> {
-  await env.CACHE_KV.delete(`settings:${id}`);
+  await delCache(env, `settings:${id}`);
 }

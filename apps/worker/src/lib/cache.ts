@@ -10,6 +10,36 @@
  * a stale-cache bug is usually a key-mismatch bug.
  */
 import type { Env } from "../types";
+import { memoDelete } from "./memo";
+
+/**
+ * Testing kill switch: skip `CACHE_KV` writes made by the read-through CACHES.
+ *
+ * The free plan's 1,000 KV writes/day is exhausted in a few hours by one person
+ * exercising the app, and once it is, `put` returns 429 until 00:00 UTC. Setting
+ * `KV_WRITES_DISABLED = "true"` lets a test session run far under the quota:
+ * every cache read simply misses and the value is recomputed from D1, which is
+ * the fail-open path this module is already built around.
+ *
+ * Scope, deliberately narrow — this flag affects CACHES and nothing else:
+ *
+ *   - `OTP_KV` is NEVER affected. OTP codes, send cooldowns, re-auth grants and
+ *     the password-reset verified flag must persist or auth breaks outright —
+ *     and "breaks" here would mean a code that cannot be verified, or a reset
+ *     that no longer needs proof.
+ *   - RATE LIMITING is never affected either, so this is not a way to turn off
+ *     abuse or spend protection. See the note in lib/rateLimit.ts for why keying
+ *     it off `failClosed` was wrong.
+ *   - The Firebase access token and JWKS caches, and the `rzp_order` payment
+ *     intent, write through `env.CACHE_KV.put` directly and so keep writing.
+ *     They are state, not cache.
+ *
+ * It is still a switch that makes the app cache nothing, so it belongs in a test
+ * deployment and not in a production one.
+ */
+export function kvWritesDisabled(env: Env): boolean {
+  return String(env.KV_WRITES_DISABLED ?? "").toLowerCase() === "true";
+}
 
 // --- key builders ----------------------------------------------------------
 /** Public profile of a single user (routes/read.ts GET /users/:id). */
@@ -93,6 +123,7 @@ export async function cacheGetJson<T = any>(env: Env, key: string): Promise<T | 
 
 /** Write JSON with a TTL; never throws (fail-open on quota / transport blips). */
 export async function cachePutJson(env: Env, key: string, data: unknown, ttlSec: number): Promise<void> {
+  if (kvWritesDisabled(env)) return;
   try {
     await env.CACHE_KV.put(key, JSON.stringify(data), { expirationTtl: Math.max(60, ttlSec) });
   } catch (e) {
@@ -100,8 +131,21 @@ export async function cachePutJson(env: Env, key: string, data: unknown, ttlSec:
   }
 }
 
-/** Delete one or more keys; never throws. Use to invalidate on writes. */
+/**
+ * Delete one or more keys; never throws. Use to invalidate on writes.
+ *
+ * Clears this isolate's memo (lib/memo.ts) for the same keys FIRST, so a writer
+ * cannot read back the copy it just invalidated. Other isolates keep their copy
+ * until its (short) memo ttl lapses — that window is why only values tolerant of
+ * a few seconds of staleness are memoised at all.
+ *
+ * The KV delete still runs when `KV_WRITES_DISABLED` is set: deletes are metered
+ * separately from writes, the daily delete quota is nowhere near the limit (16
+ * used against 1,000), and skipping an invalidation would leave a stale entry
+ * that outlives the test session.
+ */
 export async function delCache(env: Env, ...keys: string[]): Promise<void> {
+  memoDelete(...keys);
   await Promise.all(
     keys.map((k) =>
       env.CACHE_KV.delete(k).catch((e) => console.error("[cache] delete failed (continuing)", k, e)),

@@ -52,11 +52,25 @@ import { cacheGetJson, cachePutJson, delCache } from "./cache";
 export const blockCacheKey = (uid: string) => `cache:blocks:${uid}`;
 
 /**
- * Cache lifetime. Long-ish because the write paths invalidate explicitly, so the
- * TTL is only a backstop against a missed invalidation rather than the primary
+ * Cache lifetime. Long because the write paths invalidate explicitly, so the TTL
+ * is only a backstop against a missed invalidation rather than the primary
  * freshness mechanism.
+ *
+ * Raised from 300s. This lookup runs on nearly every read and the common case — a
+ * user with no blocks at all — is an empty object, so at 300s it cost a KV write
+ * every five minutes per active user just to keep "nothing to filter" cached.
+ *
+ * Raising the TTL is the safe way to save those writes, and the ONLY safe way
+ * here. Every path that changes a relation calls `invalidateBlockCache`, which
+ * DELETES the key: block and unblock (both uids), mute and unmute, and account
+ * deletion. A KV delete is visible to every isolate, so a new block still takes
+ * effect immediately no matter how long the ttl is. An isolate-memory cache in
+ * front of this would NOT have that property — it cannot be invalidated from the
+ * isolate that ran the block — so it would lengthen the window in which a blocked
+ * user's content is still served, and buy nothing in exchange: the write happens
+ * on a KV miss, so only the ttl governs it.
  */
-const BLOCK_CACHE_TTL = 300;
+const BLOCK_CACHE_TTL = 900;
 
 /**
  * Hard ceiling on how many relations are loaded per user.
@@ -172,12 +186,13 @@ async function loadRelations(env: Env, uid: string): Promise<BlockRelations> {
 export async function getRelations(env: Env, uid: string | undefined): Promise<BlockRelations> {
   if (!uid) return EMPTY;
   try {
-    const cached = await cacheGetJson<BlockRelations>(env, blockCacheKey(uid));
+    const key = blockCacheKey(uid);
+    const cached = await cacheGetJson<BlockRelations>(env, key);
     if (cached) return cached;
     const fresh = await loadRelations(env, uid);
     // Cached even when empty — the common case is a user with no blocks at all,
     // and that is exactly the lookup worth not repeating on every request.
-    await cachePutJson(env, blockCacheKey(uid), fresh, BLOCK_CACHE_TTL);
+    await cachePutJson(env, key, fresh, BLOCK_CACHE_TTL);
     return fresh;
   } catch (e) {
     console.error("[blocks] getRelations failed (continuing unfiltered)", uid, e);

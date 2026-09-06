@@ -40,6 +40,22 @@ export async function consumeRateLimit(
   windowSec: number,
   options: RateLimitOptions = {},
 ): Promise<boolean> {
+  // NOTE: `KV_WRITES_DISABLED` deliberately does NOT apply here, even though each
+  // call costs a KV write and the hot keys are per-action.
+  //
+  // The first version of that flag skipped the counter for every key without
+  // `failClosed: true`, on the reasoning that those are "just" engagement
+  // throttles. That reasoning was wrong, because `failClosed` does not mean "this
+  // guard protects money" — it means "refuse if the counter is unreadable", and
+  // several throttles that DO guard money or real spend are fail-open simply by
+  // omission: `deposit:{uid}` (api.ts), `ad:{uid}` (mints withdrawable coins),
+  // `vidup:{uid}` (Bunny transcode spend), `create:{ip}` (the only per-IP signup
+  // limit, and signup grants a bonus balance) and `exportdata:{uid}` (PII export).
+  // A config flag that silently removed those is not a caching optimisation.
+  //
+  // So rate limiting always counts. It is bounded by user ACTIONS rather than by
+  // request volume or a ttl, which makes it a much smaller share of the write
+  // budget than the per-request caches the flag does cover.
   try {
     const windowId = Math.floor(Date.now() / 1000 / windowSec);
     const cacheKey = `rl:${key}:${windowId}`;

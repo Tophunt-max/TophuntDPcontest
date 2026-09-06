@@ -21,6 +21,7 @@ import { Hono } from 'hono';
 import { drizzle } from 'drizzle-orm/d1';
 import * as schema from '../../src/db/schema';
 import { ApiError, errorBody } from '../../src/lib/http';
+import { memoReset } from '../../src/lib/memo';
 import { apiRoute } from '../../src/routes/api';
 import { readRoute } from '../../src/routes/read';
 import { adminRoute } from '../../src/routes/admin';
@@ -166,6 +167,13 @@ export interface TestEnv {
 
 /** Fresh in-memory DB with all migrations applied + a ready-to-use env. */
 export function makeEnv(overrides: Partial<TestEnv> = {}): { env: TestEnv; db: SqliteDb } {
+  // lib/memo.ts caches in MODULE state, which outlives a single test in the same
+  // Vitest module registry. Every test here builds a fresh D1 and a fresh fake
+  // KV, so without this reset a settings blob or block set memoised by the
+  // previous test would be served against this test's database — passing or
+  // failing depending on file order, which is the worst kind of flake.
+  memoReset();
+
   const sqlite = new DatabaseSync(':memory:');
   const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
   for (const f of files) sqlite.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, f), 'utf8'));

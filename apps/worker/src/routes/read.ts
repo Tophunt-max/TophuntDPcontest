@@ -26,7 +26,9 @@ import {
   followingCacheKey,
   cacheGetJson,
   cachePutJson,
+  kvWritesDisabled,
 } from "../lib/cache";
+import { memoGet, memoPut } from "../lib/memo";
 import { getLiveTally, getViewerVote } from "../lib/voteCounter";
 import { rateLimit } from "../lib/rateLimit";
 import { searchTracks, searchCatalog, getCatalog } from "../lib/music";
@@ -181,6 +183,7 @@ async function cacheGet(env: Env, key: string): Promise<any | null> {
   }
 }
 async function cachePut(env: Env, key: string, data: any, ttlSec: number): Promise<void> {
+  if (kvWritesDisabled(env)) return;
   try {
     // Cloudflare KV enforces a 60s minimum TTL — a smaller value throws and the
     // put silently fails (i.e. no cache at all). Clamp so short-lived caches
@@ -293,6 +296,137 @@ const FEED_DIVERSITY_WINDOW = 2; // don't repeat a participant within N neighbou
 const FEED_AFFINITY_LOOKBACK = 500; // cap on how many past votes/visits we scan
 const FEED_SEEN_MAX_KEYS = 300; // bound the per-user seen map size in KV
 const FEED_SEEN_TTL = 3 * 86_400; // fatigue persists ~3 days
+/**
+ * Candidate-pool and per-viewer-order lifetimes, in ISOLATE MEMORY (see the note
+ * at the `candKey` read). Same durations the KV versions used, so feed freshness
+ * and pagination stability are unchanged — only the storage moved.
+ */
+const FEED_POOL_TTL = 45;
+const FEED_ORDER_TTL = 60;
+/**
+ * How long the viewer's fatigue map stays in isolate memory.
+ *
+ * This is the working copy: it is updated on EVERY feed load, so fatigue is as
+ * accurate as it was before. Only the durable KV copy is throttled below.
+ */
+const FEED_SEEN_MEMO_TTL = 900;
+/**
+ * Minimum gap between durable KV writes of the fatigue map, per viewer.
+ *
+ * `bumpSeen` used to `put` on every single feed request with no ttl gating of any
+ * kind, which made it the largest consumer of the free plan's 1,000 KV
+ * writes/day: a client that refreshes the feed every 10 seconds spends 360
+ * writes an hour, so one person scrolling for three hours exhausted the entire
+ * daily quota on impression tracking alone — and then every OTHER cache write in
+ * the Worker started failing with 429 for the rest of the day.
+ *
+ * Throttling only the FLUSH (not the counting) is what makes this free: the
+ * increments land in isolate memory immediately, so within a session the ranking
+ * sees exactly the counts it saw before. KV is only the copy that has to survive
+ * an isolate going away, and a fatigue map is the definition of data that can
+ * afford to lose its last few minutes.
+ */
+const FEED_SEEN_FLUSH_INTERVAL_MS = 5 * 60_000;
+
+/**
+ * The viewer's impression-fatigue state.
+ *
+ * `flushedAt` is stored INSIDE the value rather than under a second key because
+ * a separate "last flushed" key would itself need a write per flush, which is
+ * the cost being removed.
+ */
+/** Current envelope version. Bumping this REQUIRES reading the note in parseSeen. */
+const FEED_SEEN_VERSION = 2;
+
+interface SeenState {
+  /** matchId -> times shown to this viewer. */
+  map: Record<string, number>;
+  /** ms since epoch of the last durable KV write. */
+  flushedAt: number;
+  /**
+   * True when this state could not be loaded and is therefore NOT the viewer's
+   * real history. Such a state is never memoised and never flushed — see
+   * `loadSeen`.
+   */
+  transient?: boolean;
+}
+
+/**
+ * Coerce whatever is in KV into a `SeenState`.
+ *
+ * BACKWARD compatibility: the pre-existing shape had the value BE the bare
+ * `matchId -> count` map. Those entries have a 3-day ttl, so they keep arriving
+ * for three days after this deploys, and treating one as an empty map would
+ * silently reset fatigue for every currently-active user. The `v` marker is what
+ * distinguishes them — a structural guess ("does it have a `map` property?") would
+ * misread a legacy map that happened to contain a match id called `map`, and
+ * because the counts are NESTED under `map` rather than spread, no legacy id can
+ * collide with the envelope's own fields either.
+ *
+ * FORWARD compatibility, which matters just as much: a Cloudflare deploy is not
+ * atomic across colos, so if this envelope is ever versioned up to 3, isolates
+ * still running THIS code will read that value. Without the version check below
+ * they would take the whole envelope as the count map and increment
+ * `map.map` — `Math.min((obj || 0) + 1, 99)` on a nested object is `NaN`, which
+ * then flushes back to KV as `null` and corrupts the entry for every reader. So an
+ * unrecognised version is treated as "start over": lossy, never destructive.
+ */
+function parseSeen(raw: unknown): SeenState {
+  if (raw && typeof raw === "object") {
+    const obj = raw as Record<string, any>;
+    if (obj.v === FEED_SEEN_VERSION && obj.map && typeof obj.map === "object") {
+      return { map: obj.map as Record<string, number>, flushedAt: Number(obj.flushedAt) || 0 };
+    }
+    // A version we do not understand — from a newer deploy. Do not try to read it.
+    if (typeof obj.v === "number") return { map: {}, flushedAt: 0 };
+    // Legacy: the value itself is the map. flushedAt 0 means "flush on next
+    // bump", which upgrades the entry to the new shape on first use.
+    return { map: obj as Record<string, number>, flushedAt: 0 };
+  }
+  return { map: {}, flushedAt: 0 };
+}
+
+/** Bound the map to the most-penalising ids. Mutates and returns the same object. */
+function pruneSeen(map: Record<string, number>): Record<string, number> {
+  const keys = Object.keys(map);
+  if (keys.length > FEED_SEEN_MAX_KEYS) {
+    // Drop the least-seen entries first — they need the least fatigue.
+    keys.sort((a, b) => (map[a] || 0) - (map[b] || 0));
+    for (const k of keys.slice(0, keys.length - FEED_SEEN_MAX_KEYS)) delete map[k];
+  }
+  return map;
+}
+
+/**
+ * The viewer's fatigue state, preferring this isolate's working copy.
+ *
+ * Both readers go through here — the ranker and `bumpSeen` — so they always agree
+ * on the same object, and the ranker sees increments this isolate has not flushed
+ * yet.
+ *
+ * Reads KV directly rather than through `cacheGetJson`, because that helper
+ * collapses "missing" and "the read failed" into the same `null`. That distinction
+ * was harmless when every request re-read KV, but it is not harmless now: an empty
+ * map produced by a transport blip would be memoised for FEED_SEEN_MEMO_TTL, have
+ * its ttl refreshed on every subsequent load, and be flushed over up to three days
+ * of real history. A failed read therefore returns a `transient` state that is
+ * neither cached nor written back, so the next request simply tries KV again.
+ */
+async function loadSeen(env: Env, uid: string): Promise<SeenState> {
+  const key = feedSeenKey(uid);
+  const memo = memoGet<SeenState>(key);
+  if (memo) return memo;
+  let raw: unknown;
+  try {
+    raw = await env.CACHE_KV.get(key, "json");
+  } catch (e) {
+    console.error("[feed] seen load failed (not caching, not flushing)", uid, e);
+    return { map: {}, flushedAt: Date.now(), transient: true };
+  }
+  const state = parseSeen(raw);
+  memoPut(key, state, FEED_SEEN_MEMO_TTL);
+  return state;
+}
 
 /**
  * Tunable ranking weights. Defaults live here but can be overridden at runtime
@@ -346,23 +480,67 @@ async function getFeedWeights(env: Env): Promise<FeedWeights> {
 }
 
 /**
- * Write-behind impression tracking (KV, fail-open). Increments the times each
- * served battle was shown to this viewer, prunes to the most-penalising keys,
- * and never throws — so a KV blip can't break the feed and it never touches D1.
+ * Write-behind impression tracking (fail-open). Increments the times each served
+ * battle was shown to this viewer, prunes to the most-penalising keys, and never
+ * throws — so a blip can't break the feed and it never touches D1.
+ *
+ * Two tiers, for the reason set out on FEED_SEEN_FLUSH_INTERVAL_MS: counts are
+ * updated in isolate memory on every call, and pushed to KV at most once every
+ * five minutes per viewer.
  */
 async function bumpSeen(env: Env, uid: string, ids: string[]): Promise<void> {
   if (ids.length === 0) return;
   try {
     const key = feedSeenKey(uid);
-    const map = (await cacheGetJson<Record<string, number>>(env, key)) || {};
+    const state = await loadSeen(env, uid);
+    // Could not read the real history — counting onto an empty map and writing it
+    // back would erase it. Skip entirely; one lost page of impressions is nothing.
+    if (state.transient) return;
+
+    const map = state.map;
     for (const id of ids) map[id] = Math.min((map[id] || 0) + 1, 99);
-    const keys = Object.keys(map);
-    if (keys.length > FEED_SEEN_MAX_KEYS) {
-      // Drop the least-seen entries first — they need the least fatigue.
-      keys.sort((a, b) => (map[a] || 0) - (map[b] || 0));
-      for (const k of keys.slice(0, keys.length - FEED_SEEN_MAX_KEYS)) delete map[k];
+    pruneSeen(map);
+
+    // memo holds the state BY REFERENCE, so the mutations above are already
+    // visible to the next request in this isolate. Re-put to refresh its ttl and
+    // to cover the cold-miss case where `loadSeen` built the object itself.
+    memoPut(key, state, FEED_SEEN_MEMO_TTL);
+
+    const now = Date.now();
+    if (now - state.flushedAt < FEED_SEEN_FLUSH_INTERVAL_MS) return;
+    // Claim the flush window BEFORE awaiting, so two concurrent requests in this
+    // isolate cannot both decide to write.
+    state.flushedAt = now;
+
+    // Merge with the durable copy instead of overwriting it.
+    //
+    // This request's isolate is not the only one serving this viewer, and it has
+    // not re-read KV since it warmed its memo. A blind write would discard
+    // whatever another isolate flushed in the meantime, so counts would converge
+    // on the maximum held by any ONE isolate rather than on the real total —
+    // fatigue would quietly weaken by roughly the isolate fan-out.
+    //
+    // Per-id MAX, not sum: both copies descend from the same durable baseline, so
+    // adding them would double-count everything already flushed.
+    let merged = map;
+    try {
+      const durable = parseSeen(await env.CACHE_KV.get(key, "json"));
+      merged = { ...durable.map };
+      for (const [id, count] of Object.entries(map)) {
+        merged[id] = Math.min(Math.max(merged[id] || 0, count), 99);
+      }
+      pruneSeen(merged);
+      // Adopt the merged view so this isolate stops diverging from KV.
+      state.map = merged;
+      memoPut(key, state, FEED_SEEN_MEMO_TTL);
+    } catch (e) {
+      // Merge is an improvement, not a requirement. On a read failure write what
+      // this isolate knows rather than losing the flush.
+      console.error("[feed] seen merge failed (writing local view)", uid, e);
+      merged = map;
     }
-    await cachePutJson(env, key, map, FEED_SEEN_TTL);
+
+    await cachePutJson(env, key, { v: FEED_SEEN_VERSION, map: merged, flushedAt: now }, FEED_SEEN_TTL);
   } catch {
     /* fail-open: impression fatigue is best-effort */
   }
@@ -459,8 +637,29 @@ async function servePersonalizedFeed(
   // The "Following" tab is inherently personal — signed-out users get nothing.
   if (following && !uid) return c.json({ items: [], nextCursor: null });
 
+  // The candidate pool and the per-viewer order below live in ISOLATE MEMORY, not
+  // KV. Both are written on a cache MISS, so their write rate is set purely by
+  // their ttl: at 45s and 60s that was ~1,920 and ~1,440 KV writes a day
+  // respectively — either one alone over the free plan's 1,000/day budget for the
+  // entire Worker, which is why throttling `bumpSeen` did not fix the quota on its
+  // own.
+  //
+  // Neither is a correctness dependency. Both are pure functions of D1 rows plus
+  // the ranking weights, and a miss simply recomputes them — which is exactly what
+  // a KV miss already did. Moving them to memory therefore trades a KV write for
+  // one D1 query per isolate per window. That is the right trade here: D1's free
+  // allowance is measured in millions of rows a day and this query is two indexed
+  // reads capped at 190 rows, while KV writes are the scarce resource by three
+  // orders of magnitude. If isolate fan-out ever grows enough for the repeated D1
+  // query to matter, the answer is a longer window, not a return to KV.
   const candKey = `cache:matches:cand:${status}:${type || "all"}`;
-  let candidates: any[] | null = await cacheGet(c.env, candKey);
+  // Cloned on the way out. The memo hands back the SAME object it stored, and the
+  // enrichment below mutates match objects in place, so a shared pool would let one
+  // request's edits leak into every later request's view of the cache. Reading from
+  // KV used to give each caller a private copy for free (it deserialises), and this
+  // keeps that property — at less cost than the JSON.parse it replaces.
+  const pooled = memoGet<any[]>(candKey);
+  let candidates: any[] | null = pooled ? structuredClone(pooled) : null;
   if (!candidates) {
     const typeConds = type ? [eq(schema.contestMatches.type, type)] : [];
     const activeRows = await db
@@ -489,7 +688,9 @@ async function servePersonalizedFeed(
       .map((r) => ({ ...enrichMatchMedia(c.env, mapMatch(r)), _base: rankBaseScore(r, now, w) }))
       .sort((a, b) => b._base - a._base);
     await enrichParticipants(c.env, candidates);
-    await cachePut(c.env, candKey, candidates, 45);
+    // Store a clone for the same reason it is cloned on read: this request goes on
+    // to filter and rank `candidates`, and must not be able to reach the cached copy.
+    memoPut(candKey, structuredClone(candidates), FEED_POOL_TTL);
   }
 
   // Per-viewer block/mute filter, applied to the value that came OUT of the
@@ -523,7 +724,11 @@ async function servePersonalizedFeed(
   const orderKey = uid
     ? `cache:feedorder:${uid}:${following ? "following" : "foryou"}:${status}:${type || "all"}:${exclusionVersion(hidden)}`
     : "";
-  const cachedOrder = uid && candidates.length > 0 ? await cacheGet(c.env, orderKey) : null;
+  // Isolate memory, not KV — see the note on the candidate pool above. A plain
+  // string[], and the reader below only maps over it, but it is copied anyway so
+  // that this cache cannot be reached through the value it handed out.
+  const storedOrder = uid && candidates.length > 0 ? memoGet<string[]>(orderKey) : undefined;
+  const cachedOrder = storedOrder ? storedOrder.slice() : null;
 
   let ranked: any[];
   if (uid && candidates.length > 0 && Array.isArray(cachedOrder)) {
@@ -535,7 +740,7 @@ async function servePersonalizedFeed(
     );
     // Three cheap per-viewer affinity signals ("your history with this creator"):
     //   follows (strongest), past votes (backed them before), profile visits.
-    const [followRows, voteRows, visitRows, seenMap] = await Promise.all([
+    const [followRows, voteRows, visitRows, seenState] = await Promise.all([
       participantUids.length
         ? db
             .select({ following: schema.follows.followingId })
@@ -555,7 +760,7 @@ async function servePersonalizedFeed(
         .where(eq(schema.profileVisits.visitorId, uid))
         .limit(FEED_AFFINITY_LOOKBACK)
         .all(),
-      cacheGetJson<Record<string, number>>(c.env, feedSeenKey(uid)),
+      loadSeen(c.env, uid),
     ]);
     const followSet = new Set((followRows as Array<{ following: string }>).map((r) => r.following));
     // Same scan gives both the affinity set (creators backed) and the novelty
@@ -563,7 +768,7 @@ async function servePersonalizedFeed(
     const votedForSet = new Set((voteRows as Array<{ votedForUid: string }>).map((r) => r.votedForUid));
     const votedMatchSet = new Set((voteRows as Array<{ matchId: string }>).map((r) => r.matchId));
     const visitedSet = new Set((visitRows as Array<{ userId: string }>).map((r) => r.userId));
-    const seen = seenMap || {};
+    const seen = seenState.map;
 
     let scored = candidates.map((m) => {
       const a = m.userA?.uid;
@@ -593,8 +798,8 @@ async function servePersonalizedFeed(
     if (following) scored = scored.filter((x) => x.followed);
     // Diversity pass so one creator doesn't stack several battles in a row.
     ranked = diversifyFeed(scored.sort((a, b) => b.s - a.s).map((x) => x.m), FEED_DIVERSITY_WINDOW);
-    // Cache the id order for stable, cheap pagination within the TTL.
-    await cachePut(c.env, orderKey, ranked.map((m) => m.id), 60);
+    // Cache the id order for stable, cheap pagination within the window.
+    memoPut(orderKey, ranked.map((m) => m.id), FEED_ORDER_TTL);
   } else if (following) {
     ranked = []; // signed-in but no candidates, or the empty-pool case
   } else {
@@ -793,11 +998,18 @@ readRoute.get("/contests", optionalAuth, async (c) => {
   if (type) conds.push(eq(schema.contests.type, type));
   const rows = await db.select().from(schema.contests).where(and(...conds)).all();
   const contests = rows.map(mapContest);
-  // 60s, as before — but the window is evaluated per cache MISS, so a contest
-  // can appear or disappear up to a minute late. That is why the app also
-  // counts down locally and disables an entry whose endsAt has passed: the
-  // last-minute case is handled client-side rather than by shortening the TTL
-  // for every request.
+  // STAYS AT 60s. Admin edits are covered by `invalidateContestCaches` (including
+  // the cron that ends expired ones), so a longer ttl looks free — but SCHEDULING
+  // is not covered. The filter above is `startsAt < now`, and nothing invalidates
+  // at the moment a scheduled contest enters its window, so appearance is gated
+  // purely on the next cache miss.
+  //
+  // The client-side mitigation only helps in the other direction: it can count
+  // down and disable an entry whose `endsAt` has passed, because that entry is
+  // already in the response. Nothing on the client can surface a contest that the
+  // payload omits. For a timed launch that users are waiting on, a five-minute
+  // delay is product-visible, so this ttl stays where it is until a launch
+  // invalidation exists.
   await cachePutJson(c.env, key, contests, 60);
   c.header("Cache-Control", "public, max-age=60");
   return c.json(contests);
@@ -816,7 +1028,12 @@ readRoute.get("/contests/:id", optionalAuth, async (c) => {
   const db = getDb(c.env);
   const row = await db.select().from(schema.contests).where(eq(schema.contests.id, id)).get();
   const contest = row ? mapContest(row) : null;
-  await cachePutJson(c.env, key, { contest }, 60);
+  // 300s. Unlike the LIST above, a detail lookup is by id and does not filter on
+  // the validity window, so the scheduling gap described there does not apply
+  // here: `invalidateContestCaches` covers every mutation of this row, and the
+  // join path re-reads the contest from D1 and calls `assertContestOpenNow`, so a
+  // stale detail payload can never authorise an entry outside the window.
+  await cachePutJson(c.env, key, { contest }, 300);
   c.header("Cache-Control", "public, max-age=60");
   return c.json(contest);
 });
@@ -1618,6 +1835,21 @@ readRoute.get("/users/:id", optionalAuth, async (c) => {
   safe.following = following.map((f) => f.id);
   safe.profileImageUrlThumb = avatarUrl(c.env, safe.profileImageUrl);
   if (!isHiddenAccountStatus(row.status)) {
+    // STAYS AT 30s. This looks like an obvious candidate for a longer ttl —
+    // `updateProfile`, the identifier-change flows and account deletion all call
+    // `delCache(userCacheKey(uid))` — but the payload is built by spreading the
+    // whole `users` row, so it carries `dpcoin`, `xp`, `streak` and
+    // `lastDailyClaim`, and this is the endpoint the app reads a balance from.
+    //
+    // None of the ~15 coin-mutating paths invalidate this key: the match entry
+    // fee, the daily reward, the rewarded-ad credit, the task claim, the Razorpay
+    // top-up, the withdrawal debit, admin wallet adjustments and deposit
+    // approvals, settlement, payouts and the cron prize sweep. At 30s a user who
+    // has just paid an entry fee or bought coins sees a stale balance briefly; at
+    // 180s they would see it for three minutes, which in a coin app reads as a
+    // lost payment.
+    //
+    // Raising this requires invalidating on the money paths first.
     await cachePutJson(c.env, key, safe, 30);
   } else {
     c.header("Cache-Control", "private, no-store");
@@ -1901,7 +2133,9 @@ async function connectionsHandler(c: any, direction: "followers" | "following") 
   const { items, nextCursor } = await listConnections(c, targetId, direction, cursor, limit);
 
   if (isFirstPage) {
-    c.executionCtx.waitUntil(cachePutJson(c.env, cacheKey, { items, nextCursor }, 30));
+    // 180s (was 30s). `toggleFollow` invalidates BOTH sides of the edge, so a
+    // follow shows up immediately regardless of the ttl.
+    c.executionCtx.waitUntil(cachePutJson(c.env, cacheKey, { items, nextCursor }, 180));
   }
 
   const body = await visible(items);
@@ -2165,6 +2399,13 @@ readRoute.get("/comments", optionalAuth, async (c) => {
         .get();
       payload.total = Number(countRow?.n ?? 0);
     }
+    // Stays at 30s, unlike the other caches here, and NOT because nobody has got
+    // round to it: `toggleCommentLike` mutates `likeCount` on the rows in this
+    // payload and does NOT invalidate this key — it only returns the new count to
+    // the caller for its own optimistic update. So the ttl is the ONLY thing
+    // bounding how long every other viewer sees a stale like count, and raising it
+    // would turn a 30-second lag into a multi-minute one. Add invalidation to
+    // `toggleCommentLike` before touching this number.
     if (isFirstPage) await cachePut(c.env, cacheKey, payload, 30);
   }
 
@@ -2415,7 +2656,9 @@ readRoute.get("/blog", async (c) => {
   const nextCursor = rows.length === limit ? rows[rows.length - 1].publishedAt : null;
   const payload = { posts: rows.map((r) => mapBlogPost(c.env, r)), nextCursor };
   if (cacheable) {
-    await cachePut(c.env, cacheKey, payload, 120);
+    // 600s (was 120s). `invalidateBlogReadCache` drops the list and post keys on
+    // every editorial write, so publishing is still immediate.
+    await cachePut(c.env, cacheKey, payload, 600);
     c.header("Cache-Control", "public, max-age=60");
   }
   return c.json(payload);
@@ -2517,6 +2760,7 @@ readRoute.get("/blog/:slug", async (c) => {
     .run()
     .catch(() => {});
   const payload = mapBlogPost(c.env, row, { withContent: true });
-  await cachePutJson(c.env, cacheKey, payload, 120);
+  // 600s (was 120s) — invalidated by `invalidateBlogReadCache` on every edit.
+  await cachePutJson(c.env, cacheKey, payload, 600);
   return c.json(payload);
 });
