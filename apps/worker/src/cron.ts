@@ -10,7 +10,7 @@
 import { and, eq, lte, gt, desc, sql, asc, isNull, isNotNull } from "drizzle-orm";
 import type { Env } from "./types";
 import { getDb, schema } from "./db";
-import { invalidateContestCaches } from "./lib/cache";
+import { invalidateContestCaches } from "./lib/edgeCache";
 import { createNotification } from "./lib/notify";
 import { sendUserEmail } from "./lib/email";
 import { contestWinEmail, contestRefundEmail, prizeClaimEmail } from "./lib/emailTemplates";

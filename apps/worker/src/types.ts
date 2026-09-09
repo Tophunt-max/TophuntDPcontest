@@ -42,12 +42,12 @@ export interface Env {
    * the Worker fails with 429 until 00:00 UTC. This makes a test session cost
    * far less: caches simply always miss and values are recomputed from D1.
    *
-   * Affects CACHES ONLY. It does NOT touch OTP_KV (OTP codes, send cooldowns,
-   * re-auth grants, the password-reset verified flag), it does NOT touch RATE
-   * LIMITING of any kind — so it cannot be used to disable abuse or spend
-   * protection — and it does not touch the Firebase token/JWKS caches or the
-   * `rzp_order` payment intent, which are state rather than cache. See
-   * `kvWritesDisabled` in lib/cache.ts.
+   * Affects CACHES ONLY — including the Cloudflare Cache API tier, which is now the
+   * primary read cache (lib/edgeCache.ts). It does NOT touch OTP_KV (OTP codes, send
+   * cooldowns, re-auth grants, the password-reset verified flag), it does NOT touch
+   * RATE LIMITING of any kind — so it cannot be used to disable abuse or spend
+   * protection — and it does not touch the Firebase token/JWKS caches, which are state
+   * rather than cache. See `kvWritesDisabled` in lib/cache.ts.
    */
   KV_WRITES_DISABLED?: string;
 

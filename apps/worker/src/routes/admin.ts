@@ -36,15 +36,10 @@ import { refundRejectedWithdrawal } from "../lib/payouts";
 import { publish } from "../lib/publish";
 import { resolveContests, monthlyHallOfFame, seoAuditJob } from "../cron";
 import { newId, now } from "../lib/ids";
-import { discoverUrls, processBatch } from "../lib/importerTask";
+import { discoverUrls, processBatch, readImportProgress, writeImportProgress } from "../lib/importerTask";
 import { runVideoBackfillBatch } from "../lib/videoBackfill";
-import {
-  blogListCacheKey,
-  blogPostCacheKey,
-  commentsCacheKey,
-  delCache,
-  invalidateContestCaches,
-} from "../lib/cache";
+import { blogListCacheKey, blogPostCacheKey, commentsCacheKey } from "../lib/cache";
+import { edgePurgeUrl, invalidateContestCaches, purgeShared } from "../lib/edgeCache";
 import {
   assertContestWindow,
   contestBannerUrl,
@@ -527,7 +522,7 @@ adminRoute.delete("/contests/:id", async (c) => {
     if (!stillExists) throw httpsError("not-found", "Contest not found.");
     throw httpsError("failed-precondition", "Contest became ineligible for deletion; refresh and try again.");
   }
-  await invalidateContestCaches(c.env, id);
+  await invalidateContestCaches(c.env, id, c);
   await logAudit(c, "contest.delete", "contest", id, { previous: current });
   await cleanupUnattachedContestBanners(c, contestBannerCandidates(current));
   return c.json({ message: "Contest deleted successfully" });
@@ -661,7 +656,7 @@ adminRoute.patch("/contests/:id", async (c) => {
   if (updated.meta.changes === 0) {
     throw httpsError("failed-precondition", "Contest activity changed while saving. Refresh and try again.");
   }
-  await invalidateContestCaches(c.env, id);
+  await invalidateContestCaches(c.env, id, c);
   await logAudit(c, "contest.update", "contest", id, set);
   await cleanupUnattachedContestBanners(c, oldBanners);
   if (hasOwn(set, "prizeProductImageUrl")) await cleanupUnattachedProductImages(c, oldProductImages);
@@ -1029,23 +1024,27 @@ function validatePublishedBlog(status: string, content: string | null | undefine
   }
 }
 
-/** Clear the hot public list/detail caches after an editorial write. */
+/**
+ * Clear the hot public list/detail caches after an editorial write.
+ *
+ * Also runs for DELETE and UNPUBLISH, which is why the blog TTLs are the shortest
+ * in `READ_CACHE_TTLS`: this purge clears THIS colo immediately, and every other
+ * colo converges within the (20s) edge TTL. A post pulled for legal reasons is the
+ * case that bound is chosen for.
+ */
 async function invalidateBlogReadCache(c: any, id?: string, ...slugs: Array<string | null | undefined>): Promise<void> {
   const keys = new Set<string>([blogListCacheKey(12)]);
   if (id) keys.add(blogPostCacheKey(id));
   for (const slug of slugs) if (slug) keys.add(blogPostCacheKey(slug));
-  await delCache(c.env, ...keys);
+  await purgeShared(c, ...keys);
 
-  // Categories use the Cache API rather than KV. This is best-effort just like
-  // the shared KV invalidator and must never make an admin write fail.
-  try {
-    const categoriesUrl = new URL(c.req.url);
-    categoriesUrl.pathname = "/read/blog/categories";
-    categoriesUrl.search = "";
-    await (caches as any).default.delete(new Request(categoriesUrl.toString()));
-  } catch (e) {
-    console.error("[cache] blog categories delete failed (continuing)", e);
-  }
+  // `/read/blog/categories` is a whole-RESPONSE entry rather than a logical one, so
+  // it needs the url-keyed purge. It goes through `edgePurgeUrl` — the same builder
+  // the reader uses — instead of the hand-rolled `new URL(c.req.url)` this replaced:
+  // that copy had to re-derive the path and the (empty) query string by hand, and a
+  // reader that ever gained a `varyParams` entry would have silently stopped
+  // matching it.
+  edgePurgeUrl(c, "/read/blog/categories");
 }
 
 // List posts (any status) for the admin table. Optional ?q= title search.
@@ -1089,7 +1088,7 @@ adminRoute.get("/blog/stats", async (c) => {
   return c.json({ total, published, drafts: total - published, imported });
 });
 
-const PROGRESS_KEY = "blog:import:progress";
+
 
 /** sha256 hex of a string (used for content-hash dedup + image keys). */
 async function sha256Hex(input: string | ArrayBuffer): Promise<string> {
@@ -1277,15 +1276,12 @@ adminRoute.post("/blog/import", async (c) => {
 // ---- Import job progress (fed by the importer, read by the dashboard) ----
 adminRoute.post("/blog/import/progress", async (c) => {
   const body = await c.req.json<any>();
-  await c.env.CACHE_KV.put(PROGRESS_KEY, JSON.stringify({ ...body, updatedAt: now() }), {
-    expirationTtl: 86400,
-  });
+  await writeImportProgress(c.env, body);
   return c.json({ ok: true });
 });
 
 adminRoute.get("/blog/import/progress", async (c) => {
-  const raw = await c.env.CACHE_KV.get(PROGRESS_KEY, "json");
-  return c.json(raw || null);
+  return c.json((await readImportProgress(c.env)) || null);
 });
 
 // URLs already handled (so the importer can resume and skip them).
@@ -1367,7 +1363,7 @@ adminRoute.post("/blog/import/finish", async (c) => {
   const { state } = await c.req.json<any>();
   if (state) {
     state.done = true;
-    await c.env.CACHE_KV.put(PROGRESS_KEY, JSON.stringify({ ...state, updatedAt: now() }), { expirationTtl: 86400 });
+    await writeImportProgress(c.env, state);
   }
   return c.json({ ok: true });
 });
@@ -1874,7 +1870,7 @@ adminRoute.post("/contests", async (c) => {
     createdBy,
     createdAt,
   });
-  await invalidateContestCaches(c.env, id);
+  await invalidateContestCaches(c.env, id, c);
   await logAudit(c, "contest.create", "contest", id, { ...values, createdBy, createdAt });
   return c.json({ success: true, contestId: id, id });
 });
@@ -2612,7 +2608,15 @@ adminRoute.delete("/comments/:id", async (c) => {
     // Drop the cached thread, otherwise the removed comment stays on the public
     // page for the rest of the TTL — the one place a moderator expects a delete
     // to be immediate, since anyone can be looking at that url.
-    if (row?.postId) await delCache(c.env, commentsCacheKey("blog", row.postId));
+    // Immediate in THIS colo, and within `READ_CACHE_TTLS.comments.edge` (30s)
+    // everywhere else — the Cache API cannot be purged across colos. Accepted
+    // deliberately for the highest-exposure UGC surface here: a blog comment is
+    // public, indexed and readable signed-out, and it is deleted precisely when its
+    // content is the problem. 30s is inside any moderation SLA, and the alternative —
+    // keeping this one thread family on KV for a global delete — costs ~1,440 writes a
+    // day per active thread against a 1,000/day budget for the entire Worker, i.e. it
+    // would disable every other cache in the app to shorten this window.
+    if (row?.postId) await purgeShared(c, commentsCacheKey("blog", row.postId));
     await logAudit(c, "blogComment.delete", "blogComment", id);
     return c.json({ message: "Comment deleted" });
   }
@@ -3505,11 +3509,14 @@ adminRoute.patch("/users/:id/profile", async (c) => {
   if (b.verified !== undefined) set.verified = !!b.verified;
   if (b.featured !== undefined) set.featured = !!b.featured;
   await db.update(schema.users).set(set).where(eq(schema.users.uid, id));
-  // The public profile is served from a shared KV entry, so writing the row is
+  // The public profile is served from a shared cache entry, so writing the row is
   // not enough: without this the app keeps serving the pre-edit copy until the
   // TTL lapses. Granting a blue check and seeing nothing change in the app is
   // exactly how that looks from the outside.
-  await invalidateUserCaches(c.env, id).catch((e) =>
+  //
+  // `c` is passed so the purge reaches this colo immediately; without it the call
+  // would delete a KV key that nothing reads any more and invalidate nothing at all.
+  await invalidateUserCaches(c.env, [id], c).catch((e) =>
     console.error("[admin] profile cache invalidation failed", id, e),
   );
   await logAudit(c, "user.profile-edit", "user", id, set);

@@ -31,9 +31,10 @@ import { memoDelete } from "./memo";
  *     Durable Object, not in KV. This flag is not a way to turn off abuse or
  *     spend protection. (An earlier version of it did exactly that, by keying off
  *     `failClosed` — see the note in lib/rateLimit.ts for why that was wrong.)
- *   - The Firebase access token and JWKS caches, and the `rzp_order` payment
- *     intent, write through `env.CACHE_KV.put` directly and so keep writing.
- *     They are state, not cache.
+ *   - The Firebase access token and JWKS caches write through `env.CACHE_KV.put`
+ *     directly and so keep writing. They are state, not cache. (The `rzp_order`
+ *     payment intent used to be listed here too; it is gone — D1 `payment_orders`
+ *     was always the authoritative record. See routes/api.ts `createOrder`.)
  *
  * It is still a switch that makes the app cache nothing, so it belongs in a test
  * deployment and not in a production one.
@@ -41,6 +42,39 @@ import { memoDelete } from "./memo";
 export function kvWritesDisabled(env: Env): boolean {
   return String(env.KV_WRITES_DISABLED ?? "").toLowerCase() === "true";
 }
+
+/**
+ * Cloudflare's MINIMUM KV expiration TTL, in seconds.
+ *
+ * This is not a tuning knob — it is a platform floor. `put` with a smaller
+ * `expirationTtl` is rejected, so every helper here clamps up to it.
+ *
+ * ---------------------------------------------------------------------------
+ * Why this constant is exported and asserted rather than left inline
+ * ---------------------------------------------------------------------------
+ * The clamp used to be a bare `Math.max(60, ttlSec)` in two different files, and
+ * that quietly broke three documented freshness ceilings: `READ_CACHE_TTLS`
+ * declared `matchesPage` as edge 10 + kv 20 (ceiling 30) while the value actually
+ * lived 60s in KV, making the real worst case 70s. `contestList` and `leaderboard`
+ * were each 20s over their stated ceiling the same way, and `cache:user` — which
+ * carries a WALLET BALANCE and whose comment justifies 30s by arguing that 180s
+ * "reads as a lost payment" — was really 60s.
+ *
+ * None of that was visible: `test/edgeCache.test.ts` asserted the arithmetic of the
+ * DECLARED constants, so it stayed green while production served older data than
+ * the table promised.
+ *
+ * The second consequence is the cost one. A key that is read continuously is
+ * re-written once per TTL lapse, so the floor also sets a WRITE FLOOR of
+ * 86400 / 60 = 1,440 writes/day for any hot KV cache key — against a free-plan
+ * budget of 1,000/day for the entire Worker. That is why the hot read caches no
+ * longer use KV at all (see lib/edgeCache.ts): at a sub-60s freshness requirement,
+ * KV is not a cheaper cache, it is an unaffordable one.
+ *
+ * So: any cache whose freshness requirement is BELOW this floor cannot use KV, and
+ * `test/kvBudget.test.ts` asserts that no KV TTL in the codebase sits under it.
+ */
+export const KV_MIN_TTL_SEC = 60;
 
 // --- key builders ----------------------------------------------------------
 /** Public profile of a single user (routes/read.ts GET /users/:id). */
@@ -69,21 +103,6 @@ export const contestListCacheKeys = () => [
 /** Public detail for one contest template. */
 export const contestDetailCacheKey = (id: string) => `cache:contest:detail:${id}`;
 /**
- * Drop every public cache entry a contest write can invalidate.
- *
- * Lives here rather than in routes/admin.ts because the cron sweep also mutates
- * contest rows (it ends expired ones), and a second copy of this list is how
- * one writer ends up forgetting a key and serving a contest the app should no
- * longer see.
- */
-export async function invalidateContestCaches(env: Env, id?: string | string[]): Promise<void> {
-  const ids = id === undefined ? [] : Array.isArray(id) ? id : [id];
-  // The three list keys are shared by every contest, so they are collected once
-  // rather than re-deleted per id — a batch of 200 expiries would otherwise
-  // spend 600 redundant writes against KV's daily quota.
-  await delCache(env, ...contestListCacheKeys(), ...ids.map(contestDetailCacheKey));
-}
-/**
  * Comment list for one target. `targetType` is normalised so the "matches" /
  * "contestMatches" aliases and every caller (reader + all writers) resolve to
  * the SAME key — a key mismatch is the classic stale-cache bug.
@@ -111,6 +130,16 @@ export const commentsCacheKey = (targetType: string, targetId: string) => {
  * never adds to the hot database write path.
  */
 export const feedSeenKey = (uid: string) => `feed:seen:${uid}`;
+/**
+ * Provider music-search results for a normalised query + limit.
+ *
+ * EDGE-ONLY (see lib/edgeCache.ts). This key embeds user-supplied search text, so
+ * its key space is unbounded and caller-controlled — which is exactly why it must
+ * not be a KV key. Build it from `normaliseSearchQuery` / `cappedSearchLimit` so the
+ * key cannot disagree with the request that produced it.
+ */
+export const musicSearchCacheKey = (query: string, limit: number) =>
+  `cache:music:search:${limit}:${query.toLowerCase()}`;
 
 // --- fail-open ops ----------------------------------------------------------
 /** Read JSON from the cache; returns null on miss OR any KV error. */
@@ -122,11 +151,27 @@ export async function cacheGetJson<T = any>(env: Env, key: string): Promise<T | 
   }
 }
 
-/** Write JSON with a TTL; never throws (fail-open on quota / transport blips). */
+/**
+ * Write JSON with a TTL; never throws (fail-open on quota / transport blips).
+ *
+ * A `ttlSec` below `KV_MIN_TTL_SEC` is clamped UP, because the platform rejects it
+ * outright — but it is also logged, loudly, because the clamp is exactly how three
+ * documented freshness ceilings were silently exceeded for months. If you are
+ * seeing this warning, the caller wants freshness KV cannot provide: move it to the
+ * Cache API tier (lib/edgeCache.ts) instead of accepting the clamp.
+ */
 export async function cachePutJson(env: Env, key: string, data: unknown, ttlSec: number): Promise<void> {
   if (kvWritesDisabled(env)) return;
+  if (ttlSec < KV_MIN_TTL_SEC) {
+    console.warn(
+      `[cache] ttl ${ttlSec}s for "${key}" is below KV's ${KV_MIN_TTL_SEC}s floor and was clamped — ` +
+        `the effective staleness is ${KV_MIN_TTL_SEC}s, not ${ttlSec}s. Use the Cache API tier for sub-floor freshness.`,
+    );
+  }
   try {
-    await env.CACHE_KV.put(key, JSON.stringify(data), { expirationTtl: Math.max(60, ttlSec) });
+    await env.CACHE_KV.put(key, JSON.stringify(data), {
+      expirationTtl: Math.max(KV_MIN_TTL_SEC, ttlSec),
+    });
   } catch (e) {
     console.error("[cache] put failed (continuing)", key, e);
   }

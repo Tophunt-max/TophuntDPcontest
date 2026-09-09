@@ -24,15 +24,22 @@ import {
   feedSeenKey,
   followersCacheKey,
   followingCacheKey,
-  cacheGetJson,
+  musicSearchCacheKey,
   cachePutJson,
-  kvWritesDisabled,
 } from "../lib/cache";
+import { cachedJson, cachedResponse } from "../lib/edgeCache";
 import { memoGet, memoPut } from "../lib/memo";
 import { getLiveTally, getViewerVote } from "../lib/voteCounter";
 import { publicPrize } from "../lib/prizes";
 import { rateLimit } from "../lib/rateLimit";
-import { searchTracks, searchCatalog, getCatalog } from "../lib/music";
+import {
+  searchTracks,
+  searchCatalog,
+  getCatalog,
+  normaliseSearchQuery,
+  cappedSearchLimit,
+  type MusicTrack,
+} from "../lib/music";
 import { assertChatMember } from "../lib/chatAuth";
 import {
   blockedUidsFor,
@@ -175,252 +182,148 @@ async function enrichParticipants(env: Env, matches: any[]): Promise<void> {
   }
 }
 
-// --- short-lived KV cache for hot read endpoints (fail-open) ---------------
-async function cacheGet(env: Env, key: string): Promise<any | null> {
-  try {
-    return await env.CACHE_KV.get(key, "json");
-  } catch {
-    return null;
-  }
-}
-async function cachePut(env: Env, key: string, data: any, ttlSec: number): Promise<void> {
-  if (kvWritesDisabled(env)) return;
-  try {
-    // Cloudflare KV enforces a 60s minimum TTL — a smaller value throws and the
-    // put silently fails (i.e. no cache at all). Clamp so short-lived caches
-    // actually take effect (matches lib/cache.ts cachePutJson).
-    await env.CACHE_KV.put(key, JSON.stringify(data), { expirationTtl: Math.max(60, ttlSec) });
-  } catch {
-    /* ignore KV blips */
-  }
+/** One read cache's lifetimes and the staleness bound it must respect. */
+export interface ReadCacheTtl {
+  /** Colo (Cache API) lifetime, seconds. This is the primary tier. */
+  edge: number;
+  /**
+   * Durable KV lifetime, or `null` for edge-only.
+   *
+   * MUST be >= `KV_MIN_TTL_SEC` when set. A smaller number is not a shorter cache —
+   * the platform clamps it up to 60s — which is exactly how three of these ceilings
+   * were silently exceeded (see below).
+   */
+  kv: number | null;
+  /** True when some writer explicitly purges this key. */
+  invalidated: boolean;
+  /** Worst-case staleness this endpoint must stay within, seconds. */
+  ceiling: number;
 }
 
 /**
- * Read-cache lifetimes, in one table so the pairs are reviewable together.
+ * Read-cache lifetimes, in one table so they are reviewable together.
  *
- * THE THING THAT IS EASY TO GET WRONG: the two tiers COMPOSE. A colo that misses
- * the edge cache when the KV entry is nearly expired promotes that already-old
- * value into the edge tier for a further `edge` seconds:
+ * ---------------------------------------------------------------------------
+ * Why `kv` is now null everywhere, and what that fixed
+ * ---------------------------------------------------------------------------
+ * These were all two-tier (Cache API in front of KV) on the reasoning that KV is
+ * the durable, globally-invalidatable tier. Two things were wrong with that:
  *
- *   t=0   KV written (kv=60)
- *   t=59  colo B misses edge, reads KV (59s old), stores at edge until t=89
- *   t=89  a viewer in colo B is reading 89-second-old data
+ *  1. THE COST MODEL. A KV write happens when both tiers miss, and a KV entry's
+ *     lifetime is its own TTL — so writes land at ~86400/kv per key per day no
+ *     matter how well the edge tier works. The edge tier saves READS, not WRITES
+ *     (lib/edgeCache.ts spells this out). At KV's 60s floor that is a write floor
+ *     of 1,440/day per hot key, against 1,000/day for the whole Worker.
  *
- * So for a key that NOTHING INVALIDATES, worst-case staleness is `edge + kv`, and
- * that total — not `kv` — is what has to stay inside whatever bound the endpoint
- * needs. `ceiling` records that bound and `test/edgeCache.test.ts` asserts it, which
- * is the only reason the arithmetic cannot quietly drift.
+ *  2. THE CEILINGS WERE FICTION. `cachePutJson` clamps sub-60s TTLs up to 60s, so
+ *     three rows here promised a bound they did not deliver, and the test asserted
+ *     the DECLARED arithmetic so it never noticed:
  *
- * For a key that IS invalidated, the KV delete is global and makes the next edge
- * miss reload from D1, so the post-invalidation tail is just `edge`. That tail is
- * still real: the Cache API cannot be purged, so `edge` is the window in which a
- * deleted or edited row keeps being served from a colo that had already cached it.
- * Keep it short enough to wait out — a takedown is the case that matters, not an
- * edit.
+ *       matchesPage   declared 10+20 = 30   actual 10+60 = 70   (+40s)
+ *       contestList   declared 20+40 = 60   actual 20+60 = 80   (+20s)
+ *       leaderboard   declared 20+40 = 60   actual 20+60 = 80   (+20s)
+ *
+ *     The user profile was the worst of them: its comment justifies a 30s TTL by
+ *     arguing that three minutes "reads as a lost payment" for a wallet balance,
+ *     and it was really serving 60s.
+ *
+ * Edge-only fixes both at once: every ceiling below is now the literal edge TTL, and
+ * every one of them is TIGHTER than what production actually served.
+ *
+ * ---------------------------------------------------------------------------
+ * What replaces global invalidation
+ * ---------------------------------------------------------------------------
+ * A KV delete reached every colo; `cache.delete()` reaches only the colo running it.
+ * So for the `invalidated` rows the writers now call `edgePurge`, which makes the
+ * WRITER'S OWN colo consistent immediately — the colo the person who made the change
+ * is almost always served from — and every other colo converges within `edge`.
+ * Because `edge` here is 20–60s rather than the 300–600s the KV tier used, the
+ * remote tail is short enough to be the right trade for removing the writes.
+ *
+ * If a future cache genuinely cannot tolerate a per-colo tail (a legal takedown with
+ * a hard SLA, say), it must set `kv` — and then it must also respect the 60s floor.
+ * `test/kvBudget.test.ts` enforces that rule.
  */
 export const READ_CACHE_TTLS = {
   /**
-   * Not invalidated on a scheduled contest ENTERING its window (the filter is
+   * Nothing invalidates a scheduled contest ENTERING its window (the filter is
    * `startsAt < now`), and nothing on the client can surface a contest the payload
-   * omits — so the 60s total is a product requirement, not a cost preference.
+   * omits — so 60s is a product requirement, not a cost preference. Admin edits and
+   * the cron expiry sweep additionally purge, via `invalidateContestCaches`.
    */
-  contestList: { edge: 20, kv: 40, invalidated: false, ceiling: 60 },
-  /** Invalidated by `invalidateContestCaches` on every mutation of the row. */
-  contestDetail: { edge: 30, kv: 300, invalidated: true, ceiling: 330 },
+  contestList: { edge: 60, kv: null, invalidated: true, ceiling: 60 },
+  /**
+   * Was 30s edge over a 300s KV entry (330s ceiling). A detail lookup is a single row
+   * by primary key, so it is the cheapest query here to recompute and had the least to
+   * gain from a durable tier — while being per-contest-id, i.e. the key family whose
+   * count grew with the catalogue.
+   *
+   * 30s and NOT 60s, deliberately. This row is `invalidated`, and for an invalidated
+   * row `edge` is also the POST-INVALIDATION tail in colos other than the writer's. At
+   * 60s a deleted or disqualified contest would be served remotely for twice as long as
+   * the 30s the old edge tail gave — the one place in this table where moving to
+   * edge-only could have made a tail worse rather than better. 30s keeps every tail at
+   * or below what it replaced.
+   *
+   * Note the cron expiry sweep has no request context, so for that writer there is no
+   * colo purge at all and this TTL is the whole story. That is the reason it must stay
+   * short.
+   */
+  contestDetail: { edge: 30, kv: null, invalidated: true, ceiling: 30 },
   /** Nothing invalidates a page of the list; a new battle appears when it lapses. */
-  matchesPage: { edge: 10, kv: 20, invalidated: false, ceiling: 30 },
+  matchesPage: { edge: 30, kv: null, invalidated: false, ceiling: 30 },
+  /** Standings move when a match resolves; nothing invalidates. */
+  leaderboard: { edge: 60, kv: null, invalidated: false, ceiling: 60 },
   /**
-   * Standings move when a match resolves; nothing invalidates. 20 + 40 rather than
-   * an even 30 + 30: the same 60s total, but a shorter unpurgeable tail AND a longer
-   * durable tier, and since a KV write only happens on a KV miss the longer half
-   * belongs there.
+   * The public profile, and the strictest ceiling in the table.
+   *
+   * It carries `dpcoin`, and NONE of the ~15 coin-mutating paths invalidate it, so
+   * the TTL is the only thing bounding how long a user sees a stale balance after
+   * paying an entry fee or buying coins. 30s was the intended bound all along; this
+   * is the first version that actually delivers it.
    */
-  leaderboard: { edge: 20, kv: 40, invalidated: false, ceiling: 60 },
+  userProfile: { edge: 30, kv: null, invalidated: true, ceiling: 30 },
   /**
-   * Invalidated by `invalidateBlogReadCache`. The edge tail is deliberately small
-   * because that invalidator also runs for DELETE and UNPUBLISH: a post pulled for
-   * legal reasons must not keep being served from an unpurgeable colo cache for a
-   * minute.
+   * First page of a comment thread. `toggleCommentLike` mutates `likeCount` on these
+   * rows and does NOT purge, so the TTL alone bounds how long other viewers see a
+   * stale like count — which is why it stays short. Adding a comment DOES purge.
    */
-  blogList: { edge: 10, kv: 600, invalidated: true, ceiling: 610 },
-  blogPost: { edge: 10, kv: 600, invalidated: true, ceiling: 610 },
-} as const;
-
-/**
- * The colo's shared cache, or null where the Cache API is unavailable.
- *
- * `caches` is a runtime-provided global. Reading `.default` from outside a try
- * meant any runtime without the Cache API threw a ReferenceError and 500'd the
- * endpoint — the exact opposite of fail-open — so the access belongs inside one.
- *
- * Worth knowing about the null case: the Cache API only performs real work for
- * Workers on a CUSTOM DOMAIN. On `api.tophunt.in` it is live; on the
- * `*.workers.dev` host — which app builds predating the custom domain still call
- * (see R2_LEGACY_BASE_URLS in wrangler.toml) — it is effectively a no-op. That is
- * exactly why the KV tier below it stays: the edge tier is an accelerator, never
- * the only cache.
- */
-function defaultCache(): Cache | null {
-  try {
-    return ((caches as any)?.default as Cache) ?? null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Cache-API key for a logical cache entry.
- *
- * Same origin, because the Cache API is per-zone and the host has to stay ours,
- * but a reserved path with the cache key as the only query parameter.
- *
- * Deriving the edge key from the SAME string as the KV key is the whole point: the
- * two tiers can then never disagree about what they hold. Keying on the raw request
- * url instead — which is what `edgeCached` does, and is fine for endpoints whose
- * every parameter affects the payload — would let an irrelevant query parameter
- * mint a duplicate entry, and would let two requests that differ only in a
- * parameter the payload ignores be told apart when they should not be.
- */
-function edgeCacheKey(c: any, key: string): Request {
-  const u = new URL(c.req.url);
-  u.pathname = "/__edge";
-  u.search = `?k=${encodeURIComponent(key)}`;
-  return new Request(u.toString(), { method: "GET" });
-}
-
-/** Store a payload in the colo cache. Best-effort; never delays the response. */
-function edgeStore(c: any, cache: Cache, cacheKey: Request, data: unknown, ttlSec: number): void {
-  // Honours the same kill switch as the KV tier. Without this check
-  // `KV_WRITES_DISABLED` would stop the KV write and let the edge write through,
-  // so a test deployment would still be serving cached data from six endpoints —
-  // the opposite of the "caches always miss, values recomputed from D1" contract
-  // that flag exists to provide (see lib/cache.ts).
-  if (kvWritesDisabled(c.env)) return;
-  try {
-    const res = new Response(JSON.stringify(data), {
-      headers: {
-        "Content-Type": "application/json; charset=UTF-8",
-        // The Cache API honours Cache-Control on the response handed to put(),
-        // so this IS the edge ttl.
-        "Cache-Control": `public, max-age=${ttlSec}`,
-      },
-    });
-    // `.catch` on the promise as well as the try/catch: the try only covers a
-    // synchronous throw, and an unhandled rejection from inside waitUntil is
-    // reported as a request failure.
-    c.executionCtx.waitUntil(cache.put(cacheKey, res).catch(() => {}));
-  } catch {
-    /* best-effort */
-  }
-}
-
-/**
- * Two-tier read-through cache: Cloudflare Cache API in front of Workers KV.
- *
- * Returns the DATA, not a Response, and that is deliberate. `edgeCached` below
- * returns early with the whole cached response, which silently skips everything the
- * handler would otherwise have done — including per-viewer authorization. The
- * endpoints using this helper all layer a per-viewer pass onto the shared payload:
- * `/matches` applies the viewer's block filter and hydrates their vote state, and
- * `/leaderboard` drops accounts the viewer has blocked. A response-level cache there
- * would either skip that pass or bake one viewer's exclusions into an entry every
- * other viewer then reads. Handing back data keeps the pass running, and
- * test/edgeCache.test.ts asserts exactly that.
- *
- * ---------------------------------------------------------------------------
- * Why two tiers and not just the Cache API
- * ---------------------------------------------------------------------------
- * The Cache API CANNOT BE INVALIDATED. It is per-colo — an entry written in Mumbai
- * does not exist in Singapore — and `cache.delete()` only affects the colo running
- * the code. Purge-by-tag is an Enterprise feature. So for everything whose freshness
- * comes from an explicit invalidator (a blog publish, a contest update) the edge
- * tier can only ever be a SHORT accelerator over KV, which is shared across colos
- * and can be deleted.
- *
- * It is also a no-op for a Worker that is not on a custom domain, and app builds
- * predating `api.tophunt.in` still call the `*.workers.dev` host — a second reason
- * the KV tier stays rather than being replaced.
- *
- * See READ_CACHE_TTLS for how the two lifetimes have to be chosen together; the
- * short version is that they COMPOSE, so `edge + kv` is the staleness bound for any
- * key nothing invalidates.
- *
- * The loader must not resolve to `null` — a cached `null` is indistinguishable from
- * a miss. Wrap it, as `/contests/:id` does with `{ contest }`. Use `skipCache` to
- * compute a value that is returned but never stored.
- */
-async function edgeCachedJson<T>(
-  c: any,
-  opts: {
-    key: string;
-    edgeTtlSec: number;
-    kvTtlSec: number;
-    load: () => Promise<T>;
-    /**
-     * Return true to serve this value without caching it in either tier.
-     *
-     * Exists for negative results on a key space the CALLER controls. `/blog/:slug`
-     * takes its key straight from the url on an unauthenticated, unthrottled
-     * endpoint, so caching not-found would mint one KV write per novel slug — and
-     * the free plan allows 1,000 KV writes a day for the whole Worker, after which
-     * every cache in the app stops writing. A script walking a thousand made-up
-     * slugs would take the entire application's caching down for the day.
-     */
-    skipCache?: (data: T) => boolean;
-  },
-): Promise<T> {
-  const { key, edgeTtlSec, kvTtlSec, load, skipCache } = opts;
-  const cache = edgeTtlSec > 0 ? defaultCache() : null;
-  const cacheKey = cache ? edgeCacheKey(c, key) : null;
-
-  if (cache && cacheKey) {
-    try {
-      const hit = await cache.match(cacheKey);
-      if (hit) return (await hit.json()) as T;
-    } catch {
-      /* cache unavailable or unparseable — fall through to KV */
-    }
-  }
-
-  const fromKv = await cacheGetJson<T>(c.env, key);
-  if (fromKv !== null && fromKv !== undefined) {
-    if (cache && cacheKey) edgeStore(c, cache, cacheKey, fromKv, edgeTtlSec);
-    return fromKv;
-  }
-
-  const data = await load();
-  if (skipCache?.(data)) return data;
-  await cachePutJson(c.env, key, data, kvTtlSec);
-  if (cache && cacheKey) edgeStore(c, cache, cacheKey, data, edgeTtlSec);
-  return data;
-}
-
-/**
- * Edge-cache a fully-public (user-agnostic) JSON GET at the Cloudflare colo via
- * the Cache API. On a hit the Worker returns immediately WITHOUT touching D1/KV
- * — cutting D1 rows-read and Worker CPU (and therefore billing) for hot public
- * endpoints. Only use for responses that are identical for every caller AND that
- * need no per-viewer pass at all; otherwise use `edgeCachedJson` above.
- */
-async function edgeCached<T>(c: any, ttlSec: number, producer: () => Promise<T>): Promise<Response> {
-  const cache = defaultCache();
-  const cacheKey = new Request(new URL(c.req.url).toString(), { method: "GET" });
-  try {
-    const hit = cache ? await cache.match(cacheKey) : null;
-    if (hit) return hit;
-  } catch {
-    /* cache unavailable — fall through */
-  }
-  const data = await producer();
-  const res = c.json(data) as Response;
-  res.headers.set("Cache-Control", `public, max-age=${ttlSec}`);
-  try {
-    if (cache) c.executionCtx.waitUntil(cache.put(cacheKey, res.clone()));
-  } catch {
-    /* best-effort */
-  }
-  return res;
-}
+  comments: { edge: 30, kv: null, invalidated: true, ceiling: 30 },
+  /**
+   * First page of a followers / following list. Was 180s in KV; 30s edge-only is
+   * fresher for the changes nothing purges (a member's renamed handle or new avatar)
+   * as well as free.
+   */
+  connections: { edge: 30, kv: null, invalidated: true, ceiling: 30 },
+  /**
+   * Blog list and post.
+   *
+   * These keep the SHORTEST edge TTLs in the table because `invalidateBlogReadCache`
+   * also runs for DELETE and UNPUBLISH, and a post pulled for legal reasons must
+   * stop being served promptly. Previously the tail was ~10s in every colo (global
+   * KV delete plus a 10s edge tail); now it is 0s in the colo that took the action
+   * and <=20s elsewhere. Slightly longer remotely, immediate locally, and no longer
+   * one KV write per hot article per 10 minutes.
+   */
+  blogList: { edge: 20, kv: null, invalidated: true, ceiling: 20 },
+  blogPost: { edge: 20, kv: null, invalidated: true, ceiling: 20 },
+  /**
+   * Third-party music-search results. Keeps the 6h lifetime the KV version had —
+   * the iTunes catalogue does not move quickly and nothing invalidates this.
+   *
+   * The reason it MOVED is not freshness but the shape of its key space: it embeds
+   * the user's search text, so on KV it was an unbounded, caller-controlled supply of
+   * writes on the Worker's scarcest quota. See `musicSearchCacheKey`.
+   */
+  musicSearch: { edge: 6 * 60 * 60, kv: null, invalidated: false, ceiling: 6 * 60 * 60 },
+  // `satisfies`, NOT `: Record<string, ReadCacheTtl>`. A string index signature makes
+  // every dotted access type-check, so a typo like `READ_CACHE_TTLS.userProfle.edge`
+  // would compile as `number`, evaluate to `undefined`, fail the `edgeTtlSec > 0` guard
+  // and silently serve that endpoint uncached from D1 forever — invisible to
+  // test/kvBudget.test.ts, whose assertion is that zero KV writes happen, which a
+  // completely disabled cache also satisfies. This keeps the field checking and the
+  // literal keys.
+} satisfies Record<string, ReadCacheTtl>;
 
 /**
  * Hydrate per-viewer engagement state (vote / like / bookmark) onto a PUBLIC
@@ -518,8 +421,24 @@ const FEED_SEEN_MEMO_TTL = 900;
  * sees exactly the counts it saw before. KV is only the copy that has to survive
  * an isolate going away, and a fatigue map is the definition of data that can
  * afford to lose its last few minutes.
+ *
+ * Raised 5min -> 15min, which takes the per-active-viewer cost from ~288 writes/day
+ * to ~96. This is now the LARGEST remaining KV write source in the Worker — it is
+ * the only one that scales with active users rather than with content — so it is
+ * also the one worth being least generous with. The cost of the longer window is
+ * bounded and self-correcting: an isolate eviction loses at most 15 minutes of one
+ * viewer's impression counts, after which the ranking simply shows them a battle
+ * they had already scrolled past once.
+ *
+ * It cannot move off KV. Unlike the read caches, this value is not recomputable from
+ * D1 — it IS the record — and it must be shared across the isolates and colos
+ * serving one viewer, which rules out both isolate memory alone and the per-colo
+ * Cache API. A Durable Object per viewer would work and would remove the KV write
+ * entirely; it is the right next step if this ever needs to go lower, and is not
+ * taken here because 96 writes/day per active viewer is affordable and a DO per user
+ * is a materially bigger change than a constant.
  */
-const FEED_SEEN_FLUSH_INTERVAL_MS = 5 * 60_000;
+const FEED_SEEN_FLUSH_INTERVAL_MS = 15 * 60_000;
 
 /**
  * The viewer's impression-fatigue state.
@@ -1173,21 +1092,21 @@ readRoute.get("/contests", optionalAuth, async (c) => {
   const type = typeParam as "photo" | "video" | undefined;
   const key = contestListCacheKey(type ?? "all");
   const db = getDb(c.env);
-  // Fully public and identical for every caller, so both tiers are safe.
+  // Fully public and identical for every caller, so a shared entry is safe.
   //
-  // The 60s TOTAL is a product requirement, not a cost preference. Admin edits are
-  // covered by `invalidateContestCaches` (including the cron that ends expired
-  // ones), but SCHEDULING is not: the filter below is `startsAt < now`, and nothing
-  // invalidates at the moment a scheduled contest enters its window, so appearance
-  // is gated purely on a cache miss. The client-side mitigation only helps in the
-  // other direction — it can count down and disable an entry whose `endsAt` has
-  // passed, because that entry is already in the response, but nothing on the client
-  // can surface a contest the payload omits.
+  // The 60s is a product requirement, not a cost preference. Admin edits are covered
+  // by `invalidateContestCaches` (including the cron that ends expired ones), but
+  // SCHEDULING is not: the filter below is `startsAt < now`, and nothing invalidates at
+  // the moment a scheduled contest enters its window, so appearance is gated purely on
+  // a cache miss. The client-side mitigation only helps in the other direction — it can
+  // count down and disable an entry whose `endsAt` has passed, because that entry is
+  // already in the response, but nothing on the client can surface a contest the
+  // payload omits.
   //
-  // So the KV ttl came DOWN to 40s to make room for the edge tier: the two compose,
-  // and 20 + 40 is the same 60s ceiling this endpoint had before. See
-  // READ_CACHE_TTLS.
-  const contests = await edgeCachedJson<any[]>(c, {
+  // Edge-only, so the 60s here IS the whole bound rather than one of two composing
+  // tiers — the previous 20s edge over a KV entry that the platform floored to 60s
+  // actually served up to 80s. See READ_CACHE_TTLS.
+  const contests = await cachedJson<any[]>(c, {
     key,
     edgeTtlSec: READ_CACHE_TTLS.contestList.edge,
     kvTtlSec: READ_CACHE_TTLS.contestList.kv,
@@ -1227,8 +1146,8 @@ readRoute.get("/contests/:id", optionalAuth, async (c) => {
   // ttl, and an edge tier on top.
   //
   // The value is WRAPPED so a cached not-found (null) stays distinguishable from a
-  // cache miss — `edgeCachedJson` treats a bare null as a miss.
-  const { contest } = await edgeCachedJson<{ contest: ReturnType<typeof mapContest> | null }>(c, {
+  // cache miss — `cachedJson` treats a bare null as a miss.
+  const { contest } = await cachedJson<{ contest: ReturnType<typeof mapContest> | null }>(c, {
     key,
     edgeTtlSec: READ_CACHE_TTLS.contestDetail.edge,
     kvTtlSec: READ_CACHE_TTLS.contestDetail.kv,
@@ -1270,20 +1189,20 @@ readRoute.get("/matches", optionalAuth, async (c) => {
     return servePersonalizedFeed(c, db, { status, type, limit, cursorRaw, uid, following: sort === "following" });
   }
 
-  // The user-agnostic base list for this page, from the colo cache, then KV, then
-  // D1. Every parameter that changes the payload is in the key, so the entry is
-  // safe to share; the viewer's vote state and block filter are layered on AFTER,
-  // onto a copy, which is why this returns data rather than a whole response.
+  // The user-agnostic base list for this page, from the colo cache and otherwise D1.
+  // Every parameter that changes the payload is in the key, so the entry is safe to
+  // share; the viewer's vote state and block filter are layered on AFTER, onto a copy,
+  // which is why this returns data rather than a whole response.
   //
   // nextCursor rides in the X-Next-Cursor header (the body stays a plain array —
   // non-breaking), so it has to be cached alongside the rows.
   const cacheKey = `cache:matches:${status}:${type || "all"}:${sort}:${limit}:${cursorRaw || "0"}`;
-  const { matches, nextCursor } = await edgeCachedJson<{ matches: any[]; nextCursor: number | null }>(c, {
+  const { matches, nextCursor } = await cachedJson<{ matches: any[]; nextCursor: number | null }>(c, {
     key: cacheKey,
-    // Nothing invalidates this key — a new battle appears when the entry lapses —
-    // so the ttls ARE the freshness policy and they compose. 10 + 20 keeps the same
-    // 30s ceiling this page had before, with the edge tier absorbing the burst of
-    // people opening the same tab. See READ_CACHE_TTLS.
+    // Nothing invalidates this key — a new battle appears when the entry lapses — so
+    // the ttl IS the freshness policy. 30s is the same ceiling this page has always
+    // declared, and now actually honours: the old 10s edge sat over a KV entry the
+    // platform floored to 60s, so the real worst case was 70s. See READ_CACHE_TTLS.
     edgeTtlSec: READ_CACHE_TTLS.matchesPage.edge,
     kvTtlSec: READ_CACHE_TTLS.matchesPage.kv,
     load: async () => {
@@ -1442,13 +1361,13 @@ readRoute.get("/leaderboard", optionalAuth, async (c) => {
   // A rank is a global fact, so this entry is identical for everyone and both tiers
   // are safe. The per-viewer block filter runs on the way OUT, via visibleRanks.
   const cacheKey = `cache:leaderboard:${by}:${limit}`;
-  const enriched = await edgeCachedJson<any[]>(c, {
+  const enriched = await cachedJson<any[]>(c, {
     key: cacheKey,
-    // Nothing invalidates this — the standings move when a match resolves — so the
-    // ttls are the freshness policy and they compose: 30 + 30 keeps the same 60s
-    // ceiling as before. The leaderboard is the most expensive query here (a full
-    // ordered scan of publicly visible users) and the one people refresh most,
-    // which is exactly the shape the edge tier is for.
+    // Nothing invalidates this — the standings move when a match resolves — so the ttl
+    // is the freshness policy. 60s, down from the 80s the old 20s-edge-over-a-floored-
+    // 60s-KV-entry actually served. The leaderboard is the most expensive query here (a
+    // full ordered scan of publicly visible users) and the one people refresh most,
+    // which is exactly the shape a colo cache is for.
     edgeTtlSec: READ_CACHE_TTLS.leaderboard.edge,
     kvTtlSec: READ_CACHE_TTLS.leaderboard.kv,
     load: async () => {
@@ -1495,7 +1414,9 @@ readRoute.get("/leaderboard", optionalAuth, async (c) => {
  * are deliberately added here.
  */
 readRoute.get("/app-config", async (c) => {
-  return edgeCached(c, 120, async () => {
+  // No query parameters: the edge key is the bare path, so `?anything=1` cannot
+  // mint extra colo entries for a byte-identical response. See `urlEdgeKey`.
+  return cachedResponse(c, 120, async () => {
     const cfg: any = (await getAppConfig(c.env)) || {};
     const ads = cfg.ads || {};
     const withdrawal = cfg.withdrawal || {};
@@ -1566,7 +1487,7 @@ readRoute.get("/legal", async (c) => {
   // handful of times a year, and an admin edit already purges the KV settings
   // cache; the edge copy expiring is the only wait, and it is the right trade for
   // not re-serving 28 KB from the origin.
-  return edgeCached(c, 600, async () => {
+  return cachedResponse(c, 600, async () => {
     const cfg: any = (await getAppConfig(c.env)) || {};
     return {
       legalContent: resolveLegalContent(cfg),
@@ -1828,7 +1749,7 @@ readRoute.get("/transactions", requireAuth, async (c) => {
 // Razorpay order via the server-authoritative `createOrder` action). Only
 // active packages are exposed; pricing lives server-side.
 readRoute.get("/coin-packages", async (c) =>
-  edgeCached(c, 120, async () => {
+  cachedResponse(c, 120, async () => {
     const db = getDb(c.env);
     const rows = await db
       .select()
@@ -1951,11 +1872,13 @@ readRoute.get("/users/:id", optionalAuth, async (c) => {
     if (rel.blocked.includes(id)) return c.json(null);
   }
 
-  // The public profile is viewer-agnostic (target user's own data + their
-  // following list), so it's safe to share one cached copy across all callers.
-  // The app polls this heavily, so a short KV cache saves a lot of D1 reads.
-  // Invalidated immediately when the user edits their profile (see api.ts
-  // updateProfile → delCache(userCacheKey)). Follower counts may lag by <=TTL.
+  // The public profile is viewer-agnostic (target user's own data + their following
+  // list), so it's safe to share one cached copy across all callers. The app polls this
+  // heavily, so a short shared cache saves a lot of D1 reads. Purged when the user
+  // edits their profile, when an admin edits it, on an identifier change and on
+  // deletion (see `purgeShared` / `invalidateUserCaches`) — immediately in the colo
+  // that made the change, and within the ttl elsewhere. Follower counts may lag by
+  // <=TTL.
   /**
    * Last per-viewer pass over the SHARED cached copy.
    *
@@ -2004,72 +1927,91 @@ readRoute.get("/users/:id", optionalAuth, async (c) => {
   const hiddenAccount = (profile: any): boolean =>
     viewer !== id && isHiddenAccountStatus(profile?.status);
 
-  const key = userCacheKey(id);
-  const cached = await cacheGetJson<any>(c.env, key);
-  if (cached !== null) {
-    if (hiddenAccount(cached)) {
-      c.header("Cache-Control", "private, no-store");
-      return c.json(null);
-    }
-    return c.json(await forViewer(cached));
-  }
-
-  const db = getDb(c.env);
-  const row = await db.select().from(schema.users).where(eq(schema.users.uid, id)).get();
-  if (!row) return c.json(null);
-  if (hiddenAccount(row)) {
-    c.header("Cache-Control", "private, no-store");
-    return c.json(null);
-  }
-
-  const { fcmTokens, ...columns } = row as any;
   /**
-   * Merge `extra` UNDER the real columns, never over them.
+   * The shared, viewer-agnostic profile.
    *
-   * `extra` is a free-form JSON blob holding the fields with no column of their
-   * own (facebook/twitter/instagram). It is written from whatever
-   * `updateProfile` did not recognise — so this merge used to be
-   * `Object.assign(safe, safe.extra)`, letting a key that happened to share a
-   * column's name OVERWRITE that column in the response. A user could set
-   * `{verified: true}` and read back a verified badge; the same trick covered
-   * `dpcoin`, `role`, `followersCount`, `status` and `email`. The database was
-   * never wrong, which is why nobody noticed — the API simply served the
-   * account's own claims about itself as fact, including into the shared KV
-   * cache below, where other viewers would read them too.
+   * WRAPPED in `{ profile }` because the loader must be able to say "no such user"
+   * without that being read as a cache miss — a bare null is indistinguishable from
+   * one (see `cachedJson`).
    *
-   * `updateProfile` now refuses to put column names in `extra` at all. This is
-   * the second half of that fix, and the half that also neutralises every row
-   * already carrying a poisoned blob.
+   * ---------------------------------------------------------------------------
+   * Why this is edge-only, and why 30s is now real
+   * ---------------------------------------------------------------------------
+   * The payload spreads the whole `users` row, so it carries `dpcoin`, `xp`,
+   * `streak` and `lastDailyClaim`, and this is the endpoint the app reads a BALANCE
+   * from. None of the ~15 coin-mutating paths invalidate it: the match entry fee,
+   * the daily reward, the rewarded-ad credit, the task claim, the Razorpay top-up,
+   * the withdrawal debit, admin wallet adjustments and deposit approvals,
+   * settlement, payouts and the cron prize sweep. So the TTL is the only thing
+   * bounding how long a user sees a stale balance after paying.
+   *
+   * That is why it was set to 30s — and why it mattered that KV could not deliver
+   * 30s. `cachePutJson` clamps anything under 60s up to 60s, so this cache was
+   * serving twice the staleness its own comment argued for, on the number the same
+   * comment says "reads as a lost payment" when it grows. Edge-only honours the 30s
+   * literally, and costs no KV write at all instead of ~1,440/day per hot profile.
    */
-  const safe: any =
-    columns.extra && typeof columns.extra === "object"
-      ? { ...columns.extra, ...columns }
-      : columns;
-  // expose following[] (list of uids) for screens that expect it
-  const following = await db.select({ id: schema.follows.followingId }).from(schema.follows).where(eq(schema.follows.followerId, row.uid)).all();
-  safe.following = following.map((f) => f.id);
-  safe.profileImageUrlThumb = avatarUrl(c.env, safe.profileImageUrl);
-  if (!isHiddenAccountStatus(row.status)) {
-    // STAYS AT 30s. This looks like an obvious candidate for a longer ttl —
-    // `updateProfile`, the identifier-change flows and account deletion all call
-    // `delCache(userCacheKey(uid))` — but the payload is built by spreading the
-    // whole `users` row, so it carries `dpcoin`, `xp`, `streak` and
-    // `lastDailyClaim`, and this is the endpoint the app reads a balance from.
-    //
-    // None of the ~15 coin-mutating paths invalidate this key: the match entry
-    // fee, the daily reward, the rewarded-ad credit, the task claim, the Razorpay
-    // top-up, the withdrawal debit, admin wallet adjustments and deposit
-    // approvals, settlement, payouts and the cron prize sweep. At 30s a user who
-    // has just paid an entry fee or bought coins sees a stale balance briefly; at
-    // 180s they would see it for three minutes, which in a coin app reads as a
-    // lost payment.
-    //
-    // Raising this requires invalidating on the money paths first.
-    await cachePutJson(c.env, key, safe, 30);
-  } else {
+  const key = userCacheKey(id);
+  const { profile } = await cachedJson<{ profile: any | null }>(c, {
+    key,
+    edgeTtlSec: READ_CACHE_TTLS.userProfile.edge,
+    kvTtlSec: READ_CACHE_TTLS.userProfile.kv,
+    load: async () => {
+      const db = getDb(c.env);
+      const row = await db.select().from(schema.users).where(eq(schema.users.uid, id)).get();
+      if (!row) return { profile: null };
+
+      const { fcmTokens, ...columns } = row as any;
+      /**
+       * Merge `extra` UNDER the real columns, never over them.
+       *
+       * `extra` is a free-form JSON blob holding the fields with no column of their
+       * own (facebook/twitter/instagram). It is written from whatever
+       * `updateProfile` did not recognise — so this merge used to be
+       * `Object.assign(safe, safe.extra)`, letting a key that happened to share a
+       * column's name OVERWRITE that column in the response. A user could set
+       * `{verified: true}` and read back a verified badge; the same trick covered
+       * `dpcoin`, `role`, `followersCount`, `status` and `email`. The database was
+       * never wrong, which is why nobody noticed — the API simply served the
+       * account's own claims about itself as fact, including into the shared cache
+       * below, where other viewers would read them too.
+       *
+       * `updateProfile` now refuses to put column names in `extra` at all. This is
+       * the second half of that fix, and the half that also neutralises every row
+       * already carrying a poisoned blob.
+       */
+      const safe: any =
+        columns.extra && typeof columns.extra === "object"
+          ? { ...columns.extra, ...columns }
+          : columns;
+      // expose following[] (list of uids) for screens that expect it
+      const following = await db.select({ id: schema.follows.followingId }).from(schema.follows).where(eq(schema.follows.followerId, row.uid)).all();
+      safe.following = following.map((f) => f.id);
+      safe.profileImageUrlThumb = avatarUrl(c.env, safe.profileImageUrl);
+      return { profile: safe };
+    },
+    /**
+     * Two things must never enter the shared entry.
+     *
+     * A MISSING user, because `id` comes straight off the url on an endpoint any
+     * caller can hit, so caching negatives hands out one entry per invented uid.
+     *
+     * A HIDDEN account (pending deletion / anonymised), because this entry is keyed
+     * only by uid: without the guard the OWNER's own fetch — the one request
+     * entitled to see it — would publish that profile for every other viewer to
+     * read, immediately undoing the invalidation the deletion request performed.
+     */
+    skipCache: ({ profile: p }) => p === null || isHiddenAccountStatus(p.status),
+  });
+
+  if (!profile) return c.json(null);
+  if (isHiddenAccountStatus(profile.status)) {
+    // Never storable by an intermediary, whether this is the owner's own
+    // pending-deletion view or a stranger's "does not exist" answer.
     c.header("Cache-Control", "private, no-store");
+    if (hiddenAccount(profile)) return c.json(null);
   }
-  return c.json(await forViewer(safe));
+  return c.json(await forViewer(profile));
 });
 
 /**
@@ -2334,24 +2276,25 @@ async function connectionsHandler(c: any, direction: "followers" | "following") 
   };
   const cacheHeader = () => (filtered ? "private, no-store" : "public, max-age=30");
 
-  if (isFirstPage) {
-    const cached = await cacheGetJson<{ items: any[]; nextCursor: number | null }>(c.env, cacheKey);
-    if (cached) {
-      const body = await visible(cached.items);
-      const res = c.json(body) as Response;
-      res.headers.set("Cache-Control", cacheHeader());
-      if (cached.nextCursor != null) res.headers.set("X-Next-Cursor", String(cached.nextCursor));
-      return res;
-    }
-  }
-
-  const { items, nextCursor } = await listConnections(c, targetId, direction, cursor, limit);
-
-  if (isFirstPage) {
-    // 180s (was 30s). `toggleFollow` invalidates BOTH sides of the edge, so a
-    // follow shows up immediately regardless of the ttl.
-    c.executionCtx.waitUntil(cachePutJson(c.env, cacheKey, { items, nextCursor }, 180));
-  }
+  /**
+   * Only the default first page is cached — that is what the connections screen
+   * loads on open, and bounding it to one key per direction keeps invalidation
+   * exact instead of spanning every cursor and page size.
+   *
+   * Edge-only at 30s, down from 180s in KV. `toggleFollow` and the block paths
+   * purge, so the TTL is a backstop rather than the primary freshness mechanism —
+   * but it is the ONLY bound on the changes nothing purges, such as a member of the
+   * list renaming themselves or changing their avatar. So the shorter TTL is
+   * strictly fresher than what it replaces, while costing no KV write.
+   */
+  const { items, nextCursor } = isFirstPage
+    ? await cachedJson<{ items: any[]; nextCursor: number | null }>(c, {
+        key: cacheKey,
+        edgeTtlSec: READ_CACHE_TTLS.connections.edge,
+        kvTtlSec: READ_CACHE_TTLS.connections.kv,
+        load: () => listConnections(c, targetId, direction, cursor, limit),
+      })
+    : await listConnections(c, targetId, direction, cursor, limit);
 
   const body = await visible(items);
   const res = c.json(body) as Response;
@@ -2467,8 +2410,17 @@ readRoute.get("/chats/:id/messages", requireAuth, async (c) => {
 readRoute.get("/music/search", requireAuth, async (c) => {
   const uid = c.get("user")!.uid;
   await rateLimit(c.env, `music:${uid}`, 60, 60);
-  const q = c.req.query("q") || "";
-  const limit = parseInt(c.req.query("limit") || "20", 10) || 20;
+  // Normalised with the provider client's OWN helpers, so the cache key below cannot
+  // disagree with what the outbound call is clamped to — `limit=999` keys as the 25 it
+  // actually requests, and surrounding whitespace does not mint a second entry.
+  //
+  // Precisely: `musicSearchCacheKey` additionally lowercases, while the outbound term
+  // keeps its original casing. So `"Song"` and `"song"` share ONE entry — whichever
+  // casing arrived first is the term that was actually searched. That is intended (the
+  // provider is case-insensitive) but it is not the same claim as "identical requests",
+  // and the difference is worth stating rather than implying.
+  const q = normaliseSearchQuery(c.req.query("q") || "");
+  const limit = cappedSearchLimit(parseInt(c.req.query("limit") || "20", 10) || 20);
 
   // Our own catalogue first. It is authoritative, instant, and cannot be
   // throttled by other traffic sharing our egress IP.
@@ -2478,11 +2430,31 @@ readRoute.get("/music/search", requireAuth, async (c) => {
     return c.json({ items: curated, source: "catalog" });
   }
 
-  // Nothing curated matched, so widen to the provider. `providerFailed`
-  // distinguishes "we asked and got nothing back" from "there is genuinely no
-  // such song" — collapsing those into an empty array is exactly why a throttled
-  // provider looked like an empty search box for so long.
-  const provider = await searchTracks(c.env, q, limit);
+  /**
+   * Nothing curated matched, so widen to the provider. `providerFailed`
+   * distinguishes "we asked and got nothing back" from "there is genuinely no such
+   * song" — collapsing those into an empty array is exactly why a throttled provider
+   * looked like an empty search box for so long.
+   *
+   * Cached at the EDGE, not in KV, and this one is a security fix as much as a cost
+   * one. The cache key contains the user's search text, so the key space is
+   * unbounded and caller-controlled: on KV, at one write per novel query, a single
+   * signed-in user working within the 60/minute rate limit above could mint ~3,600
+   * KV writes an hour and exhaust the whole Worker's 1,000/day write budget —
+   * silently disabling every other cache in the app. The provider result is pure
+   * external data that a miss simply refetches, so it has no business on the quota
+   * that matters.
+   *
+   * Empty results are still not cached (`skipCache`), for the original reason: a
+   * transient provider outage must not be pinned for hours.
+   */
+  const provider = await cachedJson<MusicTrack[]>(c, {
+    key: musicSearchCacheKey(q, limit),
+    edgeTtlSec: READ_CACHE_TTLS.musicSearch.edge,
+    kvTtlSec: READ_CACHE_TTLS.musicSearch.kv,
+    load: () => searchTracks(c.env, q, limit),
+    skipCache: (tracks) => tracks.length === 0,
+  });
   c.header("Cache-Control", "public, max-age=600");
   return c.json({
     items: provider,
@@ -2536,17 +2508,10 @@ readRoute.get("/comments", optionalAuth, async (c) => {
   }
   const isFirstPage = !cursorRaw;
 
-  // Only the first page is cached (by far the most requested + kept fresh by
-  // the add/delete cache bust in routes/api.ts). Deeper pages are rare, so they
-  // hit D1 directly. The per-viewer `likedByMe` flag is layered on per request
-  // and never baked into the shared cache. Comment like COUNTS are eventually
-  // consistent within the TTL — the same trade-off the feed makes for votes.
   const cacheKey = commentsCacheKey(targetType, targetId);
-  let payload: { items: any[]; nextCursor: string | null; total?: number } | null = isFirstPage
-    ? await cacheGet(c.env, cacheKey)
-    : null;
+  type CommentsPayload = { items: any[]; nextCursor: string | null; total?: number };
 
-  if (!payload) {
+  const loadThread = async (): Promise<CommentsPayload> => {
     const keyset =
       cursorAt != null && Number.isFinite(cursorAt)
         ? isMatch
@@ -2600,7 +2565,7 @@ readRoute.get("/comments", optionalAuth, async (c) => {
     const last: any = pageRows[pageRows.length - 1];
     const nextCursor = hasMore && last ? `${last.createdAt}_${last.id}` : null;
     const items = pageRows.map((r: any) => ({ ...r, postId: targetId, likes: r.likes ?? 0, likedByMe: false }));
-    payload = { items, nextCursor };
+    const payload: CommentsPayload = { items, nextCursor };
     // One extra COUNT, blog only, and only on a cache miss. It is a thread total
     // rather than `items.length` because the heading has to be right on page one
     // of a long thread — and it is deliberately NOT recomputed after the blocked
@@ -2614,15 +2579,42 @@ readRoute.get("/comments", optionalAuth, async (c) => {
         .get();
       payload.total = Number(countRow?.n ?? 0);
     }
-    // Stays at 30s, unlike the other caches here, and NOT because nobody has got
-    // round to it: `toggleCommentLike` mutates `likeCount` on the rows in this
-    // payload and does NOT invalidate this key — it only returns the new count to
-    // the caller for its own optimistic update. So the ttl is the ONLY thing
-    // bounding how long every other viewer sees a stale like count, and raising it
-    // would turn a 30-second lag into a multi-minute one. Add invalidation to
-    // `toggleCommentLike` before touching this number.
-    if (isFirstPage) await cachePut(c.env, cacheKey, payload, 30);
-  }
+    return payload;
+  };
+
+  /**
+   * Only the first page is cached — by far the most requested, and the one the
+   * add/delete purge in routes/api.ts keeps fresh. Deeper pages are rare and go
+   * straight to D1. The per-viewer `likedByMe` flag and the blocked-author filter
+   * are layered on AFTER this and never baked into the shared entry.
+   *
+   * STAYS AT 30s, and not for want of attention: `toggleCommentLike` mutates
+   * `likeCount` on these rows and does NOT purge — it only returns the new count to
+   * the caller for its own optimistic update. So the TTL is the ONLY thing bounding
+   * how long every other viewer sees a stale like count. Add a purge to
+   * `toggleCommentLike` before raising it.
+   *
+   * Edge-only, which is what finally makes that 30s true: on KV the value was
+   * clamped to a 60s floor, so the bound this comment argues for was never the one
+   * in force. It also removes ~1,440 KV writes/day per active thread.
+   */
+  const payload = isFirstPage
+    ? await cachedJson<CommentsPayload>(c, {
+        key: cacheKey,
+        edgeTtlSec: READ_CACHE_TTLS.comments.edge,
+        kvTtlSec: READ_CACHE_TTLS.comments.kv,
+        load: loadThread,
+        /**
+         * An EMPTY thread is not cached, for the same reason `/users/:id` does not cache
+         * a missing user: `targetId` comes straight off the query string, so caching
+         * negatives mints one entry per invented id. Cheap at the edge rather than
+         * dangerous — it was one KV WRITE per invented id before, which is the bug this
+         * whole change exists to fix — but the two endpoints guard an identical key-space
+         * shape and there is no reason for them to disagree about it.
+         */
+        skipCache: (p) => p.items.length === 0,
+      })
+    : await loadThread();
 
   // Layer the signed-in viewer's per-comment like state so hearts stay filled.
   let items = payload.items;
@@ -2873,12 +2865,12 @@ readRoute.get("/blog", async (c) => {
   // invalidation to one known key instead of up to 50 limit variants.
   if (!cacheable) return c.json(await load());
 
-  // KV keeps the long ttl because `invalidateBlogReadCache` deletes this key on
-  // every editorial write, so publishing is immediate there. The edge tier CANNOT be
-  // purged, so it is much shorter: the window in which a just-published post is
-  // still missing — or a just-deleted one still present — in a colo that had already
-  // cached the old list.
-  const payload = await edgeCachedJson<{ posts: any[]; nextCursor: number | null }>(c, {
+  // `invalidateBlogReadCache` purges this key on every editorial write, so publishing
+  // is immediate in the colo that published. The ttl is short because the Cache API
+  // cannot be purged across colos, and that invalidator also fires for DELETE and
+  // UNPUBLISH: it bounds the window in which a just-published post is still missing —
+  // or a just-deleted one still present — elsewhere.
+  const payload = await cachedJson<{ posts: any[]; nextCursor: number | null }>(c, {
     key: cacheKey,
     edgeTtlSec: READ_CACHE_TTLS.blogList.edge,
     kvTtlSec: READ_CACHE_TTLS.blogList.kv,
@@ -2891,7 +2883,7 @@ readRoute.get("/blog", async (c) => {
 // Distinct categories with post counts — for the blog filter UI. Public and
 // slow-changing, so edge-cache 5min to skip D1's GROUP BY on repeat loads.
 readRoute.get("/blog/categories", async (c) =>
-  edgeCached(c, 300, async () => {
+  cachedResponse(c, 300, async () => {
     const db = getDb(c.env);
     const rows = await db
       .select({ category: schema.blogPosts.category, count: sql<number>`count(*)` })
@@ -2925,34 +2917,59 @@ readRoute.get("/blog/categories", async (c) =>
  *
  * `lastmod` prefers `updated_at` so an edited post is re-crawled.
  */
-readRoute.get("/blog/sitemap", async (c) =>
-  edgeCached(c, 900, async () => {
-    const db = getDb(c.env);
-    const MAX_LIMIT = 10000;
-    const limit = Math.min(Math.max(parseInt(c.req.query("limit") || String(MAX_LIMIT), 10) || MAX_LIMIT, 1), MAX_LIMIT);
-    const cursor = c.req.query("cursor") ? parseInt(c.req.query("cursor")!, 10) : null;
+readRoute.get("/blog/sitemap", async (c) => {
+  // Parsed OUT here rather than inside the producer so the same normalised values
+  // form the edge cache key. Keying on the raw query text would give `?limit=abc`,
+  // `?limit=0` and `?limit=999999` three entries for one identical payload — an
+  // unbounded key supply on an unauthenticated endpoint. A malformed cursor
+  // normalises to null, which is also how the query treats it.
+  const MAX_LIMIT = 10000;
+  const limit = Math.min(Math.max(parseInt(c.req.query("limit") || String(MAX_LIMIT), 10) || MAX_LIMIT, 1), MAX_LIMIT);
+  // KNOWN RESIDUAL, recorded rather than fixed: `limit` is a free integer in [1, 10000]
+  // on an unauthenticated endpoint, so it is a caller-controlled supply of distinct
+  // colo entries — the same shape `urlEdgeKey`'s allow-list narrows, narrowed only to
+  // the parameters that matter rather than to their value space. Not a regression:
+  // keying on the raw url (what this replaced) was strictly worse, since EVERY query
+  // string minted an entry.
+  //
+  // Deliberately not "fixed" by bucketing the limit, which was tried: rounding up to a
+  // power of two bounds the keys but returns MORE rows than the caller asked for, i.e.
+  // it changes the response to solve a cache-shape problem. The right tier for this is
+  // a Cloudflare WAF rate-limiting rule on these two blog paths — the same second tier
+  // lib/rateLimit.ts already names for traffic the in-Worker limiter should not be
+  // asked to absorb. The Cache API is per-colo and LRU-evicted, so the blast radius is
+  // one colo's cache pressure, not a quota that stops the application working.
+  const cursorRaw = c.req.query("cursor") ? parseInt(c.req.query("cursor")!, 10) : null;
+  const cursor = cursorRaw != null && Number.isFinite(cursorRaw) ? cursorRaw : null;
 
-    const conds = [eq(schema.blogPosts.status, "published")];
-    if (cursor) conds.push(lt(schema.blogPosts.publishedAt, cursor));
+  return cachedResponse(
+    c,
+    900,
+    async () => {
+      const db = getDb(c.env);
+      const conds = [eq(schema.blogPosts.status, "published")];
+      if (cursor) conds.push(lt(schema.blogPosts.publishedAt, cursor));
 
-    const rows = await db
-      .select({
-        slug: schema.blogPosts.slug,
-        publishedAt: schema.blogPosts.publishedAt,
-        updatedAt: schema.blogPosts.updatedAt,
-      })
-      .from(schema.blogPosts)
-      .where(and(...conds))
-      .orderBy(desc(schema.blogPosts.publishedAt))
-      .limit(limit)
-      .all();
+      const rows = await db
+        .select({
+          slug: schema.blogPosts.slug,
+          publishedAt: schema.blogPosts.publishedAt,
+          updatedAt: schema.blogPosts.updatedAt,
+        })
+        .from(schema.blogPosts)
+        .where(and(...conds))
+        .orderBy(desc(schema.blogPosts.publishedAt))
+        .limit(limit)
+        .all();
 
-    return {
-      posts: rows.map((r) => ({ slug: r.slug, lastmod: r.updatedAt || r.publishedAt || null })),
-      nextCursor: rows.length === limit ? rows[rows.length - 1].publishedAt : null,
-    };
-  }),
-);
+      return {
+        posts: rows.map((r) => ({ slug: r.slug, lastmod: r.updatedAt || r.publishedAt || null })),
+        nextCursor: rows.length === limit ? rows[rows.length - 1].publishedAt : null,
+      };
+    },
+    { varyParams: { limit, cursor } },
+  );
+});
 
 /**
  * A page of the blog archive: slug + title only, addressed by PAGE NUMBER.
@@ -2979,55 +2996,61 @@ readRoute.get("/blog/sitemap", async (c) =>
  * a tiebreak SQLite may order ties differently between two queries — which for
  * OFFSET pagination means a post silently appearing on two pages, or on none.
  */
-readRoute.get("/blog/archive", async (c) =>
-  edgeCached(c, 900, async () => {
-    const db = getDb(c.env);
-    const perPage = Math.min(Math.max(parseInt(c.req.query("per") || "100", 10) || 100, 1), 500);
-    const page = Math.max(parseInt(c.req.query("page") || "1", 10) || 1, 1);
-    const category = c.req.query("category") || null;
+readRoute.get("/blog/archive", async (c) => {
+  // Normalised before the cache key is built — see the note on /blog/sitemap.
+  const perPage = Math.min(Math.max(parseInt(c.req.query("per") || "100", 10) || 100, 1), 500);
+  const page = Math.max(parseInt(c.req.query("page") || "1", 10) || 1, 1);
+  const category = c.req.query("category") || null;
 
-    const conds = [eq(schema.blogPosts.status, "published")];
-    if (category) conds.push(eq(schema.blogPosts.category, category));
+  return cachedResponse(
+    c,
+    900,
+    async () => {
+      const db = getDb(c.env);
+      const conds = [eq(schema.blogPosts.status, "published")];
+      if (category) conds.push(eq(schema.blogPosts.category, category));
 
-    const counted = await db
-      .select({ total: sql<number>`count(*)` })
-      .from(schema.blogPosts)
-      .where(and(...conds))
-      .get();
-    const total = Number(counted?.total || 0);
-    const totalPages = Math.max(Math.ceil(total / perPage), 1);
+      const counted = await db
+        .select({ total: sql<number>`count(*)` })
+        .from(schema.blogPosts)
+        .where(and(...conds))
+        .get();
+      const total = Number(counted?.total || 0);
+      const totalPages = Math.max(Math.ceil(total / perPage), 1);
 
-    const rows = await db
-      .select({
-        slug: schema.blogPosts.slug,
-        title: schema.blogPosts.title,
-        category: schema.blogPosts.category,
-        publishedAt: schema.blogPosts.publishedAt,
-        updatedAt: schema.blogPosts.updatedAt,
-      })
-      .from(schema.blogPosts)
-      .where(and(...conds))
-      .orderBy(desc(schema.blogPosts.publishedAt), asc(schema.blogPosts.id))
-      .limit(perPage)
-      .offset((page - 1) * perPage)
-      .all();
+      const rows = await db
+        .select({
+          slug: schema.blogPosts.slug,
+          title: schema.blogPosts.title,
+          category: schema.blogPosts.category,
+          publishedAt: schema.blogPosts.publishedAt,
+          updatedAt: schema.blogPosts.updatedAt,
+        })
+        .from(schema.blogPosts)
+        .where(and(...conds))
+        .orderBy(desc(schema.blogPosts.publishedAt), asc(schema.blogPosts.id))
+        .limit(perPage)
+        .offset((page - 1) * perPage)
+        .all();
 
-    return {
-      page,
-      perPage,
-      total,
-      totalPages,
-      category,
-      posts: rows.map((r) => ({
-        slug: r.slug,
-        title: r.title,
-        category: r.category || null,
-        publishedAt: r.publishedAt || null,
-        lastmod: r.updatedAt || r.publishedAt || null,
-      })),
-    };
-  }),
-);
+      return {
+        page,
+        perPage,
+        total,
+        totalPages,
+        category,
+        posts: rows.map((r) => ({
+          slug: r.slug,
+          title: r.title,
+          category: r.category || null,
+          publishedAt: r.publishedAt || null,
+          lastmod: r.updatedAt || r.publishedAt || null,
+        })),
+      };
+    },
+    { varyParams: { per: perPage, page, category } },
+  );
+});
 
 // Single post by slug (falls back to id). Increments view count fire-and-forget.
 readRoute.get("/blog/:slug", async (c) => {
@@ -3035,13 +3058,13 @@ readRoute.get("/blog/:slug", async (c) => {
   const key = c.req.param("slug");
   const cacheKey = blogPostCacheKey(key);
 
-  // Serve the (expensive-to-serialize) full post body from the colo cache, then KV.
-  // The view counter still increments on every request — only the payload is
-  // cached — so analytics stay live while D1 content reads drop. The displayed
-  // viewCount itself may lag by up to the ttl, which is fine for a blog.
+  // Serve the (expensive-to-serialize) full post body from the colo cache. The view
+  // counter still increments on every request — only the payload is cached — so
+  // analytics stay live while D1 content reads drop. The displayed viewCount itself may
+  // lag by up to the ttl, which is fine for a blog.
   //
   // The stored value is WRAPPED as `{ post }` so the loader never returns a bare
-  // null, which `edgeCachedJson` would read as a cache miss.
+  // null, which `cachedJson` would read as a cache miss.
   //
   // A not-found is deliberately NOT cached, via `skipCache`. `key` here comes
   // straight off the url on an unauthenticated, unthrottled endpoint, so caching
@@ -3061,12 +3084,12 @@ readRoute.get("/blog/:slug", async (c) => {
     v && typeof v === "object" && "post" in v ? { post: v.post } : { post: v ?? null };
 
   const { post } = unwrapPost(
-    await edgeCachedJson<{ post: Record<string, any> | null }>(c, {
+    await cachedJson<{ post: Record<string, any> | null }>(c, {
       key: cacheKey,
-      // KV keeps the long ttl because every editorial write deletes this key. The
-      // edge tier is short because it cannot be purged and that invalidator also
-      // fires for DELETE and UNPUBLISH — a post pulled for legal reasons must not
-      // keep being served from a colo cache for a minute with no way to stop it.
+      // Every editorial write purges this key in the colo that performed it. The ttl is
+      // deliberately one of the shortest in the table because the Cache API cannot be
+      // purged elsewhere and that invalidator also fires for DELETE and UNPUBLISH — a
+      // post pulled for legal reasons must not keep being served for long.
       edgeTtlSec: READ_CACHE_TTLS.blogPost.edge,
       kvTtlSec: READ_CACHE_TTLS.blogPost.kv,
       skipCache: (v) => v.post === null,

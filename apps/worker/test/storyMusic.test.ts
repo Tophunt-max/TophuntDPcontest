@@ -40,7 +40,7 @@ vi.mock('../src/lib/voteCounter', () => ({
   getViewerVote: async () => ({ hasVoted: false, votedForUid: null }),
 }));
 
-import { makeEnv, makeApp, fakeCtx, drizzleOf, type TestEnv } from './helpers/harness';
+import { makeEnv, makeApp, fakeCtx, drizzleOf, installEdgeCache, type TestEnv } from './helpers/harness';
 import * as schema from '../src/db/schema';
 import { normalizeTrack, sanitiseMusicStartMs } from '../src/lib/music';
 
@@ -299,19 +299,54 @@ describe('GET /read/music/search', () => {
     expect(impl).not.toHaveBeenCalled();
   });
 
-  it('caches a result, so the default query is not one request per user', async () => {
-    const { impl } = stubFetch([{ body: { results: [providerRow()] } }]);
-    await read('poster', '/music/search?q=Top%20Hits');
-    await read('poster', '/music/search?q=top hits');
-    // Same query, normalised — one outbound call.
-    expect(impl).toHaveBeenCalledTimes(1);
-  });
+  /**
+   * Provider-search caching lives at the Cloudflare EDGE, not in KV.
+   *
+   * It used to be a KV entry keyed on the user's raw search text — an unbounded,
+   * caller-controlled key space on the Worker's scarcest quota, where one signed-in
+   * user inside this endpoint's own 60/minute limit could mint thousands of writes an
+   * hour and disable every other cache in the app for the day.
+   *
+   * These tests therefore need a cache that actually stores; the harness default is
+   * always-miss. That also makes the "empty result is not cached" test meaningful
+   * rather than vacuously true.
+   */
+  describe('caching', () => {
+    let edge: ReturnType<typeof installEdgeCache>;
+    beforeEach(() => {
+      edge = installEdgeCache();
+    });
+    afterEach(() => {
+      edge.restore();
+    });
 
-  it('does not cache an empty result, so an outage is not pinned for hours', async () => {
-    const { impl } = stubFetch([new Error('down'), { body: { results: [providerRow()] } }]);
-    expect((await read('poster', '/music/search?q=recover')).body.items).toEqual([]);
-    expect((await read('poster', '/music/search?q=recover')).body.items).toHaveLength(1);
-    expect(impl).toHaveBeenCalledTimes(2);
+    it('caches a result, so the default query is not one request per user', async () => {
+      const { impl } = stubFetch([{ body: { results: [providerRow()] } }]);
+      await read('poster', '/music/search?q=Top%20Hits');
+      await read('poster', '/music/search?q=top hits');
+      // Same query once normalised — one outbound call, one cache entry.
+      expect(impl).toHaveBeenCalledTimes(1);
+      expect(edge.logicalKeys()).toContain('cache:music:search:20:top hits');
+    });
+
+    it('spends no KV write to do it', async () => {
+      const puts: string[] = [];
+      const orig = env.CACHE_KV.put.bind(env.CACHE_KV);
+      env.CACHE_KV.put = async (k: string, v: string, o?: any) => {
+        puts.push(k);
+        return orig(k, v, o);
+      };
+      stubFetch([{ body: { results: [providerRow()] } }]);
+      await read('poster', '/music/search?q=Top%20Hits');
+      expect(puts.filter((k) => k.startsWith('cache:music:search:'))).toHaveLength(0);
+    });
+
+    it('does not cache an empty result, so an outage is not pinned for hours', async () => {
+      const { impl } = stubFetch([new Error('down'), { body: { results: [providerRow()] } }]);
+      expect((await read('poster', '/music/search?q=recover')).body.items).toEqual([]);
+      expect((await read('poster', '/music/search?q=recover')).body.items).toHaveLength(1);
+      expect(impl).toHaveBeenCalledTimes(2);
+    });
   });
 });
 

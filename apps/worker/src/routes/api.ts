@@ -28,11 +28,11 @@ import {
   contestDetailCacheKey,
   contestListCacheKeys,
   commentsCacheKey,
-  delCache,
   userCacheKey,
   followersCacheKey,
   followingCacheKey,
 } from "../lib/cache";
+import { purgeShared } from "../lib/edgeCache";
 import { assertContestOpenNow, createContestExtra, validateContestInput } from "../lib/contestAdmin";
 import { parsePayoutDestination, readWithdrawalPolicy } from "../lib/payouts";
 import { parseDeliveryAddress } from "../lib/deliveryAddress";
@@ -1057,8 +1057,8 @@ apiRoute.post("/", async (c) => {
       // list, the target's "followers" list, and both users' profile (denormalized
       // follower/following counts). Invalidate all four so the next read is fresh.
       const invalidateFollowCaches = () =>
-        delCache(
-          env,
+        purgeShared(
+          c,
           followingCacheKey(uid),
           followersCacheKey(targetUserId),
           userCacheKey(uid),
@@ -1192,8 +1192,8 @@ apiRoute.post("/", async (c) => {
         Promise.all([
           // Mutual relation → both users' exclusion sets moved.
           invalidateBlockCache(env, uid, targetUserId),
-          delCache(
-            env,
+          purgeShared(
+            c,
             followingCacheKey(uid),
             followersCacheKey(uid),
             followingCacheKey(targetUserId),
@@ -1510,18 +1510,18 @@ apiRoute.post("/", async (c) => {
         throw httpsError("internal", "Could not initialize payment. Please try again.");
       }
 
-      // Also keep the short-lived KV intent as a fast-path fallback (and for
-      // orders still in flight across a deploy). Best-effort — the DB row above
-      // is the source of truth.
-      try {
-        await env.CACHE_KV.put(
-          `rzp_order:${order.id}`,
-          JSON.stringify({ uid, coins: totalCoins, priceInr, packageId: String(packageId) }),
-          { expirationTtl: 3600 },
-        );
-      } catch (e) {
-        console.warn("[createOrder] KV put failed (non-fatal)", e);
-      }
+      // NOTE: there used to be a duplicate of this intent in KV
+      // (`rzp_order:{id}`, 1h ttl), kept as a fast path and to cover orders in
+      // flight across the deploy that introduced `payment_orders`. It is gone.
+      //
+      // It was never a fallback that could fire: the insert above THROWS on
+      // failure, so an order id cannot be handed to the client without a durable
+      // row, and `payment_orders` stores a strict superset of what the KV copy did
+      // (`userId`, `coins`, `bonusCoins`, `amountPaise`, `packageId`, status).
+      // Everything the 1-hour KV entry could have answered for expired long ago.
+      // Keeping it meant a write plus a delete per top-up on the account's scarcest
+      // quota, and — worse — a SECOND crediting path with its own weaker
+      // idempotency story running beside the CAS-guarded one in lib/coinOrders.ts.
 
       return c.json({
         orderId: order.id,
@@ -1563,46 +1563,33 @@ apiRoute.post("/", async (c) => {
       if (res.reason === "already")
         throw httpsError("already-exists", "Payment already processed.");
       if (res.credited) {
-        try { await env.CACHE_KV.delete(`rzp_order:${orderId}`); } catch { /* ignore */ }
         return c.json({ success: true, message: "Coins added successfully!", coins: res.coins });
       }
 
-      // Fallback (only for orders with no DB row — e.g. created before this
-      // deploy): use the legacy short-lived KV intent.
-      let record: { uid: string; coins: number } | null = null;
-      try {
-        record = (await env.CACHE_KV.get(`rzp_order:${orderId}`, "json")) as any;
-      } catch (e) {
-        console.error("[topup] KV get failed", e);
-        throw httpsError("internal", "Could not verify the order. Please contact support.");
-      }
-      if (!record) throw httpsError("not-found", "Payment order not found or expired.");
-      if (record.uid !== uid) throw httpsError("permission-denied", "Order does not belong to this user.");
-      const coins = Number(record.coins);
-      if (!Number.isFinite(coins) || coins <= 0 || coins > 1_000_000)
+      /**
+       * `creditPaymentOrder` is now the ONLY crediting path on this action.
+       *
+       * There used to be a second one here, reading the legacy `rzp_order:{id}` KV
+       * intent and doing its own insert/update/ledger by hand. It has been removed
+       * rather than ported, for two reasons beyond the KV cost:
+       *
+       *  - IT COULD NOT BE REACHED. `createOrder` throws if the `payment_orders`
+       *    insert fails, so no order id reaches a client without a durable row, and
+       *    the KV entry it depended on had a 1-hour ttl.
+       *  - IT WAS THE WEAKER PATH. It guarded double-credit with a `payments`
+       *    insert alone, whereas `creditPaymentOrder` takes an atomic status CAS on
+       *    the order (created|expired -> paid) FIRST, which is what makes the
+       *    client callback and the gateway webhook safe to race. Two crediting
+       *    paths with different idempotency models is precisely the shape that
+       *    produces a double credit under retry.
+       *
+       * `amount_mismatch` cannot occur here (it needs `capturedAmountPaise`, which
+       * only the webhook supplies) but is handled rather than folded into the
+       * not-found below, so a future caller passing it cannot get a misleading error.
+       */
+      if (res.reason === "amount_mismatch")
         throw httpsError("failed-precondition", "Invalid order amount.");
-
-      const ts = now();
-      // Idempotency guard: the first insert of this paymentId wins; replays are
-      // rejected so the same payment can't be credited twice.
-      const pay = await db
-        .insert(schema.payments)
-        .values({ id: paymentId, userId: uid, amount: coins, status: "success", createdAt: ts })
-        .onConflictDoNothing()
-        .run();
-      if (pay.meta.changes === 0) throw httpsError("already-exists", "Payment already processed.");
-
-      // Credit + ledger atomically so we can't mark a payment success without
-      // recording the matching coin grant.
-      await db.batch([
-        db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${coins}` }).where(eq(schema.users.uid, uid)),
-        db.insert(schema.coinTransactions).values({
-          id: newId(), uid, amount: coins, type: "purchase", description: `Purchased ${coins} Dpcoins`, createdAt: ts,
-        }),
-      ]);
-      // Best-effort cleanup so the same order can't be reused.
-      try { await env.CACHE_KV.delete(`rzp_order:${orderId}`); } catch { /* ignore */ }
-      return c.json({ success: true, message: "Coins added successfully!", coins });
+      throw httpsError("not-found", "Payment order not found or expired.");
     }
 
     case "requestWithdrawal": {
@@ -1883,7 +1870,7 @@ apiRoute.post("/", async (c) => {
         createdBy: uid,
         createdAt,
       });
-      await delCache(env, ...contestListCacheKeys(), contestDetailCacheKey(id));
+      await purgeShared(c, ...contestListCacheKeys(), contestDetailCacheKey(id));
       try {
         await db.insert(schema.adminAuditLog).values({
           id: newId(),
@@ -2040,7 +2027,7 @@ apiRoute.post("/", async (c) => {
       // badge can be an object or null (unequip)
       await db.update(schema.users).set({ equippedBadge: body.badge ?? null, updatedAt: now() }).where(eq(schema.users.uid, uid));
       // Reflect the equipped badge on the user's public profile right away.
-      c.executionCtx.waitUntil(delCache(env, userCacheKey(uid)));
+      c.executionCtx.waitUntil(purgeShared(c, userCacheKey(uid)));
       return c.json({ success: true });
     }
 
@@ -2181,7 +2168,7 @@ apiRoute.post("/", async (c) => {
       const commentCounters = await bumpEngagement(env, matchId, "comment", 1);
       await publish(env, `match:${matchId}`, { type: "comment", commentId, commentCount: commentCounters.comment ?? 0 });
       // Bust the cached comment list so the new comment is visible immediately.
-      c.executionCtx.waitUntil(delCache(env, commentsCacheKey("matches", matchId)));
+      c.executionCtx.waitUntil(purgeShared(c, commentsCacheKey("matches", matchId)));
       c.executionCtx.waitUntil(
         (async () => {
           const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, matchId)).get();
@@ -2328,7 +2315,7 @@ apiRoute.post("/", async (c) => {
         );
       }
       // Bust the cached comment list so the new comment shows immediately.
-      c.executionCtx.waitUntil(delCache(env, commentsCacheKey(targetType, targetId)));
+      c.executionCtx.waitUntil(purgeShared(c, commentsCacheKey(targetType, targetId)));
       return c.json({ success: true, commentId });
     }
 
@@ -2354,7 +2341,7 @@ apiRoute.post("/", async (c) => {
         await db.update(schema.posts).set({ commentCount: sql`MAX(${schema.posts.commentCount} - 1, 0)` }).where(eq(schema.posts.id, row.postId));
       }
       // Bust the cached comment list so the removal is reflected immediately.
-      c.executionCtx.waitUntil(delCache(env, commentsCacheKey(targetType, targetId)));
+      c.executionCtx.waitUntil(purgeShared(c, commentsCacheKey(targetType, targetId)));
       return c.json({ success: true });
     }
 
@@ -2545,8 +2532,8 @@ apiRoute.post("/", async (c) => {
         }
       }
       // Invalidate the cached public profile so the user sees their edits
-      // immediately (GET /users/:id serves a short-lived KV copy).
-      c.executionCtx.waitUntil(delCache(env, userCacheKey(uid)));
+      // immediately (GET /users/:id serves a short-lived shared copy).
+      c.executionCtx.waitUntil(purgeShared(c, userCacheKey(uid)));
       return c.json({ success: true });
     }
 
@@ -2675,10 +2662,12 @@ apiRoute.post("/", async (c) => {
       // unlocked. Firebase's own recent-login rule does not apply here, because
       // this path never touches the client SDK.
       await assertRecentAuthForDeletion(env, c.get("user"));
-      const result = await requestAccountDeletion(env, uid, {
-        reason: body.reason,
-        source: body.source === "web" ? "web" : "app",
-      });
+      const result = await requestAccountDeletion(
+        env,
+        uid,
+        { reason: body.reason, source: body.source === "web" ? "web" : "app" },
+        c,
+      );
       return c.json({ success: true, ...result });
     }
 
@@ -2711,7 +2700,7 @@ apiRoute.post("/", async (c) => {
      */
     case "cancelAccountDeletion": {
       await rateLimit(env, `canceldeletion:${uid}`, 10, 3600);
-      const result = await cancelAccountDeletion(env, uid);
+      const result = await cancelAccountDeletion(env, uid, c);
       return c.json({ success: true, ...result });
     }
 
@@ -2814,7 +2803,7 @@ apiRoute.post("/", async (c) => {
         throw httpsError("invalid-argument", "Account deletion must be confirmed.");
       }
       await assertRecentAuthForDeletion(env, c.get("user"));
-      const result = await requestAccountDeletion(env, uid, { reason: body.reason });
+      const result = await requestAccountDeletion(env, uid, { reason: body.reason }, c);
       return c.json({
         success: true,
         deletedAt: result.scheduledFor,

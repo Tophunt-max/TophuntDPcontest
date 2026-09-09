@@ -9,6 +9,7 @@
 import type { Env } from "../types";
 import { httpsError } from "./http";
 import { getFirebaseServiceAccount } from "./integrations";
+import { memoGet, memoPut } from "./memo";
 
 interface ServiceAccount {
   client_email: string;
@@ -86,13 +87,84 @@ async function signJwt(sa: ServiceAccount): Promise<string> {
   return `${unsigned}.${base64url(sig)}`;
 }
 
-/** Mint (and cache) a Google OAuth access token for the service account. */
+/**
+ * Safety margin: a token is treated as spent this long before it truly expires, so
+ * an in-flight request cannot be the one that discovers it lapsed.
+ */
+const TOKEN_SKEW_MS = 30_000;
+
+/**
+ * Mint (and cache) a Google OAuth access token for the service account.
+ *
+ * ---------------------------------------------------------------------------
+ * Why there is an isolate memo in front of the KV cache
+ * ---------------------------------------------------------------------------
+ * This function was an N+1 READ on the busiest write path in the app. Push delivery
+ * (lib/notify.ts `deliverToTokens`) fans out over a user's devices with
+ * `tokens.map(t => sendFcmToToken(...))`, and every `sendFcmToToken` called this —
+ * so ONE notification to a three-device user spent three KV reads, six if the
+ * transient-failure retry fired. `drainBroadcastJobs` then does that for a
+ * PAGE_SIZE of 100 recipients per cron tick, i.e. several hundred KV reads to send
+ * one broadcast page, all of them fetching the same string.
+ *
+ * The memo collapses that to one read per isolate per token lifetime.
+ *
+ * Why it is safe here, given lib/memo.ts forbids memoising anything consulted to
+ * decide whether an action is ALLOWED: this is not such a value. It is an opaque
+ * bearer token minted by Google with a self-describing expiry, and the memo TTL is
+ * derived FROM that expiry (minus the same skew the KV check uses), so a memoised
+ * token can never outlive the one KV would have handed back. Nothing revokes it
+ * out-of-band that would not also invalidate the KV copy for up to an hour.
+ */
 export async function getAccessToken(env: Env): Promise<string> {
+  const memoised = memoGet<string>(TOKEN_KV_KEY);
+  if (memoised) return memoised;
+  // A value cache alone does NOT fix the N+1, because the fan-out is CONCURRENT:
+  // `Promise.all(tokens.map(...))` starts every call before any of them has finished
+  // populating the memo, so all of them miss it and all of them read KV. Sharing the
+  // in-flight promise is what actually collapses one notification's devices — and a
+  // burst of simultaneous requests — into a single KV read and a single OAuth
+  // exchange.
+  //
+  // A failed BORROW falls back to doing the work ourselves rather than propagating:
+  // the shared promise lives in another request's I/O context, which `workerd`
+  // restricts and which is cancelled if that request goes away first. Propagating it
+  // would fail a push (or an admin user operation) for a reason that has nothing to do
+  // with this request. See the fuller note in lib/firebaseAuth.ts `getJwks`.
+  const shared = inflightToken;
+  if (shared) {
+    try {
+      return await shared;
+    } catch {
+      /* borrow failed — mint our own below */
+    }
+  }
+
+  const own = fetchAccessToken(env);
+  inflightToken = own;
+  try {
+    return await own;
+  } finally {
+    // Cleared on failure too, so one transient error cannot poison the isolate — but
+    // only if nothing newer has taken the slot.
+    if (inflightToken === own) inflightToken = null;
+  }
+}
+
+/** Shared in-flight token fetch for this isolate. See `getAccessToken`. */
+let inflightToken: Promise<string> | null = null;
+
+async function fetchAccessToken(env: Env): Promise<string> {
   const cached = await env.CACHE_KV.get<{ token: string; expiresAt: number }>(
     TOKEN_KV_KEY,
     "json",
   );
-  if (cached && cached.expiresAt > Date.now() + 30_000) return cached.token;
+  if (cached && cached.expiresAt > Date.now() + TOKEN_SKEW_MS) {
+    // Memoise only the remaining life, so the isolate copy expires no later than
+    // the durable one it came from.
+    memoPut(TOKEN_KV_KEY, cached.token, Math.floor((cached.expiresAt - TOKEN_SKEW_MS - Date.now()) / 1000));
+    return cached.token;
+  }
 
   const sa = await getServiceAccount(env);
   const assertion = await signJwt(sa);
@@ -107,6 +179,11 @@ export async function getAccessToken(env: Env): Promise<string> {
   if (!res.ok) throw httpsError("internal", `OAuth token exchange failed: ${await res.text()}`);
   const json = (await res.json()) as { access_token: string; expires_in: number };
   const expiresAt = Date.now() + json.expires_in * 1000;
+  // Memoised before the KV write is even attempted: the token is already valid, and
+  // the fan-out described above happens within a single request, so the isolate copy
+  // is what actually absorbs it. This also means a Worker whose KV writes are
+  // exhausted still only performs one OAuth exchange per isolate.
+  memoPut(TOKEN_KV_KEY, json.access_token, Math.max(0, json.expires_in - 60));
   // Cache the access token, but never let a KV write failure (e.g. the daily
   // put() quota being exhausted) break admin/Identity-Toolkit operations — we
   // already minted a valid token. A failed cache write just costs one extra

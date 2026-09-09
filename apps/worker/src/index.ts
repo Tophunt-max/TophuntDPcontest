@@ -42,6 +42,7 @@ import {
 } from "./lib/httpRange";
 import { applyPublicMediaCors, preflightMediaCorsHeaders } from "./lib/mediaCors";
 import { cachePolicyForKey } from "./lib/mediaCategories";
+import { clientIp, rateLimit } from "./lib/rateLimit";
 
 // Durable Object for real-time WebSocket push.
 export { RealtimeHub } from "./realtime";
@@ -160,8 +161,35 @@ app.get("/health/deep", async (c) => {
   // Shared with the admin panel's System Health console (GET /admin/health) so
   // the two never disagree — see lib/health.ts. Public + 503-on-unhealthy here
   // for uptime monitors.
+  //
+  // ---------------------------------------------------------------------------
+  // Throttled, NOT cached — and the difference matters
+  // ---------------------------------------------------------------------------
+  // Each call probes FIVE dependencies (D1, both KV namespaces, R2 and the RateLimiter
+  // Durable Object), so an unauthenticated caller can amplify one cheap HTTP request
+  // into five backend operations. That wants a brake.
+  //
+  // Caching the result was the wrong brake. `.github/workflows/deploy-worker.yml`
+  // gates every deploy on this endpoint returning 200, and Cache API entries SURVIVE a
+  // deploy — so a healthy response written moments before `wrangler deploy` would
+  // satisfy the gate without `computeDeepHealth` ever running against the new code.
+  // The workflow's whole premise is that "the test matters more than the deploy"; a
+  // cache hit exercises none of the dependencies it claims to check.
+  //
+  // A per-IP limit brakes the amplification without ever answering from a stale
+  // result. Fails OPEN deliberately: an unreachable limiter must not make a healthy
+  // deployment look unhealthy, which would be the monitoring equivalent of the bug
+  // above. Distributed abuse across many IPs is out of scope here and belongs in
+  // Cloudflare WAF rate-limiting rules, which is where lib/rateLimit.ts already says
+  // the second tier belongs.
+  await rateLimit(c.env, `healthdeep:${clientIp(c.req.raw.headers)}`, 60, 60);
+
   const health = await computeDeepHealth(c.env);
-  return c.json(health, health.ok ? 200 : 503);
+  const res = c.json(health, health.ok ? 200 : 503) as Response;
+  // Never storable by an intermediary: a health check answered from anyone's cache is
+  // not a health check.
+  res.headers.set("Cache-Control", "no-store");
+  return res;
 });
 
 /**

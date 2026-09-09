@@ -56,21 +56,33 @@ export const blockCacheKey = (uid: string) => `cache:blocks:${uid}`;
  * is only a backstop against a missed invalidation rather than the primary
  * freshness mechanism.
  *
- * Raised from 300s. This lookup runs on nearly every read and the common case — a
- * user with no blocks at all — is an empty object, so at 300s it cost a KV write
- * every five minutes per active user just to keep "nothing to filter" cached.
+ * Raised 300s -> 900s -> 3600s. This lookup runs on nearly every read and the
+ * common case — a user with no blocks at all — is an empty object, so a short TTL
+ * spent a KV write per lapse per active user just to keep "nothing to filter"
+ * cached: 288/day each at 300s, 96 at 900s, 24 now.
  *
- * Raising the TTL is the safe way to save those writes, and the ONLY safe way
- * here. Every path that changes a relation calls `invalidateBlockCache`, which
- * DELETES the key: block and unblock (both uids), mute and unmute, and account
- * deletion. A KV delete is visible to every isolate, so a new block still takes
- * effect immediately no matter how long the ttl is. An isolate-memory cache in
- * front of this would NOT have that property — it cannot be invalidated from the
- * isolate that ran the block — so it would lengthen the window in which a blocked
- * user's content is still served, and buy nothing in exchange: the write happens
- * on a KV miss, so only the ttl governs it.
+ * This is one of only three caches still on KV, and the reason it stays there is
+ * the reason its TTL is the only tuning lever available:
+ *
+ *   A KV DELETE REACHES EVERY ISOLATE AND EVERY COLO. Nothing else here does.
+ *
+ * Every path that changes a relation calls `invalidateBlockCache` — block and
+ * unblock (both uids), mute and unmute, account deletion — so a new block takes
+ * effect immediately no matter how long the TTL is, which is what makes 3600s safe.
+ * Two alternatives were considered and rejected:
+ *
+ *   - ISOLATE MEMORY in front of this cannot be invalidated from the isolate that
+ *     ran the block, so it would lengthen the window in which a blocked user's
+ *     content is still served — and buy nothing, because the write happens on a KV
+ *     miss and only the TTL governs that.
+ *   - THE CACHE API is per-colo and equally unpurgeable from elsewhere. For a
+ *     safety filter, "revoked everywhere except the colo that already cached you"
+ *     is the wrong failure mode.
+ *
+ * So unlike the read caches (see lib/edgeCache.ts), this one genuinely needs KV, and
+ * a longer backstop is the correct way to make it cheap.
  */
-const BLOCK_CACHE_TTL = 900;
+const BLOCK_CACHE_TTL = 3600;
 
 /**
  * Hard ceiling on how many relations are loaded per user.

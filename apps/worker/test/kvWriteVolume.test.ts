@@ -144,9 +144,9 @@ describe('feed reads do not scale KV writes with request count', () => {
     await loadFeed(env, 'alice');
     expect(puts.filter((k) => k === feedSeenKey('alice'))).toHaveLength(0);
 
-    // Age the last flush past the 5-minute interval.
+    // Age the last flush past the flush interval (15 minutes).
     const state = memoGet<any>(feedSeenKey('alice'))!;
-    state.flushedAt = Date.now() - 6 * 60_000;
+    state.flushedAt = Date.now() - 16 * 60_000;
 
     await loadFeed(env, 'alice');
     expect(puts.filter((k) => k === feedSeenKey('alice'))).toHaveLength(1);
@@ -165,7 +165,7 @@ describe('feed reads do not scale KV writes with request count', () => {
     );
 
     const state = memoGet<any>(feedSeenKey('alice'))!;
-    state.flushedAt = Date.now() - 6 * 60_000; // due a flush
+    state.flushedAt = Date.now() - 16 * 60_000; // due a flush
     await loadFeed(env, 'alice');
 
     const durable = JSON.parse(env.CACHE_KV._map.get(feedSeenKey('alice'))!);

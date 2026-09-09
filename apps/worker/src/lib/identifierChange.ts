@@ -14,7 +14,8 @@ import { updateAuthUser } from "./firebaseAdmin";
 import { sendEmail, emailConfigured } from "./email";
 import { sendSms, smsConfigured } from "./sms";
 import { createNotification } from "./notify";
-import { delCache, userCacheKey } from "./cache";
+import { userCacheKey } from "./cache";
+import { purgeShared, type EdgeCtx } from "./edgeCache";
 import { assertRecentAuth, clearReauthGrant } from "./reauth";
 import { verificationCodeEmail, identifierChangedEmail } from "./emailTemplates";
 import { now } from "./ids";
@@ -280,6 +281,8 @@ export async function confirmEmailChange(
   env: Env,
   uid: string,
   code: unknown,
+  /** Request context, so the profile cache purge reaches this colo. */
+  c?: EdgeCtx,
 ): Promise<{ email: string; verifyOnly: boolean }> {
   const db = getDb(env);
   const before = await readIdentifiers(env, uid);
@@ -320,13 +323,14 @@ export async function confirmEmailChange(
     // No alert and no burned grant: nothing changed, so there is nobody to warn
     // and no credential whose proof has gone stale. Only the cached profile needs
     // dropping, because `emailVerified` is part of what it serves.
-    await delCache(env, userCacheKey(uid)).catch(() => {});
+    await purgeShared(c ?? env, userCacheKey(uid)).catch(() => {});
   } else {
-    await afterIdentifierChange(env, uid, {
-      kind: "email",
-      oldValue: before.email,
-      newValue: email,
-    });
+    await afterIdentifierChange(
+      env,
+      uid,
+      { kind: "email", oldValue: before.email, newValue: email },
+      c,
+    );
   }
 
   return { email, verifyOnly };
@@ -410,6 +414,8 @@ export async function confirmPhoneChange(
   env: Env,
   uid: string,
   code: unknown,
+  /** Request context, so the profile cache purge reaches this colo. */
+  c?: EdgeCtx,
 ): Promise<{ phone: string; verifyOnly: boolean }> {
   const db = getDb(env);
   const before = await readIdentifiers(env, uid);
@@ -433,9 +439,9 @@ export async function confirmPhoneChange(
       kind: "phone",
       oldValue: before.phone,
       newValue: phone,
-    });
+    }, c);
   } else {
-    await delCache(env, userCacheKey(uid)).catch(() => {});
+    await purgeShared(c ?? env, userCacheKey(uid)).catch(() => {});
   }
 
   return { phone, verifyOnly };
@@ -460,6 +466,7 @@ async function afterIdentifierChange(
   env: Env,
   uid: string,
   change: { kind: "email" | "phone"; oldValue: string | null; newValue: string },
+  c?: EdgeCtx,
 ): Promise<void> {
   const label = change.kind === "email" ? "email address" : "phone number";
   const masked =
@@ -476,9 +483,11 @@ async function afterIdentifierChange(
    */
   await clearReauthGrant(env, uid);
 
-  // The public profile is served from a shared KV entry, so the old address would
-  // keep being returned until its TTL lapsed.
-  await delCache(env, userCacheKey(uid)).catch(() => {});
+  // The public profile is served from a shared cache entry, so the old address would
+  // keep being returned until its TTL lapsed. Goes through `purgeShared` rather than
+  // `delCache`: this key is served from the Cache API now, so a KV-only delete would
+  // invalidate nothing at all.
+  await purgeShared(c ?? env, userCacheKey(uid)).catch(() => {});
 
   // In-app, so there is a record inside the account itself.
   await createNotification(env, uid, {

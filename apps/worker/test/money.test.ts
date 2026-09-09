@@ -74,7 +74,7 @@ afterEach(() => {
 
 // ===========================================================================
 describe('createOrder', () => {
-  it('creates a server-priced order and stores the intent in KV', async () => {
+  it('creates a server-priced order and persists the intent in D1, not KV', async () => {
     const { env } = makeEnv();
     await seedUser(env, 'alice');
     await seedPackage(env, 'pkg1', 100, 20, 199);
@@ -86,8 +86,21 @@ describe('createOrder', () => {
     expect(body.orderId).toBe('order_abc');
     expect(body.amount).toBe(19900); // paise
     expect(body.coins).toBe(120); // coins + bonus
-    const stored = await env.CACHE_KV.get('rzp_order:order_abc', 'json');
-    expect(stored).toMatchObject({ uid: 'alice', coins: 120 });
+
+    // The DURABLE record is the `payment_orders` row, and it is the only one.
+    const order = await drizzleOf(env)
+      .select()
+      .from(schema.paymentOrders)
+      .where(eq(schema.paymentOrders.orderId, 'order_abc'))
+      .get();
+    expect(order).toMatchObject({ userId: 'alice', coins: 120, amountPaise: 19900, status: 'created' });
+
+    // There used to be a duplicate of this intent in KV (`rzp_order:{id}`, 1h ttl) as
+    // a "fallback". It could never fire — the insert above throws on failure, so no
+    // order id reaches a client without a row — and it backed a SECOND crediting path
+    // with weaker idempotency than the CAS in lib/coinOrders.ts. Asserting its absence
+    // is what stops it being reintroduced as a convenience.
+    expect([...env.CACHE_KV._map.keys()].filter((k) => k.startsWith('rzp_order:'))).toHaveLength(0);
   });
 
   it('rejects an unknown / inactive package', async () => {
