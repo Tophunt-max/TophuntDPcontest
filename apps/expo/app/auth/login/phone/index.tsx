@@ -11,7 +11,7 @@ import {
   TextInput,
   Alert,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { BackButton } from "@/src/components/ui/BackButton";
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -22,12 +22,17 @@ import { auth } from "../../../../src/services/firebase/initFirebase";
 import { signInWithCustomToken } from "firebase/auth";
 import { callApi, readApi } from "../../../../src/services/api";
 import { reportError } from "@/src/lib/reportError";
+import { postAuthDestination } from "@/src/lib/postAuthRedirect";
 import { useSignupStore } from "../../../../src/store/signup";
 import { CountryPicker } from "react-native-country-codes-picker";
 import { Ionicons } from "@/src/lib/icons";
 
 export default function PhoneLoginScreen() {
   const router = useRouter();
+  // Forwarded from `/auth/login`. Carries the link the visitor was trying to open —
+  // usually a `/@handle` profile, which requires a session.
+  const params = useLocalSearchParams();
+  const redirect = params.redirect as string | undefined;
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
@@ -108,7 +113,10 @@ export default function PhoneLoginScreen() {
         // Check if profile is actually complete (has username or flag)
         if (userData.signupCompleted === true || userData.username) {
           addToast("Welcome back!", "success");
-          router.replace("/home");
+          // Honour the link the visitor followed. Phone is the dominant sign-in method
+          // here, and this branch used to hard-code `/home` — so a shared `/@handle`
+          // link ended at the home feed for most people who opened one.
+          router.replace(postAuthDestination(redirect) as any);
         } else {
           // Found user but profile incomplete
           setMultiple({

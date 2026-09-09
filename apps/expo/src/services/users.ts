@@ -126,3 +126,70 @@ export const equipBadgeService = async (_userId: string, badge: Badge | null) =>
     throw error;
   }
 };
+
+/**
+ * What a `/@handle` lookup resolved to.
+ *
+ * `status` is a discriminant rather than a bag of optional fields because the caller
+ * has to tell "no such account" from "we could not ask" — and those two render
+ * differently. See `fetchProfileByHandle`.
+ */
+export type HandleResolution =
+  /** The handle is live. */
+  | { status: 'found'; profile: any }
+  /**
+   * The handle was RELEASED by its owner and nobody holds it now. The caller should
+   * navigate to `/@<movedTo>` rather than render.
+   */
+  | { status: 'moved'; movedTo: string }
+  /** The API answered, authoritatively, that no such handle exists. */
+  | { status: 'not-found' }
+  /** The lookup could not be completed. NOT the same as not-found. */
+  | { status: 'unavailable' };
+
+/**
+ * Resolve a public `/@handle` to a profile.
+ *
+ * Backs the public profile url. It used to be `/profile?userId=<uid>`, which put the
+ * internal Firebase uid into every shared link and browser history entry; the handle
+ * is what a person can actually read, share and type.
+ *
+ * `moved` is the interesting case. A username is mutable, so a readable url can rot —
+ * the Worker answers a released handle with the account's CURRENT handle so an old link
+ * still finds the person instead of dying. Whoever holds a handle today always wins over
+ * history, so this can never point at someone who has since taken the name legitimately.
+ *
+ * ---------------------------------------------------------------------------
+ * `not-found` and `unavailable` are deliberately DIFFERENT answers
+ * ---------------------------------------------------------------------------
+ * This originally collapsed both into one empty result, and the screen rendered
+ * "This account doesn't exist or is no longer available" for either. So a dropped
+ * connection told the visitor that a real profile — usually one they had just followed
+ * a link to — did not exist, with no retry affordance and nothing to suggest trying
+ * again would help.
+ *
+ * The edge Worker already takes care to distinguish these: it answers 404 for an
+ * unknown handle and 503 for an unreachable API, precisely so a bad minute upstream
+ * does not get reported as a missing page. The client has the same obligation to the
+ * person holding the link.
+ */
+export async function fetchProfileByHandle(handle: string): Promise<HandleResolution> {
+  const clean = String(handle || '').trim().replace(/^@+/, '');
+  if (!clean) return { status: 'not-found' };
+  try {
+    const raw: any = await readApi(`/read/users/by-username/${encodeURIComponent(clean)}`);
+    // A `null` body is the Worker's authoritative "no such handle" — it uses the same
+    // shape as `/read/users/:id` so callers have one not-found form to handle.
+    if (!raw) return { status: 'not-found' };
+    if (raw.movedTo) return { status: 'moved', movedTo: String(raw.movedTo) };
+    return { status: 'found', profile: raw };
+  } catch {
+    return { status: 'unavailable' };
+  }
+}
+
+/** The canonical public path for a handle. Lowercase, so one profile has ONE url. */
+export function profilePath(username: string | null | undefined): string | null {
+  const clean = String(username || '').trim().replace(/^@+/, '').toLowerCase();
+  return clean ? `/@${clean}` : null;
+}

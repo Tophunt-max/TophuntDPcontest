@@ -17,6 +17,7 @@ import app from '../firebase/initFirebase';
 import { readApi } from '../api';
 import { useSignupStore } from '../../store/signup';
 import { reportError } from '@/src/lib/reportError';
+import { postAuthDestination } from '@/src/lib/postAuthRedirect';
 
 /**
  * Social sign-in.
@@ -84,12 +85,21 @@ export function socialProviderAvailability(): {
   };
 }
 
-/** Route a freshly signed-in user to home or to profile completion. */
+/**
+ * Route a freshly signed-in user to their destination, or to profile completion.
+ *
+ * `redirect` is the link the visitor was trying to reach before being asked to sign in
+ * — almost always a `/@handle` profile, since those are the shared urls that require a
+ * session. It is honoured only for a RETURNING user with a complete profile; a new
+ * account is sent through onboarding, because dropping someone onto a stranger's
+ * profile before they have a username of their own is not a shortcut worth taking.
+ */
 async function routeAfterSignIn(
   router: any,
   addToast: any,
   credential: UserCredential,
   providerName: string,
+  redirect?: string | null,
 ) {
   const user = credential.user;
   const signupStore = useSignupStore.getState();
@@ -100,7 +110,7 @@ async function routeAfterSignIn(
   if (userData) {
     if (userData.signupCompleted === true || userData.username) {
       addToast('Welcome back!', 'success');
-      router.replace('/home');
+      router.replace(postAuthDestination(redirect));
     } else {
       signupStore.setMultiple({
         ...userData,
@@ -251,11 +261,12 @@ async function run(
   providerName: 'Google' | 'Apple' | 'Facebook',
   native: () => Promise<UserCredential>,
   webProvider: () => any,
+  redirect?: string | null,
 ) {
   try {
     const credential =
       Platform.OS === 'web' ? await webPopupSignIn(webProvider()) : await native();
-    return await routeAfterSignIn(router, addToast, credential, providerName);
+    return await routeAfterSignIn(router, addToast, credential, providerName, redirect);
   } catch (error: any) {
     // A user closing the sheet is not an error worth reporting or shouting about.
     const cancelled =
@@ -280,12 +291,12 @@ async function run(
 }
 
 export const SocialAuthService = {
-  googleLogin: (router: any, addToast: any) =>
-    run(router, addToast, 'Google', googleNativeSignIn, () => new GoogleAuthProvider()),
+  googleLogin: (router: any, addToast: any, redirect?: string | null) =>
+    run(router, addToast, 'Google', googleNativeSignIn, () => new GoogleAuthProvider(), redirect),
 
-  appleLogin: (router: any, addToast: any) =>
-    run(router, addToast, 'Apple', appleNativeSignIn, () => new OAuthProvider('apple.com')),
+  appleLogin: (router: any, addToast: any, redirect?: string | null) =>
+    run(router, addToast, 'Apple', appleNativeSignIn, () => new OAuthProvider('apple.com'), redirect),
 
-  facebookLogin: (router: any, addToast: any) =>
-    run(router, addToast, 'Facebook', facebookNativeSignIn, () => new FacebookAuthProvider()),
+  facebookLogin: (router: any, addToast: any, redirect?: string | null) =>
+    run(router, addToast, 'Facebook', facebookNativeSignIn, () => new FacebookAuthProvider(), redirect),
 };

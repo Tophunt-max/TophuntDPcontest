@@ -18,6 +18,28 @@ export const DELETED_STATUS = "deleted";
 export const BLOCKED_STATUS = "blocked";
 
 /**
+ * Statuses that make an account invisible to everyone but its owner.
+ *
+ * Note that `BLOCKED_STATUS` is NOT here: an admin-blocked account cannot use the app
+ * but its profile is still a real, visible profile. Only the two deletion states hide
+ * a row from other viewers.
+ */
+export const PUBLICLY_HIDDEN_STATUSES = [PENDING_DELETION_STATUS, DELETED_STATUS] as const;
+
+/**
+ * True when this account is out of service and must not be shown to others.
+ *
+ * Lives here, with no imports, because both the read routes and the username
+ * resolver need it. It used to be private to routes/read.ts, and `resolveUsername`
+ * consequently had no way to ask the question — so `/@oldhandle` would happily
+ * redirect to a pending-deletion account's live handle, and to the anonymised
+ * `deleted_…` handle that `executeAccountDeletion` writes. One definition is what
+ * keeps the two entry points from disagreeing about who is visible.
+ */
+export const isHiddenAccountStatus = (status: string | null | undefined): boolean =>
+  !!status && (PUBLICLY_HIDDEN_STATUSES as readonly string[]).includes(status);
+
+/**
  * `/api` actions that must stay reachable even when the account is blocked.
  *
  * Both app stores require an in-app way to delete an account, and the auth

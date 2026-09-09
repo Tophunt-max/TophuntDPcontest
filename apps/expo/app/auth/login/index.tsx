@@ -103,19 +103,24 @@ export default function LoginWelcomeScreen() {
   }, []);
 
   const handleSocialLogin = async (provider: string) => {
+    // `redirect` is forwarded to EVERY branch, not just the password one. A shared
+    // `/@handle` link sends anonymous visitors here, so a branch that drops it lands
+    // them on the home feed instead of the profile they followed a link to.
     if (provider === "Phone") {
-      router.push("/auth/login/phone");
+      router.push(
+        redirect ? `/auth/login/phone?redirect=${encodeURIComponent(redirect)}` : "/auth/login/phone",
+      );
       return;
     }
 
     setLoading(provider);
     try {
       if (provider === "Google") {
-        await SocialAuthService.googleLogin(router, addToast);
+        await SocialAuthService.googleLogin(router, addToast, redirect);
       } else if (provider === "Facebook") {
-        await SocialAuthService.facebookLogin(router, addToast);
+        await SocialAuthService.facebookLogin(router, addToast, redirect);
       } else if (provider === "Apple") {
-        await SocialAuthService.appleLogin(router, addToast);
+        await SocialAuthService.appleLogin(router, addToast, redirect);
       }
     } catch (error: any) {
       // Error handled in service

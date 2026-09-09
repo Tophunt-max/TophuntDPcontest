@@ -444,6 +444,112 @@ function redirect301(pathAndQuery, base) {
 }
 
 /**
+ * A redirect whose TARGET CAN CHANGE — 302, and never stored.
+ *
+ * `redirect301` is right for a rule that is true forever: `/blog/<slug>` is always
+ * `/<slug>`, and letting a browser cache that permanently is a saving. It is wrong for
+ * anything computed from a username, because browsers cache 301s aggressively and
+ * often indefinitely, and there is no way to invalidate one you have already served.
+ *
+ * Two concrete failures if the profile hops were 301:
+ *
+ *  - `?userId=<uid>` -> `/@alice` is only true while that account holds `alice`. Once
+ *    it renames and the hold expires, a legitimate new owner takes the handle — and a
+ *    client that cached the hop now sends the visitor to a DIFFERENT PERSON. That is
+ *    the exact guarantee this whole design exists to provide, defeated in the client
+ *    rather than on the server.
+ *
+ *  - `/@alice` -> `/@bob` after a rename, then a rename BACK to `alice` — which the
+ *    hold deliberately permits, and which is the single most common reason to want a
+ *    just-released handle. The server now says `/@bob` -> `/@alice` while the client
+ *    still rewrites `/@alice` -> `/@bob`: ERR_TOO_MANY_REDIRECTS on the account's own
+ *    canonical url. Nothing loops server-side, so no test and no fresh browser can
+ *    see it.
+ *
+ * `Response.redirect` cannot carry headers, so this builds the response by hand.
+ */
+function redirectTemporary(pathAndQuery, base) {
+  return withSecurityHeaders(
+    new Response(null, {
+      status: 302,
+      headers: {
+        location: new URL(pathAndQuery, base).toString(),
+        'cache-control': 'no-store',
+      },
+    }),
+  );
+}
+
+/**
+ * The public profile urls: `/@<handle>`, and the legacy `/profile?userId=<uid>`.
+ *
+ * Returns null when the path is neither, so the caller falls through to the rest of
+ * its routing. Called ABOVE the asset/document split — see the call site for why that
+ * placement is load-bearing rather than incidental.
+ */
+async function handleProfileRoutes({ url, path, env, origin, apiBase }) {
+  // --- legacy /profile?userId=<uid> -> /@<handle> ---------------------------
+  //
+  // The public profile address used to carry the internal Firebase uid — the same
+  // identifier used for realtime channel names and Durable Object instances — so every
+  // shared link, browser history entry and clipboard copy contained it. The uid is not
+  // a secret and not a capability, but it has no business in a url a person is meant
+  // to share, and redirecting is what stops the old form spreading further: shared
+  // links keep working, and anyone who follows one ends up on the handle.
+  //
+  // A bare `/profile` (no `userId`) is the signed-in user's own screen and must NOT be
+  // redirected — it falls through to the private-screen branch as before. So does an
+  // unresolvable uid, which the app reports as not-found.
+  if (path === '/profile') {
+    const legacyUid = url.searchParams.get('userId');
+    if (legacyUid) {
+      const handleForUid = await fetchHandleForUid(apiBase, legacyUid);
+      if (handleForUid) return redirectTemporary(`/@${handleForUid.toLowerCase()}`, url.origin);
+    }
+    return null;
+  }
+
+  const handle = handleFromPath(path);
+  if (!handle) return null;
+
+  // ONE url per profile. Handles are case-insensitive (the unique index is COLLATE
+  // NOCASE), so the lowercase form is canonical and any other casing redirects instead
+  // of serving the same profile at a second address.
+  //
+  // 301 here, unlike the two below: "the lowercase form is canonical" does not depend
+  // on who owns the handle, so it is safe to cache forever. Resolution happens after
+  // this, so a mixed-case moved handle costs two hops — acceptable, because the
+  // alternative is resolving a url we are about to redirect anyway.
+  const lower = handle.toLowerCase();
+  if (lower !== handle) return redirect301(`/@${lower}` + url.search, url.origin);
+
+  const resolved = await fetchProfileByHandle(apiBase, lower);
+
+  // The handle was released and the account renamed. Following it keeps old links
+  // alive — which the scheme this borrows from does not do, since a renamed Instagram
+  // handle simply 404s.
+  if (resolved.movedTo) {
+    return redirectTemporary(`/@${resolved.movedTo.toLowerCase()}`, url.origin);
+  }
+
+  if (resolved.profile && resolved.profile.username) {
+    return injectProfileSeo(await fetchShell(env, origin), resolved.profile, origin, lower);
+  }
+
+  // The API could not be reached. NOT a 404, for the same reason the blog branch says
+  // so: telling Google a real page is gone because an upstream had a bad minute is how
+  // an indexed page gets dropped.
+  if (!resolved.ok) return unavailablePage(env, origin);
+
+  // A genuinely unknown handle is a 404 WITH a 404 status, not a soft 404.
+  return injectSeo(await fetchShell(env, origin, 404), {
+    title: `Not found | ${SITE_NAME}`,
+    description: DEFAULT_DESCRIPTION,
+    robots: 'noindex, follow',
+  });
+}
+
+/**
  * The single canonical url shape for a post is the ROOT permalink `/<slug>`, with
  * no trailing slash — the same string `/sitemap.xml` advertises. This returns the
  * redirect target for every other shape that resolves to the same post.
@@ -632,6 +738,27 @@ export default {
       }
       return getArchivePage(archive, apiBase, origin);
     }
+
+    // --- public profiles ----------------------------------------------------
+    //
+    // Handled ABOVE the asset/document split below, and that placement is the whole
+    // point rather than a stylistic choice.
+    //
+    // `validateUsername` allows dots, so `john.doe` is a legal handle — and
+    // `hasFileExtension` sees `.doe` as a file extension. Below the split, `/@john.doe`
+    // would be classified as an asset, fall through to the SPA fallback, and be turned
+    // into a plain-text 404 by the `servedHtml && hasFileExtension` guard. Every
+    // dotted handle would be a dead link on the web: dead when shared, dead on
+    // refresh, and dead as the target of the legacy `?userId=` redirect just below,
+    // which would actively convert a working url into a broken one.
+    //
+    // `/@…` is a namespace nothing else in this app uses — there is no asset, route or
+    // legacy url beginning with `@` — so claiming the whole of it here costs nothing.
+    // The consequence to be aware of: `/@alice.png` is now resolved as the HANDLE
+    // "alice.png" (which is a legal username) rather than as a missing image. That is
+    // the right answer, because an image was never served from this namespace.
+    const profileResponse = await handleProfileRoutes({ url, path, env, origin, apiBase });
+    if (profileResponse) return profileResponse;
 
     // Only document requests get SEO treatment. Everything else (JS/CSS/images/
     // API-less asset fetches) is served straight from static assets.
@@ -995,6 +1122,125 @@ async function fetchMatch(apiBase, id) {
 }
 
 /**
+ * `/@<username>` -> the handle, without the `@`. Null for anything else.
+ *
+ * Must be consulted BEFORE `blogSlugFromPath`, which claims every one-segment path
+ * and would report a real profile as a missing blog post.
+ *
+ * The `@` prefix is what makes the two separable: a blog slug cannot begin with `@`
+ * and a username cannot contain one (`validateUsername` in the Worker allows only
+ * letters, digits, `_` and `.`), so neither can be mistaken for the other. The same
+ * character set is enforced here rather than trusted — this value is interpolated
+ * into an upstream url, and a path segment is attacker-controlled.
+ */
+function handleFromPath(path) {
+  const segments = path.replace(/\/+$/, '').split('/').filter(Boolean);
+  if (segments.length !== 1) return null;
+  const s = segments[0];
+  if (!s.startsWith('@')) return null;
+  const handle = s.slice(1);
+  return /^[a-zA-Z0-9_.]{3,30}$/.test(handle) ? handle : null;
+}
+
+/**
+ * Resolve a handle to a profile via the API.
+ *
+ * Returns `{ profile, movedTo, ok }`, mirroring `fetchPost`:
+ *
+ *   ok:false     the API could not be reached. NOT a 404 — see the caller, which
+ *                answers 503 so an indexed page is not dropped over a bad minute.
+ *   movedTo      the handle was released and the account renamed; redirect there.
+ *   profile:null the handle is genuinely unknown.
+ */
+async function fetchProfileByHandle(apiBase, handle) {
+  try {
+    // No `cf: { cacheEverything }`, deliberately — unlike `fetchPost`.
+    //
+    // `cacheEverything` caches by url and OVERRIDES the origin's cache headers, which
+    // is fine for a blog post (immutable-ish, and a stale one is still the right
+    // article) and wrong for all three answers here. It would cache a NEGATIVE, so a
+    // brand-new handle keeps unfurling as "Not found" for anyone whose colo probed it
+    // in the previous minute; it would cache the `movedTo` pointer the API explicitly
+    // marks `private, no-store`; and it would keep serving the pre-rename profile — old
+    // handle in the title and canonical — from a cache entry that `purgeShared` cannot
+    // reach, because it is keyed on the url rather than on the uid.
+    //
+    // There is no load argument against this: the Worker serves this endpoint from its
+    // own edge cache already (`READ_CACHE_TTLS.userProfile`), so the subrequest is
+    // cheap and is invalidated correctly by the rename.
+    const res = await fetch(`${apiBase}/read/users/by-username/${encodeURIComponent(handle)}`, {
+      headers: { accept: 'application/json' },
+    });
+    if (!res.ok) return { profile: null, movedTo: null, ok: false };
+    const body = await res.json();
+    if (body && body.movedTo) return { profile: null, movedTo: String(body.movedTo), ok: true };
+    return { profile: body || null, movedTo: null, ok: true };
+  } catch (_err) {
+    return { profile: null, movedTo: null, ok: false };
+  }
+}
+
+/**
+ * The handle currently held by `uid`, for redirecting the legacy `?userId=` address.
+ * Null when it cannot be resolved, in which case the caller leaves the url alone.
+ */
+async function fetchHandleForUid(apiBase, uid) {
+  try {
+    // Uncached for the same reason as `fetchProfileByHandle`: this decides a REDIRECT
+    // TARGET from a mutable handle, so a url-keyed entry the rename cannot purge would
+    // point old links at a stale handle for its whole TTL.
+    const res = await fetch(`${apiBase}/read/users/${encodeURIComponent(uid)}`, {
+      headers: { accept: 'application/json' },
+    });
+    if (!res.ok) return null;
+    const body = await res.json();
+    return body && body.username ? String(body.username) : null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+/**
+ * Meta for a public profile.
+ *
+ * NOINDEX, and that is not an oversight. The profile screen still requires a sign-in
+ * (see `ProfileScreen`), so letting Google index it would index a login redirect —
+ * a page that answers 200 with no content for the crawler is the soft-404 pattern
+ * this Worker exists to remove. The og/twitter tags are still worth emitting: they
+ * are what makes a shared `/@handle` link render as a card in WhatsApp, iMessage and
+ * Twitter, and those scrapers do not need to get past the gate.
+ *
+ * IF profiles are ever made publicly viewable, this single `robots` value is what
+ * changes — to `index, follow` for a public account and `noindex, follow` when
+ * `isPrivate`, matching Instagram. Nothing else here needs to move.
+ */
+function injectProfileSeo(shellResp, profile, origin, handleLower) {
+  const handle = profile.username || handleLower;
+  const name = (profile.fullName || '').trim();
+  const title = name ? `${name} (@${handle})` : `@${handle}`;
+  const bio = (profile.bio || '').trim();
+  const description = bio || `See @${handle}'s battles, wins and photos on TopHunt.`;
+  const image = profile.profileImageUrl || '';
+  const canonical = `${origin}/@${handleLower}`;
+
+  return injectSeo(shellResp, {
+    title,
+    description,
+    canonical,
+    image,
+    type: 'profile',
+    robots: 'noindex, follow',
+    // Non-JS crawlers and social scrapers that read the body get the essentials.
+    noscript:
+      `<noscript><article>` +
+      `<h1>${esc(title)}</h1>` +
+      (image ? `<img src="${esc(image)}" alt="${esc(handle)}" width="400" />` : '') +
+      `<p>${esc(description)}</p>` +
+      `</article></noscript>`,
+  });
+}
+
+/**
  * Organization + WebSite + SoftwareApplication for the landing page.
  *
  * These are the entity claims answer engines use to attribute a statement to a
@@ -1157,7 +1403,33 @@ function robotsTxt(origin) {
   return [
     'User-agent: *',
     'Allow: /',
-    ...PRIVATE_PREFIXES.map((p) => `Disallow: ${p}/`),
+    /**
+     * THREE rules per prefix, and the precise set matters in both directions.
+     *
+     * It used to emit `Disallow: /profile/` alone. A trailing slash only matches paths
+     * that START with `/profile/`, so `/profile?userId=…` — the exact url that was
+     * being shared — was never disallowed, and the same gap applied to every other
+     * prefix here.
+     *
+     * The obvious repair is to drop the slash and emit a bare `Disallow: /profile`. Do
+     * NOT do that: robots directives are UNBOUNDED PREFIX MATCHES, and root-level blog
+     * permalinks share this namespace (`blogSlugFromPath` claims every one-segment
+     * path). A bare `Disallow: /contest` also blocks `/contest-alert-…`, `/story`
+     * blocks `/story-…`, and across ~4,400 imported posts about contests and giveaways
+     * that is a silent de-indexing of every article whose slug happens to begin with
+     * one of these twelve words.
+     *
+     * So each prefix is spelled out as exactly the three shapes a private screen can
+     * take, and nothing else:
+     *
+     *   Disallow: /profile$   the screen itself      ($ = end of url, honoured by
+     *                                                 Google and Bing)
+     *   Disallow: /profile/   its subpaths           (/profile/edit)
+     *   Disallow: /profile?   the screen with a query (/profile?userId=…)
+     *
+     * `/contest-alert-…` matches none of the three.
+     */
+    ...PRIVATE_PREFIXES.flatMap((p) => [`Disallow: ${p}$`, `Disallow: ${p}/`, `Disallow: ${p}?`]),
     // Shared battles are fine to fetch (that is how a preview gets built) but
     // carry noindex; keeping them crawlable is what lets the unfurl work.
     '',

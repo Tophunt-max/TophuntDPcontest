@@ -421,8 +421,70 @@ describe('/robots.txt', () => {
   it('declares the sitemap and blocks only the private prefixes', async () => {
     const body = await (await get(`${ORIGIN}/robots.txt`)).text();
     expect(body).toContain(`Sitemap: ${ORIGIN}/sitemap.xml`);
-    expect(body).toContain('Disallow: /wallet/');
+    expect(body).toContain('Disallow: /wallet');
     // The blog and the archive must stay crawlable.
     expect(body).not.toContain('Disallow: /blog');
+  });
+
+  it('blocks a private prefix with a QUERY STRING, not just a subpath', async () => {
+    // THE BUG THIS EXISTS FOR. The rules were emitted as `Disallow: /profile/` alone,
+    // and a trailing slash only matches paths that START with `/profile/`. The url
+    // actually being shared was `/profile?userId=<uid>` — path `/profile`, no trailing
+    // slash — so it was never disallowed at all, and the same gap applied to every
+    // other prefix in the list.
+    const body = await (await get(`${ORIGIN}/robots.txt`)).text();
+    expect(body).toContain('Disallow: /profile?');
+    expect(body).toContain('Disallow: /profile$');
+    expect(body).toContain('Disallow: /profile/');
+  });
+
+  it('does NOT emit a bare prefix, which would swallow the blog permalinks', async () => {
+    /**
+     * The regression the obvious fix would have caused.
+     *
+     * Repairing the gap above by simply dropping the trailing slash gives
+     * `Disallow: /contest` — and robots directives are UNBOUNDED PREFIX MATCHES with no
+     * word boundary. Root-level blog permalinks live in the same namespace
+     * (`blogSlugFromPath` claims every one-segment path), so that single line also
+     * blocks `/contest-alert-…`, and `Disallow: /story` blocks `/story-…`. Across ~4,400
+     * imported posts about contests and giveaways, that is a silent de-indexing of
+     * every article whose slug begins with one of twelve common English words.
+     *
+     * The `$` form is what draws the boundary, so the bare form must be absent. Asserted
+     * per-line rather than with `toContain`, because `Disallow: /contest$` contains
+     * `Disallow: /contest` as a substring.
+     */
+    const body: string = await (await get(`${ORIGIN}/robots.txt`)).text();
+    const lines = body.split('\n').map((l: string) => l.trim());
+    for (const prefix of ['/profile', '/contest', '/story', '/wallet', '/setting', '/auth']) {
+      expect(lines, `bare Disallow: ${prefix} would block /${prefix.slice(1)}-… blog slugs`).not.toContain(
+        `Disallow: ${prefix}`,
+      );
+    }
+  });
+
+  it('leaves a blog slug that merely STARTS WITH a private prefix crawlable', async () => {
+    // The property the three-rule form buys, stated as the thing that must remain true.
+    const body: string = await (await get(`${ORIGIN}/robots.txt`)).text();
+    const disallowed: string[] = body
+      .split('\n')
+      .filter((l: string) => l.startsWith('Disallow: '))
+      .map((l: string) => l.slice('Disallow: '.length));
+
+    // Google's matcher: a rule matches when the path starts with the pattern, with `$`
+    // anchoring the end and `?` being a literal character in the url.
+    const blocks = (rule: string, path: string) =>
+      rule.endsWith('$') ? path === rule.slice(0, -1) : path.startsWith(rule);
+
+    for (const slug of ['/contest-alert-flipkart-quiz', '/story-of-a-winner', '/authentic-review-of-the-app']) {
+      expect(
+        disallowed.filter((r) => blocks(r, slug)),
+        `${slug} must stay crawlable`,
+      ).toEqual([]);
+    }
+    // And the real private screens are still covered, in all three shapes.
+    for (const priv of ['/profile', '/profile/edit', '/profile?userId=abc']) {
+      expect(disallowed.some((r) => blocks(r, priv)), `${priv} must be disallowed`).toBe(true);
+    }
   });
 });

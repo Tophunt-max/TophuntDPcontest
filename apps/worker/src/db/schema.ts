@@ -1441,3 +1441,35 @@ export const prizeClaims = sqliteTable(
     statusIdx: index("idx_prize_claims_status").on(t.status, t.createdAt),
   }),
 );
+
+// ---------------------------------------------------------------------------
+// username_history  (migration 0043)
+//
+// Released usernames, so `/@handle` can never silently change owner.
+//
+// The public profile url is `/@username`, and a username is mutable — so without
+// this a rename would (a) break every shared link and (b) free the handle for
+// immediate re-registration, after which those links open a DIFFERENT PERSON.
+// The second is the dangerous one, and it is the gap Instagram's own scheme has.
+// Since this product moves wallets and prize payouts, "the profile a shared link
+// opens is who you think it is" is a security property.
+//
+// Resolution is always CURRENT OWNER FIRST; a row here only answers when nobody
+// holds the handle now, so it is a fallback and never an override. See the
+// migration for the full reasoning, and lib/userIdentifiers.ts for the hold window.
+// ---------------------------------------------------------------------------
+export const usernameHistory = sqliteTable(
+  "username_history",
+  {
+    /** The released handle, lowercased. One row per handle — a later release wins. */
+    usernameLower: text("username_lower").primaryKey(),
+    /** The account that released it. */
+    uid: text("uid").notNull(),
+    /** Epoch ms. Drives the hold window, so it is a timestamp and not a flag. */
+    releasedAt: integer("released_at").notNull(),
+  },
+  (t) => ({
+    // Read by `purgeUsernameHistory` on account deletion.
+    uidIdx: index("idx_username_history_uid").on(t.uid),
+  }),
+);
