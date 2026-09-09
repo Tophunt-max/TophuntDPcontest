@@ -22,7 +22,12 @@ import { setCustomClaims } from "../lib/firebaseAdmin";
 import { publish, publishMany } from "../lib/publish";
 import { castVote, bumpEngagement } from "../lib/voteCounter";
 import { clientIp, consumeRateLimit, rateLimit } from "../lib/rateLimit";
-import { assertIdentifiersAvailable, normalizePhone, validateUsername } from "../lib/userIdentifiers";
+import {
+  assertIdentifiersAvailable,
+  normalizePhone,
+  recordUsernameTransition,
+  validateUsername,
+} from "../lib/userIdentifiers";
 import { enforceIdempotency, releaseIdempotency } from "../lib/idempotency";
 import {
   contestDetailCacheKey,
@@ -2475,10 +2480,41 @@ apiRoute.post("/", async (c) => {
       if (set.username) {
         await assertIdentifiersAvailable(env, uid, { username: set.username });
       }
+      /**
+       * The handle being given up, captured BEFORE the write.
+       *
+       * Needed because the public profile url is `/@username`: releasing a handle
+       * has to be recorded, or (a) every link to the old one dies and (b) the name
+       * becomes instantly claimable by someone who then inherits that traffic. See
+       * migration 0043.
+       *
+       * One indexed lookup by primary key, and only when a username is actually part
+       * of the patch — this is a profile-edit path, not a hot read.
+       */
+      let previousUsername: string | null = null;
+      if (set.username) {
+        const cur = await db
+          .select({ username: schema.users.username })
+          .from(schema.users)
+          .where(eq(schema.users.uid, uid))
+          .get();
+        previousUsername = cur?.username ?? null;
+      }
       if (Object.keys(extraPatch).length) {
         const cur = await db.select({ extra: schema.users.extra }).from(schema.users).where(eq(schema.users.uid, uid)).get();
         set.extra = { ...((cur?.extra as any) || {}), ...extraPatch };
       }
+
+      // BEFORE the users row is written, deliberately. Publishing the hold after the
+      // handle goes free leaves a window in which another account can claim it, which
+      // is the exact attack the hold exists to stop. Safe in the failure direction: a
+      // history row naming a handle this uid still holds is inert, because the live
+      // owner outranks history and the hold exempts the uid on the row. See
+      // `recordUsernameTransition`.
+      if (set.username) {
+        await recordUsernameTransition(env, uid, previousUsername, set.username);
+      }
+
       const upd = await db.update(schema.users).set(set).where(eq(schema.users.uid, uid)).run();
       if (upd.meta.changes === 0) {
         // profile row doesn't exist yet — create it

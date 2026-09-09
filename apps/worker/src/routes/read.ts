@@ -52,7 +52,13 @@ import {
   hiddenUidsFor,
   sqlExclusionList,
 } from "../lib/blocks";
-import { DELETED_STATUS, PENDING_DELETION_STATUS } from "../lib/accountStatus";
+import {
+  DELETED_STATUS,
+  PENDING_DELETION_STATUS,
+  PUBLICLY_HIDDEN_STATUSES,
+  isHiddenAccountStatus,
+} from "../lib/accountStatus";
+import { resolveUsername } from "../lib/userIdentifiers";
 
 export const readRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -72,15 +78,10 @@ export const readRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
  * SQLite treats as false, so every legacy account would have vanished from the
  * app instead.
  */
-const PUBLICLY_HIDDEN_STATUSES = [PENDING_DELETION_STATUS, DELETED_STATUS] as const;
 const publiclyVisibleUser = sql`(${schema.users.status} IS NULL OR ${schema.users.status} NOT IN (${sql.join(
   PUBLICLY_HIDDEN_STATUSES.map((s) => sql`${s}`),
   sql`, `,
 )}))`;
-
-/** True when this account is out of service and must not be shown to others. */
-const isHiddenAccountStatus = (status: string | null | undefined): boolean =>
-  !!status && (PUBLICLY_HIDDEN_STATUSES as readonly string[]).includes(status);
 
 /** The live, per-user fields that a SNAPSHOT froze and must not be trusted for. */
 interface LiveUserFields {
@@ -1976,8 +1977,16 @@ function publicProfile(full: Record<string, any>): Record<string, any> {
   return out;
 }
 
-readRoute.get("/users/:id", optionalAuth, async (c) => {
-  const id = c.req.param("id");
+/**
+ * Serve one user's profile, by uid.
+ *
+ * Extracted from the route so that `/users/:id` and `/users/by-username/:username`
+ * share ONE implementation. That is not tidiness: this function carries the block
+ * asymmetry, the hidden-account rule and the public/private field split, and two
+ * copies of those rules is exactly how a second entry point ends up leaking what the
+ * first one learned not to.
+ */
+async function serveUserProfile(c: any, id: string): Promise<Response> {
   const viewer = c.get("user")?.uid;
 
   // Block handling here is deliberately ASYMMETRIC, and checked before the
@@ -2170,7 +2179,88 @@ readRoute.get("/users/:id", optionalAuth, async (c) => {
     return c.json(null);
   }
   return c.json(await forViewer(profile));
+}
+
+/**
+ * Resolve a `/@handle` to a profile — the public url's backing endpoint.
+ *
+ * ---------------------------------------------------------------------------
+ * Why this exists
+ * ---------------------------------------------------------------------------
+ * The public profile url is `/@username`. It used to be `/profile?userId=<uid>`,
+ * which put the internal Firebase uid — the same identifier used for realtime
+ * channel names and Durable Object instances — into every shared link, browser
+ * history and clipboard. The uid was never a secret (it is not a capability; the
+ * socket path checks it against the verified token, and it was already readable from
+ * the leaderboard), but an internal identifier does not belong in a url a user is
+ * meant to share.
+ *
+ * ---------------------------------------------------------------------------
+ * The `movedTo` case, which is the interesting one
+ * ---------------------------------------------------------------------------
+ * A username is mutable, so a readable url can rot. `resolveUsername` handles that:
+ * CURRENT OWNER ALWAYS WINS, and a handle nobody holds today falls back to whoever
+ * released it, so an old link still finds the person. When that happens this returns
+ * `{ movedTo: "<their current handle>" }` and the caller redirects — the web Worker
+ * with a 301, the app by replacing the url. That makes old links keep working, which
+ * Instagram's equivalent scheme does not do.
+ *
+ * It answers `null` for an unknown handle, matching `/users/:id`, so a caller has one
+ * not-found shape to handle rather than two.
+ *
+ * Registered BEFORE `/users/:id` so `by-username` cannot be read as a uid.
+ */
+readRoute.get("/users/by-username/:username", optionalAuth, async (c) => {
+  const viewer = c.get("user")?.uid;
+  const raw = c.req.param("username");
+  // Tolerate a leading '@' so `/@alice` can be forwarded verbatim by any caller.
+  const handle = String(raw ?? "").trim().replace(/^@+/, "");
+  if (!handle) return c.json(null);
+
+  const resolved = await resolveUsername(c.env, handle);
+  if (!resolved) return c.json(null);
+
+  if (resolved.moved && resolved.currentUsername) {
+    /**
+     * A pointer is still a DISCLOSURE, so it has to clear the same bar as the profile.
+     *
+     * This branch answers before `serveUserProfile`, which means none of that
+     * function's guards run — and the one that matters is the block. `serveUserProfile`
+     * returns `null` to a viewer the target has blocked, precisely so that a block
+     * cannot be detected: "anything else tells the blocked party that they were blocked
+     * and by whom, which turns the safety tool into a notification." A moved pointer
+     * would hand that party their blocker's CURRENT handle — which is exactly what
+     * someone renaming to get away from a harasser is trying to withhold, and the
+     * rename is often the reason the block exists.
+     *
+     * The reverse direction needs no check: if the VIEWER blocked the target, they
+     * already know who that is, and following the redirect lands them on the
+     * "You blocked @name — Unblock" shell `serveUserProfile` builds.
+     *
+     * Hidden accounts are handled upstream in `resolveUsername`, which refuses to name
+     * a pending-deletion or anonymised account as a redirect target at all.
+     */
+    if (viewer && viewer !== resolved.uid) {
+      const rel = await getRelations(c.env, viewer);
+      // `blocked` is the SYMMETRIC safety set (an edge in either direction), so
+      // `blockedByMe` has to be consulted first — exactly the precedence
+      // `serveUserProfile` uses. Without that ordering this would also hide the
+      // pointer from a viewer who did the blocking, stranding them with no way back
+      // to the profile they need in order to unblock.
+      if (!rel.blockedByMe.includes(resolved.uid) && rel.blocked.includes(resolved.uid)) {
+        return c.json(null);
+      }
+    }
+    // Not shared-cacheable: it is a pointer that changes the moment the account
+    // renames again, it is now viewer-dependent, and it is cheap to recompute.
+    c.header("Cache-Control", "private, no-store");
+    return c.json({ movedTo: resolved.currentUsername });
+  }
+
+  return serveUserProfile(c, resolved.uid);
 });
+
+readRoute.get("/users/:id", optionalAuth, (c) => serveUserProfile(c, c.req.param("id")));
 
 /**
  * True when the viewer must not see anything belonging to `targetId`.

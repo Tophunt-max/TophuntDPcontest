@@ -15,6 +15,7 @@ import {
   userCacheKey,
 } from "./cache";
 import { purgeShared, type EdgeCtx } from "./edgeCache";
+import { purgeUsernameHistory } from "./userIdentifiers";
 import { getAppConfig } from "./settings";
 import { publish } from "./publish";
 import { sendEmail } from "./email";
@@ -1101,6 +1102,14 @@ async function phaseAuth(env: Env, uid: string, reason: string | undefined): Pro
   // rendering a signed-in shell for an account that no longer exists.
   await publish(env, `user:${uid}`, { type: "account_deleted" }).catch(() => {});
   await delCache(env, feedSeenKey(uid)).catch(() => {});
+
+  // Released handles must stop leading here. `/@theirOldHandle` redirects to whatever
+  // handle the releasing account holds now (see lib/userIdentifiers.ts
+  // `resolveUsername`), so leaving these rows would point old links at an anonymised
+  // profile — a link that resolves to a deleted person is worse than one that 404s,
+  // and deletion is meant to make them unreachable. Also frees those names for reuse,
+  // since the hold window's purpose ends with the account.
+  await purgeUsernameHistory(env, uid);
 
   try {
     await deleteAuthUser(env, uid);

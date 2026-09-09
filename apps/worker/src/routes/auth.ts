@@ -20,7 +20,7 @@ import { getRewardSettings } from "../lib/settings";
 import { setOtp, generateOtp, verifyOtp, deleteOtp } from "../lib/otp";
 import { validatePasswordStrength } from "../lib/password";
 import { rateLimit, enforceSendCooldown, markSent, clearSendCooldown, clientIp } from "../lib/rateLimit";
-import { assertIdentifiersAvailable, validateUsername } from "../lib/userIdentifiers";
+import { assertIdentifiersAvailable, assertUsernameNotOnHold, validateUsername } from "../lib/userIdentifiers";
 import {
   confirmEmailChange,
   confirmPhoneChange,
@@ -107,6 +107,29 @@ async function createUserProfile(env: Env, uid: string, data: any, signupBonus: 
       : null;
 
   const profileStatements: any[] = [];
+
+  /**
+   * Signup CLAIMS a handle, so any record of a past owner has to go.
+   *
+   * `assertIdentifiersAvailable` above has already refused the name if it is still
+   * inside its hold window, so reaching this line means the handle is legitimately
+   * available. What is left behind is a history row from whoever released it — and that
+   * row is not harmless. Nothing else deletes it, so it stays dormant (the live owner
+   * always outranks history) until this account stops holding the name in a way that
+   * records no release, at which point `/@thishandle` starts redirecting to the
+   * PREVIOUS owner. Every link shared during this account's ownership would land on a
+   * stranger.
+   *
+   * In the same batch as the insert rather than as a call to
+   * `recordUsernameTransition`, because here it costs nothing to be exact: if the
+   * signup fails, the row this would have deleted is still protecting the handle.
+   */
+  if (username) {
+    profileStatements.push(
+      db.delete(schema.usernameHistory).where(eq(schema.usernameHistory.usernameLower, username.toLowerCase())),
+    );
+  }
+
   profileStatements.push(
     db
     .insert(schema.users)
@@ -208,6 +231,35 @@ authRoute.post("/", async (c) => {
         const row = await db.select({ uid: schema.users.uid }).from(schema.users).where(predicate).get();
         exists = !!row;
       }
+
+      /**
+       * A username nobody holds can still be unavailable, and this check has to say so.
+       *
+       * The query above only looks at `users`, so a handle inside its 30-day hold window
+       * reported `{exists: false}` — and then the write refused it with "Username is
+       * already in use." The client tells the user the name is free, they finish signing
+       * up or renaming, and the request fails on the last step for a reason nothing had
+       * hinted at. An availability check that disagrees with the claim path is worse than
+       * no check at all.
+       *
+       * `assertUsernameNotOnHold` is the right thing to call rather than a fresh query,
+       * because it is the same code the write uses — and it deliberately declines to say
+       * WHO held the name or when it frees up, which keeps this endpoint from becoming a
+       * monitor for handles about to become available. `exists` collapses both reasons
+       * into "not available", which is all a signup form can act on anyway.
+       *
+       * Passing the CALLER's uid (or "" when unauthenticated) preserves the owner
+       * exemption: someone checking whether they can take their own just-released handle
+       * back is correctly told yes.
+       */
+      if (!exists && type === "username") {
+        try {
+          await assertUsernameNotOnHold(env, c.get("user")?.uid ?? "", value);
+        } catch {
+          exists = true;
+        }
+      }
+
       return c.json({ exists });
     }
 

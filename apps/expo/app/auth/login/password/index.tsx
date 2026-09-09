@@ -35,6 +35,7 @@ import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useToast } from "@/src/components/toast/ToastProvider";
 import { Colors } from '@/constants/theme';
 import { SocialAuthService } from "../../../../src/services/auth/socialAuth";
+import { postAuthDestination } from "@/src/lib/postAuthRedirect";
 
 // Validation Schema
 const loginSchema = z.object({
@@ -115,11 +116,10 @@ export default function PasswordLoginScreen() {
 
       if (userData && (userData.signupCompleted === true || userData.username)) {
           addToast("Login successful!", "success");
-          if (redirect) {
-            router.replace(decodeURIComponent(redirect) as any);
-          } else {
-            router.replace("/home");
-          }
+          // Sanitised rather than used as given: this used to be
+          // `router.replace(decodeURIComponent(redirect))`, so an absolute url in the
+          // query string would navigate off-site from a genuine TopHunt login page.
+          router.replace(postAuthDestination(redirect) as any);
       } else {
           // Profile Incomplete or User Record missing
           signupStore.reset();
@@ -149,11 +149,11 @@ export default function PasswordLoginScreen() {
   const handleSocialLogin = async (provider: string) => {
     try {
         if (provider === "Google") {
-            await SocialAuthService.googleLogin(router, addToast);
+            await SocialAuthService.googleLogin(router, addToast, redirect);
         } else if (provider === "Facebook") {
-            await SocialAuthService.facebookLogin(router, addToast);
+            await SocialAuthService.facebookLogin(router, addToast, redirect);
         } else if (provider === "Apple") {
-            await SocialAuthService.appleLogin(router, addToast);
+            await SocialAuthService.appleLogin(router, addToast, redirect);
         }
     } catch (error) {
         // Handled in service

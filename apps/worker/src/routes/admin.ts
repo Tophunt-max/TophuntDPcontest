@@ -75,7 +75,7 @@ import {
 import { fetchExternalImage } from "../lib/safeFetch";
 import { enforceAdminIdempotency } from "../lib/idempotency";
 import { registerIntegrationRoutes } from "./integrations";
-import { assertIdentifiersAvailable, validateUsername } from "../lib/userIdentifiers";
+import { assertIdentifiersAvailable, recordUsernameTransition, validateUsername } from "../lib/userIdentifiers";
 import { computeDeepHealth } from "../lib/health";
 import { computeMoneyHealth } from "../lib/moneyHealth";
 import { cronHealth } from "../lib/ops";
@@ -3500,6 +3500,22 @@ adminRoute.patch("/users/:id/profile", async (c) => {
     set.username = validateUsername(b.username);
     // And it must still be globally unique.
     await assertIdentifiersAvailable(c.env, id, { username: set.username });
+
+    /**
+     * An admin rename releases a handle exactly like a self-service one, so it has to
+     * be recorded exactly like one.
+     *
+     * Without this the old handle is freed with NO hold and NO redirect — and this
+     * endpoint is how support renames the accounts most worth impersonating. A creator
+     * whose handle is on posters and in bios gets renamed here, and the name is
+     * claimable by anyone in the next second, inheriting all of that traffic.
+     */
+    const cur = await db
+      .select({ username: schema.users.username })
+      .from(schema.users)
+      .where(eq(schema.users.uid, id))
+      .get();
+    await recordUsernameTransition(c.env, id, cur?.username ?? null, set.username);
   }
   if (b.bio !== undefined) {
     const bio = String(b.bio);
