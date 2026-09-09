@@ -278,11 +278,20 @@ describe('users.extra cannot shadow a real column', () => {
     // And none of it was smuggled into `extra` either.
     expect(row?.extra ?? {}).toEqual({});
 
-    const profile = await read(env, 'bob', '/users/alice');
-    expect(profile.body.verified).toBe(false);
-    expect(profile.body.dpcoin).toBe(0);
-    expect(profile.body.role).toBe('user');
-    expect(profile.body.followersCount).toBe(0);
+    // Read back as a STRANGER: the two public fields the exploit targeted are
+    // truthful, and `dpcoin`/`role` are not disclosed to a stranger at all — a
+    // strictly stronger outcome than serving the correct value.
+    const asStranger = await read(env, 'bob', '/users/alice');
+    expect(asStranger.body.verified).toBe(false);
+    expect(asStranger.body.followersCount).toBe(0);
+    expect(asStranger.body.dpcoin).toBeUndefined();
+    expect(asStranger.body.role).toBeUndefined();
+
+    // Read back as the OWNER, who does receive them: the claims did not stick.
+    const asOwner = await read(env, 'alice', '/users/alice');
+    expect(asOwner.body.dpcoin).toBe(0);
+    expect(asOwner.body.role).toBe('user');
+    expect(asOwner.body.verified).toBe(false);
   });
 
   it('still merges genuine extra fields into the profile', async () => {
@@ -315,13 +324,23 @@ describe('users.extra cannot shadow a real column', () => {
     });
     await seedUser(env, 'bob');
 
-    const profile = await read(env, 'bob', '/users/alice');
+    // A stranger: the public field the blob tried to forge is truthful, the private
+    // ones it tried to forge are not served at all, and the legitimate social key in
+    // the same blob still comes through.
+    const asStranger = await read(env, 'bob', '/users/alice');
+    expect(asStranger.body.verified).toBe(false);
+    expect(asStranger.body.facebook).toBe('fb.alice');
+    expect(asStranger.body.dpcoin).toBeUndefined();
+    expect(asStranger.body.email).toBeUndefined();
 
-    expect(profile.body.verified).toBe(false);
-    expect(profile.body.dpcoin).toBe(5);
-    expect(profile.body.email).toBe('alice@example.com');
-    // The legitimate key in the same blob still comes through.
-    expect(profile.body.facebook).toBe('fb.alice');
+    // The owner, who does receive the private fields, gets the COLUMN values rather
+    // than the blob's — which is the neutralisation this test exists for. Note the
+    // forged `email` is the interesting one: it is the field an attacker would most
+    // want to control, since a wrong address is where a password reset would go.
+    const asOwner = await read(env, 'alice', '/users/alice');
+    expect(asOwner.body.dpcoin).toBe(5);
+    expect(asOwner.body.email).toBe('alice@example.com');
+    expect(asOwner.body.verified).toBe(false);
   });
 });
 
@@ -866,16 +885,32 @@ describe('the account holder is told', () => {
    * The public profile is served from a shared KV entry, so without invalidation
    * the old address kept being handed out until the TTL lapsed.
    */
-  it('drops the cached profile so the old address stops being served', async () => {
+  it('never serves a stale address, because it never serves the address at all', async () => {
+    // This test used to warm the shared profile cache as `bob`, change alice's email,
+    // and assert bob then saw the NEW address. It passed, but it was asserting the
+    // wrong thing: that a stranger receives alice's email address, stale or otherwise.
+    //
+    // `/read/users/:id` now projects an allow-list, so an address cannot go stale in a
+    // shared entry for the simple reason that it is never in one. The owner's own read
+    // is uncached, so it is always current. Both halves are asserted here, because
+    // together they are what makes the original staleness unreachable rather than
+    // merely unlikely.
     const { env } = makeEnv();
     await seedUser(env, 'alice');
     await seedUser(env, 'bob');
 
-    await read(env, 'bob', '/users/alice'); // warm the cache
+    await read(env, 'bob', '/users/alice'); // warm the shared entry, as before
     await auth(env, 'alice', 'sendEmailOtp', { newEmail: 'new@example.com' });
     await auth(env, 'alice', 'verifyEmailOtp', { otp: lastEmailCode() });
 
-    const profile = await read(env, 'bob', '/users/alice');
-    expect(profile.body.email).toBe('new@example.com');
+    // The owner sees the change immediately — this is the screen that has to be right.
+    const asOwner = await read(env, 'alice', '/users/alice');
+    expect(asOwner.body.email).toBe('new@example.com');
+
+    // A stranger never had it, before or after, warm cache or cold.
+    const asStranger = await read(env, 'bob', '/users/alice');
+    expect(asStranger.body.email).toBeUndefined();
+    // ...and still gets a usable profile.
+    expect(asStranger.body.username).toBe('alice');
   });
 });

@@ -1769,6 +1769,50 @@ readRoute.get("/coin-packages", async (c) =>
 );
 
 // ================= USERS =================
+/**
+ * Degrade a stored lat/lng to roughly a 1 km grid before it leaves the server.
+ *
+ * ---------------------------------------------------------------------------
+ * Why this exists
+ * ---------------------------------------------------------------------------
+ * `/read/users/suggested` hands the client a batch of accounts and the client sorts
+ * them by distance (`fetchSuggestedUsers` in apps/expo/src/services/users.ts). To do
+ * that it was given each account's EXACT stored coordinates — full precision, up to
+ * 50 accounts per call, on an `optionalAuth` endpoint that needs no token at all.
+ *
+ * Exact coordinates plus a username is a home address. That is a more serious
+ * disclosure than the email and phone this file's profile projection just removed,
+ * and it was harder to notice because the field is explicitly selected rather than
+ * spread, so it reads as intentional.
+ *
+ * Two decimal places is ~1.1 km at the equator and less further from it. Enough for
+ * "who is nearest" to keep producing a sensible order within a city, not enough to
+ * place anyone at a building.
+ *
+ * ---------------------------------------------------------------------------
+ * What this does NOT fix
+ * ---------------------------------------------------------------------------
+ * A ~1 km cell still discloses a neighbourhood, and the honest fix is for the client
+ * to send its OWN coordinate and the server to sort and return no coordinates at
+ * all. That needs a client release to be useful, and old installs would silently
+ * lose proximity ordering in the meantime, so it is deliberately not done here.
+ * Coarsening is the part that can ship on the server alone, today, without changing
+ * a single response field or breaking a build already in users' hands.
+ *
+ * Unparseable or absent input returns null, which the client already handles — it
+ * sorts accounts with no coordinate to the end.
+ */
+function coarseCoordinates(value: unknown): { lat: number; lng: number } | null {
+  if (!value || typeof value !== "object") return null;
+  const { lat, lng } = value as { lat?: unknown; lng?: unknown };
+  const nLat = Number(lat);
+  const nLng = Number(lng);
+  if (!Number.isFinite(nLat) || !Number.isFinite(nLng)) return null;
+  // Round rather than truncate, so the cell a point falls into is the nearest one
+  // rather than always the one to the south-west.
+  return { lat: Math.round(nLat * 100) / 100, lng: Math.round(nLng * 100) / 100 };
+}
+
 readRoute.get("/users/suggested", optionalAuth, async (c) => {
   const db = getDb(c.env);
   const uid = c.get("user")?.uid;
@@ -1799,7 +1843,7 @@ readRoute.get("/users/suggested", optionalAuth, async (c) => {
   // Safety net for a viewer past SQL_EXCLUSION_MAX, where the clause above only
   // covers part of the set.
   const visible = exclusionTruncated(hidden) ? excludeHiddenBy(rows as any[], hidden, (r: any) => r.id) : rows;
-  return c.json(visible);
+  return c.json(visible.map((r: any) => ({ ...r, coordinates: coarseCoordinates(r.coordinates) })));
 });
 
 readRoute.get("/users/search", optionalAuth, async (c) => {
@@ -1833,6 +1877,104 @@ readRoute.get("/users/search", optionalAuth, async (c) => {
   const visible = exclusionTruncated(blocked) ? excludeHiddenBy(rows as any[], blocked, (r: any) => r.id) : rows;
   return c.json(visible);
 });
+
+/**
+ * Everything a profile shows to SOMEONE ELSE. An explicit allow-list.
+ *
+ * ---------------------------------------------------------------------------
+ * Why an allow-list, and what was wrong before
+ * ---------------------------------------------------------------------------
+ * This endpoint used to answer with the whole `users` row minus `fcmTokens`. That
+ * is one line of code and a large amount of personal data: `email`, `phone`,
+ * `dob`, `gender`, `occupation`, `coordinates` (a location), `dpcoin` (a wallet
+ * balance), `role`, `isBlocked`, `authProvider`, `referralCode`,
+ * `notificationPrefs`, `streak`, `lastDailyClaim`. The endpoint is `optionalAuth`,
+ * so no token was needed, and uids are enumerable through `/read/users/search` and
+ * `/read/users/suggested`.
+ *
+ * The exact shape of the same mistake was already fixed once in this file, on
+ * `/read/app-config`, which used to project the whole settings document: "It now
+ * projects an explicit allow-list. New settings are private unless they are
+ * deliberately added here." This is that lesson applied to the `users` row, and it
+ * matters more here, because a new column lands in this table far more often than a
+ * new key lands in `appConfig`.
+ *
+ * DENY-lists were rejected for that reason. A deny-list is only correct until the
+ * next migration; an allow-list makes a new column private BY DEFAULT and forces
+ * whoever adds it to decide. `test/userProfilePrivacy.test.ts` additionally fails if
+ * a new `users` column appears that has not been classified either way, so the
+ * decision cannot be skipped by simply not thinking about it.
+ *
+ * ---------------------------------------------------------------------------
+ * How this list was chosen
+ * ---------------------------------------------------------------------------
+ * Every entry is a field the Expo client actually renders for another person —
+ * audited against `ProfileHeader` (identity, badges, counters), `ProfileTabs`
+ * (`isPrivate`) and `profile/connections` (`following`). Notably ABSENT is
+ * `dpcoin`: the wallet card that reads it is wrapped in `{isOwnProfile && (...)}`
+ * (apps/expo/app/profile/index.tsx), so no other viewer has ever displayed it.
+ *
+ * `status` is here only because the post-cache guard below reads it. The only values
+ * it can carry out to a caller are "active" or absent — a hidden account answers
+ * `null` — so it discloses nothing.
+ */
+export const PUBLIC_PROFILE_FIELDS = [
+  // Identity.
+  "uid",
+  "username",
+  "fullName",
+  "profileImageUrl",
+  "profileImageUrlThumb",
+  "bio",
+  // Badges and progression — the profile header renders all of these.
+  "verified",
+  "featured",
+  "badges",
+  "equippedBadge",
+  "xp",
+  "level",
+  // Counters.
+  "followersCount",
+  "followingCount",
+  "postsCount",
+  // Contest record. Already public on `/read/leaderboard`, which serves the same
+  // numbers for the top N without any viewer check at all.
+  "wins",
+  "monthlyWins",
+  "totalVotesReceived",
+  "contestsJoined",
+  // The tab strip hides content for a private account.
+  "isPrivate",
+  // The target's OWN follow list. Filtered per viewer afterwards by `forViewer`.
+  "following",
+  // Social links. These live in `extra` and are merged to the top level, so they
+  // have to be named individually — and naming them is also what stops any OTHER
+  // key a client shoved into `extra` from reaching a stranger.
+  "website",
+  "facebook",
+  "twitter",
+  "instagram",
+  // Joined-at, shown on the profile.
+  "createdAt",
+  // Internal: read by the hidden-account guard below. See the note above.
+  "status",
+] as const;
+
+/**
+ * Project a full profile row down to `PUBLIC_PROFILE_FIELDS`.
+ *
+ * Absent keys are skipped rather than emitted as `undefined`, so the response shape
+ * for a field the row does not have is unchanged from before this projection
+ * existed (`JSON.stringify` drops `undefined`, but skipping keeps object identity
+ * checks on the client honest too).
+ */
+function publicProfile(full: Record<string, any>): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const field of PUBLIC_PROFILE_FIELDS) {
+    if (full[field] !== undefined) out[field] = full[field];
+  }
+  return out;
+}
 
 readRoute.get("/users/:id", optionalAuth, async (c) => {
   const id = c.req.param("id");
@@ -1872,15 +2014,17 @@ readRoute.get("/users/:id", optionalAuth, async (c) => {
     if (rel.blocked.includes(id)) return c.json(null);
   }
 
-  // The public profile is viewer-agnostic (target user's own data + their following
-  // list), so it's safe to share one cached copy across all callers. The app polls this
-  // heavily, so a short shared cache saves a lot of D1 reads. Purged when the user
-  // edits their profile, when an admin edits it, on an identifier change and on
-  // deletion (see `purgeShared` / `invalidateUserCaches`) — immediately in the colo
-  // that made the change, and within the ttl elsewhere. Follower counts may lag by
-  // <=TTL.
+  // Two paths from here, and the split is the privacy boundary:
+  //
+  //   viewer === id  → the full row, uncached, never shared.
+  //   otherwise      → `PUBLIC_PROFILE_FIELDS` only, from one shared cache entry.
+  //
+  // The shared entry is purged when the user edits their profile, when an admin edits
+  // it, on an identifier change and on deletion (see `purgeShared` /
+  // `invalidateUserCaches`) — immediately in the colo that made the change, and within
+  // the ttl elsewhere. Follower counts may lag by <=TTL.
   /**
-   * Last per-viewer pass over the SHARED cached copy.
+   * Last per-viewer pass, applied to whichever payload the paths below produced.
    *
    * `following` is the target's own follow list and is part of the cached,
    * viewer-agnostic payload — so it can name accounts this particular viewer has
@@ -1907,88 +2051,96 @@ readRoute.get("/users/:id", optionalAuth, async (c) => {
   };
 
   /**
-   * An account that is pending deletion, or already anonymised, reads as "does
-   * not exist" to everyone but its owner.
+   * The full profile row, as the account's owner is entitled to see it.
    *
-   * Null rather than an error or an empty profile, matching how a block is
-   * handled above: any other answer distinguishes "deleted" from "never existed",
-   * and the owner is the only person entitled to know which.
-   *
-   * The owner still gets the real row, because the app needs it to render the
-   * "scheduled for deletion — cancel?" screen, and that screen is the only way
-   * back from a deletion the user did not mean to start.
-   *
-   * Checked on the CACHED copy too, and used to suppress the cache WRITE. The
-   * shared entry is keyed only by uid, so without the write guard the owner's own
-   * fetch would publish a hidden account's profile for every other viewer to
-   * read — the request path invalidates this key, but re-populating it here would
-   * undo that immediately.
+   * Shared by both paths below so the two can never disagree about how a profile is
+   * assembled — only about how much of it is handed out.
    */
-  const hiddenAccount = (profile: any): boolean =>
-    viewer !== id && isHiddenAccountStatus(profile?.status);
+  const loadFullProfile = async (): Promise<Record<string, any> | null> => {
+    const db = getDb(c.env);
+    const row = await db.select().from(schema.users).where(eq(schema.users.uid, id)).get();
+    if (!row) return null;
 
-  /**
-   * The shared, viewer-agnostic profile.
-   *
-   * WRAPPED in `{ profile }` because the loader must be able to say "no such user"
-   * without that being read as a cache miss — a bare null is indistinguishable from
-   * one (see `cachedJson`).
-   *
-   * ---------------------------------------------------------------------------
-   * Why this is edge-only, and why 30s is now real
-   * ---------------------------------------------------------------------------
-   * The payload spreads the whole `users` row, so it carries `dpcoin`, `xp`,
-   * `streak` and `lastDailyClaim`, and this is the endpoint the app reads a BALANCE
-   * from. None of the ~15 coin-mutating paths invalidate it: the match entry fee,
-   * the daily reward, the rewarded-ad credit, the task claim, the Razorpay top-up,
-   * the withdrawal debit, admin wallet adjustments and deposit approvals,
-   * settlement, payouts and the cron prize sweep. So the TTL is the only thing
-   * bounding how long a user sees a stale balance after paying.
-   *
-   * That is why it was set to 30s — and why it mattered that KV could not deliver
-   * 30s. `cachePutJson` clamps anything under 60s up to 60s, so this cache was
-   * serving twice the staleness its own comment argued for, on the number the same
-   * comment says "reads as a lost payment" when it grows. Edge-only honours the 30s
-   * literally, and costs no KV write at all instead of ~1,440/day per hot profile.
-   */
-  const key = userCacheKey(id);
-  const { profile } = await cachedJson<{ profile: any | null }>(c, {
-    key,
+    const { fcmTokens, ...columns } = row as any;
+    /**
+     * Merge `extra` UNDER the real columns, never over them.
+     *
+     * `extra` is a free-form JSON blob holding the fields with no column of their
+     * own (facebook/twitter/instagram). It is written from whatever `updateProfile`
+     * did not recognise — so this merge used to be `Object.assign(safe, safe.extra)`,
+     * letting a key that happened to share a column's name OVERWRITE that column in
+     * the response. A user could set `{verified: true}` and read back a verified
+     * badge; the same trick covered `dpcoin`, `role`, `followersCount`, `status` and
+     * `email`. The database was never wrong, which is why nobody noticed — the API
+     * simply served the account's own claims about itself as fact, including into the
+     * shared cache, where other viewers would read them too.
+     *
+     * `updateProfile` now refuses to put column names in `extra` at all, and the
+     * public projection below names the `extra` keys it will pass on — so an
+     * unrecognised one cannot reach a stranger even if it is stored.
+     */
+    const safe: any =
+      columns.extra && typeof columns.extra === "object"
+        ? { ...columns.extra, ...columns }
+        : columns;
+    // expose following[] (list of uids) for screens that expect it
+    const following = await db.select({ id: schema.follows.followingId }).from(schema.follows).where(eq(schema.follows.followerId, row.uid)).all();
+    safe.following = following.map((f) => f.id);
+    safe.profileImageUrlThumb = avatarUrl(c.env, safe.profileImageUrl);
+    return safe;
+  };
+
+  // ---------------------------------------------------------------------------
+  // THE OWNER'S OWN PROFILE — full row, and never cached.
+  // ---------------------------------------------------------------------------
+  //
+  // This is the request that legitimately needs `email`, `phone`, `dpcoin` and the
+  // rest: the wallet screens read the balance from here, the edit screen reads the
+  // contact details, and `role` is what the client turns into `isAdmin`.
+  //
+  // Uncached, which is a deliberate improvement rather than a cost. This payload
+  // carries a WALLET BALANCE that none of the ~15 coin-mutating paths invalidate —
+  // the match entry fee, the daily reward, the rewarded-ad credit, the task claim,
+  // the Razorpay top-up, the withdrawal debit, admin wallet adjustments and deposit
+  // approvals, settlement, payouts and the cron prize sweep. While it was served
+  // from a shared cache, a user who had just paid an entry fee or bought coins could
+  // see a stale balance for the whole TTL, which in a coin app reads as a lost
+  // payment. Reading their own row directly removes that window entirely: one
+  // indexed lookup by primary key, and the balance is always current.
+  //
+  // It also means the shared entry below can never contain anyone's private fields,
+  // because the only request that produces them does not write to it.
+  if (viewer === id) {
+    const own = await loadFullProfile();
+    if (!own) return c.json(null);
+    c.header("Cache-Control", "private, no-store");
+    return c.json(await forViewer(own));
+  }
+
+  // ---------------------------------------------------------------------------
+  // SOMEONE ELSE'S PROFILE — public projection, shared cache.
+  // ---------------------------------------------------------------------------
+  //
+  // Also the path an UNAUTHENTICATED caller takes, which is the one that mattered
+  // most: `optionalAuth` means `viewer` can be undefined, so before this projection
+  // existed a bare `GET /read/users/<uid>` with no token at all returned a stranger's
+  // email, phone and location.
+  //
+  // WRAPPED in `{ profile }` because the loader must be able to say "no such user"
+  // without that being read as a cache miss — a bare null is indistinguishable from
+  // one (see `cachedJson`).
+  //
+  // Edge-only at 30s. That 30s is now real: `cachePutJson` clamps anything under 60s
+  // up to 60s, so on KV this entry served twice the staleness its own comment argued
+  // for, and it cost ~1,440 KV writes/day per hot profile against a 1,000/day budget
+  // for the whole Worker.
+  const { profile } = await cachedJson<{ profile: Record<string, any> | null }>(c, {
+    key: userCacheKey(id),
     edgeTtlSec: READ_CACHE_TTLS.userProfile.edge,
     kvTtlSec: READ_CACHE_TTLS.userProfile.kv,
     load: async () => {
-      const db = getDb(c.env);
-      const row = await db.select().from(schema.users).where(eq(schema.users.uid, id)).get();
-      if (!row) return { profile: null };
-
-      const { fcmTokens, ...columns } = row as any;
-      /**
-       * Merge `extra` UNDER the real columns, never over them.
-       *
-       * `extra` is a free-form JSON blob holding the fields with no column of their
-       * own (facebook/twitter/instagram). It is written from whatever
-       * `updateProfile` did not recognise — so this merge used to be
-       * `Object.assign(safe, safe.extra)`, letting a key that happened to share a
-       * column's name OVERWRITE that column in the response. A user could set
-       * `{verified: true}` and read back a verified badge; the same trick covered
-       * `dpcoin`, `role`, `followersCount`, `status` and `email`. The database was
-       * never wrong, which is why nobody noticed — the API simply served the
-       * account's own claims about itself as fact, including into the shared cache
-       * below, where other viewers would read them too.
-       *
-       * `updateProfile` now refuses to put column names in `extra` at all. This is
-       * the second half of that fix, and the half that also neutralises every row
-       * already carrying a poisoned blob.
-       */
-      const safe: any =
-        columns.extra && typeof columns.extra === "object"
-          ? { ...columns.extra, ...columns }
-          : columns;
-      // expose following[] (list of uids) for screens that expect it
-      const following = await db.select({ id: schema.follows.followingId }).from(schema.follows).where(eq(schema.follows.followerId, row.uid)).all();
-      safe.following = following.map((f) => f.id);
-      safe.profileImageUrlThumb = avatarUrl(c.env, safe.profileImageUrl);
-      return { profile: safe };
+      const full = await loadFullProfile();
+      return { profile: full ? publicProfile(full) : null };
     },
     /**
      * Two things must never enter the shared entry.
@@ -1996,20 +2148,26 @@ readRoute.get("/users/:id", optionalAuth, async (c) => {
      * A MISSING user, because `id` comes straight off the url on an endpoint any
      * caller can hit, so caching negatives hands out one entry per invented uid.
      *
-     * A HIDDEN account (pending deletion / anonymised), because this entry is keyed
-     * only by uid: without the guard the OWNER's own fetch — the one request
-     * entitled to see it — would publish that profile for every other viewer to
-     * read, immediately undoing the invalidation the deletion request performed.
+     * A HIDDEN account (pending deletion / anonymised), so that a request arriving
+     * between the deletion and its invalidation cannot re-publish the entry the
+     * deletion just purged.
      */
     skipCache: ({ profile: p }) => p === null || isHiddenAccountStatus(p.status),
   });
 
   if (!profile) return c.json(null);
+
+  /**
+   * An account that is pending deletion, or already anonymised, reads as "does not
+   * exist" to everyone but its owner — and the owner already returned above.
+   *
+   * Null rather than an error or an empty profile, matching how a block is handled
+   * at the top of this handler: any other answer distinguishes "deleted" from "never
+   * existed", and the owner is the only person entitled to know which.
+   */
   if (isHiddenAccountStatus(profile.status)) {
-    // Never storable by an intermediary, whether this is the owner's own
-    // pending-deletion view or a stranger's "does not exist" answer.
     c.header("Cache-Control", "private, no-store");
-    if (hiddenAccount(profile)) return c.json(null);
+    return c.json(null);
   }
   return c.json(await forViewer(profile));
 });
