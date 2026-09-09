@@ -10,26 +10,30 @@ import { delCache, kvWritesDisabled } from "./cache";
 /**
  * KV lifetime.
  *
- * Raised from 60s, which is where the write saving comes from. Freshness does NOT
- * depend on the ttl — every admin write calls `invalidateSetting`, which DELETES
- * the key, and a KV delete is visible to every isolate. So the ttl is only a
- * backstop against a missed invalidation, and at 60s it was an expensive one:
- * `getAppConfig` / `getGamificationSettings` are called from 14 places including
- * the feed ranker and `/app-config` (which the app polls hard), so the key was
- * re-written up to 1,440 times a day per settings id purely to re-cache a blob
- * that had not changed. At 600s that is ~144.
+ * Raised 60s -> 600s -> 1800s, and that is where the write saving comes from.
+ * Freshness does NOT depend on the ttl — every admin write calls
+ * `invalidateSetting`, which DELETES the key, and a KV delete is visible to every
+ * isolate and colo. So the ttl is only a backstop against a missed invalidation, and
+ * at 60s it was an expensive one: `getAppConfig` / `getGamificationSettings` are
+ * called from 14 places including the feed ranker and `/app-config` (which the app
+ * polls hard), so the key was re-written up to 1,440 times a day per settings id
+ * purely to re-cache a blob that had not changed. At 600s that was ~144, and at
+ * 1800s it is ~48 — across `appConfig`, `gamification` and `seoAudit`, ~144/day in
+ * total rather than ~4,300.
  *
- * NOT memoised in isolate memory, deliberately, even though this is the hottest
- * read in the Worker. Isolate memory cannot be invalidated from another isolate,
- * and `appConfig` carries `payoutsFrozen` — the emergency switch that blocks all
- * new payout requests during a suspected-fraud incident. An in-memory copy would
- * mean that switch takes effect everywhere except the isolates already serving
- * traffic, for as long as its ttl. Since the write saving comes from the ttl above
- * and NOT from memoising, a memo here would buy KV reads (which sit at under 1% of
- * their quota) at the price of delaying a fraud kill-switch. That is not a trade
- * worth making.
+ * NOT moved to the Cache API or to isolate memory, and NOT for lack of trying —
+ * `appConfig` carries `payoutsFrozen`, the emergency switch that blocks all new
+ * payout requests during a suspected-fraud incident. Both of those tiers are
+ * unpurgeable from anywhere but the isolate/colo that wrote them, so either would
+ * mean the kill-switch takes effect everywhere EXCEPT the machines already serving
+ * traffic, for as long as its ttl. A fraud switch that is live in one colo is not a
+ * switch. KV's globally-visible delete is exactly the property this needs, so this
+ * cache stays on KV by design and pays for it with a long backstop instead.
+ *
+ * (The same argument, in the same words, applies to `cache:blocks:*` — see
+ * lib/blocks.ts.)
  */
-const CACHE_TTL = 600;
+const CACHE_TTL = 1800;
 
 async function readSetting(env: Env, id: string): Promise<any> {
   const cacheKey = `settings:${id}`;

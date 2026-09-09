@@ -551,7 +551,7 @@ authRoute.post("/", async (c) => {
     case "verifyEmailOtp": {
       if (!uid) throw httpsError("unauthenticated", "User must be logged in.");
       await rateLimit(env, `emailotpverify:${uid}`, 20, 3600, { failClosed: true });
-      const { email, verifyOnly } = await confirmEmailChange(env, uid, body.otp);
+      const { email, verifyOnly } = await confirmEmailChange(env, uid, body.otp, c);
       return c.json({ success: true, email, verifyOnly });
     }
 
@@ -563,7 +563,7 @@ authRoute.post("/", async (c) => {
     case "verifyPhoneOtp": {
       if (!uid) throw httpsError("unauthenticated", "User must be logged in.");
       await rateLimit(env, `phoneotpverify:${uid}`, 20, 3600, { failClosed: true });
-      const { phone, verifyOnly } = await confirmPhoneChange(env, uid, body.otp);
+      const { phone, verifyOnly } = await confirmPhoneChange(env, uid, body.otp, c);
       return c.json({ success: true, phone, verifyOnly });
     }
 

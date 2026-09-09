@@ -11,6 +11,7 @@
 import { jwtVerify, createLocalJWKSet, type JSONWebKeySet } from "jose";
 import type { Env, AuthUser } from "../types";
 import { httpsError } from "./http";
+import { memoGet, memoPut } from "./memo";
 
 const JWKS_URL =
   "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com";
@@ -21,9 +22,64 @@ interface CachedJwks {
   expiresAt: number;
 }
 
+/**
+ * Google's public keys, with an isolate memo in front of the KV cache.
+ *
+ * This is the hottest KV READ in the Worker: it runs for EVERY authenticated
+ * request, on a value that changes roughly once a day. Keeping it in KV alone meant
+ * one KV read per request forever — reads are the cheaper quota, but "once per
+ * request" is the wrong order of magnitude for a value this static, and it sat on
+ * the critical path of every sign-in.
+ *
+ * Safe to memoise for the same reason the access token is (see lib/firebaseAdmin.ts):
+ * the memo TTL is derived from the expiry the endpoint itself advertised, so the
+ * isolate copy can never outlive what KV would have returned. Note what this does
+ * NOT do — it does not decide whether anyone is allowed anything. `jwtVerify` still
+ * runs in full against these keys on every single request, and a token signed by a
+ * rotated-out key fails verification whether the key set came from memory or not.
+ */
 async function getJwks(env: Env): Promise<JSONWebKeySet> {
+  const memoised = memoGet<JSONWebKeySet>(JWKS_KV_KEY);
+  if (memoised) return memoised;
+
+  // Concurrent requests would each miss the memo and each read KV, so the in-flight
+  // fetch is shared. On a cold isolate taking a burst of traffic that is the
+  // difference between one KV read and one per request.
+  //
+  // The rejection path is NOT optional. The shared promise was created inside another
+  // request's I/O context: `workerd` restricts using it from a different request, and
+  // if the originating request is cancelled (client disconnect, or it simply returns
+  // first) the pending subrequest is cancelled and this await rejects. Propagating that
+  // would mean `verifyIdToken` throwing — a 401 on a perfectly valid token, caused by
+  // an unrelated request going away. So a failed borrow falls back to doing the work
+  // ourselves, at the cost of one extra KV read in a rare case, on the quota that was
+  // never the scarce one.
+  const shared = inflightJwks;
+  if (shared) {
+    try {
+      return await shared;
+    } catch {
+      /* borrow failed — fetch our own below */
+    }
+  }
+
+  const own = fetchJwks(env);
+  inflightJwks = own;
+  try {
+    return await own;
+  } finally {
+    // Only clear if nothing newer has taken the slot.
+    if (inflightJwks === own) inflightJwks = null;
+  }
+}
+
+/** Shared in-flight key-set fetch for this isolate. See `getJwks`. */
+let inflightJwks: Promise<JSONWebKeySet> | null = null;
+
+async function fetchJwks(env: Env): Promise<JSONWebKeySet> {
   const cached = await env.CACHE_KV.get<CachedJwks>(JWKS_KV_KEY, "json");
   if (cached && cached.expiresAt > Date.now()) {
+    memoPut(JWKS_KV_KEY, cached.keys, Math.floor((cached.expiresAt - Date.now()) / 1000));
     return cached.keys;
   }
 
@@ -36,6 +92,10 @@ async function getJwks(env: Env): Promise<JSONWebKeySet> {
   const maxAgeMatch = cacheControl.match(/max-age=(\d+)/);
   const maxAge = maxAgeMatch ? parseInt(maxAgeMatch[1], 10) : 3600;
   const payload: CachedJwks = { keys, expiresAt: Date.now() + maxAge * 1000 };
+  // Memoised regardless of whether the KV write below succeeds, so a Worker that
+  // has exhausted its KV write quota still refetches these once per isolate rather
+  // than once per authenticated request.
+  memoPut(JWKS_KV_KEY, keys, maxAge);
 
   // Cache the keys, but NEVER let a KV write failure (e.g. the daily put()
   // quota being exhausted) break token verification — we already have the keys

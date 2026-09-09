@@ -219,6 +219,24 @@ name = "tophunt-api-staging"
 # repoint the production API hostname at the staging Worker — pointing real
 # users' traffic at the staging database. Staging is reached on its
 # workers.dev host instead.
+#
+# CONSEQUENCE WORTH KNOWING, now that the read caches are edge-only (lib/edgeCache.ts):
+# the Cloudflare Cache API only does real work for a Worker on a CUSTOM DOMAIN, so with
+# no route here staging has NO shared read cache at all — every request to every cached
+# endpoint recomputes from D1. Two things follow:
+#
+#   1. Staging's D1 read volume is higher than production's by whatever the cache hit
+#      rate is. Fine for a low-traffic environment, and the queries are indexed and
+#      small, but it is not a like-for-like performance rehearsal.
+#   2. Cache behaviour and the colo-local invalidation tails CANNOT be exercised here.
+#      A staging pass proves correctness-without-cache; it does not prove that a purge
+#      reaches the right entry. That is what apps/worker/test/edgeCache.test.ts is for,
+#      since it installs a Cache API stub that really stores.
+#
+# Giving staging its own hostname on the zone (e.g. a `staging-api.tophunt.in` custom
+# domain) would restore both. Deliberately not done here: it is a DNS/zone change, and
+# the existing comment's warning about `routes` inheritance is the reason to be careful
+# with this key at all.
 routes = []
 
 [[env.staging.d1_databases]]

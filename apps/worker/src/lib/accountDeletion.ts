@@ -14,6 +14,7 @@ import {
   followingCacheKey,
   userCacheKey,
 } from "./cache";
+import { purgeShared, type EdgeCtx } from "./edgeCache";
 import { getAppConfig } from "./settings";
 import { publish } from "./publish";
 import { sendEmail } from "./email";
@@ -307,6 +308,8 @@ export async function requestAccountDeletion(
   env: Env,
   uid: string,
   opts: { reason?: string; source?: "app" | "web" | "admin" } = {},
+  /** Request context, so the cache purge reaches this colo. See `invalidateUserCaches`. */
+  c?: EdgeCtx,
 ): Promise<RequestDeletionResult> {
   const db = getDb(env);
   const eligibility = await checkDeletionEligibility(env, uid);
@@ -369,7 +372,7 @@ export async function requestAccountDeletion(
   ]);
 
   // Out of every public listing and cached profile from this moment on.
-  await invalidateUserCaches(env, uid);
+  await invalidateUserCaches(env, [uid], c);
 
   // Confirm by email, with the date the deletion can still be cancelled by. The
   // in-app notice disappears with the account it is attached to, so an email is
@@ -415,7 +418,11 @@ export async function requestAccountDeletion(
  * touching data (`status = 'processing'`) there is nothing left to restore, and
  * pretending otherwise would be the worst possible answer.
  */
-export async function cancelAccountDeletion(env: Env, uid: string): Promise<{ cancelled: boolean }> {
+export async function cancelAccountDeletion(
+  env: Env,
+  uid: string,
+  c?: EdgeCtx,
+): Promise<{ cancelled: boolean }> {
   const db = getDb(env);
   const existing = await db
     .select()
@@ -452,7 +459,7 @@ export async function cancelAccountDeletion(env: Env, uid: string): Promise<{ ca
       .where(eq(schema.users.uid, uid)),
   ]);
 
-  await invalidateUserCaches(env, uid);
+  await invalidateUserCaches(env, [uid], c);
   return { cancelled: true };
 }
 
@@ -1061,7 +1068,10 @@ async function phaseSocial(env: Env, uid: string): Promise<void> {
   await invalidateBlockCache(env, uid, ...staleRelationCaches).catch((e) =>
     console.error("[accountDeletion] block cache invalidation failed", uid, e),
   );
-  await invalidateUserCaches(env, uid, ...counterparties).catch((e) =>
+  // No request context here by construction — this is the cron purge — so the edge
+  // tier converges on its 30s TTL rather than being purged. Recorded as a limit of
+  // this path in `invalidateUserCaches`.
+  await invalidateUserCaches(env, [uid, ...counterparties]).catch((e) =>
     console.error("[accountDeletion] profile cache invalidation failed", uid, e),
   );
 }
@@ -1131,16 +1141,41 @@ export async function purgeDeletedAccountMedia(env: Env, urls: string[]): Promis
 /**
  * Drop every cached view of a user's profile and connection lists.
  *
- * The public profile is served from a shared KV entry, so anonymising the D1 row
- * is not enough on its own — the cache kept serving the real name, photo and bio
- * until its TTL lapsed. Counterparties are included because their follower and
+ * The public profile is served from a SHARED cache entry, so anonymising the D1 row
+ * is not enough on its own — the cache keeps serving the real name, photo and bio
+ * until its TTL lapses. Counterparties are included because their follower and
  * following pages cache a page that named this account.
+ *
+ * ---------------------------------------------------------------------------
+ * Why the context argument is not optional decoration
+ * ---------------------------------------------------------------------------
+ * `cache:user:*` and the connection lists are served from the Cloudflare Cache API
+ * and NOT from KV (see lib/edgeCache.ts). A bare `delCache` therefore deletes a key
+ * nothing reads: the invalidation becomes a no-op and the pre-purge row keeps being
+ * served for the full TTL, in every colo.
+ *
+ * That is not a cosmetic staleness. `/read/users/:id` builds its payload by spreading
+ * the whole `users` row, which includes `email` and `phone`, so a purge whose
+ * invalidation does nothing means a stranger can still read a deleted account's real
+ * name, photo, bio, email and phone number. The read-side `status` guard cannot
+ * intercept it either, because the CACHED copy carries the pre-purge status — which
+ * is exactly why the write guard was always paired with an invalidation rather than
+ * relied on alone.
+ *
+ * So every caller that has a request context MUST pass it. The cron purge genuinely
+ * has none (there is no request, so no origin to derive a cache key from) and is
+ * TTL-bound by construction; that is a recorded limit of the purge path, not an
+ * oversight.
  */
-export async function invalidateUserCaches(env: Env, ...uids: string[]): Promise<void> {
+export async function invalidateUserCaches(
+  env: Env,
+  uids: string[],
+  c?: EdgeCtx,
+): Promise<void> {
   const unique = [...new Set(uids.filter(Boolean))];
   if (!unique.length) return;
-  await delCache(
-    env,
+  await purgeShared(
+    c ?? env,
     ...unique.flatMap((u) => [userCacheKey(u), followersCacheKey(u), followingCacheKey(u)]),
   );
 }

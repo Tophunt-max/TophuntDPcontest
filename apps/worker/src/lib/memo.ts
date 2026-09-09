@@ -32,10 +32,30 @@
  * ---------------------------------------------------------------------------
  * When to reach for this, and when a longer KV ttl is the better tool
  * ---------------------------------------------------------------------------
- * All three callers are in the feed (routes/read.ts): the impression-fatigue map
+ * Three callers are in the feed (routes/read.ts): the impression-fatigue map
  * `feed:seen:{uid}`, the shared candidate pool `cache:matches:cand:…`, and the
- * per-viewer ranked order `cache:feedorder:{uid}:…`. The list is short on purpose,
- * because there is a specific test for whether memoising helps at all.
+ * per-viewer ranked order `cache:feedorder:{uid}:…`.
+ *
+ * Two more are the external-credential caches: `firebase:access_token`
+ * (lib/firebaseAdmin.ts) and `firebase:jwks` (lib/firebaseAuth.ts). Those two are
+ * here to fix READ volume rather than write volume, which is the one case where
+ * that is worth doing:
+ *
+ *   - `firebase:jwks` is read on EVERY authenticated request, for a value Google
+ *     rotates about once a day.
+ *   - `firebase:access_token` was a genuine N+1. Push delivery fans out over a
+ *     user's devices with `tokens.map(t => sendFcmToToken(...))` and each call
+ *     fetched the same token, so one notification to a three-device user cost three
+ *     KV reads — and `drainBroadcastJobs` repeats that for 100 recipients a tick.
+ *
+ * Both are safe here despite the prohibition below because neither is consulted to
+ * decide whether an action is allowed: one is an opaque bearer token Google minted,
+ * the other is a public key set that `jwtVerify` still checks every token against in
+ * full. Crucially, both memo TTLs are derived from the expiry the ISSUER advertised,
+ * so an isolate copy can never outlive what KV would have returned.
+ *
+ * The list is short on purpose, because there is a specific test for whether
+ * memoising helps at all.
  *
  * A KV write happens on a cache MISS. So there are exactly two reasons a cache can
  * be expensive in writes, and only one of them is fixed by memory:
@@ -48,14 +68,19 @@
  *      nothing needs the value to survive the isolate — a miss just recomputes.
  *
  * What memory does NOT fix is a cache that must be SHARED and INVALIDATED. There,
- * the write rate is set by the ttl, so memory saves KV *reads* — which sit under 1%
- * of their quota — and saves zero writes, while costing the ability to invalidate:
- * a KV delete reaches every isolate, an in-memory copy cannot be reached at all.
- * `settings` and `cache:blocks` were both tried here and both reverted to "longer
- * KV ttl + explicit invalidation on write", because memoising them would have
- * delayed an admin config change — including the `payoutsFrozen` fraud
- * kill-switch — and lengthened the window in which a blocked user's content is
- * still served, in exchange for no write saving whatsoever.
+ * the write rate is set by the ttl, so memory saves KV *reads* and saves zero
+ * writes, while costing the ability to invalidate: a KV delete reaches every
+ * isolate, an in-memory copy cannot be reached at all. `settings` and `cache:blocks`
+ * were both tried here and both reverted to "longer KV ttl + explicit invalidation
+ * on write", because memoising them would have delayed an admin config change —
+ * including the `payoutsFrozen` fraud kill-switch — and lengthened the window in
+ * which a blocked user's content is still served, in exchange for no write saving
+ * whatsoever. Those two are now the ONLY read caches left on KV, precisely because
+ * a globally-visible delete is the property they cannot do without.
+ *
+ * The same asymmetry is why the hot read caches moved to the Cloudflare Cache API
+ * rather than being memoised: see lib/edgeCache.ts. An edge tier also saves reads
+ * rather than writes — the fix for writes was to stop writing them to KV at all.
  *
  * ---------------------------------------------------------------------------
  * What must never come through here

@@ -4,8 +4,64 @@ import { eq, sql, inArray } from "drizzle-orm";
 import { importOneUrl } from "./importer";
 import { newId, now } from "./ids";
 
-const PROGRESS_KEY = "blog:import:progress";
 const DOMAIN = "tophunt.in";
+
+/**
+ * Blog-import job progress — a `settings` row, not a KV entry.
+ *
+ * ---------------------------------------------------------------------------
+ * Why this moved off KV
+ * ---------------------------------------------------------------------------
+ * This is JOB STATE, not a cache: it is written to be read back, and losing it
+ * means the import dashboard cannot say how far a run got. It was in `CACHE_KV`
+ * under `blog:import:progress` with a 24h ttl, written once per BATCH from
+ * `processBatch` and again from two admin endpoints — so a single import of a few
+ * thousand URLs produced a burst of hundreds of KV writes against a 1,000/day
+ * budget shared with every cache in the Worker. An import could therefore take the
+ * whole application's caching down for the rest of the day, which is a strange way
+ * for a background job to fail.
+ *
+ * D1 has no comparable write ceiling, and `settings` is already the established
+ * place for a singleton JSON document of exactly this shape (`seoAudit` uses it the
+ * same way). Reads and writes here go STRAIGHT to D1 and deliberately do NOT go
+ * through `readSetting` in lib/settings.ts — that helper caches in KV, which would
+ * reintroduce the writes this removes and serve a stale progress figure besides.
+ */
+export const IMPORT_PROGRESS_SETTING_ID = "blogImportProgress";
+
+/**
+ * How long a progress document stays meaningful.
+ *
+ * Preserves the old KV ttl exactly. A D1 row has no expiry, so without this a
+ * finished run from last month would keep being reported as the current state of
+ * the importer — where the KV version simply vanished. The row is left in place
+ * (harmless, and useful when debugging a failed run); it is just no longer
+ * presented as live.
+ */
+const IMPORT_PROGRESS_MAX_AGE_MS = 86_400_000;
+
+/** Persist the importer's progress document. Overwrites the previous one. */
+export async function writeImportProgress(env: Env, state: Record<string, unknown>): Promise<void> {
+  const ts = now();
+  const data = { ...state, updatedAt: ts };
+  await getDb(env)
+    .insert(schema.settings)
+    .values({ id: IMPORT_PROGRESS_SETTING_ID, data, updatedAt: ts })
+    .onConflictDoUpdate({ target: schema.settings.id, set: { data, updatedAt: ts } })
+    .run();
+}
+
+/** The current progress document, or null when there is none / it has gone stale. */
+export async function readImportProgress(env: Env): Promise<Record<string, unknown> | null> {
+  const row = await getDb(env)
+    .select({ data: schema.settings.data, updatedAt: schema.settings.updatedAt })
+    .from(schema.settings)
+    .where(eq(schema.settings.id, IMPORT_PROGRESS_SETTING_ID))
+    .get();
+  if (!row) return null;
+  if (Number(row.updatedAt) < Date.now() - IMPORT_PROGRESS_MAX_AGE_MS) return null;
+  return (row.data as Record<string, unknown>) ?? null;
+}
 
 async function uniqueBlogSlug(db: any, base: string, ignoreId?: string): Promise<string> {
   let slug = base;
@@ -94,7 +150,7 @@ export async function processBatch(env: Env, urls: string[], state: any) {
     state.done = final;
     const mins = (Date.now() - state.startedAt) / 60000;
     state.speedPerMin = mins > 0 ? +(state.processed / mins).toFixed(1) : 0;
-    await env.CACHE_KV.put(PROGRESS_KEY, JSON.stringify({ ...state, updatedAt: now() }), { expirationTtl: 86400 });
+    await writeImportProgress(env, state);
   };
   await pushState();
 

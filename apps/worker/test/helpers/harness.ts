@@ -284,6 +284,63 @@ if (!(globalThis as any).caches) {
   };
 }
 
+/**
+ * Replace the always-miss `caches` stub with one that REALLY STORES, for the
+ * duration of a test.
+ *
+ * Lives here rather than in one suite because the Cache API is now the app's primary
+ * read cache (lib/edgeCache.ts): any test that wants to observe caching at all —
+ * that an entry is written, that a hit still runs per-viewer authorization, that a
+ * purge clears it — needs a cache that behaves like one. With the default stub every
+ * endpoint recomputes, which is deterministic but means the cache is exercised by
+ * nothing.
+ *
+ * Keyed by request url, which is what the real Cache API does, so the key-derivation
+ * helpers in lib/edgeCache.ts are genuinely under test.
+ *
+ * Call `restore()` in an afterEach — a cache that survives into the next test would
+ * serve one test's response to another's request.
+ */
+export function installEdgeCache() {
+  const store = new Map<string, { body: string; cacheControl: string | null; status: number }>();
+  const previous = (globalThis as any).caches;
+  (globalThis as any).caches = {
+    default: {
+      async match(req: Request) {
+        const hit = store.get(req.url);
+        if (!hit) return undefined;
+        return new Response(hit.body, {
+          status: hit.status,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      },
+      async put(req: Request, res: Response) {
+        store.set(req.url, {
+          body: await res.text(),
+          cacheControl: res.headers.get('Cache-Control'),
+          status: res.status,
+        });
+      },
+      async delete(req: Request) {
+        return store.delete(req.url);
+      },
+    },
+  };
+  return {
+    store,
+    keys: () => [...store.keys()],
+    /** Entry keys carrying a logical cache key, decoded. Excludes url-keyed entries. */
+    logicalKeys: () =>
+      [...store.keys()]
+        .filter((u) => u.includes('/__edge'))
+        .map((u) => decodeURIComponent(new URL(u).searchParams.get('k') || '')),
+    clear: () => store.clear(),
+    restore: () => {
+      (globalThis as any).caches = previous;
+    },
+  };
+}
+
 /** A no-op ExecutionContext that swallows waitUntil rejections. */
 export function fakeCtx() {
   return {

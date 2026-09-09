@@ -56,6 +56,30 @@ const LOOKUP_ENDPOINT = "https://itunes.apple.com/lookup";
 const TIMEOUT_MS = 6000;
 
 /**
+ * Provider-search caching moved OUT of this module to the caller
+ * (routes/read.ts `/music/search`), which caches it at the Cloudflare edge.
+ *
+ * It used to live here on KV, and the key contained the user's raw search text —
+ * an unbounded, caller-controlled key space on the Worker's scarcest quota. One
+ * signed-in user inside the endpoint's own 60/minute limit could mint thousands of
+ * KV writes an hour and take every other cache in the app offline for the day. The
+ * provider result is pure external data, so the edge is the right home for it and
+ * this module is now just the provider client.
+ *
+ * These two helpers are exported so the caller's cache key is derived from the SAME
+ * normalisation the request uses. Otherwise `"  Song "` and `"song"` would be one
+ * outbound call but two cache entries, and `limit=999` would key separately from the
+ * `limit=25` it is actually clamped to.
+ */
+export function normaliseSearchQuery(query: string): string {
+  return query.trim().slice(0, 80);
+}
+
+export function cappedSearchLimit(limit: number): number {
+  return Math.min(Math.max(limit, 1), 25);
+}
+
+/**
  * Provider row -> our shape, or null when the row is unusable.
  *
  * A track WITHOUT a preview stream is dropped rather than returned. Apple omits
@@ -127,6 +151,12 @@ const trackColumns = {
  * our own table cannot be rate-limited by someone else's traffic.
  *
  * Cached for a day: these rows only change when a migration ships.
+ *
+ * STAYS ON KV, unlike `searchTracks` above, and the difference is the key space, not
+ * the data. This is ONE key with a 24-hour lifetime — about one write per day, shared
+ * by every colo — whereas the search cache was one key per user-supplied query
+ * string. A single bounded key is what KV is good at; an unbounded caller-controlled
+ * one is what exhausted the quota.
  */
 export async function getCatalog(env: Env): Promise<MusicCategory[]> {
   const cacheKey = "cache:music:catalog:v1";
@@ -212,26 +242,17 @@ export async function findCatalogTrack(env: Env, trackId: string): Promise<Music
  * API throttles per source IP and our egress is shared, so it returns an empty
  * result often enough that a picker built on it alone appears broken.
  *
- * Cached per normalised query.
+ * NOT cached here — the caller caches it at the edge. See `normaliseSearchQuery`.
  */
 export async function searchTracks(env: Env, query: string, limit = 20): Promise<MusicTrack[]> {
-  const q = query.trim().slice(0, 80);
+  const q = normaliseSearchQuery(query);
   if (!q) return [];
-  const capped = Math.min(Math.max(limit, 1), 25);
-  const cacheKey = `cache:music:search:${capped}:${q.toLowerCase()}`;
-
-  const cached = await cacheGetJson<MusicTrack[]>(env, cacheKey);
-  if (cached) return cached;
+  const capped = cappedSearchLimit(limit);
 
   const url = `${SEARCH_ENDPOINT}?term=${encodeURIComponent(q)}&media=music&entity=song&limit=${capped}`;
   const data = await fetchJson(url);
   const rows: any[] = Array.isArray(data?.results) ? data.results : [];
-  const tracks = rows.map(normalizeTrack).filter((t): t is MusicTrack => t !== null);
-
-  // Only a non-empty result is cached. Caching [] would pin a transient provider
-  // outage for six hours, and the picker would stay empty long after it recovered.
-  if (tracks.length > 0) await cachePutJson(env, cacheKey, tracks, 6 * 60 * 60);
-  return tracks;
+  return rows.map(normalizeTrack).filter((t): t is MusicTrack => t !== null);
 }
 
 /**
@@ -262,6 +283,11 @@ export async function lookupTrack(env: Env, trackId: string): Promise<MusicTrack
   const curated = await findCatalogTrack(env, id);
   if (curated) return curated;
 
+  // Also still on KV, and bounded for a subtler reason than the catalogue above: the
+  // write below is guarded by `if (track)`, so only ids the provider actually RESOLVES
+  // are ever stored. An invented id costs a lookup and no write, which caps this key
+  // space at the set of real tracks users have chosen — and this runs once per story
+  // creation, behind a media upload and a rate limit, rather than once per keystroke.
   const cacheKey = `cache:music:track:${id}`;
   const cached = await cacheGetJson<MusicTrack>(env, cacheKey);
   if (cached) return cached;

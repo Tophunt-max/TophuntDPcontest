@@ -1,18 +1,25 @@
 /**
- * The two-tier read cache: Cloudflare Cache API in front of Workers KV.
+ * The read cache: Cloudflare Cache API, with KV deliberately no longer under it.
  *
- * The harness's default `caches` stub is always-miss / never-store, which keeps
- * every other suite deterministic but means the edge tier is exercised by nothing.
- * This file installs a cache that really stores, because the property that matters
- * cannot be checked any other way:
+ * The harness's default `caches` stub is always-miss / never-store, which keeps every
+ * other suite deterministic but means the edge tier is exercised by nothing. This file
+ * installs a cache that really stores, because two properties matter here and neither
+ * can be checked any other way.
  *
- *   AN EDGE HIT MUST NOT SKIP PER-VIEWER AUTHORIZATION.
+ *   1. AN EDGE HIT MUST NOT SKIP PER-VIEWER AUTHORIZATION.
  *
- * That is the whole reason `edgeCachedJson` returns DATA rather than a Response.
- * The older `edgeCached` returns the cached response and so returns from the handler
- * early — correct for a fully public endpoint, and a data leak on any endpoint that
- * gates or filters per viewer. If someone "simplifies" a call site back to a
- * response-level cache, the tests below are what fails.
+ *      That is the whole reason `cachedJson` returns DATA rather than a Response.
+ *      `cachedResponse` returns the cached response and so returns from the handler
+ *      early — correct for a fully public endpoint, and a data leak on any endpoint
+ *      that gates or filters per viewer. If someone "simplifies" a call site from one
+ *      to the other, the tests below are what fails.
+ *
+ *   2. THE HOT READ PATHS MUST NOT WRITE TO KV.
+ *
+ *      Not a style rule. KV's minimum TTL is 60s, so a continuously-read KV cache key
+ *      costs at least 1,440 writes/day against a free-plan budget of 1,000/day for the
+ *      whole Worker — one hot key was over budget on its own. Nothing about a RESPONSE
+ *      changes when a KV write creeps back in, so only counting the writes catches it.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
@@ -34,42 +41,12 @@ vi.mock('../src/lib/publish', () => ({
   publishMany: async () => {},
 }));
 
-import { makeEnv, makeApp, fakeCtx, drizzleOf, type TestEnv } from './helpers/harness';
+import { makeEnv, makeApp, fakeCtx, drizzleOf, installEdgeCache, type TestEnv } from './helpers/harness';
 import * as schema from '../src/db/schema';
 import { READ_CACHE_TTLS } from '../src/routes/read';
+import { KV_MIN_TTL_SEC } from '../src/lib/cache';
 
 const app = makeApp();
-
-/** A Cache API stand-in that actually stores, keyed by the request url. */
-function installEdgeCache() {
-  const store = new Map<string, { body: string; cacheControl: string | null }>();
-  const previous = (globalThis as any).caches;
-  (globalThis as any).caches = {
-    default: {
-      async match(req: Request) {
-        const hit = store.get(req.url);
-        if (!hit) return undefined;
-        return new Response(hit.body, { headers: { 'Content-Type': 'application/json' } });
-      },
-      async put(req: Request, res: Response) {
-        store.set(req.url, {
-          body: await res.text(),
-          cacheControl: res.headers.get('Cache-Control'),
-        });
-      },
-      async delete(req: Request) {
-        return store.delete(req.url);
-      },
-    },
-  };
-  return {
-    store,
-    keys: () => [...store.keys()],
-    restore: () => {
-      (globalThis as any).caches = previous;
-    },
-  };
-}
 
 let edge: ReturnType<typeof installEdgeCache>;
 beforeEach(() => {
@@ -78,6 +55,17 @@ beforeEach(() => {
 afterEach(() => {
   edge.restore();
 });
+
+/** Record every key written to CACHE_KV from this point on. */
+function recordPuts(env: TestEnv): string[] {
+  const puts: string[] = [];
+  const orig = env.CACHE_KV.put.bind(env.CACHE_KV);
+  env.CACHE_KV.put = async (key: string, value: string, opts?: any) => {
+    puts.push(key);
+    return orig(key, value, opts);
+  };
+  return puts;
+}
 
 async function seedBattle(env: TestEnv) {
   const ts = Date.now();
@@ -120,67 +108,87 @@ async function listMatches(env: TestEnv, uid: string | null) {
   return { body: (await res.json()) as any[], headers: res.headers };
 }
 
-describe('ttl pairs', () => {
-  it('never lets the edge tier outlive the KV tier, and keeps every total inside its ceiling', () => {
-    // The two tiers COMPOSE: a colo that misses the edge cache when the KV entry is
-    // nearly expired promotes that already-old value for a further `edge` seconds, so
-    // worst-case staleness is `edge + kv`. That is easy to get wrong by editing one
-    // number, and no behavioural test can see it because neither the cache stub nor
-    // `fakeKV` honours expiry. Asserting the arithmetic is the only guard.
+describe('cache lifetimes', () => {
+  it('never declares a KV ttl below the platform floor', () => {
+    // THE BUG THIS EXISTS FOR. `cachePutJson` clamps sub-60s TTLs up to 60s, so a
+    // table entry declaring `kv: 20` did not produce a 20-second cache — it produced a
+    // 60-second one, and three ceilings here were quietly exceeded by 20-40s for
+    // months. The old version of this suite asserted `edge + kv <= ceiling` on the
+    // DECLARED numbers, which is exactly why it never noticed. A KV ttl must now
+    // either be absent or be honourable as written.
     for (const [name, t] of Object.entries(READ_CACHE_TTLS)) {
-      expect(t.edge, `${name}: edge must be shorter than kv`).toBeLessThan(t.kv);
-      expect(t.edge + t.kv, `${name}: edge + kv exceeds its ceiling`).toBeLessThanOrEqual(t.ceiling);
+      if (t.kv === null) continue;
+      expect(t.kv, `${name}: a kv ttl below ${KV_MIN_TTL_SEC}s is silently clamped up`).toBeGreaterThanOrEqual(
+        KV_MIN_TTL_SEC,
+      );
     }
   });
 
-  it('keeps the tail short on the keys an editor can invalidate', () => {
-    // For an invalidated key the KV delete is global, so the post-invalidation tail
-    // is just `edge` — but the Cache API cannot be purged, so that tail covers DELETE
-    // and UNPUBLISH too. A takedown that keeps serving for a minute is the case that
-    // matters, not an edit.
+  it('keeps every worst-case staleness inside its declared ceiling', () => {
+    // The tiers COMPOSE when both are present: a colo that misses the edge cache while
+    // the KV entry is nearly expired promotes that already-old value for a further
+    // `edge` seconds, so the bound is `edge + kv`, not `kv`.
+    for (const [name, t] of Object.entries(READ_CACHE_TTLS)) {
+      expect(t.edge + (t.kv ?? 0), `${name}: worst-case staleness exceeds its ceiling`).toBeLessThanOrEqual(
+        t.ceiling,
+      );
+    }
+  });
+
+  it('keeps the tail short on the keys a writer can purge', () => {
+    // For an edge-only key the writer's own colo is purged immediately and every other
+    // colo converges within `edge`, so `edge` IS the post-invalidation tail. It covers
+    // DELETE and UNPUBLISH too, which is why the blog rows are the shortest in the
+    // table — a post pulled for legal reasons is the case this bound is chosen for.
     for (const [name, t] of Object.entries(READ_CACHE_TTLS)) {
       if (!t.invalidated) continue;
-      expect(t.edge, `${name}: post-invalidation tail is too long`).toBeLessThanOrEqual(30);
+      expect(t.edge, `${name}: post-invalidation tail is too long`).toBeLessThanOrEqual(60);
     }
   });
 });
 
-describe('the edge tier serves the shared payload', () => {
-  it('is consulted BEFORE the KV tier', async () => {
+describe('the hot read paths spend no KV writes', () => {
+  it('serves many identical list requests without touching KV', async () => {
     const { env } = makeEnv();
     await seedBattle(env);
 
-    // Warm both tiers, then plant a different value in the edge tier only. Deleting
-    // the D1 row and asserting the response is unchanged would pass even with the
-    // edge tier completely broken, because KV also holds the value — so the tiers
-    // have to disagree for this to prove anything.
-    await listMatches(env, null);
-    const [edgeKey] = edge.keys();
-    edge.store.set(edgeKey, {
-      body: JSON.stringify({ matches: [{ id: 'from-edge' }], nextCursor: null }),
-      cacheControl: 'public, max-age=10',
-    });
-
-    const served = await listMatches(env, null);
-    expect(served.body).toHaveLength(1);
-    expect(served.body[0].id).toBe('from-edge');
+    const puts = recordPuts(env);
+    for (let i = 0; i < 10; i++) {
+      expect((await listMatches(env, null)).body).toHaveLength(1);
+    }
+    // Previously: one KV write per 60s lapse per key variant, i.e. 1,440/day each.
+    expect(puts.filter((k) => k.startsWith('cache:matches:'))).toHaveLength(0);
+    expect(puts).toHaveLength(0);
   });
 
-  it('falls through to KV when the edge tier misses', async () => {
+  it('caches the list at the edge and serves the second request from it', async () => {
     const { env } = makeEnv();
     await seedBattle(env);
+
     await listMatches(env, null);
+    expect(edge.logicalKeys().some((k) => k.startsWith('cache:matches:active:all:recent:'))).toBe(true);
 
-    // Drop the edge entry only, and remove the D1 row so a KV hit is the only way to
-    // still get the battle back.
-    edge.store.clear();
+    // Delete the row: only a cache hit can still return the battle.
     await drizzleOf(env).delete(schema.contestMatches);
+    expect((await listMatches(env, null)).body).toHaveLength(1);
+  });
 
-    const served = await listMatches(env, null);
-    expect(served.body).toHaveLength(1);
-    expect(served.body[0].id).toBe('m1');
-    // ...and the KV value is promoted back into the edge tier.
-    expect(edge.keys()).toHaveLength(1);
+  it('recomputes from D1 when the Cache API is unavailable, and still writes nothing to KV', async () => {
+    // The `*.workers.dev` host that older app builds still call gets no Cache API, so
+    // this is the legacy-client path. It must be correct and it must stay off KV — the
+    // point of the change is that the durable tier is gone, not that it is conditional.
+    const { env } = makeEnv();
+    await seedBattle(env);
+    (globalThis as any).caches = undefined;
+
+    const puts = recordPuts(env);
+    expect((await listMatches(env, null)).body).toHaveLength(1);
+    expect((await listMatches(env, null)).body).toHaveLength(1);
+    expect(puts).toHaveLength(0);
+
+    // ...and it is genuinely uncached, i.e. reading D1 every time.
+    await drizzleOf(env).delete(schema.contestMatches);
+    expect((await listMatches(env, null)).body).toHaveLength(0);
   });
 
   it('keys the edge entry on the CACHE key, not the request url', async () => {
@@ -189,8 +197,9 @@ describe('the edge tier serves the shared payload', () => {
     await listMatches(env, null);
 
     const [key] = edge.keys();
-    // A reserved path plus the KV key, so the two tiers cannot disagree about what
-    // they hold, and an irrelevant query parameter cannot mint a duplicate entry.
+    // A reserved path plus the logical key, so a reader and a purging writer in another
+    // file cannot disagree about what is stored, and an irrelevant query parameter
+    // cannot mint a duplicate entry.
     expect(key).toContain('/__edge');
     expect(decodeURIComponent(key)).toContain('cache:matches:active:all:recent:');
   });
@@ -200,7 +209,7 @@ describe('the edge tier serves the shared payload', () => {
     await seedBattle(env);
     await listMatches(env, null);
     const [entry] = [...edge.store.values()];
-    expect(entry.cacheControl).toMatch(/^public, max-age=\d+$/);
+    expect(entry.cacheControl).toBe(`public, max-age=${READ_CACHE_TTLS.matchesPage.edge}`);
   });
 });
 
@@ -209,7 +218,7 @@ describe('an edge hit still runs per-viewer authorization', () => {
     const { env } = makeEnv();
     await seedBattle(env);
 
-    // Warm both tiers from an unauthenticated request, so the stored entry is
+    // Warm the cache from an unauthenticated request, so the stored entry is
     // definitely the unfiltered, shared one.
     expect((await listMatches(env, null)).body).toHaveLength(1);
 
@@ -227,10 +236,8 @@ describe('an edge hit still runs per-viewer authorization', () => {
 
     // ...and the shared entry is unharmed: another viewer still sees the battle, so
     // one viewer's exclusions were never written into it.
-    const bobView = await listMatches(env, 'bob');
-    expect(bobView.body).toHaveLength(1);
-    const anon = await listMatches(env, null);
-    expect(anon.body).toHaveLength(1);
+    expect((await listMatches(env, 'bob')).body).toHaveLength(1);
+    expect((await listMatches(env, null)).body).toHaveLength(1);
   });
 
   it('never marks an authenticated response publicly cacheable', async () => {
@@ -245,45 +252,180 @@ describe('an edge hit still runs per-viewer authorization', () => {
   });
 });
 
-describe('the KV tier remains the fallback', () => {
-  it('works with no Cache API at all', async () => {
-    // The Cache API only does real work for Workers on a custom domain, so on the
-    // *.workers.dev host that older app builds still call it is a no-op. The KV tier
-    // is what keeps those clients cached.
+describe('the user profile cache', () => {
+  async function seedProfile(env: TestEnv) {
+    const ts = Date.now();
+    await drizzleOf(env)
+      .insert(schema.users)
+      .values({ uid: 'dave', username: 'dave', fullName: 'Dave', dpcoin: 500, createdAt: ts, updatedAt: ts } as any);
+  }
+  const getProfile = async (env: TestEnv, id = 'dave') =>
+    (await (await app.request(`/read/users/${id}`, {}, env, fakeCtx())).json()) as any;
+
+  it('costs no KV write, which is what makes its 30s bound real', async () => {
+    // Its own comment justifies 30s by arguing a longer window "reads as a lost
+    // payment" for a wallet balance — and on KV it was clamped to 60s, i.e. double the
+    // bound it claimed. Edge-only honours 30s literally AND removes ~1,440 writes/day
+    // per hot profile.
     const { env } = makeEnv();
-    await seedBattle(env);
-    (globalThis as any).caches = undefined;
-
-    const first = await listMatches(env, null);
-    expect(first.body).toHaveLength(1);
-    // Written to KV even though the edge tier was unavailable.
-    const kvKeys = [...env.CACHE_KV._map.keys()].filter((k) => k.startsWith('cache:matches:'));
-    expect(kvKeys).toHaveLength(1);
-
-    await drizzleOf(env).delete(schema.contestMatches);
-    const second = await listMatches(env, null);
-    expect(second.body).toHaveLength(1); // served from KV
+    await seedProfile(env);
+    const puts = recordPuts(env);
+    for (let i = 0; i < 5; i++) expect((await getProfile(env)).uid).toBe('dave');
+    expect(puts.filter((k) => k.startsWith('cache:user:'))).toHaveLength(0);
+    expect(READ_CACHE_TTLS.userProfile.ceiling).toBe(30);
   });
 
-  it('populates the edge tier from a KV hit', async () => {
+  it('does NOT cache a missing user, in any tier', async () => {
+    // `id` comes straight off the url, so caching negatives is an unbounded entry
+    // supply keyed by invented uids.
     const { env } = makeEnv();
-    await seedBattle(env);
+    expect(await getProfile(env, 'no-such-uid')).toBeNull();
+    expect(edge.logicalKeys()).not.toContain('cache:user:no-such-uid');
+    expect(env.CACHE_KV._map.has('cache:user:no-such-uid')).toBe(false);
+    expect(await getProfile(env, 'no-such-uid')).toBeNull();
+  });
 
-    // Warm KV only.
-    (globalThis as any).caches = undefined;
-    await listMatches(env, null);
-    expect(env.CACHE_KV._map.size).toBeGreaterThan(0);
+  it('does NOT publish a hidden account, even when the owner is the one fetching it', async () => {
+    // The entry is keyed only by uid, so without the write guard the OWNER's own
+    // fetch — the one request entitled to see a pending-deletion profile — would
+    // populate it for every other viewer.
+    const { env } = makeEnv();
+    const ts = Date.now();
+    await drizzleOf(env)
+      .insert(schema.users)
+      .values({ uid: 'gone', username: 'gone', status: 'pending_deletion', createdAt: ts, updatedAt: ts } as any);
 
-    // Re-enable the edge tier: the next request should promote the KV value into it,
-    // otherwise a colo would go to KV on every single request forever.
-    edge.restore();
-    edge = installEdgeCache();
-    await listMatches(env, null);
-    expect(edge.keys()).toHaveLength(1);
+    const owner = await app.request('/read/users/gone', { headers: { Authorization: 'Bearer gone' } }, env, fakeCtx());
+    expect((await owner.json() as any)?.uid).toBe('gone');
+    expect(owner.headers.get('Cache-Control')).toBe('private, no-store');
+    expect(edge.logicalKeys()).not.toContain('cache:user:gone');
+
+    // A stranger still gets "does not exist".
+    const stranger = await app.request('/read/users/gone', { headers: { Authorization: 'Bearer bob' } }, env, fakeCtx());
+    expect(await stranger.json()).toBeNull();
   });
 });
 
-describe('blog post cache shape migration', () => {
+/**
+ * The invalidation side of an edge-only cache.
+ *
+ * THE BUG THESE EXIST FOR. When the read caches moved off KV, several writers were left
+ * calling `delCache` — a KV-only delete — against keys nothing reads from KV any more.
+ * That is worse than a colo-local purge: it invalidates NOTHING, in every colo, so the
+ * pre-write payload keeps being served for the full TTL.
+ *
+ * On `/read/users/:id` that is not cosmetic. The payload spreads the whole `users` row,
+ * including `email` and `phone`, so an account-deletion purge whose invalidation does
+ * nothing means a stranger can still read a deleted account's real name, email and
+ * phone. The read-side `status` guard cannot catch it either, because the CACHED copy
+ * carries the pre-purge status — which is exactly why the write guard has always been
+ * paired with an invalidation rather than relied on alone.
+ *
+ * A KV-only `delCache` on these keys is silent, so only asserting on the edge entry
+ * catches a regression.
+ */
+describe('writers purge the edge tier, not just KV', () => {
+  async function seedDave(env: TestEnv) {
+    const ts = Date.now();
+    await drizzleOf(env)
+      .insert(schema.users)
+      .values({
+        uid: 'dave',
+        username: 'dave',
+        fullName: 'Dave',
+        email: 'dave@example.com',
+        phone: '+919812345678',
+        verified: false,
+        createdAt: ts,
+        updatedAt: ts,
+      } as any);
+  }
+  const getProfile = async (env: TestEnv) =>
+    (await (await app.request('/read/users/dave', {}, env, fakeCtx())).json()) as any;
+
+  it('an admin profile edit is visible on the next read', async () => {
+    const { env } = makeEnv();
+    await seedDave(env);
+
+    expect((await getProfile(env)).verified).toBe(false);
+    expect(edge.logicalKeys()).toContain('cache:user:dave');
+
+    const res = await app.request(
+      '/read/../admin/users/dave/profile'.replace('/read/../', '/'),
+      {
+        method: 'PATCH',
+        headers: { 'X-Admin-Secret': 'test-admin-secret', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ verified: true }),
+      },
+      env,
+      fakeCtx(),
+    );
+    expect(res.status).toBe(200);
+
+    // The entry must be GONE, not merely stale. "Granting a blue check and seeing
+    // nothing change in the app" is precisely what a KV-only delete produces here.
+    expect(edge.logicalKeys()).not.toContain('cache:user:dave');
+    expect((await getProfile(env)).verified).toBe(true);
+  });
+
+  it('an account-deletion request stops the profile being served', async () => {
+    const { env } = makeEnv();
+    await seedDave(env);
+
+    // Warm the shared entry with the real row, including the PII the payload spreads.
+    const before = await getProfile(env);
+    expect(before.email).toBe('dave@example.com');
+    expect(edge.logicalKeys()).toContain('cache:user:dave');
+
+    // Deletion is gated on a recent sign-in or a passed re-auth challenge; the mocked
+    // token carries no `auth_time`, so the grant stands in for having answered one.
+    await env.OTP_KV.put('reauth:granted:dave', String(Date.now()));
+
+    const res = await app.request(
+      '/api',
+      {
+        method: 'POST',
+        headers: { Authorization: 'Bearer dave', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'requestAccountDeletion', reason: 'done', confirm: true }),
+      },
+      env,
+      fakeCtx(),
+    );
+    expect(res.status).toBe(200);
+
+    expect(edge.logicalKeys()).not.toContain('cache:user:dave');
+    // ...and a stranger now gets "does not exist" rather than the cached PII.
+    expect(await getProfile(env)).toBeNull();
+  });
+
+  it('an identifier change is not served from the pre-change copy', async () => {
+    const { env } = makeEnv();
+    await seedDave(env);
+    expect((await getProfile(env)).emailVerified).toBeFalsy();
+    expect(edge.logicalKeys()).toContain('cache:user:dave');
+
+    // The `verifyOnly` branch, which needs no Firebase call — enough to exercise the
+    // purge, which is the thing under test. The context origin must match the one the
+    // reader used, because the edge key is same-origin by construction; in production
+    // that is guaranteed, here it has to be stated.
+    const { setOtp } = await import('../src/lib/otp');
+    const { confirmEmailChange } = await import('../src/lib/identifierChange');
+    await setOtp(env as any, 'email', 'dave', {
+      otp: '123456',
+      newEmail: 'dave@example.com',
+      verifyOnly: true,
+    });
+    await confirmEmailChange(env as any, 'dave', '123456', {
+      req: { url: 'http://localhost/auth' },
+      env,
+    } as any);
+
+    expect(edge.logicalKeys()).not.toContain('cache:user:dave');
+    expect((await getProfile(env)).emailVerified).toBe(true);
+  });
+});
+
+describe('blog reads', () => {
   async function seedPost(env: TestEnv) {
     const ts = Date.now();
     await drizzleOf(env)
@@ -306,33 +448,17 @@ describe('blog post cache shape migration', () => {
     return (await res.json()) as any;
   }
 
-  it('reads an entry written in the previous, unwrapped shape', async () => {
-    const { env } = makeEnv();
-    await seedPost(env);
-    // What the old code stored: the value WAS the payload. These have a 600s ttl, so
-    // they keep arriving for ten minutes after deploy — reading one as "no `post`
-    // field, therefore not found" would 404 every hot article in the blog.
-    await env.CACHE_KV.put(
-      'cache:blog:post:hello-world',
-      JSON.stringify({ id: 'p1', slug: 'hello-world', title: 'Legacy shape' }),
-    );
-    const post = await getPost(env);
-    expect(post?.title).toBe('Legacy shape');
-  });
-
-  it('does NOT cache a not-found, in either tier', async () => {
+  it('does NOT cache a not-found, in any tier', async () => {
     const { env } = makeEnv();
     const res = await app.request('/read/blog/no-such-slug', {}, env, fakeCtx());
     expect(await res.json()).toBeNull();
 
-    // The slug comes straight off the url on an unauthenticated, unthrottled
-    // endpoint. Caching misses would mint one KV write per novel slug against a
-    // 1,000/day budget for the whole Worker — a script walking made-up slugs would
-    // stop every cache in the app from writing for the rest of the day. And such an
-    // entry could not be cleared: `invalidateBlogReadCache` only knows the exact
-    // slug and id of the post being edited, and the edge tier cannot be purged.
+    // The slug comes straight off the url on an unauthenticated, unthrottled endpoint.
+    // Caching misses would mint one entry per novel slug, and such an entry could not
+    // be cleared: `invalidateBlogReadCache` only knows the exact slug and id of the
+    // post being edited.
+    expect(edge.logicalKeys()).not.toContain('cache:blog:post:no-such-slug');
     expect(env.CACHE_KV._map.has('cache:blog:post:no-such-slug')).toBe(false);
-    expect(edge.keys()).toHaveLength(0);
 
     const again = await app.request('/read/blog/no-such-slug', {}, env, fakeCtx());
     expect(await again.json()).toBeNull();
@@ -341,9 +467,9 @@ describe('blog post cache shape migration', () => {
   it('counts a view on every request, including cache hits', async () => {
     const { env } = makeEnv();
     await seedPost(env);
-    await getPost(env); // populates both tiers
-    await getPost(env); // edge hit
-    await getPost(env); // edge hit
+    await getPost(env); // populates the cache
+    await getPost(env); // cache hit
+    await getPost(env); // cache hit
     const row = await drizzleOf(env)
       .select({ viewCount: schema.blogPosts.viewCount })
       .from(schema.blogPosts)
@@ -351,24 +477,46 @@ describe('blog post cache shape migration', () => {
     // The payload is cached; the analytics deliberately are not. Note what this does
     // and does not prove: the harness's sqlite resolves synchronously and
     // `fakeCtx().waitUntil` swallows, so this pins that the increment is ISSUED on a
-    // cache hit — not that it is durable. Durability is what `waitUntil` is for in
-    // the handler, and it is not observable from here.
+    // cache hit — not that it is durable.
     expect(Number(row?.viewCount)).toBe(3);
   });
 });
 
-describe('the kill switch covers both tiers', () => {
+describe('cache keys cannot be minted by irrelevant query parameters', () => {
+  it('ignores unknown parameters on a parameterless endpoint', async () => {
+    // `/read/app-config` takes no parameters, so `?x=1`, `?x=2`, … used to produce a
+    // separate colo entry each for a byte-identical response — an unbounded,
+    // attacker-controlled key supply on an unauthenticated endpoint.
+    const { env } = makeEnv();
+    for (const qs of ['', '?x=1', '?x=2', '?cache=bust']) {
+      const res = await app.request(`/read/app-config${qs}`, {}, env, fakeCtx());
+      expect(res.status).toBe(200);
+    }
+    expect(edge.keys()).toHaveLength(1);
+    expect(edge.keys()[0]).toMatch(/\/read\/app-config$/);
+  });
+
+  it('normalises the parameters that DO matter', async () => {
+    // Both spellings clamp to the same limit and therefore the same payload, so they
+    // must share one entry rather than keying on the raw text.
+    const { env } = makeEnv();
+    await app.request('/read/blog/sitemap?limit=99999', {}, env, fakeCtx());
+    await app.request('/read/blog/sitemap?limit=abc', {}, env, fakeCtx());
+    expect(edge.keys()).toHaveLength(1);
+  });
+});
+
+describe('the kill switch covers the edge tier', () => {
   it('caches nothing when KV_WRITES_DISABLED is set', async () => {
     // The flag's contract is "every cache read simply misses and the value is
-    // recomputed from D1". Before `edgeStore` checked it, the KV write was skipped
-    // and the edge write went through anyway — so a test deployment on a custom
-    // domain kept serving cached data from six endpoints.
+    // recomputed from D1". It has to reach the edge tier too, now that the edge tier
+    // IS the cache — otherwise a test deployment would serve cached data from every
+    // endpoint in the module.
     const { env } = makeEnv({ KV_WRITES_DISABLED: 'true' });
     await seedBattle(env);
 
     expect((await listMatches(env, null)).body).toHaveLength(1);
     expect(edge.keys()).toHaveLength(0);
-    expect([...env.CACHE_KV._map.keys()].filter((k) => k.startsWith('cache:matches:'))).toHaveLength(0);
 
     // Still correct, just uncached: the row is gone, so is the response.
     await drizzleOf(env).delete(schema.contestMatches);
