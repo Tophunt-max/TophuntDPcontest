@@ -261,8 +261,16 @@ describe('the flag is present wherever a name is rendered', () => {
     await seedUser(env, 'alice', { emailVerified: true, phoneVerified: true });
     await seedUser(env, 'bob');
 
-    const res = await read(env, 'bob', '/users/alice');
-    expect(res.body.emailVerified).toBe(true);
-    expect(res.body.verified).toBe(false);
+    // The admin badge is public; whether a contact detail was proven is not. So the
+    // two halves of this are asserted from the two viewpoints that are allowed to see
+    // them — which is itself the point being made: `verified` travels to everyone,
+    // `emailVerified` only to the account holder.
+    const asStranger = await read(env, 'bob', '/users/alice');
+    expect(asStranger.body.verified).toBe(false);
+    expect(asStranger.body.emailVerified).toBeUndefined();
+
+    const asOwner = await read(env, 'alice', '/users/alice');
+    expect(asOwner.body.emailVerified).toBe(true);
+    expect(asOwner.body.verified).toBe(false);
   });
 });

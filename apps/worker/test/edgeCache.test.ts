@@ -372,9 +372,13 @@ describe('writers purge the edge tier, not just KV', () => {
     const { env } = makeEnv();
     await seedDave(env);
 
-    // Warm the shared entry with the real row, including the PII the payload spreads.
+    // Warm the shared entry. Note what it does NOT contain: the payload is projected
+    // to an allow-list, so a stranger's copy carries no email or phone. The purge still
+    // matters — the profile must stop being served at all — but the blast radius of a
+    // missed purge is no longer a PII disclosure.
     const before = await getProfile(env);
-    expect(before.email).toBe('dave@example.com');
+    expect(before.username).toBe('dave');
+    expect(before.email).toBeUndefined();
     expect(edge.logicalKeys()).toContain('cache:user:dave');
 
     // Deletion is gated on a recent sign-in or a passed re-auth challenge; the mocked
@@ -398,10 +402,10 @@ describe('writers purge the edge tier, not just KV', () => {
     expect(await getProfile(env)).toBeNull();
   });
 
-  it('an identifier change is not served from the pre-change copy', async () => {
+  it('an identifier change purges the shared entry', async () => {
     const { env } = makeEnv();
     await seedDave(env);
-    expect((await getProfile(env)).emailVerified).toBeFalsy();
+    expect((await getProfile(env)).username).toBe('dave');
     expect(edge.logicalKeys()).toContain('cache:user:dave');
 
     // The `verifyOnly` branch, which needs no Firebase call — enough to exercise the
@@ -421,7 +425,18 @@ describe('writers purge the edge tier, not just KV', () => {
     } as any);
 
     expect(edge.logicalKeys()).not.toContain('cache:user:dave');
-    expect((await getProfile(env)).emailVerified).toBe(true);
+
+    // `emailVerified` is private, so the assertion that it changed has to be made from
+    // the owner's own view. That read is uncached by design, which is the other half of
+    // why an identifier change can never be served stale.
+    const asOwner = await app.request(
+      '/read/users/dave',
+      { headers: { Authorization: 'Bearer dave' } },
+      env,
+      fakeCtx(),
+    );
+    expect(((await asOwner.json()) as any).emailVerified).toBe(true);
+    expect(asOwner.headers.get('Cache-Control')).toBe('private, no-store');
   });
 });
 
