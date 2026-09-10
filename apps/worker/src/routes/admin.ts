@@ -8,7 +8,7 @@
  * the admin panel keep its existing route URLs while the data moves to D1.
  */
 import { Hono } from "hono";
-import { and, eq, desc, sql, count, ne, like, gte, lt, lte, inArray, or, isNull, isNotNull } from "drizzle-orm";
+import { and, eq, desc, sql, count, ne, like, gte, lt, lte, inArray, notInArray, or, isNull, isNotNull } from "drizzle-orm";
 import { DELETED_STATUS, PENDING_DELETION_STATUS } from "../lib/accountStatus";
 import { invalidateUserCaches } from "../lib/accountDeletion";
 import { alias } from "drizzle-orm/sqlite-core";
@@ -509,6 +509,12 @@ adminRoute.delete("/contests/:id", async (c) => {
   await invalidateContestCaches(c.env, id, c);
   await logAudit(c, "contest.delete", "contest", id, { previous: current });
   await cleanupUnattachedContestBanners(c, contestBannerCandidates(current));
+  // The product image too, on the same terms as the banner. This was unreachable
+  // before the panel could upload one; without it, deleting a product contest that
+  // never produced a claim leaves its image in R2 forever. `cleanupUnattachedProductImages`
+  // checks contests AND prize_claims, so an image a winner is still looking at while
+  // waiting for delivery is left alone.
+  await cleanupUnattachedProductImages(c, [current?.prizeProductImageUrl].filter((url): url is string => typeof url === "string" && !!url));
   return c.json({ message: "Contest deleted successfully" });
 });
 
@@ -1610,7 +1616,22 @@ adminRoute.get("/overview", async (c) => {
     (await db.select({ v: count() }).from(schema.withdrawals).where(eq(schema.withdrawals.status, "pending")).get())?.v ?? 0;
   const pendingDeposits =
     (await db.select({ v: count() }).from(schema.deposits).where(eq(schema.deposits.status, "pending")).get())?.v ?? 0;
-  return c.json({ users, posts, reports, support, revenue, revenueInr, activeMatches, liveContests, pendingWithdrawals, pendingDeposits });
+  // Prize claims that still need a human: anything not yet delivered or cancelled.
+  // Counted by exclusion rather than by listing the open states, so a status added
+  // to the lifecycle later shows up in the badge instead of being silently ignored.
+  //
+  // `unclaimed` is deliberately included even though it is waiting on the WINNER,
+  // not on us: a physical prize nobody ever claims is the one state an operator has
+  // to notice in order to chase it, and it is invisible everywhere else.
+  const pendingPrizeClaims =
+    (
+      await db
+        .select({ v: count() })
+        .from(schema.prizeClaims)
+        .where(notInArray(schema.prizeClaims.status, ["delivered", "cancelled"]))
+        .get()
+    )?.v ?? 0;
+  return c.json({ users, posts, reports, support, revenue, revenueInr, activeMatches, liveContests, pendingWithdrawals, pendingDeposits, pendingPrizeClaims });
 });
 
 adminRoute.get("/device-stats", async (c) => {
@@ -2129,6 +2150,13 @@ function matchRow(m: any) {
     commentCount: m.commentCount ?? 0,
     winnerUid: m.winnerUid,
     rewardAmount: m.rewardAmount ?? 0,
+    /**
+     * The match's own prize snapshot. Without it the panel's Reward column showed a
+     * bare `0` for every product-prize battle, which is indistinguishable from a
+     * misconfigured contest — and `rewardAmount` really is 0, because a product
+     * prize moves no coins.
+     */
+    ...publicPrize(m),
     userA: { uid: a.uid, username: a.username, profilePic: a.profilePic || a.profileImageUrl, mediaUrl: a.mediaUrl, votes: a.votes ?? 0 },
     userB: { uid: b.uid, username: b.username, profilePic: b.profilePic || b.profileImageUrl, mediaUrl: b.mediaUrl, votes: b.votes ?? 0 },
     createdAt: m.createdAt ? new Date(m.createdAt).toISOString() : null,

@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/Badge";
 import { PageHeader, fmtDateTime, fmtNumber } from "@/lib/format";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { toast } from "@/lib/toast";
-import { Trophy, XCircle, Eye, Swords, ShieldAlert, ShieldCheck } from "lucide-react";
+import { Trophy, XCircle, Eye, Swords, ShieldAlert, ShieldCheck, Package } from "lucide-react";
 
 const STATUS = ["", "active", "waiting_for_opponent", "completed", "cancelled"];
 
@@ -24,7 +24,17 @@ export default function Matches() {
 
   const winnerMut = useMutation({
     mutationFn: ({ id, winnerUid }: { id: string; winnerUid?: string }) => api.declareWinner(id, winnerUid),
-    onSuccess: () => { toast.success("Winner declared & reward paid"); invalidate(); },
+    // A product-prize battle pays no coins — settlement creates a delivery claim
+    // instead — so the old unconditional "reward paid" was simply untrue for those.
+    // The route tells us which happened.
+    onSuccess: (result: any) => {
+      toast.success(
+        result?.prizeType === "product"
+          ? "Winner declared — prize claim created. Fulfil it in Prize Claims."
+          : "Winner declared & reward paid",
+      );
+      invalidate();
+    },
     onError: (e: any) => toast.error(e.message),
   });
   const cancelMut = useMutation({
@@ -79,7 +89,24 @@ export default function Matches() {
           },
           { key: "status", header: "Status", render: (m: any) => <Badge variant={m.status === "active" ? "active" : m.status === "completed" ? "ended" : m.status === "cancelled" ? "cancelled" : "pending"}>{m.status?.replace(/_/g, " ")}</Badge> },
           { key: "entry", header: "Entry", render: (m: any) => <span>{fmtNumber(m.entryFee)}</span> },
-          { key: "reward", header: "Reward", render: (m: any) => <span>{fmtNumber(m.rewardAmount)}</span> },
+          {
+            key: "reward",
+            header: "Prize",
+            // A product battle's rewardAmount is 0 by construction, so rendering the
+            // coin figure alone showed `0` and read as a broken contest.
+            render: (m: any) =>
+              m.prizeType === "product" ? (
+                <span
+                  className="inline-flex max-w-40 items-center gap-1"
+                  title={m.prizeProductTitle || "Product prize"}
+                >
+                  <Package size={13} className="shrink-0 text-violet-600" />
+                  <span className="truncate text-xs font-medium">{m.prizeProductTitle || "Product"}</span>
+                </span>
+              ) : (
+                <span>{fmtNumber(m.rewardAmount)}</span>
+              ),
+          },
           { key: "created", header: "Created", render: (m: any) => <span className="text-muted-foreground">{fmtDateTime(m.createdAt)}</span> },
           {
             key: "actions",

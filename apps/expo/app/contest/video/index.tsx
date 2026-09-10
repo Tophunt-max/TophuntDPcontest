@@ -18,9 +18,9 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { goToCongratulations } from '@/src/lib/contestSuccess';
 import { getDeviceId } from '@/src/lib/deviceId';
 import { validateVideo, CONTEST_MAX_VIDEO_SEC } from '@/src/lib/videoValidation';
-import { ContestCountdownBadge, ContestEntryBadge } from '@/src/components/contests/ContestBadges';
+import { ContestCountdownBadge, ContestEntryBadge, ContestPrizeLine } from '@/src/components/contests/ContestBadges';
 import { useCountdown } from '@/src/hooks/useCountdown';
-import { entryFeePerPlayer, rewardCoins } from '@/src/lib/contestPricing';
+import { entryFeePerPlayer } from '@/src/lib/contestPricing';
 import { hasEnded } from '@/src/lib/countdown';
 
 const BRAND_PRIMARY = '#FF4D67';
@@ -103,6 +103,17 @@ export default function VideoContestScreen() {
         totalEntryFee: match.entryFee,
         entryFishCoins: match.entryFee,
         rewardCoins: match.rewardAmount ?? match.prizeCoins,
+        // The prize the MATCH was created with, not the template's current one —
+        // the match payload carries its own snapshot, and joining a battle must
+        // show what that battle pays rather than what the contest pays today.
+        //
+        // Four fields, not five: `contest_matches` has no description column, so
+        // the snapshot deliberately does not carry one. Nothing needs it — the
+        // description is contest copy, not part of what settlement owes.
+        prizeType: match.prizeType,
+        prizeProductTitle: match.prizeProductTitle,
+        prizeProductImageUrl: match.prizeProductImageUrl,
+        prizeProductValue: match.prizeProductValue,
         isJoinMode: true,
       });
     } catch (error) {
@@ -221,7 +232,18 @@ export default function VideoContestScreen() {
       ) : (
         <ScrollView contentContainerStyle={{ padding: 20 }}>
           <Text style={[styles.subtitle, {color: textColor}]}>{selectedContest.title || selectedContest.name}</Text>
-          
+
+          {/*
+            The prize, on the screen where the user is about to pay to enter.
+            This was the one entry flow that showed no prize at all: joining a battle
+            copies the match's own prize snapshot onto `selectedContest`, and the
+            photo setup screen renders it, but this one dropped it — so a product
+            battle asked for an entry fee without saying what it awards.
+          */}
+          <View style={[styles.prizeBanner, { backgroundColor: inputBg, borderColor }]}>
+            <ContestPrizeLine contest={selectedContest} labelColor={subTextColor} />
+          </View>
+
           <TouchableOpacity style={[styles.mediaUpload, {backgroundColor: inputBg, borderColor}]} onPress={pickVideo}>
             {media ? (
               <VideoView player={player} style={styles.previewVideo} contentFit="cover" />
@@ -277,7 +299,6 @@ function VideoContestCard({
   onEnter: () => void;
 }) {
   const { ended } = useCountdown(item?.endsAt);
-  const reward = rewardCoins(item);
 
   return (
     <TouchableOpacity
@@ -316,13 +337,7 @@ function VideoContestCard({
       </ImageBackground>
 
       <View style={styles.cardFooter}>
-        <View style={styles.rewardInfo}>
-          <Text style={[styles.rewardLabel, { color: subTextColor }]}>WINNER GETS</Text>
-          <View style={styles.rewardValueRow}>
-            <Ionicons name="trophy" size={16} color="#FFB800" />
-            <Text style={styles.rewardValue}>{reward} Coins</Text>
-          </View>
-        </View>
+        <ContestPrizeLine contest={item} labelColor={subTextColor} />
         <LinearGradient
           colors={ended ? ['#9AA0AA', '#7E848E'] : [BRAND_PRIMARY, '#FF8A9B']}
           start={{ x: 0, y: 0 }}
@@ -380,10 +395,9 @@ const styles = StyleSheet.create({
   contestCardEnded: { opacity: 0.6 },
   cardTitle: { fontSize: 22, fontFamily: 'Urbanist-Bold', color: '#FFF' },
   cardFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16 },
-  rewardInfo: { flex: 1 },
-  rewardLabel: { fontSize: 11, fontFamily: 'Urbanist-Bold', letterSpacing: 0.6 },
-  rewardValueRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 3 },
-  rewardValue: { fontSize: 17, fontFamily: 'Urbanist-Bold', color: '#FFB800' },
+  // The reward block's styles now live with the component that renders it,
+  // src/components/contests/ContestBadges.tsx#ContestPrizeLine.
+  prizeBanner: { borderWidth: 1, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 14 },
   startBtn: {
     flexDirection: 'row',
     alignItems: 'center',

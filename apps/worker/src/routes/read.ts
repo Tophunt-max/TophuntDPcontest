@@ -1006,6 +1006,21 @@ const mapMatch = (r: any) => ({
   winnerUid: r.winnerUid,
   rewardAmount: r.rewardAmount,
   /**
+   * The match's own prize snapshot, so a client can say what a battle is worth
+   * without also fetching its contest template.
+   *
+   * `publicPrize` degrades a NULL `prize_type` to `coins`, which is right for the
+   * rows that have one: `prize_type` is NULL only on matches written before
+   * migration 0042, and every contest that existed then awarded coins. Matches
+   * created since carry the real snapshot (see `startMatch`).
+   *
+   * `prizeProductDescription` is therefore always null here — `contest_matches` has
+   * four prize columns, not five. That is deliberate: the description is contest
+   * copy, not part of what settlement owes, so it does not need freezing. Read it
+   * from the contest template if a screen ever wants it.
+   */
+  ...publicPrize(r),
+  /**
    * The composite head-to-head image, once a client has produced one
    * (migration 0033). Null is normal and permanent for battles created before
    * this existed, or where capture is unavailable — every reader must fall back

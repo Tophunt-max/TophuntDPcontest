@@ -7,6 +7,7 @@
  * loaded — is testable. The component keeps only the layout, which is two
  * `flex: 1` halves in a `flexDirection: 'row'`.
  */
+import { contestPrize } from './contestPrize';
 
 export interface VsSideData {
   uid?: string;
@@ -25,7 +26,17 @@ export interface VsFrameData {
   right: VsSideData;
   isVideo: boolean;
   title: string;
+  /** Coin prize. Always 0 for a product battle — read `productPrize` instead. */
   prize: number;
+  /**
+   * Product prize name, when the battle awards one.
+   *
+   * The shared frame is the surface whose whole job is making a battle look worth
+   * entering, and a product battle used to share with no prize on it at all: its
+   * coin figure is 0 by construction, and the pill was gated on that number being
+   * positive.
+   */
+  productPrize: string | null;
 }
 
 function side(participant: any): VsSideData {
@@ -111,11 +122,16 @@ export function resolveVsFrame(match: any): VsFrameData | null {
   const right = side(userB);
   if (!left.uri || !right.uri) return null;
 
+  // The match carries its own prize snapshot (read.ts `mapMatch` spreads
+  // `publicPrize`), so this needs no second fetch of the contest template.
+  const resolved = contestPrize(match);
+
   return {
     left,
     right,
     isVideo: match?.type === 'video',
     title: match?.title || 'Battle',
-    prize: Number(match?.rewardAmount ?? match?.prizeCoins ?? 0) || 0,
+    prize: resolved.type === 'coins' ? Number(match?.rewardAmount ?? match?.prizeCoins ?? 0) || 0 : 0,
+    productPrize: resolved.type === 'product' ? resolved.product.title : null,
   };
 }

@@ -50,10 +50,15 @@ describe('notification category map parity between client and worker', () => {
     expect(orphaned).toEqual([]);
   });
 
-  it('maps the two types that were previously unmapped', () => {
+  it('maps the types that were previously unmapped', () => {
     // Explicit guard so a future refactor cannot quietly drop them back to the
     // fallback while keeping the two maps in agreement.
     expect(workerCategoryForType('match_active')).toBe('contest');
     expect(workerCategoryForType('level_up')).toBe('social');
+    // `prize-claim` shipped with the product-prize backend and was in neither map,
+    // so the notification telling somebody to claim a physical prize was muted by
+    // the "likes and follows" toggle.
+    expect(workerCategoryForType('prize-claim')).toBe('contest');
+    expect(clientCategoryForType('prize-claim')).toBe('contest');
   });
 });

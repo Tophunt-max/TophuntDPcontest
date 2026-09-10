@@ -1,4 +1,5 @@
 import { Timestamp } from 'firebase/firestore';
+import type { PrizeType } from '@/src/lib/contestPrize';
 
 export type ContestStatus = 'upcoming' | 'live' | 'ended';
 export type MediaType = 'photo' | 'video';
@@ -35,9 +36,29 @@ export interface Contest {
   /** True when neither player pays to enter. */
   isFree: boolean;
 
-  /** Winner's prize. Aliases of the same number. */
+  /**
+   * Winner's prize IN COINS. Aliases of the same number.
+   *
+   * 0 for a product contest — coin rewards are capped at the entry pot and a
+   * physical item has no coin value, so the product lives in its own fields
+   * below. Read both through `contestPrize()` in src/lib/contestPrize.ts rather
+   * than reading these directly, or a product contest renders as "0 Coins".
+   */
   rewardCoins: number;
   winningCoins: number;
+
+  /**
+   * The physical-prize columns, spread in by the Worker's `publicPrize`.
+   *
+   * `prizeType` is `'coins'` for every contest that awards coins, including every
+   * contest created before product prizes existed.
+   */
+  prizeType: PrizeType;
+  prizeProductTitle: string | null;
+  prizeProductImageUrl: string | null;
+  /** Declared retail value in rupees. Display only — never credited. */
+  prizeProductValue: number;
+  prizeProductDescription: string | null;
 
   /**
    * Validity window in epoch MILLISECONDS; null means unbounded. Absolute

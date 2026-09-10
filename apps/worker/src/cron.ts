@@ -87,12 +87,20 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
     if (needsPrizeTemplate && contest) {
       // Persist the snapshot so this match settles deterministically from now on,
       // and so an admin editing the template afterwards cannot change what is owed.
+      // Gated on the resolved TYPE, matching `startMatch`. A contest switched back
+      // to coins can still carry stale product columns, and copying them onto a
+      // `coins` match would leave a row that claims to owe a product nobody is
+      // going to be given. Nothing reads them today because every consumer branches
+      // on the type first — which is exactly why the two writers of this one
+      // snapshot must not be allowed to drift.
+      const snapshotType = normalizePrizeType(contest.prizeType);
+      const snapshotIsProduct = snapshotType === "product";
       await db.update(schema.contestMatches)
         .set({
-          prizeType: normalizePrizeType(contest.prizeType),
-          prizeProductTitle: contest.prizeProductTitle ?? null,
-          prizeProductImageUrl: contest.prizeProductImageUrl ?? null,
-          prizeProductValue: contest.prizeProductValue ?? null,
+          prizeType: snapshotType,
+          prizeProductTitle: snapshotIsProduct ? contest.prizeProductTitle ?? null : null,
+          prizeProductImageUrl: snapshotIsProduct ? contest.prizeProductImageUrl ?? null : null,
+          prizeProductValue: snapshotIsProduct ? contest.prizeProductValue ?? null : null,
         })
         .where(and(
           eq(schema.contestMatches.id, match.id),

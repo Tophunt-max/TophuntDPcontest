@@ -13,6 +13,7 @@ const UsersPage = lazy(() => import("@/pages/Users"));
 const Admins = lazy(() => import("@/pages/Admins"));
 const Contests = lazy(() => import("@/pages/Contests"));
 const Matches = lazy(() => import("@/pages/Matches"));
+const PrizeClaims = lazy(() => import("@/pages/PrizeClaims"));
 const Leaderboard = lazy(() => import("@/pages/Leaderboard"));
 const Transactions = lazy(() => import("@/pages/Transactions"));
 const Withdrawals = lazy(() => import("@/pages/Withdrawals"));
@@ -72,6 +73,7 @@ function ProtectedApp() {
           <Route path="/admins" component={Admins} />
           <Route path="/contests" component={Contests} />
           <Route path="/matches" component={Matches} />
+          <Route path="/prize-claims" component={PrizeClaims} />
           <Route path="/leaderboard" component={Leaderboard} />
           <Route path="/transactions" component={Transactions} />
           <Route path="/withdrawals" component={Withdrawals} />

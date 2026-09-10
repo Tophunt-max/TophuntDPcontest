@@ -108,7 +108,33 @@ export interface BlogStats {
 export type ContestType = "photo" | "video";
 export type ContestStatus = "live" | "upcoming" | "paused" | "ended";
 
-export interface AdminContest {
+/**
+ * What a contest awards. Mirrors `PRIZE_TYPES` in the Worker's lib/prizes.ts.
+ *
+ * `coins` credits `rewardCoins` to the winner's wallet. `product` ships a physical
+ * item and credits nothing — the Worker forces `rewardCoins` to 0 for a product
+ * contest, because `assertPrizeFundedByPot` caps coin rewards at the pot the two
+ * players funded and a phone has no coin value to cap.
+ */
+export type PrizeType = "coins" | "product";
+
+/** Bounds the Worker's `assertProductPrize` enforces; mirrored so the admin sees the error next to the field. */
+export const PRODUCT_TITLE_MAX = 120;
+export const PRODUCT_DESCRIPTION_MAX = 1000;
+export const PRODUCT_VALUE_MAX = 100_000_000;
+
+/** The prize columns, shared by a contest row and a contest write. */
+export interface ContestPrizeFields {
+  prizeType: PrizeType;
+  prizeProductTitle: string | null;
+  /** Required by the Worker whenever prizeType is "product". */
+  prizeProductImageUrl: string | null;
+  /** Declared retail value in rupees. Display only — never credited, never spendable. */
+  prizeProductValue: number;
+  prizeProductDescription: string | null;
+}
+
+export interface AdminContest extends ContestPrizeFields {
   id: string;
   title: string | null;
   name: string | null;
@@ -140,7 +166,7 @@ export interface AdminContest {
   activeMatches: number;
 }
 
-export interface ContestWritePayload {
+export interface ContestWritePayload extends ContestPrizeFields {
   title: string;
   description: string | null;
   rules: string | null;
@@ -159,6 +185,115 @@ export interface ContestWritePayload {
 export interface ContestBannerUpload {
   fileKey: string;
   publicUrl: string;
+}
+
+// ─── Prize claims (physical prize fulfilment) ────────────────────────────────
+
+/**
+ * Fulfilment lifecycle. Mirrors `PRIZE_CLAIM_STATUSES` in the Worker's
+ * routes/admin.ts, and the legal moves in `PRIZE_CLAIM_TRANSITIONS`.
+ *
+ * Only settlement creates `unclaimed`, and only the winner's own submit produces
+ * `submitted`; everything after that is an operator decision.
+ */
+export type PrizeClaimStatus =
+  | "unclaimed"
+  | "submitted"
+  | "approved"
+  | "shipped"
+  | "delivered"
+  | "cancelled";
+
+export const PRIZE_CLAIM_STATUSES: PrizeClaimStatus[] = [
+  "unclaimed",
+  "submitted",
+  "approved",
+  "shipped",
+  "delivered",
+  "cancelled",
+];
+
+/**
+ * Which status an operator may move a claim to. A copy of the Worker's map, used
+ * only to decide which buttons to render — the Worker re-checks every transition,
+ * so a stale copy here can never authorise an illegal move.
+ */
+export const PRIZE_CLAIM_TRANSITIONS: Record<PrizeClaimStatus, PrizeClaimStatus[]> = {
+  unclaimed: ["cancelled"],
+  submitted: ["approved", "cancelled"],
+  approved: ["shipped", "cancelled"],
+  shipped: ["delivered", "cancelled"],
+  delivered: [],
+  cancelled: [],
+};
+
+/**
+ * A row in the fulfilment queue.
+ *
+ * Deliberately has NO address fields. The list endpoint strips them and sends a
+ * masked `deliverySummary` instead, so working the queue does not spray home
+ * addresses across every operator's screen. The full address is on
+ * `PrizeClaimDetail`, fetched only for the claim actually being packed — and that
+ * read is audit-logged.
+ */
+export interface PrizeClaim {
+  id: string;
+  matchId: string;
+  contestId: string | null;
+  uid: string;
+  status: PrizeClaimStatus;
+  productTitle: string;
+  productImageUrl: string | null;
+  /**
+   * Declared retail value in rupees, or null. Display only — never credited.
+   *
+   * Nullable because this list returns the raw column, unlike the app's
+   * `/read/prizes`, which coerces it to 0. Coerce before comparing.
+   */
+  productValue: number | null;
+  courier: string | null;
+  trackingNumber: string | null;
+  createdAt: number;
+  submittedAt: number | null;
+  shippedAt: number | null;
+  deliveredAt: number | null;
+  username: string | null;
+  fullName: string | null;
+  /** "Name · City, State, PIN · masked phone". Null while `unclaimed`. */
+  deliverySummary: string | null;
+  hasAddress: boolean;
+}
+
+/** One claim with the full delivery address — the packing screen. */
+export interface PrizeClaimDetail extends PrizeClaim {
+  recipientName: string | null;
+  phone: string | null;
+  addressLine1: string | null;
+  addressLine2: string | null;
+  landmark: string | null;
+  city: string | null;
+  state: string | null;
+  postalCode: string | null;
+  country: string | null;
+  notes: string | null;
+  adminNote: string | null;
+  approvedAt: number | null;
+  cancelledAt: number | null;
+  updatedAt: number | null;
+  /**
+   * The address pre-formatted as a shipping label by the Worker. Used verbatim so
+   * the panel and the app cannot disagree about field order. Null until submitted.
+   */
+  addressBlock: string | null;
+}
+
+export interface PrizeClaimStatusPayload {
+  status: PrizeClaimStatus;
+  /** Both required by the Worker when status is "shipped". */
+  courier?: string;
+  trackingNumber?: string;
+  /** Required by the Worker when status is "cancelled". */
+  adminNote?: string;
 }
 
 export type UploadProgressHandler = (percent: number) => void;
@@ -215,6 +350,9 @@ const uploadContestBanner = (file: File, onProgress?: UploadProgressHandler) =>
 
 const uploadPaymentQr = (file: File, onProgress?: UploadProgressHandler) =>
   uploadBinary("/admin/media/payment-qr", file, onProgress, "QR upload failed. Check your connection and try again.");
+
+const uploadProductImage = (file: File, onProgress?: UploadProgressHandler) =>
+  uploadBinary("/admin/media/product-image", file, onProgress, "Product image upload failed. Check your connection and try again.");
 
 /**
  * Core request helper. Attaches the Firebase ID token as a Bearer header — the
@@ -439,6 +577,13 @@ export const api = {
       liveContests: number;
       pendingWithdrawals: number;
       pendingDeposits: number;
+      /**
+       * Prize claims still needing an operator: everything that is neither
+       * delivered nor cancelled. Includes `unclaimed`, which is waiting on the
+       * winner rather than on us — a prize nobody ever claims is exactly the
+       * thing an operator should notice and chase.
+       */
+      pendingPrizeClaims: number;
     }>("/admin/overview"),
   deviceStats: () =>
     get<{ web: number; mobile: number; other: number }>("/admin/device-stats"),
@@ -489,8 +634,34 @@ export const api = {
   deleteContestBanner: (url: string) =>
     req<{ success: true }>("DELETE", "/admin/media/contest-banner", { url }),
 
+  // Product-prize image. Same pipeline as the banner, separate R2 prefix.
+  uploadProductImage,
+  /**
+   * Only ever used to clean up an image whose contest then failed to save. The
+   * Worker refuses to delete one that is attached to a contest or a prize claim,
+   * so this cannot orphan a picture a winner is still looking at.
+   */
+  deleteProductImage: (url: string) =>
+    req<{ success: true }>("DELETE", "/admin/media/product-image", { url }),
+
   // Manual payment QR image upload (stored in R2, returns a public URL).
   uploadPaymentQr,
+
+  // prize claims (physical prize fulfilment queue)
+  prizeClaims: (params?: { status?: PrizeClaimStatus; limit?: number }) => {
+    const s = new URLSearchParams();
+    if (params?.status) s.set("status", params.status);
+    if (params?.limit) s.set("limit", String(params.limit));
+    const qs = s.toString();
+    return get<PrizeClaim[]>(`/admin/prize-claims${qs ? `?${qs}` : ""}`);
+  },
+  /** Fetches the full delivery address. The Worker audit-logs every call. */
+  prizeClaim: (id: string) => get<PrizeClaimDetail>(`/admin/prize-claims/${encodeURIComponent(id)}`),
+  updatePrizeClaimStatus: (id: string, payload: PrizeClaimStatusPayload) =>
+    post<{ success: true; id: string; status: PrizeClaimStatus }>(
+      `/admin/prize-claims/${encodeURIComponent(id)}/status`,
+      payload,
+    ),
 
   // posts / stories (moderation)
   posts: () => get<any[]>("/admin/posts"),

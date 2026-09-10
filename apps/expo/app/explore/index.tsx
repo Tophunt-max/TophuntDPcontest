@@ -37,7 +37,8 @@ import { Colors } from '@/constants/theme';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
 import { ContestCountdownBadge, ContestEntryBadge } from '@/src/components/contests/ContestBadges';
 import { useCountdown } from '@/src/hooks/useCountdown';
-import { isFreeContest, rewardCoins } from '@/src/lib/contestPricing';
+import { isFreeContest } from '@/src/lib/contestPricing';
+import { contestPrize, describePrize } from '@/src/lib/contestPrize';
 
 const { width } = Dimensions.get('window');
 const PAD = 20;
@@ -728,7 +729,7 @@ function ScaleTouchable({ children, onPress, style, disabled, ...rest }: any) {
 function TemplateCard({ item, onStart }: { item: any; onStart: () => void }) {
   const isVideo = item?.type === 'video';
   const { ended } = useCountdown(item?.endsAt);
-  const prize = rewardCoins(item);
+  const prize = contestPrize(item);
 
   if (!item || !item.title) return null;
 
@@ -740,7 +741,7 @@ function TemplateCard({ item, onStart }: { item: any; onStart: () => void }) {
     item.title,
     isVideo ? 'video battle' : 'photo battle',
     isFreeContest(item) ? 'free entry' : 'paid entry',
-    prize > 0 ? `winner gets ${prize} coins` : null,
+    describePrize(prize),
     ended ? 'closed' : null,
   ]
     .filter(Boolean)
@@ -807,17 +808,30 @@ function TemplateCard({ item, onStart }: { item: any; onStart: () => void }) {
           </View>
 
           <View>
-            {prize > 0 && (
+            {/* A product is named rather than numbered, so it drops to the smaller
+                title-sized type — a 20-character product name at the coin figure's
+                21pt would not fit the card, and the name IS the persuasive part. */}
+            {prize.type === 'product' ? (
+              <>
+                <Text style={styles.templatePrizeLabel}>WINNER GETS</Text>
+                <View style={styles.templatePrizeRow}>
+                  <Ionicons name="cube" size={14} color="#DDD0FF" />
+                  <Text style={styles.templateProductValue} numberOfLines={1}>
+                    {prize.product.title}
+                  </Text>
+                </View>
+              </>
+            ) : prize.coins > 0 ? (
               <>
                 <Text style={styles.templatePrizeLabel}>WINNER GETS</Text>
                 <View style={styles.templatePrizeRow}>
                   <CoinIcon size={15} color="#FFD54A" />
                   <Text style={styles.templatePrizeValue} numberOfLines={1}>
-                    {prize}
+                    {prize.coins}
                   </Text>
                 </View>
               </>
-            )}
+            ) : null}
             <Text style={styles.templateTitle} numberOfLines={2}>
               {item.title}
             </Text>
@@ -991,6 +1005,10 @@ const styles = StyleSheet.create({
   },
   templatePrizeRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   templatePrizeValue: { color: '#FFF', fontSize: 21, fontFamily: 'Urbanist-Black', lineHeight: 24 },
+  /** A product NAME in the hero slot: smaller than the coin figure so it fits. */
+  templateProductValue: {
+    color: '#FFF', fontSize: 14, fontFamily: 'Urbanist-Black', lineHeight: 18, flexShrink: 1,
+  },
   templateTitle: { color: '#FFF', fontSize: 14, fontFamily: 'Urbanist-Bold', lineHeight: 18, marginTop: 3 },
   // Column, and `flex-start` so the badge keeps its intrinsic width instead of
   // being stretched by the default `stretch` alignment.
