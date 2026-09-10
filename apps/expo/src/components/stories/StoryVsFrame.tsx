@@ -240,12 +240,22 @@ export const StoryVsFrame: React.FC<Props> = ({ matchId, fallbackMediaUrl, conte
         <View style={styles.footerRow}>
           <Avatar uri={frame.left.avatarUri} name={frame.left.username} size={26} />
           <Avatar uri={frame.right.avatarUri} name={frame.right.username} size={26} style={styles.overlapAvatar} />
-          {frame.prize > 0 && (
+          {/* A product battle's coin figure is 0 by construction, so gating this
+              pill on it alone hid the prize from exactly the battles most worth
+              sharing. */}
+          {frame.productPrize ? (
+            <View style={[styles.prizePill, styles.productPrizePill]}>
+              <Ionicons name="cube" size={12} color="#DDD0FF" />
+              <Text style={[styles.prizeText, styles.productPrizeText]} numberOfLines={1}>
+                {frame.productPrize}
+              </Text>
+            </View>
+          ) : frame.prize > 0 ? (
             <View style={styles.prizePill}>
               <CoinIcon size={12} color="#FFD54F" />
               <Text style={styles.prizeText}>{frame.prize}</Text>
             </View>
-          )}
+          ) : null}
         </View>
 
         {/*
@@ -313,6 +323,8 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,213,79,0.16)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 100,
   },
   prizeText: { color: '#FFD54F', fontSize: 13, fontFamily: 'Urbanist-Bold' },
+  productPrizePill: { backgroundColor: 'rgba(167,139,250,0.20)', flexShrink: 1 },
+  productPrizeText: { color: '#DDD0FF', flexShrink: 1 },
 
   cta: {
     color: 'rgba(255,255,255,0.7)', fontSize: 12, fontFamily: 'Urbanist-Medium',

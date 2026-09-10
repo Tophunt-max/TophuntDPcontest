@@ -100,6 +100,7 @@ import Music from 'lucide-react-native/icons/music';
 import MoreHorizontal from 'lucide-react-native/icons/ellipsis';
 import MoreVertical from 'lucide-react-native/icons/ellipsis-vertical';
 import Newspaper from 'lucide-react-native/icons/newspaper';
+import Package from 'lucide-react-native/icons/package';
 import Palette from 'lucide-react-native/icons/palette';
 import PartyPopper from 'lucide-react-native/icons/party-popper';
 import Pause from 'lucide-react-native/icons/pause';
@@ -143,6 +144,7 @@ import TrendingDown from 'lucide-react-native/icons/trending-down';
 import TrendingUp from 'lucide-react-native/icons/trending-up';
 import TriangleAlert from 'lucide-react-native/icons/triangle-alert';
 import Trophy from 'lucide-react-native/icons/trophy';
+import Truck from 'lucide-react-native/icons/truck';
 import Tv from 'lucide-react-native/icons/tv';
 import Type from 'lucide-react-native/icons/type';
 import Upload from 'lucide-react-native/icons/upload';
@@ -174,7 +176,7 @@ export interface IconProps {
 type LucideIcon = React.ComponentType<any>;
 
 // name -> component lookup (built from the per-icon imports above).
-const I: Record<string, LucideIcon> = { AlarmClock, AlertCircle, ArrowDown, ArrowLeft, ArrowLeftRight, ArrowRight, ArrowUp, AtSign, AudioLines, Award, Ban, Banknote, Bell, Bookmark, Calendar, Camera, ChartColumn, ChartLine, Check, CheckCheck, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleCheck, CircleHelp, CircleUser, Clapperboard, Clock, Cloud, CloudOff, Coins, Compass, Copy, CreditCard, Crop, Crown, Dices, Download, Expand, Eye, EyeOff, FerrisWheel, File, FileText, Filter, Flame, Frown, Gamepad2, Gem, Gift, Globe, Hand, Heart, HeartCrack, HeartHandshake, Home, Hourglass, Image, Images, IndianRupee, Info, Landmark, LayoutGrid, Link, List, Lock, LockOpen, LogIn, LogOut, Mail, MapPin, Medal, Megaphone, Menu, MessageCircle, MessagesSquare, Mic, Moon, MoreHorizontal, MoreVertical, Music, Newspaper, Palette, PartyPopper, Pause, Pencil, Phone, Play, PlayCircle, Plus, PlusCircle, QrCode, Receipt, RefreshCw, Rocket, RotateCw, ScanLine, Search, Send, Settings, Share2, Shield, ShieldCheck, SlidersHorizontal, Smartphone, Smile, Sparkles, Sprout, SquarePen, Star, Sticker, Sun, SwitchCamera, Swords, Tag, Tags, Target, Ticket, Timer, TrafficCone, Trash2, TrendingDown, TrendingUp, TriangleAlert, Trophy, Tv, Type, Upload, UploadCloud, User, Users, Video, VideoOff, Volume2, VolumeX, Vote, Wallet, Wand2, Wifi, WifiOff, Wrench, X, XCircle, Zap };
+const I: Record<string, LucideIcon> = { AlarmClock, AlertCircle, ArrowDown, ArrowLeft, ArrowLeftRight, ArrowRight, ArrowUp, AtSign, AudioLines, Award, Ban, Banknote, Bell, Bookmark, Calendar, Camera, ChartColumn, ChartLine, Check, CheckCheck, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleCheck, CircleHelp, CircleUser, Clapperboard, Clock, Cloud, CloudOff, Coins, Compass, Copy, CreditCard, Crop, Crown, Dices, Download, Expand, Eye, EyeOff, FerrisWheel, File, FileText, Filter, Flame, Frown, Gamepad2, Gem, Gift, Globe, Hand, Heart, HeartCrack, HeartHandshake, Home, Hourglass, Image, Images, IndianRupee, Info, Landmark, LayoutGrid, Link, List, Lock, LockOpen, LogIn, LogOut, Mail, MapPin, Medal, Megaphone, Menu, MessageCircle, MessagesSquare, Mic, Moon, MoreHorizontal, MoreVertical, Music, Newspaper, Package, Palette, PartyPopper, Pause, Pencil, Phone, Play, PlayCircle, Plus, PlusCircle, QrCode, Receipt, RefreshCw, Rocket, RotateCw, ScanLine, Search, Send, Settings, Share2, Shield, ShieldCheck, SlidersHorizontal, Smartphone, Smile, Sparkles, Sprout, SquarePen, Star, Sticker, Sun, SwitchCamera, Swords, Tag, Tags, Target, Ticket, Timer, TrafficCone, Trash2, TrendingDown, TrendingUp, TriangleAlert, Trophy, Truck, Tv, Type, Upload, UploadCloud, User, Users, Video, VideoOff, Volume2, VolumeX, Vote, Wallet, Wand2, Wifi, WifiOff, Wrench, X, XCircle, Zap };
 
 // Resolve an icon by its lucide PascalCase name, falling back safely.
 const ic = (n: string): LucideIcon => I[n] || Circle;
@@ -232,6 +234,10 @@ const ionicons: Record<string, LucideIcon> = {
   'play': ic('Play'), 'play-circle': ic('PlayCircle'), 'pause': ic('Pause'), 'pause-circle': ic('PauseCircle'),
   'podium': ic('Award'), 'podium-outline': ic('Award'),
   'pricetags-outline': ic('Tags'), 'pricetag-outline': ic('Tag'),
+  // Physical prizes and their delivery. `cube` is the parcel/product glyph and
+  // `car` the courier one, matching the Ionicons names the rest of the app uses.
+  'cube': ic('Package'), 'cube-outline': ic('Package'),
+  'car': ic('Truck'), 'car-outline': ic('Truck'),
   'qr-code-outline': ic('QrCode'), 'qr-code': ic('QrCode'),
   'receipt-outline': ic('Receipt'), 'receipt': ic('Receipt'),
   'refresh': ic('RefreshCw'), 'refresh-outline': ic('RefreshCw'), 'sync-outline': ic('RefreshCw'), 'reload': ic('RotateCw'),

@@ -20,9 +20,8 @@ import { BackButton } from '@/src/components/ui/BackButton';
 import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
 import { CoinIcon } from '@/src/components/ui/CoinIcon'; 
 import { LinearGradient } from 'expo-linear-gradient';
-import { ContestCountdownBadge, ContestEntryBadge } from '@/src/components/contests/ContestBadges';
+import { ContestCountdownBadge, ContestEntryBadge, ContestPrizeLine } from '@/src/components/contests/ContestBadges';
 import { useCountdown } from '@/src/hooks/useCountdown';
-import { rewardCoins } from '@/src/lib/contestPricing';
 
 const BRAND_PRIMARY = '#FF4D67'; 
 const BRAND_SECONDARY = '#FF758C';
@@ -154,7 +153,6 @@ function ContestCard({
   onEnter: () => void;
 }) {
   const { ended } = useCountdown(item?.endsAt);
-  const reward = rewardCoins(item);
 
   return (
     <TouchableOpacity
@@ -196,13 +194,7 @@ function ContestCard({
       </ImageBackground>
 
       <View style={styles.cardFooter}>
-        <View style={styles.rewardInfo}>
-          <Text style={[styles.rewardLabel, { color: subTextColor }]}>WINNER GETS</Text>
-          <View style={styles.rewardValueRow}>
-            <Ionicons name="trophy" size={16} color="#FFB800" />
-            <Text style={styles.rewardValue}>{reward} Coins</Text>
-          </View>
-        </View>
+        <ContestPrizeLine contest={item} labelColor={subTextColor} />
         <LinearGradient
           colors={ended ? ['#9AA0AA', '#7E848E'] : [BRAND_PRIMARY, BRAND_SECONDARY]}
           start={{ x: 0, y: 0 }}
@@ -326,10 +318,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 16,
   },
-  rewardInfo: { flex: 1 },
-  rewardLabel: { fontSize: 11, fontFamily: 'Urbanist-Bold', letterSpacing: 0.6 },
-  rewardValueRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 3 },
-  rewardValue: { fontSize: 17, fontFamily: 'Urbanist-Bold', color: '#FFB800' },
+  // The reward block's styles now live with the component that renders it,
+  // src/components/contests/ContestBadges.tsx#ContestPrizeLine.
   startBtn: {
     flexDirection: 'row',
     alignItems: 'center',

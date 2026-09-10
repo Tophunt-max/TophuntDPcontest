@@ -44,7 +44,8 @@ import { ImageViewer } from '@/src/components/ui/ImageViewer';
 import * as Haptics from 'expo-haptics';
 import { getDeviceId } from '@/src/lib/deviceId';
 import { useReadjustablePhoto } from '@/src/components/media/useImageAdjuster';
-import { entryFeePerPlayer, rewardCoins } from '@/src/lib/contestPricing';
+import { entryFeePerPlayer } from '@/src/lib/contestPricing';
+import { contestPrize } from '@/src/lib/contestPrize';
 import { hasEnded } from '@/src/lib/countdown';
 
 const PINK_ACCENT = '#FFB1BD';
@@ -333,7 +334,18 @@ export default function BattleSetupScreen() {
   if (!selectedContest) return null;
 
   const fee = entryFeePerPlayer(selectedContest);
-  const winningReward = rewardCoins(selectedContest);
+  // A product contest pays 0 coins, so reading the coin figure alone would have
+  // this screen promise "Winner Gets 0 Coins!" for a phone.
+  //
+  // Resolved into plain locals rather than a ternary inside the JSX because the
+  // shared-icon gate (scripts/check-icons.mjs) reads `name=` literally and would
+  // see the branch's other string as an icon name.
+  const winningPrize = contestPrize(selectedContest);
+  const winnerBannerIcon = winningPrize.type === 'product' ? 'cube' : 'trophy';
+  const winnerBannerText =
+    winningPrize.type === 'product'
+      ? `Winner Gets ${winningPrize.product.title}!`
+      : `Winner Gets ${winningPrize.coins} Coins!`;
   const userCoins = profile?.coins || profile?.Dpcoin || 0;
   const hasInsufficientCoins = userCoins < fee;
 
@@ -426,8 +438,8 @@ export default function BattleSetupScreen() {
           </View>
 
           <View style={styles.winnerBanner}>
-             <Ionicons name="trophy" size={16} color="#EAB308" />
-             <Text style={styles.winnerBannerText}>Winner Gets {winningReward} Coins!</Text>
+             <Ionicons name={winnerBannerIcon} size={16} color="#EAB308" />
+             <Text style={styles.winnerBannerText} numberOfLines={2}>{winnerBannerText}</Text>
           </View>
         </View>
 

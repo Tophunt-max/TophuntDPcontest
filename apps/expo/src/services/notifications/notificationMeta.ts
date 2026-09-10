@@ -21,6 +21,7 @@ export type NotificationType =
   | "contest-loss"
   | "contest-refund"
   | "contest-tie"
+  | "prize-claim"
   | "purchase"
   | "admin"
   // legacy / loose aliases still accepted for safety
@@ -72,6 +73,20 @@ export function getNotificationDestination(
     case "contest-loss":
       return "/home";
 
+    /**
+     * Physical prize won, or a fulfilment step on one. `targetId` is
+     * `prize:<matchId>`, and the claim's own id is `prize_claim:<matchId>`, so the
+     * match id is the addressable part.
+     *
+     * This is the ONE notification in the app that asks the user to do something
+     * before they get what they won, so it deep-links to that specific prize
+     * rather than to a list they then have to search.
+     */
+    case "prize-claim": {
+      const matchId = targetId?.startsWith("prize:") ? targetId.slice("prize:".length) : null;
+      return matchId ? `/prizes/${matchId}` : "/prizes";
+    }
+
     // Wallet-affecting events open the wallet.
     case "contest-refund":
     case "contest-tie":
@@ -106,6 +121,8 @@ export function getNotificationTag(type: NotificationType | undefined): Notifica
       return { label: "Comment", color: "#8B5CF6", icon: "chatbubble-outline" };
     case "contest-win":
       return { label: "Win", color: "#22C55E", icon: "trophy" };
+    case "prize-claim":
+      return { label: "Prize", color: "#8B5CF6", icon: "cube" };
     case "contest-loss":
       return { label: "Result", color: "#F59E0B", icon: "sad-outline" };
     case "contest-refund":
@@ -173,6 +190,7 @@ export const CATEGORY_BY_TYPE: Record<string, NotificationCategory> = {
   "contest-ending": "contest",
   "hall-of-fame": "contest",
   monthly_hall_of_fame_reward: "contest",
+  "prize-claim": "contest",
   // wallet
   purchase: "wallet",
   deposit: "wallet",

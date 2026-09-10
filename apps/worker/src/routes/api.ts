@@ -41,6 +41,7 @@ import { purgeShared } from "../lib/edgeCache";
 import { assertContestOpenNow, createContestExtra, validateContestInput } from "../lib/contestAdmin";
 import { parsePayoutDestination, readWithdrawalPolicy } from "../lib/payouts";
 import { parseDeliveryAddress } from "../lib/deliveryAddress";
+import { normalizePrizeType } from "../lib/prizes";
 import {
   cancelAccountDeletion,
   checkDeletionEligibility,
@@ -421,6 +422,28 @@ apiRoute.post("/", async (c) => {
       // the contest template cannot change what this match pays out, and the
       // prize can never exceed the pot these two players fund.
       const prizeCoins = Math.min(Number(contest.rewardCoins || 0), matchPot(totalFee));
+      /**
+       * The PRODUCT half of that same snapshot, and for exactly the same reason.
+       *
+       * This was missing: migration 0042 added the four columns and `resolveMatchPrize`
+       * reads them, but the only production INSERT into `contest_matches` (this one)
+       * never wrote them. Every new match therefore had `prize_type IS NULL`, which
+       * `resolveMatch` interprets as "row written before 0042" and back-fills from the
+       * live template — at SETTLEMENT time, once voting is already over.
+       *
+       * So the immutability that holds for `prize_coins` did not hold for a product:
+       * a match sitting in `waiting_for_opponent` is not `active`, so the PATCH guard
+       * ("Cannot change the prize while active matches exist") does not cover it, and
+       * an admin who switched the template's prize changed what that already-paid-for
+       * battle would hand over. Writing the snapshot here closes that window, and it
+       * also lets the match payload state its own prize instead of nothing.
+       *
+       * `normalizePrizeType` rather than the raw column: NULL must mean "legacy" for
+       * the degrade path in `resolveMatch` to stay meaningful, so a row this code
+       * writes is never allowed to be NULL.
+       */
+      const prizeType = normalizePrizeType(contest.prizeType);
+      const isProductPrize = prizeType === "product";
 
       const ts = now();
       const matchId = newId();
@@ -474,8 +497,10 @@ apiRoute.post("/", async (c) => {
         env.DB.prepare(
           `INSERT INTO contest_matches
              (id, contest_id, status, type, title, entry_fee, is_private, invited_uid,
-              join_id_a, user_a, total_votes, min_votes_required, prize_coins, created_at, expires_at)
-           SELECT ?, ?, 'waiting_for_opponent', ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?
+              join_id_a, user_a, total_votes, min_votes_required, prize_coins,
+              prize_type, prize_product_title, prize_product_image_url, prize_product_value,
+              created_at, expires_at)
+           SELECT ?, ?, 'waiting_for_opponent', ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?
             WHERE ${solvent}`,
         ).bind(
           matchId,
@@ -489,6 +514,10 @@ apiRoute.post("/", async (c) => {
           JSON.stringify(userASnapshot),
           Math.max(0, Number(contest.minVotes || 0)),
           prizeCoins,
+          prizeType,
+          isProductPrize ? contest.prizeProductTitle ?? null : null,
+          isProductPrize ? contest.prizeProductImageUrl ?? null : null,
+          isProductPrize ? contest.prizeProductValue ?? null : null,
           ts,
           expiresAt,
           uid,

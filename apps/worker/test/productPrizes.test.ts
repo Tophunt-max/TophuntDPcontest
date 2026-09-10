@@ -41,6 +41,7 @@ import * as schema from '../src/db/schema';
 import { settleWinner } from '../src/lib/contestSettlement';
 import { resolveMatchPrize, assertProductPrize, normalizePrizeType } from '../src/lib/prizes';
 import { parseDeliveryAddress } from '../src/lib/deliveryAddress';
+import { validateContestInput } from '../src/lib/contestAdmin';
 
 const app = makeApp();
 const ADMIN = { 'Content-Type': 'application/json', 'X-Admin-Secret': 'test-admin-secret' };
@@ -140,6 +141,57 @@ describe('resolveMatchPrize', () => {
     expect(normalizePrizeType(null)).toBe('coins');
     expect(normalizePrizeType('sweepstake')).toBe('coins');
     expect(resolveMatchPrize({ prizeType: 'nonsense' }, null, 10).type).toBe('coins');
+  });
+});
+
+/**
+ * The PATCH contract for the product prize, pinned because the admin panel builds a
+ * minimal field-by-field diff and this is the one field group where that is wrong.
+ *
+ * `validateContestInput` validates the product as a UNIT: `prizeType: "product"`
+ * makes it call `assertProductPrize` over whatever the body contains, and an absent
+ * key arrives as `undefined`, which fails as blank. So a diff carrying only the one
+ * field that changed is refused, naming a field the admin can see filled in. Any
+ * client editing a product prize has to send all five keys together.
+ */
+describe('validateContestInput — a product prize is a unit on PATCH', () => {
+  const FULL = {
+    prizeType: 'product',
+    prizeProductTitle: 'boAt Airdopes 141',
+    prizeProductImageUrl: 'https://media.test/p.jpg',
+    prizeProductValue: 1499,
+  };
+
+  it('accepts the whole prize set', () => {
+    const values = validateContestInput({ ...FULL }, false).values;
+    expect(values.prizeType).toBe('product');
+    expect(values.prizeProductTitle).toBe('boAt Airdopes 141');
+    // A product contest pays no coins, forced rather than merely validated.
+    expect(values.rewardCoins).toBe(0);
+  });
+
+  it('refuses a partial product edit, so a diffing client MUST send all five keys', () => {
+    expect(() => validateContestInput({ prizeType: 'product', prizeProductTitle: 'New name' }, false))
+      .toThrow(/product image/i);
+    expect(() => validateContestInput({ prizeType: 'product', prizeProductImageUrl: 'https://media.test/n.jpg' }, false))
+      .toThrow(/product name/i);
+    expect(() => validateContestInput({ prizeType: 'product', prizeProductValue: 99 }, false))
+      .toThrow(/product name/i);
+    expect(() => validateContestInput({ prizeType: 'product', prizeProductDescription: 'Black' }, false))
+      .toThrow(/product name/i);
+  });
+
+  it('refuses product fields that do not say which kind of prize this is', () => {
+    expect(() => validateContestInput({ prizeProductTitle: 'New name' }, false))
+      .toThrow(/Include prizeType/i);
+  });
+
+  it('clears the product columns on the way back to coins', () => {
+    const values = validateContestInput({ prizeType: 'coins', rewardCoins: 40, totalEntryFee: 100 }, false).values;
+    expect(values.prizeProductTitle).toBeNull();
+    expect(values.prizeProductImageUrl).toBeNull();
+    expect(values.prizeProductValue).toBe(0);
+    expect(values.prizeProductDescription).toBeNull();
   });
 });
 
@@ -459,6 +511,137 @@ describe('admin fulfilment', () => {
     // for the winner's notification and for whoever asks about it later.
     expect((await setStatus(env, { status: 'cancelled' })).status).toBe(400);
     expect((await setStatus(env, { status: 'cancelled', adminNote: 'Out of stock; coins offered instead.' })).status).toBe(200);
+  });
+});
+
+// ===========================================================================
+/**
+ * `startMatch` must SNAPSHOT the product prize onto the match, exactly as it already
+ * did for `prize_coins`.
+ *
+ * Migration 0042 added the four columns and `resolveMatchPrize` reads them, but the
+ * only production INSERT into `contest_matches` never wrote them — so every new
+ * match had `prize_type IS NULL`, which the resolver interprets as "row written
+ * before 0042" and back-fills from the LIVE template at settlement time.
+ *
+ * That silently voided the immutability guarantee for products. A match in
+ * `waiting_for_opponent` is not `active`, so the admin PATCH guard ("Cannot change
+ * the prize while active matches exist") does not cover it: an admin could switch a
+ * template from a phone to earphones — or to coins — and change what an
+ * already-paid-for battle handed over.
+ */
+describe('startMatch snapshots the prize onto the match', () => {
+  const startMatch = (env: TestEnv, uid: string, contestId: string) =>
+    app.request(
+      '/api',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${uid}` },
+        body: JSON.stringify({ action: 'startMatch', contestId, mediaUrl: 'https://m.test/a.jpg', mediaType: 'photo' }),
+      },
+      env,
+      fakeCtx(),
+    );
+
+  async function seedLiveContest(env: TestEnv, values: Record<string, any>) {
+    const ts = Date.now();
+    await drizzleOf(env).insert(schema.contests).values({
+      id: 'c1',
+      title: 'Prize Contest',
+      type: 'photo',
+      status: 'live',
+      totalEntryFee: 100,
+      rewardCoins: 0,
+      voteDurationDays: 1,
+      autoCancelHours: 24,
+      minVotes: 0,
+      createdAt: ts,
+      ...values,
+    } as any);
+  }
+
+  it('writes the product columns so the match is not read as a legacy row', async () => {
+    const { env } = makeEnv();
+    await seedUsers(env, ['alice']);
+    await seedLiveContest(env, {
+      prizeType: 'product',
+      prizeProductTitle: 'boAt Airdopes 141',
+      prizeProductImageUrl: 'https://media.test/p.jpg',
+      prizeProductValue: 1499,
+    });
+
+    const res = await startMatch(env, 'alice', 'c1');
+    expect(res.status).toBe(200);
+
+    const match = await drizzleOf(env).select().from(schema.contestMatches).get();
+    // Non-null prize_type is what marks this as a row carrying its own snapshot.
+    expect(match?.prizeType).toBe('product');
+    expect(match?.prizeProductTitle).toBe('boAt Airdopes 141');
+    expect(match?.prizeProductImageUrl).toBe('https://media.test/p.jpg');
+    expect(match?.prizeProductValue).toBe(1499);
+  });
+
+  it('resolves that snapshot even after the template is edited underneath it', async () => {
+    const { env } = makeEnv();
+    await seedUsers(env, ['alice']);
+    await seedLiveContest(env, {
+      prizeType: 'product',
+      prizeProductTitle: 'boAt Airdopes 141',
+      prizeProductImageUrl: 'https://media.test/p.jpg',
+      prizeProductValue: 1499,
+    });
+    await startMatch(env, 'alice', 'c1');
+
+    const db = drizzleOf(env);
+    // The admin swaps the prize while the match is still waiting for an opponent.
+    await db
+      .update(schema.contests)
+      .set({ prizeProductTitle: 'A single sticker', prizeProductValue: 5 } as any)
+      .where(eq(schema.contests.id, 'c1'));
+
+    const match = await db.select().from(schema.contestMatches).get();
+    const template = await db.select().from(schema.contests).get();
+    const prize = resolveMatchPrize(match as any, template as any, 0);
+
+    expect(prize.type).toBe('product');
+    expect(prize.product?.title).toBe('boAt Airdopes 141');
+    expect(prize.product?.value).toBe(1499);
+  });
+
+  it('stamps a coin contest as "coins" rather than leaving it null', async () => {
+    const { env } = makeEnv();
+    await seedUsers(env, ['alice']);
+    await seedLiveContest(env, { prizeType: 'coins', rewardCoins: 40 });
+
+    await startMatch(env, 'alice', 'c1');
+
+    const match = await drizzleOf(env).select().from(schema.contestMatches).get();
+    // NULL has to keep meaning "written before 0042" for the resolver's degrade path
+    // to be meaningful, so rows written now are never allowed to be null.
+    expect(match?.prizeType).toBe('coins');
+    expect(match?.prizeProductTitle).toBeNull();
+    // The coin snapshot still works as before, clamped to the pot.
+    expect(match?.prizeCoins).toBe(40);
+  });
+
+  it('does not copy product fields onto a coin contest', async () => {
+    const { env } = makeEnv();
+    await seedUsers(env, ['alice']);
+    // A contest switched back to coins can still have stale product columns; the
+    // match must not inherit them and then claim to owe a phone.
+    await seedLiveContest(env, {
+      prizeType: 'coins',
+      rewardCoins: 40,
+      prizeProductTitle: 'Leftover phone',
+      prizeProductImageUrl: 'https://media.test/old.jpg',
+    });
+
+    await startMatch(env, 'alice', 'c1');
+
+    const match = await drizzleOf(env).select().from(schema.contestMatches).get();
+    expect(match?.prizeProductTitle).toBeNull();
+    expect(match?.prizeProductImageUrl).toBeNull();
+    expect(resolveMatchPrize(match as any, null, 40).type).toBe('coins');
   });
 });
 

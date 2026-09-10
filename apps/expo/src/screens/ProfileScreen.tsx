@@ -19,6 +19,7 @@ import Highlights from '@/src/components/profile/Highlights';
 import ProfileTabs, { ProfileTab } from '@/src/components/profile/ProfileTabs';
 import { ProfileHeaderSkeleton, PostGridSkeleton } from '@/src/components/profile/ProfileSkeleton';
 import { WalletCard } from '@/src/components/profile/WalletCard';
+import { PrizeEntryCard } from '@/src/components/prizes/PrizeEntryCard';
 import { BottomNav } from '@/src/components/home/BottomNav';
 import { notificationService } from '@/src/services/notifications/notificationService';
 import { fetchProfileByHandle, profilePath } from '@/src/services/users';
@@ -390,12 +391,21 @@ const ProfileContent = ({
             {isBlockedByMe ? null : (
             <>
             {isOwnProfile && (
-              <WalletCard
-                Dpcoin={profile?.Dpcoin || 0}
-                stats={profile?.stats || { contestsJoined: 0, wins: 0, totalVotesReceived: 0 }}
-                onPress={() => router.push('/wallet')}
-                onPressWins={() => router.push(`/profile/wins?userId=${targetUserId}`)}
-              />
+              <>
+                <WalletCard
+                  Dpcoin={profile?.Dpcoin || 0}
+                  stats={profile?.stats || { contestsJoined: 0, wins: 0, totalVotesReceived: 0 }}
+                  onPress={() => router.push('/wallet')}
+                  onPressWins={() => router.push(`/profile/wins?userId=${targetUserId}`)}
+                />
+                {/*
+                  Physical prizes have no home in the WalletCard — they are not coins
+                  and never touch a balance. This renders nothing at all for a user
+                  who has never won one, and turns into a call to action when one is
+                  waiting on their delivery address.
+                */}
+                <PrizeEntryCard isDark={isDark} />
+              </>
             )}
             <Highlights userId={targetUserId} />
             <ProfileTabs

@@ -4,6 +4,7 @@ import { Ionicons } from '@/src/lib/icons';
 import { CoinIcon } from '@/src/components/ui/CoinIcon';
 import { useCountdown } from '@/src/hooks/useCountdown';
 import { entryFeePerPlayer, isFreeContest, type ContestPricingInput } from '@/src/lib/contestPricing';
+import { contestPrize, type ContestPrizeInput } from '@/src/lib/contestPrize';
 import type { Deadline } from '@/src/lib/countdown';
 
 /**
@@ -51,6 +52,13 @@ const FREE_BG = '#4ADE80';
 const FREE_FG = '#052E16';
 const PAID_BG = '#FCD34D';
 const PAID_FG = '#422006';
+/**
+ * Prize accents. Coins keep the gold they have everywhere else in the app; a
+ * physical prize gets violet so the two kinds are distinguishable at a glance
+ * without reading the label.
+ */
+const COIN_FG = '#FFB800';
+const PRODUCT_FG = '#A78BFA';
 /** Time pill: solid dark, light type. */
 const TIME_BG = '#111827';
 const TIME_URGENT_BG = '#DC2626';
@@ -172,6 +180,73 @@ export function ContestCountdownBadge({
   );
 }
 
+/**
+ * The "WINNER GETS" block on a contest card.
+ *
+ * Shared by the photo and video lists, which rendered `{rewardCoins(item)} Coins`
+ * inline and identically. That was fine until a contest could award a phone: a
+ * product contest keeps its coin reward at 0, so both screens advertised
+ * "WINNER GETS 0 Coins" for the most valuable prizes in the app.
+ *
+ * A product shows the item's NAME, because that is the prize — the declared value
+ * is a secondary line, and deliberately prefixed "Worth" and rendered in rupees so
+ * it can never be mistaken for a coin figure the wallet is about to receive.
+ */
+export function ContestPrizeLine({
+  contest,
+  labelColor,
+}: {
+  contest: ContestPrizeInput | null | undefined;
+  labelColor: string;
+}) {
+  const prize = contestPrize(contest);
+
+  if (prize.type === 'product') {
+    return (
+      <View style={styles.prizeInfo}>
+        <Text style={[styles.prizeLabel, { color: labelColor }]} maxFontSizeMultiplier={MAX_SCALE}>
+          WINNER GETS
+        </Text>
+        <View style={styles.prizeValueRow}>
+          <Ionicons name="cube" size={16} color={PRODUCT_FG} />
+          <Text
+            style={[styles.prizeValue, { color: PRODUCT_FG }]}
+            numberOfLines={1}
+            maxFontSizeMultiplier={MAX_SCALE}
+          >
+            {prize.product.title}
+          </Text>
+        </View>
+        {prize.product.value > 0 && (
+          <Text style={[styles.prizeSub, { color: labelColor }]} numberOfLines={1} maxFontSizeMultiplier={MAX_SCALE}>
+            Worth ₹{prize.product.value}
+          </Text>
+        )}
+      </View>
+    );
+  }
+
+  // Nothing at all rather than "0 Coins". Zero is reachable on the degrade paths
+  // `contestPrize` documents — a payload served from the 60s cache across a deploy,
+  // or a product row whose title was lost — and "WINNER GETS 0 Coins" reads as a
+  // broken contest. Matches what Explore's card already does.
+  if (prize.coins <= 0) return <View style={styles.prizeInfo} />;
+
+  return (
+    <View style={styles.prizeInfo}>
+      <Text style={[styles.prizeLabel, { color: labelColor }]} maxFontSizeMultiplier={MAX_SCALE}>
+        WINNER GETS
+      </Text>
+      <View style={styles.prizeValueRow}>
+        <Ionicons name="trophy" size={16} color={COIN_FG} />
+        <Text style={[styles.prizeValue, { color: COIN_FG }]} numberOfLines={1} maxFontSizeMultiplier={MAX_SCALE}>
+          {prize.coins} Coins
+        </Text>
+      </View>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   badge: {
     flexDirection: 'row',
@@ -196,6 +271,14 @@ const styles = StyleSheet.create({
   badgeTextSm: { fontSize: 11 },
   /** Fixed-width digits, so a ticking label does not resize its own pill. */
   numeric: { fontVariant: ['tabular-nums'] },
+
+  // Reward block. Lifted verbatim from the photo and video cards, which both had
+  // an identical copy, so moving it here changed nothing visually for coins.
+  prizeInfo: { flex: 1 },
+  prizeLabel: { fontSize: 11, fontFamily: 'Urbanist-Bold', letterSpacing: 0.6 },
+  prizeValueRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 3 },
+  prizeValue: { fontSize: 17, fontFamily: 'Urbanist-Bold', flexShrink: 1 },
+  prizeSub: { fontSize: 11, fontFamily: 'Urbanist-SemiBold', marginTop: 1 },
 
   freeBadge: { backgroundColor: FREE_BG, borderColor: 'rgba(5,46,22,0.22)' },
   paidBadge: { backgroundColor: PAID_BG, borderColor: 'rgba(66,32,6,0.22)' },

@@ -63,6 +63,21 @@ export const CATEGORY_BY_TYPE: Record<string, NotificationCategory> = {
   "contest-ending": "contest",
   "hall-of-fame": "contest",
   monthly_hall_of_fame_reward: "contest",
+  /**
+   * Physical prize: "you won a phone, add your delivery address", and every
+   * fulfilment step after it (approved / shipped / delivered / cancelled).
+   *
+   * `contest` because this is the product-prize counterpart of `contest-win` — for
+   * a product contest it IS the win notification — and a user who wants contest
+   * results wants this one most of all. It was unmapped, so it fell back to
+   * `social`: muting likes and follows also muted the message telling somebody a
+   * prize was on its way, and the push landed on the `social` Android channel.
+   *
+   * Not `wallet` despite carrying real value: nothing here moves coins, and a
+   * winner who has muted contests still sees every step in the notification centre
+   * and on the Prizes screen, because preferences gate PUSH only.
+   */
+  "prize-claim": "contest",
 
   // --- wallet (real money / balances) ---
   purchase: "wallet",

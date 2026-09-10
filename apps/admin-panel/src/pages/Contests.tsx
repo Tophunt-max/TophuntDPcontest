@@ -2,10 +2,14 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
+  PRODUCT_DESCRIPTION_MAX,
+  PRODUCT_TITLE_MAX,
+  PRODUCT_VALUE_MAX,
   type AdminContest,
   type ContestStatus,
   type ContestType,
   type ContestWritePayload,
+  type PrizeType,
 } from "@/lib/api";
 import { Table } from "@/components/ui/Table";
 import { Badge } from "@/components/ui/Badge";
@@ -28,9 +32,11 @@ import { toast } from "@/lib/toast";
 import {
   AlertCircle,
   Clock3,
+  Coins,
   Copy,
   Image as ImageIcon,
   Loader2,
+  Package,
   Pencil,
   Plus,
   Radio,
@@ -359,12 +365,21 @@ export default function Contests() {
             },
             {
               key: "economy",
-              header: "Entry / Reward",
+              header: "Entry / Prize",
+              // A product contest pays 0 coins, so rendering only the coin figure
+              // showed "500 / 0" and read as a misconfigured contest.
               render: (contest) => (
                 <div className="whitespace-nowrap text-sm">
                   <span className="font-medium">{fmtNumber(contest.totalEntryFee)}</span>
                   <span className="mx-1.5 text-muted-foreground">/</span>
-                  <span>{fmtNumber(contest.rewardCoins)}</span>
+                  {contest.prizeType === "product" ? (
+                    <span className="inline-flex max-w-40 items-center gap-1 align-middle" title={contest.prizeProductTitle || "Product prize"}>
+                      <Package className="size-3.5 shrink-0 text-violet-600" />
+                      <span className="truncate text-xs font-medium">{contest.prizeProductTitle || "Product"}</span>
+                    </span>
+                  ) : (
+                    <span>{fmtNumber(contest.rewardCoins)}</span>
+                  )}
                 </div>
               ),
             },
@@ -506,9 +521,14 @@ type ContestFormState = {
   /** datetime-local strings; "" means unbounded. */
   startsAt: string;
   endsAt: string;
+  prizeType: PrizeType;
+  prizeProductTitle: string;
+  prizeProductImageUrl: string;
+  prizeProductValue: string;
+  prizeProductDescription: string;
 };
 
-type ContestFormErrors = Partial<Record<keyof ContestFormState | "banner", string>>;
+type ContestFormErrors = Partial<Record<keyof ContestFormState | "banner" | "productImage", string>>;
 
 function formFromContest(contest: AdminContest | undefined, mode: DialogMode): ContestFormState {
   const duplicate = mode === "duplicate";
@@ -531,6 +551,15 @@ function formFromContest(contest: AdminContest | undefined, mode: DialogMode): C
     minVotes: String(contest?.minVotes ?? 0),
     startsAt: staleWindow ? "" : msToLocalInput(contest?.startsAt ?? null),
     endsAt: staleWindow ? "" : msToLocalInput(inheritedEnd),
+    // A duplicate DOES inherit the product image URL. That is safe here where a
+    // stale date is not: the R2 object is immutable and shared by reference, and
+    // the Worker's delete refuses any image still attached to a contest, so two
+    // contests pointing at one picture cannot leave either of them broken.
+    prizeType: contest?.prizeType === "product" ? "product" : "coins",
+    prizeProductTitle: contest?.prizeProductTitle || "",
+    prizeProductImageUrl: contest?.prizeProductImageUrl || "",
+    prizeProductValue: String(contest?.prizeProductValue ?? 0),
+    prizeProductDescription: contest?.prizeProductDescription || "",
   };
 }
 
@@ -553,16 +582,40 @@ function ContestDialog({
   const [localPreview, setLocalPreview] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploading, setUploading] = useState(false);
+  const [productFile, setProductFile] = useState<File | null>(null);
+  const [productPreview, setProductPreview] = useState<string | null>(null);
+  const [productProgress, setProductProgress] = useState(0);
+  const [uploadingProduct, setUploadingProduct] = useState(false);
   const [saving, setSaving] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const isEdit = mode === "edit";
-  const isDirty = JSON.stringify(form) !== JSON.stringify(initialForm.current) || bannerFile !== null;
+  const isDirty =
+    JSON.stringify(form) !== JSON.stringify(initialForm.current) || bannerFile !== null || productFile !== null;
   const bannerPreview = localPreview || form.bannerUrl || null;
+  const isProduct = form.prizeType === "product";
+  const productImagePreview = productPreview || form.prizeProductImageUrl || null;
+  /** What the payload will actually carry — a product contest always pays 0 coins. */
+  const effectiveRewardCoins = isProduct ? 0 : Number(form.rewardCoins);
+  /**
+   * The same three fields the Worker's PATCH guard treats as "the prize changed".
+   * Value and description alone do not count there, so they do not count here — a
+   * warning that fires on an edit the Worker allows is a warning admins learn to
+   * ignore.
+   */
+  const prizeChanged =
+    form.prizeType !== (contest?.prizeType === "product" ? "product" : "coins") ||
+    (isProduct ? form.prizeProductTitle.trim() : "") !== (contest?.prizeProductTitle ?? "") ||
+    (isProduct ? form.prizeProductImageUrl : "") !== (contest?.prizeProductImageUrl ?? "") ||
+    (isProduct && productFile !== null);
 
   useEffect(() => () => {
     if (localPreview) URL.revokeObjectURL(localPreview);
   }, [localPreview]);
+
+  useEffect(() => () => {
+    if (productPreview) URL.revokeObjectURL(productPreview);
+  }, [productPreview]);
 
   const set = <K extends keyof ContestFormState>(key: K, value: ContestFormState[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
@@ -608,6 +661,33 @@ function ContestDialog({
     setUploadProgress(0);
   };
 
+  // The product image goes through the same pre-checks as the banner, against the
+  // same Worker limits, so an oversized file is refused here instead of after a
+  // 5 MB upload.
+  const selectProductImage = (file: File | undefined) => {
+    if (!file) return;
+    if (!BANNER_TYPES.includes(file.type)) {
+      setErrors((current) => ({ ...current, productImage: "Choose a JPEG, PNG, or WebP image." }));
+      return;
+    }
+    if (file.size > MAX_BANNER_BYTES) {
+      setErrors((current) => ({ ...current, productImage: "Image must be 5 MB or smaller." }));
+      return;
+    }
+    setProductFile(file);
+    setProductPreview(URL.createObjectURL(file));
+    setErrors((current) => ({ ...current, productImage: undefined }));
+    setSubmitError(null);
+    setProductProgress(0);
+  };
+
+  const removeProductImage = () => {
+    setProductFile(null);
+    setProductPreview(null);
+    set("prizeProductImageUrl", "");
+    setProductProgress(0);
+  };
+
   const validate = (): { errors: ContestFormErrors; payload: ContestWritePayload | null } => {
     const next: ContestFormErrors = {};
     const title = form.title.trim();
@@ -628,10 +708,38 @@ function ContestDialog({
     };
 
     const totalEntryFee = integer("totalEntryFee", "Entry fee", 0, 1_000_000);
-    const rewardCoins = integer("rewardCoins", "Reward coins", 0, 10_000_000);
+    // A product contest pays no coins, so the coin field is not validated and not
+    // read — the Worker forces it to 0 regardless, and validating a disabled field
+    // would block a save on a number that is about to be discarded.
+    const rewardCoins = isProduct ? 0 : integer("rewardCoins", "Reward coins", 0, 10_000_000);
     const voteDurationDays = integer("voteDurationDays", "Vote duration", 1, 30);
     const autoCancelHours = integer("autoCancelHours", "Waiting auto-cancel", 1, 168);
     const minVotes = integer("minVotes", "Minimum votes", 0, 1_000_000);
+
+    // Product prize. These mirror the Worker's `assertProductPrize` so a bad prize
+    // is caught before the banner and the product image are both uploaded.
+    const productTitle = form.prizeProductTitle.trim();
+    const productDescription = form.prizeProductDescription.trim();
+    let productValue = 0;
+    if (isProduct) {
+      if (!productTitle) next.prizeProductTitle = "A product prize needs a product name.";
+      else if (productTitle.length > PRODUCT_TITLE_MAX) {
+        next.prizeProductTitle = `Product name must be ${fmtNumber(PRODUCT_TITLE_MAX)} characters or fewer.`;
+      }
+      // The image is required, not optional: it is the one field that makes a
+      // physical prize believable, and it is shown on every card in the app.
+      if (!productFile && !form.prizeProductImageUrl) {
+        next.productImage = "A product prize needs a product image.";
+      }
+      const raw = form.prizeProductValue.trim();
+      productValue = raw === "" ? 0 : Number(raw);
+      if (!Number.isInteger(productValue) || productValue < 0 || productValue > PRODUCT_VALUE_MAX) {
+        next.prizeProductValue = `Product value must be a whole number from 0 to ${fmtNumber(PRODUCT_VALUE_MAX)}.`;
+      }
+      if (productDescription.length > PRODUCT_DESCRIPTION_MAX) {
+        next.prizeProductDescription = `Product description must be ${fmtNumber(PRODUCT_DESCRIPTION_MAX)} characters or fewer.`;
+      }
+    }
 
     // Validity window. Empty is valid and means unbounded, so only a non-empty
     // value is ever checked. These mirror the Worker's own rules so the admin
@@ -694,6 +802,14 @@ function ContestDialog({
         minVotes,
         startsAt: preserveUntouched('startsAt', startsAt),
         endsAt: preserveUntouched('endsAt', endsAt),
+        prizeType: form.prizeType,
+        // Cleared rather than carried when the prize is coins, so the payload says
+        // what the contest is instead of leaving a previous product's name behind.
+        // (The Worker nulls them too; sending them keeps the edit diff honest.)
+        prizeProductTitle: isProduct ? productTitle : null,
+        prizeProductImageUrl: isProduct ? form.prizeProductImageUrl || null : null,
+        prizeProductValue: isProduct ? productValue : 0,
+        prizeProductDescription: isProduct ? productDescription || null : null,
       },
     };
   };
@@ -708,6 +824,7 @@ function ContestDialog({
     setSaving(true);
     setSubmitError(null);
     let uploadedUrl: string | null = null;
+    let uploadedProductUrl: string | null = null;
     try {
       const payload = { ...result.payload };
       if (bannerFile) {
@@ -716,6 +833,16 @@ function ContestDialog({
         uploadedUrl = uploaded.publicUrl;
         payload.bannerUrl = uploaded.publicUrl;
         setUploading(false);
+      }
+      // Only when the prize is actually a product. Uploading a picked file after
+      // the admin switched back to coins would leave an unreferenced object in R2
+      // that the payload never mentions.
+      if (productFile && isProduct) {
+        setUploadingProduct(true);
+        const uploaded = await api.uploadProductImage(productFile, setProductProgress);
+        uploadedProductUrl = uploaded.publicUrl;
+        payload.prizeProductImageUrl = uploaded.publicUrl;
+        setUploadingProduct(false);
       }
 
       if (isEdit && contest) {
@@ -740,10 +867,44 @@ function ContestDialog({
           // `preserveUntouched` puts in the payload.
           startsAt: contest.startsAt ?? localInputToMs(initial.startsAt),
           endsAt: contest.endsAt ?? localInputToMs(initial.endsAt),
+          prizeType: initial.prizeType,
+          prizeProductTitle: initial.prizeProductTitle.trim() || null,
+          prizeProductImageUrl: initial.prizeProductImageUrl || null,
+          prizeProductValue: Number(initial.prizeProductValue),
+          prizeProductDescription: initial.prizeProductDescription.trim() || null,
         };
         const patch: Partial<ContestWritePayload> = {};
         for (const key of Object.keys(payload) as Array<keyof ContestWritePayload>) {
           if (payload[key] !== initialPayload[key]) (patch as Record<string, unknown>)[key] = payload[key];
+        }
+        /**
+         * THE PRIZE IS SENT AS A WHOLE OR NOT AT ALL.
+         *
+         * A field-by-field diff is wrong for this one group, because the Worker does
+         * not validate the prize field by field. `validateContestInput` treats
+         * `prizeType: "product"` as "validate the product as a unit" and calls
+         * `assertProductPrize` with whatever the body happens to contain — and an
+         * absent key reads as `undefined`, which fails as a blank value. So a diff
+         * carrying only the field that changed is exactly the payload it refuses:
+         * renaming a product would 400 with "A product prize needs a product image."
+         *
+         * It also rejects any `prizeProduct*` field that arrives without `prizeType`
+         * ("Include prizeType when changing product prize fields."), since it will
+         * not guess whether a bare title means "rename the product" or "turn this
+         * coin contest into a product one".
+         *
+         * Both rules are satisfied by the same move: if anything about the prize
+         * changed, send all five keys.
+         */
+        const PRIZE_KEYS = [
+          "prizeType",
+          "prizeProductTitle",
+          "prizeProductImageUrl",
+          "prizeProductValue",
+          "prizeProductDescription",
+        ] as const;
+        if (PRIZE_KEYS.some((key) => key in patch)) {
+          for (const key of PRIZE_KEYS) (patch as Record<string, unknown>)[key] = payload[key];
         }
         if (!Object.keys(patch).length) {
           toast.info("No contest changes to save");
@@ -762,6 +923,9 @@ function ContestDialog({
       const message = error instanceof Error ? error.message : "Could not save contest.";
       setSubmitError(message);
       toast.error(message);
+      // Both uploads happen before the save, so a failed save can leave images in
+      // R2 that no contest references. Each is cleaned up independently — a banner
+      // that cannot be removed must not also strand the product image.
       if (uploadedUrl) {
         try {
           await api.deleteContestBanner(uploadedUrl);
@@ -769,8 +933,16 @@ function ContestDialog({
           toast.warning("The contest was not saved and its temporary banner could not be removed automatically.");
         }
       }
+      if (uploadedProductUrl) {
+        try {
+          await api.deleteProductImage(uploadedProductUrl);
+        } catch {
+          toast.warning("The contest was not saved and its temporary product image could not be removed automatically.");
+        }
+      }
     } finally {
       setUploading(false);
+      setUploadingProduct(false);
       setSaving(false);
     }
   };
@@ -967,15 +1139,180 @@ function ContestDialog({
             </section>
 
             <section className="space-y-4 border-t border-border pt-5">
+              <FormSectionTitle
+                title="Prize"
+                description="A contest awards either coins or one physical product — never both."
+              />
+              <div className="grid gap-3 sm:grid-cols-2">
+                <PrizeTypeOption
+                  selected={!isProduct}
+                  disabled={saving}
+                  icon={Coins}
+                  title="Coins"
+                  description="Credited to the winner's wallet on settlement. Capped by the entry-fee pot."
+                  onSelect={() => set("prizeType", "coins")}
+                />
+                <PrizeTypeOption
+                  selected={isProduct}
+                  disabled={saving}
+                  icon={Package}
+                  title="Physical product"
+                  description="The winner submits a delivery address and you ship it from the Prize Claims queue."
+                  onSelect={() => set("prizeType", "product")}
+                />
+              </div>
+
+              {isProduct && (
+                <div className="space-y-4 rounded-xl border border-border bg-secondary/30 p-4">
+                  <Field
+                    label="Product name"
+                    required
+                    error={errors.prizeProductTitle}
+                    hint={`${form.prizeProductTitle.length}/${PRODUCT_TITLE_MAX}`}
+                  >
+                    <Input
+                      value={form.prizeProductTitle}
+                      maxLength={PRODUCT_TITLE_MAX}
+                      disabled={saving}
+                      onChange={(event) => set("prizeProductTitle", event.target.value)}
+                      placeholder="e.g. boAt Airdopes 141 Earbuds"
+                      aria-invalid={!!errors.prizeProductTitle}
+                    />
+                  </Field>
+
+                  <div className="grid gap-4 sm:grid-cols-[160px_minmax(0,1fr)]">
+                    <div className="flex aspect-square items-center justify-center overflow-hidden rounded-xl border border-dashed border-border bg-card">
+                      {productImagePreview ? (
+                        <img src={productImagePreview} alt="Product prize preview" className="h-full w-full object-cover" />
+                      ) : (
+                        <div className="text-center text-muted-foreground">
+                          <Package className="mx-auto mb-2 size-6" />
+                          <span className="text-xs">No product image</span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex flex-col justify-center gap-3">
+                      <p className="text-xs font-medium text-foreground">
+                        Product image<span className="ml-0.5 text-destructive">*</span>
+                      </p>
+                      <input
+                        id="contest-product-image-file"
+                        type="file"
+                        className="sr-only"
+                        accept="image/jpeg,image/png,image/webp"
+                        disabled={saving}
+                        onChange={(event) => {
+                          selectProductImage(event.target.files?.[0]);
+                          event.target.value = "";
+                        }}
+                      />
+                      <div className="flex flex-wrap gap-2">
+                        <Button type="button" variant="outline" size="sm" disabled={saving} asChild>
+                          <label htmlFor="contest-product-image-file" className="cursor-pointer">
+                            <Upload /> {productImagePreview ? "Replace image" : "Choose image"}
+                          </label>
+                        </Button>
+                        {productImagePreview && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            disabled={saving}
+                            onClick={removeProductImage}
+                            className="text-destructive"
+                          >
+                            <X /> Remove
+                          </Button>
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        JPEG, PNG, or WebP · maximum 5 MB. Shown on the contest card and to the winner while they wait for
+                        delivery.
+                      </p>
+                      {productFile && (
+                        <p className="text-xs text-muted-foreground">
+                          {productFile.name} · {(productFile.size / 1024 / 1024).toFixed(2)} MB · uploads when you save
+                        </p>
+                      )}
+                      {errors.productImage && <p className="text-xs font-medium text-destructive">{errors.productImage}</p>}
+                      {uploadingProduct && (
+                        <div className="space-y-1.5" aria-live="polite">
+                          <div className="flex justify-between text-xs text-muted-foreground">
+                            <span>Uploading product image…</span><span>{productProgress}%</span>
+                          </div>
+                          <Progress value={productProgress} />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <NumberField
+                      label="Declared value (₹)"
+                      value={form.prizeProductValue}
+                      min={0}
+                      max={PRODUCT_VALUE_MAX}
+                      error={errors.prizeProductValue}
+                      disabled={saving}
+                      onChange={(value) => set("prizeProductValue", value)}
+                    />
+                    <Field
+                      label="Product description"
+                      error={errors.prizeProductDescription}
+                      hint={`${form.prizeProductDescription.length}/${PRODUCT_DESCRIPTION_MAX}`}
+                    >
+                      <Textarea
+                        value={form.prizeProductDescription}
+                        maxLength={PRODUCT_DESCRIPTION_MAX}
+                        disabled={saving}
+                        onChange={(event) => set("prizeProductDescription", event.target.value)}
+                        placeholder="Colour, variant, warranty — anything the winner should know"
+                        className="min-h-20"
+                      />
+                    </Field>
+                  </div>
+                  <InlineNote>
+                    The declared value is shown to users as what the prize is worth. It is never credited and never
+                    spendable — a product contest pays 0 coins, and the entry fees it collects are what pay for the item.
+                  </InlineNote>
+                </div>
+              )}
+
+              {/* A prize change is refused outright while a battle is in flight,
+                  because a pre-0042 match reads the template at settlement — so
+                  this edit really can change what an already-running match pays. */}
+              {isEdit && contest && contest.activeMatches > 0 && prizeChanged && (
+                <InlineWarning>
+                  The prize cannot change while {contest.activeMatches} matches are active. Those battles were started on
+                  the current prize and must settle on it.
+                </InlineWarning>
+              )}
+            </section>
+
+            <section className="space-y-4 border-t border-border pt-5">
               <FormSectionTitle title="Economy and match policy" description="All values must be whole numbers within the supported limits." />
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 <NumberField label="Total entry fee" value={form.totalEntryFee} min={0} max={1_000_000} error={errors.totalEntryFee} disabled={saving} onChange={(value) => set("totalEntryFee", value)} />
-                <NumberField label="Reward coins" value={form.rewardCoins} min={0} max={10_000_000} error={errors.rewardCoins} disabled={saving} onChange={(value) => set("rewardCoins", value)} />
+                <NumberField
+                  label="Reward coins"
+                  value={isProduct ? "0" : form.rewardCoins}
+                  min={0}
+                  max={10_000_000}
+                  error={errors.rewardCoins}
+                  disabled={saving || isProduct}
+                  onChange={(value) => set("rewardCoins", value)}
+                />
                 <NumberField label="Minimum votes" value={form.minVotes} min={0} max={1_000_000} error={errors.minVotes} disabled={saving} onChange={(value) => set("minVotes", value)} />
                 <NumberField label="Vote duration (days)" value={form.voteDurationDays} min={1} max={30} error={errors.voteDurationDays} disabled={saving} onChange={(value) => set("voteDurationDays", value)} />
                 <NumberField label="Waiting auto-cancel (hours)" value={form.autoCancelHours} min={1} max={168} error={errors.autoCancelHours} disabled={saving} onChange={(value) => set("autoCancelHours", value)} />
               </div>
-              {isEdit && contest && contest.activeMatches > 0 && Number(form.rewardCoins) !== contest.rewardCoins && (
+              {isProduct && (
+                <InlineNote>
+                  Reward coins are fixed at 0 because this contest awards a product. Switch the prize back to Coins to set
+                  a coin reward.
+                </InlineNote>
+              )}
+              {isEdit && contest && contest.activeMatches > 0 && effectiveRewardCoins !== contest.rewardCoins && (
                 <InlineWarning>Reward coins cannot change while {contest.activeMatches} matches are active.</InlineWarning>
               )}
               {isEdit && contest && contest.waitingMatches > 0 && Number(form.voteDurationDays) !== contest.voteDurationDays && (
@@ -1001,6 +1338,54 @@ function ContestDialog({
         </form>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * One of the two prize kinds, as a card rather than a `<select>` option.
+ *
+ * The choice changes which fields the form even has and whether the coin reward is
+ * paid at all, so it gets room to say what each option means. A two-line dropdown
+ * is where "why is Reward coins greyed out?" comes from.
+ */
+function PrizeTypeOption({
+  selected,
+  disabled,
+  icon: Icon,
+  title,
+  description,
+  onSelect,
+}: {
+  selected: boolean;
+  disabled: boolean;
+  icon: typeof Coins;
+  title: string;
+  description: string;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      disabled={disabled}
+      onClick={onSelect}
+      className={`flex gap-3 rounded-xl border p-3 text-left transition-colors disabled:opacity-60 ${
+        selected ? "border-primary bg-primary/5 ring-1 ring-primary/30" : "border-border hover:bg-secondary/50"
+      }`}
+    >
+      <span
+        className={`mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg ${
+          selected ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground"
+        }`}
+      >
+        <Icon className="size-4" />
+      </span>
+      <span className="min-w-0">
+        <span className="block text-sm font-semibold text-foreground">{title}</span>
+        <span className="mt-0.5 block text-xs text-muted-foreground">{description}</span>
+      </span>
+    </button>
   );
 }
 
