@@ -39,6 +39,8 @@ vi.mock('../src/lib/firebaseAuth', () => ({
 const { authDeletes } = vi.hoisted(() => ({ authDeletes: [] as string[] }));
 
 vi.mock('../src/lib/firebaseAdmin', () => ({
+  // Session revocation calls this; without it the mock throws on property access.
+  revokeRefreshTokens: async () => undefined,
   deleteAuthUser: async (_env: unknown, uid: string) => {
     authDeletes.push(uid);
   },

@@ -19,6 +19,8 @@ vi.mock('../src/lib/firebaseAuth', () => ({
 }));
 
 vi.mock('../src/lib/firebaseAdmin', () => ({
+  // Session revocation calls this; without it the mock throws on property access.
+  revokeRefreshTokens: async () => undefined,
   updateAuthUser: async () => undefined,
   createAuthUser: async () => 'uid',
   createCustomToken: async () => 't',

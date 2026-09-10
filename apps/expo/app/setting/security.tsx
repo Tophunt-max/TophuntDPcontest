@@ -14,7 +14,7 @@ import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
 import { Ionicons } from '@/src/lib/icons';
 import { Colors } from '@/constants/theme';
 import { useAuth } from '@/src/hooks/useAuth';
-import { signOut } from '@/src/services/auth';
+import { logoutAllDevices, signOut } from '@/src/services/auth';
 import {
   hasPasswordProvider,
   providerIdsFor,
@@ -24,6 +24,7 @@ import { providerLabel } from '@/src/services/auth/passwordReset';
 import { useConfirm } from '@/src/components/modals/ConfirmDialog';
 import { emitToast } from '@/src/lib/toastBridge';
 import { reportError } from '@/src/lib/reportError';
+import { stripErrorMarker } from '@/src/lib/stripErrorMarker';
 
 /**
  * Security.
@@ -84,6 +85,50 @@ export default function SecurityScreen() {
       confirmLabel: 'Log out',
       destructive: true,
       onConfirm: performLogout,
+    });
+  };
+
+  const performLogoutAll = async () => {
+    try {
+      await logoutAllDevices();
+      router.replace('/auth/login');
+      emitToast('Signed out on all devices.', 'success');
+    } catch (error: any) {
+      reportError(error, { screen: 'security', action: 'logoutAllDevices' });
+      // Deliberately does NOT fall back to a local-only sign-out. Someone who pressed
+      // this because they think an intruder is signed in must not be left believing the
+      // intruder was removed when the request never landed — being signed out here while
+      // they are still signed in there is the worst of both outcomes. The session is
+      // untouched, so retrying is all that is needed.
+      // `error.message` can be a server message carrying the machine marker
+      // (`session_revoked: …`), which happens if this session was already revoked — by
+      // pressing twice, or by another device. Stripped rather than shown raw.
+      emitToast(
+        stripErrorMarker(error?.message) || 'Could not sign out your other devices. Please try again.',
+        'error',
+      );
+      throw error;
+    }
+  };
+
+  const handleLogoutAll = () => {
+    void confirm({
+      title: 'Log out of all devices?',
+      /**
+       * States plainly that this device goes too.
+       *
+       * It is not a caveat to bury — it is the difference between the control doing what
+       * it claims and not. A cutoff cannot preserve one session without being able to
+       * identify it, and for the case this exists to answer — "I do not know who else is
+       * signed in" — ending everything is the only answer that actually settles the
+       * question. Saying so up front is also what stops the immediate sign-out reading as
+       * a bug.
+       */
+      message:
+        'Every device will be signed out, including this one. You will need to sign in again.',
+      confirmLabel: 'Log out everywhere',
+      destructive: true,
+      onConfirm: performLogoutAll,
     });
   };
 
@@ -188,6 +233,23 @@ export default function SecurityScreen() {
             title="Email & phone"
             description="Kept verified so you can always get back in, and so payouts reach you"
             onPress={() => router.push('/profile/manage/edit')}
+            last
+          />
+        </View>
+
+        {/*
+          Its own section, above "This device", because the distinction between the two
+          is the entire point and a user skimming for the panic button should not have to
+          read a description to find it. This is what to press when you think someone
+          else is signed in.
+        */}
+        <Text style={[styles.sectionTitle, { color: textColor }]}>All devices</Text>
+        <View style={[styles.card, { backgroundColor: cardColor }]}>
+          <Row
+            icon="phone-portrait-outline"
+            title="Log out of all devices"
+            description="Ends every session, everywhere — use this if you think someone else is signed in"
+            onPress={handleLogoutAll}
             last
           />
         </View>

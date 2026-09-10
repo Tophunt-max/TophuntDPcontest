@@ -16,7 +16,8 @@ import { sendSms, smsConfigured } from "./sms";
 import { createNotification } from "./notify";
 import { userCacheKey } from "./cache";
 import { purgeShared, type EdgeCtx } from "./edgeCache";
-import { assertRecentAuth, clearReauthGrant } from "./reauth";
+import { assertRecentAuth, clearReauthGrant, hasFreshSession } from "./reauth";
+import { revokeAllSessions, revokeOtherSessions } from "./sessionRevocation";
 import { verificationCodeEmail, identifierChangedEmail } from "./emailTemplates";
 import { now } from "./ids";
 
@@ -279,12 +280,18 @@ export async function requestEmailChange(
  */
 export async function confirmEmailChange(
   env: Env,
-  uid: string,
+  /**
+   * The whole caller, not just their uid — `afterIdentifierChange` needs their
+   * `auth_time` to end the OTHER sessions without ending this one. Matches
+   * `requestEmailChange`, which has always taken the user.
+   */
+  user: AuthUser,
   code: unknown,
   /** Request context, so the profile cache purge reaches this colo. */
   c?: EdgeCtx,
 ): Promise<{ email: string; verifyOnly: boolean }> {
   const db = getDb(env);
+  const uid = user.uid;
   const before = await readIdentifiers(env, uid);
   const rec = await verifyOtp(env, "email", uid, code as string | undefined);
   const email = assertValidEmail(rec.newEmail);
@@ -327,7 +334,7 @@ export async function confirmEmailChange(
   } else {
     await afterIdentifierChange(
       env,
-      uid,
+      user,
       { kind: "email", oldValue: before.email, newValue: email },
       c,
     );
@@ -412,12 +419,14 @@ export async function requestPhoneChange(
  */
 export async function confirmPhoneChange(
   env: Env,
-  uid: string,
+  /** See `confirmEmailChange` — the caller's `auth_time` decides which session survives. */
+  user: AuthUser,
   code: unknown,
   /** Request context, so the profile cache purge reaches this colo. */
   c?: EdgeCtx,
 ): Promise<{ phone: string; verifyOnly: boolean }> {
   const db = getDb(env);
+  const uid = user.uid;
   const before = await readIdentifiers(env, uid);
   const rec = await verifyOtp(env, "phone", uid, code as string | undefined);
   const phone = assertValidPhone(rec.newPhone);
@@ -435,7 +444,7 @@ export async function confirmPhoneChange(
     await updateAuthUser(env, uid, { phoneNumber: phone }).catch((e) =>
       console.error("[identifierChange] Firebase phone sync failed (D1 is authoritative)", uid, e),
     );
-    await afterIdentifierChange(env, uid, {
+    await afterIdentifierChange(env, user, {
       kind: "phone",
       oldValue: before.phone,
       newValue: phone,
@@ -464,10 +473,11 @@ export async function confirmPhoneChange(
  */
 async function afterIdentifierChange(
   env: Env,
-  uid: string,
+  user: AuthUser,
   change: { kind: "email" | "phone"; oldValue: string | null; newValue: string },
   c?: EdgeCtx,
 ): Promise<void> {
+  const uid = user.uid;
   const label = change.kind === "email" ? "email address" : "phone number";
   const masked =
     change.kind === "email" ? maskEmail(change.newValue) : maskPhone(change.newValue);
@@ -482,6 +492,62 @@ async function afterIdentifierChange(
    * deletion. Each credential change re-proves.
    */
   await clearReauthGrant(env, uid);
+
+  /**
+   * End the OTHER sessions. The identifier that recovers this account has moved, so a
+   * device that was signed in before the move should not stay signed in after it.
+   *
+   * `revokeOtherSessions`, not `revokeAllSessions`, and the reasoning is worth recording
+   * because the opposite is tempting. The attack this function exists for is a session
+   * hijack that swaps the credentials, and in THAT case the attacker is the caller — so
+   * ending everything would evict them too, which sounds strictly better.
+   *
+   * It is not, once the cost is counted on the right side. Reaching this point already
+   * required passing `assertRecentAuth` — a fresh password login, or an OTP to the
+   * identifier being replaced — and an attacker who has cleared that bar and now owns
+   * the address can reset the password at will. Ending their session buys minutes and
+   * takes nothing away from them. Meanwhile ending ALL sessions is paid by every
+   * legitimate user, every time: confirm an OTP to update your email, get signed out of
+   * the phone in your hand, and sign in again with a credential you have only just set.
+   * No mainstream product does that for an identifier change, and for good reason.
+   *
+   * The defence that actually works here is the one immediately below and already
+   * present: tell the OLD address, so a swap the owner did not perform is visible to
+   * them within seconds.
+   *
+   * Only reached on a real change — the `verifyOnly` path (same address, merely proving
+   * it) does not call this function, and must not, since nothing has moved.
+   */
+  /**
+   * WHICH revocation depends on how the caller proved themselves, and getting this wrong
+   * makes the whole thing a no-op.
+   *
+   * `revokeOtherSessions` identifies the session to keep by its `auth_time`. That only
+   * works if `auth_time` is recent — and `assertRecentAuth` accepts TWO proofs: a fresh
+   * sign-in, or an OTP grant. The grant path never touches `auth_time`, and it exists
+   * precisely for the accounts least likely to have a recent one: "phone-only,
+   * Google-only, Apple-only… without it the gate would be unsatisfiable for a large part
+   * of the user base". Mobile sessions persist for months, so on that path the cutoff
+   * would land weeks in the past, `MAX()` would discard it, and the log would cheerfully
+   * report that other sessions had been ended while the intruder this exists to evict
+   * carried on.
+   *
+   * So: a demonstrably fresh caller keeps their session, and a caller who only cleared an
+   * OTP challenge gets a full revocation. Signing back in is the cheapest step in a flow
+   * they have just spent an OTP on, and it is the only option that actually evicts
+   * anyone.
+   */
+  const revoke = hasFreshSession(user)
+    ? revokeOtherSessions(env, user, change.kind === "email" ? "email_changed" : "phone_changed")
+    : revokeAllSessions(env, uid, change.kind === "email" ? "email_changed" : "phone_changed");
+
+  await revoke.catch((e) =>
+    // Best-effort like everything else here: the change has committed, and failing now
+    // would report a completed change as failed. Logged at error level because what a
+    // failure leaves behind is a live session on an account whose recovery details just
+    // moved, which is a real loose end and not a cosmetic one.
+    console.error("[identifierChange] session revocation failed", uid, change.kind, e),
+  );
 
   // The public profile is served from a shared cache entry, so the old address would
   // keep being returned until its TTL lapsed. Goes through `purgeShared` rather than

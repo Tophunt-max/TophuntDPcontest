@@ -21,6 +21,7 @@ import { setOtp, generateOtp, verifyOtp, deleteOtp } from "../lib/otp";
 import { validatePasswordStrength } from "../lib/password";
 import { rateLimit, enforceSendCooldown, markSent, clearSendCooldown, clientIp } from "../lib/rateLimit";
 import { assertIdentifiersAvailable, assertUsernameNotOnHold, validateUsername } from "../lib/userIdentifiers";
+import { revokeAllSessions } from "../lib/sessionRevocation";
 import {
   confirmEmailChange,
   confirmPhoneChange,
@@ -579,6 +580,24 @@ authRoute.post("/", async (c) => {
         .get();
       if (!row) throw httpsError("not-found", "User not found.");
       await updateAuthUser(env, row.uid, { password: body.newPassword });
+      /**
+       * End every existing session. This is the clearest case in the whole codebase for
+       * doing so.
+       *
+       * The person calling this is SIGNED OUT — that is the premise of the flow — so
+       * there is no session here worth preserving, and every session that does exist
+       * belongs to a device that was signed in before the password was reset. That
+       * includes whoever the reset is a response to. Until now a phone-OTP recovery gave
+       * the real owner their password back while leaving the intruder exactly where they
+       * were: it restored access without restoring control.
+       *
+       * Awaited and allowed to throw, unlike the best-effort revocations elsewhere. The
+       * caller is not holding a session that a failure would strand, and silently
+       * reporting a successful recovery that did not actually evict anyone is the one
+       * outcome this must not produce. A retry is cheap; the OTP proof is deleted only
+       * after this succeeds.
+       */
+      await revokeAllSessions(env, row.uid, "password_reset");
       await env.OTP_KV.delete(pwVerifiedKey(normalizedPhone));
       return c.json({ success: true });
     }
@@ -603,7 +622,7 @@ authRoute.post("/", async (c) => {
     case "verifyEmailOtp": {
       if (!uid) throw httpsError("unauthenticated", "User must be logged in.");
       await rateLimit(env, `emailotpverify:${uid}`, 20, 3600, { failClosed: true });
-      const { email, verifyOnly } = await confirmEmailChange(env, uid, body.otp, c);
+      const { email, verifyOnly } = await confirmEmailChange(env, c.get("user"), body.otp, c);
       return c.json({ success: true, email, verifyOnly });
     }
 
@@ -615,7 +634,7 @@ authRoute.post("/", async (c) => {
     case "verifyPhoneOtp": {
       if (!uid) throw httpsError("unauthenticated", "User must be logged in.");
       await rateLimit(env, `phoneotpverify:${uid}`, 20, 3600, { failClosed: true });
-      const { phone, verifyOnly } = await confirmPhoneChange(env, uid, body.otp, c);
+      const { phone, verifyOnly } = await confirmPhoneChange(env, c.get("user"), body.otp, c);
       return c.json({ success: true, phone, verifyOnly });
     }
 

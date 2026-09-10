@@ -113,4 +113,15 @@ export const PENDING_DELETION_ALLOWED_ACTIONS: ReadonlySet<string> = new Set([
   // user signing out of an account that is pending deletion is the normal case.
   "unregisterFcmToken",
   "markNotificationsRead",
+  /**
+   * Ending every session has to stay reachable while a deletion is pending, and this
+   * is not a convenience.
+   *
+   * `cancelAccountDeletion` is on this list — it must be, or a change of mind would be
+   * impossible. That means anyone holding a live session on an account that is pending
+   * deletion can CANCEL the deletion. So if the reason the owner asked for deletion is
+   * that someone else got in, the attacker can undo it, and without this entry the
+   * owner would have no way to remove them.
+   */
+  "logoutAllDevices",
 ]);

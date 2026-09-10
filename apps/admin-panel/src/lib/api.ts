@@ -461,6 +461,14 @@ export const api = {
   setUserBlocked: (id: string, isBlocked: boolean) =>
     patch(`/admin/users/${id}`, { isBlocked }),
   deleteUser: (id: string) => del(`/admin/users/${id}`),
+  /**
+   * End every session on an account WITHOUT blocking it.
+   *
+   * For the support case blocking cannot serve: a user reports their account is
+   * compromised. Blocking evicts the intruder and locks out the victim too, who has done
+   * nothing wrong and still needs to reach their balance.
+   */
+  logoutAllUserSessions: (id: string) => post(`/admin/users/${id}/logout-all`, {}),
   adjustWallet: (id: string, amount: number, type: "add" | "subtract") =>
     post<{ newBalance: number }>(`/admin/users/${id}/wallet`, { amount, type }),
   setRole: (payload: { email?: string; userId?: string; makeAdmin?: boolean; role?: string }) =>

@@ -45,6 +45,7 @@ import m_0040_identifier_verification_sql from "../../migrations/0040_identifier
 import m_0041_username_case_insensitive_sql from "../../migrations/0041_username_case_insensitive.sql";
 import m_0042_contest_product_prizes_sql from "../../migrations/0042_contest_product_prizes.sql";
 import m_0043_username_history_sql from "../../migrations/0043_username_history.sql";
+import m_0044_session_revocation_sql from "../../migrations/0044_session_revocation.sql";
 
 export interface Migration {
   name: string;
@@ -96,4 +97,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0041_username_case_insensitive.sql", sql: m_0041_username_case_insensitive_sql },
   { name: "0042_contest_product_prizes.sql", sql: m_0042_contest_product_prizes_sql },
   { name: "0043_username_history.sql", sql: m_0043_username_history_sql },
+  { name: "0044_session_revocation.sql", sql: m_0044_session_revocation_sql },
 ];
