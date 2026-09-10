@@ -80,6 +80,21 @@ export default function ChangePasswordScreen() {
       emitToast('Your password has been changed.', 'success');
       router.back();
     } catch (e: any) {
+      /**
+       * The password may have changed even though this threw.
+       *
+       * `changePassword` also ends the account's other sessions, and that step can fail on
+       * its own after the password itself has committed. Leaving the user on the form
+       * would invite a retry that cannot work — their old password is no longer valid — so
+       * this closes the screen and reports the partial outcome, which is what the message
+       * on that error already explains.
+       */
+      if (e?.passwordAlreadyChanged) {
+        emitToast(e.message, 'error');
+        reportError(e, { screen: 'change-password', code: e?.code });
+        router.back();
+        return;
+      }
       // The service has already turned Firebase codes into readable copy, so this
       // renders inline rather than guessing at a friendlier message.
       setError(e?.message || 'Could not change your password. Please try again.');

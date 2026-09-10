@@ -79,6 +79,16 @@ const PRIVATE_USER_FIELDS = [
   // Internal / operational.
   'role',
   'isBlocked',
+  /**
+   * The session-revocation cutoff (migration 0044).
+   *
+   * Private, and not merely by default. It is a precise timestamp of a SECURITY EVENT on
+   * someone else's account — the moment they changed a password, recovered access, or
+   * pressed "log out of all devices". Publishing that tells a stranger when an account
+   * holder last felt the need to lock things down, and tells an attacker whether the
+   * victim has noticed them yet. Nothing on any profile screen reads it.
+   */
+  'tokensValidAfter',
   'platform',
   'authProvider',
   'signupCompleted',

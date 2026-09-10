@@ -1,6 +1,6 @@
 import { AppState } from 'react-native';
 import { auth } from './firebase/initFirebase';
-import { API_BASE_URL } from './api';
+import { API_BASE_URL, endRejectedSession } from './api';
 
 /**
  * Instant push over WebSockets, backed by the Worker's RealtimeHub Durable
@@ -25,7 +25,26 @@ interface Conn {
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   attempts: number;
   closedByUs: boolean;
+  /**
+   * Consecutive closes that happened BEFORE the socket ever opened.
+   *
+   * The only evidence available that the upgrade is being REFUSED rather than the network
+   * being flaky. React Native's WebSocket surfaces a rejected handshake as a plain close
+   * with no status code, so a revoked session is indistinguishable from a dropped tunnel
+   * — and without counting these, an app with no API traffic reconnects forever while
+   * showing a signed-in UI on a dead session.
+   */
+  preOpenFailures: number;
 }
+
+/**
+ * How many failed handshakes in a row before concluding the session is gone.
+ *
+ * Three, spanning roughly 2s + 4s + 8s of backoff. High enough that a lift, a tunnel or a
+ * cell handover does not sign anybody out; low enough that a revoked session resolves in
+ * well under a minute instead of never.
+ */
+const PRE_OPEN_FAILURES_BEFORE_SIGNOUT = 3;
 
 const conns = new Map<string, Conn>();
 
@@ -53,8 +72,14 @@ async function openSocket(channel: string, conn: Conn) {
   }
   conn.ws = ws;
 
+  let opened = false;
+
   ws.onopen = () => {
+    opened = true;
     conn.attempts = 0;
+    // The handshake succeeded, so whatever the previous failures were, they were not a
+    // refusal.
+    conn.preOpenFailures = 0;
     conn.heartbeat = setInterval(() => {
       try {
         ws.send('ping');
@@ -95,7 +120,28 @@ async function openSocket(channel: string, conn: Conn) {
     if (conn.heartbeat) clearInterval(conn.heartbeat);
     conn.heartbeat = null;
     conn.ws = null;
-    if (!conn.closedByUs && conn.listeners.size > 0) scheduleReconnect(channel, conn);
+    if (conn.closedByUs || conn.listeners.size === 0) return;
+
+    /**
+     * A close that never reached `onopen` means the HANDSHAKE failed, not the connection.
+     * Repeatedly, with a token attached, that is the server refusing the session — a
+     * revoked or blocked account answers the upgrade with 401.
+     *
+     * Handing it to the API layer's sign-out path rather than reconnecting is the
+     * difference between the user being told what happened and an app that looks signed
+     * in forever on a dead session. Counted rather than acted on immediately because a
+     * single failed handshake is far more likely to be a lift than a revocation.
+     */
+    if (!opened) {
+      conn.preOpenFailures += 1;
+      if (conn.preOpenFailures >= PRE_OPEN_FAILURES_BEFORE_SIGNOUT && auth.currentUser) {
+        conn.preOpenFailures = 0;
+        void endRejectedSession();
+        return;
+      }
+    }
+
+    scheduleReconnect(channel, conn);
   };
 }
 
@@ -110,7 +156,7 @@ function scheduleReconnect(channel: string, conn: Conn) {
 export function subscribeChannel(channel: string, onEvent: Listener): () => void {
   let conn = conns.get(channel);
   if (!conn) {
-    conn = { ws: null, listeners: new Set(), heartbeat: null, reconnectTimer: null, attempts: 0, closedByUs: false };
+    conn = { ws: null, listeners: new Set(), heartbeat: null, reconnectTimer: null, attempts: 0, closedByUs: false, preOpenFailures: 0 };
     conns.set(channel, conn);
     openSocket(channel, conn);
   }

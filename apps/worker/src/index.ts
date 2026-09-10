@@ -24,7 +24,7 @@ import { adminRoute } from "./routes/admin";
 import { webhookRoute } from "./routes/webhook";
 import { uploadRoute } from "./routes/upload";
 import { verifyIdToken } from "./lib/firebaseAuth";
-import { assertAccountNotBlocked } from "./middleware/auth";
+import { assertSessionUsable } from "./middleware/auth";
 import { resolveContests, expireContests, monthlyHallOfFame, seoAuditJob } from "./cron";
 import { purgeScheduledDeletions } from "./lib/accountDeletion";
 import { ensureMigrated } from "./db/autoMigrate";
@@ -327,8 +327,16 @@ app.get("/ws", async (c) => {
 
   let user;
   try {
+    // The global middleware skips auto-migration for upgrades, so this path has to ask for
+    // it itself: `assertSessionUsable` reads `users.tokens_valid_after`, and on an isolate
+    // whose first ever request is a WebSocket upgrade that column may not exist yet — in
+    // which case every upgrade would answer 401 until some HTTP request happened to run
+    // the migration.
+    await ensureMigrated(c.env).catch((e) =>
+      console.error("[migrate] auto-migration failed on /ws (continuing)", e),
+    );
     user = await verifyIdToken(token, c.env);
-    await assertAccountNotBlocked(c.env, user.uid);
+    await assertSessionUsable(c.env, user);
   } catch {
     return c.text("Unauthorized.", 401);
   }

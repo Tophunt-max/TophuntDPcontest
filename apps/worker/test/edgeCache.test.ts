@@ -419,10 +419,17 @@ describe('writers purge the edge tier, not just KV', () => {
       newEmail: 'dave@example.com',
       verifyOnly: true,
     });
-    await confirmEmailChange(env as any, 'dave', '123456', {
-      req: { url: 'http://localhost/auth' },
-      env,
-    } as any);
+    // Takes the whole caller now, not a uid: confirming a change ends the account's
+    // OTHER sessions, and `auth_time` is how the surviving one is identified.
+    await confirmEmailChange(
+      env as any,
+      { uid: 'dave', authTime: Math.floor(Date.now() / 1000) } as any,
+      '123456',
+      {
+        req: { url: 'http://localhost/auth' },
+        env,
+      } as any,
+    );
 
     expect(edge.logicalKeys()).not.toContain('cache:user:dave');
 

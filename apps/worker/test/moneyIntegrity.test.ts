@@ -23,6 +23,8 @@ vi.mock('../src/lib/firebaseAuth', () => ({
 // Firebase Admin is only reachable from a deployed worker. Account deletion calls
 // deleteAuthUser; nothing here asserts on it.
 vi.mock('../src/lib/firebaseAdmin', () => ({
+  // Session revocation calls this; without it the mock throws on property access.
+  revokeRefreshTokens: async () => undefined,
   deleteAuthUser: async () => undefined,
   updateAuthUser: async () => undefined,
   setCustomClaims: async () => undefined,

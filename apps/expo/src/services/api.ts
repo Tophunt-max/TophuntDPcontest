@@ -45,6 +45,18 @@ if (!process.env.EXPO_PUBLIC_API_URL && __DEV__) {
 
 export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || FALLBACK_API_URL;
 
+/**
+ * The server marks a 401 with this token in the message when the SESSION was ended,
+ * rather than merely having expired.
+ *
+ * Mirrors `SESSION_REVOKED_CODE` in the Worker's `lib/sessionRevocation.ts`, the same way
+ * `src/services/auth/reauth.ts` mirrors `REAUTH_REQUIRED_CODE`. A duplicated string
+ * literal rather than a shared import because the two apps do not share a package — and
+ * the Worker keeps the marker in the MESSAGE precisely so the HTTP status can stay 401,
+ * which is what makes the existing sign-out path below work unchanged.
+ */
+const SESSION_REVOKED_CODE = 'session_revoked';
+
 /** Request budget. Uploads set their own, longer, timeout. */
 const DEFAULT_TIMEOUT_MS = 20_000;
 /** Reads are safe to repeat; two retries covers a tunnel or a lift. */
@@ -117,12 +129,60 @@ async function isOffline(): Promise<boolean> {
  * than every screen failing with a generic error while a dead token is retried
  * forever. Guarded so a burst of parallel 401s produces one sign-out, one toast.
  */
+/**
+ * Suppresses the automatic sign-out while the app is DELIBERATELY ending its session.
+ *
+ * `logoutAllDevices` revokes this session server-side and only then signs out locally. Any
+ * request already in flight in that gap — the realtime heartbeat, the periodic settings
+ * refetch — comes back 401 with the revocation marker and would fire "You were signed out
+ * for security" as an error toast, immediately before the success toast for the thing the
+ * user just chose to do. Two toasts with opposite framing for one action.
+ *
+ * `SignOutOptions.skipPushTokenUnregister` already documents this exact collision for the
+ * push-token detach call; this closes the rest of the window.
+ */
+let deliberateSignOut = false;
+export function beginDeliberateSignOut() {
+  deliberateSignOut = true;
+}
+export function endDeliberateSignOut() {
+  deliberateSignOut = false;
+}
+
+/**
+ * End the session from OUTSIDE the request path.
+ *
+ * The WebSocket layer needs this. A rejected upgrade surfaces to React Native as an
+ * ordinary close with no status, so `realtime.ts` cannot tell "revoked session" from
+ * "tunnel dropped" and reconnects forever — leaving an app that is sitting on a screen
+ * with no API traffic showing a signed-in UI on a dead session indefinitely. A streak of
+ * closes that never reached `onopen` is the signal it does have, and this is where that
+ * signal has to land so the sign-out stays deduplicated with the one below.
+ */
+export async function endRejectedSession() {
+  await endExpiredSession(true);
+}
+
 let endingSession = false;
-async function endExpiredSession() {
-  if (endingSession || !auth.currentUser) return;
+async function endExpiredSession(revoked = false) {
+  if (endingSession || deliberateSignOut || !auth.currentUser) return;
   endingSession = true;
   try {
-    emitToast('Your session expired. Please sign in again.', 'error');
+    /**
+     * Two different messages, because these are two different events to the user.
+     *
+     * "Expired" is routine — a token aged out, sign in and carry on. "Signed out for
+     * security" means something HAPPENED to the account: a password was changed, access
+     * was recovered, or someone pressed "log out of all devices". Reporting the second
+     * as the first is how a user shrugs off the one notification that would have told
+     * them about a takeover.
+     */
+    emitToast(
+      revoked
+        ? 'You were signed out for security. Please sign in again.'
+        : 'Your session expired. Please sign in again.',
+      'error',
+    );
     await signOut(auth);
   } catch (e) {
     console.error('[api] sign-out after 401 failed', e);
@@ -199,14 +259,28 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<R
 
         if (res.ok) return { data: json as T, headers: res.headers };
 
+        /**
+         * A REVOKED session, as opposed to an expired one.
+         *
+         * The server ends sessions on a password change, an account recovery, an admin
+         * intervention, or the user's own "log out of all devices" — and marks the 401
+         * so the two cases are distinguishable (see the Worker's
+         * `SESSION_REVOKED_CODE`). The refresh retry below is skipped for it, and that
+         * is not just an optimisation: refreshing cannot help, because the server is
+         * rejecting the session's ORIGINAL sign-in time and a new token carries the same
+         * one. Retrying would spend a network round trip to be told the same thing, and
+         * on a `revokeAllSessions` the refresh token is gone too, so it fails anyway.
+         */
+        const revoked = res.status === 401 && String(json?.error?.message || '').includes(SESSION_REVOKED_CODE);
+
         // 401: the token may simply have expired. Force-refresh once and retry
         // the SAME attempt before treating it as a real failure.
-        if (res.status === 401 && authTry === 0 && auth.currentUser) {
+        if (res.status === 401 && !revoked && authTry === 0 && auth.currentUser) {
           refreshedForThisAttempt = true;
           continue;
         }
         if (res.status === 401 && !allowUnauthenticated && auth.currentUser) {
-          await endExpiredSession();
+          await endExpiredSession(revoked);
         }
 
         const status = (json?.error?.status || 'INTERNAL').toLowerCase().replace(/_/g, '-');

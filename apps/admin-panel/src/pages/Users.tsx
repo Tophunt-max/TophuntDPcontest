@@ -7,7 +7,7 @@ import { PageHeader, fmtDate, fmtNumber } from "@/lib/format";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { toast } from "@/lib/toast";
 import { fmtDateTime, exportCsv } from "@/lib/format";
-import { Search, Ban, CheckCircle2, Trash2, Wallet, ShieldCheck, Eye, BadgeCheck, Star, Download, ChevronLeft, ChevronRight } from "lucide-react";
+import { Search, Ban, CheckCircle2, Trash2, Wallet, ShieldCheck, Eye, BadgeCheck, Star, Download, ChevronLeft, ChevronRight, LogOut } from "lucide-react";
 
 export default function UsersPage() {
   const qc = useQueryClient();
@@ -32,6 +32,12 @@ export default function UsersPage() {
       toast.success(v.isBlocked ? "User blocked" : "User unblocked");
       invalidate();
     },
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  const logoutAllMut = useMutation({
+    mutationFn: (id: string) => api.logoutAllUserSessions(id),
+    onSuccess: () => toast.success("All sessions for this user have been ended"),
     onError: (e: any) => toast.error(e.message),
   });
 
@@ -164,6 +170,26 @@ export default function UsersPage() {
                   onClick={() => blockMut.mutate({ id: u.id, isBlocked: !u.isBlocked })}
                 >
                   {u.isBlocked ? <CheckCircle2 size={15} className="text-green-600" /> : <Ban size={15} className="text-amber-600" />}
+                </IconBtn>
+                {/*
+                  Separate from Block on purpose. Blocking is a moderation decision that
+                  also locks the user out; this is the remedy for a COMPROMISED account,
+                  where the user is the victim and must keep their access.
+                */}
+                <IconBtn
+                  title="Log out all sessions"
+                  onClick={async () => {
+                    if (
+                      await confirm({
+                        title: "End all sessions?",
+                        description:
+                          "Signs this user out on every device without blocking the account. Use this when an account is compromised — they can sign straight back in.",
+                      })
+                    )
+                      logoutAllMut.mutate(u.id);
+                  }}
+                >
+                  <LogOut size={15} className="text-blue-600" />
                 </IconBtn>
                 <IconBtn
                   title="Delete"

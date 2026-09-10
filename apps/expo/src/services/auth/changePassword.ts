@@ -110,10 +110,19 @@ export function messageForChangePasswordError(code?: string): string | null {
 
 export class ChangePasswordError extends Error {
   code?: string;
-  constructor(message: string, code?: string) {
+  /**
+   * True when the password DID change and only a follow-up step failed.
+   *
+   * The distinction matters to the screen: it must not invite a retry, because the old
+   * password no longer works and retrying would report it as wrong. See the
+   * `notifyPasswordChanged` failure path.
+   */
+  passwordAlreadyChanged?: boolean;
+  constructor(message: string, code?: string, options?: { passwordAlreadyChanged?: boolean }) {
     super(message);
     this.name = 'ChangePasswordError';
     this.code = code;
+    this.passwordAlreadyChanged = options?.passwordAlreadyChanged;
   }
 }
 
@@ -171,12 +180,42 @@ export async function changePassword(
     );
   }
 
-  // Fire the "your password was changed" security email. The password change has
-  // already succeeded by this point, so this is strictly best-effort: a failure
-  // here (offline, server blip) must NOT surface as a failed password change.
+  /**
+   * Force a token refresh before telling the server.
+   *
+   * `reauthenticateWithCredential` above moved `auth_time`, and the server uses that claim
+   * to decide WHICH sessions to end: it keeps the session whose `auth_time` matches and
+   * ends the older ones. Without an explicit refresh the SDK may hand back a cached token
+   * still carrying the pre-reauthentication value, in which case the cutoff lands in the
+   * past and the change evicts nobody — silently, because the request still succeeds.
+   *
+   * `services/auth/reauth.ts` does the same thing after its reauthentication, for the same
+   * reason. Best-effort: if the refresh fails, the call below still goes out and the server
+   * falls back to ending every session rather than trusting a stale claim.
+   */
+  await user.getIdToken(true).catch(() => undefined);
+
+  /**
+   * Tell the server. This is no longer just an email.
+   *
+   * It sends the "your password was changed" alert AND ends the account's other sessions —
+   * the thing a user actually expects a password change to do. So a failure here is not
+   * cosmetic: the password is new, but a device someone else is holding is still signed
+   * in.
+   *
+   * Still non-fatal, because the password change itself has committed and reporting it as
+   * failed would be worse — a user who retried would be told their current password is
+   * wrong. But the error is surfaced to the caller so the screen can say what did not
+   * happen, instead of being swallowed as it was when this only sent mail.
+   */
   try {
     await callApi('notifyPasswordChanged', {});
-  } catch {
-    /* non-fatal — the password is already changed */
+  } catch (e: any) {
+    throw new ChangePasswordError(
+      'Your password was changed, but we could not sign out your other devices. ' +
+        'Open Security settings and use "Log out of all devices".',
+      'auth/partial-password-change',
+      { passwordAlreadyChanged: true },
+    );
   }
 }

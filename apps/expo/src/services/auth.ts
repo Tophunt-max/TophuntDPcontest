@@ -1,5 +1,6 @@
 import { createUserWithEmailAndPassword, signOut as firebaseSignOut } from 'firebase/auth';
 import { auth } from './firebase/initFirebase';
+import { beginDeliberateSignOut, callApi, endDeliberateSignOut } from './api';
 import { notificationService } from './notifications/notificationService';
 
 // Single source of truth for auth state. Previously this module had its own
@@ -57,5 +58,42 @@ export const signOut = async (options: SignOutOptions = {}) => {
   } catch (error: any) {
     console.error("[AuthService] firebaseSignOut error:", error);
     throw new Error(error.message);
+  }
+};
+
+/**
+ * Sign out of EVERY device, not just this one.
+ *
+ * The control for "I think someone else is in my account". Ordinary sign-out only ends
+ * the session on the handset in your hand; until the server gained a revocation cutoff
+ * there was no way to end the others at all, so a session someone else had obtained
+ * stayed alive indefinitely and the only remedy was asking support to block the whole
+ * account.
+ *
+ * Order matters, and both steps are needed:
+ *
+ *  1. The server call first, while this device still holds a working token. It writes
+ *     the cutoff that invalidates every session and drops every push token.
+ *  2. Then sign out locally. `skipPushTokenUnregister` because the server has already
+ *     cleared the tokens — and because our own session is dead by now, so the detach
+ *     call would go out unauthorised and be reported to the user as "signed out for
+ *     security" a moment before the toast for the thing they just did deliberately.
+ *     See `SignOutOptions`, which documents that exact collision.
+ *
+ * Throws if the server call fails, deliberately: the caller must not tell the user their
+ * other devices are gone when they are not. Local sign-out is not attempted in that case
+ * either — being signed out here while the intruder is still signed in there is the worst
+ * of both outcomes, and leaving the session intact means they can simply retry.
+ */
+export const logoutAllDevices = async () => {
+  // Silences the automatic "you were signed out for security" handler for the duration.
+  // This session is about to be revoked on purpose, and any request already in flight
+  // would otherwise report that as an error next to the success toast.
+  beginDeliberateSignOut();
+  try {
+    await callApi('logoutAllDevices', {});
+    await signOut({ skipPushTokenUnregister: true });
+  } finally {
+    endDeliberateSignOut();
   }
 };

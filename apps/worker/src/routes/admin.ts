@@ -17,7 +17,7 @@ import { getDb, schema } from "../db";
 import { httpsError, ApiError } from "../lib/http";
 import { timingSafeEqualSecret } from "../lib/timingSafe";
 import { verifyIdToken, bearerToken } from "../lib/firebaseAuth";
-import { assertAccountNotBlocked } from "../middleware/auth";
+import { assertSessionUsable } from "../middleware/auth";
 import { getAppConfig, getGamificationSettings, getSeoAudit, invalidateSetting } from "../lib/settings";
 import { deleteAuthUser, updateAuthUser, setCustomClaims, getUserByEmail } from "../lib/firebaseAdmin";
 import { createNotification } from "../lib/notify";
@@ -33,7 +33,7 @@ import { enqueueBroadcast } from "../lib/broadcast";
 import { finalizeVotes } from "../lib/voteCounter";
 import { settleRefund, settleWinner } from "../lib/contestSettlement";
 import { refundRejectedWithdrawal } from "../lib/payouts";
-import { publish } from "../lib/publish";
+import { closeRealtimeSessions, publish } from "../lib/publish";
 import { resolveContests, monthlyHallOfFame, seoAuditJob } from "../cron";
 import { newId, now } from "../lib/ids";
 import { discoverUrls, processBatch, readImportProgress, writeImportProgress } from "../lib/importerTask";
@@ -76,6 +76,7 @@ import { fetchExternalImage } from "../lib/safeFetch";
 import { enforceAdminIdempotency } from "../lib/idempotency";
 import { registerIntegrationRoutes } from "./integrations";
 import { assertIdentifiersAvailable, recordUsernameTransition, validateUsername } from "../lib/userIdentifiers";
+import { revokeAllSessions } from "../lib/sessionRevocation";
 import { computeDeepHealth } from "../lib/health";
 import { computeMoneyHealth } from "../lib/moneyHealth";
 import { cronHealth } from "../lib/ops";
@@ -118,27 +119,10 @@ export const adminRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 // requireFullAdmin below.
 const ADMIN_ROLES = ["superadmin", "admin", "moderator"];
 
-/** Close existing private realtime sessions after an account is blocked. */
-async function revokeRealtimeSessions(env: Env, uid: string): Promise<void> {
-  const chats = await env.DB.prepare(
-    `SELECT id FROM chats
-      WHERE EXISTS (
-        SELECT 1 FROM json_each(chats.users) WHERE json_each.value = ?
-      )`,
-  ).bind(uid).all<{ id: string }>();
-  const channels = new Set<string>([
-    `user:${uid}`,
-    ...(chats.results ?? []).map((chat) => `chat:${chat.id}`),
-  ]);
-  await Promise.all([...channels].map(async (channel) => {
-    const id = env.REALTIME.idFromName(channel);
-    await env.REALTIME.get(id).fetch("https://do.internal/revoke", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ uid }),
-    });
-  }));
-}
+// Closing realtime sockets used to live here as a private helper. It moved to
+// lib/publish.ts as `closeRealtimeSessions` because lib/sessionRevocation.ts needs it
+// too — every full revocation closes sockets now, not just the two admin paths — and two
+// copies is how they would drift on which channels count.
 
 /** Resolve the caller's effective admin role from claim or the D1 users row. */
 async function resolveAdminRole(c: any): Promise<string | null> {
@@ -169,7 +153,7 @@ adminRoute.use("*", async (c, next) => {
   if (token) {
     try {
       const user = await verifyIdToken(token, c.env);
-      await assertAccountNotBlocked(c.env, user.uid);
+      await assertSessionUsable(c.env, user);
       c.set("user", user);
       const role = await resolveAdminRole(c);
       if (role) {
@@ -804,7 +788,7 @@ adminRoute.delete("/users/:id", async (c) => {
   const db = getDb(c.env);
   requireFullAdmin(c);
   const id = c.req.param("id");
-  await revokeRealtimeSessions(c.env, id);
+  await closeRealtimeSessions(c.env, id);
   await db.delete(schema.users).where(eq(schema.users.uid, id));
   await deleteAuthUser(c.env, id).catch((e) => console.error("Auth delete failed", e));
   await logAudit(c, "user.delete", "user", id);
@@ -852,9 +836,55 @@ adminRoute.patch("/users/:id", async (c) => {
     .run();
   if (updated.meta.changes === 0) throw httpsError("not-found", "User not found.");
   await updateAuthUser(c.env, id, { disabled: blocked }).catch((e) => console.warn("Auth update failed", e));
-  if (blocked) await revokeRealtimeSessions(c.env, id);
+  if (blocked) {
+    /**
+     * Kill the AUTH sessions too, not just the realtime ones.
+     *
+     * `revokeRealtimeSessions` closes open WebSockets, which was the only eviction a
+     * block performed. The bearer tokens survived it: `isBlocked` is checked on every
+     * request so a blocked session could not DO anything, but the refresh token stayed
+     * valid indefinitely, so the moment a block was lifted every previously-signed-in
+     * device — including any the account was blocked because of — resumed exactly where
+     * it left off. Unblocking is meant to restore the user's access, not the intruder's.
+     *
+     * Open sockets are closed as part of this — `revokeAllSessions` does it, so that the
+     * user's own "log out of all devices" gets the same treatment rather than only the
+     * admin paths remembering to ask.
+     */
+    await revokeAllSessions(c.env, id, "admin_blocked");
+  }
   await logAudit(c, blocked ? "user.block" : "user.unblock", "user", id);
   return c.json({ message: `User ${blocked ? "blocked" : "unblocked"} successfully`, status: blocked });
+});
+
+/**
+ * Sign an account out everywhere WITHOUT blocking it.
+ *
+ * The support case that had no answer: a user writes in saying their account is
+ * compromised. Blocking them evicts the intruder and also locks out the victim, who has
+ * done nothing wrong and now cannot enter contests or reach their balance. The only
+ * other option was to talk them through the in-app control, which is useless if the
+ * intruder has already changed the password.
+ *
+ * Full admin rather than moderator: this ends sessions on an arbitrary account, so it is
+ * the same class of power as blocking, not the same class as hiding a comment.
+ */
+adminRoute.post("/users/:id/logout-all", async (c) => {
+  requireFullAdmin(c);
+  const id = c.req.param("id");
+  const exists = await getDb(c.env)
+    .select({ uid: schema.users.uid })
+    .from(schema.users)
+    .where(eq(schema.users.uid, id))
+    .get();
+  if (!exists) throw httpsError("not-found", "User not found.");
+
+  // Closes open sockets too, as part of the revocation.
+  await revokeAllSessions(c.env, id, "admin_forced");
+  // Audited, because an admin ending someone's sessions is exactly the kind of action
+  // that has to be attributable after the fact.
+  await logAudit(c, "user.logoutAll", "user", id);
+  return c.json({ message: "All sessions for this user have been ended." });
 });
 
 // ---- wallet (was adminManageWallet Cloud Function) ----

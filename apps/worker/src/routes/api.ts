@@ -49,9 +49,11 @@ import {
 import { exportUserData } from "../lib/accountExport";
 import {
   assertRecentAuthForDeletion,
+  hasFreshSession,
   confirmReauthChallenge,
   sendReauthChallenge,
 } from "../lib/reauth";
+import { revokeAllSessions, revokeOtherSessions } from "../lib/sessionRevocation";
 import {
   adjustUserWallet,
   assertCoinAmount,
@@ -2420,7 +2422,64 @@ apiRoute.post("/", async (c) => {
     // address; there is nothing to spoof. Best-effort and never fatal — a mail
     // blip must not make a completed password change look failed to the client.
     case "notifyPasswordChanged": {
+      /**
+       * End every OTHER session, keeping the device that just did this.
+       *
+       * The point people expect a password change to have: the device left at a
+       * friend's house, or whoever prompted the change, stops being signed in. Until
+       * now a password change evicted precisely nobody — the old sessions kept
+       * working indefinitely, which makes "change your password" useless as a response
+       * to "someone is in my account".
+       *
+       * `revokeOtherSessions` and not `revokeAllSessions`: this caller reauthenticated
+       * with their current password seconds ago (see the client's `changePassword.ts`),
+       * so they are demonstrably in control, and signing them out of the phone in their
+       * hand is a worse experience than the change is worth. Someone who wants
+       * everything gone has `logoutAllDevices` below, which says so plainly.
+       *
+       * Awaited, unlike the email. The email is a courtesy and a mail blip must not
+       * make a completed password change look failed; this is the security effect the
+       * user is asking for, and reporting success without it would be a lie.
+       *
+       * Falls back to a FULL revocation when the caller's `auth_time` is not actually
+       * fresh. `revokeOtherSessions` identifies the surviving session by that claim, so a
+       * stale one would put the cutoff in the past and evict nobody. The client
+       * reauthenticates and force-refreshes before calling this, so the fresh path is the
+       * normal one — but a silent no-op is the wrong way to handle a client that did not,
+       * and this is the same guard `afterIdentifierChange` needs for the same reason.
+       */
+      const passwordChanger = c.get("user");
+      if (hasFreshSession(passwordChanger)) {
+        await revokeOtherSessions(env, passwordChanger, "password_changed");
+      } else {
+        await revokeAllSessions(env, uid, "password_changed");
+      }
       c.executionCtx.waitUntil(sendUserEmail(env, uid, passwordChangedEmail()));
+      return c.json({ success: true });
+    }
+
+    /**
+     * "Log out of all devices" — the answer to "I think someone is in my account".
+     *
+     * Ends EVERY session including this one, which is the whole value of it: a control
+     * that left some sessions alive would not settle the question it is being pressed to
+     * settle, and the user cannot enumerate their own sessions to check. The client
+     * warns that they will have to sign in again here too.
+     *
+     * Deliberately NOT behind `assertRecentAuth`. The reauth gate exists for actions
+     * that are irreversible or that move credentials, and it costs an OTP round trip.
+     * This action destroys nothing, moves nothing, and its worst-case abuse — someone
+     * with a stolen session signing everyone out — is strictly less harmful than the
+     * takeover they already have, and is loud rather than quiet. Putting a challenge in
+     * front of the panic button would mean the people most in need of it are the ones
+     * most likely to be unable to use it.
+     */
+    case "logoutAllDevices": {
+      // Each call costs an Identity Toolkit write and a fan-out to every open socket.
+      // Generous enough that a worried user retrying is never blocked, tight enough that
+      // a loop cannot use it as an amplifier.
+      await rateLimit(env, `logoutall:${uid}`, 10, 3600);
+      await revokeAllSessions(env, uid, "user_logout_all");
       return c.json({ success: true });
     }
 

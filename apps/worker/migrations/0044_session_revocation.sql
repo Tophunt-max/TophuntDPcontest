@@ -1,0 +1,82 @@
+-- A cutoff that invalidates every session an account authenticated before it.
+--
+-- DDL-only and idempotent, like every migration here: src/db/autoMigrate.ts has no
+-- distributed lock (AUDIT_2026-08-23.md #15), so isolates in different colos can run
+-- this concurrently. `ALTER TABLE ADD COLUMN` is tolerated because isIgnorable()
+-- swallows "duplicate column name".
+--
+-- ---------------------------------------------------------------------------
+-- What was missing
+-- ---------------------------------------------------------------------------
+-- Sessions here are completely stateless: a Firebase ID token arrives as a bearer
+-- token and `verifyIdToken` checks its signature against locally cached JWKS. No
+-- network call to Firebase, therefore NO revocation check — and nothing in this
+-- codebase ever called Firebase's `revokeRefreshTokens` either. Grepping for it
+-- returns nothing.
+--
+-- The practical consequences, all of them live until this migration:
+--
+--   * Changing your password did NOT sign out any other device. The old session kept
+--     working, indefinitely, with the old password's session.
+--   * A stolen ID token stayed valid for up to an hour, and the refresh token behind
+--     it stayed valid FOREVER — the app could keep minting fresh ID tokens from it
+--     with nothing to stop them.
+--   * There was no "log out of all devices" at all. The only kill switch in the
+--     product was an admin blocking the whole account, which is not something a
+--     worried user can do for themselves at 2am.
+--   * Recovering an account by phone OTP (`updatePasswordWithPhone`) let the real
+--     owner back in but did not evict whoever was already inside. The recovery
+--     restored access without restoring control.
+--
+-- For an app holding coin balances, contest entry fees and payout details, "I think
+-- someone is in my account" needs an answer that the user can act on immediately.
+--
+-- ---------------------------------------------------------------------------
+-- Why a cutoff instead of a sessions table
+-- ---------------------------------------------------------------------------
+-- The obvious design is a `user_sessions` table with one row per device. That is what
+-- you need for a "these are your active devices" SCREEN, and it is a much larger
+-- change: a row to create on every sign-in, a lifecycle to keep tidy, garbage to
+-- collect, and a new identifier to keep out of urls and logs.
+--
+-- Revocation does not need any of it. Firebase ID tokens already carry `auth_time` —
+-- the moment a human last actually authenticated — and unlike `iat` it does not move
+-- when the SDK silently refreshes the token hourly. So one timestamp per user answers
+-- the whole question: reject any token whose `auth_time` is older than the cutoff.
+-- Every session that existed before the cutoff dies at once, with no per-session
+-- bookkeeping and nothing new to leak.
+--
+-- The device-list screen can be built later on top of this. It is additive.
+--
+-- ---------------------------------------------------------------------------
+-- Why D1 and not just Firebase
+-- ---------------------------------------------------------------------------
+-- Both, and each covers the other's gap — exactly the arrangement `isBlocked` already
+-- uses (D1 checked on every request, `disableUser` mirrored to Firebase):
+--
+--   * Firebase `validSince` alone is too SLOW. `verifyIdToken` validates locally
+--     against cached JWKS, so an ID token issued before the revocation keeps passing
+--     until it expires — up to an hour of continued access after the user pressed the
+--     button.
+--   * D1 alone is too NARROW. It stops the token at our API, but the refresh token
+--     survives, so the client can keep minting new ID tokens. They would all fail our
+--     check, so the app is unusable — but the Firebase session itself is still alive.
+--
+-- Together: refused at our edge on the very next request, and no new tokens.
+--
+-- ---------------------------------------------------------------------------
+-- Why SECONDS
+-- ---------------------------------------------------------------------------
+-- `auth_time` is a JWT claim in whole seconds, and a millisecond cutoff compared
+-- against it has an off-by-one-second bug that bites the legitimate user: revoke at
+-- 1700000000500ms, the user signs back in at 1700000000.8s, the claim truncates to
+-- 1700000000, `authTime * 1000` is 1700000000000 — earlier than the cutoff — and the
+-- brand-new session is rejected. Storing the same unit as the claim removes the
+-- comparison entirely. It is also the unit Firebase's own `validSince` takes, so one
+-- value drives both.
+--
+-- NULL means nothing has ever been revoked for this account, which is the correct
+-- state for every existing row — so there is no backfill, and no user is signed out
+-- by deploying this.
+
+ALTER TABLE users ADD COLUMN tokens_valid_after INTEGER;

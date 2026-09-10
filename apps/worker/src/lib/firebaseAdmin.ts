@@ -305,6 +305,34 @@ export async function deleteAuthUser(env: Env, uid: string): Promise<void> {
   await idToolkit(env, "accounts:delete", { localId: uid });
 }
 
+/**
+ * Invalidate every REFRESH token on the account.
+ *
+ * This is what the Admin SDK's `revokeRefreshTokens()` does under the hood: set
+ * `validSince`, and Identity Toolkit stops honouring refresh tokens issued before it.
+ *
+ * Worth being precise about what it does NOT do, because the name suggests more than
+ * it delivers. Already-issued ID tokens keep verifying until they expire — up to an
+ * hour — because `verifyIdToken` here checks a signature against locally cached JWKS
+ * and never asks Firebase anything. So this is the half that stops NEW tokens being
+ * minted; the half that refuses the ones already in circulation is the D1 cutoff in
+ * lib/sessionRevocation.ts. Neither is sufficient alone, which is why that module always
+ * writes the cutoff first and treats this call as best-effort.
+ *
+ * `validSince` is in EPOCH SECONDS and is passed as a string, which is what the REST
+ * API expects for its int64 fields.
+ */
+export async function revokeRefreshTokens(
+  env: Env,
+  uid: string,
+  validSinceSec: number,
+): Promise<void> {
+  await idToolkit(env, "accounts:update", {
+    localId: uid,
+    validSince: String(Math.floor(validSinceSec)),
+  });
+}
+
 /** Set custom claims (e.g. { role: 'admin' }) — merges by replacing the map. */
 export async function setCustomClaims(
   env: Env,

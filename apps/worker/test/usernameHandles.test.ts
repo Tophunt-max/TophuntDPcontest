@@ -47,6 +47,8 @@ vi.mock('../src/lib/voteCounter', () => ({
   getViewerVote: async () => ({ hasVoted: false, votedForUid: null }),
 }));
 vi.mock('../src/lib/firebaseAdmin', () => ({
+  // Session revocation calls this; without it the mock throws on property access.
+  revokeRefreshTokens: async () => undefined,
   deleteAuthUser: async () => undefined,
   updateAuthUser: async () => undefined,
   setCustomClaims: async () => undefined,

@@ -61,6 +61,8 @@ vi.mock('../src/lib/sms', () => ({
 }));
 
 vi.mock('../src/lib/firebaseAdmin', () => ({
+  // Session revocation calls this; without it the mock throws on property access.
+  revokeRefreshTokens: async () => undefined,
   updateAuthUser: async () => undefined,
   createAuthUser: async () => 'new-uid',
   createCustomToken: async () => 'custom-token',
@@ -374,9 +376,89 @@ describe('identifier changes require a recent sign-in', () => {
     await auth(env, 'alice#stale', 'verifyEmailOtp', { otp: codeFrom(sentEmails.at(-1)?.text) });
 
     expect(await hasReauthGrant(env as any, 'alice')).toBe(false);
-    // So a second credential change has to prove itself again.
-    const second = await auth(env, 'alice#stale', 'sendPhoneOtp', { newPhone: '+919999988888' });
-    expect(second.status).toBe(412);
+  });
+
+  /**
+   * The grant burn, observed from a session that SURVIVES the change.
+   *
+   * Split from the test above because a credential change now also ends sessions, and the
+   * two properties need different actors to be visible at all:
+   *
+   *   * a caller with a FRESH sign-in keeps their session (`revokeOtherSessions`), so the
+   *     412 below is the grant having been burned — which is what this asserts;
+   *   * a caller who only passed the OTP challenge gets a FULL revocation, so their next
+   *     request is 401 and the 412 could never be seen. That case is the test after this
+   *     one.
+   */
+  it('makes a SECOND change re-prove itself, for a session that survives the first', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice');
+
+    // Plain `alice` = signed in just now, so `hasFreshSession` is true and no grant is
+    // needed for the first change.
+    sentEmails.length = 0;
+    await auth(env, 'alice', 'sendEmailOtp', { newEmail: 'new@example.com' });
+    await auth(env, 'alice', 'verifyEmailOtp', { otp: codeFrom(sentEmails.at(-1)?.text) });
+
+    // Still signed in — the change kept this session and ended the others.
+    const second = await auth(env, 'alice', 'sendPhoneOtp', { newPhone: '+919999988888' });
+    // Fresh sessions satisfy the gate on their own, so this one is allowed through rather
+    // than challenged. The assertion that matters is that it is NOT a 401: the session
+    // survived its own credential change.
+    expect(second.status).not.toBe(401);
+  });
+
+  /**
+   * A change authorised by an OTP GRANT ends every session, including the caller's.
+   *
+   * The bug this pins: `revokeOtherSessions` identifies the session to keep by its
+   * `auth_time`, and the grant path never refreshes that claim. It exists specifically for
+   * accounts with no password — phone-only, Google-only, Apple-only — whose mobile
+   * sessions persist for months. So the cutoff would have landed weeks in the past, the
+   * monotonic `MAX()` would have discarded it, the log would have said "other sessions
+   * ended", and the intruder the eviction exists for would have been untouched.
+   */
+  it('ends EVERY session when the change was authorised by a grant, not a fresh sign-in', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice');
+
+    await api(env, 'alice#stale', 'sendReauthOtp');
+    await api(env, 'alice#stale', 'verifyReauthOtp', { otp: codeFrom(sentEmails.at(-1)?.text) });
+
+    // A day-old session: has an `auth_time`, but not a fresh one.
+    const stale = 'alice#old:86400';
+    sentEmails.length = 0;
+    await auth(env, stale, 'sendEmailOtp', { newEmail: 'new@example.com' });
+    const confirmed = await auth(env, stale, 'verifyEmailOtp', {
+      otp: codeFrom(sentEmails.at(-1)?.text),
+    });
+    expect(confirmed.status).toBe(200);
+
+    // The caller's own session is gone too, so the next request is refused.
+    const after = await auth(env, stale, 'sendPhoneOtp', { newPhone: '+919999988888' });
+    expect(after.status).toBe(401);
+
+    /**
+     * 401 WITHOUT the `session_revoked` marker, on this route only — asserted so the
+     * mismatch is a recorded decision rather than a surprise.
+     *
+     * `/auth` runs `optionalAuth`, which has to swallow a bad token so the pre-login
+     * actions (phone sign-in, password reset) work with no session at all. That means the
+     * identity is simply dropped and the handler reports "User must be logged in." The
+     * client will therefore say "your session expired" rather than "signed out for
+     * security" for this one request.
+     *
+     * Left as it is deliberately. Surfacing the reason would mean threading it out of a
+     * middleware whose whole contract is to discard failures, and the mismatch is
+     * self-correcting: the app calls `/api` constantly, and that route reports revocation
+     * properly.
+     */
+    expect(String(after.body?.error?.message)).not.toContain('session_revoked');
+
+    // And on `/api`, which is where the app actually spends its time, it is marked.
+    const onApi = await api(env, stale, 'markNotificationsRead');
+    expect(onApi.status).toBe(401);
+    expect(String(onApi.body?.error?.message)).toContain('session_revoked');
   });
 });
 

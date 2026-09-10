@@ -41,6 +41,18 @@ export const users = sqliteTable(
     role: text("role").default("user"), // 'user' | 'admin'
     status: text("status").default("active"),
     isBlocked: integer("is_blocked", { mode: "boolean" }).default(false),
+    /**
+     * Sessions that authenticated before this instant are no longer valid.
+     *
+     * EPOCH SECONDS, not milliseconds — it is compared against the `auth_time` JWT
+     * claim, which is in whole seconds, and mixing the units silently rejects a
+     * legitimate brand-new session (see migration 0044). It is also the unit
+     * Firebase's own `validSince` takes.
+     *
+     * NULL means nothing has ever been revoked, which is every pre-0044 row.
+     * See lib/sessionRevocation.ts.
+     */
+    tokensValidAfter: integer("tokens_valid_after"),
     bio: text("bio"),
     isPrivate: integer("is_private", { mode: "boolean" }).default(false),
     authProvider: text("auth_provider"),
