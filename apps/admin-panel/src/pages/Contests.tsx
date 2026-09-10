@@ -582,19 +582,27 @@ function ContestDialog({
   const [localPreview, setLocalPreview] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploading, setUploading] = useState(false);
-  const [productFile, setProductFile] = useState<File | null>(null);
-  const [productPreview, setProductPreview] = useState<string | null>(null);
   const [productProgress, setProductProgress] = useState(0);
   const [uploadingProduct, setUploadingProduct] = useState(false);
+  /**
+   * Product images uploaded by THIS dialog that are not yet referenced by a saved
+   * contest. Cleaned up when the dialog closes without saving, so an admin who picks
+   * an image and then cancels does not leave an object in R2 nobody points at.
+   *
+   * A ref, not state: it must survive the close handler without triggering a render,
+   * and nothing displays it.
+   */
+  const orphanProductImages = useRef<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const isEdit = mode === "edit";
   const isDirty =
-    JSON.stringify(form) !== JSON.stringify(initialForm.current) || bannerFile !== null || productFile !== null;
+    JSON.stringify(form) !== JSON.stringify(initialForm.current) || bannerFile !== null;
   const bannerPreview = localPreview || form.bannerUrl || null;
   const isProduct = form.prizeType === "product";
-  const productImagePreview = productPreview || form.prizeProductImageUrl || null;
+  // The uploaded image IS the preview — nothing is held locally any more.
+  const productImagePreview = form.prizeProductImageUrl || null;
   /** What the payload will actually carry — a product contest always pays 0 coins. */
   const effectiveRewardCoins = isProduct ? 0 : Number(form.rewardCoins);
   /**
@@ -606,16 +614,11 @@ function ContestDialog({
   const prizeChanged =
     form.prizeType !== (contest?.prizeType === "product" ? "product" : "coins") ||
     (isProduct ? form.prizeProductTitle.trim() : "") !== (contest?.prizeProductTitle ?? "") ||
-    (isProduct ? form.prizeProductImageUrl : "") !== (contest?.prizeProductImageUrl ?? "") ||
-    (isProduct && productFile !== null);
+    (isProduct ? form.prizeProductImageUrl : "") !== (contest?.prizeProductImageUrl ?? "");
 
   useEffect(() => () => {
     if (localPreview) URL.revokeObjectURL(localPreview);
   }, [localPreview]);
-
-  useEffect(() => () => {
-    if (productPreview) URL.revokeObjectURL(productPreview);
-  }, [productPreview]);
 
   const set = <K extends keyof ContestFormState>(key: K, value: ContestFormState[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
@@ -625,15 +628,22 @@ function ContestDialog({
 
   const requestClose = async () => {
     if (saving) return;
+    // An in-flight product upload is worth blocking on: closing mid-upload would
+    // leave an object in R2 that the cleanup below has not been told about yet.
+    if (uploadingProduct) {
+      toast.info("Wait for the product image to finish uploading.");
+      return;
+    }
     if (isDirty) {
       const discard = await confirm({
         title: "Discard unsaved changes?",
-        description: "Your contest changes and selected local image will be lost.",
+        description: "Your contest changes will be lost, and any product image you uploaded will be removed.",
         confirmLabel: "Discard changes",
         variant: "destructive",
       });
       if (!discard) return;
     }
+    await discardOrphanProductImages(null);
     onClose();
   };
 
@@ -661,11 +671,32 @@ function ContestDialog({
     setUploadProgress(0);
   };
 
-  // The product image goes through the same pre-checks as the banner, against the
-  // same Worker limits, so an oversized file is refused here instead of after a
-  // 5 MB upload.
-  const selectProductImage = (file: File | undefined) => {
+  /**
+   * Pick a product image and upload it IMMEDIATELY, unlike the banner which is held
+   * until Save.
+   *
+   * The banner's deferred upload keeps a `File` in component state for as long as the
+   * admin is filling the form in, and on a phone that is not a safe place to keep it:
+   * Android Chrome routinely evicts a backgrounded tab while the system file picker
+   * is in front, and the reload that follows takes the `File`, the object URL and the
+   * rest of the form with it. Uploading on pick means the only thing the form has to
+   * survive with is a URL string.
+   *
+   * It also removes the object URL entirely — the preview is the uploaded image — so
+   * there is no `blob:` handle to leak or to revoke at the wrong moment.
+   *
+   * Same pattern as the payment-QR upload on the Deposits page, and the same
+   * trade-off: an image can now exist in R2 before any contest references it.
+   * `discardOrphanProductImages` covers Cancel and Save, but NOT a closed tab — and
+   * the product-image category has `retentionDays: null` with no background sweep, so
+   * a genuinely abandoned upload persists. That is the cheaper of the two failures
+   * (an invisible object costs almost nothing; losing the image an admin just picked
+   * costs them the whole form), but it does want a server-side sweep eventually.
+   */
+  const selectProductImage = async (file: File | undefined) => {
     if (!file) return;
+    // Pre-checks against the Worker's own limits, so an oversized file is refused
+    // here instead of after a 5 MB upload.
     if (!BANNER_TYPES.includes(file.type)) {
       setErrors((current) => ({ ...current, productImage: "Choose a JPEG, PNG, or WebP image." }));
       return;
@@ -674,18 +705,46 @@ function ContestDialog({
       setErrors((current) => ({ ...current, productImage: "Image must be 5 MB or smaller." }));
       return;
     }
-    setProductFile(file);
-    setProductPreview(URL.createObjectURL(file));
+
     setErrors((current) => ({ ...current, productImage: undefined }));
     setSubmitError(null);
     setProductProgress(0);
+    setUploadingProduct(true);
+    try {
+      const uploaded = await api.uploadProductImage(file, setProductProgress);
+      orphanProductImages.current.push(uploaded.publicUrl);
+      set("prizeProductImageUrl", uploaded.publicUrl);
+      toast.success("Product image uploaded");
+    } catch (error) {
+      // Surfaced next to the field AND as a toast. An upload that fails silently is
+      // indistinguishable from one that is still running, and the admin's next move
+      // would be to hit Save on a product prize with no image.
+      const message = error instanceof Error ? error.message : "Product image upload failed.";
+      setErrors((current) => ({ ...current, productImage: message }));
+      toast.error(message);
+    } finally {
+      setUploadingProduct(false);
+    }
   };
 
   const removeProductImage = () => {
-    setProductFile(null);
-    setProductPreview(null);
     set("prizeProductImageUrl", "");
     setProductProgress(0);
+  };
+
+  /**
+   * Delete any product image this dialog uploaded that no contest ended up
+   * referencing — a replaced image, or one picked before the admin switched back to
+   * Coins.
+   *
+   * Best-effort and silent: the Worker refuses to delete an image that IS attached to
+   * a contest or a prize claim, so the worst case is a no-op, and a failed cleanup
+   * must never block closing the dialog.
+   */
+  const discardOrphanProductImages = async (keep: string | null) => {
+    const stale = orphanProductImages.current.filter((url) => url !== keep);
+    orphanProductImages.current = [];
+    await Promise.all(stale.map((url) => api.deleteProductImage(url).catch(() => undefined)));
   };
 
   const validate = (): { errors: ContestFormErrors; payload: ContestWritePayload | null } => {
@@ -728,7 +787,7 @@ function ContestDialog({
       }
       // The image is required, not optional: it is the one field that makes a
       // physical prize believable, and it is shown on every card in the app.
-      if (!productFile && !form.prizeProductImageUrl) {
+      if (!form.prizeProductImageUrl) {
         next.productImage = "A product prize needs a product image.";
       }
       const raw = form.prizeProductValue.trim();
@@ -824,7 +883,6 @@ function ContestDialog({
     setSaving(true);
     setSubmitError(null);
     let uploadedUrl: string | null = null;
-    let uploadedProductUrl: string | null = null;
     try {
       const payload = { ...result.payload };
       if (bannerFile) {
@@ -833,16 +891,6 @@ function ContestDialog({
         uploadedUrl = uploaded.publicUrl;
         payload.bannerUrl = uploaded.publicUrl;
         setUploading(false);
-      }
-      // Only when the prize is actually a product. Uploading a picked file after
-      // the admin switched back to coins would leave an unreferenced object in R2
-      // that the payload never mentions.
-      if (productFile && isProduct) {
-        setUploadingProduct(true);
-        const uploaded = await api.uploadProductImage(productFile, setProductProgress);
-        uploadedProductUrl = uploaded.publicUrl;
-        payload.prizeProductImageUrl = uploaded.publicUrl;
-        setUploadingProduct(false);
       }
 
       if (isEdit && contest) {
@@ -917,27 +965,24 @@ function ContestDialog({
       }
 
       await onDone();
+      // The image the saved contest actually points at is kept; anything else this
+      // dialog uploaded (a replaced image, or one picked before switching to Coins)
+      // is now unreferenced.
+      await discardOrphanProductImages(payload.prizeProductImageUrl);
       toast.success(isEdit ? "Contest updated" : mode === "duplicate" ? "Contest duplicated" : "Contest created");
       onClose();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not save contest.";
       setSubmitError(message);
       toast.error(message);
-      // Both uploads happen before the save, so a failed save can leave images in
-      // R2 that no contest references. Each is cleaned up independently — a banner
-      // that cannot be removed must not also strand the product image.
+      // The banner uploads just before the save, so a failed save can strand it.
+      // The product image is cleaned up by discardOrphanProductImages instead, which
+      // runs on close and covers every image this dialog uploaded.
       if (uploadedUrl) {
         try {
           await api.deleteContestBanner(uploadedUrl);
         } catch {
           toast.warning("The contest was not saved and its temporary banner could not be removed automatically.");
-        }
-      }
-      if (uploadedProductUrl) {
-        try {
-          await api.deleteProductImage(uploadedProductUrl);
-        } catch {
-          toast.warning("The contest was not saved and its temporary product image could not be removed automatically.");
         }
       }
     } finally {
@@ -1200,19 +1245,23 @@ function ContestDialog({
                         type="file"
                         className="sr-only"
                         accept="image/jpeg,image/png,image/webp"
-                        disabled={saving}
+                        disabled={saving || uploadingProduct}
                         onChange={(event) => {
-                          selectProductImage(event.target.files?.[0]);
+                          const file = event.target.files?.[0];
+                          // Reset the input BEFORE awaiting, so picking the same file
+                          // twice still fires a change event.
                           event.target.value = "";
+                          void selectProductImage(file);
                         }}
                       />
                       <div className="flex flex-wrap gap-2">
-                        <Button type="button" variant="outline" size="sm" disabled={saving} asChild>
+                        <Button type="button" variant="outline" size="sm" disabled={saving || uploadingProduct} asChild>
                           <label htmlFor="contest-product-image-file" className="cursor-pointer">
-                            <Upload /> {productImagePreview ? "Replace image" : "Choose image"}
+                            {uploadingProduct ? <Loader2 className="animate-spin" /> : <Upload />}
+                            {uploadingProduct ? "Uploading…" : productImagePreview ? "Replace image" : "Choose image"}
                           </label>
                         </Button>
-                        {productImagePreview && (
+                        {productImagePreview && !uploadingProduct && (
                           <Button
                             type="button"
                             variant="ghost"
@@ -1226,14 +1275,9 @@ function ContestDialog({
                         )}
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        JPEG, PNG, or WebP · maximum 5 MB. Shown on the contest card and to the winner while they wait for
-                        delivery.
+                        JPEG, PNG, or WebP · maximum 5 MB. Uploads as soon as you pick it, so it is not lost if your
+                        browser reloads the page. Shown on the contest card and to the winner awaiting delivery.
                       </p>
-                      {productFile && (
-                        <p className="text-xs text-muted-foreground">
-                          {productFile.name} · {(productFile.size / 1024 / 1024).toFixed(2)} MB · uploads when you save
-                        </p>
-                      )}
                       {errors.productImage && <p className="text-xs font-medium text-destructive">{errors.productImage}</p>}
                       {uploadingProduct && (
                         <div className="space-y-1.5" aria-live="polite">
