@@ -325,6 +325,88 @@ describe('parseDeliveryAddress', () => {
   it('defaults the country rather than demanding it', () => {
     expect(parseDeliveryAddress(ADDRESS).country).toBe('India');
   });
+
+  /**
+   * The Worker half of a contract shared with the app's claim form.
+   *
+   * `apps/expo/src/lib/deliveryAddressForm.ts` mirrors these rules in zod so a typo is
+   * caught before a round trip — worth it because `submitPrizeClaim` is rate-limited
+   * 10/hour FAIL-CLOSED, so a server rejection for a typo spends part of the budget
+   * the user needs to fix that typo. But a mirror that drifts is worse than none:
+   * stricter than this locks somebody out of a prize they won, looser burns a slot on
+   * a submit that fails anyway.
+   *
+   * This table is duplicated verbatim in apps/expo/test/deliveryAddressForm.test.ts.
+   * The duplication is forced: each app's CI job installs only its own
+   * `node_modules`, this validator reaches `hono` via lib/http.ts (which the Expo job
+   * cannot resolve — it failed exactly that way once), and the Worker has no `zod`.
+   * Asserting one explicit table on both sides survives that split, and states what
+   * the answer is meant to be rather than only that two implementations agree.
+   *
+   * KEEP THE TWO TABLES IDENTICAL.
+   */
+  const VALID_DELIVERY = {
+    recipientName: 'Asha Kumari',
+    phone: '9876543210',
+    addressLine1: '12 MG Road, Flat 4B',
+    addressLine2: '',
+    landmark: '',
+    city: 'Bengaluru',
+    state: 'Karnataka',
+    postalCode: '560001',
+    notes: '',
+  };
+
+  const DELIVERY_CASES: Array<[string, Record<string, unknown>, boolean]> = [
+    ['a complete valid address', VALID_DELIVERY, true],
+    ['a +91 prefixed number', { ...VALID_DELIVERY, phone: '+919876543210' }, true],
+    ['a 91 prefixed number', { ...VALID_DELIVERY, phone: '919876543210' }, true],
+    ['a number typed with spaces and dashes', { ...VALID_DELIVERY, phone: '98765-43210' }, true],
+    ['a spaced +91 number', { ...VALID_DELIVERY, phone: '+91 98765 43210' }, true],
+    ['a PIN typed with a space', { ...VALID_DELIVERY, postalCode: '560 001' }, true],
+    ['extra internal whitespace', { ...VALID_DELIVERY, recipientName: ' Asha   Kumari ', city: ' Bengaluru ' }, true],
+    [
+      'every optional field populated',
+      { ...VALID_DELIVERY, addressLine2: 'HSR Layout', landmark: 'Opp. metro', notes: 'Ring twice' },
+      true,
+    ],
+    ['a name at the 100 limit', { ...VALID_DELIVERY, recipientName: 'a'.repeat(100) }, true],
+    ['a PIN starting with 9', { ...VALID_DELIVERY, postalCode: '900001' }, true],
+
+    ['a landline-style number', { ...VALID_DELIVERY, phone: '1234567890' }, false],
+    ['a number starting below 6', { ...VALID_DELIVERY, phone: '5876543210' }, false],
+    ['a 9-digit number', { ...VALID_DELIVERY, phone: '987654321' }, false],
+    ['an 11-digit number', { ...VALID_DELIVERY, phone: '98765432109' }, false],
+    ['a blank phone', { ...VALID_DELIVERY, phone: '' }, false],
+    ['a PIN starting with 0', { ...VALID_DELIVERY, postalCode: '060001' }, false],
+    ['a 5-digit PIN', { ...VALID_DELIVERY, postalCode: '56001' }, false],
+    ['a 7-digit PIN', { ...VALID_DELIVERY, postalCode: '5600011' }, false],
+    ['a PIN with letters', { ...VALID_DELIVERY, postalCode: '56000A' }, false],
+    ['a one-character name', { ...VALID_DELIVERY, recipientName: 'A' }, false],
+    ['a blank name', { ...VALID_DELIVERY, recipientName: '   ' }, false],
+    ['a 3-character street address', { ...VALID_DELIVERY, addressLine1: '12A' }, false],
+    ['a blank street address', { ...VALID_DELIVERY, addressLine1: '' }, false],
+    ['a one-character city', { ...VALID_DELIVERY, city: 'B' }, false],
+    ['a blank city', { ...VALID_DELIVERY, city: '' }, false],
+    ['a one-character state', { ...VALID_DELIVERY, state: 'K' }, false],
+    ['a blank state', { ...VALID_DELIVERY, state: '' }, false],
+    ['an over-long name', { ...VALID_DELIVERY, recipientName: 'a'.repeat(101) }, false],
+    ['an over-long street address', { ...VALID_DELIVERY, addressLine1: 'a'.repeat(201) }, false],
+    ['an over-long city', { ...VALID_DELIVERY, city: 'a'.repeat(81) }, false],
+    ['an over-long address line 2', { ...VALID_DELIVERY, addressLine2: 'a'.repeat(201) }, false],
+    ['an over-long landmark', { ...VALID_DELIVERY, landmark: 'a'.repeat(121) }, false],
+    ['over-long notes', { ...VALID_DELIVERY, notes: 'a'.repeat(501) }, false],
+  ];
+
+  it.each(DELIVERY_CASES)('shares the app form’s verdict on %s -> accepted: %s', (_label, input, accepted) => {
+    let ok = true;
+    try {
+      parseDeliveryAddress(input);
+    } catch {
+      ok = false;
+    }
+    expect(ok).toBe(accepted);
+  });
 });
 
 describe('submitPrizeClaim', () => {

@@ -33,8 +33,13 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { useForm } from 'react-hook-form';
-import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
+import {
+  deliverySchema,
+  EMPTY_DELIVERY_FORM,
+  PHONE_INPUT_MAX_LENGTH,
+  type DeliveryFormValues,
+} from '@/src/lib/deliveryAddressForm';
 import * as Haptics from 'expo-haptics';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Ionicons } from '@/src/lib/icons';
@@ -47,69 +52,6 @@ import { EmptyState, ErrorState } from '@/src/components/ui/StateViews';
 import { PrizeStatusPill, prizeStatusMeta } from '@/src/components/prizes/prizeStatus';
 import { usePrize, useSubmitPrizeClaim } from '@/src/hooks/usePrizes';
 import { Colors } from '@/constants/theme';
-
-/** Collapse internal whitespace, exactly as the Worker's `text()` does. */
-const collapse = (value: unknown) => (typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '');
-
-const optional = (max: number, label: string) =>
-  z
-    .string()
-    .optional()
-    .transform((v) => collapse(v))
-    .refine((v) => v.length <= max, `${label} must be ${max} characters or fewer.`);
-
-const deliverySchema = z.object({
-  recipientName: z
-    .string()
-    .transform(collapse)
-    .refine((v) => v.length >= 2, 'Enter a valid recipient name.')
-    .refine((v) => v.length <= 100, 'Recipient name must be 100 characters or fewer.'),
-  // Spaces and dashes are stripped before the check, and a +91 / 91 prefix is
-  // accepted, because that is how people type their own number.
-  phone: z
-    .string()
-    .transform((v) => collapse(v).replace(/[\s-]/g, ''))
-    .refine(
-      (v) => /^(?:\+?91)?[6-9]\d{9}$/.test(v),
-      'Enter a valid 10-digit mobile number for delivery.',
-    ),
-  addressLine1: z
-    .string()
-    .transform(collapse)
-    .refine((v) => v.length >= 4, 'Enter a valid house / street address.')
-    .refine((v) => v.length <= 200, 'House / street address must be 200 characters or fewer.'),
-  addressLine2: optional(200, 'Address line 2'),
-  landmark: optional(120, 'Landmark'),
-  city: z
-    .string()
-    .transform(collapse)
-    .refine((v) => v.length >= 2, 'Enter a valid city.')
-    .refine((v) => v.length <= 80, 'City must be 80 characters or fewer.'),
-  state: z
-    .string()
-    .transform(collapse)
-    .refine((v) => v.length >= 2, 'Enter a valid state.')
-    .refine((v) => v.length <= 80, 'State must be 80 characters or fewer.'),
-  postalCode: z
-    .string()
-    .transform((v) => collapse(v).replace(/\s/g, ''))
-    .refine((v) => /^[1-9]\d{5}$/.test(v), 'Enter a valid 6-digit PIN code.'),
-  notes: optional(500, 'Delivery notes'),
-});
-
-type DeliveryFormValues = z.input<typeof deliverySchema>;
-
-const EMPTY_FORM: DeliveryFormValues = {
-  recipientName: '',
-  phone: '',
-  addressLine1: '',
-  addressLine2: '',
-  landmark: '',
-  city: '',
-  state: '',
-  postalCode: '',
-  notes: '',
-};
 
 export default function PrizeClaimScreen() {
   const params = useLocalSearchParams();
@@ -135,7 +77,7 @@ export default function PrizeClaimScreen() {
     formState: { errors },
   } = useForm<DeliveryFormValues>({
     resolver: zodResolver(deliverySchema) as any,
-    defaultValues: EMPTY_FORM,
+    defaultValues: EMPTY_DELIVERY_FORM,
   });
 
   // Prefill from the address already on file, so "correct my address" is an edit
@@ -287,11 +229,7 @@ export default function PrizeClaimScreen() {
                   name="phone"
                   placeholder="10-digit mobile number *"
                   keyboardType="phone-pad"
-                  // 16, not 14: the schema strips spaces, dashes and a +91 prefix,
-                  // but only AFTER the input has already truncated. "+91 98765 43210"
-                  // is 15 characters, so a 14 cap ate the last digit and then
-                  // reported an invalid number the user had typed correctly.
-                  maxLength={16}
+                  maxLength={PHONE_INPUT_MAX_LENGTH}
                   errorMessage={errors.phone?.message}
                 />
                 <FormInput
