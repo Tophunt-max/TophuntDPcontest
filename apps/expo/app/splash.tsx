@@ -126,6 +126,17 @@ export default function SplashScreen() {
 
             if (user) {
                 try {
+                    // Account scheduled for deletion? Route to the reactivation gate
+                    // instead of home. This MUST be checked before the profile lookup
+                    // below: `/read/users/:id` hides pending-deletion accounts, so the
+                    // profile call would look like an incomplete signup and misroute.
+                    const meStatus: any = await readApi('/read/me/status').catch(() => null);
+                    if (meStatus?.status === 'pending_deletion' && meStatus?.deletion) {
+                        console.log('Account pending deletion -> reactivation gate');
+                        router.replace('/account-scheduled-deletion');
+                        return;
+                    }
+
                     // Check if the user has a completed profile in D1 (via the Worker)
                     const userData: any = await readApi(`/read/users/${user.uid}`).catch(() => null);
 

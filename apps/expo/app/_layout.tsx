@@ -4,7 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useFonts } from 'expo-font';
 import React, { useEffect } from 'react';
 import 'react-native-reanimated';
-import { QueryClient, QueryClientProvider, QueryCache, MutationCache, onlineManager, focusManager } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, QueryCache, MutationCache, onlineManager, focusManager, useQuery } from '@tanstack/react-query';
 import { Provider as PaperProvider } from 'react-native-paper';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -59,6 +59,7 @@ import { ErrorBoundary } from '@/src/components/ErrorBoundary';
 import { OfflineBanner } from '@/src/components/ui/OfflineBanner';
 import { emitToast } from '@/src/lib/toastBridge';
 import { reportError } from '@/src/lib/reportError';
+import { readApi } from '@/src/services/api';
 import { configureVideoCache } from '@/src/lib/videoCache';
 import { hydrateThemePreference } from '@/src/lib/themePreference';
 
@@ -132,6 +133,51 @@ function MaintenanceGuard({ children }: { children: React.ReactNode }) {
       router.replace('/');
     }
   }, [config?.maintenanceMode, config?.forceUpdate, config?.minAppVersion, loading, segments]);
+
+  return <>{children}</>;
+}
+
+/**
+ * Redirect a signed-in user whose account is scheduled for deletion to the
+ * reactivation gate — from ANY route, and back to the app once they cancel.
+ *
+ * This is the always-on safety net behind app/splash.tsx's cold-start check: it
+ * also catches a deletion requested on another device mid-session, and a direct
+ * deep-link into the app. `/read/users/:id` hides pending accounts, so without a
+ * dedicated status read the app has no other way to know.
+ *
+ * Cheap: one cached `/read/me/status` read per session (staleTime), and the query
+ * only runs while logged in. Maintenance / force-update take priority — those gates
+ * are about the whole app, this one is about a single account.
+ */
+function DeletionGuard({ children }: { children: React.ReactNode }) {
+  const { user, loading: authLoading } = useAuth();
+  const segments = useSegments();
+  const router = useRouter();
+
+  const { data } = useQuery({
+    queryKey: ['me-status', user?.uid],
+    queryFn: () => readApi('/read/me/status'),
+    enabled: !!user && !authLoading,
+    staleTime: 120_000,
+  });
+
+  const pending =
+    !!user && (data as any)?.status === 'pending_deletion' && !!(data as any)?.deletion;
+
+  useEffect(() => {
+    if (!user || !data) return; // not logged in, or status not known yet
+    const top = segments[0];
+    // Let the app-wide gates win — never fight maintenance / force-update.
+    if (top === 'maintenance' || top === 'force-update') return;
+    const onGate = top === 'account-scheduled-deletion';
+    if (pending && !onGate) {
+      router.replace('/account-scheduled-deletion');
+    } else if (!pending && onGate) {
+      // Deletion was cancelled (here or elsewhere) — hand the user back to the app.
+      router.replace('/home');
+    }
+  }, [pending, segments, user, data, router]);
 
   return <>{children}</>;
 }
@@ -231,20 +277,23 @@ function RootLayoutNav() {
 
   return (
     <MaintenanceGuard>
-      <View style={{ flex: 1 }}>
-        <Stack screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="index" />
-          <Stack.Screen name="splash" />
-          <Stack.Screen name="home" />
-          <Stack.Screen name="maintenance" options={{ gestureEnabled: false }} />
-          <Stack.Screen name="force-update" options={{ gestureEnabled: false }} />
-          <Stack.Screen name="notifications/index" options={{ presentation: 'modal', title: 'Notifications' }} />
-        </Stack>
-        {/* Admin-controlled announcement banner (overlays all screens). */}
-        <AnnouncementBanner />
-        {/* Connectivity banner shown whenever the device goes offline. */}
-        <OfflineBanner />
-      </View>
+      <DeletionGuard>
+        <View style={{ flex: 1 }}>
+          <Stack screenOptions={{ headerShown: false }}>
+            <Stack.Screen name="index" />
+            <Stack.Screen name="splash" />
+            <Stack.Screen name="home" />
+            <Stack.Screen name="maintenance" options={{ gestureEnabled: false }} />
+            <Stack.Screen name="force-update" options={{ gestureEnabled: false }} />
+            <Stack.Screen name="account-scheduled-deletion" options={{ gestureEnabled: false }} />
+            <Stack.Screen name="notifications/index" options={{ presentation: 'modal', title: 'Notifications' }} />
+          </Stack>
+          {/* Admin-controlled announcement banner (overlays all screens). */}
+          <AnnouncementBanner />
+          {/* Connectivity banner shown whenever the device goes offline. */}
+          <OfflineBanner />
+        </View>
+      </DeletionGuard>
     </MaintenanceGuard>
   );
 }

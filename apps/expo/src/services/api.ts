@@ -194,6 +194,38 @@ async function endExpiredSession(revoked = false) {
   }
 }
 
+/**
+ * Route a still-signed-in caller to the account-deletion reactivation gate.
+ *
+ * The server refuses writes from an account that is pending deletion with a
+ * `failed-precondition` "scheduled for deletion" error (see the Worker's
+ * `requireApiAuth`). That is the immediate signal that this session is on a closing
+ * account — most often because the deletion was requested on another device. Rather
+ * than surface a confusing raw error, we send the user to the gate where they can
+ * cancel. The splash + DeletionGuard cover cold start and focus; this covers the
+ * mid-session case at the exact moment it is detected.
+ *
+ * Deduped so a burst of failing writes cannot stack redirects, and a no-op when
+ * signed out. Lazy-imports expo-router so this service module carries no navigation
+ * dependency at load time.
+ */
+let routingToDeletionGate = false;
+async function routeToDeletionGate() {
+  if (routingToDeletionGate || !auth.currentUser) return;
+  routingToDeletionGate = true;
+  try {
+    emitToast('Your account is scheduled for deletion. Cancel it to keep using TopHunt.', 'info');
+    const { router } = await import('expo-router');
+    router.replace('/account-scheduled-deletion');
+  } catch (e) {
+    console.error('[api] route to deletion gate failed', e);
+  } finally {
+    setTimeout(() => {
+      routingToDeletionGate = false;
+    }, 5_000);
+  }
+}
+
 async function authHeader(forceRefresh = false): Promise<Record<string, string>> {
   const currentUser = auth.currentUser;
   if (!currentUser) return {};
@@ -281,6 +313,15 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<R
         }
         if (res.status === 401 && !allowUnauthenticated && auth.currentUser) {
           await endExpiredSession(revoked);
+        }
+
+        // The account is pending deletion — the server refuses writes from it. Route
+        // to the reactivation gate instead of bubbling a raw "failed-precondition".
+        if (
+          auth.currentUser &&
+          String(json?.error?.message || '').toLowerCase().includes('scheduled for deletion')
+        ) {
+          void routeToDeletionGate();
         }
 
         const status = (json?.error?.status || 'INTERNAL').toLowerCase().replace(/_/g, '-');

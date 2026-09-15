@@ -2608,6 +2608,74 @@ async function connectionsHandler(c: any, direction: "followers" | "following") 
 readRoute.get("/users/:id/followers", optionalAuth, (c) => connectionsHandler(c, "followers"));
 readRoute.get("/users/:id/following", optionalAuth, (c) => connectionsHandler(c, "following"));
 
+// ================= SELF ACCOUNT STATUS (auth) =================
+/**
+ * The signed-in caller's OWN account status — the login gate's data source.
+ *
+ * The client cannot learn "this account is scheduled for deletion" any other way:
+ * `/read/users/:id` deliberately HIDES pending-deletion and deleted accounts
+ * (`isHiddenAccountStatus`), so a user in the grace period who signs back in would
+ * otherwise land in the normal app with no hint that their account is closing — the
+ * exact gap this endpoint closes. On seeing `deletion`, the app routes to the
+ * reactivation screen instead of home.
+ *
+ * Cheap: one PK read of the caller's own row (the auth middleware already read it),
+ * and the `deletion_requests` lookup only when the status actually warrants it.
+ * Never cached — it gates access and must reflect a cancel/restore on the very next
+ * request.
+ */
+readRoute.get("/me/status", requireAuth, async (c) => {
+  const db = getDb(c.env);
+  const uid = c.get("user").uid;
+  const user = await db
+    .select({ status: schema.users.status })
+    .from(schema.users)
+    .where(eq(schema.users.uid, uid))
+    .get();
+  const status = user?.status ?? "active";
+
+  let deletion:
+    | {
+        requestStatus: "pending" | "processing";
+        scheduledFor: number | null;
+        daysRemaining: number | null;
+        deferredReason: string | null;
+      }
+    | null = null;
+
+  if (status === PENDING_DELETION_STATUS) {
+    const req = await db
+      .select({
+        status: schema.deletionRequests.status,
+        scheduledFor: schema.deletionRequests.scheduledFor,
+        deferredReason: schema.deletionRequests.deferredReason,
+      })
+      .from(schema.deletionRequests)
+      .where(eq(schema.deletionRequests.uid, uid))
+      .get();
+
+    if (req && (req.status === "pending" || req.status === "processing")) {
+      const DAY_MS = 86_400_000;
+      // Ceil so "less than a day left" reads as "1 day", not "0" — and never negative.
+      const daysRemaining = Math.max(0, Math.ceil((req.scheduledFor - Date.now()) / DAY_MS));
+      deletion = {
+        requestStatus: req.status,
+        scheduledFor: req.scheduledFor,
+        daysRemaining,
+        deferredReason: req.deferredReason ?? null,
+      };
+    } else {
+      // The row says pending but no active request exists (a data-repair edge). Still
+      // gate the account rather than let it slip into the app; the screen degrades to
+      // a generic "scheduled for deletion" with no date.
+      deletion = { requestStatus: "pending", scheduledFor: null, daysRemaining: null, deferredReason: null };
+    }
+  }
+
+  c.header("Cache-Control", "private, no-store");
+  return c.json({ status, deletion });
+});
+
 // ================= CHATS (auth) =================
 readRoute.get("/chats", requireAuth, async (c) => {
   const db = getDb(c.env);
