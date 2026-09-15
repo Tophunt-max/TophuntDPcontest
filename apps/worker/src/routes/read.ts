@@ -317,6 +317,31 @@ export const READ_CACHE_TTLS = {
    * writes on the Worker's scarcest quota. See `musicSearchCacheKey`.
    */
   musicSearch: { edge: 6 * 60 * 60, kv: null, invalidated: false, ceiling: 6 * 60 * 60 },
+  /**
+   * Suggested-users pool. Shared and viewer-AGNOSTIC — the per-viewer block/mute
+   * filter runs on every request AFTER this cache, so a blocked account is never
+   * baked into the shared entry (the rule lib/edgeCache.ts states for `cachedJson`).
+   * Nothing invalidates it: a newly-public account simply appears when the entry
+   * lapses, which for a discovery list is a freshness the TTL can own. Edge-only —
+   * a pure function of `users` that a miss recomputes, needing no cross-colo purge.
+   *
+   * This is the endpoint the audit flagged as an unfiltered `SELECT ... FROM users
+   * LIMIT 50` on every open (D1_R2_LOAD_AUDIT.md §7); the cache removes that scan
+   * from the hot path entirely, and a guest pays ZERO D1 for it.
+   */
+  usersSuggested: { edge: 120, kv: null, invalidated: false, ceiling: 120 },
+  /**
+   * Stories bar. A shared base of the live stories; the per-viewer block/mute
+   * filter, grouping and current-user-first ordering all run per request after the
+   * cache. `expiresAt > now` is evaluated once per fill, so a story can linger in the
+   * bar up to `edge` seconds past expiry — the same staleness the feed list already
+   * accepts, and harmless for a bar. Edge-only for the same reason as above.
+   *
+   * Was uncached and read up to 100 rows on every feed open (§7). At 1500 users
+   * opening the app repeatedly that was the single largest avoidable rows_read
+   * source after the feed itself.
+   */
+  storiesFeed: { edge: 60, kv: null, invalidated: false, ceiling: 60 },
   // `satisfies`, NOT `: Record<string, ReadCacheTtl>`. A string index signature makes
   // every dotted access type-check, so a typo like `READ_CACHE_TTLS.userProfle.edge`
   // would compile as `number`, evaluate to `undefined`, fail the `edgeTtlSec > 0` guard
@@ -1830,35 +1855,47 @@ function coarseCoordinates(value: unknown): { lat: number; lng: number } | null 
 }
 
 readRoute.get("/users/suggested", optionalAuth, async (c) => {
-  const db = getDb(c.env);
   const uid = c.get("user")?.uid;
   const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 100);
-  // Suggesting someone the viewer blocked or muted is the single most jarring
-  // place for one to appear, so this is filtered in SQL rather than after the
-  // fact — it keeps the requested page size intact instead of returning short.
+
+  // Shared, viewer-AGNOSTIC candidate pool, edge-cached so the discovery screen
+  // stops scanning `users` on every open (D1_R2_LOAD_AUDIT.md §7). Filled at the
+  // documented max (100) so ONE entry serves every requested `limit`. The block/
+  // mute filter deliberately does NOT run here — it is per-viewer, and baking one
+  // viewer's exclusions into the shared entry is the exact mistake `cachedJson`
+  // exists to prevent (see lib/edgeCache.ts). It runs below, after the cache.
+  const pool = await cachedJson<any[]>(c, {
+    key: "cache:users:suggested",
+    edgeTtlSec: READ_CACHE_TTLS.usersSuggested.edge,
+    kvTtlSec: READ_CACHE_TTLS.usersSuggested.kv,
+    load: async () => {
+      const db = getDb(c.env);
+      const rows = await db
+        .select({
+          id: schema.users.uid,
+          fullName: schema.users.fullName,
+          username: schema.users.username,
+          profileImageUrl: schema.users.profileImageUrl,
+          verified: schema.users.verified,
+          coordinates: schema.users.coordinates,
+        })
+        .from(schema.users)
+        .where(publiclyVisibleUser)
+        .limit(100)
+        .all();
+      return rows as any[];
+    },
+  });
+
+  // Per-viewer pass: drop anyone the viewer blocked or muted, THEN trim to the page.
+  // Filtering the whole pool in JS covers the full hidden set (no SQL_EXCLUSION_MAX
+  // ceiling to work around), at the cost that a viewer with many blocks inside the
+  // top 100 gets a shorter page than requested — an acceptable trade for a
+  // suggestion list, and the same trade the cached feed at /matches already makes.
   const hidden = await hiddenUidsFor(c.env, uid);
-  const excluded = sqlExclusionList(hidden);
-  const rows = await db
-    .select({
-      id: schema.users.uid,
-      fullName: schema.users.fullName,
-      username: schema.users.username,
-      profileImageUrl: schema.users.profileImageUrl,
-      verified: schema.users.verified,
-      coordinates: schema.users.coordinates,
-    })
-    .from(schema.users)
-    .where(
-      excluded.length
-        ? and(publiclyVisibleUser, notInArray(schema.users.uid, excluded))
-        : publiclyVisibleUser,
-    )
-    .limit(limit)
-    .all();
   if (hidden.size) c.header("Cache-Control", "private, no-store");
-  // Safety net for a viewer past SQL_EXCLUSION_MAX, where the clause above only
-  // covers part of the set.
-  const visible = exclusionTruncated(hidden) ? excludeHiddenBy(rows as any[], hidden, (r: any) => r.id) : rows;
+  const filtered = hidden.size ? excludeHiddenBy(pool, hidden, (r: any) => r.id) : pool;
+  const visible = filtered.slice(0, limit);
   return c.json(visible.map((r: any) => ({ ...r, coordinates: coarseCoordinates(r.coordinates) })));
 });
 
@@ -2939,29 +2976,39 @@ async function attachUsers(c: any, userIds: string[]) {
 }
 
 readRoute.get("/stories/feed", requireAuth, async (c) => {
-  const db = getDb(c.env);
   const uid = c.get("user").uid;
-  const nowMs = Date.now();
-  // The stories bar sits directly above the feed, so it uses the same wider
-  // `hiddenUidsFor` (blocks AND mutes) — "stop showing me this person" has to
-  // cover both or the feature looks broken. Filtered in SQL because this
-  // endpoint has no shared cache to poison.
+
+  // Shared base: every live story, newest first. Edge-cached (edge-only) so the
+  // stories bar stops scanning `stories` on every feed open (D1_R2_LOAD_AUDIT.md
+  // §7). The per-viewer block/mute filter is applied AFTER the cache rather than in
+  // the SQL, so no viewer's exclusions are ever baked into the shared entry — the
+  // rule lib/edgeCache.ts states for `cachedJson`. `expiresAt > now` is evaluated
+  // once per fill, so a story can linger in the bar up to the edge TTL past expiry;
+  // that is the same staleness the feed list already tolerates and is harmless here.
+  const baseRows = await cachedJson<any[]>(c, {
+    key: "cache:stories:feed",
+    edgeTtlSec: READ_CACHE_TTLS.storiesFeed.edge,
+    kvTtlSec: READ_CACHE_TTLS.storiesFeed.kv,
+    load: async () => {
+      const db = getDb(c.env);
+      const rows = await db
+        .select()
+        .from(schema.stories)
+        .where(gt(schema.stories.expiresAt, Date.now()))
+        .orderBy(desc(schema.stories.createdAt))
+        .limit(100)
+        .all();
+      return rows as any[];
+    },
+  });
+
+  // The stories bar uses the wider `hiddenUidsFor` (blocks AND mutes) — "stop
+  // showing me this person" has to cover both or the feature looks broken. The full
+  // hidden set is filtered in JS (no SQL_EXCLUSION_MAX ceiling to work around now).
   const hiddenAuthors = await hiddenUidsFor(c.env, uid);
-  const excludedAuthors = sqlExclusionList(hiddenAuthors);
-  const allRows = await db
-    .select()
-    .from(schema.stories)
-    .where(
-      excludedAuthors.length
-        ? and(gt(schema.stories.expiresAt, nowMs), notInArray(schema.stories.userId, excludedAuthors))
-        : gt(schema.stories.expiresAt, nowMs),
-    )
-    .orderBy(desc(schema.stories.createdAt))
-    .limit(100)
-    .all();
-  const rows = exclusionTruncated(hiddenAuthors)
-    ? excludeHiddenBy(allRows as any[], hiddenAuthors, (r: any) => r.userId)
-    : allRows;
+  const rows = hiddenAuthors.size
+    ? excludeHiddenBy(baseRows as any[], hiddenAuthors, (r: any) => r.userId)
+    : baseRows;
 
   const userIds = [...new Set(rows.map((r) => r.userId))];
   const userMap = await attachUsers(c, userIds);

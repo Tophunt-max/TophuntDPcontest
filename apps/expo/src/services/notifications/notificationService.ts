@@ -41,6 +41,25 @@ Notifications.setNotificationHandler({
 /** Where this device's push token is cached so logout can detach it. */
 const PUSH_TOKEN_KEY = 'push::deviceToken';
 
+/**
+ * Safety-net poll interval for the two notification subscriptions, in ms.
+ *
+ * `live()` refetches instantly on every socket event, so this timer only fires
+ * when the socket missed an event or is down — it is a backstop, not the delivery
+ * mechanism. Its default is 60s (services/realtime.ts), and BOTH the header bell
+ * (subscribeToUnreadCount) and the notifications screen (subscribeToNotifications)
+ * subscribe to `user:<uid>`, so a foregrounded-but-idle app was paying two authed
+ * GETs a minute — `/read/notifications` + `/read/notifications/unread-count`, each
+ * of which also costs a D1 auth-row read. On Cloudflare's D1 free tier that idle
+ * baseline, multiplied across every active user, is a real fraction of the daily
+ * rows-read budget for zero user benefit.
+ *
+ * 180s matches what PostCard already uses (components/home/PostCard.tsx) and cuts
+ * that idle baseline 3x without touching delivery latency: a real notification
+ * still arrives instantly over the socket. See D1_R2_LOAD_AUDIT.md §5.
+ */
+const NOTIFICATION_FALLBACK_MS = 180_000;
+
 export interface NotificationItem {
     id: string;
     title: string;
@@ -256,7 +275,7 @@ class NotificationService {
             `user:${userId}`,
             () => readApi('/read/notifications/unread-count'),
             (res: any) => callback(res?.count ?? 0),
-            { filter: (e) => e.type === 'notification' },
+            { filter: (e) => e.type === 'notification', fallbackMs: NOTIFICATION_FALLBACK_MS },
         );
     }
 
@@ -266,7 +285,7 @@ class NotificationService {
             `user:${userId}`,
             () => readApi('/read/notifications', { limit: limitCount }),
             (items: NotificationItem[]) => callback(items || []),
-            { filter: (e) => e.type === 'notification' },
+            { filter: (e) => e.type === 'notification', fallbackMs: NOTIFICATION_FALLBACK_MS },
         );
     }
 
