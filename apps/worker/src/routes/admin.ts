@@ -10,7 +10,7 @@
 import { Hono } from "hono";
 import { and, eq, desc, sql, count, ne, like, gte, lt, lte, inArray, notInArray, or, isNull, isNotNull } from "drizzle-orm";
 import { DELETED_STATUS, PENDING_DELETION_STATUS } from "../lib/accountStatus";
-import { invalidateUserCaches } from "../lib/accountDeletion";
+import { invalidateUserCaches, executeAccountDeletion, cancelAccountDeletion } from "../lib/accountDeletion";
 import { alias } from "drizzle-orm/sqlite-core";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
@@ -3318,9 +3318,25 @@ adminRoute.get("/account-deletions", async (c) => {
     .from(schema.accountDeletions)
     .get();
 
+  // Attach a display handle so an operator can identify the account — a bare uid
+  // is unusable for support. Resolved in ONE indexed lookup for the whole page
+  // rather than a join, so the `...r` spread below stays intact. A completed
+  // (anonymised) row resolves to its `deleted_…` handle, which is correct.
+  const uids = requests.map((r) => r.uid);
+  const users = uids.length
+    ? await db
+        .select({ uid: schema.users.uid, username: schema.users.username, email: schema.users.email })
+        .from(schema.users)
+        .where(inArray(schema.users.uid, uids))
+        .all()
+    : [];
+  const userByUid = new Map(users.map((u) => [u.uid, u]));
+
   return c.json({
     requests: requests.map((r) => ({
       ...r,
+      username: userByUid.get(r.uid)?.username ?? null,
+      email: userByUid.get(r.uid)?.email ?? null,
       requestedAtIso: r.requestedAt ? new Date(r.requestedAt).toISOString() : null,
       scheduledForIso: r.scheduledFor ? new Date(r.scheduledFor).toISOString() : null,
       completedAtIso: r.completedAt ? new Date(r.completedAt).toISOString() : null,
@@ -3338,6 +3354,52 @@ adminRoute.get("/account-deletions", async (c) => {
       forfeitedCoinsTotal: Number(forfeited?.total ?? 0),
     },
   });
+});
+
+/**
+ * Force a purge to run NOW — or resume one that stalled.
+ *
+ * The cron sweep retries a failing purge five times and then goes silent, so once
+ * the underlying cause is fixed (or for a support/legal escalation that cannot
+ * wait out the grace period) this is the manual trigger. `executeAccountDeletion`
+ * resumes from the last completed phase and every phase is idempotent, so
+ * re-running a half-done or failed purge continues rather than repeating work.
+ *
+ * Irreversible. Full admins only, and audited.
+ */
+adminRoute.post("/account-deletions/:uid/purge", async (c) => {
+  requireFullAdmin(c);
+  const uid = c.req.param("uid");
+  const existing = await getDb(c.env)
+    .select({ status: schema.deletionRequests.status })
+    .from(schema.deletionRequests)
+    .where(eq(schema.deletionRequests.uid, uid))
+    .get();
+  if (existing?.status === "completed") {
+    throw httpsError("failed-precondition", "This account has already been erased.");
+  }
+  const result = await executeAccountDeletion(c.env, uid, "admin_forced");
+  await logAudit(c, "account.deletion.purge", "user", uid, {
+    forfeitedCoins: result.forfeitedCoins,
+    mediaRemoved: result.mediaUrls.length,
+  });
+  return c.json({ success: true, ...result });
+});
+
+/**
+ * Restore an account during the grace period, on the user's behalf.
+ *
+ * The support case: someone asked to leave, changed their mind, and cannot sign in
+ * to cancel it themselves. `cancelAccountDeletion` refuses once the purge has
+ * started (`processing`) or finished (`completed`) — there is nothing left to bring
+ * back — and is idempotent otherwise. Full admins only, and audited.
+ */
+adminRoute.post("/account-deletions/:uid/cancel", async (c) => {
+  requireFullAdmin(c);
+  const uid = c.req.param("uid");
+  const result = await cancelAccountDeletion(c.env, uid, c);
+  await logAudit(c, "account.deletion.cancel", "user", uid, { cancelled: result.cancelled });
+  return c.json({ success: true, ...result });
 });
 
 adminRoute.delete("/logs", async (c) => {

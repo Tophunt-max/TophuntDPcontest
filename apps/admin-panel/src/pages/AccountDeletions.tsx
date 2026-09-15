@@ -1,8 +1,10 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { api, type DeletionRequestStatus } from "@/lib/api";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { api, type DeletionRequestStatus, type AccountDeletionRequest } from "@/lib/api";
 import { Table } from "@/components/ui/Table";
 import { Badge } from "@/components/ui/Badge";
+import { useConfirm } from "@/components/ConfirmDialog";
+import { toast } from "@/lib/toast";
 import { PageHeader, fmtDateTime, fmtNumber, truncate } from "@/lib/format";
 import { AlertTriangle, Clock, Trash2, Undo2, CheckCircle2 } from "lucide-react";
 
@@ -44,12 +46,63 @@ const DEFERRAL_LABELS: Record<string, string> = {
 
 export default function AccountDeletions() {
   const [status, setStatus] = useState<DeletionRequestStatus | "">("");
+  const qc = useQueryClient();
+  const { confirm } = useConfirm();
   const q = useQuery({
     queryKey: ["account-deletions", status],
     queryFn: () => api.accountDeletions({ status: status || undefined, limit: 200 }),
     // Purge health is time-sensitive: a stuck deletion is a compliance clock.
     refetchInterval: 60_000,
   });
+
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["account-deletions"] });
+
+  const purgeMut = useMutation({
+    mutationFn: (uid: string) => api.purgeAccountDeletion(uid),
+    onSuccess: (r) => {
+      toast.success(
+        r.forfeitedCoins != null
+          ? `Purge run — ${fmtNumber(r.forfeitedCoins)} coins forfeited.`
+          : "Purge run.",
+      );
+      invalidate();
+    },
+    onError: (e: any) => toast.error(e?.message || "Purge failed."),
+  });
+
+  const cancelMut = useMutation({
+    mutationFn: (uid: string) => api.cancelAccountDeletion(uid),
+    onSuccess: (r) => {
+      toast.success(r.cancelled ? "Account restored." : "Nothing to restore.");
+      invalidate();
+    },
+    onError: (e: any) => toast.error(e?.message || "Could not restore the account."),
+  });
+
+  const busy = (uid: string) =>
+    (purgeMut.isPending && purgeMut.variables === uid) ||
+    (cancelMut.isPending && cancelMut.variables === uid);
+
+  const askPurge = async (r: AccountDeletionRequest) => {
+    const label = r.username || r.uid;
+    const ok = await confirm({
+      title: r.lastError ? "Retry the purge?" : "Erase this account now?",
+      description: r.lastError
+        ? `Re-runs the purge for ${label} from where it stopped. This is irreversible.`
+        : `This permanently erases ${label} immediately, skipping the remaining grace period. It cannot be undone.`,
+      variant: "destructive",
+    });
+    if (ok) purgeMut.mutate(r.uid);
+  };
+
+  const askRestore = async (r: AccountDeletionRequest) => {
+    const label = r.username || r.uid;
+    const ok = await confirm({
+      title: "Restore this account?",
+      description: `Cancels the scheduled deletion for ${label} and sets the account back to active. The user can use it again immediately.`,
+    });
+    if (ok) cancelMut.mutate(r.uid);
+  };
 
   const stats = q.data?.stats;
   const needsAttention = (stats?.overdue ?? 0) > 0 || (stats?.failing ?? 0) > 0;
@@ -137,7 +190,21 @@ export default function AccountDeletions() {
           {
             key: "uid",
             header: "Account",
-            render: (r) => <span className="font-mono text-xs">{r.uid}</span>,
+            render: (r) => (
+              <div className="min-w-0">
+                <div className="font-semibold text-foreground truncate" title={r.username ?? ""}>
+                  {r.username ? `@${r.username}` : "—"}
+                </div>
+                {r.email && (
+                  <div className="text-xs text-muted-foreground truncate" title={r.email}>
+                    {r.email}
+                  </div>
+                )}
+                <div className="font-mono text-[10px] text-muted-foreground truncate" title={r.uid}>
+                  {r.uid}
+                </div>
+              </div>
+            ),
           },
           {
             key: "status",
@@ -212,6 +279,45 @@ export default function AccountDeletions() {
               ) : (
                 <span className="text-muted-foreground">—</span>
               ),
+          },
+          {
+            key: "actions",
+            header: "Actions",
+            render: (r) => {
+              // Completed and cancelled rows are terminal — nothing to act on.
+              if (r.status === "completed" || r.status === "cancelled") {
+                return <span className="text-muted-foreground">—</span>;
+              }
+              const disabled = busy(r.uid);
+              // Restore is only meaningful before the purge starts — cancelling a
+              // `processing` account is refused server-side, so it is not offered.
+              const canRestore = r.status === "pending";
+              const purgeLabel = r.lastError
+                ? "Retry purge"
+                : r.status === "processing"
+                  ? "Resume purge"
+                  : "Purge now";
+              return (
+                <div className="flex items-center gap-2">
+                  {canRestore && (
+                    <button
+                      onClick={() => void askRestore(r)}
+                      disabled={disabled}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold border border-sky-300 text-sky-700 hover:bg-sky-50 disabled:opacity-50"
+                    >
+                      <Undo2 size={13} /> Restore
+                    </button>
+                  )}
+                  <button
+                    onClick={() => void askPurge(r)}
+                    disabled={disabled}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50"
+                  >
+                    <Trash2 size={13} /> {purgeLabel}
+                  </button>
+                </div>
+              );
+            },
           },
         ]}
       />
