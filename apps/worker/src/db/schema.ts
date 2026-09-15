@@ -696,10 +696,31 @@ export const chats = sqliteTable(
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
-  // Partial mitigation only: removes the filesort from /read/chats. That query's
-  // real cost is the correlated EXISTS over json_each(users), which no index can
-  // serve — see D1_R2_LOAD_AUDIT.md section 4.
+  // Serves the ORDER BY updated_at DESC of /read/chats. Membership is no longer
+  // tested with json_each on this table — the indexed `chat_members` join
+  // (below) does that now — so this index carries the sort for the join's page.
   (t) => ({ updatedIdx: index("idx_chats_updated").on(t.updatedAt) }),
+);
+
+/**
+ * Indexed chat membership — replaces the EXISTS(json_each(chats.users)) scans
+ * (D1_R2_LOAD_AUDIT.md §4). Membership is immutable: written when a chat is
+ * created, deleted with the chat, never otherwise mutated (no group chats).
+ *
+ * `(user_id, chat_id)` PK serves the hot "my chats" seek; `idx_chat_members_chat`
+ * serves the reverse "members of this chat" lookup used on delete. See migration
+ * 0045_chat_members.sql for the one-time backfill from the legacy JSON arrays.
+ */
+export const chatMembers = sqliteTable(
+  "chat_members",
+  {
+    userId: text("user_id").notNull(),
+    chatId: text("chat_id").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.userId, t.chatId] }),
+    chatIdx: index("idx_chat_members_chat").on(t.chatId),
+  }),
 );
 
 export const messages = sqliteTable(

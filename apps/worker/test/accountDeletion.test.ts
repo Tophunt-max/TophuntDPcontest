@@ -959,6 +959,11 @@ describe('deletion completeness across the whole schema', () => {
     // Threads survive for the other participant; the member snapshot is
     // anonymised and the messages are deleted (tested above).
     chats: 'counterparty conversation (snapshot anonymised)',
+    // The membership edge is part of the retained thread: it points at the
+    // anonymised "Deleted user" row, carries no personal data of its own, and is
+    // what keeps the conversation reachable for the OTHER participant. Deleted only
+    // by a hard deleteChat, exactly like the `chats` row it mirrors.
+    chat_members: 'counterparty conversation membership (points at anonymised row)',
     // A record that a prize was awarded and where it ended up — an accounting fact
     // about the business, in the same class as the coin ledger above. The PERSONAL
     // part (name, phone, full postal address) is scrubbed in place by phaseContent

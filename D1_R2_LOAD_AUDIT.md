@@ -94,6 +94,19 @@ This runs **144 times a day** whether or not anything is prunable.
 
 ## 4. `/read/chats` — the single worst query in the codebase
 
+> **Status: RESOLVED.** A `chat_members(user_id, chat_id)` join table (migration
+> `0045_chat_members.sql`, backfilled from the JSON arrays) now serves membership as
+> an index seek. `/read/chats` is an indexed join with `LIMIT 50` instead of an
+> un-LIMITed `json_each` scan; `isChatMember` (used by `sendMessage`, `markChatRead`,
+> `deleteChat`, `GET /chats/:id/messages` and the `/ws` chat-channel auth) and the
+> `startChat` existing-chat check are index lookups too. Membership is immutable
+> (written at chat creation in one batch with the `chats` row, deleted with the chat),
+> which is what keeps the index trivially correct. The two RARE account-lifecycle
+> sweeps — `anonymiseChatSnapshots` (deletion) and `closeRealtimeSessions` (eviction)
+> — deliberately KEEP the `json_each` read of the source-of-truth array: they run
+> once per deletion/eviction, so the scan cost is irrelevant, and reading the
+> authoritative membership guarantees completeness a derived index cannot.
+
 `src/routes/read.ts:1222-1243`. Hot (chat list screen), **no cache, no LIMIT**:
 
 ```sql

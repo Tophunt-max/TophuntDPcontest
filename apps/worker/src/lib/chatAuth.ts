@@ -1,15 +1,13 @@
 /**
  * Chat membership authorization.
  *
- * `chats.users` is a JSON array of uids, so membership is checked by expanding
- * it with `json_each` inside the same statement that looks up the chat. This is
- * the exact query the WebSocket upgrade path in `src/index.ts` already uses;
- * the REST handlers were never given the equivalent check, which left
- * `sendMessage`, `markChatRead`, `deleteChat` and `GET /read/chats/:id/messages`
- * open to any authenticated caller who knew (or guessed) a chat id.
- *
- * Always use this rather than re-deriving the check — a chat id is not a secret
- * and `requireAuth` only proves that *someone* is logged in.
+ * Membership is an indexed row in `chat_members` (see D1_R2_LOAD_AUDIT.md §4 and
+ * migration 0045) — a `(chat_id, user_id)` existence check, which replaces the old
+ * EXISTS(json_each(chats.users)) test. The REST handlers `sendMessage`,
+ * `markChatRead`, `deleteChat` and `GET /read/chats/:id/messages` all gate on this;
+ * without it any authenticated caller who knew (or guessed) a chat id could act on
+ * it, since a chat id is not a secret and `requireAuth` only proves *someone* is
+ * logged in. Always use this rather than re-deriving the check.
  */
 import type { Env } from "../types";
 import { httpsError } from "./http";
@@ -17,9 +15,9 @@ import { httpsError } from "./http";
 /** True when `uid` is a participant of `chatId`. */
 export async function isChatMember(env: Env, chatId: string, uid: string): Promise<boolean> {
   if (!chatId || !uid) return false;
+  // Index seek on the chat_members PK — no scan of `chats`, no json_each.
   const row = await env.DB.prepare(
-    `SELECT 1 FROM chats WHERE id = ?
-       AND EXISTS (SELECT 1 FROM json_each(chats.users) WHERE json_each.value = ?)`,
+    `SELECT 1 FROM chat_members WHERE chat_id = ? AND user_id = ?`,
   )
     .bind(chatId, uid)
     .first();

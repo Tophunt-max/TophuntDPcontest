@@ -850,6 +850,14 @@ async function anonymiseMatchSnapshots(env: Env, uid: string, media: Set<string>
  */
 async function anonymiseChatSnapshots(env: Env, uid: string): Promise<void> {
   const db = getDb(env);
+  // Reads the membership SOURCE OF TRUTH (chats.users), not the chat_members
+  // index. This is a privacy-completeness sweep that runs once per deletion, so
+  // the scan cost is irrelevant — and it must find EVERY chat carrying this user's
+  // name/photo snapshot, which is a guarantee the authoritative JSON array gives
+  // and a derived index cannot (a rollout gap or a writer bug could leave it
+  // short). The chat is KEPT and scrubbed, so its chat_members edge stays too — the
+  // deleted user remains a "Deleted user" participant. The hot per-request paths
+  // use chat_members (D1_R2_LOAD_AUDIT.md §4).
   const rows = await env.DB.prepare(
     `SELECT id, users_data, last_message FROM chats
       WHERE EXISTS (SELECT 1 FROM json_each(chats.users) WHERE json_each.value = ?)`,
