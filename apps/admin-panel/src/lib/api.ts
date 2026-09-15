@@ -503,6 +503,10 @@ export interface DeepHealth {
 export type DeletionRequestStatus = "pending" | "processing" | "completed" | "cancelled";
 export interface AccountDeletionRequest {
   uid: string;
+  /** Display handle for the account (null if the row no longer resolves). */
+  username: string | null;
+  /** Email on file, for support identification (null on phone-only / anonymised). */
+  email: string | null;
   status: DeletionRequestStatus;
   reason: string | null;
   requestedAt: number;
@@ -856,6 +860,16 @@ export const api = {
     const qs = s.toString();
     return get<AccountDeletionsResponse>(`/admin/account-deletions${qs ? `?${qs}` : ""}`);
   },
+  /** Force a purge to run now / resume a stalled one. Irreversible. */
+  purgeAccountDeletion: (uid: string) =>
+    post<{ success: boolean; forfeitedCoins?: number; mediaUrls?: string[] }>(
+      `/admin/account-deletions/${encodeURIComponent(uid)}/purge`,
+    ),
+  /** Restore a pending deletion on the user's behalf. */
+  cancelAccountDeletion: (uid: string) =>
+    post<{ success: boolean; cancelled: boolean }>(
+      `/admin/account-deletions/${encodeURIComponent(uid)}/cancel`,
+    ),
 
   // error logs (observability)
   logs: (params?: { level?: string; q?: string; limit?: number }) => {

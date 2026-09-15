@@ -912,6 +912,109 @@ describe('data export', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 8b. Admin operator actions on deletion requests.
+// ---------------------------------------------------------------------------
+
+/** POST to an /admin route as superadmin (the shared-secret path). */
+async function adminPost(env: TestEnv, path: string, body: any = {}) {
+  const res = await app.request(
+    `/admin${path}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Secret': 'test-admin-secret' },
+      body: JSON.stringify(body),
+    },
+    env,
+    fakeCtx(),
+  );
+  return { status: res.status, body: (await res.json().catch(() => ({}))) as any };
+}
+
+describe('admin actions on deletion requests', () => {
+  it('force-purges a pending request now (skips the grace period)', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice');
+    await requestAccountDeletion(env as any, 'alice');
+
+    const res = await adminPost(env, '/account-deletions/alice/purge');
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+
+    const user = await drizzleOf(env).select().from(schema.users).where(eq(schema.users.uid, 'alice')).get();
+    expect(user?.status).toBe(DELETED_STATUS);
+    const req = await drizzleOf(env)
+      .select()
+      .from(schema.deletionRequests)
+      .where(eq(schema.deletionRequests.uid, 'alice'))
+      .get();
+    expect(req?.status).toBe('completed');
+    // The purge really removed the Firebase login (mock records it).
+    expect(authDeletes).toContain('alice');
+  });
+
+  it('refuses to purge an already-erased account', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice');
+    await requestAccountDeletion(env as any, 'alice');
+    await adminPost(env, '/account-deletions/alice/purge');
+
+    const again = await adminPost(env, '/account-deletions/alice/purge');
+    expect(again.status).toBe(412); // failed-precondition
+
+  });
+
+  it('restores (cancels) a pending deletion on the user\'s behalf', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice');
+    await requestAccountDeletion(env as any, 'alice');
+
+    const res = await adminPost(env, '/account-deletions/alice/cancel');
+    expect(res.status).toBe(200);
+    expect(res.body.cancelled).toBe(true);
+
+    const user = await drizzleOf(env).select().from(schema.users).where(eq(schema.users.uid, 'alice')).get();
+    expect(user?.status).toBe('active');
+    const req = await drizzleOf(env)
+      .select()
+      .from(schema.deletionRequests)
+      .where(eq(schema.deletionRequests.uid, 'alice'))
+      .get();
+    expect(req?.status).toBe('cancelled');
+  });
+
+  it('refuses to restore an account that has already been erased', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice');
+    await requestAccountDeletion(env as any, 'alice');
+    await adminPost(env, '/account-deletions/alice/purge');
+
+    const res = await adminPost(env, '/account-deletions/alice/cancel');
+    expect(res.status).toBe(412); // failed-precondition
+  });
+
+  it('both actions require admin authorization', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice');
+    await requestAccountDeletion(env as any, 'alice');
+
+    const res = await app.request(
+      '/admin/account-deletions/alice/cancel',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+      env,
+      fakeCtx(),
+    );
+    expect(res.status).toBeGreaterThanOrEqual(401);
+    // And the account is untouched.
+    const req = await drizzleOf(env)
+      .select()
+      .from(schema.deletionRequests)
+      .where(eq(schema.deletionRequests.uid, 'alice'))
+      .get();
+    expect(req?.status).toBe('pending');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 9. The test that catches defects nobody has written yet.
 // ---------------------------------------------------------------------------
 
