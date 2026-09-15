@@ -60,14 +60,14 @@ export function PageHeader({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex items-start justify-between gap-4 mb-6">
-      <div>
-        <h2 className="text-xl font-bold text-foreground">{title}</h2>
+    <div className="flex flex-col gap-3 mb-6 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+      <div className="min-w-0">
+        <h2 className="text-lg sm:text-xl font-bold text-foreground">{title}</h2>
         {subtitle && (
           <p className="text-sm text-muted-foreground mt-0.5">{subtitle}</p>
         )}
       </div>
-      {action && <div className="flex items-center gap-2">{action}</div>}
+      {action && <div className="flex items-center gap-2 flex-wrap">{action}</div>}
     </div>
   );
 }
