@@ -65,6 +65,12 @@ export async function publishMany(
 export async function closeRealtimeSessions(env: Env, uid: string): Promise<void> {
   try {
     const chats = await env.DB.prepare(
+      // Reads the membership SOURCE OF TRUTH (chats.users) rather than the
+      // chat_members index. This runs only on eviction (block / logout-all /
+      // credential change / deletion), never per request, so the scan cost is
+      // irrelevant — and closing every one of the user's sockets is a completeness
+      // job where reading the authoritative array beats trusting a derived index.
+      // The hot per-request paths use chat_members instead (D1_R2_LOAD_AUDIT.md §4).
       `SELECT id FROM chats
         WHERE EXISTS (
           SELECT 1 FROM json_each(chats.users) WHERE json_each.value = ?

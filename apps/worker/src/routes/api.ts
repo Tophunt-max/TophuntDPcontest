@@ -2078,11 +2078,13 @@ apiRoute.post("/", async (c) => {
       // Opening a DM is the single most direct way to reach someone, so this is
       // the guard that matters most.
       await assertNotBlocked(env, uid, otherUserId);
-      // find an existing chat containing both users
+      // Find an existing chat containing both users via indexed chat_members
+      // (D1_R2_LOAD_AUDIT.md §4) — the intersection of each user's memberships,
+      // not a double json_each scan of `chats`.
       const existing = await env.DB.prepare(
-        `SELECT id FROM chats
-          WHERE EXISTS (SELECT 1 FROM json_each(chats.users) WHERE json_each.value = ?)
-            AND EXISTS (SELECT 1 FROM json_each(chats.users) WHERE json_each.value = ?)
+        `SELECT chat_id AS id FROM chat_members
+          WHERE user_id = ?
+            AND chat_id IN (SELECT chat_id FROM chat_members WHERE user_id = ?)
           LIMIT 1`,
       ).bind(uid, otherUserId).first<{ id: string }>();
       if (existing?.id) return c.json({ chatId: existing.id });
@@ -2090,17 +2092,25 @@ apiRoute.post("/", async (c) => {
       const me = await db.select({ username: schema.users.username, avatar: schema.users.profileImageUrl }).from(schema.users).where(eq(schema.users.uid, uid)).get();
       const ts = now();
       const chatId = newId();
-      await db.insert(schema.chats).values({
-        id: chatId,
-        users: [uid, otherUserId],
-        usersData: [
-          { uid, displayName: me?.username || null, photoURL: me?.avatar || null },
-          { uid: otherUserId, ...(otherUserData || {}) },
-        ] as any,
-        lastMessage: { text: "Say hi!", createdAt: ts } as any,
-        createdAt: ts,
-        updatedAt: ts,
-      });
+      // Chat row + both membership edges in ONE batch, so a chat can never exist
+      // without its chat_members rows (which would make it invisible to
+      // /read/chats and unauthorizable on /ws). `chats.users` is still written —
+      // it remains the display source; chat_members is purely the membership index.
+      await db.batch([
+        db.insert(schema.chats).values({
+          id: chatId,
+          users: [uid, otherUserId],
+          usersData: [
+            { uid, displayName: me?.username || null, photoURL: me?.avatar || null },
+            { uid: otherUserId, ...(otherUserData || {}) },
+          ] as any,
+          lastMessage: { text: "Say hi!", createdAt: ts } as any,
+          createdAt: ts,
+          updatedAt: ts,
+        }),
+        db.insert(schema.chatMembers).values({ userId: uid, chatId }),
+        db.insert(schema.chatMembers).values({ userId: otherUserId, chatId }),
+      ] as any);
       return c.json({ chatId });
     }
 
@@ -2148,6 +2158,9 @@ apiRoute.post("/", async (c) => {
       await assertChatMember(env, chatId, uid);
       await db.delete(schema.messages).where(eq(schema.messages.chatId, chatId));
       await db.delete(schema.chats).where(eq(schema.chats.id, chatId));
+      // Drop the membership edges too, or they would dangle and keep pointing at a
+      // chat that no longer exists (idx_chat_members_chat makes this a seek).
+      await db.delete(schema.chatMembers).where(eq(schema.chatMembers.chatId, chatId));
       return c.json({ success: true });
     }
 

@@ -231,6 +231,11 @@ describe('the flag is present wherever a name is rendered', () => {
         createdAt: ts,
         updatedAt: ts,
       } as any);
+    // /read/chats resolves membership via the chat_members index (migration 0045).
+    await drizzleOf(env).insert(schema.chatMembers).values([
+      { userId: 'alice', chatId: 'chat1' },
+      { userId: 'bob', chatId: 'chat1' },
+    ] as any);
 
     const res = await read(env, 'bob', '/chats');
     const chat = res.body.find((c: any) => c.id === 'chat1');

@@ -118,6 +118,11 @@ describe('a changed profile photo reaches snapshot-backed surfaces', () => {
         createdAt: ts,
         updatedAt: ts,
       } as any);
+    // /read/chats resolves membership via the chat_members index (migration 0045).
+    await drizzleOf(env).insert(schema.chatMembers).values([
+      { userId: 'alice', chatId: 'chat1' },
+      { userId: 'bob', chatId: 'chat1' },
+    ] as any);
 
     const res = await read(env, 'bob', '/chats');
     const chat = res.body.find((c: any) => c.id === 'chat1');
@@ -241,6 +246,10 @@ describe('a changed username reaches snapshot-backed surfaces', () => {
         createdAt: ts,
         updatedAt: ts,
       } as any);
+    await drizzleOf(env).insert(schema.chatMembers).values([
+      { userId: 'alice', chatId: 'chatu1' },
+      { userId: 'bob', chatId: 'chatu1' },
+    ] as any);
 
     const res = await read(env, 'bob', '/chats');
     const chat = res.body.find((c: any) => c.id === 'chatu1');

@@ -25,6 +25,7 @@ import { webhookRoute } from "./routes/webhook";
 import { uploadRoute } from "./routes/upload";
 import { verifyIdToken } from "./lib/firebaseAuth";
 import { assertSessionUsable } from "./middleware/auth";
+import { isChatMember } from "./lib/chatAuth";
 import { resolveContests, expireContests, monthlyHallOfFame, seoAuditJob } from "./cron";
 import { purgeScheduledDeletions } from "./lib/accountDeletion";
 import { ensureMigrated } from "./db/autoMigrate";
@@ -345,13 +346,9 @@ app.get("/ws", async (c) => {
   if (kind === "user") {
     if (ref !== user.uid) return c.text("Forbidden.", 403);
   } else if (kind === "chat") {
-    const member = await c.env.DB.prepare(
-      `SELECT 1 FROM chats WHERE id = ?
-         AND EXISTS (SELECT 1 FROM json_each(chats.users) WHERE json_each.value = ?)`,
-    )
-      .bind(ref, user.uid)
-      .first();
-    if (!member) return c.text("Forbidden.", 403);
+    // Single source of truth with the REST handlers — an indexed chat_members
+    // seek, not a json_each scan of `chats`.
+    if (!(await isChatMember(c.env, ref, user.uid))) return c.text("Forbidden.", 403);
   } else if (kind !== "match") {
     return c.text("Unknown channel.", 400);
   }

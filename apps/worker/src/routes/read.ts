@@ -2575,11 +2575,18 @@ readRoute.get("/users/:id/following", optionalAuth, (c) => connectionsHandler(c,
 readRoute.get("/chats", requireAuth, async (c) => {
   const db = getDb(c.env);
   const uid = c.get("user").uid;
-  // users is a JSON array column; use json_each to filter membership.
+  // Membership is an indexed join on chat_members (D1_R2_LOAD_AUDIT.md §4), not a
+  // json_each scan of the whole `chats` table. LIMIT bounds the page: the previous
+  // query returned EVERY chat a user had ever had. 50 is well above a realistic
+  // inbox; if a heavier inbox ever needs it, this is the place to add keyset
+  // pagination (as /read/notifications does), which needs a client change to load
+  // older pages — the socket keeps the head fresh regardless.
   const rows = await c.env.DB.prepare(
-    `SELECT * FROM chats WHERE EXISTS (
-        SELECT 1 FROM json_each(chats.users) WHERE json_each.value = ?
-     ) ORDER BY updated_at DESC`,
+    `SELECT c.* FROM chat_members m
+        JOIN chats c ON c.id = m.chat_id
+       WHERE m.user_id = ?
+       ORDER BY c.updated_at DESC
+       LIMIT 50`,
   )
     .bind(uid)
     .all();
