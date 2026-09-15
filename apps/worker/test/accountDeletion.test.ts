@@ -887,13 +887,18 @@ describe('data export', () => {
 
     const res = await call(env, 'alice', 'exportMyData');
     expect(res.status).toBe(200);
-    expect(res.body.profile.uid).toBe('alice');
-    expect(res.body.profile.bio).toBe('hello');
+    // No email on this account, so the export is returned INLINE for the client to
+    // save (accounts WITH an email get it delivered as an attachment instead — see
+    // test/dataExportEmail.test.ts).
+    expect(res.body.emailed).toBe(false);
+    const data = res.body.data;
+    expect(data.profile.uid).toBe('alice');
+    expect(data.profile.bio).toBe('hello');
     // A push token is a device credential, not personal data — handing it back
     // would let anyone holding the export address the account.
-    expect(res.body.profile.fcmTokens).toBeUndefined();
+    expect(data.profile.fcmTokens).toBeUndefined();
     expect(JSON.stringify(res.body)).not.toContain('device-token-abc');
-    expect(res.body.posts.items.length).toBe(1);
+    expect(data.posts.items.length).toBe(1);
   });
 
   it('stays available to an account that is pending deletion', async () => {

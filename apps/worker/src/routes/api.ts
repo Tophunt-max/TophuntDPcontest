@@ -92,7 +92,7 @@ import { mediaRouting } from "../lib/mediaRouting";
 import { getAppConfig, getRewardedAdConfig } from "../lib/settings";
 import { getSettings } from "../lib/gamification";
 import { sendEmail, sendUserEmail } from "../lib/email";
-import { passwordChangedEmail } from "../lib/emailTemplates";
+import { passwordChangedEmail, dataExportEmail } from "../lib/emailTemplates";
 import { newId, now, generateJoinId } from "../lib/ids";
 
 /** Fire-and-forget admin email alert (only if an alert address is configured). */
@@ -2857,7 +2857,56 @@ apiRoute.post("/", async (c) => {
       // One export is a lot of reads across a dozen tables.
       await rateLimit(env, `exportdata:${uid}`, 3, 86400);
       const bundle = await exportUserData(env, uid);
-      return c.json(bundle);
+      const json = JSON.stringify(bundle, null, 2);
+
+      /**
+       * Deliver by EMAIL, not a device download.
+       *
+       * A data export is personal information, and mailing it to the address on the
+       * account keeps the copy tied to something only the owner controls rather than
+       * whatever device happened to tap the button. It rides as a JSON attachment.
+       *
+       * Two fallbacks return the bundle inline for the client to save instead, so no
+       * one is ever left with no way to get their data:
+       *  - the account is phone-only (no email on file), or
+       *  - the export is too large to attach safely (base64 inflates ~33%, and every
+       *    provider caps total message size).
+       * A provider send-failure falls back the same way.
+       */
+      const row = await db
+        .select({ email: schema.users.email })
+        .from(schema.users)
+        .where(eq(schema.users.uid, uid))
+        .get();
+      const email = (row?.email || "").trim();
+      const MAX_ATTACH_BYTES = 6 * 1024 * 1024;
+
+      if (email && json.length <= MAX_ATTACH_BYTES) {
+        // UTF-8-safe base64, chunked so a multi-MB export cannot overflow the call
+        // stack via String.fromCharCode(...bigArray).
+        const bytes = new TextEncoder().encode(json);
+        let binary = "";
+        const CHUNK = 0x8000;
+        for (let i = 0; i < bytes.length; i += CHUNK) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+        }
+        const base64 = btoa(binary);
+        const filename = `tophunt-my-data-${new Date().toISOString().slice(0, 10)}.json`;
+        const rendered = dataExportEmail();
+        const sent = await sendEmail(env, {
+          to: email,
+          subject: rendered.subject,
+          html: rendered.html,
+          text: rendered.text,
+          attachments: [{ filename, content: base64, contentType: "application/json" }],
+        });
+        if (sent) {
+          const masked = email.replace(/^(.)[^@]*(@.*)$/, "$1***$2");
+          return c.json({ emailed: true, email: masked });
+        }
+        // Send failed — do not strand the user; fall through to returning the data.
+      }
+      return c.json({ emailed: false, data: bundle });
     }
 
     /**
