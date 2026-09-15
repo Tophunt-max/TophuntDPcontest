@@ -38,7 +38,7 @@ import { resolveContests, monthlyHallOfFame, seoAuditJob } from "../cron";
 import { newId, now } from "../lib/ids";
 import { discoverUrls, processBatch, readImportProgress, writeImportProgress } from "../lib/importerTask";
 import { runVideoBackfillBatch } from "../lib/videoBackfill";
-import { blogListCacheKey, blogPostCacheKey, commentsCacheKey } from "../lib/cache";
+import { blogListCacheKey, blogPostCacheKey, commentsCacheKey, invalidateAuthState } from "../lib/cache";
 import { edgePurgeUrl, invalidateContestCaches, purgeShared } from "../lib/edgeCache";
 import {
   assertContestWindow,
@@ -842,6 +842,11 @@ adminRoute.patch("/users/:id", async (c) => {
     .run();
   if (updated.meta.changes === 0) throw httpsError("not-found", "User not found.");
   await updateAuthUser(c.env, id, { disabled: blocked }).catch((e) => console.warn("Auth update failed", e));
+  // `isBlocked`/`status` changed — drop any cached auth-state (paid tier) so the
+  // block, or the un-block, is enforced on the next request rather than after the
+  // cache TTL. Unblock does NOT revoke sessions, so it would otherwise not be
+  // covered by the invalidation inside `revokeAllSessions` below.
+  await invalidateAuthState(c.env, id);
   if (blocked) {
     /**
      * Kill the AUTH sessions too, not just the realtime ones.

@@ -140,6 +140,15 @@ export const feedSeenKey = (uid: string) => `feed:seen:${uid}`;
  */
 export const musicSearchCacheKey = (query: string, limit: number) =>
   `cache:music:search:${limit}:${query.toLowerCase()}`;
+/**
+ * Per-user auth account-state (`status` / `isBlocked` / `tokensValidAfter`).
+ *
+ * Written and read by the auth middleware ONLY on the paid tier
+ * (`scaleConfig(env).cacheAuthState`) — see lib/scale.ts. Invalidated via
+ * `invalidateAuthState` by every writer of those columns, so a block, deletion or
+ * session revocation drops the cached copy in every colo immediately.
+ */
+export const authStateCacheKey = (uid: string) => `authstate:${uid}`;
 
 // --- fail-open ops ----------------------------------------------------------
 /** Read JSON from the cache; returns null on miss OR any KV error. */
@@ -197,4 +206,19 @@ export async function delCache(env: Env, ...keys: string[]): Promise<void> {
       env.CACHE_KV.delete(k).catch((e) => console.error("[cache] delete failed (continuing)", k, e)),
     ),
   );
+}
+
+/**
+ * Drop a user's cached auth account-state. Never throws.
+ *
+ * Call this from EVERY writer of `status`, `isBlocked` or `tokensValidAfter`, so
+ * that a block/unblock, deletion or session revocation takes effect immediately
+ * rather than after the cache TTL lapses. It is a no-op cost on the free tier
+ * (the key is never written there) and a globally-visible KV delete on paid, so it
+ * is always safe to call regardless of `SCALE_TIER` — which is why callers do NOT
+ * branch on the tier before invalidating.
+ */
+export async function invalidateAuthState(env: Env, uid: string): Promise<void> {
+  if (!uid) return;
+  await delCache(env, authStateCacheKey(uid));
 }

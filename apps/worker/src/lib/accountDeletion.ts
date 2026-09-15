@@ -12,6 +12,7 @@ import {
   feedSeenKey,
   followersCacheKey,
   followingCacheKey,
+  invalidateAuthState,
   userCacheKey,
 } from "./cache";
 import { purgeShared, type EdgeCtx } from "./edgeCache";
@@ -758,6 +759,10 @@ async function phaseSnapshots(env: Env, uid: string): Promise<string[]> {
       })
       .where(eq(schema.users.uid, uid)),
   ] as any);
+
+  // The account is now blocked + deleted; drop any cached auth-state (paid tier)
+  // so the terminal status is enforced immediately rather than after the TTL.
+  await invalidateAuthState(env, uid);
 
   await anonymiseMatchSnapshots(env, uid, media);
   await anonymiseChatSnapshots(env, uid);

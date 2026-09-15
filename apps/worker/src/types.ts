@@ -50,6 +50,13 @@ export interface Env {
    * rather than cache. See `kvWritesDisabled` in lib/cache.ts.
    */
   KV_WRITES_DISABLED?: string;
+  /**
+   * Scale tier: `"paid"` to unlock the paid-plan tuning, anything else (incl.
+   * unset) means `"free"`. The single switch between running inside the free
+   * plan's quotas and using the Workers Paid plan's headroom — no code change at
+   * the transition. See lib/scale.ts and SCALE_TIER.md.
+   */
+  SCALE_TIER?: string;
 
   // --- Secrets (wrangler secret put) ---
   // Firebase Admin service account (JSON string) used for Identity Toolkit + FCM.

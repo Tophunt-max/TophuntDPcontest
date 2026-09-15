@@ -12,6 +12,8 @@ import {
   PENDING_DELETION_STATUS,
   SELF_SERVICE_ACTIONS,
 } from "../lib/accountStatus";
+import { scaleConfig } from "../lib/scale";
+import { authStateCacheKey, cacheGetJson, cachePutJson } from "../lib/cache";
 
 type MW = { Bindings: Env; Variables: Variables };
 
@@ -22,7 +24,7 @@ interface AccountState {
   tokensValidAfter: number | null;
 }
 
-function readAccountState(env: Env, uid: string): Promise<AccountState | undefined> {
+function readAccountStateFromDb(env: Env, uid: string): Promise<AccountState | undefined> {
   return getDb(env)
     .select({
       status: schema.users.status,
@@ -34,6 +36,34 @@ function readAccountState(env: Env, uid: string): Promise<AccountState | undefin
     .from(schema.users)
     .where(eq(schema.users.uid, uid))
     .get() as Promise<AccountState | undefined>;
+}
+
+/**
+ * The account-state row every authenticated request needs.
+ *
+ * On the FREE tier this is a direct D1 lookup — the same single-row PK read it has
+ * always been. On the PAID tier (`scaleConfig(env).cacheAuthState`) it is served
+ * from a short-lived CACHE_KV entry instead, so the highest-COUNT query in the
+ * system (D1_R2_LOAD_AUDIT.md §1 — one read on every `/read/*` and `/api` request,
+ * before any route cache) stops touching D1 on a hit. The switch is a single env
+ * var and needs no code change; see lib/scale.ts for the budget reasoning and for
+ * how block/revocation invalidation keeps the cached copy honest.
+ *
+ * Fail-open: a KV miss or error simply falls through to D1, and a row that does not
+ * exist is never cached (an absent user is rare, and caching "not found" would
+ * delay a freshly-created account from being recognised).
+ */
+async function readAccountState(env: Env, uid: string): Promise<AccountState | undefined> {
+  const cfg = scaleConfig(env);
+  if (!cfg.cacheAuthState) return readAccountStateFromDb(env, uid);
+
+  const key = authStateCacheKey(uid);
+  const cached = await cacheGetJson<AccountState>(env, key);
+  if (cached) return cached;
+
+  const fresh = await readAccountStateFromDb(env, uid);
+  if (fresh) await cachePutJson(env, key, fresh, cfg.authStateTtlSec);
+  return fresh;
 }
 
 /** The moderation half of the gate, split out so both entry points share one copy. */
