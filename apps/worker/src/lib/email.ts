@@ -18,11 +18,22 @@ export interface EmailResult {
   error?: string;
 }
 
+/** A file to attach to an email. `content` is base64-encoded. */
+export interface EmailAttachment {
+  filename: string;
+  /** Base64-encoded file bytes. */
+  content: string;
+  /** MIME type, e.g. "application/json". Optional. */
+  contentType?: string;
+}
+
 interface SendOpts {
   to: string;
   subject: string;
   html: string;
   text?: string;
+  /** Optional file attachments. Kept small — providers cap total message size. */
+  attachments?: EmailAttachment[];
 }
 
 const FALLBACK_FROM = "TopHunt <no-reply@tophunt.in>";
@@ -40,6 +51,15 @@ async function sendViaResend(env: Env, from: string, replyTo: string, opts: Send
       html: opts.html,
       text: opts.text,
       ...(replyTo ? { reply_to: replyTo } : {}),
+      ...(opts.attachments?.length
+        ? {
+            attachments: opts.attachments.map((a) => ({
+              filename: a.filename,
+              content: a.content,
+              ...(a.contentType ? { content_type: a.contentType } : {}),
+            })),
+          }
+        : {}),
     }),
   });
   const body = await res.text();
@@ -73,6 +93,9 @@ async function sendViaBrevo(env: Env, from: string, replyTo: string, opts: SendO
       htmlContent: opts.html,
       textContent: opts.text,
       ...(replyTo ? { replyTo: parseAddress(replyTo) } : {}),
+      ...(opts.attachments?.length
+        ? { attachment: opts.attachments.map((a) => ({ name: a.filename, content: a.content })) }
+        : {}),
     }),
   });
   const body = await res.text();
@@ -136,6 +159,15 @@ async function sendViaMaileroo(env: Env, from: string, replyTo: string, opts: Se
     // At least one body is required; we always have html, plain is a bonus.
     ...(opts.text ? { plain: opts.text } : {}),
     ...(replyTo ? { reply_to: [mailerooAddress(replyTo)] } : {}),
+    ...(opts.attachments?.length
+      ? {
+          attachments: opts.attachments.map((a) => ({
+            file_name: a.filename,
+            content: a.content,
+            ...(a.contentType ? { content_type: a.contentType } : {}),
+          })),
+        }
+      : {}),
   };
 
   const res = await fetch("https://smtp.maileroo.com/api/v2/emails", {

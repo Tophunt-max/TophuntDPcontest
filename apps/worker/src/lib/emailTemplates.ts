@@ -333,6 +333,37 @@ export function accountDeletionScheduledEmail(
 // ---------------------------------------------------------------------------
 // 6. Admin test — the "Test connection" probe on the Integrations page.
 // ---------------------------------------------------------------------------
+/**
+ * Sent WITH the user's data export attached as a JSON file.
+ *
+ * The "Download a copy of my data" action delivers the export to the account's
+ * email instead of the device — the file rides along as an attachment, so this body
+ * only has to explain what arrived and reassure a recipient who did not ask for it.
+ */
+export function dataExportEmail(supportEmail = DEFAULT_SUPPORT_EMAIL): RenderedEmail {
+  return {
+    subject: `Your ${BRAND.name} data export`,
+    html: layout({
+      preview: `A copy of your ${BRAND.name} data is attached to this email.`,
+      heading: "Your data export",
+      paragraphs: [
+        `A copy of everything we hold about your ${BRAND.name} account is attached to this email as a JSON file.`,
+        "Keep it somewhere safe — it contains personal information about your account.",
+        "If you did not request this, someone may have access to your account. Change your password and contact support.",
+      ],
+      supportEmail,
+    }),
+    text: plain(
+      [
+        `A copy of your ${BRAND.name} data is attached to this email as a JSON file.`,
+        "Keep it somewhere safe — it contains personal information about your account.",
+        "If you did not request this, change your password and contact support.",
+      ],
+      supportEmail,
+    ),
+  };
+}
+
 export function testEmail(supportEmail = DEFAULT_SUPPORT_EMAIL): RenderedEmail {
   return {
     subject: `${BRAND.name} email test`,

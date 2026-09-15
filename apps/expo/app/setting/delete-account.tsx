@@ -154,7 +154,22 @@ export default function DeleteAccountScreen() {
     if (exporting) return;
     setExporting(true);
     try {
-      const bundle = await callApi('exportMyData');
+      const res: any = await callApi('exportMyData');
+
+      // Delivered to the account's email as an attachment — nothing to download.
+      if (res?.emailed) {
+        emitToast(
+          res.email
+            ? `We've emailed a copy of your data to ${res.email}.`
+            : "We've emailed a copy of your data to you.",
+          'success',
+        );
+        return;
+      }
+
+      // Fallback: a phone-only account (no email) or an export too large to attach.
+      // Save it to the device the old way so no one is left without their data.
+      const bundle = res?.data ?? res;
       const json = JSON.stringify(bundle, null, 2);
 
       if (Platform.OS === 'web') {
@@ -423,15 +438,15 @@ export default function DeleteAccountScreen() {
       disabled={exporting}
       style={[styles.secondaryBtn, { borderColor: border, marginTop: 20 }]}
       accessibilityRole="button"
-      accessibilityLabel="Download a copy of my data"
+      accessibilityLabel="Email me a copy of my data"
     >
       {exporting ? (
         <ActivityIndicator color={textColor} />
       ) : (
         <>
-          <Ionicons name="download-outline" size={18} color={textColor} />
+          <Ionicons name="mail-outline" size={18} color={textColor} />
           <Text style={[styles.secondaryBtnText, { color: textColor }]}>
-            Download a copy of my data
+            Email me a copy of my data
           </Text>
         </>
       )}
