@@ -52,6 +52,7 @@ import { getDb, schema } from "../db";
 import { revokeRefreshTokens } from "./firebaseAdmin";
 import { closeRealtimeSessions } from "./publish";
 import { httpsError } from "./http";
+import { invalidateAuthState } from "./cache";
 
 /**
  * Marker the client matches on to tell a revoked session from an expired one.
@@ -151,7 +152,12 @@ async function setCutoff(
     })
     .where(eq(schema.users.uid, uid))
     .run();
-  return Number(res.meta?.changes || 0) > 0;
+  const changed = Number(res.meta?.changes || 0) > 0;
+  // `tokensValidAfter` just moved, so any cached auth-state (paid tier only) is now
+  // stale — drop it in every colo so the new cutoff takes effect immediately rather
+  // than after the cache TTL. No-op cost on free, where nothing is cached.
+  if (changed) await invalidateAuthState(env, uid);
+  return changed;
 }
 
 /**

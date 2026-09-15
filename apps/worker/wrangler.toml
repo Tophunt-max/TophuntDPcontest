@@ -309,6 +309,23 @@ ALLOWED_ORIGINS = "http://localhost:5000,http://localhost:8081,https://tophuntdp
 [vars]
 FIREBASE_PROJECT_ID = "tophuntdpcontest"
 
+# Scale tier — the single switch between the Cloudflare FREE tier and the Workers
+# PAID plan. See src/lib/scale.ts and SCALE_TIER.md.
+#
+# "free" (default): every read is served from the Cache API / isolate memory and
+# NOTHING extra is written to KV, so the app stays inside the free plan's 1,000
+# KV writes/day and D1's daily row limits.
+#
+# "paid": additionally caches the per-request auth account-state in KV, removing
+# the highest-COUNT D1 query (one read on every authenticated request) from the
+# hot path. That cache costs KV writes the free plan cannot afford but the paid
+# plan can — so it is gated behind this one flag.
+#
+# Going paid is exactly two steps and NO code change: upgrade the account to
+# Workers Paid, then set this to "paid" (here + redeploy, or as a dashboard env
+# var for an instant flip). An unset or unrecognised value is treated as "free".
+SCALE_TIER = "free"
+
 # Public media origin — the R2 bucket's own custom domain, NOT the Worker.
 #
 # Serving media straight from R2 removes a Worker invocation per image, lets the

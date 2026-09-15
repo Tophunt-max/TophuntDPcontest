@@ -36,6 +36,7 @@ import {
   userCacheKey,
   followersCacheKey,
   followingCacheKey,
+  invalidateAuthState,
 } from "../lib/cache";
 import { purgeShared } from "../lib/edgeCache";
 import { assertContestOpenNow, createContestExtra, validateContestInput } from "../lib/contestAdmin";
@@ -1858,6 +1859,9 @@ apiRoute.post("/", async (c) => {
       const { updateAuthUser } = await import("../lib/firebaseAdmin");
       await updateAuthUser(env, userId, { disabled: false });
       await db.update(schema.users).set({ isBlocked: false, status: "active", updatedAt: now() }).where(eq(schema.users.uid, userId));
+      // `isBlocked`/`status` changed — drop any cached auth-state (paid tier) so the
+      // account is usable again on its next request rather than after the TTL.
+      await invalidateAuthState(env, userId);
       return c.json({ success: true });
     }
     case "sendBroadcastNotification": {
