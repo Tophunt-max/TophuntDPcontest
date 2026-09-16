@@ -33,6 +33,7 @@ const Notifications = lazy(() => import("@/pages/Notifications"));
 const Rewards = lazy(() => import("@/pages/Rewards"));
 const AppControl = lazy(() => import("@/pages/AppControl"));
 const AppSettings = lazy(() => import("@/pages/AppSettings"));
+const Legal = lazy(() => import("@/pages/Legal"));
 const Integrations = lazy(() => import("@/pages/Integrations"));
 const Logs = lazy(() => import("@/pages/Logs"));
 const SystemHealth = lazy(() => import("@/pages/SystemHealth"));
@@ -94,6 +95,7 @@ function ProtectedApp() {
           <Route path="/rewards" component={Rewards} />
           <Route path="/app-control" component={AppControl} />
           <Route path="/app-settings" component={AppSettings} />
+          <Route path="/legal" component={Legal} />
           <Route path="/integrations" component={Integrations} />
           <Route path="/system-health" component={SystemHealth} />
           <Route component={() => <Redirect to="/dashboard" />} />

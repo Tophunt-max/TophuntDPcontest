@@ -61,6 +61,20 @@ export const LEGAL_DOC_KEYS: readonly LegalDocKey[] = [
   "communityGuidelines",
 ] as const;
 
+/** Human labels + why each document exists, for the admin editor. */
+export const LEGAL_DOC_META: Record<LegalDocKey, { label: string; note: string }> = {
+  privacyPolicy: { label: "Privacy Policy", note: "Required by both app stores." },
+  termsOfService: { label: "Terms of Service", note: "Include contest rules and eligibility." },
+  refundPolicy: {
+    label: "Refund & Cancellation Policy",
+    note: "Required by Razorpay for paid digital goods.",
+  },
+  communityGuidelines: {
+    label: "Community Guidelines",
+    note: "Referenced from the in-app report flow.",
+  },
+};
+
 /**
  * Bump this whenever the substance of a document below changes.
  *
@@ -541,4 +555,43 @@ export function resolveLegalContent(cfg: any): LegalContent {
     out[key] = interpolate(custom || BUNDLED[key], supportEmail, graceDays);
   }
   return out;
+}
+
+/** One admin editor row: the RAW content in effect for a doc + where it comes from. */
+export interface LegalDocAdminView {
+  key: LegalDocKey;
+  label: string;
+  note: string;
+  /**
+   * The RAW text the app resolves for this document right now — the stored
+   * override if one exists, otherwise the bundled default — with `{{…}}` tokens
+   * left INTACT. The editor shows this so the admin sees (and edits from) exactly
+   * what the app serves, instead of an empty "override-only" box.
+   */
+  content: string;
+  /** True when a stored override is in effect; false when it is the bundled default. */
+  isCustom: boolean;
+}
+
+/**
+ * The four documents as the admin editor needs them: the effective raw content
+ * (override-or-bundled) plus whether each is currently a custom override.
+ *
+ * Deliberately RAW (tokens not interpolated): an override is stored with the tokens
+ * so it keeps tracking `supportEmail` / the deletion grace period, exactly like the
+ * bundled text does. `resolveLegalContent` interpolates on the way out.
+ */
+export function legalDocsForAdmin(cfg: any): LegalDocAdminView[] {
+  const stored = (cfg?.legalContent ?? {}) as Partial<Record<LegalDocKey, unknown>>;
+  return LEGAL_DOC_KEYS.map((key) => {
+    const value = stored[key];
+    const custom = typeof value === "string" ? value.trim() : "";
+    return {
+      key,
+      label: LEGAL_DOC_META[key].label,
+      note: LEGAL_DOC_META[key].note,
+      content: custom || BUNDLED[key],
+      isCustom: !!custom,
+    };
+  });
 }

@@ -10,7 +10,6 @@ import {
   CreditCard,
   Megaphone,
   Mail,
-  Scale,
   Code2,
   AlertTriangle,
   ChevronDown,
@@ -65,12 +64,10 @@ interface Cfg {
   ads: { enabled: boolean; trustClient: boolean; provider: string; reward: number; dailyCap: number };
   adminAlertEmail: string;
   supportEmail: string;
-  legalContent: {
-    privacyPolicy: string;
-    termsOfService: string;
-    refundPolicy: string;
-    communityGuidelines: string;
-  };
+  // NOTE: legal documents are managed on their OWN page (/legal), not here — this
+  // page must never send `legalContent`, or an unrelated save would wipe an
+  // override. It stays in MANAGED_KEYS above so it is also kept out of the Advanced
+  // JSON editor.
   socialLinks: { instagram: string; youtube: string; telegram: string; website: string };
 }
 
@@ -88,7 +85,6 @@ const DEFAULTS: Cfg = {
   ads: { enabled: false, trustClient: false, provider: "", reward: 5, dailyCap: 10 },
   adminAlertEmail: "",
   supportEmail: "",
-  legalContent: { privacyPolicy: "", termsOfService: "", refundPolicy: "", communityGuidelines: "" },
   socialLinks: { instagram: "", youtube: "", telegram: "", website: "" },
 };
 
@@ -178,7 +174,6 @@ export default function AppSettings() {
       withdrawal: { ...DEFAULTS.withdrawal, ...(data.withdrawal || {}) },
       paymentGateway: { ...DEFAULTS.paymentGateway, ...(data.paymentGateway || {}) },
       ads: { ...DEFAULTS.ads, ...(data.ads || {}) },
-      legalContent: { ...DEFAULTS.legalContent, ...(data.legalContent || {}) },
       socialLinks: { ...DEFAULTS.socialLinks, ...(data.socialLinks || {}) },
     });
     setAdvancedText(JSON.stringify(unmanaged, null, 2));
@@ -218,7 +213,7 @@ export default function AppSettings() {
     <div>
       <PageHeader
         title="App Settings"
-        subtitle="Wallet rules, payment mode, rewarded ads, legal copy and contact details"
+        subtitle="Wallet rules, payment mode, rewarded ads and contact details"
         action={
           <button
             onClick={onSave}
@@ -457,50 +452,9 @@ export default function AppSettings() {
         </Section>
       </div>
 
-      {/* ---- Legal ---- */}
-      <div className="mt-5">
-        <Section
-          icon={Scale}
-          title="Legal content"
-          blurb="Overrides only. Leave a box empty and the app serves the document bundled with the Worker (apps/worker/src/content/legal.ts) — so a policy is never blank. Clearing a box reverts to the bundled text."
-        >
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {(
-              [
-                ["privacyPolicy", "Privacy Policy", "Required by both app stores."],
-                ["termsOfService", "Terms of Service", "Include contest rules and eligibility."],
-                ["refundPolicy", "Refund & Cancellation Policy", "Required by Razorpay for paid digital goods."],
-                ["communityGuidelines", "Community Guidelines", "Referenced from the in-app report flow."],
-              ] as const
-            ).map(([key, title, help]) => (
-              <div key={key}>
-                <label className={label}>{title}</label>
-                <textarea
-                  value={cfg.legalContent[key]}
-                  onChange={(e) => setCfg({ ...cfg, legalContent: { ...cfg.legalContent, [key]: e.target.value } })}
-                  rows={10}
-                  className={`${field} font-mono text-xs leading-relaxed`}
-                  /*
-                   * The supported syntax, stated exactly. This said "Markdown or
-                   * plain text…" while the app rendered the whole document inside a
-                   * single Text node, so anything written as Markdown reached users
-                   * as literal asterisks. The app now has a renderer, but it
-                   * understands this subset and nothing more — links, tables and
-                   * code fences will show as written.
-                   */
-                  placeholder={"## Heading\n\nParagraph text with **bold** runs.\n\n- bullet\n- bullet"}
-                />
-                <p className={hint}>
-                  {help}{" "}
-                  {cfg.legalContent[key]
-                    ? `Overriding the bundled document — ${cfg.legalContent[key].length} characters.`
-                    : "Using the bundled document."}
-                </p>
-              </div>
-            ))}
-          </div>
-        </Section>
-      </div>
+      {/* Legal documents moved to their own page (/legal): they are long-form,
+          need a filled editor (bundled default vs override) and per-document save,
+          and must not ride this page's all-at-once save. */}
 
       {/* ---- Advanced ---- */}
       <div className="mt-5 bg-card border border-border rounded-2xl overflow-hidden">

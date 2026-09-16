@@ -397,6 +397,21 @@ export async function req<T>(
   return (text ? JSON.parse(text) : undefined) as T;
 }
 
+/** One legal document row for the editor (effective raw content + its source). */
+export interface LegalDoc {
+  key: string;
+  label: string;
+  note: string;
+  /** RAW content the app serves for this doc (override or bundled), tokens intact. */
+  content: string;
+  /** True when a stored override is in effect; false when it is the bundled default. */
+  isCustom: boolean;
+}
+export interface LegalDocsResponse {
+  docs: LegalDoc[];
+  lastUpdated: string;
+}
+
 const get = <T>(p: string) => req<T>("GET", p);
 const post = <T>(p: string, b?: unknown) => req<T>("POST", p, b ?? {});
 const patch = <T>(p: string, b?: unknown) => req<T>("PATCH", p, b ?? {});
@@ -731,6 +746,14 @@ export const api = {
   saveRewards: (payload: any) => post("/admin/rewards", payload),
   appSettings: () => get<any>("/admin/app-settings"),
   saveAppSettings: (payload: any) => post("/admin/app-settings", payload),
+
+  // Legal documents. `legal()` returns each doc's EFFECTIVE raw content (a stored
+  // override, or the bundled default) so the editor is never blank; `saveLegal`
+  // stores an override, or clears it (reverting to the bundled default) when
+  // `content` is empty.
+  legal: () => get<LegalDocsResponse>("/admin/legal"),
+  saveLegal: (key: string, content: string) =>
+    post<{ success: boolean; isCustom: boolean }>("/admin/legal", { key, content }),
 
   // integrations — provider config plus write-only credentials
   integrations: () => get<IntegrationsResponse>("/admin/integrations"),
