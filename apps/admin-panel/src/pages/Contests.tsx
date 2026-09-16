@@ -97,7 +97,7 @@ function humanGap(ms: number): string {
 }
 
 type DialogMode = "create" | "edit" | "duplicate";
-type DialogState = { mode: DialogMode; contest?: AdminContest } | null;
+type DialogState = { mode: DialogMode; contest?: AdminContest; draftForm?: ContestFormState } | null;
 type StatusFilter = ContestStatus | "all";
 type TypeFilter = ContestType | "all";
 
@@ -107,6 +107,55 @@ const statusLabels: Record<ContestStatus, string> = {
   paused: "Paused",
   ended: "Ended",
 };
+
+/**
+ * A contest being written is worth surviving a reload the admin never asked for.
+ *
+ * On mobile, tapping "Choose image" hands control to the OS picker and pushes the
+ * tab to the background; Android Chrome routinely discards a backgrounded tab
+ * under memory pressure, and returning from the picker then reloads the page —
+ * taking the in-memory dialog and every field the admin had typed with it. The
+ * product image already survives (it uploads on pick, leaving only a URL string),
+ * but the title, rules, prize and economy fields did not, so the admin came back
+ * to a blank contests list and assumed the app had crashed.
+ *
+ * We snapshot the form to `sessionStorage` while it is dirty and reopen the dialog
+ * with it after the reload. Only the serialisable form state is kept — the banner
+ * `File` (held until Save) cannot be, so a banner picked-but-not-yet-saved must be
+ * re-chosen, which the UI already prompts for. `sessionStorage` (not local) scopes
+ * the draft to this tab and clears itself when the tab really closes.
+ */
+const CONTEST_DRAFT_KEY = "tophunt:contest-draft-v1";
+/** A tab discarded mid-edit is resumed in seconds; an older draft is abandoned. */
+const CONTEST_DRAFT_TTL_MS = 6 * 60 * 60 * 1000;
+
+type ContestDraft = { mode: DialogMode; contestId: string | null; savedAt: number; form: ContestFormState };
+
+function readContestDraft(): ContestDraft | null {
+  try {
+    const raw = sessionStorage.getItem(CONTEST_DRAFT_KEY);
+    if (!raw) return null;
+    const draft = JSON.parse(raw) as ContestDraft;
+    if (!draft || typeof draft !== "object" || !draft.form || !draft.mode) return null;
+    if (!Number.isFinite(draft.savedAt) || Date.now() - draft.savedAt > CONTEST_DRAFT_TTL_MS) {
+      sessionStorage.removeItem(CONTEST_DRAFT_KEY);
+      return null;
+    }
+    return draft;
+  } catch {
+    // Corrupt JSON or storage disabled (private mode): treat as no draft.
+    return null;
+  }
+}
+
+function writeContestDraft(draft: ContestDraft): void {
+  // A lost draft is never worth throwing over (quota, private mode, etc.).
+  try { sessionStorage.setItem(CONTEST_DRAFT_KEY, JSON.stringify(draft)); } catch { /* ignore */ }
+}
+
+function clearContestDraft(): void {
+  try { sessionStorage.removeItem(CONTEST_DRAFT_KEY); } catch { /* ignore */ }
+}
 
 export default function Contests() {
   const qc = useQueryClient();
@@ -122,6 +171,37 @@ export default function Contests() {
   const contestsQuery = useQuery({ queryKey: ["contests"], queryFn: api.contests });
   const contests = contestsQuery.data ?? [];
   const invalidate = () => qc.invalidateQueries({ queryKey: ["contests"] });
+
+  // Reopen a draft left behind by a reload the admin did not ask for (see
+  // CONTEST_DRAFT_KEY). Runs once: a `create` draft can reopen immediately, while
+  // `edit`/`duplicate` wait for the list so the live contest row can be attached.
+  const draftRestoredRef = useRef(false);
+  useEffect(() => {
+    if (draftRestoredRef.current) return;
+    const draft = readContestDraft();
+    if (!draft) {
+      draftRestoredRef.current = true;
+      return;
+    }
+    if (draft.mode === "create") {
+      draftRestoredRef.current = true;
+      setDialog({ mode: "create", draftForm: draft.form });
+      toast.info("Restored your unsaved contest draft.");
+      return;
+    }
+    // The edit/duplicate dialog needs the real contest for its baseline diff and
+    // its live warnings, so hold off until the list has actually loaded.
+    if (contestsQuery.isLoading) return;
+    draftRestoredRef.current = true;
+    const contest = contests.find((item) => item.id === draft.contestId);
+    if (contest) {
+      setDialog({ mode: draft.mode, contest, draftForm: draft.form });
+      toast.info("Restored your unsaved contest draft.");
+    } else {
+      // The contest it referenced is gone (deleted, or another admin's tab).
+      clearContestDraft();
+    }
+  }, [contests, contestsQuery.isLoading]);
 
   const stats = useMemo(
     () => ({
@@ -498,7 +578,14 @@ export default function Contests() {
           key={`${dialog.mode}-${dialog.contest?.id ?? "new"}`}
           mode={dialog.mode}
           contest={dialog.contest}
-          onClose={() => setDialog(null)}
+          draftForm={dialog.draftForm}
+          onClose={() => {
+            // Every close path — Save, Cancel, discard — routes through here, so
+            // clearing the draft in one place covers them all. A tab-discard
+            // reload never reaches this, which is exactly why the draft survives.
+            clearContestDraft();
+            setDialog(null);
+          }}
           onDone={invalidate}
         />
       )}
@@ -566,16 +653,22 @@ function formFromContest(contest: AdminContest | undefined, mode: DialogMode): C
 function ContestDialog({
   mode,
   contest,
+  draftForm,
   onClose,
   onDone,
 }: {
   mode: DialogMode;
   contest?: AdminContest;
+  /** A form snapshot restored after a reload; seeds the live state only. */
+  draftForm?: ContestFormState;
   onClose: () => void;
   onDone: () => Promise<unknown>;
 }) {
+  // The baseline stays the clean contest values even when a draft is restored, so
+  // the dirty check and the edit-time field diff still compare against what the
+  // server actually has — the draft only pre-fills what the admin sees.
   const initialForm = useRef(formFromContest(contest, mode));
-  const [form, setForm] = useState<ContestFormState>(initialForm.current);
+  const [form, setForm] = useState<ContestFormState>(draftForm ?? initialForm.current);
   const [errors, setErrors] = useState<ContestFormErrors>({});
   const [bannerFile, setBannerFile] = useState<File | null>(null);
   const [localPreview, setLocalPreview] = useState<string | null>(null);
@@ -626,6 +719,15 @@ function ContestDialog({
   useEffect(() => () => {
     if (localPreview) URL.revokeObjectURL(localPreview);
   }, [localPreview]);
+
+  // Snapshot the in-progress form so a reload the admin never asked for (a mobile
+  // tab discarded behind the file picker) can restore it. Only while dirty, and
+  // never mid-save: a save either clears the draft on success or, on failure,
+  // leaves `saving` false and the still-dirty form re-persisted for a retry.
+  useEffect(() => {
+    if (saving || !isDirty) return;
+    writeContestDraft({ mode, contestId: contest?.id ?? null, savedAt: Date.now(), form });
+  }, [form, isDirty, saving, mode, contest]);
 
   const set = <K extends keyof ContestFormState>(key: K, value: ContestFormState[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
