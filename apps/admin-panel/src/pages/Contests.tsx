@@ -1008,8 +1008,20 @@ function ContestDialog({
     <Dialog open onOpenChange={(open) => { if (!open) void requestClose(); }}>
       <DialogContent
         className="left-0 top-0 flex h-[100dvh] max-h-[100dvh] w-full max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-0 p-0 shadow-none duration-0 sm:left-[50%] sm:top-[50%] sm:h-auto sm:max-h-[92dvh] sm:w-[calc(100%-2rem)] sm:max-w-3xl sm:translate-x-[-50%] sm:translate-y-[-50%] sm:rounded-lg sm:border sm:shadow-lg sm:duration-200"
-        onEscapeKeyDown={(event) => { if (saving) event.preventDefault(); }}
-        onPointerDownOutside={(event) => { if (saving) event.preventDefault(); }}
+        // Never auto-dismiss on an OUTSIDE interaction. On mobile, returning from
+        // the native file picker fires a focus/pointer-outside event that Radix
+        // treats as "close the dialog" — which popped the "Discard unsaved changes?"
+        // prompt (and, on the old build, a blank screen) on its own right after a
+        // product-image upload. A form holding unsaved work must only close through
+        // an explicit Cancel / ✕ / Escape, so the picker returning can never nuke it.
+        // `onInteractOutside` covers BOTH pointer-outside and focus-outside; the old
+        // handler only caught pointer-outside (and only while saving), which is why
+        // the focus event from the picker slipped through.
+        onInteractOutside={(event) => event.preventDefault()}
+        onEscapeKeyDown={(event) => {
+          event.preventDefault();
+          if (!saving) requestClose();
+        }}
       >
         {/* Discard confirmation — an overlay INSIDE this dialog, not a second modal. */}
         {confirmingDiscard && (
