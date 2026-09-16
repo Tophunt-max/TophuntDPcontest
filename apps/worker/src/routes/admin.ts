@@ -37,6 +37,7 @@ import { refundRejectedWithdrawal } from "../lib/payouts";
 import { closeRealtimeSessions, publish } from "../lib/publish";
 import { resolveContests, monthlyHallOfFame, seoAuditJob } from "../cron";
 import { newId, now } from "../lib/ids";
+import { memoGet, memoPut } from "../lib/memo";
 import { discoverUrls, processBatch, readImportProgress, writeImportProgress } from "../lib/importerTask";
 import { runVideoBackfillBatch } from "../lib/videoBackfill";
 import { blogListCacheKey, blogPostCacheKey, commentsCacheKey, invalidateAuthState } from "../lib/cache";
@@ -1196,14 +1197,27 @@ adminRoute.get("/blog", async (c) => {
 });
 
 // Blog stats for dashboards / list header.
+//
+// Three COUNT(*)s over the whole blog_posts table (~4.5k rows each) — a top
+// rows_read source in `wrangler d1 insights` because the admin Blog page and the
+// dashboard refetch it. Memoised in isolate memory for 60s: the counts are a
+// glanceable header, not an authorization decision, so a minute of staleness is
+// fine, and a warm isolate serving an admin clicking around now answers repeat
+// loads with zero D1. Deliberately NOT cross-isolate/KV — this is a pure read
+// saving with no invalidation need at this staleness.
+const BLOG_STATS_MEMO_KEY = "admin:blog-stats";
 adminRoute.get("/blog/stats", async (c) => {
+  const cached = memoGet<{ total: number; published: number; drafts: number; imported: number }>(BLOG_STATS_MEMO_KEY);
+  if (cached) return c.json(cached);
   const db = getDb(c.env);
   const total = (await db.select({ v: count() }).from(schema.blogPosts).get())?.v ?? 0;
   const published =
     (await db.select({ v: count() }).from(schema.blogPosts).where(eq(schema.blogPosts.status, "published")).get())?.v ?? 0;
   const imported =
     (await db.select({ v: count() }).from(schema.blogPosts).where(eq(schema.blogPosts.source, "archive")).get())?.v ?? 0;
-  return c.json({ total, published, drafts: total - published, imported });
+  const stats = { total, published, drafts: total - published, imported };
+  memoPut(BLOG_STATS_MEMO_KEY, stats, 60);
+  return c.json(stats);
 });
 
 

@@ -3329,9 +3329,13 @@ readRoute.get("/blog", async (c) => {
 });
 
 // Distinct categories with post counts — for the blog filter UI. Public and
-// slow-changing, so edge-cache 5min to skip D1's GROUP BY on repeat loads.
+// slow-changing (editorial blog), and this GROUP BY reads EVERY published post
+// (~4.5k rows) on each miss. `wrangler d1 insights` put it among the top
+// rows_read sources, so cache 30min rather than 5min — the write path purges
+// this exact entry in the acting colo (invalidateBlogReadCache → edgePurgeUrl),
+// so an edit still shows immediately there and within the TTL elsewhere.
 readRoute.get("/blog/categories", async (c) =>
-  cachedResponse(c, 300, async () => {
+  cachedResponse(c, 1800, async () => {
     const db = getDb(c.env);
     const rows = await db
       .select({ category: schema.blogPosts.category, count: sql<number>`count(*)` })
@@ -3390,9 +3394,13 @@ readRoute.get("/blog/sitemap", async (c) => {
   const cursorRaw = c.req.query("cursor") ? parseInt(c.req.query("cursor")!, 10) : null;
   const cursor = cursorRaw != null && Number.isFinite(cursorRaw) ? cursorRaw : null;
 
+  // 6h TTL: a sitemap is a crawler surface (Googlebot fetches it on its own
+  // schedule), so hours-stale is standard and harmless — while each miss reads
+  // every published slug (~4.5k rows). Not invalidated on write (the entry space
+  // is keyed by limit/cursor); TTL convergence is the right freshness model here.
   return cachedResponse(
     c,
-    900,
+    21600,
     async () => {
       const db = getDb(c.env);
       const conds = [eq(schema.blogPosts.status, "published")];
@@ -3450,9 +3458,14 @@ readRoute.get("/blog/archive", async (c) => {
   const page = Math.max(parseInt(c.req.query("page") || "1", 10) || 1, 1);
   const category = c.req.query("category") || null;
 
+  // 30min TTL (was 15): crawlable archive pages over slow-changing editorial
+  // content. Each miss runs a COUNT(*) + a page read over the published set
+  // (~4.5k rows), so a longer TTL is the main lever against the blog rows_read
+  // this endpoint contributes. Keyed by per/page/category, so like the sitemap
+  // it relies on TTL rather than explicit purge.
   return cachedResponse(
     c,
-    900,
+    1800,
     async () => {
       const db = getDb(c.env);
       const conds = [eq(schema.blogPosts.status, "published")];
