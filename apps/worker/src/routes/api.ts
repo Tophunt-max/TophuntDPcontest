@@ -89,7 +89,7 @@ import {
 } from "../lib/bunny";
 import { applyBunnyEncodeResult, LIVE_STATUS_RECHECK_MS } from "../lib/videoReconcile";
 import { mediaRouting } from "../lib/mediaRouting";
-import { getAppConfig, getRewardedAdConfig } from "../lib/settings";
+import { getAppConfig, getRewardedAdConfig, getRewardSettings } from "../lib/settings";
 import { getSettings } from "../lib/gamification";
 import { sendEmail, sendUserEmail } from "../lib/email";
 import { passwordChangedEmail, dataExportEmail } from "../lib/emailTemplates";
@@ -102,9 +102,73 @@ function alertAdminEmail(c: any, cfg: any, subject: string, html: string): void 
   c.executionCtx.waitUntil(sendEmail(c.env, { to, subject, html }).catch(() => {}));
 }
 
-/** A short, URL-safe referral code. */
+/**
+ * A referral is a WELCOME bonus, so it may only be applied to a freshly created
+ * account. Without this, any long-existing user who was never referred could call
+ * `completeSignup` with a code at any time and mint themselves — and a referrer —
+ * a bonus. The client only ever calls completeSignup right after signup, so a
+ * generous window covers a legitimately interrupted onboarding while still
+ * blocking every older account.
+ */
+const REFERRAL_WELCOME_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** A short, URL-safe referral code (crypto RNG so codes are unguessable). */
 function makeReferralCode(): string {
-  return "TH" + Math.random().toString(36).slice(2, 8).toUpperCase();
+  const bytes = crypto.getRandomValues(new Uint8Array(6));
+  let s = "";
+  for (const b of bytes) s += (b % 36).toString(36);
+  return "TH" + s.toUpperCase();
+}
+
+/**
+ * Assign this user a referral code if they lack one, retrying on the (astronomically
+ * rare) collision now that `referral_code` has a UNIQUE index. Returns nothing —
+ * callers that need the code re-read the row.
+ */
+async function ensureReferralCode(db: ReturnType<typeof getDb>, uid: string, hasCode: boolean): Promise<void> {
+  if (hasCode) return;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      await db
+        .update(schema.users)
+        .set({ referralCode: makeReferralCode() })
+        .where(and(eq(schema.users.uid, uid), isNull(schema.users.referralCode)));
+      return;
+    } catch (err) {
+      // UNIQUE collision on referral_code — try a different code. Any other error
+      // is not ours to swallow.
+      if (attempt === 4 || !/unique/i.test(String((err as Error)?.message))) throw err;
+    }
+  }
+}
+
+/**
+ * Credit a referral bonus through the canonical wallet path, treating a replay as
+ * success. `adjustUserWallet` is atomic (balance + ledger in one txn) and, with a
+ * deterministic `claimKey`, applied exactly once — a retry or a concurrent
+ * duplicate throws `WalletReplay`, which here simply means "already credited".
+ */
+async function creditReferralOnce(
+  env: Env,
+  uid: string,
+  amount: number,
+  description: string,
+  claimKey: string,
+): Promise<void> {
+  try {
+    await adjustUserWallet(env, {
+      uid,
+      amount,
+      direction: "add",
+      type: "referral_bonus",
+      description,
+      claimKey,
+      ledgerId: claimKey,
+    });
+  } catch (err) {
+    if (err instanceof WalletReplay) return;
+    throw err;
+  }
 }
 
 /** Days since epoch in UTC (stable daily bucket key). */
@@ -2634,41 +2698,60 @@ apiRoute.post("/", async (c) => {
 
       // Ensure a referral code + apply an inbound referral (once) at signup.
       const meRow = await db
-        .select({ referralCode: schema.users.referralCode, referredBy: schema.users.referredBy })
+        .select({
+          referralCode: schema.users.referralCode,
+          referredBy: schema.users.referredBy,
+          createdAt: schema.users.createdAt,
+        })
         .from(schema.users)
         .where(eq(schema.users.uid, uid))
         .get();
-      if (meRow && !meRow.referralCode) {
-        await db.update(schema.users).set({ referralCode: makeReferralCode() }).where(eq(schema.users.uid, uid));
-      }
+      // Everyone gets a shareable code (collision-safe now that referral_code is UNIQUE).
+      await ensureReferralCode(db, uid, !!meRow?.referralCode);
+
       const refCode = String(body.referralCode || body.referredByCode || "").trim().toUpperCase();
-      if (action === "completeSignup" && refCode && meRow && !meRow.referredBy) {
+      // A referral is a WELCOME bonus: only a freshly created account may claim it,
+      // so a long-existing never-referred user cannot mint one on demand.
+      const withinWelcomeWindow =
+        !!meRow &&
+        Number.isFinite(Number(meRow.createdAt)) &&
+        now() - Number(meRow.createdAt) <= REFERRAL_WELCOME_WINDOW_MS;
+      if (action === "completeSignup" && refCode && meRow && !meRow.referredBy && withinWelcomeWindow) {
         const referrer = await db
           .select({ uid: schema.users.uid })
           .from(schema.users)
           .where(eq(schema.users.referralCode, refCode))
           .get();
         if (referrer && referrer.uid !== uid) {
-          const settings = await getSettings(env);
-          const bonus = Number(settings.referralBonus || 0);
+          // Single source of truth: appConfig.rewardSettings (the App Settings knob),
+          // NOT the gamification row it used to — silently — read.
+          const { referralBonus: bonus } = await getRewardSettings(env);
           const ts2 = now();
-          // referred_uid is UNIQUE → dedups if this runs twice.
-          const ins = await db
-            .insert(schema.referrals)
-            .values({ id: newId(), referrerUid: referrer.uid, referredUid: uid, bonus, createdAt: ts2 })
-            .onConflictDoNothing()
-            .run();
-          if (ins.meta.changes > 0) {
-            await db.update(schema.users).set({ referredBy: referrer.uid, updatedAt: ts2 }).where(eq(schema.users.uid, uid));
-            if (bonus > 0) {
-              await db.batch([
-                db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${bonus}` }).where(eq(schema.users.uid, referrer.uid)),
-                db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${bonus}` }).where(eq(schema.users.uid, uid)),
-                db.insert(schema.coinTransactions).values({ id: newId(), uid: referrer.uid, amount: bonus, type: "referral_bonus", description: "Referral bonus — invited a friend", createdAt: ts2 }),
-                db.insert(schema.coinTransactions).values({ id: newId(), uid, amount: bonus, type: "referral_bonus", description: "Referral welcome bonus", createdAt: ts2 }),
-              ]);
+          // Credit FIRST, through the canonical, replay-safe wallet path. Because
+          // each grant is idempotent per claimKey, a crash between the two credits
+          // — or a retry, or a concurrent duplicate — can neither double-pay nor
+          // strand a credit. This is why the old insert-then-credit gate (which
+          // lost the bonus permanently on a mid-flight failure) is gone.
+          if (bonus > 0) {
+            await creditReferralOnce(env, referrer.uid, bonus, "Referral bonus — invited a friend", `referral_bonus:referrer:${uid}`);
+            await creditReferralOnce(env, uid, bonus, "Referral welcome bonus", `referral_bonus:referred:${uid}`);
+          }
+          // Record attribution only AFTER crediting. Both writes are idempotent
+          // (UNIQUE referred_uid; a fixed referredBy value), and setting referredBy
+          // is what makes this whole block skip on any later call for this user.
+          await db.batch([
+            db
+              .insert(schema.referrals)
+              .values({ id: newId(), referrerUid: referrer.uid, referredUid: uid, bonus, createdAt: ts2 })
+              .onConflictDoNothing(),
+            db.update(schema.users).set({ referredBy: referrer.uid, updatedAt: ts2 }).where(eq(schema.users.uid, uid)),
+          ]);
+          // Purely cosmetic, and dead last: a failed push must never undo a credit
+          // or the attribution above (both already durably committed).
+          if (bonus > 0) {
+            try {
               await createNotification(env, referrer.uid, { title: "Referral Bonus! 🎉", body: `You earned ${bonus} coins — a friend joined with your code!`, type: "referral", targetId: "wallet" });
-            }
+            } catch { /* notification is best-effort */ }
           }
         }
       }

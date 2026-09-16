@@ -47,6 +47,7 @@ import m_0042_contest_product_prizes_sql from "../../migrations/0042_contest_pro
 import m_0043_username_history_sql from "../../migrations/0043_username_history.sql";
 import m_0044_session_revocation_sql from "../../migrations/0044_session_revocation.sql";
 import m_0045_chat_members_sql from "../../migrations/0045_chat_members.sql";
+import m_0046_referral_code_unique_sql from "../../migrations/0046_referral_code_unique.sql";
 
 export interface Migration {
   name: string;
@@ -100,4 +101,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0043_username_history.sql", sql: m_0043_username_history_sql },
   { name: "0044_session_revocation.sql", sql: m_0044_session_revocation_sql },
   { name: "0045_chat_members.sql", sql: m_0045_chat_members_sql },
+  { name: "0046_referral_code_unique.sql", sql: m_0046_referral_code_unique_sql },
 ];

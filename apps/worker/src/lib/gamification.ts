@@ -21,8 +21,11 @@ export interface GamificationSettings {
   dailyLoginReward: number;
   /** Extra coins per consecutive day, multiplied by the current streak. */
   dailyStreakBonus: number;
-  signupBonus: number;
-  referralBonus: number;
+  // NOTE: signupBonus and referralBonus deliberately do NOT live here any more.
+  // Both are credited straight to a balance and are now sourced exclusively from
+  // `appConfig.rewardSettings` via getRewardSettings() (settings.ts) — the same
+  // row the admin's App Settings page writes. Keeping duplicates here was a dead
+  // knob: the App Settings field wrote appConfig while crediting read this row.
   badges: Badge[];
 }
 
@@ -31,8 +34,6 @@ const DEFAULT_SETTINGS: GamificationSettings = {
   xpIncrement: 500,
   dailyLoginReward: 10,
   dailyStreakBonus: 2,
-  signupBonus: 100,
-  referralBonus: 50,
   badges: [],
 };
 
@@ -51,8 +52,9 @@ const DEFAULT_SETTINGS: GamificationSettings = {
 //   * a vote       -> a flat VOTE_XP constant in voteCounter.ts (XP only, no coins)
 //   * joining      -> nothing; joining costs an entry fee rather than paying one
 
-/** Coin-valued settings keys. These reach a real balance, so they are sanitised. */
-const COIN_KEYS = ["dailyLoginReward", "dailyStreakBonus", "signupBonus", "referralBonus"] as const;
+/** Coin-valued settings keys. These reach a real balance, so they are sanitised.
+ *  (signupBonus/referralBonus moved to appConfig.rewardSettings — see settings.ts.) */
+const COIN_KEYS = ["dailyLoginReward", "dailyStreakBonus"] as const;
 /** Integer-valued but non-monetary keys. */
 const XP_KEYS = ["xpThreshold", "xpIncrement"] as const;
 
