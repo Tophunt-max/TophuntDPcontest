@@ -93,6 +93,7 @@ const nav = [
   { href: "/rewards", label: "Rewards & Gamification", icon: Gift, section: "system" },
   { href: "/app-control", label: "App Control", icon: SlidersHorizontal, section: "system" },
   { href: "/app-settings", label: "App Settings", icon: Settings, section: "system" },
+  { href: "/legal", label: "Legal Content", icon: ScrollText, section: "system" },
   { href: "/integrations", label: "Integrations", icon: Plug, section: "system" },
 ];
 

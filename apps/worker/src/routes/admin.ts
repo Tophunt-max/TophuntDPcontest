@@ -19,6 +19,7 @@ import { timingSafeEqualSecret } from "../lib/timingSafe";
 import { verifyIdToken, bearerToken } from "../lib/firebaseAuth";
 import { assertSessionUsable } from "../middleware/auth";
 import { getAppConfig, getGamificationSettings, getSeoAudit, invalidateSetting } from "../lib/settings";
+import { legalDocsForAdmin, LEGAL_DOC_KEYS, LEGAL_LAST_UPDATED } from "../content/legal";
 import { deleteAuthUser, updateAuthUser, setCustomClaims, getUserByEmail } from "../lib/firebaseAdmin";
 import { createNotification } from "../lib/notify";
 import { sendUserEmail } from "../lib/email";
@@ -237,6 +238,58 @@ adminRoute.post("/app-settings", async (c) => {
     .onConflictDoUpdate({ target: schema.settings.id, set: { data: merged, updatedAt: now() } });
   await invalidateSetting(c.env, "appConfig");
   return c.json({ message: "Settings updated successfully" });
+});
+
+// ---- legal documents (settings/appConfig.legalContent) ----
+/**
+ * The four legal documents as the editor needs them: the RAW content in effect for
+ * each (a stored override, or the bundled default) plus whether it is currently
+ * custom. The panel prefills its boxes with `content`, so an operator sees exactly
+ * what the app serves — the previous editor showed empty "override-only" boxes,
+ * which read as "the app has no policy" even though it always does.
+ */
+adminRoute.get("/legal", async (c) => {
+  requireFullAdmin(c);
+  const cfg = (await getAppConfig(c.env)) || {};
+  return c.json({ docs: legalDocsForAdmin(cfg), lastUpdated: LEGAL_LAST_UPDATED });
+});
+
+/**
+ * Save one legal document.
+ *
+ * A non-empty `content` stores an override the app serves in place of the bundled
+ * text (tokens such as {{SUPPORT_EMAIL}} are kept and interpolated at serve time).
+ * An empty/whitespace `content` CLEARS the override, reverting that document to the
+ * bundled default — so "Reset to default" is simply saving nothing.
+ *
+ * The whole `legalContent` object is rewritten explicitly (not deep-merged) so a
+ * cleared key is actually removed. Purges the /read/legal edge cache in this colo so
+ * the change shows in the app immediately here; other colos converge on that
+ * endpoint's 10-minute TTL.
+ */
+adminRoute.post("/legal", async (c) => {
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const { key, content } = await c.req.json<{ key?: string; content?: unknown }>();
+  if (typeof key !== "string" || !(LEGAL_DOC_KEYS as readonly string[]).includes(key)) {
+    throw httpsError("invalid-argument", "Unknown legal document.");
+  }
+  const text = typeof content === "string" ? content.trim() : "";
+
+  const existing = (await getAppConfig(c.env)) || {};
+  const legalContent: Record<string, string> = { ...((existing as any).legalContent ?? {}) };
+  if (text) legalContent[key] = text;
+  else delete legalContent[key]; // cleared -> app falls back to the bundled default
+
+  const merged = { ...(existing as any), legalContent };
+  await db
+    .insert(schema.settings)
+    .values({ id: "appConfig", data: merged, updatedAt: now() })
+    .onConflictDoUpdate({ target: schema.settings.id, set: { data: merged, updatedAt: now() } });
+  await invalidateSetting(c.env, "appConfig");
+  edgePurgeUrl(c, "/read/legal");
+  await logAudit(c, "legal.update", "legal", key, { cleared: !text, length: text.length });
+  return c.json({ success: true, isCustom: !!text });
 });
 
 // ---- rewards (settings/gamification) ----
