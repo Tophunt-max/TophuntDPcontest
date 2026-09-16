@@ -475,6 +475,31 @@ export default {
       case "0 0 1 * *":
         ctx.waitUntil(runCronJob(env, "monthlyHallOfFame", () => monthlyHallOfFame(env)).then(() => undefined));
         break;
+      // Retention housekeeping — its OWN hourly trigger, split off the 10-minute
+      // operational tick. None of this is time-critical: it only bounds table
+      // growth, so running it 24×/day instead of 144×/day is plenty and keeps the
+      // frequent tick focused on money/settlement. All three deletes are indexed
+      // (error_logs.created_at, notifications, cron_runs.created_at — migration
+      // 0048), so each run is a cheap index range, not a scan.
+      case "0 * * * *":
+        ctx.waitUntil(
+          (async () => {
+            // Retention: drop error logs past the retention window.
+            await runCronJob(env, "pruneErrorLogs", async () => {
+              await pruneErrorLogs(env);
+            });
+            // Retention: the notifications table previously grew forever, which
+            // made heavy users' own list and badge-count queries progressively
+            // slower.
+            await runCronJob(env, "pruneNotifications", async () => {
+              await pruneNotifications(env);
+            });
+            // Retention: heartbeat rows, expired replay claims and stale admin
+            // notifications.
+            await runCronJob(env, "pruneIdempotencyKeys", () => pruneOpsTables(env));
+          })(),
+        );
+        break;
       case "*/10 * * * *":
       default:
         ctx.waitUntil(
@@ -487,18 +512,9 @@ export default {
             // Money that was captured at the gateway but never credited here
             // (client died AND webhook lost) is invisible without this sweep.
             await runCronJob(env, "reconcilePayments", () => reconcilePaymentOrders(env));
-            // Retention: drop error logs past the retention window.
-            await runCronJob(env, "pruneErrorLogs", async () => {
-              await pruneErrorLogs(env);
-            });
-            // Retention: the notifications table previously grew forever, which
-            // made heavy users' own list and badge-count queries progressively
-            // slower.
-            await runCronJob(env, "pruneNotifications", async () => {
-              await pruneNotifications(env);
-            });
-            // Retention: heartbeat rows and expired replay claims.
-            await runCronJob(env, "pruneIdempotencyKeys", () => pruneOpsTables(env));
+            // NOTE: retention sweeps (pruneErrorLogs / pruneNotifications /
+            // pruneOpsTables) moved to the hourly "0 * * * *" trigger above —
+            // they are not time-critical and do not need to run every 10 min.
             // Safety net for the Bunny encode webhook: promote videos stuck in
             // `processing` (a lost webhook) and close abandoned uploads (cost).
             await runCronJob(env, "reconcileVideos", () => reconcileVideos(env));

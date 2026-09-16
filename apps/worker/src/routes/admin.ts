@@ -1683,7 +1683,19 @@ adminRoute.delete("/blog/:id", async (c) => {
 });
 
 // ======================= DASHBOARD =======================
+const OVERVIEW_MEMO_KEY = "admin:overview";
 adminRoute.get("/overview", async (c) => {
+  // The panel polls this every ~20s (sidebar badges + dashboard) and it runs a
+  // dozen COUNT(*)/SUM() aggregates. They are index-backed and cheap while the
+  // tables are small, but `count(*) from users`, `count(*) from posts` and the
+  // SUM over successful payments all scale with total history — so at real
+  // volume this endpoint alone would be a standing D1 cost. Memoise the whole
+  // payload in isolate memory for 30s: the numbers are a glanceable dashboard,
+  // not an authorization decision, so 30s of staleness is fine, and a warm
+  // isolate serving an admin answers repeat polls with zero D1. Per-isolate and
+  // no KV, so it stays free-tier-safe (no KV writes) and needs no invalidation.
+  const cachedOverview = memoGet<Record<string, number>>(OVERVIEW_MEMO_KEY);
+  if (cachedOverview) return c.json(cachedOverview);
   const db = getDb(c.env);
   const users = (await db.select({ v: count() }).from(schema.users).get())?.v ?? 0;
   const posts = (await db.select({ v: count() }).from(schema.posts).get())?.v ?? 0;
@@ -1727,7 +1739,9 @@ adminRoute.get("/overview", async (c) => {
         .where(notInArray(schema.prizeClaims.status, ["delivered", "cancelled"]))
         .get()
     )?.v ?? 0;
-  return c.json({ users, posts, reports, support, revenue, revenueInr, activeMatches, liveContests, pendingWithdrawals, pendingDeposits, pendingPrizeClaims });
+  const overview = { users, posts, reports, support, revenue, revenueInr, activeMatches, liveContests, pendingWithdrawals, pendingDeposits, pendingPrizeClaims };
+  memoPut(OVERVIEW_MEMO_KEY, overview, 30);
+  return c.json(overview);
 });
 
 adminRoute.get("/device-stats", async (c) => {
