@@ -244,6 +244,17 @@ function NotificationBell() {
     }
   };
 
+  // "Mark all read" only silences the badge; a repeating alert keeps refilling the
+  // feed. "Clear all" deletes them so the bell actually empties.
+  const clearAll = async () => {
+    try {
+      await api.clearNotifications();
+      qc.invalidateQueries({ queryKey: ["notifications"] });
+    } catch {
+      /* ignore */
+    }
+  };
+
   const openItem = (n: any) => {
     setOpen(false);
     if (n?.link) setLoc(n.link);
@@ -271,11 +282,18 @@ function NotificationBell() {
           <div className="absolute right-0 mt-2 w-80 max-w-[90vw] bg-card border border-border rounded-2xl shadow-xl z-50 overflow-hidden">
             <div className="flex items-center justify-between px-4 py-3 border-b border-border">
               <p className="font-bold text-sm text-foreground">Notifications</p>
-              {unread > 0 && (
-                <button onClick={markAllRead} className="text-xs text-violet-600 font-medium hover:underline">
-                  Mark all read
-                </button>
-              )}
+              <div className="flex items-center gap-3">
+                {unread > 0 && (
+                  <button onClick={markAllRead} className="text-xs text-violet-600 font-medium hover:underline">
+                    Mark all read
+                  </button>
+                )}
+                {items.length > 0 && (
+                  <button onClick={clearAll} className="text-xs text-red-500 font-medium hover:underline">
+                    Clear all
+                  </button>
+                )}
+              </div>
             </div>
             <div className="max-h-[360px] overflow-y-auto">
               {items.length === 0 ? (
