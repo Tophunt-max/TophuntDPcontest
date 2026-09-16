@@ -225,11 +225,33 @@ function mergeSettings(existing: any, patch: any): any {
   return out;
 }
 
+/**
+ * Coin-valued keys inside `appConfig.rewardSettings`. These are credited straight
+ * to `users.dpcoin` (signup grant, referral welcome), so — exactly like the
+ * gamification reward keys — a fractional value would break the whole-number coin
+ * invariant and a negative one would DEBIT a new user. Validated here at the point
+ * of entry; getRewardSettings() floors again as a second line of defence.
+ */
+const REWARD_SETTINGS_COIN_KEYS = ["signupBonus", "referralBonus"] as const;
+
 adminRoute.get("/app-settings", async (c) => c.json((await getAppConfig(c.env)) || {}));
 adminRoute.post("/app-settings", async (c) => {
   requireFullAdmin(c);
   const db = getDb(c.env);
   const body = await c.req.json<any>();
+  const rewardSettings = body?.rewardSettings;
+  if (rewardSettings && typeof rewardSettings === "object") {
+    for (const key of REWARD_SETTINGS_COIN_KEYS) {
+      if (rewardSettings[key] === undefined || rewardSettings[key] === null) continue;
+      const n = Number(rewardSettings[key]);
+      if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0 || n > 1_000_000) {
+        throw httpsError(
+          "invalid-argument",
+          `${key} must be a whole number of coins between 0 and 1000000 — it is credited straight to user balances.`,
+        );
+      }
+    }
+  }
   const existing = (await getAppConfig(c.env)) || {};
   const merged = mergeSettings(existing, body);
   await db
@@ -305,7 +327,9 @@ adminRoute.get("/rewards", async (c) => c.json((await getGamificationSettings(c.
  * than being discovered later in a balance. lib/gamification.ts sanitises on read
  * as a second line of defence for values stored before this check existed.
  */
-const REWARD_COIN_KEYS = ["dailyLoginReward", "dailyBaseReward", "dailyStreakBonus", "signupBonus", "referralBonus"] as const;
+// signupBonus/referralBonus are NOT here: they live in appConfig.rewardSettings
+// (validated on POST /app-settings), not the gamification row.
+const REWARD_COIN_KEYS = ["dailyLoginReward", "dailyBaseReward", "dailyStreakBonus"] as const;
 
 adminRoute.post("/rewards", async (c) => {
   requireFullAdmin(c);

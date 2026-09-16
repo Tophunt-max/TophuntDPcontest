@@ -65,9 +65,38 @@ async function readSetting(env: Env, id: string): Promise<any> {
   return data;
 }
 
-export async function getRewardSettings(env: Env): Promise<{ signupBonus: number; [k: string]: any }> {
+/** Reward coins are credited straight to a balance, so cap them and never mint. */
+export const MAX_REWARD_COINS = 1_000_000;
+
+/**
+ * Floor a stored reward-coin value to a safe whole number.
+ *
+ * `appConfig.rewardSettings` is the single source of truth for the signup and
+ * referral bonuses (both are credited straight to `users.dpcoin`). The write path
+ * (`POST /admin/app-settings`) rejects bad input, and this is the second line of
+ * defence for values stored before that check — a fraction is floored (never pays
+ * more than intended) and a negative/NaN falls back to the default rather than
+ * silently DEBITING a new user.
+ */
+function sanitizeRewardCoins(value: unknown, fallback: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return Math.min(MAX_REWARD_COINS, Math.floor(n));
+}
+
+/**
+ * The signup and referral welcome bonuses, both sourced from
+ * `appConfig.rewardSettings`. This is the ONE place either value is read for
+ * crediting — the gamification row no longer carries them, so the admin's App
+ * Settings fields are authoritative.
+ */
+export async function getRewardSettings(env: Env): Promise<{ signupBonus: number; referralBonus: number }> {
   const cfg = await readSetting(env, "appConfig");
-  return cfg?.rewardSettings ?? { signupBonus: 100 };
+  const rs = (cfg?.rewardSettings ?? {}) as Record<string, unknown>;
+  return {
+    signupBonus: sanitizeRewardCoins(rs.signupBonus, 100),
+    referralBonus: sanitizeRewardCoins(rs.referralBonus, 50),
+  };
 }
 
 export async function getGamificationSettings(env: Env): Promise<any> {

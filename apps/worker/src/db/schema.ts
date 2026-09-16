@@ -108,6 +108,9 @@ export const users = sqliteTable(
     usernameIdx: uniqueIndex("idx_users_username").on(t.username),
     emailIdx: uniqueIndex("idx_users_email").on(t.email),
     phoneIdx: uniqueIndex("idx_users_phone").on(t.phone),
+    // Referral codes are unique so a code can never resolve to the wrong account.
+    // DB-level enforcement is applied by migration 0046 (NULLs stay distinct).
+    referralCodeIdx: uniqueIndex("idx_users_referral_code").on(t.referralCode),
     monthlyWinsIdx: index("idx_users_monthly_wins").on(t.monthlyWins),
     // Public read paths exclude accounts that are pending deletion or already
     // anonymised. Before migration 0039 `status` was never queried, so that
