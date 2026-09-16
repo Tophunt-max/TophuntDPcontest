@@ -290,21 +290,27 @@ export default function BattleSetupScreen() {
           deviceId,
         };
 
+        let resultMatchId: string | undefined;
         if (isJoining) {
+          const joinTargetId = (matchId as string) || selectedContest.id;
           await contestService.joinMatch({
-            matchId: matchId as string || selectedContest.id,
+            matchId: joinTargetId,
             ...matchData
           });
+          resultMatchId = joinTargetId;
         } else {
-          await contestService.startMatch({
+          const res = await contestService.startMatch({
             contestId: selectedContest.id,
             ...matchData
           });
+          resultMatchId = res?.matchId;
         }
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         goToCongratulations(router, {
           contestName: selectedContest.title || selectedContest.name,
           isJoining,
+          matchId: resultMatchId,
+          imageUrl: downloadUrl,
         });
       } catch (error: any) {
         console.error("[BattleSetup] Action Error:", error);
