@@ -5,7 +5,7 @@
  * the existing screens already consume, so UI code stays unchanged.
  */
 import { Hono } from "hono";
-import { and, or, eq, desc, asc, gt, lt, sql, inArray, notInArray, isNull, like } from "drizzle-orm";
+import { and, or, eq, desc, asc, gt, gte, lt, lte, sql, inArray, notInArray, isNull, like, exists } from "drizzle-orm";
 import type { Env, Variables } from "../types";
 import { getDb, schema, type NotificationActor } from "../db";
 import { perPlayerEntryFee } from "../lib/money";
@@ -1592,6 +1592,69 @@ readRoute.get("/withdrawals", requireAuth, async (c) => {
       updatedAt: r.updatedAt,
     })),
   );
+});
+
+// ================= ANNOUNCEMENT POPUPS (auth) =================
+/**
+ * The single best announcement popup to show THIS user right now, or null.
+ *
+ * "Show" means: active, inside its schedule window, targeted at the user (an
+ * "all" announcement or one that names them), and not currently snoozed (no
+ * dismissal row, or the snooze has lapsed). Highest priority wins, then newest.
+ *
+ * Returns one at a time on purpose — the app shows a single centered popup, the
+ * user dismisses it (POST /api dismissAnnouncement), and the next poll returns
+ * the next eligible one. A re-appearing announcement (snooze lapsed) is served
+ * again with no admin action, because eligibility is evaluated live here.
+ */
+readRoute.get("/announcements/active", requireAuth, async (c) => {
+  const db = getDb(c.env);
+  const uid = c.get("user").uid;
+  const ts = Date.now();
+  const a = schema.announcements;
+  const d = schema.announcementDismissals;
+  const t = schema.announcementTargets;
+
+  const row = await db
+    .select({
+      id: a.id,
+      title: a.title,
+      body: a.body,
+      link: a.link,
+      image: a.image,
+      snoozeHours: a.snoozeHours,
+      priority: a.priority,
+      createdAt: a.createdAt,
+    })
+    .from(a)
+    .leftJoin(d, and(eq(d.announcementId, a.id), eq(d.uid, uid)))
+    .where(
+      and(
+        eq(a.isActive, true),
+        or(isNull(a.startAt), lte(a.startAt, ts)),
+        or(isNull(a.endAt), gt(a.endAt, ts)),
+        // Not snoozed: no dismissal row, or its window has lapsed.
+        or(isNull(d.snoozedUntil), lte(d.snoozedUntil, ts)),
+        // Targeted: everyone, or explicitly named in announcement_targets.
+        or(
+          eq(a.targetType, "all"),
+          exists(
+            db
+              .select({ one: sql`1` })
+              .from(t)
+              .where(and(eq(t.announcementId, a.id), eq(t.uid, uid))),
+          ),
+        ),
+      ),
+    )
+    .orderBy(desc(a.priority), desc(a.createdAt))
+    .limit(1)
+    .get();
+
+  const res = c.json(row ?? null) as Response;
+  // Per-user eligibility — must never be shared-cached.
+  res.headers.set("Cache-Control", "private, no-store");
+  return res;
 });
 
 // ================= NOTIFICATIONS (auth) =================

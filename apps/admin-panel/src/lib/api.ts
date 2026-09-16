@@ -579,6 +579,48 @@ export interface IntegrationsResponse {
   secretStorage: boolean;
 }
 
+// ─── Announcement popups ─────────────────────────────────────────────────────
+
+export type AnnouncementTargetType = "all" | "users";
+
+/** A row from GET /admin/announcements (includes its explicit-target count). */
+export interface AdminAnnouncement {
+  id: string;
+  title: string;
+  body: string;
+  link: string | null;
+  image: string | null;
+  isActive: boolean;
+  targetType: AnnouncementTargetType;
+  /** Hours the popup stays hidden after a user closes it, then re-appears. */
+  snoozeHours: number;
+  /** Higher shows first when several are active for one user. */
+  priority: number;
+  /** Schedule window in epoch ms; null = unbounded on that side. */
+  startAt: number | null;
+  endAt: number | null;
+  createdBy: string | null;
+  createdAt: number;
+  updatedAt: number;
+  /** How many uids are explicitly targeted (0 for an "all" announcement). */
+  targetCount: number;
+}
+
+export interface AnnouncementWritePayload {
+  title: string;
+  body: string;
+  link?: string | null;
+  image?: string | null;
+  isActive?: boolean;
+  targetType?: AnnouncementTargetType;
+  snoozeHours?: number;
+  priority?: number;
+  startAt?: number | null;
+  endAt?: number | null;
+  /** Explicit target uids; only used when targetType is "users". */
+  userIds?: string[];
+}
+
 // ─── Typed surface over the Worker's /admin endpoints ───────────────────────
 export const api = {
   // dashboard
@@ -914,6 +956,16 @@ export const api = {
     post("/admin/notify", payload),
   broadcast: (payload: { title: string; body: string; image?: string; segment?: { platform?: string; minLevel?: number } }) =>
     post<{ recipients: number }>("/admin/broadcast", payload),
+
+  // announcement popups (in-app modal shown to users; targeted, 24h-snooze)
+  announcements: () => get<AdminAnnouncement[]>("/admin/announcements"),
+  announcementTargets: (id: string) => get<string[]>(`/admin/announcements/${encodeURIComponent(id)}/targets`),
+  createAnnouncement: (payload: AnnouncementWritePayload) =>
+    post<{ success: true; id: string }>("/admin/announcements", payload),
+  updateAnnouncement: (id: string, payload: Partial<AnnouncementWritePayload>) =>
+    patch<{ success: true; id: string }>(`/admin/announcements/${encodeURIComponent(id)}`, payload),
+  deleteAnnouncement: (id: string) =>
+    del<{ success: true }>(`/admin/announcements/${encodeURIComponent(id)}`),
 
   // scheduled notifications
   scheduledNotifications: () => get<any[]>("/admin/scheduled-notifications"),

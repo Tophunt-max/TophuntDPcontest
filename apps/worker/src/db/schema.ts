@@ -817,6 +817,77 @@ export const adminNotifications = sqliteTable(
 );
 
 // ---------------------------------------------------------------------------
+// announcements  (admin-authored in-app POPUPS — see migration 0047)
+//
+// Distinct from the appConfig.announcement banner (one global message) and from
+// `notifications` (append-only per-user history). A popup is stateful: active
+// for a targeted audience, dismissible, and re-shown after a per-announcement
+// snooze window. Targeting + dismissal live in the two tables below.
+// ---------------------------------------------------------------------------
+export const announcements = sqliteTable(
+  "announcements",
+  {
+    id: text("id").primaryKey(),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    /** Optional call-to-action opened when the popup is tapped. */
+    link: text("link"),
+    /** Optional hero image URL shown above the text. */
+    image: text("image"),
+    /** Master on/off — an inactive announcement is never served. */
+    isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+    /** 'all' -> everyone; 'users' -> only uids in announcementTargets. */
+    targetType: text("target_type").notNull().default("all"),
+    /** Hours the popup stays hidden after a close, then re-appears. */
+    snoozeHours: integer("snooze_hours").notNull().default(24),
+    /** Higher shows first when several are active for one user. */
+    priority: integer("priority").notNull().default(0),
+    /** Optional schedule window (epoch ms); NULL = unbounded on that side. */
+    startAt: integer("start_at"),
+    endAt: integer("end_at"),
+    createdBy: text("created_by"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => ({
+    activeIdx: index("idx_announcements_active").on(t.isActive, t.priority, t.createdAt),
+  }),
+);
+
+/** Explicit per-user targeting; only consulted when targetType = 'users'. */
+export const announcementTargets = sqliteTable(
+  "announcement_targets",
+  {
+    announcementId: text("announcement_id").notNull(),
+    uid: text("uid").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.announcementId, t.uid] }),
+    uidIdx: index("idx_announcement_targets_uid").on(t.uid),
+  }),
+);
+
+/**
+ * Per-user dismissal / snooze state — the heart of the 24h behaviour.
+ *
+ * The user endpoint shows an announcement only when it has no dismissal row OR
+ * now() >= snoozedUntil. Server-side so the snooze is consistent across a
+ * user's devices and reinstalls.
+ */
+export const announcementDismissals = sqliteTable(
+  "announcement_dismissals",
+  {
+    announcementId: text("announcement_id").notNull(),
+    uid: text("uid").notNull(),
+    snoozedUntil: integer("snoozed_until").notNull(),
+    dismissedAt: integer("dismissed_at").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.announcementId, t.uid] }),
+  }),
+);
+
+// ---------------------------------------------------------------------------
 // blog_posts  (editorial blog + imported tophunt.in archive posts)
 // ---------------------------------------------------------------------------
 export const blogPosts = sqliteTable(
