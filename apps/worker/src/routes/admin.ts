@@ -37,6 +37,7 @@ import { refundRejectedWithdrawal } from "../lib/payouts";
 import { closeRealtimeSessions, publish } from "../lib/publish";
 import { resolveContests, monthlyHallOfFame, seoAuditJob } from "../cron";
 import { newId, now } from "../lib/ids";
+import { memoGet, memoPut } from "../lib/memo";
 import { discoverUrls, processBatch, readImportProgress, writeImportProgress } from "../lib/importerTask";
 import { runVideoBackfillBatch } from "../lib/videoBackfill";
 import { blogListCacheKey, blogPostCacheKey, commentsCacheKey, invalidateAuthState } from "../lib/cache";
@@ -1196,14 +1197,27 @@ adminRoute.get("/blog", async (c) => {
 });
 
 // Blog stats for dashboards / list header.
+//
+// Three COUNT(*)s over the whole blog_posts table (~4.5k rows each) — a top
+// rows_read source in `wrangler d1 insights` because the admin Blog page and the
+// dashboard refetch it. Memoised in isolate memory for 60s: the counts are a
+// glanceable header, not an authorization decision, so a minute of staleness is
+// fine, and a warm isolate serving an admin clicking around now answers repeat
+// loads with zero D1. Deliberately NOT cross-isolate/KV — this is a pure read
+// saving with no invalidation need at this staleness.
+const BLOG_STATS_MEMO_KEY = "admin:blog-stats";
 adminRoute.get("/blog/stats", async (c) => {
+  const cached = memoGet<{ total: number; published: number; drafts: number; imported: number }>(BLOG_STATS_MEMO_KEY);
+  if (cached) return c.json(cached);
   const db = getDb(c.env);
   const total = (await db.select({ v: count() }).from(schema.blogPosts).get())?.v ?? 0;
   const published =
     (await db.select({ v: count() }).from(schema.blogPosts).where(eq(schema.blogPosts.status, "published")).get())?.v ?? 0;
   const imported =
     (await db.select({ v: count() }).from(schema.blogPosts).where(eq(schema.blogPosts.source, "archive")).get())?.v ?? 0;
-  return c.json({ total, published, drafts: total - published, imported });
+  const stats = { total, published, drafts: total - published, imported };
+  memoPut(BLOG_STATS_MEMO_KEY, stats, 60);
+  return c.json(stats);
 });
 
 
@@ -1669,7 +1683,19 @@ adminRoute.delete("/blog/:id", async (c) => {
 });
 
 // ======================= DASHBOARD =======================
+const OVERVIEW_MEMO_KEY = "admin:overview";
 adminRoute.get("/overview", async (c) => {
+  // The panel polls this every ~20s (sidebar badges + dashboard) and it runs a
+  // dozen COUNT(*)/SUM() aggregates. They are index-backed and cheap while the
+  // tables are small, but `count(*) from users`, `count(*) from posts` and the
+  // SUM over successful payments all scale with total history — so at real
+  // volume this endpoint alone would be a standing D1 cost. Memoise the whole
+  // payload in isolate memory for 30s: the numbers are a glanceable dashboard,
+  // not an authorization decision, so 30s of staleness is fine, and a warm
+  // isolate serving an admin answers repeat polls with zero D1. Per-isolate and
+  // no KV, so it stays free-tier-safe (no KV writes) and needs no invalidation.
+  const cachedOverview = memoGet<Record<string, number>>(OVERVIEW_MEMO_KEY);
+  if (cachedOverview) return c.json(cachedOverview);
   const db = getDb(c.env);
   const users = (await db.select({ v: count() }).from(schema.users).get())?.v ?? 0;
   const posts = (await db.select({ v: count() }).from(schema.posts).get())?.v ?? 0;
@@ -1713,7 +1739,9 @@ adminRoute.get("/overview", async (c) => {
         .where(notInArray(schema.prizeClaims.status, ["delivered", "cancelled"]))
         .get()
     )?.v ?? 0;
-  return c.json({ users, posts, reports, support, revenue, revenueInr, activeMatches, liveContests, pendingWithdrawals, pendingDeposits, pendingPrizeClaims });
+  const overview = { users, posts, reports, support, revenue, revenueInr, activeMatches, liveContests, pendingWithdrawals, pendingDeposits, pendingPrizeClaims };
+  memoPut(OVERVIEW_MEMO_KEY, overview, 30);
+  return c.json(overview);
 });
 
 adminRoute.get("/device-stats", async (c) => {
