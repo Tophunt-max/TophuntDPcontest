@@ -1277,6 +1277,11 @@ export const cronRuns = sqliteTable(
   },
   (t) => ({
     jobCreatedIdx: index("idx_cron_runs_job_created").on(t.job, t.createdAt),
+    // Serves the retention prune `DELETE ... WHERE created_at < ?`
+    // (lib/ops.ts). The composite above leads with `job`, so a bare created_at
+    // predicate could not use it and full-scanned the table every 10 min — the
+    // largest rows_read source on the account (migration 0048).
+    createdIdx: index("idx_cron_runs_created").on(t.createdAt),
   }),
 );
 

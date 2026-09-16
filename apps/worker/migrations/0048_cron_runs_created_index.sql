@@ -1,0 +1,20 @@
+-- Stop the retention prune from full-scanning cron_runs.
+--
+-- Measured with `wrangler d1 insights tophunt-db --sort-by reads`, the single
+-- largest D1 rows_read consumer on the account BY FAR was:
+--
+--   DELETE FROM cron_runs WHERE created_at < ?      (lib/ops.ts pruneOpsTables)
+--     avgRowsRead 24,144 · run 119×/day · totalRowsRead ≈ 2,873,202/day
+--
+-- That is ~57% of the entire free-tier 5,000,000 rows_read/day cap, from one
+-- query — and it deleted ~0 rows most runs (queryEfficiency 0), i.e. pure waste.
+--
+-- The cause: cron_runs' only non-PK index is (job, created_at). A bare
+-- `WHERE created_at < ?` can't use a composite whose LEADING column is `job`, so
+-- every 10-minute prune scanned the whole ~24k-row table. This single-column
+-- index on created_at makes the prune an index range instead — it reads only the
+-- rows actually older than the retention cutoff (usually none).
+--
+-- DDL-only and idempotent (autoMigrate has no distributed lock — CREATE INDEX
+-- IF NOT EXISTS is safe to run concurrently across colos).
+CREATE INDEX IF NOT EXISTS idx_cron_runs_created ON cron_runs (created_at);
