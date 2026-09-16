@@ -2,11 +2,8 @@
  * XP / level / reward logic ported from utils/gamification.ts.
  * Settings come from the `gamification` settings row (KV-cached).
  */
-import { eq } from "drizzle-orm";
 import type { Env } from "../types";
-import { getDb, schema } from "../db";
 import { getGamificationSettings as loadGamification } from "./settings";
-import { sendPushNotification } from "./notify";
 
 interface Badge {
   level: number;
@@ -107,35 +104,24 @@ export function calculateLevel(xp: number, threshold: number, increment: number)
   return level;
 }
 
-/** Award XP (and handle level-up + badges). */
-export async function awardXp(env: Env, userId: string, amount: number): Promise<void> {
-  const settings = await getSettings(env);
-  const db = getDb(env);
-  const user = await db
-    .select({ xp: schema.users.xp, level: schema.users.level, badges: schema.users.badges })
-    .from(schema.users)
-    .where(eq(schema.users.uid, userId))
-    .get();
-  if (!user) return;
-
-  const newXp = (user.xp || 0) + amount;
-  const newLevel = calculateLevel(newXp, settings.xpThreshold, settings.xpIncrement);
-  const leveledUp = newLevel > (user.level || 1);
-
-  let badges = (user.badges as unknown as Badge[]) || [];
-  if (leveledUp) {
-    const badge = settings.badges.find((b) => b.level === newLevel);
-    if (badge && !badges.some((b) => b.name === badge.name)) badges = [...badges, badge];
-  }
-
-  await db
-    .update(schema.users)
-    .set({ xp: newXp, level: newLevel, badges: badges as any, updatedAt: Date.now() })
-    .where(eq(schema.users.uid, userId));
-
-  if (leveledUp) {
-    await sendPushNotification(env, userId, "Level Up! 🌟", `You reached Level ${newLevel}.`, "level_up");
-  }
+/**
+ * The level a given cumulative XP maps to — DERIVED, never stored.
+ *
+ * XP is the single source of truth: it is incremented atomically (`xp = xp + N`)
+ * wherever it is earned (votes, match results, the daily reward, …) and the level
+ * is computed from it on read. The old `awardXp` that ALSO wrote `users.level`
+ * was removed — it had no callers and did a non-atomic read-modify-write, and its
+ * absence is exactly why every account's stored `level` sat frozen at its seeded
+ * value while XP climbed. Deriving on read means the level can never drift from
+ * the XP behind it, and there is no write to race.
+ */
+export function levelForXp(
+  xp: number,
+  settings: Pick<GamificationSettings, "xpThreshold" | "xpIncrement">,
+): number {
+  const n = Number(xp);
+  const safeXp = Number.isFinite(n) && n > 0 ? n : 0;
+  return calculateLevel(safeXp, settings.xpThreshold, settings.xpIncrement);
 }
 
 // ---------------------------------------------------------------------------
