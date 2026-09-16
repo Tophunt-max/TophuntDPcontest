@@ -574,7 +574,6 @@ function ContestDialog({
   onClose: () => void;
   onDone: () => Promise<unknown>;
 }) {
-  const { confirm } = useConfirm();
   const initialForm = useRef(formFromContest(contest, mode));
   const [form, setForm] = useState<ContestFormState>(initialForm.current);
   const [errors, setErrors] = useState<ContestFormErrors>({});
@@ -595,6 +594,14 @@ function ContestDialog({
   const orphanProductImages = useRef<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  /**
+   * Discard confirmation is a LOCAL overlay inside this dialog, not the global
+   * `useConfirm` (which is a second Radix modal). Stacking two Radix modals and then
+   * unmounting this one as the other closed left the page blank/frozen on mobile —
+   * the teardown of two overlapping focus-scopes + scroll-locks races. One modal
+   * layer, one unmount, no race.
+   */
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
 
   const isEdit = mode === "edit";
   const isDirty =
@@ -626,25 +633,28 @@ function ContestDialog({
     setSubmitError(null);
   };
 
-  const requestClose = async () => {
-    if (saving) return;
+  /** Actually tear down: clean up orphan uploads, then unmount. */
+  const performClose = async () => {
+    setConfirmingDiscard(false);
+    await discardOrphanProductImages(null);
+    onClose();
+  };
+
+  const requestClose = () => {
+    if (saving || confirmingDiscard) return;
     // An in-flight product upload is worth blocking on: closing mid-upload would
     // leave an object in R2 that the cleanup below has not been told about yet.
     if (uploadingProduct) {
       toast.info("Wait for the product image to finish uploading.");
       return;
     }
+    // Unsaved work -> show the in-dialog confirmation (NOT a second modal). Clean
+    // work -> close straight away.
     if (isDirty) {
-      const discard = await confirm({
-        title: "Discard unsaved changes?",
-        description: "Your contest changes will be lost, and any product image you uploaded will be removed.",
-        confirmLabel: "Discard changes",
-        variant: "destructive",
-      });
-      if (!discard) return;
+      setConfirmingDiscard(true);
+      return;
     }
-    await discardOrphanProductImages(null);
-    onClose();
+    void performClose();
   };
 
   const selectBanner = (file: File | undefined) => {
@@ -1001,6 +1011,38 @@ function ContestDialog({
         onEscapeKeyDown={(event) => { if (saving) event.preventDefault(); }}
         onPointerDownOutside={(event) => { if (saving) event.preventDefault(); }}
       >
+        {/* Discard confirmation — an overlay INSIDE this dialog, not a second modal. */}
+        {confirmingDiscard && (
+          <div
+            className="absolute inset-0 z-20 flex items-center justify-center bg-black/50 p-6"
+            role="alertdialog"
+            aria-modal="true"
+          >
+            <div className="w-full max-w-sm rounded-2xl border border-border bg-background p-6 text-center shadow-xl">
+              <h3 className="text-lg font-semibold text-foreground">Discard unsaved changes?</h3>
+              <p className="mt-2 text-sm text-muted-foreground">
+                Your contest changes will be lost, and any product image you uploaded will be removed.
+              </p>
+              <div className="mt-5 flex flex-col gap-2">
+                <button
+                  type="button"
+                  onClick={() => void performClose()}
+                  className="w-full rounded-xl bg-destructive px-4 py-2.5 text-sm font-semibold text-destructive-foreground hover:bg-destructive/90"
+                >
+                  Discard changes
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmingDiscard(false)}
+                  className="w-full rounded-xl border border-input px-4 py-2.5 text-sm font-medium hover:bg-accent"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <DialogHeader className="shrink-0 border-b border-border px-5 pb-4 pr-12 pt-[max(1rem,env(safe-area-inset-top))] text-left sm:px-6 sm:py-4">
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>
