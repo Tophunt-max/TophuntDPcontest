@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/Badge";
 import { PageHeader, fmtDateTime } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import { useConfirm } from "@/components/ConfirmDialog";
-import { Send, CheckCheck, Bell, Megaphone, Clock, X } from "lucide-react";
+import { Send, CheckCheck, Bell, Megaphone, Clock, X, Trash2 } from "lucide-react";
 
 export default function Notifications() {
   const qc = useQueryClient();
@@ -54,6 +54,15 @@ export default function Notifications() {
     mutationFn: () => api.markNotificationsRead(),
     onSuccess: () => {
       toast.success("Marked all as read");
+      qc.invalidateQueries({ queryKey: ["notifications"] });
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  const clearMut = useMutation({
+    mutationFn: () => api.clearNotifications(),
+    onSuccess: () => {
+      toast.success("Notifications cleared");
       qc.invalidateQueries({ queryKey: ["notifications"] });
     },
     onError: (e: any) => toast.error(e.message),
@@ -182,9 +191,14 @@ export default function Notifications() {
             <h3 className="font-bold text-foreground flex items-center gap-2">
               <Bell size={16} className="text-violet-600" /> Admin Alerts
             </h3>
-            <button onClick={() => readMut.mutate()} className="text-xs text-violet-600 font-medium flex items-center gap-1 hover:underline">
-              <CheckCheck size={14} /> Mark all read
-            </button>
+            <div className="flex items-center gap-3">
+              <button onClick={() => readMut.mutate()} disabled={readMut.isPending || data.length === 0} className="text-xs text-violet-600 font-medium flex items-center gap-1 hover:underline disabled:opacity-40">
+                <CheckCheck size={14} /> Mark all read
+              </button>
+              <button onClick={() => clearMut.mutate()} disabled={clearMut.isPending || data.length === 0} className="text-xs text-red-500 font-medium flex items-center gap-1 hover:underline disabled:opacity-40">
+                <Trash2 size={14} /> Clear all
+              </button>
+            </div>
           </div>
           {isLoading ? (
             <p className="text-sm text-muted-foreground py-6 text-center">Loading…</p>

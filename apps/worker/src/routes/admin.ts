@@ -1918,6 +1918,24 @@ adminRoute.post("/notifications/read", async (c) => {
   return c.json({ success: true });
 });
 
+/**
+ * Clear (delete) the caller's notifications — the "Clear all" action.
+ *
+ * "Mark all read" only silences the badge; the feed still fills, which for a
+ * repeating alert (a cron failing every tick) reads as "read does nothing". This
+ * removes them. Scoped like the read/list endpoints, so a moderator can only clear
+ * what they can see and never a finance alert. Old rows are also swept
+ * automatically by `pruneOpsTables`; this is the manual version.
+ */
+adminRoute.delete("/notifications", async (c) => {
+  const db = getDb(c.env);
+  const scopes = isFullAdmin(c) ? ["finance", "moderation"] : ["moderation"];
+  await db
+    .delete(schema.adminNotifications)
+    .where(inArray(schema.adminNotifications.scope, scopes));
+  return c.json({ success: true });
+});
+
 
 // ======================= OPS (used by admin CLI scripts) =======================
 // Make/unmake a user admin: sets the Firebase custom claim (Identity Toolkit)

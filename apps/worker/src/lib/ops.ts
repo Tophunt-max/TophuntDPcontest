@@ -71,8 +71,15 @@ export async function runCronJob<T>(
     // stalled payout run is visible without reading logs.
     await logErrorToDb(env, error, { path: `cron:${name}`, method: "CRON" });
     await captureError(env, error, { path: `cron:${name}`, method: "CRON", tags: { cron: name } });
-    await raiseOpsAlert(
+    // DEDUPED per job, 6h window. A job that keeps failing every 10-minute tick —
+    // e.g. every job at once when D1 is over its daily row limit — used to raise a
+    // FRESH admin notification each tick, flooding the bell so "Mark all read" never
+    // seemed to clear. One alert per job per window is enough to see the incident;
+    // the error trail and heartbeat carry the rest.
+    await alertOnce(
       env,
+      `cron:${name}`,
+      6 * 60 * 60 * 1000,
       `Cron failed: ${name}`,
       `${message} (after ${durationMs}ms). Contest settlement, refunds or payouts may be delayed.`,
     );
@@ -150,7 +157,9 @@ export async function cronHealth(env: Env): Promise<CronHealth[]> {
 }
 
 /** Retention for the heartbeat table and expired replay claims. */
-export async function pruneOpsTables(env: Env): Promise<{ cronRuns: number; idempotencyKeys: number }> {
+export async function pruneOpsTables(
+  env: Env,
+): Promise<{ cronRuns: number; idempotencyKeys: number; adminNotifications: number }> {
   const cutoff = Date.now() - CRON_RUN_RETENTION_MS;
   const runs = await env.DB.prepare("DELETE FROM cron_runs WHERE created_at < ?").bind(cutoff).run();
   // Replay claims only need to outlive any plausible client retry window. A week
@@ -159,9 +168,21 @@ export async function pruneOpsTables(env: Env): Promise<{ cronRuns: number; idem
   const keys = await env.DB.prepare("DELETE FROM idempotency_keys WHERE created_at < ?")
     .bind(keyCutoff)
     .run();
+  // Admin notifications are an activity feed, not a record — nothing read them
+  // back after the fact, and with no retention they grew without bound (a burst of
+  // cron-failure alerts alone can add dozens a day). Read ones go after a week;
+  // anything at all goes after 30 days so an unacknowledged incident is not erased
+  // too soon but the table is still bounded.
+  const DAY = 24 * 60 * 60 * 1000;
+  const notifs = await env.DB.prepare(
+    "DELETE FROM admin_notifications WHERE created_at < ? OR (is_read = 1 AND created_at < ?)",
+  )
+    .bind(Date.now() - 30 * DAY, Date.now() - 7 * DAY)
+    .run();
   return {
     cronRuns: Number(runs.meta?.changes || 0),
     idempotencyKeys: Number(keys.meta?.changes || 0),
+    adminNotifications: Number(notifs.meta?.changes || 0),
   };
 }
 
@@ -173,17 +194,24 @@ export async function alertOnce(
   title: string,
   message: string,
 ): Promise<boolean> {
-  const db = getDb(env);
-  const ts = now();
-  const claimKey = `alert:${key}:${Math.floor(ts / windowMs)}`;
-  const claim = await db
-    .insert(schema.idempotencyKeys)
-    .values({ key: claimKey, nonce: crypto.randomUUID(), scope: "alert", createdAt: ts })
-    .onConflictDoNothing()
-    .run();
-  if (Number(claim.meta?.changes || 0) === 0) return false;
-  await raiseOpsAlert(env, title, message);
-  return true;
+  // Never throws: this runs from runCronJob's failure path, which must stay
+  // non-throwing, and from cron where an alert must not become a second incident.
+  try {
+    const db = getDb(env);
+    const ts = now();
+    const claimKey = `alert:${key}:${Math.floor(ts / windowMs)}`;
+    const claim = await db
+      .insert(schema.idempotencyKeys)
+      .values({ key: claimKey, nonce: crypto.randomUUID(), scope: "alert", createdAt: ts })
+      .onConflictDoNothing()
+      .run();
+    if (Number(claim.meta?.changes || 0) === 0) return false;
+    await raiseOpsAlert(env, title, message);
+    return true;
+  } catch (e) {
+    console.error("[ops] alertOnce failed", key, e);
+    return false;
+  }
 }
 
 /** Remove alert-suppression claims that have aged out (called with pruneOpsTables). */

@@ -909,6 +909,7 @@ export const api = {
   // notifications
   notifications: () => get<any[]>("/admin/notifications"),
   markNotificationsRead: () => post("/admin/notifications/read"),
+  clearNotifications: () => del("/admin/notifications"),
   notify: (payload: { userId: string; title: string; body: string; type?: string }) =>
     post("/admin/notify", payload),
   broadcast: (payload: { title: string; body: string; image?: string; segment?: { platform?: string; minLevel?: number } }) =>
