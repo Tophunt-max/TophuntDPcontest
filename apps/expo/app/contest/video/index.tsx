@@ -177,26 +177,32 @@ export default function VideoContestScreen() {
       const downloadUrl = await contestMediaService.uploadMedia(media, selectedContest.id || selectedContest.contestId, user.uid, 'video');
       const deviceId = await getDeviceId();
 
+      let resultMatchId: string | undefined;
       if (isJoining) {
+        const joinTargetId = (matchId as string) || selectedContest.id;
         await contestService.joinMatch({
-          matchId: matchId as string || selectedContest.id,
+          matchId: joinTargetId,
           mediaUrl: downloadUrl,
           mediaType: 'video',
           caption,
           deviceId,
         });
+        resultMatchId = joinTargetId;
       } else {
-        await contestService.startMatch({
+        const res = await contestService.startMatch({
           contestId: selectedContest.id,
           mediaUrl: downloadUrl,
           mediaType: 'video',
           caption,
           deviceId,
         });
+        resultMatchId = res?.matchId;
       }
       goToCongratulations(router, {
         contestName: selectedContest.title || selectedContest.name,
         isJoining,
+        matchId: resultMatchId,
+        imageUrl: downloadUrl,
       });
     } catch (error: any) {
       Alert.alert("Oops!", error.message || "Failed to submit.");

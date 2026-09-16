@@ -19,13 +19,32 @@ import type { Router } from 'expo-router';
  */
 export function goToCongratulations(
   router: Router,
-  opts: { contestName?: string | null; isJoining: boolean },
+  opts: {
+    contestName?: string | null;
+    isJoining: boolean;
+    /**
+     * The match just created/joined. Threaded through so the congratulations
+     * screen's Share button can build a real, openable battle link
+     * (`/battle/<id>`) — without it the share had only a caption, no link.
+     */
+    matchId?: string | null;
+    /**
+     * The user's just-uploaded entry image. Lets the share attach the photo
+     * (on platforms that allow an image + text together); elsewhere it rides
+     * along as the battle link's preview image.
+     */
+    imageUrl?: string | null;
+  },
 ): void {
   router.replace({
     pathname: '/contest/joined',
     params: {
       contestName: opts.contestName || 'Contest',
       mode: opts.isJoining ? 'join' : 'create',
+      // Only include when present — expo-router serialises every param into the
+      // URL, and empty values would add noise like `?matchId=`.
+      ...(opts.matchId ? { matchId: opts.matchId } : {}),
+      ...(opts.imageUrl ? { imageUrl: opts.imageUrl } : {}),
     },
   });
 }
