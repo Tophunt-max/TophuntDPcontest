@@ -53,6 +53,33 @@ export interface EnqueueBroadcastInput {
  */
 const PAGE_SIZE = 100;
 
+/**
+ * How long a `running`/`pending` job may sit untouched before the cron safety net
+ * takes it over. In normal operation the QUEUE drives a job page-by-page in
+ * seconds, bumping `updatedAt` each page, so it never goes stale and cron never
+ * touches it. Cron only steps in when the queue path stalled (binding absent, a
+ * message lost, the consumer erroring past its retries).
+ */
+const STALE_MS = 2 * 60 * 1000;
+
+/** The body of a broadcast queue message: which job to advance by one page. */
+export interface BroadcastQueueMessage {
+  jobId: string;
+}
+
+/**
+ * Kick a broadcast onto the queue for immediate processing. Fail-open: with no
+ * queue binding (local dev, or before `wrangler queues create`) this is a no-op
+ * and the cron safety net drains the job instead — just not instantly.
+ */
+async function sendBroadcastQueueMessage(env: Env, jobId: string): Promise<void> {
+  try {
+    await env.BROADCAST_QUEUE?.send({ jobId } satisfies BroadcastQueueMessage);
+  } catch (e) {
+    console.error("[broadcast] queue send failed (cron will drain)", jobId, e);
+  }
+}
+
 function segmentConditions(segment?: BroadcastSegment | null) {
   const conds: any[] = [];
   if (segment?.platform) conds.push(eq(schema.users.platform, segment.platform));
@@ -98,45 +125,47 @@ export async function enqueueBroadcast(
     updatedAt: ts,
   });
 
+  // Start it NOW via the queue. The old design waited for the next 10-minute cron
+  // tick even to begin, and then took one more tick per page. See the queue
+  // consumer in index.ts, which advances one page and re-enqueues the next.
+  await sendBroadcastQueueMessage(env, jobId);
+
   return { jobId, estimatedRecipients: countRow?.v ?? 0 };
 }
 
+type BroadcastJob = typeof schema.broadcastJobs.$inferSelect;
+
 /**
- * Advance the oldest unfinished broadcast by one page.
+ * Move a job from `pending` to `running`, atomically. Returns true if this caller
+ * owns the run. A job already `running` is treated as claimed (the queue continues
+ * it page by page); anything terminal returns false.
  *
- * Called from cron. Processes at most one job per invocation so a large
- * broadcast cannot starve the rest of the schedule; the next tick continues it.
+ * The atomic `WHERE status = 'pending'` is what stops two racing starts — the
+ * queue consumer and a cron safety-net tick — from both sending the first page.
  */
-export async function drainBroadcastJobs(env: Env): Promise<void> {
+async function claimRunning(env: Env, job: BroadcastJob): Promise<boolean> {
+  if (job.status === "running") return true;
+  if (job.status !== "pending") return false;
+  const claim = await getDb(env)
+    .update(schema.broadcastJobs)
+    .set({ status: "running", updatedAt: now() })
+    .where(and(eq(schema.broadcastJobs.id, job.id), eq(schema.broadcastJobs.status, "pending")))
+    .run();
+  return (claim.meta.changes ?? 0) > 0;
+}
+
+/**
+ * Send one page of a RUNNING job and advance its keyset cursor. Returns whether
+ * the job is now finished (the table for its segment is exhausted).
+ *
+ * Never more than one page in memory; a crash or timeout resumes from `cursor`.
+ */
+async function runBroadcastPage(env: Env, job: BroadcastJob): Promise<{ done: boolean }> {
   const db = getDb(env);
-
-  const job = await db
-    .select()
-    .from(schema.broadcastJobs)
-    .where(
-      sql`${schema.broadcastJobs.status} IN ('pending','running')`,
-    )
-    .orderBy(asc(schema.broadcastJobs.createdAt))
-    .limit(1)
-    .get();
-  if (!job) return;
-
-  // Claim it. Only the run that flips pending -> running proceeds, so two
-  // overlapping cron invocations cannot double-send the same page.
-  if (job.status === "pending") {
-    const claim = await db
-      .update(schema.broadcastJobs)
-      .set({ status: "running", updatedAt: now() })
-      .where(and(eq(schema.broadcastJobs.id, job.id), eq(schema.broadcastJobs.status, "pending")))
-      .run();
-    if (claim.meta.changes === 0) return;
-  }
-
   const segment = (job.segment as BroadcastSegment | null) ?? undefined;
   const conds = segmentConditions(segment);
   if (job.cursor) conds.push(gt(schema.users.uid, job.cursor));
 
-  // Keyset pagination over the primary key.
   const page = await db
     .select({ uid: schema.users.uid })
     .from(schema.users)
@@ -151,7 +180,7 @@ export async function drainBroadcastJobs(env: Env): Promise<void> {
       .set({ status: "done", finishedAt: now(), updatedAt: now() })
       .where(eq(schema.broadcastJobs.id, job.id))
       .run();
-    return;
+    return { done: true };
   }
 
   let processed = 0;
@@ -186,11 +215,65 @@ export async function drainBroadcastJobs(env: Env): Promise<void> {
       processed: (job.processed ?? 0) + processed,
       failed: (job.failed ?? 0) + failed,
       // A short final page means the table is exhausted, so finish now rather
-      // than burning another tick to discover an empty page.
+      // than burning another round to discover an empty page.
       status: exhausted ? "done" : "running",
       finishedAt: exhausted ? now() : null,
       updatedAt: now(),
     })
     .where(eq(schema.broadcastJobs.id, job.id))
     .run();
+
+  return { done: exhausted };
+}
+
+/**
+ * Advance ONE broadcast by one page — the queue consumer's unit of work.
+ *
+ * Loads the job by id, claims it, and sends a page. Returns `done` so the consumer
+ * knows whether to re-enqueue the next page. Terminal or missing jobs (already
+ * done, or CANCELLED mid-flight) return `{ done: true }` so the queue chain stops.
+ */
+export async function processBroadcastJob(env: Env, jobId: string): Promise<{ done: boolean }> {
+  const job = await getDb(env)
+    .select()
+    .from(schema.broadcastJobs)
+    .where(eq(schema.broadcastJobs.id, jobId))
+    .get();
+  if (!job || job.status === "done" || job.status === "cancelled" || job.status === "failed") {
+    return { done: true };
+  }
+  // Lost the start race to the cron safety net — let that path carry it.
+  if (!(await claimRunning(env, job))) return { done: true };
+  return runBroadcastPage(env, { ...job, status: "running" });
+}
+
+/**
+ * Cron SAFETY NET — resume a broadcast the queue path failed to finish.
+ *
+ * The queue (see index.ts `queue()`) is the primary driver and processes a job in
+ * seconds. This only claims a job that has been sitting `pending`/`running` for
+ * longer than `STALE_MS`, i.e. one whose queue chain broke (binding missing, a
+ * message lost, the consumer exhausted its retries). A healthy, actively-draining
+ * job bumps `updatedAt` every page, so it is never stale and is left to the queue.
+ *
+ * One page per invocation, so a recovering broadcast cannot starve the rest of the
+ * schedule; the next tick continues it.
+ */
+export async function drainBroadcastJobs(env: Env): Promise<void> {
+  const db = getDb(env);
+  const staleBefore = now() - STALE_MS;
+
+  const job = await db
+    .select()
+    .from(schema.broadcastJobs)
+    .where(
+      sql`${schema.broadcastJobs.status} IN ('pending','running') AND ${schema.broadcastJobs.updatedAt} < ${staleBefore}`,
+    )
+    .orderBy(asc(schema.broadcastJobs.createdAt))
+    .limit(1)
+    .get();
+  if (!job) return;
+
+  if (!(await claimRunning(env, job))) return;
+  await runBroadcastPage(env, { ...job, status: "running" });
 }

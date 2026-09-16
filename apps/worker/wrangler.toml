@@ -153,6 +153,28 @@ tag = "v3"
 new_sqlite_classes = ["RateLimiter"]
 
 # ---------------------------------------------------------------------------
+# Queues — admin broadcast fan-out (src/lib/broadcast.ts + index.ts `queue()`).
+#
+# A broadcast enqueues one message, the consumer sends ONE page of recipients and
+# re-enqueues the next, so a send-to-everyone drains in seconds instead of one page
+# per 10-minute cron tick. The cron (drainBroadcastJobs) stays as a stale-job
+# safety net, and the producer binding is read optionally, so the app keeps working
+# if the queue is not yet created.
+#
+# CREATE ONCE before the first deploy that includes this:
+#   wrangler queues create tophunt-broadcast
+# ---------------------------------------------------------------------------
+[[queues.producers]]
+binding = "BROADCAST_QUEUE"
+queue = "tophunt-broadcast"
+
+[[queues.consumers]]
+queue = "tophunt-broadcast"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+
+# ---------------------------------------------------------------------------
 # Scheduled tasks (replace Firebase onSchedule functions)
 #   */10 * * * *  -> resolveContests + expired story cleanup (was `scheduled`/`resolveContestsTask`)
 #   0 0 1 * *     -> monthlyHallOfFame
@@ -268,6 +290,17 @@ class_name = "VoteCounter"
 [[env.staging.durable_objects.bindings]]
 name = "RATE_LIMITER"
 class_name = "RateLimiter"
+
+# Staging broadcast queue. Create once:  wrangler queues create tophunt-broadcast-staging
+[[env.staging.queues.producers]]
+binding = "BROADCAST_QUEUE"
+queue = "tophunt-broadcast-staging"
+
+[[env.staging.queues.consumers]]
+queue = "tophunt-broadcast-staging"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
 
 [env.staging.observability]
 enabled = true

@@ -29,6 +29,7 @@ import { isChatMember } from "./lib/chatAuth";
 import { resolveContests, expireContests, monthlyHallOfFame, seoAuditJob } from "./cron";
 import { purgeScheduledDeletions } from "./lib/accountDeletion";
 import { ensureMigrated } from "./db/autoMigrate";
+import { processBroadcastJob } from "./lib/broadcast";
 import { captureError, logErrorToDb, pruneErrorLogs } from "./lib/observability";
 import { pruneOpsTables, runCronJob } from "./lib/ops";
 import { reconcilePaymentOrders } from "./lib/coinOrders";
@@ -414,6 +415,43 @@ app.notFound((c) => c.json(errorBody(new ApiError("not-found", "Route not found.
 
 export default {
   fetch: app.fetch,
+
+  /**
+   * Queue consumer — admin broadcast fan-out (wrangler.toml [[queues.consumers]]).
+   *
+   * Each message names one broadcast job. We advance it by exactly ONE page
+   * (bounded work, well inside the CPU/time budget) and, if more recipients
+   * remain, re-enqueue the same job to continue immediately — so the whole
+   * broadcast drains in seconds rather than one page per 10-minute cron tick.
+   *
+   * `ack()` on success (including "nothing more to do"), `retry()` on failure so
+   * the platform redelivers. Delivery is at-least-once; a duplicated page just
+   * re-sends a broadcast notification, which is harmless (no money, no state that
+   * can be double-charged). The cron safety net in cron.ts still resumes any job
+   * whose queue chain breaks entirely.
+   */
+  async queue(
+    batch: MessageBatch<import("./lib/broadcast").BroadcastQueueMessage>,
+    env: Env,
+    _ctx: ExecutionContext,
+  ): Promise<void> {
+    await ensureMigrated(env).catch((e) => console.error("[migrate] queue auto-migration failed", e));
+    for (const msg of batch.messages) {
+      try {
+        const jobId = msg.body?.jobId;
+        if (!jobId) {
+          msg.ack();
+          continue;
+        }
+        const { done } = await processBroadcastJob(env, jobId);
+        if (!done) await env.BROADCAST_QUEUE?.send({ jobId });
+        msg.ack();
+      } catch (e) {
+        console.error("[queue] broadcast page failed", e);
+        msg.retry();
+      }
+    }
+  },
 
   // Cron Triggers (wrangler.toml [triggers].crons)
   //
