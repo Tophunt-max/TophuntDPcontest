@@ -8,9 +8,38 @@
     <!-- Inter is self-hosted via @fontsource (imported in src/main.tsx) so it
          loads under the panel's strict CSP. Do NOT re-add a Google Fonts <link>:
          font-src / style-src do not allow it and it will be blocked. -->
+    <style>
+      /* Boot splash: shown from first paint until React mounts and replaces the
+         contents of #root. On mobile, returning to a tab the browser discarded
+         (e.g. while the file picker was open) triggers a full reload, and the gap
+         before the JS bundle re-executes used to be a bare white screen that read
+         as "the app crashed". A neutral spinner keeps that gap looking like
+         loading, not a blank/broken page. No external assets, so it renders under
+         the strict CSP with zero extra requests. */
+      #app-boot {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #ffffff;
+        font-family: system-ui, sans-serif;
+      }
+      #app-boot .app-boot-spinner {
+        width: 34px;
+        height: 34px;
+        border: 3px solid #e2e8f0;
+        border-top-color: #6366f1;
+        border-radius: 50%;
+        animation: app-boot-spin 0.7s linear infinite;
+      }
+      @keyframes app-boot-spin { to { transform: rotate(360deg); } }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="app-boot"><div class="app-boot-spinner"></div></div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
