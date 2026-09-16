@@ -2698,6 +2698,199 @@ adminRoute.post("/broadcast", async (c) => {
   }
 });
 
+// ======================= ANNOUNCEMENT POPUPS =======================
+// In-app popups shown to users (see schema `announcements`). Unlike a broadcast
+// (which writes one notification row per user), an announcement is a single row
+// the user endpoint evaluates live against targeting + per-user snooze — so it
+// can re-appear after the snooze window without re-fanning-out to anyone.
+
+const ANNOUNCEMENT_TARGET_TYPES = ["all", "users"] as const;
+
+/** Validate + normalise a create/update payload. Throws invalid-argument. */
+function parseAnnouncementInput(body: any, { partial }: { partial: boolean }) {
+  const out: Record<string, any> = {};
+
+  const wants = (k: string) => hasOwn(body, k);
+
+  if (!partial || wants("title")) {
+    const title = String(body.title ?? "").trim();
+    if (!title) throw httpsError("invalid-argument", "title is required.");
+    if (title.length > 120) throw httpsError("invalid-argument", "title must be 120 characters or fewer.");
+    out.title = title;
+  }
+  if (!partial || wants("body")) {
+    const text = String(body.body ?? "").trim();
+    if (!text) throw httpsError("invalid-argument", "body is required.");
+    if (text.length > 2000) throw httpsError("invalid-argument", "body must be 2000 characters or fewer.");
+    out.body = text;
+  }
+  if (wants("link")) {
+    const link = body.link == null ? null : String(body.link).trim() || null;
+    if (link && !/^https?:\/\//i.test(link)) {
+      throw httpsError("invalid-argument", "link must be an http(s) URL.");
+    }
+    out.link = link;
+  }
+  if (wants("image")) {
+    out.image = body.image == null ? null : String(body.image).trim() || null;
+  }
+  if (wants("isActive")) out.isActive = !!body.isActive;
+  if (wants("targetType")) {
+    if (!ANNOUNCEMENT_TARGET_TYPES.includes(body.targetType)) {
+      throw httpsError("invalid-argument", "targetType must be 'all' or 'users'.");
+    }
+    out.targetType = body.targetType;
+  }
+  if (wants("snoozeHours")) {
+    const n = Number(body.snoozeHours);
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1 || n > 8760) {
+      throw httpsError("invalid-argument", "snoozeHours must be a whole number of hours between 1 and 8760.");
+    }
+    out.snoozeHours = n;
+  }
+  if (wants("priority")) {
+    const n = Number(body.priority);
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0 || n > 1000) {
+      throw httpsError("invalid-argument", "priority must be a whole number between 0 and 1000.");
+    }
+    out.priority = n;
+  }
+  for (const k of ["startAt", "endAt"] as const) {
+    if (wants(k)) {
+      if (body[k] == null || body[k] === "") {
+        out[k] = null;
+      } else {
+        const n = Number(body[k]);
+        if (!Number.isFinite(n)) throw httpsError("invalid-argument", `${k} must be an epoch-ms timestamp.`);
+        out[k] = Math.trunc(n);
+      }
+    }
+  }
+  if (out.startAt != null && out.endAt != null && out.endAt <= out.startAt) {
+    throw httpsError("invalid-argument", "endAt must be after startAt.");
+  }
+
+  // Explicit target uid list (only meaningful for targetType 'users').
+  let userIds: string[] | undefined;
+  if (wants("userIds")) {
+    if (!Array.isArray(body.userIds)) throw httpsError("invalid-argument", "userIds must be an array.");
+    const cleaned = (body.userIds as unknown[]).map((u) => String(u).trim()).filter((u): u is string => u.length > 0);
+    userIds = [...new Set<string>(cleaned)];
+    if (userIds.length > 5000) throw httpsError("invalid-argument", "userIds is limited to 5000 entries.");
+  }
+
+  return { fields: out, userIds };
+}
+
+/** Replace the target rows for an announcement with the given uid list. */
+async function replaceAnnouncementTargets(db: any, announcementId: string, userIds: string[]): Promise<void> {
+  await db.delete(schema.announcementTargets).where(eq(schema.announcementTargets.announcementId, announcementId));
+  // Chunk the insert — SQLite caps bound parameters (~999) and D1 caps row count.
+  for (let i = 0; i < userIds.length; i += 100) {
+    const chunk = userIds.slice(i, i + 100);
+    if (chunk.length === 0) continue;
+    await db
+      .insert(schema.announcementTargets)
+      .values(chunk.map((uid) => ({ announcementId, uid })))
+      .onConflictDoNothing();
+  }
+}
+
+// List every announcement, newest first, with its explicit-target count.
+adminRoute.get("/announcements", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db.select().from(schema.announcements).orderBy(desc(schema.announcements.createdAt)).all();
+  const counts = await db
+    .select({ announcementId: schema.announcementTargets.announcementId, n: count() })
+    .from(schema.announcementTargets)
+    .groupBy(schema.announcementTargets.announcementId)
+    .all();
+  const byId = new Map(counts.map((r: any) => [r.announcementId, Number(r.n)]));
+  return c.json(rows.map((r: any) => ({ ...r, targetCount: byId.get(r.id) ?? 0 })));
+});
+
+// Create an announcement (optionally with an explicit target uid list).
+adminRoute.post("/announcements", async (c) => {
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const { fields, userIds } = parseAnnouncementInput(await c.req.json<any>(), { partial: false });
+  const id = newId();
+  const ts = now();
+  await db.insert(schema.announcements).values({
+    id,
+    title: fields.title,
+    body: fields.body,
+    link: fields.link ?? null,
+    image: fields.image ?? null,
+    isActive: fields.isActive ?? true,
+    targetType: fields.targetType ?? "all",
+    snoozeHours: fields.snoozeHours ?? 24,
+    priority: fields.priority ?? 0,
+    startAt: fields.startAt ?? null,
+    endAt: fields.endAt ?? null,
+    createdBy: c.get("user")?.uid ?? null,
+    createdAt: ts,
+    updatedAt: ts,
+  });
+  if ((fields.targetType ?? "all") === "users") {
+    await replaceAnnouncementTargets(db, id, userIds ?? []);
+  }
+  await logAudit(c, "announcement.create", "announcement", id, {
+    title: fields.title,
+    targetType: fields.targetType ?? "all",
+    targets: userIds?.length ?? 0,
+  });
+  return c.json({ success: true, id });
+});
+
+// Update fields and/or the target list. Absent keys are left unchanged.
+adminRoute.patch("/announcements/:id", async (c) => {
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const id = c.req.param("id");
+  const existing = await db.select().from(schema.announcements).where(eq(schema.announcements.id, id)).get();
+  if (!existing) throw httpsError("not-found", "Announcement not found.");
+  const { fields, userIds } = parseAnnouncementInput(await c.req.json<any>(), { partial: true });
+  await db
+    .update(schema.announcements)
+    .set({ ...fields, updatedAt: now() })
+    .where(eq(schema.announcements.id, id));
+  // Rewrite targets when a uid list was sent, or clear them if the announcement
+  // is (now) an "all" announcement so stale rows can't linger.
+  const effectiveType = fields.targetType ?? existing.targetType;
+  if (effectiveType === "users") {
+    if (userIds) await replaceAnnouncementTargets(db, id, userIds);
+  } else if (fields.targetType === "all") {
+    await db.delete(schema.announcementTargets).where(eq(schema.announcementTargets.announcementId, id));
+  }
+  await logAudit(c, "announcement.update", "announcement", id, { changed: Object.keys(fields) });
+  return c.json({ success: true, id });
+});
+
+// Delete an announcement and all of its targeting + dismissal state.
+adminRoute.delete("/announcements/:id", async (c) => {
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const id = c.req.param("id");
+  await db.delete(schema.announcementTargets).where(eq(schema.announcementTargets.announcementId, id));
+  await db.delete(schema.announcementDismissals).where(eq(schema.announcementDismissals.announcementId, id));
+  await db.delete(schema.announcements).where(eq(schema.announcements.id, id));
+  await logAudit(c, "announcement.delete", "announcement", id);
+  return c.json({ success: true });
+});
+
+// The explicit target uids for one announcement (so the editor can prefill).
+adminRoute.get("/announcements/:id/targets", async (c) => {
+  const db = getDb(c.env);
+  const id = c.req.param("id");
+  const rows = await db
+    .select({ uid: schema.announcementTargets.uid })
+    .from(schema.announcementTargets)
+    .where(eq(schema.announcementTargets.announcementId, id))
+    .all();
+  return c.json(rows.map((r: any) => r.uid));
+});
+
 // ======================= COMMENTS MODERATION =======================
 // Recent comments (with author + optional ?postId= filter).
 //

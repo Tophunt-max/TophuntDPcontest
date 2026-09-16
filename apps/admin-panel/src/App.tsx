@@ -68,6 +68,7 @@ const Moderation = lazyWithReload(() => import("@/pages/Moderation"));
 const AuditLog = lazyWithReload(() => import("@/pages/AuditLog"));
 const AccountDeletions = lazyWithReload(() => import("@/pages/AccountDeletions"));
 const Notifications = lazyWithReload(() => import("@/pages/Notifications"));
+const Announcements = lazyWithReload(() => import("@/pages/Announcements"));
 const Rewards = lazyWithReload(() => import("@/pages/Rewards"));
 const AppControl = lazyWithReload(() => import("@/pages/AppControl"));
 const AppSettings = lazyWithReload(() => import("@/pages/AppSettings"));
@@ -130,6 +131,7 @@ function ProtectedApp() {
           <Route path="/account-deletions" component={AccountDeletions} />
           <Route path="/logs" component={Logs} />
           <Route path="/notifications" component={Notifications} />
+          <Route path="/announcements" component={Announcements} />
           <Route path="/rewards" component={Rewards} />
           <Route path="/app-control" component={AppControl} />
           <Route path="/app-settings" component={AppSettings} />

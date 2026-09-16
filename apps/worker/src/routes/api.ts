@@ -2060,6 +2060,38 @@ apiRoute.post("/", async (c) => {
       return c.json({ success: true });
     }
 
+    /**
+     * Snooze an announcement popup after the user closes it with ×.
+     *
+     * Records (announcement, user) -> snoozedUntil = now + snoozeHours. The
+     * read endpoint (/read/announcements/active) hides the popup until that
+     * instant, then serves it again. Stored server-side so the snooze holds
+     * across the user's devices and reinstalls; the app also caches it locally
+     * for an instant dismiss. Idempotent — re-closing just re-arms the window.
+     */
+    case "dismissAnnouncement": {
+      const announcementId = String(body.announcementId || "").trim();
+      if (!announcementId) throw httpsError("invalid-argument", "announcementId is required.");
+      const ann = await db
+        .select({ snoozeHours: schema.announcements.snoozeHours })
+        .from(schema.announcements)
+        .where(eq(schema.announcements.id, announcementId))
+        .get();
+      // A deleted announcement has nothing to snooze — succeed quietly so the
+      // client can drop it without special-casing a 404.
+      if (!ann) return c.json({ success: true });
+      const ts = now();
+      const snoozedUntil = ts + Math.max(1, ann.snoozeHours ?? 24) * 3600_000;
+      await db
+        .insert(schema.announcementDismissals)
+        .values({ announcementId, uid, snoozedUntil, dismissedAt: ts })
+        .onConflictDoUpdate({
+          target: [schema.announcementDismissals.announcementId, schema.announcementDismissals.uid],
+          set: { snoozedUntil, dismissedAt: ts },
+        });
+      return c.json({ success: true, snoozedUntil });
+    }
+
     case "registerFcmToken": {
       const { token } = body;
       if (!token) throw httpsError("invalid-argument", "token is required.");

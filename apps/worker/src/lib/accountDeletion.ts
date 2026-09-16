@@ -956,6 +956,11 @@ async function phaseContent(env: Env, uid: string): Promise<void> {
     db.delete(schema.highlights).where(eq(schema.highlights.userId, uid)),
     db.delete(schema.storyViews).where(eq(schema.storyViews.viewerId, uid)),
     db.delete(schema.messages).where(eq(schema.messages.senderId, uid)),
+    // Announcement popup targeting + per-user snooze state. Pure engagement
+    // metadata (who an announcement was aimed at, and when this user last
+    // dismissed it) — no reason to keep it once the account is gone.
+    db.delete(schema.announcementTargets).where(eq(schema.announcementTargets.uid, uid)),
+    db.delete(schema.announcementDismissals).where(eq(schema.announcementDismissals.uid, uid)),
     // Prize claims are SCRUBBED, not deleted — the same choice `phaseSnapshots`
     // makes for the users row, and for the same reason. The row records that a
     // prize was awarded and where it got to, which is an accounting fact about the
