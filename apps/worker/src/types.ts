@@ -18,6 +18,13 @@ export interface Env {
   // Typed for native RPC calls. See lib/rateLimit.ts for the client.
   RATE_LIMITER: DurableObjectNamespace<import("./rateLimiter").RateLimiter>;
 
+  // Admin broadcast fan-out queue. A broadcast enqueues one message per page and
+  // the consumer (index.ts `queue()`) advances one page then re-enqueues, so a
+  // send-to-everyone runs in seconds instead of one page per 10-minute cron tick.
+  // OPTIONAL on purpose: with no binding (local dev, or before the queue is
+  // created) `enqueueBroadcast` no-ops the send and the cron safety net drains it.
+  BROADCAST_QUEUE?: Queue<import("./lib/broadcast").BroadcastQueueMessage>;
+
   // --- Plain vars ---
   FIREBASE_PROJECT_ID: string;
   /** Base url new media is written under, e.g. "https://media.tophunt.in". */
