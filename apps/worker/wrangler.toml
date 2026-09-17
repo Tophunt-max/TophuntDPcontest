@@ -346,6 +346,14 @@ ALLOWED_ORIGINS = "http://localhost:5000,http://localhost:8081,https://tophuntdp
 [vars]
 FIREBASE_PROJECT_ID = "tophuntdpcontest"
 
+# Capacity widget (admin dashboard) — account + D1 ids for the Cloudflare GraphQL
+# Analytics query that reports today's live rows_read / rows_written. NOT secret.
+# The read-only token is a SECRET, set separately with:
+#   wrangler secret put CF_ANALYTICS_TOKEN
+# Without the token the widget still shows table growth + storage (fail-open).
+CF_ACCOUNT_ID = "8357be8f9dba5721b6b726faff763f0f"
+CF_D1_DATABASE_ID = "932ccd0f-190a-46df-bdf6-685926f524ff"
+
 # Scale tier — the single switch between the Cloudflare FREE tier and the Workers
 # PAID plan. See src/lib/scale.ts and SCALE_TIER.md.
 #
