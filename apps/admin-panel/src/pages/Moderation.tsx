@@ -26,7 +26,7 @@ export default function Moderation() {
     onError: (e: any) => toast.error(e.message),
   });
   const delMsg = useMutation({
-    mutationFn: (id: string) => api.deleteMessage(id),
+    mutationFn: (m: { chatId: string; id: string }) => api.deleteMessage(m.chatId, m.id),
     onSuccess: () => { toast.success("Message deleted"); qc.invalidateQueries({ queryKey: ["messages"] }); },
     onError: (e: any) => toast.error(e.message),
   });
@@ -76,7 +76,7 @@ export default function Moderation() {
             header: "",
             className: "text-right",
             render: (m: any) => (
-              <button title="Delete" onClick={async () => { if (await confirm({ title: "Delete message?", description: "This permanently removes the message.", variant: "destructive" })) delMsg.mutate(m.id); }} className="p-2 rounded-lg hover:bg-secondary text-red-600"><Trash2 size={15} /></button>
+              <button title="Delete" onClick={async () => { if (await confirm({ title: "Delete message?", description: "This permanently removes the message.", variant: "destructive" })) delMsg.mutate({ chatId: m.chatId, id: m.id }); }} className="p-2 rounded-lg hover:bg-secondary text-red-600"><Trash2 size={15} /></button>
             ),
           },
         ]}

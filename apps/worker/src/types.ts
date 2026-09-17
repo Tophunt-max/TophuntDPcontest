@@ -17,6 +17,12 @@ export interface Env {
   // which a KV read-then-write on an eventually-consistent store never was.
   // Typed for native RPC calls. See lib/rateLimit.ts for the client.
   RATE_LIMITER: DurableObjectNamespace<import("./rateLimiter").RateLimiter>;
+  // Per-chat message store (SQLite-backed DO). Owns chat message BODIES, keeping
+  // the fastest-growing write path off D1's single writer. The `chats` preview
+  // row + `chat_members` index stay in D1 (cross-chat inbox queries). Typed for
+  // native RPC calls; see lib/chatArchive.ts for the client. Seeds lazily from
+  // the D1 `messages` rows on first touch — that seed IS the migration.
+  CHAT_ARCHIVE: DurableObjectNamespace<import("./chatArchive").ChatArchive>;
 
   // Admin broadcast fan-out queue. A broadcast enqueues one message per page and
   // the consumer (index.ts `queue()`) advances one page then re-enqueues, so a

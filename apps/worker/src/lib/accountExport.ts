@@ -3,6 +3,7 @@ import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { httpsError } from "./http";
 import { now } from "./ids";
+import { listChatMessagesBySender, type ChatMessage } from "./chatArchive";
 
 /**
  * "Download my data" — one JSON document containing everything we hold about a
@@ -35,6 +36,33 @@ interface Capped<T> {
 
 function capped<T>(items: T[]): Capped<T> {
   return { count: items.length, truncated: items.length >= CAP, items };
+}
+
+/**
+ * Every message the user sent, gathered from the per-chat ChatArchive DOs.
+ *
+ * Message bodies no longer live in a single D1 table that could be queried by
+ * sender, so this fans out over the user's conversations (from the source-of-
+ * truth `chats.users` array) and merges. Best-effort per chat — one unreachable
+ * DO must not fail the whole export — newest-first, capped like every other
+ * collection.
+ */
+async function collectSentMessages(env: Env, uid: string, cap: number): Promise<ChatMessage[]> {
+  const chats = await env.DB.prepare(
+    `SELECT id FROM chats
+      WHERE EXISTS (SELECT 1 FROM json_each(chats.users) WHERE json_each.value = ?)`,
+  )
+    .bind(uid)
+    .all<{ id: string }>();
+  const perChat = await Promise.all(
+    (chats.results ?? []).map((row) =>
+      listChatMessagesBySender(env, row.id, uid, cap).catch(() => [] as ChatMessage[]),
+    ),
+  );
+  return perChat
+    .flat()
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, cap);
 }
 
 export interface UserDataExport {
@@ -140,7 +168,11 @@ export async function exportUserData(env: Env, uid: string): Promise<UserDataExp
       .limit(CAP)
       .all(),
     db.select().from(schema.votes).where(eq(schema.votes.voterUid, uid)).limit(CAP).all(),
-    db.select().from(schema.messages).where(eq(schema.messages.senderId, uid)).limit(CAP).all(),
+    // Message bodies live in per-chat ChatArchive DOs now, not the D1 `messages`
+    // table, so a plain D1 select would miss everything sent since the cutover.
+    // Gather from every conversation the user is in (the DO includes any seeded
+    // legacy rows too), so the export stays complete for the data-rights request.
+    collectSentMessages(env, uid, CAP),
     db
       .select()
       .from(schema.notifications)

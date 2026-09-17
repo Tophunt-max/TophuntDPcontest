@@ -41,6 +41,7 @@ import {
   type MusicTrack,
 } from "../lib/music";
 import { assertChatMember } from "../lib/chatAuth";
+import { chatHistory } from "../lib/chatArchive";
 import {
   blockedUidsFor,
   describeUsers,
@@ -2815,14 +2816,12 @@ readRoute.get("/chats/:id/messages", requireAuth, async (c) => {
   // viewer's own past conversations, and `sendMessage` refuses new messages in
   // both directions, so nothing can be added to what is already there.
   const since = parseInt(c.req.query("since") || "0", 10);
-  const rows = await db
-    .select()
-    .from(schema.messages)
-    .where(and(eq(schema.messages.chatId, chatId), gt(schema.messages.createdAt, since)))
-    .orderBy(asc(schema.messages.createdAt))
-    .limit(200)
-    .all();
-  return c.json(rows.map((m) => ({ id: m.id, chatId: m.chatId, senderId: m.senderId, text: m.text, createdAt: m.createdAt })));
+  // Message bodies are served from the chat's ChatArchive Durable Object, not
+  // D1 (see src/chatArchive.ts). The DO seeds itself from any pre-migration D1
+  // rows on first touch, so history stays complete across the cutover. Same
+  // shape as before — oldest-first, capped at 200, `read` deliberately omitted.
+  const rows = await chatHistory(c.env, chatId, since, 200);
+  return c.json(rows);
 });
 
 

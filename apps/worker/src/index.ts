@@ -50,6 +50,9 @@ import { clientIp, rateLimit } from "./lib/rateLimit";
 export { RealtimeHub } from "./realtime";
 // Durable Object for production-safe vote aggregation (one per match).
 export { VoteCounter } from "./voteCounter";
+// Durable Object for per-chat message storage (one per chatId) — keeps the
+// unbounded message write path off D1's single writer.
+export { ChatArchive } from "./chatArchive";
 // Durable Object for rate-limit counters (one per throttled subject).
 export { RateLimiter } from "./rateLimiter";
 
