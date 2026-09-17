@@ -38,6 +38,7 @@ import { closeRealtimeSessions, publish } from "../lib/publish";
 import { resolveContests, monthlyHallOfFame, seoAuditJob } from "../cron";
 import { newId, now } from "../lib/ids";
 import { memoGet, memoPut } from "../lib/memo";
+import { computeCapacity } from "../lib/capacity";
 import { discoverUrls, processBatch, readImportProgress, writeImportProgress } from "../lib/importerTask";
 import { runVideoBackfillBatch } from "../lib/videoBackfill";
 import { blogListCacheKey, blogPostCacheKey, commentsCacheKey, invalidateAuthState } from "../lib/cache";
@@ -1743,6 +1744,12 @@ adminRoute.get("/overview", async (c) => {
   memoPut(OVERVIEW_MEMO_KEY, overview, 30);
   return c.json(overview);
 });
+
+// Cloudflare free-tier capacity snapshot for the dashboard widget: growth-table
+// row counts + DB storage (measured in-Worker, memoised 5 min) and — when a
+// CF_ANALYTICS_TOKEN is configured — today's live D1 rows_read / rows_written.
+// See lib/capacity.ts and CAPACITY_MONITORING.md.
+adminRoute.get("/capacity", async (c) => c.json(await computeCapacity(c.env)));
 
 adminRoute.get("/device-stats", async (c) => {
   const db = getDb(c.env);

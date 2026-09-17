@@ -116,6 +116,17 @@ export interface Env {
   SENTRY_DSN?: string;
   SENTRY_ENVIRONMENT?: string;
 
+  // Capacity monitoring (admin dashboard "Database Capacity" widget). All
+  // OPTIONAL and fail-open: without them the widget still shows table growth +
+  // storage (measured in-Worker); with them it also shows today's live D1
+  // rows_read / rows_written from the Cloudflare GraphQL Analytics API.
+  //   CF_ACCOUNT_ID / CF_D1_DATABASE_ID — not secret (wrangler.toml [vars]).
+  //   CF_ANALYTICS_TOKEN — a READ-ONLY Analytics API token, set via
+  //     `wrangler secret put CF_ANALYTICS_TOKEN`. Never returned to the client.
+  CF_ACCOUNT_ID?: string;
+  CF_D1_DATABASE_ID?: string;
+  CF_ANALYTICS_TOKEN?: string;
+
   // -------------------------------------------------------------------------
   // Panel-managed integrations.
   //

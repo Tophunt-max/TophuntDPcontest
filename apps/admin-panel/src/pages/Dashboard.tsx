@@ -17,6 +17,7 @@ import {
   Coins,
   ArrowRight,
   Wallet,
+  Database,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -30,7 +31,7 @@ import {
   Bar,
   Legend,
 } from "recharts";
-import { api } from "@/lib/api";
+import { api, type Capacity } from "@/lib/api";
 import { StatCard } from "@/components/ui/StatCard";
 import { PageHeader, fmtDateTime, fmtNumber } from "@/lib/format";
 import { Badge } from "@/components/ui/Badge";
@@ -48,6 +49,7 @@ export default function Dashboard() {
   const finance = useQuery({ queryKey: ["finance-trends"], queryFn: api.financeTrends, refetchInterval: SLOW });
   const revenue = useQuery({ queryKey: ["revenue"], queryFn: api.revenue, refetchInterval: SLOW });
   const tickets = useQuery({ queryKey: ["recent-tickets"], queryFn: api.recentTickets, refetchInterval: SLOW });
+  const capacity = useQuery({ queryKey: ["capacity"], queryFn: api.capacity, refetchInterval: SLOW });
 
   const an = analytics.data;
   const chartData =
@@ -101,6 +103,9 @@ export default function Dashboard() {
         <StatCard icon={Coins} label="Coins Sold (today)" value={fmtNumber(an?.revenueToday)} gradient="gradient-green" change={pct(an?.revenueToday, an?.revenueYesterday)} />
         <StatCard icon={Vote} label="Votes (today)" value={fmtNumber(an?.votesToday)} gradient="gradient-orange" change={pct(an?.votesToday, an?.votesYesterday)} />
       </div>
+
+      {/* Database capacity — Cloudflare free-tier headroom. */}
+      {capacity.data && <CapacityPanel data={capacity.data} />}
 
       {/* Charts row. */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
@@ -284,6 +289,91 @@ function AlertChip({ n, label, href, icon: Icon, tone }: { n: number; label: str
       </div>
       <ArrowRight size={16} className="flex-shrink-0 opacity-60" />
     </Link>
+  );
+}
+
+/** Cloudflare free-tier capacity: usage today + storage + table-growth triggers. */
+function CapacityPanel({ data }: { data: Capacity }) {
+  const pctOf = (n: number, cap: number) => (cap > 0 ? (n / cap) * 100 : 0);
+  const tables = [...data.tables].sort((a, b) => b.count / b.threshold - a.count / a.threshold);
+  const storagePct = data.storageBytes != null ? pctOf(data.storageBytes, data.storageCapBytes) : null;
+
+  return (
+    <div className="bg-card border border-border rounded-2xl p-5 mb-6">
+      <div className="mb-4">
+        <h3 className="font-bold text-foreground flex items-center gap-2">
+          <Database size={16} className="text-violet-600" /> Database Capacity
+        </h3>
+        <p className="text-xs text-muted-foreground">
+          Cloudflare free-tier headroom · updated {fmtDateTime(data.generatedAt)}
+        </p>
+      </div>
+
+      {/* Usage today (from Cloudflare Analytics) + storage. */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+        {data.usage ? (
+          <>
+            <CapMetric label="Rows read (today)" value={data.usage.rowsRead} cap={data.caps.rowsRead} />
+            <CapMetric label="Rows written (today)" value={data.usage.rowsWritten} cap={data.caps.rowsWritten} />
+          </>
+        ) : (
+          <div className="sm:col-span-2 rounded-xl border border-dashed border-border p-3 text-xs text-muted-foreground">
+            Live rows read/written need <code>CF_ANALYTICS_TOKEN</code>. Until then, watch the D1 usage
+            alert in the Cloudflare dashboard (see <code>CAPACITY_MONITORING.md</code>).
+          </div>
+        )}
+        {storagePct != null && (
+          <CapMetric label="Storage" value={data.storageBytes!} cap={data.storageCapBytes} unit="bytes" />
+        )}
+      </div>
+
+      {/* Table growth vs the soft thresholds that trigger a staged optimization. */}
+      <div className="mt-5 pt-4 border-t border-border">
+        <p className="text-xs font-medium text-muted-foreground mb-3">Table growth → optimization trigger</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3">
+          {tables.map((t) => (
+            <div key={t.name}>
+              <div className="flex justify-between text-xs mb-1">
+                <span className="text-foreground font-medium">{t.name}</span>
+                <span className="text-muted-foreground">
+                  {fmtNumber(t.count)} / {fmtNumber(t.threshold)}
+                </span>
+              </div>
+              <CapBar pct={pctOf(t.count, t.threshold)} />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CapMetric({ label, value, cap, unit }: { label: string; value: number; cap: number; unit?: "bytes" }) {
+  const pct = cap > 0 ? (value / cap) * 100 : 0;
+  const show = (n: number) =>
+    unit === "bytes" ? `${(n / 1024 / 1024).toFixed(n >= 1024 * 1024 * 1024 ? 1 : 0)} MB` : fmtNumber(n);
+  const showCap = (n: number) => (unit === "bytes" ? `${(n / 1024 / 1024 / 1024).toFixed(0)} GB` : fmtNumber(n));
+  return (
+    <div>
+      <div className="flex justify-between items-baseline mb-1">
+        <span className="text-xs text-muted-foreground">{label}</span>
+        <span className="text-sm font-bold text-foreground">{pct < 1 ? pct.toFixed(1) : Math.round(pct)}%</span>
+      </div>
+      <CapBar pct={pct} />
+      <p className="text-[11px] text-muted-foreground mt-1">
+        {show(value)} / {showCap(cap)}
+      </p>
+    </div>
+  );
+}
+
+function CapBar({ pct }: { pct: number }) {
+  const clamped = Math.max(0, Math.min(100, pct));
+  const tone = pct >= 90 ? "bg-red-500" : pct >= 70 ? "bg-amber-500" : "bg-green-500";
+  return (
+    <div className="h-2 rounded-full bg-secondary overflow-hidden">
+      <div className={`h-full ${tone} transition-all`} style={{ width: `${clamped}%` }} />
+    </div>
   );
 }
 

@@ -621,6 +621,22 @@ export interface AnnouncementWritePayload {
   userIds?: string[];
 }
 
+// ─── Capacity (Cloudflare free-tier headroom) ────────────────────────────────
+export interface CapacityTable {
+  name: string;
+  count: number;
+  threshold: number;
+}
+export interface Capacity {
+  caps: { rowsRead: number; rowsWritten: number; kvWrites: number };
+  storageBytes: number | null;
+  storageCapBytes: number;
+  tables: CapacityTable[];
+  /** Today's usage (UTC day). null when the analytics token isn't configured. */
+  usage: { rowsRead: number; rowsWritten: number } | null;
+  generatedAt: number;
+}
+
 // ─── Typed surface over the Worker's /admin endpoints ───────────────────────
 export const api = {
   // dashboard
@@ -648,6 +664,7 @@ export const api = {
     }>("/admin/overview"),
   deviceStats: () =>
     get<{ web: number; mobile: number; other: number }>("/admin/device-stats"),
+  capacity: () => get<Capacity>("/admin/capacity"),
   userGrowth: () =>
     get<{ categories: string[]; data: number[] }>("/admin/user-growth"),
   recentTickets: () => get<any[]>("/admin/recent-tickets"),
