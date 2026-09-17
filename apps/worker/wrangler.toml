@@ -354,22 +354,24 @@ FIREBASE_PROJECT_ID = "tophuntdpcontest"
 CF_ACCOUNT_ID = "8357be8f9dba5721b6b726faff763f0f"
 CF_D1_DATABASE_ID = "932ccd0f-190a-46df-bdf6-685926f524ff"
 
-# Scale tier — the single switch between the Cloudflare FREE tier and the Workers
-# PAID plan. See src/lib/scale.ts and SCALE_TIER.md.
+# Scale tier — how the Worker tunes itself for the Cloudflare FREE vs Workers PAID
+# plan. See src/lib/scale.ts and SCALE_TIER.md. Three values:
 #
-# "free" (default): every read is served from the Cache API / isolate memory and
-# NOTHING extra is written to KV, so the app stays inside the free plan's 1,000
-# KV writes/day and D1's daily row limits.
+# "auto" (DEPLOYED DEFAULT): self-adapts to BOTH billing directions with NO code,
+#   flag, or deploy change at the transition. It caches the per-request auth
+#   account-state in KV — on paid the writes succeed (optimal); on free, once the
+#   KV write budget is spent the writes fail open and the request recomputes from
+#   D1 (never breaks). Block/revocation still take effect immediately because
+#   invalidation is a KV DELETE (metered separately). So you upgrade/downgrade the
+#   Cloudflare plan and the app just follows — nothing to flip.
 #
-# "paid": additionally caches the per-request auth account-state in KV, removing
-# the highest-COUNT D1 query (one read on every authenticated request) from the
-# hot path. That cache costs KV writes the free plan cannot afford but the paid
-# plan can — so it is gated behind this one flag.
+# "paid": force the auth-state cache on (for a paid account that wants it explicit).
+# "free": force it OFF — guarantees zero auth-cache KV writes, best for a LARGE
+#   free deployment that wants the whole KV budget for other caches.
 #
-# Going paid is exactly two steps and NO code change: upgrade the account to
-# Workers Paid, then set this to "paid" (here + redeploy, or as a dashboard env
-# var for an instant flip). An unset or unrecognised value is treated as "free".
-SCALE_TIER = "free"
+# An unset or unrecognised value resolves to "free" (the never-write-extra tier),
+# so a typo can never change behaviour unsafely.
+SCALE_TIER = "auto"
 
 # Public media origin — the R2 bucket's own custom domain, NOT the Worker.
 #

@@ -10,15 +10,28 @@ code at the transition.** The move is one flag.
 
 ## TL;DR
 
-| | Free tier (today) | Workers Paid (`SCALE_TIER="paid"`) |
-|---|---|---|
-| Hot reads (feed, contests, stories, suggestions, profiles, leaderboard) | Cache API + isolate memory, **0 KV writes** | same — no change needed |
-| Per-request auth account-state read | direct D1 (1 row / authed request) | **served from KV**, D1 untouched on a hit |
-| KV writes/day used by the above | ~0 (stays under the 1,000/day free cap) | auth-state cache only (affordable on paid) |
-| What you change to switch | — | `SCALE_TIER = "paid"` + upgrade account |
+The Worker now ships with **`SCALE_TIER = "auto"`**, which **self-adapts to BOTH
+billing directions with no code, flag, or deploy change at the transition.** You
+just upgrade or downgrade the Cloudflare plan — the app follows automatically.
 
-**Default is `"free"`.** Anything other than the exact string `"paid"` (unset, empty,
-a typo) resolves to free, so a mistake can never accidentally incur paid-only writes.
+| | Free plan | Workers Paid plan | What YOU do |
+|---|---|---|---|
+| Hot reads (feed, contests, stories, profiles…) | Cache API + isolate memory, **0 KV writes** | same | nothing |
+| Per-request auth account-state read | cache `put`s **fail open** once the free KV budget is spent → recompute from D1 (never breaks) | **served from KV**, D1 untouched on a hit | nothing |
+| Switch free ↔ paid | — | — | **only the Cloudflare billing change** |
+
+**How `"auto"` stays safe on free:** a block / logout / revocation is a KV **DELETE**
+(metered separately from writes, budget nowhere near its cap), so it takes effect
+immediately in every colo even when the write budget is exhausted — and the 60s TTL
+is the same backstop the paid tier already relies on. Correctness therefore holds on
+either plan; the only free-plan cost is that auth-caching uses some of the 1,000/day
+KV write budget (failing open when spent), which is exactly the moment the capacity
+monitor (`CAPACITY_MONITORING.md`) tells you to upgrade.
+
+**Explicit overrides** remain: `"free"` forces the auth-cache OFF (guarantees zero
+auth-cache KV writes — best for a very large free deployment), `"paid"` forces it ON.
+An unset or unrecognised value resolves to **free** (never writes extra), so a typo is
+always safe.
 
 ---
 
