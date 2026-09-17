@@ -2820,8 +2820,30 @@ readRoute.get("/chats/:id/messages", requireAuth, async (c) => {
   // D1 (see src/chatArchive.ts). The DO seeds itself from any pre-migration D1
   // rows on first touch, so history stays complete across the cutover. Same
   // shape as before — oldest-first, capped at 200, `read` deliberately omitted.
-  const rows = await chatHistory(c.env, chatId, since, 200);
-  return c.json(rows);
+  //
+  // DEFENSE IN DEPTH: opening a conversation is the single most-used chat action,
+  // and the client renders a full-screen spinner until this resolves — a 500 here
+  // is an infinite spinner, not a graceful error. So if the DO read fails for any
+  // reason (a bad deploy, a DO outage, a migration race), fall back to reading the
+  // D1 `messages` rows directly. Those rows are the DO's own seed source and are
+  // still present, so an established conversation degrades to "reads work, the
+  // newest DO-only messages may lag" instead of breaking outright.
+  try {
+    const rows = await chatHistory(c.env, chatId, since, 200);
+    return c.json(rows);
+  } catch (e) {
+    console.error("[read/messages] ChatArchive read failed, falling back to D1", chatId, e);
+    const rows = await db
+      .select()
+      .from(schema.messages)
+      .where(and(eq(schema.messages.chatId, chatId), gt(schema.messages.createdAt, since)))
+      .orderBy(asc(schema.messages.createdAt))
+      .limit(200)
+      .all();
+    return c.json(
+      rows.map((m) => ({ id: m.id, chatId: m.chatId, senderId: m.senderId, text: m.text, createdAt: m.createdAt })),
+    );
+  }
 });
 
 
