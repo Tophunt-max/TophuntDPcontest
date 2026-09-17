@@ -2240,6 +2240,13 @@ apiRoute.post("/", async (c) => {
       // cannot answer.
       await appendMessage(env, chatId, { id: messageId, senderId: uid, text, createdAt: ts });
       await db.update(schema.chats).set({ lastMessage: { text, createdAt: ts, senderId: uid } as any, updatedAt: ts }).where(eq(schema.chats.id, chatId));
+      // Bump every recipient's unread counter (never the sender's). One bounded
+      // UPDATE — a chat has a fixed, tiny membership — that drives the inbox badge
+      // in /read/chats without a per-chat DO round-trip on the list. Reset in
+      // markChatRead below.
+      await env.DB.prepare(
+        `UPDATE chat_members SET unread_count = unread_count + 1 WHERE chat_id = ? AND user_id != ?`,
+      ).bind(chatId, uid).run();
       // Instant push: to the chat room + each participant's user channel (chat-list bump).
       const msg = { id: messageId, chatId, senderId: uid, text, createdAt: ts };
       await publish(env, `chat:${chatId}`, { type: "message", message: msg });
@@ -2253,6 +2260,25 @@ apiRoute.post("/", async (c) => {
       await assertChatMember(env, chatId, uid);
       // Read flags live with the message bodies in the chat's Durable Object.
       await markChatMessagesRead(env, chatId, uid);
+      // Clear the inbox badge counter for this member (mirror of the increment in
+      // sendMessage). Own row only — the other member's unread is theirs.
+      await env.DB.prepare(
+        `UPDATE chat_members SET unread_count = 0 WHERE chat_id = ? AND user_id = ?`,
+      ).bind(chatId, uid).run();
+      return c.json({ success: true });
+    }
+
+    case "setTyping": {
+      // Ephemeral "user is typing…" signal. No storage, no `updated_at` bump, no
+      // unread change — it must not disturb inbox ordering or the badge. The
+      // recipient viewing the conversation is subscribed to `chat:<id>`, so that
+      // is where it fans out. Lightly throttled so a fast typist cannot turn
+      // keystrokes into a broadcast flood (the client also debounces its sends).
+      const { chatId } = body;
+      if (!chatId) throw httpsError("invalid-argument", "chatId is required.");
+      await assertChatMember(env, chatId, uid);
+      await rateLimit(env, `typing:${uid}`, 20, 10);
+      await publish(env, `chat:${chatId}`, { type: "typing", chatId, uid });
       return c.json({ success: true });
     }
 

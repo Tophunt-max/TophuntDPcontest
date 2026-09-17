@@ -221,6 +221,63 @@ describe('admin moderation', () => {
   });
 });
 
+async function readChats(env: TestEnv, uid: string) {
+  const res = await app.request('/read/chats', { headers: { Authorization: `Bearer ${uid}` } }, env, fakeCtx());
+  return (await res.json().catch(() => [])) as any[];
+}
+const unreadOf = (chats: any[], chatId: string) => chats.find((c) => c.id === chatId)?.unreadCount ?? 0;
+
+describe('unread count badge', () => {
+  it('increments for the recipient on send and resets on read; never for the sender', async () => {
+    const { env } = makeEnv();
+    const chatId = await startChat(env);
+
+    // Alice sends two; Bob sends one.
+    await api(env, 'alice', 'sendMessage', { chatId, text: 'a1' });
+    await api(env, 'alice', 'sendMessage', { chatId, text: 'a2' });
+    await api(env, 'bob', 'sendMessage', { chatId, text: 'b1' });
+
+    // Bob has 2 unread (Alice's), Alice has 1 unread (Bob's) — a sender never
+    // accrues unread for their own message.
+    expect(unreadOf(await readChats(env, 'bob'), chatId)).toBe(2);
+    expect(unreadOf(await readChats(env, 'alice'), chatId)).toBe(1);
+
+    // Bob opens the chat → his badge clears, Alice's is untouched.
+    expect((await api(env, 'bob', 'markChatRead', { chatId })).status).toBe(200);
+    expect(unreadOf(await readChats(env, 'bob'), chatId)).toBe(0);
+    expect(unreadOf(await readChats(env, 'alice'), chatId)).toBe(1);
+  });
+
+  it('starts at 0 for a freshly created chat', async () => {
+    const { env } = makeEnv();
+    const chatId = await startChat(env);
+    expect(unreadOf(await readChats(env, 'alice'), chatId)).toBe(0);
+    expect(unreadOf(await readChats(env, 'bob'), chatId)).toBe(0);
+  });
+});
+
+describe('typing indicator', () => {
+  it('accepts a member and refuses a non-member', async () => {
+    const { env } = makeEnv();
+    const chatId = await startChat(env);
+    await seedUser(env, 'carol');
+    // Member: ephemeral signal accepted (publish is best-effort in the harness).
+    expect((await api(env, 'alice', 'setTyping', { chatId })).status).toBe(200);
+    // Non-member cannot even tell the chat exists.
+    expect((await api(env, 'carol', 'setTyping', { chatId })).status).toBe(404);
+  });
+
+  it('does not disturb inbox ordering or the unread badge', async () => {
+    const { env } = makeEnv();
+    const chatId = await startChat(env);
+    const before = (await readChats(env, 'bob'))[0]?.updatedAt;
+    await api(env, 'alice', 'setTyping', { chatId });
+    const after = await readChats(env, 'bob');
+    expect(after[0]?.updatedAt).toBe(before);
+    expect(unreadOf(after, chatId)).toBe(0);
+  });
+});
+
 describe('data export gathers sent messages from the DOs', () => {
   it('includes the user`s own messages across chats, newest-first', async () => {
     const { env } = makeEnv();

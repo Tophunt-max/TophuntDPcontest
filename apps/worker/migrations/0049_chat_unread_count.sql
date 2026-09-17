@@ -1,0 +1,18 @@
+-- Per-member unread message counter for the inbox badge.
+--
+-- The chat list (`/read/chats`) rendered an unread badge, but the server never
+-- populated it — the client hard-coded `unreadCount || 0`, so it was always 0.
+-- Computing it on read would mean, with message bodies now living in per-chat
+-- Durable Objects, one DO round-trip per conversation on every inbox load. So we
+-- keep a running counter in D1 instead: it is a single bounded write per message
+-- (one row per recipient, not one per message stored) and a single reset on read.
+--
+-- Lives on `chat_members` because unread is PER MEMBER PER CHAT — the same row the
+-- inbox query already joins (D1_R2_LOAD_AUDIT.md §4), so the count comes back for
+-- free with no extra query. Defaults to 0 for every existing membership row, which
+-- is the correct starting value (a freshly loaded inbox shows nothing unread until
+-- new messages arrive).
+--
+-- DDL-only and idempotent-safe: `ADD COLUMN` with a NOT NULL DEFAULT backfills
+-- every existing row to 0 in one statement.
+ALTER TABLE chat_members ADD COLUMN unread_count INTEGER NOT NULL DEFAULT 0;

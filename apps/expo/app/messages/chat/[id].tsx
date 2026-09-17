@@ -1,7 +1,7 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { GiftedChat, IMessage, BubbleProps, TimeProps, InputToolbarProps, Bubble } from 'react-native-gifted-chat';
 import { readApi, callApi } from '@/src/services/api';
-import { live } from '@/src/services/realtime';
+import { live, subscribeChannel } from '@/src/services/realtime';
 import { useLocalSearchParams } from 'expo-router';
 import { View, Text, ActivityIndicator, StyleSheet, TouchableOpacity } from 'react-native';
 import { useAuth } from '@/src/hooks/useAuth';
@@ -43,6 +43,13 @@ export default function ChatScreen() {
   const [state, setState] = useState<LoadState>('loading');
   // Bumping this re-runs the load effect — the "Try Again" button.
   const [reloadKey, setReloadKey] = useState(0);
+
+  // "…is typing" presence. Driven by ephemeral `typing` events on the chat
+  // channel; auto-clears if no keystroke arrives for a few seconds so a dropped
+  // "stopped typing" signal can never leave the indicator stuck on.
+  const [otherTyping, setOtherTyping] = useState(false);
+  const typingClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastTypingSent = useRef(0);
 
   // Recipient identity is passed as query params by whoever opened the chat
   // (the chat list and the profile "Message" button both already know the other
@@ -91,14 +98,38 @@ export default function ChatScreen() {
       { filter: (e) => e.type === 'message', immediate: false },
     );
 
+    // 3) TYPING presence — a separate raw subscription on the same channel, since
+    //    `live()` above only forwards `message` events. Ignore our own echo.
+    const unsubTyping = subscribeChannel(`chat:${chatId}`, (e) => {
+      if (cancelled || e.type !== 'typing' || e.uid === currentUser.uid) return;
+      setOtherTyping(true);
+      if (typingClearTimer.current) clearTimeout(typingClearTimer.current);
+      typingClearTimer.current = setTimeout(() => setOtherTyping(false), 4000);
+    });
+
     // Mark incoming messages as read (best-effort).
     callApi('markChatRead', { chatId }).catch(() => {});
 
     return () => {
       cancelled = true;
       unsubscribe();
+      unsubTyping();
+      if (typingClearTimer.current) clearTimeout(typingClearTimer.current);
     };
   }, [chatId, currentUser, authLoading, reloadKey]);
+
+  // Tell the other member we're typing — throttled to at most once per ~2.5s so a
+  // fast typist doesn't fan out a broadcast per keystroke. Best-effort.
+  const onInputTextChanged = useCallback(
+    (text: string) => {
+      if (!chatId || !text.trim()) return;
+      const now = Date.now();
+      if (now - lastTypingSent.current < 2500) return;
+      lastTypingSent.current = now;
+      callApi('setTyping', { chatId }).catch(() => {});
+    },
+    [chatId],
+  );
 
   const onSend = useCallback(
     async (newMessages: IMessage[] = []) => {
@@ -216,6 +247,19 @@ export default function ChatScreen() {
         renderTime={renderTime}
         renderInputToolbar={renderInputToolbar}
         minInputToolbarHeight={64}
+        // Hook keystrokes via textInputProps.onChangeText (this GiftedChat version
+        // has no onInputTextChanged prop). It rides alongside the Composer's own
+        // onChange, so it never clobbers the input's text handling.
+        textInputProps={{ onChangeText: onInputTextChanged }}
+        renderFooter={() =>
+          otherTyping ? (
+            <View style={styles.typingRow}>
+              <View style={styles.typingBubble}>
+                <Text style={styles.typingText}>{recipientName.split(' ')[0]} is typing…</Text>
+              </View>
+            </View>
+          ) : null
+        }
         renderChatEmpty={() => (
           <View style={styles.emptyChat}>
             {/* GiftedChat's empty container is inverted, so flip it upright. */}
@@ -341,4 +385,18 @@ const styles = StyleSheet.create({
   },
   sendButtonDisabled: { backgroundColor: '#F3A6B2' },
   timeText: { fontSize: 11 },
+  typingRow: {
+    paddingHorizontal: 14,
+    paddingBottom: 8,
+    paddingTop: 2,
+    alignItems: 'flex-start',
+  },
+  typingBubble: {
+    backgroundColor: '#F1F1F4',
+    borderRadius: 16,
+    borderBottomLeftRadius: 5,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  typingText: { fontSize: 13, color: '#8A8F98', fontStyle: 'italic' },
 });

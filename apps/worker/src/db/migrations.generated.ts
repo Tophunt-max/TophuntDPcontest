@@ -50,6 +50,7 @@ import m_0045_chat_members_sql from "../../migrations/0045_chat_members.sql";
 import m_0046_referral_code_unique_sql from "../../migrations/0046_referral_code_unique.sql";
 import m_0047_announcements_sql from "../../migrations/0047_announcements.sql";
 import m_0048_cron_runs_created_index_sql from "../../migrations/0048_cron_runs_created_index.sql";
+import m_0049_chat_unread_count_sql from "../../migrations/0049_chat_unread_count.sql";
 
 export interface Migration {
   name: string;
@@ -106,4 +107,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0046_referral_code_unique.sql", sql: m_0046_referral_code_unique_sql },
   { name: "0047_announcements.sql", sql: m_0047_announcements_sql },
   { name: "0048_cron_runs_created_index.sql", sql: m_0048_cron_runs_created_index_sql },
+  { name: "0049_chat_unread_count.sql", sql: m_0049_chat_unread_count_sql },
 ];

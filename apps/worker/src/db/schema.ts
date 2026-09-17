@@ -719,6 +719,11 @@ export const chatMembers = sqliteTable(
   {
     userId: text("user_id").notNull(),
     chatId: text("chat_id").notNull(),
+    // Per-member unread counter for the inbox badge (migration 0049). Bumped for
+    // every recipient on sendMessage, reset to 0 on markChatRead. Kept in D1 (not
+    // derived from the per-chat message DO) so the inbox badge costs no extra
+    // round-trip — it rides the existing chat_members join.
+    unreadCount: integer("unread_count").notNull().default(0),
   },
   (t) => ({
     pk: primaryKey({ columns: [t.userId, t.chatId] }),
