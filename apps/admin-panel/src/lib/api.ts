@@ -1008,7 +1008,10 @@ export const api = {
 
   // messages moderation
   messages: () => get<any[]>("/admin/messages"),
-  deleteMessage: (id: string) => del(`/admin/messages/${id}`),
+  // Message bodies live in per-chat Durable Objects, so a delete is addressed by
+  // (chatId, id) — the id alone no longer locates the message.
+  deleteMessage: (chatId: string, id: string) =>
+    del(`/admin/messages/${encodeURIComponent(chatId)}/${encodeURIComponent(id)}`),
 
   // analytics
   analytics: () =>

@@ -7,6 +7,7 @@ import { deleteMediaByUrl } from "./mediaDelete";
 import { deleteVideo } from "./bunny";
 import { newId, now } from "./ids";
 import { invalidateBlockCache } from "./blocks";
+import { deleteChatMessagesBySender } from "./chatArchive";
 import {
   delCache,
   feedSeenKey,
@@ -986,6 +987,36 @@ async function phaseContent(env: Env, uid: string): Promise<void> {
       })
       .where(eq(schema.prizeClaims.uid, uid)),
   ]);
+
+  // Message BODIES now live in per-chat ChatArchive Durable Objects, not the D1
+  // `messages` table (the delete above only clears any legacy D1 seed rows). So
+  // the authoritative deletion is per-chat: enumerate every conversation this
+  // user is in (from the source-of-truth `chats.users` array, same read the
+  // snapshot anonymiser uses) and tell each chat's DO to drop this sender's
+  // messages. Best-effort and non-fatal — an unreachable DO must not strand the
+  // whole deletion — and it dovetails with anonymiseChatSnapshots, which scrubs
+  // the surviving preview if the last word was theirs.
+  await purgeUserMessagesFromArchives(env, uid);
+}
+
+/**
+ * Delete every message `uid` sent, across all their conversations, from the
+ * per-chat ChatArchive DOs. Best-effort per chat.
+ */
+async function purgeUserMessagesFromArchives(env: Env, uid: string): Promise<void> {
+  try {
+    const rows = await env.DB.prepare(
+      `SELECT id FROM chats
+        WHERE EXISTS (SELECT 1 FROM json_each(chats.users) WHERE json_each.value = ?)`,
+    )
+      .bind(uid)
+      .all<{ id: string }>();
+    await Promise.all(
+      (rows.results ?? []).map((row) => deleteChatMessagesBySender(env, row.id, uid)),
+    );
+  } catch (e) {
+    console.error("[accountDeletion] message archive purge failed (continuing)", uid, e);
+  }
 }
 
 /** Phase 4 — social graph, activity trail, and the relations other users cache. */

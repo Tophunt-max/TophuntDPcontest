@@ -21,6 +21,7 @@ import { enqueueBroadcast } from "../lib/broadcast";
 import { setCustomClaims } from "../lib/firebaseAdmin";
 import { publish, publishMany } from "../lib/publish";
 import { castVote, bumpEngagement } from "../lib/voteCounter";
+import { appendMessage, markChatMessagesRead, purgeChatMessages } from "../lib/chatArchive";
 import { clientIp, consumeRateLimit, rateLimit } from "../lib/rateLimit";
 import {
   assertIdentifiersAvailable,
@@ -2231,7 +2232,13 @@ apiRoute.post("/", async (c) => {
       await assertNotBlockedAny(env, uid, members);
       const ts = now();
       const messageId = newId();
-      await db.insert(schema.messages).values({ id: messageId, chatId, senderId: uid, text, read: false, createdAt: ts });
+      // The message BODY lives in the chat's ChatArchive Durable Object, not the
+      // D1 `messages` table — that keeps the unbounded, highest-volume write path
+      // off D1's single writer (see src/chatArchive.ts). The `chats` row below is
+      // the ONE bounded D1 write that stays: it is the inbox preview + sort key,
+      // and /read/chats orders across ALL of a user's chats, which a per-chat DO
+      // cannot answer.
+      await appendMessage(env, chatId, { id: messageId, senderId: uid, text, createdAt: ts });
       await db.update(schema.chats).set({ lastMessage: { text, createdAt: ts, senderId: uid } as any, updatedAt: ts }).where(eq(schema.chats.id, chatId));
       // Instant push: to the chat room + each participant's user channel (chat-list bump).
       const msg = { id: messageId, chatId, senderId: uid, text, createdAt: ts };
@@ -2244,9 +2251,8 @@ apiRoute.post("/", async (c) => {
       const { chatId } = body;
       if (!chatId) throw httpsError("invalid-argument", "chatId is required.");
       await assertChatMember(env, chatId, uid);
-      await env.DB.prepare(
-        `UPDATE messages SET read = 1 WHERE chat_id = ? AND sender_id != ? AND read = 0`,
-      ).bind(chatId, uid).run();
+      // Read flags live with the message bodies in the chat's Durable Object.
+      await markChatMessagesRead(env, chatId, uid);
       return c.json({ success: true });
     }
 
@@ -2256,6 +2262,10 @@ apiRoute.post("/", async (c) => {
       // Destructive and irreversible — it drops the chat and every message in
       // it — so membership must be proven before anything is deleted.
       await assertChatMember(env, chatId, uid);
+      // Message bodies live in the chat's Durable Object; drop them there.
+      await purgeChatMessages(env, chatId);
+      // Also clear any legacy D1 seed rows for this chat so nothing is orphaned
+      // (harmless no-op once a chat has only ever written to the DO).
       await db.delete(schema.messages).where(eq(schema.messages.chatId, chatId));
       await db.delete(schema.chats).where(eq(schema.chats.id, chatId));
       // Drop the membership edges too, or they would dangle and keep pointing at a

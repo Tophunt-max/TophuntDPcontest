@@ -28,6 +28,13 @@ apps/admin-panel   React + Vite admin panel (Cloudflare Pages)
 - **Hot paths** — votes are counted in a per-match `VoteCounter` Durable Object and
   batch-flushed to D1, keeping the viral path off D1's single writer. Realtime chat
   and notifications use a `RealtimeHub` Durable Object over WebSockets.
+- **Chat messages** — message bodies live in a per-chat `ChatArchive` Durable Object
+  (SQLite), not the D1 `messages` table, so the unbounded, highest-volume write path
+  stays off D1's single writer; each chat is its own writer. The `chats` preview row
+  and the `chat_members` index stay in D1 (they answer cross-chat inbox queries a
+  per-chat DO cannot). Each `ChatArchive` seeds itself from any pre-cutover D1
+  `messages` rows on first touch — that lazy seed is the whole migration, so no
+  backfill job is needed and history survives the switch.
 
 ## Getting started
 

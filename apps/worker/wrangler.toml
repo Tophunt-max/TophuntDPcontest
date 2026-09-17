@@ -137,6 +137,12 @@ class_name = "VoteCounter"
 name = "RATE_LIMITER"
 class_name = "RateLimiter"
 
+# Per-chat message store (SQLite-backed). Owns chat message bodies, one instance
+# per chatId, so the unbounded message write path stays off D1's single writer.
+[[durable_objects.bindings]]
+name = "CHAT_ARCHIVE"
+class_name = "ChatArchive"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["RealtimeHub"]
@@ -151,6 +157,11 @@ new_sqlite_classes = ["VoteCounter"]
 [[migrations]]
 tag = "v3"
 new_sqlite_classes = ["RateLimiter"]
+
+# Per-chat message store. Same rule: append a new tag, never edit an applied one.
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["ChatArchive"]
 
 # ---------------------------------------------------------------------------
 # Queues — admin broadcast fan-out (src/lib/broadcast.ts + index.ts `queue()`).
@@ -294,6 +305,10 @@ class_name = "VoteCounter"
 [[env.staging.durable_objects.bindings]]
 name = "RATE_LIMITER"
 class_name = "RateLimiter"
+
+[[env.staging.durable_objects.bindings]]
+name = "CHAT_ARCHIVE"
+class_name = "ChatArchive"
 
 # Staging broadcast queue. Create once:  wrangler queues create tophunt-broadcast-staging
 [[env.staging.queues.producers]]

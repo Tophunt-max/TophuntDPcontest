@@ -11,6 +11,7 @@ import { Hono } from "hono";
 import { and, eq, desc, sql, count, ne, like, gte, lt, lte, inArray, notInArray, or, isNull, isNotNull } from "drizzle-orm";
 import { DELETED_STATUS, PENDING_DELETION_STATUS } from "../lib/accountStatus";
 import { invalidateUserCaches, executeAccountDeletion, cancelAccountDeletion } from "../lib/accountDeletion";
+import { recentChatMessages, deleteChatMessage } from "../lib/chatArchive";
 import { alias } from "drizzle-orm/sqlite-core";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
@@ -4086,34 +4087,62 @@ adminRoute.get("/messages", async (c) => {
   requireFullAdmin(c);
   const db = getDb(c.env);
   const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 300);
-  const rows = await db
-    .select({
-      id: schema.messages.id,
-      chatId: schema.messages.chatId,
-      senderId: schema.messages.senderId,
-      text: schema.messages.text,
-      createdAt: schema.messages.createdAt,
-      username: schema.users.username,
-    })
-    .from(schema.messages)
-    .leftJoin(schema.users, eq(schema.users.uid, schema.messages.senderId))
-    .orderBy(desc(schema.messages.createdAt))
+
+  // Message bodies live in per-chat ChatArchive DOs, so there is no single table
+  // to ORDER BY created_at across. A chat's `updated_at` bumps on every message,
+  // so the globally most-recent messages are in the most-recently-active chats:
+  // pull the recent page from the top `limit` chats, merge, and take the newest
+  // `limit`. That is enough to surface the top `limit` even if they all sit in
+  // one chat (it would be chat #1). Bounded by design; this is a rare admin read.
+  const chats = await db
+    .select({ id: schema.chats.id })
+    .from(schema.chats)
+    .orderBy(desc(schema.chats.updatedAt))
     .limit(limit)
     .all();
+  const perChat = await Promise.all(
+    chats.map((ch) => recentChatMessages(c.env, ch.id, limit).catch(() => [])),
+  );
+  const merged = perChat
+    .flat()
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, limit);
+
+  // One batched lookup for the sender usernames rather than a join per message.
+  const senderIds = [...new Set(merged.map((m) => m.senderId))];
+  const users = senderIds.length
+    ? await db
+        .select({ uid: schema.users.uid, username: schema.users.username })
+        .from(schema.users)
+        .where(inArray(schema.users.uid, senderIds))
+        .all()
+    : [];
+  const nameByUid = new Map(users.map((u) => [u.uid, u.username]));
+
   // Reading other people's private conversations is exactly the kind of access
   // that must leave a trace. Every other destructive/sensitive action here is
   // audited; this read was not, so there was no record of who looked at what.
-  await logAudit(c, "message.read", "message", null, { count: rows.length, limit });
-  return c.json(rows.map((r) => ({ ...r, createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null })));
+  await logAudit(c, "message.read", "message", null, { count: merged.length, limit });
+  return c.json(
+    merged.map((m) => ({
+      id: m.id,
+      chatId: m.chatId,
+      senderId: m.senderId,
+      text: m.text,
+      createdAt: m.createdAt ? new Date(m.createdAt).toISOString() : null,
+      username: nameByUid.get(m.senderId) ?? null,
+    })),
+  );
 });
 
-adminRoute.delete("/messages/:id", async (c) => {
-  // Full admins only: deletes a private message.
+adminRoute.delete("/messages/:chatId/:id", async (c) => {
+  // Full admins only: deletes a private message. `chatId` is required now that a
+  // message lives in its chat's DO — the id alone no longer locates it.
   requireFullAdmin(c);
-  const db = getDb(c.env);
+  const chatId = c.req.param("chatId");
   const id = c.req.param("id");
-  await db.delete(schema.messages).where(eq(schema.messages.id, id));
-  await logAudit(c, "message.delete", "message", id);
+  await deleteChatMessage(c.env, chatId, id);
+  await logAudit(c, "message.delete", "message", id, { chatId });
   return c.json({ message: "Message deleted" });
 });
 
