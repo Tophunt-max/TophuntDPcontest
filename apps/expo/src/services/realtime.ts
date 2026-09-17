@@ -148,7 +148,19 @@ async function openSocket(channel: string, conn: Conn) {
 function scheduleReconnect(channel: string, conn: Conn) {
   if (conn.closedByUs) return;
   conn.attempts += 1;
-  const delay = Math.min(30000, 1000 * 2 ** Math.min(conn.attempts, 5)); // 2s..30s
+  // Exponential backoff, capped at 30s.
+  const base = Math.min(30000, 1000 * 2 ** Math.min(conn.attempts, 5)); // 2s..30s
+  /**
+   * FULL JITTER on top of the backoff. Without it, a single event that drops
+   * every client's socket at once — most commonly a Worker redeploy, which the
+   * repo does on every push to `main` — makes all of them reconnect in lockstep,
+   * then again after the same 2s, 4s, 8s… backoff. That synchronised retry is a
+   * self-inflicted thundering herd against the same RealtimeHub Durable Objects
+   * the instant they come back. Spreading each client uniformly across [0, base]
+   * turns the spike into a smooth ramp; the expected wait is only halved, so a
+   * genuinely-down backend is not hammered any harder.
+   */
+  const delay = Math.floor(Math.random() * base);
   conn.reconnectTimer = setTimeout(() => openSocket(channel, conn), delay);
 }
 
