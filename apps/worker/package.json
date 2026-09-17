@@ -6,6 +6,7 @@
   "main": "src/index.ts",
   "scripts": {
     "gen:migrations": "node scripts/gen-migrations.mjs",
+    "capacity": "node scripts/d1-capacity.mjs",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "pretypecheck": "node scripts/gen-migrations.mjs",
