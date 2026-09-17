@@ -2751,7 +2751,7 @@ readRoute.get("/chats", requireAuth, async (c) => {
   // pagination (as /read/notifications does), which needs a client change to load
   // older pages — the socket keeps the head fresh regardless.
   const rows = await c.env.DB.prepare(
-    `SELECT c.* FROM chat_members m
+    `SELECT c.*, m.unread_count FROM chat_members m
         JOIN chats c ON c.id = m.chat_id
        WHERE m.user_id = ?
        ORDER BY c.updated_at DESC
@@ -2764,6 +2764,9 @@ readRoute.get("/chats", requireAuth, async (c) => {
     users: JSON.parse(r.users || "[]"),
     usersData: JSON.parse(r.users_data || "[]"),
     lastMessage: r.last_message ? JSON.parse(r.last_message) : null,
+    // Per-member unread counter (migration 0049) — drives the inbox badge. Comes
+    // back on the membership join, so no extra query and no per-chat DO call.
+    unreadCount: Number(r.unread_count) || 0,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }));
