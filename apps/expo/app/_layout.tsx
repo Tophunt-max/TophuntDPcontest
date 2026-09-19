@@ -289,7 +289,7 @@ function RootLayoutNav() {
             <Stack.Screen name="account-scheduled-deletion" options={{ gestureEnabled: false }} />
             <Stack.Screen name="notifications/index" options={{ presentation: 'modal', title: 'Notifications' }} />
           </Stack>
-          {/* Admin-controlled announcement banner (overlays all screens). */}
+          {/* Admin-controlled announcement banner (renders only on the home screen; dismissal persists). */}
           <AnnouncementBanner />
           {/* Admin-controlled announcement popup (targeted, 24h-snooze modal). */}
           <AnnouncementPopup />
