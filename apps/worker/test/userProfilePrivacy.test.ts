@@ -89,6 +89,16 @@ const PRIVATE_USER_FIELDS = [
    * victim has noticed them yet. Nothing on any profile screen reads it.
    */
   'tokensValidAfter',
+  /**
+   * Last-seen presence timestamp (migration 0051).
+   *
+   * Private on the PUBLIC PROFILE: no profile screen reads it, and broadcasting
+   * when a stranger was last active is exactly the kind of ambient tracking a
+   * profile should not hand out. Presence is instead surfaced ONLY to people you
+   * are in a conversation with — `/read/chats` projects it as `lastSeen` for a
+   * chat member — which is a deliberate, scoped exposure, not this raw column.
+   */
+  'lastSeenAt',
   'platform',
   'authProvider',
   'signupCompleted',

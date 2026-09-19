@@ -56,6 +56,15 @@ export const users = sqliteTable(
     bio: text("bio"),
     isPrivate: integer("is_private", { mode: "boolean" }).default(false),
     authProvider: text("auth_provider"),
+    /**
+     * Epoch MILLISECONDS of the user's last realtime connection or disconnection
+     * (migration 0051). Stamped when a `user:<uid>` WebSocket opens (they came
+     * online) and when it closes (they went offline), so it doubles as the
+     * "last seen" timestamp shown in a chat header. NULL for anyone who has never
+     * connected since this shipped. Not the same unit as `tokensValidAfter`
+     * (that one is seconds) — this is compared against `Date.now()`.
+     */
+    lastSeenAt: integer("last_seen_at"),
     // Any profile fields without a dedicated column (facebook/twitter/instagram, etc.)
     extra: text("extra", { mode: "json" }),
 
@@ -739,6 +748,12 @@ export const messages = sqliteTable(
     senderId: text("sender_id").notNull(),
     text: text("text"),
     read: integer("read", { mode: "boolean" }).default(false),
+    // Message kind + optional media URL (migration 0050). Message bodies live in
+    // the per-chat ChatArchive Durable Object now; these columns exist on the D1
+    // mirror so a legacy row seeded into a DO carries its kind, and the DO-read
+    // fallback in /read/chats/:id/messages returns media messages too.
+    type: text("type").notNull().default("text"), // 'text' | 'image'
+    mediaUrl: text("media_url"),
     createdAt: integer("created_at").notNull(),
   },
   (t) => ({ chatIdx: index("idx_messages_chat").on(t.chatId, t.createdAt) }),

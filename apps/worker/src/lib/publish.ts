@@ -35,6 +35,61 @@ export async function publishMany(
   await Promise.all(channels.map((ch) => publish(env, ch, payload)));
 }
 
+/** Max conversations a single presence change fans out to. */
+const PRESENCE_FANOUT_LIMIT = 20;
+
+/**
+ * Broadcast a user's online/offline transition to the people who can see it.
+ *
+ * Called exactly twice per session — once when the `user:<uid>` socket opens
+ * (online) and once when it closes (offline) — never per message or per
+ * heartbeat, so the fan-out cost is bounded to session edges, not traffic.
+ *
+ * Presence reaches two kinds of subscriber:
+ *   - `chat:<chatId>`  so an OPEN conversation's header flips live.
+ *   - `user:<peerUid>` so a peer's INBOX (which holds only their own user socket)
+ *                      updates the green dot without opening every chat.
+ *
+ * Capped at the user's most-recent {@link PRESENCE_FANOUT_LIMIT} conversations:
+ * presence only matters for active chats, and the cap keeps the number of DO
+ * subrequests here well under the per-invocation ceiling. Best-effort — presence
+ * must never fail the connect/disconnect it rides on.
+ */
+export async function publishPresence(
+  env: Env,
+  uid: string,
+  online: boolean,
+  lastSeen: number,
+): Promise<void> {
+  try {
+    const rows = await env.DB.prepare(
+      `SELECT c.id AS chat_id, c.users AS users
+         FROM chat_members m JOIN chats c ON c.id = m.chat_id
+        WHERE m.user_id = ?
+        ORDER BY c.updated_at DESC
+        LIMIT ?`,
+    )
+      .bind(uid, PRESENCE_FANOUT_LIMIT)
+      .all<{ chat_id: string; users: string }>();
+
+    const channels = new Set<string>();
+    for (const r of rows.results ?? []) {
+      channels.add(`chat:${r.chat_id}`);
+      let members: string[] = [];
+      try {
+        members = JSON.parse(r.users || "[]");
+      } catch {
+        members = [];
+      }
+      for (const m of members) if (m && m !== uid) channels.add(`user:${m}`);
+    }
+    if (channels.size === 0) return;
+    await publishMany(env, [...channels], { type: "presence", uid, online, lastSeen });
+  } catch (e) {
+    console.error("[publish] presence failed (continuing)", uid, online, e);
+  }
+}
+
 
 /**
  * Tell every RealtimeHub holding a socket for `uid` to close it.

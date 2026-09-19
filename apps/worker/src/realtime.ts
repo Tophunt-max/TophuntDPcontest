@@ -31,17 +31,28 @@
  * forwarding the upgrade here, so this class trusts its caller.
  */
 import type { Env } from "./types";
+import { publishPresence } from "./lib/publish";
 
 // Heartbeat handled entirely by the runtime (see class header). Constructed once
 // per isolate and re-installed on every constructor run so it survives eviction.
 const HEARTBEAT_REQUEST = "ping";
 const HEARTBEAT_RESPONSE = "pong";
 
+/** Socket attachment shape (survives hibernation). */
+interface SocketAttachment {
+  /** Present only on `user:<uid>` sockets — the uid whose presence this tracks. */
+  pu?: string;
+  /** Unexpected-frame counter (see webSocketMessage). */
+  bad?: number;
+}
+
 export class RealtimeHub {
   private state: DurableObjectState;
+  private env: Env;
 
-  constructor(state: DurableObjectState, _env: Env) {
+  constructor(state: DurableObjectState, env: Env) {
     this.state = state;
+    this.env = env;
     // Answer client heartbeats in the runtime without waking this DO. Must be set
     // in the constructor: it is per-DO configuration that has to be re-applied
     // every time the object is (re)constructed after hibernation/eviction.
@@ -88,6 +99,17 @@ export class RealtimeHub {
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
       this.state.acceptWebSocket(server, [`uid:${uid}`]);
+      // Mark presence sockets so webSocketClose knows to announce the OFFLINE
+      // transition. Set by the Worker only for `user:<uid>` upgrades — this hub
+      // is per-channel, so every socket here is that same user's presence socket.
+      const presenceUid = request.headers.get("X-Presence-Uid");
+      if (presenceUid) {
+        try {
+          server.serializeAttachment({ pu: presenceUid } as SocketAttachment);
+        } catch {
+          /* attachment API unavailable; presence-offline just won't fire for this socket */
+        }
+      }
       // Greet so the client knows the socket is live.
       try {
         server.send(JSON.stringify({ type: "connected", ts: Date.now() }));
@@ -114,7 +136,7 @@ export class RealtimeHub {
     // simply drop it. A client that insists on flooding is closed rather than
     // left to spend the DO's request budget.
     try {
-      const attachment = (ws.deserializeAttachment?.() ?? {}) as { bad?: number };
+      const attachment = (ws.deserializeAttachment?.() ?? {}) as SocketAttachment;
       const bad = (attachment.bad ?? 0) + 1;
       if (bad >= 20) {
         ws.close(1003, "unexpected data");
@@ -126,7 +148,39 @@ export class RealtimeHub {
     }
   }
 
-  webSocketClose(ws: WebSocket, code: number, _reason: string, _wasClean: boolean) {
+  async webSocketClose(ws: WebSocket, code: number, _reason: string, _wasClean: boolean) {
+    // Presence: if this was a user's presence socket AND it was their last one,
+    // they have gone offline — stamp last-seen and announce it to their peers.
+    // Only fires on the `user:<uid>` hub (the only place presence sockets live),
+    // and only on the final disconnect, so a user with two devices does not flip
+    // offline when one of them closes. Best-effort; never blocks the close.
+    let pu: string | undefined;
+    try {
+      pu = (ws.deserializeAttachment?.() as SocketAttachment | null)?.pu;
+    } catch {
+      pu = undefined;
+    }
+    if (pu) {
+      const stillConnected = this.state.getWebSockets().some((s) => {
+        if (s === ws) return false; // exclude the socket that is closing
+        try {
+          return (s.deserializeAttachment?.() as SocketAttachment | null)?.pu === pu;
+        } catch {
+          return false;
+        }
+      });
+      if (!stillConnected) {
+        const ts = Date.now();
+        try {
+          await this.env.DB.prepare("UPDATE users SET last_seen_at = ? WHERE uid = ?")
+            .bind(ts, pu)
+            .run();
+        } catch (e) {
+          console.error("[realtime] last_seen stamp on close failed (continuing)", e);
+        }
+        await publishPresence(this.env, pu, false, ts);
+      }
+    }
     try {
       ws.close(code === 1006 ? 1000 : code);
     } catch {
