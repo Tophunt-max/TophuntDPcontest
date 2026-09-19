@@ -105,16 +105,51 @@ app.use("*", async (c, next) => {
   );
 });
 
-app.use("*", async (c, next) => {
+/** Requests whose responses must not carry the API's CORS policy. */
+const skipsApiCors = (c: { req: { header: (n: string) => string | undefined; url: string } }): boolean =>
   // WebSocket upgrades must not be wrapped by CORS (immutable 101 response).
-  if (c.req.header("Upgrade") === "websocket") return next();
+  c.req.header("Upgrade") === "websocket" ||
   // Public media is a different CORS surface from the credentialed API: it serves
   // itself `Access-Control-Allow-Origin: *` from within the /media handler (see
   // lib/mediaCors.ts). Running the API's origin-restricted policy here too would
   // override that `*` with an ALLOWED_ORIGINS-based value and re-break
   // cross-origin canvas reads from the app/blog origins. So media opts out.
-  if (new URL(c.req.url).pathname.startsWith("/media/")) return next();
-  const origins = (c.env.ALLOWED_ORIGINS || "*").split(",").map((s) => s.trim());
+  new URL(c.req.url).pathname.startsWith("/media/");
+
+/** The configured allow-list, or `["*"]` when nothing is set. */
+function allowedOrigins(env: Env): string[] {
+  const raw = (env.ALLOWED_ORIGINS || "").trim();
+  if (!raw) {
+    // Loud, because an unset allow-list means any site can make credentialed
+    // calls to this API. Production and staging both set it in wrangler.toml
+    // [vars]; this is here so a new environment that forgets cannot do so
+    // silently. Not hard-failed: refusing every cross-origin request would take
+    // a working deployment down over a config omission.
+    console.error(
+      "[cors] ALLOWED_ORIGINS is not set — defaulting to '*'. Set it to the app and admin origins.",
+    );
+    return ["*"];
+  }
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+/**
+ * Resolve the `Access-Control-Allow-Origin` value for this request, or null when
+ * the origin is not allowed (or there is no `Origin` header at all).
+ *
+ * Mirrors what `hono/cors` decides, so the error path below cannot drift from the
+ * happy path.
+ */
+function corsOriginFor(c: { req: { header: (n: string) => string | undefined }; env: Env }): string | null {
+  const origins = allowedOrigins(c.env);
+  if (origins.length === 1 && origins[0] === "*") return "*";
+  const requestOrigin = c.req.header("Origin");
+  return requestOrigin && origins.includes(requestOrigin) ? requestOrigin : null;
+}
+
+app.use("*", async (c, next) => {
+  if (skipsApiCors(c)) return next();
+  const origins = allowedOrigins(c.env);
   const mw = cors({
     origin: origins.length === 1 && origins[0] === "*" ? "*" : origins,
     // PUT belongs here: the admin panel saves integration config and rotates
@@ -401,6 +436,31 @@ app.route("/webhook", webhookRoute);
 app.onError((err, c) => {
   const requestId = c.get("requestId");
   const errPath = new URL(c.req.url).pathname;
+  /**
+   * Re-apply the CORS headers before returning an error.
+   *
+   * `hono/cors` sets `Access-Control-Allow-Origin` AFTER `await next()`, so when a
+   * handler throws, the middleware chain unwinds past that line and never sets it.
+   * Every thrown response — 401 from `requireAuth`, 403 from the `/admin` gate,
+   * 429 from the rate limiter, and any 500 — therefore reached the browser with no
+   * ACAO header, and the browser refuses to expose a cross-origin response without
+   * one. The admin panel and the web build showed a bare
+   * `TypeError: Failed to fetch` instead of the real status, which reads as a
+   * network outage rather than "your session expired" or "slow down".
+   *
+   * This runs on the response `onError` builds, which is the only place the header
+   * can still be attached.
+   */
+  if (!skipsApiCors(c)) {
+    const origin = corsOriginFor(c);
+    if (origin) {
+      c.header("Access-Control-Allow-Origin", origin);
+      // Required whenever the value is origin-dependent, or a shared cache can
+      // serve one origin's response to another.
+      if (origin !== "*") c.header("Vary", "Origin");
+      c.header("Access-Control-Expose-Headers", "X-Next-Cursor, X-Request-Id");
+    }
+  }
   if (err instanceof ApiError) {
     // A 5xx ApiError is OUR fault and used to return from here completely
     // unrecorded — no error_logs row, no Sentry event, only an ephemeral

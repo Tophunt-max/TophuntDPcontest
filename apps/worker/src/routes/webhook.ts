@@ -109,10 +109,17 @@ webhookRoute.post("/razorpay", async (c) => {
           paymentId: String(paymentId),
           kind: "refund",
           refundedAmountPaise: Number(refund?.amount) || null,
+          // Razorpay allows several partial refunds against one payment, each
+          // arriving as its own event. Passing the refund id is what lets the
+          // second one be recognised as a NEW refund rather than a duplicate
+          // delivery of the first — without it, a payment refunded as 2x50%
+          // clawed back only the first half and the user kept the rest.
+          refundId: refund?.id ? String(refund.id) : null,
         });
         if (res.clawedBack) {
           console.warn(
             `[webhook/razorpay] refund clawed back ${res.coins} coins from ${res.uid}` +
+              ` (${res.refundedPaise} paise refunded in total, ${res.fullyRefunded ? "fully" : "partially"} refunded)` +
               (res.shortfall ? ` (shortfall ${res.shortfall} — balance went negative)` : ""),
           );
           if (res.uid) {
@@ -145,6 +152,7 @@ webhookRoute.post("/razorpay", async (c) => {
           paymentId: String(paymentId),
           kind: "dispute",
           refundedAmountPaise: Number(dispute?.amount) || null,
+          refundId: dispute?.id ? String(dispute.id) : null,
         });
         if (res.clawedBack) {
           console.warn(`[webhook/razorpay] chargeback clawed back ${res.coins} coins from ${res.uid}`);
@@ -229,23 +237,46 @@ webhookRoute.post("/bunny", async (c) => {
     return c.json({ ok: false, error: "not_configured" }, 503);
   }
 
-  // Bunny's webhook does not sign its payload by default. When a secret IS
-  // configured we require it, so the endpoint can be locked down; otherwise the
-  // handler is safe because it only ever trusts data re-fetched from Bunny's API
-  // below, never the values in the request body.
-  // Panel-managed with env fallback — a secret saved in the admin panel must
-  // actually take effect, which reading env directly did not honour.
+  /**
+   * Bunny's webhook does not sign its payload, so a shared secret is the only
+   * authentication available — and it is now REQUIRED.
+   *
+   * It used to be enforced only `if (configuredSecret)`, which meant the default
+   * deployment left this endpoint completely open: anyone could POST a `VideoGuid`
+   * and force an encode-state transition. The blast radius was genuinely limited
+   * (the handler re-fetches the truth from Bunny's API rather than trusting the
+   * body, so it is forced work rather than forged state), but "limited" is not the
+   * same as "authenticated", and every other webhook here already fails closed —
+   * `/webhook/razorpay` returns 503 when its secret is missing.
+   *
+   * Failing closed is also the safe direction operationally: Bunny's webhook is
+   * OPTIONAL, and the encode-state cron plus the live recheck in `videoStatus`
+   * both already cover the case where it never fires. So a deployment without the
+   * secret configured loses nothing but the latency improvement, and gets a loud
+   * log line telling it what to set.
+   *
+   * Panel-managed with env fallback — a secret saved in the admin panel must
+   * actually take effect, which reading env directly did not honour.
+   */
   const configuredSecret = ((await getBunnyWebhookSecret(c.env)) || "").trim();
-  if (configuredSecret) {
-    const presented =
-      c.req.header("X-Bunny-Signature") ||
-      c.req.header("Authorization")?.replace(/^Bearer\s+/i, "") ||
-      new URL(c.req.url).searchParams.get("secret") ||
-      "";
-    if (!(await timingSafeEqualSecret(presented, configuredSecret))) {
-      console.warn("[webhook/bunny] invalid signature");
-      return c.json({ ok: false, error: "invalid_signature" }, 400);
-    }
+  if (!configuredSecret) {
+    console.error(
+      "[webhook/bunny] no Bunny webhook secret configured (panel or env) — rejecting. " +
+        "Encode state still resolves via the reconcileVideos cron and the videoStatus recheck.",
+    );
+    return c.json({ ok: false, error: "not_configured" }, 503);
+  }
+  // Header only. The secret used to be accepted from `?secret=` as well, which put
+  // a long-lived shared credential into every proxy, CDN and access log that
+  // records query strings — and unlike a header it is trivially leaked by a
+  // referrer or a copied URL.
+  const presented =
+    c.req.header("X-Bunny-Signature") ||
+    c.req.header("Authorization")?.replace(/^Bearer\s+/i, "") ||
+    "";
+  if (!(await timingSafeEqualSecret(presented, configuredSecret))) {
+    console.warn("[webhook/bunny] invalid signature");
+    return c.json({ ok: false, error: "invalid_signature" }, 400);
   }
 
   let evt: any;

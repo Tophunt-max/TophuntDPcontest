@@ -64,6 +64,56 @@ import { resolveUsername } from "../lib/userIdentifiers";
 export const readRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 /**
+ * Resolve a `?limit=` query parameter into a usable page size.
+ *
+ * This exists because the obvious one-liner is wrong at BOTH ends, and eight
+ * handlers here shipped it:
+ *
+ *     const limit = Math.min(parseInt(c.req.query("limit") ?? "30", 10), 100);
+ *
+ *  - `?limit=-1` survives the `Math.min` untouched, and SQLite treats a NEGATIVE
+ *    LIMIT as NO LIMIT. One unauthenticated `GET /read/matches?limit=-1` therefore
+ *    returned the entire `contest_matches` table, ran the per-row participant
+ *    enrichment over all of it, and stored the result in the shared cache under a
+ *    key the caller chose — a row-read and cache-payload amplification from a
+ *    single request. The `limit + 1` paginators had the same hole at `-2`.
+ *  - `?limit=abc` makes `parseInt` NaN, and `Math.min(NaN, 100)` is NaN, which
+ *    then gets BOUND as the LIMIT parameter: D1 either rejects it (a 500 from an
+ *    unvalidated query string) or coerces it to NULL, which SQLite again reads as
+ *    unlimited. Either way the cap does not hold.
+ *
+ * Three handlers already clamped correctly by hand. Centralising it means the
+ * next one cannot get it wrong, and the floor of 1 is explicit: a zero-row page
+ * is never what a caller wants, and it would make `nextCursor` meaningless.
+ */
+function pageLimit(
+  c: { req: { query: (name: string) => string | undefined } },
+  fallback: number,
+  max: number,
+): number {
+  const parsed = parseInt(c.req.query("limit") || String(fallback), 10);
+  // `|| fallback` catches NaN (and 0, which is equivalent to unset here).
+  return Math.min(Math.max(parsed || fallback, 1), max);
+}
+
+/**
+ * Resolve a keyset `?cursor=` into a finite number, or null.
+ *
+ * Cursors were passed straight into a WHERE comparison as `Number(cursor)` or
+ * `parseInt(cursor, 10)`, so `?cursor=abc` put NaN into the predicate. A NaN
+ * comparison in SQLite is never true, which silently returns an EMPTY page rather
+ * than an error — a paginated list that just stops, with nothing to debug.
+ *
+ * Returning null for anything unparseable means an invalid cursor degrades to
+ * "first page", which is the behaviour a client can actually recover from.
+ */
+function pageCursor(raw: string | undefined | null): number | null {
+  if (raw == null || raw === "") return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
  * Accounts that must not appear in any public listing.
  *
  * An account that has asked to be deleted, or has already been anonymised, still
@@ -949,7 +999,7 @@ async function servePersonalizedFeed(
     ranked = diversifyFeed(candidates, FEED_DIVERSITY_WINDOW);
   }
 
-  const offset = cursorRaw ? Math.max(parseInt(cursorRaw, 10) || 0, 0) : 0;
+  const offset = Math.max(pageCursor(cursorRaw) ?? 0, 0);
   const pageItems = ranked.slice(offset, offset + limit).map((m) => {
     const { _base, ...rest } = m; // strip the internal score from the response
     return rest;
@@ -1221,7 +1271,7 @@ readRoute.get("/matches", optionalAuth, async (c) => {
         : sortParam === "following"
           ? "following"
           : "recent";
-  const limit = Math.min(parseInt(c.req.query("limit") || "30", 10), 100);
+  const limit = pageLimit(c, 30, 100);
   const cursorRaw = c.req.query("cursor");
   // Signed-in viewer (optionalAuth). Only the base list is cached publicly; the
   // viewer's vote state is layered on per-request so refresh keeps "Voted".
@@ -1256,7 +1306,7 @@ readRoute.get("/matches", optionalAuth, async (c) => {
 
       if (sort === "hot") {
         // Engagement-weighted ranking; paginate by numeric offset.
-        const offset = cursorRaw ? Math.max(parseInt(cursorRaw, 10), 0) : 0;
+        const offset = Math.max(pageCursor(cursorRaw) ?? 0, 0);
         const score = sql`(
           ${schema.contestMatches.totalVotes}
           + ${schema.contestMatches.likeCount}
@@ -1277,7 +1327,8 @@ readRoute.get("/matches", optionalAuth, async (c) => {
       }
 
       // Keyset pagination by createdAt — stable and index-friendly.
-      if (cursorRaw) conds.push(lt(schema.contestMatches.createdAt, parseInt(cursorRaw, 10)));
+      const matchesCursor = pageCursor(cursorRaw);
+      if (matchesCursor != null) conds.push(lt(schema.contestMatches.createdAt, matchesCursor));
       const rows = await db
         .select()
         .from(schema.contestMatches)
@@ -1378,7 +1429,7 @@ readRoute.get("/matches/:id", optionalAuth, async (c) => {
 readRoute.get("/leaderboard", optionalAuth, async (c) => {
   const db = getDb(c.env);
   const by = c.req.query("by") || "wins"; // wins | votes | xp
-  const limit = Math.min(parseInt(c.req.query("limit") || "20", 10), 100);
+  const limit = pageLimit(c, 20, 100);
   // Leaderboard changes slowly (on match resolution) — cache 30s in KV.
   const viewerUid = c.get("user")?.uid;
   /**
@@ -1669,12 +1720,13 @@ readRoute.get("/announcements/active", requireAuth, async (c) => {
 readRoute.get("/notifications", requireAuth, async (c) => {
   const db = getDb(c.env);
   const uid = c.get("user").uid;
-  const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 100);
-  const cursor = c.req.query("cursor"); // createdAt of the last row seen
+  const limit = pageLimit(c, 50, 100);
+  const cursor = pageCursor(c.req.query("cursor")); // createdAt of the last row seen
 
-  const where = cursor
-    ? and(eq(schema.notifications.recipientId, uid), lt(schema.notifications.createdAt, Number(cursor)))
-    : eq(schema.notifications.recipientId, uid);
+  const where =
+    cursor != null
+      ? and(eq(schema.notifications.recipientId, uid), lt(schema.notifications.createdAt, cursor))
+      : eq(schema.notifications.recipientId, uid);
 
   const rows = await db
     .select({
@@ -1820,12 +1872,13 @@ readRoute.get("/notifications/unread-count", requireAuth, async (c) => {
 readRoute.get("/transactions", requireAuth, async (c) => {
   const db = getDb(c.env);
   const uid = c.get("user").uid;
-  const limit = Math.min(parseInt(c.req.query("limit") || "30", 10), 100);
-  const cursor = c.req.query("cursor"); // createdAt of the last row seen
+  const limit = pageLimit(c, 30, 100);
+  const cursor = pageCursor(c.req.query("cursor")); // createdAt of the last row seen
 
-  const where = cursor
-    ? and(eq(schema.coinTransactions.uid, uid), lt(schema.coinTransactions.createdAt, Number(cursor)))
-    : eq(schema.coinTransactions.uid, uid);
+  const where =
+    cursor != null
+      ? and(eq(schema.coinTransactions.uid, uid), lt(schema.coinTransactions.createdAt, cursor))
+      : eq(schema.coinTransactions.uid, uid);
 
   const rows = await db
     .select()
@@ -1923,7 +1976,7 @@ function coarseCoordinates(value: unknown): { lat: number; lng: number } | null 
 
 readRoute.get("/users/suggested", optionalAuth, async (c) => {
   const uid = c.get("user")?.uid;
-  const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 100);
+  const limit = pageLimit(c, 50, 100);
 
   // Shared, viewer-AGNOSTIC candidate pool, edge-cached so the discovery screen
   // stops scanning `users` on every open (D1_R2_LOAD_AUDIT.md §7). Filled at the
@@ -2404,8 +2457,8 @@ readRoute.get("/users/:id/posts", optionalAuth, async (c) => {
   // Each sub-resource is reachable directly, so each needs its own check — the
   // guard on GET /users/:id does not protect them.
   if (await profileHiddenFrom(c, userId)) return c.json({ posts: [], nextCursor: null });
-  const limit = Math.min(parseInt(c.req.query("limit") || "12", 10), 50);
-  const cursor = c.req.query("cursor") ? parseInt(c.req.query("cursor")!, 10) : null;
+  const limit = pageLimit(c, 12, 50);
+  const cursor = pageCursor(c.req.query("cursor"));
   const conds = [eq(schema.posts.userId, userId), eq(schema.posts.isHidden, false)];
   if (cursor) conds.push(lt(schema.posts.createdAt, cursor));
   const rows = await db
@@ -2426,7 +2479,7 @@ readRoute.get("/users/:id/matches", optionalAuth, async (c) => {
   const db = getDb(c.env);
   const userId = c.req.param("id");
   const type = c.req.query("type");
-  const limit = Math.min(parseInt(c.req.query("limit") || "12", 10), 50);
+  const limit = pageLimit(c, 12, 50);
   const viewer = c.get("user")?.uid;
   if (await profileHiddenFrom(c, userId)) return c.json([]);
 
@@ -2603,12 +2656,9 @@ async function listConnections(
 /** Shared handler for both /followers and /following. */
 async function connectionsHandler(c: any, direction: "followers" | "following") {
   const targetId = c.req.param("id");
-  const limit = Math.min(
-    CONNECTIONS_MAX_PAGE_SIZE,
-    Math.max(1, parseInt(c.req.query("limit") || String(CONNECTIONS_PAGE_SIZE), 10) || CONNECTIONS_PAGE_SIZE),
-  );
+  const limit = pageLimit(c, CONNECTIONS_PAGE_SIZE, CONNECTIONS_MAX_PAGE_SIZE);
   const cursorRaw = c.req.query("cursor");
-  const cursor = cursorRaw ? parseInt(cursorRaw, 10) || null : null;
+  const cursor = pageCursor(cursorRaw);
 
   // Only the default first page (no cursor, default size) is cacheable — that's
   // what the connections screen loads on open, i.e. the hot path.
@@ -2871,7 +2921,7 @@ readRoute.get("/chats/:id/messages/search", requireAuth, async (c) => {
   await assertChatMember(c.env, chatId, c.get("user").uid);
   const q = (c.req.query("q") || "").trim();
   if (!q) return c.json([]);
-  const limit = Math.min(Math.max(parseInt(c.req.query("limit") || "50", 10) || 50, 1), 100);
+  const limit = pageLimit(c, 50, 100);
   try {
     const rows = await searchChatMessages(c.env, chatId, q, limit);
     return c.json(rows);
@@ -2987,7 +3037,7 @@ readRoute.get("/comments", optionalAuth, async (c) => {
   // needs is a `total` for the "Comments (N)" heading (there is no denormalised
   // counter on blog_posts — see migrations/0034_blog_comments.sql).
   const isBlog = targetType === "blog";
-  const limit = Math.min(Math.max(parseInt(c.req.query("limit") || "20", 10) || 20, 1), 50);
+  const limit = pageLimit(c, 20, 50);
 
   // Keyset (cursor) pagination — Instagram-style "load older on scroll". The
   // cursor is an opaque `${createdAt}_${id}` string; the id tie-break keeps
@@ -3322,7 +3372,29 @@ readRoute.get("/highlights/:id/stories", optionalAuth, async (c) => {
   if (await profileHiddenFrom(c, h.userId)) return c.json(null);
   const storyIds = ((h.storyIds as string[]) || []).slice(0, 30);
   if (!storyIds.length) return c.json(null);
-  const rows = await db.select().from(schema.stories).where(inArray(schema.stories.id, storyIds)).all();
+  /**
+   * `userId = h.userId` is load-bearing, not redundant.
+   *
+   * The visibility check above tests the HIGHLIGHT OWNER — which, for a highlight
+   * the viewer created, is the viewer themselves, so it always passed. Selecting
+   * by id alone therefore returned whatever stories the owner had listed,
+   * including other people's: an attacker could pin a victim's story ids into
+   * their own highlight (nothing validated them before `createHighlight` started
+   * doing so) and this endpoint would serve the victim's rows, publicly and
+   * unauthenticated, labelled with the attacker's name.
+   *
+   * Filtering by author here means the response can only ever contain stories the
+   * highlight's owner actually wrote, so even a highlight created before that
+   * validation existed cannot leak. Ids that fail the filter simply vanish from
+   * the list, which is the right failure mode for a read: the shelf renders with
+   * what is legitimately on it.
+   */
+  const rows = await db
+    .select()
+    .from(schema.stories)
+    .where(and(inArray(schema.stories.id, storyIds), eq(schema.stories.userId, h.userId)))
+    .all();
+  if (!rows.length) return c.json(null);
   const userMap = await attachUsers(c, [h.userId]);
   return c.json({
     userId: h.userId,
@@ -3339,8 +3411,8 @@ readRoute.get("/highlights/:id/stories", optionalAuth, async (c) => {
 // with optional ?category= and ?q= (title search). Cached briefly in KV.
 readRoute.get("/blog", async (c) => {
   const db = getDb(c.env);
-  const limit = Math.min(parseInt(c.req.query("limit") || "12", 10), 50);
-  const cursor = c.req.query("cursor") ? parseInt(c.req.query("cursor")!, 10) : null;
+  const limit = pageLimit(c, 12, 50);
+  const cursor = pageCursor(c.req.query("cursor"));
   const category = c.req.query("category") || null;
   const q = (c.req.query("q") || "").trim().toLowerCase();
 
@@ -3434,7 +3506,7 @@ readRoute.get("/blog/sitemap", async (c) => {
   // unbounded key supply on an unauthenticated endpoint. A malformed cursor
   // normalises to null, which is also how the query treats it.
   const MAX_LIMIT = 10000;
-  const limit = Math.min(Math.max(parseInt(c.req.query("limit") || String(MAX_LIMIT), 10) || MAX_LIMIT, 1), MAX_LIMIT);
+  const limit = pageLimit(c, MAX_LIMIT, MAX_LIMIT);
   // KNOWN RESIDUAL, recorded rather than fixed: `limit` is a free integer in [1, 10000]
   // on an unauthenticated endpoint, so it is a caller-controlled supply of distinct
   // colo entries — the same shape `urlEdgeKey`'s allow-list narrows, narrowed only to
@@ -3449,8 +3521,7 @@ readRoute.get("/blog/sitemap", async (c) => {
   // lib/rateLimit.ts already names for traffic the in-Worker limiter should not be
   // asked to absorb. The Cache API is per-colo and LRU-evicted, so the blast radius is
   // one colo's cache pressure, not a quota that stops the application working.
-  const cursorRaw = c.req.query("cursor") ? parseInt(c.req.query("cursor")!, 10) : null;
-  const cursor = cursorRaw != null && Number.isFinite(cursorRaw) ? cursorRaw : null;
+  const cursor = pageCursor(c.req.query("cursor"));
 
   // 6h TTL: a sitemap is a crawler surface (Googlebot fetches it on its own
   // schedule), so hours-stale is standard and harmless — while each miss reads

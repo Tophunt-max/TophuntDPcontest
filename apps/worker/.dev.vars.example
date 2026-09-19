@@ -66,7 +66,17 @@ RAZORPAY_WEBHOOK_SECRET=xxxxxxxx
 BUNNY_STREAM_API_KEY=xxxxxxxx-xxxx-xxxx-xxxxxxxxxxxx
 BUNNY_LIBRARY_ID=123456
 BUNNY_CDN_HOSTNAME=vz-xxxxxxxx-xxx.b-cdn.net
-# Optional: set only if you configure a signing secret on the Bunny webhook.
+# REQUIRED to use the Bunny encode webhook at all. Bunny does not sign its
+# payload, so this shared secret is the only authentication available and
+# /webhook/bunny now fails closed (503) without it — previously the endpoint was
+# left wide open, and anyone could POST a VideoGuid to force an encode-state
+# transition. Set the same value as a custom header on the webhook in Bunny's
+# dashboard: `X-Bunny-Signature: <value>` (an `Authorization: Bearer <value>`
+# header is also accepted; the query string is NOT).
+#
+# Leaving it unset is a supported configuration — it only means the webhook is
+# unused. Encode state still resolves via the reconcileVideos cron and the live
+# recheck inside the `videoStatus` action, just with more latency.
 BUNNY_WEBHOOK_SECRET=
 
 # ---------------------------------------------------------------------------
