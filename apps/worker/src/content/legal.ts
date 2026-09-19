@@ -283,6 +283,7 @@ Erasure deletes your own content: profile, photo, bio, contact details, posts, s
 - **Conversations you were part of** — the messages you sent are deleted and your name and photo are replaced, but the other person keeps their side of the conversation.
 - **Administrative audit records** — the log of actions our own staff took.
 - **Prize records** — that a prize was awarded, and whether it was delivered, is an accounting record of the same kind as a payment. The record survives; your delivery name, phone number and full address are erased from it.
+- **Monthly Hall of Fame results** — that an account placed in a month's top three, and what it was paid, is an accounting record of the same kind as a payment. It is also what stops that month's prize being paid out twice.
 
 None of these remain linked to your identity. Retained financial records are kept for the period Indian tax and accounting law requires, and then deleted.
 

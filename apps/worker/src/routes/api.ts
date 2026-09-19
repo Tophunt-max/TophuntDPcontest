@@ -262,6 +262,56 @@ function requiredId(value: unknown, name: string, maxLength = 256): string {
   return normalized;
 }
 
+/**
+ * How many stories one highlight may hold.
+ *
+ * `storyIds` is an unbounded JSON array in a single column, and the read endpoint
+ * only ever showed the first 30 — so anything beyond that was invisible weight in
+ * every row read. Enforced on WRITE now, which is the end that can actually refuse.
+ */
+const MAX_HIGHLIGHT_STORIES = 100;
+
+/**
+ * Validate a client-supplied list of story ids and assert the caller wrote every
+ * one of them.
+ *
+ * Returns the de-duplicated ids, in the caller's order. Throws rather than
+ * silently dropping the ids that fail: a highlight is something the user is
+ * curating deliberately, so quietly discarding half of it would be worse than
+ * saying no — and a partial success would also make the IDOR attempt look like it
+ * had worked.
+ */
+async function assertOwnedStoryIds(
+  db: ReturnType<typeof getDb>,
+  uid: string,
+  value: unknown,
+): Promise<string[]> {
+  if (value == null) return [];
+  if (!Array.isArray(value)) {
+    throw httpsError("invalid-argument", "storyIds must be an array of story ids.");
+  }
+  const ids = [...new Set(value.map((v, i) => requiredId(v, `storyIds[${i}]`, 128)))];
+  if (ids.length === 0) return [];
+  if (ids.length > MAX_HIGHLIGHT_STORIES) {
+    throw httpsError(
+      "invalid-argument",
+      `A highlight can hold at most ${MAX_HIGHLIGHT_STORIES} stories.`,
+    );
+  }
+  const owned = await db
+    .select({ id: schema.stories.id })
+    .from(schema.stories)
+    .where(and(inArray(schema.stories.id, ids), eq(schema.stories.userId, uid)))
+    .all();
+  if (owned.length !== ids.length) {
+    // Deliberately does not say WHICH ids failed, or distinguish "not yours" from
+    // "does not exist" — either answer would turn this into an oracle for probing
+    // whether a given story id is real.
+    throw httpsError("permission-denied", "A highlight can only contain your own stories.");
+  }
+  return ids;
+}
+
 apiRoute.post("/", async (c) => {
   const body = await c.req.json<any>().catch(() => ({}));
   const action = body?.action;
@@ -411,6 +461,18 @@ apiRoute.post("/", async (c) => {
     /**
      * Current processing state for a set of videos, so a client showing a
      * "Processing…" overlay can poll without hitting Bunny directly.
+     *
+     * Scoped to the caller's OWN uploads. The predicate used to be the id list
+     * alone, which made this an enumeration endpoint for other people's media:
+     * `playbackUrl` and `mp4Url` are in the selected columns, so 50 guessed guids
+     * per request returned direct playback links for anyone's video — including
+     * uploads not yet attached to any public object (`targetType`/`targetId` still
+     * null) and videos on stories the caller has been blocked from. `ownerUid` was
+     * already on the row, and `idx_videos_owner` already indexed it.
+     *
+     * The overlay only ever polls for a video the caller just uploaded, so this
+     * costs legitimate callers nothing. It also bounds the Bunny recheck below to
+     * the caller's own media, which is what makes that amplification self-limiting.
      */
     case "videoStatus": {
       const { videoIds } = body;
@@ -427,7 +489,8 @@ apiRoute.post("/", async (c) => {
         mp4Url: schema.videos.mp4Url,
         updatedAt: schema.videos.updatedAt,
       };
-      let rows = await db.select(columns).from(schema.videos).where(inArray(schema.videos.id, ids)).all();
+      const ownedVideos = and(inArray(schema.videos.id, ids), eq(schema.videos.ownerUid, uid));
+      let rows = await db.select(columns).from(schema.videos).where(ownedVideos).all();
 
       // Ask Bunny directly for anything still unfinished and not checked in the
       // last window. Bunny's encode webhook is OPTIONAL and configured in their
@@ -452,7 +515,7 @@ apiRoute.post("/", async (c) => {
             }),
           ),
         );
-        rows = await db.select(columns).from(schema.videos).where(inArray(schema.videos.id, ids)).all();
+        rows = await db.select(columns).from(schema.videos).where(ownedVideos).all();
       }
       return c.json({ videos: rows });
     }
@@ -605,7 +668,7 @@ apiRoute.post("/", async (c) => {
 
       // Close the create-vs-pause race: the admin pause update refuses to run
       // while this waiting match exists. If the pause won just before the match
-      // insert, remove the new match and ledger entry and atomically refund.
+      // insert, remove the new match and atomically refund the entry fee.
       let statusAfterCreate: { status: string | null } | undefined;
       try {
         statusAfterCreate = await db
@@ -621,32 +684,67 @@ apiRoute.post("/", async (c) => {
       }
       if (statusAfterCreate && statusAfterCreate.status !== "live") {
         try {
-          // D1 batches are atomic and sequential. Gate every financial change
-          // on the match still being waiting, then delete it last. If an
-          // opponent already activated it, all three statements are no-ops.
-          const stillWaiting = sql`EXISTS (
-            SELECT 1 FROM ${schema.contestMatches}
-            WHERE ${schema.contestMatches.id} = ${matchId}
-              AND ${schema.contestMatches.status} = 'waiting_for_opponent'
-          )`;
-          const rollback = await db.batch([
-            db.delete(schema.coinTransactions).where(and(
-              eq(schema.coinTransactions.id, entryTransactionId),
-              stillWaiting,
-            )),
-            db.update(schema.users)
-              .set({
-                dpcoin: sql`${schema.users.dpcoin} + ${fee}`,
-                xp: sql`${schema.users.xp} - 10`,
-                updatedAt: now(),
-              })
-              .where(and(eq(schema.users.uid, uid), stillWaiting)),
-            db.delete(schema.contestMatches).where(and(
-              eq(schema.contestMatches.id, matchId),
-              eq(schema.contestMatches.status, "waiting_for_opponent"),
-            )),
+          /**
+           * D1 batches are atomic and sequential. Every financial statement is
+           * gated on the match still being waiting AND on the refund not already
+           * being recorded; the match delete goes last.
+           *
+           * The refund is now a COMPENSATING LEDGER ROW, not a deletion of the
+           * entry-fee row. Deleting it made this the only refund path in the
+           * worker that rewrote history instead of appending to it — the user's
+           * transaction list lost both halves, so a charge they had really been
+           * through became unexplainable, and `settleRefund` / `lib/payouts.ts`
+           * both do the opposite for the same situation.
+           *
+           * It also fixes what the credit was gated on. `stillWaiting` is a fact
+           * about the MATCH, not about the charge being compensated: if the
+           * entry-fee row were already absent (a partially-applied earlier
+           * rollback), the coins were still handed back with nothing offsetting
+           * them. `NOT EXISTS(refund row)` ties the credit to the exact thing it
+           * reverses, and the refund's ledger id is deterministic so a retry
+           * cannot pay it twice.
+           */
+          const refundTransactionId = `contest_entry_refund:${matchId}:${uid}`;
+          const rollbackTs = now();
+          // Raw SQL because BOTH money statements must carry the identical gate.
+          // Drizzle's `onConflictDoNothing()` insert cannot take a WHERE, so
+          // expressing this with the query builder would leave the ledger row
+          // ungated — it would then be written even when the credit no-opped
+          // (an opponent having activated the match), which is exactly the drift
+          // this rollback is supposed to prevent.
+          const refundGate =
+            `EXISTS (SELECT 1 FROM contest_matches WHERE id = ? AND status = 'waiting_for_opponent')
+             AND NOT EXISTS (SELECT 1 FROM coin_transactions WHERE id = ?)`;
+          const refundBindings = [matchId, refundTransactionId];
+          const rollback = await env.DB.batch([
+            env.DB.prepare(
+              // `MAX(0, xp - 10)` — reversing the +10 granted above must not be
+              // able to drive lifetime XP negative, which a plain `xp - 10` could
+              // for an account whose only XP was this entry.
+              `UPDATE users
+                  SET dpcoin = dpcoin + ?, xp = MAX(0, xp - 10), updated_at = ?
+                WHERE uid = ? AND ${refundGate}`,
+            ).bind(fee, rollbackTs, uid, ...refundBindings),
+            env.DB.prepare(
+              `INSERT OR IGNORE INTO coin_transactions
+                 (id, uid, amount, type, contest_id, match_id, description, created_at)
+               SELECT ?, ?, ?, 'contest_entry_refund', ?, ?, ?, ?
+                WHERE ${refundGate}`,
+            ).bind(
+              refundTransactionId,
+              uid,
+              fee,
+              contestId ?? null,
+              matchId,
+              "Entry fee refunded — contest stopped accepting new matches",
+              rollbackTs,
+              ...refundBindings,
+            ),
+            env.DB.prepare(
+              `DELETE FROM contest_matches WHERE id = ? AND status = 'waiting_for_opponent'`,
+            ).bind(matchId),
           ]);
-          if (rollback[2].meta.changes > 0) {
+          if (Number(rollback[2]?.meta?.changes || 0) > 0) {
             throw httpsError("failed-precondition", "This contest stopped accepting new matches. Your entry fee was refunded.");
           }
         } catch (e: any) {
@@ -1527,19 +1625,54 @@ apiRoute.post("/", async (c) => {
       }
 
       const ts = now();
-      // PK (uid, task_id, day) dedups — first claim wins.
-      const ins = await db
-        .insert(schema.dailyTaskClaims)
-        .values({ uid, taskId, day, reward: task.reward, createdAt: ts })
-        .onConflictDoNothing()
-        .run();
-      if (ins.meta.changes === 0) throw httpsError("already-exists", "Task already claimed today.");
-
-      await db.batch([
-        db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${task.reward}`, updatedAt: ts }).where(eq(schema.users.uid, uid)),
-        db.insert(schema.coinTransactions).values({ id: newId(), uid, amount: task.reward, type: "daily_task", description: `Task reward: ${task.title}`, createdAt: ts }),
+      const reward = assertCoinAmount(task.reward, "task reward");
+      /**
+       * Claim + credit + ledger in ONE batch, the same shape as `claimAdReward`
+       * above.
+       *
+       * The claim used to be its own statement, followed by a separate batch whose
+       * `dpcoin +=` was gated on NOTHING. A crash or a D1 error between the two
+       * left the claim row present and the reward gone forever: every retry got
+       * `already-exists`, and no sweeper looks for this.
+       *
+       * The replay guard is the LEDGER row, not the claim row. That distinction
+       * matters here and is why this cannot simply copy `claimAdReward` verbatim:
+       * that handler's claim carries a fresh random id per request, so
+       * `EXISTS(claim)` is only ever true for the request that wrote it. This
+       * claim's key is (uid, task_id, day) — stable across retries — so
+       * `EXISTS(claim)` is true on a replay too and would authorise a second
+       * credit. `NOT EXISTS(ledger)` on a deterministic id is exact instead.
+       *
+       * The credit comes BEFORE the ledger insert so both read the same
+       * pre-transaction snapshot of `coin_transactions` and can only both apply or
+       * both no-op. The `users` arm keeps a deleted account from producing a
+       * ledger row with no matching balance change.
+       */
+      const ledgerId = `daily_task:${uid}:${day}:${taskId}`;
+      const taskGate =
+        `EXISTS (SELECT 1 FROM daily_task_claims WHERE uid = ? AND task_id = ? AND day = ?)
+         AND NOT EXISTS (SELECT 1 FROM coin_transactions WHERE id = ?)
+         AND EXISTS (SELECT 1 FROM users WHERE uid = ?)`;
+      const taskBindings = [uid, taskId, day, ledgerId, uid];
+      const taskResults = await env.DB.batch([
+        env.DB.prepare(
+          `INSERT OR IGNORE INTO daily_task_claims (uid, task_id, day, reward, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        ).bind(uid, taskId, day, reward, ts),
+        env.DB.prepare(
+          `UPDATE users SET dpcoin = dpcoin + ?, updated_at = ? WHERE uid = ? AND ${taskGate}`,
+        ).bind(reward, ts, uid, ...taskBindings),
+        env.DB.prepare(
+          `INSERT OR IGNORE INTO coin_transactions
+             (id, uid, amount, type, description, created_at)
+           SELECT ?, ?, ?, 'daily_task', ?, ?
+            WHERE ${taskGate}`,
+        ).bind(ledgerId, uid, reward, `Task reward: ${task.title}`, ts, ...taskBindings),
       ]);
-      return c.json({ success: true, reward: task.reward });
+      if (Number(taskResults[1]?.meta?.changes || 0) === 0) {
+        throw httpsError("already-exists", "Task already claimed today.");
+      }
+      return c.json({ success: true, reward });
     }
 
     // ================= WALLET =================
@@ -2870,10 +3003,40 @@ apiRoute.post("/", async (c) => {
         .onConflictDoUpdate({ target: [schema.storyViews.storyId, schema.storyViews.viewerId], set: { reaction: emoji } });
       return c.json({ success: true });
     }
+    /**
+     * Create a highlight — a permanent, publicly readable shelf of the OWNER'S
+     * OWN stories.
+     *
+     * Every field was previously stored verbatim, `storyIds` included, and nothing
+     * checked whose stories those were. Combined with the read endpoint (which only
+     * checked the highlight owner's visibility — i.e. the attacker's own), that made
+     * this a cross-account disclosure primitive: harvest a victim's story ids from
+     * the public `GET /read/users/:id/stories`, name them here, and
+     * `GET /read/highlights/:id/stories` served the victim's full story rows to
+     * anyone, unauthenticated, attributed to the attacker's profile — including
+     * stories long past the 24h window and ones whose `visibility` is not public.
+     *
+     * So ownership is asserted on the way IN (here) and enforced again on the way
+     * OUT (routes/read.ts). One check would be enough for correctness; two mean a
+     * highlight that predates this fix cannot leak either.
+     */
     case "createHighlight": {
       const { name, coverImageUrl, storyIds } = body;
+      const highlightName = name == null ? null : requiredId(name, "name", 120);
+      // Constrained like `setMatchVsImage` does: a highlight cover is rendered on a
+      // public profile, so an arbitrary off-domain url here is a way to log the IP
+      // and user-agent of everyone who views that profile.
+      const cover = coverImageUrl == null ? null : requiredId(coverImageUrl, "coverImageUrl", 2048);
+      const ownedStoryIds = await assertOwnedStoryIds(db, uid, storyIds);
       const id = newId();
-      await db.insert(schema.highlights).values({ id, userId: uid, name, coverImageUrl, storyIds: storyIds || [], createdAt: now() });
+      await db.insert(schema.highlights).values({
+        id,
+        userId: uid,
+        name: highlightName,
+        coverImageUrl: cover,
+        storyIds: ownedStoryIds,
+        createdAt: now(),
+      });
       return c.json({ success: true, highlightId: id });
     }
     case "addStoryToHighlight": {
@@ -2882,8 +3045,18 @@ apiRoute.post("/", async (c) => {
       const h = await db.select().from(schema.highlights).where(eq(schema.highlights.id, highlightId)).get();
       if (!h) throw httpsError("not-found", "Highlight not found.");
       if (h.userId !== uid) throw httpsError("permission-denied", "Not allowed.");
+      // Two DIFFERENT ownership questions, and only the first was ever asked.
+      // Owning the highlight does not make someone the author of the story being
+      // pinned into it — see `createHighlight` above for what that allowed.
+      const [ownedStoryId] = await assertOwnedStoryIds(db, uid, [storyId]);
       const ids = new Set<string>((h.storyIds as string[]) || []);
-      ids.add(storyId);
+      ids.add(ownedStoryId);
+      if (ids.size > MAX_HIGHLIGHT_STORIES) {
+        throw httpsError(
+          "failed-precondition",
+          `A highlight can hold at most ${MAX_HIGHLIGHT_STORIES} stories.`,
+        );
+      }
       await db.update(schema.highlights).set({ storyIds: [...ids] }).where(eq(schema.highlights.id, highlightId));
       return c.json({ success: true });
     }

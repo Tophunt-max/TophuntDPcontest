@@ -8,7 +8,7 @@
  * the admin panel keep its existing route URLs while the data moves to D1.
  */
 import { Hono } from "hono";
-import { and, eq, desc, sql, count, ne, like, gte, lt, lte, inArray, notInArray, or, isNull, isNotNull } from "drizzle-orm";
+import { and, eq, desc, sql, count, ne, like, gt, gte, lt, lte, inArray, notInArray, or, isNull, isNotNull } from "drizzle-orm";
 import { DELETED_STATUS, PENDING_DELETION_STATUS } from "../lib/accountStatus";
 import { invalidateUserCaches, executeAccountDeletion, cancelAccountDeletion } from "../lib/accountDeletion";
 import { recentChatMessages, deleteChatMessage } from "../lib/chatArchive";
@@ -2138,7 +2138,13 @@ adminRoute.get("/revenue", async (c) => {
   // Full admins only: revenue and top spenders.
   requireFullAdmin(c);
   const db = getDb(c.env);
-  const successful = eq(schema.payments.status, "success");
+  /**
+   * Gross receipts. `partially_refunded` belongs here: the payment succeeded and
+   * most of it stands, so dropping the whole row (which is what happened while a
+   * partial refund flipped the status straight to `refunded`) wrote off revenue we
+   * actually kept. The part that WAS returned is netted off via `reversed` below.
+   */
+  const successful = inArray(schema.payments.status, ["success", "partially_refunded"]);
 
   const totals = await db
     .select({
@@ -2153,13 +2159,22 @@ adminRoute.get("/revenue", async (c) => {
     .where(successful)
     .get();
 
+  /**
+   * Money actually returned, read from `payment_orders.refunded_amount_paise`
+   * rather than by summing whole `payments` rows.
+   *
+   * Summing the payment total treated every reversal as total: a ₹1000 payment with
+   * a ₹100 refund was reported as ₹1000 reversed. The clawback path has always
+   * written the real figure to this column (and now accumulates it across several
+   * partial refunds), so this is both accurate and partial-aware.
+   */
   const reversed = await db
     .select({
-      paise: sql<number>`COALESCE(SUM(${schema.payments.amountPaise}),0)`,
+      paise: sql<number>`COALESCE(SUM(${schema.paymentOrders.refundedAmountPaise}),0)`,
       n: count(),
     })
-    .from(schema.payments)
-    .where(inArray(schema.payments.status, ["refunded", "disputed"]))
+    .from(schema.paymentOrders)
+    .where(gt(schema.paymentOrders.refundedAmountPaise, 0))
     .get();
 
   const coinsInCirculation =
@@ -3446,9 +3461,28 @@ adminRoute.get("/finance-trends", async (c) => {
 
 /**
  * Action a manual deposit. action: "approve" | "reject".
- * Approving credits the coins (users.dpcoin), records a payment + coin ledger
- * entry, and is idempotent via an atomic status claim (only a pending row is
- * ever credited, so double-approval can't double-credit).
+ *
+ * Approving credits the coins (`users.dpcoin`), records a `payments` row and a
+ * coin ledger entry, and stamps `credited_at` — ALL IN ONE D1 BATCH, every
+ * statement gated on the same `status = 'pending'` snapshot.
+ *
+ * That gating is the whole point. The status claim used to be its own statement
+ * followed by a separate crediting batch whose balance update carried no gate, so
+ * a failure between the two left the deposit reading `approved` with no coins, no
+ * `payments` row and no ledger row — while the "already processed" guard below
+ * made a retry impossible. The user had wired real INR against a verified UTR and
+ * the loss was invisible: unlike a Razorpay order, nothing swept for it, because
+ * `recoverStrandedPaidOrders` only ever looks at `payment_orders`.
+ *
+ * With one batch that window does not exist, so there is deliberately no recovery
+ * sweeper here — there is no state for it to find. (A Razorpay order genuinely
+ * needs one: its claim cannot share a transaction with the credit, because the
+ * gateway decides the outcome.) `computeMoneyHealth` keeps that claim honest by
+ * reporting any `approved` deposit with `credited_at IS NULL`.
+ *
+ * The ledger id is deterministic (`manual_deposit:<id>`) so that even a manual
+ * operator re-run cannot write a second ledger row for one deposit — the same
+ * reason `recoverStrandedPaidOrders` uses `purchase:<paymentId>`.
  */
 adminRoute.patch("/deposits/:id", async (c) => {
   requireFullAdmin(c);
@@ -3475,37 +3509,84 @@ adminRoute.patch("/deposits/:id", async (c) => {
     if (already) throw httpsError("failed-precondition", "This UTR was already credited on another deposit.");
   }
 
-  // Atomically claim the pending row so overlapping approvals can't double-credit.
-  const claim = await db
-    .update(schema.deposits)
-    .set({ status, adminNote: adminNote || null, processedBy: admin?.uid ?? null, updatedAt: ts })
-    .where(and(eq(schema.deposits.id, id), eq(schema.deposits.status, "pending")))
-    .run();
-  if (claim.meta.changes === 0) throw httpsError("failed-precondition", "Deposit was already processed.");
-
   // `amount` already includes the package bonus; this just makes it visible in
   // the ledger and the notification so the user can see the offer was applied.
   const depBonus = Number(d.bonusCoins) || 0;
   const bonusSuffix = depBonus > 0 ? ` (incl. ${depBonus} bonus)` : "";
 
   if (action === "approve") {
-    await db.batch([
-      db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${d.amount}`, updatedAt: ts }).where(eq(schema.users.uid, d.userId)),
-      db.insert(schema.payments).values({
-        id: `dep_${id}`,
-        userId: d.userId,
+    const coins = assertCoinAmount(d.amount, "deposit amount");
+    /**
+     * Every statement is gated on the deposit STILL being pending and the
+     * recipient still existing, and the status claim comes LAST.
+     *
+     * Ordering matters: the claim is the only statement that changes
+     * `deposits.status`, so placing it last means all four evaluate the same
+     * pre-transaction snapshot and can only all apply or all no-op. Two
+     * overlapping approvals therefore still credit exactly once — the loser's
+     * gate is already false when its batch runs — and there is no window in
+     * which the row is `approved` but the coins are not there.
+     *
+     * The user-exists arm matters too: without it a deposit for a deleted
+     * account would flip to `approved` while the credit silently matched no
+     * row, which is ledger drift in the other direction.
+     */
+    const pendingGate = `EXISTS (SELECT 1 FROM deposits WHERE id = ? AND status = 'pending')
+        AND EXISTS (SELECT 1 FROM users WHERE uid = ?)`;
+    const ledgerId = `manual_deposit:${id}`;
+    const results = await c.env.DB.batch([
+      c.env.DB.prepare(
+        `UPDATE users SET dpcoin = dpcoin + ?, updated_at = ?
+          WHERE uid = ? AND ${pendingGate}`,
+      ).bind(coins, ts, d.userId, id, d.userId),
+      c.env.DB.prepare(
+        `INSERT OR IGNORE INTO payments
+           (id, user_id, amount, coins, amount_paise, source, status, created_at)
+         SELECT ?, ?, ?, ?, ?, 'manual_deposit', 'success', ?
+          WHERE ${pendingGate}`,
         // `amount` is the legacy coin column; the split fields record the coins
         // credited and the rupees actually transferred, so revenue reporting can
         // read real money instead of a coin count.
-        amount: d.amount,
-        coins: d.amount,
-        amountPaise: toPaise(Number(d.payAmount) || 0),
-        source: "manual_deposit",
-        status: "success",
-        createdAt: ts,
-      }).onConflictDoNothing(),
-      db.insert(schema.coinTransactions).values({ id: newId(), uid: d.userId, amount: d.amount, type: "manual_deposit", description: `Manual deposit approved${bonusSuffix} (UTR ${d.utr || "-"})`, createdAt: ts }),
+      ).bind(`dep_${id}`, d.userId, coins, coins, toPaise(Number(d.payAmount) || 0), ts, id, d.userId),
+      c.env.DB.prepare(
+        `INSERT OR IGNORE INTO coin_transactions
+           (id, uid, amount, type, description, created_at)
+         SELECT ?, ?, ?, 'manual_deposit', ?, ?
+          WHERE ${pendingGate}`,
+      ).bind(
+        ledgerId,
+        d.userId,
+        coins,
+        `Manual deposit approved${bonusSuffix} (UTR ${d.utr || "-"})`,
+        ts,
+        id,
+        d.userId,
+      ),
+      c.env.DB.prepare(
+        `UPDATE deposits
+            SET status = 'approved', admin_note = ?, processed_by = ?, credited_at = ?, updated_at = ?
+          WHERE id = ? AND status = 'pending' AND EXISTS (SELECT 1 FROM users WHERE uid = ?)`,
+      ).bind(adminNote || null, admin?.uid ?? null, ts, ts, id, d.userId),
     ]);
+    if (Number(results[3]?.meta?.changes || 0) === 0) {
+      // Nothing moved: another approval won the race, or the recipient account
+      // no longer exists. Either way no coins were credited.
+      const stillThere = await db
+        .select({ uid: schema.users.uid })
+        .from(schema.users)
+        .where(eq(schema.users.uid, d.userId))
+        .get();
+      if (!stillThere) throw httpsError("failed-precondition", "That user account no longer exists.");
+      throw httpsError("failed-precondition", "Deposit was already processed.");
+    }
+  } else {
+    // Rejection moves no money, so a plain compare-and-swap is enough.
+    const claim = await db
+      .update(schema.deposits)
+      .set({ status, adminNote: adminNote || null, processedBy: admin?.uid ?? null, updatedAt: ts })
+      .where(and(eq(schema.deposits.id, id), eq(schema.deposits.status, "pending")))
+      .run();
+    if (claim.meta.changes === 0) throw httpsError("failed-precondition", "Deposit was already processed.");
   }
 
   await createNotification(c.env, d.userId, {

@@ -7,7 +7,7 @@
  * loaded — is testable. The component keeps only the layout, which is two
  * `flex: 1` halves in a `flexDirection: 'row'`.
  */
-import { contestPrize } from './contestPrize';
+import { matchPrize } from './contestPrize';
 
 export interface VsSideData {
   uid?: string;
@@ -124,14 +124,17 @@ export function resolveVsFrame(match: any): VsFrameData | null {
 
   // The match carries its own prize snapshot (read.ts `mapMatch` spreads
   // `publicPrize`), so this needs no second fetch of the contest template.
-  const resolved = contestPrize(match);
+  // `matchPrize` is that resolution, shared with the feed and Explore cards —
+  // the arithmetic used to live inline here and every other surface invented
+  // its own, which is how the feed ended up advertising `entryFee * 1.8`.
+  const resolved = matchPrize(match);
 
   return {
     left,
     right,
     isVideo: match?.type === 'video',
     title: match?.title || 'Battle',
-    prize: resolved.type === 'coins' ? Number(match?.rewardAmount ?? match?.prizeCoins ?? 0) || 0 : 0,
+    prize: resolved.type === 'coins' ? resolved.coins : 0,
     productPrize: resolved.type === 'product' ? resolved.product.title : null,
   };
 }

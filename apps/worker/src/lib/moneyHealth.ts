@@ -46,6 +46,15 @@ export interface MoneyHealth {
   negativeBalances: { count: number; samples: { uid: string; balance: number }[] };
   /** Captured at Razorpay, coins never landed (paid order with no payments row). */
   strandedPaidOrders: number;
+  /**
+   * Manual deposits marked `approved` whose coins never landed (`credited_at IS
+   * NULL`, migration 0053).
+   *
+   * Structurally impossible since the approval became one gated batch — which is
+   * exactly why it is worth probing. If this is ever non-zero, the approval path
+   * has regressed to a non-atomic write and a user has paid real INR for nothing.
+   */
+  strandedApprovedDeposits: number;
   /** Orders still `created` past the reconcile window — the sweeper should be clearing these. */
   stuckCreatedOrders: number;
   /** Refunds where coins were already spent and could not be recovered. */
@@ -89,6 +98,7 @@ export async function computeMoneyHealth(env: Env): Promise<MoneyHealth> {
     negCount,
     negSamples,
     stranded,
+    strandedDeposits,
     stuckCreated,
     clawbackCount,
     clawbackCoins,
@@ -125,6 +135,10 @@ export async function computeMoneyHealth(env: Env): Promise<MoneyHealth> {
     ),
     firstNumber(
       env,
+      `SELECT COUNT(*) AS n FROM deposits WHERE status = 'approved' AND credited_at IS NULL`,
+    ),
+    firstNumber(
+      env,
       `SELECT COUNT(*) AS n FROM payment_orders WHERE status = 'created' AND created_at < ?`,
       ts - STUCK_ORDER_MIN_AGE_MS,
     ),
@@ -143,7 +157,11 @@ export async function computeMoneyHealth(env: Env): Promise<MoneyHealth> {
   // visible rather than silently green.
   const bad = (n: number) => n !== 0; // includes -1
   const ok =
-    !bad(driftCount) && !bad(negCount) && !bad(stranded) && !bad(clawbackCount);
+    !bad(driftCount) &&
+    !bad(negCount) &&
+    !bad(stranded) &&
+    !bad(strandedDeposits) &&
+    !bad(clawbackCount);
 
   return {
     ok,
@@ -151,6 +169,7 @@ export async function computeMoneyHealth(env: Env): Promise<MoneyHealth> {
     ledgerDrift: { count: driftCount, samples: driftSamples },
     negativeBalances: { count: negCount, samples: negSamples },
     strandedPaidOrders: stranded,
+    strandedApprovedDeposits: strandedDeposits,
     stuckCreatedOrders: stuckCreated,
     clawbackShortfalls: { count: clawbackCount, coins: clawbackCoins },
     pendingDeposits: { count: pendDepCount, oldestAgeMs: ageOf(pendDepOldest) },

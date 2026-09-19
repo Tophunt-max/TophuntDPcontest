@@ -20,6 +20,7 @@ import { VerifiedBadge } from '../ui/VerifiedBadge';
 import { useVideoStatus } from '@/src/hooks/useVideoStatus';
 import { useCountdown } from '@/src/hooks/useCountdown';
 import { useHlsVideo } from '@/src/hooks/useHlsVideo';
+import { matchPrize } from '@/src/lib/contestPrize';
 import * as Haptics from 'expo-haptics';
 import LottieView from 'lottie-react-native';
 import Animated, { 
@@ -473,6 +474,23 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
   const picA = item.userA.profilePicThumb || item.userA.profilePic || item.userA.profileImageUrl || null;
   const picB = item.userB?.profilePicThumb || item.userB?.profilePic || item.userB?.profileImageUrl || null;
 
+  /**
+   * The opponent side, and what this battle pays.
+   *
+   * `userB` is absent on a `waiting_for_opponent` match. The rest of this file has
+   * always treated it as nullable (`item.userB?.votes`, and the header avatar is
+   * wrapped in `{item.userB && …}`), but four places dereferenced it directly — the
+   * hero media uri and three on the B vote button. Nothing crashed only because the
+   * Worker filters one-sided matches out of every list that feeds this component,
+   * and `routes/read.ts` says so out loud: "waiting_for_opponent (no userB -> would
+   * crash the card)". That makes client stability depend on a server WHERE clause,
+   * and this component is rendered from four different screens. Binding the side
+   * once here means a one-sided match renders a placeholder instead of
+   * red-screening the feed.
+   */
+  const userB = item.userB ?? null;
+  const prize = matchPrize(item);
+
   return (
     <View style={[styles.postContainer, { backgroundColor: cardColor }]}>
       {showConfetti && (
@@ -538,16 +556,36 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
                <Text style={[styles.timeText, { color: subTextColor }]} numberOfLines={1}>{item.title}</Text>
            </View>
         </View>
-        {item.entryFee > 0 && (
+        {/*
+          * What this battle actually pays, from the match's own prize snapshot.
+          *
+          * This used to render `item.entryFee * 1.8`. `entryFee` on a match is the
+          * pot for BOTH players, so that advertised 180% of the money that existed
+          * against a server payout hard-capped at the pot; it had no rounding, so a
+          * 7-coin pot displayed "12.6" coins; and it showed a coin figure even for
+          * battles whose prize is a physical product. Explore showed a different
+          * number again for the same battle. `matchPrize` is now the single answer
+          * for both.
+          */}
+        {prize.type === 'product' ? (
+          <LinearGradient
+            colors={['#FFF4C2', '#FFE68A']}
+            start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+            style={styles.prizeBadge}
+          >
+            <Ionicons name="gift" size={12} color="#E6A200" />
+            <Text style={styles.prizeText} numberOfLines={1}>{prize.product.title}</Text>
+          </LinearGradient>
+        ) : prize.coins > 0 ? (
           <LinearGradient
             colors={['#FFF4C2', '#FFE68A']}
             start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
             style={styles.prizeBadge}
           >
             <Ionicons name="trophy" size={12} color="#E6A200" />
-            <Text style={styles.prizeText}>{item.entryFee * 1.8}</Text>
+            <Text style={styles.prizeText}>{prize.coins}</Text>
           </LinearGradient>
-        )}
+        ) : null}
       </View>
 
       {/* Hero media */}
@@ -562,11 +600,19 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
         </View>
 
         <View style={[styles.imageWrapper, bWins && styles.leadingImage]}>
-          <BattleMedia
-            isVideo={isVideo}
-            uri={item.userB.mediaUrlOptimized || item.userB.mediaUrl}
-            style={styles.postImage}
-          />
+          {userB ? (
+            <BattleMedia
+              isVideo={isVideo}
+              uri={userB.mediaUrlOptimized || userB.mediaUrl}
+              style={styles.postImage}
+            />
+          ) : (
+            // Waiting for an opponent: the slot stays, empty, rather than throwing.
+            <View style={[styles.postImage, styles.waitingSlot]}>
+              <Ionicons name="hourglass-outline" size={22} color="#9BA1A6" />
+              <Text style={styles.waitingSlotText}>Waiting for opponent</Text>
+            </View>
+          )}
           {bWins && <View style={styles.crownContainer}><MaterialCommunityIcons name="crown" size={20} color="#FFD700" /></View>}
         </View>
 
@@ -692,15 +738,15 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
             votingDisabled && !votedForB && styles.disabledVoteButton,
             voteAnimB,
           ]}
-          onPress={() => { pulseButton(voteScaleB); handleVote(item.userB.uid); }}
-          disabled={votingDisabled}
+          onPress={() => { if (!userB) return; pulseButton(voteScaleB); handleVote(userB.uid); }}
+          disabled={votingDisabled || !userB}
           activeOpacity={0.85}
           accessibilityRole="button"
           accessibilityLabel={`Vote for ${nameB}`}
           accessibilityHint={votingClosed ? 'Voting has ended' : 'Submits your one vote for this battle'}
-          accessibilityState={{ disabled: votingDisabled, busy: submittingForUid === item.userB.uid, selected: votedForB }}
+          accessibilityState={{ disabled: votingDisabled || !userB, busy: submittingForUid === userB?.uid, selected: votedForB }}
         >
-          {submittingForUid === item.userB.uid
+          {submittingForUid === userB?.uid
             ? <ActivityIndicator size="small" color="#FFF" />
             : votedForB
               ? <View style={styles.voteButtonInner}>
@@ -786,6 +832,9 @@ const styles = StyleSheet.create({
   mediaSection: { flexDirection: 'row', justifyContent: 'space-between', marginHorizontal: 16, gap: 12, position: 'relative' },
   imageWrapper: { flex: 1, position: 'relative', borderRadius: 20, overflow: 'hidden', borderWidth: 2, borderColor: 'transparent' },
   postImage: { width: '100%', height: 260, backgroundColor: '#EEE' },
+  // Shown in place of the B entry when a battle has no opponent yet.
+  waitingSlot: { alignItems: 'center', justifyContent: 'center', gap: 6 },
+  waitingSlotText: { fontFamily: 'Urbanist-SemiBold', fontSize: 12, color: '#9BA1A6' },
   leadingImage: { borderColor: '#FFD700' },
   crownContainer: { position: 'absolute', top: 8, alignSelf: 'center', left: 0, right: 0, alignItems: 'center', zIndex: 10 },
 

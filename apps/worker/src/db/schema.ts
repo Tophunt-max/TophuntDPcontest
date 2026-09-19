@@ -1129,12 +1129,22 @@ export const deposits = sqliteTable(
     status: text("status").notNull().default("pending"), // pending | approved | rejected
     adminNote: text("admin_note"),
     processedBy: text("processed_by"),
+    /**
+     * When the coins actually landed (migration 0053).
+     *
+     * Written in the SAME batch as the wallet credit, so `status = 'approved' AND
+     * credited_at IS NULL` is the fingerprint of a deposit that was claimed but
+     * never paid. The approval is now atomic, which makes that state impossible —
+     * this column is what lets `computeMoneyHealth` keep proving it.
+     */
+    creditedAt: integer("credited_at"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
   (t) => ({
     statusIdx: index("idx_deposits_status").on(t.status, t.createdAt),
     userIdx: index("idx_deposits_user").on(t.userId),
+    creditedIdx: index("idx_deposits_credited").on(t.status, t.creditedAt),
   }),
 );
 
@@ -1276,6 +1286,34 @@ export const deletionRequests = sqliteTable(
   },
   (t) => ({
     dueIdx: index("idx_deletion_requests_due").on(t.status, t.scheduledFor),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// hall_of_fame_awards  (the settled monthly winner set — migration 0052)
+//
+// The payout used to derive its top 3 live from `users.monthly_wins` and then
+// reset that counter, so re-running a past period paid whoever led the CURRENT
+// month instead. Recording the set makes a re-run a replay rather than a fresh
+// derivation. See the migration for the full account.
+// ---------------------------------------------------------------------------
+export const hallOfFameAwards = sqliteTable(
+  "hall_of_fame_awards",
+  {
+    /** 'YYYY-MM' of the settled month. */
+    period: text("period").notNull(),
+    uid: text("uid").notNull(),
+    /** 1 | 2 | 3 — payload, not key: one user can hold only one rank per month. */
+    rank: integer("rank").notNull(),
+    /** Coins promised for that rank, frozen so a later reward change cannot move it. */
+    reward: real("reward").notNull().default(0),
+    /** `monthly_wins` the rank was awarded for. Audit only — the counter is reset. */
+    wins: real("wins").notNull().default(0),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.period, t.uid] }),
+    periodIdx: index("idx_hof_awards_period").on(t.period, t.rank),
   }),
 );
 

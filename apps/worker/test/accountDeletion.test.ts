@@ -1077,6 +1077,12 @@ describe('deletion completeness across the whole schema', () => {
     // part (name, phone, full postal address) is scrubbed in place by phaseContent
     // and is asserted separately below.
     prize_claims: 'prize award record (delivery address scrubbed)',
+    // Which account won which month, and what it was owed — an accounting fact in
+    // the same class as the coin ledger. It is ALSO the payout's replay guard
+    // (cron.ts `resolveHallOfFameWinners` refuses to re-derive a settled period),
+    // so deleting it would let a re-run pay the current leaderboard for an old
+    // month. Carries no personal data beyond the already-anonymised uid.
+    hall_of_fame_awards: 'monthly award record + payout replay guard',
   };
 
   /** Column names that identify a person in this schema. */

@@ -15,6 +15,14 @@
  */
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import {
+  API_ALLOWED_HEADERS,
+  API_ALLOWED_METHODS,
+  API_EXPOSED_HEADERS,
+  allowedOrigins,
+  applyApiCorsHeaders,
+  isWildcardPolicy,
+} from "./lib/apiCors";
 import type { Env, Variables } from "./types";
 import { ApiError, errorBody } from "./lib/http";
 import { authRoute } from "./routes/auth";
@@ -105,25 +113,25 @@ app.use("*", async (c, next) => {
   );
 });
 
-app.use("*", async (c, next) => {
+/** Requests whose responses must not carry the API's CORS policy. */
+const skipsApiCors = (c: { req: { header: (n: string) => string | undefined; url: string } }): boolean =>
   // WebSocket upgrades must not be wrapped by CORS (immutable 101 response).
-  if (c.req.header("Upgrade") === "websocket") return next();
+  c.req.header("Upgrade") === "websocket" ||
   // Public media is a different CORS surface from the credentialed API: it serves
   // itself `Access-Control-Allow-Origin: *` from within the /media handler (see
   // lib/mediaCors.ts). Running the API's origin-restricted policy here too would
   // override that `*` with an ALLOWED_ORIGINS-based value and re-break
   // cross-origin canvas reads from the app/blog origins. So media opts out.
-  if (new URL(c.req.url).pathname.startsWith("/media/")) return next();
-  const origins = (c.env.ALLOWED_ORIGINS || "*").split(",").map((s) => s.trim());
+  new URL(c.req.url).pathname.startsWith("/media/");
+
+app.use("*", async (c, next) => {
+  if (skipsApiCors(c)) return next();
+  const origins = allowedOrigins(c.env);
   const mw = cors({
-    origin: origins.length === 1 && origins[0] === "*" ? "*" : origins,
-    // PUT belongs here: the admin panel saves integration config and rotates
-    // credentials with PUT (`saveIntegrations`, `setIntegrationSecret`). Omitting
-    // it made those calls fail preflight with a bare `TypeError: Failed to fetch`,
-    // which reads like a network outage rather than a policy rejection.
-    allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowHeaders: ["Content-Type", "Authorization"],
-    exposeHeaders: ["X-Next-Cursor", "X-Request-Id"],
+    origin: isWildcardPolicy(origins) ? "*" : origins,
+    allowMethods: [...API_ALLOWED_METHODS],
+    allowHeaders: [...API_ALLOWED_HEADERS],
+    exposeHeaders: [...API_EXPOSED_HEADERS],
     maxAge: 86400,
   });
   return mw(c, next);
@@ -401,6 +409,11 @@ app.route("/webhook", webhookRoute);
 app.onError((err, c) => {
   const requestId = c.get("requestId");
   const errPath = new URL(c.req.url).pathname;
+  // Re-apply CORS before returning: `hono/cors` sets its headers AFTER
+  // `await next()`, so a thrown response has none. See lib/apiCors.ts.
+  if (!skipsApiCors(c)) {
+    applyApiCorsHeaders({ set: (name, value) => c.header(name, value) }, c.env, c.req.header("Origin"));
+  }
   if (err instanceof ApiError) {
     // A 5xx ApiError is OUR fault and used to return from here completely
     // unrecorded — no error_logs row, no Sentry event, only an ephemeral

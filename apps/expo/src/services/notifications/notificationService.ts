@@ -280,12 +280,22 @@ class NotificationService {
     }
 
     // 3. Notifications list — instant via the user's WebSocket channel.
-    subscribeToNotifications(userId: string, limitCount: number = 50, callback: (items: NotificationItem[]) => void): () => void {
+    //
+    // `onError` is forwarded so the screen can distinguish "no data yet" from "the
+    // fetch failed". Without it the list callback fired only on success, and the
+    // notifications screen cleared its loading flag only inside that callback — so
+    // one failed fetch left the skeleton animating with no way out.
+    subscribeToNotifications(
+        userId: string,
+        limitCount: number = 50,
+        callback: (items: NotificationItem[]) => void,
+        onError?: (reason: 'fetch_failed' | 'backgrounded', error?: unknown) => void,
+    ): () => void {
         return live(
             `user:${userId}`,
             () => readApi('/read/notifications', { limit: limitCount }),
             (items: NotificationItem[]) => callback(items || []),
-            { filter: (e) => e.type === 'notification', fallbackMs: NOTIFICATION_FALLBACK_MS },
+            { filter: (e) => e.type === 'notification', fallbackMs: NOTIFICATION_FALLBACK_MS, onError },
         );
     }
 

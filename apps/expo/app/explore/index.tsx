@@ -37,8 +37,8 @@ import { Colors } from '@/constants/theme';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
 import { ContestCountdownBadge, ContestEntryBadge } from '@/src/components/contests/ContestBadges';
 import { useCountdown } from '@/src/hooks/useCountdown';
-import { isFreeContest } from '@/src/lib/contestPricing';
-import { contestPrize, describePrize } from '@/src/lib/contestPrize';
+import { entryFeePerPlayer, isFreeContest } from '@/src/lib/contestPricing';
+import { contestPrize, describePrize, matchPrize } from '@/src/lib/contestPrize';
 
 const { width } = Dimensions.get('window');
 const PAD = 20;
@@ -150,21 +150,60 @@ export default function DiscoverScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, user]);
 
+  /**
+   * Monotonic request ids, so a slow response can never overwrite a newer one.
+   *
+   * Both of the async flows below are reachable concurrently — the search box fires
+   * on every debounce, and `fetchExploreData` has three callers (the auth effect,
+   * pull-to-refresh, and the Live Arena refresh button) — and neither had any
+   * cancellation. The search effect in particular only cleared its TIMER, so once
+   * the 350ms had elapsed the in-flight request was completely unguarded: typing
+   * "al" then "alice" showed results for "al" whenever the first request was
+   * slower, a stale `setSearching(false)` hid the spinner while the newer request
+   * was still running, and leaving the screen mid-search set state on an unmounted
+   * component. `searchUsers` swallows its own errors and returns [], so a stale
+   * FAILED request could also blank out good results for the current query.
+   *
+   * This is the pattern `app/home.tsx` already uses for the feed.
+   */
+  const searchReqId = useRef(0);
+  const exploreReqId = useRef(0);
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
+
   // Debounced server-side people search (min 2 chars, only on the People tab).
   useEffect(() => {
-    if (activeTab !== 'users') return;
+    // Leaving the People tab must also clear the in-flight state, or `searching`
+    // stays true forever and the spinner is stuck on a tab nobody is searching.
+    if (activeTab !== 'users') { setSearching(false); return; }
     const query = searchQuery.trim();
     if (query.length < 2) { setSearchResults([]); setSearching(false); return; }
     setSearching(true);
+    // Two guards, covering two different races:
+    //  - `cancelled` handles the query changing (or the screen unmounting) after
+    //    the timer has already fired, which the old `clearTimeout`-only cleanup
+    //    could not touch;
+    //  - `reqId` orders the requests still in flight against each other, so a
+    //    slow earlier response cannot land on top of a newer one.
+    let cancelled = false;
+    const reqId = ++searchReqId.current;
     const t = setTimeout(async () => {
-      const res = await searchUsers(query);
-      setSearchResults(res);
-      setSearching(false);
+      try {
+        const res = await searchUsers(query);
+        if (cancelled || !mounted.current || reqId !== searchReqId.current) return;
+        setSearchResults(res);
+      } finally {
+        if (!cancelled && mounted.current && reqId === searchReqId.current) setSearching(false);
+      }
     }, 350);
-    return () => clearTimeout(t);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
   }, [searchQuery, activeTab]);
 
   const fetchExploreData = async (isRefresh = false) => {
+    const reqId = ++exploreReqId.current;
     if (isRefresh) setRefreshing(true); else setLoading(true);
     try {
       const [contests, waiting, usersData] = await Promise.all([
@@ -172,15 +211,21 @@ export default function DiscoverScreen() {
         contestService.getWaitingMatches(),
         fetchSuggestedUsers(),
       ]);
+      // Two overlapping refreshes must not interleave their results.
+      if (!mounted.current || reqId !== exploreReqId.current) return;
       setAvailableContests(contests);
       setWaitingMatches(waiting);
       setSuggestedUsers(usersData);
     } catch (error) {
       console.error('Explore error:', error);
-      addToast('Failed to load explore data', 'error');
+      if (mounted.current && reqId === exploreReqId.current) {
+        addToast('Failed to load explore data', 'error');
+      }
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (mounted.current && reqId === exploreReqId.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   };
 
@@ -398,8 +443,11 @@ export default function DiscoverScreen() {
   // ================================================================
   const renderVersus = (item: any) => {
     const isMyMatch = user && item.userA && item.userA.uid === user.uid;
-    const entryFee = item.entryFee ? item.entryFee / 2 : 0;
-    const prize = item.entryFee || 0;
+    // Both through the shared helpers, so this card and the feed card can no
+    // longer disagree about the same battle — Explore used to show the raw pot as
+    // the prize while the feed showed the pot times 1.8.
+    const entryFee = entryFeePerPlayer(item);
+    const prize = matchPrize(item);
     const isVideo = item.type === 'video';
     const grad = gradForType(item.type);
     const accent = colorForType(item.type);
@@ -425,11 +473,18 @@ export default function DiscoverScreen() {
             <View style={styles.liveDot} />
             <Text style={styles.arenaStatusText}>LIVE · WAITING</Text>
           </View>
-          <View style={styles.arenaPrizePill}>
-            <MaterialCommunityIcons name="trophy" size={12} color="#F59E0B" />
-            <Text style={styles.arenaPrizeText}>Win {prize}</Text>
-            <CoinIcon size={12} color="#F59E0B" />
-          </View>
+          {prize.type === 'product' ? (
+            <View style={styles.arenaPrizePill}>
+              <MaterialCommunityIcons name="gift" size={12} color="#F59E0B" />
+              <Text style={styles.arenaPrizeText} numberOfLines={1}>Win {prize.product.title}</Text>
+            </View>
+          ) : (
+            <View style={styles.arenaPrizePill}>
+              <MaterialCommunityIcons name="trophy" size={12} color="#F59E0B" />
+              <Text style={styles.arenaPrizeText}>Win {prize.coins}</Text>
+              <CoinIcon size={12} color="#F59E0B" />
+            </View>
+          )}
         </View>
 
         {/* Versus arena: creator vs empty challenger slot */}
