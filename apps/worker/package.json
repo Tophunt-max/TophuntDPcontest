@@ -21,7 +21,7 @@
   "dependencies": {
     "aws4fetch": "^1.0.20",
     "drizzle-orm": "^0.45.2",
-    "hono": "^4.13.5",
+    "hono": "^4.13.8",
     "jose": "^5.9.6",
     "node-html-parser": "^9.0.1"
   },
