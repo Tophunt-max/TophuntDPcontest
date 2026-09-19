@@ -17,6 +17,19 @@ export interface Env {
   // which a KV read-then-write on an eventually-consistent store never was.
   // Typed for native RPC calls. See lib/rateLimit.ts for the client.
   RATE_LIMITER: DurableObjectNamespace<import("./rateLimiter").RateLimiter>;
+  // Per-chat message store (SQLite-backed DO). Owns chat message BODIES, keeping
+  // the fastest-growing write path off D1's single writer. The `chats` preview
+  // row + `chat_members` index stay in D1 (cross-chat inbox queries). Typed for
+  // native RPC calls; see lib/chatArchive.ts for the client. Seeds lazily from
+  // the D1 `messages` rows on first touch — that seed IS the migration.
+  CHAT_ARCHIVE: DurableObjectNamespace<import("./chatArchive").ChatArchive>;
+
+  // Admin broadcast fan-out queue. A broadcast enqueues one message per page and
+  // the consumer (index.ts `queue()`) advances one page then re-enqueues, so a
+  // send-to-everyone runs in seconds instead of one page per 10-minute cron tick.
+  // OPTIONAL on purpose: with no binding (local dev, or before the queue is
+  // created) `enqueueBroadcast` no-ops the send and the cron safety net drains it.
+  BROADCAST_QUEUE?: Queue<import("./lib/broadcast").BroadcastQueueMessage>;
 
   // --- Plain vars ---
   FIREBASE_PROJECT_ID: string;
@@ -108,6 +121,17 @@ export interface Env {
   // error tracking is a no-op and nothing else changes.
   SENTRY_DSN?: string;
   SENTRY_ENVIRONMENT?: string;
+
+  // Capacity monitoring (admin dashboard "Database Capacity" widget). All
+  // OPTIONAL and fail-open: without them the widget still shows table growth +
+  // storage (measured in-Worker); with them it also shows today's live D1
+  // rows_read / rows_written from the Cloudflare GraphQL Analytics API.
+  //   CF_ACCOUNT_ID / CF_D1_DATABASE_ID — not secret (wrangler.toml [vars]).
+  //   CF_ANALYTICS_TOKEN — a READ-ONLY Analytics API token, set via
+  //     `wrangler secret put CF_ANALYTICS_TOKEN`. Never returned to the client.
+  CF_ACCOUNT_ID?: string;
+  CF_D1_DATABASE_ID?: string;
+  CF_ANALYTICS_TOKEN?: string;
 
   // -------------------------------------------------------------------------
   // Panel-managed integrations.

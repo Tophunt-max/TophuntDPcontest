@@ -1,11 +1,12 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Share, ScrollView, useWindowDimensions, Image } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, useWindowDimensions, Platform } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@/src/lib/icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { designWidth } from '@/src/lib/layout';
+import { shareBattle, battleUrl, shareOrigin } from '@/src/lib/share';
 
 /**
  * Contest congratulations screen.
@@ -25,21 +26,41 @@ export default function ContestJoinedScreen() {
   const params = useLocalSearchParams();
   const contestName = params.contestName as string || "Contest";
   const isJoining = params.mode !== 'create';
+  const matchId = (params.matchId as string) || '';
+  const imageUrl = (params.imageUrl as string) || '';
 
   const bgColor = useThemeColor({}, 'background');
   const textColor = useThemeColor({}, 'text');
   const cardBg = useThemeColor({ light: '#FFF', dark: '#1F222A' }, 'background');
 
+  /**
+   * Share the battle with a LINK and the entry PHOTO — not just the caption.
+   *
+   * The previous version sent only `message`, so recipients got a line of text
+   * with no way to reach the battle and no image. Now:
+   *  - the caption carries an openable battle link (`/battle/<id>`), falling back
+   *    to the app's own origin when we don't have a match id;
+   *  - the link's page provides the photo as its rich preview on every target
+   *    that renders one (WhatsApp, Telegram, iMessage, X, Facebook…);
+   *  - on web — where a file and text can be shared together — the entry image
+   *    is attached directly too.
+   *
+   * `shareBattle` is the app's single, tested share implementation and never
+   * throws (a cancelled sheet just resolves quietly).
+   */
   const handleShare = async () => {
-    try {
-      await Share.share({
-        message: isJoining
-          ? `I just joined the ${contestName} battle on TopHunt! Vote for me and let's win some coins.`
-          : `I just started a ${contestName} battle on TopHunt! Come challenge me and win coins.`,
-      });
-    } catch (error) {
-      console.log(error);
-    }
+    const link = matchId ? battleUrl(matchId) : shareOrigin();
+    const intro = isJoining
+      ? `I just joined the ${contestName} battle on TopHunt! Vote for me and let's win some coins.`
+      : `I just started a ${contestName} battle on TopHunt! Come challenge me and win coins.`;
+    const caption = link ? `${intro}\n${link}` : intro;
+    await shareBattle({
+      caption,
+      url: link,
+      // Attaching a file drops the caption/link on native (an expo-sharing
+      // limit), so only attach the image where both can go together (web).
+      vsImageUrl: Platform.OS === 'web' ? imageUrl || undefined : undefined,
+    });
   };
 
   return (

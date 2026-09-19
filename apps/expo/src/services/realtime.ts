@@ -148,7 +148,19 @@ async function openSocket(channel: string, conn: Conn) {
 function scheduleReconnect(channel: string, conn: Conn) {
   if (conn.closedByUs) return;
   conn.attempts += 1;
-  const delay = Math.min(30000, 1000 * 2 ** Math.min(conn.attempts, 5)); // 2s..30s
+  // Exponential backoff, capped at 30s.
+  const base = Math.min(30000, 1000 * 2 ** Math.min(conn.attempts, 5)); // 2s..30s
+  /**
+   * FULL JITTER on top of the backoff. Without it, a single event that drops
+   * every client's socket at once — most commonly a Worker redeploy, which the
+   * repo does on every push to `main` — makes all of them reconnect in lockstep,
+   * then again after the same 2s, 4s, 8s… backoff. That synchronised retry is a
+   * self-inflicted thundering herd against the same RealtimeHub Durable Objects
+   * the instant they come back. Spreading each client uniformly across [0, base]
+   * turns the spike into a smooth ramp; the expected wait is only halved, so a
+   * genuinely-down backend is not hammered any harder.
+   */
+  const delay = Math.floor(Math.random() * base);
   conn.reconnectTimer = setTimeout(() => openSocket(channel, conn), delay);
 }
 
@@ -205,6 +217,18 @@ export function live<T>(
      * still keep it updated. Defaults to true (fetch on subscribe).
      */
     immediate?: boolean;
+    /**
+     * Called when a refresh could not produce data.
+     *
+     * Without this, `callback` firing only on SUCCESS made a screen whose loading
+     * flag was cleared inside `callback` unable to ever leave its skeleton: a 500,
+     * a timeout or an offline blip was swallowed by the catch below and looked
+     * identical to "still loading". `reason` distinguishes a real failure from a
+     * fetch that was deliberately skipped because the app is backgrounded, since a
+     * subscriber should show a retry for the first and simply keep waiting for the
+     * second.
+     */
+    onError?: (reason: 'fetch_failed' | 'backgrounded', error?: unknown) => void;
   } = {},
 ): () => void {
   // The WebSocket pushes updates instantly, so this poll is only a safety net.
@@ -223,13 +247,23 @@ export function live<T>(
     }
     // Skip the safety-net fetch while backgrounded (the socket reconnects and
     // refreshes on foreground anyway).
-    if (AppState.currentState !== 'active') return;
+    //
+    // This also skips the INITIAL fetch, which is why it is reported: on iOS a
+    // cold start from a push-notification tap can run this while AppState is
+    // still 'inactive', so a subscriber that only learns about success would
+    // wait forever for data that was never requested.
+    if (AppState.currentState !== 'active') {
+      if (active) opts.onError?.('backgrounded');
+      return;
+    }
     inFlight = true;
     try {
       const data = await fetcher();
       if (active) callback(data);
-    } catch {
-      /* transient */
+    } catch (e) {
+      // Still transient — the socket and the safety-net poll will retry — but no
+      // longer silent, so a subscriber can offer a retry instead of hanging.
+      if (active) opts.onError?.('fetch_failed', e);
     } finally {
       inFlight = false;
       if (active && refreshPending) {

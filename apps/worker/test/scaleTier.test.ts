@@ -101,6 +101,32 @@ describe('SCALE_TIER — auth-state cache (the one free->paid lever)', () => {
     expect((await get(env, 'alice', AUTHED_ROUTE)).status).toBe(403);
   });
 
+  it('auto tier: caches the auth-state like paid (safe on any plan via fail-open writes)', async () => {
+    const { env } = makeEnv({ SCALE_TIER: 'auto' });
+    await seedUser(env, 'alice');
+
+    expect(env.CACHE_KV._map.has(authStateCacheKey('alice'))).toBe(false);
+    const r = await get(env, 'alice', AUTHED_ROUTE);
+    expect(r.status).toBe(200);
+    // "auto" attempts the cache (like paid); on paid it succeeds, on free the put
+    // simply fails open — either way the request is served correctly.
+    expect(env.CACHE_KV._map.has(authStateCacheKey('alice'))).toBe(true);
+  });
+
+  it('auto tier: blocking still invalidates immediately (revocation is a DELETE, not gated by tier)', async () => {
+    const { env } = makeEnv({ SCALE_TIER: 'auto' });
+    await seedUser(env, 'alice');
+
+    expect((await get(env, 'alice', AUTHED_ROUTE)).status).toBe(200);
+    expect(env.CACHE_KV._map.has(authStateCacheKey('alice'))).toBe(true);
+
+    expect(await setBlocked(env, 'alice', true)).toBe(200);
+    // The invalidation delete drops the cached copy — this is what keeps a block
+    // immediate even on a free plan whose write budget is exhausted.
+    expect(env.CACHE_KV._map.has(authStateCacheKey('alice'))).toBe(false);
+    expect((await get(env, 'alice', AUTHED_ROUTE)).status).toBe(403);
+  });
+
   it('paid tier: unblocking invalidates the cache so access is restored immediately', async () => {
     const { env } = makeEnv({ SCALE_TIER: 'paid' });
     await seedUser(env, 'alice', { isBlocked: true, status: 'blocked' });

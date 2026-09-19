@@ -2,11 +2,8 @@
  * XP / level / reward logic ported from utils/gamification.ts.
  * Settings come from the `gamification` settings row (KV-cached).
  */
-import { eq } from "drizzle-orm";
 import type { Env } from "../types";
-import { getDb, schema } from "../db";
 import { getGamificationSettings as loadGamification } from "./settings";
-import { sendPushNotification } from "./notify";
 
 interface Badge {
   level: number;
@@ -21,8 +18,11 @@ export interface GamificationSettings {
   dailyLoginReward: number;
   /** Extra coins per consecutive day, multiplied by the current streak. */
   dailyStreakBonus: number;
-  signupBonus: number;
-  referralBonus: number;
+  // NOTE: signupBonus and referralBonus deliberately do NOT live here any more.
+  // Both are credited straight to a balance and are now sourced exclusively from
+  // `appConfig.rewardSettings` via getRewardSettings() (settings.ts) — the same
+  // row the admin's App Settings page writes. Keeping duplicates here was a dead
+  // knob: the App Settings field wrote appConfig while crediting read this row.
   badges: Badge[];
 }
 
@@ -31,8 +31,6 @@ const DEFAULT_SETTINGS: GamificationSettings = {
   xpIncrement: 500,
   dailyLoginReward: 10,
   dailyStreakBonus: 2,
-  signupBonus: 100,
-  referralBonus: 50,
   badges: [],
 };
 
@@ -51,8 +49,9 @@ const DEFAULT_SETTINGS: GamificationSettings = {
 //   * a vote       -> a flat VOTE_XP constant in voteCounter.ts (XP only, no coins)
 //   * joining      -> nothing; joining costs an entry fee rather than paying one
 
-/** Coin-valued settings keys. These reach a real balance, so they are sanitised. */
-const COIN_KEYS = ["dailyLoginReward", "dailyStreakBonus", "signupBonus", "referralBonus"] as const;
+/** Coin-valued settings keys. These reach a real balance, so they are sanitised.
+ *  (signupBonus/referralBonus moved to appConfig.rewardSettings — see settings.ts.) */
+const COIN_KEYS = ["dailyLoginReward", "dailyStreakBonus"] as const;
 /** Integer-valued but non-monetary keys. */
 const XP_KEYS = ["xpThreshold", "xpIncrement"] as const;
 
@@ -105,35 +104,24 @@ export function calculateLevel(xp: number, threshold: number, increment: number)
   return level;
 }
 
-/** Award XP (and handle level-up + badges). */
-export async function awardXp(env: Env, userId: string, amount: number): Promise<void> {
-  const settings = await getSettings(env);
-  const db = getDb(env);
-  const user = await db
-    .select({ xp: schema.users.xp, level: schema.users.level, badges: schema.users.badges })
-    .from(schema.users)
-    .where(eq(schema.users.uid, userId))
-    .get();
-  if (!user) return;
-
-  const newXp = (user.xp || 0) + amount;
-  const newLevel = calculateLevel(newXp, settings.xpThreshold, settings.xpIncrement);
-  const leveledUp = newLevel > (user.level || 1);
-
-  let badges = (user.badges as unknown as Badge[]) || [];
-  if (leveledUp) {
-    const badge = settings.badges.find((b) => b.level === newLevel);
-    if (badge && !badges.some((b) => b.name === badge.name)) badges = [...badges, badge];
-  }
-
-  await db
-    .update(schema.users)
-    .set({ xp: newXp, level: newLevel, badges: badges as any, updatedAt: Date.now() })
-    .where(eq(schema.users.uid, userId));
-
-  if (leveledUp) {
-    await sendPushNotification(env, userId, "Level Up! 🌟", `You reached Level ${newLevel}.`, "level_up");
-  }
+/**
+ * The level a given cumulative XP maps to — DERIVED, never stored.
+ *
+ * XP is the single source of truth: it is incremented atomically (`xp = xp + N`)
+ * wherever it is earned (votes, match results, the daily reward, …) and the level
+ * is computed from it on read. The old `awardXp` that ALSO wrote `users.level`
+ * was removed — it had no callers and did a non-atomic read-modify-write, and its
+ * absence is exactly why every account's stored `level` sat frozen at its seeded
+ * value while XP climbed. Deriving on read means the level can never drift from
+ * the XP behind it, and there is no write to race.
+ */
+export function levelForXp(
+  xp: number,
+  settings: Pick<GamificationSettings, "xpThreshold" | "xpIncrement">,
+): number {
+  const n = Number(xp);
+  const safeXp = Number.isFinite(n) && n > 0 ? n : 0;
+  return calculateLevel(safeXp, settings.xpThreshold, settings.xpIncrement);
 }
 
 // ---------------------------------------------------------------------------

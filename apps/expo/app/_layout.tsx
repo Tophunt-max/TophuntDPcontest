@@ -55,6 +55,7 @@ import { useAppConfig, isUpdateRequired } from '@/src/services/appSettings';
 import { useAuth } from '@/src/hooks/useAuth'; // Import useAuth hook
 import { notificationService } from '@/src/services/notifications/notificationService';
 import { AnnouncementBanner } from '@/src/components/ui/AnnouncementBanner';
+import { AnnouncementPopup } from '@/src/components/ui/AnnouncementPopup';
 import { ErrorBoundary } from '@/src/components/ErrorBoundary';
 import { OfflineBanner } from '@/src/components/ui/OfflineBanner';
 import { emitToast } from '@/src/lib/toastBridge';
@@ -290,6 +291,8 @@ function RootLayoutNav() {
           </Stack>
           {/* Admin-controlled announcement banner (overlays all screens). */}
           <AnnouncementBanner />
+          {/* Admin-controlled announcement popup (targeted, 24h-snooze modal). */}
+          <AnnouncementPopup />
           {/* Connectivity banner shown whenever the device goes offline. */}
           <OfflineBanner />
         </View>

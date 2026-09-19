@@ -1,4 +1,4 @@
-import { desc, eq, lt } from "drizzle-orm";
+import { and, desc, eq, lt } from "drizzle-orm";
 import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { newId, now } from "./ids";
@@ -37,6 +37,45 @@ export const CRON_STALE_AFTER_MS: Record<string, number> = {
 
 const CRON_RUN_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
+/** How long a prunable replay claim has to outlive any plausible client retry. */
+const CLAIM_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * The ONLY `idempotency_keys` scopes that may ever be deleted.
+ *
+ * This is an allowlist, not a blocklist, and that direction is the whole point.
+ * The retention sweep used to be scope-blind:
+ *
+ *     DELETE FROM idempotency_keys WHERE created_at < ?
+ *
+ * which silently deleted MONEY claims alongside the request-retry ones. For the
+ * paths whose ledger row is written with `INSERT OR IGNORE` on a deterministic id
+ * (the Hall of Fame) or with a random uuid (`adjustUserWallet`), that claim row is
+ * the ONLY thing standing between a re-run and a second credit — so deleting it
+ * turned "exactly once, forever" into "exactly once, for seven days". A Hall of
+ * Fame re-run past the window credited coins whose ledger insert was ignored as a
+ * duplicate, moving a balance with no ledger row: the precise `ledgerDrift`
+ * condition lib/moneyHealth.ts alarms on.
+ *
+ * With an allowlist, a scope added later is RETAINED until someone deliberately
+ * declares it safe to drop. The safe direction for a claim of unknown purpose is
+ * to keep it; an unbounded table is a cost problem, a lost money claim is a
+ * correctness one.
+ *
+ *  - `api`   — per-request `Idempotency-Key` on a user action. Bounded retry window.
+ *  - `admin` — same, for an admin action; released explicitly on failure anyway.
+ *  - `alert` — an alert-suppression window, already expired by the time it ages out.
+ *
+ * Deliberately absent, and why each one must never be pruned:
+ *  - `wallet`      — sole replay guard for `adjustUserWallet` (random ledger id).
+ *  - `clawback`    — sole per-refund guard for a refund/chargeback reversal.
+ *  - `hall_of_fame`— sole guard on the monthly payout.
+ * `NULL` is excluded too: it means "written before this scope existed", so it
+ * cannot be proven safe. Those rows are historical and finite, so retaining them
+ * costs a bounded amount and risks nothing.
+ */
+export const PRUNABLE_CLAIM_SCOPES = ["api", "admin", "alert"] as const;
+
 export interface CronRunOutcome<T> {
   ok: boolean;
   durationMs: number;
@@ -71,8 +110,15 @@ export async function runCronJob<T>(
     // stalled payout run is visible without reading logs.
     await logErrorToDb(env, error, { path: `cron:${name}`, method: "CRON" });
     await captureError(env, error, { path: `cron:${name}`, method: "CRON", tags: { cron: name } });
-    await raiseOpsAlert(
+    // DEDUPED per job, 6h window. A job that keeps failing every 10-minute tick —
+    // e.g. every job at once when D1 is over its daily row limit — used to raise a
+    // FRESH admin notification each tick, flooding the bell so "Mark all read" never
+    // seemed to clear. One alert per job per window is enough to see the incident;
+    // the error trail and heartbeat carry the rest.
+    await alertOnce(
       env,
+      `cron:${name}`,
+      6 * 60 * 60 * 1000,
       `Cron failed: ${name}`,
       `${message} (after ${durationMs}ms). Contest settlement, refunds or payouts may be delayed.`,
     );
@@ -150,18 +196,36 @@ export async function cronHealth(env: Env): Promise<CronHealth[]> {
 }
 
 /** Retention for the heartbeat table and expired replay claims. */
-export async function pruneOpsTables(env: Env): Promise<{ cronRuns: number; idempotencyKeys: number }> {
+export async function pruneOpsTables(
+  env: Env,
+): Promise<{ cronRuns: number; idempotencyKeys: number; adminNotifications: number }> {
   const cutoff = Date.now() - CRON_RUN_RETENTION_MS;
   const runs = await env.DB.prepare("DELETE FROM cron_runs WHERE created_at < ?").bind(cutoff).run();
-  // Replay claims only need to outlive any plausible client retry window. A week
-  // is generous; keeping them forever would grow the table without bound.
-  const keyCutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
-  const keys = await env.DB.prepare("DELETE FROM idempotency_keys WHERE created_at < ?")
-    .bind(keyCutoff)
+  // Request-retry claims only need to outlive any plausible client retry window;
+  // a week is generous. MONEY claims are never pruned — see PRUNABLE_CLAIM_SCOPES
+  // for why this is an allowlist and what deleting one used to cost.
+  const keyCutoff = Date.now() - CLAIM_RETENTION_MS;
+  const scopePlaceholders = PRUNABLE_CLAIM_SCOPES.map(() => "?").join(", ");
+  const keys = await env.DB.prepare(
+    `DELETE FROM idempotency_keys WHERE created_at < ? AND scope IN (${scopePlaceholders})`,
+  )
+    .bind(keyCutoff, ...PRUNABLE_CLAIM_SCOPES)
+    .run();
+  // Admin notifications are an activity feed, not a record — nothing read them
+  // back after the fact, and with no retention they grew without bound (a burst of
+  // cron-failure alerts alone can add dozens a day). Read ones go after a week;
+  // anything at all goes after 30 days so an unacknowledged incident is not erased
+  // too soon but the table is still bounded.
+  const DAY = 24 * 60 * 60 * 1000;
+  const notifs = await env.DB.prepare(
+    "DELETE FROM admin_notifications WHERE created_at < ? OR (is_read = 1 AND created_at < ?)",
+  )
+    .bind(Date.now() - 30 * DAY, Date.now() - 7 * DAY)
     .run();
   return {
     cronRuns: Number(runs.meta?.changes || 0),
     idempotencyKeys: Number(keys.meta?.changes || 0),
+    adminNotifications: Number(notifs.meta?.changes || 0),
   };
 }
 
@@ -173,24 +237,39 @@ export async function alertOnce(
   title: string,
   message: string,
 ): Promise<boolean> {
-  const db = getDb(env);
-  const ts = now();
-  const claimKey = `alert:${key}:${Math.floor(ts / windowMs)}`;
-  const claim = await db
-    .insert(schema.idempotencyKeys)
-    .values({ key: claimKey, nonce: crypto.randomUUID(), scope: "alert", createdAt: ts })
-    .onConflictDoNothing()
-    .run();
-  if (Number(claim.meta?.changes || 0) === 0) return false;
-  await raiseOpsAlert(env, title, message);
-  return true;
+  // Never throws: this runs from runCronJob's failure path, which must stay
+  // non-throwing, and from cron where an alert must not become a second incident.
+  try {
+    const db = getDb(env);
+    const ts = now();
+    const claimKey = `alert:${key}:${Math.floor(ts / windowMs)}`;
+    const claim = await db
+      .insert(schema.idempotencyKeys)
+      .values({ key: claimKey, nonce: crypto.randomUUID(), scope: "alert", createdAt: ts })
+      .onConflictDoNothing()
+      .run();
+    if (Number(claim.meta?.changes || 0) === 0) return false;
+    await raiseOpsAlert(env, title, message);
+    return true;
+  } catch (e) {
+    console.error("[ops] alertOnce failed", key, e);
+    return false;
+  }
 }
 
-/** Remove alert-suppression claims that have aged out (called with pruneOpsTables). */
+/**
+ * Remove alert-suppression claims that have aged out (called with pruneOpsTables).
+ *
+ * Scoped to `alert`, which is what the name always promised. It previously
+ * deleted EVERY claim older than a week regardless of scope — a second copy of
+ * the money-claim bug documented on `PRUNABLE_CLAIM_SCOPES`, so fixing only
+ * `pruneOpsTables` would have left this one still able to drop a wallet or
+ * Hall-of-Fame claim.
+ */
 export async function pruneAlertClaims(env: Env): Promise<void> {
-  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const cutoff = Date.now() - CLAIM_RETENTION_MS;
   await getDb(env)
     .delete(schema.idempotencyKeys)
-    .where(lt(schema.idempotencyKeys.createdAt, cutoff))
+    .where(and(lt(schema.idempotencyKeys.createdAt, cutoff), eq(schema.idempotencyKeys.scope, "alert")))
     .run();
 }

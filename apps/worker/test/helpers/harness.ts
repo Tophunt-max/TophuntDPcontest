@@ -152,6 +152,127 @@ export function fakeRateLimiter() {
   };
 }
 
+/**
+ * Stand-in for the ChatArchive Durable Object (one instance per chatId).
+ *
+ * Message bodies moved out of the D1 `messages` table into per-chat DOs, so the
+ * handlers now call `env.CHAT_ARCHIVE.get(id).append/history/…` instead of
+ * touching D1. `src/chatArchive.ts` imports `cloudflare:workers`, which cannot
+ * load in Node (the same reason the app can't import src/index.ts here), so this
+ * fake mirrors the DO's behaviour in memory.
+ *
+ * Crucially it SEEDS from the D1 `messages` table on first touch, exactly like
+ * the real DO — so a test that pre-inserts legacy rows sees them, and the
+ * lazy-migration path is actually exercised rather than stubbed away.
+ */
+export function fakeChatArchive(sqlite: SqliteDb) {
+  interface Msg { id: string; senderId: string; text: string | null; read: number; createdAt: number }
+  const stores = new Map<string, { seeded: boolean; msgs: Map<string, Msg> }>();
+  const store = (chatId: string) => {
+    let s = stores.get(chatId);
+    if (!s) {
+      s = { seeded: false, msgs: new Map() };
+      stores.set(chatId, s);
+    }
+    return s;
+  };
+  const seed = (chatId: string) => {
+    const s = store(chatId);
+    if (s.seeded) return;
+    const rows = sqlite
+      .prepare('SELECT id, sender_id, text, read, created_at FROM messages WHERE chat_id = ?')
+      .all(chatId) as any[];
+    for (const r of rows) {
+      if (!s.msgs.has(r.id)) {
+        s.msgs.set(r.id, {
+          id: r.id,
+          senderId: r.sender_id,
+          text: r.text ?? null,
+          read: r.read ? 1 : 0,
+          createdAt: Number(r.created_at),
+        });
+      }
+    }
+    s.seeded = true;
+  };
+  const out = (m: Msg, chatId: string) => ({ id: m.id, senderId: m.senderId, text: m.text, createdAt: m.createdAt, chatId });
+  const makeStub = (chatId: string) => ({
+    async append(cid: string, m: { id: string; senderId: string; text: string | null; createdAt: number }) {
+      seed(cid);
+      const s = store(cid);
+      if (!s.msgs.has(m.id)) s.msgs.set(m.id, { ...m, read: 0 });
+      return { id: m.id, senderId: m.senderId, text: m.text, createdAt: m.createdAt };
+    },
+    async history(cid: string, since = 0, limit = 200) {
+      seed(cid);
+      return [...store(cid).msgs.values()]
+        .filter((m) => m.createdAt > (Number(since) || 0))
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .slice(0, limit)
+        .map((m) => ({ id: m.id, senderId: m.senderId, text: m.text, createdAt: m.createdAt }));
+    },
+    async markRead(cid: string, reader: string) {
+      seed(cid);
+      let updated = 0;
+      for (const m of store(cid).msgs.values()) {
+        if (m.senderId !== reader && m.read === 0) {
+          m.read = 1;
+          updated++;
+        }
+      }
+      return { updated };
+    },
+    async purge(cid: string) {
+      const s = store(cid);
+      const deleted = s.msgs.size;
+      s.msgs.clear();
+      s.seeded = false;
+      return { deleted };
+    },
+    async deleteBySender(cid: string, uid: string) {
+      seed(cid);
+      const s = store(cid);
+      let deleted = 0;
+      for (const [id, m] of [...s.msgs]) {
+        if (m.senderId === uid) {
+          s.msgs.delete(id);
+          deleted++;
+        }
+      }
+      return { deleted };
+    },
+    async listBySender(cid: string, uid: string, limit: number) {
+      seed(cid);
+      return [...store(cid).msgs.values()]
+        .filter((m) => m.senderId === uid)
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .slice(0, limit)
+        .map((m) => out(m, cid));
+    },
+    async deleteOne(cid: string, id: string) {
+      seed(cid);
+      const deleted = store(cid).msgs.delete(id) ? 1 : 0;
+      return { deleted };
+    },
+    async recent(cid: string, limit: number) {
+      seed(cid);
+      return [...store(cid).msgs.values()]
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .slice(0, limit)
+        .map((m) => out(m, cid));
+    },
+  });
+  return {
+    _stores: stores,
+    idFromName(name: string) {
+      return { name } as any;
+    },
+    get(id: { name: string }) {
+      return makeStub(id.name);
+    },
+  };
+}
+
 /** Simple in-memory KV that mimics the bits the handlers use. */
 export function fakeKV() {
   const map = new Map<string, string>();
@@ -218,6 +339,7 @@ export interface TestEnv {
   CACHE_KV: ReturnType<typeof fakeKV>;
   OTP_KV: ReturnType<typeof fakeKV>;
   RATE_LIMITER: ReturnType<typeof fakeRateLimiter>;
+  CHAT_ARCHIVE: ReturnType<typeof fakeChatArchive>;
   RAZORPAY_KEY_ID: string;
   RAZORPAY_KEY_SECRET: string;
   R2_PUBLIC_BASE_URL: string;
@@ -245,6 +367,7 @@ export function makeEnv(overrides: Partial<TestEnv> = {}): { env: TestEnv; db: S
     CACHE_KV: fakeKV(),
     OTP_KV: fakeKV(),
     RATE_LIMITER: fakeRateLimiter(),
+    CHAT_ARCHIVE: fakeChatArchive(sqlite),
     RAZORPAY_KEY_ID: 'rzp_test_key',
     RAZORPAY_KEY_SECRET: 'rzp_test_secret',
     R2_PUBLIC_BASE_URL: 'https://cdn.test',

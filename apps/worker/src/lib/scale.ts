@@ -66,10 +66,10 @@
  */
 import type { Env } from "../types";
 
-export type ScaleTier = "free" | "paid";
+export type ScaleTier = "free" | "paid" | "auto";
 
 export interface ScaleConfig {
-  /** The resolved tier. `"free"` unless `SCALE_TIER` is exactly `"paid"`. */
+  /** The resolved tier. `"free"` unless `SCALE_TIER` is `"paid"` or `"auto"`. */
   tier: ScaleTier;
   /**
    * Cache the per-request auth account-state in CACHE_KV instead of hitting D1 on
@@ -87,22 +87,57 @@ export interface ScaleConfig {
 }
 
 /**
- * Resolve the tier from the environment. Defaults to `"free"` for any unset,
- * empty, or unrecognised value — the tier that never incurs paid-only writes.
+ * Resolve the tier from the environment. Recognises three values; anything unset,
+ * empty or unrecognised resolves to `"free"` — the tier that never attempts
+ * paid-only writes, so a typo can never change behaviour unsafely.
+ *
+ *   "free" — direct D1 for the auth-state read. Zero extra KV writes.
+ *   "paid" — cache the auth-state in KV. For accounts on the Workers Paid plan.
+ *   "auto" — the SELF-ADAPTING default we deploy (see the "auto" note below).
  */
 export function scaleTier(env: Env): ScaleTier {
-  return String((env as { SCALE_TIER?: string }).SCALE_TIER ?? "").trim().toLowerCase() === "paid"
-    ? "paid"
-    : "free";
+  const v = String((env as { SCALE_TIER?: string }).SCALE_TIER ?? "").trim().toLowerCase();
+  if (v === "paid") return "paid";
+  if (v === "auto") return "auto";
+  return "free";
 }
 
-/** The full tuning profile for the current tier. */
+/**
+ * The full tuning profile for the current tier.
+ *
+ * ---------------------------------------------------------------------------
+ * The `"auto"` tier — one config, both billing directions, never a manual change
+ * ---------------------------------------------------------------------------
+ * `"auto"` enables the auth-state cache (like `"paid"`) but is SAFE to run on the
+ * FREE plan too, so the app self-adapts when you upgrade or downgrade Cloudflare
+ * billing with no code, flag, or deploy change at the transition:
+ *
+ *   - Upgrade free -> paid:  KV writes succeed -> full auth-state caching. Optimal.
+ *   - Downgrade paid -> free: once the free KV write budget is spent, the cache
+ *     `put`s start failing -> `cachePutJson` swallows the error (fail-open) and the
+ *     request recomputes from D1. The app keeps working; it just caches less.
+ *
+ * Why this is CORRECT on free, not just non-breaking: revocation/block still take
+ * effect immediately, because `invalidateAuthState` is a KV DELETE (metered
+ * separately from writes, with a budget nowhere near its cap), so a block or
+ * logout drops the cached row in every colo even when the write budget is gone —
+ * and the 60s TTL is the same backstop the paid tier already relies on.
+ *
+ * The one honest trade-off: on a HEAVILY loaded free plan, auth-caching consumes
+ * the small (1,000/day) KV write budget that other opportunistic caches
+ * (feed-seen, read caches) would otherwise use — those also fail open, so nothing
+ * breaks, but D1 read load rises. That is precisely the point at which the
+ * capacity monitor (CAPACITY_MONITORING.md) tells you to upgrade — which is the
+ * "free now, paid later" path this whole design serves. Use explicit `"free"` if
+ * you want to guarantee zero auth-cache writes on a large free deployment.
+ */
 export function scaleConfig(env: Env): ScaleConfig {
   const tier = scaleTier(env);
-  const paid = tier === "paid";
   return {
     tier,
-    cacheAuthState: paid,
+    // Both "paid" and "auto" cache; "auto" relies on the fail-open write path to
+    // stay safe on free. Only explicit "free" (or the unset default) skips it.
+    cacheAuthState: tier === "paid" || tier === "auto",
     // 60s == KV_MIN_TTL_SEC. Kept in sync deliberately; a lower value would be
     // clamped up (and warned about) by cachePutJson.
     authStateTtlSec: 60,

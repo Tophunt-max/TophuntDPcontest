@@ -15,6 +15,14 @@
  */
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import {
+  API_ALLOWED_HEADERS,
+  API_ALLOWED_METHODS,
+  API_EXPOSED_HEADERS,
+  allowedOrigins,
+  applyApiCorsHeaders,
+  isWildcardPolicy,
+} from "./lib/apiCors";
 import type { Env, Variables } from "./types";
 import { ApiError, errorBody } from "./lib/http";
 import { authRoute } from "./routes/auth";
@@ -26,9 +34,11 @@ import { uploadRoute } from "./routes/upload";
 import { verifyIdToken } from "./lib/firebaseAuth";
 import { assertSessionUsable } from "./middleware/auth";
 import { isChatMember } from "./lib/chatAuth";
+import { publishPresence } from "./lib/publish";
 import { resolveContests, expireContests, monthlyHallOfFame, seoAuditJob } from "./cron";
 import { purgeScheduledDeletions } from "./lib/accountDeletion";
 import { ensureMigrated } from "./db/autoMigrate";
+import { processBroadcastJob } from "./lib/broadcast";
 import { captureError, logErrorToDb, pruneErrorLogs } from "./lib/observability";
 import { pruneOpsTables, runCronJob } from "./lib/ops";
 import { reconcilePaymentOrders } from "./lib/coinOrders";
@@ -49,6 +59,9 @@ import { clientIp, rateLimit } from "./lib/rateLimit";
 export { RealtimeHub } from "./realtime";
 // Durable Object for production-safe vote aggregation (one per match).
 export { VoteCounter } from "./voteCounter";
+// Durable Object for per-chat message storage (one per chatId) — keeps the
+// unbounded message write path off D1's single writer.
+export { ChatArchive } from "./chatArchive";
 // Durable Object for rate-limit counters (one per throttled subject).
 export { RateLimiter } from "./rateLimiter";
 
@@ -100,25 +113,25 @@ app.use("*", async (c, next) => {
   );
 });
 
-app.use("*", async (c, next) => {
+/** Requests whose responses must not carry the API's CORS policy. */
+const skipsApiCors = (c: { req: { header: (n: string) => string | undefined; url: string } }): boolean =>
   // WebSocket upgrades must not be wrapped by CORS (immutable 101 response).
-  if (c.req.header("Upgrade") === "websocket") return next();
+  c.req.header("Upgrade") === "websocket" ||
   // Public media is a different CORS surface from the credentialed API: it serves
   // itself `Access-Control-Allow-Origin: *` from within the /media handler (see
   // lib/mediaCors.ts). Running the API's origin-restricted policy here too would
   // override that `*` with an ALLOWED_ORIGINS-based value and re-break
   // cross-origin canvas reads from the app/blog origins. So media opts out.
-  if (new URL(c.req.url).pathname.startsWith("/media/")) return next();
-  const origins = (c.env.ALLOWED_ORIGINS || "*").split(",").map((s) => s.trim());
+  new URL(c.req.url).pathname.startsWith("/media/");
+
+app.use("*", async (c, next) => {
+  if (skipsApiCors(c)) return next();
+  const origins = allowedOrigins(c.env);
   const mw = cors({
-    origin: origins.length === 1 && origins[0] === "*" ? "*" : origins,
-    // PUT belongs here: the admin panel saves integration config and rotates
-    // credentials with PUT (`saveIntegrations`, `setIntegrationSecret`). Omitting
-    // it made those calls fail preflight with a bare `TypeError: Failed to fetch`,
-    // which reads like a network outage rather than a policy rejection.
-    allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowHeaders: ["Content-Type", "Authorization"],
-    exposeHeaders: ["X-Next-Cursor", "X-Request-Id"],
+    origin: isWildcardPolicy(origins) ? "*" : origins,
+    allowMethods: [...API_ALLOWED_METHODS],
+    allowHeaders: [...API_ALLOWED_HEADERS],
+    exposeHeaders: [...API_EXPOSED_HEADERS],
     maxAge: 86400,
   });
   return mw(c, next);
@@ -359,6 +372,27 @@ app.get("/ws", async (c) => {
   // The channel DO stores this verified identity as a hibernation tag so an
   // admin block can close already-established private sockets immediately.
   forwardedHeaders.set("X-Authenticated-Uid", user.uid);
+
+  // Presence: the `user:<uid>` channel is where a user is "present". Stamp
+  // last-seen and announce them online now (bounded to session start — never per
+  // message), and tell the hub to announce the OFFLINE transition when this
+  // socket closes (X-Presence-Uid marks the socket for that in the DO).
+  if (kind === "user") {
+    const ts = Date.now();
+    forwardedHeaders.set("X-Presence-Uid", user.uid);
+    c.executionCtx.waitUntil(
+      (async () => {
+        try {
+          await c.env.DB.prepare("UPDATE users SET last_seen_at = ? WHERE uid = ?")
+            .bind(ts, user.uid)
+            .run();
+        } catch (e) {
+          console.error("[ws] last_seen stamp failed (continuing)", e);
+        }
+        await publishPresence(c.env, user.uid, true, ts);
+      })(),
+    );
+  }
   return stub.fetch(new Request(c.req.raw, { headers: forwardedHeaders }));
 });
 
@@ -375,6 +409,11 @@ app.route("/webhook", webhookRoute);
 app.onError((err, c) => {
   const requestId = c.get("requestId");
   const errPath = new URL(c.req.url).pathname;
+  // Re-apply CORS before returning: `hono/cors` sets its headers AFTER
+  // `await next()`, so a thrown response has none. See lib/apiCors.ts.
+  if (!skipsApiCors(c)) {
+    applyApiCorsHeaders({ set: (name, value) => c.header(name, value) }, c.env, c.req.header("Origin"));
+  }
   if (err instanceof ApiError) {
     // A 5xx ApiError is OUR fault and used to return from here completely
     // unrecorded — no error_logs row, no Sentry event, only an ephemeral
@@ -415,6 +454,43 @@ app.notFound((c) => c.json(errorBody(new ApiError("not-found", "Route not found.
 export default {
   fetch: app.fetch,
 
+  /**
+   * Queue consumer — admin broadcast fan-out (wrangler.toml [[queues.consumers]]).
+   *
+   * Each message names one broadcast job. We advance it by exactly ONE page
+   * (bounded work, well inside the CPU/time budget) and, if more recipients
+   * remain, re-enqueue the same job to continue immediately — so the whole
+   * broadcast drains in seconds rather than one page per 10-minute cron tick.
+   *
+   * `ack()` on success (including "nothing more to do"), `retry()` on failure so
+   * the platform redelivers. Delivery is at-least-once; a duplicated page just
+   * re-sends a broadcast notification, which is harmless (no money, no state that
+   * can be double-charged). The cron safety net in cron.ts still resumes any job
+   * whose queue chain breaks entirely.
+   */
+  async queue(
+    batch: MessageBatch<import("./lib/broadcast").BroadcastQueueMessage>,
+    env: Env,
+    _ctx: ExecutionContext,
+  ): Promise<void> {
+    await ensureMigrated(env).catch((e) => console.error("[migrate] queue auto-migration failed", e));
+    for (const msg of batch.messages) {
+      try {
+        const jobId = msg.body?.jobId;
+        if (!jobId) {
+          msg.ack();
+          continue;
+        }
+        const { done } = await processBroadcastJob(env, jobId);
+        if (!done) await env.BROADCAST_QUEUE?.send({ jobId });
+        msg.ack();
+      } catch (e) {
+        console.error("[queue] broadcast page failed", e);
+        msg.retry();
+      }
+    }
+  },
+
   // Cron Triggers (wrangler.toml [triggers].crons)
   //
   // Every job runs through `runCronJob`, which records a heartbeat row, a
@@ -437,6 +513,31 @@ export default {
       case "0 0 1 * *":
         ctx.waitUntil(runCronJob(env, "monthlyHallOfFame", () => monthlyHallOfFame(env)).then(() => undefined));
         break;
+      // Retention housekeeping — its OWN hourly trigger, split off the 10-minute
+      // operational tick. None of this is time-critical: it only bounds table
+      // growth, so running it 24×/day instead of 144×/day is plenty and keeps the
+      // frequent tick focused on money/settlement. All three deletes are indexed
+      // (error_logs.created_at, notifications, cron_runs.created_at — migration
+      // 0048), so each run is a cheap index range, not a scan.
+      case "0 * * * *":
+        ctx.waitUntil(
+          (async () => {
+            // Retention: drop error logs past the retention window.
+            await runCronJob(env, "pruneErrorLogs", async () => {
+              await pruneErrorLogs(env);
+            });
+            // Retention: the notifications table previously grew forever, which
+            // made heavy users' own list and badge-count queries progressively
+            // slower.
+            await runCronJob(env, "pruneNotifications", async () => {
+              await pruneNotifications(env);
+            });
+            // Retention: heartbeat rows, expired replay claims and stale admin
+            // notifications.
+            await runCronJob(env, "pruneIdempotencyKeys", () => pruneOpsTables(env));
+          })(),
+        );
+        break;
       case "*/10 * * * *":
       default:
         ctx.waitUntil(
@@ -449,18 +550,9 @@ export default {
             // Money that was captured at the gateway but never credited here
             // (client died AND webhook lost) is invisible without this sweep.
             await runCronJob(env, "reconcilePayments", () => reconcilePaymentOrders(env));
-            // Retention: drop error logs past the retention window.
-            await runCronJob(env, "pruneErrorLogs", async () => {
-              await pruneErrorLogs(env);
-            });
-            // Retention: the notifications table previously grew forever, which
-            // made heavy users' own list and badge-count queries progressively
-            // slower.
-            await runCronJob(env, "pruneNotifications", async () => {
-              await pruneNotifications(env);
-            });
-            // Retention: heartbeat rows and expired replay claims.
-            await runCronJob(env, "pruneIdempotencyKeys", () => pruneOpsTables(env));
+            // NOTE: retention sweeps (pruneErrorLogs / pruneNotifications /
+            // pruneOpsTables) moved to the hourly "0 * * * *" trigger above —
+            // they are not time-critical and do not need to run every 10 min.
             // Safety net for the Bunny encode webhook: promote videos stuck in
             // `processing` (a lost webhook) and close abandoned uploads (cost).
             await runCronJob(env, "reconcileVideos", () => reconcileVideos(env));

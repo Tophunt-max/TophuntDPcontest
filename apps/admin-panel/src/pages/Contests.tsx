@@ -97,7 +97,7 @@ function humanGap(ms: number): string {
 }
 
 type DialogMode = "create" | "edit" | "duplicate";
-type DialogState = { mode: DialogMode; contest?: AdminContest } | null;
+type DialogState = { mode: DialogMode; contest?: AdminContest; draftForm?: ContestFormState } | null;
 type StatusFilter = ContestStatus | "all";
 type TypeFilter = ContestType | "all";
 
@@ -107,6 +107,55 @@ const statusLabels: Record<ContestStatus, string> = {
   paused: "Paused",
   ended: "Ended",
 };
+
+/**
+ * A contest being written is worth surviving a reload the admin never asked for.
+ *
+ * On mobile, tapping "Choose image" hands control to the OS picker and pushes the
+ * tab to the background; Android Chrome routinely discards a backgrounded tab
+ * under memory pressure, and returning from the picker then reloads the page —
+ * taking the in-memory dialog and every field the admin had typed with it. The
+ * product image already survives (it uploads on pick, leaving only a URL string),
+ * but the title, rules, prize and economy fields did not, so the admin came back
+ * to a blank contests list and assumed the app had crashed.
+ *
+ * We snapshot the form to `sessionStorage` while it is dirty and reopen the dialog
+ * with it after the reload. Only the serialisable form state is kept — the banner
+ * `File` (held until Save) cannot be, so a banner picked-but-not-yet-saved must be
+ * re-chosen, which the UI already prompts for. `sessionStorage` (not local) scopes
+ * the draft to this tab and clears itself when the tab really closes.
+ */
+const CONTEST_DRAFT_KEY = "tophunt:contest-draft-v1";
+/** A tab discarded mid-edit is resumed in seconds; an older draft is abandoned. */
+const CONTEST_DRAFT_TTL_MS = 6 * 60 * 60 * 1000;
+
+type ContestDraft = { mode: DialogMode; contestId: string | null; savedAt: number; form: ContestFormState };
+
+function readContestDraft(): ContestDraft | null {
+  try {
+    const raw = sessionStorage.getItem(CONTEST_DRAFT_KEY);
+    if (!raw) return null;
+    const draft = JSON.parse(raw) as ContestDraft;
+    if (!draft || typeof draft !== "object" || !draft.form || !draft.mode) return null;
+    if (!Number.isFinite(draft.savedAt) || Date.now() - draft.savedAt > CONTEST_DRAFT_TTL_MS) {
+      sessionStorage.removeItem(CONTEST_DRAFT_KEY);
+      return null;
+    }
+    return draft;
+  } catch {
+    // Corrupt JSON or storage disabled (private mode): treat as no draft.
+    return null;
+  }
+}
+
+function writeContestDraft(draft: ContestDraft): void {
+  // A lost draft is never worth throwing over (quota, private mode, etc.).
+  try { sessionStorage.setItem(CONTEST_DRAFT_KEY, JSON.stringify(draft)); } catch { /* ignore */ }
+}
+
+function clearContestDraft(): void {
+  try { sessionStorage.removeItem(CONTEST_DRAFT_KEY); } catch { /* ignore */ }
+}
 
 export default function Contests() {
   const qc = useQueryClient();
@@ -122,6 +171,37 @@ export default function Contests() {
   const contestsQuery = useQuery({ queryKey: ["contests"], queryFn: api.contests });
   const contests = contestsQuery.data ?? [];
   const invalidate = () => qc.invalidateQueries({ queryKey: ["contests"] });
+
+  // Reopen a draft left behind by a reload the admin did not ask for (see
+  // CONTEST_DRAFT_KEY). Runs once: a `create` draft can reopen immediately, while
+  // `edit`/`duplicate` wait for the list so the live contest row can be attached.
+  const draftRestoredRef = useRef(false);
+  useEffect(() => {
+    if (draftRestoredRef.current) return;
+    const draft = readContestDraft();
+    if (!draft) {
+      draftRestoredRef.current = true;
+      return;
+    }
+    if (draft.mode === "create") {
+      draftRestoredRef.current = true;
+      setDialog({ mode: "create", draftForm: draft.form });
+      toast.info("Restored your unsaved contest draft.");
+      return;
+    }
+    // The edit/duplicate dialog needs the real contest for its baseline diff and
+    // its live warnings, so hold off until the list has actually loaded.
+    if (contestsQuery.isLoading) return;
+    draftRestoredRef.current = true;
+    const contest = contests.find((item) => item.id === draft.contestId);
+    if (contest) {
+      setDialog({ mode: draft.mode, contest, draftForm: draft.form });
+      toast.info("Restored your unsaved contest draft.");
+    } else {
+      // The contest it referenced is gone (deleted, or another admin's tab).
+      clearContestDraft();
+    }
+  }, [contests, contestsQuery.isLoading]);
 
   const stats = useMemo(
     () => ({
@@ -498,7 +578,14 @@ export default function Contests() {
           key={`${dialog.mode}-${dialog.contest?.id ?? "new"}`}
           mode={dialog.mode}
           contest={dialog.contest}
-          onClose={() => setDialog(null)}
+          draftForm={dialog.draftForm}
+          onClose={() => {
+            // Every close path — Save, Cancel, discard — routes through here, so
+            // clearing the draft in one place covers them all. A tab-discard
+            // reload never reaches this, which is exactly why the draft survives.
+            clearContestDraft();
+            setDialog(null);
+          }}
           onDone={invalidate}
         />
       )}
@@ -566,43 +653,58 @@ function formFromContest(contest: AdminContest | undefined, mode: DialogMode): C
 function ContestDialog({
   mode,
   contest,
+  draftForm,
   onClose,
   onDone,
 }: {
   mode: DialogMode;
   contest?: AdminContest;
+  /** A form snapshot restored after a reload; seeds the live state only. */
+  draftForm?: ContestFormState;
   onClose: () => void;
   onDone: () => Promise<unknown>;
 }) {
-  const { confirm } = useConfirm();
+  // The baseline stays the clean contest values even when a draft is restored, so
+  // the dirty check and the edit-time field diff still compare against what the
+  // server actually has — the draft only pre-fills what the admin sees.
   const initialForm = useRef(formFromContest(contest, mode));
-  const [form, setForm] = useState<ContestFormState>(initialForm.current);
+  const [form, setForm] = useState<ContestFormState>(draftForm ?? initialForm.current);
   const [errors, setErrors] = useState<ContestFormErrors>({});
-  const [bannerFile, setBannerFile] = useState<File | null>(null);
-  const [localPreview, setLocalPreview] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploading, setUploading] = useState(false);
   const [productProgress, setProductProgress] = useState(0);
   const [uploadingProduct, setUploadingProduct] = useState(false);
   /**
-   * Product images uploaded by THIS dialog that are not yet referenced by a saved
-   * contest. Cleaned up when the dialog closes without saving, so an admin who picks
-   * an image and then cancels does not leave an object in R2 nobody points at.
+   * Images uploaded by THIS dialog that are not yet referenced by a saved contest —
+   * a banner or product image that was replaced, picked before switching prize type,
+   * or picked and then cancelled. Cleaned up on close/save so a pick-then-cancel
+   * never leaves an orphan object in R2.
    *
-   * A ref, not state: it must survive the close handler without triggering a render,
-   * and nothing displays it.
+   * Refs, not state: they must survive the close handler without triggering a render,
+   * and nothing displays them. The banner and product image now BOTH upload on pick
+   * (see selectBanner / selectProductImage) — the banner used to hold a `File` until
+   * Save, which did not survive the mobile tab-reload behind the file picker (the
+   * "blank screen" report). Uploading on pick means the form only has to carry a URL
+   * string, which the draft snapshot already persists.
    */
+  const orphanBannerImages = useRef<string[]>([]);
   const orphanProductImages = useRef<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  /**
+   * Discard confirmation is a LOCAL overlay inside this dialog, not the global
+   * `useConfirm` (which is a second Radix modal). Stacking two Radix modals and then
+   * unmounting this one as the other closed left the page blank/frozen on mobile —
+   * the teardown of two overlapping focus-scopes + scroll-locks races. One modal
+   * layer, one unmount, no race.
+   */
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
 
   const isEdit = mode === "edit";
-  const isDirty =
-    JSON.stringify(form) !== JSON.stringify(initialForm.current) || bannerFile !== null;
-  const bannerPreview = localPreview || form.bannerUrl || null;
+  // Picking either image now changes `form` (the uploaded URL), so a plain form
+  // comparison captures dirtiness — no separate File flag needed.
+  const isDirty = JSON.stringify(form) !== JSON.stringify(initialForm.current);
   const isProduct = form.prizeType === "product";
-  // The uploaded image IS the preview — nothing is held locally any more.
-  const productImagePreview = form.prizeProductImageUrl || null;
   /** What the payload will actually carry — a product contest always pays 0 coins. */
   const effectiveRewardCoins = isProduct ? 0 : Number(form.rewardCoins);
   /**
@@ -616,9 +718,14 @@ function ContestDialog({
     (isProduct ? form.prizeProductTitle.trim() : "") !== (contest?.prizeProductTitle ?? "") ||
     (isProduct ? form.prizeProductImageUrl : "") !== (contest?.prizeProductImageUrl ?? "");
 
-  useEffect(() => () => {
-    if (localPreview) URL.revokeObjectURL(localPreview);
-  }, [localPreview]);
+  // Snapshot the in-progress form so a reload the admin never asked for (a mobile
+  // tab discarded behind the file picker) can restore it. Only while dirty, and
+  // never mid-save: a save either clears the draft on success or, on failure,
+  // leaves `saving` false and the still-dirty form re-persisted for a retry.
+  useEffect(() => {
+    if (saving || !isDirty) return;
+    writeContestDraft({ mode, contestId: contest?.id ?? null, savedAt: Date.now(), form });
+  }, [form, isDirty, saving, mode, contest]);
 
   const set = <K extends keyof ContestFormState>(key: K, value: ContestFormState[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
@@ -626,28 +733,39 @@ function ContestDialog({
     setSubmitError(null);
   };
 
-  const requestClose = async () => {
-    if (saving) return;
+  /** Actually tear down: clean up orphan uploads, then unmount. */
+  const performClose = async () => {
+    setConfirmingDiscard(false);
+    await discardOrphanImages(null, null);
+    onClose();
+  };
+
+  const requestClose = () => {
+    if (saving || confirmingDiscard) return;
     // An in-flight product upload is worth blocking on: closing mid-upload would
     // leave an object in R2 that the cleanup below has not been told about yet.
     if (uploadingProduct) {
       toast.info("Wait for the product image to finish uploading.");
       return;
     }
+    // Unsaved work -> show the in-dialog confirmation (NOT a second modal). Clean
+    // work -> close straight away.
     if (isDirty) {
-      const discard = await confirm({
-        title: "Discard unsaved changes?",
-        description: "Your contest changes will be lost, and any product image you uploaded will be removed.",
-        confirmLabel: "Discard changes",
-        variant: "destructive",
-      });
-      if (!discard) return;
+      setConfirmingDiscard(true);
+      return;
     }
-    await discardOrphanProductImages(null);
-    onClose();
+    void performClose();
   };
 
-  const selectBanner = (file: File | undefined) => {
+  /**
+   * Pick the contest banner and upload it IMMEDIATELY — the same robust flow the
+   * product image uses. The banner used to be held as a `File` until Save, which did
+   * not survive the page reload Android Chrome triggers when it evicts the tab behind
+   * the file picker (the "blank screen" report, see #99). Uploading on pick means the
+   * form only carries a URL string, which the draft snapshot already persists — so a
+   * reload no longer loses the banner.
+   */
+  const selectBanner = async (file: File | undefined) => {
     if (!file) return;
     if (!BANNER_TYPES.includes(file.type)) {
       setErrors((current) => ({ ...current, banner: "Choose a JPEG, PNG, or WebP image." }));
@@ -657,41 +775,45 @@ function ContestDialog({
       setErrors((current) => ({ ...current, banner: "Image must be 5 MB or smaller." }));
       return;
     }
-    setBannerFile(file);
-    setLocalPreview(URL.createObjectURL(file));
     setErrors((current) => ({ ...current, banner: undefined }));
     setSubmitError(null);
     setUploadProgress(0);
+    setUploading(true);
+    try {
+      const uploaded = await api.uploadContestBanner(file, setUploadProgress);
+      orphanBannerImages.current.push(uploaded.publicUrl);
+      set("bannerUrl", uploaded.publicUrl);
+      toast.success("Banner uploaded");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Banner upload failed.";
+      setErrors((current) => ({ ...current, banner: message }));
+      toast.error(message);
+    } finally {
+      setUploading(false);
+    }
   };
 
   const removeBanner = () => {
-    setBannerFile(null);
-    setLocalPreview(null);
     set("bannerUrl", "");
     setUploadProgress(0);
   };
 
   /**
-   * Pick a product image and upload it IMMEDIATELY, unlike the banner which is held
-   * until Save.
-   *
-   * The banner's deferred upload keeps a `File` in component state for as long as the
-   * admin is filling the form in, and on a phone that is not a safe place to keep it:
-   * Android Chrome routinely evicts a backgrounded tab while the system file picker
-   * is in front, and the reload that follows takes the `File`, the object URL and the
-   * rest of the form with it. Uploading on pick means the only thing the form has to
-   * survive with is a URL string.
-   *
-   * It also removes the object URL entirely — the preview is the uploaded image — so
-   * there is no `blob:` handle to leak or to revoke at the wrong moment.
+   * Pick a product image and upload it IMMEDIATELY — the same flow as the banner
+   * (see selectBanner). Uploading on pick is what makes both images survive the
+   * page reload Android Chrome triggers when it evicts the tab behind the file
+   * picker: the form only has to carry a URL string, not a `File`, so the draft
+   * snapshot restores it. No object URL is created either — the preview IS the
+   * uploaded image — so there is no `blob:` handle to leak.
    *
    * Same pattern as the payment-QR upload on the Deposits page, and the same
-   * trade-off: an image can now exist in R2 before any contest references it.
-   * `discardOrphanProductImages` covers Cancel and Save, but NOT a closed tab — and
-   * the product-image category has `retentionDays: null` with no background sweep, so
-   * a genuinely abandoned upload persists. That is the cheaper of the two failures
-   * (an invisible object costs almost nothing; losing the image an admin just picked
-   * costs them the whole form), but it does want a server-side sweep eventually.
+   * trade-off: an image can exist in R2 before any contest references it.
+   * `discardOrphanImages` covers Cancel and Save, but NOT a closed tab — and the
+   * image categories have `retentionDays: null` with no background sweep, so a
+   * genuinely abandoned upload persists. That is the cheaper of the two failures
+   * (an invisible object costs almost nothing; losing the image an admin just
+   * picked costs them the whole form), but it does want a server-side sweep
+   * eventually.
    */
   const selectProductImage = async (file: File | undefined) => {
     if (!file) return;
@@ -741,10 +863,15 @@ function ContestDialog({
    * a contest or a prize claim, so the worst case is a no-op, and a failed cleanup
    * must never block closing the dialog.
    */
-  const discardOrphanProductImages = async (keep: string | null) => {
-    const stale = orphanProductImages.current.filter((url) => url !== keep);
+  const discardOrphanImages = async (keepBanner: string | null, keepProduct: string | null) => {
+    const staleBanners = orphanBannerImages.current.filter((url) => url && url !== keepBanner);
+    const staleProducts = orphanProductImages.current.filter((url) => url && url !== keepProduct);
+    orphanBannerImages.current = [];
     orphanProductImages.current = [];
-    await Promise.all(stale.map((url) => api.deleteProductImage(url).catch(() => undefined)));
+    await Promise.all([
+      ...staleBanners.map((url) => api.deleteContestBanner(url).catch(() => undefined)),
+      ...staleProducts.map((url) => api.deleteProductImage(url).catch(() => undefined)),
+    ]);
   };
 
   const validate = (): { errors: ContestFormErrors; payload: ContestWritePayload | null } => {
@@ -754,7 +881,7 @@ function ContestDialog({
     else if (title.length > 160) next.title = "Title must be 160 characters or fewer.";
     if (form.description.length > 1000) next.description = "Description must be 1,000 characters or fewer.";
     if (form.rules.length > 5000) next.rules = "Rules must be 5,000 characters or fewer.";
-    if (!bannerFile && !form.bannerUrl && (!isEdit || form.status === "live")) {
+    if (!form.bannerUrl && (!isEdit || form.status === "live")) {
       next.banner = isEdit ? "A live contest must have a banner." : "A banner image is required.";
     }
 
@@ -882,16 +1009,10 @@ function ContestDialog({
 
     setSaving(true);
     setSubmitError(null);
-    let uploadedUrl: string | null = null;
     try {
+      // Both images already uploaded on pick, so `form.bannerUrl` /
+      // `form.prizeProductImageUrl` are the final URLs — nothing to upload here.
       const payload = { ...result.payload };
-      if (bannerFile) {
-        setUploading(true);
-        const uploaded = await api.uploadContestBanner(bannerFile, setUploadProgress);
-        uploadedUrl = uploaded.publicUrl;
-        payload.bannerUrl = uploaded.publicUrl;
-        setUploading(false);
-      }
 
       if (isEdit && contest) {
         // Send only fields this dialog actually changed. Besides reducing write
@@ -965,26 +1086,19 @@ function ContestDialog({
       }
 
       await onDone();
-      // The image the saved contest actually points at is kept; anything else this
-      // dialog uploaded (a replaced image, or one picked before switching to Coins)
-      // is now unreferenced.
-      await discardOrphanProductImages(payload.prizeProductImageUrl);
+      // The images the saved contest actually points at are kept; anything else this
+      // dialog uploaded (a replaced banner/product image, or one picked before
+      // switching prize type) is now unreferenced and removed.
+      await discardOrphanImages(payload.bannerUrl, payload.prizeProductImageUrl);
       toast.success(isEdit ? "Contest updated" : mode === "duplicate" ? "Contest duplicated" : "Contest created");
       onClose();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not save contest.";
       setSubmitError(message);
       toast.error(message);
-      // The banner uploads just before the save, so a failed save can strand it.
-      // The product image is cleaned up by discardOrphanProductImages instead, which
-      // runs on close and covers every image this dialog uploaded.
-      if (uploadedUrl) {
-        try {
-          await api.deleteContestBanner(uploadedUrl);
-        } catch {
-          toast.warning("The contest was not saved and its temporary banner could not be removed automatically.");
-        }
-      }
+      // Both images uploaded on pick and are tracked in the orphan refs, so a failed
+      // save strands nothing: discardOrphanImages runs on close/cancel and removes any
+      // image the eventually-saved contest does not reference.
     } finally {
       setUploading(false);
       setUploadingProduct(false);
@@ -998,9 +1112,53 @@ function ContestDialog({
     <Dialog open onOpenChange={(open) => { if (!open) void requestClose(); }}>
       <DialogContent
         className="left-0 top-0 flex h-[100dvh] max-h-[100dvh] w-full max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-0 p-0 shadow-none duration-0 sm:left-[50%] sm:top-[50%] sm:h-auto sm:max-h-[92dvh] sm:w-[calc(100%-2rem)] sm:max-w-3xl sm:translate-x-[-50%] sm:translate-y-[-50%] sm:rounded-lg sm:border sm:shadow-lg sm:duration-200"
-        onEscapeKeyDown={(event) => { if (saving) event.preventDefault(); }}
-        onPointerDownOutside={(event) => { if (saving) event.preventDefault(); }}
+        // Never auto-dismiss on an OUTSIDE interaction. On mobile, returning from
+        // the native file picker fires a focus/pointer-outside event that Radix
+        // treats as "close the dialog" — which popped the "Discard unsaved changes?"
+        // prompt (and, on the old build, a blank screen) on its own right after a
+        // product-image upload. A form holding unsaved work must only close through
+        // an explicit Cancel / ✕ / Escape, so the picker returning can never nuke it.
+        // `onInteractOutside` covers BOTH pointer-outside and focus-outside; the old
+        // handler only caught pointer-outside (and only while saving), which is why
+        // the focus event from the picker slipped through.
+        onInteractOutside={(event) => event.preventDefault()}
+        onEscapeKeyDown={(event) => {
+          event.preventDefault();
+          if (!saving) requestClose();
+        }}
       >
+        {/* Discard confirmation — an overlay INSIDE this dialog, not a second modal. */}
+        {confirmingDiscard && (
+          <div
+            className="absolute inset-0 z-20 flex items-center justify-center bg-black/50 p-6"
+            role="alertdialog"
+            aria-modal="true"
+          >
+            <div className="w-full max-w-sm rounded-2xl border border-border bg-background p-6 text-center shadow-xl">
+              <h3 className="text-lg font-semibold text-foreground">Discard unsaved changes?</h3>
+              <p className="mt-2 text-sm text-muted-foreground">
+                Your contest changes will be lost, and any product image you uploaded will be removed.
+              </p>
+              <div className="mt-5 flex flex-col gap-2">
+                <button
+                  type="button"
+                  onClick={() => void performClose()}
+                  className="w-full rounded-xl bg-destructive px-4 py-2.5 text-sm font-semibold text-destructive-foreground hover:bg-destructive/90"
+                >
+                  Discard changes
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmingDiscard(false)}
+                  className="w-full rounded-xl border border-input px-4 py-2.5 text-sm font-medium hover:bg-accent"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <DialogHeader className="shrink-0 border-b border-border px-5 pb-4 pr-12 pt-[max(1rem,env(safe-area-inset-top))] text-left sm:px-6 sm:py-4">
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>
@@ -1048,56 +1206,22 @@ function ContestDialog({
             </section>
 
             <section className="space-y-4 border-t border-border pt-5">
-              <FormSectionTitle title="Contest banner" description="Local image only · JPEG, PNG, or WebP · maximum 5 MB." />
-              <div className="grid gap-4 sm:grid-cols-[220px_minmax(0,1fr)]">
-                <div className="flex aspect-[16/9] items-center justify-center overflow-hidden rounded-xl border border-dashed border-border bg-secondary">
-                  {bannerPreview ? (
-                    <img src={bannerPreview} alt="Contest banner preview" className="h-full w-full object-cover" />
-                  ) : (
-                    <div className="text-center text-muted-foreground">
-                      <ImageIcon className="mx-auto mb-2 size-7" />
-                      <span className="text-xs">No banner selected</span>
-                    </div>
-                  )}
-                </div>
-                <div className="flex flex-col justify-center gap-3">
-                  <input
-                    id="contest-banner-file"
-                    type="file"
-                    className="sr-only"
-                    accept="image/jpeg,image/png,image/webp"
-                    disabled={saving}
-                    onChange={(event) => {
-                      selectBanner(event.target.files?.[0]);
-                      event.target.value = "";
-                    }}
-                  />
-                  <div className="flex flex-wrap gap-2">
-                    <Button type="button" variant="outline" disabled={saving} asChild>
-                      <label htmlFor="contest-banner-file" className="cursor-pointer">
-                        <Upload /> {bannerPreview ? "Replace image" : "Choose image"}
-                      </label>
-                    </Button>
-                    {bannerPreview && (
-                      <Button type="button" variant="ghost" disabled={saving} onClick={removeBanner} className="text-destructive">
-                        <X /> Remove
-                      </Button>
-                    )}
-                  </div>
-                  {bannerFile && (
-                    <p className="text-xs text-muted-foreground">
-                      {bannerFile.name} · {(bannerFile.size / 1024 / 1024).toFixed(2)} MB · uploads when you save
-                    </p>
-                  )}
-                  {errors.banner && <p className="text-xs font-medium text-destructive">{errors.banner}</p>}
-                  {uploading && (
-                    <div className="space-y-1.5" aria-live="polite">
-                      <div className="flex justify-between text-xs text-muted-foreground"><span>Uploading banner…</span><span>{uploadProgress}%</span></div>
-                      <Progress value={uploadProgress} />
-                    </div>
-                  )}
-                </div>
-              </div>
+              <FormSectionTitle title="Contest banner" description="JPEG, PNG, or WebP · maximum 5 MB · uploads as soon as you pick it." />
+              <ImageUploadField
+                idPrefix="contest-banner"
+                value={form.bannerUrl || null}
+                uploading={uploading}
+                progress={uploadProgress}
+                error={errors.banner}
+                disabled={saving}
+                onPick={(file) => void selectBanner(file)}
+                onRemove={removeBanner}
+                aspectClass="aspect-[16/9]"
+                previewGridClass="sm:grid-cols-[220px_minmax(0,1fr)]"
+                placeholderIcon={ImageIcon}
+                placeholderText="No banner selected"
+                helpText="Uploads immediately, so it is not lost if your browser reloads. Shown on the contest card."
+              />
             </section>
 
             <section className="space-y-4 border-t border-border pt-5">
@@ -1225,69 +1349,25 @@ function ContestDialog({
                     />
                   </Field>
 
-                  <div className="grid gap-4 sm:grid-cols-[160px_minmax(0,1fr)]">
-                    <div className="flex aspect-square items-center justify-center overflow-hidden rounded-xl border border-dashed border-border bg-card">
-                      {productImagePreview ? (
-                        <img src={productImagePreview} alt="Product prize preview" className="h-full w-full object-cover" />
-                      ) : (
-                        <div className="text-center text-muted-foreground">
-                          <Package className="mx-auto mb-2 size-6" />
-                          <span className="text-xs">No product image</span>
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex flex-col justify-center gap-3">
-                      <p className="text-xs font-medium text-foreground">
-                        Product image<span className="ml-0.5 text-destructive">*</span>
-                      </p>
-                      <input
-                        id="contest-product-image-file"
-                        type="file"
-                        className="sr-only"
-                        accept="image/jpeg,image/png,image/webp"
-                        disabled={saving || uploadingProduct}
-                        onChange={(event) => {
-                          const file = event.target.files?.[0];
-                          // Reset the input BEFORE awaiting, so picking the same file
-                          // twice still fires a change event.
-                          event.target.value = "";
-                          void selectProductImage(file);
-                        }}
-                      />
-                      <div className="flex flex-wrap gap-2">
-                        <Button type="button" variant="outline" size="sm" disabled={saving || uploadingProduct} asChild>
-                          <label htmlFor="contest-product-image-file" className="cursor-pointer">
-                            {uploadingProduct ? <Loader2 className="animate-spin" /> : <Upload />}
-                            {uploadingProduct ? "Uploading…" : productImagePreview ? "Replace image" : "Choose image"}
-                          </label>
-                        </Button>
-                        {productImagePreview && !uploadingProduct && (
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            disabled={saving}
-                            onClick={removeProductImage}
-                            className="text-destructive"
-                          >
-                            <X /> Remove
-                          </Button>
-                        )}
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        JPEG, PNG, or WebP · maximum 5 MB. Uploads as soon as you pick it, so it is not lost if your
-                        browser reloads the page. Shown on the contest card and to the winner awaiting delivery.
-                      </p>
-                      {errors.productImage && <p className="text-xs font-medium text-destructive">{errors.productImage}</p>}
-                      {uploadingProduct && (
-                        <div className="space-y-1.5" aria-live="polite">
-                          <div className="flex justify-between text-xs text-muted-foreground">
-                            <span>Uploading product image…</span><span>{productProgress}%</span>
-                          </div>
-                          <Progress value={productProgress} />
-                        </div>
-                      )}
-                    </div>
+                  <div>
+                    <p className="mb-2 text-xs font-medium text-foreground">
+                      Product image<span className="ml-0.5 text-destructive">*</span>
+                    </p>
+                    <ImageUploadField
+                      idPrefix="contest-product-image"
+                      value={form.prizeProductImageUrl || null}
+                      uploading={uploadingProduct}
+                      progress={productProgress}
+                      error={errors.productImage}
+                      disabled={saving}
+                      onPick={(file) => void selectProductImage(file)}
+                      onRemove={removeProductImage}
+                      aspectClass="aspect-square"
+                      previewGridClass="sm:grid-cols-[160px_minmax(0,1fr)]"
+                      placeholderIcon={Package}
+                      placeholderText="No product image"
+                      helpText="Uploads as soon as you pick it, so it is not lost if your browser reloads. Shown on the contest card and to the winner awaiting delivery."
+                    />
                   </div>
 
                   <div className="grid gap-4 sm:grid-cols-2">
@@ -1430,6 +1510,96 @@ function PrizeTypeOption({
         <span className="mt-0.5 block text-xs text-muted-foreground">{description}</span>
       </span>
     </button>
+  );
+}
+
+/**
+ * The one image picker used for BOTH the contest banner and the product prize
+ * image, so they behave and look identical. Upload-on-pick (the robust flow):
+ * the file is uploaded the moment it is chosen, `onPick` gets nothing to hold,
+ * and the parent stores only the returned URL — which survives the mobile
+ * tab-reload behind the file picker that produced the old "blank screen".
+ */
+function ImageUploadField({
+  idPrefix,
+  value,
+  uploading,
+  progress,
+  error,
+  disabled,
+  onPick,
+  onRemove,
+  aspectClass = "aspect-[16/9]",
+  previewGridClass = "sm:grid-cols-[220px_minmax(0,1fr)]",
+  placeholderIcon: PlaceholderIcon = ImageIcon,
+  placeholderText = "No image selected",
+  helpText,
+}: {
+  idPrefix: string;
+  value: string | null;
+  uploading: boolean;
+  progress: number;
+  error?: string;
+  disabled?: boolean;
+  onPick: (file: File | undefined) => void;
+  onRemove: () => void;
+  aspectClass?: string;
+  previewGridClass?: string;
+  placeholderIcon?: React.ComponentType<{ className?: string }>;
+  placeholderText?: string;
+  helpText?: string;
+}) {
+  const fileId = `${idPrefix}-file`;
+  return (
+    <div className={`grid gap-4 ${previewGridClass}`}>
+      <div className={`flex ${aspectClass} items-center justify-center overflow-hidden rounded-xl border border-dashed border-border bg-secondary`}>
+        {value ? (
+          <img src={value} alt="Preview" className="h-full w-full object-cover" />
+        ) : (
+          <div className="text-center text-muted-foreground">
+            <PlaceholderIcon className="mx-auto mb-2 size-7" />
+            <span className="text-xs">{placeholderText}</span>
+          </div>
+        )}
+      </div>
+      <div className="flex flex-col justify-center gap-3">
+        <input
+          id={fileId}
+          type="file"
+          className="sr-only"
+          accept="image/jpeg,image/png,image/webp"
+          disabled={disabled || uploading}
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            // Reset BEFORE the (async) handler runs, so picking the same file twice
+            // still fires a change event.
+            event.target.value = "";
+            onPick(file);
+          }}
+        />
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="outline" size="sm" disabled={disabled || uploading} asChild>
+            <label htmlFor={fileId} className="cursor-pointer">
+              {uploading ? <Loader2 className="animate-spin" /> : <Upload />}
+              {uploading ? "Uploading…" : value ? "Replace image" : "Choose image"}
+            </label>
+          </Button>
+          {value && !uploading && (
+            <Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={onRemove} className="text-destructive">
+              <X /> Remove
+            </Button>
+          )}
+        </div>
+        {helpText && <p className="text-xs text-muted-foreground">{helpText}</p>}
+        {error && <p className="text-xs font-medium text-destructive">{error}</p>}
+        {uploading && (
+          <div className="space-y-1.5" aria-live="polite">
+            <div className="flex justify-between text-xs text-muted-foreground"><span>Uploading…</span><span>{progress}%</span></div>
+            <Progress value={progress} />
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

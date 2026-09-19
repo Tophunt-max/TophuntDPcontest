@@ -397,6 +397,21 @@ export async function req<T>(
   return (text ? JSON.parse(text) : undefined) as T;
 }
 
+/** One legal document row for the editor (effective raw content + its source). */
+export interface LegalDoc {
+  key: string;
+  label: string;
+  note: string;
+  /** RAW content the app serves for this doc (override or bundled), tokens intact. */
+  content: string;
+  /** True when a stored override is in effect; false when it is the bundled default. */
+  isCustom: boolean;
+}
+export interface LegalDocsResponse {
+  docs: LegalDoc[];
+  lastUpdated: string;
+}
+
 const get = <T>(p: string) => req<T>("GET", p);
 const post = <T>(p: string, b?: unknown) => req<T>("POST", p, b ?? {});
 const patch = <T>(p: string, b?: unknown) => req<T>("PATCH", p, b ?? {});
@@ -564,6 +579,64 @@ export interface IntegrationsResponse {
   secretStorage: boolean;
 }
 
+// ─── Announcement popups ─────────────────────────────────────────────────────
+
+export type AnnouncementTargetType = "all" | "users";
+
+/** A row from GET /admin/announcements (includes its explicit-target count). */
+export interface AdminAnnouncement {
+  id: string;
+  title: string;
+  body: string;
+  link: string | null;
+  image: string | null;
+  isActive: boolean;
+  targetType: AnnouncementTargetType;
+  /** Hours the popup stays hidden after a user closes it, then re-appears. */
+  snoozeHours: number;
+  /** Higher shows first when several are active for one user. */
+  priority: number;
+  /** Schedule window in epoch ms; null = unbounded on that side. */
+  startAt: number | null;
+  endAt: number | null;
+  createdBy: string | null;
+  createdAt: number;
+  updatedAt: number;
+  /** How many uids are explicitly targeted (0 for an "all" announcement). */
+  targetCount: number;
+}
+
+export interface AnnouncementWritePayload {
+  title: string;
+  body: string;
+  link?: string | null;
+  image?: string | null;
+  isActive?: boolean;
+  targetType?: AnnouncementTargetType;
+  snoozeHours?: number;
+  priority?: number;
+  startAt?: number | null;
+  endAt?: number | null;
+  /** Explicit target uids; only used when targetType is "users". */
+  userIds?: string[];
+}
+
+// ─── Capacity (Cloudflare free-tier headroom) ────────────────────────────────
+export interface CapacityTable {
+  name: string;
+  count: number;
+  threshold: number;
+}
+export interface Capacity {
+  caps: { rowsRead: number; rowsWritten: number; kvWrites: number };
+  storageBytes: number | null;
+  storageCapBytes: number;
+  tables: CapacityTable[];
+  /** Today's usage (UTC day). null when the analytics token isn't configured. */
+  usage: { rowsRead: number; rowsWritten: number } | null;
+  generatedAt: number;
+}
+
 // ─── Typed surface over the Worker's /admin endpoints ───────────────────────
 export const api = {
   // dashboard
@@ -591,6 +664,7 @@ export const api = {
     }>("/admin/overview"),
   deviceStats: () =>
     get<{ web: number; mobile: number; other: number }>("/admin/device-stats"),
+  capacity: () => get<Capacity>("/admin/capacity"),
   userGrowth: () =>
     get<{ categories: string[]; data: number[] }>("/admin/user-growth"),
   recentTickets: () => get<any[]>("/admin/recent-tickets"),
@@ -731,6 +805,14 @@ export const api = {
   saveRewards: (payload: any) => post("/admin/rewards", payload),
   appSettings: () => get<any>("/admin/app-settings"),
   saveAppSettings: (payload: any) => post("/admin/app-settings", payload),
+
+  // Legal documents. `legal()` returns each doc's EFFECTIVE raw content (a stored
+  // override, or the bundled default) so the editor is never blank; `saveLegal`
+  // stores an override, or clears it (reverting to the bundled default) when
+  // `content` is empty.
+  legal: () => get<LegalDocsResponse>("/admin/legal"),
+  saveLegal: (key: string, content: string) =>
+    post<{ success: boolean; isCustom: boolean }>("/admin/legal", { key, content }),
 
   // integrations — provider config plus write-only credentials
   integrations: () => get<IntegrationsResponse>("/admin/integrations"),
@@ -886,10 +968,21 @@ export const api = {
   // notifications
   notifications: () => get<any[]>("/admin/notifications"),
   markNotificationsRead: () => post("/admin/notifications/read"),
+  clearNotifications: () => del("/admin/notifications"),
   notify: (payload: { userId: string; title: string; body: string; type?: string }) =>
     post("/admin/notify", payload),
   broadcast: (payload: { title: string; body: string; image?: string; segment?: { platform?: string; minLevel?: number } }) =>
     post<{ recipients: number }>("/admin/broadcast", payload),
+
+  // announcement popups (in-app modal shown to users; targeted, 24h-snooze)
+  announcements: () => get<AdminAnnouncement[]>("/admin/announcements"),
+  announcementTargets: (id: string) => get<string[]>(`/admin/announcements/${encodeURIComponent(id)}/targets`),
+  createAnnouncement: (payload: AnnouncementWritePayload) =>
+    post<{ success: true; id: string }>("/admin/announcements", payload),
+  updateAnnouncement: (id: string, payload: Partial<AnnouncementWritePayload>) =>
+    patch<{ success: true; id: string }>(`/admin/announcements/${encodeURIComponent(id)}`, payload),
+  deleteAnnouncement: (id: string) =>
+    del<{ success: true }>(`/admin/announcements/${encodeURIComponent(id)}`),
 
   // scheduled notifications
   scheduledNotifications: () => get<any[]>("/admin/scheduled-notifications"),
@@ -915,7 +1008,10 @@ export const api = {
 
   // messages moderation
   messages: () => get<any[]>("/admin/messages"),
-  deleteMessage: (id: string) => del(`/admin/messages/${id}`),
+  // Message bodies live in per-chat Durable Objects, so a delete is addressed by
+  // (chatId, id) — the id alone no longer locates the message.
+  deleteMessage: (chatId: string, id: string) =>
+    del(`/admin/messages/${encodeURIComponent(chatId)}/${encodeURIComponent(id)}`),
 
   // analytics
   analytics: () =>

@@ -1,0 +1,16 @@
+-- Online / last-seen presence.
+--
+-- One nullable timestamp column on `users`, stamped by the realtime layer when a
+-- user's `user:<uid>` WebSocket opens (came online) and when it closes (went
+-- offline). It is the "last seen" value a chat header shows, and the live green
+-- dot is driven by the `presence` events the same connect/disconnect broadcasts
+-- (see src/lib/publish.ts `publishPresence`) — this column is only the durable
+-- fallback for the timestamp, not the live online signal.
+--
+-- EPOCH MILLISECONDS (compared against Date.now()), deliberately a different unit
+-- from `tokens_valid_after` (seconds). NULL means the user has never connected
+-- since this shipped, which the client renders as no last-seen text rather than
+-- a bogus "last seen 1970". No index: it is read only as part of the already
+-- indexed chat_members -> chats -> users enrichment on /read/chats, never
+-- filtered or sorted on. DDL-only and append-only.
+ALTER TABLE users ADD COLUMN last_seen_at INTEGER;

@@ -133,6 +133,33 @@ export class WalletReplay extends Error {
 }
 
 /**
+ * Drop a wallet claim that won its insert but whose adjustment did not apply.
+ *
+ * Deletes on `(key, nonce)`, never on the key alone: the nonce proves the row is
+ * OURS. Without that, a release racing a concurrent retry could delete the row the
+ * other request is relying on and let both adjustments through — the exact
+ * double-spend the claim exists to stop.
+ *
+ * Best-effort by design. If the delete fails the worst outcome is the pre-existing
+ * behaviour (the key stays consumed), so it must not mask the real error being
+ * raised by the caller.
+ */
+async function releaseWalletClaim(
+  env: Env,
+  claimKey: string | undefined,
+  nonce: string,
+): Promise<void> {
+  if (!claimKey) return;
+  try {
+    await env.DB.prepare(`DELETE FROM idempotency_keys WHERE key = ? AND nonce = ?`)
+      .bind(claimKey, nonce)
+      .run();
+  } catch (e) {
+    console.error("[money] could not release wallet claim", claimKey, e);
+  }
+}
+
+/**
  * The single supported way to move an account balance from an admin path.
  *
  * Guarantees, all of which the previous two divergent implementations broke in
@@ -235,6 +262,18 @@ export async function adjustUserWallet(
     const existing = await env.DB.prepare(`SELECT dpcoin FROM users WHERE uid = ?`)
       .bind(input.uid)
       .first<{ dpcoin: number | null }>();
+    // The batch COMMITTED — the claim row is in the database even though no money
+    // moved, because the claim insert is unconditional while the money statements
+    // are gated. Leaving it there permanently poisons the key: a legitimate retry
+    // with the same `Idempotency-Key` would find the stale row, lose the nonce
+    // comparison above, and be reported to the caller as
+    // "already updated (no change applied)" — telling an admin an adjustment had
+    // happened when it never did, and making it impossible with that key.
+    //
+    // Releasing it is safe precisely because nothing else in the batch applied:
+    // `changes === 0` on the gated UPDATE proves the balance did not move, and the
+    // ledger insert shares that gate, so there is no committed effect to protect.
+    await releaseWalletClaim(env, input.claimKey, nonce);
     if (!existing) throw httpsError("not-found", "User not found.");
     throw httpsError(
       "failed-precondition",

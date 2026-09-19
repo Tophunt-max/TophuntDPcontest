@@ -137,6 +137,12 @@ class_name = "VoteCounter"
 name = "RATE_LIMITER"
 class_name = "RateLimiter"
 
+# Per-chat message store (SQLite-backed). Owns chat message bodies, one instance
+# per chatId, so the unbounded message write path stays off D1's single writer.
+[[durable_objects.bindings]]
+name = "CHAT_ARCHIVE"
+class_name = "ChatArchive"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["RealtimeHub"]
@@ -152,13 +158,44 @@ new_sqlite_classes = ["VoteCounter"]
 tag = "v3"
 new_sqlite_classes = ["RateLimiter"]
 
+# Per-chat message store. Same rule: append a new tag, never edit an applied one.
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["ChatArchive"]
+
+# ---------------------------------------------------------------------------
+# Queues — admin broadcast fan-out (src/lib/broadcast.ts + index.ts `queue()`).
+#
+# A broadcast enqueues one message, the consumer sends ONE page of recipients and
+# re-enqueues the next, so a send-to-everyone drains in seconds instead of one page
+# per 10-minute cron tick. The cron (drainBroadcastJobs) stays as a stale-job
+# safety net, and the producer binding is read optionally, so the app keeps working
+# if the queue is not yet created.
+#
+# CREATE ONCE before the first deploy that includes this:
+#   wrangler queues create tophunt-broadcast
+# ---------------------------------------------------------------------------
+[[queues.producers]]
+binding = "BROADCAST_QUEUE"
+queue = "tophunt-broadcast"
+
+[[queues.consumers]]
+queue = "tophunt-broadcast"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+
 # ---------------------------------------------------------------------------
 # Scheduled tasks (replace Firebase onSchedule functions)
 #   */10 * * * *  -> resolveContests + expired story cleanup (was `scheduled`/`resolveContestsTask`)
 #   0 0 1 * *     -> monthlyHallOfFame
 # ---------------------------------------------------------------------------
 [triggers]
-#   */10 * * * *  -> the operational sweep (settlement, refunds, pruning)
+#   */10 * * * *  -> the operational sweep (settlement, refunds, video/deletion reconciliation)
+#   0 * * * *     -> retention housekeeping (prune error_logs / notifications / ops tables).
+#                    Split OFF the 10-min tick: retention is not time-critical and does not
+#                    need to run 144x/day. Hourly is plenty, and it keeps the frequent tick
+#                    focused on money/settlement work.
 #   0 */6 * * *   -> SEO audit. Has its OWN schedule on purpose, see below.
 #   0 0 1 * *     -> monthlyHallOfFame
 #
@@ -172,7 +209,7 @@ new_sqlite_classes = ["RateLimiter"]
 #
 # Its own trigger gives it a fresh budget — and means a future failure IS recorded
 # instead of vanishing.
-crons = ["*/10 * * * *", "0 */6 * * *", "0 0 1 * *"]
+crons = ["*/10 * * * *", "0 * * * *", "0 */6 * * *", "0 0 1 * *"]
 
 # ---------------------------------------------------------------------------
 # Workers Logs.
@@ -269,13 +306,28 @@ class_name = "VoteCounter"
 name = "RATE_LIMITER"
 class_name = "RateLimiter"
 
+[[env.staging.durable_objects.bindings]]
+name = "CHAT_ARCHIVE"
+class_name = "ChatArchive"
+
+# Staging broadcast queue. Create once:  wrangler queues create tophunt-broadcast-staging
+[[env.staging.queues.producers]]
+binding = "BROADCAST_QUEUE"
+queue = "tophunt-broadcast-staging"
+
+[[env.staging.queues.consumers]]
+queue = "tophunt-broadcast-staging"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+
 [env.staging.observability]
 enabled = true
 head_sampling_rate = 1
 
 # Staging runs the same cron schedule so scheduled work is exercised too.
 [env.staging.triggers]
-crons = ["*/10 * * * *", "0 */6 * * *", "0 0 1 * *"]
+crons = ["*/10 * * * *", "0 * * * *", "0 */6 * * *", "0 0 1 * *"]
 
 [env.staging.vars]
 FIREBASE_PROJECT_ID = "tophuntdpcontest-staging"
@@ -309,22 +361,32 @@ ALLOWED_ORIGINS = "http://localhost:5000,http://localhost:8081,https://tophuntdp
 [vars]
 FIREBASE_PROJECT_ID = "tophuntdpcontest"
 
-# Scale tier — the single switch between the Cloudflare FREE tier and the Workers
-# PAID plan. See src/lib/scale.ts and SCALE_TIER.md.
+# Capacity widget (admin dashboard) — account + D1 ids for the Cloudflare GraphQL
+# Analytics query that reports today's live rows_read / rows_written. NOT secret.
+# The read-only token is a SECRET, set separately with:
+#   wrangler secret put CF_ANALYTICS_TOKEN
+# Without the token the widget still shows table growth + storage (fail-open).
+CF_ACCOUNT_ID = "8357be8f9dba5721b6b726faff763f0f"
+CF_D1_DATABASE_ID = "932ccd0f-190a-46df-bdf6-685926f524ff"
+
+# Scale tier — how the Worker tunes itself for the Cloudflare FREE vs Workers PAID
+# plan. See src/lib/scale.ts and SCALE_TIER.md. Three values:
 #
-# "free" (default): every read is served from the Cache API / isolate memory and
-# NOTHING extra is written to KV, so the app stays inside the free plan's 1,000
-# KV writes/day and D1's daily row limits.
+# "auto" (DEPLOYED DEFAULT): self-adapts to BOTH billing directions with NO code,
+#   flag, or deploy change at the transition. It caches the per-request auth
+#   account-state in KV — on paid the writes succeed (optimal); on free, once the
+#   KV write budget is spent the writes fail open and the request recomputes from
+#   D1 (never breaks). Block/revocation still take effect immediately because
+#   invalidation is a KV DELETE (metered separately). So you upgrade/downgrade the
+#   Cloudflare plan and the app just follows — nothing to flip.
 #
-# "paid": additionally caches the per-request auth account-state in KV, removing
-# the highest-COUNT D1 query (one read on every authenticated request) from the
-# hot path. That cache costs KV writes the free plan cannot afford but the paid
-# plan can — so it is gated behind this one flag.
+# "paid": force the auth-state cache on (for a paid account that wants it explicit).
+# "free": force it OFF — guarantees zero auth-cache KV writes, best for a LARGE
+#   free deployment that wants the whole KV budget for other caches.
 #
-# Going paid is exactly two steps and NO code change: upgrade the account to
-# Workers Paid, then set this to "paid" (here + redeploy, or as a dashboard env
-# var for an instant flip). An unset or unrecognised value is treated as "free".
-SCALE_TIER = "free"
+# An unset or unrecognised value resolves to "free" (the never-write-extra tier),
+# so a typo can never change behaviour unsafely.
+SCALE_TIER = "auto"
 
 # Public media origin — the R2 bucket's own custom domain, NOT the Worker.
 #

@@ -10,7 +10,7 @@
  */
 import { describe, it, expect } from 'vitest';
 
-import { contestPrize, describePrize, isProductPrize } from '@/src/lib/contestPrize';
+import { contestPrize, describePrize, isProductPrize, matchPrize } from '@/src/lib/contestPrize';
 
 describe('contestPrize', () => {
   it('reads a coin contest from either reward alias', () => {
@@ -114,5 +114,87 @@ describe('describePrize', () => {
 
   it('says nothing at all for a contest with no prize to speak of', () => {
     expect(describePrize(contestPrize({ rewardCoins: 0 }))).toBeNull();
+  });
+});
+
+
+/**
+ * `matchPrize` — what a BATTLE pays, as opposed to what a contest template awards.
+ *
+ * These pin the bug the feed card shipped: it rendered `item.entryFee * 1.8`.
+ * `entryFee` on a match is the pot BOTH players funded, so that advertised 180% of
+ * the money that existed against a server payout hard-capped at the pot; it had no
+ * rounding, so a 7-coin pot displayed "12.6" for a whole-number currency; and it
+ * showed a coin figure even when the prize was a physical product. Explore printed
+ * the raw pot for the same battle, so the two surfaces disagreed.
+ *
+ * The reason a match needs its own resolver at all is that `/read/matches` carries
+ * its coin figure as `rewardAmount`/`prizeCoins` (the snapshot frozen at creation),
+ * NOT as `rewardCoins` — so `contestPrize` alone reports 0 for every coin battle.
+ */
+describe('matchPrize', () => {
+  /** A match payload shaped like one from /read/matches. */
+  const match = (extra: Record<string, unknown> = {}) => ({
+    id: 'm1',
+    entryFee: 100, // the POT, both players
+    prizeType: 'coins',
+    ...extra,
+  });
+
+  it('reads the coin prize from the match snapshot, not from entryFee', () => {
+    // rewardAmount is the snapshot; entryFee is the pot and must not be used.
+    expect(matchPrize(match({ rewardAmount: 100 }))).toEqual({
+      type: 'coins',
+      coins: 100,
+      product: null,
+    });
+  });
+
+  it('never exceeds the pot the two players funded', () => {
+    // The server clamps the snapshot to the pot at creation; the card reads the
+    // snapshot, so it cannot advertise more than was collected. The old
+    // `entryFee * 1.8` produced 180.
+    const prize = matchPrize(match({ entryFee: 100, rewardAmount: 100 }));
+    expect(prize.coins).toBe(100);
+    expect(prize.coins).toBeLessThanOrEqual(100);
+  });
+
+  it('falls back to prizeCoins when rewardAmount is absent', () => {
+    expect(matchPrize(match({ rewardAmount: null, prizeCoins: 60 })).coins).toBe(60);
+  });
+
+  it('never renders a fractional coin amount', () => {
+    // The regression: a 7-coin pot rendered 7 * 1.8 = 12.6. Coins are whole
+    // numbers — apps/worker/src/lib/money.ts refuses to store a fraction — so a
+    // card must never promise one.
+    const prize = matchPrize(match({ entryFee: 7, rewardAmount: 6.5 }));
+    expect(Number.isInteger(prize.coins)).toBe(true);
+    expect(prize.coins).toBe(6);
+  });
+
+  it('reports a product prize as a product, with no coin figure', () => {
+    // The old badge showed `entryFee * 1.8` coins for a phone.
+    const prize = matchPrize(
+      match({
+        prizeType: 'product',
+        prizeProductTitle: 'Redmi Note 13',
+        prizeProductValue: 15999,
+        rewardAmount: 0,
+      }),
+    );
+    expect(prize.type).toBe('product');
+    expect(prize.coins).toBe(0);
+    expect(prize.product?.title).toBe('Redmi Note 13');
+  });
+
+  it('shows no prize rather than a wrong one when the snapshot is missing', () => {
+    // A legacy match with no prize columns must not fall back to the pot.
+    expect(matchPrize(match({ rewardAmount: null, prizeCoins: null })).coins).toBe(0);
+    expect(matchPrize(null).coins).toBe(0);
+    expect(matchPrize(undefined).coins).toBe(0);
+  });
+
+  it('is never negative', () => {
+    expect(matchPrize(match({ rewardAmount: -50 })).coins).toBe(0);
   });
 });

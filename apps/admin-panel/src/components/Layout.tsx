@@ -28,6 +28,7 @@ import {
   ShieldAlert,
   UserMinus,
   Bell,
+  Megaphone,
   Gift,
   SlidersHorizontal,
   Settings,
@@ -89,10 +90,12 @@ const nav = [
   { href: "/account-deletions", label: "Account Deletions", icon: UserMinus, section: "moderation" },
   { href: "/logs", label: "Error Logs", icon: ScrollText, section: "moderation" },
   { href: "/notifications", label: "Notifications", icon: Bell, section: "engagement" },
+  { href: "/announcements", label: "Announcements", icon: Megaphone, section: "engagement" },
   { href: "/system-health", label: "System Health", icon: Activity, section: "system" },
   { href: "/rewards", label: "Rewards & Gamification", icon: Gift, section: "system" },
   { href: "/app-control", label: "App Control", icon: SlidersHorizontal, section: "system" },
   { href: "/app-settings", label: "App Settings", icon: Settings, section: "system" },
+  { href: "/legal", label: "Legal Content", icon: ScrollText, section: "system" },
   { href: "/integrations", label: "Integrations", icon: Plug, section: "system" },
 ];
 
@@ -243,6 +246,17 @@ function NotificationBell() {
     }
   };
 
+  // "Mark all read" only silences the badge; a repeating alert keeps refilling the
+  // feed. "Clear all" deletes them so the bell actually empties.
+  const clearAll = async () => {
+    try {
+      await api.clearNotifications();
+      qc.invalidateQueries({ queryKey: ["notifications"] });
+    } catch {
+      /* ignore */
+    }
+  };
+
   const openItem = (n: any) => {
     setOpen(false);
     if (n?.link) setLoc(n.link);
@@ -270,11 +284,18 @@ function NotificationBell() {
           <div className="absolute right-0 mt-2 w-80 max-w-[90vw] bg-card border border-border rounded-2xl shadow-xl z-50 overflow-hidden">
             <div className="flex items-center justify-between px-4 py-3 border-b border-border">
               <p className="font-bold text-sm text-foreground">Notifications</p>
-              {unread > 0 && (
-                <button onClick={markAllRead} className="text-xs text-violet-600 font-medium hover:underline">
-                  Mark all read
-                </button>
-              )}
+              <div className="flex items-center gap-3">
+                {unread > 0 && (
+                  <button onClick={markAllRead} className="text-xs text-violet-600 font-medium hover:underline">
+                    Mark all read
+                  </button>
+                )}
+                {items.length > 0 && (
+                  <button onClick={clearAll} className="text-xs text-red-500 font-medium hover:underline">
+                    Clear all
+                  </button>
+                )}
+              </div>
             </div>
             <div className="max-h-[360px] overflow-y-auto">
               {items.length === 0 ? (

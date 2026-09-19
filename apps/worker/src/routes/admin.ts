@@ -8,9 +8,10 @@
  * the admin panel keep its existing route URLs while the data moves to D1.
  */
 import { Hono } from "hono";
-import { and, eq, desc, sql, count, ne, like, gte, lt, lte, inArray, notInArray, or, isNull, isNotNull } from "drizzle-orm";
+import { and, eq, desc, sql, count, ne, like, gt, gte, lt, lte, inArray, notInArray, or, isNull, isNotNull } from "drizzle-orm";
 import { DELETED_STATUS, PENDING_DELETION_STATUS } from "../lib/accountStatus";
 import { invalidateUserCaches, executeAccountDeletion, cancelAccountDeletion } from "../lib/accountDeletion";
+import { recentChatMessages, deleteChatMessage } from "../lib/chatArchive";
 import { alias } from "drizzle-orm/sqlite-core";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
@@ -19,6 +20,7 @@ import { timingSafeEqualSecret } from "../lib/timingSafe";
 import { verifyIdToken, bearerToken } from "../lib/firebaseAuth";
 import { assertSessionUsable } from "../middleware/auth";
 import { getAppConfig, getGamificationSettings, getSeoAudit, invalidateSetting } from "../lib/settings";
+import { legalDocsForAdmin, LEGAL_DOC_KEYS, LEGAL_LAST_UPDATED } from "../content/legal";
 import { deleteAuthUser, updateAuthUser, setCustomClaims, getUserByEmail } from "../lib/firebaseAdmin";
 import { createNotification } from "../lib/notify";
 import { sendUserEmail } from "../lib/email";
@@ -36,6 +38,8 @@ import { refundRejectedWithdrawal } from "../lib/payouts";
 import { closeRealtimeSessions, publish } from "../lib/publish";
 import { resolveContests, monthlyHallOfFame, seoAuditJob } from "../cron";
 import { newId, now } from "../lib/ids";
+import { memoGet, memoPut } from "../lib/memo";
+import { computeCapacity } from "../lib/capacity";
 import { discoverUrls, processBatch, readImportProgress, writeImportProgress } from "../lib/importerTask";
 import { runVideoBackfillBatch } from "../lib/videoBackfill";
 import { blogListCacheKey, blogPostCacheKey, commentsCacheKey, invalidateAuthState } from "../lib/cache";
@@ -224,11 +228,33 @@ function mergeSettings(existing: any, patch: any): any {
   return out;
 }
 
+/**
+ * Coin-valued keys inside `appConfig.rewardSettings`. These are credited straight
+ * to `users.dpcoin` (signup grant, referral welcome), so — exactly like the
+ * gamification reward keys — a fractional value would break the whole-number coin
+ * invariant and a negative one would DEBIT a new user. Validated here at the point
+ * of entry; getRewardSettings() floors again as a second line of defence.
+ */
+const REWARD_SETTINGS_COIN_KEYS = ["signupBonus", "referralBonus"] as const;
+
 adminRoute.get("/app-settings", async (c) => c.json((await getAppConfig(c.env)) || {}));
 adminRoute.post("/app-settings", async (c) => {
   requireFullAdmin(c);
   const db = getDb(c.env);
   const body = await c.req.json<any>();
+  const rewardSettings = body?.rewardSettings;
+  if (rewardSettings && typeof rewardSettings === "object") {
+    for (const key of REWARD_SETTINGS_COIN_KEYS) {
+      if (rewardSettings[key] === undefined || rewardSettings[key] === null) continue;
+      const n = Number(rewardSettings[key]);
+      if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0 || n > 1_000_000) {
+        throw httpsError(
+          "invalid-argument",
+          `${key} must be a whole number of coins between 0 and 1000000 — it is credited straight to user balances.`,
+        );
+      }
+    }
+  }
   const existing = (await getAppConfig(c.env)) || {};
   const merged = mergeSettings(existing, body);
   await db
@@ -237,6 +263,58 @@ adminRoute.post("/app-settings", async (c) => {
     .onConflictDoUpdate({ target: schema.settings.id, set: { data: merged, updatedAt: now() } });
   await invalidateSetting(c.env, "appConfig");
   return c.json({ message: "Settings updated successfully" });
+});
+
+// ---- legal documents (settings/appConfig.legalContent) ----
+/**
+ * The four legal documents as the editor needs them: the RAW content in effect for
+ * each (a stored override, or the bundled default) plus whether it is currently
+ * custom. The panel prefills its boxes with `content`, so an operator sees exactly
+ * what the app serves — the previous editor showed empty "override-only" boxes,
+ * which read as "the app has no policy" even though it always does.
+ */
+adminRoute.get("/legal", async (c) => {
+  requireFullAdmin(c);
+  const cfg = (await getAppConfig(c.env)) || {};
+  return c.json({ docs: legalDocsForAdmin(cfg), lastUpdated: LEGAL_LAST_UPDATED });
+});
+
+/**
+ * Save one legal document.
+ *
+ * A non-empty `content` stores an override the app serves in place of the bundled
+ * text (tokens such as {{SUPPORT_EMAIL}} are kept and interpolated at serve time).
+ * An empty/whitespace `content` CLEARS the override, reverting that document to the
+ * bundled default — so "Reset to default" is simply saving nothing.
+ *
+ * The whole `legalContent` object is rewritten explicitly (not deep-merged) so a
+ * cleared key is actually removed. Purges the /read/legal edge cache in this colo so
+ * the change shows in the app immediately here; other colos converge on that
+ * endpoint's 10-minute TTL.
+ */
+adminRoute.post("/legal", async (c) => {
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const { key, content } = await c.req.json<{ key?: string; content?: unknown }>();
+  if (typeof key !== "string" || !(LEGAL_DOC_KEYS as readonly string[]).includes(key)) {
+    throw httpsError("invalid-argument", "Unknown legal document.");
+  }
+  const text = typeof content === "string" ? content.trim() : "";
+
+  const existing = (await getAppConfig(c.env)) || {};
+  const legalContent: Record<string, string> = { ...((existing as any).legalContent ?? {}) };
+  if (text) legalContent[key] = text;
+  else delete legalContent[key]; // cleared -> app falls back to the bundled default
+
+  const merged = { ...(existing as any), legalContent };
+  await db
+    .insert(schema.settings)
+    .values({ id: "appConfig", data: merged, updatedAt: now() })
+    .onConflictDoUpdate({ target: schema.settings.id, set: { data: merged, updatedAt: now() } });
+  await invalidateSetting(c.env, "appConfig");
+  edgePurgeUrl(c, "/read/legal");
+  await logAudit(c, "legal.update", "legal", key, { cleared: !text, length: text.length });
+  return c.json({ success: true, isCustom: !!text });
 });
 
 // ---- rewards (settings/gamification) ----
@@ -252,7 +330,9 @@ adminRoute.get("/rewards", async (c) => c.json((await getGamificationSettings(c.
  * than being discovered later in a balance. lib/gamification.ts sanitises on read
  * as a second line of defence for values stored before this check existed.
  */
-const REWARD_COIN_KEYS = ["dailyLoginReward", "dailyBaseReward", "dailyStreakBonus", "signupBonus", "referralBonus"] as const;
+// signupBonus/referralBonus are NOT here: they live in appConfig.rewardSettings
+// (validated on POST /app-settings), not the gamification row.
+const REWARD_COIN_KEYS = ["dailyLoginReward", "dailyBaseReward", "dailyStreakBonus"] as const;
 
 adminRoute.post("/rewards", async (c) => {
   requireFullAdmin(c);
@@ -1119,14 +1199,27 @@ adminRoute.get("/blog", async (c) => {
 });
 
 // Blog stats for dashboards / list header.
+//
+// Three COUNT(*)s over the whole blog_posts table (~4.5k rows each) — a top
+// rows_read source in `wrangler d1 insights` because the admin Blog page and the
+// dashboard refetch it. Memoised in isolate memory for 60s: the counts are a
+// glanceable header, not an authorization decision, so a minute of staleness is
+// fine, and a warm isolate serving an admin clicking around now answers repeat
+// loads with zero D1. Deliberately NOT cross-isolate/KV — this is a pure read
+// saving with no invalidation need at this staleness.
+const BLOG_STATS_MEMO_KEY = "admin:blog-stats";
 adminRoute.get("/blog/stats", async (c) => {
+  const cached = memoGet<{ total: number; published: number; drafts: number; imported: number }>(BLOG_STATS_MEMO_KEY);
+  if (cached) return c.json(cached);
   const db = getDb(c.env);
   const total = (await db.select({ v: count() }).from(schema.blogPosts).get())?.v ?? 0;
   const published =
     (await db.select({ v: count() }).from(schema.blogPosts).where(eq(schema.blogPosts.status, "published")).get())?.v ?? 0;
   const imported =
     (await db.select({ v: count() }).from(schema.blogPosts).where(eq(schema.blogPosts.source, "archive")).get())?.v ?? 0;
-  return c.json({ total, published, drafts: total - published, imported });
+  const stats = { total, published, drafts: total - published, imported };
+  memoPut(BLOG_STATS_MEMO_KEY, stats, 60);
+  return c.json(stats);
 });
 
 
@@ -1592,7 +1685,19 @@ adminRoute.delete("/blog/:id", async (c) => {
 });
 
 // ======================= DASHBOARD =======================
+const OVERVIEW_MEMO_KEY = "admin:overview";
 adminRoute.get("/overview", async (c) => {
+  // The panel polls this every ~20s (sidebar badges + dashboard) and it runs a
+  // dozen COUNT(*)/SUM() aggregates. They are index-backed and cheap while the
+  // tables are small, but `count(*) from users`, `count(*) from posts` and the
+  // SUM over successful payments all scale with total history — so at real
+  // volume this endpoint alone would be a standing D1 cost. Memoise the whole
+  // payload in isolate memory for 30s: the numbers are a glanceable dashboard,
+  // not an authorization decision, so 30s of staleness is fine, and a warm
+  // isolate serving an admin answers repeat polls with zero D1. Per-isolate and
+  // no KV, so it stays free-tier-safe (no KV writes) and needs no invalidation.
+  const cachedOverview = memoGet<Record<string, number>>(OVERVIEW_MEMO_KEY);
+  if (cachedOverview) return c.json(cachedOverview);
   const db = getDb(c.env);
   const users = (await db.select({ v: count() }).from(schema.users).get())?.v ?? 0;
   const posts = (await db.select({ v: count() }).from(schema.posts).get())?.v ?? 0;
@@ -1636,8 +1741,16 @@ adminRoute.get("/overview", async (c) => {
         .where(notInArray(schema.prizeClaims.status, ["delivered", "cancelled"]))
         .get()
     )?.v ?? 0;
-  return c.json({ users, posts, reports, support, revenue, revenueInr, activeMatches, liveContests, pendingWithdrawals, pendingDeposits, pendingPrizeClaims });
+  const overview = { users, posts, reports, support, revenue, revenueInr, activeMatches, liveContests, pendingWithdrawals, pendingDeposits, pendingPrizeClaims };
+  memoPut(OVERVIEW_MEMO_KEY, overview, 30);
+  return c.json(overview);
 });
+
+// Cloudflare free-tier capacity snapshot for the dashboard widget: growth-table
+// row counts + DB storage (measured in-Worker, memoised 5 min) and — when a
+// CF_ANALYTICS_TOKEN is configured — today's live D1 rows_read / rows_written.
+// See lib/capacity.ts and CAPACITY_MONITORING.md.
+adminRoute.get("/capacity", async (c) => c.json(await computeCapacity(c.env)));
 
 adminRoute.get("/device-stats", async (c) => {
   const db = getDb(c.env);
@@ -1865,6 +1978,24 @@ adminRoute.post("/notifications/read", async (c) => {
   return c.json({ success: true });
 });
 
+/**
+ * Clear (delete) the caller's notifications — the "Clear all" action.
+ *
+ * "Mark all read" only silences the badge; the feed still fills, which for a
+ * repeating alert (a cron failing every tick) reads as "read does nothing". This
+ * removes them. Scoped like the read/list endpoints, so a moderator can only clear
+ * what they can see and never a finance alert. Old rows are also swept
+ * automatically by `pruneOpsTables`; this is the manual version.
+ */
+adminRoute.delete("/notifications", async (c) => {
+  const db = getDb(c.env);
+  const scopes = isFullAdmin(c) ? ["finance", "moderation"] : ["moderation"];
+  await db
+    .delete(schema.adminNotifications)
+    .where(inArray(schema.adminNotifications.scope, scopes));
+  return c.json({ success: true });
+});
+
 
 // ======================= OPS (used by admin CLI scripts) =======================
 // Make/unmake a user admin: sets the Firebase custom claim (Identity Toolkit)
@@ -2007,7 +2138,13 @@ adminRoute.get("/revenue", async (c) => {
   // Full admins only: revenue and top spenders.
   requireFullAdmin(c);
   const db = getDb(c.env);
-  const successful = eq(schema.payments.status, "success");
+  /**
+   * Gross receipts. `partially_refunded` belongs here: the payment succeeded and
+   * most of it stands, so dropping the whole row (which is what happened while a
+   * partial refund flipped the status straight to `refunded`) wrote off revenue we
+   * actually kept. The part that WAS returned is netted off via `reversed` below.
+   */
+  const successful = inArray(schema.payments.status, ["success", "partially_refunded"]);
 
   const totals = await db
     .select({
@@ -2022,13 +2159,22 @@ adminRoute.get("/revenue", async (c) => {
     .where(successful)
     .get();
 
+  /**
+   * Money actually returned, read from `payment_orders.refunded_amount_paise`
+   * rather than by summing whole `payments` rows.
+   *
+   * Summing the payment total treated every reversal as total: a ₹1000 payment with
+   * a ₹100 refund was reported as ₹1000 reversed. The clawback path has always
+   * written the real figure to this column (and now accumulates it across several
+   * partial refunds), so this is both accurate and partial-aware.
+   */
   const reversed = await db
     .select({
-      paise: sql<number>`COALESCE(SUM(${schema.payments.amountPaise}),0)`,
+      paise: sql<number>`COALESCE(SUM(${schema.paymentOrders.refundedAmountPaise}),0)`,
       n: count(),
     })
-    .from(schema.payments)
-    .where(inArray(schema.payments.status, ["refunded", "disputed"]))
+    .from(schema.paymentOrders)
+    .where(gt(schema.paymentOrders.refundedAmountPaise, 0))
     .get();
 
   const coinsInCirculation =
@@ -2603,6 +2749,199 @@ adminRoute.post("/broadcast", async (c) => {
   }
 });
 
+// ======================= ANNOUNCEMENT POPUPS =======================
+// In-app popups shown to users (see schema `announcements`). Unlike a broadcast
+// (which writes one notification row per user), an announcement is a single row
+// the user endpoint evaluates live against targeting + per-user snooze — so it
+// can re-appear after the snooze window without re-fanning-out to anyone.
+
+const ANNOUNCEMENT_TARGET_TYPES = ["all", "users"] as const;
+
+/** Validate + normalise a create/update payload. Throws invalid-argument. */
+function parseAnnouncementInput(body: any, { partial }: { partial: boolean }) {
+  const out: Record<string, any> = {};
+
+  const wants = (k: string) => hasOwn(body, k);
+
+  if (!partial || wants("title")) {
+    const title = String(body.title ?? "").trim();
+    if (!title) throw httpsError("invalid-argument", "title is required.");
+    if (title.length > 120) throw httpsError("invalid-argument", "title must be 120 characters or fewer.");
+    out.title = title;
+  }
+  if (!partial || wants("body")) {
+    const text = String(body.body ?? "").trim();
+    if (!text) throw httpsError("invalid-argument", "body is required.");
+    if (text.length > 2000) throw httpsError("invalid-argument", "body must be 2000 characters or fewer.");
+    out.body = text;
+  }
+  if (wants("link")) {
+    const link = body.link == null ? null : String(body.link).trim() || null;
+    if (link && !/^https?:\/\//i.test(link)) {
+      throw httpsError("invalid-argument", "link must be an http(s) URL.");
+    }
+    out.link = link;
+  }
+  if (wants("image")) {
+    out.image = body.image == null ? null : String(body.image).trim() || null;
+  }
+  if (wants("isActive")) out.isActive = !!body.isActive;
+  if (wants("targetType")) {
+    if (!ANNOUNCEMENT_TARGET_TYPES.includes(body.targetType)) {
+      throw httpsError("invalid-argument", "targetType must be 'all' or 'users'.");
+    }
+    out.targetType = body.targetType;
+  }
+  if (wants("snoozeHours")) {
+    const n = Number(body.snoozeHours);
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1 || n > 8760) {
+      throw httpsError("invalid-argument", "snoozeHours must be a whole number of hours between 1 and 8760.");
+    }
+    out.snoozeHours = n;
+  }
+  if (wants("priority")) {
+    const n = Number(body.priority);
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0 || n > 1000) {
+      throw httpsError("invalid-argument", "priority must be a whole number between 0 and 1000.");
+    }
+    out.priority = n;
+  }
+  for (const k of ["startAt", "endAt"] as const) {
+    if (wants(k)) {
+      if (body[k] == null || body[k] === "") {
+        out[k] = null;
+      } else {
+        const n = Number(body[k]);
+        if (!Number.isFinite(n)) throw httpsError("invalid-argument", `${k} must be an epoch-ms timestamp.`);
+        out[k] = Math.trunc(n);
+      }
+    }
+  }
+  if (out.startAt != null && out.endAt != null && out.endAt <= out.startAt) {
+    throw httpsError("invalid-argument", "endAt must be after startAt.");
+  }
+
+  // Explicit target uid list (only meaningful for targetType 'users').
+  let userIds: string[] | undefined;
+  if (wants("userIds")) {
+    if (!Array.isArray(body.userIds)) throw httpsError("invalid-argument", "userIds must be an array.");
+    const cleaned = (body.userIds as unknown[]).map((u) => String(u).trim()).filter((u): u is string => u.length > 0);
+    userIds = [...new Set<string>(cleaned)];
+    if (userIds.length > 5000) throw httpsError("invalid-argument", "userIds is limited to 5000 entries.");
+  }
+
+  return { fields: out, userIds };
+}
+
+/** Replace the target rows for an announcement with the given uid list. */
+async function replaceAnnouncementTargets(db: any, announcementId: string, userIds: string[]): Promise<void> {
+  await db.delete(schema.announcementTargets).where(eq(schema.announcementTargets.announcementId, announcementId));
+  // Chunk the insert — SQLite caps bound parameters (~999) and D1 caps row count.
+  for (let i = 0; i < userIds.length; i += 100) {
+    const chunk = userIds.slice(i, i + 100);
+    if (chunk.length === 0) continue;
+    await db
+      .insert(schema.announcementTargets)
+      .values(chunk.map((uid) => ({ announcementId, uid })))
+      .onConflictDoNothing();
+  }
+}
+
+// List every announcement, newest first, with its explicit-target count.
+adminRoute.get("/announcements", async (c) => {
+  const db = getDb(c.env);
+  const rows = await db.select().from(schema.announcements).orderBy(desc(schema.announcements.createdAt)).all();
+  const counts = await db
+    .select({ announcementId: schema.announcementTargets.announcementId, n: count() })
+    .from(schema.announcementTargets)
+    .groupBy(schema.announcementTargets.announcementId)
+    .all();
+  const byId = new Map(counts.map((r: any) => [r.announcementId, Number(r.n)]));
+  return c.json(rows.map((r: any) => ({ ...r, targetCount: byId.get(r.id) ?? 0 })));
+});
+
+// Create an announcement (optionally with an explicit target uid list).
+adminRoute.post("/announcements", async (c) => {
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const { fields, userIds } = parseAnnouncementInput(await c.req.json<any>(), { partial: false });
+  const id = newId();
+  const ts = now();
+  await db.insert(schema.announcements).values({
+    id,
+    title: fields.title,
+    body: fields.body,
+    link: fields.link ?? null,
+    image: fields.image ?? null,
+    isActive: fields.isActive ?? true,
+    targetType: fields.targetType ?? "all",
+    snoozeHours: fields.snoozeHours ?? 24,
+    priority: fields.priority ?? 0,
+    startAt: fields.startAt ?? null,
+    endAt: fields.endAt ?? null,
+    createdBy: c.get("user")?.uid ?? null,
+    createdAt: ts,
+    updatedAt: ts,
+  });
+  if ((fields.targetType ?? "all") === "users") {
+    await replaceAnnouncementTargets(db, id, userIds ?? []);
+  }
+  await logAudit(c, "announcement.create", "announcement", id, {
+    title: fields.title,
+    targetType: fields.targetType ?? "all",
+    targets: userIds?.length ?? 0,
+  });
+  return c.json({ success: true, id });
+});
+
+// Update fields and/or the target list. Absent keys are left unchanged.
+adminRoute.patch("/announcements/:id", async (c) => {
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const id = c.req.param("id");
+  const existing = await db.select().from(schema.announcements).where(eq(schema.announcements.id, id)).get();
+  if (!existing) throw httpsError("not-found", "Announcement not found.");
+  const { fields, userIds } = parseAnnouncementInput(await c.req.json<any>(), { partial: true });
+  await db
+    .update(schema.announcements)
+    .set({ ...fields, updatedAt: now() })
+    .where(eq(schema.announcements.id, id));
+  // Rewrite targets when a uid list was sent, or clear them if the announcement
+  // is (now) an "all" announcement so stale rows can't linger.
+  const effectiveType = fields.targetType ?? existing.targetType;
+  if (effectiveType === "users") {
+    if (userIds) await replaceAnnouncementTargets(db, id, userIds);
+  } else if (fields.targetType === "all") {
+    await db.delete(schema.announcementTargets).where(eq(schema.announcementTargets.announcementId, id));
+  }
+  await logAudit(c, "announcement.update", "announcement", id, { changed: Object.keys(fields) });
+  return c.json({ success: true, id });
+});
+
+// Delete an announcement and all of its targeting + dismissal state.
+adminRoute.delete("/announcements/:id", async (c) => {
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const id = c.req.param("id");
+  await db.delete(schema.announcementTargets).where(eq(schema.announcementTargets.announcementId, id));
+  await db.delete(schema.announcementDismissals).where(eq(schema.announcementDismissals.announcementId, id));
+  await db.delete(schema.announcements).where(eq(schema.announcements.id, id));
+  await logAudit(c, "announcement.delete", "announcement", id);
+  return c.json({ success: true });
+});
+
+// The explicit target uids for one announcement (so the editor can prefill).
+adminRoute.get("/announcements/:id/targets", async (c) => {
+  const db = getDb(c.env);
+  const id = c.req.param("id");
+  const rows = await db
+    .select({ uid: schema.announcementTargets.uid })
+    .from(schema.announcementTargets)
+    .where(eq(schema.announcementTargets.announcementId, id))
+    .all();
+  return c.json(rows.map((r: any) => r.uid));
+});
+
 // ======================= COMMENTS MODERATION =======================
 // Recent comments (with author + optional ?postId= filter).
 //
@@ -3122,9 +3461,28 @@ adminRoute.get("/finance-trends", async (c) => {
 
 /**
  * Action a manual deposit. action: "approve" | "reject".
- * Approving credits the coins (users.dpcoin), records a payment + coin ledger
- * entry, and is idempotent via an atomic status claim (only a pending row is
- * ever credited, so double-approval can't double-credit).
+ *
+ * Approving credits the coins (`users.dpcoin`), records a `payments` row and a
+ * coin ledger entry, and stamps `credited_at` — ALL IN ONE D1 BATCH, every
+ * statement gated on the same `status = 'pending'` snapshot.
+ *
+ * That gating is the whole point. The status claim used to be its own statement
+ * followed by a separate crediting batch whose balance update carried no gate, so
+ * a failure between the two left the deposit reading `approved` with no coins, no
+ * `payments` row and no ledger row — while the "already processed" guard below
+ * made a retry impossible. The user had wired real INR against a verified UTR and
+ * the loss was invisible: unlike a Razorpay order, nothing swept for it, because
+ * `recoverStrandedPaidOrders` only ever looks at `payment_orders`.
+ *
+ * With one batch that window does not exist, so there is deliberately no recovery
+ * sweeper here — there is no state for it to find. (A Razorpay order genuinely
+ * needs one: its claim cannot share a transaction with the credit, because the
+ * gateway decides the outcome.) `computeMoneyHealth` keeps that claim honest by
+ * reporting any `approved` deposit with `credited_at IS NULL`.
+ *
+ * The ledger id is deterministic (`manual_deposit:<id>`) so that even a manual
+ * operator re-run cannot write a second ledger row for one deposit — the same
+ * reason `recoverStrandedPaidOrders` uses `purchase:<paymentId>`.
  */
 adminRoute.patch("/deposits/:id", async (c) => {
   requireFullAdmin(c);
@@ -3151,37 +3509,84 @@ adminRoute.patch("/deposits/:id", async (c) => {
     if (already) throw httpsError("failed-precondition", "This UTR was already credited on another deposit.");
   }
 
-  // Atomically claim the pending row so overlapping approvals can't double-credit.
-  const claim = await db
-    .update(schema.deposits)
-    .set({ status, adminNote: adminNote || null, processedBy: admin?.uid ?? null, updatedAt: ts })
-    .where(and(eq(schema.deposits.id, id), eq(schema.deposits.status, "pending")))
-    .run();
-  if (claim.meta.changes === 0) throw httpsError("failed-precondition", "Deposit was already processed.");
-
   // `amount` already includes the package bonus; this just makes it visible in
   // the ledger and the notification so the user can see the offer was applied.
   const depBonus = Number(d.bonusCoins) || 0;
   const bonusSuffix = depBonus > 0 ? ` (incl. ${depBonus} bonus)` : "";
 
   if (action === "approve") {
-    await db.batch([
-      db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${d.amount}`, updatedAt: ts }).where(eq(schema.users.uid, d.userId)),
-      db.insert(schema.payments).values({
-        id: `dep_${id}`,
-        userId: d.userId,
+    const coins = assertCoinAmount(d.amount, "deposit amount");
+    /**
+     * Every statement is gated on the deposit STILL being pending and the
+     * recipient still existing, and the status claim comes LAST.
+     *
+     * Ordering matters: the claim is the only statement that changes
+     * `deposits.status`, so placing it last means all four evaluate the same
+     * pre-transaction snapshot and can only all apply or all no-op. Two
+     * overlapping approvals therefore still credit exactly once — the loser's
+     * gate is already false when its batch runs — and there is no window in
+     * which the row is `approved` but the coins are not there.
+     *
+     * The user-exists arm matters too: without it a deposit for a deleted
+     * account would flip to `approved` while the credit silently matched no
+     * row, which is ledger drift in the other direction.
+     */
+    const pendingGate = `EXISTS (SELECT 1 FROM deposits WHERE id = ? AND status = 'pending')
+        AND EXISTS (SELECT 1 FROM users WHERE uid = ?)`;
+    const ledgerId = `manual_deposit:${id}`;
+    const results = await c.env.DB.batch([
+      c.env.DB.prepare(
+        `UPDATE users SET dpcoin = dpcoin + ?, updated_at = ?
+          WHERE uid = ? AND ${pendingGate}`,
+      ).bind(coins, ts, d.userId, id, d.userId),
+      c.env.DB.prepare(
+        `INSERT OR IGNORE INTO payments
+           (id, user_id, amount, coins, amount_paise, source, status, created_at)
+         SELECT ?, ?, ?, ?, ?, 'manual_deposit', 'success', ?
+          WHERE ${pendingGate}`,
         // `amount` is the legacy coin column; the split fields record the coins
         // credited and the rupees actually transferred, so revenue reporting can
         // read real money instead of a coin count.
-        amount: d.amount,
-        coins: d.amount,
-        amountPaise: toPaise(Number(d.payAmount) || 0),
-        source: "manual_deposit",
-        status: "success",
-        createdAt: ts,
-      }).onConflictDoNothing(),
-      db.insert(schema.coinTransactions).values({ id: newId(), uid: d.userId, amount: d.amount, type: "manual_deposit", description: `Manual deposit approved${bonusSuffix} (UTR ${d.utr || "-"})`, createdAt: ts }),
+      ).bind(`dep_${id}`, d.userId, coins, coins, toPaise(Number(d.payAmount) || 0), ts, id, d.userId),
+      c.env.DB.prepare(
+        `INSERT OR IGNORE INTO coin_transactions
+           (id, uid, amount, type, description, created_at)
+         SELECT ?, ?, ?, 'manual_deposit', ?, ?
+          WHERE ${pendingGate}`,
+      ).bind(
+        ledgerId,
+        d.userId,
+        coins,
+        `Manual deposit approved${bonusSuffix} (UTR ${d.utr || "-"})`,
+        ts,
+        id,
+        d.userId,
+      ),
+      c.env.DB.prepare(
+        `UPDATE deposits
+            SET status = 'approved', admin_note = ?, processed_by = ?, credited_at = ?, updated_at = ?
+          WHERE id = ? AND status = 'pending' AND EXISTS (SELECT 1 FROM users WHERE uid = ?)`,
+      ).bind(adminNote || null, admin?.uid ?? null, ts, ts, id, d.userId),
     ]);
+    if (Number(results[3]?.meta?.changes || 0) === 0) {
+      // Nothing moved: another approval won the race, or the recipient account
+      // no longer exists. Either way no coins were credited.
+      const stillThere = await db
+        .select({ uid: schema.users.uid })
+        .from(schema.users)
+        .where(eq(schema.users.uid, d.userId))
+        .get();
+      if (!stillThere) throw httpsError("failed-precondition", "That user account no longer exists.");
+      throw httpsError("failed-precondition", "Deposit was already processed.");
+    }
+  } else {
+    // Rejection moves no money, so a plain compare-and-swap is enough.
+    const claim = await db
+      .update(schema.deposits)
+      .set({ status, adminNote: adminNote || null, processedBy: admin?.uid ?? null, updatedAt: ts })
+      .where(and(eq(schema.deposits.id, id), eq(schema.deposits.status, "pending")))
+      .run();
+    if (claim.meta.changes === 0) throw httpsError("failed-precondition", "Deposit was already processed.");
   }
 
   await createNotification(c.env, d.userId, {
@@ -3763,34 +4168,62 @@ adminRoute.get("/messages", async (c) => {
   requireFullAdmin(c);
   const db = getDb(c.env);
   const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 300);
-  const rows = await db
-    .select({
-      id: schema.messages.id,
-      chatId: schema.messages.chatId,
-      senderId: schema.messages.senderId,
-      text: schema.messages.text,
-      createdAt: schema.messages.createdAt,
-      username: schema.users.username,
-    })
-    .from(schema.messages)
-    .leftJoin(schema.users, eq(schema.users.uid, schema.messages.senderId))
-    .orderBy(desc(schema.messages.createdAt))
+
+  // Message bodies live in per-chat ChatArchive DOs, so there is no single table
+  // to ORDER BY created_at across. A chat's `updated_at` bumps on every message,
+  // so the globally most-recent messages are in the most-recently-active chats:
+  // pull the recent page from the top `limit` chats, merge, and take the newest
+  // `limit`. That is enough to surface the top `limit` even if they all sit in
+  // one chat (it would be chat #1). Bounded by design; this is a rare admin read.
+  const chats = await db
+    .select({ id: schema.chats.id })
+    .from(schema.chats)
+    .orderBy(desc(schema.chats.updatedAt))
     .limit(limit)
     .all();
+  const perChat = await Promise.all(
+    chats.map((ch) => recentChatMessages(c.env, ch.id, limit).catch(() => [])),
+  );
+  const merged = perChat
+    .flat()
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, limit);
+
+  // One batched lookup for the sender usernames rather than a join per message.
+  const senderIds = [...new Set(merged.map((m) => m.senderId))];
+  const users = senderIds.length
+    ? await db
+        .select({ uid: schema.users.uid, username: schema.users.username })
+        .from(schema.users)
+        .where(inArray(schema.users.uid, senderIds))
+        .all()
+    : [];
+  const nameByUid = new Map(users.map((u) => [u.uid, u.username]));
+
   // Reading other people's private conversations is exactly the kind of access
   // that must leave a trace. Every other destructive/sensitive action here is
   // audited; this read was not, so there was no record of who looked at what.
-  await logAudit(c, "message.read", "message", null, { count: rows.length, limit });
-  return c.json(rows.map((r) => ({ ...r, createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null })));
+  await logAudit(c, "message.read", "message", null, { count: merged.length, limit });
+  return c.json(
+    merged.map((m) => ({
+      id: m.id,
+      chatId: m.chatId,
+      senderId: m.senderId,
+      text: m.text,
+      createdAt: m.createdAt ? new Date(m.createdAt).toISOString() : null,
+      username: nameByUid.get(m.senderId) ?? null,
+    })),
+  );
 });
 
-adminRoute.delete("/messages/:id", async (c) => {
-  // Full admins only: deletes a private message.
+adminRoute.delete("/messages/:chatId/:id", async (c) => {
+  // Full admins only: deletes a private message. `chatId` is required now that a
+  // message lives in its chat's DO — the id alone no longer locates it.
   requireFullAdmin(c);
-  const db = getDb(c.env);
+  const chatId = c.req.param("chatId");
   const id = c.req.param("id");
-  await db.delete(schema.messages).where(eq(schema.messages.id, id));
-  await logAudit(c, "message.delete", "message", id);
+  await deleteChatMessage(c.env, chatId, id);
+  await logAudit(c, "message.delete", "message", id, { chatId });
   return c.json({ message: "Message deleted" });
 });
 

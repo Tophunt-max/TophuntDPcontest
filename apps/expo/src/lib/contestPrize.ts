@@ -96,6 +96,36 @@ export function isProductPrize(contest: ContestPrizeInput | null | undefined): b
 }
 
 /**
+ * The prize a MATCH pays, resolved from the match's own snapshot.
+ *
+ * A match payload is not a contest template, and reading it as one is how surfaces
+ * ended up inventing their own arithmetic. `/read/matches` spreads `publicPrize`
+ * (so `prizeType` and the product fields are present) but carries its coin figure
+ * as `rewardAmount`/`prizeCoins` — the snapshot frozen at creation — NOT as
+ * `rewardCoins`. So `contestPrize(match)` alone reports 0 coins for every coin
+ * battle, and the feed card worked around that with `item.entryFee * 1.8`: the
+ * both-player pot multiplied by a guess, which advertised 180% of the money that
+ * existed, disagreed with Explore's figure for the same battle, rendered a coin
+ * amount for product-prize battles, and produced fractions (a 7-coin pot showed
+ * "12.6") for a currency the server refuses to store fractionally.
+ *
+ * This is the pattern `src/lib/vsStory.ts` already used, lifted out so every
+ * surface shares one answer. Reading the snapshot also means a card shows what the
+ * battle actually pays, not what its template pays today.
+ */
+export function matchPrize(match: (ContestPrizeInput & { rewardAmount?: number | null; prizeCoins?: number | null }) | null | undefined): ContestPrize {
+  if (!match) return { type: 'coins', coins: 0, product: null };
+  const resolved = contestPrize(match);
+  if (resolved.type === 'product') return resolved;
+  // Snapshot first, then the template alias, then the generic fields. `Math.floor`
+  // because coins are whole numbers — the server never credits a fraction, so a
+  // card must never promise one.
+  const snapshot = Number(match.rewardAmount ?? match.prizeCoins ?? 0);
+  const coins = Number.isFinite(snapshot) && snapshot > 0 ? Math.floor(snapshot) : resolved.coins;
+  return { type: 'coins', coins: Math.max(0, Math.floor(coins)), product: null };
+}
+
+/**
  * One line describing the prize, for accessibility labels and any single-line
  * summary. Kept here so the cards cannot each invent their own phrasing.
  */

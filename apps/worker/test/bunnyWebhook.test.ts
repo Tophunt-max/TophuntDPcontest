@@ -55,11 +55,20 @@ describe('POST /webhook/bunny — secret enforcement', () => {
     expect(body.error).toBe('invalid_signature');
   });
 
-  it('accepts the call when the secret is presented on the query string', async () => {
+  it('accepts the secret in the X-Bunny-Signature header', async () => {
     webhookSecret = 'shh-secret';
+    const { env } = makeEnv();
     // Unknown guid → the handler acks 200 after the signature passes, which is
     // all we need to prove the secret was accepted.
-    const res = await post({ VideoGuid: 'not-seeded' }, 'http://x/webhook/bunny?secret=shh-secret');
+    const res = await app().fetch(
+      new Request('http://x/webhook/bunny', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Bunny-Signature': 'shh-secret' },
+        body: JSON.stringify({ VideoGuid: 'not-seeded' }),
+      }),
+      env,
+      fakeCtx(),
+    );
     expect(res.status).toBe(200);
     const body: any = await res.json();
     expect(body.ok).toBe(true);
@@ -83,15 +92,50 @@ describe('POST /webhook/bunny — secret enforcement', () => {
 
   it('rejects a wrong secret', async () => {
     webhookSecret = 'shh-secret';
-    const res = await post({ VideoGuid: 'abc' }, 'http://x/webhook/bunny?secret=wrong');
+    const { env } = makeEnv();
+    const res = await app().fetch(
+      new Request('http://x/webhook/bunny', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Bunny-Signature': 'wrong' },
+        body: JSON.stringify({ VideoGuid: 'abc' }),
+      }),
+      env,
+      fakeCtx(),
+    );
     expect(res.status).toBe(400);
   });
 
-  it('stays open (no signature required) when no secret is configured', async () => {
+  /**
+   * The secret is no longer accepted from the query string.
+   *
+   * A shared credential in a URL is recorded by every proxy, CDN and access log
+   * that keeps query strings, and leaks through referrers and copied links in a
+   * way a header does not. Bunny sends custom headers, so nothing legitimate
+   * needed it.
+   */
+  it('refuses the secret when it is only on the query string', async () => {
+    webhookSecret = 'shh-secret';
+    const res = await post({ VideoGuid: 'not-seeded' }, 'http://x/webhook/bunny?secret=shh-secret');
+    expect(res.status).toBe(400);
+    const body: any = await res.json();
+    expect(body.error).toBe('invalid_signature');
+  });
+
+  /**
+   * FAILS CLOSED with no secret configured — previously it stayed wide open, so
+   * anyone could POST a guid and force an encode-state transition.
+   *
+   * Rejecting costs nothing: the webhook is optional at Bunny's end, and the
+   * `reconcileVideos` cron plus the live recheck inside `videoStatus` already
+   * resolve encode state without it. Matches `/webhook/razorpay`, which has
+   * always 503'd on a missing secret.
+   */
+  it('rejects every call when no secret is configured', async () => {
     webhookSecret = null; // nothing in panel or env
     const res = await post({ VideoGuid: 'not-seeded' });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(503);
     const body: any = await res.json();
-    expect(body.ok).toBe(true);
+    expect(body.ok).toBe(false);
+    expect(body.error).toBe('not_configured');
   });
 });

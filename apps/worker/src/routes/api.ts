@@ -13,7 +13,7 @@ import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
 import { requireApiAuth, isAdmin } from "../middleware/auth";
 import { requireFullAdmin as requireFullAdminAction, writeAdminAudit } from "../lib/adminAuthz";
-import { vsImageKeyFromPublicUrl, deleteVsImageByPublicUrl, canonicalMediaUrl } from "../lib/r2";
+import { vsImageKeyFromPublicUrl, deleteVsImageByPublicUrl, canonicalMediaUrl, isOwnChatMediaUrl } from "../lib/r2";
 import { deleteMediaByUrl } from "../lib/mediaDelete";
 
 import { createNotification, sendPushNotification } from "../lib/notify";
@@ -21,6 +21,7 @@ import { enqueueBroadcast } from "../lib/broadcast";
 import { setCustomClaims } from "../lib/firebaseAdmin";
 import { publish, publishMany } from "../lib/publish";
 import { castVote, bumpEngagement } from "../lib/voteCounter";
+import { appendMessage, markChatMessagesRead, purgeChatMessages } from "../lib/chatArchive";
 import { clientIp, consumeRateLimit, rateLimit } from "../lib/rateLimit";
 import {
   assertIdentifiersAvailable,
@@ -89,7 +90,7 @@ import {
 } from "../lib/bunny";
 import { applyBunnyEncodeResult, LIVE_STATUS_RECHECK_MS } from "../lib/videoReconcile";
 import { mediaRouting } from "../lib/mediaRouting";
-import { getAppConfig, getRewardedAdConfig } from "../lib/settings";
+import { getAppConfig, getRewardedAdConfig, getRewardSettings } from "../lib/settings";
 import { getSettings } from "../lib/gamification";
 import { sendEmail, sendUserEmail } from "../lib/email";
 import { passwordChangedEmail, dataExportEmail } from "../lib/emailTemplates";
@@ -102,9 +103,73 @@ function alertAdminEmail(c: any, cfg: any, subject: string, html: string): void 
   c.executionCtx.waitUntil(sendEmail(c.env, { to, subject, html }).catch(() => {}));
 }
 
-/** A short, URL-safe referral code. */
+/**
+ * A referral is a WELCOME bonus, so it may only be applied to a freshly created
+ * account. Without this, any long-existing user who was never referred could call
+ * `completeSignup` with a code at any time and mint themselves — and a referrer —
+ * a bonus. The client only ever calls completeSignup right after signup, so a
+ * generous window covers a legitimately interrupted onboarding while still
+ * blocking every older account.
+ */
+const REFERRAL_WELCOME_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** A short, URL-safe referral code (crypto RNG so codes are unguessable). */
 function makeReferralCode(): string {
-  return "TH" + Math.random().toString(36).slice(2, 8).toUpperCase();
+  const bytes = crypto.getRandomValues(new Uint8Array(6));
+  let s = "";
+  for (const b of bytes) s += (b % 36).toString(36);
+  return "TH" + s.toUpperCase();
+}
+
+/**
+ * Assign this user a referral code if they lack one, retrying on the (astronomically
+ * rare) collision now that `referral_code` has a UNIQUE index. Returns nothing —
+ * callers that need the code re-read the row.
+ */
+async function ensureReferralCode(db: ReturnType<typeof getDb>, uid: string, hasCode: boolean): Promise<void> {
+  if (hasCode) return;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      await db
+        .update(schema.users)
+        .set({ referralCode: makeReferralCode() })
+        .where(and(eq(schema.users.uid, uid), isNull(schema.users.referralCode)));
+      return;
+    } catch (err) {
+      // UNIQUE collision on referral_code — try a different code. Any other error
+      // is not ours to swallow.
+      if (attempt === 4 || !/unique/i.test(String((err as Error)?.message))) throw err;
+    }
+  }
+}
+
+/**
+ * Credit a referral bonus through the canonical wallet path, treating a replay as
+ * success. `adjustUserWallet` is atomic (balance + ledger in one txn) and, with a
+ * deterministic `claimKey`, applied exactly once — a retry or a concurrent
+ * duplicate throws `WalletReplay`, which here simply means "already credited".
+ */
+async function creditReferralOnce(
+  env: Env,
+  uid: string,
+  amount: number,
+  description: string,
+  claimKey: string,
+): Promise<void> {
+  try {
+    await adjustUserWallet(env, {
+      uid,
+      amount,
+      direction: "add",
+      type: "referral_bonus",
+      description,
+      claimKey,
+      ledgerId: claimKey,
+    });
+  } catch (err) {
+    if (err instanceof WalletReplay) return;
+    throw err;
+  }
 }
 
 /** Days since epoch in UTC (stable daily bucket key). */
@@ -195,6 +260,56 @@ function requiredId(value: unknown, name: string, maxLength = 256): string {
     throw httpsError("invalid-argument", `Invalid ${name}.`);
   }
   return normalized;
+}
+
+/**
+ * How many stories one highlight may hold.
+ *
+ * `storyIds` is an unbounded JSON array in a single column, and the read endpoint
+ * only ever showed the first 30 — so anything beyond that was invisible weight in
+ * every row read. Enforced on WRITE now, which is the end that can actually refuse.
+ */
+const MAX_HIGHLIGHT_STORIES = 100;
+
+/**
+ * Validate a client-supplied list of story ids and assert the caller wrote every
+ * one of them.
+ *
+ * Returns the de-duplicated ids, in the caller's order. Throws rather than
+ * silently dropping the ids that fail: a highlight is something the user is
+ * curating deliberately, so quietly discarding half of it would be worse than
+ * saying no — and a partial success would also make the IDOR attempt look like it
+ * had worked.
+ */
+async function assertOwnedStoryIds(
+  db: ReturnType<typeof getDb>,
+  uid: string,
+  value: unknown,
+): Promise<string[]> {
+  if (value == null) return [];
+  if (!Array.isArray(value)) {
+    throw httpsError("invalid-argument", "storyIds must be an array of story ids.");
+  }
+  const ids = [...new Set(value.map((v, i) => requiredId(v, `storyIds[${i}]`, 128)))];
+  if (ids.length === 0) return [];
+  if (ids.length > MAX_HIGHLIGHT_STORIES) {
+    throw httpsError(
+      "invalid-argument",
+      `A highlight can hold at most ${MAX_HIGHLIGHT_STORIES} stories.`,
+    );
+  }
+  const owned = await db
+    .select({ id: schema.stories.id })
+    .from(schema.stories)
+    .where(and(inArray(schema.stories.id, ids), eq(schema.stories.userId, uid)))
+    .all();
+  if (owned.length !== ids.length) {
+    // Deliberately does not say WHICH ids failed, or distinguish "not yours" from
+    // "does not exist" — either answer would turn this into an oracle for probing
+    // whether a given story id is real.
+    throw httpsError("permission-denied", "A highlight can only contain your own stories.");
+  }
+  return ids;
 }
 
 apiRoute.post("/", async (c) => {
@@ -346,6 +461,18 @@ apiRoute.post("/", async (c) => {
     /**
      * Current processing state for a set of videos, so a client showing a
      * "Processing…" overlay can poll without hitting Bunny directly.
+     *
+     * Scoped to the caller's OWN uploads. The predicate used to be the id list
+     * alone, which made this an enumeration endpoint for other people's media:
+     * `playbackUrl` and `mp4Url` are in the selected columns, so 50 guessed guids
+     * per request returned direct playback links for anyone's video — including
+     * uploads not yet attached to any public object (`targetType`/`targetId` still
+     * null) and videos on stories the caller has been blocked from. `ownerUid` was
+     * already on the row, and `idx_videos_owner` already indexed it.
+     *
+     * The overlay only ever polls for a video the caller just uploaded, so this
+     * costs legitimate callers nothing. It also bounds the Bunny recheck below to
+     * the caller's own media, which is what makes that amplification self-limiting.
      */
     case "videoStatus": {
       const { videoIds } = body;
@@ -362,7 +489,8 @@ apiRoute.post("/", async (c) => {
         mp4Url: schema.videos.mp4Url,
         updatedAt: schema.videos.updatedAt,
       };
-      let rows = await db.select(columns).from(schema.videos).where(inArray(schema.videos.id, ids)).all();
+      const ownedVideos = and(inArray(schema.videos.id, ids), eq(schema.videos.ownerUid, uid));
+      let rows = await db.select(columns).from(schema.videos).where(ownedVideos).all();
 
       // Ask Bunny directly for anything still unfinished and not checked in the
       // last window. Bunny's encode webhook is OPTIONAL and configured in their
@@ -387,7 +515,7 @@ apiRoute.post("/", async (c) => {
             }),
           ),
         );
-        rows = await db.select(columns).from(schema.videos).where(inArray(schema.videos.id, ids)).all();
+        rows = await db.select(columns).from(schema.videos).where(ownedVideos).all();
       }
       return c.json({ videos: rows });
     }
@@ -540,7 +668,7 @@ apiRoute.post("/", async (c) => {
 
       // Close the create-vs-pause race: the admin pause update refuses to run
       // while this waiting match exists. If the pause won just before the match
-      // insert, remove the new match and ledger entry and atomically refund.
+      // insert, remove the new match and atomically refund the entry fee.
       let statusAfterCreate: { status: string | null } | undefined;
       try {
         statusAfterCreate = await db
@@ -556,32 +684,67 @@ apiRoute.post("/", async (c) => {
       }
       if (statusAfterCreate && statusAfterCreate.status !== "live") {
         try {
-          // D1 batches are atomic and sequential. Gate every financial change
-          // on the match still being waiting, then delete it last. If an
-          // opponent already activated it, all three statements are no-ops.
-          const stillWaiting = sql`EXISTS (
-            SELECT 1 FROM ${schema.contestMatches}
-            WHERE ${schema.contestMatches.id} = ${matchId}
-              AND ${schema.contestMatches.status} = 'waiting_for_opponent'
-          )`;
-          const rollback = await db.batch([
-            db.delete(schema.coinTransactions).where(and(
-              eq(schema.coinTransactions.id, entryTransactionId),
-              stillWaiting,
-            )),
-            db.update(schema.users)
-              .set({
-                dpcoin: sql`${schema.users.dpcoin} + ${fee}`,
-                xp: sql`${schema.users.xp} - 10`,
-                updatedAt: now(),
-              })
-              .where(and(eq(schema.users.uid, uid), stillWaiting)),
-            db.delete(schema.contestMatches).where(and(
-              eq(schema.contestMatches.id, matchId),
-              eq(schema.contestMatches.status, "waiting_for_opponent"),
-            )),
+          /**
+           * D1 batches are atomic and sequential. Every financial statement is
+           * gated on the match still being waiting AND on the refund not already
+           * being recorded; the match delete goes last.
+           *
+           * The refund is now a COMPENSATING LEDGER ROW, not a deletion of the
+           * entry-fee row. Deleting it made this the only refund path in the
+           * worker that rewrote history instead of appending to it — the user's
+           * transaction list lost both halves, so a charge they had really been
+           * through became unexplainable, and `settleRefund` / `lib/payouts.ts`
+           * both do the opposite for the same situation.
+           *
+           * It also fixes what the credit was gated on. `stillWaiting` is a fact
+           * about the MATCH, not about the charge being compensated: if the
+           * entry-fee row were already absent (a partially-applied earlier
+           * rollback), the coins were still handed back with nothing offsetting
+           * them. `NOT EXISTS(refund row)` ties the credit to the exact thing it
+           * reverses, and the refund's ledger id is deterministic so a retry
+           * cannot pay it twice.
+           */
+          const refundTransactionId = `contest_entry_refund:${matchId}:${uid}`;
+          const rollbackTs = now();
+          // Raw SQL because BOTH money statements must carry the identical gate.
+          // Drizzle's `onConflictDoNothing()` insert cannot take a WHERE, so
+          // expressing this with the query builder would leave the ledger row
+          // ungated — it would then be written even when the credit no-opped
+          // (an opponent having activated the match), which is exactly the drift
+          // this rollback is supposed to prevent.
+          const refundGate =
+            `EXISTS (SELECT 1 FROM contest_matches WHERE id = ? AND status = 'waiting_for_opponent')
+             AND NOT EXISTS (SELECT 1 FROM coin_transactions WHERE id = ?)`;
+          const refundBindings = [matchId, refundTransactionId];
+          const rollback = await env.DB.batch([
+            env.DB.prepare(
+              // `MAX(0, xp - 10)` — reversing the +10 granted above must not be
+              // able to drive lifetime XP negative, which a plain `xp - 10` could
+              // for an account whose only XP was this entry.
+              `UPDATE users
+                  SET dpcoin = dpcoin + ?, xp = MAX(0, xp - 10), updated_at = ?
+                WHERE uid = ? AND ${refundGate}`,
+            ).bind(fee, rollbackTs, uid, ...refundBindings),
+            env.DB.prepare(
+              `INSERT OR IGNORE INTO coin_transactions
+                 (id, uid, amount, type, contest_id, match_id, description, created_at)
+               SELECT ?, ?, ?, 'contest_entry_refund', ?, ?, ?, ?
+                WHERE ${refundGate}`,
+            ).bind(
+              refundTransactionId,
+              uid,
+              fee,
+              contestId ?? null,
+              matchId,
+              "Entry fee refunded — contest stopped accepting new matches",
+              rollbackTs,
+              ...refundBindings,
+            ),
+            env.DB.prepare(
+              `DELETE FROM contest_matches WHERE id = ? AND status = 'waiting_for_opponent'`,
+            ).bind(matchId),
           ]);
-          if (rollback[2].meta.changes > 0) {
+          if (Number(rollback[2]?.meta?.changes || 0) > 0) {
             throw httpsError("failed-precondition", "This contest stopped accepting new matches. Your entry fee was refunded.");
           }
         } catch (e: any) {
@@ -1462,19 +1625,54 @@ apiRoute.post("/", async (c) => {
       }
 
       const ts = now();
-      // PK (uid, task_id, day) dedups — first claim wins.
-      const ins = await db
-        .insert(schema.dailyTaskClaims)
-        .values({ uid, taskId, day, reward: task.reward, createdAt: ts })
-        .onConflictDoNothing()
-        .run();
-      if (ins.meta.changes === 0) throw httpsError("already-exists", "Task already claimed today.");
-
-      await db.batch([
-        db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${task.reward}`, updatedAt: ts }).where(eq(schema.users.uid, uid)),
-        db.insert(schema.coinTransactions).values({ id: newId(), uid, amount: task.reward, type: "daily_task", description: `Task reward: ${task.title}`, createdAt: ts }),
+      const reward = assertCoinAmount(task.reward, "task reward");
+      /**
+       * Claim + credit + ledger in ONE batch, the same shape as `claimAdReward`
+       * above.
+       *
+       * The claim used to be its own statement, followed by a separate batch whose
+       * `dpcoin +=` was gated on NOTHING. A crash or a D1 error between the two
+       * left the claim row present and the reward gone forever: every retry got
+       * `already-exists`, and no sweeper looks for this.
+       *
+       * The replay guard is the LEDGER row, not the claim row. That distinction
+       * matters here and is why this cannot simply copy `claimAdReward` verbatim:
+       * that handler's claim carries a fresh random id per request, so
+       * `EXISTS(claim)` is only ever true for the request that wrote it. This
+       * claim's key is (uid, task_id, day) — stable across retries — so
+       * `EXISTS(claim)` is true on a replay too and would authorise a second
+       * credit. `NOT EXISTS(ledger)` on a deterministic id is exact instead.
+       *
+       * The credit comes BEFORE the ledger insert so both read the same
+       * pre-transaction snapshot of `coin_transactions` and can only both apply or
+       * both no-op. The `users` arm keeps a deleted account from producing a
+       * ledger row with no matching balance change.
+       */
+      const ledgerId = `daily_task:${uid}:${day}:${taskId}`;
+      const taskGate =
+        `EXISTS (SELECT 1 FROM daily_task_claims WHERE uid = ? AND task_id = ? AND day = ?)
+         AND NOT EXISTS (SELECT 1 FROM coin_transactions WHERE id = ?)
+         AND EXISTS (SELECT 1 FROM users WHERE uid = ?)`;
+      const taskBindings = [uid, taskId, day, ledgerId, uid];
+      const taskResults = await env.DB.batch([
+        env.DB.prepare(
+          `INSERT OR IGNORE INTO daily_task_claims (uid, task_id, day, reward, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        ).bind(uid, taskId, day, reward, ts),
+        env.DB.prepare(
+          `UPDATE users SET dpcoin = dpcoin + ?, updated_at = ? WHERE uid = ? AND ${taskGate}`,
+        ).bind(reward, ts, uid, ...taskBindings),
+        env.DB.prepare(
+          `INSERT OR IGNORE INTO coin_transactions
+             (id, uid, amount, type, description, created_at)
+           SELECT ?, ?, ?, 'daily_task', ?, ?
+            WHERE ${taskGate}`,
+        ).bind(ledgerId, uid, reward, `Task reward: ${task.title}`, ts, ...taskBindings),
       ]);
-      return c.json({ success: true, reward: task.reward });
+      if (Number(taskResults[1]?.meta?.changes || 0) === 0) {
+        throw httpsError("already-exists", "Task already claimed today.");
+      }
+      return c.json({ success: true, reward });
     }
 
     // ================= WALLET =================
@@ -1996,6 +2194,38 @@ apiRoute.post("/", async (c) => {
       return c.json({ success: true });
     }
 
+    /**
+     * Snooze an announcement popup after the user closes it with ×.
+     *
+     * Records (announcement, user) -> snoozedUntil = now + snoozeHours. The
+     * read endpoint (/read/announcements/active) hides the popup until that
+     * instant, then serves it again. Stored server-side so the snooze holds
+     * across the user's devices and reinstalls; the app also caches it locally
+     * for an instant dismiss. Idempotent — re-closing just re-arms the window.
+     */
+    case "dismissAnnouncement": {
+      const announcementId = String(body.announcementId || "").trim();
+      if (!announcementId) throw httpsError("invalid-argument", "announcementId is required.");
+      const ann = await db
+        .select({ snoozeHours: schema.announcements.snoozeHours })
+        .from(schema.announcements)
+        .where(eq(schema.announcements.id, announcementId))
+        .get();
+      // A deleted announcement has nothing to snooze — succeed quietly so the
+      // client can drop it without special-casing a 404.
+      if (!ann) return c.json({ success: true });
+      const ts = now();
+      const snoozedUntil = ts + Math.max(1, ann.snoozeHours ?? 24) * 3600_000;
+      await db
+        .insert(schema.announcementDismissals)
+        .values({ announcementId, uid, snoozedUntil, dismissedAt: ts })
+        .onConflictDoUpdate({
+          target: [schema.announcementDismissals.announcementId, schema.announcementDismissals.uid],
+          set: { snoozedUntil, dismissedAt: ts },
+        });
+      return c.json({ success: true, snoozedUntil });
+    }
+
     case "registerFcmToken": {
       const { token } = body;
       if (!token) throw httpsError("invalid-argument", "token is required.");
@@ -2119,8 +2349,26 @@ apiRoute.post("/", async (c) => {
     }
 
     case "sendMessage": {
-      const { chatId, text } = body;
-      if (!chatId || !text) throw httpsError("invalid-argument", "chatId and text are required.");
+      const { chatId } = body;
+      const text = typeof body.text === "string" ? body.text : null;
+      const mediaUrl = typeof body.mediaUrl === "string" ? body.mediaUrl.trim() : "";
+      // A message is now EITHER text OR an image (or text captioning an image).
+      // The old contract required `text`; relaxing it to "text OR media" is what
+      // lets an image message through — but an empty message (neither) is still
+      // rejected so a tap of the send button with nothing to say is a no-op.
+      const trimmedText = text && text.trim() ? text.trim() : null;
+      if (!chatId) throw httpsError("invalid-argument", "chatId is required.");
+      if (!trimmedText && !mediaUrl) {
+        throw httpsError("invalid-argument", "A message needs text or an image.");
+      }
+      // Guard against an arbitrary URL being stored/rendered as our own media: a
+      // media message must point at THIS deployment's chat media, not an external
+      // host (which would be an embed/SSRF-style abuse of every recipient's
+      // client). Uploads land under the `chat/` prefix via POST /upload.
+      if (mediaUrl && !isOwnChatMediaUrl(env, mediaUrl)) {
+        throw httpsError("invalid-argument", "Invalid media URL.");
+      }
+      const type: "text" | "image" = mediaUrl ? "image" : "text";
       // Only participants may post into a chat.
       await assertChatMember(env, chatId, uid);
       // Messages were the one social write with no velocity cap (likes are
@@ -2135,10 +2383,26 @@ apiRoute.post("/", async (c) => {
       await assertNotBlockedAny(env, uid, members);
       const ts = now();
       const messageId = newId();
-      await db.insert(schema.messages).values({ id: messageId, chatId, senderId: uid, text, read: false, createdAt: ts });
-      await db.update(schema.chats).set({ lastMessage: { text, createdAt: ts, senderId: uid } as any, updatedAt: ts }).where(eq(schema.chats.id, chatId));
+      // The message BODY lives in the chat's ChatArchive Durable Object, not the
+      // D1 `messages` table — that keeps the unbounded, highest-volume write path
+      // off D1's single writer (see src/chatArchive.ts). The `chats` row below is
+      // the ONE bounded D1 write that stays: it is the inbox preview + sort key,
+      // and /read/chats orders across ALL of a user's chats, which a per-chat DO
+      // cannot answer.
+      await appendMessage(env, chatId, { id: messageId, senderId: uid, text: trimmedText, type, mediaUrl: mediaUrl || null, createdAt: ts });
+      // Inbox preview text: the caption if any, else a "📷 Photo" placeholder for
+      // an image so the conversation list never shows a blank last message.
+      const previewText = trimmedText || (type === "image" ? "📷 Photo" : "");
+      await db.update(schema.chats).set({ lastMessage: { text: previewText, createdAt: ts, senderId: uid } as any, updatedAt: ts }).where(eq(schema.chats.id, chatId));
+      // Bump every recipient's unread counter (never the sender's). One bounded
+      // UPDATE — a chat has a fixed, tiny membership — that drives the inbox badge
+      // in /read/chats without a per-chat DO round-trip on the list. Reset in
+      // markChatRead below.
+      await env.DB.prepare(
+        `UPDATE chat_members SET unread_count = unread_count + 1 WHERE chat_id = ? AND user_id != ?`,
+      ).bind(chatId, uid).run();
       // Instant push: to the chat room + each participant's user channel (chat-list bump).
-      const msg = { id: messageId, chatId, senderId: uid, text, createdAt: ts };
+      const msg = { id: messageId, chatId, senderId: uid, text: trimmedText, type, mediaUrl: mediaUrl || null, createdAt: ts };
       await publish(env, `chat:${chatId}`, { type: "message", message: msg });
       await publishMany(env, members.map((u) => `user:${u}`), { type: "chat_update", chatId, message: msg });
       return c.json({ success: true });
@@ -2148,9 +2412,27 @@ apiRoute.post("/", async (c) => {
       const { chatId } = body;
       if (!chatId) throw httpsError("invalid-argument", "chatId is required.");
       await assertChatMember(env, chatId, uid);
+      // Read flags live with the message bodies in the chat's Durable Object.
+      await markChatMessagesRead(env, chatId, uid);
+      // Clear the inbox badge counter for this member (mirror of the increment in
+      // sendMessage). Own row only — the other member's unread is theirs.
       await env.DB.prepare(
-        `UPDATE messages SET read = 1 WHERE chat_id = ? AND sender_id != ? AND read = 0`,
+        `UPDATE chat_members SET unread_count = 0 WHERE chat_id = ? AND user_id = ?`,
       ).bind(chatId, uid).run();
+      return c.json({ success: true });
+    }
+
+    case "setTyping": {
+      // Ephemeral "user is typing…" signal. No storage, no `updated_at` bump, no
+      // unread change — it must not disturb inbox ordering or the badge. The
+      // recipient viewing the conversation is subscribed to `chat:<id>`, so that
+      // is where it fans out. Lightly throttled so a fast typist cannot turn
+      // keystrokes into a broadcast flood (the client also debounces its sends).
+      const { chatId } = body;
+      if (!chatId) throw httpsError("invalid-argument", "chatId is required.");
+      await assertChatMember(env, chatId, uid);
+      await rateLimit(env, `typing:${uid}`, 20, 10);
+      await publish(env, `chat:${chatId}`, { type: "typing", chatId, uid });
       return c.json({ success: true });
     }
 
@@ -2160,6 +2442,10 @@ apiRoute.post("/", async (c) => {
       // Destructive and irreversible — it drops the chat and every message in
       // it — so membership must be proven before anything is deleted.
       await assertChatMember(env, chatId, uid);
+      // Message bodies live in the chat's Durable Object; drop them there.
+      await purgeChatMessages(env, chatId);
+      // Also clear any legacy D1 seed rows for this chat so nothing is orphaned
+      // (harmless no-op once a chat has only ever written to the DO).
       await db.delete(schema.messages).where(eq(schema.messages.chatId, chatId));
       await db.delete(schema.chats).where(eq(schema.chats.id, chatId));
       // Drop the membership edges too, or they would dangle and keep pointing at a
@@ -2634,41 +2920,60 @@ apiRoute.post("/", async (c) => {
 
       // Ensure a referral code + apply an inbound referral (once) at signup.
       const meRow = await db
-        .select({ referralCode: schema.users.referralCode, referredBy: schema.users.referredBy })
+        .select({
+          referralCode: schema.users.referralCode,
+          referredBy: schema.users.referredBy,
+          createdAt: schema.users.createdAt,
+        })
         .from(schema.users)
         .where(eq(schema.users.uid, uid))
         .get();
-      if (meRow && !meRow.referralCode) {
-        await db.update(schema.users).set({ referralCode: makeReferralCode() }).where(eq(schema.users.uid, uid));
-      }
+      // Everyone gets a shareable code (collision-safe now that referral_code is UNIQUE).
+      await ensureReferralCode(db, uid, !!meRow?.referralCode);
+
       const refCode = String(body.referralCode || body.referredByCode || "").trim().toUpperCase();
-      if (action === "completeSignup" && refCode && meRow && !meRow.referredBy) {
+      // A referral is a WELCOME bonus: only a freshly created account may claim it,
+      // so a long-existing never-referred user cannot mint one on demand.
+      const withinWelcomeWindow =
+        !!meRow &&
+        Number.isFinite(Number(meRow.createdAt)) &&
+        now() - Number(meRow.createdAt) <= REFERRAL_WELCOME_WINDOW_MS;
+      if (action === "completeSignup" && refCode && meRow && !meRow.referredBy && withinWelcomeWindow) {
         const referrer = await db
           .select({ uid: schema.users.uid })
           .from(schema.users)
           .where(eq(schema.users.referralCode, refCode))
           .get();
         if (referrer && referrer.uid !== uid) {
-          const settings = await getSettings(env);
-          const bonus = Number(settings.referralBonus || 0);
+          // Single source of truth: appConfig.rewardSettings (the App Settings knob),
+          // NOT the gamification row it used to — silently — read.
+          const { referralBonus: bonus } = await getRewardSettings(env);
           const ts2 = now();
-          // referred_uid is UNIQUE → dedups if this runs twice.
-          const ins = await db
-            .insert(schema.referrals)
-            .values({ id: newId(), referrerUid: referrer.uid, referredUid: uid, bonus, createdAt: ts2 })
-            .onConflictDoNothing()
-            .run();
-          if (ins.meta.changes > 0) {
-            await db.update(schema.users).set({ referredBy: referrer.uid, updatedAt: ts2 }).where(eq(schema.users.uid, uid));
-            if (bonus > 0) {
-              await db.batch([
-                db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${bonus}` }).where(eq(schema.users.uid, referrer.uid)),
-                db.update(schema.users).set({ dpcoin: sql`${schema.users.dpcoin} + ${bonus}` }).where(eq(schema.users.uid, uid)),
-                db.insert(schema.coinTransactions).values({ id: newId(), uid: referrer.uid, amount: bonus, type: "referral_bonus", description: "Referral bonus — invited a friend", createdAt: ts2 }),
-                db.insert(schema.coinTransactions).values({ id: newId(), uid, amount: bonus, type: "referral_bonus", description: "Referral welcome bonus", createdAt: ts2 }),
-              ]);
+          // Credit FIRST, through the canonical, replay-safe wallet path. Because
+          // each grant is idempotent per claimKey, a crash between the two credits
+          // — or a retry, or a concurrent duplicate — can neither double-pay nor
+          // strand a credit. This is why the old insert-then-credit gate (which
+          // lost the bonus permanently on a mid-flight failure) is gone.
+          if (bonus > 0) {
+            await creditReferralOnce(env, referrer.uid, bonus, "Referral bonus — invited a friend", `referral_bonus:referrer:${uid}`);
+            await creditReferralOnce(env, uid, bonus, "Referral welcome bonus", `referral_bonus:referred:${uid}`);
+          }
+          // Record attribution only AFTER crediting. Both writes are idempotent
+          // (UNIQUE referred_uid; a fixed referredBy value), and setting referredBy
+          // is what makes this whole block skip on any later call for this user.
+          await db.batch([
+            db
+              .insert(schema.referrals)
+              .values({ id: newId(), referrerUid: referrer.uid, referredUid: uid, bonus, createdAt: ts2 })
+              .onConflictDoNothing(),
+            db.update(schema.users).set({ referredBy: referrer.uid, updatedAt: ts2 }).where(eq(schema.users.uid, uid)),
+          ]);
+          // Purely cosmetic, and dead last: a failed push must never undo a credit
+          // or the attribution above (both already durably committed).
+          if (bonus > 0) {
+            try {
               await createNotification(env, referrer.uid, { title: "Referral Bonus! 🎉", body: `You earned ${bonus} coins — a friend joined with your code!`, type: "referral", targetId: "wallet" });
-            }
+            } catch { /* notification is best-effort */ }
           }
         }
       }
@@ -2698,10 +3003,40 @@ apiRoute.post("/", async (c) => {
         .onConflictDoUpdate({ target: [schema.storyViews.storyId, schema.storyViews.viewerId], set: { reaction: emoji } });
       return c.json({ success: true });
     }
+    /**
+     * Create a highlight — a permanent, publicly readable shelf of the OWNER'S
+     * OWN stories.
+     *
+     * Every field was previously stored verbatim, `storyIds` included, and nothing
+     * checked whose stories those were. Combined with the read endpoint (which only
+     * checked the highlight owner's visibility — i.e. the attacker's own), that made
+     * this a cross-account disclosure primitive: harvest a victim's story ids from
+     * the public `GET /read/users/:id/stories`, name them here, and
+     * `GET /read/highlights/:id/stories` served the victim's full story rows to
+     * anyone, unauthenticated, attributed to the attacker's profile — including
+     * stories long past the 24h window and ones whose `visibility` is not public.
+     *
+     * So ownership is asserted on the way IN (here) and enforced again on the way
+     * OUT (routes/read.ts). One check would be enough for correctness; two mean a
+     * highlight that predates this fix cannot leak either.
+     */
     case "createHighlight": {
       const { name, coverImageUrl, storyIds } = body;
+      const highlightName = name == null ? null : requiredId(name, "name", 120);
+      // Constrained like `setMatchVsImage` does: a highlight cover is rendered on a
+      // public profile, so an arbitrary off-domain url here is a way to log the IP
+      // and user-agent of everyone who views that profile.
+      const cover = coverImageUrl == null ? null : requiredId(coverImageUrl, "coverImageUrl", 2048);
+      const ownedStoryIds = await assertOwnedStoryIds(db, uid, storyIds);
       const id = newId();
-      await db.insert(schema.highlights).values({ id, userId: uid, name, coverImageUrl, storyIds: storyIds || [], createdAt: now() });
+      await db.insert(schema.highlights).values({
+        id,
+        userId: uid,
+        name: highlightName,
+        coverImageUrl: cover,
+        storyIds: ownedStoryIds,
+        createdAt: now(),
+      });
       return c.json({ success: true, highlightId: id });
     }
     case "addStoryToHighlight": {
@@ -2710,8 +3045,18 @@ apiRoute.post("/", async (c) => {
       const h = await db.select().from(schema.highlights).where(eq(schema.highlights.id, highlightId)).get();
       if (!h) throw httpsError("not-found", "Highlight not found.");
       if (h.userId !== uid) throw httpsError("permission-denied", "Not allowed.");
+      // Two DIFFERENT ownership questions, and only the first was ever asked.
+      // Owning the highlight does not make someone the author of the story being
+      // pinned into it — see `createHighlight` above for what that allowed.
+      const [ownedStoryId] = await assertOwnedStoryIds(db, uid, [storyId]);
       const ids = new Set<string>((h.storyIds as string[]) || []);
-      ids.add(storyId);
+      ids.add(ownedStoryId);
+      if (ids.size > MAX_HIGHLIGHT_STORIES) {
+        throw httpsError(
+          "failed-precondition",
+          `A highlight can hold at most ${MAX_HIGHLIGHT_STORIES} stories.`,
+        );
+      }
       await db.update(schema.highlights).set({ storyIds: [...ids] }).where(eq(schema.highlights.id, highlightId));
       return c.json({ success: true });
     }

@@ -552,78 +552,143 @@ export function previousMonthPeriod(at: number = Date.now()): string {
   return `${prev.getUTCFullYear()}-${String(prev.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
+/** Coins awarded for ranks 1..3. Indexed by rank - 1. */
+const HALL_OF_FAME_REWARDS = [1000, 500, 250];
+/** Badge granted for ranks 1..3. Indexed by rank - 1. */
+const HALL_OF_FAME_BADGES = ["Gold Hall of Fame", "Silver Hall of Fame", "Bronze Hall of Fame"];
+
+/** Deterministic ledger id for a period's payout. Unique per (period, uid). */
+const hallOfFameLedgerId = (period: string, uid: string) => `hall_of_fame:${period}:${uid}`;
+
+/** One winner of a settled period, as stored in `hall_of_fame_awards`. */
+interface HallOfFameWinner {
+  uid: string;
+  rank: number;
+  reward: number;
+  wins: number;
+}
+
 /**
  * Monthly cron: top-3 by monthlyWins get coins/xp/badge, then reset monthlyWins.
  *
- * Exactly-once per (period, rank). Each winner's payout is claimed in
- * `idempotency_keys` inside the SAME transaction as the credit, the ledger row
- * and the XP/badge grant, so:
+ * Exactly-once per (period, uid), and safe to re-run at ANY later date. Three
+ * independent guards, because the failure mode is minting coins:
  *
- *  - a double-clicked `/admin/ops/hall-of-fame` pays nobody twice
- *  - a mid-loop failure does not re-pay the winners already settled on retry
- *  - `monthly_wins` is only reset when every winner has actually been paid,
- *    so a failure cannot silently erase the leaderboard it was settling
+ *  1. THE WINNER SET IS PERSISTED, NOT RE-DERIVED. The first settlement of a
+ *     period writes `hall_of_fame_awards`; every later run replays those rows.
+ *     Deriving live from `users.monthly_wins` was wrong for a re-run because the
+ *     run itself resets that counter: re-running a past month paid whoever led
+ *     the CURRENT month and then wiped the in-progress leaderboard. Periods
+ *     settled before that table existed are detected by their ledger ids instead.
+ *
+ *  2. THE CREDIT IS GATED ON ITS LEDGER ROW NOT EXISTING. The ledger insert is
+ *     `INSERT OR IGNORE` on a deterministic id, so on a replay it is ignored —
+ *     which means it cannot be the thing that stops the balance moving. It used
+ *     to be gated only on the `idempotency_keys` claim, and the retention sweep
+ *     deleted those after seven days (see PRUNABLE_CLAIM_SCOPES), so a re-run
+ *     past the window credited coins with no ledger row: exactly the drift
+ *     lib/moneyHealth.ts alarms on. This gate needs no retention to hold.
+ *
+ *  3. THE CLAIM STILL SERIALISES CONCURRENT RUNS. Two simultaneous triggers in
+ *     the same millisecond are separated by the nonce, as before.
+ *
+ * `monthly_wins` is only reset on a FIRST settlement (never on a replay), and
+ * only once every winner has actually been paid — so a failure cannot erase the
+ * leaderboard it was settling, and a replay cannot erase the current month.
  */
 export async function monthlyHallOfFame(env: Env, period = previousMonthPeriod()): Promise<{
   period: string;
   paid: number;
   skipped: number;
   reset: boolean;
+  /** True when this run replayed an already-settled period instead of deriving one. */
+  replayed: boolean;
 }> {
   const db = getDb(env);
-  const top = await db.select().from(schema.users).orderBy(desc(schema.users.monthlyWins)).limit(3).all();
-  const rewards = [1000, 500, 250];
-  const badges = ["Gold Hall of Fame", "Silver Hall of Fame", "Bronze Hall of Fame"];
+
+  const { winners, derived } = await resolveHallOfFameWinners(env, db, period);
+  if (winners.length === 0) {
+    // Either nobody won anything this month, or the period was settled before
+    // `hall_of_fame_awards` existed and its ledger rows prove it. Both are no-ops.
+    return { period, paid: 0, skipped: 0, reset: false, replayed: !derived };
+  }
 
   let paid = 0;
   let skipped = 0;
   const failures: string[] = [];
 
-  for (let i = 0; i < top.length; i++) {
-    const u = top[i];
-    if (!u.monthlyWins || u.monthlyWins <= 0) continue;
-    const reward = rewards[i];
+  for (const winner of winners) {
+    const { uid, rank, reward } = winner;
+    const badge = HALL_OF_FAME_BADGES[rank - 1] ?? HALL_OF_FAME_BADGES[2];
     const ts = now();
-    const claimKey = `hall_of_fame:${period}:${i + 1}:${u.uid}`;
+    const claimKey = `hall_of_fame:${period}:${rank}:${uid}`;
+    const ledgerId = hallOfFameLedgerId(period, uid);
     const nonce = crypto.randomUUID();
-    const currentBadges = ((u.badges as unknown as any[]) || []).slice();
-    if (!currentBadges.includes(badges[i])) currentBadges.push(badges[i]);
 
     try {
-      // The claim row is written first; every money/XP statement after it is
-      // gated on OUR nonce having won that claim. On a replay the pre-existing
-      // row keeps its original nonce, so all three statements no-op.
+      const user = await db.select().from(schema.users).where(eq(schema.users.uid, uid)).get();
+      if (!user) {
+        // The account was deleted between winning and being paid. Nothing to
+        // credit, and nothing broken — record it as skipped rather than failing
+        // the whole run (which would block the other two winners).
+        console.warn("[monthlyHallOfFame] winner no longer exists, skipping", period, uid);
+        skipped++;
+        continue;
+      }
+      const currentBadges = ((user.badges as unknown as any[]) || []).slice();
+      if (!currentBadges.includes(badge)) currentBadges.push(badge);
+
+      // The claim row is written first; both money statements after it are gated
+      // on OUR nonce having won that claim AND on the payout's ledger row not
+      // already existing. `notPaidGate` is the guard that needs no retention.
+      //
+      // The balance UPDATE comes BEFORE the ledger INSERT deliberately. The
+      // INSERT is the only statement that writes `coin_transactions`, so placing
+      // it last means both statements evaluate `notPaidGate` against the SAME
+      // pre-transaction snapshot and can therefore only both apply or both
+      // no-op — the balance can never move without its ledger row, and vice
+      // versa. (Gating the UPDATE after the INSERT would always read `false`.)
+      // D1 runs a batch sequentially inside one transaction, so this ordering
+      // costs nothing in atomicity.
       const claimGate = `EXISTS (SELECT 1 FROM idempotency_keys WHERE key = ? AND nonce = ?)`;
+      const notPaidGate = `NOT EXISTS (SELECT 1 FROM coin_transactions WHERE id = ?)`;
+      // The account could be deleted between the read above and this batch. Without
+      // this arm the ledger insert would still apply while the balance update
+      // matched no row — drift in the other direction.
+      const payeeGate = `EXISTS (SELECT 1 FROM users WHERE uid = ?)`;
+      const gates = `${claimGate} AND ${notPaidGate} AND ${payeeGate}`;
       const results = await env.DB.batch([
         env.DB.prepare(
           `INSERT OR IGNORE INTO idempotency_keys (key, nonce, scope, created_at) VALUES (?, ?, ?, ?)`,
         ).bind(claimKey, nonce, "hall_of_fame", ts),
         env.DB.prepare(
+          `UPDATE users
+              SET dpcoin = dpcoin + ?, xp = xp + 500, badges = ?, monthly_wins = 0, updated_at = ?
+            WHERE uid = ? AND ${gates}`,
+        ).bind(reward, JSON.stringify(currentBadges), ts, uid, claimKey, nonce, ledgerId, uid),
+        env.DB.prepare(
           `INSERT OR IGNORE INTO coin_transactions
              (id, uid, amount, type, description, created_at)
            SELECT ?, ?, ?, 'monthly_hall_of_fame_reward', ?, ?
-            WHERE ${claimGate}`,
+            WHERE ${gates}`,
         ).bind(
-          `hall_of_fame:${period}:${u.uid}`,
-          u.uid,
+          ledgerId,
+          uid,
           reward,
-          `Hall of Fame rank #${i + 1} (${period})`,
+          `Hall of Fame rank #${rank} (${period})`,
           ts,
           claimKey,
           nonce,
+          ledgerId,
+          uid,
         ),
-        env.DB.prepare(
-          `UPDATE users
-              SET dpcoin = dpcoin + ?, xp = xp + 500, badges = ?, monthly_wins = 0, updated_at = ?
-            WHERE uid = ? AND ${claimGate}`,
-        ).bind(reward, JSON.stringify(currentBadges), ts, u.uid, claimKey, nonce),
       ]);
 
-      if (Number(results[2]?.meta?.changes || 0) > 0) {
+      if (Number(results[1]?.meta?.changes || 0) > 0) {
         paid++;
-        await createNotification(env, u.uid, {
+        await createNotification(env, uid, {
           title: "Monthly Hall of Fame! 🏆",
-          body: `Congratulations! You ranked #${i + 1} this month. You've earned ${reward} Dpcoins and the ${badges[i]}!`,
+          body: `Congratulations! You ranked #${rank} this month. You've earned ${reward} Dpcoins and the ${badge}!`,
           type: "hall-of-fame",
           targetId: "profile",
         });
@@ -632,15 +697,16 @@ export async function monthlyHallOfFame(env: Env, period = previousMonthPeriod()
         skipped++;
       }
     } catch (e) {
-      console.error("[monthlyHallOfFame] payout failed", period, u.uid, e);
-      failures.push(u.uid);
+      console.error("[monthlyHallOfFame] payout failed", period, uid, e);
+      failures.push(uid);
     }
   }
 
   if (failures.length > 0) {
-    // Do NOT reset the leaderboard: the unpaid winners' monthly_wins are the
-    // only record of who is still owed. Throwing surfaces this in the cron
-    // failure alert so it can be re-run (which is now safe).
+    // Do NOT reset the leaderboard: `hall_of_fame_awards` now records who is
+    // owed, but the counters are still the human-readable record of the month.
+    // Throwing surfaces this in the cron failure alert so it can be re-run
+    // (which is now safe, and will replay the persisted set).
     throw new Error(
       `Hall of Fame ${period}: ${failures.length} payout(s) failed (${failures.join(", ")}); monthly wins left intact for retry.`,
     );
@@ -649,8 +715,114 @@ export async function monthlyHallOfFame(env: Env, period = previousMonthPeriod()
   // Reset the monthly leaderboard for EVERYONE (not just the top 3) so next
   // month starts clean — otherwise non-winners' monthlyWins accumulate forever
   // and the "monthly" ranking silently becomes an all-time cumulative one.
-  await db.update(schema.users).set({ monthlyWins: 0, updatedAt: now() }).where(gt(schema.users.monthlyWins, 0));
-  return { period, paid, skipped, reset: true };
+  //
+  // ONLY on a first settlement. On a replay the counters belong to a DIFFERENT,
+  // in-progress month and wiping them would destroy live data to re-finish an
+  // old payout.
+  if (derived) {
+    await db.update(schema.users).set({ monthlyWins: 0, updatedAt: now() }).where(gt(schema.users.monthlyWins, 0));
+  }
+  return { period, paid, skipped, reset: derived, replayed: !derived };
+}
+
+/**
+ * The winner set for `period`: replayed if already settled, derived if not.
+ *
+ * `derived` tells the caller whether this run is the FIRST settlement, which is
+ * what licenses it to reset `monthly_wins`.
+ */
+async function resolveHallOfFameWinners(
+  env: Env,
+  db: ReturnType<typeof getDb>,
+  period: string,
+): Promise<{ winners: HallOfFameWinner[]; derived: boolean }> {
+  const existing = await db
+    .select()
+    .from(schema.hallOfFameAwards)
+    .where(eq(schema.hallOfFameAwards.period, period))
+    .orderBy(asc(schema.hallOfFameAwards.rank))
+    .all();
+  if (existing.length > 0) {
+    return {
+      winners: existing.map((row) => ({
+        uid: row.uid,
+        rank: Number(row.rank),
+        reward: Number(row.reward) || 0,
+        wins: Number(row.wins) || 0,
+      })),
+      derived: false,
+    };
+  }
+
+  // No award rows. Before deriving a set from the LIVE leaderboard, make sure
+  // this period was not already settled before that table existed — the ledger
+  // ids are deterministic, so their presence is proof. Without this check, the
+  // first run after this deploy would re-pay every historical period on request.
+  const alreadyLedgered = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM coin_transactions
+      WHERE type = 'monthly_hall_of_fame_reward' AND id LIKE ?`,
+  )
+    .bind(`hall_of_fame:${period}:%`)
+    .first<{ n: number }>();
+  if (Number(alreadyLedgered?.n || 0) > 0) {
+    console.warn(
+      `[monthlyHallOfFame] ${period} was settled before hall_of_fame_awards existed ` +
+        `(${alreadyLedgered?.n} ledger row(s)); refusing to re-derive a winner set.`,
+    );
+    return { winners: [], derived: false };
+  }
+
+  const top = await db
+    .select()
+    .from(schema.users)
+    .where(gt(schema.users.monthlyWins, 0))
+    .orderBy(desc(schema.users.monthlyWins))
+    .limit(3)
+    .all();
+  if (top.length === 0) return { winners: [], derived: true };
+
+  const ts = now();
+  const derivedWinners: HallOfFameWinner[] = top.map((u, i) => ({
+    uid: u.uid,
+    rank: i + 1,
+    reward: HALL_OF_FAME_REWARDS[i],
+    wins: Number(u.monthlyWins) || 0,
+  }));
+
+  // Persist the set BEFORE paying anyone, so a crash mid-payout leaves a record
+  // of who is owed. `onConflictDoNothing` makes two concurrent first runs safe:
+  // whichever lands first defines the period, and the re-read below means the
+  // loser pays that set rather than its own.
+  await db
+    .insert(schema.hallOfFameAwards)
+    .values(
+      derivedWinners.map((w) => ({
+        period,
+        uid: w.uid,
+        rank: w.rank,
+        reward: w.reward,
+        wins: w.wins,
+        createdAt: ts,
+      })),
+    )
+    .onConflictDoNothing()
+    .run();
+
+  const settled = await db
+    .select()
+    .from(schema.hallOfFameAwards)
+    .where(eq(schema.hallOfFameAwards.period, period))
+    .orderBy(asc(schema.hallOfFameAwards.rank))
+    .all();
+  return {
+    winners: settled.map((row) => ({
+      uid: row.uid,
+      rank: Number(row.rank),
+      reward: Number(row.reward) || 0,
+      wins: Number(row.wins) || 0,
+    })),
+    derived: true,
+  };
 }
 
 

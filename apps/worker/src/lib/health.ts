@@ -69,6 +69,18 @@ export async function computeDeepHealth(env: Env): Promise<DeepHealth> {
     if (!ns) throw new Error("RATE_LIMITER binding is not configured");
     await ns.get(ns.idFromName("health:probe")).peek("health:probe", 60);
   });
+  // Chat message bodies live in the ChatArchive Durable Object. A broken binding,
+  // an unapplied SQLite migration, or a seed that throws would take EVERY chat's
+  // history read down — which surfaces to users as an endless spinner on opening a
+  // conversation. The read path now falls back to D1, so this is not an outage, but
+  // it IS a silent regression the deploy smoke test must catch. `history` on a
+  // throwaway chat id seeds from zero D1 rows and returns [], proving the binding,
+  // the class and the actor's schema without touching anyone's data.
+  await timed("do_chat_archive", async () => {
+    const ns = env.CHAT_ARCHIVE;
+    if (!ns) throw new Error("CHAT_ARCHIVE binding is not configured");
+    await ns.get(ns.idFromName("health:probe")).history("health:probe", 0, 1);
+  });
 
   // Secrets whose absence silently breaks a user-visible flow. Panel-managed
   // credentials are resolved through the credential store (panel value first,

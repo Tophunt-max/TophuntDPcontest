@@ -56,6 +56,15 @@ export const users = sqliteTable(
     bio: text("bio"),
     isPrivate: integer("is_private", { mode: "boolean" }).default(false),
     authProvider: text("auth_provider"),
+    /**
+     * Epoch MILLISECONDS of the user's last realtime connection or disconnection
+     * (migration 0051). Stamped when a `user:<uid>` WebSocket opens (they came
+     * online) and when it closes (they went offline), so it doubles as the
+     * "last seen" timestamp shown in a chat header. NULL for anyone who has never
+     * connected since this shipped. Not the same unit as `tokensValidAfter`
+     * (that one is seconds) — this is compared against `Date.now()`.
+     */
+    lastSeenAt: integer("last_seen_at"),
     // Any profile fields without a dedicated column (facebook/twitter/instagram, etc.)
     extra: text("extra", { mode: "json" }),
 
@@ -108,6 +117,9 @@ export const users = sqliteTable(
     usernameIdx: uniqueIndex("idx_users_username").on(t.username),
     emailIdx: uniqueIndex("idx_users_email").on(t.email),
     phoneIdx: uniqueIndex("idx_users_phone").on(t.phone),
+    // Referral codes are unique so a code can never resolve to the wrong account.
+    // DB-level enforcement is applied by migration 0046 (NULLs stay distinct).
+    referralCodeIdx: uniqueIndex("idx_users_referral_code").on(t.referralCode),
     monthlyWinsIdx: index("idx_users_monthly_wins").on(t.monthlyWins),
     // Public read paths exclude accounts that are pending deletion or already
     // anonymised. Before migration 0039 `status` was never queried, so that
@@ -716,6 +728,11 @@ export const chatMembers = sqliteTable(
   {
     userId: text("user_id").notNull(),
     chatId: text("chat_id").notNull(),
+    // Per-member unread counter for the inbox badge (migration 0049). Bumped for
+    // every recipient on sendMessage, reset to 0 on markChatRead. Kept in D1 (not
+    // derived from the per-chat message DO) so the inbox badge costs no extra
+    // round-trip — it rides the existing chat_members join.
+    unreadCount: integer("unread_count").notNull().default(0),
   },
   (t) => ({
     pk: primaryKey({ columns: [t.userId, t.chatId] }),
@@ -731,6 +748,12 @@ export const messages = sqliteTable(
     senderId: text("sender_id").notNull(),
     text: text("text"),
     read: integer("read", { mode: "boolean" }).default(false),
+    // Message kind + optional media URL (migration 0050). Message bodies live in
+    // the per-chat ChatArchive Durable Object now; these columns exist on the D1
+    // mirror so a legacy row seeded into a DO carries its kind, and the DO-read
+    // fallback in /read/chats/:id/messages returns media messages too.
+    type: text("type").notNull().default("text"), // 'text' | 'image'
+    mediaUrl: text("media_url"),
     createdAt: integer("created_at").notNull(),
   },
   (t) => ({ chatIdx: index("idx_messages_chat").on(t.chatId, t.createdAt) }),
@@ -810,6 +833,77 @@ export const adminNotifications = sqliteTable(
   (t) => ({
     createdIdx: index("idx_admin_notif_created").on(t.createdAt),
     scopeIdx: index("idx_admin_notif_scope").on(t.scope, t.createdAt),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// announcements  (admin-authored in-app POPUPS — see migration 0047)
+//
+// Distinct from the appConfig.announcement banner (one global message) and from
+// `notifications` (append-only per-user history). A popup is stateful: active
+// for a targeted audience, dismissible, and re-shown after a per-announcement
+// snooze window. Targeting + dismissal live in the two tables below.
+// ---------------------------------------------------------------------------
+export const announcements = sqliteTable(
+  "announcements",
+  {
+    id: text("id").primaryKey(),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    /** Optional call-to-action opened when the popup is tapped. */
+    link: text("link"),
+    /** Optional hero image URL shown above the text. */
+    image: text("image"),
+    /** Master on/off — an inactive announcement is never served. */
+    isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+    /** 'all' -> everyone; 'users' -> only uids in announcementTargets. */
+    targetType: text("target_type").notNull().default("all"),
+    /** Hours the popup stays hidden after a close, then re-appears. */
+    snoozeHours: integer("snooze_hours").notNull().default(24),
+    /** Higher shows first when several are active for one user. */
+    priority: integer("priority").notNull().default(0),
+    /** Optional schedule window (epoch ms); NULL = unbounded on that side. */
+    startAt: integer("start_at"),
+    endAt: integer("end_at"),
+    createdBy: text("created_by"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => ({
+    activeIdx: index("idx_announcements_active").on(t.isActive, t.priority, t.createdAt),
+  }),
+);
+
+/** Explicit per-user targeting; only consulted when targetType = 'users'. */
+export const announcementTargets = sqliteTable(
+  "announcement_targets",
+  {
+    announcementId: text("announcement_id").notNull(),
+    uid: text("uid").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.announcementId, t.uid] }),
+    uidIdx: index("idx_announcement_targets_uid").on(t.uid),
+  }),
+);
+
+/**
+ * Per-user dismissal / snooze state — the heart of the 24h behaviour.
+ *
+ * The user endpoint shows an announcement only when it has no dismissal row OR
+ * now() >= snoozedUntil. Server-side so the snooze is consistent across a
+ * user's devices and reinstalls.
+ */
+export const announcementDismissals = sqliteTable(
+  "announcement_dismissals",
+  {
+    announcementId: text("announcement_id").notNull(),
+    uid: text("uid").notNull(),
+    snoozedUntil: integer("snoozed_until").notNull(),
+    dismissedAt: integer("dismissed_at").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.announcementId, t.uid] }),
   }),
 );
 
@@ -1035,12 +1129,22 @@ export const deposits = sqliteTable(
     status: text("status").notNull().default("pending"), // pending | approved | rejected
     adminNote: text("admin_note"),
     processedBy: text("processed_by"),
+    /**
+     * When the coins actually landed (migration 0053).
+     *
+     * Written in the SAME batch as the wallet credit, so `status = 'approved' AND
+     * credited_at IS NULL` is the fingerprint of a deposit that was claimed but
+     * never paid. The approval is now atomic, which makes that state impossible —
+     * this column is what lets `computeMoneyHealth` keep proving it.
+     */
+    creditedAt: integer("credited_at"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
   (t) => ({
     statusIdx: index("idx_deposits_status").on(t.status, t.createdAt),
     userIdx: index("idx_deposits_user").on(t.userId),
+    creditedIdx: index("idx_deposits_credited").on(t.status, t.creditedAt),
   }),
 );
 
@@ -1186,6 +1290,34 @@ export const deletionRequests = sqliteTable(
 );
 
 // ---------------------------------------------------------------------------
+// hall_of_fame_awards  (the settled monthly winner set — migration 0052)
+//
+// The payout used to derive its top 3 live from `users.monthly_wins` and then
+// reset that counter, so re-running a past period paid whoever led the CURRENT
+// month instead. Recording the set makes a re-run a replay rather than a fresh
+// derivation. See the migration for the full account.
+// ---------------------------------------------------------------------------
+export const hallOfFameAwards = sqliteTable(
+  "hall_of_fame_awards",
+  {
+    /** 'YYYY-MM' of the settled month. */
+    period: text("period").notNull(),
+    uid: text("uid").notNull(),
+    /** 1 | 2 | 3 — payload, not key: one user can hold only one rank per month. */
+    rank: integer("rank").notNull(),
+    /** Coins promised for that rank, frozen so a later reward change cannot move it. */
+    reward: real("reward").notNull().default(0),
+    /** `monthly_wins` the rank was awarded for. Audit only — the counter is reset. */
+    wins: real("wins").notNull().default(0),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.period, t.uid] }),
+    periodIdx: index("idx_hof_awards_period").on(t.period, t.rank),
+  }),
+);
+
+// ---------------------------------------------------------------------------
 // cron_runs  (cron heartbeat + duration metric + failure trail)
 // One row per scheduled-job run. Without this a cron that stops firing is
 // invisible, and a job that throws only leaves a console.error behind while
@@ -1203,6 +1335,11 @@ export const cronRuns = sqliteTable(
   },
   (t) => ({
     jobCreatedIdx: index("idx_cron_runs_job_created").on(t.job, t.createdAt),
+    // Serves the retention prune `DELETE ... WHERE created_at < ?`
+    // (lib/ops.ts). The composite above leads with `job`, so a bare created_at
+    // predicate could not use it and full-scanned the table every 10 min — the
+    // largest rows_read source on the account (migration 0048).
+    createdIdx: index("idx_cron_runs_created").on(t.createdAt),
   }),
 );
 

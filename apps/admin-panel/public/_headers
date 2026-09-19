@@ -11,6 +11,13 @@
 # CSP notes:
 #  - 'unsafe-inline' for style-src is required by the Tailwind/Radix runtime,
 #    which injects style attributes. Scripts are NOT allowed inline.
+#  - Cloudflare Browser Insights (RUM) is auto-injected by the CDN: it loads
+#    beacon.min.js from static.cloudflareinsights.com (script-src) and POSTs
+#    timing data to cloudflareinsights.com (connect-src). Both were refused under
+#    the strict policy, logging a "Refused to load the script ... cloudflareinsights"
+#    violation on every load. These are Cloudflare's own first-party RUM hosts —
+#    scoped exactly, no wildcard. If RUM is instead disabled in the Cloudflare
+#    dashboard, both entries can be removed.
 #  - connect-src lists the API and Firebase endpoints the panel actually calls.
 #    Anything else — including an injected exfiltration endpoint — is blocked.
 #    It is exactly one API host: https://api.tophunt.in. No WebSocket entry,
@@ -21,6 +28,15 @@
 #    that wildcard made every Cloudflare customer's Worker a permitted
 #    destination for stolen data. In local dev the Worker is reached through the
 #    Vite proxy (same-origin, covered by 'self'), so nothing needs it.
+#  - frame-src lists the Firebase Auth helper iframe plus Google's sign-in
+#    origin. The SDK loads `/__/auth/iframe` from whatever VITE_FIREBASE_AUTH_DOMAIN
+#    is set to, on init, to restore the session; with only `default-src 'self'` it
+#    was refused, which spammed the console with a "Refused to frame ..." CSP
+#    violation on every load. BOTH auth hosts are allowed so the policy holds
+#    whichever authDomain production runs on: the Firebase default
+#    (tophuntdpcontest.firebaseapp.com, what .env.production ships and what the
+#    console error showed) and the custom domain tophunt.in. It is scoped to those
+#    exact hosts — nothing else may be framed.
 #  - frame-ancestors 'none' prevents clickjacking of the admin UI.
 /*
   Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
@@ -29,7 +45,7 @@
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), microphone=(), payment=(), usb=()
   Cross-Origin-Opener-Policy: same-origin
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://api.tophunt.in https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://api.tophunt.in https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com https://cloudflareinsights.com; frame-src 'self' https://tophuntdpcontest.firebaseapp.com https://tophunt.in https://accounts.google.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
 
 # Immutable, content-hashed build assets.
 /assets/*
