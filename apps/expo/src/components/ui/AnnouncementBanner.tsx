@@ -1,35 +1,76 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Linking } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSegments } from 'expo-router';
 import { Ionicons } from '@/src/lib/icons';
 import { useAppConfig } from '@/src/services/appSettings';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
+import { loadDismissedBanner, dismissBanner } from '@/src/lib/bannerDismiss';
 
 /**
- * Admin-controlled announcement banner. Shows when appConfig.announcement is
- * enabled with a message. Dismissible for the session; re-appears if the admin
- * changes the message (dismissal is keyed by message text).
+ * Admin-controlled announcement banner. Driven by appConfig.announcement
+ * (App Control Center → "In-App Announcement Banner").
+ *
+ * Shows ONLY on the home screen. It is mounted globally in app/_layout.tsx, so
+ * without this gate it overlaid every screen — login, splash, onboarding and the
+ * rest — which is not what a "home" announcement should do.
+ *
+ * Dismissal is PERSISTED (AsyncStorage), keyed by the message text: once the
+ * user closes it, it stays closed across reloads and app restarts, and only
+ * re-appears when the admin changes the message.
  */
 export function AnnouncementBanner() {
   const { config } = useAppConfig();
   const insets = useSafeAreaInsets();
+  const segments = useSegments();
   const [dismissedMsg, setDismissedMsg] = useState<string | null>(null);
+  const [ready, setReady] = useState(false);
+
+  // Hydrate the persisted dismissal once, before the first paint decision.
+  useEffect(() => {
+    let alive = true;
+    loadDismissedBanner().then((msg) => {
+      if (alive) {
+        setDismissedMsg(msg);
+        setReady(true);
+      }
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const ann = config?.announcement;
   const message = ann?.message?.trim();
-  if (!ann?.enabled || !message || dismissedMsg === message) return null;
+
+  // Home screen only. `segments[0]` is the top-level route slug ('home', 'auth',
+  // 'splash', …); everything else must not carry the banner.
+  const onHome = segments[0] === 'home';
+
+  // Only treat the link as tappable when it is a real http(s) URL. The banner's
+  // link field is free text (unlike the popup's, which the admin API validates),
+  // so a non-URL value must not turn the whole banner into a dead tap target.
+  const link = ann?.link?.trim();
+  const validLink = link && /^https?:\/\//i.test(link) ? link : undefined;
+
+  if (!onHome || !ready || !ann?.enabled || !message || dismissedMsg === message) return null;
+
+  const handleDismiss = () => {
+    setDismissedMsg(message);
+    void dismissBanner(message);
+  };
 
   return (
     <View style={[styles.wrap, { paddingTop: insets.top + 8 }]} pointerEvents="box-none">
       <TouchableOpacity
-        activeOpacity={ann.link ? 0.85 : 1}
-        onPress={() => ann.link && Linking.openURL(ann.link).catch(() => {})}
+        activeOpacity={validLink ? 0.85 : 1}
+        onPress={() => validLink && Linking.openURL(validLink).catch(() => {})}
         style={styles.banner}
       >
         <Ionicons name="megaphone" size={18} color="#FFF" />
         <Text style={styles.text} numberOfLines={2}>{message}</Text>
         <TouchableOpacity
-          onPress={() => setDismissedMsg(message)}
+          onPress={handleDismiss}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           accessibilityRole="button"
           accessibilityLabel="Dismiss announcement"
