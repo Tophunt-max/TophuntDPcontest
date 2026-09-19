@@ -175,16 +175,38 @@ export default function ChatScreen() {
     [chatId],
   );
 
+  /**
+   * Send a text message.
+   *
+   * The optimistic bubble is appended immediately, then REMOVED again if the send
+   * fails, and the user is told.
+   *
+   * Previously the failure was written to `console.error` and nowhere else: the
+   * bubble stayed on screen looking exactly like a delivered message, so the user
+   * closed the app believing it had been sent. Worse, the bubble then vanished
+   * without explanation the moment the realtime callback replaced `messages`
+   * wholesale (which happens as soon as either party sends anything) — silent data
+   * loss behind a UI that actively signalled success. The sibling `onPickImage`
+   * already alerted on failure; this now matches it.
+   */
   const onSend = useCallback(
     async (newMessages: IMessage[] = []) => {
       if (!currentUser || !chatId) return;
+      const outgoing = newMessages[0];
+      if (!outgoing) return;
       // Optimistic append so the bubble appears instantly.
       setMessages((previous) => GiftedChat.append(previous, newMessages));
-      const { text } = newMessages[0];
       try {
-        await callApi('sendMessage', { chatId, text });
+        await callApi('sendMessage', { chatId, text: outgoing.text });
       } catch (error) {
         console.error('[ChatScreen] Error sending message:', error);
+        // Take the bubble back so the conversation reflects what was actually
+        // delivered, and hand the text back in the alert so it is not lost.
+        setMessages((previous) => previous.filter((m) => m._id !== outgoing._id));
+        Alert.alert(
+          'Message not sent',
+          'We could not send that message. Check your connection and try again.',
+        );
       }
     },
     [chatId, currentUser],

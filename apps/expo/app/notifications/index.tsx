@@ -135,9 +135,26 @@ export default function NotificationsScreen() {
     const [head, setHead] = useState<NotificationItem[]>([]);
     const [tail, setTail] = useState<NotificationItem[]>([]);
     const [loading, setLoading] = useState(true);
+    /**
+     * A first load that FAILED, as a first-class state.
+     *
+     * `loading` was only ever cleared inside the realtime success callback, which
+     * fires exclusively on a successful fetch. So a 500, a timeout, an offline blip,
+     * a signed-out viewer, or an initial fetch skipped because the app was
+     * backgrounded (common on an iOS cold start from a push tap — precisely how
+     * users reach this screen) all left the skeleton animating forever. The render
+     * gate below then hid the FlatList, and with it the RefreshControl, so
+     * pull-to-refresh could not even be attempted.
+     *
+     * This mirrors the LoadState machine in app/messages/chat/[id].tsx, which
+     * documents having fixed the identical bug on that screen.
+     */
+    const [loadFailed, setLoadFailed] = useState(false);
     const [refreshing, setRefreshing] = useState(false);
     const [loadingMore, setLoadingMore] = useState(false);
     const [reachedEnd, setReachedEnd] = useState(false);
+    // Bumping this re-runs the subscribe effect — the "Try Again" button.
+    const [reloadKey, setReloadKey] = useState(0);
 
     // Refs to read latest values inside callbacks without re-subscribing.
     const loadingMoreRef = useRef(false);
@@ -148,10 +165,19 @@ export default function NotificationsScreen() {
 
     // Subscribe to the live head (WebSocket + safety-net poll).
     useEffect(() => {
-        if (!user?.uid) return;
+        if (!user?.uid) {
+            // Signed out: there is nothing to load, so stop pretending to load it.
+            // This `return` used to sit above every `setLoading(false)`, leaving the
+            // skeleton running indefinitely for a signed-out viewer.
+            setLoading(false);
+            setLoadFailed(false);
+            return;
+        }
+        setLoadFailed(false);
         const unsubscribe = notificationService.subscribeToNotifications(user.uid, HEAD_LIMIT, (items) => {
             setHead(items);
             setLoading(false);
+            setLoadFailed(false);
             setRefreshing(false);
 
             // Mark everything SEEN once, the first time the screen has data.
@@ -167,9 +193,19 @@ export default function NotificationsScreen() {
                 setHead((prev) => prev.map((n) => ({ ...n, seen: true })));
                 setTail((prev) => prev.map((n) => ({ ...n, seen: true })));
             }
+        }, (reason) => {
+            // A skipped fetch (app backgrounded) is not a failure — the socket
+            // refreshes on foreground — so keep waiting rather than accusing the
+            // network. A real fetch failure becomes a retryable error state, but
+            // only while we have nothing to show: once the list has content, a
+            // later transient blip should not replace it with an error screen.
+            if (reason !== 'fetch_failed') return;
+            setRefreshing(false);
+            setLoading(false);
+            setLoadFailed(true);
         });
         return () => unsubscribe();
-    }, [user?.uid]);
+    }, [user?.uid, reloadKey]);
 
     /**
      * Pull-to-refresh.
@@ -184,6 +220,10 @@ export default function NotificationsScreen() {
         try {
             const { items } = await notificationService.fetchNotificationsPage(undefined, HEAD_LIMIT);
             setHead(items);
+            // A successful manual fetch clears the failed state and the skeleton —
+            // otherwise a retry that worked would still look broken.
+            setLoading(false);
+            setLoadFailed(false);
             setTail([]);
             setReachedEnd(false);
             reachedEndRef.current = false;
@@ -245,6 +285,13 @@ export default function NotificationsScreen() {
 
     const keyExtractor = useCallback((item: NotificationItem) => item.id, []);
 
+    /** Re-subscribe and fetch again — the "Try Again" button. */
+    const retry = useCallback(() => {
+        setLoadFailed(false);
+        setLoading(true);
+        setReloadKey((k) => k + 1);
+    }, []);
+
     return (
         <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['top', 'left', 'right']}>
             {/* Navigator header stays off app-wide; this screen draws its own. */}
@@ -255,7 +302,31 @@ export default function NotificationsScreen() {
                 <Text style={[styles.headerTitle, { color: textColor }]}>Notification</Text>
             </View>
 
-            {loading && notifications.length === 0 ? (
+            {loadFailed && notifications.length === 0 ? (
+                /*
+                 * A dead end became a retry. Only shown when there is nothing to
+                 * display — once the list has content, a later transient failure
+                 * leaves the content on screen rather than replacing it.
+                 */
+                <View style={styles.emptyContainer}>
+                    <View style={[styles.emptyIcon, { backgroundColor: isDark ? '#1C1C1E' : '#F2F2F7' }]}>
+                        <Ionicons name="cloud-offline-outline" size={30} color={subTextColor} />
+                    </View>
+                    <Text style={[styles.emptyText, { color: textColor }]}>Could not load notifications</Text>
+                    <Text style={[styles.emptySub, { color: subTextColor }]}>
+                        Check your connection and try again.
+                    </Text>
+                    <TouchableOpacity
+                        onPress={retry}
+                        style={styles.retryButton}
+                        accessibilityRole="button"
+                        accessibilityLabel="Try loading notifications again"
+                    >
+                        <Ionicons name="refresh" size={16} color="#FFFFFF" />
+                        <Text style={styles.retryButtonText}>Try Again</Text>
+                    </TouchableOpacity>
+                </View>
+            ) : loading && notifications.length === 0 ? (
                 <NotificationSkeleton count={8} />
             ) : (
                 <FlatList
@@ -438,6 +509,21 @@ const styles = StyleSheet.create({
         textAlign: 'center',
         marginTop: 6,
         lineHeight: 18,
+    },
+    retryButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        marginTop: 18,
+        paddingHorizontal: 18,
+        paddingVertical: 10,
+        borderRadius: 22,
+        backgroundColor: '#FF4D67',
+    },
+    retryButtonText: {
+        color: '#FFFFFF',
+        fontSize: 14,
+        fontWeight: '600',
     },
     footer: {
         paddingVertical: 20,
