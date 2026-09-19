@@ -500,6 +500,19 @@ export function mediaKeyFromPublicUrl(env: Env, publicUrl: string): string | nul
 }
 
 /**
+ * True only if `publicUrl` is one of THIS deployment's chat images (an object
+ * this account owns, under the `chat/` prefix). Used by `sendMessage` to refuse
+ * an image message whose URL points anywhere else — an external host would turn
+ * every recipient's client into a fetcher of an attacker-chosen URL, and a URL
+ * under a different owned prefix (deposits, contest banners) would let a chat
+ * leak media it should not surface. Uploads land under `chat/` via POST /upload.
+ */
+export function isOwnChatMediaUrl(env: Env, publicUrl: string): boolean {
+  const key = mediaKeyFromPublicUrl(env, publicUrl);
+  return !!key && key.startsWith("chat/");
+}
+
+/**
  * Delete an object from R2 given its public URL (used by deleteStory).
  *
  * Best-effort by design — a storage cleanup must not fail the caller's request —

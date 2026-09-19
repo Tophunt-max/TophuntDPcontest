@@ -13,7 +13,7 @@ import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
 import { requireApiAuth, isAdmin } from "../middleware/auth";
 import { requireFullAdmin as requireFullAdminAction, writeAdminAudit } from "../lib/adminAuthz";
-import { vsImageKeyFromPublicUrl, deleteVsImageByPublicUrl, canonicalMediaUrl } from "../lib/r2";
+import { vsImageKeyFromPublicUrl, deleteVsImageByPublicUrl, canonicalMediaUrl, isOwnChatMediaUrl } from "../lib/r2";
 import { deleteMediaByUrl } from "../lib/mediaDelete";
 
 import { createNotification, sendPushNotification } from "../lib/notify";
@@ -2216,8 +2216,26 @@ apiRoute.post("/", async (c) => {
     }
 
     case "sendMessage": {
-      const { chatId, text } = body;
-      if (!chatId || !text) throw httpsError("invalid-argument", "chatId and text are required.");
+      const { chatId } = body;
+      const text = typeof body.text === "string" ? body.text : null;
+      const mediaUrl = typeof body.mediaUrl === "string" ? body.mediaUrl.trim() : "";
+      // A message is now EITHER text OR an image (or text captioning an image).
+      // The old contract required `text`; relaxing it to "text OR media" is what
+      // lets an image message through — but an empty message (neither) is still
+      // rejected so a tap of the send button with nothing to say is a no-op.
+      const trimmedText = text && text.trim() ? text.trim() : null;
+      if (!chatId) throw httpsError("invalid-argument", "chatId is required.");
+      if (!trimmedText && !mediaUrl) {
+        throw httpsError("invalid-argument", "A message needs text or an image.");
+      }
+      // Guard against an arbitrary URL being stored/rendered as our own media: a
+      // media message must point at THIS deployment's chat media, not an external
+      // host (which would be an embed/SSRF-style abuse of every recipient's
+      // client). Uploads land under the `chat/` prefix via POST /upload.
+      if (mediaUrl && !isOwnChatMediaUrl(env, mediaUrl)) {
+        throw httpsError("invalid-argument", "Invalid media URL.");
+      }
+      const type: "text" | "image" = mediaUrl ? "image" : "text";
       // Only participants may post into a chat.
       await assertChatMember(env, chatId, uid);
       // Messages were the one social write with no velocity cap (likes are
@@ -2238,8 +2256,11 @@ apiRoute.post("/", async (c) => {
       // the ONE bounded D1 write that stays: it is the inbox preview + sort key,
       // and /read/chats orders across ALL of a user's chats, which a per-chat DO
       // cannot answer.
-      await appendMessage(env, chatId, { id: messageId, senderId: uid, text, createdAt: ts });
-      await db.update(schema.chats).set({ lastMessage: { text, createdAt: ts, senderId: uid } as any, updatedAt: ts }).where(eq(schema.chats.id, chatId));
+      await appendMessage(env, chatId, { id: messageId, senderId: uid, text: trimmedText, type, mediaUrl: mediaUrl || null, createdAt: ts });
+      // Inbox preview text: the caption if any, else a "📷 Photo" placeholder for
+      // an image so the conversation list never shows a blank last message.
+      const previewText = trimmedText || (type === "image" ? "📷 Photo" : "");
+      await db.update(schema.chats).set({ lastMessage: { text: previewText, createdAt: ts, senderId: uid } as any, updatedAt: ts }).where(eq(schema.chats.id, chatId));
       // Bump every recipient's unread counter (never the sender's). One bounded
       // UPDATE — a chat has a fixed, tiny membership — that drives the inbox badge
       // in /read/chats without a per-chat DO round-trip on the list. Reset in
@@ -2248,7 +2269,7 @@ apiRoute.post("/", async (c) => {
         `UPDATE chat_members SET unread_count = unread_count + 1 WHERE chat_id = ? AND user_id != ?`,
       ).bind(chatId, uid).run();
       // Instant push: to the chat room + each participant's user channel (chat-list bump).
-      const msg = { id: messageId, chatId, senderId: uid, text, createdAt: ts };
+      const msg = { id: messageId, chatId, senderId: uid, text: trimmedText, type, mediaUrl: mediaUrl || null, createdAt: ts };
       await publish(env, `chat:${chatId}`, { type: "message", message: msg });
       await publishMany(env, members.map((u) => `user:${u}`), { type: "chat_update", chatId, message: msg });
       return c.json({ success: true });

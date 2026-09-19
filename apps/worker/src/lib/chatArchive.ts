@@ -44,6 +44,17 @@ export async function chatHistory(
   return rows.map(withChatId(chatId));
 }
 
+/** Search this chat's message bodies (newest-first), capped at `limit`. */
+export async function searchChatMessages(
+  env: Env,
+  chatId: string,
+  query: string,
+  limit = 50,
+): Promise<ChatMessage[]> {
+  const rows = await stub(env, chatId).search(chatId, query, limit);
+  return rows.map(withChatId(chatId));
+}
+
 /** Mark all inbound unread messages in the chat as read for `readerUid`. */
 export async function markChatMessagesRead(
   env: Env,

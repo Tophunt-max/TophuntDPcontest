@@ -26,6 +26,7 @@ import { uploadRoute } from "./routes/upload";
 import { verifyIdToken } from "./lib/firebaseAuth";
 import { assertSessionUsable } from "./middleware/auth";
 import { isChatMember } from "./lib/chatAuth";
+import { publishPresence } from "./lib/publish";
 import { resolveContests, expireContests, monthlyHallOfFame, seoAuditJob } from "./cron";
 import { purgeScheduledDeletions } from "./lib/accountDeletion";
 import { ensureMigrated } from "./db/autoMigrate";
@@ -363,6 +364,27 @@ app.get("/ws", async (c) => {
   // The channel DO stores this verified identity as a hibernation tag so an
   // admin block can close already-established private sockets immediately.
   forwardedHeaders.set("X-Authenticated-Uid", user.uid);
+
+  // Presence: the `user:<uid>` channel is where a user is "present". Stamp
+  // last-seen and announce them online now (bounded to session start — never per
+  // message), and tell the hub to announce the OFFLINE transition when this
+  // socket closes (X-Presence-Uid marks the socket for that in the DO).
+  if (kind === "user") {
+    const ts = Date.now();
+    forwardedHeaders.set("X-Presence-Uid", user.uid);
+    c.executionCtx.waitUntil(
+      (async () => {
+        try {
+          await c.env.DB.prepare("UPDATE users SET last_seen_at = ? WHERE uid = ?")
+            .bind(ts, user.uid)
+            .run();
+        } catch (e) {
+          console.error("[ws] last_seen stamp failed (continuing)", e);
+        }
+        await publishPresence(c.env, user.uid, true, ts);
+      })(),
+    );
+  }
   return stub.fetch(new Request(c.req.raw, { headers: forwardedHeaders }));
 });
 

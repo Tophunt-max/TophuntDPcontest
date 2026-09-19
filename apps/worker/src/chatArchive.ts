@@ -46,11 +46,23 @@ import type { Env } from "./types";
 /** History page size — matches the previous `GET /read/chats/:id/messages` cap. */
 const HISTORY_LIMIT = 200;
 
+/**
+ * A chat message kind. `text` is the default and the only value pre-dating media
+ * messages; `image` carries a `mediaUrl` pointing at the R2 `chat/` folder.
+ * Kept as a widenable string union so a future `video`/`audio` needs no schema
+ * change here (the column is free-text).
+ */
+export type MessageType = "text" | "image";
+
 /** One message as stored/returned. `chatId` is added by the client from the address. */
 export interface ArchivedMessage {
   id: string;
   senderId: string;
   text: string | null;
+  /** "text" | "image". Defaults to "text" for every pre-media row. */
+  type: MessageType;
+  /** Public R2 URL for a media message; null for a plain text message. */
+  mediaUrl: string | null;
   createdAt: number;
 }
 
@@ -58,6 +70,8 @@ interface MessageRow {
   id: string;
   sender_id: string;
   text: string | null;
+  type: string | null;
+  media_url: string | null;
   created_at: number;
 }
 
@@ -75,11 +89,29 @@ export class ChatArchive extends DurableObject<Env> {
          sender_id  TEXT NOT NULL,
          text       TEXT,
          read       INTEGER NOT NULL DEFAULT 0,
+         type       TEXT NOT NULL DEFAULT 'text',
+         media_url  TEXT,
          created_at INTEGER NOT NULL
        );`,
     );
+    // Media columns are added to DOs that were created before this change — a DO
+    // has no external migration runner, so the additive columns are applied here,
+    // idempotently. A freshly-created table already has them (CREATE above), so
+    // the ALTER throws "duplicate column name" and is swallowed. This is the same
+    // append-only discipline as the D1 migrations, just self-applied per DO.
+    this.addColumnIfMissing("type", "TEXT NOT NULL DEFAULT 'text'");
+    this.addColumnIfMissing("media_url", "TEXT");
     // Serves the ORDER BY created_at of both history() (asc) and recent() (desc).
     this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_msg_created ON messages (created_at);`);
+  }
+
+  /** Add a column only if it does not already exist (per-DO self-migration). */
+  private addColumnIfMissing(name: string, ddlType: string): void {
+    try {
+      this.sql.exec(`ALTER TABLE messages ADD COLUMN ${name} ${ddlType};`);
+    } catch {
+      /* column already present — expected on every table created with it inline */
+    }
   }
 
   // ============================ RPC methods ================================
@@ -88,10 +120,12 @@ export class ChatArchive extends DurableObject<Env> {
   async append(chatId: string, m: ArchivedMessage): Promise<ArchivedMessage> {
     await this.ensureSeeded(chatId);
     this.sql.exec(
-      "INSERT OR IGNORE INTO messages (id, sender_id, text, read, created_at) VALUES (?, ?, ?, 0, ?)",
+      "INSERT OR IGNORE INTO messages (id, sender_id, text, read, type, media_url, created_at) VALUES (?, ?, ?, 0, ?, ?, ?)",
       m.id,
       m.senderId,
       m.text ?? null,
+      m.type || "text",
+      m.mediaUrl ?? null,
       m.createdAt,
     );
     return m;
@@ -106,8 +140,34 @@ export class ChatArchive extends DurableObject<Env> {
     const cap = Math.min(Math.max(Number(limit) || HISTORY_LIMIT, 1), HISTORY_LIMIT);
     const rows = this.sql
       .exec(
-        "SELECT id, sender_id, text, created_at FROM messages WHERE created_at > ? ORDER BY created_at ASC LIMIT ?",
+        "SELECT id, sender_id, text, type, media_url, created_at FROM messages WHERE created_at > ? ORDER BY created_at ASC LIMIT ?",
         Number(since) || 0,
+        cap,
+      )
+      .toArray() as unknown as MessageRow[];
+    return rows.map(toMessage);
+  }
+
+  /**
+   * Full-text-ish search over message bodies in THIS chat, newest-first.
+   *
+   * A per-chat `LIKE` scan, not a global index: message bodies are partitioned
+   * one SQLite DB per chat, so "search my conversation" is answered entirely
+   * inside the chat's own DO with no cross-chat fan-out. Media messages have a
+   * null `text`, so they never match — search is over what was typed.
+   */
+  async search(chatId: string, query: string, limit = 50): Promise<ArchivedMessage[]> {
+    await this.ensureSeeded(chatId);
+    const q = String(query || "").trim();
+    if (!q) return [];
+    const cap = Math.min(Math.max(Number(limit) || 50, 1), HISTORY_LIMIT);
+    // Escape LIKE wildcards so a user searching for "50%" or "a_b" matches those
+    // literals rather than treating them as patterns. `\` is the ESCAPE char.
+    const escaped = q.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+    const rows = this.sql
+      .exec(
+        "SELECT id, sender_id, text, type, media_url, created_at FROM messages WHERE text LIKE ? ESCAPE '\\' ORDER BY created_at DESC LIMIT ?",
+        `%${escaped}%`,
         cap,
       )
       .toArray() as unknown as MessageRow[];
@@ -146,7 +206,7 @@ export class ChatArchive extends DurableObject<Env> {
     const cap = Math.min(Math.max(Number(limit) || 1, 1), 1000);
     const rows = this.sql
       .exec(
-        "SELECT id, sender_id, text, created_at FROM messages WHERE sender_id = ? ORDER BY created_at DESC LIMIT ?",
+        "SELECT id, sender_id, text, type, media_url, created_at FROM messages WHERE sender_id = ? ORDER BY created_at DESC LIMIT ?",
         uid,
         cap,
       )
@@ -168,7 +228,7 @@ export class ChatArchive extends DurableObject<Env> {
     const cap = Math.min(Math.max(Number(limit) || 1, 1), 300);
     const rows = this.sql
       .exec(
-        "SELECT id, sender_id, text, created_at FROM messages ORDER BY created_at DESC LIMIT ?",
+        "SELECT id, sender_id, text, type, media_url, created_at FROM messages ORDER BY created_at DESC LIMIT ?",
         cap,
       )
       .toArray() as unknown as MessageRow[];
@@ -187,17 +247,19 @@ export class ChatArchive extends DurableObject<Env> {
     if (!chatId) return;
     try {
       const rows = await this.env.DB.prepare(
-        "SELECT id, sender_id, text, read, created_at FROM messages WHERE chat_id = ? ORDER BY created_at ASC",
+        "SELECT id, sender_id, text, read, type, media_url, created_at FROM messages WHERE chat_id = ? ORDER BY created_at ASC",
       )
         .bind(chatId)
-        .all<{ id: string; sender_id: string; text: string | null; read: number | null; created_at: number }>();
+        .all<{ id: string; sender_id: string; text: string | null; read: number | null; type: string | null; media_url: string | null; created_at: number }>();
       for (const r of rows.results ?? []) {
         this.sql.exec(
-          "INSERT OR IGNORE INTO messages (id, sender_id, text, read, created_at) VALUES (?, ?, ?, ?, ?)",
+          "INSERT OR IGNORE INTO messages (id, sender_id, text, read, type, media_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
           r.id,
           r.sender_id,
           r.text ?? null,
           r.read ? 1 : 0,
+          r.type || "text",
+          r.media_url ?? null,
           r.created_at ?? Date.now(),
         );
       }
@@ -238,5 +300,12 @@ export class ChatArchive extends DurableObject<Env> {
 }
 
 function toMessage(r: MessageRow): ArchivedMessage {
-  return { id: r.id, senderId: r.sender_id, text: r.text ?? null, createdAt: Number(r.created_at) };
+  return {
+    id: r.id,
+    senderId: r.sender_id,
+    text: r.text ?? null,
+    type: (r.type as MessageType) || "text",
+    mediaUrl: r.media_url ?? null,
+    createdAt: Number(r.created_at),
+  };
 }

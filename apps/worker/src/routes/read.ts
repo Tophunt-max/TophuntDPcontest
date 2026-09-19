@@ -41,7 +41,7 @@ import {
   type MusicTrack,
 } from "../lib/music";
 import { assertChatMember } from "../lib/chatAuth";
-import { chatHistory } from "../lib/chatArchive";
+import { chatHistory, searchChatMessages } from "../lib/chatArchive";
 import {
   blockedUidsFor,
   describeUsers,
@@ -94,6 +94,8 @@ interface LiveUserFields {
   username: string | null;
   /** Fallback display name when the username is empty. */
   fullName: string | null;
+  /** Epoch ms of last realtime connect/disconnect; null if never seen. */
+  lastSeenAt: number | null;
 }
 
 /**
@@ -125,6 +127,7 @@ async function liveUserFields(
         avatar: schema.users.profileImageUrl,
         username: schema.users.username,
         fullName: schema.users.fullName,
+        lastSeenAt: schema.users.lastSeenAt,
       })
       .from(schema.users)
       .where(inArray(schema.users.uid, unique))
@@ -132,7 +135,7 @@ async function liveUserFields(
     return new Map(
       rows.map((r) => [
         r.uid,
-        { verified: !!r.verified, avatar: r.avatar ?? null, username: r.username ?? null, fullName: r.fullName ?? null },
+        { verified: !!r.verified, avatar: r.avatar ?? null, username: r.username ?? null, fullName: r.fullName ?? null, lastSeenAt: r.lastSeenAt ?? null },
       ]),
     );
   } catch (e) {
@@ -2799,6 +2802,10 @@ readRoute.get("/chats", requireAuth, async (c) => {
             verified: u.verified,
             photoURL: cdnUrl(c.env, u.avatar) ?? null,
             displayName: u.username || u.fullName || m.displayName,
+            // Presence timestamp for the inbox/chat header. The live green dot is
+            // driven by realtime `presence` events; this seeds the "last seen"
+            // text on first paint before any event arrives.
+            lastSeen: u.lastSeenAt ?? null,
           };
         });
       }
@@ -2844,8 +2851,35 @@ readRoute.get("/chats/:id/messages", requireAuth, async (c) => {
       .limit(200)
       .all();
     return c.json(
-      rows.map((m) => ({ id: m.id, chatId: m.chatId, senderId: m.senderId, text: m.text, createdAt: m.createdAt })),
+      rows.map((m) => ({ id: m.id, chatId: m.chatId, senderId: m.senderId, text: m.text, type: (m as any).type || "text", mediaUrl: (m as any).mediaUrl ?? null, createdAt: m.createdAt })),
     );
+  }
+});
+
+/**
+ * Search the message bodies of ONE conversation.
+ *
+ * A per-chat scan answered inside the chat's own ChatArchive Durable Object (see
+ * src/chatArchive.ts `search`) — message bodies are partitioned one SQLite DB per
+ * chat, so "search this conversation" needs no cross-chat fan-out and no global
+ * index. Same membership guard as reading the thread: holding a chat id is not
+ * permission to search someone else's messages. Newest-first, capped. Media
+ * messages have no text, so only what was typed matches.
+ */
+readRoute.get("/chats/:id/messages/search", requireAuth, async (c) => {
+  const chatId = c.req.param("id");
+  await assertChatMember(c.env, chatId, c.get("user").uid);
+  const q = (c.req.query("q") || "").trim();
+  if (!q) return c.json([]);
+  const limit = Math.min(Math.max(parseInt(c.req.query("limit") || "50", 10) || 50, 1), 100);
+  try {
+    const rows = await searchChatMessages(c.env, chatId, q, limit);
+    return c.json(rows);
+  } catch (e) {
+    // Search is an enhancement, not the thread itself — degrade to an empty
+    // result rather than surfacing a 500 into the search box.
+    console.error("[read/messages/search] failed", chatId, e);
+    return c.json([]);
   }
 });
 

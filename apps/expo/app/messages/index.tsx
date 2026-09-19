@@ -18,7 +18,7 @@ import { emitToast } from '@/src/lib/toastBridge';
 import { reportError } from '@/src/lib/reportError';
 import { auth } from '@/src/services/firebase/initFirebase';
 import { readApi, callApi } from '@/src/services/api';
-import { live } from '@/src/services/realtime';
+import { live, subscribeChannel } from '@/src/services/realtime';
 import { useRouter } from 'expo-router';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { ThemedView } from '@/components/themed-view';
@@ -48,9 +48,14 @@ interface UserData {
   displayName: string;
   photoURL: string;
   isOnline?: boolean;
+  /** Epoch ms of last connect/disconnect, from /read/chats enrichment. */
+  lastSeen?: number | null;
   /** Live-stamped admin blue check (see worker /read/chats enrichment). */
   verified?: boolean;
 }
+
+/** Live presence keyed by uid, driven by realtime `presence` events. */
+type PresenceMap = Record<string, { online: boolean; lastSeen: number | null }>;
 
 interface ChatItemType {
   id: string;
@@ -70,10 +75,17 @@ interface ChatItemType {
  * a hardcoded "John Doe" and an `i.pravatar.cc` avatar. Both call sites here
  * already know the real other user, so pass it through instead.
  */
-function chatRoute(chatId: string, name?: string | null, avatar?: string | null): string {
+function chatRoute(
+  chatId: string,
+  name?: string | null,
+  avatar?: string | null,
+  lastSeen?: number | null,
+): string {
   const qs = new URLSearchParams();
   if (name) qs.set('name', name);
   if (avatar) qs.set('avatar', avatar);
+  // Seed the chat header's "last seen" text before any realtime event arrives.
+  if (lastSeen) qs.set('lastSeen', String(lastSeen));
   const query = qs.toString();
   return `/messages/chat/${chatId}${query ? `?${query}` : ''}`;
 }
@@ -84,8 +96,28 @@ export default function MessagesScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [searchText, setSearchText] = useState('');
   const [isFocused, setIsFocused] = useState(false);
-  
+  const [presence, setPresence] = useState<PresenceMap>({});
+
   const currentUser = auth.currentUser;
+
+  // Live presence for everyone in the inbox. `presence` events arrive on the
+  // user's OWN channel (a peer's connect/disconnect fans out to their chat
+  // partners), so one subscription keeps every green dot live without opening a
+  // socket per conversation.
+  useEffect(() => {
+    if (!currentUser) return;
+    const unsub = subscribeChannel(`user:${currentUser.uid}`, (e) => {
+      if (e.type !== 'presence' || !e.uid) return;
+      setPresence((prev) => ({
+        ...prev,
+        [e.uid]: {
+          online: !!e.online,
+          lastSeen: typeof e.lastSeen === 'number' ? e.lastSeen : prev[e.uid]?.lastSeen ?? null,
+        },
+      }));
+    });
+    return unsub;
+  }, [currentUser]);
   const router = useRouter();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
@@ -180,9 +212,14 @@ export default function MessagesScreen() {
 
   const filteredChats = useMemo(() => {
     if (!searchText) return chats;
+    const q = searchText.toLowerCase();
+    // Match either the other person's name OR the last message preview, so the
+    // inbox search finds conversations by who they're with AND by what was said.
     return chats.filter(chat => {
       const otherUser = chat.usersData?.find(u => u.uid !== currentUser?.uid);
-      return otherUser?.displayName?.toLowerCase().includes(searchText.toLowerCase());
+      const name = otherUser?.displayName?.toLowerCase() || '';
+      const preview = chat.lastMessage?.text?.toLowerCase() || '';
+      return name.includes(q) || preview.includes(q);
     });
   }, [chats, searchText, currentUser]);
 
@@ -207,11 +244,12 @@ export default function MessagesScreen() {
     const name = otherUser?.displayName || 'User';
     const avatar = otherUser?.photoURL;
     const id = item.id;
-    const isOnline = otherUser?.isOnline ?? false;
+    const lastSeen = (otherUser?.uid ? presence[otherUser.uid]?.lastSeen : null) ?? otherUser?.lastSeen ?? null;
+    const isOnline = (otherUser?.uid ? presence[otherUser.uid]?.online : false) ?? false;
 
     return (
       <View key={id} style={styles.recentlyItem}>
-        <TouchableOpacity onPress={() => router.push(chatRoute(id, name, avatar))}>
+        <TouchableOpacity onPress={() => router.push(chatRoute(id, name, avatar, lastSeen))}>
           <View>
             <Avatar uri={avatar} name={name} size={72} style={styles.recentlyAvatar} />
             {isOnline && <View style={[styles.onlineIndicator, { borderColor: backgroundColor }]} />}
@@ -222,7 +260,7 @@ export default function MessagesScreen() {
         </Text>
       </View>
     );
-  }, [currentUser, router, textColor, backgroundColor]);
+  }, [currentUser, router, textColor, backgroundColor, presence]);
 
   const renderRightActions = (chatId: string) => (
     <TouchableOpacity
@@ -237,8 +275,9 @@ export default function MessagesScreen() {
   const renderChatItem = useCallback(({ item }: { item: ChatItemType }) => {
     const otherUser = item.usersData?.find((u: any) => u.uid !== currentUser?.uid);
     const time = formatTime(item.lastMessage?.createdAt);
-    const unreadCount = item.unreadCount || 0; 
-    const isOnline = otherUser?.isOnline ?? false;
+    const unreadCount = item.unreadCount || 0;
+    const lastSeen = (otherUser?.uid ? presence[otherUser.uid]?.lastSeen : null) ?? otherUser?.lastSeen ?? null;
+    const isOnline = (otherUser?.uid ? presence[otherUser.uid]?.online : false) ?? false;
 
     return (
       <Swipeable
@@ -254,6 +293,7 @@ export default function MessagesScreen() {
                 item.id,
                 otherUser?.displayName || 'User',
                 otherUser?.photoURL,
+                lastSeen,
               ),
             )
           }
@@ -291,7 +331,7 @@ export default function MessagesScreen() {
         </TouchableOpacity>
       </Swipeable>
     );
-  }, [currentUser, router, textColor, backgroundColor]);
+  }, [currentUser, router, textColor, backgroundColor, presence]);
 
   const listHeaderComponent = useMemo(() => {
     const recentlyData = chats.slice(0, 8);
