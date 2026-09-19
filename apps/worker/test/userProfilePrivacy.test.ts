@@ -208,7 +208,9 @@ describe('a stranger receives only public fields', () => {
       bio: 'hello',
       verified: true,
       xp: 120,
-      level: 3,
+      // Level is derived from xp (120 → level 1 at the default 500/500 curve), not
+      // the stored column seeded above — see leveling.test.ts.
+      level: 1,
       followersCount: 2,
     });
     expect(body.profileImageUrlThumb).toBeDefined();

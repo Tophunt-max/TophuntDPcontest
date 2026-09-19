@@ -12,6 +12,7 @@ import { perPlayerEntryFee } from "../lib/money";
 import { httpsError } from "../lib/http";
 import { requireAuth, optionalAuth } from "../middleware/auth";
 import { getAppConfig } from "../lib/settings";
+import { getSettings as getGamificationSettings, levelForXp } from "../lib/gamification";
 import { resolveLegalContent } from "../content/legal";
 import { enrichMatchMedia, avatarUrl, thumbUrl, optimizedUrl, cdnUrl, canonicalizeMediaHtml } from "../lib/media";
 import {
@@ -1488,7 +1489,15 @@ readRoute.get("/leaderboard", optionalAuth, async (c) => {
         .orderBy(desc(orderCol))
         .limit(limit)
         .all();
-      return rows.map((r: any) => ({ ...r, profileImageUrlThumb: avatarUrl(c.env, r.profileImageUrl) }));
+      // Same as the profile: level is derived from the authoritative xp, not the
+      // frozen stored column, so the leaderboard shows the level a user has
+      // actually earned.
+      const gs = await getGamificationSettings(c.env);
+      return rows.map((r: any) => ({
+        ...r,
+        level: levelForXp(r.xp ?? 0, gs),
+        profileImageUrlThumb: avatarUrl(c.env, r.profileImageUrl),
+      }));
     },
   });
   // visibleRanks downgrades this to private only if it actually filtered.
@@ -2268,6 +2277,12 @@ async function serveUserProfile(c: any, id: string): Promise<Response> {
     const following = await db.select({ id: schema.follows.followingId }).from(schema.follows).where(eq(schema.follows.followerId, row.uid)).all();
     safe.following = following.map((f) => f.id);
     safe.profileImageUrlThumb = avatarUrl(c.env, safe.profileImageUrl);
+    // Level is DERIVED from xp, not read from the stored column. Nothing updates
+    // `users.level` any more (see lib/gamification.ts#levelForXp), so the column is
+    // frozen at its seeded value; computing it here from the authoritative xp is
+    // what makes leveling actually work — and it can never drift from that xp.
+    const gs = await getGamificationSettings(c.env);
+    safe.level = levelForXp(safe.xp ?? 0, gs);
     return safe;
   };
 
