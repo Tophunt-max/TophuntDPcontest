@@ -255,6 +255,27 @@ adminRoute.post("/app-settings", async (c) => {
       }
     }
   }
+
+  // The announcement banner's link is shown to every user and opened on tap, so a
+  // non-URL value here is a live defect — it made the whole banner a dead tap
+  // target, and once let a diagnostic string ("App version: … Platform: web …")
+  // get stored as the "link". The popup route already validates its link; this is
+  // the matching guard for the banner. Empty/null is allowed (clears the link);
+  // any other value must be an http(s) URL. Normalised (trimmed) in place so the
+  // stored value is exactly what the client will try to open.
+  const announcement = body?.announcement;
+  if (announcement && typeof announcement === "object" && "link" in announcement) {
+    const raw = announcement.link;
+    if (raw == null || String(raw).trim() === "") {
+      announcement.link = null;
+    } else {
+      const link = String(raw).trim();
+      if (!/^https?:\/\/\S/i.test(link)) {
+        throw httpsError("invalid-argument", "announcement.link must be an http(s) URL, or empty to clear it.");
+      }
+      announcement.link = link;
+    }
+  }
   const existing = (await getAppConfig(c.env)) || {};
   const merged = mergeSettings(existing, body);
   await db
