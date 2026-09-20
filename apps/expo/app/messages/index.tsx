@@ -174,19 +174,29 @@ export default function MessagesScreen() {
     };
   }, [fetchChats]);
 
-  // Actually refetch. This used to be a 1.5s setTimeout that showed the spinner
-  // and returned the same stale list, so pulling to refresh never did anything.
+  // Pull-to-refresh does a ONE-OFF GET, not fetchChats(). fetchChats() opens a
+  // fresh live() subscription (a WebSocket listener + a safety-net poll) and
+  // returns an unsubscribe — but here that unsubscribe was discarded, so every
+  // pull leaked another subscription and stacked another chat-list callback on
+  // top of the previous ones. The persistent subscription created in the mount
+  // effect already keeps the inbox live; a manual refresh only needs to re-pull
+  // the list once.
   const onRefresh = useCallback(async () => {
+    if (!currentUser) {
+      setRefreshing(false);
+      return;
+    }
     setRefreshing(true);
     try {
-      await fetchChats();
+      const chatsData = await readApi('/read/chats');
+      setChats(chatsData || []);
     } catch (e) {
       reportError(e, { screen: 'messages', action: 'refresh' });
       emitToast('Could not refresh your chats.', 'error');
     } finally {
       setRefreshing(false);
     }
-  }, [fetchChats]);
+  }, [currentUser]);
 
   const handleDeleteChat = (chatId: string) => {
     Alert.alert(
