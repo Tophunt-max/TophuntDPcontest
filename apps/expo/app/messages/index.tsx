@@ -27,6 +27,10 @@ import { Swipeable } from 'react-native-gesture-handler';
 import { Colors } from '@/constants/theme';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
+import { LinearGradient } from 'expo-linear-gradient';
+
+// Instagram-style story ring gradient (warm yellow -> pink -> purple).
+const STORY_RING = ['#FEDA75', '#FA7E1E', '#D62976', '#962FBF', '#4F5BD5'] as const;
 
 // Import Icons from assets
 import { 
@@ -135,14 +139,16 @@ export default function MessagesScreen() {
     }).start();
   }, [isFocused]);
 
+  // Instagram's search field is a plain rounded gray pill; focus just deepens
+  // the fill slightly rather than flashing a coloured border.
   const interpolatedBackgroundColor = focusAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [isDark ? '#1F222A' : '#F5F5F5', isDark ? '#2D1F22' : '#FFEBEE'],
+    outputRange: [isDark ? '#1C1C1E' : '#EFEFEF', isDark ? '#2A2A2C' : '#E4E4E4'],
   });
 
   const interpolatedBorderColor = focusAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [isDark ? '#35383F' : '#eee', '#FF4D67'],
+    outputRange: ['transparent', 'transparent'],
   });
 
   const fetchChats = useCallback(() => {
@@ -259,11 +265,18 @@ export default function MessagesScreen() {
 
     return (
       <View key={id} style={styles.recentlyItem}>
-        <TouchableOpacity onPress={() => router.push(chatRoute(id, name, avatar, lastSeen))}>
-          <View>
-            <Avatar uri={avatar} name={name} size={62} style={styles.recentlyAvatar} />
-            {isOnline && <View style={[styles.onlineIndicator, { borderColor: backgroundColor }]} />}
-          </View>
+        <TouchableOpacity activeOpacity={0.8} onPress={() => router.push(chatRoute(id, name, avatar, lastSeen))}>
+          <LinearGradient
+            colors={STORY_RING}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.storyRing}
+          >
+            <View style={[styles.storyInner, { backgroundColor }]}>
+              <Avatar uri={avatar} name={name} size={56} />
+            </View>
+          </LinearGradient>
+          {isOnline && <View style={[styles.onlineIndicator, { borderColor: backgroundColor }]} />}
         </TouchableOpacity>
         <Text style={[styles.recentlyName, { color: textColor }]} numberOfLines={1}>
           {name.split(' ')[0]}
@@ -332,30 +345,27 @@ export default function MessagesScreen() {
               <VerifiedBadge verified={(otherUser as any)?.verified} size={14} />
             </View>
 
-            <Text
-              style={[
-                styles.lastMessage,
-                { color: mutedColor },
-                hasUnread && [styles.lastMessageUnread, { color: textColor }],
-              ]}
-              numberOfLines={1}
-            >
-              {item.lastMessage?.text || 'No messages yet'}
-            </Text>
+            <View style={styles.previewRow}>
+              <Text
+                style={[
+                  styles.lastMessage,
+                  { color: mutedColor },
+                  hasUnread && [styles.lastMessageUnread, { color: textColor }],
+                ]}
+                numberOfLines={1}
+              >
+                {item.lastMessage?.text || 'No messages yet'}
+              </Text>
+              {time ? (
+                <Text style={[styles.previewTime, { color: mutedColor }]} numberOfLines={1}>
+                  {'  ·  '}{time}
+                </Text>
+              ) : null}
+            </View>
           </View>
 
-          <View style={styles.chatMeta}>
-            <Text style={[styles.timeText, { color: hasUnread ? pinkPrimary : mutedColor }, hasUnread && styles.timeTextUnread]}>
-              {time}
-            </Text>
-            {hasUnread ? (
-              <View style={styles.badge}>
-                <Text style={styles.badgeText}>{unreadCount > 99 ? '99+' : unreadCount}</Text>
-              </View>
-            ) : (
-              <View style={styles.badgePlaceholder} />
-            )}
-          </View>
+          {/* Instagram shows a solid dot for unread threads rather than a count. */}
+          {hasUnread ? <View style={styles.unreadDot} /> : null}
         </TouchableOpacity>
       </Swipeable>
     );
@@ -370,9 +380,9 @@ export default function MessagesScreen() {
         <Animated.View style={[
           styles.searchSection, 
           { 
-            backgroundColor: interpolatedBackgroundColor, 
-            borderColor: interpolatedBorderColor, 
-            borderWidth: 1 
+            backgroundColor: interpolatedBackgroundColor,
+            borderColor: interpolatedBorderColor,
+            borderWidth: 0,
           }
         ]}>
           <View style={styles.searchIconContainer}>
@@ -533,10 +543,10 @@ const styles = StyleSheet.create({
   searchSection: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: 16,
-    paddingHorizontal: 16,
-    marginVertical: 15,
-    height: 52,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    marginVertical: 14,
+    height: 44,
   },
   searchIconContainer: {
     marginRight: 12,
@@ -566,26 +576,39 @@ const styles = StyleSheet.create({
   },
   recentlyItem: {
     alignItems: 'center',
-    marginRight: 18,
+    marginRight: 16,
+    width: 72,
+  },
+  storyRing: {
     width: 68,
+    height: 68,
+    borderRadius: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  storyInner: {
+    width: 62,
+    height: 62,
+    borderRadius: 31,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   recentlyAvatar: {
     width: 62,
     height: 62,
     borderRadius: 31,
     marginBottom: 8,
-    borderWidth: 2,
-    borderColor: 'rgba(255,77,103,0.35)',
   },
   onlineIndicator: {
     position: 'absolute',
     bottom: 8,
-    right: 2,
-    width: 14,
-    height: 14,
-    borderRadius: 7,
+    right: 4,
+    width: 15,
+    height: 15,
+    borderRadius: 7.5,
     backgroundColor: '#4CAF50',
-    borderWidth: 2,
+    borderWidth: 2.5,
   },
   chatOnlineIndicator: {
     bottom: 1,
@@ -605,8 +628,8 @@ const styles = StyleSheet.create({
   chatItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
   },
   chatAvatar: {
     width: 58,
@@ -626,51 +649,37 @@ const styles = StyleSheet.create({
   nameRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 4,
+    marginBottom: 3,
   },
   userName: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
     flexShrink: 1,
   },
   userNameUnread: {
-    fontWeight: '800',
+    fontWeight: '700',
+  },
+  previewRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   lastMessage: {
     fontSize: 14,
+    flexShrink: 1,
   },
   lastMessageUnread: {
     fontWeight: '600',
   },
-  chatMeta: {
-    alignItems: 'flex-end',
-    justifyContent: 'center',
-    marginLeft: 10,
-    minHeight: 44,
+  previewTime: {
+    fontSize: 14,
+    flexShrink: 0,
   },
-  timeText: {
-    fontSize: 12,
-    marginBottom: 6,
-  },
-  timeTextUnread: {
-    fontWeight: '700',
-  },
-  badge: {
+  unreadDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
     backgroundColor: '#FF4D67',
-    borderRadius: 11,
-    minWidth: 22,
-    height: 22,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 7,
-  },
-  badgePlaceholder: {
-    height: 22,
-  },
-  badgeText: {
-    color: 'white',
-    fontSize: 12,
-    fontWeight: 'bold',
+    marginLeft: 10,
   },
   emptyContainer: {
     alignItems: 'center',

@@ -287,16 +287,11 @@ export default function ChatScreen() {
   const renderBubble = (props: BubbleProps<IMessage>) => (
     <Bubble
       {...props}
+      // Instagram-style fully rounded pill bubbles (no tail): gray incoming,
+      // brand-pink outgoing, on a plain white thread.
       wrapperStyle={{
-        left: {
-          backgroundColor: '#FFFFFF',
-          borderRadius: 18,
-          borderBottomLeftRadius: 5,
-          marginBottom: 2,
-          borderWidth: StyleSheet.hairlineWidth,
-          borderColor: '#E9EAEE',
-        },
-        right: { backgroundColor: PINK, borderRadius: 18, borderBottomRightRadius: 5, marginBottom: 2 },
+        left: { backgroundColor: '#EFEFEF', borderRadius: 20, marginBottom: 3 },
+        right: { backgroundColor: PINK, borderRadius: 20, marginBottom: 3 },
       }}
       textStyle={{
         left: { color: '#1A1A1A', fontSize: 15, lineHeight: 21 },
@@ -543,7 +538,7 @@ export default function ChatScreen() {
   );
 }
 
-const CHAT_BG = '#F6F7F9';
+const CHAT_BG = '#FFFFFF';
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: CHAT_BG },
