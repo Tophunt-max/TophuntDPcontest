@@ -15,6 +15,7 @@ import {
   TextInput,
   FlatList,
   Keyboard,
+  Platform,
 } from 'react-native';
 import { Alert } from '@/src/lib/appAlert';
 import { useAuth } from '@/src/hooks/useAuth';
@@ -23,6 +24,12 @@ import { Ionicons } from '@/src/lib/icons';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
 
 const PINK = '#FF4D67';
+
+// On web a long, space-less token (like a share URL) will not wrap and would
+// stretch its bubble off-screen. These CSS props force it to break; they are
+// web-only and simply ignored on native, where Text already breaks by glyph.
+const WRAP_LONG: any =
+  Platform.OS === 'web' ? { wordBreak: 'break-word', overflowWrap: 'anywhere' } : {};
 
 type LoadState = 'loading' | 'ready' | 'error';
 
@@ -288,14 +295,26 @@ export default function ChatScreen() {
     <Bubble
       {...props}
       // Instagram-style fully rounded pill bubbles (no tail): gray incoming,
-      // brand-pink outgoing, on a plain white thread.
+      // brand-pink outgoing, on a plain white thread. `maxWidth` keeps a bubble
+      // from ever spanning the whole row.
       wrapperStyle={{
-        left: { backgroundColor: '#EFEFEF', borderRadius: 20, marginBottom: 3 },
-        right: { backgroundColor: PINK, borderRadius: 20, marginBottom: 3 },
+        left: { backgroundColor: '#EFEFEF', borderRadius: 20, marginBottom: 3, maxWidth: '80%' },
+        right: { backgroundColor: PINK, borderRadius: 20, marginBottom: 3, maxWidth: '80%' },
       }}
+      // WRAP_LONG breaks unbroken tokens (e.g. a battle share URL). Without it a
+      // long link stayed on one line and pushed the whole bubble off the left
+      // edge of the screen on web.
       textStyle={{
-        left: { color: '#1A1A1A', fontSize: 15, lineHeight: 21 },
-        right: { color: '#FFFFFF', fontSize: 15, lineHeight: 21 },
+        left: { color: '#1A1A1A', fontSize: 15, lineHeight: 21, ...WRAP_LONG },
+        right: { color: '#FFFFFF', fontSize: 15, lineHeight: 21, ...WRAP_LONG },
+      }}
+      // linkStyle isn't a direct Bubble prop; it reaches MessageText through
+      // messageTextProps. Links inherit the same break-long-token behaviour.
+      messageTextProps={{
+        linkStyle: {
+          left: { color: '#1B6EF3', textDecorationLine: 'underline', ...WRAP_LONG },
+          right: { color: '#FFFFFF', textDecorationLine: 'underline', ...WRAP_LONG },
+        },
       }}
     />
   );
