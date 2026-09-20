@@ -45,13 +45,29 @@ export default function AppControl() {
   }, [data]);
 
   const saveMut = useMutation({
-    mutationFn: () => api.saveAppSettings(cfg),
+    mutationFn: (next: Cfg) => api.saveAppSettings(next),
     onSuccess: () => {
       toast.success("App settings saved");
       qc.invalidateQueries({ queryKey: ["app-settings"] });
     },
     onError: (e: any) => toast.error(e.message),
   });
+
+  // The announcement link is shown to every user and opened on tap. Reject a
+  // non-URL value here (the worker validates too) so a stray string can't be
+  // saved as a "link" and turn the banner into a dead tap target. Empty clears it.
+  // The trimmed config is passed straight to the mutation (not read back from
+  // state, which updates asynchronously) so exactly what we validated is sent.
+  const handleSave = () => {
+    const link = cfg.announcement.link?.trim() ?? "";
+    if (link && !/^https?:\/\/\S/i.test(link)) {
+      toast.error("Announcement link must be a full http(s) URL (e.g. https://tophunt.in) — or leave it empty.");
+      return;
+    }
+    const next: Cfg = { ...cfg, announcement: { ...cfg.announcement, link } };
+    setCfg(next);
+    saveMut.mutate(next);
+  };
 
   const field = "w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring";
 
@@ -63,7 +79,7 @@ export default function AppControl() {
         title="App Control Center"
         subtitle="Master switches the user app obeys at runtime"
         action={
-          <button onClick={() => saveMut.mutate()} disabled={saveMut.isPending} className="flex items-center gap-2 gradient-purple text-white text-sm font-semibold px-4 py-2 rounded-xl disabled:opacity-50">
+          <button onClick={handleSave} disabled={saveMut.isPending} className="flex items-center gap-2 gradient-purple text-white text-sm font-semibold px-4 py-2 rounded-xl disabled:opacity-50">
             <Save size={16} /> Save All
           </button>
         }
