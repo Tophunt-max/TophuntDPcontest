@@ -32,19 +32,19 @@ import { LinearGradient } from 'expo-linear-gradient';
 // Instagram-style story ring gradient (warm yellow -> pink -> purple).
 const STORY_RING = ['#FEDA75', '#FA7E1E', '#D62976', '#962FBF', '#4F5BD5'] as const;
 
+// Bold curved hero header gradient (brand pink -> coral -> violet).
+const HERO_GRADIENT = ['#FF4D67', '#FF5E8E', '#8A5CF6'] as const;
+
 // Import Icons from assets
-import { 
-  Add_Icon, 
-  Menu_Light, 
-  Menu_Dark, 
-  Search_Light, 
-  Search_Dark, 
-  Control,
+import {
+  Search_Light,
+  Search_Dark,
   Delete_Icon,
   Inbox_Light,
-  Inbox_Dark
+  Inbox_Dark,
 } from '@/assets/svgs';
 import { BackButton } from '@/src/components/ui/BackButton';
+import { Ionicons } from '@/src/lib/icons';
 
 // --- TYPES ---
 interface UserData {
@@ -125,10 +125,12 @@ export default function MessagesScreen() {
   const router = useRouter();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
-  const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
   const textColor = isDark ? Colors.dark.text : Colors.light.text;
   
   const pinkPrimary = '#FF4D67';
+  // New design: a soft page canvas with elevated conversation cards.
+  const pageBg = isDark ? '#0E0E12' : '#EEF0F5';
+  const cardBg = isDark ? '#1B1C22' : '#FFFFFF';
   const focusAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -139,16 +141,16 @@ export default function MessagesScreen() {
     }).start();
   }, [isFocused]);
 
-  // Instagram's search field is a plain rounded gray pill; focus just deepens
-  // the fill slightly rather than flashing a coloured border.
+  // The search pill floats on the coloured hero: a translucent white fill that
+  // brightens a little on focus, with a faint white hairline.
   const interpolatedBackgroundColor = focusAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [isDark ? '#1C1C1E' : '#EFEFEF', isDark ? '#2A2A2C' : '#E4E4E4'],
+    outputRange: ['rgba(255,255,255,0.20)', 'rgba(255,255,255,0.32)'],
   });
 
   const interpolatedBorderColor = focusAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: ['transparent', 'transparent'],
+    outputRange: ['rgba(255,255,255,0.25)', 'rgba(255,255,255,0.6)'],
   });
 
   const fetchChats = useCallback(() => {
@@ -272,18 +274,18 @@ export default function MessagesScreen() {
             end={{ x: 1, y: 1 }}
             style={styles.storyRing}
           >
-            <View style={[styles.storyInner, { backgroundColor }]}>
+            <View style={[styles.storyInner, { backgroundColor: pageBg }]}>
               <Avatar uri={avatar} name={name} size={56} />
             </View>
           </LinearGradient>
-          {isOnline && <View style={[styles.onlineIndicator, { borderColor: backgroundColor }]} />}
+          {isOnline && <View style={[styles.onlineIndicator, { borderColor: pageBg }]} />}
         </TouchableOpacity>
         <Text style={[styles.recentlyName, { color: textColor }]} numberOfLines={1}>
           {name.split(' ')[0]}
         </Text>
       </View>
     );
-  }, [currentUser, router, textColor, backgroundColor, presence]);
+  }, [currentUser, router, textColor, pageBg, presence]);
 
   const renderRightActions = (chatId: string) => (
     <TouchableOpacity
@@ -311,8 +313,12 @@ export default function MessagesScreen() {
         rightThreshold={40}
       >
         <TouchableOpacity
-          activeOpacity={0.7}
-          style={[styles.chatItem, { backgroundColor: backgroundColor }]}
+          activeOpacity={0.85}
+          style={[
+            styles.chatItem,
+            { backgroundColor: cardBg },
+            hasUnread && styles.chatItemUnread,
+          ]}
           onPress={() =>
             router.push(
               chatRoute(
@@ -324,14 +330,15 @@ export default function MessagesScreen() {
             )
           }
         >
+          {hasUnread ? <View style={styles.unreadAccent} /> : null}
           <View>
             <Avatar
               uri={otherUser?.photoURL}
               name={otherUser?.displayName}
-              size={58}
+              size={54}
               style={styles.chatAvatar}
             />
-            {isOnline && <View style={[styles.onlineIndicator, styles.chatOnlineIndicator, { borderColor: backgroundColor }]} />}
+            {isOnline && <View style={[styles.onlineIndicator, styles.chatOnlineIndicator, { borderColor: cardBg }]} />}
           </View>
 
           <View style={styles.chatInfo}>
@@ -369,41 +376,13 @@ export default function MessagesScreen() {
         </TouchableOpacity>
       </Swipeable>
     );
-  }, [currentUser, router, textColor, backgroundColor, presence, isDark]);
+  }, [currentUser, router, textColor, cardBg, presence, isDark]);
 
   const listHeaderComponent = useMemo(() => {
     const recentlyData = chats.slice(0, 8);
 
     return (
       <View style={styles.headerContainer}>
-        {/* Animated Search Bar */}
-        <Animated.View style={[
-          styles.searchSection, 
-          { 
-            backgroundColor: interpolatedBackgroundColor,
-            borderColor: interpolatedBorderColor,
-            borderWidth: 0,
-          }
-        ]}>
-          <View style={styles.searchIconContainer}>
-             {isDark ? <Search_Dark width={20} height={20} /> : <Search_Light width={20} height={20} />}
-          </View>
-          <TextInput
-            style={[styles.searchInput, { color: textColor }]}
-            placeholder="Search"
-            placeholderTextColor="#9E9E9E"
-            value={searchText}
-            onChangeText={setSearchText}
-            onFocus={() => setIsFocused(true)}
-            onBlur={() => setIsFocused(false)}
-            returnKeyType="search"
-            onSubmitEditing={() => Keyboard.dismiss()}
-          />
-          <TouchableOpacity>
-             <Control width={20} height={20} fill={pinkPrimary} />
-          </TouchableOpacity>
-        </Animated.View>
-
         {/* Recently Section - Only show if there are chats */}
         {recentlyData.length > 0 && (
           <>
@@ -429,7 +408,7 @@ export default function MessagesScreen() {
         )}
       </View>
     );
-  }, [isFocused, searchText, textColor, chats, renderRecentlyItem, isDark, interpolatedBackgroundColor, interpolatedBorderColor]);
+  }, [textColor, chats, renderRecentlyItem]);
 
   const EmptyState = () => {
     const isSearching = searchText.length > 0;
@@ -461,25 +440,61 @@ export default function MessagesScreen() {
   };
 
   return (
-    <View style={[styles.container, { backgroundColor }]}>
-      {/* Custom Header */}
-      <View style={styles.topNav}>
-        <View style={styles.leftHeader}>
-          <BackButton size={26} color={textColor} style={styles.backButton} />
-          <Text style={[styles.headerTitle, { color: textColor }]}>Messages</Text>
+    <View style={[styles.container, { backgroundColor: pageBg }]}>
+      {/* Curved gradient hero: white nav + a floating translucent search pill. */}
+      <LinearGradient
+        colors={HERO_GRADIENT}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.hero}
+      >
+        <View style={styles.topNav}>
+          <View style={styles.leftHeader}>
+            <BackButton size={26} color="#FFFFFF" style={styles.backButton} />
+            <Text style={styles.headerTitle}>Messages</Text>
+          </View>
+          <View style={styles.rightIcons}>
+            <TouchableOpacity style={styles.navButton}>
+              <Ionicons name="create-outline" size={24} color="#FFFFFF" />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.navButton}>
+              <Ionicons name="ellipsis-horizontal" size={24} color="#FFFFFF" />
+            </TouchableOpacity>
+          </View>
         </View>
-        <View style={styles.rightIcons}>
-          <TouchableOpacity style={styles.navButton}>
-            <Add_Icon width={24} height={24} color={textColor} />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.navButton}>
-            {isDark ? <Menu_Dark width={24} height={24} /> : <Menu_Light width={24} height={24} />}
-          </TouchableOpacity>
-        </View>
-      </View>
+
+        <Animated.View
+          style={[
+            styles.searchSection,
+            {
+              backgroundColor: interpolatedBackgroundColor,
+              borderColor: interpolatedBorderColor,
+              borderWidth: 1,
+            },
+          ]}
+        >
+          <Ionicons name="search" size={19} color="rgba(255,255,255,0.9)" style={styles.searchIconContainer} />
+          <TextInput
+            style={[styles.searchInput, { color: '#FFFFFF' }]}
+            placeholder="Search messages"
+            placeholderTextColor="rgba(255,255,255,0.75)"
+            value={searchText}
+            onChangeText={setSearchText}
+            onFocus={() => setIsFocused(true)}
+            onBlur={() => setIsFocused(false)}
+            returnKeyType="search"
+            onSubmitEditing={() => Keyboard.dismiss()}
+          />
+          {searchText ? (
+            <TouchableOpacity onPress={() => setSearchText('')}>
+              <Ionicons name="close-circle" size={19} color="rgba(255,255,255,0.9)" />
+            </TouchableOpacity>
+          ) : null}
+        </Animated.View>
+      </LinearGradient>
 
       {loading && chats.length === 0 ? (
-        <View style={{ paddingHorizontal: 20, paddingTop: 10 }}>
+        <View style={{ paddingHorizontal: 20, paddingTop: 20 }}>
           {[1, 2, 3, 4, 5, 6].map((i) => (
             <MessageSkeleton key={i} isDark={isDark} />
           ))}
@@ -511,12 +526,22 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
+  hero: {
+    paddingHorizontal: 20,
+    paddingTop: Platform.OS === 'ios' ? 60 : 46,
+    paddingBottom: 20,
+    borderBottomLeftRadius: 30,
+    borderBottomRightRadius: 30,
+    shadowColor: '#8A5CF6',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.25,
+    shadowRadius: 14,
+    elevation: 8,
+  },
   topNav: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingTop: Platform.OS === 'ios' ? 60 : 45,
-    paddingBottom: 15,
+    paddingBottom: 16,
     justifyContent: 'space-between',
   },
   leftHeader: {
@@ -528,14 +553,16 @@ const styles = StyleSheet.create({
   },
   headerTitle: {
     fontSize: 26,
-    fontWeight: '700',
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: 0.3,
   },
   rightIcons: {
     flexDirection: 'row',
     alignItems: 'center',
   },
   navButton: {
-    marginLeft: 22,
+    marginLeft: 20,
   },
   headerContainer: {
     paddingHorizontal: 20,
@@ -543,13 +570,12 @@ const styles = StyleSheet.create({
   searchSection: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: 12,
+    borderRadius: 15,
     paddingHorizontal: 14,
-    marginVertical: 14,
-    height: 44,
+    height: 48,
   },
   searchIconContainer: {
-    marginRight: 12,
+    marginRight: 10,
   },
   searchInput: {
     flex: 1,
@@ -562,12 +588,12 @@ const styles = StyleSheet.create({
     }),
   },
   sectionHeader: {
-    marginTop: 18,
-    marginBottom: 12,
+    marginTop: 20,
+    marginBottom: 14,
   },
   sectionTitle: {
-    fontSize: 20,
-    fontWeight: '700',
+    fontSize: 19,
+    fontWeight: '800',
     letterSpacing: 0.2,
   },
   recentlyList: {
@@ -623,18 +649,40 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   flatListContent: {
+    paddingTop: 6,
     paddingBottom: 30,
   },
   chatItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 18,
-    paddingVertical: 10,
+    marginHorizontal: 16,
+    marginBottom: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    overflow: 'hidden',
+    shadowColor: '#1A1A2E',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    elevation: 3,
+  },
+  chatItemUnread: {
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,77,103,0.55)',
+  },
+  unreadAccent: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 5,
+    backgroundColor: '#FF4D67',
   },
   chatAvatar: {
-    width: 58,
-    height: 58,
-    borderRadius: 29,
+    width: 54,
+    height: 54,
+    borderRadius: 27,
   },
   avatarPlaceholder: {
     backgroundColor: '#f0f0f0',
