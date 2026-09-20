@@ -251,7 +251,7 @@ export default function MessagesScreen() {
       <View key={id} style={styles.recentlyItem}>
         <TouchableOpacity onPress={() => router.push(chatRoute(id, name, avatar, lastSeen))}>
           <View>
-            <Avatar uri={avatar} name={name} size={72} style={styles.recentlyAvatar} />
+            <Avatar uri={avatar} name={name} size={62} style={styles.recentlyAvatar} />
             {isOnline && <View style={[styles.onlineIndicator, { borderColor: backgroundColor }]} />}
           </View>
         </TouchableOpacity>
@@ -276,8 +276,10 @@ export default function MessagesScreen() {
     const otherUser = item.usersData?.find((u: any) => u.uid !== currentUser?.uid);
     const time = formatTime(item.lastMessage?.createdAt);
     const unreadCount = item.unreadCount || 0;
+    const hasUnread = unreadCount > 0;
     const lastSeen = (otherUser?.uid ? presence[otherUser.uid]?.lastSeen : null) ?? otherUser?.lastSeen ?? null;
     const isOnline = (otherUser?.uid ? presence[otherUser.uid]?.online : false) ?? false;
+    const mutedColor = isDark ? '#8A8F98' : '#9AA0A6';
 
     return (
       <Swipeable
@@ -286,6 +288,7 @@ export default function MessagesScreen() {
         rightThreshold={40}
       >
         <TouchableOpacity
+          activeOpacity={0.7}
           style={[styles.chatItem, { backgroundColor: backgroundColor }]}
           onPress={() =>
             router.push(
@@ -302,36 +305,51 @@ export default function MessagesScreen() {
             <Avatar
               uri={otherUser?.photoURL}
               name={otherUser?.displayName}
-              size={68}
+              size={58}
               style={styles.chatAvatar}
             />
             {isOnline && <View style={[styles.onlineIndicator, styles.chatOnlineIndicator, { borderColor: backgroundColor }]} />}
           </View>
-          
+
           <View style={styles.chatInfo}>
-            <View style={styles.chatHeaderRow}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', flexShrink: 1 }}>
-                <Text style={[styles.userName, { color: textColor }]} numberOfLines={1}>{otherUser?.displayName || 'User'}</Text>
-                <VerifiedBadge verified={(otherUser as any)?.verified} size={14} />
-              </View>
-              {unreadCount > 0 && (
-                <View style={styles.badge}>
-                  <Text style={styles.badgeText}>{unreadCount}</Text>
-                </View>
-              )}
-            </View>
-            
-            <View style={styles.chatFooterRow}>
-              <Text style={[styles.lastMessage, { color: 'gray' }]} numberOfLines={1}>
-                {item.lastMessage?.text || 'No messages yet'}
+            <View style={styles.nameRow}>
+              <Text
+                style={[styles.userName, { color: textColor }, hasUnread && styles.userNameUnread]}
+                numberOfLines={1}
+              >
+                {otherUser?.displayName || 'User'}
               </Text>
-              <Text style={[styles.timeText, { color: 'gray' }]}>{time}</Text>
+              <VerifiedBadge verified={(otherUser as any)?.verified} size={14} />
             </View>
+
+            <Text
+              style={[
+                styles.lastMessage,
+                { color: mutedColor },
+                hasUnread && [styles.lastMessageUnread, { color: textColor }],
+              ]}
+              numberOfLines={1}
+            >
+              {item.lastMessage?.text || 'No messages yet'}
+            </Text>
+          </View>
+
+          <View style={styles.chatMeta}>
+            <Text style={[styles.timeText, { color: hasUnread ? pinkPrimary : mutedColor }, hasUnread && styles.timeTextUnread]}>
+              {time}
+            </Text>
+            {hasUnread ? (
+              <View style={styles.badge}>
+                <Text style={styles.badgeText}>{unreadCount > 99 ? '99+' : unreadCount}</Text>
+              </View>
+            ) : (
+              <View style={styles.badgePlaceholder} />
+            )}
           </View>
         </TouchableOpacity>
       </Swipeable>
     );
-  }, [currentUser, router, textColor, backgroundColor, presence]);
+  }, [currentUser, router, textColor, backgroundColor, presence, isDark]);
 
   const listHeaderComponent = useMemo(() => {
     const recentlyData = chats.slice(0, 8);
@@ -505,10 +523,10 @@ const styles = StyleSheet.create({
   searchSection: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: 12,
+    borderRadius: 16,
     paddingHorizontal: 16,
     marginVertical: 15,
-    height: 56,
+    height: 52,
   },
   searchIconContainer: {
     marginRight: 12,
@@ -524,31 +542,34 @@ const styles = StyleSheet.create({
     }),
   },
   sectionHeader: {
-    marginVertical: 15,
+    marginTop: 18,
+    marginBottom: 12,
   },
   sectionTitle: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '700',
+    letterSpacing: 0.2,
   },
   recentlyList: {
-    paddingBottom: 10,
+    paddingBottom: 6,
+    paddingRight: 4,
   },
   recentlyItem: {
     alignItems: 'center',
-    marginRight: 20,
-    width: 75,
+    marginRight: 18,
+    width: 68,
   },
   recentlyAvatar: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+    width: 62,
+    height: 62,
+    borderRadius: 31,
     marginBottom: 8,
-    borderWidth: 1.5,
-    borderColor: '#eee',
+    borderWidth: 2,
+    borderColor: 'rgba(255,77,103,0.35)',
   },
   onlineIndicator: {
     position: 'absolute',
-    bottom: 10,
+    bottom: 8,
     right: 2,
     width: 14,
     height: 14,
@@ -557,13 +578,14 @@ const styles = StyleSheet.create({
     borderWidth: 2,
   },
   chatOnlineIndicator: {
-    bottom: 2,
-    right: 2,
-    width: 12,
-    height: 12,
+    bottom: 1,
+    right: 1,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
   },
   recentlyName: {
-    fontSize: 14,
+    fontSize: 13,
     textAlign: 'center',
     fontWeight: '600',
   },
@@ -574,12 +596,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 20,
-    paddingVertical: 15,
+    paddingVertical: 12,
   },
   chatAvatar: {
-    width: 68,
-    height: 68,
-    borderRadius: 34,
+    width: 58,
+    height: 58,
+    borderRadius: 29,
   },
   avatarPlaceholder: {
     backgroundColor: '#f0f0f0',
@@ -588,40 +610,52 @@ const styles = StyleSheet.create({
   },
   chatInfo: {
     flex: 1,
-    marginLeft: 15,
+    marginLeft: 14,
     justifyContent: 'center',
   },
-  chatHeaderRow: {
+  nameRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 6,
+    marginBottom: 4,
   },
   userName: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '600',
+    flexShrink: 1,
   },
-  chatFooterRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+  userNameUnread: {
+    fontWeight: '800',
   },
   lastMessage: {
-    fontSize: 15,
-    flex: 1,
-    marginRight: 10,
+    fontSize: 14,
+  },
+  lastMessageUnread: {
+    fontWeight: '600',
+  },
+  chatMeta: {
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    marginLeft: 10,
+    minHeight: 44,
   },
   timeText: {
-    fontSize: 13,
+    fontSize: 12,
+    marginBottom: 6,
+  },
+  timeTextUnread: {
+    fontWeight: '700',
   },
   badge: {
     backgroundColor: '#FF4D67',
-    borderRadius: 12,
+    borderRadius: 11,
     minWidth: 22,
     height: 22,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 6,
+    paddingHorizontal: 7,
+  },
+  badgePlaceholder: {
+    height: 22,
   },
   badgeText: {
     color: 'white',

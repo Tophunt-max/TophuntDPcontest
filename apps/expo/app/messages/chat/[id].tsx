@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { GiftedChat, IMessage, BubbleProps, TimeProps, InputToolbarProps, Bubble } from 'react-native-gifted-chat';
+import { GiftedChat, IMessage, BubbleProps, TimeProps, InputToolbarProps, Bubble, InputToolbar } from 'react-native-gifted-chat';
 import * as ImagePicker from 'expo-image-picker';
 import { readApi, callApi } from '@/src/services/api';
 import { uploadToR2 } from '@/src/lib/uploadToR2';
@@ -288,7 +288,14 @@ export default function ChatScreen() {
     <Bubble
       {...props}
       wrapperStyle={{
-        left: { backgroundColor: '#F1F1F4', borderRadius: 18, borderBottomLeftRadius: 5, marginBottom: 2 },
+        left: {
+          backgroundColor: '#FFFFFF',
+          borderRadius: 18,
+          borderBottomLeftRadius: 5,
+          marginBottom: 2,
+          borderWidth: StyleSheet.hairlineWidth,
+          borderColor: '#E9EAEE',
+        },
         right: { backgroundColor: PINK, borderRadius: 18, borderBottomRightRadius: 5, marginBottom: 2 },
       }}
       textStyle={{
@@ -311,10 +318,15 @@ export default function ChatScreen() {
     );
   };
 
-  const InputToolbarComp: any = (GiftedChat as any).InputToolbar;
+  // gifted-chat v3 exports InputToolbar as a NAMED export, not as a static on
+  // GiftedChat. The old `(GiftedChat as any).InputToolbar` resolved to
+  // `undefined`, so this render function returned `<undefined />` — React threw
+  // "Element type is invalid" the instant the chat mounted, which the app-wide
+  // ErrorBoundary caught as the "Something went wrong" screen. Use the real
+  // component.
   const renderInputToolbar = (props: InputToolbarProps<IMessage>) => (
     <View style={styles.inputToolbarContainer}>
-      <InputToolbarComp
+      <InputToolbar
         {...props}
         containerStyle={styles.inputToolbar}
         renderActions={() => (
@@ -331,15 +343,25 @@ export default function ChatScreen() {
             )}
           </TouchableOpacity>
         )}
-        renderSend={(sendProps: any) => (
-          <TouchableOpacity
-            onPress={sendProps.onSend}
-            disabled={!sendProps.text?.trim()}
-            style={[styles.sendButton, !sendProps.text?.trim() && styles.sendButtonDisabled]}
-          >
-            <Ionicons name="send" size={19} color="white" />
-          </TouchableOpacity>
-        )}
+        renderSend={(sendProps: any) => {
+          const canSend = !!sendProps.text?.trim();
+          return (
+            <TouchableOpacity
+              // gifted-chat v3's onSend expects (message, shouldResetInputToolbar).
+              // Wiring `onPress={sendProps.onSend}` directly instead handed the
+              // press event straight to onSend, so it dispatched a junk message
+              // with no `text` and never cleared the composer — the typed message
+              // was silently dropped. Build the message explicitly and reset.
+              onPress={() => {
+                if (canSend) sendProps.onSend({ text: sendProps.text.trim() }, true);
+              }}
+              disabled={!canSend}
+              style={[styles.sendButton, !canSend && styles.sendButtonDisabled]}
+            >
+              <Ionicons name="send" size={19} color="white" />
+            </TouchableOpacity>
+          );
+        }}
         textInputStyle={styles.textInput}
         placeholder="Type a message…"
       />
@@ -398,6 +420,7 @@ export default function ChatScreen() {
         renderBubble={renderBubble}
         renderTime={renderTime}
         renderInputToolbar={renderInputToolbar}
+        messagesContainerStyle={styles.messagesContainer}
         minInputToolbarHeight={64}
         // Hook keystrokes via textInputProps.onChangeText (this GiftedChat version
         // has no onInputTextChanged prop). It rides alongside the Composer's own
@@ -520,14 +543,17 @@ export default function ChatScreen() {
   );
 }
 
+const CHAT_BG = '#F6F7F9';
+
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#FFFFFF' },
+  screen: { flex: 1, backgroundColor: CHAT_BG },
+  messagesContainer: { backgroundColor: CHAT_BG },
   centered: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 32,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: CHAT_BG,
   },
   stateTitle: {
     fontSize: 18,
