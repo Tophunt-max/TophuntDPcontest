@@ -2,10 +2,13 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { BackButton } from '@/src/components/ui/BackButton';
 
-const ONLINE_GREEN = '#4CAF50';
+const ONLINE_GREEN = '#B9F6CA';
+// Matches the Messages inbox hero gradient so the whole feature feels cohesive.
+const HERO_GRADIENT = ['#FF4D67', '#FF5E8E', '#8A5CF6'] as const;
 
 interface ChatHeaderProps {
   recipientName: string;
@@ -37,10 +40,15 @@ function ChatHeader({ recipientName, recipientAvatar, online, lastSeen, onSearch
   const subtitle = online ? 'Online' : lastSeen ? formatLastSeen(lastSeen) : null;
 
   return (
-    <View style={styles.headerContainer}>
-      <BackButton size={22} color="black" style={styles.iconButton} />
-      <View>
-        <Avatar uri={recipientAvatar} name={recipientName} size={35} style={styles.avatar} />
+    <LinearGradient
+      colors={HERO_GRADIENT}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={styles.headerContainer}
+    >
+      <BackButton size={22} color="#FFFFFF" style={styles.iconButton} />
+      <View style={styles.avatarWrap}>
+        <Avatar uri={recipientAvatar} name={recipientName} size={38} style={styles.avatar} />
         {online && <View style={styles.onlineDot} />}
       </View>
       <View style={styles.titleBlock}>
@@ -56,14 +64,14 @@ function ChatHeader({ recipientName, recipientAvatar, online, lastSeen, onSearch
       <View style={styles.rightIcons}>
         {onSearchPress && (
           <TouchableOpacity style={styles.iconButton} onPress={onSearchPress} accessibilityLabel="Search messages">
-            <Ionicons name="search" size={23} color="black" />
+            <Ionicons name="search" size={22} color="#FFFFFF" />
           </TouchableOpacity>
         )}
         <TouchableOpacity style={styles.iconButton}>
-          <Ionicons name="ellipsis-vertical" size={24} color="black" />
+          <Ionicons name="ellipsis-vertical" size={23} color="#FFFFFF" />
         </TouchableOpacity>
       </View>
-    </View>
+    </LinearGradient>
   );
 }
 
@@ -75,29 +83,38 @@ const styles = StyleSheet.create({
   headerContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 10,
-    backgroundColor: '#fff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
-    paddingTop: 40, // Adjust for status bar
+    paddingHorizontal: 12,
+    paddingBottom: 14,
+    paddingTop: 44, // Adjust for status bar
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
+    shadowColor: '#8A5CF6',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    elevation: 8,
   },
   iconButton: {
     padding: 5,
   },
+  avatarWrap: {
+    marginLeft: 6,
+    marginRight: 12,
+  },
   avatar: {
-    marginLeft: 10,
-    marginRight: 10,
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.7)',
   },
   onlineDot: {
     position: 'absolute',
     bottom: 0,
-    right: 8,
-    width: 11,
-    height: 11,
+    right: 0,
+    width: 12,
+    height: 12,
     borderRadius: 6,
-    backgroundColor: ONLINE_GREEN,
+    backgroundColor: '#39D98A',
     borderWidth: 2,
-    borderColor: '#fff',
+    borderColor: '#FFFFFF',
   },
   titleBlock: {
     flex: 1,
@@ -105,16 +122,17 @@ const styles = StyleSheet.create({
   },
   recipientName: {
     fontSize: 18,
-    fontWeight: 'bold',
+    fontWeight: '800',
+    color: '#FFFFFF',
   },
   subtitle: {
     fontSize: 12,
-    color: '#9AA0A6',
+    color: 'rgba(255,255,255,0.85)',
     marginTop: 1,
   },
   subtitleOnline: {
     color: ONLINE_GREEN,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   rightIcons: {
     flexDirection: 'row',
