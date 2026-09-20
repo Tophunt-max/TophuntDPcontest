@@ -6,6 +6,7 @@ import { Ionicons } from '@/src/lib/icons';
 import { useAppConfig } from '@/src/services/appSettings';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
 import { loadDismissedBanner, dismissBanner } from '@/src/lib/bannerDismiss';
+import { bannerLink, bannerMessage, shouldShowBanner } from '@/src/lib/announcementBanner';
 
 /**
  * Admin-controlled announcement banner. Driven by appConfig.announcement
@@ -18,6 +19,9 @@ import { loadDismissedBanner, dismissBanner } from '@/src/lib/bannerDismiss';
  * Dismissal is PERSISTED (AsyncStorage), keyed by the message text: once the
  * user closes it, it stays closed across reloads and app restarts, and only
  * re-appears when the admin changes the message.
+ *
+ * The show/hide and link decisions live in src/lib/announcementBanner.ts (pure,
+ * unit-tested); this component is only the view + wiring.
  */
 export function AnnouncementBanner() {
   const { config } = useAppConfig();
@@ -41,30 +45,27 @@ export function AnnouncementBanner() {
   }, []);
 
   const ann = config?.announcement;
-  const message = ann?.message?.trim();
+  const message = bannerMessage(ann);
+  const link = bannerLink(ann?.link);
 
   // Home screen only. `segments[0]` is the top-level route slug ('home', 'auth',
   // 'splash', …); everything else must not carry the banner.
   const onHome = segments[0] === 'home';
 
-  // Only treat the link as tappable when it is a real http(s) URL. The banner's
-  // link field is free text (unlike the popup's, which the admin API validates),
-  // so a non-URL value must not turn the whole banner into a dead tap target.
-  const link = ann?.link?.trim();
-  const validLink = link && /^https?:\/\//i.test(link) ? link : undefined;
-
-  if (!onHome || !ready || !ann?.enabled || !message || dismissedMsg === message) return null;
+  if (!shouldShowBanner({ onHome, ready, enabled: ann?.enabled, message, dismissedMessage: dismissedMsg })) {
+    return null;
+  }
 
   const handleDismiss = () => {
-    setDismissedMsg(message);
-    void dismissBanner(message);
+    setDismissedMsg(message!);
+    void dismissBanner(message!);
   };
 
   return (
     <View style={[styles.wrap, { paddingTop: insets.top + 8 }]} pointerEvents="box-none">
       <TouchableOpacity
-        activeOpacity={validLink ? 0.85 : 1}
-        onPress={() => validLink && Linking.openURL(validLink).catch(() => {})}
+        activeOpacity={link ? 0.85 : 1}
+        onPress={() => link && Linking.openURL(link).catch(() => {})}
         style={styles.banner}
       >
         <Ionicons name="megaphone" size={18} color="#FFF" />
