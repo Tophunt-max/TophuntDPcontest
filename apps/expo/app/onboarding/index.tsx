@@ -14,7 +14,7 @@ import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getAppConfig } from '../../src/services/appSettings';
 import { Colors } from '@/constants/theme';
-import { designWidth, PHONE_MAX_WIDTH } from '@/src/lib/layout';
+import { designWidth, PHONE_MAX_WIDTH, useDesignWindow } from '@/src/lib/layout';
 
 const DEFAULT_ONBOARDING = [
   {
@@ -52,6 +52,9 @@ export default function OnboardingScreen() {
   // of an onboarding slide — so they sat below the fold on a screen most people
   // never think to scroll. 32% of the window keeps the copy visible.
   const artSize = Math.min(designWidth(windowWidth) * 0.8, windowHeight * 0.32);
+  // The width the pager is actually drawn at: the phone column on desktop web
+  // (PhoneFrame), the full window everywhere else.
+  const { width: pageWidth } = useDesignWindow();
 
   const [currentIndex, setCurrentIndex] = useState(0);
   const [onboardingData, setOnboardingData] = useState<any[]>(DEFAULT_ONBOARDING);
@@ -102,12 +105,12 @@ export default function OnboardingScreen() {
   const viewConfig = useRef({ viewAreaCoveragePercentThreshold: 50 }).current;
 
   const renderItem = ({ item }: { item: any }) => (
-    // The page must be exactly the window width for `pagingEnabled` to land on
-    // slide boundaries. That is why this is `windowWidth` and not clamped — and
-    // why it has to come from `useWindowDimensions()`: read once at module scope,
-    // resizing a desktop browser left every page the old width and paging drifted
-    // progressively further off-slide.
-    <View style={[styles.itemContainer, { width: windowWidth }]}>
+    // The page must be exactly the pager's width for `pagingEnabled` to land on
+    // slide boundaries. On desktop web the pager sits in the phone column
+    // (PhoneFrame), so that is the design width, not the browser width. It must be
+    // reactive: read once at module scope, resizing a desktop browser left every
+    // page the old width and paging drifted further off-slide.
+    <View style={[styles.itemContainer, { width: pageWidth }]}>
       {/*
         Each slide scrolls vertically on its own. The art is tall, and on a short
         or zoomed window the description and the Next button were simply cut off
@@ -147,6 +150,10 @@ export default function OnboardingScreen() {
         onViewableItemsChanged={onViewableItemsChanged}
         viewabilityConfig={viewConfig}
         scrollEventThrottle={32}
+        // Tells scrollToIndex (the Next button) exactly where each page starts.
+        // Without it the list has to measure first, and on web the jump never
+        // happened: Next did nothing.
+        getItemLayout={(_, index) => ({ length: pageWidth, offset: pageWidth * index, index })}
       />
 
       <View style={styles.footer}>

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, Dimensions, Pressable, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ActivityIndicator } from 'react-native';
 import { Image } from 'expo-image';
 import Animated, {
   useSharedValue,
@@ -9,6 +9,7 @@ import Animated, {
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { computeCropRect, coverBaseScale } from '@/src/lib/cropMath';
+import { useDesignWindow } from '@/src/lib/layout';
 
 /**
  * Reposition-and-zoom a picked photo inside a fixed frame, then crop it to that
@@ -26,7 +27,6 @@ import { computeCropRect, coverBaseScale } from '@/src/lib/cropMath';
  * here is the shell that drives it.
  */
 
-const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 const MAX_SCALE = 4;
 /** Chrome above (title/cancel) and below (zoom + confirm) the frame. */
 const CHROME_V = 220;
@@ -43,6 +43,8 @@ type Props = {
 const clampJS = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
 
 export const ImageAdjuster: React.FC<Props> = ({ uri, aspect, onCancel, onDone }) => {
+  // Design width: the phone column on desktop, so the crop frame fits inside it.
+  const { width: SCREEN_W, height: SCREEN_H } = useDesignWindow();
   const [size, setSize] = useState<{ w: number; h: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -75,7 +77,7 @@ export const ImageAdjuster: React.FC<Props> = ({ uri, aspect, onCancel, onDone }
       fw = fh * aspect;
     }
     return { w: Math.round(fw), h: Math.round(fh) };
-  }, [aspect]);
+  }, [aspect, SCREEN_W, SCREEN_H]);
 
   // Image display size at "cover" (scale 1 fills the frame exactly).
   const display = useMemo(() => {

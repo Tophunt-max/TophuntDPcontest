@@ -10,8 +10,11 @@ import { Avatar } from '@/src/components/ui/Avatar';
 import { CoinIcon } from '@/src/components/ui/CoinIcon';
 import { contestService } from '@/src/services/contests/contestService';
 import { resolveVsFrame, vsImageOf } from '@/src/lib/vsStory';
+import { useDesignWindow } from '@/src/lib/layout';
 
-const { width, height } = Dimensions.get('window');
+// Height only: the frame fills the story viewer, and the viewer is always the
+// full window height (on desktop too, where only its width is capped).
+const { height } = Dimensions.get('window');
 
 /**
  * The head-to-head frame for a `contest_vs` story: both entries side by side with
@@ -160,12 +163,15 @@ export const StoryVsFrame: React.FC<Props> = ({ matchId, fallbackMediaUrl, conte
     },
     [matchId, leftUri, rightUri],
   );
+  const { width: frameWidth, height: frameHeight } = useDesignWindow();
+  const box = { width: frameWidth, height: frameHeight };
+
   const onLeftLoad = useCallback(() => markUriLoaded(leftUri), [markUriLoaded, leftUri]);
   const onRightLoad = useCallback(() => markUriLoaded(rightUri), [markUriLoaded, rightUri]);
 
   if (isLoading) {
     return (
-      <View style={styles.container}>
+      <View style={[styles.container, box]}>
         <ActivityIndicator size="large" color="#FFF" />
       </View>
     );
@@ -173,9 +179,9 @@ export const StoryVsFrame: React.FC<Props> = ({ matchId, fallbackMediaUrl, conte
 
   if (!frame) {
     return (
-      <View style={styles.container}>
+      <View style={[styles.container, box]}>
         {fallbackMediaUrl ? (
-          <Image source={{ uri: fallbackMediaUrl }} style={styles.fallback} contentFit="contain" />
+          <Image source={{ uri: fallbackMediaUrl }} style={box} contentFit="contain" />
         ) : null}
       </View>
     );
@@ -183,7 +189,7 @@ export const StoryVsFrame: React.FC<Props> = ({ matchId, fallbackMediaUrl, conte
 
   if (useComposite) {
     return (
-      <View style={styles.container}>
+      <View style={[styles.container, box]}>
         <Image
           source={{ uri: composite! }}
           style={styles.media}
@@ -196,8 +202,8 @@ export const StoryVsFrame: React.FC<Props> = ({ matchId, fallbackMediaUrl, conte
   }
 
   return (
-    <LinearGradient colors={['#1B1226', '#2A1330', '#40121F']} style={styles.container}>
-      <View style={styles.card}>
+    <LinearGradient colors={['#1B1226', '#2A1330', '#40121F']} style={[styles.container, box]}>
+      <View style={[styles.card, { width: box.width - 32 }]}>
         <View style={styles.livePill}>
           <View style={styles.liveDot} />
           <Text style={styles.livePillText}>BATTLE LIVE</Text>
@@ -270,13 +276,13 @@ export const StoryVsFrame: React.FC<Props> = ({ matchId, fallbackMediaUrl, conte
   );
 };
 
-const CARD_W = width - 32;
 const SIDE_H = Math.min(height * 0.34, 320);
 
 const styles = StyleSheet.create({
-  container: { width, height, justifyContent: 'center', alignItems: 'center' },
-  fallback: { width, height },
-  card: { width: CARD_W, alignItems: 'center' },
+  // width / height come from useDesignWindow() inline, so they track the window
+  // and stay inside the desktop phone column.
+  container: { justifyContent: 'center', alignItems: 'center' },
+  card: { alignItems: 'center' },
 
   livePill: {
     flexDirection: 'row', alignItems: 'center', gap: 6,

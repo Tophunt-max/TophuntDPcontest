@@ -59,11 +59,14 @@ import Animated, { useSharedValue, useAnimatedStyle, withSpring, runOnJS } from 
 import { useReadjustablePhoto } from '@/src/components/media/useImageAdjuster';
 import { validateVideo, STORY_MAX_VIDEO_SEC } from '@/src/lib/videoValidation';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
+import { useDesignWindow, webPhoneColumn } from '@/src/lib/layout';
 
 /** Story frame aspect (width / height) — matches the 9:16 story viewer. */
 const STORY_ASPECT = 9 / 16;
 
-const { width, height } = Dimensions.get('window');
+// Height only: the editor is always the full window height, on desktop too.
+// Width comes from useDesignWindow() in the component (the phone column on web).
+const { height } = Dimensions.get('window');
 const STICKERS = ['🔥', '❤️', '😂', '😍', '✨', '💯', '📍', '🎂', '🎉', '🍕', '🌈', '👑'];
 /** One size for every toolbar icon, so the row reads as a single set. */
 const ICON_SIZE = 26;
@@ -145,6 +148,9 @@ export default function AddStoryScreen() {
   const [mentionResults, setMentionResults] = useState<any[]>([]);
   const [mentions, setMentions] = useState<string[]>([]);
 
+  // The story canvas is the design width: the phone column on desktop. Text
+  // positions are saved as a fraction of it, so the viewer places them the same.
+  const { width } = useDesignWindow();
   const textX = useSharedValue(width / 2 - 50);
   const textY = useSharedValue(height / 2);
   const stickerX = useSharedValue(width / 2 - 40);
@@ -738,7 +744,7 @@ export default function AddStoryScreen() {
             )
         ) : (
           <View style={styles.previewContainer}>
-            {media.type === 'image' ? <Image source={{ uri: media.uri }} style={styles.previewMedia} contentFit="cover" /> : <VideoView player={player} style={styles.previewMedia} contentFit="cover" />}
+            {media.type === 'image' ? <Image source={{ uri: media.uri }} style={[styles.previewMedia, { width }]} contentFit="cover" /> : <VideoView player={player} style={[styles.previewMedia, { width }]} contentFit="cover" />}
             
 
             {/* Text Overlay */}
@@ -771,7 +777,7 @@ export default function AddStoryScreen() {
             {selectedMusic && !isUploading && (
                 <PanGestureHandler onGestureEvent={(e) => { musicX.value = e.nativeEvent.absoluteX - 100; musicY.value = e.nativeEvent.absoluteY - 30; }}>
                     <Animated.View style={animatedMusicStyle}>
-                        <View style={styles.musicSticker}>
+                        <View style={[styles.musicSticker, { maxWidth: width * 0.75 }]}>
                             {/*
                               Registry icons rather than the music_play/music_pause
                               SVGs, which baked in `#FF3B30` — a different red from
@@ -1190,7 +1196,7 @@ const styles = StyleSheet.create({
   captureButtonInner: { width: 54, height: 54, borderRadius: 27, backgroundColor: 'white' },
   iconCircle: { width: 50, height: 50, borderRadius: 25, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   previewContainer: { flex: 1 },
-  previewMedia: { width: width, height: '100%' },
+  previewMedia: { height: '100%' }, // width is inline (design width)
   uploadOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'center', alignItems: 'center', zIndex: 300 },
   loadingText: { color: 'white', marginTop: 20, fontSize: 18, fontFamily: 'Urbanist-Bold' },
   visibilityContainer: { position: 'absolute', bottom: 50, left: 0, right: 0, alignItems: 'center' },
@@ -1216,7 +1222,7 @@ const styles = StyleSheet.create({
   progressTextContainer: { position: 'absolute' },
   progressText: { color: 'white', fontSize: 20, fontFamily: 'Urbanist-Bold' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  sheet: { backgroundColor: 'white', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, height: height * 0.7, position: 'absolute', bottom: 0, width: '100%' },
+  sheet: { backgroundColor: 'white', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, height: height * 0.7, position: 'absolute', bottom: 0, width: '100%', ...webPhoneColumn },
   sheetHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: '#DDD', alignSelf: 'center', marginBottom: 10 },
   sheetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
   sheetTitle: { fontSize: 18, fontFamily: 'Urbanist-Bold' },
@@ -1268,7 +1274,7 @@ const styles = StyleSheet.create({
   musicThumb: { width: 50, height: 50, borderRadius: 8, marginRight: 15 },
   musicItemTitle: { fontSize: 16, fontFamily: 'Urbanist-Bold', color: '#000' },
   musicItemArtist: { fontSize: 14, color: '#666', fontFamily: 'Urbanist-Medium' },
-  musicSticker: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'white', padding: 10, borderRadius: 12, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 5, elevation: 5, position: 'relative', maxWidth: width * 0.75 },
+  musicSticker: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'white', padding: 10, borderRadius: 12, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 5, elevation: 5, position: 'relative' }, // maxWidth is inline
   musicCover: { width: 40, height: 40, borderRadius: 6, marginRight: 10 },
   musicTitle: { fontSize: 14, fontFamily: 'Urbanist-Bold', color: '#000' },
   musicArtist: { fontSize: 12, color: '#666', fontFamily: 'Urbanist-Medium' },

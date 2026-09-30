@@ -8,7 +8,6 @@ import {
   Image,
   TouchableOpacity,
   ActivityIndicator,
-  Dimensions,
   TextInput,
 } from 'react-native';
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -26,7 +25,6 @@ import { ThemedView } from '@/components/themed-view';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
 import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
 
-const { width } = Dimensions.get('window');
 const CARD_MARGIN = 16;
 
 type User = {

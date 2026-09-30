@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, ReactNode, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Animated, Platform, Dimensions, Image, ImageSourcePropType } from 'react-native';
+import { View, Text, StyleSheet, Animated, Platform, Image, ImageSourcePropType } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { setToastHandler } from '@/src/lib/toastBridge';
 import {
@@ -7,8 +7,7 @@ import {
   Toast_NetworkOn, Toast_NetworkOff, Toast_Coins, Toast_Reward,
   Toast_Follow, Toast_Upload, Toast_Delete, Toast_Warning,
 } from '@/assets/svgs';
-
-const { width } = Dimensions.get('window');
+import { useDesignWindow } from '@/src/lib/layout';
 
 /** Named custom icon a toast can show, independent of its color type. */
 export type ToastIcon =
@@ -126,6 +125,8 @@ const TYPE_META: Record<ToastMessage['type'], { colors: [string, string]; Icon: 
 const ToastItem: React.FC<{ toast: ToastMessage; onHide: () => void }> = ({ toast, onHide }) => {
     const scaleAnim = useRef(new Animated.Value(0.8)).current;
     const fadeAnim = useRef(new Animated.Value(0)).current;
+    // Design width so the card stays phone-sized in a desktop browser.
+    const { width } = useDesignWindow();
 
     useEffect(() => {
         // Pop in — scale up + fade.
@@ -159,7 +160,7 @@ const ToastItem: React.FC<{ toast: ToastMessage; onHide: () => void }> = ({ toas
                 colors={meta.colors}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
-                style={styles.card}
+                style={[styles.card, { minWidth: width * 0.6, maxWidth: width * 0.82 }]}
             >
                 {/* Per-toast image override (e.g. an avatar), else the custom
                     type icon we ship in assets/svgs. */}
@@ -190,8 +191,6 @@ const styles = StyleSheet.create({
     marginVertical: 8,
   },
   card: {
-    minWidth: width * 0.6,
-    maxWidth: width * 0.82,
     paddingVertical: 24,
     paddingHorizontal: 26,
     borderRadius: 26,

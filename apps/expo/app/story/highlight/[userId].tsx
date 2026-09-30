@@ -22,8 +22,12 @@ import { videoSourceFor } from '@/src/lib/videoSource';
 import type { StoryViewer } from '@/src/types/stories';
 import { auth } from '@/src/services/firebase/initFirebase';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
+import { useDesignWindow } from '@/src/lib/layout';
 
-const { width, height } = Dimensions.get('window');
+// Height only: the viewer is always the full window height, on desktop too.
+// Width comes from useDesignWindow() in the component (the phone column on web);
+// the tap zones are fractions of it.
+const { height } = Dimensions.get('window');
 const DEFAULT_STORY_DURATION = 5000;
 
 export default function HighlightView() {
@@ -40,6 +44,7 @@ export default function HighlightView() {
   const [showViewers, setShowViewers] = useState(false);
   const [viewers, setViewers] = useState<StoryViewer[]>([]);
   const [loadingViewers, setLoadingViewers] = useState(false);
+  const { width } = useDesignWindow();
   const viewersTranslateY = useRef(new Animated.Value(height)).current;
 
   const animationRef = useRef<Animated.CompositeAnimation | null>(null);
@@ -211,9 +216,9 @@ export default function HighlightView() {
       <StatusBar hidden />
       <View style={styles.mediaContainer} {...mainPanResponder.panHandlers}>
         {currentStory.mediaType === 'image' ? (
-            <Image source={{ uri: currentStory.mediaUrl }} style={styles.media} contentFit="contain" />
+            <Image source={{ uri: currentStory.mediaUrl }} style={[styles.media, { width }]} contentFit="contain" />
         ) : (
-            <VideoView player={player} style={styles.media} contentFit="contain" />
+            <VideoView player={player} style={[styles.media, { width }]} contentFit="contain" />
         )}
         {isLoading && <View style={styles.loader}><ActivityIndicator size="large" color="white" /></View>}
       </View>
@@ -282,7 +287,7 @@ export default function HighlightView() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
   mediaContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  media: { width: width, height: height },
+  media: { height: height }, // width is inline (design width)
   loader: { position: 'absolute' },
   overlay: { ...StyleSheet.absoluteFillObject },
   header: { paddingHorizontal: 10, paddingTop: 10 },

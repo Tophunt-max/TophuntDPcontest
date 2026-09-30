@@ -7,7 +7,6 @@ import {
   Image,
   TouchableOpacity,
   Modal,
-  Dimensions,
   ActivityIndicator,
 } from "react-native";
 import { Alert } from '@/src/lib/appAlert';
@@ -26,9 +25,9 @@ import { UserActionsSheet } from '@/src/components/profile/UserActionsSheet';
 import { useUnblockUser } from '@/src/hooks/useProfileData';
 import { emitToast } from '@/src/lib/toastBridge';
 import { reportError } from '@/src/lib/reportError';
+import { useDesignWindow } from '@/src/lib/layout';
 import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
 
-const { width } = Dimensions.get('window');
 
 type ProfileHeaderProps = {
   user: UserProfile;
@@ -91,6 +90,7 @@ const calculateLevelInfo = (xp: number) => {
 };
 
 const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onToggleFollow, isFollowing, onRefresh }) => {
+  const { width: designW } = useDesignWindow();
   const router = useRouter();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
@@ -374,7 +374,7 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
       {/* Badges Reveal Modal */}
       <Modal visible={claimModalVisible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
-            <Animated.View style={[styles.badgeRevealCard, { backgroundColor }, animatedBadgeStyle]}>
+            <Animated.View style={[styles.badgeRevealCard, { width: designW * 0.8, backgroundColor }, animatedBadgeStyle]}>
                 <Text style={styles.congratsText}>CONGRATULATIONS!</Text>
                 <Text style={[styles.reachText, { color: textColor }]}>You reached Level {levelInfo.level}</Text>
                 
@@ -450,7 +450,8 @@ const styles = StyleSheet.create({
   
   // Reveal Modal
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', alignItems: 'center' },
-  badgeRevealCard: { width: width * 0.8, borderRadius: 30, padding: 30, alignItems: 'center' },
+  // Width is inline (80% of the design width), so it fits the desktop column.
+  badgeRevealCard: { borderRadius: 30, padding: 30, alignItems: 'center' },
   congratsText: { fontSize: 14, fontFamily: 'Urbanist-Bold', color: '#FFA500', letterSpacing: 2 },
   reachText: { fontSize: 24, fontFamily: 'Urbanist-Bold', marginVertical: 10 },
   badgeCircle: { width: 120, height: 120, borderRadius: 60, justifyContent: 'center', alignItems: 'center', marginVertical: 20, borderWidth: 5, borderColor: '#FFD700' },

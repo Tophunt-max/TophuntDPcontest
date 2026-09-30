@@ -74,8 +74,12 @@ import { CloseIcon } from '@/src/components/ui/CloseIcon';
 import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useDesignWindow, webPhoneColumn } from '@/src/lib/layout';
 
-const { width, height } = Dimensions.get('window');
+// Height only: the viewer is always the full window height, on desktop too.
+// Width comes from useDesignWindow() in the component (the phone column on web);
+// the tap zones and the saved text position are fractions of it.
+const { height } = Dimensions.get('window');
 // Shared with the editor's music trimmer: the window it cuts has to be the window
 // this screen plays, or a trimmed soundtrack ends early or runs past what the
 // author auditioned.
@@ -131,6 +135,7 @@ export default function StoryView() {
 
   const animationRef = useRef<Animated.CompositeAnimation | null>(null);
   const progressValue = useRef(0);
+  const { width } = useDesignWindow();
   const viewersTranslateY = useRef(new Animated.Value(height)).current;
   const highlightTranslateY = useRef(new Animated.Value(height)).current;
 
@@ -1092,7 +1097,7 @@ const styles = StyleSheet.create({
   mediaContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   // Kept for any legacy full-bleed use; the photo/video branch now uses the
   // safe-inset styles below so the chrome never hides content.
-  media: { width: width, height: height },
+  media: { width: '100%', height: height },
   mediaSafe: { ...StyleSheet.absoluteFillObject },
   mediaFill: { flex: 1, width: '100%' },
   scrimTop: { position: 'absolute', top: 0, left: 0, right: 0, height: 140 },
@@ -1125,7 +1130,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    maxWidth: width * 0.7,
+    maxWidth: '70%',
     minHeight: 34,
     paddingHorizontal: 14,
     borderRadius: 999,
@@ -1179,7 +1184,7 @@ const styles = StyleSheet.create({
   viewTime: { fontSize: 12 },
   emptyText: { textAlign: 'center', color: '#999', marginTop: 50, fontFamily: 'Urbanist-Medium' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  highlightModal: { borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, minHeight: 300 },
+  highlightModal: { borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, minHeight: 300, ...webPhoneColumn },
   modalHeader: { alignItems: 'center', marginBottom: 20 },
   modalHeaderContent: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%' },
   modalTitle: { fontSize: 18, fontFamily: 'Urbanist-Bold' },

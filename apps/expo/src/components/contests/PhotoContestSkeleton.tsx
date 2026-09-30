@@ -2,15 +2,14 @@ import React from 'react';
 import {
   View,
   StyleSheet,
-  Dimensions,
 } from 'react-native';
+import { useDesignWindow } from '@/src/lib/layout';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Skeleton } from '../ui/Skeleton';
 
-const { width } = Dimensions.get('window');
-
 const Card = () => {
   const isDark = useColorScheme() === 'dark';
+  const { width } = useDesignWindow();
   const cardBg = isDark ? '#16171E' : '#FFFFFF';
   const border = isDark ? '#23262F' : '#EEEEEE';
   return (

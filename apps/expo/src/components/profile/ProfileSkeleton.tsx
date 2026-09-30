@@ -1,5 +1,6 @@
 import React from 'react';
-import { View, StyleSheet, Dimensions } from 'react-native';
+import { View, StyleSheet } from 'react-native';
+import { useDesignWindow } from '@/src/lib/layout';
 import { Skeleton, SkeletonCircle } from '../ui/Skeleton';
 
 export const ProfileHeaderSkeleton = () => (
@@ -44,11 +45,12 @@ export const ProfileHeaderSkeleton = () => (
   </View>
 );
 
-const { width } = Dimensions.get('window');
 const GAP = 2;
-const itemSize = (width - GAP * 2) / 3;
 
-export const PostGridSkeleton = () => (
+export const PostGridSkeleton = () => {
+  const { width } = useDesignWindow();
+  const itemSize = (width - GAP * 2) / 3;
+  return (
   <View style={styles.gridContainer}>
     {Array.from({ length: 9 }).map((_, index) => (
       <Skeleton
@@ -60,7 +62,8 @@ export const PostGridSkeleton = () => (
       />
     ))}
   </View>
-);
+  );
+};
 
 const styles = StyleSheet.create({
   headerContainer: { alignItems: 'center', padding: 16, width: '100%' },

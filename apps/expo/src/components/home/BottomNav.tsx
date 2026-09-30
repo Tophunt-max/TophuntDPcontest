@@ -8,8 +8,10 @@ import { Colors } from '@/constants/theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFeature } from '@/src/services/appSettings';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
+import { webPhoneColumn } from '@/src/lib/layout';
 
-const { width, height } = Dimensions.get('window');
+// Height only: the add-menu sheet slides up from below the window.
+const { height } = Dimensions.get('window');
 
 interface BottomNavProps {
     backgroundColor: string;
@@ -330,6 +332,8 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.5)',
   },
   menuContainer: {
+    // A web Modal spans the whole browser; keep the sheet in the phone column.
+    ...webPhoneColumn,
     padding: 24,
     borderTopLeftRadius: 32,
     borderTopRightRadius: 32,
