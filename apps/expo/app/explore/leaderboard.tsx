@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, Image, TouchableOpacity, ActivityIndicator, SafeAreaView, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, FlatList, Image, TouchableOpacity, ActivityIndicator, SafeAreaView } from 'react-native';
 import { useRouter } from 'expo-router';
 import { MaterialCommunityIcons } from '@/src/lib/icons';
 import { BackButton } from '@/src/components/ui/BackButton';
@@ -10,11 +10,13 @@ import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Avatar } from '@/src/components/ui/Avatar';
-
-const { width } = Dimensions.get('window');
+import { useDesignWindow } from '@/src/lib/layout';
 
 export default function LeaderboardScreen() {
   const router = useRouter();
+  // Podium columns are sized from the design width (the phone column on desktop).
+  const { width } = useDesignWindow();
+  const podiumW = { width: width / 3.5 };
   const [activeTab, setActiveTab] = useState<'wins' | 'votes' | 'xp'>('wins');
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
@@ -61,7 +63,7 @@ export default function LeaderboardScreen() {
     return (
       <View style={styles.podiumContainer}>
         {/* Second Place */}
-        <View style={[styles.podiumItem, { marginTop: 40 }]}>
+        <View style={[styles.podiumItem, podiumW, { marginTop: 40 }]}>
             <Avatar
                 uri={second.profileImageUrlThumb || second.profileImageUrl}
                 name={second.fullName}
@@ -77,7 +79,7 @@ export default function LeaderboardScreen() {
         </View>
 
         {/* First Place */}
-        <View style={styles.podiumItem}>
+        <View style={[styles.podiumItem, podiumW]}>
             <View style={{ position: 'relative' }}>
                 <MaterialCommunityIcons name="crown" size={32} color="#FFD700" style={styles.crown} />
                 <Avatar
@@ -96,7 +98,7 @@ export default function LeaderboardScreen() {
         </View>
 
         {/* Third Place */}
-        <View style={[styles.podiumItem, { marginTop: 60 }]}>
+        <View style={[styles.podiumItem, podiumW, { marginTop: 60 }]}>
             <Avatar
                 uri={third.profileImageUrlThumb || third.profileImageUrl}
                 name={third.fullName}
@@ -204,7 +206,7 @@ const styles = StyleSheet.create({
 
   // Podium
   podiumContainer: { flexDirection: 'row', justifyContent: 'center', alignItems: 'flex-end', marginBottom: 30, marginTop: 10, height: 200 },
-  podiumItem: { alignItems: 'center', width: width / 3.5 },
+  podiumItem: { alignItems: 'center' }, // width is inline (podiumW)
   podiumAvatar: { width: 70, height: 70, borderRadius: 35, marginBottom: 8, borderWidth: 2, borderColor: '#C0C0C0' },
   badgeContainer: { position: 'absolute', bottom: 50, backgroundColor: '#C0C0C0', width: 20, height: 20, borderRadius: 10, justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: '#FFF' },
   badgeText: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },

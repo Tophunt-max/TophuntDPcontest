@@ -1,8 +1,9 @@
 import React from 'react';
-import { View, FlatList, Image, StyleSheet, Dimensions, Text, ActivityIndicator } from 'react-native';
+import { View, FlatList, Image, StyleSheet, Text, ActivityIndicator } from 'react-native';
 import { Post } from '@/src/types/user';
 import { Ionicons } from '@/src/lib/icons';
 import { Colors } from '@/constants/theme';
+import { useDesignWindow } from '@/src/lib/layout';
 
 type PostGridProps = {
   posts: Post[];
@@ -14,8 +15,6 @@ type PostGridProps = {
 };
 
 const numColumns = 3;
-const { width } = Dimensions.get('window');
-const itemSize = width / numColumns;
 
 const PostGrid: React.FC<PostGridProps> = ({
   posts,
@@ -25,8 +24,11 @@ const PostGrid: React.FC<PostGridProps> = ({
   onRefresh,
   ListHeaderComponent,
 }) => {
+  // Column width, not browser width: on desktop the app sits in a phone column.
+  const { width } = useDesignWindow();
+  const itemSize = width / numColumns;
   const renderItem = ({ item }: { item: Post }) => (
-    <View style={styles.itemContainer}>
+    <View style={[styles.itemContainer, { width: itemSize, height: itemSize * 1.5 }]}>
       <Image source={{ uri: item.mediaUrl }} style={styles.itemImage} />
       {item.mediaType === 'video' && (
         <Ionicons name="play" size={24} color="white" style={styles.videoIcon} />
@@ -62,8 +64,7 @@ const PostGrid: React.FC<PostGridProps> = ({
 
 const styles = StyleSheet.create({
   itemContainer: {
-    width: itemSize,
-    height: itemSize * 1.5, // Make items rectangular
+    // width / height (rectangular, 1.5x) are applied inline from the window size.
     padding: 1,
     position: 'relative',
   },

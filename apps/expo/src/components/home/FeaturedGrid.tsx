@@ -4,14 +4,12 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
-  Dimensions,
 } from 'react-native';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useRouter } from 'expo-router';
 import { Colors } from '@/constants/theme';
 import { Ionicons } from '@/src/lib/icons';
 
-const { width } = Dimensions.get('window');
 
 export default function FeaturedGrid() {
   const router = useRouter();

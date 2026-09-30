@@ -58,6 +58,7 @@ import { AnnouncementBanner } from '@/src/components/ui/AnnouncementBanner';
 import { AnnouncementPopup } from '@/src/components/ui/AnnouncementPopup';
 import { ErrorBoundary } from '@/src/components/ErrorBoundary';
 import { OfflineBanner } from '@/src/components/ui/OfflineBanner';
+import { PhoneFrame } from '@/src/components/layout/PhoneFrame';
 import { emitToast } from '@/src/lib/toastBridge';
 import { reportError } from '@/src/lib/reportError';
 import { readApi } from '@/src/services/api';
@@ -279,7 +280,18 @@ function RootLayoutNav() {
   return (
     <MaintenanceGuard>
       <DeletionGuard>
-        <View style={{ flex: 1 }}>
+        {/*
+          Desktop browsers get a centred phone-width column, because every
+          screen is a phone layout. Blog posts opt out (/blog/[slug] and the
+          root /[slug] permalink): BlogDetailScreen has its own 800px reading
+          column. The blog LIST is a phone layout, so it stays framed.
+        */}
+        <PhoneFrame
+          disabled={
+            segments[0] === '[slug]' ||
+            (segments[0] === 'blog' && (segments as string[])[1] === '[slug]')
+          }
+        >
           <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="index" />
             <Stack.Screen name="splash" />
@@ -295,7 +307,7 @@ function RootLayoutNav() {
           <AnnouncementPopup />
           {/* Connectivity banner shown whenever the device goes offline. */}
           <OfflineBanner />
-        </View>
+        </PhoneFrame>
       </DeletionGuard>
     </MaintenanceGuard>
   );

@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, Modal, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, Modal } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import { Ionicons } from '@/src/lib/icons';
-
-const { width } = Dimensions.get('window');
+import { useDesignWindow } from '@/src/lib/layout';
 
 const NoInternetModal = () => {
   const [isConnected, setIsConnected] = useState<boolean | null>(true);
+  // Design width, not window width: a Modal covers the whole browser, but the
+  // card should stay phone-sized on desktop.
+  const { width } = useDesignWindow();
 
   useEffect(() => {
     // Subscribe to network state changes
@@ -29,7 +31,7 @@ const NoInternetModal = () => {
       statusBarTranslucent
     >
       <View style={styles.overlay}>
-        <View style={styles.content}>
+        <View style={[styles.content, { width: width * 0.8 }]}>
           <Ionicons name="cloud-offline-outline" size={60} color="#ff4466" />
           <Text style={styles.title}>No Internet Connection</Text>
           <Text style={styles.message}>
@@ -53,7 +55,6 @@ const styles = StyleSheet.create({
     padding: 30,
     borderRadius: 20,
     alignItems: 'center',
-    width: width * 0.8,
   },
   title: {
     fontSize: 20,

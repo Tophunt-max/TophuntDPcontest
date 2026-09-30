@@ -61,6 +61,8 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 5,
     width: '90%',
+    // Stay phone-sized in a desktop browser (a web Modal spans the window).
+    maxWidth: 420,
     maxHeight: '70%',
   },
   modalHeader: {

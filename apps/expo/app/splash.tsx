@@ -3,7 +3,6 @@ import {
   View,
   StyleSheet,
   Image,
-  Dimensions,
   Text,
 } from 'react-native';
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -25,7 +24,6 @@ import { Colors } from '@/constants/theme';
 import { getAppConfig } from '../src/services/appSettings';
 import { readApi } from '../src/services/api';
 
-const { width } = Dimensions.get('window');
 
 // Loading Spinner Component
 const LoadingSpinner = () => {

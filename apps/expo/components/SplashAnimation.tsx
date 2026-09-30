@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { View, StyleSheet, Dimensions } from 'react-native';
+import { View, StyleSheet } from 'react-native';
 import Animated, { 
   useSharedValue, 
   useAnimatedStyle, 
@@ -10,8 +10,8 @@ import Animated, {
 } from 'react-native-reanimated';
 import Svg, { Circle, Defs, RadialGradient, Stop } from 'react-native-svg';
 import AppLogo from '@/assets/svgs/appLogo.svg';
+import { useDesignWindow } from '@/src/lib/layout';
 
-const { width, height } = Dimensions.get('window');
 
 // Blob component for the floating pink blobs
 const Blob = ({ x, y, size, delay, duration }: { x: number, y: number, size: number, delay: number, duration: number }) => {
@@ -76,6 +76,7 @@ const LoadingSpinner = () => {
 };
 
 export const SplashAnimation = () => {
+  const { width, height } = useDesignWindow();
   const logoScale = useSharedValue(0.8);
 
   useEffect(() => {

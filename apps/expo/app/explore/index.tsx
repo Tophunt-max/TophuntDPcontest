@@ -7,7 +7,6 @@ import {
   Image,
   TouchableOpacity,
   ScrollView,
-  Dimensions,
   ImageBackground,
   TextInput,
   Animated as RNAnimated,
@@ -39,12 +38,18 @@ import { ContestCountdownBadge, ContestEntryBadge } from '@/src/components/conte
 import { useCountdown } from '@/src/hooks/useCountdown';
 import { entryFeePerPlayer, isFreeContest } from '@/src/lib/contestPricing';
 import { contestPrize, describePrize, matchPrize } from '@/src/lib/contestPrize';
+import { useDesignWindow } from '@/src/lib/layout';
 
-const { width } = Dimensions.get('window');
 const PAD = 20;
-const CONTENT_W = width - PAD * 2;
 const GRID_GAP = 14;
-const PEOPLE_CARD_W = (CONTENT_W - GRID_GAP) / 2;
+/**
+ * Two people cards per row, from the design width (the phone column on desktop,
+ * so the grid can't outgrow it) and reactive to window resizes.
+ */
+function usePeopleCardWidth(): number {
+  const { width } = useDesignWindow();
+  return (width - PAD * 2 - GRID_GAP) / 2;
+}
 const TEMPLATE_W = 176;
 /**
  * Kept next to the width, and shared with the loading skeleton, because the card
@@ -98,6 +103,7 @@ const gradForType = (t?: string): [string, string] =>
 const colorForType = (t?: string): string => (t === 'video' ? '#6A5AE0' : '#FF4D67');
 
 export default function DiscoverScreen() {
+  const PEOPLE_CARD_W = usePeopleCardWidth();
   const router = useRouter();
   const { user, loading: authLoading } = useAuth();
   const { data: currentUserProfile } = useProfile(user?.uid || '');
@@ -938,6 +944,7 @@ function EmptyState({ icon, iconLib, mci, text, border, sub, actionText, actionC
 
 /** Pulsing skeleton placeholders shown while data loads. */
 function SkeletonBody({ activeTab, cardBg, borderColor }: any) {
+  const PEOPLE_CARD_W = usePeopleCardWidth();
   if (activeTab === 'users') {
     return (
       <View style={{ paddingHorizontal: PAD, marginTop: 18 }}>

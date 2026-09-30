@@ -8,7 +8,6 @@ import {
   Share,
   Modal,
   ActivityIndicator,
-  Dimensions,
 } from "react-native";
 import { Alert } from '@/src/lib/appAlert';
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -31,8 +30,8 @@ import { walletService } from '@/src/services/wallet/walletService';
 import { useFeature } from '@/src/services/appSettings';
 import { readApi } from '@/src/services/api';
 import { useQuery } from '@tanstack/react-query';
+import { useDesignWindow } from '@/src/lib/layout';
 
-const { width, height } = Dimensions.get('window');
 
 const DAILY_REWARDS = [10, 15, 20, 25, 30, 50, 100];
 const FILTERS = ['All', 'Income', 'Expense'];
@@ -40,6 +39,9 @@ const FILTERS = ['All', 'Income', 'Expense'];
 const taskIcon = (type: string) => (type === 'vote' ? 'stats-chart' : type === 'share' ? 'share-social' : 'videocam');
 
 export default function WalletScreen() {
+  // Seven day slots across the design width (the phone column on desktop).
+  const { width: designW } = useDesignWindow();
+  const daySlot = (designW - 40) / 7;
   const router = useRouter();
   const { user } = useAuth();
   const { data: profile, refetch: refetchProfile, isLoading: profileLoading } = useProfile(user?.uid || '');
@@ -263,11 +265,12 @@ export default function WalletScreen() {
     const isClaimed = status === 'claimed';
     
     return (
-        <View key={index} style={styles.dayWrapper}>
+        <View key={index} style={[styles.dayWrapper, { width: daySlot }]}>
             {/* Connecting Line */}
             {index < DAILY_REWARDS.length - 1 && (
                 <View style={[
                     styles.connectorLine, 
+                    { right: -(daySlot / 2), width: daySlot },
                     { backgroundColor: index < currentDay ? '#4CAF50' : (isDark ? '#333' : '#E0E0E0') } 
                 ]} />
             )}
@@ -567,8 +570,9 @@ const styles = StyleSheet.create({
   // Daily Bonus
   dailyScrollWrapper: { paddingHorizontal: 20, marginBottom: 5 },
   dailyContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  dayWrapper: { alignItems: 'center', width: (width - 40) / 7 },
-  connectorLine: { position: 'absolute', top: 25, right: -((width - 40) / 14), width: (width - 40) / 7, height: 3, zIndex: -1 },
+  // width (and the connector's right / width) are inline from the day slot size.
+  dayWrapper: { alignItems: 'center' },
+  connectorLine: { position: 'absolute', top: 25, height: 3, zIndex: -1 },
   dayCard: { width: 44, height: 60, borderRadius: 22, alignItems: 'center', justifyContent: 'center', elevation: 2, paddingVertical: 5, marginBottom: 5, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 3, shadowOffset: {width: 0, height: 2} },
   dayText: { fontSize: 9, fontFamily: 'Urbanist-Bold', marginBottom: 4 },
   dayAmount: { fontSize: 11, fontFamily: 'Urbanist-Bold' },
@@ -613,7 +617,7 @@ const styles = StyleSheet.create({
 
   // Ad Modal
   adModalContainer: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'center', alignItems: 'center' },
-  adModalContent: { width: '80%', padding: 25, borderRadius: 24, alignItems: 'center' },
+  adModalContent: { width: '80%', maxWidth: 360, padding: 25, borderRadius: 24, alignItems: 'center' },
   adTitle: { fontSize: 20, fontFamily: 'Urbanist-Bold', marginBottom: 8 },
   adSubtitle: { fontSize: 14, fontFamily: 'Urbanist-Medium', textAlign: 'center' },
   adProgressBar: { width: '100%', height: 6, backgroundColor: '#E0E0E0', borderRadius: 3, marginTop: 10, overflow: 'hidden' },

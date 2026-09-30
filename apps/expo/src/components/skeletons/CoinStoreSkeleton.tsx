@@ -2,16 +2,16 @@ import React from 'react';
 import {
   View,
   StyleSheet,
-  Dimensions,
 } from 'react-native';
+import { useDesignWindow } from '@/src/lib/layout';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Skeleton, SkeletonCircle } from '../ui/Skeleton';
-
-const CARD_W = (Dimensions.get('window').width - 20 * 2 - 12) / 2;
 
 /** Shimmer placeholder for the coin store: balance bar + 2-col package grid. */
 export const CoinStoreSkeleton = () => {
   const isDark = useColorScheme() === 'dark';
+  const { width } = useDesignWindow();
+  const CARD_W = (width - 20 * 2 - 12) / 2;
   const cardBg = isDark ? '#16171E' : '#FFFFFF';
   const border = isDark ? '#23262F' : '#EEEEEE';
   return (

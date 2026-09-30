@@ -1,3 +1,5 @@
+import { Platform, useWindowDimensions, type ViewStyle } from 'react-native';
+
 /**
  * Layout width for art that is sized as a fraction of the screen.
  *
@@ -45,3 +47,55 @@ export const PHONE_MAX_WIDTH = 420;
 export function designWidth(windowWidth: number): number {
   return Math.min(windowWidth, PHONE_MAX_WIDTH);
 }
+
+/**
+ * True when the app is drawn inside the centred phone column (see
+ * `src/components/layout/PhoneFrame.tsx`): a web window wider than a phone.
+ */
+export function isPhoneFramed(windowWidth: number): boolean {
+  return Platform.OS === 'web' && windowWidth > PHONE_MAX_WIDTH;
+}
+
+/**
+ * The window size a screen should lay itself out for. Use this instead of
+ * `Dimensions.get('window')`.
+ *
+ * On web the app is drawn inside a column capped at `PHONE_MAX_WIDTH`
+ * (PhoneFrame), so the usable width is the column's, not the browser's. A grid
+ * that computes `width / 3` from a 1920px window builds 640px tiles and
+ * overflows the column. This returns the column width instead.
+ *
+ * Native is not capped, because native has no frame. Tablets are supported
+ * (`supportsTablet`), and capping there would leave a 420pt layout sitting in a
+ * 768pt+ screen.
+ *
+ * Width and height both come from `useWindowDimensions()`, so a resized browser
+ * or a rotated device re-renders with the new size.
+ */
+export function useDesignWindow(): { width: number; height: number } {
+  const { width, height } = useWindowDimensions();
+  return { width: Platform.OS === 'web' ? designWidth(width) : width, height };
+}
+
+/**
+ * Keeps a sheet or card rendered inside a `<Modal>` in the phone column on web.
+ *
+ * A react-native-web Modal is portalled to <body>, outside PhoneFrame, so a
+ * bottom sheet inside one spans the whole desktop window. Add this to the
+ * sheet's style. It caps the width and centres it, for normal flow and for
+ * `position: 'absolute'` sheets (left/right 0 plus auto margins).
+ *
+ * Empty on native, where the sheet must stay full-width on tablets. On a
+ * phone-width browser the cap is wider than the window, so it changes nothing.
+ */
+export const webPhoneColumn: ViewStyle =
+  Platform.OS === 'web'
+    ? {
+        width: '100%',
+        maxWidth: PHONE_MAX_WIDTH,
+        alignSelf: 'center',
+        left: 0,
+        right: 0,
+        marginHorizontal: 'auto',
+      }
+    : {};

@@ -1,11 +1,11 @@
 import React from 'react';
-import { View, StyleSheet, Dimensions, ScrollView } from 'react-native';
+import { View, StyleSheet, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Skeleton } from '../ui/Skeleton';
-
-const { width } = Dimensions.get('window');
+import { useDesignWindow } from '@/src/lib/layout';
 
 export const BattleSetupSkeleton = () => {
+  const { width } = useDesignWindow();
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>

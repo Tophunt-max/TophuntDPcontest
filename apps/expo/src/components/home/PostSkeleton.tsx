@@ -1,11 +1,12 @@
 import React from 'react';
-import { View, StyleSheet, Dimensions } from 'react-native';
+import { View, StyleSheet } from 'react-native';
+import { useDesignWindow } from '@/src/lib/layout';
 import { Skeleton, SkeletonCircle } from '../ui/Skeleton';
 
-const { width } = Dimensions.get('window');
-const MEDIA = (width - 42) / 2;
-
-export const PostSkeleton = (_props: { isDark?: boolean }) => (
+export const PostSkeleton = (_props: { isDark?: boolean }) => {
+  const { width } = useDesignWindow();
+  const MEDIA = (width - 42) / 2;
+  return (
   <View style={styles.container}>
     {/* Header */}
     <View style={styles.header}>
@@ -34,7 +35,8 @@ export const PostSkeleton = (_props: { isDark?: boolean }) => (
       <Skeleton width="100%" height={6} borderRadius={3} />
     </View>
   </View>
-);
+  );
+};
 
 const styles = StyleSheet.create({
   container: { paddingBottom: 20, marginBottom: 10 },
