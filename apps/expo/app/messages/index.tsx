@@ -45,6 +45,7 @@ import {
 } from '@/assets/svgs';
 import { BackButton } from '@/src/components/ui/BackButton';
 import { Ionicons } from '@/src/lib/icons';
+import { CloseIcon } from '@/src/components/ui/CloseIcon';
 
 // --- TYPES ---
 interface UserData {
@@ -486,8 +487,12 @@ export default function MessagesScreen() {
             onSubmitEditing={() => Keyboard.dismiss()}
           />
           {searchText ? (
-            <TouchableOpacity onPress={() => setSearchText('')}>
-              <Ionicons name="close-circle" size={19} color="rgba(255,255,255,0.9)" />
+            <TouchableOpacity
+              onPress={() => setSearchText('')}
+              accessibilityRole="button"
+              accessibilityLabel="Clear search"
+            >
+              <CloseIcon variant="circle" size={19} color="rgba(255,255,255,0.9)" />
             </TouchableOpacity>
           ) : null}
         </Animated.View>

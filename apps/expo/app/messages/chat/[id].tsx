@@ -376,8 +376,6 @@ export default function ChatScreen() {
             </TouchableOpacity>
           );
         }}
-        textInputStyle={styles.textInput}
-        placeholder="Type a message…"
       />
     </View>
   );
@@ -439,7 +437,16 @@ export default function ChatScreen() {
         // Hook keystrokes via textInputProps.onChangeText (this GiftedChat version
         // has no onInputTextChanged prop). It rides alongside the Composer's own
         // onChange, so it never clobbers the input's text handling.
-        textInputProps={{ onChangeText: onInputTextChanged }}
+        //
+        // The composer's style and placeholder go here too. v3 dropped the
+        // `textInputStyle` / `placeholder` props on InputToolbar: passed there they
+        // failed the typecheck and were ignored at runtime, so the input showed the
+        // library's default style and "Type a message...".
+        textInputProps={{
+          onChangeText: onInputTextChanged,
+          style: styles.textInput,
+          placeholder: 'Type a message…',
+        }}
         renderFooter={() =>
           otherTyping ? (
             <View style={styles.typingRow}>
