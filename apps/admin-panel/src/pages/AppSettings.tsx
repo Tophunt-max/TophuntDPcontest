@@ -369,7 +369,7 @@ export default function AppSettings() {
                 checked={cfg.ads.trustClient}
                 onChange={(v) => setCfg({ ...cfg, ads: { ...cfg.ads, trustClient: v } })}
                 title="Credit without server-side verification"
-                description="Required for providers with no SSV. Keep the daily cap low if you enable this."
+                description="Required for providers with no SSV. Has NO effect unless the Worker is also deployed with ALLOW_UNVERIFIED_AD_REWARDS=true. Keep the daily cap low if you enable this."
               />
               <div className="grid grid-cols-3 gap-3 mt-3">
                 <div>

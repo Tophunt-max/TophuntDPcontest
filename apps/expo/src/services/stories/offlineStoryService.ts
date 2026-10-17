@@ -413,7 +413,16 @@ export const syncPendingActions = async (): Promise<void> => {
     // Imported lazily to break the storyService <-> offlineStoryService cycle.
     const { markStoryAsSeen, reactToStory } = await import('./storyService');
 
+    // Only replay actions the CURRENT account queued. Each action records the
+    // user who made it, but the replay used to ignore that and send them from
+    // whoever was signed in — after an account switch on the same device, user
+    // A's queued story views and reactions were attributed to user B. Another
+    // account's actions are left in place for when that account signs back in.
+    const currentUid = auth.currentUser?.uid;
+    if (!currentUid) return;
+
     for (const action of actions) {
+      if (action.userId && action.userId !== currentUid) continue;
       try {
         switch (action.type) {
           case 'view':

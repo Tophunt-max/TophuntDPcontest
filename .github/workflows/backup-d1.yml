@@ -41,6 +41,39 @@ jobs:
           cache-dependency-path: apps/worker/package-lock.json
       - run: npm ci
 
+      # Every scheduled run from 2026-08-30 to 2026-10-11 failed here with
+      # Cloudflare error 7404 "The database 932ccd0f-… could not be found": the
+      # token/account pair in the repository secrets cannot see the database
+      # wrangler.toml points at. Not one backup was ever produced. This step turns
+      # that into an explicit, actionable failure (never printing secret values)
+      # instead of a bare 7404 from the export.
+      - name: Preflight — can these credentials see tophunt-db?
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN and/or CLOUDFLARE_ACCOUNT_ID repository secrets are not set."
+            exit 1
+          fi
+          expected_account=$(sed -n 's/^CF_ACCOUNT_ID *= *"\(.*\)"/\1/p' wrangler.toml | head -1)
+          expected_db=$(sed -n 's/^database_id *= *"\(.*\)"/\1/p' wrangler.toml | head -1)
+          if [ -n "$expected_account" ] && [ "$expected_account" != "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::The CLOUDFLARE_ACCOUNT_ID secret is NOT the account that owns tophunt-db (wrangler.toml [vars] CF_ACCOUNT_ID). Set the secret to that account's ID and use an API token created in that account."
+            exit 1
+          fi
+          if ! npx wrangler d1 list --json > d1-list.json 2> d1-list.err; then
+            echo "::error::The API token cannot list D1 databases in this account. Give it 'Account → D1 → Read' (export also needs 'D1 → Edit' on some plans)."
+            sed -E 's/[0-9a-f]{32}/<redacted>/g' d1-list.err | tail -5
+            exit 1
+          fi
+          if ! grep -q "\"$expected_db\"" d1-list.json; then
+            echo "::error::Token and account are valid but tophunt-db ($expected_db) is not among the databases this token can see. The database lives in a different account, or the token is scoped to other resources."
+            exit 1
+          fi
+          rm -f d1-list.json d1-list.err
+          echo "Preflight OK: credentials can see tophunt-db."
+
       - name: Export database
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -57,7 +90,43 @@ jobs:
             echo "::error::Export is only ${size} bytes — that is not a real backup. Failing rather than storing it."
             exit 1
           fi
-          gzip "tophunt-db-$stamp.sql"
+          # Keep the plain SQL for the restore test below; gzip afterwards.
+
+      # A backup is only proven by a restore. Load the export into a throwaway,
+      # isolated SQLite file on the runner (never into any Cloudflare database)
+      # and check that it is structurally sound and actually holds the data.
+      - name: Restore test (isolated SQLite on the runner)
+        run: |
+          file="tophunt-db-${STAMP}.sql"
+          rm -f restore-test.db
+          sqlite3 restore-test.db < "$file"
+          integrity=$(sqlite3 restore-test.db "PRAGMA integrity_check;")
+          if [ "$integrity" != "ok" ]; then
+            echo "::error::Restored copy failed PRAGMA integrity_check: $integrity"
+            exit 1
+          fi
+          for t in users coin_transactions payment_orders withdrawals contests d1_migrations; do
+            if ! sqlite3 restore-test.db "SELECT 1 FROM sqlite_master WHERE type='table' AND name='$t';" | grep -q 1; then
+              echo "::error::Restored copy is missing table '$t'."
+              exit 1
+            fi
+          done
+          migrations=$(sqlite3 restore-test.db "SELECT COUNT(*) FROM d1_migrations;")
+          shipped=$(ls migrations/*.sql | wc -l)
+          users=$(sqlite3 restore-test.db "SELECT COUNT(*) FROM users;")
+          ledger=$(sqlite3 restore-test.db "SELECT COUNT(*) FROM coin_transactions;")
+          echo "Restored: users=$users ledger_rows=$ledger migrations_recorded=$migrations (repo ships $shipped)"
+          if [ "$migrations" -lt 1 ]; then
+            echo "::error::Restored copy has no recorded migrations — this is not a production export."
+            exit 1
+          fi
+          {
+            echo "RESTORE_USERS=$users"
+            echo "RESTORE_LEDGER=$ledger"
+            echo "RESTORE_MIGRATIONS=$migrations"
+          } >> "$GITHUB_ENV"
+          rm -f restore-test.db
+          gzip "$file"
 
       # The bucket name is read into an env var rather than tested in an `if:`
       # expression, because the `secrets` context is not reliably available there.
@@ -86,12 +155,16 @@ jobs:
           retention-days: 90
 
       - name: Summarise
+        env:
+          BACKUP_R2_BUCKET: ${{ secrets.BACKUP_R2_BUCKET }}
         run: |
           {
             echo "### D1 backup"
             echo ""
             echo "- Snapshot: \`tophunt-db-${{ env.STAMP }}.sql.gz\`"
             echo "- Size: $(stat -c%s tophunt-db-${{ env.STAMP }}.sql.gz) bytes (gzipped)"
+            echo "- Restore test: PASSED (integrity_check ok; users=${RESTORE_USERS}, ledger rows=${RESTORE_LEDGER}, migrations recorded=${RESTORE_MIGRATIONS})"
+            echo "- Off-site R2 copy: $([ -n "$BACKUP_R2_BUCKET" ] && echo uploaded || echo 'NOT configured — artifact only (90-day retention)')"
             echo ""
             echo "Restore: \`gunzip\` then \`npx wrangler d1 execute tophunt-db --remote --file=<file>.sql\`"
             echo "against a NEW database first — see docs/RUNBOOK.md."

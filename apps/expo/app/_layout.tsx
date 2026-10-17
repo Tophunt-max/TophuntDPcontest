@@ -187,6 +187,21 @@ function DeletionGuard({ children }: { children: React.ReactNode }) {
 // Main Root Layout Component
 function RootLayoutNav() {
   const { user, loading } = useAuth(); // Get user auth state
+
+  // Drop every cached query when the signed-in account changes (sign-out, or a
+  // different account signing in). The client is module-scoped and lives for the
+  // whole JS session, and several keys are not uid-scoped (e.g. ['stories'],
+  // ['match', id]) — so the next account on the device was served the previous
+  // account's viewer-specific data until each query happened to refetch.
+  const lastUidRef = React.useRef<string | null | undefined>(undefined);
+  React.useEffect(() => {
+    if (loading) return;
+    const uid = user?.uid ?? null;
+    if (lastUidRef.current !== undefined && lastUidRef.current !== uid) {
+      queryClient.clear();
+    }
+    lastUidRef.current = uid;
+  }, [user?.uid, loading]);
   const segments = useSegments();
   const router = useRouter();
 

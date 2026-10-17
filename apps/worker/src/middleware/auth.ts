@@ -242,14 +242,16 @@ export const optionalAuth = createMiddleware<MW>(async (c, next) => {
 export async function isAdmin(c: { env: Env; get: (k: "user") => any }): Promise<boolean> {
   const user = c.get("user");
   if (!user?.uid) return false;
-  if (user.role === "admin") return true;
+  // superadmin outranks admin; it used to be refused by every /api admin action.
+  const privileged = (role: unknown) => role === "admin" || role === "superadmin";
+  if (privileged(user.role)) return true;
   const db = getDb(c.env);
   const row = await db
     .select({ role: schema.users.role })
     .from(schema.users)
     .where(eq(schema.users.uid, user.uid))
     .get();
-  return row?.role === "admin";
+  return privileged(row?.role);
 }
 
 // NOTE: there is deliberately no `requireAdmin` middleware here.

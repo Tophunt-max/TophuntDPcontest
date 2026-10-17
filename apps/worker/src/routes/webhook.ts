@@ -138,7 +138,12 @@ webhookRoute.post("/razorpay", async (c) => {
           console.warn(`[webhook/razorpay] refund not applied for ${paymentId}: ${res.reason}`);
         }
       } catch (e) {
+        // Must NOT be acknowledged: nothing else sweeps refunds, so a 200 here
+        // after a transient D1 error left refunded coins spendable forever.
+        // A non-2xx makes Razorpay redeliver; the clawback is idempotent per
+        // refund id, so the retry cannot double-debit.
         console.error("[webhook/razorpay] clawback failed", paymentId, e);
+        return c.json({ ok: false, error: "processing_failed" }, 500);
       }
     }
     return c.json({ ok: true });
@@ -166,7 +171,9 @@ webhookRoute.post("/razorpay", async (c) => {
           );
         }
       } catch (e) {
+        // Same as refunds: a non-2xx so Razorpay redelivers (idempotent per dispute id).
         console.error("[webhook/razorpay] dispute clawback failed", paymentId, e);
+        return c.json({ ok: false, error: "processing_failed" }, 500);
       }
     }
     return c.json({ ok: true });
@@ -187,6 +194,7 @@ webhookRoute.post("/razorpay", async (c) => {
           paymentId: String(paymentId),
           source: "webhook",
           capturedAmountPaise: Number.isFinite(amount) ? amount : null,
+          capturedCurrency: typeof payment.currency === "string" ? payment.currency : null,
         });
         if (res.credited && res.uid) {
           // Notify the user their coins landed (best-effort; don't block the ack).
@@ -206,9 +214,11 @@ webhookRoute.post("/razorpay", async (c) => {
           console.warn(`[webhook/razorpay] order ${orderId} not credited: ${res.reason}`);
         }
       } catch (e) {
-        // Log but still ack — Razorpay will retry, and the client callback is a
-        // second chance. Returning 500 here just triggers noisy retries.
+        // Razorpay only redelivers a webhook that did NOT get a 2xx, so the old
+        // "log but ack 200" here meant it never retried. Crediting is idempotent
+        // (status CAS + gated wallet batch), so a retry is always safe.
         console.error("[webhook/razorpay] credit failed", e);
+        return c.json({ ok: false, error: "processing_failed" }, 500);
       }
     }
   }

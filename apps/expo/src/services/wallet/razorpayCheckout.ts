@@ -160,7 +160,7 @@ async function openNativeCheckout(order: CreatedOrder, prefill?: PurchasePrefill
 export async function purchasePackage(
   pkg: { id: string; name?: string },
   prefill?: PurchasePrefill,
-): Promise<{ coins: number }> {
+): Promise<{ coins: number; pending?: boolean }> {
   // 1) Server-priced order.
   const order = await walletService.createOrder(pkg.id);
 
@@ -171,7 +171,18 @@ export async function purchasePackage(
       : await openNativeCheckout(order, prefill);
 
   // 3) Server verification + credit (coins are server-authoritative).
-  await walletService.confirmTopup(proof);
+  try {
+    const res: any = await walletService.confirmTopup(proof);
+    // The gateway has not confirmed the capture yet. Nothing was credited by
+    // this call; the server's webhook / reconcile sweep will credit it.
+    if (res?.pending) return { coins: 0, pending: true };
+  } catch (error: any) {
+    // The payment webhook often reaches the server before this callback and
+    // credits the order first. The server then answers "already processed" —
+    // which is a success for the buyer, not the error toast it used to show.
+    if (String(error?.code || '').includes('already-exists')) return { coins: order.coins };
+    throw error;
+  }
 
   return { coins: order.coins };
 }

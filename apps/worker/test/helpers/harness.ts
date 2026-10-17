@@ -43,11 +43,19 @@ class ShimStatement {
   }
 
   async all() {
+    return this.allSync();
+  }
+
+  allSync() {
     const rows = this.db.prepare(this.sql).all(...this.params).map((r: any) => ({ ...r }));
     return { results: rows, success: true, meta: {} };
   }
 
   async run() {
+    return this.runSync();
+  }
+
+  runSync() {
     const info = this.db.prepare(this.sql).run(...this.params);
     const changes = Number(info.changes);
     return {
@@ -82,9 +90,25 @@ class D1Shim {
   prepare(sql: string) {
     return new ShimStatement(this.db, sql);
   }
+  /**
+   * Like D1, a batch is ONE transaction: if any statement throws, every earlier
+   * statement in the batch is rolled back. (The shim used to commit statement by
+   * statement, so all-or-nothing behaviour could not be tested.)
+   *
+   * Also like D1, a batch is SERIALIZED: it runs start to finish without yielding,
+   * so two concurrent batches can never interleave their statements.
+   */
   async batch(stmts: ShimStatement[]) {
     const out: any[] = [];
-    for (const s of stmts) out.push(isSelectLike(s.sql) ? await s.all() : await s.run());
+    this.db.exec('SAVEPOINT d1_batch');
+    try {
+      for (const s of stmts) out.push(isSelectLike(s.sql) ? s.allSync() : s.runSync());
+      this.db.exec('RELEASE d1_batch');
+    } catch (e) {
+      this.db.exec('ROLLBACK TO d1_batch');
+      this.db.exec('RELEASE d1_batch');
+      throw e;
+    }
     return out;
   }
   async exec(sql: string) {

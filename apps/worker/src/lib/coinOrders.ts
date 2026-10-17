@@ -7,8 +7,10 @@
  *
  * Idempotency is enforced by an atomic status CAS on `payment_orders`
  * (created -> paid): only the first writer flips the row and performs the
- * credit; every later attempt sees status='paid' and no-ops. The `payments`
- * insert (PK = paymentId) is a second, independent guard.
+ * credit; every later attempt sees status='paid' and no-ops. The wallet batch
+ * itself is a second, independent guard: it is gated on the `payments` marker
+ * (PK = paymentId) being absent and the order still being `paid` — see
+ * `applyOrderCredit`.
  */
 import { and, asc, eq, inArray, lt, sql } from "drizzle-orm";
 import type { Env } from "../types";
@@ -38,6 +40,55 @@ export interface CreditOrderInput {
   expectedFromUid?: string;
   /** Captured amount in paise (from the webhook). Verified against the order. */
   capturedAmountPaise?: number | null;
+  /** Captured currency (ISO code) when known. Must match the order's currency. */
+  capturedCurrency?: string | null;
+}
+
+/** The subset of a Razorpay payment entity crediting depends on. */
+export interface GatewayPayment {
+  status: string;
+  amountPaise: number | null;
+  currency: string | null;
+  orderId: string | null;
+}
+
+/**
+ * Ask Razorpay for the authoritative state of one payment.
+ *
+ * The checkout signature (HMAC of order_id|payment_id) proves the pair is
+ * genuine, but it is issued once a payment is AUTHORIZED — not captured. If the
+ * account is on manual capture, or a capture fails, the authorization is later
+ * auto-reversed and the money never arrives. Crediting withdrawable coins on the
+ * signature alone therefore paid out for payments that were never collected.
+ *
+ * Returns null on any transport/credential failure; callers must treat that as
+ * "not confirmed yet" (fail closed) — the webhook and the reconcile sweep both
+ * still credit a captured payment later.
+ */
+export async function fetchGatewayPayment(env: Env, paymentId: string): Promise<GatewayPayment | null> {
+  const rzp = await getRazorpayCredentials(env);
+  if (!rzp.keyId || !rzp.keySecret) return null;
+  try {
+    const res = await fetch(`https://api.razorpay.com/v1/payments/${encodeURIComponent(paymentId)}`, {
+      headers: { Authorization: `Basic ${btoa(`${rzp.keyId}:${rzp.keySecret}`)}` },
+    });
+    if (!res.ok) {
+      console.error(`[coinOrders] gateway payment lookup failed for ${paymentId}: ${res.status}`);
+      return null;
+    }
+    const p = (await res.json()) as any;
+    if (!p || typeof p.status !== "string") return null;
+    const amount = Number(p.amount);
+    return {
+      status: p.status,
+      amountPaise: Number.isFinite(amount) && amount > 0 ? amount : null,
+      currency: typeof p.currency === "string" ? p.currency : null,
+      orderId: typeof p.order_id === "string" ? p.order_id : null,
+    };
+  } catch (e) {
+    console.error(`[coinOrders] gateway payment lookup threw for ${paymentId}`, e);
+    return null;
+  }
 }
 
 export type CreditReason =
@@ -65,7 +116,7 @@ export async function creditPaymentOrder(
   db: Db,
   input: CreditOrderInput,
 ): Promise<CreditOrderResult> {
-  const { orderId, paymentId, source, expectedFromUid, capturedAmountPaise } = input;
+  const { orderId, paymentId, source, expectedFromUid, capturedAmountPaise, capturedCurrency } = input;
 
   const order = await db
     .select()
@@ -84,6 +135,14 @@ export async function creditPaymentOrder(
     capturedAmountPaise != null &&
     Number.isFinite(capturedAmountPaise) &&
     capturedAmountPaise < order.amountPaise
+  )
+    return { credited: false, reason: "amount_mismatch", uid: order.userId };
+
+  // `payment_orders.currency` was stored but never compared. Every order is
+  // created in INR, so a capture in any other currency is not this order's price.
+  if (
+    capturedCurrency &&
+    String(capturedCurrency).toUpperCase() !== String(order.currency || "INR").toUpperCase()
   )
     return { credited: false, reason: "amount_mismatch", uid: order.userId };
 
@@ -114,39 +173,79 @@ export async function creditPaymentOrder(
   if (claim.meta.changes === 0)
     return { credited: false, reason: "already", coins, uid: order.userId };
 
-  // Credit the wallet + write the ledger entry atomically. The payments insert
-  // is keyed on paymentId (onConflictDoNothing) as a second idempotency guard.
-  await db.batch([
-    db
-      .insert(schema.payments)
-      .values({
-        id: paymentId,
-        userId: order.userId,
-        // `amount` is the legacy coin column; `coins` and `amountPaise` split the
-        // two so revenue reporting can stop treating coins as rupees.
-        amount: coins,
-        coins,
-        amountPaise: Number(order.amountPaise) || 0,
-        source: "razorpay",
-        status: "success",
-        createdAt: ts,
-      })
-      .onConflictDoNothing(),
-    db
-      .update(schema.users)
-      .set({ dpcoin: sql`${schema.users.dpcoin} + ${coins}`, updatedAt: ts })
-      .where(eq(schema.users.uid, order.userId)),
-    db.insert(schema.coinTransactions).values({
-      id: newId(),
-      uid: order.userId,
-      amount: coins,
-      type: "purchase",
-      description,
-      createdAt: ts,
-    }),
-  ]);
+  // Credit the wallet + write the ledger entry atomically.
+  const applied = await applyOrderCredit(env, {
+    orderId,
+    paymentId,
+    uid: order.userId,
+    coins,
+    amountPaise: Number(order.amountPaise) || 0,
+    description,
+    ts,
+  });
 
-  return { credited: true, reason: "credited", coins, uid: order.userId };
+  return applied
+    ? { credited: true, reason: "credited", coins, uid: order.userId }
+    : { credited: false, reason: "already", coins, uid: order.userId };
+}
+
+/**
+ * The wallet half of a credit: ledger row, balance, and the `payments` marker,
+ * in one transaction. Shared by the normal credit path and stranded-order
+ * recovery so the two can never disagree on what "credited" means.
+ *
+ * Every statement is gated on
+ *   1. the order STILL being `paid` with this payment id — the claim and this
+ *      batch are separate statements, so a `refund.created` / dispute webhook
+ *      can land in between. `clawbackPaymentOrder` treats a paid order with no
+ *      `payments` row as "never landed", marks it refunded and debits nothing;
+ *      the old ungated batch then credited the coins anyway onto a refunded
+ *      order, with nothing left to reverse them; and
+ *   2. the `payments` marker being absent. The marker is inserted LAST, so the
+ *      ledger and balance gates read the same pre-insert state and either both
+ *      apply or both no-op. Previously the marker was the only idempotent
+ *      statement while the balance UPDATE and a random-id ledger INSERT were
+ *      unconditional, so the "second guard" protected nothing.
+ *
+ * Returns true only when THIS call moved the balance.
+ */
+async function applyOrderCredit(
+  env: Env,
+  p: {
+    orderId: string;
+    paymentId: string;
+    uid: string;
+    coins: number;
+    amountPaise: number;
+    description: string;
+    ts: number;
+  },
+): Promise<boolean> {
+  const stillPaid = `EXISTS (SELECT 1 FROM payment_orders WHERE order_id = ? AND status = 'paid' AND payment_id = ?)`;
+  const notCredited = `NOT EXISTS (SELECT 1 FROM payments WHERE id = ?)`;
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO coin_transactions
+         (id, uid, amount, type, description, created_at)
+       SELECT ?, ?, ?, 'purchase', ?, ?
+        WHERE ${stillPaid} AND ${notCredited}
+          AND EXISTS (SELECT 1 FROM users WHERE uid = ?)`,
+    ).bind(`purchase:${p.paymentId}`, p.uid, p.coins, p.description, p.ts, p.orderId, p.paymentId, p.paymentId, p.uid),
+    env.DB.prepare(
+      `UPDATE users
+          SET dpcoin = dpcoin + ?, updated_at = ?
+        WHERE uid = ? AND ${stillPaid} AND ${notCredited}`,
+    ).bind(p.coins, p.ts, p.uid, p.orderId, p.paymentId, p.paymentId),
+    // `amount` is the legacy coin column; `coins` and `amount_paise` split the
+    // two so revenue reporting can stop treating coins as rupees.
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO payments
+         (id, user_id, amount, coins, amount_paise, source, status, created_at)
+       SELECT ?, ?, ?, ?, ?, 'razorpay', 'success', ?
+        WHERE ${stillPaid}`,
+    ).bind(p.paymentId, p.uid, p.coins, p.coins, p.amountPaise, p.ts, p.orderId, p.paymentId),
+  ]);
+  return Number(results[1]?.meta?.changes || 0) > 0;
 }
 
 
@@ -563,6 +662,7 @@ export async function reconcilePaymentOrders(
           paymentId: String(captured.id),
           source: "reconciliation",
           capturedAmountPaise: Number(captured.amount) || null,
+          capturedCurrency: typeof captured.currency === "string" ? captured.currency : null,
         });
         if (credit.credited) {
           summary.credited++;
@@ -671,34 +771,21 @@ async function recoverStrandedPaidOrders(
       bonus > 0 ? `Purchased ${base} Dpcoins + ${bonus} bonus` : `Purchased ${coins} Dpcoins`;
 
     try {
-      // The ledger row and the balance are gated on the `payments` marker being
-      // absent, and the marker is inserted LAST — D1 batches run sequentially, so
-      // the two gates read the pre-insert state and either both apply or both
-      // no-op. That also makes a concurrent second recovery attempt harmless.
-      //
-      // The ledger id is deterministic here (unlike the random one on the normal
-      // credit path) so a repeated recovery cannot write a second row.
-      const notCredited = `NOT EXISTS (SELECT 1 FROM payments WHERE id = ?)`;
-      const results = await env.DB.batch([
-        env.DB.prepare(
-          `INSERT OR IGNORE INTO coin_transactions
-             (id, uid, amount, type, description, created_at)
-           SELECT ?, ?, ?, 'purchase', ?, ?
-            WHERE ${notCredited}`,
-        ).bind(`purchase:${paymentId}`, order.userId, coins, description, ts, paymentId),
-        env.DB.prepare(
-          `UPDATE users
-              SET dpcoin = dpcoin + ?, updated_at = ?
-            WHERE uid = ? AND ${notCredited}`,
-        ).bind(coins, ts, order.userId, paymentId),
-        env.DB.prepare(
-          `INSERT OR IGNORE INTO payments
-             (id, user_id, amount, coins, amount_paise, source, status, created_at)
-           VALUES (?, ?, ?, ?, ?, 'razorpay', 'success', ?)`,
-        ).bind(paymentId, order.userId, coins, coins, Number(order.amountPaise) || 0, ts),
-      ]);
+      // Same gated batch as the normal credit path: ledger + balance gated on
+      // the `payments` marker being absent AND the order still being `paid` (a
+      // refund that lands between the scan above and this batch must not be
+      // credited onto a refunded order), marker inserted last.
+      const applied = await applyOrderCredit(env, {
+        orderId: order.orderId,
+        paymentId,
+        uid: order.userId,
+        coins,
+        amountPaise: Number(order.amountPaise) || 0,
+        description,
+        ts,
+      });
 
-      if (Number(results[1]?.meta?.changes || 0) > 0) {
+      if (applied) {
         summary.recovered++;
         summary.coins += coins;
         // Loud on purpose: this means a customer paid and the credit was lost

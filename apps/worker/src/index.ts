@@ -137,15 +137,31 @@ app.use("*", async (c, next) => {
   return mw(c, next);
 });
 
-// Auto-apply pending D1 migrations on first request per isolate. Best-effort:
-// a failure is logged but never blocks traffic (it retries on the next request).
+// Auto-apply pending D1 migrations on first request per isolate.
+//
+// A failure used to be logged and IGNORED for every request, so code that
+// depends on the new schema served traffic against the old one. For reads that
+// is at worst an error; for writes it can silently break an invariant the new
+// migration exists to enforce (a UNIQUE index guarding a payout reference or a
+// vote, a column a money batch gates on). So: reads (GET/HEAD/OPTIONS) and the
+// health endpoints keep serving; every WRITE is refused with a retryable 503
+// until the schema is current. Webhook senders retry a 503, so nothing is lost.
 // WebSocket upgrades are skipped — their 101 response can't be delayed here.
 app.use("*", async (c, next) => {
   if (c.req.header("Upgrade") === "websocket") return next();
   try {
     await ensureMigrated(c.env);
   } catch (e) {
-    console.error("[migrate] auto-migration failed (continuing)", e);
+    console.error("[migrate] auto-migration failed", e);
+    const method = c.req.method.toUpperCase();
+    const readOnly = method === "GET" || method === "HEAD" || method === "OPTIONS";
+    if (!readOnly && !c.req.path.startsWith("/health")) {
+      return c.json(
+        { error: { status: "UNAVAILABLE", message: "Service is updating. Please try again in a minute." } },
+        503,
+        { "Retry-After": "30" },
+      );
+    }
   }
   return next();
 });
@@ -499,7 +515,16 @@ export default {
   // whole tick so the runtime keeps the isolate alive until the batch is done
   // and the heartbeats are actually written.
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    await ensureMigrated(env).catch((e) => console.error("[migrate] cron auto-migration failed", e));
+    // Settlement, payment reconciliation and account purges all WRITE money and
+    // user data. Running them against a schema their code does not match is the
+    // same hazard the request middleware refuses writes for, so a failed
+    // migration skips the tick (logged loudly); the next tick retries.
+    try {
+      await ensureMigrated(env);
+    } catch (e) {
+      console.error("[migrate] cron auto-migration failed — skipping this tick", event.cron, e);
+      return;
+    }
     switch (event.cron) {
       // SEO audit — its own invocation, for its own subrequest budget.
       //

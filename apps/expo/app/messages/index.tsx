@@ -98,6 +98,9 @@ function chatRoute(
 export default function MessagesScreen() {
   const [chats, setChats] = useState<ChatItemType[]>([]);
   const [loading, setLoading] = useState(true);
+  // First load failed (offline / 5xx / timeout). Without this the skeleton
+  // spun forever, because `loading` was only cleared on a successful fetch.
+  const [loadFailed, setLoadFailed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [searchText, setSearchText] = useState('');
   const [isFocused, setIsFocused] = useState(false);
@@ -167,10 +170,19 @@ export default function MessagesScreen() {
       () => readApi('/read/chats'),
       (chatsData) => {
         setChats(chatsData || []);
+        setLoadFailed(false);
         setLoading(false);
         setRefreshing(false);
       },
-      { filter: (e) => e.type === 'chat_update' },
+      {
+        filter: (e) => e.type === 'chat_update',
+        onError: (reason) => {
+          if (reason !== 'fetch_failed') return;
+          setLoadFailed(true);
+          setLoading(false);
+          setRefreshing(false);
+        },
+      },
     );
 
     return unsubscribe;
@@ -424,14 +436,16 @@ export default function MessagesScreen() {
             )}
         </View>
         <Text style={[styles.emptyTitle, { color: textColor }]}>
-            {isSearching ? 'No results found' : 'No messages yet'}
+            {isSearching ? 'No results found' : loadFailed ? "Couldn't load messages" : 'No messages yet'}
         </Text>
         <Text style={styles.emptySubtitle}>
             {isSearching 
                 ? `We couldn't find any chats matching "${searchText}"`
-                : "You haven't started any conversations yet. Start chatting with your friends!"}
+                : loadFailed
+                  ? 'Check your connection, then pull down to try again.'
+                  : "You haven't started any conversations yet. Start chatting with your friends!"}
         </Text>
-        {!isSearching && (
+        {!isSearching && !loadFailed && (
             <TouchableOpacity style={styles.startChatButton} onPress={() => router.push('/explore')}>
                 <Text style={styles.startChatButtonText}>Explore Friends</Text>
             </TouchableOpacity>

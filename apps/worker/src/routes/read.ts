@@ -2890,7 +2890,9 @@ readRoute.get("/chats/:id/messages", requireAuth, async (c) => {
   // history stays readable to a member who still has the id: these are the
   // viewer's own past conversations, and `sendMessage` refuses new messages in
   // both directions, so nothing can be added to what is already there.
-  const since = parseInt(c.req.query("since") || "0", 10);
+  // A non-numeric `since` used to reach the ChatArchive DO as NaN.
+  const sinceRaw = parseInt(c.req.query("since") || "0", 10);
+  const since = Number.isFinite(sinceRaw) && sinceRaw > 0 ? sinceRaw : 0;
   // Message bodies are served from the chat's ChatArchive Durable Object, not
   // D1 (see src/chatArchive.ts). The DO seeds itself from any pre-migration D1
   // rows on first touch, so history stays complete across the cutover. Same
