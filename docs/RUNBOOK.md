@@ -116,7 +116,21 @@ npx wrangler d1 time-travel restore tophunt-db --timestamp=2026-08-24T09:00:00Z
 ### Option B — weekly off-site export
 
 Backups are produced by `.github/workflows/backup-d1.yml`, stored as a workflow
-artifact and (when `BACKUP_R2_BUCKET` is set) in R2 under `d1/`.
+artifact (90 days) and (when `BACKUP_R2_BUCKET` is set) in R2 under `d1/`. Each run
+restore-tests its own export into a throwaway SQLite file on the runner
+(`PRAGMA integrity_check`, core tables present, row counts in the job summary).
+Without `BACKUP_R2_BUCKET` the artifact is the ONLY copy, and it lives in GitHub, not
+off-site from GitHub.
+
+> **Status as of 2026-10-17: no backup has ever succeeded.** Every scheduled run
+> (2026-08-30 → 2026-10-11) failed with Cloudflare `7404 The database 932ccd0f-… could
+> not be found`. The `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` secrets point at
+> an account/token that cannot see the database in `wrangler.toml`. Fix: create an API
+> token **in the account that owns `tophunt-db`** (D1 Read/Edit; plus Workers Scripts
+> Edit and User → Memberships Read if the same token is used for deploys), set
+> `CLOUDFLARE_ACCOUNT_ID` to that account, then run the workflow manually. The new
+> preflight step names which of these is wrong. Note `wrangler d1 export` makes the
+> database briefly unavailable while it runs — dispatch it off-peak.
 
 **Always restore into a NEW database first and inspect it:**
 
