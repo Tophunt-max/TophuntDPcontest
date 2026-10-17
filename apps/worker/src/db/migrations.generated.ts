@@ -55,6 +55,7 @@ import m_0050_chat_media_messages_sql from "../../migrations/0050_chat_media_mes
 import m_0051_user_last_seen_sql from "../../migrations/0051_user_last_seen.sql";
 import m_0052_hall_of_fame_awards_sql from "../../migrations/0052_hall_of_fame_awards.sql";
 import m_0053_deposits_credited_at_sql from "../../migrations/0053_deposits_credited_at.sql";
+import m_0054_verification_reward_sql from "../../migrations/0054_verification_reward.sql";
 
 export interface Migration {
   name: string;
@@ -116,4 +117,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0051_user_last_seen.sql", sql: m_0051_user_last_seen_sql },
   { name: "0052_hall_of_fame_awards.sql", sql: m_0052_hall_of_fame_awards_sql },
   { name: "0053_deposits_credited_at.sql", sql: m_0053_deposits_credited_at_sql },
+  { name: "0054_verification_reward.sql", sql: m_0054_verification_reward_sql },
 ];

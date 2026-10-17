@@ -55,6 +55,7 @@ import { useAppConfig, isUpdateRequired } from '@/src/services/appSettings';
 import { useAuth } from '@/src/hooks/useAuth'; // Import useAuth hook
 import { notificationService } from '@/src/services/notifications/notificationService';
 import { AnnouncementBanner } from '@/src/components/ui/AnnouncementBanner';
+import { VerificationRewardPopup } from '@/src/components/verification/VerificationRewardPopup';
 import { AnnouncementPopup } from '@/src/components/ui/AnnouncementPopup';
 import { ErrorBoundary } from '@/src/components/ErrorBoundary';
 import { OfflineBanner } from '@/src/components/ui/OfflineBanner';
@@ -320,6 +321,7 @@ function RootLayoutNav() {
           <AnnouncementBanner />
           {/* Admin-controlled announcement popup (targeted, 24h-snooze modal). */}
           <AnnouncementPopup />
+          <VerificationRewardPopup />
           {/* Connectivity banner shown whenever the device goes offline. */}
           <OfflineBanner />
         </PhoneFrame>

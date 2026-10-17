@@ -1060,6 +1060,8 @@ describe('deletion completeness across the whole schema', () => {
     // Low-sensitivity, and swept by the retention cron.
     daily_task_claims: 'pruned by retention cron',
     ad_reward_claims: 'pruned by retention cron',
+    // Hashes only; retained so delete-and-re-register cannot re-claim the bonus.
+    verification_reward_claims: 'anti-farming identifier hashes (no raw contact data)',
     idempotency_keys: 'pruned by retention cron',
     error_logs: 'pruned by retention cron',
     // The users row itself is anonymised in place, not deleted.

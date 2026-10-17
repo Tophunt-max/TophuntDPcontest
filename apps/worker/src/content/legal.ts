@@ -284,6 +284,7 @@ Erasure deletes your own content: profile, photo, bio, contact details, posts, s
 - **Administrative audit records** — the log of actions our own staff took.
 - **Prize records** — that a prize was awarded, and whether it was delivered, is an accounting record of the same kind as a payment. The record survives; your delivery name, phone number and full address are erased from it.
 - **Monthly Hall of Fame results** — that an account placed in a month's top three, and what it was paid, is an accounting record of the same kind as a payment. It is also what stops that month's prize being paid out twice.
+- **Verification bonus fingerprints** — if your email address and mobile number earned the verification bonus, a one-way fingerprint (hash) of each is kept so the same email or number cannot claim the bonus again on a new account. It cannot be turned back into your email or number.
 
 None of these remain linked to your identity. Retained financial records are kept for the period Indian tax and accounting law requires, and then deleted.
 

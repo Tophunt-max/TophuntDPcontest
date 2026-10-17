@@ -69,6 +69,12 @@ import {
 import { verifyRazorpaySignature } from "../lib/payments";
 import { getRazorpayCredentials } from "../lib/integrations";
 import { creditPaymentOrder, fetchGatewayPayment } from "../lib/coinOrders";
+import {
+  getVerificationStatus,
+  recordPromptShown,
+  refreshVerificationFromFirebase,
+  tryCreditVerificationReward,
+} from "../lib/verificationReward";
 import { assertClean } from "../lib/moderation";
 import { lookupTrack, sanitiseMusicStartMs } from "../lib/music";
 import { assertChatMember } from "../lib/chatAuth";
@@ -1514,6 +1520,31 @@ apiRoute.post("/", async (c) => {
     // real money value it MUST be gated by the ad network's Server-Side
     // Verification (SSV) callback (e.g. AdMob SSV) before crediting. The cap +
     // rate limit bound the abuse until SSV is wired in. See PRODUCTION_TODO.md.
+    // ===== Registration verification reward (lib/verificationReward.ts) =====
+    //
+    // None of these accept a uid, an amount or a verification flag: the uid is
+    // the verified token's, the amount is the server's snapshot, and "verified"
+    // is whatever server-side proof has recorded.
+    case "refreshVerification": {
+      // One outbound Firebase lookup per call; money can follow, so fail closed.
+      await rateLimit(env, `verifyrefresh:${uid}`, 20, 3600, { failClosed: true });
+      await refreshVerificationFromFirebase(env, uid);
+      const reward = await tryCreditVerificationReward(env, uid);
+      const status = await getVerificationStatus(env, uid);
+      return c.json({ success: true, reward: { credited: reward.credited, coins: reward.coins, reason: reward.reason }, status });
+    }
+    case "claimVerificationReward": {
+      await rateLimit(env, `verifyclaim:${uid}`, 30, 3600, { failClosed: true });
+      const reward = await tryCreditVerificationReward(env, uid);
+      const status = await getVerificationStatus(env, uid);
+      return c.json({ success: true, reward: { credited: reward.credited, coins: reward.coins, reason: reward.reason }, status });
+    }
+    case "markVerificationPromptShown": {
+      await rateLimit(env, `verifyprompt:${uid}`, 30, 3600);
+      const recorded = await recordPromptShown(env, uid);
+      return c.json({ success: true, recorded });
+    }
+
     case "claimAdReward": {
       await rateLimit(env, `ad:${uid}`, 20, 60);
       const ads = await getRewardedAdConfig(env);
