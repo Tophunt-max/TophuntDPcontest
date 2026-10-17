@@ -77,7 +77,8 @@ export type RevocationReason =
   | "phone_changed"
   | "user_logout_all"
   | "admin_forced"
-  | "admin_blocked";
+  | "admin_blocked"
+  | "role_changed";
 
 const nowSec = (): number => Math.floor(Date.now() / 1000);
 

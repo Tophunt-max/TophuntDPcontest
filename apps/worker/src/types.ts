@@ -121,6 +121,12 @@ export interface Env {
   // error tracking is a no-op and nothing else changes.
   SENTRY_DSN?: string;
   SENTRY_ENVIRONMENT?: string;
+  /**
+   * Deploy-level opt-in (exactly "true") required, IN ADDITION to the admin
+   * panel's `ads.trustClient`, before rewarded ads credit on the client's word.
+   * Leave unset in production until an ad-network SSV callback exists.
+   */
+  ALLOW_UNVERIFIED_AD_REWARDS?: string;
 
   // Capacity monitoring (admin dashboard "Database Capacity" widget). All
   // OPTIONAL and fail-open: without them the widget still shows table growth +

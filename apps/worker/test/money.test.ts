@@ -68,6 +68,21 @@ function sign(orderId: string, paymentId: string, secret: string) {
   return crypto.createHmac('sha256', secret).update(`${orderId}|${paymentId}`).digest('hex');
 }
 
+/**
+ * Razorpay stand-in: order creation returns `{ id: orderId }`; the payment lookup
+ * the topup callback now performs returns a CAPTURED payment for that order.
+ */
+function fakeRazorpay(orderId: string, amountPaise: number, status = 'captured') {
+  return vi.fn(async (url: any) => {
+    const u = String(url);
+    if (u.includes('/v1/payments/')) {
+      const id = decodeURIComponent(u.split('/v1/payments/')[1]);
+      return new Response(JSON.stringify({ id, status, amount: amountPaise, currency: 'INR', order_id: orderId }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ id: orderId }), { status: 200 });
+  });
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -128,7 +143,7 @@ describe('topup', () => {
   async function primeOrder(env: TestEnv, uid: string, orderId = 'order_abc') {
     await seedUser(env, uid, 0);
     await seedPackage(env, 'pkg1', 100, 20, 199);
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ id: orderId }), { status: 200 })));
+    vi.stubGlobal('fetch', fakeRazorpay(orderId, 19900));
     await call(env, uid, 'createOrder', { packageId: 'pkg1' });
   }
 
@@ -350,7 +365,7 @@ describe('claimAdReward', () => {
   });
 
   it('credits a capped reward and enforces the daily limit', async () => {
-    const { env } = makeEnv();
+    const { env } = makeEnv({ ALLOW_UNVERIFIED_AD_REWARDS: 'true' });
     await seedUser(env, 'alice', 0);
     await seedSettings(env, 'appConfig', adsOn);
 
@@ -371,7 +386,7 @@ describe('claimAdReward', () => {
   });
 
   it('writes exactly one ledger row per credited claim', async () => {
-    const { env } = makeEnv();
+    const { env } = makeEnv({ ALLOW_UNVERIFIED_AD_REWARDS: 'true' });
     await seedUser(env, 'alice', 0);
     await seedSettings(env, 'appConfig', adsOn);
 
@@ -644,7 +659,7 @@ describe('payment records money and coins separately', () => {
     const { env } = makeEnv();
     await seedUser(env, 'alice', 0);
     await seedPackage(env, 'p1', 500, 50, 99);
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ id: 'order_money' }), { status: 200 })));
+    vi.stubGlobal('fetch', fakeRazorpay('order_money', 9900));
 
     const order = await call(env, 'alice', 'createOrder', { packageId: 'p1' });
     expect(order.status).toBe(200);

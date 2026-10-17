@@ -137,13 +137,22 @@ export function readWithdrawalPolicy(cfg: any): WithdrawalPolicy {
     const n = Number(value);
     return Number.isFinite(n) && n >= 0 ? n : fallback;
   };
+  // An unset rate keeps the historical default of 1. An explicitly configured
+  // rate that is zero, negative or non-numeric used to be accepted as-is, so a
+  // typo in App Control produced payouts worth ₹0 (the user's coins escrowed for
+  // nothing) or a NEGATIVE cash amount. There is no safe rate to guess, so such a
+  // config disables new requests instead.
+  const rawRate = w.conversionRate;
+  const rateConfigured = rawRate !== undefined && rawRate !== null && rawRate !== "";
+  const rate = Number(rawRate);
+  const rateValid = !rateConfigured || (Number.isFinite(rate) && rate > 0);
   return {
-    enabled: w.enabled !== false,
+    enabled: w.enabled !== false && rateValid,
     payoutsFrozen: w.payoutsFrozen === true,
     minAmount: num(w.minAmount, 0),
     maxAmount: num(w.maxAmount, 0),
     maxPerDay: num(w.maxPerDay, 0),
-    conversionRate: Number.isFinite(Number(w.conversionRate)) ? Number(w.conversionRate) : 1,
+    conversionRate: rateConfigured && rateValid ? rate : 1,
   };
 }
 

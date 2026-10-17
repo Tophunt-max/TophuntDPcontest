@@ -60,6 +60,7 @@ import { revokeAllSessions, revokeOtherSessions } from "../lib/sessionRevocation
 import {
   adjustUserWallet,
   assertCoinAmount,
+  assertPrizeFundedByPot,
   matchPot,
   perPlayerEntryFee,
   roundFiat,
@@ -67,7 +68,7 @@ import {
 } from "../lib/money";
 import { verifyRazorpaySignature } from "../lib/payments";
 import { getRazorpayCredentials } from "../lib/integrations";
-import { creditPaymentOrder } from "../lib/coinOrders";
+import { creditPaymentOrder, fetchGatewayPayment } from "../lib/coinOrders";
 import { assertClean } from "../lib/moderation";
 import { lookupTrack, sanitiseMusicStartMs } from "../lib/music";
 import { assertChatMember } from "../lib/chatAuth";
@@ -1531,7 +1532,13 @@ apiRoute.post("/", async (c) => {
           "Rewarded ads are not currently available.",
         );
       }
-      if (!ads.trustClient) {
+      // There is no SSV callback endpoint yet, so `trustClient` is the ONLY way
+      // this credits — i.e. any signed-in client calling this with an empty body
+      // mints withdrawable coins up to the daily cap, per account. That was one
+      // admin-panel toggle away (a single compromised or careless admin account).
+      // It now ALSO requires a deploy-level opt-in that only someone with
+      // Cloudflare access can set, so the panel alone can never switch it on.
+      if (!ads.trustClient || (env as any).ALLOW_UNVERIFIED_AD_REWARDS !== "true") {
         throw httpsError(
           "failed-precondition",
           "Rewarded ads must be credited through the ad network's server-side verification callback.",
@@ -1682,6 +1689,10 @@ apiRoute.post("/", async (c) => {
     case "createOrder": {
       const { packageId } = body;
       if (!packageId) throw httpsError("invalid-argument", "packageId is required.");
+      // Every call makes an authenticated outbound order-create at Razorpay plus
+      // a D1 insert, and it had no limit at all. Generous for a real buyer;
+      // fail-closed because this is a payment path.
+      await rateLimit(env, `createorder:${uid}`, 20, 3600, { failClosed: true });
       const rzp = await getRazorpayCredentials(env);
       if (!rzp.keyId || !rzp.keySecret)
         throw httpsError("failed-precondition", "Payments are not configured on the server.");
@@ -1783,6 +1794,42 @@ apiRoute.post("/", async (c) => {
       const verified = await verifyRazorpaySignature(env, { orderId, paymentId, signature });
       if (!verified) throw httpsError("permission-denied", "Payment verification failed.");
 
+      const orderRow = await db
+        .select({
+          userId: schema.paymentOrders.userId,
+          status: schema.paymentOrders.status,
+          paymentId: schema.paymentOrders.paymentId,
+          coins: schema.paymentOrders.coins,
+        })
+        .from(schema.paymentOrders)
+        .where(eq(schema.paymentOrders.orderId, String(orderId)))
+        .get();
+      if (!orderRow) throw httpsError("not-found", "Payment order not found or expired.");
+      if (orderRow.userId !== uid) throw httpsError("permission-denied", "Order does not belong to this user.");
+
+      // The signature proves the order/payment pair is genuine, but it is issued
+      // on AUTHORIZATION, not capture. Confirm with the gateway that the money
+      // was actually captured — and for how much, in which currency, against
+      // which order — before minting withdrawable coins. Anything short of a
+      // confirmed capture is reported as pending, not credited: the webhook and
+      // the reconcile sweep both credit a captured payment later, through the
+      // same exactly-once path.
+      const gateway = await fetchGatewayPayment(env, String(paymentId));
+      if (gateway?.orderId && gateway.orderId !== String(orderId))
+        throw httpsError("permission-denied", "Payment does not belong to this order.");
+      if (gateway && (gateway.status === "failed" || gateway.status === "refunded"))
+        throw httpsError("failed-precondition", "This payment was not completed.");
+      if (!gateway || gateway.status !== "captured") {
+        if (orderRow.status === "paid" && orderRow.paymentId === String(paymentId))
+          throw httpsError("already-exists", "Payment already processed.");
+        return c.json({
+          success: true,
+          pending: true,
+          coins: 0,
+          message: "Payment received. Your coins will be added as soon as the bank confirms it.",
+        });
+      }
+
       // Primary path: credit the persisted order (shared with the webhook so we
       // never double-credit regardless of which arrives first).
       const res = await creditPaymentOrder(env, db, {
@@ -1790,13 +1837,26 @@ apiRoute.post("/", async (c) => {
         paymentId: String(paymentId),
         source: "callback",
         expectedFromUid: uid,
+        capturedAmountPaise: gateway.amountPaise,
+        capturedCurrency: gateway.currency,
       });
       if (res.reason === "owner_mismatch")
         throw httpsError("permission-denied", "Order does not belong to this user.");
       if (res.reason === "invalid_amount")
         throw httpsError("failed-precondition", "Invalid order amount.");
-      if (res.reason === "already")
-        throw httpsError("already-exists", "Payment already processed.");
+      if (res.reason === "already") {
+        // `already` covers both "credited by the webhook first" and "terminal
+        // (refunded / disputed)". Only the first is a success the app may show
+        // as coins added; the second must not be reported as a purchase.
+        const after = await db
+          .select({ status: schema.paymentOrders.status, paymentId: schema.paymentOrders.paymentId })
+          .from(schema.paymentOrders)
+          .where(eq(schema.paymentOrders.orderId, String(orderId)))
+          .get();
+        if (after?.status === "paid" && after.paymentId === String(paymentId))
+          throw httpsError("already-exists", "Payment already processed.");
+        throw httpsError("failed-precondition", "This payment was refunded or cancelled.");
+      }
       if (res.credited) {
         return c.json({ success: true, message: "Coins added successfully!", coins: res.coins });
       }
@@ -1818,9 +1878,8 @@ apiRoute.post("/", async (c) => {
        *    paths with different idempotency models is precisely the shape that
        *    produces a double credit under retry.
        *
-       * `amount_mismatch` cannot occur here (it needs `capturedAmountPaise`, which
-       * only the webhook supplies) but is handled rather than folded into the
-       * not-found below, so a future caller passing it cannot get a misleading error.
+       * `amount_mismatch` means the gateway captured less than the server-set
+       * price, or in a different currency.
        */
       if (res.reason === "amount_mismatch")
         throw httpsError("failed-precondition", "Invalid order amount.");
@@ -1885,13 +1944,28 @@ apiRoute.post("/", async (c) => {
       // coins were simply gone — no withdrawal row, no ledger entry, nothing to
       // reconcile against. Both inserts are gated on the same pre-transaction
       // balance snapshot as the deduct, so all three apply or none do.
+      //
+      // The rolling 24h cap is ALSO enforced inside this transaction. The SELECT
+      // above is only a friendly early message: it is a read-then-write, so
+      // several parallel requests all saw the same `already` total and together
+      // exceeded `maxPerDay`. Only the withdrawal INSERT evaluates solvency and
+      // the cap; the ledger row and the deduct are gated on that row existing, so
+      // the cap sees the same snapshot and all three still apply or none do.
       const solvent = `EXISTS (SELECT 1 FROM users WHERE uid = ? AND dpcoin >= ?)`;
+      const capGate =
+        policy.maxPerDay > 0
+          ? `AND (SELECT COALESCE(SUM(amount), 0) FROM withdrawals
+                   WHERE user_id = ? AND created_at >= ? AND status != 'rejected') + ? <= ?`
+          : "";
+      const capBindings =
+        policy.maxPerDay > 0 ? [uid, ts - 24 * 60 * 60 * 1000, amt, policy.maxPerDay] : [];
+      const created = `EXISTS (SELECT 1 FROM withdrawals WHERE id = ?)`;
       const withdrawalResults = await env.DB.batch([
         env.DB.prepare(
           `INSERT INTO withdrawals
              (id, user_id, amount, cash_amount, method, account_details, status, reserved, created_at, updated_at)
            SELECT ?, ?, ?, ?, ?, ?, 'pending', 1, ?, ?
-            WHERE ${solvent}`,
+            WHERE ${solvent} ${capGate}`,
         ).bind(
           id,
           uid,
@@ -1903,26 +1977,34 @@ apiRoute.post("/", async (c) => {
           ts,
           uid,
           amt,
+          ...capBindings,
         ),
         env.DB.prepare(
           `INSERT OR IGNORE INTO coin_transactions
              (id, uid, amount, type, description, created_at)
            SELECT ?, ?, ?, 'withdrawal_hold', ?, ?
-            WHERE ${solvent}`,
+            WHERE ${created}`,
         ).bind(
           `withdrawal_hold:${id}`,
           uid,
           -amt,
           `Payout requested (${destination.method}) — coins reserved`,
           ts,
-          uid,
-          amt,
+          id,
         ),
         env.DB.prepare(
-          `UPDATE users SET dpcoin = dpcoin - ?, updated_at = ? WHERE uid = ? AND dpcoin >= ?`,
-        ).bind(amt, ts, uid, amt),
+          `UPDATE users SET dpcoin = dpcoin - ?, updated_at = ?
+            WHERE uid = ? AND dpcoin >= ? AND ${created}`,
+        ).bind(amt, ts, uid, amt, id),
       ]);
       if (Number(withdrawalResults[2]?.meta?.changes || 0) === 0) {
+        const me = await env.DB.prepare(`SELECT dpcoin FROM users WHERE uid = ?`).bind(uid).first<{ dpcoin: number }>();
+        if (policy.maxPerDay > 0 && Number(me?.dpcoin ?? 0) >= amt) {
+          throw httpsError(
+            "failed-precondition",
+            `Daily payout limit is ${policy.maxPerDay} coins. Try a smaller amount or wait 24 hours.`,
+          );
+        }
         throw httpsError("failed-precondition", "Insufficient balance.");
       }
 
@@ -2024,9 +2106,15 @@ apiRoute.post("/", async (c) => {
       if (targetRole.role === "superadmin") {
         throw httpsError("permission-denied", "A superadmin's role can only be changed by a superadmin via /admin/set-role.");
       }
+      if (userId === uid) throw httpsError("permission-denied", "You cannot change your own role.");
       const role = makeAdmin === false ? "user" : "admin";
       await setCustomClaims(env, userId, { role });
       await db.update(schema.users).set({ role, updatedAt: now() }).where(eq(schema.users.uid, userId));
+      // Demotion must end the existing sessions: an issued ID token keeps its old
+      // role claim (and admin access) until it expires.
+      if (role === "user" && ["admin", "moderator"].includes(String(targetRole.role))) {
+        await revokeAllSessions(env, userId, "role_changed");
+      }
       await writeAdminAudit(env, c.get("user"), "user.set-role", "user", userId, {
         role,
         previousRole: targetRole.role ?? null,
@@ -2091,6 +2179,11 @@ apiRoute.post("/", async (c) => {
       if (!(await isAdmin(c as any))) throw httpsError("permission-denied", "Admin only.");
       const { values } = validateContestInput(body, true);
       if (!values.bannerUrl) throw httpsError("failed-precondition", "A banner is required for a new contest.");
+      // Same rule as POST /admin/contests: the advertised prize cannot exceed the
+      // pot the two entry fees fund. This path skipped it, so the same input was
+      // refused on /admin and accepted here (settlement clamps the payout, so the
+      // stored prize simply lied to users about what a win pays).
+      assertPrizeFundedByPot(values.totalEntryFee, values.rewardCoins);
       const id = newId();
       const createdAt = now();
       await db.insert(schema.contests).values({
@@ -2294,8 +2387,25 @@ apiRoute.post("/", async (c) => {
     }
 
     case "equipBadge": {
-      // badge can be an object or null (unequip)
-      await db.update(schema.users).set({ equippedBadge: body.badge ?? null, updatedAt: now() }).where(eq(schema.users.uid, uid));
+      // badge can be an object or null (unequip).
+      //
+      // The client-supplied object used to be written as-is. Binding an object
+      // to the TEXT column failed (so claiming a badge always errored), and the
+      // value was never checked: any user could equip a badge they never earned,
+      // shown publicly on their profile. The only badges the app awards are
+      // level badges, so the server now builds the badge itself from a level the
+      // caller has actually reached.
+      let equipped: string | null = null;
+      if (body.badge != null) {
+        const level = Number(body.badge?.level);
+        const me = await db.select({ level: schema.users.level }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+        if (!me) throw httpsError("not-found", "User not found.");
+        if (!Number.isInteger(level) || level < 1 || level > Number(me.level ?? 1)) {
+          throw httpsError("permission-denied", "You have not unlocked this badge yet.");
+        }
+        equipped = JSON.stringify({ name: `Level ${level} Hero`, icon: "trophy", level });
+      }
+      await db.update(schema.users).set({ equippedBadge: equipped, updatedAt: now() }).where(eq(schema.users.uid, uid));
       // Reflect the equipped badge on the user's public profile right away.
       c.executionCtx.waitUntil(purgeShared(c, userCacheKey(uid)));
       return c.json({ success: true });
@@ -2307,8 +2417,10 @@ apiRoute.post("/", async (c) => {
       // inbox, so an unlimited loop here is a DM-bombing primitive. sendMessage
       // was rate limited; chat CREATION was not.
       await rateLimit(env, `startchat:${uid}`, 30, 3600);
-      const { otherUserId, otherUserData } = body;
-      if (!otherUserId) throw httpsError("invalid-argument", "otherUserId is required.");
+      const { otherUserId } = body;
+      if (!otherUserId || typeof otherUserId !== "string")
+        throw httpsError("invalid-argument", "otherUserId is required.");
+      if (otherUserId === uid) throw httpsError("invalid-argument", "You cannot start a chat with yourself.");
       // Opening a DM is the single most direct way to reach someone, so this is
       // the guard that matters most.
       await assertNotBlocked(env, uid, otherUserId);
@@ -2324,6 +2436,16 @@ apiRoute.post("/", async (c) => {
       if (existing?.id) return c.json({ chatId: existing.id });
 
       const me = await db.select({ username: schema.users.username, avatar: schema.users.profileImageUrl }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+      // The other member's display snapshot used to be the CLIENT's
+      // `otherUserData`, spread verbatim — so the initiator chose the name and
+      // photo the chat stored for the other person (and could even overwrite its
+      // `uid`). It is now read from the other user's own row, which must exist.
+      const other = await db
+        .select({ username: schema.users.username, avatar: schema.users.profileImageUrl })
+        .from(schema.users)
+        .where(eq(schema.users.uid, otherUserId))
+        .get();
+      if (!other) throw httpsError("not-found", "User not found.");
       const ts = now();
       const chatId = newId();
       // Chat row + both membership edges in ONE batch, so a chat can never exist
@@ -2336,7 +2458,7 @@ apiRoute.post("/", async (c) => {
           users: [uid, otherUserId],
           usersData: [
             { uid, displayName: me?.username || null, photoURL: me?.avatar || null },
-            { uid: otherUserId, ...(otherUserData || {}) },
+            { uid: otherUserId, displayName: other.username || null, photoURL: other.avatar || null },
           ] as any,
           lastMessage: { text: "Say hi!", createdAt: ts } as any,
           createdAt: ts,
@@ -2825,7 +2947,9 @@ apiRoute.post("/", async (c) => {
       const extraPatch: Record<string, any> = {};
       const COLUMN_KEYS = new Set([
         "fullName", "username", "dob", "occupation", "gender", "coordinates",
-        "bio", "isPrivate", "authProvider", "platform", "equippedBadge", "signupCompleted",
+        // `equippedBadge` is deliberately NOT here: it is set only through the
+        // validated `equipBadge` action, never as a free-form profile field.
+        "bio", "isPrivate", "authProvider", "platform", "signupCompleted",
       ]);
       for (const [k, v] of Object.entries(fields)) {
         if (k === "action" || k === "uid" || v === undefined) continue;

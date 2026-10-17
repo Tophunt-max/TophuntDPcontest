@@ -171,6 +171,27 @@ adminRoute.use("*", async (c, next) => {
   throw httpsError("permission-denied", "Admin access required.");
 });
 
+/**
+ * Parse an integer query parameter, clamped to [min, max].
+ *
+ * The admin list endpoints used `Math.min(parseInt(q), MAX)`, which has no lower
+ * bound and no NaN guard: `?limit=-1` became `LIMIT -1`, which SQLite treats as
+ * NO limit (a full-table read), and `?limit=abc` bound NaN. Same contract as
+ * `pageLimit()` in routes/read.ts.
+ */
+export function boundedQueryInt(raw: string | undefined, fallback: number, min: number, max: number): number {
+  const n = parseInt(raw ?? "", 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(Math.max(n, min), max);
+}
+
+const ROLE_RANK: Record<string, number> = { superadmin: 3, admin: 2, moderator: 1 };
+
+/** True when `to` grants strictly less admin authority than `from`. */
+function isDemotion(from: string | null | undefined, to: string): boolean {
+  return (ROLE_RANK[from ?? ""] ?? 0) > (ROLE_RANK[to] ?? 0);
+}
+
 /** Block moderators from privileged (money / user-lifecycle / config) actions. */
 function requireFullAdmin(c: any): void {
   if (!isFullAdmin(c)) {
@@ -1192,7 +1213,7 @@ async function invalidateBlogReadCache(c: any, id?: string, ...slugs: Array<stri
 // List posts (any status) for the admin table. Optional ?q= title search.
 adminRoute.get("/blog", async (c) => {
   const db = getDb(c.env);
-  const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 200);
+  const limit = boundedQueryInt(c.req.query("limit"), 100, 1, 200);
   const q = (c.req.query("q") || "").trim().toLowerCase();
   const conds: any[] = [];
   if (q.length >= 2) conds.push(like(sql`lower(${schema.blogPosts.title})`, `%${q}%`));
@@ -1454,7 +1475,7 @@ adminRoute.get("/blog/import/done-urls", async (c) => {
 adminRoute.get("/blog/import/log", async (c) => {
   const db = getDb(c.env);
   const status = c.req.query("status");
-  const limit = Math.min(parseInt(c.req.query("limit") || "200", 10), 1000);
+  const limit = boundedQueryInt(c.req.query("limit"), 200, 1, 1000);
   const conds: any[] = [];
   if (status) conds.push(eq(schema.blogImportLog.status, status));
   const rows = await db
@@ -1835,8 +1856,8 @@ const iso = (r: any) => ({ ...r, createdAt: r.createdAt ? new Date(r.createdAt).
 adminRoute.get("/users", async (c) => {
   const db = getDb(c.env);
   const q = (c.req.query("q") || "").trim().toLowerCase();
-  const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 100);
-  const offset = Math.max(parseInt(c.req.query("offset") || "0", 10), 0);
+  const limit = boundedQueryInt(c.req.query("limit"), 50, 1, 100);
+  const offset = boundedQueryInt(c.req.query("offset"), 0, 0, 1_000_000);
   const conds: any[] = [];
   if (q.length >= 2) {
     const term = `%${q}%`;
@@ -2033,9 +2054,32 @@ adminRoute.post("/set-role", async (c) => {
   // Prefer an explicit role ("admin" | "moderator" | "user"); fall back to the
   // legacy makeAdmin boolean.
   const role = ["admin", "moderator", "user"].includes(roleArg) ? roleArg : makeAdmin === false ? "user" : "admin";
+
+  // Role hierarchy. `requireFullAdmin` admits admin AND superadmin, and nothing
+  // here looked at the TARGET, so any plain admin could demote a superadmin (or
+  // re-role themselves). The /api twin already refused superadmin targets and
+  // pointed here as the place where only a superadmin can do it — now true.
+  const callerUid: string | undefined = c.get("user")?.uid;
+  if (callerUid && callerUid === uid) {
+    throw httpsError("permission-denied", "You cannot change your own role.");
+  }
+  const target = await db.select({ role: schema.users.role }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+  const previousRole = target?.role ?? null;
+  if (previousRole === "superadmin" && c.get("adminRole") !== "superadmin") {
+    throw httpsError("permission-denied", "Only a superadmin can change a superadmin's role.");
+  }
+
   await setCustomClaims(c.env, uid, { role });
   await db.update(schema.users).set({ role, updatedAt: now() }).where(eq(schema.users.uid, uid));
-  await logAudit(c, "user.set-role", "user", uid, { role });
+  // A demotion must take effect NOW. The /admin gate honours the role claim
+  // carried in the ID token, and an already-issued token keeps the old claim
+  // until it expires (up to an hour) — an hour of admin access, including money
+  // endpoints, after being demoted. Ending the sessions forces a fresh token,
+  // which carries the new claim.
+  if (isDemotion(previousRole, role)) {
+    await revokeAllSessions(c.env, uid, "role_changed");
+  }
+  await logAudit(c, "user.set-role", "user", uid, { role, previousRole });
   return c.json({ success: true, uid, role });
 });
 
@@ -2084,9 +2128,15 @@ adminRoute.post("/contests", async (c) => {
 });
 
 // Send a notification to a user (used by test-notification).
+//
+// Full admins only. It was reachable by moderators, letting the weakest admin
+// role push arbitrary official-looking "system" messages (e.g. phishing for a
+// payout UPI id) to any user, with no audit trail.
 adminRoute.post("/notify", async (c) => {
+  requireFullAdmin(c);
   const { userId, title, body, type } = await c.req.json<any>();
-  if (!userId) throw httpsError("invalid-argument", "userId is required.");
+  if (!userId || typeof userId !== "string") throw httpsError("invalid-argument", "userId is required.");
+  await logAudit(c, "user.notify", "user", userId, { title: title ?? null, type: type ?? null });
   await createNotification(c.env, userId, {
     title: title || "Test Notification",
     body: body || "Hello from the Worker.",
@@ -2108,7 +2158,7 @@ adminRoute.get("/transactions", async (c) => {
   const db = getDb(c.env);
   const uid = c.req.query("uid");
   const type = c.req.query("type");
-  const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 500);
+  const limit = boundedQueryInt(c.req.query("limit"), 100, 1, 500);
   const conds: any[] = [];
   if (uid) conds.push(eq(schema.coinTransactions.uid, uid));
   if (type) conds.push(eq(schema.coinTransactions.type, type));
@@ -2286,7 +2336,7 @@ adminRoute.get("/payments", async (c) => {
   // Full admins only: individual payment records.
   requireFullAdmin(c);
   const db = getDb(c.env);
-  const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 500);
+  const limit = boundedQueryInt(c.req.query("limit"), 100, 1, 500);
   const rows = await db
     .select({
       id: schema.payments.id,
@@ -2341,7 +2391,7 @@ function matchRow(m: any) {
 adminRoute.get("/matches", async (c) => {
   const db = getDb(c.env);
   const status = c.req.query("status");
-  const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 300);
+  const limit = boundedQueryInt(c.req.query("limit"), 100, 1, 300);
   const conds: any[] = [];
   if (status) conds.push(eq(schema.contestMatches.status, status));
   const rows = await db
@@ -2974,7 +3024,7 @@ adminRoute.get("/announcements/:id/targets", async (c) => {
 adminRoute.get("/comments", async (c) => {
   const db = getDb(c.env);
   const postId = c.req.query("postId");
-  const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 300);
+  const limit = boundedQueryInt(c.req.query("limit"), 100, 1, 300);
   if (c.req.query("target") === "blog") {
     const rows = await db
       .select({
@@ -3278,29 +3328,46 @@ adminRoute.patch("/withdrawals/:id", async (c) => {
         // so a failure between them moved a balance with no ledger row. Both
         // statements test the same pre-transaction balance snapshot (the INSERT
         // runs first and does not touch `users`), so they cannot disagree.
-        const solvent = `EXISTS (SELECT 1 FROM users WHERE uid = ? AND dpcoin >= ?)`;
+        //
+        // Exactly-once: the ledger row has a fixed id, so a repeated INSERT was
+        // ignored — but the balance UPDATE used to be ungated, so the
+        // claim → batch commits → later failure → revertClaim() → admin retries
+        // sequence debited the user TWICE against ONE ledger row. Both money
+        // statements are now gated on a per-request nonce claim that can only be
+        // won while the ledger row is absent. The `withdrawal` scope is not in the
+        // retention allowlist (lib/ops.ts), so the claim is never pruned, and the
+        // claim itself also re-checks the permanent ledger row.
+        const ledgerId = `withdrawal_legacy:${id}`;
+        const nonce = crypto.randomUUID();
+        const claimGate = `EXISTS (SELECT 1 FROM idempotency_keys WHERE key = ? AND nonce = ?)`;
         const legacyResults = await c.env.DB.batch([
+          c.env.DB.prepare(
+            `INSERT OR IGNORE INTO idempotency_keys (key, nonce, scope, created_at)
+             SELECT ?, ?, 'withdrawal', ?
+              WHERE EXISTS (SELECT 1 FROM users WHERE uid = ? AND dpcoin >= ?)
+                AND NOT EXISTS (SELECT 1 FROM coin_transactions WHERE id = ?)`,
+          ).bind(ledgerId, nonce, ts, w.userId, w.amount, ledgerId),
           c.env.DB.prepare(
             `INSERT OR IGNORE INTO coin_transactions
                (id, uid, amount, type, description, created_at)
              SELECT ?, ?, ?, 'withdrawal', ?, ?
-              WHERE ${solvent}`,
-          ).bind(
-            `withdrawal_legacy:${id}`,
-            w.userId,
-            -w.amount,
-            `Payout ${status} (${w.method})`,
-            ts,
-            w.userId,
-            w.amount,
-          ),
+              WHERE ${claimGate}`,
+          ).bind(ledgerId, w.userId, -w.amount, `Payout ${status} (${w.method})`, ts, ledgerId, nonce),
           c.env.DB.prepare(
-            `UPDATE users SET dpcoin = dpcoin - ?, updated_at = ? WHERE uid = ? AND dpcoin >= ?`,
-          ).bind(w.amount, ts, w.userId, w.amount),
+            `UPDATE users SET dpcoin = dpcoin - ?, updated_at = ?
+              WHERE uid = ? AND dpcoin >= ? AND ${claimGate}`,
+          ).bind(w.amount, ts, w.userId, w.amount, ledgerId, nonce),
         ]);
-        if (Number(legacyResults[1]?.meta?.changes || 0) === 0) {
-          await revertClaim();
-          throw httpsError("failed-precondition", "User has insufficient balance for this payout.");
+        if (Number(legacyResults[2]?.meta?.changes || 0) === 0) {
+          const alreadyDebited = await c.env.DB.prepare(`SELECT 1 AS x FROM coin_transactions WHERE id = ?`)
+            .bind(ledgerId)
+            .first();
+          // A previous attempt already took the coins (and wrote the ledger row);
+          // this retry just completes the approval without moving money again.
+          if (!alreadyDebited) {
+            await revertClaim();
+            throw httpsError("failed-precondition", "User has insufficient balance for this payout.");
+          }
         }
       }
       // Rejecting a previously-approved legacy request refunds the held coins.
@@ -3629,7 +3696,7 @@ adminRoute.get("/audit-log", async (c) => {
   // Full admins only: the trail of admin actions, including actions taken against the caller.
   requireFullAdmin(c);
   const db = getDb(c.env);
-  const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 500);
+  const limit = boundedQueryInt(c.req.query("limit"), 100, 1, 500);
   const action = c.req.query("action");
   const conds: any[] = [];
   if (action) conds.push(eq(schema.adminAuditLog.action, action));
@@ -3651,7 +3718,7 @@ adminRoute.get("/logs", async (c) => {
   // Full admins only: server error logs, which can contain request context.
   requireFullAdmin(c);
   const db = getDb(c.env);
-  const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 500);
+  const limit = boundedQueryInt(c.req.query("limit"), 100, 1, 500);
   const level = c.req.query("level");
   const q = c.req.query("q");
   const conds: any[] = [];
@@ -3699,7 +3766,7 @@ adminRoute.get("/logs/stats", async (c) => {
 adminRoute.get("/account-deletions", async (c) => {
   requireFullAdmin(c);
   const db = getDb(c.env);
-  const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 500);
+  const limit = boundedQueryInt(c.req.query("limit"), 100, 1, 500);
   const status = c.req.query("status");
 
   const conds: any[] = [];
@@ -4188,7 +4255,7 @@ adminRoute.get("/messages", async (c) => {
   // Full admins only: a plaintext dump of private direct messages.
   requireFullAdmin(c);
   const db = getDb(c.env);
-  const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 300);
+  const limit = boundedQueryInt(c.req.query("limit"), 100, 1, 300);
 
   // Message bodies live in per-chat ChatArchive DOs, so there is no single table
   // to ORDER BY created_at across. A chat's `updated_at` bumps on every message,
@@ -4450,7 +4517,7 @@ adminRoute.get("/prize-claims", async (c) => {
   requireFullAdmin(c);
   const db = getDb(c.env);
   const status = c.req.query("status");
-  const limit = Math.min(parseInt(c.req.query("limit") || "100", 10) || 100, 500);
+  const limit = boundedQueryInt(c.req.query("limit"), 100, 1, 500);
   const conds: any[] = [];
   if (status && (PRIZE_CLAIM_STATUSES as readonly string[]).includes(status)) {
     conds.push(eq(schema.prizeClaims.status, status));
