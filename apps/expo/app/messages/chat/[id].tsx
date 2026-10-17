@@ -201,20 +201,28 @@ export default function ChatScreen() {
       if (!currentUser || !chatId) return;
       const outgoing = newMessages[0];
       if (!outgoing) return;
-      // Optimistic append so the bubble appears instantly.
-      setMessages((previous) => GiftedChat.append(previous, newMessages));
-      try {
-        await callApi('sendMessage', { chatId, text: outgoing.text });
-      } catch (error) {
-        console.error('[ChatScreen] Error sending message:', error);
-        // Take the bubble back so the conversation reflects what was actually
-        // delivered, and hand the text back in the alert so it is not lost.
-        setMessages((previous) => previous.filter((m) => m._id !== outgoing._id));
-        Alert.alert(
-          'Message not sent',
-          'We could not send that message. Check your connection and try again.',
-        );
-      }
+      const attempt = async (msg: IMessage): Promise<void> => {
+        // Optimistic append so the bubble appears instantly.
+        setMessages((previous) => GiftedChat.append(previous, [msg]));
+        try {
+          await callApi('sendMessage', { chatId, text: msg.text });
+        } catch (error) {
+          console.error('[ChatScreen] Error sending message:', error);
+          // Take the bubble back so the conversation reflects what was actually
+          // delivered. The composer is uncontrolled, so the typed text used to be
+          // simply lost; offer a one-tap retry with the same text instead.
+          setMessages((previous) => previous.filter((m) => m._id !== msg._id));
+          Alert.alert(
+            'Message not sent',
+            'We could not send that message. Check your connection and try again.',
+            [
+              { text: 'Discard', style: 'cancel' },
+              { text: 'Retry', onPress: () => void attempt({ ...msg, _id: `${msg._id}-r${Date.now()}`, createdAt: new Date() }) },
+            ],
+          );
+        }
+      };
+      await attempt(outgoing);
     },
     [chatId, currentUser],
   );
@@ -224,6 +232,7 @@ export default function ChatScreen() {
   // replaced by the server copy on the next realtime refresh.
   const onPickImage = useCallback(async () => {
     if (!currentUser || !chatId || uploadingImage) return;
+    let tempId: string | null = null;
     try {
       const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!perm.granted) {
@@ -236,7 +245,7 @@ export default function ChatScreen() {
 
       setUploadingImage(true);
       // Optimistic bubble from the local file.
-      const tempId = `local-${Date.now()}`;
+      tempId = `local-${Date.now()}`;
       setMessages((prev) =>
         GiftedChat.append(prev, [
           {
@@ -257,6 +266,11 @@ export default function ChatScreen() {
       // bubble is harmless until then (same image, from the local uri).
     } catch (error) {
       console.error('[ChatScreen] Error sending image:', error);
+      // The optimistic bubble used to stay in the thread as if it had been sent.
+      if (tempId) {
+        const failedId = tempId;
+        setMessages((prev) => prev.filter((m) => m._id !== failedId));
+      }
       Alert.alert('Upload failed', 'Could not send that image. Please try again.');
     } finally {
       setUploadingImage(false);

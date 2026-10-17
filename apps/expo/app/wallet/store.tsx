@@ -93,7 +93,7 @@ export default function CoinStoreScreen() {
     }
     setLoading(pkg.id);
     try {
-      const { coins } = await purchasePackage(
+      const { coins, pending } = await purchasePackage(
         { id: pkg.id, name: pkg.name },
         {
           email: profile?.email || undefined,
@@ -102,7 +102,11 @@ export default function CoinStoreScreen() {
         },
       );
       await refetchProfile();
-      addToast({ text: `${coins} Dpcoins added to your wallet!`, type: 'success', icon: 'coins' });
+      if (pending) {
+        addToast({ text: 'Payment received — your coins will appear as soon as the bank confirms it.', type: 'info' });
+      } else {
+        addToast({ text: `${coins} Dpcoins added to your wallet!`, type: 'success', icon: 'coins' });
+      }
       router.back();
     } catch (error: any) {
       const msg = error?.message || error?.details || 'Transaction could not be completed. Please try again.';

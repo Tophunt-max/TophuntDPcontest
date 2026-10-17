@@ -44,24 +44,25 @@ export interface NotificationTag {
  * expo-router can push, or null when there's nothing meaningful to open (the
  * caller then falls back to the notifications list).
  *
- * `url` (admin deep-link) always wins when present.
+ * `url` (admin deep-link) wins when present AND it is an in-app route.
  */
 export function getNotificationDestination(
   type: NotificationType | undefined,
   targetId?: string | null,
   url?: string | null,
 ): string | null {
-  if (url) return url;
+  const deepLink = safeInAppRoute(url);
+  if (deepLink) return deepLink;
 
   switch (type) {
     case "follow":
     case "profile_visit":
-      return targetId ? `/profile?userId=${targetId}` : "/profile";
+      return targetId ? `/profile?userId=${encodeURIComponent(targetId)}` : "/profile";
 
     // Post permalinks live at the root-level app/[slug].tsx route.
     case "like":
     case "comment":
-      return targetId ? `/${targetId}` : null;
+      return targetId ? `/${encodeURIComponent(targetId)}` : null;
 
     // Battle/match engagement — no standalone match detail route exists yet,
     // so send the user to the live battles feed on home.
@@ -99,6 +100,22 @@ export function getNotificationDestination(
     default:
       return null;
   }
+}
+
+/**
+ * Accept a push/notification `url` only if it is a path inside this app.
+ *
+ * The value arrives in the push payload and was handed to `router.push` as-is,
+ * so any absolute URL (`https://…`, `intent://…`, `javascript:`) or
+ * protocol-relative `//host` in a notification opened whatever it pointed at —
+ * a phishing primitive for anyone able to put a payload in front of the device.
+ */
+export function safeInAppRoute(url?: string | null): string | null {
+  if (typeof url !== "string") return null;
+  const u = url.trim();
+  if (!u.startsWith("/") || u.startsWith("//") || u.includes("\\")) return null;
+  if (/[\u0000-\u001f]/.test(u)) return null;
+  return u;
 }
 
 const DEFAULT_TAG: NotificationTag = { label: "Update", color: "#6B7280", icon: "notifications" };
