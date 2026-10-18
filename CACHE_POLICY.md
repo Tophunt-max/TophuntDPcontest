@@ -118,29 +118,41 @@ Worker.
   holds at most 200 rows, evicting the oldest first. Wallet, coin, withdrawal and contest-entry
   actions are never queued.
 
-## 6. Known open items (not changed in this pass)
+## 6. Follow-up round (2026-10-18) and what remains
 
-- **`SCALE_TIER = "auto"` is deployed.** On the free plan this spends KV writes
-  on `authstate:*` (one per active user per 60s) until the daily quota fails.
-  After that, every other KV write fails open, including `settings:*`,
-  `cache:blocks:*` and `feed:seen:*`, so their reads fall to D1. This is correct
-  but not cheap. Confirm the Cloudflare plan: use `paid` if the account is paid,
-  or `free` for a busy free account.
-- `sort=hot` orders by a computed score with OFFSET, so it cannot use an index.
-  Its 30s page cache is the only bound. A maintained score column is warranted
-  only after D1 Insights shows it.
-- Feed pool and recent-list queries use `SELECT *` on `contest_matches`,
-  including JSON participant blobs. The blog list selects `content`.
-- `/read/users/:id` reads the target's full following list, unbounded (a PK
-  range).
-- Every `/read/blog/:slug` view writes `view_count` to D1, cache hits included.
-- Cron N+1: `resolveMatch` notifications, and per-recipient `createNotification`
-  in broadcasts.
-- Invite-only (`isPrivate`) matches are not filtered from the For You pool. This
-  is a product question, not a cache one.
-- `idx_matches_status` is now redundant (it is a prefix of
-  `idx_matches_status_created`). Drop it after Insights confirms the planner has
-  switched.
+Done:
+
+| Item | Change | Where |
+|---|---|---|
+| `SCALE_TIER="auto"` starving KV | After a KV **daily-limit** put failure, the isolate stops attempting puts until UTC midnight, and the event is recorded once in D1 (`settings` id `kvQuota`). For 7 days `auto` then reads account state from D1 instead of caching it, so the KV budget goes to settings, blocks and feed-seen. On paid the limit never trips | `lib/kvQuota.ts`, `middleware/auth.ts`, `lib/cache.ts` |
+| One socket per mounted card | Home subscribes only the visible cards plus one ahead. A card that wasn't listening for more than 1 min (counted from mount if it never listened) does one catch-up read when it comes into view. Sockets linger 5s (same account only) so scroll-backs reuse them | `src/lib/liveWindow.ts`, `PostCard.tsx`, `realtime.ts` |
+| Guests had no live tallies | `match:<id>` is open to guests: well-formed id, live, not invite-only, per-IP `GUEST_READ_LIMITER`, one memoised lookup per battle per minute, and at most 2,000 guest sockets per battle. `user:` and `chat:` still need a token. Guests' cards for finished battles don't subscribe. `/ws` now strips the headers the hub trusts (`X-Presence-Uid`, `X-Authenticated-Uid`), so presence can't be spoofed on any path, and the channel must be exactly `<kind>:<ref>`, because it names the Durable Object | `lib/wsGuest.ts`, `index.ts /ws`, `realtime.ts`, `PostCard.tsx` |
+| `SELECT *` on lists | The feed pool, recent/hot lists and blog list select only the columns their mappers read. Settlement token, VS-publication bookkeeping, `vs_image_meta` and the blog `content` are no longer read. A test checks that list items still equal the full-row detail. rows_read is unchanged (D1 bills rows); bytes and isolate memory drop | `routes/read.ts` |
+| Blog `view_count` write per view | Buffered per isolate and flushed as one `DB.batch` per 20s window. A failed flush is re-queued; at most 500 distinct posts are buffered | `lib/viewCounter.ts` |
+| Unbounded profile following list | Someone else's profile returns the newest 200 plus `followingTruncated`. The owner's own read stays complete, since explore, connections and the follow button need it | `routes/read.ts` |
+| Cron / broadcast N+1 | `createNotificationsBulk` (actor-less, non-collapsing only): one `IN` lookup, one batched insert (falling back to row by row if the batch fails) and one grouped badge count per 90 recipients, with the same push gating. Used for broadcast pages, tie/void notices and ending-soon reminders. Ending-soon is claimed atomically **before** notifying, so overlapping ticks never send twice | `lib/notify.ts`, `lib/broadcast.ts`, `cron.ts` |
+
+Remaining:
+
+- `sort=hot` orders by a computed score with OFFSET (unindexable). Its 30s page
+  cache is the bound. Add a maintained score column only if Insights shows it.
+- Win/loss notifications are per recipient (different text), so they still use
+  `createNotification`.
+- Invite-only matches in the For You pool: a product question.
+- Drop the redundant `idx_matches_status` once Insights confirms the planner
+  uses `idx_matches_status_created`.
+
+### Measuring in production (needs Cloudflare access)
+
+```sh
+cd apps/worker
+npm run insights:snapshot -- before.json        # before deploying this branch
+# deploy, wait ≥ 1 day
+npm run insights:snapshot -- after.json
+npm run insights:compare -- before.json after.json   # rows read PER RUN per query family
+npx wrangler tail tophunt-api --format json --sampling-rate 0.2 > tail.jsonl   # a few minutes
+npm run cache:report -- tail.jsonl              # hit% / p50 / p95 / 5xx per route
+```
 
 ## 7. Verification
 
@@ -153,8 +165,12 @@ Worker.
   story-sweep media leak, comment-delete purge, and cache-outcome logging.
 - Existing tests that still apply: `edgeCache.test.ts`, `kvBudget.test.ts`,
   `kvWriteVolume.test.ts`.
+- `apps/worker/test/kvQuota.test.ts`, `wsGuest.test.ts`,
+  `measurementScripts.test.ts`, plus the projection, following-cap, bulk
+  notification and view-count blocks in `cacheAudit.test.ts`.
 - `apps/expo/test/feedSnapshot*.test.ts`, `pendingActionQueue.test.ts`,
-  `notificationBadgeShare.test.ts` and `storySchemaMigrations.test.ts`.
+  `notificationBadgeShare.test.ts`, `storySchemaMigrations.test.ts`,
+  `realtimeLinger.test.ts` and `liveWindow.test.ts`.
 - `node apps/worker/scripts/bench-hot-queries.mjs [--without 0059] [--analyze]`
   is a repeatable local plan/timing comparison on synthetic data. It is
   **not** D1.
@@ -163,8 +179,9 @@ Worker.
 
 | Signal | Source |
 |---|---|
-| Shared-cache outcome per request (`hit` / `kv` / `miss` / `skip` / `bypass`; the last lookup wins) | **Worker log line** field `edgeCache` (Workers Logs). Status only, never the key |
-| D1 rows read/written, top queries | Cloudflare dashboard / `wrangler d1 insights` (needs account access); `npm run capacity` |
+| Shared-cache outcome per request (`hit` / `kv` / `miss` / `skip` / `bypass`; the last lookup wins) | **Worker log line** field `edgeCache`; `npm run cache:report` turns a `wrangler tail` capture into hit% per route. Status only, never the key |
+| KV daily-limit events | `settings` row `kvQuota` (`lastExhaustedAt`) and the `[kvQuota]` warning log line |
+| D1 rows read/written, top queries | `npm run insights:snapshot` / `insights:compare` (before/after per query family); `npm run capacity`. Needs account access |
 | KV ops and quota errors | Dashboard. `[cache] … failed (continuing)` / `[settings] …` log lines |
 | Cron duration and outcome | `cron_runs` table (admin health) |
 | Endpoint latency and status | Worker log line `ms`, `status` |
