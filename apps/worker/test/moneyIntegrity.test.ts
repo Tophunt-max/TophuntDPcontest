@@ -319,10 +319,16 @@ describe('reward settings cannot corrupt a balance', () => {
 
 // ===========================================================================
 describe('the signup bonus is ledgered with the balance that grants it', () => {
-  /** The bonus amount comes from appConfig.rewardSettings, not the gamification row. */
+  /**
+   * The LEGACY bonus: appConfig.rewardSettings.signupBonus, which applies when the
+   * registration verification reward is switched off (it is on by default and
+   * covered in test/verificationReward.test.ts).
+   */
   async function seedSignupBonus(env: TestEnv, signupBonus: number) {
     await drizzleOf(env).insert(schema.settings).values({
-      id: 'appConfig', data: { rewardSettings: { signupBonus } } as any, updatedAt: Date.now(),
+      id: 'appConfig',
+      data: { rewardSettings: { signupBonus }, verificationReward: { enabled: false } } as any,
+      updatedAt: Date.now(),
     } as any);
     await env.CACHE_KV.delete('settings:appConfig');
   }

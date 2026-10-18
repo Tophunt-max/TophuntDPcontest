@@ -114,6 +114,12 @@ export default function ManageProfileScreen() {
           They now go to the screens the labels promise.
         */}
         {renderItem({
+          icon: Settings_Shield,
+          label: 'Verify Email & Mobile',
+          onPress: () => router.push('/profile/manage/verification' as any),
+        })}
+
+        {renderItem({
           icon: Settings_Lock,
           label: 'Privacy Settings',
           onPress: () => router.push('/setting/privacy'),

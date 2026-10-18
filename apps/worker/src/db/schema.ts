@@ -1373,6 +1373,42 @@ export const adRewardClaims = sqliteTable(
 // distinguishable from a first attempt even inside the same millisecond.
 // Pruned by retention in the cron.
 // ---------------------------------------------------------------------------
+// verification_rewards  (migration 0054) — enrolment in the signup
+// verification bonus, plus server-side reminder state. See lib/verificationReward.ts.
+export const verificationRewards = sqliteTable(
+  "verification_rewards",
+  {
+    uid: text("uid").primaryKey(),
+    registrationReward: integer("registration_reward").notNull().default(0),
+    registrationLedgerId: text("registration_ledger_id"),
+    completionReward: integer("completion_reward").notNull().default(0),
+    completionLedgerId: text("completion_ledger_id"),
+    completedAt: integer("completed_at"),
+    promptCount: integer("prompt_count").notNull().default(0),
+    lastPromptAt: integer("last_prompt_at"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => ({
+    completedIdx: index("idx_verification_rewards_completed").on(t.completedAt),
+  }),
+);
+
+// verification_reward_claims (migration 0054) — one completion bonus per
+// canonical email / phone (hashed), across all accounts, forever.
+export const verificationRewardClaims = sqliteTable(
+  "verification_reward_claims",
+  {
+    identifierHash: text("identifier_hash").primaryKey(),
+    kind: text("kind").notNull(),
+    uid: text("uid").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    uidIdx: index("idx_verification_reward_claims_uid").on(t.uid),
+  }),
+);
+
 export const idempotencyKeys = sqliteTable(
   "idempotency_keys",
   {

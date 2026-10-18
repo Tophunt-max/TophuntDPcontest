@@ -39,6 +39,12 @@ const pwVerifiedKey = (phone: string) => `pwverified:${phone}`;
 import { sendSms, smsConfigured } from "../lib/sms";
 import { sendEmail } from "../lib/email";
 import { welcomeEmail } from "../lib/emailTemplates";
+import {
+  getVerificationRewardConfig,
+  registrationLedgerId,
+  signupGrant,
+  tryCreditVerificationReward,
+} from "../lib/verificationReward";
 import { now } from "../lib/ids";
 
 const DISPOSABLE_DOMAINS = new Set([
@@ -59,9 +65,30 @@ function isDisposableEmail(email: string): boolean {
   const domain = email.split("@")[1];
   return domain ? DISPOSABLE_DOMAINS.has(domain.toLowerCase()) : false;
 }
-async function createUserProfile(env: Env, uid: string, data: any, signupBonus: number) {
+/**
+ * Attempt the verification completion credit after a successful proof. Never
+ * fails the verification itself: the proof is already committed, and the credit
+ * is retried idempotently by the next status refresh / claim.
+ */
+async function creditAfterVerification(env: Env, uid: string) {
+  try {
+    const r = await tryCreditVerificationReward(env, uid);
+    return { credited: r.credited, coins: r.coins, reason: r.reason };
+  } catch (e) {
+    console.error("[auth] verification reward attempt failed (will retry)", uid, e);
+    return { credited: false, coins: 0, reason: "retry_later" };
+  }
+}
+
+async function createUserProfile(env: Env, uid: string, data: any, legacySignupBonus: number) {
   const db = getDb(env);
   const ts = now();
+  // With the verification reward enabled, signup credits only the registration
+  // reward (default 10) and enrols the account for the completion bonus
+  // (default 90, paid once email AND mobile are verified). Disabled: the legacy
+  // `rewardSettings.signupBonus` behaviour, unchanged.
+  const grant = signupGrant(await getVerificationRewardConfig(env), legacySignupBonus);
+  const signupBonus = grant.amount;
   // Validate + PRESERVE the typed case for display. Uniqueness stays
   // case-insensitive (assertIdentifiersAvailable + the COLLATE NOCASE index),
   // but the row stores "Alice", not "alice". Idempotent for the `create` path,
@@ -97,7 +124,7 @@ async function createUserProfile(env: Env, uid: string, data: any, signupBonus: 
       ? db
           .insert(schema.coinTransactions)
           .values({
-            id: `signup_bonus:${uid}`,
+            id: registrationLedgerId(uid),
             uid,
             amount: signupBonus,
             type: "signup_bonus",
@@ -168,6 +195,24 @@ async function createUserProfile(env: Env, uid: string, data: any, signupBonus: 
     }),
   );
   if (bonusLedger) profileStatements.push(bonusLedger);
+  // Enrolment in the SAME transaction as the profile and the registration
+  // credit, and only for a brand-new uid — a repeated signup never enrols (or
+  // re-enrols) anyone, and no pre-existing account is ever enrolled.
+  if (!alreadyExisted && grant.enrol) {
+    profileStatements.push(
+      db
+        .insert(schema.verificationRewards)
+        .values({
+          uid,
+          registrationReward: signupBonus,
+          registrationLedgerId: signupBonus > 0 ? registrationLedgerId(uid) : null,
+          completionReward: grant.completionReward,
+          createdAt: ts,
+          updatedAt: ts,
+        })
+        .onConflictDoNothing(),
+    );
+  }
   await db.batch(profileStatements as any);
 
   // Welcome the new account, best-effort. Only for email signups (phone-only
@@ -469,6 +514,7 @@ authRoute.post("/", async (c) => {
         } catch (e) {
           console.error("[auth] phoneSignIn: could not mark phone verified", uid, e);
         }
+        await creditAfterVerification(env, uid);
       }
 
       const customToken = await createCustomToken(env, uid);
@@ -623,7 +669,10 @@ authRoute.post("/", async (c) => {
       if (!uid) throw httpsError("unauthenticated", "User must be logged in.");
       await rateLimit(env, `emailotpverify:${uid}`, 20, 3600, { failClosed: true });
       const { email, verifyOnly } = await confirmEmailChange(env, c.get("user"), body.otp, c);
-      return c.json({ success: true, email, verifyOnly });
+      // Proving an identifier may complete the verification reward. The server
+      // decides eligibility and amount; the response only reports the outcome.
+      const verificationReward = await creditAfterVerification(env, uid);
+      return c.json({ success: true, email, verifyOnly, verificationReward });
     }
 
     case "sendPhoneOtp": {
@@ -635,7 +684,8 @@ authRoute.post("/", async (c) => {
       if (!uid) throw httpsError("unauthenticated", "User must be logged in.");
       await rateLimit(env, `phoneotpverify:${uid}`, 20, 3600, { failClosed: true });
       const { phone, verifyOnly } = await confirmPhoneChange(env, c.get("user"), body.otp, c);
-      return c.json({ success: true, phone, verifyOnly });
+      const verificationReward = await creditAfterVerification(env, uid);
+      return c.json({ success: true, phone, verifyOnly, verificationReward });
     }
 
     default:

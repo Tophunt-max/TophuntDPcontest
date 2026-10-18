@@ -43,6 +43,9 @@ export interface UserProfile {
    * detail was proven. This one is editorial and only an admin can set it.
    */
   verified?: boolean;
+  /** Owner-only: the email / mobile on file has been proven by a code (server-set). */
+  emailVerified?: boolean;
+  phoneVerified?: boolean;
   xp?: number;
   level?: number;
   badges?: Badge[];

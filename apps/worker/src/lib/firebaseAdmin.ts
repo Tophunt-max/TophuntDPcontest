@@ -253,6 +253,36 @@ export async function createAuthUser(env: Env, input: CreateUserInput): Promise<
   return json.localId as string;
 }
 
+/**
+ * Server-to-server read of one Firebase Auth user by uid: the AUTHORITATIVE
+ * email-verified flag and phone number, as opposed to claims in a client-held ID
+ * token (which can be up to an hour stale). Returns null if no such user.
+ */
+export async function lookupAuthUser(
+  env: Env,
+  uid: string,
+): Promise<{ email: string | null; emailVerified: boolean; phoneNumber: string | null } | null> {
+  const token = await getAccessToken(env);
+  const projectId = env.FIREBASE_PROJECT_ID;
+  const res = await fetch(
+    `https://identitytoolkit.googleapis.com/v1/projects/${projectId}/accounts:lookup`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ localId: [uid] }),
+    },
+  );
+  if (!res.ok) throw new Error(`accounts:lookup failed (${res.status})`);
+  const json = await res.json<any>();
+  const u = json.users?.[0];
+  if (!u) return null;
+  return {
+    email: typeof u.email === "string" ? u.email : null,
+    emailVerified: u.emailVerified === true,
+    phoneNumber: typeof u.phoneNumber === "string" ? u.phoneNumber : null,
+  };
+}
+
 /** Look up a user by email; returns uid or null. */
 export async function getUserByEmail(env: Env, email: string): Promise<string | null> {
   const token = await getAccessToken(env);
