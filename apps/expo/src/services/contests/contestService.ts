@@ -78,6 +78,14 @@ export const contestService = {
     catch (error) { console.error("Error sharing match:", error); throw error; }
   },
 
+  /**
+   * Report a battle (spam, QR / payment scam, not a real photo, inappropriate).
+   * One report per user per battle; enough distinct reports hide it from feeds
+   * pending admin review (Worker migration 0060).
+   */
+  reportMatch: async (matchId: string, reason: string) =>
+    callApi('createReport', { targetType: 'match', targetId: matchId, reason }),
+
   getContestById: async (id: string) => readApi(`/read/contests/${id}`),
 
   getMatchById: async (id: string) => readApi(`/read/matches/${id}`),

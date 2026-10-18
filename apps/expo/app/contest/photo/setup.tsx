@@ -47,6 +47,7 @@ import { useReadjustablePhoto } from '@/src/components/media/useImageAdjuster';
 import { entryFeePerPlayer } from '@/src/lib/contestPricing';
 import { contestPrize } from '@/src/lib/contestPrize';
 import { hasEnded } from '@/src/lib/countdown';
+import { screenEntryImage } from '@/src/lib/entryScreening';
 
 const PINK_ACCENT = '#FFB1BD';
 const PRIMARY_COLOR = '#FF4D67';
@@ -182,6 +183,14 @@ export default function BattleSetupScreen() {
       quality: 0.8,
     });
     if (!result.canceled) {
+        // Refuse QR / payment screenshots up front (src/lib/entryScreeningRules.ts),
+        // before the user spends time cropping a photo that cannot be entered.
+        const verdict = await screenEntryImage(result.assets[0].uri);
+        if (!verdict.ok) {
+          addToast(verdict.message, 'error');
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          return;
+        }
         setMedia(await adjustPicked(result.assets[0].uri));
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
@@ -221,7 +230,22 @@ export default function BattleSetupScreen() {
       coinOpacity.value = withTiming(0, { duration: 1000, easing: Easing.in(Easing.exp) });
   };
 
+  // Synchronous re-entry guard for the PAID submit: `uploading` state flips a
+  // render later, and the QR screening below awaits before it is set, so a fast
+  // second tap could otherwise upload and charge twice.
+  const submittingRef = useRef(false);
+
   const handleAction = async () => {
+    if (submittingRef.current || uploading) return;
+    submittingRef.current = true;
+    try {
+      await handleActionInner();
+    } finally {
+      submittingRef.current = false;
+    }
+  };
+
+  const handleActionInner = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
     if (!user) {
@@ -263,6 +287,14 @@ export default function BattleSetupScreen() {
 
     if (!media) {
       addToast("Please upload a photo first.", 'error');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      return;
+    }
+
+    // Same check on the FINAL image, before any coins move.
+    const verdict = await screenEntryImage(media);
+    if (!verdict.ok) {
+      addToast(verdict.message, 'error');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       return;
     }
