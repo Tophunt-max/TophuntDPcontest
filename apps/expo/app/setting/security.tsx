@@ -68,7 +68,7 @@ export default function SecurityScreen() {
   const performLogout = async () => {
     try {
       await signOut();
-      router.replace('/auth/login');
+      router.replace('/home');
     } catch (error: any) {
       reportError(error, { screen: 'security', action: 'logout' });
       emitToast(error?.message || 'Could not log out. Please try again.', 'error');
@@ -91,7 +91,7 @@ export default function SecurityScreen() {
   const performLogoutAll = async () => {
     try {
       await logoutAllDevices();
-      router.replace('/auth/login');
+      router.replace('/home');
       emitToast('Signed out on all devices.', 'success');
     } catch (error: any) {
       reportError(error, { screen: 'security', action: 'logoutAllDevices' });

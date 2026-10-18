@@ -219,6 +219,46 @@ describe('Stories: guest-browsable, never wider than their audience', () => {
     expect(hl.body.stories.map((s: any) => s.id)).toEqual(['pub']);
   });
 
+  it('the highlight shelf never publishes media of Stories the viewer may not see', async () => {
+    const env = await storyWorld();
+    const FOL = 'https://cdn.test/stories/images/fol.jpg';
+    const PUB = 'https://cdn.test/stories/images/pub.jpg';
+    await drizzleOf(env).insert(schema.highlights).values([
+      { id: 'h-mixed', userId: 'alice', name: 'mixed', coverImageUrl: FOL, storyIds: ['fol', 'pub'], createdAt: Date.now() },
+      { id: 'h-fol', userId: 'alice', name: 'close friends', coverImageUrl: FOL, storyIds: ['fol'], createdAt: Date.now() - 1 },
+      { id: 'h-priv', userId: 'priv', name: 'private', coverImageUrl: 'https://cdn.test/stories/images/priv-pub.jpg', storyIds: ['priv-pub'], createdAt: Date.now() },
+    ] as any);
+    const guest = await get(env, '/read/users/alice/highlights');
+    expect(guest.body.map((h: any) => h.id)).toEqual(['h-mixed']);
+    expect(guest.body[0].storyIds).toEqual(['pub']);
+    expect(guest.body[0].coverImageUrl).toBe(PUB);
+    expect(JSON.stringify(guest.body)).not.toContain(FOL);
+    expect(guest.headers.get('Vary')).toContain('Authorization');
+    expect((await get(env, '/read/users/priv/highlights')).body).toEqual([]);
+    // A follower sees the whole shelf; so does the owner.
+    expect((await get(env, '/read/users/alice/highlights', 'fan')).body.map((h: any) => h.id).sort()).toEqual(['h-fol', 'h-mixed']);
+    expect((await get(env, '/read/users/alice/highlights', 'alice')).body).toHaveLength(2);
+  });
+
+  it('guest Story answers vary on Authorization so a browser cannot replay them after sign-in', async () => {
+    const env = await storyWorld();
+    for (const path of ['/read/stories/feed', '/read/users/alice/stories']) {
+      expect((await get(env, path)).headers.get('Vary'), path).toContain('Authorization');
+    }
+  });
+
+  it('going private takes an account out of the shared stories bar immediately', async () => {
+    const cache = installEdgeCache();
+    try {
+      const env = await storyWorld();
+      expect(feedIds((await get(env, '/read/stories/feed')).body)).toContain('pub');
+      expect((await api(env, 'updateProfile', { isPrivate: true }, 'alice')).status).toBe(200);
+      expect(feedIds((await get(env, '/read/stories/feed')).body)).not.toContain('pub');
+    } finally {
+      cache.restore();
+    }
+  });
+
   it('a Story\'s viewer list stays owner-only', async () => {
     const env = await storyWorld();
     expect((await get(env, '/read/stories/pub/viewers')).status).toBe(401);
@@ -230,6 +270,32 @@ describe('Stories: guest-browsable, never wider than their audience', () => {
     const env = await storyWorld();
     await api(env, 'blockUser', { targetUserId: 'stranger' }, 'alice');
     expect(feedIds((await get(env, '/read/stories/feed', 'stranger')).body)).toEqual([]);
+  });
+});
+
+// ===========================================================================
+describe('guest sharing', () => {
+  it('a guest can resolve the canonical share image for a public battle', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice');
+    await seedUser(env, 'bob');
+    await seedBattle(env, 'm1', { vsStoryStatus: 'pending' });
+    const res = await get(env, '/read/matches/m1/share-image');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ matchId: 'm1', status: 'preparing', url: null });
+    expect(res.headers.get('Cache-Control')).toBe('private, no-store');
+  });
+
+  it('a waiting battle has no image; a blocked signed-in viewer is refused', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice');
+    await seedUser(env, 'bob');
+    await seedUser(env, 'carol');
+    await seedBattle(env, 'w1', { status: 'waiting_for_opponent', userB: null });
+    expect((await get(env, '/read/matches/w1/share-image')).body.status).toBe('waiting_for_opponent');
+    await seedBattle(env, 'm2');
+    await api(env, 'blockUser', { targetUserId: 'carol' }, 'alice');
+    expect((await get(env, '/read/matches/m2/share-image', 'carol')).status).toBe(403);
   });
 });
 
@@ -327,10 +393,11 @@ describe('abuse limits on guest reads', () => {
     const { env } = makeEnv();
     await seedUser(env, 'alice');
     let last = 0;
-    for (let i = 0; i < 61; i++) {
+    // Generous (300/min) because many guests share one carrier-NAT address.
+    for (let i = 0; i < 301; i++) {
       const res = await app.request('/read/users/search?q=al', { headers: { 'CF-Connecting-IP': '203.0.113.9' } }, env, fakeCtx());
       last = res.status;
-      if (i < 60) expect(res.status).toBe(200);
+      if (i < 300) expect(res.status).toBe(200);
     }
     expect(last).toBe(429);
     const signedIn = await app.request('/read/users/search?q=al', { headers: { 'CF-Connecting-IP': '203.0.113.9', Authorization: 'Bearer alice' } }, env, fakeCtx());

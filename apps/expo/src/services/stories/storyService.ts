@@ -4,7 +4,7 @@ import { auth } from '../firebase/initFirebase';
 import { callApi, readApi } from '../api';
 import {
   getUserStoriesLocally,
-  saveUserStoriesLocally,
+  replaceUserStoriesLocally,
   markStoryAsSeenLocally,
   reactToStoryLocally,
   queuePendingAction,
@@ -54,32 +54,26 @@ export const fetchStories = async (
       return [];
     }
   }
+  // Signed in: NETWORK FIRST, the device cache only as the offline fallback.
+  // It used to be cache-first and upsert-only, which kept serving Stories the
+  // server no longer shows this viewer (unfollowed accounts, followers-only
+  // Stories cached before the audience rule). React Query keeps the previous
+  // list on screen while this resolves, so the bar does not blank. `forceRefresh`
+  // is kept for callers; both paths now go to the network.
+  void forceRefresh;
   try {
-    // Serve the cache first unless the caller explicitly wants fresh data.
-    if (!forceRefresh) {
-      const localStories = await getUserStoriesLocally();
-      if (localStories.length > 0) {
-        return localStories;
-      }
-    }
-
     const response = await readApi('/read/stories/feed', { limit });
     if (!Array.isArray(response)) {
       console.error('[fetchStories] Invalid response format:', response);
-      return [];
+      return await getUserStoriesLocally();
     }
-
     const stories = response as UserStories[];
-
-    for (const userStories of stories) {
-      await saveUserStoriesLocally(userStories);
-    }
-
+    await replaceUserStoriesLocally(stories);
     return stories;
   } catch (error) {
     console.error('[fetchStories] error:', error);
-    // Fall back to the cache. getUserStoriesLocally swallows its own errors and
-    // returns [], so this cannot throw a second time.
+    // Offline: the last answer the server gave THIS account (the cache is wiped
+    // on every account change). getUserStoriesLocally never throws.
     return await getUserStoriesLocally();
   }
 };

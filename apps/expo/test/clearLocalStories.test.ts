@@ -1,7 +1,7 @@
 /**
- * Signing out / switching accounts wipes the device-wide Story cache, including
- * queued Story actions, so the next viewer can neither see nor replay the
- * previous account's data.
+ * Signing out / switching accounts wipes the device-wide Story CONTENT cache so
+ * the next viewer never sees the previous account's Stories. Queued actions are
+ * kept: they carry their owner's uid and only that account ever replays them.
  */
 import { describe, it, expect, vi } from 'vitest';
 
@@ -34,8 +34,8 @@ vi.mock('@nozbe/watermelondb', () => ({ Q: {}, Model: class {} }));
 import { clearLocalStories } from '@/src/services/stories/offlineStoryService';
 
 describe('clearLocalStories', () => {
-  it('destroys every cached story, story group and queued story action', async () => {
+  it('destroys every cached story and story group, but keeps uid-scoped queued actions', async () => {
     await clearLocalStories();
-    expect(h.destroyed.sort()).toEqual(['pending_actions:p1', 'stories:s1', 'stories:s2', 'user_stories:u1']);
+    expect(h.destroyed.sort()).toEqual(['stories:s1', 'stories:s2', 'user_stories:u1']);
   });
 });

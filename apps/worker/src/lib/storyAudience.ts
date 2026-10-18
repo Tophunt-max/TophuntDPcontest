@@ -22,6 +22,14 @@ import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { isHiddenAccountStatus } from "./accountStatus";
 
+/**
+ * The shared stories-bar base (rows + owner privacy/ban facts). Purged when an
+ * account's privacy or ban status changes so guests stop seeing its Stories
+ * without waiting for the edge TTL. The Cache API purge is per colo, so other
+ * colos converge within the 60s edge TTL.
+ */
+export const STORIES_FEED_CACHE_KEY = "cache:stories:feed:v2";
+
 export interface StoryOwnerMeta {
   isPrivate: boolean;
   /** Deleted, pending deletion, or banned: their Stories are shown to nobody but themselves. */

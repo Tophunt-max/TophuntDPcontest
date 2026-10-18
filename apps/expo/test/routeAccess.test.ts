@@ -90,9 +90,13 @@ describe('guardDecision', () => {
     });
   });
 
-  it('signed-in user on a sign-in screen goes on to their destination — unless they just signed in there', () => {
-    expect(guardDecision({ ...base, access: 'auth-entry', signedIn: true, destination: '/battle/m1' })).toEqual({ type: 'redirect', to: '/battle/m1' });
+  it('signed-in user on a sign-in screen leaves it for their destination — unless they just signed in there', () => {
+    expect(guardDecision({ ...base, access: 'auth-entry', signedIn: true, destination: '/battle/m1' })).toEqual({ type: 'leave-auth', to: '/battle/m1' });
     expect(guardDecision({ ...base, access: 'auth-entry', signedIn: true, justSignedIn: true })).toEqual({ type: 'none' });
+  });
+
+  it('signing out on a private screen lands on public Home (no login race)', () => {
+    expect(guardDecision({ ...base, access: 'private', signedIn: false, justSignedOut: true, currentPath: '/setting' })).toEqual({ type: 'redirect', to: '/home' });
   });
 
   it('action links and post-signup steps are never bounced', () => {
@@ -120,7 +124,7 @@ describe('guardDecision', () => {
         });
         let hops = 0;
         let at = path;
-        while (decision.type === 'redirect') {
+        while (decision.type !== 'none') {
           at = decision.to;
           const r = new URLSearchParams(at.split('?')[1] || '').get('redirect');
           decision = guardDecision({ ...base, access: accessOf(at), signedIn, currentPath: at, destination: postAuthDestination(r) });

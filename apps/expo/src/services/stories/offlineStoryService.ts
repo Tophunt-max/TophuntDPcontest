@@ -477,19 +477,21 @@ export const checkAndSync = async (): Promise<void> => {
 };
 
 /**
- * Wipe every locally cached Story (and queued Story actions).
+ * Wipe the locally cached Story CONTENT (stories + story groups).
  *
  * The cache is device-wide, not per account, so it is cleared whenever the
  * signed-in account changes (sign-out, or a different account signing in) —
  * otherwise the next viewer on the device could be shown the previous
- * account's followers-only Stories, or replay its queued reactions.
+ * account's followers-only Stories. Queued actions (`pending_actions`) are
+ * deliberately KEPT: each carries its owner's uid and `syncPendingActions` only
+ * replays the signed-in account's own, so an offline reaction survives a
+ * sign-out/sign-in round trip.
  */
 export const clearLocalStories = async (): Promise<void> => {
   try {
     await database.write(async () => {
-      const tables = ['stories', 'user_stories', 'pending_actions'];
       const doomed: Model[] = [];
-      for (const t of tables) {
+      for (const t of ['stories', 'user_stories']) {
         try {
           doomed.push(...(await database.get<Model>(t).query().fetch()));
         } catch {
@@ -501,4 +503,17 @@ export const clearLocalStories = async (): Promise<void> => {
   } catch (e) {
     console.error('[offlineStoryService] clearLocalStories failed', e);
   }
+};
+
+/**
+ * Make the device cache EXACTLY the server's latest answer for this viewer.
+ *
+ * Upsert-only saving kept anything the server had stopped returning — Stories
+ * from someone the viewer unfollowed, or followers-only Stories cached before
+ * the audience rule existed — and kept serving them. Replacing the set on every
+ * successful fetch makes the server's audience decision the only one.
+ */
+export const replaceUserStoriesLocally = async (list: UserStories[]): Promise<void> => {
+  await clearLocalStories();
+  for (const group of list) await saveUserStoriesLocally(group);
 };

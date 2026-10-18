@@ -17,10 +17,15 @@ export const StoriesBar: React.FC = () => {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   const [currentUser, setCurrentUser] = useState(auth.currentUser);
+  // Until Firebase restores (or rules out) a persisted session on cold start,
+  // we do not know whether this is a guest — fetching first would fire a guest
+  // request for a signed-in user and then refetch as them.
+  const [authResolved, setAuthResolved] = useState(!!auth.currentUser);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setCurrentUser(user);
+      setAuthResolved(true);
     });
     return () => unsubscribe();
   }, []);
@@ -32,6 +37,7 @@ export const StoriesBar: React.FC = () => {
     // Wrapped, not passed by reference: react-query would otherwise pass its
     // QueryFunctionContext in as fetchStories' options argument.
     queryFn: () => fetchStories(),
+    enabled: authResolved,
     staleTime: 5000, // Reduced staleTime for more frequent updates
     refetchOnWindowFocus: true,
   });
@@ -78,7 +84,7 @@ export const StoriesBar: React.FC = () => {
     if (firstFrames.length) void prefetchImages(firstFrames);
   }, [userStories]);
 
-  if (isLoading && !userStories) {
+  if ((isLoading || !authResolved) && !userStories) {
     return <StoriesSkeleton isDark={isDark} />;
   }
 

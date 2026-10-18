@@ -164,7 +164,7 @@ export default function SettingScreen() {
   const performLogout = async () => {
     try {
       await signOut();
-      router.replace('/auth/login');
+      router.replace('/home');
     } catch (error: any) {
       reportError(error, { screen: 'settings', action: 'logout' });
       emitToast(error?.message || 'Could not log out. Please try again.', 'error');

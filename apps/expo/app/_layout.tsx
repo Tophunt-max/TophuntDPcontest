@@ -289,6 +289,7 @@ function RootLayoutNav() {
     if (loading) return;
     const signedIn = !!user;
     const justSignedIn = wasSignedIn.current === false && signedIn;
+    const justSignedOut = wasSignedIn.current === true && !signedIn;
     wasSignedIn.current = signedIn;
     const params = globalParams as Record<string, unknown>;
     const decision = guardDecision({
@@ -296,11 +297,18 @@ function RootLayoutNav() {
       signedIn,
       authLoading: loading,
       justSignedIn,
+      justSignedOut,
       currentPath: pathWithQuery(pathname, params, segments as string[]),
       destination: postAuthDestination(params.redirect as string | string[] | undefined),
       loginHref,
     });
     if (decision.type === 'redirect') router.replace(decision.to as any);
+    else if (decision.type === 'leave-auth') {
+      // Reached with Back after a gated sign-in: skip the stale login entry
+      // instead of re-showing the destination on top of it.
+      if (router.canGoBack()) router.back();
+      else router.replace(decision.to as any);
+    }
   }, [user, loading, segments, pathname, globalParams]);
 
   useEffect(() => {

@@ -40,6 +40,7 @@ import {
   invalidateAuthState,
 } from "../lib/cache";
 import { purgeShared } from "../lib/edgeCache";
+import { STORIES_FEED_CACHE_KEY } from "../lib/storyAudience";
 import { assertContestOpenNow, createContestExtra, validateContestInput } from "../lib/contestAdmin";
 import { parsePayoutDestination, readWithdrawalPolicy } from "../lib/payouts";
 import { parseDeliveryAddress } from "../lib/deliveryAddress";
@@ -3182,7 +3183,15 @@ apiRoute.post("/", async (c) => {
       }
       // Invalidate the cached public profile so the user sees their edits
       // immediately (GET /users/:id serves a short-lived shared copy).
-      c.executionCtx.waitUntil(purgeShared(c, userCacheKey(uid)));
+      c.executionCtx.waitUntil(
+        purgeShared(
+          c,
+          userCacheKey(uid),
+          // Going private (or public) changes who may see this account's Stories;
+          // the shared stories-bar base carries that fact (lib/storyAudience.ts).
+          ...(fields && Object.prototype.hasOwnProperty.call(fields, "isPrivate") ? [STORIES_FEED_CACHE_KEY] : []),
+        ),
+      );
       return c.json({ success: true });
     }
 

@@ -100,18 +100,27 @@ export function classifyRoute(segments: readonly string[], params: { userId?: un
   return TABLE[k] ?? 'private';
 }
 
-export type GuardDecision = { type: 'none' } | { type: 'redirect'; to: string };
+export type GuardDecision =
+  | { type: 'none' }
+  | { type: 'redirect'; to: string }
+  /**
+   * A signed-in user is on a sign-in screen they did not just use (typically
+   * reached with Back after a gated sign-in). Leave it: go back past it when
+   * there is history, otherwise replace it with `to`.
+   */
+  | { type: 'leave-auth'; to: string };
 
 /**
  * What the root guard should do for a route. Pure, so the whole policy is
  * testable without a navigator.
  *
  *  - while auth is still resolving: nothing (no premature redirect)
- *  - guest on a private route: sign in, then come back here
- *  - signed-in user on a sign-in/sign-up entry screen: on to their destination —
- *    EXCEPT right after signing in on that screen, which navigates itself (to a
- *    redirect, or to the profile-completion step for a brand-new account);
- *    fighting it here is how new accounts used to skip profile setup
+ *  - guest on a private route: sign in, then come back here — except right
+ *    after signing OUT there, which lands on the public Home (guest-first, and
+ *    no race with the screen's own post-sign-out navigation)
+ *  - signed-in user on a sign-in/sign-up entry screen: leave it for their
+ *    destination — EXCEPT right after signing in on that screen, which
+ *    navigates itself (to a redirect, or to profile setup for a new account)
  *  - everything else: nothing
  */
 export function guardDecision(input: {
@@ -120,6 +129,8 @@ export function guardDecision(input: {
   authLoading: boolean;
   /** The session started while this screen was showing. */
   justSignedIn?: boolean;
+  /** The session ended while this screen was showing. */
+  justSignedOut?: boolean;
   /** The current in-app path with query, for the return trip. */
   currentPath: string;
   /** Sanitised post-auth destination of the current screen, if any. */
@@ -129,7 +140,10 @@ export function guardDecision(input: {
 }): GuardDecision {
   const { access, signedIn, authLoading } = input;
   if (authLoading) return { type: 'none' };
-  if (!signedIn && access === 'private') return { type: 'redirect', to: input.loginHref(input.currentPath) };
-  if (signedIn && access === 'auth-entry' && !input.justSignedIn) return { type: 'redirect', to: input.destination };
+  if (!signedIn && access === 'private') {
+    if (input.justSignedOut) return { type: 'redirect', to: '/home' };
+    return { type: 'redirect', to: input.loginHref(input.currentPath) };
+  }
+  if (signedIn && access === 'auth-entry' && !input.justSignedIn) return { type: 'leave-auth', to: input.destination };
   return { type: 'none' };
 }

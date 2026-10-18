@@ -54,10 +54,11 @@ import {
   getRelations,
   hiddenUidsFor,
   sqlExclusionList,
+  assertMatchInteractionAllowed,
 } from "../lib/blocks";
 import { applyVsStoryPrivacy } from "../lib/matchStories";
-import { filterStoriesForViewer, storyOwnerMeta, type StoryOwnerMeta } from "../lib/storyAudience";
-import { publicVsStoryStatus } from "../lib/vsPublication";
+import { filterStoriesForViewer, STORIES_FEED_CACHE_KEY, storyOwnerMeta, type StoryOwnerMeta } from "../lib/storyAudience";
+import { ensureMatchShareImage, publicVsStoryStatus, runVsPublication } from "../lib/vsPublication";
 import {
   DELETED_STATUS,
   PENDING_DELETION_STATUS,
@@ -1367,6 +1368,32 @@ readRoute.get("/matches", optionalAuth, async (c) => {
   return c.json(matches);
 });
 
+/**
+ * The battle's canonical share image (server-rendered VS card), for guests too.
+ *
+ * Sharing a public battle needs no account, so the image a share sheet attaches
+ * must be readable without one. Same resolver as the `/api` action
+ * (`ensureMatchShareImage`): verifies the stored card and re-renders it at the
+ * same url if it was swept — never touching Stories or money. A signed-in viewer
+ * who is blocked by a participant is refused, exactly like the battle itself.
+ * Reads are bounded per viewer (uid, or IP for guests); re-renders are bounded
+ * per battle.
+ */
+readRoute.get("/matches/:id/share-image", optionalAuth, async (c) => {
+  const matchId = String(c.req.param("id") || "").slice(0, 128);
+  const uid = c.get("user")?.uid;
+  await rateLimit(c.env, uid ? `vsshare:${uid}` : `vsshare_ip:${clientIp(c.req.raw.headers)}`, 600, 3600);
+  if (uid) await assertMatchInteractionAllowed(c.env, uid, matchId);
+  const out = await ensureMatchShareImage(c.env, matchId, {
+    beforeRegenerate: () => rateLimit(c.env, `vsshare_regen:${matchId}`, 20, 3600),
+  });
+  if (out.status === "preparing") {
+    c.executionCtx.waitUntil(runVsPublication(c.env, matchId).catch(() => {}));
+  }
+  c.header("Cache-Control", "private, no-store");
+  return c.json(out);
+});
+
 readRoute.get("/matches/:id", optionalAuth, async (c) => {
   const db = getDb(c.env);
   const id = c.req.param("id");
@@ -2045,7 +2072,8 @@ readRoute.get("/users/search", optionalAuth, async (c) => {
   // Guests can search too, but an uncached LIKE scan per keystroke from an
   // anonymous client is the cheapest way to burn D1 reads, so signed-out
   // searches are throttled per IP (signed-in users are bounded by their session).
-  if (!uid) await rateLimit(c.env, `usersearch_ip:${clientIp(c.req.raw.headers)}`, 60, 60);
+  // Generous because many guests share one carrier-NAT address.
+  if (!uid) await rateLimit(c.env, `usersearch_ip:${clientIp(c.req.raw.headers)}`, 300, 60);
   // Blocks only: a muted user is still someone you can look up on purpose.
   const blocked = await blockedUidsFor(c.env, uid);
   const excluded = sqlExclusionList(blocked);
@@ -3284,7 +3312,7 @@ readRoute.get("/stories/feed", optionalAuth, async (c) => {
   // `cachedJson`). `expiresAt > now` is evaluated once per fill, so a story can
   // linger up to the edge TTL past expiry; the same staleness the feed tolerates.
   const base = await cachedJson<{ rows: any[]; owners: Record<string, StoryOwnerMeta> }>(c, {
-    key: "cache:stories:feed:v2",
+    key: STORIES_FEED_CACHE_KEY,
     edgeTtlSec: READ_CACHE_TTLS.storiesFeed.edge,
     kvTtlSec: READ_CACHE_TTLS.storiesFeed.kv,
     load: async () => {
@@ -3294,7 +3322,10 @@ readRoute.get("/stories/feed", optionalAuth, async (c) => {
         .from(schema.stories)
         .where(gt(schema.stories.expiresAt, Date.now()))
         .orderBy(desc(schema.stories.createdAt))
-        .limit(100)
+        // Wider than the old 100: the audience rule now filters per viewer AFTER
+        // this shared window, so a narrower one would drop followed accounts'
+        // Stories for viewers who follow few people. One cached read per minute.
+        .limit(250)
         .all();
       const owners = await storyOwnerMeta(c.env, rows.map((r) => r.userId));
       return { rows: rows as any[], owners: Object.fromEntries(owners) };
@@ -3316,6 +3347,8 @@ readRoute.get("/stories/feed", optionalAuth, async (c) => {
   // A guest answer depends only on the shared base, so it may be cached briefly
   // by browsers; a signed-in answer is relationship-dependent and must not be.
   c.header("Cache-Control", uid ? "private, no-store" : "public, max-age=30");
+  // A guest answer must never satisfy the same browser's first signed-in request.
+  c.header("Vary", "Authorization");
 
   const userIds = [...new Set(rows.map((r) => r.userId))];
   const userMap = await attachUsers(c, userIds);
@@ -3373,6 +3406,7 @@ readRoute.get("/users/:id/stories", optionalAuth, async (c) => {
   );
   // Audience depends on the viewer's follow graph and blocks.
   c.header("Cache-Control", storyViewer ? "private, no-store" : "public, max-age=30");
+  c.header("Vary", "Authorization");
   if (!rows.length) return c.json(null);
   const userMap = await attachUsers(c, [userId]);
   return c.json({
@@ -3425,6 +3459,7 @@ readRoute.get("/stories/:id/viewers", requireAuth, async (c) => {
 readRoute.get("/users/:id/highlights", optionalAuth, async (c) => {
   const db = getDb(c.env);
   const userId = c.req.param("id");
+  const viewer = c.get("user")?.uid;
   if (await profileHiddenFrom(c, userId)) return c.json([]);
   const rows = await db
     .select()
@@ -3432,7 +3467,52 @@ readRoute.get("/users/:id/highlights", optionalAuth, async (c) => {
     .where(eq(schema.highlights.userId, userId))
     .orderBy(desc(schema.highlights.createdAt))
     .all();
-  return c.json(rows);
+  c.header("Vary", "Authorization");
+  // The owner sees their whole shelf.
+  if (viewer === userId) {
+    c.header("Cache-Control", "private, no-store");
+    return c.json(rows);
+  }
+  /**
+   * Everyone else gets only highlights backed by Stories they may see.
+   *
+   * A highlight's `coverImageUrl` is a Story's media, so serving the raw rows
+   * published followers-only and private-account Story media to guests and
+   * non-followers. Each highlight is kept only if at least one of its Stories
+   * still exists and passes the audience rule (lib/storyAudience.ts), and its
+   * cover is replaced unless it is one of those visible Stories' media (or not a
+   * Story's media at all). Highlights whose Stories have all expired show
+   * nothing to others — their reels were already empty.
+   */
+  const ids = [...new Set(rows.flatMap((h) => ((h.storyIds as string[]) || []).slice(0, 30)))].slice(0, 300);
+  const storyRows = ids.length
+    ? await db
+        .select({ id: schema.stories.id, userId: schema.stories.userId, visibility: schema.stories.visibility, mediaUrl: schema.stories.mediaUrl, type: schema.stories.type, matchId: schema.stories.matchId, mediaType: schema.stories.mediaType })
+        .from(schema.stories)
+        .where(and(inArray(schema.stories.id, ids), eq(schema.stories.userId, userId)))
+        .all()
+    : [];
+  const visible = await applyVsStoryPrivacy(
+    c.env,
+    await filterStoriesForViewer(c.env, storyRows as any[], viewer),
+    viewer ? await hiddenUidsFor(c.env, viewer) : new Set<string>(),
+    viewer,
+  );
+  const visibleById = new Map(visible.map((s: any) => [s.id, s]));
+  const allMedia = new Set(storyRows.map((s) => s.mediaUrl).filter(Boolean));
+  const out = [];
+  for (const h of rows) {
+    const shown = ((h.storyIds as string[]) || []).filter((id) => visibleById.has(id));
+    if (!shown.length) continue;
+    const visibleMedia = new Set(shown.map((id) => (visibleById.get(id) as any).mediaUrl));
+    const cover =
+      h.coverImageUrl && (visibleMedia.has(h.coverImageUrl) || !allMedia.has(h.coverImageUrl))
+        ? h.coverImageUrl
+        : (visibleById.get(shown[0]) as any).mediaUrl;
+    out.push({ ...h, storyIds: shown, coverImageUrl: cover });
+  }
+  c.header("Cache-Control", viewer ? "private, no-store" : "public, max-age=30");
+  return c.json(out);
 });
 
 readRoute.get("/highlights/:id/stories", optionalAuth, async (c) => {
@@ -3473,6 +3553,8 @@ readRoute.get("/highlights/:id/stories", optionalAuth, async (c) => {
     highlightViewer ? await hiddenUidsFor(c.env, highlightViewer) : new Set<string>(),
     highlightViewer,
   );
+  c.header("Cache-Control", highlightViewer ? "private, no-store" : "public, max-age=30");
+  c.header("Vary", "Authorization");
   if (!rows.length) return c.json(null);
   const userMap = await attachUsers(c, [h.userId]);
   return c.json({
