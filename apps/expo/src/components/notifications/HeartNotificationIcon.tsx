@@ -9,12 +9,14 @@ import { useRouter } from 'expo-router';
 import { HeartIcon_Light, HeartIcon_Dark } from '@/assets/svgs';
 import { notificationService } from "@/src/services/notifications/notificationService";
 import { useAuth } from "@/src/hooks/useAuth";
+import { useAuthGate } from "@/src/hooks/useAuthGate";
 
 export const HeartNotificationIcon = () => {
   const router = useRouter();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   const { user } = useAuth();
+  const { requireAuth } = useAuthGate();
   const [unreadCount, setUnreadCount] = useState(0);
 
   const HeartIcon = isDark ? HeartIcon_Dark : HeartIcon_Light;
@@ -36,7 +38,7 @@ export const HeartNotificationIcon = () => {
   return (
     <Pressable 
         hitSlop={10} 
-        onPress={() => router.push('/notifications')}
+        onPress={() => requireAuth('notifications', { returnTo: '/notifications' }) && router.push('/notifications')}
     >
       <View>
         <HeartIcon width={24} height={24} />

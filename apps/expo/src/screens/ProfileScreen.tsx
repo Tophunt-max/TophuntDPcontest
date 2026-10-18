@@ -25,6 +25,7 @@ import { notificationService } from '@/src/services/notifications/notificationSe
 import { fetchProfileByHandle, profilePath } from '@/src/services/users';
 import { Colors } from '@/constants/theme';
 import { PostCard } from '@/src/components/home/PostCard';
+import { useAuthGate } from '@/src/hooks/useAuthGate';
 
 interface ProfileScreenProps {
   /**
@@ -74,22 +75,12 @@ const ProfilePage = ({ handle }: ProfileScreenProps) => {
     if (!handle) return;
     if (authLoading) return;
     /**
-     * Same sign-in gate the uid address has always had.
-     *
-     * Deliberately NOT relaxed as part of this change. Making `/@username` viewable
-     * without an account would be a separate, much larger decision — every profile
-     * becomes readable by anyone on the internet — and it is not what moving the uid
-     * out of the url required. The url is the change; who may read a profile is
-     * unchanged.
-     *
-     * `redirect` carries the handle, so signing in lands back on the profile the
-     * visitor actually followed a link to.
+     * Guest-readable. A shared `/@handle` link opens the PUBLIC profile without an
+     * account; the Worker decides what that is (an explicit field allow-list —
+     * no wallet, bookmarks, contact details or settings — and nothing at all for
+     * deleted/hidden accounts or a viewer the owner has blocked). Following,
+     * messaging and reporting prompt for sign-in at the moment of the tap.
      */
-    if (!currentUser) {
-      setIsRedirecting(true);
-      router.replace(`/auth/login?redirect=${encodeURIComponent(`/@${handle}`)}`);
-      return;
-    }
 
     /**
      * ONE url per profile, in the app as well as at the edge.
@@ -134,7 +125,8 @@ const ProfilePage = ({ handle }: ProfileScreenProps) => {
         return;
       }
       setTargetId(uid);
-      if (uid !== currentUser?.uid) notificationService.notifyProfileVisit(uid);
+      // Visit telemetry is an authenticated action; guests are not recorded.
+      if (currentUser && uid !== currentUser.uid) notificationService.notifyProfileVisit(uid);
     })();
     return () => {
       cancelled = true;
@@ -145,18 +137,19 @@ const ProfilePage = ({ handle }: ProfileScreenProps) => {
   useEffect(() => {
     if (handle) return;
     if (!authLoading) {
-        if (!currentUser) {
+        // `/profile?userId=<someone>` is that person's public profile — open to
+        // guests. Bare `/profile` is the viewer's OWN profile: a guest has none,
+        // and the root route guard (src/lib/routeAccess.ts) sends them to sign
+        // in with a return path. Only the skeleton shows meanwhile.
+        if (!currentUser && !userIdParam) {
             setIsRedirecting(true);
-            const redirectPath = userIdParam ? `/profile?userId=${userIdParam}` : '/profile';
-            const encodedRedirect = encodeURIComponent(redirectPath);
-            router.replace(`/auth/login?redirect=${encodedRedirect}`);
             return;
         }
 
         const id = userIdParam || currentUser?.uid;
         if (id) {
             setTargetId(id);
-            if (id !== currentUser?.uid) {
+            if (currentUser && id !== currentUser.uid) {
                 notificationService.notifyProfileVisit(id);
             }
         }
@@ -293,8 +286,11 @@ const ProfileContent = ({
     if (next) router.replace(next);
   }, [addressedByUid, profile?.username, router]);
 
+  const { requireAuth } = useAuthGate();
   const handleToggleFollow = () => {
-    if (!isOwnProfile) toggleFollow(targetUserId);
+    if (isOwnProfile) return;
+    if (!requireAuth('follow')) return;
+    toggleFollow(targetUserId);
   };
 
   const handleRefresh = async () => {

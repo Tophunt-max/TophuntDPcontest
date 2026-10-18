@@ -33,7 +33,7 @@ import { cachedJson, cachedResponse } from "../lib/edgeCache";
 import { memoGet, memoPut } from "../lib/memo";
 import { getLiveTally, getViewerVote } from "../lib/voteCounter";
 import { publicPrize } from "../lib/prizes";
-import { rateLimit } from "../lib/rateLimit";
+import { clientIp, rateLimit } from "../lib/rateLimit";
 import {
   searchTracks,
   searchCatalog,
@@ -56,6 +56,7 @@ import {
   sqlExclusionList,
 } from "../lib/blocks";
 import { applyVsStoryPrivacy } from "../lib/matchStories";
+import { filterStoriesForViewer, storyOwnerMeta, type StoryOwnerMeta } from "../lib/storyAudience";
 import { publicVsStoryStatus } from "../lib/vsPublication";
 import {
   DELETED_STATUS,
@@ -2041,6 +2042,10 @@ readRoute.get("/users/search", optionalAuth, async (c) => {
   const uid = c.get("user")?.uid;
   const q = (c.req.query("q") || "").toLowerCase();
   if (q.length < 2) return c.json([]);
+  // Guests can search too, but an uncached LIKE scan per keystroke from an
+  // anonymous client is the cheapest way to burn D1 reads, so signed-out
+  // searches are throttled per IP (signed-in users are bounded by their session).
+  if (!uid) await rateLimit(c.env, `usersearch_ip:${clientIp(c.req.raw.headers)}`, 60, 60);
   // Blocks only: a muted user is still someone you can look up on purpose.
   const blocked = await blockedUidsFor(c.env, uid);
   const excluded = sqlExclusionList(blocked);
@@ -3257,18 +3262,29 @@ async function attachUsers(c: any, userIds: string[]) {
   return map;
 }
 
-readRoute.get("/stories/feed", requireAuth, async (c) => {
-  const uid = c.get("user").uid;
+/**
+ * The stories bar. Guest-readable (optionalAuth): a signed-out visitor sees the
+ * public Stories of public accounts; a signed-in viewer additionally sees
+ * followers-only Stories of people they follow, and their own. The audience rule
+ * is lib/storyAudience.ts, shared with profile rings and highlights.
+ *
+ * Viewer-specific state stays out of guest responses: no viewer lists, no seen
+ * state, no relationship data. Reacting, replying and viewing (`viewStory`) are
+ * authenticated `/api` actions.
+ */
+readRoute.get("/stories/feed", optionalAuth, async (c) => {
+  const uid: string | undefined = c.get("user")?.uid;
 
-  // Shared base: every live story, newest first. Edge-cached (edge-only) so the
+  // Shared base: every live story, newest first, plus the owner facts the
+  // audience rule needs (privacy, hidden/banned). Edge-cached (edge-only) so the
   // stories bar stops scanning `stories` on every feed open (D1_R2_LOAD_AUDIT.md
-  // §7). The per-viewer block/mute filter is applied AFTER the cache rather than in
-  // the SQL, so no viewer's exclusions are ever baked into the shared entry — the
-  // rule lib/edgeCache.ts states for `cachedJson`. `expiresAt > now` is evaluated
-  // once per fill, so a story can linger in the bar up to the edge TTL past expiry;
-  // that is the same staleness the feed list already tolerates and is harmless here.
-  const baseRows = await cachedJson<any[]>(c, {
-    key: "cache:stories:feed",
+  // §7). Everything viewer-dependent — the audience rule's follow check and the
+  // block/mute filter — is applied AFTER the cache, so no viewer's view is ever
+  // baked into the shared entry (the rule lib/edgeCache.ts states for
+  // `cachedJson`). `expiresAt > now` is evaluated once per fill, so a story can
+  // linger up to the edge TTL past expiry; the same staleness the feed tolerates.
+  const base = await cachedJson<{ rows: any[]; owners: Record<string, StoryOwnerMeta> }>(c, {
+    key: "cache:stories:feed:v2",
     edgeTtlSec: READ_CACHE_TTLS.storiesFeed.edge,
     kvTtlSec: READ_CACHE_TTLS.storiesFeed.kv,
     load: async () => {
@@ -3280,20 +3296,26 @@ readRoute.get("/stories/feed", requireAuth, async (c) => {
         .orderBy(desc(schema.stories.createdAt))
         .limit(100)
         .all();
-      return rows as any[];
+      const owners = await storyOwnerMeta(c.env, rows.map((r) => r.userId));
+      return { rows: rows as any[], owners: Object.fromEntries(owners) };
     },
   });
+  const baseRows = base.rows || [];
+  const audience = await filterStoriesForViewer(c.env, baseRows as any[], uid, new Map(Object.entries(base.owners || {})));
 
   // The stories bar uses the wider `hiddenUidsFor` (blocks AND mutes) — "stop
   // showing me this person" has to cover both or the feature looks broken. The full
   // hidden set is filtered in JS (no SQL_EXCLUSION_MAX ceiling to work around now).
-  const hiddenAuthors = await hiddenUidsFor(c.env, uid);
+  const hiddenAuthors = uid ? await hiddenUidsFor(c.env, uid) : new Set<string>();
   const authorFiltered = hiddenAuthors.size
-    ? excludeHiddenBy(baseRows as any[], hiddenAuthors, (r: any) => r.userId)
-    : baseRows;
+    ? excludeHiddenBy(audience as any[], hiddenAuthors, (r: any) => r.userId)
+    : audience;
   // A VS story also DEPICTS the opponent. Hiding the author is not enough when
   // the viewer hid the other participant — see applyVsStoryPrivacy.
   const rows = await applyVsStoryPrivacy(c.env, authorFiltered as any[], hiddenAuthors, uid);
+  // A guest answer depends only on the shared base, so it may be cached briefly
+  // by browsers; a signed-in answer is relationship-dependent and must not be.
+  c.header("Cache-Control", uid ? "private, no-store" : "public, max-age=30");
 
   const userIds = [...new Set(rows.map((r) => r.userId))];
   const userMap = await attachUsers(c, userIds);
@@ -3323,8 +3345,10 @@ readRoute.get("/stories/feed", requireAuth, async (c) => {
     hasUnseen: true,
   }));
   // current user first
-  const idx = list.findIndex((u) => u.userId === uid);
-  if (idx > 0) list.unshift(list.splice(idx, 1)[0]);
+  if (uid) {
+    const idx = list.findIndex((u) => u.userId === uid);
+    if (idx > 0) list.unshift(list.splice(idx, 1)[0]);
+  }
   return c.json(list);
 });
 
@@ -3343,10 +3367,12 @@ readRoute.get("/users/:id/stories", optionalAuth, async (c) => {
   const storyViewer = c.get("user")?.uid;
   const rows = await applyVsStoryPrivacy(
     c.env,
-    rawRows,
+    await filterStoriesForViewer(c.env, rawRows, storyViewer),
     storyViewer ? await hiddenUidsFor(c.env, storyViewer) : new Set<string>(),
     storyViewer,
   );
+  // Audience depends on the viewer's follow graph and blocks.
+  c.header("Cache-Control", storyViewer ? "private, no-store" : "public, max-age=30");
   if (!rows.length) return c.json(null);
   const userMap = await attachUsers(c, [userId]);
   return c.json({
@@ -3443,7 +3469,7 @@ readRoute.get("/highlights/:id/stories", optionalAuth, async (c) => {
   const highlightViewer = c.get("user")?.uid;
   const rows = await applyVsStoryPrivacy(
     c.env,
-    highlightRows,
+    await filterStoriesForViewer(c.env, highlightRows, highlightViewer),
     highlightViewer ? await hiddenUidsFor(c.env, highlightViewer) : new Set<string>(),
     highlightViewer,
   );

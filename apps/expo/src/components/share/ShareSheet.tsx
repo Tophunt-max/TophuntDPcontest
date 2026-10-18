@@ -49,6 +49,8 @@ import {
   type ShareOutcome,
 } from '@/src/lib/share';
 import { useBattleShareAsset } from '@/src/hooks/useBattleShareAsset';
+import { useAuthGate } from '@/src/hooks/useAuthGate';
+import { auth } from '@/src/services/firebase/initFirebase';
 import { createShareCounter, platformShareMode, shareOutcomeMessage } from '@/src/lib/vsShareAsset';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -113,7 +115,13 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId, match: matchPr
     };
   }, [isWeb, webFiles, imageUrl]);
   const preparedFile = prepared && prepared.url === imageUrl ? prepared.file : null;
-  const counter = useMemo(() => createShareCounter(() => contestService.shareMatch(matchId)), [matchId]);
+  // The share count is an authenticated action; a guest's share is real but not
+  // recorded (it would only 401).
+  const counter = useMemo(
+    () => createShareCounter(() => (auth.currentUser ? contestService.shareMatch(matchId) : Promise.resolve())),
+    [matchId],
+  );
+  const { requireAuth } = useAuthGate();
   // One counted share per OPENING of the sheet.
   useEffect(() => {
     if (visible) counter.reset();
@@ -241,6 +249,7 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId, match: matchPr
   /** Send the battle straight into a DM with the tapped user (caption + link). */
   const onSendToUser = useCallback(async (u: any) => {
     if (busy) return;
+    if (!requireAuth('message', { beforeNavigate: closeSheet })) return;
     setBusy(true);
     try {
       const chatId = await startChat(u.id, { displayName: u.name, photoURL: u.avatar });
@@ -253,7 +262,7 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId, match: matchPr
     } finally {
       setBusy(false);
     }
-  }, [busy, caption, closeSheet, counter, addToast]);
+  }, [busy, caption, closeSheet, counter, addToast, requireAuth]);
 
   /** URL only, by design. Counted once per opening however often it is tapped. */
   const onCopyLink = useCallback(async () => {

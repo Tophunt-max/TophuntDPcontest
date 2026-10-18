@@ -475,3 +475,30 @@ export const checkAndSync = async (): Promise<void> => {
     console.error('[checkAndSync] Error:', error);
   }
 };
+
+/**
+ * Wipe every locally cached Story (and queued Story actions).
+ *
+ * The cache is device-wide, not per account, so it is cleared whenever the
+ * signed-in account changes (sign-out, or a different account signing in) —
+ * otherwise the next viewer on the device could be shown the previous
+ * account's followers-only Stories, or replay its queued reactions.
+ */
+export const clearLocalStories = async (): Promise<void> => {
+  try {
+    await database.write(async () => {
+      const tables = ['stories', 'user_stories', 'pending_actions'];
+      const doomed: Model[] = [];
+      for (const t of tables) {
+        try {
+          doomed.push(...(await database.get<Model>(t).query().fetch()));
+        } catch {
+          /* table absent on an old schema */
+        }
+      }
+      if (doomed.length) await database.batch(...doomed.map((r) => r.prepareDestroyPermanently()));
+    });
+  } catch (e) {
+    console.error('[offlineStoryService] clearLocalStories failed', e);
+  }
+};

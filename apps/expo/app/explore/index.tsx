@@ -29,6 +29,7 @@ import { fetchSuggestedUsers, toggleFollowService, searchUsers } from '@/src/ser
 import { Avatar } from '@/src/components/ui/Avatar';
 import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
 import { useAuth } from '@/src/hooks/useAuth';
+import { useAuthGate } from '@/src/hooks/useAuthGate';
 import { useProfile } from '@/src/hooks/useProfileData';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useToast } from '@/src/components/toast/ToastProvider';
@@ -240,9 +241,10 @@ export default function DiscoverScreen() {
     setActiveTab(key);
   };
 
+  const { requireAuth } = useAuthGate();
   const handleAction = (action: () => void) => {
-    if (!user) router.push(`/auth/login?redirect=${encodeURIComponent('/explore')}`);
-    else action();
+    // Explore is public; following prompts sign-in at the tap and returns here.
+    if (requireAuth('follow')) action();
   };
 
   const handleFollow = async (targetId: string) => {

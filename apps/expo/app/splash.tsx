@@ -157,14 +157,15 @@ export default function SplashScreen() {
                     router.replace('/home');
                 }
             } else {
-                // Not logged in
-                if (hasSeenOnboarding === 'true') {
-                    console.log("Returning guest -> Login");
-                    router.replace('/auth/login');
-                } else {
-                    console.log("First time user -> Onboarding");
-                    router.replace('/onboarding');
+                // Guest-first: new and returning guests both land on the public
+                // Home feed. Sign-in is asked for only when they open a personal
+                // screen or tap a protected action (src/hooks/useAuthGate.ts).
+                // Marking onboarding as seen keeps the old intro from being shown
+                // ahead of content on a later launch.
+                if (hasSeenOnboarding !== 'true') {
+                    await AsyncStorage.setItem('hasSeenOnboarding', 'true').catch(() => {});
                 }
+                router.replace('/home');
             }
         });
     };

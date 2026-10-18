@@ -27,6 +27,7 @@ import { emitToast } from '@/src/lib/toastBridge';
 import { reportError } from '@/src/lib/reportError';
 import { useDesignWindow } from '@/src/lib/layout';
 import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
+import { useAuthGate } from '@/src/hooks/useAuthGate';
 
 
 type ProfileHeaderProps = {
@@ -90,6 +91,7 @@ const calculateLevelInfo = (xp: number) => {
 };
 
 const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onToggleFollow, isFollowing, onRefresh }) => {
+  const { requireAuth } = useAuthGate();
   const { width: designW } = useDesignWindow();
   const router = useRouter();
   const colorScheme = useColorScheme();
@@ -178,6 +180,8 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
 
   const handleMessagePress = async () => {
     if (isStartingChat) return;
+    // Guests can view the profile; messaging needs an account.
+    if (!requireAuth('message')) return;
     setIsStartingChat(true);
     try {
         // Add a timeout to prevent infinite loading
@@ -252,7 +256,7 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
              // This slot was empty on other people's profiles, which is why there
              // was nowhere to put Block / Mute / Report.
              <TouchableOpacity
-               onPress={() => setActionsVisible(true)}
+               onPress={() => requireAuth('report') && setActionsVisible(true)}
                accessibilityRole="button"
                accessibilityLabel="More options"
                accessibilityHint="Block, mute or report this account"

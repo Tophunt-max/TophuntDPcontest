@@ -10,6 +10,7 @@ import { StoriesSkeleton } from './StoriesSkeleton';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { onAuthStateChanged } from 'firebase/auth';
 import { Colors } from '@/constants/theme';
+import { useAuthGate } from '@/src/hooks/useAuthGate';
 
 export const StoriesBar: React.FC = () => {
   const router = useRouter();
@@ -24,17 +25,20 @@ export const StoriesBar: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
+  // Guests see the public stories bar too. The key is per viewer ('guest' when
+  // signed out), so a guest list and an account's list never share an entry.
   const { data: userStories, isLoading } = useQuery({
-    queryKey: ['stories', currentUser?.uid],
+    queryKey: ['stories', currentUser?.uid ?? 'guest'],
     // Wrapped, not passed by reference: react-query would otherwise pass its
     // QueryFunctionContext in as fetchStories' options argument.
     queryFn: () => fetchStories(),
-    enabled: !!currentUser,
     staleTime: 5000, // Reduced staleTime for more frequent updates
     refetchOnWindowFocus: true,
   });
 
+  const { requireAuth } = useAuthGate();
   const handleAddStory = () => {
+    if (!requireAuth('create')) return;
     router.push('/story/create');
   };
 
@@ -43,7 +47,6 @@ export const StoriesBar: React.FC = () => {
   };
 
   const handleCurrentUserPress = (hasStories: boolean, userId: string) => {
-    console.log("Handle Current User Press:", { hasStories, userId });
     if (hasStories && userId) {
       handleViewStory(userId);
     } else {
@@ -54,7 +57,6 @@ export const StoriesBar: React.FC = () => {
   // Find current user's stories data
   const currentUserStoriesData = useMemo(() => {
     const data = userStories?.find(us => us.userId === currentUser?.uid);
-    console.log("Current User Stories Data:", data ? "Found" : "Not Found", { storyCount: data?.stories?.length });
     return data;
   }, [userStories, currentUser]);
 
@@ -92,6 +94,7 @@ export const StoriesBar: React.FC = () => {
         windowSize={5}
         removeClippedSubviews={true}
         ListHeaderComponent={
+          // A guest has no story of their own: tapping the tile prompts sign-in.
           <StoryItem 
             isCurrentUser 
             item={currentUserStoriesData} 

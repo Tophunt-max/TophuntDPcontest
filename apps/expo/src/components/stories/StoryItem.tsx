@@ -7,6 +7,7 @@ import { VerifiedBadge } from '../ui/VerifiedBadge';
 import AddIcon from '@/assets/svgs/add_Icon.svg';
 import { auth } from '@/src/services/firebase/initFirebase';
 import { useRouter } from 'expo-router';
+import { useAuthGate } from '@/src/hooks/useAuthGate';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Colors } from '@/constants/theme';
 
@@ -32,7 +33,9 @@ export const StoryItem: React.FC<StoryItemProps> = memo(({ item, isCurrentUser, 
   const hasUnseen = item?.hasUnseen;
   const hasStories = !!item && item.stories.length > 0;
 
+  const { requireAuth } = useAuthGate();
   const handleAddStory = () => {
+    if (!requireAuth('create')) return;
     router.push('/story/create');
   };
 

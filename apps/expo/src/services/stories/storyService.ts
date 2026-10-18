@@ -41,9 +41,20 @@ export const fetchStories = async (
   options: FetchStoriesOptions = {},
 ): Promise<UserStories[]> => {
   const { limit = 50, forceRefresh = false } = options;
+  // Guests browse the PUBLIC stories bar straight from the network. The local
+  // WatermelonDB cache is device-wide (not keyed by viewer), so it is neither
+  // read nor written for a guest: a previous account's followers-only Stories
+  // must never be served to a signed-out visitor from disk.
+  if (!auth.currentUser) {
+    try {
+      const response = await readApi('/read/stories/feed', { limit });
+      return Array.isArray(response) ? (response as UserStories[]) : [];
+    } catch (error) {
+      console.error('[fetchStories] guest fetch error:', error);
+      return [];
+    }
+  }
   try {
-    if (!auth.currentUser) return [];
-
     // Serve the cache first unless the caller explicitly wants fresh data.
     if (!forceRefresh) {
       const localStories = await getUserStoriesLocally();

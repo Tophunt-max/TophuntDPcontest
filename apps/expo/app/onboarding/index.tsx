@@ -79,7 +79,8 @@ export default function OnboardingScreen() {
   const handleFinishOnboarding = async () => {
     try {
       await AsyncStorage.setItem('hasSeenOnboarding', 'true');
-      router.replace('/auth/login');
+      // Guest-first: finish into the public feed; sign-in happens on demand.
+      router.replace('/home');
     } catch (error) {
       console.error('Error saving onboarding status:', error);
     }

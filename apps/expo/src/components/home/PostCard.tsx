@@ -1,12 +1,12 @@
 import React, { useState, memo, useEffect, useCallback, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Pressable, ActivityIndicator, AccessibilityInfo } from 'react-native';
-import { Alert } from '@/src/lib/appAlert';
 import { AppImage as ExpoImage } from '../ui/AppImage';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { Ionicons, MaterialCommunityIcons } from '@/src/lib/icons';
 import { CommentSheet } from '../comments/CommentSheet';
 import { ShareSheet } from '../share/ShareSheet';
 import { useAuth } from '@/src/hooks/useAuth';
+import { useAuthGate } from '@/src/hooks/useAuthGate';
 import { contestService } from '@/src/services/contests/contestService';
 import { readApi } from '@/src/services/api';
 import { live } from '@/src/services/realtime';
@@ -121,6 +121,7 @@ const formatVotes = (n: number): string => {
 
 export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => {
   const { user } = useAuth();
+  const { requireAuth } = useAuthGate();
   const router = useRouter();
   const { addToast } = useToast();
 
@@ -287,6 +288,13 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
   const handleDoubleTap = () => {
     const now = Date.now();
     if (now - lastTap.current < 300) {
+      // A guest's double-tap asks them to sign in rather than animating a like
+      // that cannot happen.
+      if (!user) {
+        lastTap.current = 0;
+        requireAuth('like');
+        return;
+      }
       if (!isHeartAnimating.current) {
         isHeartAnimating.current = true;
         // Fast pop-in, brief hold, quick fade-out so the heart doesn't linger.
@@ -321,7 +329,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
   };
 
   const handleVote = async (selectedUid: string) => {
-    if (!user) return Alert.alert("Login required", "Please login to vote.");
+    if (!user) return void requireAuth('vote');
     if (isVoting || hasVoted) return;
     const endDate = item.expiresAt?.toDate ? item.expiresAt.toDate() : new Date(item.expiresAt);
     if (matchStatus !== 'active' || !item.expiresAt || endDate.getTime() <= Date.now()) {
@@ -372,7 +380,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
   };
   
   const handleLike = async () => {
-    if (!user) return Alert.alert("Login required", "Please login to like.");
+    if (!user) return void requireAuth('like');
     // In-flight guard: rapid taps must not fire overlapping toggle requests
     // (which desync the count and hammer the DB).
     if (likeInFlight.current) return;
@@ -398,13 +406,13 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
   };
 
   const handleShare = async () => {
-    if (!user) return Alert.alert("Login required", "Please login to share.");
+    // Sharing a public battle needs no account (the sheet gates DMs itself).
     triggerHaptic();
     setShowShare(true);
   };
 
   const handleBookmark = async () => {
-    if (!user) return Alert.alert("Login required", "Please login to bookmark.");
+    if (!user) return void requireAuth('bookmark');
     triggerHaptic();
     try {
       // Toggle local state immediately for better UX
@@ -768,6 +776,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
                <Text style={[styles.actionCount, { color: textColor }]}>{likeCount}</Text>
             </TouchableOpacity>
             
+            {/* Guests can read the thread; posting is gated inside the sheet. */}
             <TouchableOpacity style={styles.actionItem} onPress={() => setShowComments(true)}>
                <ChatIcon_Light width={26} height={26} color={textColor} />
                <Text style={[styles.actionCount, { color: textColor }]}>{commentCount}</Text>

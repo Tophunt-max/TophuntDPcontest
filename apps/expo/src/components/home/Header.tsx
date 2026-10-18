@@ -14,6 +14,7 @@ import { Colors } from '@/constants/theme';
 import { useAppConfig } from "@/src/services/appSettings";
 import images from "@/assets/images";
 import { HeartNotificationIcon } from "../notifications/HeartNotificationIcon";
+import { useAuthGate } from '@/src/hooks/useAuthGate';
 
 const HeaderComponent = () => {
   const router = useRouter();
@@ -22,6 +23,7 @@ const HeaderComponent = () => {
   const { config } = useAppConfig();
 
   const ChatIcon = isDark ? ChatIcon_Dark : ChatIcon_Light;
+  const { requireAuth } = useAuthGate();
 
   return (
     <View
@@ -52,7 +54,7 @@ const HeaderComponent = () => {
         <Pressable 
             hitSlop={10} 
             style={styles.iconBtn}
-            onPress={() => router.push('/messages')}
+            onPress={() => requireAuth('message', { returnTo: '/messages' }) && router.push('/messages')}
         >
           <ChatIcon width={24} height={24} />
         </Pressable>

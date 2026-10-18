@@ -17,6 +17,7 @@ import { Ionicons } from '@/src/lib/icons';
 import { UserListSkeleton } from '@/src/components/skeletons/UserListSkeleton';
 import { toggleFollowService } from '@/src/services/users';
 import { useAuth } from '@/src/hooks/useAuth';
+import { useAuthGate } from '@/src/hooks/useAuthGate';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { useProfile } from '@/src/hooks/useProfileData';
 import { useToast } from '@/src/components/toast/ToastProvider';
@@ -103,13 +104,10 @@ export default function ConnectionsScreen() {
     }
   };
 
+  const { requireAuth } = useAuthGate();
   const handleAction = (action: () => void) => {
-      if (!user) {
-          const redirect = encodeURIComponent(`/profile/connections?userId=${userId}&type=${type}`);
-          router.push(`/auth/login?redirect=${redirect}`);
-      } else {
-          action();
-      }
+      // The list is public; following prompts sign-in and returns to this list.
+      if (requireAuth('follow', { returnTo: `/profile/connections?userId=${encodeURIComponent(userId)}&type=${encodeURIComponent(String(type))}` })) action();
   };
 
   const handleFollow = async (targetId: string) => {
