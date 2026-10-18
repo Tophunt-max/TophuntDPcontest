@@ -42,6 +42,18 @@ describe('battle link preview image', () => {
     expect(html).not.toContain(B);
   });
 
+  it('ignores a legacy client-captured card or another battle\'s card', async () => {
+    for (const vsImageUrl of [
+      'https://media.tophunt.in/vs-cards/2026/09/client.jpg',
+      'https://media.tophunt.in/vs-cards/battles/OTHER-v1.jpg',
+    ]) {
+      restore?.();
+      const html = await preview({ id: 'm1', status: 'active', vsImageUrl,
+        userA: { uid: 'a', username: 'alice', mediaUrl: A }, userB: { uid: 'b', username: 'bob', mediaUrl: B } });
+      expect(ogImage(html)).toBeNull();
+    }
+  });
+
   it('a battle still waiting for an opponent may preview its only entry', async () => {
     const html = await preview({ id: 'm1', status: 'waiting_for_opponent', title: 'Best Smile',
       userA: { uid: 'a', username: 'alice', mediaUrl: A }, userB: null });

@@ -32,11 +32,11 @@
  *               battle references it (or by account deletion of a participant,
  *               whose face it contains).
  */
-import { and, eq, gt, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { deleteVsImageByPublicUrl, vsImageKeyFromPublicUrl } from "./r2";
-import { STORY_TTL_MS } from "./vsPublication";
+import { STORY_TTL_MS, vsCardKey } from "./vsPublication";
 
 export { STORY_TTL_MS };
 
@@ -165,6 +165,10 @@ export async function teardownVsStories(env: Env, matchId: string): Promise<void
         ),
       ),
     db.delete(schema.stories).where(and(eq(schema.stories.matchId, matchId), eq(schema.stories.type, "contest_vs"))),
+    // A taken-down battle is no longer shareable: end the composite's retention
+    // so the next sweep deletes it (its Stories are gone as of this batch)
+    // instead of keeping it public for the voting window.
+    db.update(schema.contestMatches).set({ vsImageRetainUntil: 0 }).where(eq(schema.contestMatches.id, matchId)),
   ] as any);
 }
 
@@ -245,10 +249,19 @@ export async function sweepVsComposites(env: Env, nowMs: number): Promise<{ dele
       if (m.retainUntil != null && Number(m.retainUntil) > nowMs) continue;
       // Clear first, conditionally: a client reading a url that names a deleted
       // object renders an empty frame, while null falls back to the live layout.
+      // Re-checks retention in the same statement: a share that extended it
+      // between the read above and this write wins, so a URL just handed to a
+      // sharer is never deleted under them.
       const cleared = await db
         .update(schema.contestMatches)
         .set({ vsImageUrl: null, vsImageRetainUntil: null })
-        .where(and(eq(schema.contestMatches.id, matchId), eq(schema.contestMatches.vsImageUrl, m.vsImageUrl)))
+        .where(
+          and(
+            eq(schema.contestMatches.id, matchId),
+            eq(schema.contestMatches.vsImageUrl, m.vsImageUrl),
+            or(isNull(schema.contestMatches.vsImageRetainUntil), lte(schema.contestMatches.vsImageRetainUntil, nowMs)),
+          ),
+        )
         .run();
       if (!Number(cleared.meta?.changes || 0)) continue;
       if (vsImageKeyFromPublicUrl(env, m.vsImageUrl)) {
@@ -272,20 +285,26 @@ export async function sweepVsComposites(env: Env, nowMs: number): Promise<{ dele
 export async function purgeVsCompositesForUser(env: Env, uid: string): Promise<string[]> {
   const rows = await env.DB.prepare(
     `SELECT id, vs_image_url FROM contest_matches
-      WHERE vs_image_url IS NOT NULL
-        AND (json_extract(user_a, '$.uid') = ? OR json_extract(user_b, '$.uid') = ?)`,
+      WHERE json_extract(user_a, '$.uid') = ? OR json_extract(user_b, '$.uid') = ?`,
   )
     .bind(uid, uid)
-    .all<{ id: string; vs_image_url: string }>();
-  const urls: string[] = [];
+    .all<{ id: string; vs_image_url: string | null }>();
+  const base = env.R2_PUBLIC_BASE_URL.replace(/\/$/, "");
+  const urls = new Set<string>();
   for (const r of rows.results || []) {
-    await getDb(env).batch([
-      getDb(env)
-        .delete(schema.stories)
-        .where(and(eq(schema.stories.matchId, r.id), sql`${schema.stories.type} IN ('contest_vs', 'contest_match_live')`)),
-      getDb(env).update(schema.contestMatches).set({ vsImageUrl: null }).where(eq(schema.contestMatches.id, r.id)),
-    ]);
-    if (vsImageKeyFromPublicUrl(env, r.vs_image_url)) urls.push(r.vs_image_url);
+    if (r.vs_image_url) {
+      await getDb(env).batch([
+        getDb(env)
+          .delete(schema.stories)
+          .where(and(eq(schema.stories.matchId, r.id), sql`${schema.stories.type} IN ('contest_vs', 'contest_match_live')`)),
+        getDb(env).update(schema.contestMatches).set({ vsImageUrl: null, vsImageRetainUntil: null }).where(eq(schema.contestMatches.id, r.id)),
+      ]);
+      if (vsImageKeyFromPublicUrl(env, r.vs_image_url)) urls.add(r.vs_image_url);
+    }
+    // Also the deterministic server key, whether or not the column names it: a
+    // regeneration that lost its final write can leave the object at this key
+    // with the column NULL. R2 deletes of absent keys are free no-ops.
+    urls.add(`${base}/${vsCardKey(r.id)}`);
   }
-  return urls;
+  return [...urls];
 }

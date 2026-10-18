@@ -1047,12 +1047,17 @@ apiRoute.post("/", async (c) => {
      * Blocked viewers are refused, exactly like any other match interaction.
      */
     case "getMatchShareImage": {
-      await rateLimit(env, `vsshare:${uid}`, 120, 3600);
+      // Reads are cheap (one row + one R2 HEAD); a sheet opening polls a few
+      // times while an image is being prepared.
+      await rateLimit(env, `vsshare:${uid}`, 600, 3600);
       const matchId = requiredId(body.matchId, "matchId", 128);
       await assertMatchInteractionAllowed(env, uid, matchId);
-      // Bounds regeneration cost for one battle however many people share it.
-      await rateLimit(env, `vsshare_m:${matchId}`, 120, 3600);
-      const out = await ensureMatchShareImage(env, matchId);
+      const out = await ensureMatchShareImage(env, matchId, {
+        // Only an actual (re)render counts against the per-battle budget, so
+        // popular battles or one noisy viewer cannot switch image sharing off
+        // for everyone by merely opening the sheet.
+        beforeRegenerate: () => rateLimit(env, `vsshare_regen:${matchId}`, 20, 3600),
+      });
       if (out.status === "preparing") {
         c.executionCtx.waitUntil(runVsPublication(env, matchId).catch(() => {}));
       }

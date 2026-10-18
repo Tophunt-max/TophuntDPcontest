@@ -148,21 +148,31 @@ async function localImageFile(remoteUrl: string): Promise<string | null> {
  * What actually happened, stated precisely enough that the UI never claims an
  * image was sent when only a link was:
  *
- *  - `shared_image`                — the VS image FILE went to the share sheet
- *                                     (with the caption, where the platform allows)
- *  - `shared_image_caption_copied` — image sent; the platform cannot attach text
- *                                     to a file (Android `expo-sharing`), so the
- *                                     caption was put on the clipboard to paste
+ *  - `shared_image`              — the VS image FILE was shared (with the caption
+ *                                   where the platform allows)
+ *  - `handed_off_caption_copied` — Android: the image went to the system share
+ *                                   sheet. `expo-sharing` cannot report whether
+ *                                   the user then picked an app or backed out,
+ *                                   and cannot attach text to a file, so the
+ *                                   caption was copied for pasting. Counted as an
+ *                                   intended share (the platform gives no better
+ *                                   signal); worded neutrally.
+ *  - `image_saved`               — iOS: the user chose Save Image / Copy / Print
+ *                                   etc. — not a share, never counted
  *  - `shared_link` / `copied_link` — text + link only, no image
- *  - `image_unsupported`           — this browser/build cannot attach a file
- *  - `dismissed`                   — the user backed out
- *  - `failed`                      — the image could not be obtained or shared
+ *  - `needs_gesture`             — web: the browser refused because the tap's
+ *                                   user activation was spent; ask for one more tap
+ *  - `image_unsupported`         — this browser/build cannot attach a file
+ *  - `dismissed`                 — the user backed out
+ *  - `failed`                    — the image could not be obtained or shared
  */
 export type ShareOutcome =
   | 'shared_image'
-  | 'shared_image_caption_copied'
+  | 'handed_off_caption_copied'
+  | 'image_saved'
   | 'shared_link'
   | 'copied_link'
+  | 'needs_gesture'
   | 'image_unsupported'
   | 'dismissed'
   | 'failed';
@@ -171,7 +181,7 @@ export type ShareOutcome =
 export function isCompletedShare(outcome: ShareOutcome): boolean {
   return (
     outcome === 'shared_image' ||
-    outcome === 'shared_image_caption_copied' ||
+    outcome === 'handed_off_caption_copied' ||
     outcome === 'shared_link' ||
     outcome === 'copied_link'
   );
@@ -195,12 +205,35 @@ export function canShareFilesOnWeb(): boolean {
 }
 
 /**
+ * Fetch the image into a `File` for the Web Share API, BEFORE the user taps.
+ *
+ * Safari (and Chrome on some platforms) only honour `navigator.share` inside the
+ * user gesture; awaiting a network fetch after the tap can spend that
+ * activation. Surfaces prefetch with this as soon as the image is known, so the
+ * tap itself calls `share` with no network wait. Null on any failure.
+ */
+export async function prepareShareFile(source: ShareImageSource): Promise<File | null> {
+  try {
+    const res = await fetch(source.kind === 'remote' ? source.url : source.uri);
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    return new File([blob], 'tophunt-battle.jpg', { type: blob.type || CARD_MIME });
+  } catch {
+    return null;
+  }
+}
+
+/** iOS activity types that keep the image on the device rather than sharing it. */
+const NON_SHARE_ACTIVITY = /SaveToCameraRoll|CopyToPasteboard|Print|AssignToContact|AddToReadingList|SaveToFiles|MarkupAsPDF/i;
+
+/**
  * Share the battle's VS image file. NEVER silently degrades to a link: if the
  * image cannot be obtained or attached, the outcome says so and the caller
  * decides (and tells the user) what to do instead.
  *
  *  - Web: Web Share API with the file + caption, when the browser supports
- *    files; otherwise `image_unsupported`.
+ *    files; otherwise `image_unsupported`. Pass `file` (from
+ *    `prepareShareFile`) to keep the tap's user activation.
  *  - iOS: React Native `Share` with the LOCAL file url and the caption together
  *    (UIActivityViewController attaches both).
  *  - Android: `expo-sharing` with the local file; Android cannot attach text to
@@ -210,26 +243,26 @@ export function canShareFilesOnWeb(): boolean {
  * attach files, not http(s) URLs. A `local` source (a capture) is used as-is;
  * the caller owns releasing it.
  */
-export async function shareImageFile(opts: { source: ShareImageSource; caption: string; url: string }): Promise<ShareOutcome> {
+export async function shareImageFile(opts: {
+  source: ShareImageSource;
+  caption: string;
+  url: string;
+  /** Web only: a pre-fetched file, so `share` runs inside the user gesture. */
+  file?: File | null;
+}): Promise<ShareOutcome> {
   const { source, caption } = opts;
 
   if (Platform.OS === 'web') {
     const nav: any = typeof navigator !== 'undefined' ? navigator : null;
     if (!canShareFilesOnWeb()) return 'image_unsupported';
-    let file: File;
-    try {
-      const res = await fetch(source.kind === 'remote' ? source.url : source.uri);
-      if (!res.ok) return 'failed';
-      const blob = await res.blob();
-      file = new File([blob], 'tophunt-battle.jpg', { type: blob.type || CARD_MIME });
-    } catch {
-      return 'failed';
-    }
+    const file = opts.file ?? (await prepareShareFile(source));
+    if (!file) return 'failed';
     if (!nav.canShare({ files: [file] })) return 'image_unsupported';
     try {
       await nav.share({ files: [file], text: caption, title: 'Share this battle' });
       return 'shared_image';
-    } catch (e) {
+    } catch (e: any) {
+      if (e?.name === 'NotAllowedError') return 'needs_gesture';
       return isAbort(e) ? 'dismissed' : 'failed';
     }
   }
@@ -238,15 +271,16 @@ export async function shareImageFile(opts: { source: ShareImageSource; caption: 
   if (!fileUri) return 'failed';
   try {
     if (Platform.OS === 'ios') {
-      const result = await RNShare.share({ url: fileUri, message: caption });
-      return result.action === RNShare.dismissedAction ? 'dismissed' : 'shared_image';
+      const result: any = await RNShare.share({ url: fileUri, message: caption });
+      if (result.action === RNShare.dismissedAction) return 'dismissed';
+      return result.activityType && NON_SHARE_ACTIVITY.test(String(result.activityType)) ? 'image_saved' : 'shared_image';
     }
     const sharing = getSharing();
     if (typeof sharing?.shareAsync !== 'function') return 'image_unsupported';
     if (typeof sharing.isAvailableAsync === 'function' && !(await sharing.isAvailableAsync())) return 'image_unsupported';
     await Clipboard.setStringAsync(caption).catch(() => undefined);
     await sharing.shareAsync(fileUri, { mimeType: CARD_MIME, dialogTitle: 'Share this battle', UTI: 'public.jpeg' });
-    return 'shared_image_caption_copied';
+    return 'handed_off_caption_copied';
   } catch (e) {
     return isAbort(e) ? 'dismissed' : 'failed';
   }
@@ -291,7 +325,9 @@ export async function shareBattleLink(opts: { caption: string; url: string }): P
  * native rebuild needed). Returns false when there is no image to save.
  *
  * Callers pass the SAME canonical url they share (`resolveBattleShareAsset`), so
- * the saved file is byte-for-byte the shared one.
+ * the saved image is the shared image. (On web it is the identical file; on
+ * native both paths re-encode the same source into the app's cache directory,
+ * which the OS manages — no file-system dependency is added to delete it.)
  */
 export async function downloadBattleImage(vsImageUrl?: string | null): Promise<boolean> {
   if (!vsImageUrl) return false;

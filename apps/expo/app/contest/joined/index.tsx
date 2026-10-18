@@ -6,7 +6,7 @@ import { Ionicons } from '@/src/lib/icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { designWidth } from '@/src/lib/layout';
-import { battleUrl, shareOrigin, shareBattleLink, shareImageFile, type ShareOutcome } from '@/src/lib/share';
+import { battleUrl, shareOrigin, shareBattleLink, shareImageFile, prepareShareFile, type ShareOutcome } from '@/src/lib/share';
 import { createShareCounter, resolveBattleShareAsset, shareOutcomeMessage } from '@/src/lib/vsShareAsset';
 import { contestSuccessCopy, type VsStoryState } from '@/src/lib/contestSuccess';
 import { contestService } from '@/src/services/contests/contestService';
@@ -107,6 +107,9 @@ export default function ContestJoinedScreen() {
     () => createShareCounter(() => (matchId ? contestService.shareMatch(matchId) : Promise.resolve())),
     [matchId],
   );
+  // Web: the resolved image, pre-fetched, so a second tap shares inside its
+  // own gesture if the browser refused the first (Safari user activation).
+  const prepared = React.useRef<{ source: any; file: File | null } | null>(null);
   const handleShare = async () => {
     if (sharing) return;
     setSharing(true);
@@ -131,7 +134,9 @@ export default function ContestJoinedScreen() {
           );
           return;
         }
-        outcome = await shareImageFile({ source: asset.source, caption, url: link });
+        const file = prepared.current?.file ?? (Platform.OS === 'web' ? await prepareShareFile(asset.source) : null);
+        prepared.current = { source: asset.source, file };
+        outcome = await shareImageFile({ source: asset.source, caption, url: link, file });
       } else {
         outcome = await shareBattleLink({ caption, url: link });
       }
@@ -144,12 +149,17 @@ export default function ContestJoinedScreen() {
   };
 
   const handleShareLinkOnly = async () => {
-    if (!matchId) return;
-    const link = battleUrl(matchId);
-    const outcome = await shareBattleLink({ caption: `Vote in the ${contestName} battle on TopHunt!\n${link}`, url: link });
-    shareCounter.record(outcome);
-    const msg = shareOutcomeMessage(outcome);
-    if (msg) setShareNote(msg.text);
+    if (!matchId || sharing) return;
+    setSharing(true);
+    try {
+      const link = battleUrl(matchId);
+      const outcome = await shareBattleLink({ caption: `Vote in the ${contestName} battle on TopHunt!\n${link}`, url: link });
+      shareCounter.record(outcome);
+      const msg = shareOutcomeMessage(outcome);
+      if (msg) setShareNote(msg.text);
+    } finally {
+      setSharing(false);
+    }
   };
 
   return (

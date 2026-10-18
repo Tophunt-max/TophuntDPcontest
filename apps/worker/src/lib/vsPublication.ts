@@ -46,7 +46,7 @@
  * their own idempotency (lib/contestSettlement.ts). A render failure can delay a
  * story; it can never move a coin.
  */
-import { and, eq, inArray, lte, or, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, lte, or, sql } from "drizzle-orm";
 import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { now } from "./ids";
@@ -674,12 +674,37 @@ export interface ShareImageResult {
   reason?: string;
 }
 
-/** True when `url` is THIS match's server-rendered card. */
+/**
+ * True when `url` is a SERVER-rendered card of THIS match, of any render
+ * version. Accepting every version matters: after a layout bump, live Stories
+ * still point at the older `-v<N>` object, which is still trustworthy (we
+ * rendered it) and must be neither replaced nor deleted out from under them.
+ */
 export function isCanonicalVsUrl(env: Env, url: string | null | undefined, matchId: string): boolean {
   if (!url) return false;
   const base = env.R2_PUBLIC_BASE_URL.replace(/\/$/, "");
-  return url === `${base}/${vsCardKey(matchId)}`;
+  const prefix = `${base}/${VS_CARD_PREFIX}/battles/${matchId}-v`;
+  return url.startsWith(prefix) && /^\d+\.jpg$/.test(url.slice(prefix.length));
 }
+
+/** Only extend retention when less than this remains (avoids a D1 write per read). */
+const RETAIN_EXTEND_BELOW_MS = 6 * 24 * 60 * 60 * 1000;
+
+/**
+ * SQL gate for share-time regeneration writes: still our claim, the battle was
+ * not taken down, and neither participant has been deleted, banned or had their
+ * entry purged since the render started. Without it a cancel or an account
+ * deletion landing mid-render would be undone by this write.
+ */
+const REGEN_GATE = `
+  id = ? AND vs_story_claim = ? AND status != 'cancelled'
+  AND json_extract(user_a, '$.mediaUrl') IS NOT NULL
+  AND json_extract(user_b, '$.mediaUrl') IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM users u
+     WHERE u.uid IN (json_extract(user_a, '$.uid'), json_extract(user_b, '$.uid'))
+       AND (u.is_blocked = 1 OR u.status IN ('deleted', 'pending_deletion'))
+  )`;
 
 /**
  * The one image every share path for a two-player battle must use.
@@ -690,8 +715,15 @@ export function isCanonicalVsUrl(env: Env, url: string | null | undefined, match
  * publication state, ownership or money. While publication is still running the
  * answer is `preparing`; the caller polls. Callers never get a participant's
  * raw entry from here.
+ *
+ * `beforeRegenerate` runs only when a render may be needed (the caller's
+ * per-battle cost limit); plain reads never consume it.
  */
-export async function ensureMatchShareImage(env: Env, matchId: string, opts: VsRunOptions = {}): Promise<ShareImageResult> {
+export async function ensureMatchShareImage(
+  env: Env,
+  matchId: string,
+  opts: VsRunOptions & { beforeRegenerate?: () => Promise<void> } = {},
+): Promise<ShareImageResult> {
   const ts = opts.nowMs ?? now();
   const db = getDb(env);
   const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, matchId)).get();
@@ -711,8 +743,9 @@ export async function ensureMatchShareImage(env: Env, matchId: string, opts: VsR
   if (match.status === "cancelled") return result("unavailable", { reason: "cancelled" });
   if (match.vsStoryStatus === "pending" || match.vsStoryStatus === "processing") return result("preparing");
 
-  const extend = Math.max(Number(match.vsImageRetainUntil || 0), ts + VS_IMAGE_RETAIN_MS);
-  // Only the SERVER-rendered card is canonical. A legacy client-captured card
+  const currentRetain = Number(match.vsImageRetainUntil || 0);
+  const extend = Math.max(currentRetain, ts + VS_IMAGE_RETAIN_MS);
+  // Only a SERVER-rendered card is canonical. A legacy client-captured card
   // (pre-0055, arbitrary pixels from one participant) is replaced, not served.
   if (match.vsImageUrl && isCanonicalVsUrl(env, match.vsImageUrl, matchId)) {
     const key = vsImageKeyFromPublicUrl(env, match.vsImageUrl);
@@ -723,10 +756,18 @@ export async function ensureMatchShareImage(env: Env, matchId: string, opts: VsR
       return result("unavailable", { reason: "storage_unavailable" });
     }
     if (exists) {
-      if (extend > Number(match.vsImageRetainUntil || 0)) {
+      if (currentRetain - ts < RETAIN_EXTEND_BELOW_MS) {
         await db.update(schema.contestMatches).set({ vsImageRetainUntil: extend }).where(eq(schema.contestMatches.id, matchId)).run();
       }
       return result("ready", { url: match.vsImageUrl });
+    }
+  }
+
+  if (opts.beforeRegenerate) {
+    try {
+      await opts.beforeRegenerate();
+    } catch {
+      return result("unavailable", { reason: "rate_limited" });
     }
   }
 
@@ -746,27 +787,49 @@ export async function ensureMatchShareImage(env: Env, matchId: string, opts: VsR
     env.DB.prepare(`UPDATE contest_matches SET vs_story_claim = NULL, vs_story_claimed_at = NULL WHERE id = ? AND vs_story_claim = ?`)
       .bind(matchId, token)
       .run();
+  const gateOk = async () =>
+    !!(await env.DB.prepare(`SELECT 1 AS ok FROM contest_matches WHERE ${REGEN_GATE}`).bind(matchId, token).first<{ ok: number }>());
   try {
     const [pa, pb] = await loadParticipants(env, match);
-    const produced = await produceComposite(env, match, pa, pb, ts, opts, async () =>
-      !!(await env.DB.prepare(`SELECT 1 AS ok FROM contest_matches WHERE id = ? AND vs_story_claim = ?`)
-        .bind(matchId, token)
-        .first<{ ok: number }>()),
-    );
-    if (!produced) return result("preparing");
+    const produced = await produceComposite(env, match, pa, pb, ts, opts, gateOk);
+    if (!produced) {
+      await release().catch(() => {});
+      return result("unavailable", { reason: "no_longer_shareable" });
+    }
     const saved = await env.DB.prepare(
       `UPDATE contest_matches
           SET vs_image_url = ?, vs_image_meta = ?, vs_image_retain_until = ?,
               vs_story_claim = NULL, vs_story_claimed_at = NULL
-        WHERE id = ? AND vs_story_claim = ?`,
+        WHERE ${REGEN_GATE}`,
     )
       .bind(produced.publicUrl, JSON.stringify({ ...produced.meta, regeneratedFor: "share" }), extend, matchId, token)
       .run();
-    if (!Number(saved.meta?.changes || 0)) return result("preparing");
-    // The superseded legacy client card is now referenced by nothing (legacy
-    // story rows carry each user's own entry, never the card).
-    if (match.vsImageUrl && match.vsImageUrl !== produced.publicUrl) {
-      await deleteVsImageByPublicUrl(env, match.vsImageUrl).catch(() => {});
+    if (!Number(saved.meta?.changes || 0)) {
+      // Lost the claim to publication (which reuses this same object): fine.
+      // But if the battle was taken down or a participant left during the
+      // render, the object we just wrote must not survive at a public url.
+      const after = await db
+        .select({ status: schema.contestMatches.status, claim: schema.contestMatches.vsStoryClaim })
+        .from(schema.contestMatches)
+        .where(eq(schema.contestMatches.id, matchId))
+        .get();
+      if (!after || after.claim === token || after.status === "cancelled") {
+        await env.MEDIA.delete(vsCardKey(matchId)).catch(() => {});
+        await release().catch(() => {});
+        return result("unavailable", { reason: "no_longer_shareable" });
+      }
+      return result("preparing");
+    }
+    // The superseded LEGACY client card (never a server card) is referenced by
+    // nothing once no live Story names it.
+    if (match.vsImageUrl && match.vsImageUrl !== produced.publicUrl && !isCanonicalVsUrl(env, match.vsImageUrl, matchId)) {
+      const stillShown = await db
+        .select({ id: schema.stories.id })
+        .from(schema.stories)
+        .where(and(eq(schema.stories.mediaUrl, match.vsImageUrl), gt(schema.stories.expiresAt, ts)))
+        .limit(1)
+        .get();
+      if (!stillShown) await deleteVsImageByPublicUrl(env, match.vsImageUrl).catch(() => {});
     }
     return result("ready", { url: produced.publicUrl });
   } catch (e: any) {

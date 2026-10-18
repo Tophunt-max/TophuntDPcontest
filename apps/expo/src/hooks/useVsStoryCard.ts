@@ -33,6 +33,14 @@ export function useVsStoryCard(opts: {
   matchIdRef.current = matchId;
   /** The battle whose frame most recently reported itself fully painted. */
   const readyFor = useRef<string | null>(null);
+  // Forget readiness the moment the battle on screen changes — during render, so
+  // it happens before the newly mounted frame can report anything. Coming back
+  // to the same battle later must wait for THAT mount's photos to decode again.
+  const lastMatch = useRef(matchId);
+  if (lastMatch.current !== matchId) {
+    lastMatch.current = matchId;
+    readyFor.current = null;
+  }
 
   const onCaptureReady = useCallback(() => {
     readyFor.current = matchIdRef.current ?? null;

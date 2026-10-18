@@ -44,6 +44,7 @@ import {
   copyBattleLink,
   canShareFilesOnWeb,
   isCompletedShare,
+  prepareShareFile,
   type ShareMatchLike,
   type ShareOutcome,
 } from '@/src/lib/share';
@@ -98,6 +99,20 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId, match: matchPr
   const imageUrl = asset?.status === 'ready' && asset.source.kind === 'remote' ? asset.source.url : null;
   const isWeb = Platform.OS === 'web';
   const webFiles = isWeb && visible ? canShareFilesOnWeb() : false;
+  // Web: fetch the image into a File as soon as it is known, so the tap calls
+  // navigator.share with no network wait (Safari drops the gesture otherwise).
+  const [prepared, setPrepared] = useState<{ url: string; file: File } | null>(null);
+  useEffect(() => {
+    if (!isWeb || !webFiles || !imageUrl) return;
+    let alive = true;
+    void prepareShareFile({ kind: 'remote', url: imageUrl }).then((file) => {
+      if (alive && file) setPrepared({ url: imageUrl, file });
+    });
+    return () => {
+      alive = false;
+    };
+  }, [isWeb, webFiles, imageUrl]);
+  const preparedFile = prepared && prepared.url === imageUrl ? prepared.file : null;
   const counter = useMemo(() => createShareCounter(() => contestService.shareMatch(matchId)), [matchId]);
   // One counted share per OPENING of the sheet.
   useEffect(() => {
@@ -184,13 +199,13 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId, match: matchPr
     setBusy(true);
     try {
       const outcome = imageUrl
-        ? await shareImageFile({ source: { kind: 'remote', url: imageUrl }, caption, url })
+        ? await shareImageFile({ source: { kind: 'remote', url: imageUrl }, caption, url, file: preparedFile })
         : await shareBattleLink({ caption, url });
       if (finish(outcome)) closeSheet();
     } finally {
       setBusy(false);
     }
-  }, [busy, assetStatus, imageUrl, caption, url, finish, closeSheet, notReadyToast]);
+  }, [busy, assetStatus, imageUrl, preparedFile, caption, url, finish, closeSheet, notReadyToast]);
 
   /** A specific app — routed by what that app can actually receive. */
   const onPlatform = useCallback(async (platformId: string) => {
@@ -200,7 +215,7 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId, match: matchPr
     if (mode === 'image_sheet' && imageUrl) {
       setBusy(true);
       try {
-        const outcome = await shareImageFile({ source: { kind: 'remote', url: imageUrl }, caption, url });
+        const outcome = await shareImageFile({ source: { kind: 'remote', url: imageUrl }, caption, url, file: preparedFile });
         if (finish(outcome)) closeSheet();
       } finally {
         setBusy(false);
@@ -221,7 +236,7 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId, match: matchPr
     } finally {
       setBusy(false);
     }
-  }, [busy, isWeb, assetStatus, webFiles, imageUrl, caption, url, finish, closeSheet, notReadyToast]);
+  }, [busy, isWeb, assetStatus, webFiles, imageUrl, preparedFile, caption, url, finish, closeSheet, notReadyToast]);
 
   /** Send the battle straight into a DM with the tapped user (caption + link). */
   const onSendToUser = useCallback(async (u: any) => {
@@ -301,7 +316,7 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId, match: matchPr
                 <Image source={{ uri: imageUrl }} style={styles.previewImage} accessibilityLabel="VS battle image" />
               ) : (
                 <View style={[styles.previewImage, styles.previewPlaceholder, { backgroundColor: inputBg }]}>
-                  {assetLoading || assetStatus === 'preparing' ? <ActivityIndicator color="#FF4D67" /> : <Ionicons name="link" size={22} color={subTextColor} />}
+                  {assetLoading || assetStatus === 'preparing' ? <ActivityIndicator color="#FF4D67" /> : <Ionicons name="share-social" size={22} color={subTextColor} />}
                 </View>
               )}
               <View style={{ flex: 1 }}>

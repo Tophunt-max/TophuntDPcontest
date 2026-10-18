@@ -156,15 +156,47 @@ Removed paths: `engagementService.shareBattle` (no callers, placeholder domain),
 `shareVsCard`, and `shareBattle`, which silently degraded to a text share while
 reporting success.
 
-**Share counting:** at most one `shareContest` per sheet opening or Story share tap,
-and only for a completed share. Opening the sheet, dismissing, failing or saving the
-image never counts.
+**Server refusals are final.** A 403 (blocked viewer), a 429, or an `unavailable`
+answer (cancelled battle, blocked pair, removed participant, untrusted media) is
+never worked around with a cached URL or a frame capture. Those fallbacks are used
+only when the server could not be reached, or the image is merely still being
+prepared.
 
-**Platform limits:** WhatsApp, Instagram, Snapchat and Messenger only get the image
-through the OS or Web Share sheet. The app cannot target one of them with a file
-without app-specific native SDKs. Android cannot attach text to a file share, so the
-caption is copied for the user to paste. Desktop browsers without file sharing get a
-clear "can't attach images here" message instead of a silent link share.
+**Regeneration safety.** The final write is gated, in SQL, on four things: the
+claim, the match not being cancelled, both entries still existing, and neither
+participant being deleted or banned. A takedown or account deletion that lands
+mid-render therefore leaves no image. Account deletion also removes the
+deterministic key itself, even when no column names it.
+
+**Takedown.** `teardownVsStories`, used by admin cancel and moderation removal,
+ends the composite's retention, so the next sweep deletes it.
+
+**Cost limits.** `getMatchShareImage` allows 600 reads per user per hour; a read is
+one row plus one R2 HEAD. Only an actual re-render counts against the per-battle
+budget of 20 per hour. Retention is extended only when less than 6 days remain,
+so plain reads don't write to D1.
+
+**Share counting:** at most one `shareContest` per sheet opening or Story share tap,
+and only for a completed share. Opening the sheet, dismissing, failing, saving the
+image, or an iOS Save Image / Copy action never counts. The exception is Android:
+`expo-sharing` cannot tell a share from a dismissal, so the hand-off to the share
+sheet is counted as an intended share, and the toast says only that the image was
+"sent to the share sheet".
+
+**Platform limits:**
+- WhatsApp, Instagram, Snapchat and Messenger only get the image through the OS or
+  Web Share sheet. The app cannot target one of them with a file without
+  app-specific native SDKs.
+- Android cannot attach text to a file share, so the caption is copied to the
+  clipboard to paste, even if the user then backs out.
+- **Safari and other browsers** only allow sharing inside the tap's gesture:
+  - The share sheet pre-fetches the image file as soon as it is known.
+  - The Story viewer and congratulations screen ask for one more tap if the browser
+    refused the first.
+  - Browsers without file sharing get a clear "can't attach images here" message
+    instead of a silent link share.
+- The image fetch on web needs CORS on the media host. This is not verified here;
+  check it on staging.
 
 ## Known limitations
 

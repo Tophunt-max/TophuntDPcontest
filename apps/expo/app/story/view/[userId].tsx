@@ -71,7 +71,7 @@ import { StoryVsFrame } from '@/src/components/stories/StoryVsFrame';
 import { VsCaptureBoundary } from '@/src/components/stories/VsCaptureBoundary';
 import { useVsStoryCard } from '@/src/hooks/useVsStoryCard';
 import { contestService } from '@/src/services/contests/contestService';
-import { battleCaption, battleUrl, shareBattleLink, shareImageFile, shareOrigin } from '@/src/lib/share';
+import { battleCaption, battleUrl, prepareShareFile, shareBattleLink, shareImageFile, shareOrigin } from '@/src/lib/share';
 import { createShareCounter, resolveBattleShareAsset, shareOutcomeMessage } from '@/src/lib/vsShareAsset';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
 import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
@@ -250,6 +250,15 @@ export default function StoryView() {
     shareInFlight.current = true;
     setIsPaused(true);
     let captured: string | null = null;
+    // The story stays paused (and the button locked) until the user is done —
+    // including while an alert below is still open.
+    const done = () => {
+      if (captured) releaseCapture(captured);
+      captured = null;
+      shareInFlight.current = false;
+      setIsPaused(false);
+    };
+    let handedToAlert = false;
     try {
       const asset = await resolveBattleShareAsset(matchId, {
         fetchShareImage: contestService.getMatchShareImage,
@@ -258,8 +267,30 @@ export default function StoryView() {
       });
       if (asset.status === 'ready') {
         if (asset.source.kind === 'local') captured = asset.source.uri;
-        const outcome = await shareImageFile({ source: asset.source, caption, url });
+        const source = asset.source;
+        // Web: have the file in hand so a follow-up tap can share inside its gesture.
+        const file = Platform.OS === 'web' ? await prepareShareFile(source) : null;
+        const outcome = await shareImageFile({ source, caption, url, file });
         counter.record(outcome);
+        if (outcome === 'needs_gesture' && file) {
+          handedToAlert = true;
+          Alert.alert('Share VS image', 'Your VS image is ready.', [
+            { text: 'Cancel', style: 'cancel', onPress: done },
+            {
+              text: 'Share image',
+              onPress: () => {
+                void shareImageFile({ source, caption, url, file })
+                  .then((o) => {
+                    counter.record(o);
+                    const m = shareOutcomeMessage(o);
+                    if (m && o !== 'shared_image') Alert.alert('Share', m.text);
+                  })
+                  .finally(done);
+              },
+            },
+          ], { cancelable: true, onDismiss: done });
+          return;
+        }
         const msg = shareOutcomeMessage(outcome);
         if (msg && outcome !== 'shared_image') Alert.alert(msg.tone === 'error' ? 'Share failed' : 'Share', msg.text);
         return;
@@ -268,19 +299,20 @@ export default function StoryView() {
         asset.status === 'preparing'
           ? 'The VS image is still being prepared. Try again in a moment.'
           : 'The VS image isn’t available for this battle right now.';
+      handedToAlert = true;
       Alert.alert('VS image not ready', why, [
-        { text: 'Cancel', style: 'cancel' },
+        { text: 'Cancel', style: 'cancel', onPress: done },
         {
           text: 'Share link only',
           onPress: () => {
-            void shareBattleLink({ caption, url }).then((o) => counter.record(o));
+            void shareBattleLink({ caption, url })
+              .then((o) => counter.record(o))
+              .finally(done);
           },
         },
-      ]);
+      ], { cancelable: true, onDismiss: done });
     } finally {
-      if (captured) releaseCapture(captured);
-      shareInFlight.current = false;
-      setIsPaused(false);
+      if (!handedToAlert) done();
     }
   }, [isVsCurrent, currentStory?.matchId, currentStory?.mediaUrl, currentStory?.contestTitle, currentUserStories?.username, queryClient, captureIfReady, releaseCapture]);
 

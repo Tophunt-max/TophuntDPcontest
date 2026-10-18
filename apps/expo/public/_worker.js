@@ -1375,8 +1375,15 @@ function injectBattleSeo(shellResp, match, origin, battleId) {
   // title still names both players. A battle still waiting for an opponent has
   // only one entry, so its preview may show it.
   const twoSided = !!(b.uid || b.username);
+  // Only a SERVER-rendered card of THIS battle (`vs-cards/battles/<id>-v<N>.jpg`)
+  // qualifies — a legacy client-captured card is untrusted pixels.
+  const card = typeof match.vsImageUrl === 'string' ? match.vsImageUrl : '';
+  const cardPath = `/vs-cards/battles/${battleId}-v`;
+  const cardIdx = card.indexOf(cardPath);
+  const canonicalCard =
+    card.startsWith('https://') && cardIdx > 0 && /^\d+\.jpg$/.test(card.slice(cardIdx + cardPath.length)) ? card : '';
   const image = twoSided
-    ? match.vsImageUrl || ''
+    ? canonicalCard
     : a.mediaUrlOptimized || a.mediaUrl || '';
 
   return injectSeo(shellResp, {

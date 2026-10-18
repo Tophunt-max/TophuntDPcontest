@@ -41,6 +41,7 @@ import { makeEnv, makeApp, drizzleOf, fakeImages, fakePhoto, type TestEnv } from
 import * as schema from '../src/db/schema';
 import { storyMediaType, sweepVsComposites } from '../src/lib/matchStories';
 import {
+  ensureMatchShareImage,
   publicVsStoryStatus,
   reconcileVsPublications,
   runVsPublication,
@@ -1143,6 +1144,103 @@ describe('canonical share asset (getMatchShareImage)', () => {
     await drizzleOf(env3).update(schema.contestMatches)
       .set({ userB: { uid: 'bob', username: 'bob', joinId: 'JN-B', mediaUrl: 'https://evil.example/x.jpg', mediaType: 'photo' } } as any).run();
     expect((await share(env3, 'alice', id3)).body).toMatchObject({ status: 'unavailable', reason: 'untrusted_media', url: null });
+  });
+
+  it('regenerates for a COMPLETED battle (the main post-voting share case)', async () => {
+    const { env } = photoEnv();
+    const id = await legacyBattle(env, { status: 'completed', winnerUid: 'alice' });
+    const res = await share(env, 'alice', id);
+    expect(res.body).toMatchObject({ status: 'ready', url: cardUrl(id) });
+  });
+
+  it('a takedown during the render leaves no image behind', async () => {
+    const { env, images } = photoEnv();
+    const id = await legacyBattle(env);
+    const real = imagesBindingRenderer(images as any);
+    const out = await ensureMatchShareImage(env as any, id, {
+      renderer: {
+        id: 'cancel-mid-render',
+        render: async (input: any) => {
+          const r = await real.render(input);
+          await drizzleOf(env).update(schema.contestMatches).set({ status: 'cancelled' } as any).run();
+          return r;
+        },
+      },
+    });
+    expect(out).toMatchObject({ status: 'unavailable', url: null });
+    expect((await matchRow(env, id))?.vsImageUrl ?? null).toBeNull();
+    expect(env.MEDIA._objects.has(vsCardKey(id))).toBe(false);
+    expect((await matchRow(env, id))?.vsStoryClaim).toBeNull();
+  });
+
+  it('a participant deleting their account during the render: the face is not republished', async () => {
+    const { env, images } = photoEnv();
+    const id = await legacyBattle(env);
+    const real = imagesBindingRenderer(images as any);
+    const out = await ensureMatchShareImage(env as any, id, {
+      renderer: {
+        id: 'delete-mid-render',
+        render: async (input: any) => {
+          const r = await real.render(input);
+          await drizzleOf(env).update(schema.users).set({ status: 'deleted' } as any).where(eq(schema.users.uid, 'bob')).run();
+          return r;
+        },
+      },
+    });
+    expect(out.status).toBe('unavailable');
+    expect(env.MEDIA._puts.some((k) => k.startsWith('vs-cards/'))).toBe(false);
+    expect((await matchRow(env, id))?.vsImageUrl ?? null).toBeNull();
+  });
+
+  it('account deletion also removes an orphan at the deterministic key', async () => {
+    const { env } = photoEnv();
+    const id = await legacyBattle(env);
+    await env.MEDIA.put(vsCardKey(id), fakePhoto('orphan'));
+    await executeAccountDeletion(env as any, 'bob');
+    expect(env.MEDIA._objects.has(vsCardKey(id))).toBe(false);
+  });
+
+  it('takedown ends retention so the next sweep removes the image', async () => {
+    const { env } = photoEnv();
+    const { matchId } = await fullBattle(env);
+    expect((await admin(env, 'POST', `/matches/${matchId}/cancel`)).status).toBe(200);
+    await sweepVsComposites(env as any, Date.now());
+    expect(env.MEDIA._deleted).toContain(vsCardKey(matchId));
+    expect((await matchRow(env, matchId))?.vsImageUrl).toBeNull();
+  });
+
+  it('treats any server render version as canonical (live Stories keep their image)', async () => {
+    const { env, images } = photoEnv();
+    const id = await legacyBattle(env);
+    await env.MEDIA.put(`vs-cards/battles/${id}-v0.jpg`, fakePhoto('older-render'));
+    await drizzleOf(env).update(schema.contestMatches).set({ vsImageUrl: `${BASE}/vs-cards/battles/${id}-v0.jpg` } as any).run();
+    const res = await share(env, 'alice', id);
+    expect(res.body).toMatchObject({ status: 'ready', url: `${BASE}/vs-cards/battles/${id}-v0.jpg` });
+    expect(images._outputs).toHaveLength(0);
+    expect(env.MEDIA._deleted).toEqual([]);
+  });
+
+  it('plain reads never consume the per-battle render budget, and do not write on every read', async () => {
+    const { env } = photoEnv();
+    const { matchId } = await fullBattle(env);
+    const retain0 = Number((await matchRow(env, matchId))?.vsImageRetainUntil);
+    for (let i = 0; i < 25; i++) {
+      expect((await share(env, 'alice', matchId)).body.status).toBe('ready');
+    }
+    // Retention was already well ahead, so no write happened.
+    expect(Number((await matchRow(env, matchId))?.vsImageRetainUntil)).toBe(retain0);
+  });
+
+  it('the per-battle render budget bounds repeated regeneration', async () => {
+    const { env } = photoEnv();
+    const id = await legacyBattle(env);
+    const statuses: string[] = [];
+    for (let i = 0; i < 22; i++) {
+      env.MEDIA._objects.delete(vsCardKey(id)); // force a render every time
+      statuses.push((await share(env, 'alice', id)).body.status);
+    }
+    expect(statuses.slice(0, 20).every((st) => st === 'ready')).toBe(true);
+    expect(statuses.slice(20)).toEqual(['unavailable', 'unavailable']);
   });
 
   it('a video battle shares its poster composite, never a raw video', async () => {

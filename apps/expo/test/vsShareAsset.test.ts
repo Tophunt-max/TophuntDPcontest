@@ -102,6 +102,43 @@ describe('resolveBattleShareAsset', () => {
   });
 });
 
+describe('resolveBattleShareAsset — server refusals are final', () => {
+  const capture = vi.fn(async () => 'file:///x.jpg');
+  for (const [status, reason] of [[403, 'forbidden'], [429, 'rate_limited'], [400, 'refused']] as const) {
+    it(`HTTP ${status}: no cached url, no capture`, async () => {
+      capture.mockClear();
+      const a = await resolveBattleShareAsset('m1', {
+        fetchShareImage: async () => {
+          throw Object.assign(new Error('x'), { code: 'functions/x', status });
+        },
+        knownUrl: CARD,
+        capture,
+      });
+      expect(a).toMatchObject({ status: 'unavailable', reason });
+      expect(capture).not.toHaveBeenCalled();
+    });
+  }
+
+  it('a 5xx / offline is transport: the verified known url may be used', async () => {
+    for (const err of [Object.assign(new Error('x'), { status: 503 }), Object.assign(new Error('x'), { code: 'functions/unavailable' }), new TypeError('fetch failed')]) {
+      const a = await resolveBattleShareAsset('m1', { fetchShareImage: async () => { throw err; }, knownUrl: CARD });
+      expect(a.status).toBe('ready');
+    }
+  });
+
+  it('an `unavailable` answer (cancelled, blocked pair, untrusted media) is never captured around', async () => {
+    for (const reason of ['cancelled', 'participants_blocked', 'participant_unavailable', 'untrusted_media']) {
+      capture.mockClear();
+      const a = await resolveBattleShareAsset('m1', {
+        fetchShareImage: async () => ({ matchId: 'm1', status: 'unavailable', kind: 'photo', reason }),
+        capture,
+      });
+      expect(a).toMatchObject({ status: 'unavailable', reason });
+      expect(capture).not.toHaveBeenCalled();
+    }
+  });
+});
+
 describe('platformShareMode', () => {
   const ready = { assetStatus: 'ready' as const };
   it('image-capable apps get the image file on native and on file-sharing browsers', () => {
@@ -134,6 +171,8 @@ describe('createShareCounter', () => {
     expect(c.record('dismissed')).toBe(false);
     expect(c.record('failed')).toBe(false);
     expect(c.record('image_unsupported')).toBe(false);
+    expect(c.record('image_saved')).toBe(false);
+    expect(c.record('needs_gesture')).toBe(false);
     expect(c.record('shared_image')).toBe(true);
     // Fallbacks, retries and repeat taps of Copy link in the same session.
     expect(c.record('copied_link')).toBe(false);
@@ -156,7 +195,7 @@ describe('createShareCounter', () => {
 describe('shareOutcomeMessage', () => {
   it('only claims an image when an image was sent', () => {
     expect(shareOutcomeMessage('shared_image')?.text).toContain('VS image');
-    expect(shareOutcomeMessage('shared_image_caption_copied')?.text).toContain('VS image');
+    expect(shareOutcomeMessage('handed_off_caption_copied')?.text).toContain('VS image');
     for (const o of ['shared_link', 'copied_link', 'intent_opened'] as const) {
       expect(shareOutcomeMessage(o)?.text).not.toContain('image');
       expect(shareOutcomeMessage(o)?.text.toLowerCase()).toContain('link');

@@ -26,7 +26,7 @@ vi.mock('expo-image-manipulator', () => ({ ImageManipulator: { manipulate: h.man
 vi.mock('@/src/lib/vsNativeModules', () => ({ getSharing: () => h.sharing }));
 vi.mock('@/src/services/api', () => ({ API_BASE_URL: 'https://api.test' }));
 
-import { downloadBattleImage, shareBattleLink, shareImageFile, isCompletedShare } from '@/src/lib/share';
+import { downloadBattleImage, prepareShareFile, shareBattleLink, shareImageFile, isCompletedShare } from '@/src/lib/share';
 
 const CARD = 'https://media.tophunt.in/vs-cards/battles/m1-v1.jpg';
 const caption = 'Best Smile — @alice vs @bob. Vote now on TopHunt 👇\nhttps://tophunt.in/battle/m1';
@@ -100,6 +100,24 @@ describe('shareImageFile — web', () => {
   });
 });
 
+describe('shareImageFile — web user activation', () => {
+  it('a pre-fetched file is shared with no network wait', async () => {
+    const share = webNavigator({ files: true });
+    const file = await prepareShareFile({ kind: 'remote', url: CARD });
+    fetched = [];
+    expect(await shareImageFile({ source: { kind: 'remote', url: CARD }, caption, url, file })).toBe('shared_image');
+    expect(fetched).toEqual([]);
+    expect(share.mock.calls[0][0].files[0]).toBe(file);
+  });
+
+  it('a spent gesture (NotAllowedError) asks for another tap, never reports success', async () => {
+    webNavigator({ files: true, share: vi.fn(async () => { throw Object.assign(new Error('x'), { name: 'NotAllowedError' }); }) });
+    const out = await shareImageFile({ source: { kind: 'remote', url: CARD }, caption, url });
+    expect(out).toBe('needs_gesture');
+    expect(isCompletedShare(out)).toBe(false);
+  });
+});
+
 describe('shareImageFile — native', () => {
   beforeEach(() => {
     h.manipulate.mockReturnValue({
@@ -115,11 +133,19 @@ describe('shareImageFile — native', () => {
     expect(h.rnShare).toHaveBeenCalledWith({ url: 'file:///cache/card.jpg', message: caption });
   });
 
-  it('Android: shares the local file and copies the caption (no text on file intents)', async () => {
+  it('iOS: Save Image / Copy are not shares', async () => {
+    h.platform.OS = 'ios';
+    h.rnShare.mockResolvedValue({ action: 'sharedAction', activityType: 'com.apple.UIKit.activity.SaveToCameraRoll' });
+    const out = await shareImageFile({ source: { kind: 'remote', url: CARD }, caption, url });
+    expect(out).toBe('image_saved');
+    expect(isCompletedShare(out)).toBe(false);
+  });
+
+  it('Android: hands the local file to the share sheet and copies the caption (no text on file intents)', async () => {
     h.platform.OS = 'android';
     const shareAsync = vi.fn(async (..._args: any[]) => undefined);
     h.sharing = { isAvailableAsync: async () => true, shareAsync };
-    expect(await shareImageFile({ source: { kind: 'remote', url: CARD }, caption, url })).toBe('shared_image_caption_copied');
+    expect(await shareImageFile({ source: { kind: 'remote', url: CARD }, caption, url })).toBe('handed_off_caption_copied');
     expect(shareAsync.mock.calls[0][0]).toBe('file:///cache/card.jpg');
     expect(h.clipboard).toHaveBeenCalledWith(caption);
   });

@@ -53,6 +53,18 @@ export function isCanonicalVsImageUrl(url: unknown, matchId: string): url is str
   return new RegExp(`^https://[^/]+/(?:media/)?vs-cards/battles/${escaped}-v\\d+\\.jpg$`).test(url);
 }
 
+/**
+ * A failure to REACH the server (offline, timeout, 5xx), as opposed to an
+ * answer. `callApi` raises `ApiCallError` with an HTTP `status` for answers.
+ */
+function isTransportError(e: unknown): boolean {
+  const status = (e as any)?.status;
+  if (typeof status === 'number') return status >= 500;
+  const code = String((e as any)?.code || '');
+  if (code && !/unavailable|deadline-exceeded|internal/.test(code)) return false;
+  return true;
+}
+
 export async function resolveBattleShareAsset(
   matchId: string,
   opts: {
@@ -80,7 +92,13 @@ export async function resolveBattleShareAsset(
       status = res?.status && res.status !== 'ready' ? res.status : 'unavailable';
       reason = res?.reason ?? (res?.status === 'ready' ? 'invalid_url' : undefined);
     }
-  } catch {
+  } catch (e) {
+    if (!isTransportError(e)) {
+      // The server ANSWERED and refused (403 blocked viewer, 429, 4xx). That is
+      // final: no cached url, no capture.
+      const http = Number((e as any)?.status);
+      return { status: 'unavailable', matchId, reason: http === 403 ? 'forbidden' : http === 429 ? 'rate_limited' : 'refused' };
+    }
     if (isCanonicalVsImageUrl(opts.knownUrl, matchId)) {
       return { status: 'ready', matchId, source: { kind: 'remote', url: opts.knownUrl }, origin: 'known' };
     }
@@ -88,7 +106,11 @@ export async function resolveBattleShareAsset(
     reason = 'network';
   }
 
-  if (opts.capture && kind !== 'video' && status !== 'waiting_for_opponent' && reason !== 'mismatch') {
+  // Capture only when the image is merely LATE (still preparing, or the server
+  // could not be reached) — never to work around a refusal such as a cancelled
+  // battle, a blocked pair, a removed participant or untrusted media.
+  const captureAllowed = status === 'preparing' || reason === 'network';
+  if (opts.capture && kind !== 'video' && captureAllowed) {
     let uri: string | null = null;
     try {
       uri = await opts.capture();
@@ -154,7 +176,7 @@ export function createShareCounter(bump: () => Promise<unknown>) {
         outcome === 'intent_opened' ||
         outcome === 'dm_sent' ||
         outcome === 'shared_image' ||
-        outcome === 'shared_image_caption_copied' ||
+        outcome === 'handed_off_caption_copied' ||
         outcome === 'shared_link' ||
         outcome === 'copied_link';
       if (!completed || counted) return false;
@@ -173,8 +195,12 @@ export function shareOutcomeMessage(outcome: ShareOutcome | 'intent_opened'): { 
   switch (outcome) {
     case 'shared_image':
       return { text: 'VS image shared!', tone: 'success' };
-    case 'shared_image_caption_copied':
-      return { text: 'VS image shared — caption copied, paste it in your post', tone: 'success' };
+    case 'handed_off_caption_copied':
+      return { text: 'VS image sent to the share sheet — caption copied, paste it in your post', tone: 'success' };
+    case 'image_saved':
+      return { text: 'VS image saved', tone: 'success' };
+    case 'needs_gesture':
+      return { text: 'Tap Share again to send the VS image', tone: 'info' };
     case 'shared_link':
       return { text: 'Battle link shared', tone: 'success' };
     case 'copied_link':
