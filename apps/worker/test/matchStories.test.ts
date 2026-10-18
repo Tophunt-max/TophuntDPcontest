@@ -46,6 +46,7 @@ import {
   runVsPublication,
   STORY_TTL_MS,
   TransientVsError,
+  VS_IMAGE_RETAIN_MS,
   VS_LEASE_MS,
   VS_MAX_ATTEMPTS,
   vsCardKey,
@@ -449,7 +450,7 @@ describe('the composite image', () => {
     expect(layout.badge.left + layout.badge.width / 2).toBe(layout.width / 2);
 
     const meta: any = (await matchRow(env, matchId))?.vsImageMeta;
-    expect(meta.labels).toEqual({ left: '@ALICE', right: '@BOB', title: 'BEST SMILE' });
+    expect(meta.labels).toEqual({ left: '@ALICE', right: '@BOB', title: 'BEST SMILE', footer: 'PHOTO BATTLE  -  VOTE ON TOPHUNT.IN' });
     expect(meta).toMatchObject({ width: 1080, height: 1920, renderer: 'cf-images-binding', version: '1' });
   });
 
@@ -826,33 +827,43 @@ describe('lifecycle and cleanup of the shared composite', () => {
     expect((await matchRow(env, matchId))?.vsImageUrl).toBe(cardUrl(matchId));
   });
 
-  it('the composite is deleted only once no live story references it; the match is kept', async () => {
+  it('the composite outlives the Stories for sharing, then is deleted after retention; the match is kept', async () => {
     const { env } = photoEnv();
     const { matchId, aliceUrl, bobUrl } = await fullBattle(env);
+    const m0 = await matchRow(env, matchId);
+    // Retained through voting + grace, not just the 24h story window.
+    expect(Number(m0?.vsImageRetainUntil)).toBeGreaterThanOrEqual(Number(m0?.expiresAt) + VS_IMAGE_RETAIN_MS);
+
     // Only Alice's has expired: Bob's still displays the card.
     await drizzleOf(env).update(schema.stories).set({ expiresAt: Date.now() - 1 } as any)
       .where(eq(schema.stories.userId, 'alice')).run();
     await sweepVsComposites(env as any, Date.now());
     expect(env.MEDIA._deleted).toEqual([]);
 
+    // Both Stories gone: the battle is still being shared, so the card stays.
     await drizzleOf(env).update(schema.stories).set({ expiresAt: Date.now() - 1 } as any).run();
     await resolveContests(env as any);
+    expect(env.MEDIA._deleted).toEqual([]);
+    expect((await matchRow(env, matchId))?.vsImageUrl).toBe(cardUrl(matchId));
+
+    // Retention over: deleted, column cleared, history intact.
+    await sweepVsComposites(env as any, Number(m0?.vsImageRetainUntil) + 1);
     expect(env.MEDIA._deleted).toEqual([vsCardKey(matchId)]);
     const m = await matchRow(env, matchId);
     expect(m?.vsImageUrl).toBeNull();
-    expect(m?.status).toBe('active');
     expect((m?.userA as any).mediaUrl).toBe(aliceUrl);
     expect((m?.userB as any).mediaUrl).toBe(bobUrl);
     expect(env.MEDIA._objects.has('contests/2026/10/alice-photo.jpg')).toBe(true);
   });
 
-  it('both users deleting early still leaves no orphan once the window has passed', async () => {
+  it('both users deleting early still leaves no orphan once retention has passed', async () => {
     const { env } = photoEnv();
     const { matchId } = await fullBattle(env);
     for (const uid of ['alice', 'bob']) await call(env, uid, 'deleteStory', { storyId: vsStoryId(matchId, uid) });
-    await sweepVsComposites(env as any, Date.now());
-    expect(env.MEDIA._deleted).toEqual([]); // not before the story window ends
     await sweepVsComposites(env as any, Date.now() + STORY_TTL_MS + 1);
+    expect(env.MEDIA._deleted).toEqual([]); // still within the sharing retention
+    const retain = Number((await matchRow(env, matchId))?.vsImageRetainUntil);
+    await sweepVsComposites(env as any, retain + 1);
     expect(env.MEDIA._deleted).toEqual([vsCardKey(matchId)]);
   });
 
@@ -1021,6 +1032,133 @@ describe('visibility and takedown', () => {
     expect((await runVsPublication(env as any, matchId, { renderer: stealing })).outcome).toBe('busy');
     expect(env.MEDIA._puts.some((k) => k.startsWith('vs-cards/'))).toBe(false);
     expect(await allStories(env)).toHaveLength(0);
+  });
+});
+
+describe('canonical share asset (getMatchShareImage)', () => {
+  const share = (env: TestEnv, uid: string, matchId: string) => call(env, uid, 'getMatchShareImage', { matchId });
+
+  /** An active two-player battle written by pre-0055 code: no publication state, no stories. */
+  async function legacyBattle(env: TestEnv, extra: Record<string, any> = {}) {
+    await seedUser(env, 'alice');
+    await seedUser(env, 'bob');
+    const ts = Date.now();
+    await drizzleOf(env).insert(schema.contestMatches).values({
+      id: 'legacy1', status: 'active', type: 'photo', title: 'Best Smile', createdAt: ts, activatedAt: ts,
+      expiresAt: ts + 86_400_000, joinIdA: 'JN-A', joinIdB: 'JN-B',
+      userA: { uid: 'alice', username: 'alice', joinId: 'JN-A', mediaUrl: await entry(env, 'alice-photo', { uploader: null }), mediaType: 'photo' },
+      userB: { uid: 'bob', username: 'bob', joinId: 'JN-B', mediaUrl: await entry(env, 'bob-photo', { uploader: null }), mediaType: 'photo' },
+      ...extra,
+    } as any);
+    return 'legacy1';
+  }
+
+  it('a completed photo battle resolves to its one canonical composite', async () => {
+    const { env } = photoEnv();
+    await seedUser(env, 'viewer');
+    const { matchId, aliceUrl, bobUrl } = await fullBattle(env);
+    const res = await share(env, 'viewer', matchId);
+    expect(res.body).toEqual({ matchId, status: 'ready', url: cardUrl(matchId), kind: 'photo' });
+    // The same object both participants' Stories display.
+    const stories = await allStories(env);
+    expect(new Set(stories.map((r: any) => r.mediaUrl))).toEqual(new Set([res.body.url]));
+    expect([aliceUrl, bobUrl]).not.toContain(res.body.url);
+  });
+
+  it('never hands out a participant photo while waiting or preparing', async () => {
+    const { env } = photoEnv();
+    const { matchId } = await createBattle(env);
+    expect((await share(env, 'alice', matchId)).body).toMatchObject({ status: 'waiting_for_opponent', url: null });
+    delete (env as any).IMAGES;
+    await call(env, 'bob', 'joinMatch', { matchId, mediaUrl: await entry(env, 'bob-photo'), mediaType: 'photo', deviceId: 'b' });
+    expect((await share(env, 'bob', matchId)).body).toMatchObject({ status: 'preparing', url: null });
+  });
+
+  it('regenerates a swept/lifecycle-deleted image at the same url without touching Stories', async () => {
+    const { env, images } = photoEnv();
+    const { matchId } = await fullBattle(env);
+    const before = (await allStories(env)).map((r: any) => r.id).sort();
+    env.MEDIA._objects.delete(vsCardKey(matchId)); // R2 lifecycle rule removed it
+    const res = await share(env, 'alice', matchId);
+    expect(res.body).toMatchObject({ status: 'ready', url: cardUrl(matchId) });
+    expect(images._outputs).toHaveLength(2);
+    expect(env.MEDIA._objects.has(vsCardKey(matchId))).toBe(true);
+    expect((await allStories(env)).map((r: any) => r.id).sort()).toEqual(before);
+    const m = await matchRow(env, matchId);
+    expect(m?.vsStoryStatus).toBe('published');
+    expect(m?.vsStoryClaim).toBeNull();
+  });
+
+  it('serves an existing card without re-rendering, and extends its retention', async () => {
+    const { env, images } = photoEnv();
+    const { matchId } = await fullBattle(env);
+    await drizzleOf(env).update(schema.contestMatches).set({ vsImageRetainUntil: 1 } as any).run();
+    await share(env, 'alice', matchId);
+    expect(images._outputs).toHaveLength(1);
+    expect(Number((await matchRow(env, matchId))?.vsImageRetainUntil)).toBeGreaterThan(Date.now());
+  });
+
+  it('gives legacy battles a server-rendered card on share — and never creates Stories', async () => {
+    const { env } = photoEnv();
+    const id = await legacyBattle(env);
+    const res = await share(env, 'alice', id);
+    expect(res.body).toMatchObject({ status: 'ready', url: cardUrl(id) });
+    expect(await allStories(env)).toHaveLength(0);
+    expect((await matchRow(env, id))?.vsStoryStatus).toBeNull();
+  });
+
+  it('replaces a legacy client-captured card instead of serving its untrusted pixels', async () => {
+    const { env } = photoEnv();
+    await env.MEDIA.put('vs-cards/2026/09/client.jpg', fakePhoto('client-card'));
+    const id = await legacyBattle(env, { vsImageUrl: `${BASE}/vs-cards/2026/09/client.jpg` });
+    const res = await share(env, 'alice', id);
+    expect(res.body.url).toBe(cardUrl(id));
+    expect(env.MEDIA._deleted).toEqual(['vs-cards/2026/09/client.jpg']);
+  });
+
+  it('concurrent shares render once', async () => {
+    const { env, images } = photoEnv();
+    const id = await legacyBattle(env);
+    const out = await Promise.all([1, 2, 3].map(() => share(env, 'alice', id)));
+    expect(images._outputs).toHaveLength(1);
+    expect(out.filter((r) => r.body.status === 'ready').length).toBeGreaterThanOrEqual(1);
+    expect(out.every((r) => r.body.status === 'ready' || r.body.status === 'preparing')).toBe(true);
+    expect(out.every((r) => r.body.url === null || r.body.url === cardUrl(id))).toBe(true);
+  });
+
+  it('refuses blocked viewers, and reports cancelled or untrusted battles as unavailable', async () => {
+    const { env } = photoEnv();
+    await seedUser(env, 'carol');
+    const { matchId } = await fullBattle(env);
+    await call(env, 'bob', 'blockUser', { targetUserId: 'carol' });
+    expect((await share(env, 'carol', matchId)).status).toBe(403);
+
+    const { env: env2 } = photoEnv();
+    const id = await legacyBattle(env2);
+    await drizzleOf(env2).update(schema.contestMatches).set({ status: 'cancelled' } as any).run();
+    expect((await share(env2, 'alice', id)).body).toMatchObject({ status: 'unavailable', reason: 'cancelled', url: null });
+
+    const { env: env3 } = photoEnv();
+    const id3 = await legacyBattle(env3);
+    await drizzleOf(env3).update(schema.contestMatches)
+      .set({ userB: { uid: 'bob', username: 'bob', joinId: 'JN-B', mediaUrl: 'https://evil.example/x.jpg', mediaType: 'photo' } } as any).run();
+    expect((await share(env3, 'alice', id3)).body).toMatchObject({ status: 'unavailable', reason: 'untrusted_media', url: null });
+  });
+
+  it('a video battle shares its poster composite, never a raw video', async () => {
+    const { env } = photoEnv();
+    await seedUser(env, 'alice');
+    await seedUser(env, 'bob');
+    const ts = Date.now();
+    await drizzleOf(env).insert(schema.contestMatches).values({
+      id: 'v1', status: 'active', type: 'video', title: 'Dance', createdAt: ts, joinIdA: 'A', joinIdB: 'B',
+      userA: { uid: 'alice', joinId: 'A', mediaUrl: 'https://vz.test/x/playlist.m3u8', mediaType: 'video' },
+      userB: { uid: 'bob', joinId: 'B', mediaUrl: 'https://vz.test/y/playlist.m3u8', mediaType: 'video' },
+    } as any);
+    const res = await share(env, 'alice', 'v1');
+    expect(res.body.kind).toBe('video');
+    expect(res.body.status).toBe('unavailable'); // no Bunny poster configured: no fake image
+    expect(res.body.url).toBeNull();
   });
 });
 

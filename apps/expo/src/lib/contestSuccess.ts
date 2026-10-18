@@ -29,9 +29,9 @@ export function goToCongratulations(
      */
     matchId?: string | null;
     /**
-     * The user's just-uploaded entry image. Lets the share attach the photo
-     * (on platforms that allow an image + text together); elsewhere it rides
-     * along as the battle link's preview image.
+     * IGNORED. A battle is never shared as one participant's photo; the share
+     * image is the server-rendered VS card resolved by match id. Kept only so
+     * existing call sites compile; it is not forwarded.
      */
     imageUrl?: string | null;
   },
@@ -44,7 +44,6 @@ export function goToCongratulations(
       // Only include when present — expo-router serialises every param into the
       // URL, and empty values would add noise like `?matchId=`.
       ...(opts.matchId ? { matchId: opts.matchId } : {}),
-      ...(opts.imageUrl ? { imageUrl: opts.imageUrl } : {}),
     },
   });
 }

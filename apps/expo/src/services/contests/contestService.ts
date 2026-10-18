@@ -87,6 +87,13 @@ export const contestService = {
    * call repeatedly: it only reads (and nudges a due server-side retry); it never
    * re-submits an entry or re-charges a fee.
    */
+  /**
+   * The battle's canonical share image (server-rendered VS card), verified to
+   * exist and regenerated server-side if it was swept. See src/lib/vsShareAsset.ts.
+   */
+  getMatchShareImage: async (matchId: string): Promise<import('@/src/lib/vsShareAsset').ShareImageResponse> =>
+    callApi('getMatchShareImage', { matchId }) as any,
+
   getMatchStoryStatus: async (
     matchId: string,
   ): Promise<{ storyStatus: 'waiting_for_opponent' | 'preparing' | 'live' | 'failed' | 'unavailable'; storyId?: string | null; vsImageUrl?: string | null }> =>

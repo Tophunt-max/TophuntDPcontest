@@ -1350,9 +1350,9 @@ function injectSeo(shellResp, opts) {
  * should rank. OG unfurling does not require indexing, so this gets the product
  * benefit without the SEO cost.
  *
- * The image preference order matters: the composite VS card is the only image
- * that shows BOTH entries, so it makes by far the best preview. It does not always
- * exist (it needs a native capture), hence the fallbacks.
+ * The composite VS card is the only image that shows BOTH entries. It is rendered
+ * server-side and retained for the voting window (Worker migrations 0055/0056),
+ * so a live battle normally has one.
  */
 function injectBattleSeo(shellResp, match, origin, battleId) {
   const a = match.userA || {};
@@ -1368,7 +1368,16 @@ function injectBattleSeo(shellResp, match, origin, battleId) {
     ? `${versus} went head to head on TopHunt${contest ? ` in ${contest}` : ''}. See who won.`
     : `${versus} are going head to head${contest ? ` in ${contest}` : ''}. Vote for your favourite on TopHunt.`;
 
-  const image = match.vsImageUrl || a.mediaUrlOptimized || a.mediaUrl || b.mediaUrlOptimized || b.mediaUrl || '';
+  // Once a battle has BOTH sides, the only acceptable preview is the canonical
+  // two-photo VS card. Falling back to one participant's entry (what this used
+  // to do whenever the card was missing) made WhatsApp/Telegram/Facebook unfurl
+  // a two-player battle as a single person's photo. No card -> no image; the
+  // title still names both players. A battle still waiting for an opponent has
+  // only one entry, so its preview may show it.
+  const twoSided = !!(b.uid || b.username);
+  const image = twoSided
+    ? match.vsImageUrl || ''
+    : a.mediaUrlOptimized || a.mediaUrl || '';
 
   return injectSeo(shellResp, {
     title,

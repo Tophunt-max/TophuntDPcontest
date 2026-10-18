@@ -306,6 +306,12 @@ export const contestMatches = sqliteTable(
     vsStoryError: text("vs_story_error"),
     vsStoryPublishedAt: integer("vs_story_published_at"),
     vsImageMeta: text("vs_image_meta", { mode: "json" }),
+    /**
+     * Earliest time the composite may be deleted (migration 0056): end of voting
+     * plus a sharing grace window, extended whenever a share resolves it. The
+     * sweep never deletes before this, nor while a live Story references it.
+     */
+    vsImageRetainUntil: integer("vs_image_retain_until"),
     createdAt: integer("created_at").notNull(),
     activatedAt: integer("activated_at"),
     completedAt: integer("completed_at"),
@@ -315,6 +321,9 @@ export const contestMatches = sqliteTable(
     statusIdx: index("idx_matches_status").on(t.status),
     expiresIdx: index("idx_matches_expires").on(t.expiresAt),
     statusExpiresIdx: index("idx_matches_status_expires").on(t.status, t.expiresAt),
+    vsImageRetainIdx: index("idx_matches_vs_image_retain")
+      .on(t.vsImageRetainUntil)
+      .where(sql`${t.vsImageUrl} IS NOT NULL`),
     vsStoryDueIdx: index("idx_matches_vs_story_due")
       .on(t.vsStoryStatus, t.vsStoryNextAt)
       .where(sql`${t.vsStoryStatus} IN ('pending', 'processing')`),

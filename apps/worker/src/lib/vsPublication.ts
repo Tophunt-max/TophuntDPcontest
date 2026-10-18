@@ -50,7 +50,7 @@ import { and, eq, inArray, lte, or, sql } from "drizzle-orm";
 import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { now } from "./ids";
-import { canonicalMediaUrl, mediaKeyFromPublicUrl } from "./r2";
+import { canonicalMediaUrl, deleteVsImageByPublicUrl, mediaKeyFromPublicUrl, vsImageKeyFromPublicUrl } from "./r2";
 import { isSafeRelativeKey, VS_CARD_PREFIX } from "./mediaCategories";
 import { sniffMediaMime, isImageMime } from "./mediaTypes";
 import { bunnyConfig, guidFromUrl } from "./bunny";
@@ -382,17 +382,28 @@ async function explainUnclaimed(env: Env, matchId: string, ts: number): Promise<
   return { outcome: "busy" };
 }
 
-async function publishClaimed(env: Env, matchId: string, token: string, ts: number, opts: VsRunOptions): Promise<VsRunResult> {
-  const db = getDb(env);
-  const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, matchId)).get();
-  if (!match || match.status !== "active") throw new PermanentVsError("match_not_active");
-
-  const [pa, pb] = await loadParticipants(env, match);
+/**
+ * Step 3 of both the publication workflow and on-demand share regeneration:
+ * produce the ONE canonical composite for a battle at its deterministic key.
+ *
+ * Reuses a verified existing object (same match, both uids, render version) and
+ * otherwise renders once from trusted entries. `stillOwner` is consulted right
+ * before the only write that SQL cannot gate (the R2 put); returning false
+ * aborts with `null` so a caller that lost its claim writes nothing.
+ */
+async function produceComposite(
+  env: Env,
+  match: any,
+  pa: Participant,
+  pb: Participant,
+  ts: number,
+  opts: VsRunOptions,
+  stillOwner: () => Promise<boolean>,
+): Promise<{ publicUrl: string; meta: Record<string, unknown> } | null> {
+  const matchId = String(match.id);
   const key = vsCardKey(matchId);
   const publicUrl = `${env.R2_PUBLIC_BASE_URL.replace(/\/$/, "")}/${key}`;
 
-  // --- 3. composite: reuse a verified earlier upload, else render once --------
-  let meta: Record<string, unknown> | null = null;
   let head: R2Object | null = null;
   try {
     head = await env.MEDIA.head(key);
@@ -401,62 +412,80 @@ async function publishClaimed(env: Env, matchId: string, token: string, ts: numb
   }
   const cm = (head as any)?.customMetadata || {};
   if (head && cm.matchId === matchId && cm.uidA === pa.uid && cm.uidB === pb.uid && Number(cm.version) === VS_RENDER_VERSION) {
-    meta = { ...cm, reused: true, key };
-  } else {
-    const renderer = opts.renderer === undefined ? defaultVsRenderer(env) : opts.renderer;
-    if (!renderer) throw new TransientVsError("renderer_unavailable", "IMAGES binding is not configured", 30 * 60 * 1000);
-    const [ea, eb] = await Promise.all([resolveEntry(env, match, pa), resolveEntry(env, match, pb)]);
-    if (ea.key === eb.key) throw new PermanentVsError("duplicate_media");
-    let out;
-    try {
-      out = await withTimeout(
-        renderer.render({
-          left: { bytes: ea.bytes, username: pa.username },
-          right: { bytes: eb.bytes, username: pb.username },
-          title: match.title || "Battle",
-          kind: match.type === "video" ? "video" : "photo",
-        }),
-        opts.renderTimeoutMs ?? VS_RENDER_TIMEOUT_MS,
-        "render_timeout",
-      );
-    } catch (e: any) {
-      if (e instanceof VsMediaError) throw new PermanentVsError(e.reason, e.message);
-      throw e instanceof TransientVsError ? e : new TransientVsError("render_failed", e?.message);
-    }
-    const customMetadata = {
-      matchId,
-      uidA: pa.uid,
-      uidB: pb.uid,
-      version: String(VS_RENDER_VERSION),
-      renderer: renderer.id,
-      generatedAt: String(ts),
-    };
-    // Re-check the lease immediately before the one write that is not gated in
-    // SQL: a worker that lost its claim during a slow render must not replace
-    // the bytes behind a URL that is cached `immutable`.
-    const stillOwner = await env.DB.prepare(
-      `SELECT 1 AS ok FROM contest_matches WHERE id = ? AND vs_story_claim = ? AND status = 'active'`,
-    )
-      .bind(matchId, token)
-      .first<{ ok: number }>();
-    if (!stillOwner) return lostLeaseOrSkipped(env, matchId, token, ts);
-    try {
-      await env.MEDIA.put(key, out.bytes, {
-        httpMetadata: { contentType: out.contentType },
-        customMetadata,
-      });
-    } catch (e: any) {
-      throw new TransientVsError("r2_put_failed", e?.message);
-    }
-    meta = { ...customMetadata, key, width: out.width, height: out.height, bytes: out.bytes.length, labels: out.labels };
+    return { publicUrl, meta: { ...cm, reused: true, key } };
   }
 
+  const renderer = opts.renderer === undefined ? defaultVsRenderer(env) : opts.renderer;
+  if (!renderer) throw new TransientVsError("renderer_unavailable", "IMAGES binding is not configured", 30 * 60 * 1000);
+  const [ea, eb] = await Promise.all([resolveEntry(env, match, pa), resolveEntry(env, match, pb)]);
+  if (ea.key === eb.key) throw new PermanentVsError("duplicate_media");
+  let out;
+  try {
+    out = await withTimeout(
+      renderer.render({
+        left: { bytes: ea.bytes, username: pa.username },
+        right: { bytes: eb.bytes, username: pb.username },
+        title: match.title || "Battle",
+        kind: match.type === "video" ? "video" : "photo",
+      }),
+      opts.renderTimeoutMs ?? VS_RENDER_TIMEOUT_MS,
+      "render_timeout",
+    );
+  } catch (e: any) {
+    if (e instanceof VsMediaError) throw new PermanentVsError(e.reason, e.message);
+    throw e instanceof TransientVsError ? e : new TransientVsError("render_failed", e?.message);
+  }
+  const customMetadata = {
+    matchId,
+    uidA: pa.uid,
+    uidB: pb.uid,
+    version: String(VS_RENDER_VERSION),
+    renderer: renderer.id,
+    generatedAt: String(ts),
+  };
+  // A caller that lost its claim during a slow render must not replace the
+  // bytes behind a URL that is cached `immutable`.
+  if (!(await stillOwner())) return null;
+  try {
+    await env.MEDIA.put(key, out.bytes, { httpMetadata: { contentType: out.contentType }, customMetadata });
+  } catch (e: any) {
+    throw new TransientVsError("r2_put_failed", e?.message);
+  }
+  return {
+    publicUrl,
+    meta: { ...customMetadata, key, width: out.width, height: out.height, bytes: out.bytes.length, labels: out.labels },
+  };
+}
+
+/** Keep the composite while voting runs, plus a grace window for sharing. */
+export const VS_IMAGE_RETAIN_MS = 7 * 24 * 60 * 60 * 1000;
+
+async function publishClaimed(env: Env, matchId: string, token: string, ts: number, opts: VsRunOptions): Promise<VsRunResult> {
+  const db = getDb(env);
+  const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, matchId)).get();
+  if (!match || match.status !== "active") throw new PermanentVsError("match_not_active");
+
+  const [pa, pb] = await loadParticipants(env, match);
+
+  // --- 3. composite: reuse a verified earlier upload, else render once --------
+  const produced = await produceComposite(env, match, pa, pb, ts, opts, async () =>
+    !!(await env.DB.prepare(`SELECT 1 AS ok FROM contest_matches WHERE id = ? AND vs_story_claim = ? AND status = 'active'`)
+      .bind(matchId, token)
+      .first<{ ok: number }>()),
+  );
+  if (!produced) return lostLeaseOrSkipped(env, matchId, token, ts);
+  const { publicUrl, meta } = produced;
+
   // --- 4. persist the reference, only while we still own the lease ----------
+  // Retained through the voting window (+ grace) so feed/profile/battle-link
+  // sharing keeps resolving to the same image after the 24h Stories expire.
+  const retainUntil = Math.max(Number(match.expiresAt || 0), ts + STORY_TTL_MS) + VS_IMAGE_RETAIN_MS;
   const persisted = await env.DB.prepare(
-    `UPDATE contest_matches SET vs_image_url = ?, vs_image_meta = ?
+    `UPDATE contest_matches SET vs_image_url = ?, vs_image_meta = ?,
+            vs_image_retain_until = MAX(COALESCE(vs_image_retain_until, 0), ?)
       WHERE id = ? AND vs_story_claim = ? AND status = 'active'`,
   )
-    .bind(publicUrl, JSON.stringify(meta), matchId, token)
+    .bind(publicUrl, JSON.stringify(meta), retainUntil, matchId, token)
     .run();
   if (!Number(persisted.meta?.changes || 0)) return lostLeaseOrSkipped(env, matchId, token, ts);
 
@@ -627,4 +656,123 @@ export async function requeueVsPublication(env: Env, matchId: string): Promise<b
     .bind(matchId)
     .run();
   return Number(res.meta?.changes || 0) > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Canonical share asset
+// ---------------------------------------------------------------------------
+
+export type ShareImageStatus = "ready" | "preparing" | "waiting_for_opponent" | "unavailable";
+
+export interface ShareImageResult {
+  matchId: string;
+  status: ShareImageStatus;
+  /** The canonical composite — present only when `status === 'ready'`. */
+  url: string | null;
+  kind: "photo" | "video";
+  /** Safe failure category for `unavailable` (no error text, no paths). */
+  reason?: string;
+}
+
+/** True when `url` is THIS match's server-rendered card. */
+export function isCanonicalVsUrl(env: Env, url: string | null | undefined, matchId: string): boolean {
+  if (!url) return false;
+  const base = env.R2_PUBLIC_BASE_URL.replace(/\/$/, "");
+  return url === `${base}/${vsCardKey(matchId)}`;
+}
+
+/**
+ * The one image every share path for a two-player battle must use.
+ *
+ * Verifies the stored composite still exists (R2 lifecycle or the cleanup sweep
+ * may have removed it) and, when it is missing, regenerates it at the SAME
+ * deterministic key under a short claim — never touching Stories, the
+ * publication state, ownership or money. While publication is still running the
+ * answer is `preparing`; the caller polls. Callers never get a participant's
+ * raw entry from here.
+ */
+export async function ensureMatchShareImage(env: Env, matchId: string, opts: VsRunOptions = {}): Promise<ShareImageResult> {
+  const ts = opts.nowMs ?? now();
+  const db = getDb(env);
+  const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, matchId)).get();
+  const kind: "photo" | "video" = match?.type === "video" ? "video" : "photo";
+  const result = (status: ShareImageStatus, extra: Partial<ShareImageResult> = {}): ShareImageResult => ({
+    matchId,
+    status,
+    url: null,
+    kind,
+    ...extra,
+  });
+  if (!match) return result("unavailable", { reason: "not_found" });
+  const uidA = (match.userA as any)?.uid;
+  const uidB = (match.userB as any)?.uid;
+  if (match.status === "waiting_for_opponent" || !uidB) return result("waiting_for_opponent");
+  if (!uidA) return result("unavailable", { reason: "missing_participant" });
+  if (match.status === "cancelled") return result("unavailable", { reason: "cancelled" });
+  if (match.vsStoryStatus === "pending" || match.vsStoryStatus === "processing") return result("preparing");
+
+  const extend = Math.max(Number(match.vsImageRetainUntil || 0), ts + VS_IMAGE_RETAIN_MS);
+  // Only the SERVER-rendered card is canonical. A legacy client-captured card
+  // (pre-0055, arbitrary pixels from one participant) is replaced, not served.
+  if (match.vsImageUrl && isCanonicalVsUrl(env, match.vsImageUrl, matchId)) {
+    const key = vsImageKeyFromPublicUrl(env, match.vsImageUrl);
+    let exists = false;
+    try {
+      exists = !!(key && (await env.MEDIA.head(key)));
+    } catch {
+      return result("unavailable", { reason: "storage_unavailable" });
+    }
+    if (exists) {
+      if (extend > Number(match.vsImageRetainUntil || 0)) {
+        await db.update(schema.contestMatches).set({ vsImageRetainUntil: extend }).where(eq(schema.contestMatches.id, matchId)).run();
+      }
+      return result("ready", { url: match.vsImageUrl });
+    }
+  }
+
+  // Regenerate under a short claim on the (idle) publication lease, so two
+  // viewers sharing at once render once and Stories are never involved.
+  const token = randomToken();
+  const claimed = await env.DB.prepare(
+    `UPDATE contest_matches SET vs_story_claim = ?, vs_story_claimed_at = ?
+      WHERE id = ? AND status != 'cancelled'
+        AND COALESCE(vs_story_status, '') NOT IN ('pending', 'processing')
+        AND (vs_story_claim IS NULL OR COALESCE(vs_story_claimed_at, 0) <= ?)`,
+  )
+    .bind(token, ts, matchId, ts - VS_LEASE_MS)
+    .run();
+  if (!Number(claimed.meta?.changes || 0)) return result("preparing");
+  const release = () =>
+    env.DB.prepare(`UPDATE contest_matches SET vs_story_claim = NULL, vs_story_claimed_at = NULL WHERE id = ? AND vs_story_claim = ?`)
+      .bind(matchId, token)
+      .run();
+  try {
+    const [pa, pb] = await loadParticipants(env, match);
+    const produced = await produceComposite(env, match, pa, pb, ts, opts, async () =>
+      !!(await env.DB.prepare(`SELECT 1 AS ok FROM contest_matches WHERE id = ? AND vs_story_claim = ?`)
+        .bind(matchId, token)
+        .first<{ ok: number }>()),
+    );
+    if (!produced) return result("preparing");
+    const saved = await env.DB.prepare(
+      `UPDATE contest_matches
+          SET vs_image_url = ?, vs_image_meta = ?, vs_image_retain_until = ?,
+              vs_story_claim = NULL, vs_story_claimed_at = NULL
+        WHERE id = ? AND vs_story_claim = ?`,
+    )
+      .bind(produced.publicUrl, JSON.stringify({ ...produced.meta, regeneratedFor: "share" }), extend, matchId, token)
+      .run();
+    if (!Number(saved.meta?.changes || 0)) return result("preparing");
+    // The superseded legacy client card is now referenced by nothing (legacy
+    // story rows carry each user's own entry, never the card).
+    if (match.vsImageUrl && match.vsImageUrl !== produced.publicUrl) {
+      await deleteVsImageByPublicUrl(env, match.vsImageUrl).catch(() => {});
+    }
+    return result("ready", { url: produced.publicUrl });
+  } catch (e: any) {
+    await release().catch(() => {});
+    const reason = e?.reason || "render_failed";
+    console.error("[vsShare] could not resolve share image", matchId, reason);
+    return result(e instanceof TransientVsError ? "preparing" : "unavailable", e instanceof TransientVsError ? {} : { reason });
+  }
 }

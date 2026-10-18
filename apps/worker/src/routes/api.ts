@@ -79,7 +79,7 @@ import { assertClean } from "../lib/moderation";
 import { lookupTrack, sanitiseMusicStartMs } from "../lib/music";
 import { assertChatMember } from "../lib/chatAuth";
 import { isContestStoryType } from "../lib/matchStories";
-import { publicVsStoryStatus, runVsPublication } from "../lib/vsPublication";
+import { ensureMatchShareImage, publicVsStoryStatus, runVsPublication } from "../lib/vsPublication";
 import {
   assertMatchInteractionAllowed,
   assertNotBlocked,
@@ -1034,6 +1034,29 @@ apiRoute.post("/", async (c) => {
         storyId,
         vsImageUrl: storyStatus === "live" ? m.vsImageUrl ?? null : null,
       });
+    }
+
+    /**
+     * The canonical share asset for a battle: the server-rendered two-photo VS
+     * card. Every client share path (feed sheet, Story share, Save image, the
+     * congratulations screen) resolves through this, so they all send the same
+     * file — never one participant's raw entry.
+     *
+     * Verifies the object still exists and regenerates it at the same
+     * deterministic key if it was swept (no Stories, ownership or money touched).
+     * Blocked viewers are refused, exactly like any other match interaction.
+     */
+    case "getMatchShareImage": {
+      await rateLimit(env, `vsshare:${uid}`, 120, 3600);
+      const matchId = requiredId(body.matchId, "matchId", 128);
+      await assertMatchInteractionAllowed(env, uid, matchId);
+      // Bounds regeneration cost for one battle however many people share it.
+      await rateLimit(env, `vsshare_m:${matchId}`, 120, 3600);
+      const out = await ensureMatchShareImage(env, matchId);
+      if (out.status === "preparing") {
+        c.executionCtx.waitUntil(runVsPublication(env, matchId).catch(() => {}));
+      }
+      return c.json(out);
     }
 
     /**

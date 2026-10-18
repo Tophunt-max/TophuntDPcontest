@@ -407,7 +407,7 @@ export interface VsRenderOutput {
   width: number;
   height: number;
   /** What was drawn, for metadata and tests. */
-  labels: { left: string; right: string; title: string };
+  labels: { left: string; right: string; title: string; footer: string };
 }
 
 export interface VsRenderer {
@@ -466,14 +466,16 @@ export function imagesBindingRenderer(images: ImagesBinding): VsRenderer {
         right: cardHandle(input.right.username),
         title: sanitizeCardText(input.title, 24, "TOPHUNT BATTLE"),
       };
-      const footer = input.kind === "video" ? "TOPHUNT  VIDEO BATTLE" : "TOPHUNT  PHOTO BATTLE";
+      // Attribution + call to action: this image travels outside the app (it is
+      // the canonical share asset), so it has to say where to vote.
+      const footer = `${input.kind === "video" ? "VIDEO" : "PHOTO"} BATTLE  -  VOTE ON TOPHUNT.IN`;
 
       const nameScale = 4;
       const [leftName, rightName, title, foot] = await Promise.all([
         encodePngRgba(rasterizeLabel(labels.left, nameScale)),
         encodePngRgba(rasterizeLabel(labels.right, nameScale)),
         encodePngRgba(rasterizeLabel(labels.title, 6, { bg: [0, 0, 0, 120] })),
-        encodePngRgba(rasterizeLabel(footer, 3, { fg: [255, 255, 255, 190], bg: [0, 0, 0, 0] })),
+        encodePngRgba(rasterizeLabel(footer, 3, { fg: [255, 255, 255, 230], bg: [0, 0, 0, 110] })),
       ]);
       badgePng ||= encodePngRgba(rasterizeVsBadge(layout.badge.width));
       canvasPng ||= encodeCanvasPng(layout.width, layout.height);
@@ -509,7 +511,7 @@ export function imagesBindingRenderer(images: ImagesBinding): VsRenderer {
         .output({ format: "image/jpeg", quality: 85 });
 
       const bytes = await readAll(result.image());
-      return { bytes, contentType: "image/jpeg", width: layout.width, height: layout.height, labels };
+      return { bytes, contentType: "image/jpeg", width: layout.width, height: layout.height, labels: { ...labels, footer } };
     },
   };
 }

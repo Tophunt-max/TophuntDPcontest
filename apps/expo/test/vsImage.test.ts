@@ -18,7 +18,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   captureVsCard,
   isVsCaptureSupported,
-  shareVsCard,
 } from '@/src/lib/vsImage';
 
 let viewShot: any = null;
@@ -93,83 +92,5 @@ describe('captureVsCard', () => {
   it('swallows a capture failure — the frame on screen is still correct', async () => {
     viewShot = { captureRef: vi.fn().mockRejectedValue(new Error('view not found')) };
     await expect(captureVsCard({ some: 'ref' })).resolves.toBeNull();
-  });
-});
-
-describe('shareVsCard', () => {
-  it('sends the file and does NOT also run the text fallback', async () => {
-    // Running both would open two share sheets back to back.
-    const shareAsync = vi.fn().mockResolvedValue(undefined);
-    sharing = { isAvailableAsync: async () => true, shareAsync };
-    const fallbackShare = vi.fn();
-
-    await shareVsCard({ imageUri: 'file:///tmp/card.jpg', fallbackShare });
-
-    expect(shareAsync).toHaveBeenCalledWith('file:///tmp/card.jpg', expect.objectContaining({ mimeType: 'image/jpeg' }));
-    expect(fallbackShare).not.toHaveBeenCalled();
-  });
-
-  it('falls back to text when there is no image to send', async () => {
-    // Sharing is the whole point of producing the card, so it has to still work on
-    // web, on a pre-rebuild install, and when the capture simply failed.
-    sharing = { isAvailableAsync: async () => true, shareAsync: vi.fn() };
-    const fallbackShare = vi.fn();
-    await shareVsCard({ imageUri: null, fallbackShare });
-    expect(fallbackShare).toHaveBeenCalledTimes(1);
-  });
-
-  it('falls back when the native share module is missing', async () => {
-    const fallbackShare = vi.fn();
-    await shareVsCard({ imageUri: 'file:///tmp/card.jpg', fallbackShare });
-    expect(fallbackShare).toHaveBeenCalledTimes(1);
-  });
-
-  it('falls back for a remote url, which the share sheet cannot attach', async () => {
-    const shareAsync = vi.fn();
-    sharing = { isAvailableAsync: async () => true, shareAsync };
-    const fallbackShare = vi.fn();
-
-    await shareVsCard({ imageUri: 'https://cdn.test/vs-cards/images/abc.jpg', fallbackShare });
-
-    expect(shareAsync).not.toHaveBeenCalled();
-    expect(fallbackShare).toHaveBeenCalledTimes(1);
-  });
-
-  it('shares a web blob: capture the same way it shares a native file://', async () => {
-    // The web build produces a `blob:` object URL from html-to-image rather than a
-    // `file://` tmpfile. It is just as local and attachable, so it must take the
-    // image path, not the text fallback — this is the whole point of enabling the
-    // composite on web.
-    const shareAsync = vi.fn().mockResolvedValue(undefined);
-    sharing = { isAvailableAsync: async () => true, shareAsync };
-    const fallbackShare = vi.fn();
-
-    await shareVsCard({ imageUri: 'blob:https://app.tophunt.in/9f2c-abc', fallbackShare });
-
-    expect(shareAsync).toHaveBeenCalledWith(
-      'blob:https://app.tophunt.in/9f2c-abc',
-      expect.objectContaining({ mimeType: 'image/jpeg' }),
-    );
-    expect(fallbackShare).not.toHaveBeenCalled();
-  });
-
-  it('falls back when the device reports no share sheet', async () => {
-    const shareAsync = vi.fn();
-    sharing = { isAvailableAsync: async () => false, shareAsync };
-    const fallbackShare = vi.fn();
-
-    await shareVsCard({ imageUri: 'file:///tmp/card.jpg', fallbackShare });
-
-    expect(shareAsync).not.toHaveBeenCalled();
-    expect(fallbackShare).toHaveBeenCalledTimes(1);
-  });
-
-  it('falls back when the share sheet itself throws', async () => {
-    sharing = { isAvailableAsync: async () => true, shareAsync: vi.fn().mockRejectedValue(new Error('no activity')) };
-    const fallbackShare = vi.fn();
-
-    await shareVsCard({ imageUri: 'file:///tmp/card.jpg', fallbackShare });
-
-    expect(fallbackShare).toHaveBeenCalledTimes(1);
   });
 });

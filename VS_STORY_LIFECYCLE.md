@@ -106,9 +106,11 @@ own ledger idempotency.
 - **Ownership:** the composite belongs to the match.
   - `deleteStory`, the expired-story sweep and account deletion never delete
     contest-story media or any `vs-cards/` URL through a story.
-  - `sweepVsComposites` deletes the composite only when no live story of that battle
-    references it, or once the story window has passed after both owners deleted
-    theirs early.
+  - `sweepVsComposites` deletes the composite only when no live story of that
+    battle references it **and** its retention (`vs_image_retain_until`, migration
+    0056) has passed. Retention is the end of voting + 7 days, and every share that
+    resolves the image extends it. The image is the battle's share asset, so it
+    outlives the 24h Stories.
   - Match rows and both original entries are kept.
 - **Account deletion** of a participant destroys their composites and every VS story
   showing them, including the opponent's.
@@ -120,6 +122,49 @@ own ledger idempotency.
   battle's card).
 - The lease is re-checked right before the R2 put. A worker that lost its claim
   mid-render writes nothing.
+
+## Sharing: one canonical image everywhere
+
+Every battle share path resolves its image with `resolveBattleShareAsset`
+(`apps/expo/src/lib/vsShareAsset.ts`). That calls the Worker's
+`getMatchShareImage`, which verifies the composite still exists and regenerates it
+at the same deterministic URL if it was swept. Regeneration never touches Stories,
+publication state, ownership or money; it renders once under a short claim and
+replaces any legacy client-captured card.
+
+The client uses a URL it already has only if that fetch fails, and only if the URL
+is provably this match's server card (`vs-cards/battles/<matchId>-v<N>.jpg`). A
+capture of the on-screen `StoryVsFrame` is the last fallback: photo battles only,
+and only after the frame's capture-ready signal. A participant's raw photo is never
+used.
+
+| Entry point | Image source | Image attachment | Link-only behaviour |
+|---|---|---|---|
+| Feed share sheet → "Share image" (`ShareSheet`) | canonical composite | Web Share file + caption · iOS file + caption · Android file (caption copied) | "Share link" when the battle has no VS image (waiting, unavailable) |
+| Sheet → WhatsApp / Messenger / Instagram / Telegram / Snapchat | canonical composite via the OS / Web Share sheet | as above | WhatsApp/Telegram link intent, or the OS sheet with a link, when no image is possible; **waits** while the image is preparing |
+| Sheet → X, Facebook | — | intents can't carry files | always link intents (labelled) |
+| Sheet → Save image | same canonical URL | web download · native share sheet "Save image" | — |
+| Sheet → Copy link, DM | — | — | URL / caption only, by design |
+| Story viewer share (own or another user's VS Story) | canonical composite → known story media (same card) → gated frame capture | as above | "Share link only", offered explicitly |
+| Story viewer share (normal story) | — | — | unchanged text + link |
+| Congratulations screen, joiner | canonical composite | as above | "Share link only" button |
+| Congratulations screen, creator | — (no VS yet) | — | link invite; no longer attaches the creator's own entry |
+| `/battle/<id>` link preview (`og:image`) | composite only, for two-sided battles | — | no image rather than one participant's photo |
+| Settings → share app, wallet referral, blog, data export | not battles | — | unchanged |
+
+Removed paths: `engagementService.shareBattle` (no callers, placeholder domain),
+`shareVsCard`, and `shareBattle`, which silently degraded to a text share while
+reporting success.
+
+**Share counting:** at most one `shareContest` per sheet opening or Story share tap,
+and only for a completed share. Opening the sheet, dismissing, failing or saving the
+image never counts.
+
+**Platform limits:** WhatsApp, Instagram, Snapchat and Messenger only get the image
+through the OS or Web Share sheet. The app cannot target one of them with a file
+without app-specific native SDKs. Android cannot attach text to a file share, so the
+caption is copied for the user to paste. Desktop browsers without file sharing get a
+clear "can't attach images here" message instead of a silent link share.
 
 ## Known limitations
 

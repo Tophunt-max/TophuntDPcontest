@@ -32,7 +32,7 @@
  *               battle references it (or by account deletion of a participant,
  *               whose face it contains).
  */
-import { and, eq, gt, inArray, isNotNull, lte, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { deleteVsImageByPublicUrl, vsImageKeyFromPublicUrl } from "./r2";
@@ -169,21 +169,32 @@ export async function teardownVsStories(env: Env, matchId: string): Promise<void
 }
 
 /**
- * Reference-aware cleanup of the shared composite.
+ * Reference- and retention-aware cleanup of the shared composite.
  *
- * The composite is owned by the MATCH and displayed by up to two stories. It is
- * deleted only when no live (unexpired) story of that battle remains — so one
- * participant deleting their story, or one row expiring, never blanks the other.
+ * The composite is owned by the MATCH. It is displayed by up to two Stories and
+ * is ALSO the battle's canonical share asset (feed share, Story share, Save
+ * image, the /battle/<id> link preview), so it is deleted only when BOTH:
  *
- * Candidates are (a) battles whose VS stories just expired, and (b) published
- * battles older than the story window — the second catches the case where both
- * participants deleted their stories early, which would otherwise leave the
- * object referenced by nothing until the R2 lifecycle safety net.
+ *   - its retention has passed (`vs_image_retain_until`: end of voting + grace,
+ *     extended by every share that resolves it — migration 0056), and
+ *   - no live Story of the battle references it.
+ *
+ * One participant deleting their Story, or one row expiring, never blanks the
+ * other, and a battle still being shared keeps its image. Rows written before
+ * 0056 (no retention) keep the previous rule: deletable once their Stories have
+ * expired, or the story window has passed after publication.
  *
  * The match row and both original entries are untouched: match history stays.
+ * A share after deletion regenerates the same image (ensureMatchShareImage).
  */
 export async function sweepVsComposites(env: Env, nowMs: number): Promise<{ deleted: number }> {
   const db = getDb(env);
+  const retained = await db
+    .select({ id: schema.contestMatches.id })
+    .from(schema.contestMatches)
+    .where(and(isNotNull(schema.contestMatches.vsImageUrl), lte(schema.contestMatches.vsImageRetainUntil, nowMs)))
+    .limit(100)
+    .all();
   const expired = await db
     .select({ matchId: schema.stories.matchId })
     .from(schema.stories)
@@ -197,13 +208,16 @@ export async function sweepVsComposites(env: Env, nowMs: number): Promise<{ dele
       and(
         eq(schema.contestMatches.vsStoryStatus, "published"),
         isNotNull(schema.contestMatches.vsImageUrl),
+        isNull(schema.contestMatches.vsImageRetainUntil),
         lte(schema.contestMatches.vsStoryPublishedAt, nowMs - STORY_TTL_MS),
       ),
     )
     .limit(100)
     .all();
   const ids = [
-    ...new Set([...expired.map((s) => s.matchId), ...stale.map((m) => m.id)].filter(Boolean) as string[]),
+    ...new Set(
+      [...retained.map((m) => m.id), ...expired.map((s) => s.matchId), ...stale.map((m) => m.id)].filter(Boolean) as string[],
+    ),
   ];
 
   let deleted = 0;
@@ -217,17 +231,23 @@ export async function sweepVsComposites(env: Env, nowMs: number): Promise<{ dele
         .get();
       if (live) continue;
       const m = await db
-        .select({ vsImageUrl: schema.contestMatches.vsImageUrl, vsStoryStatus: schema.contestMatches.vsStoryStatus })
+        .select({
+          vsImageUrl: schema.contestMatches.vsImageUrl,
+          vsStoryStatus: schema.contestMatches.vsStoryStatus,
+          retainUntil: schema.contestMatches.vsImageRetainUntil,
+        })
         .from(schema.contestMatches)
         .where(eq(schema.contestMatches.id, matchId))
         .get();
-      // Never pull the image out from under an in-flight publication.
+      // Never pull the image out from under an in-flight publication, nor
+      // before its retention (a share may have just extended it).
       if (!m?.vsImageUrl || m.vsStoryStatus === "processing" || m.vsStoryStatus === "pending") continue;
+      if (m.retainUntil != null && Number(m.retainUntil) > nowMs) continue;
       // Clear first, conditionally: a client reading a url that names a deleted
       // object renders an empty frame, while null falls back to the live layout.
       const cleared = await db
         .update(schema.contestMatches)
-        .set({ vsImageUrl: null })
+        .set({ vsImageUrl: null, vsImageRetainUntil: null })
         .where(and(eq(schema.contestMatches.id, matchId), eq(schema.contestMatches.vsImageUrl, m.vsImageUrl)))
         .run();
       if (!Number(cleared.meta?.changes || 0)) continue;

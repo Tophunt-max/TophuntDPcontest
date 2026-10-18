@@ -57,6 +57,7 @@ import m_0052_hall_of_fame_awards_sql from "../../migrations/0052_hall_of_fame_a
 import m_0053_deposits_credited_at_sql from "../../migrations/0053_deposits_credited_at.sql";
 import m_0054_verification_reward_sql from "../../migrations/0054_verification_reward.sql";
 import m_0055_vs_story_publication_sql from "../../migrations/0055_vs_story_publication.sql";
+import m_0056_vs_image_retention_sql from "../../migrations/0056_vs_image_retention.sql";
 
 export interface Migration {
   name: string;
@@ -120,4 +121,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0053_deposits_credited_at.sql", sql: m_0053_deposits_credited_at_sql },
   { name: "0054_verification_reward.sql", sql: m_0054_verification_reward_sql },
   { name: "0055_vs_story_publication.sql", sql: m_0055_vs_story_publication_sql },
+  { name: "0056_vs_image_retention.sql", sql: m_0056_vs_image_retention_sql },
 ];

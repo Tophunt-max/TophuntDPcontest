@@ -231,7 +231,7 @@ export default function SettingScreen() {
       const outcome = await shareApp();
       // 'copied' is the desktop-browser path, where there is no share sheet — say
       // so, otherwise the tap looks like it did nothing.
-      if (outcome === 'copied') emitToast('Invite link copied to your clipboard.', 'success');
+      if (outcome === 'copied_link') emitToast('Invite link copied to your clipboard.', 'success');
       else if (outcome === 'failed') emitToast('Could not open the share sheet.', 'error');
     } catch (e: any) {
       reportError(e, { screen: 'settings', action: 'share-app' });

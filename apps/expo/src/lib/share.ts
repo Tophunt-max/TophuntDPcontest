@@ -144,66 +144,142 @@ async function localImageFile(remoteUrl: string): Promise<string | null> {
   }
 }
 
-export type ShareOutcome = 'shared' | 'copied' | 'dismissed' | 'failed';
+/**
+ * What actually happened, stated precisely enough that the UI never claims an
+ * image was sent when only a link was:
+ *
+ *  - `shared_image`                — the VS image FILE went to the share sheet
+ *                                     (with the caption, where the platform allows)
+ *  - `shared_image_caption_copied` — image sent; the platform cannot attach text
+ *                                     to a file (Android `expo-sharing`), so the
+ *                                     caption was put on the clipboard to paste
+ *  - `shared_link` / `copied_link` — text + link only, no image
+ *  - `image_unsupported`           — this browser/build cannot attach a file
+ *  - `dismissed`                   — the user backed out
+ *  - `failed`                      — the image could not be obtained or shared
+ */
+export type ShareOutcome =
+  | 'shared_image'
+  | 'shared_image_caption_copied'
+  | 'shared_link'
+  | 'copied_link'
+  | 'image_unsupported'
+  | 'dismissed'
+  | 'failed';
+
+/** Outcomes that represent a completed share (and so may bump the share count once). */
+export function isCompletedShare(outcome: ShareOutcome): boolean {
+  return (
+    outcome === 'shared_image' ||
+    outcome === 'shared_image_caption_copied' ||
+    outcome === 'shared_link' ||
+    outcome === 'copied_link'
+  );
+}
+
+/** The canonical image to send: the server's composite (remote) or a local capture. */
+export type ShareImageSource = { kind: 'remote'; url: string } | { kind: 'local'; uri: string };
+
+const isAbort = (e: any) => e?.name === 'AbortError' || /abort|cancel/i.test(String(e?.message || ''));
+
+/** True when this browser can attach a FILE to the Web Share API. */
+export function canShareFilesOnWeb(): boolean {
+  try {
+    const nav: any = typeof navigator !== 'undefined' ? navigator : null;
+    if (!nav || typeof nav.share !== 'function' || typeof nav.canShare !== 'function') return false;
+    const probe = new File([new Uint8Array([0xff, 0xd8, 0xff])], 'probe.jpg', { type: CARD_MIME });
+    return !!nav.canShare({ files: [probe] });
+  } catch {
+    return false;
+  }
+}
 
 /**
- * Share a battle as its VS image WITH the caption where the platform allows
- * both, degrading sensibly everywhere else:
+ * Share the battle's VS image file. NEVER silently degrades to a link: if the
+ * image cannot be obtained or attached, the outcome says so and the caller
+ * decides (and tells the user) what to do instead.
  *
- *  - Web + Web Share API with files: image file + caption together.
- *  - Web without it: caption + link via navigator.share, else copy to clipboard.
- *  - Native + a composite image: share the image file (the card already carries
- *    the VS layout, handles and "Vote on tophunt.in" branding); no per-file
- *    caption is possible through expo-sharing, which is a platform limit.
- *  - Native without an image: the caption + link via the OS text share.
+ *  - Web: Web Share API with the file + caption, when the browser supports
+ *    files; otherwise `image_unsupported`.
+ *  - iOS: React Native `Share` with the LOCAL file url and the caption together
+ *    (UIActivityViewController attaches both).
+ *  - Android: `expo-sharing` with the local file; Android cannot attach text to
+ *    a file intent this way, so the caption is copied for the user to paste.
  *
- * Never throws — a user-cancelled sheet resolves to 'dismissed'.
+ * Remote images are first materialised as a local file — native share APIs
+ * attach files, not http(s) URLs. A `local` source (a capture) is used as-is;
+ * the caller owns releasing it.
  */
-export async function shareBattle(opts: { vsImageUrl?: string | null; caption: string; url: string }): Promise<ShareOutcome> {
-  const { vsImageUrl, caption, url } = opts;
+export async function shareImageFile(opts: { source: ShareImageSource; caption: string; url: string }): Promise<ShareOutcome> {
+  const { source, caption } = opts;
 
   if (Platform.OS === 'web') {
+    const nav: any = typeof navigator !== 'undefined' ? navigator : null;
+    if (!canShareFilesOnWeb()) return 'image_unsupported';
+    let file: File;
     try {
-      const nav: any = typeof navigator !== 'undefined' ? navigator : null;
-      if (vsImageUrl && nav?.canShare) {
-        try {
-          const res = await fetch(vsImageUrl);
-          const blob = await res.blob();
-          const file = new File([blob], 'battle.jpg', { type: blob.type || CARD_MIME });
-          if (nav.canShare({ files: [file] })) {
-            await nav.share({ files: [file], text: caption, title: 'Share this battle' });
-            return 'shared';
-          }
-        } catch {
-          /* fall through to text/clipboard */
-        }
-      }
-      if (nav?.share) {
-        await nav.share({ text: caption, url });
-        return 'shared';
-      }
-      await Clipboard.setStringAsync(caption);
-      return 'copied';
+      const res = await fetch(source.kind === 'remote' ? source.url : source.uri);
+      if (!res.ok) return 'failed';
+      const blob = await res.blob();
+      file = new File([blob], 'tophunt-battle.jpg', { type: blob.type || CARD_MIME });
     } catch {
-      return 'dismissed';
+      return 'failed';
+    }
+    if (!nav.canShare({ files: [file] })) return 'image_unsupported';
+    try {
+      await nav.share({ files: [file], text: caption, title: 'Share this battle' });
+      return 'shared_image';
+    } catch (e) {
+      return isAbort(e) ? 'dismissed' : 'failed';
     }
   }
 
-  // Native
+  const fileUri = source.kind === 'local' ? source.uri : await localImageFile(source.url);
+  if (!fileUri) return 'failed';
   try {
+    if (Platform.OS === 'ios') {
+      const result = await RNShare.share({ url: fileUri, message: caption });
+      return result.action === RNShare.dismissedAction ? 'dismissed' : 'shared_image';
+    }
     const sharing = getSharing();
-    if (vsImageUrl && typeof sharing?.shareAsync === 'function') {
-      const available = typeof sharing.isAvailableAsync === 'function' ? await sharing.isAvailableAsync() : true;
-      if (available) {
-        const local = await localImageFile(vsImageUrl);
-        if (local) {
-          await sharing.shareAsync(local, { mimeType: CARD_MIME, dialogTitle: 'Share this battle', UTI: 'public.jpeg' });
-          return 'shared';
-        }
+    if (typeof sharing?.shareAsync !== 'function') return 'image_unsupported';
+    if (typeof sharing.isAvailableAsync === 'function' && !(await sharing.isAvailableAsync())) return 'image_unsupported';
+    await Clipboard.setStringAsync(caption).catch(() => undefined);
+    await sharing.shareAsync(fileUri, { mimeType: CARD_MIME, dialogTitle: 'Share this battle', UTI: 'public.jpeg' });
+    return 'shared_image_caption_copied';
+  } catch (e) {
+    return isAbort(e) ? 'dismissed' : 'failed';
+  }
+}
+
+/**
+ * Share ONLY the caption + link (no image). Used for battles that have no VS
+ * image (still waiting for an opponent, or unavailable), for "Share the link
+ * instead", and for sharing the app. Never throws.
+ */
+export async function shareBattleLink(opts: { caption: string; url: string }): Promise<ShareOutcome> {
+  const { caption, url } = opts;
+  if (Platform.OS === 'web') {
+    const nav: any = typeof navigator !== 'undefined' ? navigator : null;
+    if (typeof nav?.share === 'function') {
+      try {
+        await nav.share({ text: caption, url });
+        return 'shared_link';
+      } catch (e) {
+        if (isAbort(e)) return 'dismissed';
+        /* fall through to the clipboard */
       }
     }
+    try {
+      await Clipboard.setStringAsync(caption);
+      return 'copied_link';
+    } catch {
+      return 'failed';
+    }
+  }
+  try {
     const result = await RNShare.share({ message: caption, url });
-    return result.action === RNShare.dismissedAction ? 'dismissed' : 'shared';
+    return result.action === RNShare.dismissedAction ? 'dismissed' : 'shared_link';
   } catch {
     return 'failed';
   }
@@ -213,6 +289,9 @@ export async function shareBattle(opts: { vsImageUrl?: string | null; caption: s
  * Save the VS image: a real file download on web; on native, hand it to the OS
  * share sheet where "Save image" lives (no expo-media-library dependency, so no
  * native rebuild needed). Returns false when there is no image to save.
+ *
+ * Callers pass the SAME canonical url they share (`resolveBattleShareAsset`), so
+ * the saved file is byte-for-byte the shared one.
  */
 export async function downloadBattleImage(vsImageUrl?: string | null): Promise<boolean> {
   if (!vsImageUrl) return false;
@@ -220,12 +299,13 @@ export async function downloadBattleImage(vsImageUrl?: string | null): Promise<b
   if (Platform.OS === 'web') {
     try {
       const res = await fetch(vsImageUrl);
+      if (!res.ok) return false;
       const blob = await res.blob();
       if (typeof document === 'undefined') return false;
       const href = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = href;
-      a.download = 'battle.jpg';
+      a.download = 'tophunt-battle.jpg';
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -308,13 +388,11 @@ export function canShareApp(): boolean {
 }
 
 /**
- * Share the app itself. Reuses the battle share path — nothing in it is
- * battle-specific once no image is passed — so web/native behaviour and the
- * never-throws contract are identical.
+ * Share the app itself — a link share, with the same never-throws contract.
  */
 export async function shareApp(): Promise<ShareOutcome> {
   const origin = appShareOrigin();
   if (!origin) return 'failed';
   const caption = `Join me on TopHunt — enter photo and video contests and vote on live battles 👇\n${origin}`;
-  return shareBattle({ caption, url: origin });
+  return shareBattleLink({ caption, url: origin });
 }

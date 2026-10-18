@@ -6,7 +6,8 @@ import { Ionicons } from '@/src/lib/icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { designWidth } from '@/src/lib/layout';
-import { shareBattle, battleUrl, shareOrigin } from '@/src/lib/share';
+import { battleUrl, shareOrigin, shareBattleLink, shareImageFile, type ShareOutcome } from '@/src/lib/share';
+import { createShareCounter, resolveBattleShareAsset, shareOutcomeMessage } from '@/src/lib/vsShareAsset';
 import { contestSuccessCopy, type VsStoryState } from '@/src/lib/contestSuccess';
 import { contestService } from '@/src/services/contests/contestService';
 
@@ -40,7 +41,6 @@ export default function ContestJoinedScreen() {
   const contestName = params.contestName as string || "Contest";
   const isJoining = params.mode !== 'create';
   const matchId = (params.matchId as string) || '';
-  const imageUrl = (params.imageUrl as string) || '';
   const mode: 'create' | 'join' = isJoining ? 'join' : 'create';
 
   const [storyStatus, setStoryStatus] = useState<VsStoryState | null>(
@@ -91,34 +91,65 @@ export default function ContestJoinedScreen() {
   const cardBg = useThemeColor({ light: '#FFF', dark: '#1F222A' }, 'background');
 
   /**
-   * Share the battle with a LINK and the entry PHOTO — not just the caption.
+   * Share from the congratulations screen.
    *
-   * The previous version sent only `message`, so recipients got a line of text
-   * with no way to reach the battle and no image. Now:
-   *  - the caption carries an openable battle link (`/battle/<id>`), falling back
-   *    to the app's own origin when we don't have a match id;
-   *  - the link's page provides the photo as its rich preview on every target
-   *    that renders one (WhatsApp, Telegram, iMessage, X, Facebook…);
-   *  - on web — where a file and text can be shared together — the entry image
-   *    is attached directly too.
-   *
-   * `shareBattle` is the app's single, tested share implementation and never
-   * throws (a cancelled sheet just resolves quietly).
+   * - Creator (still waiting): there is no VS image yet, so this is an honest
+   *   LINK invite. It deliberately does not attach the creator's own entry —
+   *   a battle is never shared as one participant's photo.
+   * - Joiner: the battle's canonical VS image (the same file the feed and Story
+   *   share), resolved via the server. If it is not ready yet the screen says so
+   *   instead of falling back to a single photo; the link can still be sent,
+   *   labelled as a link.
    */
+  const [shareNote, setShareNote] = useState<string | null>(null);
+  const [sharing, setSharing] = useState(false);
+  const shareCounter = React.useMemo(
+    () => createShareCounter(() => (matchId ? contestService.shareMatch(matchId) : Promise.resolve())),
+    [matchId],
+  );
   const handleShare = async () => {
-    const link = matchId ? battleUrl(matchId) : shareOrigin();
-    const intro = isJoining
-      ? `I just joined the ${contestName} battle on TopHunt! Vote for me and let's win some coins.`
-      : `I just started a ${contestName} battle on TopHunt! Come challenge me and win coins.`;
-    const caption = link ? `${intro}\n${link}` : intro;
-    await shareBattle({
-      caption,
-      url: link,
-      // Attaching a file drops the caption/link on native (an expo-sharing
-      // limit), so only attach the image where both can go together (web).
-      // Prefer the server-rendered VS card once it is confirmed live.
-      vsImageUrl: Platform.OS === 'web' ? vsImageUrl || imageUrl || undefined : undefined,
-    });
+    if (sharing) return;
+    setSharing(true);
+    setShareNote(null);
+    try {
+      const link = matchId ? battleUrl(matchId) : shareOrigin();
+      const intro = isJoining
+        ? `I just joined the ${contestName} battle on TopHunt! Vote for me and let's win some coins.`
+        : `I just started a ${contestName} battle on TopHunt! Come challenge me and win coins.`;
+      const caption = link ? `${intro}\n${link}` : intro;
+      let outcome: ShareOutcome;
+      if (isJoining && matchId) {
+        const asset = await resolveBattleShareAsset(matchId, {
+          fetchShareImage: contestService.getMatchShareImage,
+          knownUrl: vsImageUrl,
+        });
+        if (asset.status !== 'ready') {
+          setShareNote(
+            asset.status === 'preparing'
+              ? 'Your VS image is still being prepared — try again in a moment, or use “Share link”.'
+              : 'The VS image isn’t available — you can still share the battle link.',
+          );
+          return;
+        }
+        outcome = await shareImageFile({ source: asset.source, caption, url: link });
+      } else {
+        outcome = await shareBattleLink({ caption, url: link });
+      }
+      shareCounter.record(outcome);
+      const msg = shareOutcomeMessage(outcome);
+      if (msg) setShareNote(msg.text);
+    } finally {
+      setSharing(false);
+    }
+  };
+
+  const handleShareLinkOnly = async () => {
+    if (!matchId) return;
+    const link = battleUrl(matchId);
+    const outcome = await shareBattleLink({ caption: `Vote in the ${contestName} battle on TopHunt!\n${link}`, url: link });
+    shareCounter.record(outcome);
+    const msg = shareOutcomeMessage(outcome);
+    if (msg) setShareNote(msg.text);
   };
 
   return (
@@ -166,16 +197,24 @@ export default function ContestJoinedScreen() {
         </View>
 
         {/* Share Button */}
-        <TouchableOpacity style={styles.shareButton} onPress={handleShare}>
+        <TouchableOpacity style={styles.shareButton} onPress={handleShare} disabled={sharing} accessibilityRole="button">
             <LinearGradient
                 colors={['#FF4D67', '#FF8A9B']}
                 start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
                 style={styles.gradientBtn}
             >
                 <Ionicons name="share-social" size={24} color="#FFF" />
-                <Text style={styles.shareText}>Share with Friends</Text>
+                <Text style={styles.shareText}>
+                  {sharing ? 'Preparing…' : isJoining ? 'Share VS image' : 'Invite a challenger'}
+                </Text>
             </LinearGradient>
         </TouchableOpacity>
+        {shareNote ? <Text style={[styles.shareNote, { color: textColor }]}>{shareNote}</Text> : null}
+        {isJoining && matchId ? (
+          <TouchableOpacity onPress={handleShareLinkOnly} style={styles.linkOnlyBtn} accessibilityRole="button">
+            <Text style={styles.refreshText}>Share link only</Text>
+          </TouchableOpacity>
+        ) : null}
 
         {/* Go Home Button */}
         <TouchableOpacity style={styles.homeButton} onPress={() => router.replace('/home')}>
@@ -206,6 +245,8 @@ const styles = StyleSheet.create({
   infoText: { fontSize: 15, fontFamily: 'Urbanist-Regular', textAlign: 'center', lineHeight: 22 },
   refreshBtn: { marginTop: 12, paddingVertical: 8, paddingHorizontal: 16 },
   refreshText: { color: '#FF4D67', fontSize: 15, fontFamily: 'Urbanist-Bold' },
+  shareNote: { fontSize: 13, fontFamily: 'Urbanist-Medium', textAlign: 'center', marginBottom: 8, opacity: 0.8 },
+  linkOnlyBtn: { paddingVertical: 8, marginBottom: 8 },
   
   shareButton: { width: '100%', height: 56, borderRadius: 28, overflow: 'hidden', marginBottom: 16, shadowColor: '#FF4D67', shadowOpacity: 0.3, shadowRadius: 10, elevation: 5 },
   gradientBtn: { flex: 1, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 10 },
