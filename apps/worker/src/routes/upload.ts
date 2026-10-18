@@ -150,7 +150,10 @@ uploadRoute.post("/", async (c) => {
   // `uploadToR2` sniffs the magic bytes and stores the type it detects, so the
   // declared type above is only a hint — what actually lands in R2 is decided by
   // the file's own header. A renamed ZIP/HTML/SVG/APK is rejected here.
-  const { publicUrl, fileKey, contentType } = await uploadToR2(c.env, declaredType, folder, buf, allowed);
+  // Provenance: who uploaded this object. Contest entries are checked against it
+  // (lib/vsPublication.ts, api.ts startMatch/joinMatch) so one account cannot
+  // submit — and get published as a VS Story — another account's upload.
+  const { publicUrl, fileKey, contentType } = await uploadToR2(c.env, declaredType, folder, buf, allowed, { uploader: uid });
   // `uploadUrl` mirrored for backward-compat with older callers.
   return c.json({ success: true, publicUrl, fileKey, uploadUrl: publicUrl, contentType });
 });

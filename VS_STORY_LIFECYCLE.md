@@ -46,6 +46,7 @@ Invariants are enforced in SQL, not in client input:
 - The join UPDATE requires `user_b IS NULL`, a creator snapshot, and `creator ≠ joiner`. The joiner's media must differ from the creator's.
 - Publication runs only while `status='active'`. It requires two distinct participants who are not deleted or banned and are not blocking each other.
 - Entries must be owned media: R2 `contests/` or `contest-entries/` keys, or a ready Bunny video whose `owner_uid` is that participant.
+- `POST /upload` now stores `uploader=<uid>` on every object. `startMatch` and `joinMatch` reject an entry uploaded by another account before any fee moves, and publication rejects it again.
 - Both story inserts and the `published` flip sit in one batch. They are gated on the lease token and on `status='active'`. The flip also requires both rows to exist.
 
 ## Idempotency and recovery
@@ -93,9 +94,11 @@ own ledger idempotency.
 
 ## Privacy and cleanup
 
-- **Visibility:** `public`, or `followers` for a private account (the composer's
-  default). Readers do not filter on `stories.visibility` today. That is
-  pre-existing behaviour and applies to manual stories too.
+- **Visibility:** `public`, or `followers` for a private account.
+  `applyVsStoryPrivacy` enforces this for VS stories on the feed, profile ring and
+  highlights: a followers-only story reaches only the owner and their followers,
+  and anonymous viewers never see it. Manual stories keep their existing read
+  behaviour, which does not filter on `visibility`.
 - **Blocking:** a VS story also shows the opponent. `applyVsStoryPrivacy` runs on
   the feed, on profile rings and on highlights. For a viewer who has hidden the
   opponent, it swaps the composite for the owner's own entry
@@ -109,11 +112,30 @@ own ledger idempotency.
   - Match rows and both original entries are kept.
 - **Account deletion** of a participant destroys their composites and every VS story
   showing them, including the opponent's.
-- **Admin cancel** removes the match's VS stories and marks unfinished publications
-  `skipped`.
+- **Admin cancel and moderation "remove match"** both call `teardownVsStories`. It
+  removes the VS stories and marks unfinished publications `skipped`.
 - `vs-cards/` is now server-only, so clients can no longer upload there.
-  `setMatchVsImage` no longer accepts client images. It returns the server card or
-  refuses, and deletes the client's upload either way.
+  `setMatchVsImage` is read-only. It returns the server card or refuses, and never
+  deletes anything (deleting a caller-named URL would let anyone erase another
+  battle's card).
+- The lease is re-checked right before the R2 put. A worker that lost its claim
+  mid-render writes nothing.
+
+## Known limitations
+
+- Photo entries uploaded **before** this release have no `uploader` metadata. They
+  are accepted, both to keep in-flight battles working and because older uploads
+  are indistinguishable. Ownership is enforced for every upload made from this
+  release on.
+- Video VS cards depend on Bunny posters. Legacy R2-hosted contest videos have no
+  poster, so they end in `failed / video_poster_unavailable`. The battle itself is
+  unaffected.
+- The composite is cached `immutable` on a deterministic per-version URL. After the
+  sweep deletes it, a copy someone saved may still be served from the edge cache.
+  This is the pre-existing `vs-cards/` caching behaviour (see
+  MEDIA_ARCHITECTURE.md).
+- The opponent-hiding rule relies on `hiddenUidsFor`, which fails open if the block
+  lookup errors (pre-existing helper behaviour).
 
 ## Deployment
 

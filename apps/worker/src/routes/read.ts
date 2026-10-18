@@ -3293,7 +3293,7 @@ readRoute.get("/stories/feed", requireAuth, async (c) => {
     : baseRows;
   // A VS story also DEPICTS the opponent. Hiding the author is not enough when
   // the viewer hid the other participant — see applyVsStoryPrivacy.
-  const rows = await applyVsStoryPrivacy(c.env, authorFiltered as any[], hiddenAuthors);
+  const rows = await applyVsStoryPrivacy(c.env, authorFiltered as any[], hiddenAuthors, uid);
 
   const userIds = [...new Set(rows.map((r) => r.userId))];
   const userMap = await attachUsers(c, userIds);
@@ -3341,9 +3341,12 @@ readRoute.get("/users/:id/stories", optionalAuth, async (c) => {
     .limit(50)
     .all();
   const storyViewer = c.get("user")?.uid;
-  const rows = storyViewer
-    ? await applyVsStoryPrivacy(c.env, rawRows, await hiddenUidsFor(c.env, storyViewer))
-    : rawRows;
+  const rows = await applyVsStoryPrivacy(
+    c.env,
+    rawRows,
+    storyViewer ? await hiddenUidsFor(c.env, storyViewer) : new Set<string>(),
+    storyViewer,
+  );
   if (!rows.length) return c.json(null);
   const userMap = await attachUsers(c, [userId]);
   return c.json({
@@ -3438,9 +3441,12 @@ readRoute.get("/highlights/:id/stories", optionalAuth, async (c) => {
     .where(and(inArray(schema.stories.id, storyIds), eq(schema.stories.userId, h.userId)))
     .all();
   const highlightViewer = c.get("user")?.uid;
-  const rows = highlightViewer
-    ? await applyVsStoryPrivacy(c.env, highlightRows, await hiddenUidsFor(c.env, highlightViewer))
-    : highlightRows;
+  const rows = await applyVsStoryPrivacy(
+    c.env,
+    highlightRows,
+    highlightViewer ? await hiddenUidsFor(c.env, highlightViewer) : new Set<string>(),
+    highlightViewer,
+  );
   if (!rows.length) return c.json(null);
   const userMap = await attachUsers(c, [h.userId]);
   return c.json({

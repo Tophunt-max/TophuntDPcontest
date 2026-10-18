@@ -25,6 +25,7 @@
  *               hidden (blocked / muted / been blocked by) the OPPONENT: the row
  *               falls back to the owner's own entry, so the hidden person is never
  *               shown. The owner themselves is already filtered by the callers.
+ *               It also enforces `followers` visibility for private accounts.
  *   ownership — the composite is never deleted through a story. `deleteStory`
  *               and account deletion skip contest-story media, and the object is
  *               removed only by `sweepVsComposites` once NO live story of the
@@ -57,31 +58,57 @@ export function isContestStoryType(type: unknown): boolean {
 }
 
 /**
- * Per-viewer rewrite of VS stories whose opponent the viewer has hidden.
+ * Per-viewer enforcement for server-published VS stories.
  *
  * Applied AFTER any shared cache (the composite is the same for everyone; the
- * hidden set is not). One indexed lookup, and only when there is something to
- * decide: a non-empty hidden set AND at least one VS row.
+ * viewer's relationships are not). Two rules, both for `contest_vs` rows only —
+ * manual stories keep their existing read behaviour:
  *
- * A row that cannot fall back (the owner's own entry is gone) is dropped — never
- * shown with the hidden person in it.
+ *   1. visibility — a `followers` VS story (published for a private account) is
+ *      shown only to its owner and the owner's followers. Anonymous viewers never
+ *      see one. The battle is auto-published, so it must not widen the audience a
+ *      private account has chosen.
+ *   2. opponent hidden — when the viewer has hidden (blocked / muted / been
+ *      blocked by) the OTHER participant, the row falls back to the owner's own
+ *      entry so the hidden person is never shown. A row that cannot fall back, or
+ *      whose battle cannot be resolved, is dropped (fail closed).
+ *
+ * Queries run only when there is something to decide.
  */
 export async function applyVsStoryPrivacy<T extends Record<string, any>>(
   env: Env,
   rows: T[],
   hidden: Set<string>,
+  viewerUid: string | null | undefined,
 ): Promise<T[]> {
-  if (!hidden.size || !rows.length) return rows;
+  if (!rows.length) return rows;
   const vsRows = rows.filter((r) => r?.type === "contest_vs" && r?.matchId);
   if (!vsRows.length) return rows;
 
-  const matchIds = [...new Set(vsRows.map((r) => String(r.matchId)))].slice(0, 100);
-  const matches = await getDb(env)
-    .select({ id: schema.contestMatches.id, userA: schema.contestMatches.userA, userB: schema.contestMatches.userB })
-    .from(schema.contestMatches)
-    .where(inArray(schema.contestMatches.id, matchIds))
-    .all();
-  const byId = new Map(matches.map((m) => [m.id, m]));
+  const followersOnlyOwners = [
+    ...new Set(vsRows.filter((r) => r.visibility === "followers" && r.userId !== viewerUid).map((r) => String(r.userId))),
+  ];
+  let followed = new Set<string>();
+  if (viewerUid && followersOnlyOwners.length) {
+    const edges = await getDb(env)
+      .select({ followingId: schema.follows.followingId })
+      .from(schema.follows)
+      .where(and(eq(schema.follows.followerId, viewerUid), inArray(schema.follows.followingId, followersOnlyOwners.slice(0, 100))))
+      .all();
+    followed = new Set(edges.map((e) => e.followingId));
+  }
+  const audienceOk = (r: T) => r.visibility !== "followers" || (!!viewerUid && (r.userId === viewerUid || followed.has(String(r.userId))));
+
+  let byId = new Map<string, { userA: unknown; userB: unknown }>();
+  if (hidden.size) {
+    const matchIds = [...new Set(vsRows.map((r) => String(r.matchId)))].slice(0, 100);
+    const matches = await getDb(env)
+      .select({ id: schema.contestMatches.id, userA: schema.contestMatches.userA, userB: schema.contestMatches.userB })
+      .from(schema.contestMatches)
+      .where(inArray(schema.contestMatches.id, matchIds))
+      .all();
+    byId = new Map(matches.map((m) => [m.id, m]));
+  }
 
   const out: T[] = [];
   for (const r of rows) {
@@ -89,15 +116,18 @@ export async function applyVsStoryPrivacy<T extends Record<string, any>>(
       out.push(r);
       continue;
     }
+    if (!audienceOk(r)) continue;
+    if (!hidden.size) {
+      out.push(r);
+      continue;
+    }
     const m = byId.get(String(r.matchId));
     const a = m?.userA as any;
     const b = m?.userB as any;
     const own = a?.uid === r.userId ? a : b?.uid === r.userId ? b : null;
+    // Cannot prove who is in the picture: fail closed.
+    if (!m || !own) continue;
     const opponent = own === a ? b : a;
-    if (!m || !own) {
-      // Cannot prove who is in the picture: fail closed.
-      continue;
-    }
     if (!opponent?.uid || !hidden.has(String(opponent.uid))) {
       out.push(r);
       continue;
@@ -114,6 +144,28 @@ export async function applyVsStoryPrivacy<T extends Record<string, any>>(
     });
   }
   return out;
+}
+
+/**
+ * A battle taken down (admin cancel, moderation removal) must not keep — or
+ * later gain — a VS Story: unfinished publication is marked `skipped` and the
+ * published rows are removed. The composite is left to the reference-aware
+ * sweep. Never touches money.
+ */
+export async function teardownVsStories(env: Env, matchId: string): Promise<void> {
+  const db = getDb(env);
+  await db.batch([
+    db
+      .update(schema.contestMatches)
+      .set({ vsStoryStatus: "skipped", vsStoryClaim: null, vsStoryClaimedAt: null })
+      .where(
+        and(
+          eq(schema.contestMatches.id, matchId),
+          inArray(schema.contestMatches.vsStoryStatus, ["pending", "processing", "failed"]),
+        ),
+      ),
+    db.delete(schema.stories).where(and(eq(schema.stories.matchId, matchId), eq(schema.stories.type, "contest_vs"))),
+  ] as any);
 }
 
 /**

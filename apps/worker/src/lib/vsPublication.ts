@@ -230,7 +230,7 @@ async function loadParticipants(env: Env, match: any): Promise<[Participant, Par
   return [pa, pb];
 }
 
-async function readR2Entry(env: Env, url: string): Promise<{ key: string; bytes: Uint8Array }> {
+async function readR2Entry(env: Env, url: string, ownerUid: string): Promise<{ key: string; bytes: Uint8Array }> {
   const key = mediaKeyFromPublicUrl(env, url);
   const prefix = key ? ENTRY_PREFIXES.find((p) => key.startsWith(p)) : undefined;
   if (!key || !prefix || !isSafeRelativeKey(key.slice(prefix.length))) {
@@ -243,6 +243,13 @@ async function readR2Entry(env: Env, url: string): Promise<{ key: string; bytes:
     throw new TransientVsError("r2_read_failed", e?.message);
   }
   if (!obj) throw new PermanentVsError("media_missing");
+  // Provenance recorded by POST /upload. An entry uploaded by a DIFFERENT account
+  // is never composited onto this participant's Story. Objects predating that
+  // metadata carry none and are accepted (see VS_STORY_LIFECYCLE.md, limitations).
+  const uploader = (obj as any).customMetadata?.uploader;
+  if (uploader && uploader !== ownerUid) {
+    throw new PermanentVsError("untrusted_media", "entry was uploaded by another account");
+  }
   if (typeof (obj as any).size === "number" && (obj as any).size > VS_MAX_ENTRY_BYTES) {
     throw new PermanentVsError("media_too_large");
   }
@@ -300,7 +307,7 @@ async function resolveEntry(env: Env, match: any, p: Participant): Promise<{ key
   const isVideoEntry = p.snapshot?.mediaType === "video";
   // Never silently treat one kind of battle as the other.
   if (isVideoContest !== isVideoEntry) throw new PermanentVsError("media_type_mismatch");
-  return isVideoContest ? readVideoPoster(env, url, p.uid) : readR2Entry(env, url);
+  return isVideoContest ? readVideoPoster(env, url, p.uid) : readR2Entry(env, url, p.uid);
 }
 
 // ---------------------------------------------------------------------------
@@ -424,6 +431,15 @@ async function publishClaimed(env: Env, matchId: string, token: string, ts: numb
       renderer: renderer.id,
       generatedAt: String(ts),
     };
+    // Re-check the lease immediately before the one write that is not gated in
+    // SQL: a worker that lost its claim during a slow render must not replace
+    // the bytes behind a URL that is cached `immutable`.
+    const stillOwner = await env.DB.prepare(
+      `SELECT 1 AS ok FROM contest_matches WHERE id = ? AND vs_story_claim = ? AND status = 'active'`,
+    )
+      .bind(matchId, token)
+      .first<{ ok: number }>();
+    if (!stillOwner) return lostLeaseOrSkipped(env, matchId, token, ts);
     try {
       await env.MEDIA.put(key, out.bytes, {
         httpMetadata: { contentType: out.contentType },
@@ -442,7 +458,7 @@ async function publishClaimed(env: Env, matchId: string, token: string, ts: numb
   )
     .bind(publicUrl, JSON.stringify(meta), matchId, token)
     .run();
-  if (!Number(persisted.meta?.changes || 0)) return lostLeaseOrSkipped(env, matchId, ts);
+  if (!Number(persisted.meta?.changes || 0)) return lostLeaseOrSkipped(env, matchId, token, ts);
 
   // --- 5. both stories + the published flip, one batch ----------------------
   // A pair shares one timestamp. If an earlier partial run left one row, the
@@ -497,10 +513,20 @@ async function publishClaimed(env: Env, matchId: string, token: string, ts: numb
     ).bind(ts, matchId, token, matchId, pa.uid, pb.uid),
   ]);
   if (Number(results[3]?.meta?.changes || 0) === 1) return { outcome: "published" };
-  return lostLeaseOrSkipped(env, matchId, ts);
+  return lostLeaseOrSkipped(env, matchId, token, ts);
 }
 
-async function lostLeaseOrSkipped(env: Env, matchId: string, ts: number): Promise<VsRunResult> {
+async function lostLeaseOrSkipped(env: Env, matchId: string, token: string, ts: number): Promise<VsRunResult> {
+  // Still our lease but the battle ended under us: release it as `skipped` now
+  // rather than leaving it `processing` until the lease times out.
+  const released = await env.DB.prepare(
+    `UPDATE contest_matches
+        SET vs_story_status = 'skipped', vs_story_claim = NULL, vs_story_claimed_at = NULL, vs_story_next_at = NULL
+      WHERE id = ? AND vs_story_claim = ? AND status != 'active'`,
+  )
+    .bind(matchId, token)
+    .run();
+  if (Number(released.meta?.changes || 0) > 0) return { outcome: "skipped" };
   const r = await explainUnclaimed(env, matchId, ts);
   return r.outcome === "not_eligible" ? { outcome: "busy" } : r;
 }

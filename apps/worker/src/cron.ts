@@ -392,15 +392,17 @@ export async function resolveContests(env: Env): Promise<void> {
 
   await db.delete(schema.stories).where(lte(schema.stories.expiresAt, nowMs));
 
-  // Drive VS Story publications the join-time kick did not finish (transient
-  // render/R2 failures, expired leases, videos that became ready). Bounded per
-  // tick; failures are recorded on the match, never thrown into this schedule.
-  await reconcileVsPublications(env, { limit: 10 }).catch((e) =>
-    console.error("[cron] VS publication reconcile failed (continuing)", e),
-  );
-
   // due scheduled/segmented broadcasts
   await processScheduledNotifications(env);
+
+  // Drive VS Story publications the join-time kick did not finish (transient
+  // render/R2 failures, expired leases, videos that became ready). After the
+  // time-sensitive notifications, and bounded per tick, because each one may wait
+  // on a render; failures are recorded on the match, never thrown into this
+  // schedule.
+  await reconcileVsPublications(env, { limit: 5 }).catch((e) =>
+    console.error("[cron] VS publication reconcile failed (continuing)", e),
+  );
 
   // Advance any in-flight broadcast by one page. Deliberately last, and one page
   // per tick, so a large broadcast can never starve the rest of this schedule.

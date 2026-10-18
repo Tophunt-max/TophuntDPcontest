@@ -13,7 +13,7 @@ import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
 import { requireApiAuth, isAdmin } from "../middleware/auth";
 import { requireFullAdmin as requireFullAdminAction, writeAdminAudit } from "../lib/adminAuthz";
-import { vsImageKeyFromPublicUrl, deleteVsImageByPublicUrl, canonicalMediaUrl, isOwnChatMediaUrl } from "../lib/r2";
+import { vsImageKeyFromPublicUrl, canonicalMediaUrl, isOwnChatMediaUrl, mediaKeyFromPublicUrl } from "../lib/r2";
 import { deleteMediaByUrl } from "../lib/mediaDelete";
 
 import { createNotification, sendPushNotification } from "../lib/notify";
@@ -259,6 +259,32 @@ const notPorted = (action: string, file: string): never => {
 };
 
 /** Validate untrusted client identifiers before they reach D1 or a DO. */
+/**
+ * Refuse a contest entry that is one of OUR stored objects but was uploaded by a
+ * different account. `POST /upload` records the uploader on every object, so a
+ * player cannot enter (and have published on their VS Story) someone else's
+ * photo. Objects predating that metadata, and urls that are not ours, pass here;
+ * the VS publication workflow applies the strict trusted-media rules.
+ * Checked BEFORE any entry fee moves.
+ */
+async function assertOwnContestEntry(env: Env, uid: string, mediaUrl: unknown): Promise<void> {
+  if (typeof mediaUrl !== "string" || !mediaUrl) return;
+  const key = mediaKeyFromPublicUrl(env, mediaUrl);
+  if (!key) return;
+  let head: R2Object | null = null;
+  try {
+    head = await env.MEDIA.head(key);
+  } catch (e) {
+    // Fail open on a storage blip: publication re-checks with the bytes in hand.
+    console.error("[contest] entry provenance check failed (continuing)", key, e);
+    return;
+  }
+  const uploader = (head as any)?.customMetadata?.uploader;
+  if (uploader && uploader !== uid) {
+    throw httpsError("permission-denied", "That entry was uploaded by another account. Please upload your own photo.");
+  }
+}
+
 function requiredId(value: unknown, name: string, maxLength = 256): string {
   if (typeof value !== "string") {
     throw httpsError("invalid-argument", `${name} must be a string.`);
@@ -552,6 +578,7 @@ apiRoute.post("/", async (c) => {
       // the only person allowed to join can never join — the coins would sit
       // locked until the auto-cancel refund swept them up.
       if (invitedUid) await assertNotBlockedAny(env, uid, [String(invitedUid)]);
+      await assertOwnContestEntry(env, uid, mediaUrl);
 
       const totalFee = Number(contest.totalEntryFee || 0);
       // Whole coins only. `perPlayerEntryFee` floors, so a legacy odd entry fee
@@ -801,6 +828,7 @@ apiRoute.post("/", async (c) => {
       if (userA?.mediaUrl && canonicalMediaUrl(env, mediaUrl) === canonicalMediaUrl(env, userA.mediaUrl)) {
         throw httpsError("invalid-argument", "You must upload your own entry to join this battle.");
       }
+      await assertOwnContestEntry(env, uid, mediaUrl);
 
       const user = await db.select().from(schema.users).where(eq(schema.users.uid, uid)).get();
       if (!user) throw httpsError("not-found", "User document not found.");
@@ -917,12 +945,17 @@ apiRoute.post("/", async (c) => {
         // Nothing was charged and nothing was claimed. Tell the user which of
         // the two guards rejected them.
         const stillWaiting = await db
-          .select({ status: schema.contestMatches.status })
+          .select({ status: schema.contestMatches.status, userA: schema.contestMatches.userA, userB: schema.contestMatches.userB })
           .from(schema.contestMatches)
           .where(eq(schema.contestMatches.id, matchId))
           .get();
-        if (!stillWaiting || stillWaiting.status !== "waiting_for_opponent") {
+        // The claim's structural guards (slot already filled, missing creator)
+        // reject for reasons other than balance; say so instead of blaming coins.
+        if (!stillWaiting || stillWaiting.status !== "waiting_for_opponent" || stillWaiting.userB || !(stillWaiting.userA as any)?.uid) {
           throw httpsError("failed-precondition", "Match unavailable.");
+        }
+        if ((stillWaiting.userA as any).uid === uid) {
+          throw httpsError("failed-precondition", "You cannot join your own match.");
         }
         throw httpsError("failed-precondition", `Insufficient Dpcoin. Required: ${fee}, Current: ${user.dpcoin}`);
       }
@@ -1015,8 +1048,7 @@ apiRoute.post("/", async (c) => {
      *
      * Kept as an action so installs still running the capture-and-record code get
      * a well-formed answer: the server's card when it exists, otherwise a refusal.
-     * Either way the caller's upload is discarded — it is referenced by nothing.
-     * (New installs no longer upload; `vs-cards/` is no longer a client folder.)
+     * Read-only: it never deletes anything (see below).
      */
     case "setMatchVsImage": {
       await rateLimit(env, `vsimage:${uid}`, 30, 3600, { failClosed: true });
@@ -1034,25 +1066,16 @@ apiRoute.post("/", async (c) => {
         .from(schema.contestMatches)
         .where(eq(schema.contestMatches.id, matchId))
         .get();
-      // Never delete the server's own card, even if a client echoes its url.
-      const discard = async () => {
-        if (imageUrl !== match?.vsImageUrl) await deleteVsImageByPublicUrl(env, imageUrl);
-      };
-      if (!match) {
-        await discard();
-        throw httpsError("not-found", "Match not found.");
-      }
+      // NOTHING is deleted on this path any more. Clients can no longer write to
+      // `vs-cards/`, so a caller-supplied url can only name a SERVER card — and
+      // deleting "the url you sent" would let anyone erase another battle's live
+      // composite by naming it. Legacy client uploads expire via the R2
+      // lifecycle rule on the prefix.
+      if (!match) throw httpsError("not-found", "Match not found.");
       const uidA = (match.userA as any)?.uid;
       const uidB = (match.userB as any)?.uid;
-      if (!uidA || !uidB) {
-        await discard();
-        throw httpsError("failed-precondition", "This battle does not have two participants yet.");
-      }
-      if (uid !== uidA && uid !== uidB) {
-        await discard();
-        throw httpsError("permission-denied", "Only a participant can set the battle image.");
-      }
-      await discard();
+      if (!uidA || !uidB) throw httpsError("failed-precondition", "This battle does not have two participants yet.");
+      if (uid !== uidA && uid !== uidB) throw httpsError("permission-denied", "Only a participant can set the battle image.");
       if (match.vsImageUrl) return c.json({ success: true, vsImageUrl: match.vsImageUrl, alreadySet: true });
       throw httpsError("failed-precondition", "The battle image is generated by the server.");
     }

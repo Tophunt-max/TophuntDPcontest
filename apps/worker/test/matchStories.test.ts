@@ -104,11 +104,15 @@ async function read(env: TestEnv, uid: string | null, path: string) {
   return { status: res.status, body: (await res.json().catch(() => null)) as any };
 }
 
-async function admin(env: TestEnv, method: string, path: string) {
+async function admin(env: TestEnv, method: string, path: string, body?: any) {
   const ctx = collectingCtx();
   const res = await app.request(
     `/admin${path}`,
-    { method, headers: { 'Content-Type': 'application/json', 'X-Admin-Secret': 'test-admin-secret' } },
+    {
+      method,
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Secret': 'test-admin-secret' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    },
     env,
     ctx,
   );
@@ -133,10 +137,19 @@ async function seedContest(env: TestEnv, id = 'c1', extra: Record<string, any> =
     } as any);
 }
 
-/** Upload a fake entry photo to R2 the way POST /upload would, and return its public url. */
-async function entry(env: TestEnv, label: string, opts: Parameters<typeof fakePhoto>[1] = {}) {
+/**
+ * Upload a fake entry photo to R2 the way POST /upload would (including the
+ * uploader provenance it records), and return its public url. The uploader is
+ * the label's prefix ("bob-photo" -> bob) unless given; `null` simulates an
+ * object uploaded before provenance existed.
+ */
+async function entry(env: TestEnv, label: string, opts: Parameters<typeof fakePhoto>[1] & { uploader?: string | null } = {}) {
   const key = `contests/2026/10/${label}.${opts.format === 'png' ? 'png' : 'jpg'}`;
-  await env.MEDIA.put(key, fakePhoto(label, opts), { httpMetadata: { contentType: 'image/jpeg' } });
+  const uploader = opts.uploader === undefined ? label.split('-')[0] : opts.uploader;
+  await env.MEDIA.put(key, fakePhoto(label, opts), {
+    httpMetadata: { contentType: 'image/jpeg' },
+    ...(uploader ? { customMetadata: { uploader } } : {}),
+  });
   return `${BASE}/${key}`;
 }
 
@@ -868,19 +881,149 @@ describe('lifecycle and cleanup of the shared composite', () => {
     const upload = `${BASE}/vs-cards/2026/10/client.jpg`;
     const early = await call(env, 'alice', 'setMatchVsImage', { matchId, imageUrl: upload });
     expect(early.status).toBe(412);
-    expect(env.MEDIA._deleted).toEqual(['vs-cards/2026/10/client.jpg']);
 
     await call(env, 'bob', 'joinMatch', { matchId, mediaUrl: await entry(env, 'bob-photo'), mediaType: 'photo', deviceId: 'b' });
     const late = await call(env, 'bob', 'setMatchVsImage', { matchId, imageUrl: upload });
     expect(late.body).toMatchObject({ alreadySet: true, vsImageUrl: cardUrl(matchId) });
     expect((await matchRow(env, matchId))?.vsImageUrl).toBe(cardUrl(matchId));
-    // An echo of the server's own url is never deleted.
     await call(env, 'bob', 'setMatchVsImage', { matchId, imageUrl: cardUrl(matchId) });
+    expect(env.MEDIA._objects.has(vsCardKey(matchId))).toBe(true);
+    // Read-only: it never deletes anything.
+    expect(env.MEDIA._deleted).toEqual([]);
+  });
+
+  it('nobody can delete another battle\'s live composite through setMatchVsImage', async () => {
+    const { env } = photoEnv();
+    await seedUser(env, 'mallory');
+    const { matchId } = await fullBattle(env);
+    const victim = cardUrl(matchId);
+    // Unknown match, and a real but unrelated match the attacker is not in.
+    expect((await call(env, 'mallory', 'setMatchVsImage', { matchId: 'nope', imageUrl: victim })).status).toBe(404);
+    await seedContest(env, 'c2');
+    const own = await call(env, 'mallory', 'startMatch', {
+      contestId: 'c2', mediaUrl: await entry(env, 'mallory-photo'), mediaType: 'photo', deviceId: 'm',
+    });
+    expect((await call(env, 'mallory', 'setMatchVsImage', { matchId: own.body.matchId, imageUrl: victim })).status).toBe(412);
+    expect((await call(env, 'mallory', 'setMatchVsImage', { matchId, imageUrl: victim })).status).toBe(403);
+    expect(env.MEDIA._deleted).toEqual([]);
     expect(env.MEDIA._objects.has(vsCardKey(matchId))).toBe(true);
   });
 });
 
 // ===========================================================================
+describe('entry provenance', () => {
+  it('a joiner cannot enter another account\'s upload, and is not charged', async () => {
+    const { env } = photoEnv();
+    await seedUser(env, 'carol');
+    const { matchId } = await createBattle(env);
+    const carols = await entry(env, 'carol-photo');
+    const res = await call(env, 'bob', 'joinMatch', { matchId, mediaUrl: carols, mediaType: 'photo', deviceId: 'b' });
+    expect(res.status).toBe(403);
+    expect(Number((await userRow(env, 'bob'))?.dpcoin)).toBe(1000);
+    expect((await matchRow(env, matchId))?.userB).toBeNull();
+    expect(await allStories(env)).toHaveLength(0);
+  });
+
+  it('a creator cannot start a battle with another account\'s upload', async () => {
+    const { env } = photoEnv();
+    await seedUser(env, 'alice');
+    await seedContest(env);
+    const res = await call(env, 'alice', 'startMatch', {
+      contestId: 'c1', mediaUrl: await entry(env, 'bob-photo'), mediaType: 'photo', deviceId: 'a',
+    });
+    expect(res.status).toBe(403);
+    expect(Number((await userRow(env, 'alice'))?.dpcoin)).toBe(1000);
+  });
+
+  it('publication itself refuses an entry whose provenance names someone else', async () => {
+    const { env } = photoEnv();
+    const { matchId } = await createBattle(env);
+    // Legacy object (no provenance) passes the join; then its provenance is
+    // revealed as another account's — the composite must not be built from it.
+    const url = await entry(env, 'bob-photo', { uploader: null });
+    const saved = env.IMAGES;
+    delete (env as any).IMAGES;
+    expect((await call(env, 'bob', 'joinMatch', { matchId, mediaUrl: url, mediaType: 'photo', deviceId: 'b' })).status).toBe(200);
+    env.MEDIA._objects.get('contests/2026/10/bob-photo.jpg')!.customMetadata = { uploader: 'carol' };
+    (env as any).IMAGES = saved;
+    await drizzleOf(env).update(schema.contestMatches).set({ vsStoryNextAt: 0 } as any).run();
+    expect(await runVsPublication(env as any, matchId)).toMatchObject({ outcome: 'failed', reason: 'untrusted_media' });
+    expect(await allStories(env)).toHaveLength(0);
+  });
+
+  it('pre-provenance uploads still work for the legitimate flow', async () => {
+    const { env } = photoEnv();
+    const aliceUrl = await entry(env, 'alice-photo', { uploader: null });
+    const { matchId } = await createBattle(env, { aliceUrl });
+    await call(env, 'bob', 'joinMatch', { matchId, mediaUrl: await entry(env, 'bob-photo', { uploader: null }), mediaType: 'photo', deviceId: 'b' });
+    expect((await matchRow(env, matchId))?.vsStoryStatus).toBe('published');
+  });
+});
+
+describe('visibility and takedown', () => {
+  it('a private account\'s VS story reaches only its followers', async () => {
+    const { env } = photoEnv();
+    await seedUser(env, 'stranger');
+    await seedUser(env, 'fan');
+    const { matchId } = await createBattle(env);
+    await drizzleOf(env).update(schema.users).set({ isPrivate: true } as any).where(eq(schema.users.uid, 'bob')).run();
+    await drizzleOf(env).insert(schema.follows).values({ followerId: 'fan', followingId: 'bob', createdAt: Date.now() } as any);
+    await call(env, 'bob', 'joinMatch', { matchId, mediaUrl: await entry(env, 'bob-photo'), mediaType: 'photo', deviceId: 'b' });
+
+    const groupsFor = async (uid: string) =>
+      Object.fromEntries(((await read(env, uid, '/read/stories/feed')).body as any[]).map((g) => [g.userId, g]));
+    expect((await groupsFor('stranger')).bob).toBeUndefined();
+    expect((await groupsFor('stranger')).alice).toBeDefined(); // the public side is unaffected
+    expect((await groupsFor('fan')).bob.stories[0].id).toBe(vsStoryId(matchId, 'bob'));
+    expect((await groupsFor('bob')).bob.stories[0].id).toBe(vsStoryId(matchId, 'bob'));
+    const anon = await read(env, null, '/read/users/bob/stories');
+    expect(anon.body?.stories?.some((s: any) => s.type === 'contest_vs') ?? false).toBe(false);
+  });
+
+  it('highlights apply the same opponent-hidden rule', async () => {
+    const { env } = photoEnv();
+    await seedUser(env, 'carol');
+    const { matchId, aliceUrl } = await fullBattle(env);
+    const h = await call(env, 'alice', 'createHighlight', { name: 'wins', storyIds: [vsStoryId(matchId, 'alice')] });
+    expect(h.status).toBe(200);
+    await call(env, 'carol', 'blockUser', { targetUserId: 'bob' });
+    const res = await read(env, 'carol', `/read/highlights/${h.body.highlightId}/stories`);
+    expect(res.body.stories[0].mediaUrl).toBe(aliceUrl);
+    expect(res.body.stories[0].type).toBe('contest_entry_solo');
+  });
+
+  it('a battle removed through moderation loses its VS stories', async () => {
+    const { env } = photoEnv();
+    const { matchId } = await fullBattle(env);
+    await drizzleOf(env).insert(schema.reports).values({ id: 'r1', targetType: 'match', targetId: matchId, status: 'open', createdAt: Date.now() } as any);
+    expect((await admin(env, 'POST', '/reports/r1/resolve', { action: 'remove' })).status).toBe(200);
+    expect(await allStories(env)).toHaveLength(0);
+    expect((await runVsPublication(env as any, matchId)).outcome).not.toBe('published');
+  });
+
+  it('a worker that loses its lease mid-render writes nothing', async () => {
+    const { env, images } = photoEnv();
+    const { matchId } = await createBattle(env);
+    const saved = env.IMAGES;
+    delete (env as any).IMAGES;
+    await call(env, 'bob', 'joinMatch', { matchId, mediaUrl: await entry(env, 'bob-photo'), mediaType: 'photo', deviceId: 'b' });
+    (env as any).IMAGES = saved;
+    await drizzleOf(env).update(schema.contestMatches).set({ vsStoryNextAt: 0 } as any).run();
+    const real = imagesBindingRenderer(images as any);
+    const stealing = {
+      id: 'stealing',
+      render: async (input: any) => {
+        const out = await real.render(input);
+        await drizzleOf(env).update(schema.contestMatches).set({ vsStoryClaim: 'someone-else', vsStoryClaimedAt: Date.now() } as any).run();
+        return out;
+      },
+    };
+    expect((await runVsPublication(env as any, matchId, { renderer: stealing })).outcome).toBe('busy');
+    expect(env.MEDIA._puts.some((k) => k.startsWith('vs-cards/'))).toBe(false);
+    expect(await allStories(env)).toHaveLength(0);
+  });
+});
+
 describe('regression: battle mechanics around publication', () => {
   it('entry fees are charged once each, and voting works on the published battle', async () => {
     const { env } = photoEnv();

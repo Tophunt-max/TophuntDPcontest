@@ -16,6 +16,7 @@ import { alias } from "drizzle-orm/sqlite-core";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
 import { requeueVsPublication, runVsPublication } from "../lib/vsPublication";
+import { teardownVsStories } from "../lib/matchStories";
 import { httpsError, ApiError } from "../lib/http";
 import { timingSafeEqualSecret } from "../lib/timingSafe";
 import { verifyIdToken, bearerToken } from "../lib/firebaseAuth";
@@ -910,6 +911,10 @@ adminRoute.post("/reports/:id/resolve", async (c) => {
       case "contestMatch":
       case "contestMatches":
         await db.update(schema.contestMatches).set({ status: "cancelled" }).where(eq(schema.contestMatches.id, r.targetId as string));
+        // Removed content must not stay on either participant's story ring.
+        await teardownVsStories(c.env, r.targetId as string).catch((e) =>
+          console.error("[admin] report removal: VS story teardown failed (continuing)", r.targetId, e),
+        );
         break;
       default:
         break;
@@ -2764,13 +2769,7 @@ adminRoute.post("/matches/:id/cancel", async (c) => {
   // left to the reference-aware sweep. Independent of the refund above, which
   // has already committed with its own idempotency.
   try {
-    await db.batch([
-      db
-        .update(schema.contestMatches)
-        .set({ vsStoryStatus: "skipped", vsStoryClaim: null, vsStoryClaimedAt: null })
-        .where(and(eq(schema.contestMatches.id, id), inArray(schema.contestMatches.vsStoryStatus, ["pending", "processing", "failed"]))),
-      db.delete(schema.stories).where(and(eq(schema.stories.matchId, id), eq(schema.stories.type, "contest_vs"))),
-    ] as any);
+    await teardownVsStories(c.env, id);
   } catch (e) {
     console.error("[admin] cancel: VS story teardown failed (continuing)", id, e);
   }

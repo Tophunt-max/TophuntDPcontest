@@ -140,13 +140,14 @@ export async function uploadToR2(
   folder: string,
   body: ArrayBuffer | Uint8Array,
   allowed: readonly string[] = IMAGE_MIME_TYPES,
+  customMetadata?: Record<string, string>,
 ): Promise<{ publicUrl: string; fileKey: string; contentType: MediaMime }> {
   const contentType = verifyMediaBytes(body, declaredType, allowed);
 
   const safeFolder = sanitizeMediaFolder(folder);
   const fileKey = buildMediaKey(safeFolder, extensionForMime(contentType));
 
-  await env.MEDIA.put(fileKey, body, { httpMetadata: { contentType } });
+  await env.MEDIA.put(fileKey, body, { httpMetadata: { contentType }, ...(customMetadata ? { customMetadata } : {}) });
 
   const publicBase = env.R2_PUBLIC_BASE_URL.replace(/\/$/, "");
   return { fileKey, publicUrl: `${publicBase}/${fileKey}`, contentType };
