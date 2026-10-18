@@ -1,7 +1,7 @@
-import { schemaMigrations, addColumns } from '@nozbe/watermelondb/Schema/migrations';
+import { schemaMigrations, addColumns, createTable } from '@nozbe/watermelondb/Schema/migrations';
 
 /**
- * Schema migrations for the local stories cache.
+ * Schema migrations for the local database (stories cache + feed snapshot).
  *
  * These MUST stay in lockstep with `schema.ts`: the adapter migrates an existing
  * on-device database from its stored version up to the schema version, applying
@@ -65,6 +65,28 @@ export const migrations = schemaMigrations({
         addColumns({
           table: 'stories',
           columns: [{ name: 'music_start_ms', type: 'number', isOptional: true }],
+        }),
+      ],
+    },
+    {
+      // v5 adds the Home feed snapshot table. A brand-new table, so existing
+      // devices simply start with it empty: the first successful feed load fills
+      // it, and until then Home behaves exactly as before (network first). Must
+      // match the `feed_snapshots` declaration in schema.ts column-for-column —
+      // test/storySchemaMigrations.test.ts enforces that.
+      toVersion: 5,
+      steps: [
+        createTable({
+          name: 'feed_snapshots',
+          columns: [
+            { name: 'owner', type: 'string', isIndexed: true },
+            { name: 'tab', type: 'string' },
+            { name: 'items', type: 'string' },
+            { name: 'next_cursor', type: 'string', isOptional: true },
+            { name: 'fetched_at', type: 'number' },
+            { name: 'format', type: 'number' },
+            { name: 'updated_at', type: 'number' },
+          ],
         }),
       ],
     },

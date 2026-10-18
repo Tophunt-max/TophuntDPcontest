@@ -23,6 +23,10 @@ interface Conn {
   listeners: Set<Listener>;
   heartbeat: ReturnType<typeof setInterval> | null;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
+  /** Pending close after the last listener left (see SOCKET_LINGER_MS). */
+  lingerTimer: ReturnType<typeof setTimeout> | null;
+  /** Account whose token opened the current socket (null until opened). */
+  authUid: string | null;
   attempts: number;
   closedByUs: boolean;
   /**
@@ -46,6 +50,20 @@ interface Conn {
  */
 const PRE_OPEN_FAILURES_BEFORE_SIGNOUT = 3;
 
+/**
+ * How long an idle channel's socket stays open after its last listener leaves.
+ *
+ * Without this, the socket closed the instant a channel lost its last listener and
+ * the next subscriber opened a brand-new one. Each open is a Worker request, a
+ * token verify, an account-state read and a billed Durable Object request. Home
+ * remounts every card when fresh data replaces the saved snapshot, and FlatList
+ * unmounts and remounts cards during fast scrolling, so both closed and reopened
+ * one `match:<id>` socket per card for nothing. A short linger lets the
+ * remounted subscriber take over the socket that is already open. It is idle
+ * meanwhile: heartbeats are answered by the runtime and never wake the DO.
+ */
+export const SOCKET_LINGER_MS = 5000;
+
 const conns = new Map<string, Conn>();
 
 async function openSocket(channel: string, conn: Conn) {
@@ -56,13 +74,19 @@ async function openSocket(channel: string, conn: Conn) {
   } catch {
     token = null;
   }
-  if (!token) {
-    // Not signed in yet — retry shortly.
+  // A battle's public tallies are open to guests (worker lib/wsGuest.ts), so a
+  // signed-out viewer connects without a token instead of retrying forever.
+  const guestOk = !token && channel.startsWith('match:');
+  if (!token && !guestOk) {
+    // Not signed in yet — retry shortly. Private channels (user:, chat:) only.
     conn.reconnectTimer = setTimeout(() => openSocket(channel, conn), 2000);
     return;
   }
 
-  const url = `${WS_BASE}/ws?channel=${encodeURIComponent(channel)}&token=${encodeURIComponent(token)}`;
+  conn.authUid = token ? auth.currentUser?.uid ?? null : null;
+  const url = token
+    ? `${WS_BASE}/ws?channel=${encodeURIComponent(channel)}&token=${encodeURIComponent(token)}`
+    : `${WS_BASE}/ws?channel=${encodeURIComponent(channel)}`;
   let ws: WebSocket;
   try {
     ws = new WebSocket(url);
@@ -120,6 +144,9 @@ async function openSocket(channel: string, conn: Conn) {
     if (conn.heartbeat) clearInterval(conn.heartbeat);
     conn.heartbeat = null;
     conn.ws = null;
+    // Dropped while lingering with no listeners: nobody needs it, so retire the
+    // channel now instead of reconnecting (a later subscriber opens a fresh one).
+    if (!conn.closedByUs && conn.listeners.size === 0) retire(channel, conn);
     if (conn.closedByUs || conn.listeners.size === 0) return;
 
     /**
@@ -164,32 +191,68 @@ function scheduleReconnect(channel: string, conn: Conn) {
   conn.reconnectTimer = setTimeout(() => openSocket(channel, conn), delay);
 }
 
+/** Close a channel's socket for good and forget it. */
+function retire(channel: string, c: Conn) {
+  c.closedByUs = true;
+  if (c.heartbeat) clearInterval(c.heartbeat);
+  if (c.reconnectTimer) clearTimeout(c.reconnectTimer);
+  if (c.lingerTimer) clearTimeout(c.lingerTimer);
+  c.heartbeat = null;
+  c.reconnectTimer = null;
+  c.lingerTimer = null;
+  try {
+    c.ws?.close();
+  } catch {
+    /* ignore */
+  }
+  if (conns.get(channel) === c) conns.delete(channel);
+}
+
 /** Subscribe to raw events on a channel. Returns an unsubscribe function. */
 export function subscribeChannel(channel: string, onEvent: Listener): () => void {
   let conn = conns.get(channel);
+  if (conn?.lingerTimer) {
+    if (conn.authUid !== (auth.currentUser?.uid ?? null)) {
+      // The idle socket was authenticated as a DIFFERENT account (sign-out or
+      // account switch inside the linger window). Never hand it to the new viewer:
+      // a chat channel would deliver messages on the old account's authorization.
+      retire(channel, conn);
+      conn = undefined;
+    } else {
+      // Re-subscribed within the linger window: keep the socket that is already open.
+      clearTimeout(conn.lingerTimer);
+      conn.lingerTimer = null;
+    }
+  }
   if (!conn) {
-    conn = { ws: null, listeners: new Set(), heartbeat: null, reconnectTimer: null, attempts: 0, closedByUs: false, preOpenFailures: 0 };
+    conn = {
+      ws: null, listeners: new Set(), heartbeat: null, reconnectTimer: null, lingerTimer: null,
+      authUid: null, attempts: 0, closedByUs: false, preOpenFailures: 0,
+    };
     conns.set(channel, conn);
     openSocket(channel, conn);
   }
   conn.listeners.add(onEvent);
 
+  let subscribed = true;
   return () => {
+    if (!subscribed) return; // idempotent: a double unsubscribe must not close a shared socket
+    subscribed = false;
     const c = conns.get(channel);
     if (!c) return;
     c.listeners.delete(onEvent);
-    if (c.listeners.size === 0) {
-      c.closedByUs = true;
-      if (c.heartbeat) clearInterval(c.heartbeat);
-      if (c.reconnectTimer) clearTimeout(c.reconnectTimer);
-      try {
-        c.ws?.close();
-      } catch {
-        /* ignore */
-      }
-      conns.delete(channel);
+    if (c.listeners.size === 0 && !c.lingerTimer) {
+      c.lingerTimer = setTimeout(() => {
+        c.lingerTimer = null;
+        if (c.listeners.size === 0) retire(channel, c);
+      }, SOCKET_LINGER_MS);
     }
   };
+}
+
+/** Test hook: drop every channel immediately. */
+export function __resetRealtimeForTests(): void {
+  for (const [channel, c] of [...conns]) retire(channel, c);
 }
 
 /**

@@ -38,6 +38,9 @@ import { publishPresence } from "./lib/publish";
 const HEARTBEAT_REQUEST = "ping";
 const HEARTBEAT_RESPONSE = "pong";
 
+/** Anonymous (guest) sockets one battle's hub accepts. Signed-in sockets are not capped. */
+export const MAX_GUEST_SOCKETS = 2000;
+
 /** Socket attachment shape (survives hibernation). */
 interface SocketAttachment {
   /** Present only on `user:<uid>` sockets — the uid whose presence this tracks. */
@@ -96,9 +99,18 @@ export class RealtimeHub {
     if (request.headers.get("Upgrade") === "websocket") {
       const uid = request.headers.get("X-Authenticated-Uid");
       if (!uid) return new Response("missing verified identity", { status: 401 });
+      // Guest sockets are anonymous, so the per-IP limiter bounds how fast they
+      // open but not how many stay open. Cap them per battle: every publish fans
+      // out to every socket in this DO.
+      if (request.headers.get("X-Guest-Socket") === "1" && this.state.getWebSockets("guest").length >= MAX_GUEST_SOCKETS) {
+        return new Response("too many viewers", { status: 429 });
+      }
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
-      this.state.acceptWebSocket(server, [`uid:${uid}`]);
+      this.state.acceptWebSocket(
+        server,
+        request.headers.get("X-Guest-Socket") === "1" ? [`uid:${uid}`, "guest"] : [`uid:${uid}`],
+      );
       // Mark presence sockets so webSocketClose knows to announce the OFFLINE
       // transition. Set by the Worker only for `user:<uid>` upgrades — this hub
       // is per-channel, so every socket here is that same user's presence socket.

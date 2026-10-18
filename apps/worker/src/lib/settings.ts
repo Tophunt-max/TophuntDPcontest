@@ -6,6 +6,8 @@ import { eq } from "drizzle-orm";
 import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { delCache, kvWritesDisabled } from "./cache";
+import { memoDelete } from "./memo";
+import { kvPutsSuspended, noteKvPutFailure } from "./kvQuota";
 
 /**
  * KV lifetime.
@@ -55,11 +57,12 @@ async function readSetting(env: Env, id: string): Promise<any> {
   // Never let a KV write failure (e.g. the daily put() quota being exhausted)
   // break config reads — we already have the data from D1. Fail open: skip the
   // cache write and just serve the fresh value.
-  if (!kvWritesDisabled(env)) {
+  if (!kvWritesDisabled(env) && !kvPutsSuspended()) {
     try {
       await env.CACHE_KV.put(cacheKey, JSON.stringify(data), { expirationTtl: CACHE_TTL });
     } catch (e) {
       console.error("[settings] cache write failed (continuing)", e);
+      await noteKvPutFailure(env, e);
     }
   }
   return data;
@@ -171,4 +174,17 @@ export async function getRewardedAdConfig(env: Env): Promise<RewardedAdConfig> {
  */
 export async function invalidateSetting(env: Env, id: string): Promise<void> {
   await delCache(env, `settings:${id}`);
+  // Memo-only (never written to KV), so no KV delete is spent on them.
+  memoDelete(...(DERIVED_MEMO_KEYS[id] ?? []));
 }
+
+/**
+ * Isolate-memo keys holding values DERIVED from a settings row (never the row
+ * itself). Listed here so the writer's isolate drops them together with the KV
+ * entry; other isolates converge on the memo's own short TTL. Only ranking-style
+ * values may be derived this way — nothing a security or money decision reads.
+ */
+export const FEED_WEIGHTS_MEMO_KEY = "memo:feedWeights";
+const DERIVED_MEMO_KEYS: Record<string, string[]> = {
+  appConfig: [FEED_WEIGHTS_MEMO_KEY],
+};

@@ -41,11 +41,18 @@ import {
   Bookmark_Outline, 
   Bookmark_Filled 
 } from '@/assets/svgs';
+import { needsCatchUp, shouldListen } from '@/src/lib/liveWindow';
 
 interface PostCardProps {
     item: any;
     isDark: boolean;
     onMatchEnded?: (matchId: string) => void;
+    /**
+     * Whether this card should hold a live `match:<id>` subscription. Defaults to
+     * true. The Home feed passes false for cards that are mounted but off screen,
+     * so a long feed holds only a few sockets (see src/lib/liveWindow.ts).
+     */
+    liveActive?: boolean;
 }
 
 const AnimatedLinearGradient = Animated.createAnimatedComponent(LinearGradient);
@@ -119,7 +126,7 @@ const formatVotes = (n: number): string => {
   return String(value);
 };
 
-export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => {
+export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }: PostCardProps) => {
   const { user } = useAuth();
   const { requireAuth } = useAuthGate();
   const router = useRouter();
@@ -197,8 +204,17 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
     barProgress.value = withSpring(nextProgress, { damping: 15, stiffness: 100 });
   }, [barProgress]);
 
+  // When the card last stopped listening — seeded with the MOUNT time, because
+  // FlatList mounts cards well below the screen and such a card has been "not
+  // listening" since then. A return after a long gap catches up once instead of
+  // showing counts that froze while it was away.
+  const liveEndedAtRef = useRef<number | null>(Date.now());
+  const canListen = shouldListen({ liveActive, signedIn: !!user?.uid, status: matchStatus });
+
   useEffect(() => {
-    if (!item.id) return;
+    if (!item.id || !canListen) return;
+    const catchUp = needsCatchUp(liveEndedAtRef.current);
+    liveEndedAtRef.current = null;
 
     // Self-contained vote/status events update the card immediately. Other
     // engagement events refetch details; live() coalesces overlapping refreshes.
@@ -225,7 +241,9 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
         // /read/matches/:id — a big saving of D1 reads + DO calls across a feed.
         // The WebSocket keeps it live; the safety-net poll is slow (WS handles
         // real-time) so idle cards barely touch the backend.
-        immediate: false,
+        // …unless it was off screen long enough to have missed events, in which case
+        // one catch-up read is cheaper than leaving stale counts (see liveWindow.ts).
+        immediate: catchUp,
         fallbackMs: 180000,
         // Self-contained push payloads update counts instantly. This avoids a
         // refetch that would otherwise read D1's batched (up to ~5s stale)
@@ -266,8 +284,11 @@ export const PostCard = memo(({ item, isDark, onMatchEnded }: PostCardProps) => 
         },
       },
     );
-    return () => unsub();
-  }, [applyTally, item.id, user?.uid]);
+    return () => {
+      unsub();
+      liveEndedAtRef.current = Date.now();
+    };
+  }, [applyTally, item.id, user?.uid, canListen]);
 
   useEffect(() => {
     // Cancelled/voided battles disappear; completed ones stay to show the result.

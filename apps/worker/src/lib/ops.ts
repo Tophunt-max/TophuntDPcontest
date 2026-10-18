@@ -195,19 +195,36 @@ export async function cronHealth(env: Env): Promise<CronHealth[]> {
   return out;
 }
 
+/**
+ * Rows a single retention DELETE may remove.
+ *
+ * Every predicate below is an indexed range, so the READ side was already cheap; the
+ * bound is on the WRITE side. Unbounded, a first run against a backlog (or a week of
+ * runaway alerts) deleted it all in one statement — one huge D1 write that could
+ * exceed the cron's time budget and fail the whole hourly job. Bounded, it makes
+ * progress and the next hourly tick continues. Uses a rowid subquery rather than
+ * `DELETE … LIMIT`, which needs SQLITE_ENABLE_UPDATE_DELETE_LIMIT (same as
+ * lib/notify.ts).
+ */
+export const RETENTION_BATCH = 5000;
+
 /** Retention for the heartbeat table and expired replay claims. */
 export async function pruneOpsTables(
   env: Env,
 ): Promise<{ cronRuns: number; idempotencyKeys: number; adminNotifications: number }> {
   const cutoff = Date.now() - CRON_RUN_RETENTION_MS;
-  const runs = await env.DB.prepare("DELETE FROM cron_runs WHERE created_at < ?").bind(cutoff).run();
+  const runs = await env.DB.prepare(
+    `DELETE FROM cron_runs WHERE rowid IN (SELECT rowid FROM cron_runs WHERE created_at < ? LIMIT ${RETENTION_BATCH})`,
+  )
+    .bind(cutoff)
+    .run();
   // Request-retry claims only need to outlive any plausible client retry window;
   // a week is generous. MONEY claims are never pruned — see PRUNABLE_CLAIM_SCOPES
   // for why this is an allowlist and what deleting one used to cost.
   const keyCutoff = Date.now() - CLAIM_RETENTION_MS;
   const scopePlaceholders = PRUNABLE_CLAIM_SCOPES.map(() => "?").join(", ");
   const keys = await env.DB.prepare(
-    `DELETE FROM idempotency_keys WHERE created_at < ? AND scope IN (${scopePlaceholders})`,
+    `DELETE FROM idempotency_keys WHERE rowid IN (SELECT rowid FROM idempotency_keys WHERE created_at < ? AND scope IN (${scopePlaceholders}) LIMIT ${RETENTION_BATCH})`,
   )
     .bind(keyCutoff, ...PRUNABLE_CLAIM_SCOPES)
     .run();
@@ -218,7 +235,8 @@ export async function pruneOpsTables(
   // too soon but the table is still bounded.
   const DAY = 24 * 60 * 60 * 1000;
   const notifs = await env.DB.prepare(
-    "DELETE FROM admin_notifications WHERE created_at < ? OR (is_read = 1 AND created_at < ?)",
+    "DELETE FROM admin_notifications WHERE rowid IN (SELECT rowid FROM admin_notifications " +
+      `WHERE created_at < ? OR (is_read = 1 AND created_at < ?) LIMIT ${RETENTION_BATCH})`,
   )
     .bind(Date.now() - 30 * DAY, Date.now() - 7 * DAY)
     .run();

@@ -2987,26 +2987,34 @@ apiRoute.post("/", async (c) => {
     case "deleteComment": {
       const { targetType, targetId, commentId } = body;
       if (!commentId) throw httpsError("invalid-argument", "commentId is required.");
+      // The thread to purge comes from the DELETED ROW, not the request body. The
+      // client's `targetId` was trusted here, so a caller that sent a stale or wrong
+      // id deleted the comment but left it visible in the shared first-page cache
+      // for every viewer until the TTL lapsed.
+      let threadId: string = targetId;
       if (targetType === "blog") {
         const row = await db.select().from(schema.blogComments).where(eq(schema.blogComments.id, commentId)).get();
         if (!row) throw httpsError("not-found", "Comment not found.");
         if (row.userId !== uid && !(await isAdmin(c as any))) throw httpsError("permission-denied", "Not allowed.");
         await db.delete(schema.blogComments).where(eq(schema.blogComments.id, commentId));
+        threadId = row.postId;
       } else if (targetType === "matches" || targetType === "contestMatches") {
         const row = await db.select().from(schema.matchComments).where(eq(schema.matchComments.id, commentId)).get();
         if (!row) throw httpsError("not-found", "Comment not found.");
         if (row.userId !== uid && !(await isAdmin(c as any))) throw httpsError("permission-denied", "Not allowed.");
         await db.delete(schema.matchComments).where(eq(schema.matchComments.id, commentId));
         await bumpEngagement(env, row.matchId, "comment", -1);
+        threadId = row.matchId;
       } else {
         const row = await db.select().from(schema.postComments).where(eq(schema.postComments.id, commentId)).get();
         if (!row) throw httpsError("not-found", "Comment not found.");
         if (row.userId !== uid && !(await isAdmin(c as any))) throw httpsError("permission-denied", "Not allowed.");
         await db.delete(schema.postComments).where(eq(schema.postComments.id, commentId));
         await db.update(schema.posts).set({ commentCount: sql`MAX(${schema.posts.commentCount} - 1, 0)` }).where(eq(schema.posts.id, row.postId));
+        threadId = row.postId;
       }
       // Bust the cached comment list so the removal is reflected immediately.
-      c.executionCtx.waitUntil(purgeShared(c, commentsCacheKey(targetType, targetId)));
+      c.executionCtx.waitUntil(purgeShared(c, commentsCacheKey(targetType, threadId)));
       return c.json({ success: true });
     }
 

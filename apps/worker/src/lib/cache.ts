@@ -11,6 +11,7 @@
  */
 import type { Env } from "../types";
 import { memoDelete } from "./memo";
+import { kvPutsSuspended, noteKvPutFailure } from "./kvQuota";
 
 /**
  * Testing kill switch: skip `CACHE_KV` writes made by the read-through CACHES.
@@ -171,6 +172,9 @@ export async function cacheGetJson<T = any>(env: Env, key: string): Promise<T | 
  */
 export async function cachePutJson(env: Env, key: string, data: unknown, ttlSec: number): Promise<void> {
   if (kvWritesDisabled(env)) return;
+  // The daily write quota is known to be spent (lib/kvQuota.ts): every put would fail
+  // until UTC midnight, so do not spend a subrequest and latency proving it again.
+  if (kvPutsSuspended()) return;
   if (ttlSec < KV_MIN_TTL_SEC) {
     console.warn(
       `[cache] ttl ${ttlSec}s for "${key}" is below KV's ${KV_MIN_TTL_SEC}s floor and was clamped — ` +
@@ -183,6 +187,7 @@ export async function cachePutJson(env: Env, key: string, data: unknown, ttlSec:
     });
   } catch (e) {
     console.error("[cache] put failed (continuing)", key, e);
+    await noteKvPutFailure(env, e);
   }
 }
 

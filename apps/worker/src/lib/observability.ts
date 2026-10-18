@@ -57,7 +57,13 @@ export async function logErrorToDb(env: Env, err: unknown, ctx: CaptureContext =
 export async function pruneErrorLogs(env: Env): Promise<void> {
   try {
     const cutoff = Date.now() - ERROR_LOG_RETENTION_MS;
-    await env.DB.prepare("DELETE FROM error_logs WHERE created_at < ?").bind(cutoff).run();
+    // Bounded per run (indexed range, rowid subquery — see RETENTION_BATCH in
+    // lib/ops.ts); a backlog drains over successive hourly ticks.
+    await env.DB.prepare(
+      "DELETE FROM error_logs WHERE rowid IN (SELECT rowid FROM error_logs WHERE created_at < ? LIMIT 5000)",
+    )
+      .bind(cutoff)
+      .run();
   } catch (e) {
     console.error("[observability] pruneErrorLogs failed (continuing)", e);
   }

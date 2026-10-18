@@ -345,6 +345,19 @@ export interface CachedJsonOptions<T> {
  * The loader must not resolve to `null` — a cached `null` is indistinguishable from
  * a miss. Wrap it, as `/contests/:id` does with `{ contest }`.
  */
+/**
+ * Record the cache outcome for the request log. Never throws. Last lookup wins when
+ * a handler consults more than one entry (the primary payload is read last in
+ * every current caller).
+ */
+function noteCache(c: any, outcome: "hit" | "kv" | "miss" | "skip" | "bypass"): void {
+  try {
+    c?.set?.("edgeCache", outcome);
+  } catch {
+    /* observability must never affect the response */
+  }
+}
+
 export async function cachedJson<T>(c: any, opts: CachedJsonOptions<T>): Promise<T> {
   const { key, edgeTtlSec, kvTtlSec, load, skipCache } = opts;
   const cache = edgeTtlSec > 0 ? defaultCache() : null;
@@ -353,7 +366,11 @@ export async function cachedJson<T>(c: any, opts: CachedJsonOptions<T>): Promise
   if (cache && cacheKey) {
     try {
       const hit = await cache.match(cacheKey);
-      if (hit) return (await hit.json()) as T;
+      if (hit) {
+        const data = (await hit.json()) as T;
+        noteCache(c, "hit");
+        return data;
+      }
     } catch {
       /* cache unavailable or unparseable — fall through */
     }
@@ -365,14 +382,19 @@ export async function cachedJson<T>(c: any, opts: CachedJsonOptions<T>): Promise
     const fromKv = await cacheGetJson<T>(c.env, key);
     if (fromKv !== null && fromKv !== undefined) {
       if (cache && cacheKey) edgeStore(c, cache, cacheKey, fromKv, edgeTtlSec);
+      noteCache(c, "kv");
       return fromKv;
     }
   }
 
   const data = await load();
-  if (skipCache?.(data)) return data;
+  if (skipCache?.(data)) {
+    noteCache(c, "skip");
+    return data;
+  }
   if (kvTtlSec != null) await cachePutJson(c.env, key, data, kvTtlSec);
   if (cache && cacheKey) edgeStore(c, cache, cacheKey, data, edgeTtlSec);
+  noteCache(c, cache ? "miss" : "bypass");
   return data;
 }
 
@@ -410,7 +432,10 @@ export async function cachedResponse<T>(
   const cacheKey = urlEdgeKey(c, pathname, varyParams);
   try {
     const hit = cache ? await cache.match(cacheKey) : null;
-    if (hit) return hit;
+    if (hit) {
+      noteCache(c, "hit");
+      return hit;
+    }
   } catch {
     /* cache unavailable — fall through */
   }
@@ -426,5 +451,6 @@ export async function cachedResponse<T>(
   } catch {
     /* best-effort */
   }
+  noteCache(c, cache ? "miss" : "bypass");
   return res;
 }

@@ -215,4 +215,11 @@ export type Variables = {
   // Effective admin role for the current /admin request: "superadmin" | "admin"
   // | "moderator". Server-to-server (shared secret) calls are "superadmin".
   adminRole: string;
+  /**
+   * Outcome of the last shared read-cache lookup in this request — "hit" (edge),
+   * "kv" (durable tier), "miss" (computed and stored), "skip" (computed, not cacheable) or "bypass"
+   * (Cache API unavailable). Logged on the request line; never the key itself,
+   * since keys can carry uids and target ids.
+   */
+  edgeCache?: "hit" | "kv" | "miss" | "skip" | "bypass";
 };

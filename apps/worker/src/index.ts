@@ -55,6 +55,7 @@ import {
 import { applyPublicMediaCors, preflightMediaCorsHeaders } from "./lib/mediaCors";
 import { cachePolicyForKey } from "./lib/mediaCategories";
 import { clientIp, rateLimit } from "./lib/rateLimit";
+import { authorizeGuestMatchSocket, GUEST_SOCKET_UID, parseWsChannel, trustedHubHeaders } from "./lib/wsGuest";
 
 // Durable Object for real-time WebSocket push.
 export { RealtimeHub } from "./realtime";
@@ -110,6 +111,8 @@ app.use("*", async (c, next) => {
       path,
       status: c.res.status,
       ms,
+      // Shared read-cache outcome, when the route used one (see Variables.edgeCache).
+      ...(c.get("edgeCache") ? { edgeCache: c.get("edgeCache") } : {}),
     }),
   );
 });
@@ -354,7 +357,27 @@ app.get("/ws", async (c) => {
   }
   const channel = c.req.query("channel");
   const token = c.req.query("token");
-  if (!channel || !token) return c.text("Missing channel or token.", 400);
+  if (!channel) return c.text("Missing channel or token.", 400);
+
+  // Signed-out viewers may follow a live PUBLIC battle's tallies, and nothing else
+  // (lib/wsGuest.ts). Every other channel still needs a verified token below.
+  // The Durable Object is named after the WHOLE channel string, so it must be
+  // exactly `<kind>:<ref>` — `match:<liveId>:<junk>` would otherwise mint new DOs.
+  const parsed = parseWsChannel(channel);
+  if (!parsed) return c.text("Unknown channel.", 400);
+
+  if (!token) {
+    if (parsed.kind !== "match") return c.text("Missing channel or token.", 400);
+    const guestRef = parsed.ref;
+    const ip = c.req.header("CF-Connecting-IP") || c.req.header("X-Forwarded-For")?.split(",")[0]?.trim() || "unknown";
+    const decision = await authorizeGuestMatchSocket(c.env, guestRef, ip);
+    if (!decision.ok) return c.text(decision.reason, decision.status);
+    const guestHeaders = trustedHubHeaders(c.req.raw.headers);
+    guestHeaders.set("X-Authenticated-Uid", GUEST_SOCKET_UID);
+    guestHeaders.set("X-Guest-Socket", "1");
+    const guestStub = c.env.REALTIME.get(c.env.REALTIME.idFromName(channel));
+    return guestStub.fetch(new Request(c.req.raw, { headers: guestHeaders }));
+  }
 
   let user;
   try {
@@ -372,7 +395,7 @@ app.get("/ws", async (c) => {
     return c.text("Unauthorized.", 401);
   }
 
-  const [kind, ref] = channel.split(":");
+  const { kind, ref } = parsed;
   if (kind === "user") {
     if (ref !== user.uid) return c.text("Forbidden.", 403);
   } else if (kind === "chat") {
@@ -385,7 +408,7 @@ app.get("/ws", async (c) => {
 
   const id = c.env.REALTIME.idFromName(channel);
   const stub = c.env.REALTIME.get(id);
-  const forwardedHeaders = new Headers(c.req.raw.headers);
+  const forwardedHeaders = trustedHubHeaders(c.req.raw.headers);
   // The channel DO stores this verified identity as a hibernation tag so an
   // admin block can close already-established private sockets immediately.
   forwardedHeaders.set("X-Authenticated-Uid", user.uid);

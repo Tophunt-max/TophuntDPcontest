@@ -1,5 +1,11 @@
 # D1 optimization — design for now (free) → scale (paid)
 
+> **2026-10-18 re-verification:** see [CACHE_POLICY.md](CACHE_POLICY.md). Resolved since this was
+> written: the notifications hard-prune scan, the `/read/matches` and comment-thread temp-sorts
+> (migration `0059`, pinned by `apps/worker/test/queryPlans.test.ts`), and the list + badge double
+> fetch (`/read/notifications?withUnread=1`). Still open: `sort=hot`, `SELECT *` on wide tables, the
+> unbounded profile following list, blog view-count writes and the cron N+1 (CACHE_POLICY.md §6).
+
 **Scope:** `apps/worker` (D1 access, cron, caching). **Goal:** stay comfortably
 inside the Cloudflare **free** D1 limits today, and scale to the **Workers Paid**
 plan for more users with **no code rewrite** — one env flag.

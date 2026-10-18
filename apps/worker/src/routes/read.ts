@@ -12,7 +12,7 @@ import { getDb, schema, type NotificationActor } from "../db";
 import { perPlayerEntryFee } from "../lib/money";
 import { httpsError } from "../lib/http";
 import { requireAuth, optionalAuth, guestReadLimit } from "../middleware/auth";
-import { getAppConfig } from "../lib/settings";
+import { FEED_WEIGHTS_MEMO_KEY, getAppConfig } from "../lib/settings";
 import { getSettings as getGamificationSettings, levelForXp } from "../lib/gamification";
 import { resolveLegalContent } from "../content/legal";
 import { enrichMatchMedia, avatarUrl, thumbUrl, optimizedUrl, cdnUrl, canonicalizeMediaHtml } from "../lib/media";
@@ -31,6 +31,7 @@ import {
 } from "../lib/cache";
 import { cachedJson, cachedResponse } from "../lib/edgeCache";
 import { memoGet, memoPut } from "../lib/memo";
+import { recordBlogView } from "../lib/viewCounter";
 import { getLiveTally, getViewerVote } from "../lib/voteCounter";
 import { publicPrize } from "../lib/prizes";
 import { clientIp, rateLimit } from "../lib/rateLimit";
@@ -662,7 +663,23 @@ const FEED_DEFAULT_WEIGHTS: FeedWeights = {
   resultVotedBoost: 2.0,
 };
 
+/**
+ * Isolate-memo lifetime for the DERIVED ranking weights.
+ *
+ * Every For You / Following request needs these, and reading them meant one KV read
+ * of `settings:appConfig` per feed request — KV reads are metered (100k/day on the
+ * free plan) and the feed is the hottest route. The memo holds only the twelve
+ * numbers below, never the appConfig blob itself: appConfig also carries
+ * `payoutsFrozen`, which must stay on KV's globally-visible invalidation (see
+ * lib/settings.ts). A stale weight only nudges ranking for at most this long after
+ * an admin edit, which is the kind of value lib/memo.ts exists for.
+ */
+const FEED_WEIGHTS_TTL_SEC = 30;
+
 async function getFeedWeights(env: Env): Promise<FeedWeights> {
+  const memo = memoGet<FeedWeights>(FEED_WEIGHTS_MEMO_KEY);
+  if (memo) return memo;
+  let weights: FeedWeights = FEED_DEFAULT_WEIGHTS;
   try {
     const cfg = await getAppConfig(env);
     const w = cfg?.feedWeights;
@@ -671,12 +688,16 @@ async function getFeedWeights(env: Env): Promise<FeedWeights> {
       for (const k of Object.keys(FEED_DEFAULT_WEIGHTS)) {
         if (typeof w[k] === "number" && Number.isFinite(w[k])) merged[k] = w[k];
       }
-      return merged as unknown as FeedWeights;
+      weights = merged as unknown as FeedWeights;
     }
   } catch {
-    /* fall through to defaults */
+    // Fall through to defaults, and do NOT memoise them: a transient KV/D1 failure
+    // must not pin default weights for the whole window.
+    return FEED_DEFAULT_WEIGHTS;
   }
-  return FEED_DEFAULT_WEIGHTS;
+  // Frozen so a caller can never mutate the shared memoised object.
+  memoPut(FEED_WEIGHTS_MEMO_KEY, Object.freeze({ ...weights }), FEED_WEIGHTS_TTL_SEC);
+  return weights;
 }
 
 /**
@@ -835,7 +856,11 @@ async function servePersonalizedFeed(
   const w = await getFeedWeights(c.env);
 
   // The "Following" tab is inherently personal — signed-out users get nothing.
-  if (following && !uid) return c.json({ items: [], nextCursor: null });
+  if (following && !uid) {
+    c.header("Cache-Control", "public, max-age=15");
+    c.header("Vary", "Authorization");
+    return c.json({ items: [], nextCursor: null });
+  }
 
   // The candidate pool and the per-viewer order below live in ISOLATE MEMORY, not
   // KV. Both are written on a cache MISS, so their write rate is set purely by
@@ -863,7 +888,7 @@ async function servePersonalizedFeed(
   if (!candidates) {
     const typeConds = type ? [eq(schema.contestMatches.type, type)] : [];
     const activeRows = await db
-      .select()
+      .select(MATCH_LIST_COLUMNS)
       .from(schema.contestMatches)
       .where(and(eq(schema.contestMatches.status, status), ...typeConds))
       .orderBy(desc(schema.contestMatches.createdAt))
@@ -876,7 +901,7 @@ async function servePersonalizedFeed(
     if (status === "active") {
       const cutoff = now - FEED_RESULT_WINDOW_MS;
       const completedRows = await db
-        .select()
+        .select(MATCH_LIST_COLUMNS)
         .from(schema.contestMatches)
         .where(and(eq(schema.contestMatches.status, "completed"), gt(schema.contestMatches.expiresAt, cutoff), ...typeConds))
         .orderBy(desc(schema.contestMatches.expiresAt))
@@ -1021,6 +1046,11 @@ async function servePersonalizedFeed(
     c.executionCtx.waitUntil(bumpSeen(c.env, uid, pageItems.map((m: any) => m.id)));
   }
 
+  // The same URL answers differently for a guest and a signed-in viewer, so any
+  // HTTP cache that honours the public guest variant (the browser's, on web) must
+  // key it on the credential too — otherwise a guest page cached seconds before
+  // sign-in is replayed to the new account without its vote/like state.
+  c.header("Vary", "Authorization");
   if (uid) {
     c.header("Cache-Control", "private, no-store");
     return c.json({ items: await hydrateViewerState(db, pageItems, uid), nextCursor });
@@ -1072,6 +1102,74 @@ const mapContest = (r: any) => ({
   createdBy: r.createdBy,
   createdAt: r.createdAt,
 });
+
+/**
+ * The `contest_matches` columns a LIST read needs: everything `mapMatch`,
+ * `publicPrize`, `publicVsStoryStatus` and the feed ranker (`rankBaseScore`, which
+ * reads `reactions`) consume — and nothing else.
+ *
+ * `SELECT *` also pulled the settlement token, the VS-publication lease/error
+ * bookkeeping and the `vs_image_meta` JSON blob for up to 190 rows per feed-pool
+ * refill and 30 per list page, only for `mapMatch` to drop them. D1 bills rows
+ * read, not columns, so this does not change rows_read; it cuts bytes transferred,
+ * JSON parsing and isolate memory (the pool is memoised and structured-cloned on
+ * every request). `test/cacheAudit.test.ts` asserts the projection still covers
+ * every field `mapMatch` emits, so adding a field there without adding it here fails.
+ */
+const MATCH_LIST_COLUMNS = {
+  id: schema.contestMatches.id,
+  contestId: schema.contestMatches.contestId,
+  status: schema.contestMatches.status,
+  type: schema.contestMatches.type,
+  title: schema.contestMatches.title,
+  entryFee: schema.contestMatches.entryFee,
+  isPrivate: schema.contestMatches.isPrivate,
+  invitedUid: schema.contestMatches.invitedUid,
+  joinIdA: schema.contestMatches.joinIdA,
+  joinIdB: schema.contestMatches.joinIdB,
+  userA: schema.contestMatches.userA,
+  userB: schema.contestMatches.userB,
+  totalVotes: schema.contestMatches.totalVotes,
+  likeCount: schema.contestMatches.likeCount,
+  commentCount: schema.contestMatches.commentCount,
+  shareCount: schema.contestMatches.shareCount,
+  winnerUid: schema.contestMatches.winnerUid,
+  rewardAmount: schema.contestMatches.rewardAmount,
+  minVotesRequired: schema.contestMatches.minVotesRequired,
+  prizeType: schema.contestMatches.prizeType,
+  prizeProductTitle: schema.contestMatches.prizeProductTitle,
+  prizeProductImageUrl: schema.contestMatches.prizeProductImageUrl,
+  prizeProductValue: schema.contestMatches.prizeProductValue,
+  reactions: schema.contestMatches.reactions,
+  vsImageUrl: schema.contestMatches.vsImageUrl,
+  vsStoryStatus: schema.contestMatches.vsStoryStatus,
+  endingSoonNotified: schema.contestMatches.endingSoonNotified,
+  createdAt: schema.contestMatches.createdAt,
+  activatedAt: schema.contestMatches.activatedAt,
+  completedAt: schema.contestMatches.completedAt,
+  expiresAt: schema.contestMatches.expiresAt,
+} as const;
+/** Exported for the projection-coverage test. */
+export const __MATCH_LIST_COLUMN_NAMES = Object.keys(MATCH_LIST_COLUMNS);
+
+/**
+ * Blog LIST columns: `mapBlogPost` without `withContent` never reads `content`
+ * (the full article HTML — by far the widest column), `metaTitle`,
+ * `metaDescription` or `canonicalUrl`.
+ */
+const BLOG_LIST_COLUMNS = {
+  id: schema.blogPosts.id,
+  slug: schema.blogPosts.slug,
+  title: schema.blogPosts.title,
+  excerpt: schema.blogPosts.excerpt,
+  coverImageUrl: schema.blogPosts.coverImageUrl,
+  category: schema.blogPosts.category,
+  tags: schema.blogPosts.tags,
+  author: schema.blogPosts.author,
+  viewCount: schema.blogPosts.viewCount,
+  publishedAt: schema.blogPosts.publishedAt,
+  createdAt: schema.blogPosts.createdAt,
+} as const;
 
 const mapMatch = (r: any) => ({
   id: r.id,
@@ -1263,12 +1361,20 @@ readRoute.get("/contests/:id", optionalAuth, guestReadLimit, async (c) => {
       const row = await db.select().from(schema.contests).where(eq(schema.contests.id, id)).get();
       return { contest: row ? mapContest(row) : null };
     },
+    // `id` comes straight off the URL, so caching a not-found mints one entry per
+    // invented id — the same reasoning as /users/:id and /comments. A miss is a
+    // primary-key lookup, which is cheaper than the cache pollution.
+    skipCache: (v) => v.contest === null,
   });
   c.header("Cache-Control", "public, max-age=60");
   return c.json(contest);
 });
 
 // ================= MATCHES =================
+/** Statuses a `contest_matches` row can hold (schema.ts). Bounds the page-cache key space. */
+const MATCH_STATUSES = new Set(["waiting_for_opponent", "active", "completed", "ended", "cancelled"]);
+const MATCH_TYPES = new Set(["photo", "video"]);
+
 readRoute.get("/matches", optionalAuth, guestReadLimit, async (c) => {
   const db = getDb(c.env);
   const status = c.req.query("status") || "active";
@@ -1304,9 +1410,25 @@ readRoute.get("/matches", optionalAuth, guestReadLimit, async (c) => {
   //
   // nextCursor rides in the X-Next-Cursor header (the body stays a plain array —
   // non-breaking), so it has to be cached alongside the rows.
-  const cacheKey = `cache:matches:${status}:${type || "all"}:${sort}:${limit}:${cursorRaw || "0"}`;
+  //
+  // The key is built from NORMALISED values, not the raw query string: `?cursor=`
+  // used to go in verbatim, so `cursor=abc`, `cursor=0001` and `cursor=1` were three
+  // entries for one page (and an attacker could mint unbounded entries by varying
+  // it). `pageCursor` is the same parse the loader applies, so equal keys mean equal
+  // queries (see `pageSeg` for the first page). A status/type outside the known set is still answered — it simply
+  // matches nothing — but is never cached, so it cannot grow the key space either.
+  const cursorNorm = pageCursor(cursorRaw);
+  const cacheable = MATCH_STATUSES.has(status) && (!type || MATCH_TYPES.has(type));
+  // The first page gets a segment no number can produce: for `recent`, `cursor=0`
+  // is a real (empty, `created_at < 0`) query, and keying it as the first page let
+  // one request cache an empty feed for every viewer in the colo. For `hot`, offset
+  // 0 IS the first page, so the two legitimately share an entry.
+  const pageSeg =
+    sort === "hot" ? `o${Math.max(Math.floor(cursorNorm ?? 0), 0)}` : cursorNorm == null ? "first" : `c${cursorNorm}`;
+  const cacheKey = `cache:matches:${status}:${type || "all"}:${sort}:${limit}:${pageSeg}`;
   const { matches, nextCursor } = await cachedJson<{ matches: any[]; nextCursor: number | null }>(c, {
     key: cacheKey,
+    skipCache: () => !cacheable,
     // Nothing invalidates this key — a new battle appears when the entry lapses — so
     // the ttl IS the freshness policy. 30s is the same ceiling this page has always
     // declared, and now actually honours: the old 10s edge sat over a KV entry the
@@ -1319,7 +1441,7 @@ readRoute.get("/matches", optionalAuth, guestReadLimit, async (c) => {
 
       if (sort === "hot") {
         // Engagement-weighted ranking; paginate by numeric offset.
-        const offset = Math.max(pageCursor(cursorRaw) ?? 0, 0);
+        const offset = Math.max(Math.floor(cursorNorm ?? 0), 0);
         const score = sql`(
           ${schema.contestMatches.totalVotes}
           + ${schema.contestMatches.likeCount}
@@ -1327,7 +1449,7 @@ readRoute.get("/matches", optionalAuth, guestReadLimit, async (c) => {
           + ${schema.contestMatches.shareCount} * 3
         )`;
         const rows = await db
-          .select()
+          .select(MATCH_LIST_COLUMNS)
           .from(schema.contestMatches)
           .where(and(...conds))
           .orderBy(desc(score), desc(schema.contestMatches.createdAt))
@@ -1343,7 +1465,7 @@ readRoute.get("/matches", optionalAuth, guestReadLimit, async (c) => {
       const matchesCursor = pageCursor(cursorRaw);
       if (matchesCursor != null) conds.push(lt(schema.contestMatches.createdAt, matchesCursor));
       const rows = await db
-        .select()
+        .select(MATCH_LIST_COLUMNS)
         .from(schema.contestMatches)
         .where(and(...conds))
         .orderBy(desc(schema.contestMatches.createdAt))
@@ -1359,6 +1481,8 @@ readRoute.get("/matches", optionalAuth, guestReadLimit, async (c) => {
   });
 
   if (nextCursor != null) c.header("X-Next-Cursor", String(nextCursor));
+  // Guest and signed-in answers differ for the same URL; see servePersonalizedFeed.
+  c.header("Vary", "Authorization");
   if (uid) {
     // Per-user data — must never be stored by a shared/edge cache.
     c.header("Cache-Control", "private, no-store");
@@ -1467,7 +1591,10 @@ readRoute.get("/matches/:id", optionalAuth, guestReadLimit, async (c) => {
 // ================= LEADERBOARD =================
 readRoute.get("/leaderboard", optionalAuth, guestReadLimit, async (c) => {
   const db = getDb(c.env);
-  const by = c.req.query("by") || "wins"; // wins | votes | xp
+  // Normalised BEFORE it reaches the cache key: any other value already ranked by
+  // wins, but `?by=<anything>` minted its own edge entry for the identical payload.
+  const byRaw = c.req.query("by");
+  const by = byRaw === "votes" || byRaw === "xp" ? byRaw : "wins";
   const limit = pageLimit(c, 20, 100);
   // Leaderboard changes slowly (on match resolution) — cache 30s in KV.
   const viewerUid = c.get("user")?.uid;
@@ -1871,10 +1998,22 @@ readRoute.get("/notifications", requireAuth, async (c) => {
     });
   }
 
+  // `withUnread=1` (first page only) also returns the badge count in
+  // X-Unread-Count. The app's bell and its open notifications screen both refresh on
+  // the SAME `notification` socket event; without this each event cost two requests
+  // (two auth checks, two block/mute lookups) for one change. The count reuses the
+  // `hidden` set already loaded above, so this adds one index-only COUNT and nothing
+  // else. Old clients never send the flag and see no change.
+  const unread =
+    cursor == null && c.req.query("withUnread") === "1"
+      ? await unseenNotificationCount(db, uid, hidden)
+      : null;
+
   const res = c.json(page.map((r) => mapNotification(c.env, r))) as Response;
   // Per-user data — must never be shared-cached.
   res.headers.set("Cache-Control", "private, no-store");
   if (nextCursor != null) res.headers.set("X-Next-Cursor", String(nextCursor));
+  if (unread != null) res.headers.set("X-Unread-Count", String(unread));
   return res;
 });
 
@@ -1893,12 +2032,22 @@ readRoute.get("/notifications", requireAuth, async (c) => {
  * already-installed app builds keep working.
  */
 readRoute.get("/notifications/unread-count", requireAuth, async (c) => {
-  const db = getDb(c.env);
   const uid = c.get("user").uid;
-  // Excludes hidden actors so the badge agrees with the list it opens — counting
-  // rows the list then filters away leaves a badge that cannot be cleared by
-  // reading. Capped for the same bound-parameter reason as the other SQL filters.
-  const hiddenActors = sqlExclusionList(await hiddenUidsFor(c.env, uid));
+  const count = await unseenNotificationCount(getDb(c.env), uid, await hiddenUidsFor(c.env, uid));
+  const res = c.json({ count }) as Response;
+  res.headers.set("Cache-Control", "private, no-store");
+  return res;
+});
+
+/**
+ * The badge count, shared by `/notifications/unread-count` and the `withUnread=1`
+ * option on the list. Excludes hidden actors so the badge agrees with the list it
+ * opens — counting rows the list then filters away leaves a badge that cannot be
+ * cleared by reading. Capped for the same bound-parameter reason as the other SQL
+ * filters. Index-only via idx_notif_unseen (see test/queryPlans.test.ts).
+ */
+async function unseenNotificationCount(db: ReturnType<typeof getDb>, uid: string, hidden: Set<string>): Promise<number> {
+  const hiddenActors = sqlExclusionList(hidden);
   const row = await db
     .select({ v: sql<number>`count(*)` })
     .from(schema.notifications)
@@ -1917,10 +2066,8 @@ readRoute.get("/notifications/unread-count", requireAuth, async (c) => {
       ),
     )
     .get();
-  const res = c.json({ count: row?.v ?? 0 }) as Response;
-  res.headers.set("Cache-Control", "private, no-store");
-  return res;
-});
+  return Number(row?.v ?? 0);
+}
 
 // ================= WALLET / COIN LEDGER =================
 // The signed coin transaction history for the authenticated user. Amounts are
@@ -2182,6 +2329,8 @@ export const PUBLIC_PROFILE_FIELDS = [
   "isPrivate",
   // The target's OWN follow list. Filtered per viewer afterwards by `forViewer`.
   "following",
+  // True when `following` above was cut at PUBLIC_FOLLOWING_LIMIT.
+  "followingTruncated",
   // Social links. These live in `extra` and are merged to the top level, so they
   // have to be named individually — and naming them is also what stops any OTHER
   // key a client shoved into `extra` from reaching a stranger.
@@ -2194,6 +2343,12 @@ export const PUBLIC_PROFILE_FIELDS = [
   // Internal: read by the hidden-account guard below. See the note above.
   "status",
 ] as const;
+
+/**
+ * How many of someone ELSE's followed uids a profile read returns. The full list
+ * is paginated at `/read/users/:id/following`; see loadFullProfile.
+ */
+export const PUBLIC_FOLLOWING_LIMIT = 200;
 
 /**
  * Project a full profile row down to `PUBLIC_PROFILE_FIELDS`.
@@ -2299,7 +2454,7 @@ async function serveUserProfile(c: any, id: string): Promise<Response> {
    * Shared by both paths below so the two can never disagree about how a profile is
    * assembled — only about how much of it is handed out.
    */
-  const loadFullProfile = async (): Promise<Record<string, any> | null> => {
+  const loadFullProfile = async (opts: { followingLimit?: number } = {}): Promise<Record<string, any> | null> => {
     const db = getDb(c.env);
     const row = await db.select().from(schema.users).where(eq(schema.users.uid, id)).get();
     if (!row) return null;
@@ -2326,9 +2481,25 @@ async function serveUserProfile(c: any, id: string): Promise<Response> {
       columns.extra && typeof columns.extra === "object"
         ? { ...columns.extra, ...columns }
         : columns;
-    // expose following[] (list of uids) for screens that expect it
-    const following = await db.select({ id: schema.follows.followingId }).from(schema.follows).where(eq(schema.follows.followerId, row.uid)).all();
-    safe.following = following.map((f) => f.id);
+    // expose following[] (list of uids) for screens that expect it.
+    //
+    // Bounded on the SHARED path. The app reads `following` only from the viewer's
+    // OWN profile (explore, connections and the follow button check "do I follow
+    // X?"), never from somebody else's — yet every shared-cache miss on a popular
+    // account read its entire follow list. Strangers now get the most recent
+    // PUBLIC_FOLLOWING_LIMIT (newest first, idx_follows_follower_created) plus
+    // `followingTruncated`; the owner's own uncached read stays complete because
+    // their UI depends on it.
+    const limit = opts.followingLimit;
+    const followingQuery = db
+      .select({ id: schema.follows.followingId })
+      .from(schema.follows)
+      .where(eq(schema.follows.followerId, row.uid))
+      .orderBy(desc(schema.follows.createdAt));
+    const following = limit != null ? await followingQuery.limit(limit + 1).all() : await followingQuery.all();
+    const truncated = limit != null && following.length > limit;
+    safe.following = (truncated ? following.slice(0, limit) : following).map((f) => f.id);
+    if (limit != null) safe.followingTruncated = truncated;
     safe.profileImageUrlThumb = avatarUrl(c.env, safe.profileImageUrl);
     // Level is DERIVED from xp, not read from the stored column. Nothing updates
     // `users.level` any more (see lib/gamification.ts#levelForXp), so the column is
@@ -2406,7 +2577,7 @@ async function serveUserProfile(c: any, id: string): Promise<Response> {
     edgeTtlSec: READ_CACHE_TTLS.userProfile.edge,
     kvTtlSec: READ_CACHE_TTLS.userProfile.kv,
     load: async () => {
-      const full = await loadFullProfile();
+      const full = await loadFullProfile({ followingLimit: PUBLIC_FOLLOWING_LIMIT });
       return { profile: full ? publicProfile(full) : null };
     },
     /**
@@ -3237,6 +3408,9 @@ readRoute.get("/music/catalog", requireAuth, async (c) => {
 });
 
 // ================= COMMENTS (posts, matches or blog articles) =================
+/** The page size both app comment lists request, and the only one the shared cache holds. */
+const COMMENTS_PAGE_SIZE = 20;
+
 readRoute.get("/comments", optionalAuth, guestReadLimit, async (c) => {
   const db = getDb(c.env);
   const uid = c.get("user")?.uid;
@@ -3250,7 +3424,7 @@ readRoute.get("/comments", optionalAuth, guestReadLimit, async (c) => {
   // needs is a `total` for the "Comments (N)" heading (there is no denormalised
   // counter on blog_posts — see migrations/0034_blog_comments.sql).
   const isBlog = targetType === "blog";
-  const limit = pageLimit(c, 20, 50);
+  const limit = pageLimit(c, COMMENTS_PAGE_SIZE, 50);
 
   // Keyset (cursor) pagination — Instagram-style "load older on scroll". The
   // cursor is an opaque `${createdAt}_${id}` string; the id tie-break keeps
@@ -3357,7 +3531,15 @@ readRoute.get("/comments", optionalAuth, guestReadLimit, async (c) => {
    * clamped to a 60s floor, so the bound this comment argues for was never the one
    * in force. It also removes ~1,440 KV writes/day per active thread.
    */
-  const payload = isFirstPage
+  //
+  // `limit` is NOT part of the key (the add/delete purge in routes/api.ts only knows
+  // the thread, not the page size), so only the canonical page size may be cached.
+  // Before this, whichever caller first filled the entry fixed its size for everyone:
+  // a `limit=1` request made every viewer's first page one comment long for the TTL,
+  // and a `limit=50` one was served to clients that asked for 20. Both app clients
+  // (CommentSheet, BlogComments) request exactly COMMENTS_PAGE_SIZE, so the hit rate
+  // is unchanged; any other size is simply read from D1.
+  const payload = isFirstPage && limit === COMMENTS_PAGE_SIZE
     ? await cachedJson<CommentsPayload>(c, {
         key: cacheKey,
         edgeTtlSec: READ_CACHE_TTLS.comments.edge,
@@ -3733,7 +3915,7 @@ readRoute.get("/blog", async (c) => {
 
   const load = async () => {
     const rows = await db
-      .select()
+      .select(BLOG_LIST_COLUMNS)
       .from(schema.blogPosts)
       .where(and(...conds))
       .orderBy(desc(schema.blogPosts.publishedAt))
@@ -4014,17 +4196,9 @@ readRoute.get("/blog/:slug", async (c) => {
   // an unchanged shape.
   if (!post) return c.json(null, 404);
   // Best-effort view counter — the payload is cached, the analytics deliberately are
-  // not, so this fires on cache hits too. Handed to `waitUntil` rather than left
-  // floating: on an edge hit nothing else in this handler registers any pending
-  // work, so the isolate could be torn down before an unawaited write lands.
-  c.executionCtx.waitUntil(
-    db
-      .update(schema.blogPosts)
-      .set({ viewCount: sql`${schema.blogPosts.viewCount} + 1` })
-      .where(eq(schema.blogPosts.id, post.id as string))
-      .run()
-      .catch(() => {}),
-  );
+  // not, so this counts cache hits too. Coalesced per isolate into one batched write
+  // per window (lib/viewCounter.ts) instead of one D1 write per page view.
+  recordBlogView(c.env, c.executionCtx, post.id as string);
   return c.json(post);
 });
 

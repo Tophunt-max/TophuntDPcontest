@@ -7,11 +7,11 @@
  * Firestore triggers had no equivalent here; the notification side effects that
  * used to fire from onDocument triggers are emitted explicitly via createNotification.
  */
-import { and, eq, lte, gt, desc, sql, asc, isNull, isNotNull } from "drizzle-orm";
+import { and, eq, lte, gt, desc, sql, asc, isNull, isNotNull, inArray, ne, or } from "drizzle-orm";
 import type { Env } from "./types";
 import { getDb, schema } from "./db";
 import { invalidateContestCaches } from "./lib/edgeCache";
-import { createNotification } from "./lib/notify";
+import { createNotification, createNotificationsBulk } from "./lib/notify";
 import { sendUserEmail } from "./lib/email";
 import { contestWinEmail, contestRefundEmail, prizeClaimEmail } from "./lib/emailTemplates";
 import { drainBroadcastJobs, enqueueBroadcast } from "./lib/broadcast";
@@ -193,8 +193,8 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
     if (!settled) return;
     await publishMatchStatus(env, match.id, "cancelled", votesA, votesB);
     const message = `The battle ended with ${totalVotes} of ${minVotes} required votes. Entry fees were refunded.`;
-    await createNotification(env, userA.uid, { title: "Battle Voided", body: message, type: "contest-refund", targetId: "wallet" });
-    await createNotification(env, userB.uid, { title: "Battle Voided", body: message, type: "contest-refund", targetId: "wallet" });
+    // Same actor-less message to both sides: one batched write (lib/notify.ts).
+    await createNotificationsBulk(env, [userA.uid, userB.uid], { title: "Battle Voided", body: message, type: "contest-refund", targetId: "wallet" });
     // Entry fees moved back — receipt to both. Awaited (no request to outlive in
     // cron) and best-effort, so a mail blip never stalls settlement.
     const voidReason = `it did not reach the minimum ${minVotes} votes`;
@@ -219,8 +219,7 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
     });
     if (!settled) return;
     await publishMatchStatus(env, match.id, "completed", votesA, votesB);
-    await createNotification(env, userA.uid, { title: "It's a Tie!", body: "The match ended in a tie. Entry fees refunded.", type: "contest-tie", targetId: "wallet" });
-    await createNotification(env, userB.uid, { title: "It's a Tie!", body: "The match ended in a tie. Entry fees refunded.", type: "contest-tie", targetId: "wallet" });
+    await createNotificationsBulk(env, [userA.uid, userB.uid], { title: "It's a Tie!", body: "The match ended in a tie. Entry fees refunded.", type: "contest-tie", targetId: "wallet" });
     await sendUserEmail(env, userA.uid, contestRefundEmail(match.title, "it ended in a tie"));
     await sendUserEmail(env, userB.uid, contestRefundEmail(match.title, "it ended in a tie"));
     return;
@@ -295,6 +294,11 @@ async function refundWaitingMatch(env: Env, match: Match): Promise<void> {
 }
 
 /** Every-10-min cron: resolve expired matches, refund unmatched, notify ending-soon, cleanup stories. */
+/** Expired personal stories whose media is deleted (and row removed) per 10-minute tick. */
+export const EXPIRED_STORY_BATCH = 500;
+/** After this long past expiry, a story whose media delete keeps failing is dropped anyway. */
+export const STORY_MEDIA_GIVE_UP_MS = 7 * 24 * 60 * 60 * 1000;
+
 export async function resolveContests(env: Env): Promise<void> {
   const db = getDb(env);
   const nowMs = now();
@@ -356,13 +360,32 @@ export async function resolveContests(env: Env): Promise<void> {
       eq(schema.contestMatches.endingSoonNotified, false),
     ))
     .limit(50).all();
-  for (const m of soon) {
-    const userA = m.userA as any;
-    const userB = m.userB as any;
-    const msg = `⏳ Hurry! The battle "${m.title || "Match"}" ends in less than an hour. Get more votes!`;
-    if (userA?.uid) await createNotification(env, userA.uid, { title: "Battle Ending Soon!", body: msg, type: "contest-ending", targetId: m.id });
-    if (userB?.uid) await createNotification(env, userB.uid, { title: "Battle Ending Soon!", body: msg, type: "contest-ending", targetId: m.id });
-    await db.update(schema.contestMatches).set({ endingSoonNotified: true }).where(eq(schema.contestMatches.id, m.id));
+  // CLAIM first, in one statement, then notify. The old loop notified and then
+  // flagged each match with its own UPDATE (one round trip per match), and an
+  // overlapping tick could notify the same match twice. `ending_soon_notified = 0`
+  // in the WHERE makes the claim atomic; only rows this tick flipped are notified.
+  // A crash after the claim skips a reminder rather than duplicating it — the right
+  // trade for a nudge.
+  if (soon.length) {
+    const claimed = new Set<string>();
+    for (let i = 0; i < soon.length; i += 90) {
+      const ids = soon.slice(i, i + 90).map((m) => m.id);
+      const res = await env.DB.prepare(
+        `UPDATE contest_matches SET ending_soon_notified = 1 WHERE ending_soon_notified = 0 AND id IN (${ids.map(() => "?").join(",")}) RETURNING id`,
+      )
+        .bind(...ids)
+        .all<{ id: string }>();
+      for (const r of res.results ?? []) claimed.add(r.id);
+    }
+    for (const m of soon) {
+      if (!claimed.has(m.id)) continue;
+      const userA = m.userA as any;
+      const userB = m.userB as any;
+      const msg = `⏳ Hurry! The battle "${m.title || "Match"}" ends in less than an hour. Get more votes!`;
+      await createNotificationsBulk(env, [userA?.uid, userB?.uid].filter(Boolean), {
+        title: "Battle Ending Soon!", body: msg, type: "contest-ending", targetId: m.id,
+      });
+    }
   }
 
   // expired story cleanup — also delete the R2 media of expired PERSONAL
@@ -370,18 +393,46 @@ export async function resolveContests(env: Env): Promise<void> {
   // (contest_announcement / contest_vs) carry each participant's OWN entry as
   // their media, so we must NOT delete their objects here — doing so would blank
   // out the battle itself. R2 DELETE ops are free.
+  //
+  // Bounded at EXPIRED_STORY_BATCH per tick, and the row delete below is bounded to
+  // exactly the rows whose media was handled here. It used to delete EVERY expired
+  // story after cleaning only the first 500, so on a busy day the rest lost their
+  // row — the only pointer to their R2/Bunny object — and leaked storage forever.
+  // Leftovers now wait for the next 10-minute tick with their row intact.
+  //
+  // A row is removed only once its media delete SUCCEEDED (or there was nothing to
+  // delete). A provider outage keeps the row — the only pointer to the object — for
+  // the next tick. Oldest first, so a row whose media can never be deleted cannot
+  // pin the head of the batch: past STORY_MEDIA_GIVE_UP_MS it is dropped anyway and
+  // logged as a leak.
   const expiredUserStories = await db
-    .select({ mediaUrl: schema.stories.mediaUrl })
+    .select({ id: schema.stories.id, mediaUrl: schema.stories.mediaUrl, expiresAt: schema.stories.expiresAt })
     .from(schema.stories)
     .where(and(lte(schema.stories.expiresAt, nowMs), eq(schema.stories.type, "user")))
-    .limit(500)
+    .orderBy(asc(schema.stories.expiresAt))
+    .limit(EXPIRED_STORY_BATCH)
     .all();
+  const handledIds: string[] = [];
   for (const s of expiredUserStories) {
     // Provider-aware: story videos now live in Bunny, and stories expire every
     // 24h, so an R2-only delete here would leak a video object per story.
     // Never a battle card, even if a personal story named one: that object is
     // owned by its match and may still back another participant's live story.
-    if (s.mediaUrl && !vsImageKeyFromPublicUrl(env, s.mediaUrl)) await deleteMediaByUrl(env, s.mediaUrl).catch(() => {});
+    if (!s.mediaUrl || vsImageKeyFromPublicUrl(env, s.mediaUrl)) {
+      handledIds.push(s.id);
+      continue;
+    }
+    try {
+      await deleteMediaByUrl(env, s.mediaUrl);
+      handledIds.push(s.id);
+    } catch (e) {
+      if (Number(s.expiresAt) < nowMs - STORY_MEDIA_GIVE_UP_MS) {
+        console.error("[cron] story media delete kept failing; dropping row (object leaked)", s.id, e);
+        handledIds.push(s.id);
+      } else {
+        console.error("[cron] story media delete failed; row kept for retry", s.id, e);
+      }
+    }
   }
 
   // The shared VS composite: deleted only once NO live story of its battle still
@@ -390,7 +441,20 @@ export async function resolveContests(env: Env): Promise<void> {
   // outlives its stories. See lib/matchStories.ts#sweepVsComposites.
   await sweepVsComposites(env, nowMs);
 
-  await db.delete(schema.stories).where(lte(schema.stories.expiresAt, nowMs));
+  // Personal stories: only the rows whose media was just deleted (chunked to stay
+  // under D1's bound-parameter limit). Contest stories own no media of their own
+  // (see above), so every expired one can go.
+  for (let i = 0; i < handledIds.length; i += 90) {
+    await db.delete(schema.stories).where(inArray(schema.stories.id, handledIds.slice(i, i + 90)));
+  }
+  await db
+    .delete(schema.stories)
+    .where(
+      and(
+        lte(schema.stories.expiresAt, nowMs),
+        or(isNull(schema.stories.type), ne(schema.stories.type, "user")),
+      ),
+    );
 
   // due scheduled/segmented broadcasts
   await processScheduledNotifications(env);
