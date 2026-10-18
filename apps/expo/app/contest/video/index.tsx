@@ -12,6 +12,7 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import { contestService } from '@/src/services/contests/contestService';
 import { contestMediaService } from '@/src/services/contests/uploadMedia';
 import { useAuth } from '@/src/hooks/useAuth';
+import { useAuthGate } from '@/src/hooks/useAuthGate';
 import { useProfile } from '@/src/hooks/useProfileData';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -29,6 +30,7 @@ export default function VideoContestScreen() {
   const router = useRouter();
   const { contestId, matchId, mode } = useLocalSearchParams();
   const { user } = useAuth();
+  const { requireAuth } = useAuthGate();
   const { data: profile } = useProfile(user?.uid || '');
   
   const [contests, setContests] = useState<any[]>([]);
@@ -146,6 +148,8 @@ export default function VideoContestScreen() {
   };
 
   const handleAction = async () => {
+    // The listing is public; entering/joining needs an account (entry fee).
+    if (!requireAuth('join')) return;
     if (!selectedContest || !media || !user || caption.trim().length === 0) {
       Alert.alert("Error", "Please upload a video and write a caption.");
       return;
@@ -230,7 +234,7 @@ export default function VideoContestScreen() {
               item={item}
               cardBg={cardBg}
               subTextColor={subTextColor}
-              onEnter={() => setSelectedContest(item)}
+              onEnter={() => requireAuth('join') && setSelectedContest(item)}
             />
           )}
         />

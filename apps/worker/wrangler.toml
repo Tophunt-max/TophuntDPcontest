@@ -145,6 +145,16 @@ class_name = "VoteCounter"
 name = "RATE_LIMITER"
 class_name = "RateLimiter"
 
+# Guest reads of public content (profiles, lists, battles, comments, Stories):
+# per-IP, per-colo, in memory — no Durable Object request per check. Generous on
+# purpose (carrier NAT puts many people behind one IP); it slows bulk scraping.
+# See `guestReadLimit` in src/middleware/auth.ts. namespace_id must be unique in
+# the Cloudflare account.
+[[ratelimits]]
+name = "GUEST_READ_LIMITER"
+namespace_id = "7301"
+simple = { limit = 1000, period = 60 }
+
 # Per-chat message store (SQLite-backed). Owns chat message bodies, one instance
 # per chatId, so the unbounded message write path stays off D1's single writer.
 [[durable_objects.bindings]]
@@ -316,6 +326,11 @@ class_name = "VoteCounter"
 [[env.staging.durable_objects.bindings]]
 name = "RATE_LIMITER"
 class_name = "RateLimiter"
+
+[[env.staging.ratelimits]]
+name = "GUEST_READ_LIMITER"
+namespace_id = "7302"
+simple = { limit = 1000, period = 60 }
 
 [[env.staging.durable_objects.bindings]]
 name = "CHAT_ARCHIVE"

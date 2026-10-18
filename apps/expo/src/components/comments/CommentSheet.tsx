@@ -34,6 +34,7 @@ import { CommentSkeleton } from './CommentSkeleton';
 import { commentService, Comment } from '@/src/services/comments/commentService';
 import { mergeComments } from '@/src/services/comments/commentUtils';
 import { useAuth } from '@/src/hooks/useAuth';
+import { useAuthGate } from '@/src/hooks/useAuthGate';
 import { useRouter } from 'expo-router';
 import { Colors } from '@/constants/theme';
 import { Avatar } from '@/src/components/ui/Avatar';
@@ -54,6 +55,8 @@ interface CommentSheetProps {
 
 export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatch = false }: CommentSheetProps) => {
   const { user } = useAuth();
+  // Guests read the thread; writing (comment, reply, like) prompts sign-in.
+  const { requireAuth } = useAuthGate();
   const router = useRouter();
   const translateY = useSharedValue(SHEET_HEIGHT);
   const opacity = useSharedValue(0);
@@ -151,6 +154,8 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
     });
     opacity.value = withTiming(0, { duration: 300 });
   }, [onDismiss]);
+  const closeSheetRef = useRef(closeSheet);
+  closeSheetRef.current = closeSheet;
 
   // --- actions -------------------------------------------------------------
   const openProfile = useCallback((userId?: string) => {
@@ -200,7 +205,8 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
   };
 
   const handleLikeComment = useCallback(async (comment: Comment) => {
-    if (!user || comment.pending) return;
+    if (!user) return void requireAuth('like', { beforeNavigate: () => closeSheetRef.current?.() });
+    if (comment.pending) return;
     const next = !comment.likedByMe;
     setComments((prev) => prev.map((c) => (
       c.id === comment.id
@@ -217,15 +223,16 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
         c.id === comment.id ? { ...c, likedByMe: comment.likedByMe, likes: comment.likes } : c
       )));
     }
-  }, [user, collectionName]);
+  }, [user, collectionName, requireAuth]);
 
   const handleReply = useCallback((comment: Comment) => {
+    if (!user) return void requireAuth('comment', { beforeNavigate: () => closeSheetRef.current?.() });
     setCommentText((prev) => {
       const mention = `@${comment.username} `;
       return prev.includes(mention) ? prev : `${mention}${prev}`;
     });
     inputRef.current?.focus();
-  }, []);
+  }, [user, requireAuth]);
 
   // Long-press: delete your own comment, or report someone else's.
   const handleLongPress = useCallback((comment: Comment) => {
@@ -432,14 +439,21 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
                 ]}>
                   <TextInput
                     ref={inputRef}
-                    placeholder="Add a comment..."
+                    placeholder={user ? "Add a comment..." : "Sign in to add a comment..."}
                     placeholderTextColor={subTextColor}
                     style={[
                       styles.input,
                       { color: textColor },
                       Platform.OS === 'web' && { outlineStyle: 'none' } as any,
                     ]}
-                    onFocus={() => setIsInputFocused(true)}
+                    onFocus={() => {
+                      if (!user) {
+                        inputRef.current?.blur();
+                        requireAuth('comment', { beforeNavigate: () => closeSheetRef.current?.() });
+                        return;
+                      }
+                      setIsInputFocused(true);
+                    }}
                     onBlur={() => setIsInputFocused(false)}
                     onChangeText={setCommentText}
                     value={commentText}

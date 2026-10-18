@@ -9,6 +9,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFeature } from '@/src/services/appSettings';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
 import { webPhoneColumn } from '@/src/lib/layout';
+import { useAuthGate } from '@/src/hooks/useAuthGate';
+import type { GatedAction } from '@/src/lib/authGate';
+import { GuestBanner } from '@/src/components/auth/GuestBanner';
 
 // Height only: the add-menu sheet slides up from below the window.
 const { height } = Dimensions.get('window');
@@ -32,10 +35,15 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
   const activeColor = '#FF4D67';
   const inactiveColor = isDark ? '#757575' : '#9E9E9E';
 
+  /** Tabs that are the viewer's OWN space; a guest is asked to sign in first. */
+  const PERSONAL: Record<string, GatedAction> = { '/messages': 'message', '/profile': 'profile' };
+  const { requireAuth } = useAuthGate();
   const handlePress = (path: string) => {
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
+    const gated = PERSONAL[path];
+    if (gated && !requireAuth(gated, { returnTo: path })) return;
     router.push(path);
   };
 
@@ -127,6 +135,9 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
   });
 
   return (
+    <View>
+    {/* Guests only: the persistent Log in / Sign up strip (renders nothing when signed in). */}
+    <GuestBanner isDark={isDark} />
     <View style={[
         styles.bottomNav, 
         { 
@@ -164,7 +175,7 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
             icon={Icons.Inbox_Light} 
             activeIcon={Icons.Inbox_Dark} 
             label="Inbox" 
-            path="/inbox" 
+            path="/messages" 
         />
         <NavItem 
             icon={Icons.Profile_Light} 
@@ -237,7 +248,11 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
                     {storiesEnabled && (
                     <TouchableOpacity 
                         style={styles.menuItem} 
-                        onPress={() => { closeMenu(); setTimeout(() => router.push('/story/create'), 300); }}
+                        onPress={() => {
+                          closeMenu();
+                          if (!requireAuth('create', { returnTo: '/story/create' })) return;
+                          setTimeout(() => router.push('/story/create'), 300);
+                        }}
                     >
                         <View style={[styles.menuIcon, { backgroundColor: '#FFF3E0' }]}>
                             <Ionicons name="star" size={24} color="#FF9800" />
@@ -254,6 +269,7 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
                 </Animated.View>
             </View>
         </Modal>
+    </View>
     </View>
   );
 };

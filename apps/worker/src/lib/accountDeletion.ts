@@ -345,9 +345,18 @@ export async function requestAccountDeletion(
   const reason = opts.reason ? String(opts.reason).slice(0, 500) : null;
   const deferral = eligibility.deferrals[0] || null;
 
+  // Kept so cancelling can put the account back exactly as it was — see
+  // `cancelAccountDeletion` and migration 0057.
+  const before = await db
+    .select({ isPrivate: schema.users.isPrivate })
+    .from(schema.users)
+    .where(eq(schema.users.uid, uid))
+    .get();
+
   const row = {
     uid,
     status: "pending" as const,
+    wasPrivate: !!before?.isPrivate,
     reason,
     requestedAt: ts,
     scheduledFor,
@@ -457,12 +466,18 @@ export async function cancelAccountDeletion(
       .update(schema.deletionRequests)
       .set({ status: "cancelled", cancelledAt: ts, updatedAt: ts })
       .where(eq(schema.deletionRequests.uid, uid)),
-    // Back to `active`. `isPrivate` is deliberately NOT restored: it was forced
-    // on at request time and we cannot know what it was before, so leaving it on
-    // is the choice that cannot leak anything. The user can turn it off.
+    // Back to `active`, and back to the privacy the user had chosen. `isPrivate`
+    // was forced on at request time; since migration 0057 the prior value is on
+    // the request row. A NULL (request made before 0057) means it is unknown, so
+    // the account stays private — the choice that cannot leak anything — and
+    // the user can switch it off.
     db
       .update(schema.users)
-      .set({ status: "active", updatedAt: ts })
+      .set({
+        status: "active",
+        ...(existing.wasPrivate === null || existing.wasPrivate === undefined ? {} : { isPrivate: !!existing.wasPrivate }),
+        updatedAt: ts,
+      })
       .where(eq(schema.users.uid, uid)),
   ]);
 
@@ -1080,6 +1095,14 @@ async function phaseSocial(env: Env, uid: string): Promise<void> {
     db.delete(schema.verificationRewards).where(eq(schema.verificationRewards.uid, uid)),
     db.delete(schema.follows).where(eq(schema.follows.followerId, uid)),
     db.delete(schema.follows).where(eq(schema.follows.followingId, uid)),
+    // Pending follow requests both ways (migration 0057), and the "wants to
+    // follow you" rows this account left in other people's notifications —
+    // otherwise an owner could still "Confirm" a deleted account.
+    db.delete(schema.followRequests).where(eq(schema.followRequests.requesterId, uid)),
+    db.delete(schema.followRequests).where(eq(schema.followRequests.targetId, uid)),
+    db
+      .delete(schema.notifications)
+      .where(and(eq(schema.notifications.actorId, uid), eq(schema.notifications.type, "follow_request"))),
     db.delete(schema.profileVisits).where(eq(schema.profileVisits.userId, uid)),
     db.delete(schema.profileVisits).where(eq(schema.profileVisits.visitorId, uid)),
     db.delete(schema.notifications).where(eq(schema.notifications.recipientId, uid)),

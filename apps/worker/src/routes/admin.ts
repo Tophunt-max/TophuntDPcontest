@@ -17,6 +17,7 @@ import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
 import { requeueVsPublication, runVsPublication } from "../lib/vsPublication";
 import { teardownVsStories } from "../lib/matchStories";
+import { STORIES_FEED_CACHE_KEY } from "../lib/storyAudience";
 import { httpsError, ApiError } from "../lib/http";
 import { timingSafeEqualSecret } from "../lib/timingSafe";
 import { verifyIdToken, bearerToken } from "../lib/firebaseAuth";
@@ -998,6 +999,8 @@ adminRoute.patch("/users/:id", async (c) => {
     .run();
   if (updated.meta.changes === 0) throw httpsError("not-found", "User not found.");
   await updateAuthUser(c.env, id, { disabled: blocked }).catch((e) => console.warn("Auth update failed", e));
+  // A banned account's Stories must leave the shared stories bar promptly.
+  c.executionCtx.waitUntil(purgeShared(c, STORIES_FEED_CACHE_KEY).catch(() => {}));
   // `isBlocked`/`status` changed — drop any cached auth-state (paid tier) so the
   // block, or the un-block, is enforced on the next request rather than after the
   // cache TTL. Unblock does NOT revoke sessions, so it would otherwise not be

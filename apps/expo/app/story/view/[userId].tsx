@@ -44,6 +44,7 @@ import {
 import { Ionicons } from '@/src/lib/icons';
 import { 
     fetchStories, 
+    fetchUserStoriesByUserId,
     markStoryAsSeen, 
     fetchStoryViewers,
     fetchUserHighlights,
@@ -70,6 +71,7 @@ import { isVideoStory, isVsStory, storyMediaKind, type StoryViewer } from '@/src
 import { StoryVsFrame } from '@/src/components/stories/StoryVsFrame';
 import { VsCaptureBoundary } from '@/src/components/stories/VsCaptureBoundary';
 import { useVsStoryCard } from '@/src/hooks/useVsStoryCard';
+import { useAuthGate } from '@/src/hooks/useAuthGate';
 import { contestService } from '@/src/services/contests/contestService';
 import { battleCaption, battleUrl, prepareShareFile, shareBattleLink, shareImageFile, shareOrigin } from '@/src/lib/share';
 import { createShareCounter, resolveBattleShareAsset, shareOutcomeMessage } from '@/src/lib/vsShareAsset';
@@ -145,12 +147,27 @@ export default function StoryView() {
   const [activeReaction, setActiveReaction] = useState<string | null>(null);
   const reactionAnim = useRef(new Animated.Value(0)).current;
 
-  const { data: allUserStories } = useQuery({
-    queryKey: ['stories'],
-    // Wrapped, not passed by reference: react-query would otherwise pass its
-    // QueryFunctionContext in as fetchStories' options argument.
-    queryFn: () => fetchStories(),
+  /**
+   * The reel to play. Guest-readable: a shared `/story/view/<userId>` link opens
+   * for a signed-out visitor too. The stories bar list is used when it already
+   * contains this person (so swiping on to the next ring works); otherwise —
+   * typically a link to someone outside the bar's window — that person's
+   * Stories are loaded directly. The Worker applies the same audience rule
+   * either way, so a private or followers-only Story is never returned to a
+   * viewer who may not see it. Keyed per viewer so guest and account answers
+   * never share a cache entry.
+   */
+  const viewerKey = auth.currentUser?.uid ?? 'guest';
+  const { data: allUserStories, isFetched: storiesResolved } = useQuery({
+    queryKey: ['stories', viewerKey, 'view', userId],
+    queryFn: async () => {
+      const feed = await fetchStories();
+      if (!userId || feed.some((u) => u.userId === userId)) return feed;
+      const single = await fetchUserStoriesByUserId(String(userId));
+      return single?.stories?.length ? [single] : feed;
+    },
   });
+  const { requireAuth } = useAuthGate();
 
   const users = allUserStories || [];
   const currentUserIndex = users.findIndex(u => u.userId === userId);
@@ -246,7 +263,7 @@ export default function StoryView() {
     const url = battleUrl(matchId);
     const cachedMatch: any = queryClient.getQueryData(['match', matchId]);
     const caption = battleCaption(cachedMatch ?? { title: currentStory.contestTitle }, url);
-    const counter = createShareCounter(() => contestService.shareMatch(matchId));
+    const counter = createShareCounter(() => (auth.currentUser ? contestService.shareMatch(matchId) : Promise.resolve()));
     shareInFlight.current = true;
     setIsPaused(true);
     let captured: string | null = null;
@@ -586,6 +603,7 @@ export default function StoryView() {
 
   const handleReaction = async (emoji: string) => {
       if (!currentStory) return;
+      if (!requireAuth('react')) return;
       setActiveReaction(emoji);
       reactionAnim.setValue(0);
       Animated.sequence([
@@ -835,8 +853,28 @@ export default function StoryView() {
   ).current;
 
   if (!currentUserStories?.stories?.length) {
-    router.back();
-    return null;
+    // Still loading: a spinner, never a premature exit. Resolved but empty: the
+    // Story expired, was deleted, or is not visible to this viewer — say so
+    // (a cold-started shared link has no screen to go "back" to).
+    return (
+      <View style={[styles.unavailable, { backgroundColor: backgroundColorTheme }]}>
+        {!storiesResolved ? (
+          <ActivityIndicator color="#FF4D67" />
+        ) : (
+          <>
+            <Text style={[styles.unavailableTitle, { color: textColorTheme }]}>This story isn’t available</Text>
+            <Text style={styles.unavailableText}>It may have expired, been removed, or be visible only to followers.</Text>
+            <Pressable
+              style={styles.unavailableBtn}
+              onPress={() => (router.canGoBack() ? router.back() : router.replace('/home'))}
+              accessibilityRole="button"
+            >
+              <Text style={styles.unavailableBtnText}>Go back</Text>
+            </Pressable>
+          </>
+        )}
+      </View>
+    );
   }
   if (!currentStory) return null;
 
@@ -1062,7 +1100,13 @@ export default function StoryView() {
                             placeholderTextColor="white"
                             value={replyText}
                             onChangeText={setReplyText}
-                            onFocus={() => setIsPaused(true)}
+                            onFocus={() => {
+                              if (!requireAuth('reply')) {
+                                Keyboard.dismiss();
+                                return;
+                              }
+                              setIsPaused(true);
+                            }}
                         />
                         {replyText.length > 0 ? (
                             <TouchableOpacity onPress={handleSendReply}>
@@ -1238,6 +1282,11 @@ const styles = StyleSheet.create({
   
   // Repost Styles
   repostContainer: { position: 'absolute', bottom: 180, width: '100%', alignItems: 'center' },
+  unavailable: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
+  unavailableTitle: { fontFamily: 'Urbanist-Bold', fontSize: 18, marginBottom: 8, textAlign: 'center' },
+  unavailableText: { fontFamily: 'Urbanist-Regular', fontSize: 14, color: '#9E9E9E', textAlign: 'center', marginBottom: 20 },
+  unavailableBtn: { paddingHorizontal: 22, paddingVertical: 10, borderRadius: 20, backgroundColor: '#FF4D67' },
+  unavailableBtnText: { color: '#FFF', fontFamily: 'Urbanist-Bold', fontSize: 15 },
   repostBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#0095f6', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 30, gap: 10 },
   repostText: { color: 'white', fontFamily: 'Urbanist-Bold', fontSize: 16 },
 

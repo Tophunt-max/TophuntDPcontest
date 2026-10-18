@@ -11,7 +11,7 @@ import type { Env, Variables } from "../types";
 import { getDb, schema, type NotificationActor } from "../db";
 import { perPlayerEntryFee } from "../lib/money";
 import { httpsError } from "../lib/http";
-import { requireAuth, optionalAuth } from "../middleware/auth";
+import { requireAuth, optionalAuth, guestReadLimit } from "../middleware/auth";
 import { getAppConfig } from "../lib/settings";
 import { getSettings as getGamificationSettings, levelForXp } from "../lib/gamification";
 import { resolveLegalContent } from "../content/legal";
@@ -33,7 +33,7 @@ import { cachedJson, cachedResponse } from "../lib/edgeCache";
 import { memoGet, memoPut } from "../lib/memo";
 import { getLiveTally, getViewerVote } from "../lib/voteCounter";
 import { publicPrize } from "../lib/prizes";
-import { rateLimit } from "../lib/rateLimit";
+import { clientIp, rateLimit } from "../lib/rateLimit";
 import {
   searchTracks,
   searchCatalog,
@@ -54,9 +54,11 @@ import {
   getRelations,
   hiddenUidsFor,
   sqlExclusionList,
+  assertMatchInteractionAllowed,
 } from "../lib/blocks";
 import { applyVsStoryPrivacy } from "../lib/matchStories";
-import { publicVsStoryStatus } from "../lib/vsPublication";
+import { filterStoriesForViewer, STORIES_FEED_CACHE_KEY, storyOwnerMeta, type StoryOwnerMeta } from "../lib/storyAudience";
+import { ensureMatchShareImage, publicVsStoryStatus, runVsPublication } from "../lib/vsPublication";
 import {
   DELETED_STATUS,
   PENDING_DELETION_STATUS,
@@ -64,6 +66,7 @@ import {
   isHiddenAccountStatus,
 } from "../lib/accountStatus";
 import { resolveUsername } from "../lib/userIdentifiers";
+import { followStateOf, isPrivateAccount, privateContentLocked, viewerFollows } from "../lib/privateAccount";
 
 export const readRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -1188,7 +1191,7 @@ const mapBlogPost = (env: Env, r: any, opts: { withContent?: boolean } = {}) => 
 });
 
 // ================= CONTESTS =================
-readRoute.get("/contests", optionalAuth, async (c) => {
+readRoute.get("/contests", optionalAuth, guestReadLimit, async (c) => {
   const typeParam = c.req.query("type");
   if (typeParam && typeParam !== "photo" && typeParam !== "video") {
     throw httpsError("invalid-argument", "type must be photo or video.");
@@ -1238,7 +1241,7 @@ readRoute.get("/contests", optionalAuth, async (c) => {
   return c.json(contests);
 });
 
-readRoute.get("/contests/:id", optionalAuth, async (c) => {
+readRoute.get("/contests/:id", optionalAuth, guestReadLimit, async (c) => {
   const id = c.req.param("id");
   const key = contestDetailCacheKey(id);
   const db = getDb(c.env);
@@ -1265,7 +1268,7 @@ readRoute.get("/contests/:id", optionalAuth, async (c) => {
 });
 
 // ================= MATCHES =================
-readRoute.get("/matches", optionalAuth, async (c) => {
+readRoute.get("/matches", optionalAuth, guestReadLimit, async (c) => {
   const db = getDb(c.env);
   const status = c.req.query("status") || "active";
   const type = c.req.query("type");
@@ -1366,7 +1369,33 @@ readRoute.get("/matches", optionalAuth, async (c) => {
   return c.json(matches);
 });
 
-readRoute.get("/matches/:id", optionalAuth, async (c) => {
+/**
+ * The battle's canonical share image (server-rendered VS card), for guests too.
+ *
+ * Sharing a public battle needs no account, so the image a share sheet attaches
+ * must be readable without one. Same resolver as the `/api` action
+ * (`ensureMatchShareImage`): verifies the stored card and re-renders it at the
+ * same url if it was swept — never touching Stories or money. A signed-in viewer
+ * who is blocked by a participant is refused, exactly like the battle itself.
+ * Reads are bounded per viewer (uid, or IP for guests); re-renders are bounded
+ * per battle.
+ */
+readRoute.get("/matches/:id/share-image", optionalAuth, async (c) => {
+  const matchId = String(c.req.param("id") || "").slice(0, 128);
+  const uid = c.get("user")?.uid;
+  await rateLimit(c.env, uid ? `vsshare:${uid}` : `vsshare_ip:${clientIp(c.req.raw.headers)}`, 600, 3600);
+  if (uid) await assertMatchInteractionAllowed(c.env, uid, matchId);
+  const out = await ensureMatchShareImage(c.env, matchId, {
+    beforeRegenerate: () => rateLimit(c.env, `vsshare_regen:${matchId}`, 20, 3600),
+  });
+  if (out.status === "preparing") {
+    c.executionCtx.waitUntil(runVsPublication(c.env, matchId).catch(() => {}));
+  }
+  c.header("Cache-Control", "private, no-store");
+  return c.json(out);
+});
+
+readRoute.get("/matches/:id", optionalAuth, guestReadLimit, async (c) => {
   const db = getDb(c.env);
   const id = c.req.param("id");
   const row = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, id)).get();
@@ -1435,7 +1464,7 @@ readRoute.get("/matches/:id", optionalAuth, async (c) => {
 });
 
 // ================= LEADERBOARD =================
-readRoute.get("/leaderboard", optionalAuth, async (c) => {
+readRoute.get("/leaderboard", optionalAuth, guestReadLimit, async (c) => {
   const db = getDb(c.env);
   const by = c.req.query("by") || "wins"; // wins | votes | xp
   const limit = pageLimit(c, 20, 100);
@@ -1991,7 +2020,7 @@ function coarseCoordinates(value: unknown): { lat: number; lng: number } | null 
   return { lat: Math.round(nLat * 100) / 100, lng: Math.round(nLng * 100) / 100 };
 }
 
-readRoute.get("/users/suggested", optionalAuth, async (c) => {
+readRoute.get("/users/suggested", optionalAuth, guestReadLimit, async (c) => {
   const uid = c.get("user")?.uid;
   const limit = pageLimit(c, 50, 100);
 
@@ -2036,11 +2065,16 @@ readRoute.get("/users/suggested", optionalAuth, async (c) => {
   return c.json(visible.map((r: any) => ({ ...r, coordinates: coarseCoordinates(r.coordinates) })));
 });
 
-readRoute.get("/users/search", optionalAuth, async (c) => {
+readRoute.get("/users/search", optionalAuth, guestReadLimit, async (c) => {
   const db = getDb(c.env);
   const uid = c.get("user")?.uid;
   const q = (c.req.query("q") || "").toLowerCase();
   if (q.length < 2) return c.json([]);
+  // Guests can search too, but an uncached LIKE scan per keystroke from an
+  // anonymous client is the cheapest way to burn D1 reads, so signed-out
+  // searches are throttled per IP (signed-in users are bounded by their session).
+  // Generous because many guests share one carrier-NAT address.
+  if (!uid) await rateLimit(c.env, `usersearch_ip:${clientIp(c.req.raw.headers)}`, 300, 60);
   // Blocks only: a muted user is still someone you can look up on purpose.
   const blocked = await blockedUidsFor(c.env, uid);
   const excluded = sqlExclusionList(blocked);
@@ -2318,8 +2352,26 @@ async function serveUserProfile(c: any, id: string): Promise<Response> {
     const own = await loadFullProfile();
     if (!own) return c.json(null);
     c.header("Cache-Control", "private, no-store");
-    return c.json(await forViewer(own));
+    return c.json({ ...(await forViewer(own)), locked: false });
   }
+
+  /**
+   * The private-account lock (lib/privateAccount.ts), applied after the cache.
+   *
+   * `locked: true` tells the client to render "This account is private" instead
+   * of the grid, and `following[]` — the account's own follow list — is emptied,
+   * because the shared payload carries it in full. The header fields (name,
+   * avatar, bio, counters) stay, as on Instagram, so the account can be found
+   * and requested. A public account's answer is the same for everyone and stays
+   * shared-cacheable; a private one is per viewer once someone is signed in.
+   */
+  const withPrivacyLock = async (profile: any) => {
+    if (!profile.isPrivate) return { ...profile, locked: false };
+    c.header("Vary", "Authorization");
+    if (viewer) c.header("Cache-Control", "private, no-store");
+    const locked = await privateContentLocked(c.env, viewer, id, true);
+    return locked ? { ...profile, locked: true, following: [] } : { ...profile, locked: false };
+  };
 
   // ---------------------------------------------------------------------------
   // SOMEONE ELSE'S PROFILE — public projection, shared cache.
@@ -2373,7 +2425,7 @@ async function serveUserProfile(c: any, id: string): Promise<Response> {
     c.header("Cache-Control", "private, no-store");
     return c.json(null);
   }
-  return c.json(await forViewer(profile));
+  return c.json(await withPrivacyLock(await forViewer(profile)));
 }
 
 /**
@@ -2405,7 +2457,7 @@ async function serveUserProfile(c: any, id: string): Promise<Response> {
  *
  * Registered BEFORE `/users/:id` so `by-username` cannot be read as a uid.
  */
-readRoute.get("/users/by-username/:username", optionalAuth, async (c) => {
+readRoute.get("/users/by-username/:username", optionalAuth, guestReadLimit, async (c) => {
   const viewer = c.get("user")?.uid;
   const raw = c.req.param("username");
   // Tolerate a leading '@' so `/@alice` can be forwarded verbatim by any caller.
@@ -2455,7 +2507,7 @@ readRoute.get("/users/by-username/:username", optionalAuth, async (c) => {
   return serveUserProfile(c, resolved.uid);
 });
 
-readRoute.get("/users/:id", optionalAuth, (c) => serveUserProfile(c, c.req.param("id")));
+readRoute.get("/users/:id", optionalAuth, guestReadLimit, (c) => serveUserProfile(c, c.req.param("id")));
 
 /**
  * True when the viewer must not see anything belonging to `targetId`.
@@ -2474,12 +2526,30 @@ async function profileHiddenFrom(c: any, targetId: string): Promise<boolean> {
   return (await blockedUidsFor(c.env, viewer)).has(targetId);
 }
 
-readRoute.get("/users/:id/posts", optionalAuth, async (c) => {
+/**
+ * True when the content behind `targetId`'s profile header is locked for this
+ * viewer: a private account the viewer does not (approvedly) follow.
+ *
+ * Sets `Vary: Authorization` and makes the answer uncacheable when it is
+ * viewer-dependent, so a guest's locked answer can never be served to a
+ * follower (or the reverse) by a browser or edge cache.
+ */
+async function profileLockedFor(c: any, targetId: string, knownPrivate?: boolean): Promise<boolean> {
+  const viewer = c.get("user")?.uid;
+  if (viewer && viewer === targetId) return false;
+  if (!(knownPrivate ?? (await isPrivateAccount(c.env, targetId)))) return false;
+  c.header("Vary", "Authorization");
+  c.header("Cache-Control", "private, no-store");
+  return !(await viewerFollows(c.env, viewer, targetId));
+}
+
+readRoute.get("/users/:id/posts", optionalAuth, guestReadLimit, async (c) => {
   const db = getDb(c.env);
   const userId = c.req.param("id");
   // Each sub-resource is reachable directly, so each needs its own check — the
   // guard on GET /users/:id does not protect them.
   if (await profileHiddenFrom(c, userId)) return c.json({ posts: [], nextCursor: null });
+  if (await profileLockedFor(c, userId)) return c.json({ posts: [], nextCursor: null, locked: true });
   const limit = pageLimit(c, 12, 50);
   const cursor = pageCursor(c.req.query("cursor"));
   const conds = [eq(schema.posts.userId, userId), eq(schema.posts.isHidden, false)];
@@ -2498,13 +2568,17 @@ readRoute.get("/users/:id/posts", optionalAuth, async (c) => {
 // A user's own battles (as either participant). Because participants are stored
 // in the userA/userB JSON snapshots, we match on json_extract(...uid) so the
 // same battle shows on BOTH creators' profiles. Optional ?type=photo|video.
-readRoute.get("/users/:id/matches", optionalAuth, async (c) => {
+readRoute.get("/users/:id/matches", optionalAuth, guestReadLimit, async (c) => {
   const db = getDb(c.env);
   const userId = c.req.param("id");
   const type = c.req.query("type");
   const limit = pageLimit(c, 12, 50);
   const viewer = c.get("user")?.uid;
   if (await profileHiddenFrom(c, userId)) return c.json([]);
+  // Private account, viewer not an approved follower: the grid and the Wins
+  // list (`?won=1`, same handler) are locked. The battles themselves stay
+  // reachable from the feed and /battle/<id> — see lib/privateAccount.ts.
+  if (await profileLockedFor(c, userId)) return c.json([]);
 
   // No KV cache here: migration 0014 makes this an indexed lookup (only the
   // user's own battles are read), so it's cheap enough to always serve fresh —
@@ -2692,6 +2766,11 @@ async function connectionsHandler(c: any, direction: "followers" | "following") 
   // The list belongs to `targetId`, so if the viewer and the target have blocked
   // each other the whole list is off limits, not just entries within it.
   if (await profileHiddenFrom(c, targetId)) return c.json([]);
+  // A private account's followers/following are for its approved followers only.
+  // Checked BEFORE the shared cache, so the cached page is only ever handed to
+  // someone entitled to it.
+  const targetPrivate = await isPrivateAccount(c.env, targetId);
+  if (targetPrivate && (await profileLockedFor(c, targetId, true))) return c.json([]);
 
   /**
    * Remove blocked accounts from a page of connections, AFTER the shared cache.
@@ -2714,7 +2793,8 @@ async function connectionsHandler(c: any, direction: "followers" | "following") 
     filtered = true;
     return excludeHiddenBy(items, blocked, (r) => r.id);
   };
-  const cacheHeader = () => (filtered ? "private, no-store" : "public, max-age=30");
+  // A private account's list is only reachable by followers, so never shared.
+  const cacheHeader = () => (filtered || targetPrivate ? "private, no-store" : "public, max-age=30");
 
   /**
    * Only the default first page is cached — that is what the connections screen
@@ -2745,8 +2825,94 @@ async function connectionsHandler(c: any, direction: "followers" | "following") 
   return res;
 }
 
-readRoute.get("/users/:id/followers", optionalAuth, (c) => connectionsHandler(c, "followers"));
-readRoute.get("/users/:id/following", optionalAuth, (c) => connectionsHandler(c, "following"));
+readRoute.get("/users/:id/followers", optionalAuth, guestReadLimit, (c) => connectionsHandler(c, "followers"));
+readRoute.get("/users/:id/following", optionalAuth, guestReadLimit, (c) => connectionsHandler(c, "following"));
+
+// ================= RELATIONSHIP + FOLLOW REQUESTS (auth) =================
+/**
+ * The viewer's relationship to one account, for the Follow button:
+ * `following` | `requested` (a pending request to a private account) | `none` | `self`.
+ *
+ * Its own endpoint rather than a field on GET /users/:id, so the profile answer
+ * for a public account stays one shared cache entry for every viewer.
+ */
+readRoute.get("/users/:id/relationship", requireAuth, async (c) => {
+  const uid = c.get("user").uid;
+  const target = c.req.param("id");
+  c.header("Cache-Control", "private, no-store");
+  if (await profileHiddenFrom(c, target)) return c.json({ state: "none" });
+  return c.json({ state: await followStateOf(c.env, uid, target) });
+});
+
+/**
+ * The signed-in owner's pending follow requests, newest first.
+ * Keyset-paginated on `created_at` (`X-Next-Cursor`), like the connections lists.
+ * Requesters that are blocked either way, or whose accounts are hidden, are left
+ * out of the page (the cursor still names the real last row).
+ */
+readRoute.get("/follow-requests", requireAuth, async (c) => {
+  const uid = c.get("user").uid;
+  const db = getDb(c.env);
+  const limit = pageLimit(c, 30, 100);
+  const cursor = pageCursor(c.req.query("cursor"));
+  const fr = schema.followRequests;
+  const where = cursor ? and(eq(fr.targetId, uid), lt(fr.createdAt, cursor)) : eq(fr.targetId, uid);
+  const rows = await db
+    .select({
+      id: fr.requesterId,
+      requestedAt: fr.createdAt,
+      username: schema.users.username,
+      fullName: schema.users.fullName,
+      profileImageUrl: schema.users.profileImageUrl,
+      verified: schema.users.verified,
+      status: schema.users.status,
+    })
+    .from(fr)
+    .leftJoin(schema.users, eq(schema.users.uid, fr.requesterId))
+    .where(where)
+    .orderBy(desc(fr.createdAt))
+    .limit(limit + 1)
+    .all();
+  const hasMore = rows.length > limit;
+  const page = hasMore ? rows.slice(0, limit) : rows;
+  const blocked = await blockedUidsFor(c.env, uid);
+  const items = page
+    .filter((r) => r.username != null && !isHiddenAccountStatus(r.status) && !blocked.has(r.id))
+    .map((r) => ({
+      id: r.id,
+      username: r.username,
+      fullName: r.fullName,
+      profileImageUrl: r.profileImageUrl,
+      profileImageUrlThumb: avatarUrl(c.env, r.profileImageUrl),
+      verified: !!r.verified,
+      requestedAt: r.requestedAt,
+    }));
+  const res = c.json(items) as Response;
+  res.headers.set("Cache-Control", "private, no-store");
+  if (hasMore) res.headers.set("X-Next-Cursor", String(page[page.length - 1].requestedAt));
+  return res;
+});
+
+/** How many requests are pending — the badge on the notifications screen's "Follow requests" row. */
+readRoute.get("/follow-requests/count", requireAuth, async (c) => {
+  const uid = c.get("user").uid;
+  // The same rows the list shows: requesters whose account still exists and is
+  // not hidden. Otherwise a requester pending deletion leaves a badge the owner
+  // can never clear. (Blocks already delete requests both ways.)
+  const row = await getDb(c.env)
+    .select({ n: sql<number>`COUNT(*)` })
+    .from(schema.followRequests)
+    .innerJoin(schema.users, eq(schema.users.uid, schema.followRequests.requesterId))
+    .where(
+      and(
+        eq(schema.followRequests.targetId, uid),
+        or(isNull(schema.users.status), notInArray(schema.users.status, [...PUBLICLY_HIDDEN_STATUSES])),
+      ),
+    )
+    .get();
+  c.header("Cache-Control", "private, no-store");
+  return c.json({ count: Number(row?.n ?? 0) });
+});
 
 // ================= SELF ACCOUNT STATUS (auth) =================
 /**
@@ -3060,7 +3226,7 @@ readRoute.get("/music/catalog", requireAuth, async (c) => {
 });
 
 // ================= COMMENTS (posts, matches or blog articles) =================
-readRoute.get("/comments", optionalAuth, async (c) => {
+readRoute.get("/comments", optionalAuth, guestReadLimit, async (c) => {
   const db = getDb(c.env);
   const uid = c.get("user")?.uid;
   const targetType = c.req.query("targetType") || "posts";
@@ -3257,18 +3423,29 @@ async function attachUsers(c: any, userIds: string[]) {
   return map;
 }
 
-readRoute.get("/stories/feed", requireAuth, async (c) => {
-  const uid = c.get("user").uid;
+/**
+ * The stories bar. Guest-readable (optionalAuth): a signed-out visitor sees the
+ * public Stories of public accounts; a signed-in viewer additionally sees
+ * followers-only Stories of people they follow, and their own. The audience rule
+ * is lib/storyAudience.ts, shared with profile rings and highlights.
+ *
+ * Viewer-specific state stays out of guest responses: no viewer lists, no seen
+ * state, no relationship data. Reacting, replying and viewing (`viewStory`) are
+ * authenticated `/api` actions.
+ */
+readRoute.get("/stories/feed", optionalAuth, guestReadLimit, async (c) => {
+  const uid: string | undefined = c.get("user")?.uid;
 
-  // Shared base: every live story, newest first. Edge-cached (edge-only) so the
+  // Shared base: every live story, newest first, plus the owner facts the
+  // audience rule needs (privacy, hidden/banned). Edge-cached (edge-only) so the
   // stories bar stops scanning `stories` on every feed open (D1_R2_LOAD_AUDIT.md
-  // §7). The per-viewer block/mute filter is applied AFTER the cache rather than in
-  // the SQL, so no viewer's exclusions are ever baked into the shared entry — the
-  // rule lib/edgeCache.ts states for `cachedJson`. `expiresAt > now` is evaluated
-  // once per fill, so a story can linger in the bar up to the edge TTL past expiry;
-  // that is the same staleness the feed list already tolerates and is harmless here.
-  const baseRows = await cachedJson<any[]>(c, {
-    key: "cache:stories:feed",
+  // §7). Everything viewer-dependent — the audience rule's follow check and the
+  // block/mute filter — is applied AFTER the cache, so no viewer's view is ever
+  // baked into the shared entry (the rule lib/edgeCache.ts states for
+  // `cachedJson`). `expiresAt > now` is evaluated once per fill, so a story can
+  // linger up to the edge TTL past expiry; the same staleness the feed tolerates.
+  const base = await cachedJson<{ rows: any[]; owners: Record<string, StoryOwnerMeta> }>(c, {
+    key: STORIES_FEED_CACHE_KEY,
     edgeTtlSec: READ_CACHE_TTLS.storiesFeed.edge,
     kvTtlSec: READ_CACHE_TTLS.storiesFeed.kv,
     load: async () => {
@@ -3278,22 +3455,33 @@ readRoute.get("/stories/feed", requireAuth, async (c) => {
         .from(schema.stories)
         .where(gt(schema.stories.expiresAt, Date.now()))
         .orderBy(desc(schema.stories.createdAt))
-        .limit(100)
+        // Wider than the old 100: the audience rule now filters per viewer AFTER
+        // this shared window, so a narrower one would drop followed accounts'
+        // Stories for viewers who follow few people. One cached read per minute.
+        .limit(250)
         .all();
-      return rows as any[];
+      const owners = await storyOwnerMeta(c.env, rows.map((r) => r.userId));
+      return { rows: rows as any[], owners: Object.fromEntries(owners) };
     },
   });
+  const baseRows = base.rows || [];
+  const audience = await filterStoriesForViewer(c.env, baseRows as any[], uid, new Map(Object.entries(base.owners || {})));
 
   // The stories bar uses the wider `hiddenUidsFor` (blocks AND mutes) — "stop
   // showing me this person" has to cover both or the feature looks broken. The full
   // hidden set is filtered in JS (no SQL_EXCLUSION_MAX ceiling to work around now).
-  const hiddenAuthors = await hiddenUidsFor(c.env, uid);
+  const hiddenAuthors = uid ? await hiddenUidsFor(c.env, uid) : new Set<string>();
   const authorFiltered = hiddenAuthors.size
-    ? excludeHiddenBy(baseRows as any[], hiddenAuthors, (r: any) => r.userId)
-    : baseRows;
+    ? excludeHiddenBy(audience as any[], hiddenAuthors, (r: any) => r.userId)
+    : audience;
   // A VS story also DEPICTS the opponent. Hiding the author is not enough when
   // the viewer hid the other participant — see applyVsStoryPrivacy.
   const rows = await applyVsStoryPrivacy(c.env, authorFiltered as any[], hiddenAuthors, uid);
+  // A guest answer depends only on the shared base, so it may be cached briefly
+  // by browsers; a signed-in answer is relationship-dependent and must not be.
+  c.header("Cache-Control", uid ? "private, no-store" : "public, max-age=30");
+  // A guest answer must never satisfy the same browser's first signed-in request.
+  c.header("Vary", "Authorization");
 
   const userIds = [...new Set(rows.map((r) => r.userId))];
   const userMap = await attachUsers(c, userIds);
@@ -3323,12 +3511,14 @@ readRoute.get("/stories/feed", requireAuth, async (c) => {
     hasUnseen: true,
   }));
   // current user first
-  const idx = list.findIndex((u) => u.userId === uid);
-  if (idx > 0) list.unshift(list.splice(idx, 1)[0]);
+  if (uid) {
+    const idx = list.findIndex((u) => u.userId === uid);
+    if (idx > 0) list.unshift(list.splice(idx, 1)[0]);
+  }
   return c.json(list);
 });
 
-readRoute.get("/users/:id/stories", optionalAuth, async (c) => {
+readRoute.get("/users/:id/stories", optionalAuth, guestReadLimit, async (c) => {
   const db = getDb(c.env);
   const userId = c.req.param("id");
   if (await profileHiddenFrom(c, userId)) return c.json(null);
@@ -3343,10 +3533,13 @@ readRoute.get("/users/:id/stories", optionalAuth, async (c) => {
   const storyViewer = c.get("user")?.uid;
   const rows = await applyVsStoryPrivacy(
     c.env,
-    rawRows,
+    await filterStoriesForViewer(c.env, rawRows, storyViewer),
     storyViewer ? await hiddenUidsFor(c.env, storyViewer) : new Set<string>(),
     storyViewer,
   );
+  // Audience depends on the viewer's follow graph and blocks.
+  c.header("Cache-Control", storyViewer ? "private, no-store" : "public, max-age=30");
+  c.header("Vary", "Authorization");
   if (!rows.length) return c.json(null);
   const userMap = await attachUsers(c, [userId]);
   return c.json({
@@ -3396,9 +3589,10 @@ readRoute.get("/stories/:id/viewers", requireAuth, async (c) => {
 });
 
 // ================= HIGHLIGHTS =================
-readRoute.get("/users/:id/highlights", optionalAuth, async (c) => {
+readRoute.get("/users/:id/highlights", optionalAuth, guestReadLimit, async (c) => {
   const db = getDb(c.env);
   const userId = c.req.param("id");
+  const viewer = c.get("user")?.uid;
   if (await profileHiddenFrom(c, userId)) return c.json([]);
   const rows = await db
     .select()
@@ -3406,10 +3600,55 @@ readRoute.get("/users/:id/highlights", optionalAuth, async (c) => {
     .where(eq(schema.highlights.userId, userId))
     .orderBy(desc(schema.highlights.createdAt))
     .all();
-  return c.json(rows);
+  c.header("Vary", "Authorization");
+  // The owner sees their whole shelf.
+  if (viewer === userId) {
+    c.header("Cache-Control", "private, no-store");
+    return c.json(rows);
+  }
+  /**
+   * Everyone else gets only highlights backed by Stories they may see.
+   *
+   * A highlight's `coverImageUrl` is a Story's media, so serving the raw rows
+   * published followers-only and private-account Story media to guests and
+   * non-followers. Each highlight is kept only if at least one of its Stories
+   * still exists and passes the audience rule (lib/storyAudience.ts), and its
+   * cover is replaced unless it is one of those visible Stories' media (or not a
+   * Story's media at all). Highlights whose Stories have all expired show
+   * nothing to others — their reels were already empty.
+   */
+  const ids = [...new Set(rows.flatMap((h) => ((h.storyIds as string[]) || []).slice(0, 30)))].slice(0, 300);
+  const storyRows = ids.length
+    ? await db
+        .select({ id: schema.stories.id, userId: schema.stories.userId, visibility: schema.stories.visibility, mediaUrl: schema.stories.mediaUrl, type: schema.stories.type, matchId: schema.stories.matchId, mediaType: schema.stories.mediaType })
+        .from(schema.stories)
+        .where(and(inArray(schema.stories.id, ids), eq(schema.stories.userId, userId)))
+        .all()
+    : [];
+  const visible = await applyVsStoryPrivacy(
+    c.env,
+    await filterStoriesForViewer(c.env, storyRows as any[], viewer),
+    viewer ? await hiddenUidsFor(c.env, viewer) : new Set<string>(),
+    viewer,
+  );
+  const visibleById = new Map(visible.map((s: any) => [s.id, s]));
+  const allMedia = new Set(storyRows.map((s) => s.mediaUrl).filter(Boolean));
+  const out = [];
+  for (const h of rows) {
+    const shown = ((h.storyIds as string[]) || []).filter((id) => visibleById.has(id));
+    if (!shown.length) continue;
+    const visibleMedia = new Set(shown.map((id) => (visibleById.get(id) as any).mediaUrl));
+    const cover =
+      h.coverImageUrl && (visibleMedia.has(h.coverImageUrl) || !allMedia.has(h.coverImageUrl))
+        ? h.coverImageUrl
+        : (visibleById.get(shown[0]) as any).mediaUrl;
+    out.push({ ...h, storyIds: shown, coverImageUrl: cover });
+  }
+  c.header("Cache-Control", viewer ? "private, no-store" : "public, max-age=30");
+  return c.json(out);
 });
 
-readRoute.get("/highlights/:id/stories", optionalAuth, async (c) => {
+readRoute.get("/highlights/:id/stories", optionalAuth, guestReadLimit, async (c) => {
   const db = getDb(c.env);
   const h = await db.select().from(schema.highlights).where(eq(schema.highlights.id, c.req.param("id"))).get();
   if (!h) return c.json(null);
@@ -3443,10 +3682,12 @@ readRoute.get("/highlights/:id/stories", optionalAuth, async (c) => {
   const highlightViewer = c.get("user")?.uid;
   const rows = await applyVsStoryPrivacy(
     c.env,
-    highlightRows,
+    await filterStoriesForViewer(c.env, highlightRows, highlightViewer),
     highlightViewer ? await hiddenUidsFor(c.env, highlightViewer) : new Set<string>(),
     highlightViewer,
   );
+  c.header("Cache-Control", highlightViewer ? "private, no-store" : "public, max-age=30");
+  c.header("Vary", "Authorization");
   if (!rows.length) return c.json(null);
   const userMap = await attachUsers(c, [h.userId]);
   return c.json({

@@ -13,6 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@/src/lib/icons';
 import { contestService } from '@/src/services/contests/contestService';
 import { useAuth } from '@/src/hooks/useAuth';
+import { useAuthGate } from '@/src/hooks/useAuthGate';
 import { useProfile } from '@/src/hooks/useProfileData'; 
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { PhotoContestSkeleton } from '@/src/components/contests/PhotoContestSkeleton';
@@ -56,7 +57,10 @@ export default function PhotoContestsScreen() {
     }
   };
 
+  const { requireAuth } = useAuthGate();
   const navigateToSetup = (contest: any) => {
+    // Browsing contests is public; entering one needs an account (entry fee).
+    if (!requireAuth('join')) return;
     router.push({
       pathname: '/contest/photo/setup',
       params: { contestId: contest.id }

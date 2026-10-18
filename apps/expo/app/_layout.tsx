@@ -1,5 +1,5 @@
 import { ThemeProvider } from '@react-navigation/native';
-import { Stack, useRouter, useSegments } from 'expo-router';
+import { Stack, useGlobalSearchParams, usePathname, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useFonts } from 'expo-font';
 import React, { useEffect } from 'react';
@@ -18,6 +18,7 @@ import localizedFormat from 'dayjs/plugin/localizedFormat';
 import customParseFormat from 'dayjs/plugin/customParseFormat';
 import calendar from 'dayjs/plugin/calendar';
 import utc from 'dayjs/plugin/utc';
+import { createRootGuard } from '@/src/lib/rootGuard';
 
 // Initialize all dayjs plugins globally at the root
 dayjs.extend(localeData);
@@ -200,6 +201,12 @@ function RootLayoutNav() {
     const uid = user?.uid ?? null;
     if (lastUidRef.current !== undefined && lastUidRef.current !== uid) {
       queryClient.clear();
+      // The on-device Story cache is not keyed by account either: wipe it so a
+      // guest (or the next account) never sees the previous viewer's
+      // followers-only Stories or replays their queued reactions.
+      void import('@/src/services/stories/offlineStoryService')
+        .then(({ clearLocalStories }) => clearLocalStories())
+        .catch((e) => console.error('Story cache clear failed', e));
     }
     lastUidRef.current = uid;
   }, [user?.uid, loading]);
@@ -261,30 +268,39 @@ function RootLayoutNav() {
     };
   }, []);
 
+  /**
+   * The route guard — guest-first. The policy itself lives in
+   * src/lib/routeAccess.ts (exact segment matching, fail-closed for unlisted
+   * routes); this only applies it:
+   *  - guests browse public content freely and are sent to sign in only for a
+   *    private screen, with a sanitised return path;
+   *  - a signed-in user who lands on a sign-in/sign-up screen goes on to their
+   *    destination, except right after signing in there (that screen routes
+   *    itself — e.g. a brand-new account to profile setup);
+   *  - splash and the maintenance/update/deletion gates own their own navigation,
+   *    so there is exactly one authority per route.
+   */
+  const pathname = usePathname();
+  const globalParams = useGlobalSearchParams();
+  // One guard per mount; it remembers the previous signed-in state (see
+  // src/lib/rootGuard.ts, which is where this behaviour is tested).
+  const guardRef = React.useRef(createRootGuard());
   useEffect(() => {
-    if (loading) return;
-
-    const inAuthGroup = segments[0] === 'auth';
-    const inOnboarding = segments[0] === 'onboarding';
-    const inSplash = segments[0] === 'splash';
-    // Public content — viewable without login (needed for SEO + old shared
-    // links): the blog listing/detail (/blog, /blog/[slug]), root-level post
-    // permalinks (app/[slug].tsx -> segment "[slug]"), and legal pages.
-    const isPublic =
-      segments[0] === 'blog' || segments[0] === '[slug]' || segments[0] === 'legal';
-
-    if (!user) {
-      // Agar user login nahi hai aur kisi protected page par jane ki koshish kar raha hai
-      if (!inAuthGroup && !inOnboarding && !inSplash && !isPublic && segments.length > 0) {
-        router.replace('/auth/login');
-      }
-    } else {
-      // Agar user login hai lekin auth pages par hai, toh home par bhej do
-      if (inAuthGroup || inOnboarding || inSplash) {
-        router.replace('/home');
-      }
-    }
-  }, [user, loading, segments]);
+    guardRef.current.run(
+      {
+        signedIn: !!user,
+        loading,
+        segments: segments as string[],
+        params: globalParams as Record<string, unknown>,
+        pathname,
+      },
+      {
+        replace: (to) => router.replace(to as any),
+        back: () => router.back(),
+        canGoBack: () => router.canGoBack(),
+      },
+    );
+  }, [user, loading, segments, pathname, globalParams]);
 
   useEffect(() => {
     // Register for push notifications only when user is logged in
@@ -316,6 +332,7 @@ function RootLayoutNav() {
             <Stack.Screen name="force-update" options={{ gestureEnabled: false }} />
             <Stack.Screen name="account-scheduled-deletion" options={{ gestureEnabled: false }} />
             <Stack.Screen name="notifications/index" options={{ presentation: 'modal', title: 'Notifications' }} />
+            <Stack.Screen name="notifications/requests" options={{ presentation: 'modal', title: 'Follow requests' }} />
           </Stack>
           {/* Admin-controlled announcement banner (renders only on the home screen; dismissal persists). */}
           <AnnouncementBanner />

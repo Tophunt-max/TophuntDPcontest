@@ -211,6 +211,23 @@ export async function exportUserData(env: Env, uid: string): Promise<UserDataExp
   // the right to receive it. The push-token exclusion is a different case — those
   // are device credentials someone holding the export file could act on, and are
   // not personal data at all.
+  // Pending follow requests (migration 0057), both directions — the same
+  // relationship data as `connections`, just not yet confirmed.
+  const [requestsSent, requestsReceived] = await Promise.all([
+    db
+      .select({ uid: schema.followRequests.targetId, since: schema.followRequests.createdAt })
+      .from(schema.followRequests)
+      .where(eq(schema.followRequests.requesterId, uid))
+      .limit(CAP)
+      .all(),
+    db
+      .select({ uid: schema.followRequests.requesterId, since: schema.followRequests.createdAt })
+      .from(schema.followRequests)
+      .where(eq(schema.followRequests.targetId, uid))
+      .limit(CAP)
+      .all(),
+  ]);
+
   const prizeClaims = await db
     .select()
     .from(schema.prizeClaims)
@@ -242,7 +259,12 @@ export async function exportUserData(env: Env, uid: string): Promise<UserDataExp
     likes: capped(postLikes),
     bookmarks: capped(bookmarks),
     highlights: capped(highlights),
-    connections: { following: capped(following), followers: capped(followers) },
+    connections: {
+      following: capped(following),
+      followers: capped(followers),
+      followRequestsSent: capped(requestsSent),
+      followRequestsReceived: capped(requestsReceived),
+    },
     wallet: {
       balance: Number((profile as any).dpcoin || 0),
       transactions: capped(coinTransactions),

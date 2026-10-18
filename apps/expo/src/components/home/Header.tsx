@@ -4,6 +4,7 @@ import {
   StyleSheet,
   Pressable,
   Image,
+  Text,
 } from 'react-native';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { 
@@ -14,6 +15,8 @@ import { Colors } from '@/constants/theme';
 import { useAppConfig } from "@/src/services/appSettings";
 import images from "@/assets/images";
 import { HeartNotificationIcon } from "../notifications/HeartNotificationIcon";
+import { useAuthGate } from '@/src/hooks/useAuthGate';
+import { loginHref } from '@/src/lib/authGate';
 
 const HeaderComponent = () => {
   const router = useRouter();
@@ -22,6 +25,7 @@ const HeaderComponent = () => {
   const { config } = useAppConfig();
 
   const ChatIcon = isDark ? ChatIcon_Dark : ChatIcon_Light;
+  const { requireAuth, isGuest } = useAuthGate();
 
   return (
     <View
@@ -44,6 +48,20 @@ const HeaderComponent = () => {
       </View>
 
       {/* RIGHT */}
+      {isGuest ? (
+        // Guests have no notifications or inbox; Instagram shows "Log in" here.
+        <View style={styles.right}>
+          <Pressable
+            hitSlop={8}
+            style={styles.loginPill}
+            onPress={() => router.push(loginHref('/home') as any)}
+            accessibilityRole="button"
+            accessibilityLabel="Log in"
+          >
+            <Text style={styles.loginText}>Log in</Text>
+          </Pressable>
+        </View>
+      ) : (
       <View style={styles.right}>
         <View style={styles.iconBtn}>
            <HeartNotificationIcon />
@@ -52,11 +70,12 @@ const HeaderComponent = () => {
         <Pressable 
             hitSlop={10} 
             style={styles.iconBtn}
-            onPress={() => router.push('/messages')}
+            onPress={() => requireAuth('message', { returnTo: '/messages' }) && router.push('/messages')}
         >
           <ChatIcon width={24} height={24} />
         </Pressable>
       </View>
+      )}
     </View>
   );
 };
@@ -86,4 +105,12 @@ const styles = StyleSheet.create({
   iconBtn: { 
       marginLeft: 20 
   },
+  loginPill: {
+      minHeight: 34,
+      paddingHorizontal: 16,
+      borderRadius: 17,
+      justifyContent: 'center',
+      backgroundColor: '#FF4D67',
+  },
+  loginText: { color: '#FFF', fontFamily: 'Urbanist-Bold', fontSize: 14 },
 });

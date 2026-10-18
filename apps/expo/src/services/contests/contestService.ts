@@ -91,8 +91,10 @@ export const contestService = {
    * The battle's canonical share image (server-rendered VS card), verified to
    * exist and regenerated server-side if it was swept. See src/lib/vsShareAsset.ts.
    */
+  // A public read, so a GUEST sharing a public battle gets the same VS image
+  // (an authenticated /api action would 401 and leave guests link-only).
   getMatchShareImage: async (matchId: string): Promise<import('@/src/lib/vsShareAsset').ShareImageResponse> =>
-    callApi('getMatchShareImage', { matchId }) as any,
+    readApi(`/read/matches/${encodeURIComponent(matchId)}/share-image`) as any,
 
   getMatchStoryStatus: async (
     matchId: string,

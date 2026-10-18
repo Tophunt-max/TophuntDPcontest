@@ -36,7 +36,7 @@ export default function ManageProfileScreen() {
   const performLogout = async () => {
     try {
       await signOut();
-      router.replace('/auth/login');
+      router.replace('/home');
     } catch (error: any) {
       reportError(error, { screen: 'manage-profile', action: 'logout' });
       emitToast(error?.message || 'Could not log out. Please try again.', 'error');

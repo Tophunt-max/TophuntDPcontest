@@ -107,7 +107,7 @@ export default function CongratulationsScreen() {
             const toFollow = signupData.following || [];
             for (const targetUserId of toFollow) {
               try {
-                await callApi("toggleFollow", { targetUserId });
+                await callApi("toggleFollow", { targetUserId, intent: "follow" });
               } catch (followErr) {
                 console.warn("follow apply failed for", targetUserId, followErr);
               }

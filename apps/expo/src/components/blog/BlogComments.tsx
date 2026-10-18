@@ -8,10 +8,11 @@ import {
   ActivityIndicator,
   Platform,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { usePathname, useRouter } from 'expo-router';
 import { Alert } from '@/src/lib/appAlert';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { useAuth } from '@/src/hooks/useAuth';
+import { loginHref } from '@/src/lib/authGate';
 import { commentService, Comment } from '@/src/services/comments/commentService';
 import {
   mergeComments,
@@ -60,6 +61,7 @@ interface Props {
  */
 export default function BlogComments({ postId, isDark }: Props) {
   const router = useRouter();
+  const pathname = usePathname();
   const { user, loading: authLoading } = useAuth();
 
   const textColor = isDark ? '#FFFFFF' : '#111114';
@@ -131,7 +133,7 @@ export default function BlogComments({ postId, isDark }: Props) {
       return;
     }
     if (!user) {
-      router.push('/auth/login');
+      router.push(loginHref(pathname) as any);
       return;
     }
     const clientId = commentService.clientToken();
@@ -167,13 +169,13 @@ export default function BlogComments({ postId, isDark }: Props) {
     } finally {
       setPosting(false);
     }
-  }, [draft, posting, user, postId, router, loadFirstPage]);
+  }, [draft, posting, user, postId, router, loadFirstPage, pathname]);
 
   const onToggleLike = useCallback(
     async (comment: Comment) => {
       if (comment.pending) return;
       if (!user) {
-        router.push('/auth/login');
+        router.push(loginHref(pathname) as any);
         return;
       }
       const next = !comment.likedByMe;
@@ -197,7 +199,7 @@ export default function BlogComments({ postId, isDark }: Props) {
         );
       }
     },
-    [user, router],
+    [user, router, pathname],
   );
 
   const onDelete = useCallback(
@@ -309,7 +311,7 @@ export default function BlogComments({ postId, isDark }: Props) {
             Sign in to join the conversation.
           </Text>
           <TouchableOpacity
-            onPress={() => router.push('/auth/login')}
+            onPress={() => router.push(loginHref(pathname) as any)}
             accessibilityRole="button"
             style={styles.sendBtn}
           >
