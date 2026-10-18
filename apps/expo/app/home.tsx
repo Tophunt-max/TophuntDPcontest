@@ -37,6 +37,7 @@ import {
 } from '@/src/lib/feedSnapshot';
 import { GuestLoginWall } from '@/src/components/auth/GuestLoginWall';
 import { seenAfterViewable, shouldShowGuestWall } from '@/src/lib/guestWall';
+import { liveIdsFor, sameIds } from '@/src/lib/liveWindow';
 
 type FeedTab = 'foryou' | 'following';
 const PAGE_SIZE = 8;
@@ -86,6 +87,9 @@ export default function HomeScreen() {
   sourceRef.current = source;
   const hasContentRef = useRef(false);
   hasContentRef.current = matches.length > 0;
+  // Read by the (stable) viewability callback to find the card after the visible ones.
+  const matchesRef = useRef<any[]>([]);
+  matchesRef.current = matches;
   const mountedAtRef = useRef(Date.now());
 
   const queryClient = useQueryClient();
@@ -104,8 +108,12 @@ export default function HomeScreen() {
   const seenRef = useRef(0);
   const wallDismissalsRef = useRef(0);
   const [showWall, setShowWall] = useState(false);
+  // Cards that hold a live socket: the visible ones plus the next (src/lib/liveWindow.ts).
+  const [liveIds, setLiveIds] = useState<Set<string>>(() => new Set());
   // Stable identity is required: FlatList throws if onViewableItemsChanged changes.
   const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: { index: number | null; item: any }[] }) => {
+    const next = liveIdsFor(viewableItems, matchesRef.current);
+    setLiveIds((prev) => (sameIds(prev, next) ? prev : next));
     // Skeleton rows (numbers) are not battles.
     const indices = viewableItems.filter((v) => typeof v.item === 'object').map((v) => v.index);
     seenRef.current = seenAfterViewable(seenRef.current, indices);
@@ -292,8 +300,8 @@ export default function HomeScreen() {
   }, [feedTab]);
 
   const renderItem = useCallback(({ item }: { item: any }) => (
-    <PostCard item={item} isDark={isDark} onMatchEnded={handleMatchEnded} />
-  ), [handleMatchEnded, isDark]);
+    <PostCard item={item} isDark={isDark} onMatchEnded={handleMatchEnded} liveActive={liveIds.has(item.id)} />
+  ), [handleMatchEnded, isDark, liveIds]);
 
   const TabBar = (
     <View style={[styles.tabBar, { borderBottomColor: isDark ? '#23262D' : '#EEF0F4' }]}>
@@ -364,6 +372,10 @@ export default function HomeScreen() {
       <FlatList
         data={isLoading ? [1, 2, 3] : matches}
         renderItem={({ item }) => isLoading ? <PostSkeleton isDark={isDark} /> : renderItem({ item })}
+        // The live window lives outside `data`; FlatList re-renders rows only on a data
+        // change unless told. PostCard is memoised, so only cards whose liveActive
+        // flipped do any work.
+        extraData={liveIds}
         // Cached cards get their own key so they REMOUNT when the fresh page lands:
         // PostCard seeds votes / counts / isLiked from `item` into useState once, so
         // reusing a card across the swap would keep the snapshot's stale numbers.

@@ -74,14 +74,19 @@ async function openSocket(channel: string, conn: Conn) {
   } catch {
     token = null;
   }
-  if (!token) {
-    // Not signed in yet — retry shortly.
+  // A battle's public tallies are open to guests (worker lib/wsGuest.ts), so a
+  // signed-out viewer connects without a token instead of retrying forever.
+  const guestOk = !token && channel.startsWith('match:');
+  if (!token && !guestOk) {
+    // Not signed in yet — retry shortly. Private channels (user:, chat:) only.
     conn.reconnectTimer = setTimeout(() => openSocket(channel, conn), 2000);
     return;
   }
 
-  conn.authUid = auth.currentUser?.uid ?? null;
-  const url = `${WS_BASE}/ws?channel=${encodeURIComponent(channel)}&token=${encodeURIComponent(token)}`;
+  conn.authUid = token ? auth.currentUser?.uid ?? null : null;
+  const url = token
+    ? `${WS_BASE}/ws?channel=${encodeURIComponent(channel)}&token=${encodeURIComponent(token)}`
+    : `${WS_BASE}/ws?channel=${encodeURIComponent(channel)}`;
   let ws: WebSocket;
   try {
     ws = new WebSocket(url);

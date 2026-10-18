@@ -103,6 +103,25 @@ describe('realtime socket linger', () => {
     offB();
   });
 
+  it('a guest opens a public match socket without a token', async () => {
+    h.uid = null;
+    const off = subscribeChannel('match:m1', () => {});
+    await flush();
+    expect(h.sockets).toHaveLength(1);
+    expect(h.sockets[0].url).not.toContain('token=');
+    off();
+  });
+
+  it('a guest never opens a private channel (user:/chat:) without a token', async () => {
+    h.uid = null;
+    const off = subscribeChannel('chat:c1', () => {});
+    await flush();
+    vi.advanceTimersByTime(4100);
+    await flush();
+    expect(h.sockets).toHaveLength(0);
+    off();
+  });
+
   it('a socket that drops while idle is retired, not reconnected', async () => {
     const off = subscribeChannel('match:m1', () => {});
     await flush();

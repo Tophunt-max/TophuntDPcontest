@@ -290,3 +290,22 @@ describe('the hub is push-only', () => {
     expect(ws.closed).toEqual({ code: 1003, reason: 'unexpected data' });
   });
 });
+
+describe('guest sockets are capped per battle', () => {
+  const guest = () =>
+    makeRequest('https://do.internal/ws', {
+      headers: { Upgrade: 'websocket', 'X-Authenticated-Uid': 'guest', 'X-Guest-Socket': '1' },
+    });
+
+  it('tags guest sockets so they can be counted, and refuses past the ceiling', async () => {
+    const { MAX_GUEST_SOCKETS } = await import('../src/realtime');
+    const { hub, state } = newHub();
+    expect((await hub.fetch(guest())).status).toBe(101);
+    expect(state._sockets[0].tags).toEqual(['uid:guest', 'guest']);
+    // Fill to the ceiling without driving thousands of upgrades.
+    for (let i = 1; i < MAX_GUEST_SOCKETS; i++) state._sockets.push({ ws: new FakeWebSocket(), tags: ['uid:guest', 'guest'] });
+    expect((await hub.fetch(guest())).status).toBe(429);
+    // Signed-in viewers are never turned away by the guest cap.
+    expect((await hub.fetch(makeRequest('https://do.internal/ws', { headers: { Upgrade: 'websocket', 'X-Authenticated-Uid': 'alice' } }))).status).toBe(101);
+  });
+});
