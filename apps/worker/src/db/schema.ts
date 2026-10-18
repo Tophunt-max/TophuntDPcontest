@@ -293,6 +293,25 @@ export const contestMatches = sqliteTable(
      * fall back to rendering the two entries side by side themselves.
      */
     vsImageUrl: text("vs_image_url"),
+    /**
+     * Server-owned VS Story publication sub-state (migration 0055). Orthogonal to
+     * `status`, which must stay `active` while voting runs. See
+     * lib/vsPublication.ts for the state machine. NULL = not eligible.
+     */
+    vsStoryStatus: text("vs_story_status"),
+    vsStoryAttempts: integer("vs_story_attempts").notNull().default(0),
+    vsStoryClaim: text("vs_story_claim"),
+    vsStoryClaimedAt: integer("vs_story_claimed_at"),
+    vsStoryNextAt: integer("vs_story_next_at"),
+    vsStoryError: text("vs_story_error"),
+    vsStoryPublishedAt: integer("vs_story_published_at"),
+    vsImageMeta: text("vs_image_meta", { mode: "json" }),
+    /**
+     * Earliest time the composite may be deleted (migration 0056): end of voting
+     * plus a sharing grace window, extended whenever a share resolves it. The
+     * sweep never deletes before this, nor while a live Story references it.
+     */
+    vsImageRetainUntil: integer("vs_image_retain_until"),
     createdAt: integer("created_at").notNull(),
     activatedAt: integer("activated_at"),
     completedAt: integer("completed_at"),
@@ -302,6 +321,12 @@ export const contestMatches = sqliteTable(
     statusIdx: index("idx_matches_status").on(t.status),
     expiresIdx: index("idx_matches_expires").on(t.expiresAt),
     statusExpiresIdx: index("idx_matches_status_expires").on(t.status, t.expiresAt),
+    vsImageRetainIdx: index("idx_matches_vs_image_retain")
+      .on(t.vsImageRetainUntil)
+      .where(sql`${t.vsImageUrl} IS NOT NULL`),
+    vsStoryDueIdx: index("idx_matches_vs_story_due")
+      .on(t.vsStoryStatus, t.vsStoryNextAt)
+      .where(sql`${t.vsStoryStatus} IN ('pending', 'processing')`),
     settlementUnique: uniqueIndex("uniq_matches_settlement_id")
       .on(t.settlementId)
       .where(sql`${t.settlementId} IS NOT NULL`),
@@ -551,6 +576,12 @@ export const stories = sqliteTable(
     // instead of sorting every live story. See migration 0022 for why this is
     // created_at alone rather than (expires_at, created_at).
     createdIdx: index("idx_stories_created").on(t.createdAt),
+    // Migration 0055: one contest VS Story per (battle, owner), and match lookups
+    // for reference-aware cleanup of the shared composite.
+    contestVsOwnerUnique: uniqueIndex("uniq_stories_contest_vs_owner")
+      .on(t.matchId, t.userId)
+      .where(sql`${t.type} = 'contest_vs'`),
+    matchIdx: index("idx_stories_match").on(t.matchId).where(sql`${t.matchId} IS NOT NULL`),
   }),
 );
 

@@ -1,14 +1,13 @@
-import { callApi } from '@/src/services/api';
-import { uploadToR2 } from '@/src/lib/uploadToR2';
-import { getSharing, getViewShot } from '@/src/lib/vsNativeModules';
+import { getViewShot } from '@/src/lib/vsNativeModules';
 
 /**
  * Turning a battle's head-to-head frame into one real image file.
  *
- * The frame itself is laid out in React (`components/stories/StoryVsFrame.tsx`)
- * because the Worker cannot compose images — see `migrations/0033_match_vs_image.sql`
- * for that reasoning. But a layout is not something you can hand to WhatsApp or
- * Instagram, which want a single file. So the rendered view is captured to an image.
+ * The battle's canonical VS card is rendered by the SERVER from the two accepted
+ * entries (Worker `lib/vsPublication.ts`) and is what both participants' Stories
+ * and every share path use (`src/lib/vsShareAsset.ts`). This module only captures
+ * the on-screen frame, as the gated FALLBACK for when that image cannot be
+ * obtained. Sharing itself lives in `src/lib/share.ts#shareImageFile`.
  *
  * The capture happens on the view that is ALREADY on screen in the story viewer,
  * deliberately. An off-screen host would have to prefetch both remote images and
@@ -26,23 +25,6 @@ import { getSharing, getViewShot } from '@/src/lib/vsNativeModules';
  * falls back to text, and the feature simply switches on after the next native
  * build.
  */
-
-/** MIME type of a captured card. Kept next to the capture options that produce it. */
-const CARD_MIME = 'image/jpeg';
-
-/**
- * A uri the share sheet can actually attach: a local capture, not a remote link.
- *
- * The capture is `file://` on native (view-shot tmpfile) and `blob:` on web
- * (html-to-image object URL); both are the local, freshly-produced image. A
- * remote `https://` url — e.g. an already-recorded card read back from the API —
- * is deliberately excluded: a share sheet cannot attach a URL as a file, and
- * trying would either fail or, worse, share a bare link where the caller's own
- * text fallback does that job better.
- */
-function isLocalCaptureUri(uri: string | null | undefined): uri is string {
-  return typeof uri === 'string' && (uri.startsWith('file://') || uri.startsWith('blob:'));
-}
 
 /**
  * Whether a capture can be attempted at all.
@@ -92,69 +74,4 @@ export async function captureVsCard(ref: any): Promise<string | null> {
     console.warn('[vsImage] capture failed', e);
     return null;
   }
-}
-
-/**
- * Upload a captured card and record it against the battle.
- *
- * Best-effort and silent: this runs in the background off a story view, and there
- * is nothing useful to tell the user if it fails — the frame they are looking at is
- * already correct.
- *
- * Returns the url the card should be known by. That is the SERVER's answer, not
- * necessarily the one just uploaded: the server keeps the first card recorded for
- * a battle, so a client that lost the race is told about the winner instead (and
- * its own upload is deleted server-side).
- */
-export async function uploadAndRecordVsCard(localUri: string, matchId: string): Promise<string | null> {
-  try {
-    // `vs-cards` is its own upload prefix so the Worker can verify a recorded url
-    // really is one of these before pointing anyone's story at it.
-    const publicUrl = await uploadToR2(localUri, CARD_MIME, 'vs-cards');
-    if (!publicUrl) return null;
-    // The Worker checks the caller is a participant and that the url is ours, and
-    // keeps the first card if one already exists.
-    const res: any = await callApi('setMatchVsImage', { matchId, imageUrl: publicUrl });
-    return res?.vsImageUrl || publicUrl;
-  } catch (e) {
-    console.warn('[vsImage] upload/record failed', e);
-    return null;
-  }
-}
-
-/**
- * Share a battle as one image, falling back to text when that is not possible.
- *
- * The fallback matters: sharing is the whole point of generating the image, so it
- * must still do *something* on web, on a pre-rebuild install, or when the capture
- * fails. `fallbackShare` is the caller's existing text-and-link share.
- */
-export async function shareVsCard(opts: {
-  /**
-   * A local capture uri from `captureVsCard` — `file://` on native, `blob:` on
-   * web. Remote (`https://`) urls cannot be attached as a file and are ignored.
-   */
-  imageUri?: string | null;
-  fallbackShare: () => Promise<void> | void;
-}): Promise<void> {
-  const { imageUri, fallbackShare } = opts;
-  const mod = getSharing();
-
-  if (isLocalCaptureUri(imageUri) && typeof mod?.shareAsync === 'function') {
-    try {
-      const available = typeof mod.isAvailableAsync === 'function' ? await mod.isAvailableAsync() : true;
-      if (available) {
-        await mod.shareAsync(imageUri, {
-          mimeType: CARD_MIME,
-          dialogTitle: 'Share this battle',
-          UTI: 'public.jpeg',
-        });
-        return;
-      }
-    } catch (e) {
-      console.warn('[vsImage] share sheet failed, falling back to text', e);
-    }
-  }
-
-  await fallbackShare();
 }

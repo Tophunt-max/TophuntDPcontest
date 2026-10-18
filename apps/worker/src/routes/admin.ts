@@ -15,6 +15,8 @@ import { recentChatMessages, deleteChatMessage } from "../lib/chatArchive";
 import { alias } from "drizzle-orm/sqlite-core";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
+import { requeueVsPublication, runVsPublication } from "../lib/vsPublication";
+import { teardownVsStories } from "../lib/matchStories";
 import { httpsError, ApiError } from "../lib/http";
 import { timingSafeEqualSecret } from "../lib/timingSafe";
 import { verifyIdToken, bearerToken } from "../lib/firebaseAuth";
@@ -909,6 +911,10 @@ adminRoute.post("/reports/:id/resolve", async (c) => {
       case "contestMatch":
       case "contestMatches":
         await db.update(schema.contestMatches).set({ status: "cancelled" }).where(eq(schema.contestMatches.id, r.targetId as string));
+        // Removed content must not stay on either participant's story ring.
+        await teardownVsStories(c.env, r.targetId as string).catch((e) =>
+          console.error("[admin] report removal: VS story teardown failed (continuing)", r.targetId, e),
+        );
         break;
       default:
         break;
@@ -2412,6 +2418,13 @@ function matchRow(m: any) {
     createdAt: m.createdAt ? new Date(m.createdAt).toISOString() : null,
     expiresAt: m.expiresAt ? new Date(m.expiresAt).toISOString() : null,
     completedAt: m.completedAt ? new Date(m.completedAt).toISOString() : null,
+    // VS Story publication (migration 0055). Admin-only, so the raw error is
+    // included for triage; public reads expose only the derived status.
+    vsStoryStatus: m.vsStoryStatus ?? null,
+    vsStoryAttempts: m.vsStoryAttempts ?? 0,
+    vsStoryError: m.vsStoryError ?? null,
+    vsStoryPublishedAt: m.vsStoryPublishedAt ? new Date(m.vsStoryPublishedAt).toISOString() : null,
+    vsImageUrl: m.vsImageUrl ?? null,
   };
 }
 
@@ -2751,11 +2764,49 @@ adminRoute.post("/matches/:id/cancel", async (c) => {
       c.executionCtx.waitUntil(sendUserEmail(c.env, u.uid, contestRefundEmail(m.title, "it was cancelled by an admin")));
     }
   }
+  // A cancelled battle must not keep (or later gain) a VS Story. Unpublished work
+  // is marked skipped; published stories are removed. The composite itself is
+  // left to the reference-aware sweep. Independent of the refund above, which
+  // has already committed with its own idempotency.
+  try {
+    await teardownVsStories(c.env, id);
+  } catch (e) {
+    console.error("[admin] cancel: VS story teardown failed (continuing)", id, e);
+  }
   await logAudit(c, "match.cancel", "match", id, {
     refundPerUser: perPlayerEntryFee(m.entryFee),
     participants: participants.length,
   });
   return c.json({ message: "Match cancelled and refunded" });
+});
+
+/**
+ * Repair a VS Story publication that failed permanently (or is stuck): requeue
+ * it and run it once now. Safe to repeat — the workflow is idempotent and
+ * leased, and it never touches entry fees, refunds or settlement. Refuses
+ * published and non-active matches; never back-publishes historical battles
+ * (vs_story_status NULL is not requeueable).
+ */
+adminRoute.post("/matches/:id/vs-story/retry", async (c) => {
+  requireFullAdmin(c);
+  const id = c.req.param("id");
+  const before = await getDb(c.env)
+    .select({ vsStoryStatus: schema.contestMatches.vsStoryStatus, vsStoryError: schema.contestMatches.vsStoryError })
+    .from(schema.contestMatches)
+    .where(eq(schema.contestMatches.id, id))
+    .get();
+  if (!before) throw httpsError("not-found", "Match not found.");
+  if (!(await requeueVsPublication(c.env, id))) {
+    throw httpsError("failed-precondition", `VS Story cannot be retried from state "${before.vsStoryStatus ?? "none"}".`);
+  }
+  const result = await runVsPublication(c.env, id);
+  await logAudit(c, "match.vsStory.retry", "match", id, {
+    previousStatus: before.vsStoryStatus,
+    previousError: before.vsStoryError,
+    outcome: result.outcome,
+    reason: result.reason ?? null,
+  });
+  return c.json(result);
 });
 
 // ======================= FRAUD DETECTION =======================

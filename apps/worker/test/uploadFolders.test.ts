@@ -27,9 +27,12 @@ import { USER_UPLOAD_FOLDERS, sanitizeMediaFolder } from '../src/lib/r2';
  *   stories   — app/story/create/index.tsx
  *   avatars   — app/profile/manage/edit.tsx, app/auth/signup/congratulations
  *   deposits  — app/wallet/deposit.tsx
- *   vs-cards  — src/lib/vsImage.ts (composite battle card)
+ *
+ * `vs-cards` is NOT here any more: since migration 0055 the battle card is
+ * rendered by the server (lib/vsPublication.ts), and a client-writable vs-cards
+ * prefix would let a participant plant an image on the opponent's story.
  */
-const FOLDERS_THE_CLIENT_SENDS = ['contests', 'stories', 'avatars', 'deposits', 'vs-cards'] as const;
+const FOLDERS_THE_CLIENT_SENDS = ['contests', 'stories', 'avatars', 'deposits'] as const;
 
 describe('USER_UPLOAD_FOLDERS', () => {
   it.each(FOLDERS_THE_CLIENT_SENDS)('accepts %s, which the app uploads to', (folder) => {
@@ -43,6 +46,10 @@ describe('USER_UPLOAD_FOLDERS', () => {
     // The list is an allow-list, not decoration — it must actually exclude things.
     expect(USER_UPLOAD_FOLDERS as readonly string[]).not.toContain('contest-banners');
     expect(USER_UPLOAD_FOLDERS as readonly string[]).not.toContain('anything-else');
+  });
+
+  it('keeps server-rendered battle cards out of reach', () => {
+    expect(USER_UPLOAD_FOLDERS as readonly string[]).not.toContain('vs-cards');
   });
 
   it('keeps deployment-owned banner objects out of reach', () => {

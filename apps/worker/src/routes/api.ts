@@ -13,7 +13,7 @@ import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
 import { requireApiAuth, isAdmin } from "../middleware/auth";
 import { requireFullAdmin as requireFullAdminAction, writeAdminAudit } from "../lib/adminAuthz";
-import { vsImageKeyFromPublicUrl, deleteVsImageByPublicUrl, canonicalMediaUrl, isOwnChatMediaUrl } from "../lib/r2";
+import { vsImageKeyFromPublicUrl, canonicalMediaUrl, isOwnChatMediaUrl, mediaKeyFromPublicUrl } from "../lib/r2";
 import { deleteMediaByUrl } from "../lib/mediaDelete";
 
 import { createNotification, sendPushNotification } from "../lib/notify";
@@ -78,7 +78,8 @@ import {
 import { assertClean } from "../lib/moderation";
 import { lookupTrack, sanitiseMusicStartMs } from "../lib/music";
 import { assertChatMember } from "../lib/chatAuth";
-import { publishVsStories, storyMediaType } from "../lib/matchStories";
+import { isContestStoryType } from "../lib/matchStories";
+import { ensureMatchShareImage, publicVsStoryStatus, runVsPublication } from "../lib/vsPublication";
 import {
   assertMatchInteractionAllowed,
   assertNotBlocked,
@@ -258,6 +259,32 @@ const notPorted = (action: string, file: string): never => {
 };
 
 /** Validate untrusted client identifiers before they reach D1 or a DO. */
+/**
+ * Refuse a contest entry that is one of OUR stored objects but was uploaded by a
+ * different account. `POST /upload` records the uploader on every object, so a
+ * player cannot enter (and have published on their VS Story) someone else's
+ * photo. Objects predating that metadata, and urls that are not ours, pass here;
+ * the VS publication workflow applies the strict trusted-media rules.
+ * Checked BEFORE any entry fee moves.
+ */
+async function assertOwnContestEntry(env: Env, uid: string, mediaUrl: unknown): Promise<void> {
+  if (typeof mediaUrl !== "string" || !mediaUrl) return;
+  const key = mediaKeyFromPublicUrl(env, mediaUrl);
+  if (!key) return;
+  let head: R2Object | null = null;
+  try {
+    head = await env.MEDIA.head(key);
+  } catch (e) {
+    // Fail open on a storage blip: publication re-checks with the bytes in hand.
+    console.error("[contest] entry provenance check failed (continuing)", key, e);
+    return;
+  }
+  const uploader = (head as any)?.customMetadata?.uploader;
+  if (uploader && uploader !== uid) {
+    throw httpsError("permission-denied", "That entry was uploaded by another account. Please upload your own photo.");
+  }
+}
+
 function requiredId(value: unknown, name: string, maxLength = 256): string {
   if (typeof value !== "string") {
     throw httpsError("invalid-argument", `${name} must be a string.`);
@@ -551,6 +578,7 @@ apiRoute.post("/", async (c) => {
       // the only person allowed to join can never join — the coins would sit
       // locked until the auto-cancel refund swept them up.
       if (invitedUid) await assertNotBlockedAny(env, uid, [String(invitedUid)]);
+      await assertOwnContestEntry(env, uid, mediaUrl);
 
       const totalFee = Number(contest.totalEntryFee || 0);
       // Whole coins only. `perPlayerEntryFee` floors, so a legacy odd entry fee
@@ -762,18 +790,13 @@ apiRoute.post("/", async (c) => {
         }
       }
 
-      // Solo "I've entered, come challenge me" story. Replaced by a head-to-head
-      // story for both users once someone joins (see lib/matchStories.ts).
-      // `storyMediaType` matters: this used to write "photo", which the story
-      // viewer does not recognise as an image, so it rendered blank.
-      await db.insert(schema.stories).values({
-        id: newId(), userId: uid, username: user.username || "Anonymous",
-        avatarUrl: canonicalMediaUrl(env, user.profileImageUrl) || "",
-        mediaUrl: canonicalMediaUrl(env, mediaUrl), mediaType: storyMediaType(mediaType), type: "contest_announcement", matchId,
-        contestTitle: contest.title || "Contest", createdAt: ts, expiresAt: ts + 24 * 60 * 60 * 1000,
-      }).catch(() => {});
-
-      return c.json({ matchId, joinId: joinIdA });
+      // NO story is created here. This used to auto-post a solo
+      // `contest_announcement` story carrying the creator's raw entry while the
+      // match was still waiting for an opponent — the reported defect. A battle
+      // gets stories only after a real two-participant join, from the server-owned
+      // workflow in lib/vsPublication.ts. Manual stories (createStory) are
+      // unaffected.
+      return c.json({ matchId, joinId: joinIdA, status: "waiting_for_opponent", vsStoryStatus: "waiting_for_opponent" });
       } catch (e) {
         if (startIdemKey) await releaseIdempotency(env, uid, startIdemKey);
         throw e;
@@ -798,6 +821,14 @@ apiRoute.post("/", async (c) => {
       // notification-generating interaction, and being forced into one with
       // someone you blocked is exactly what the block is for.
       await assertNotBlockedAny(env, uid, [userA?.uid]);
+      // The joiner must bring their OWN entry. Submitting the creator's media url
+      // as "my" entry would put their photo on both halves of the battle and on
+      // the joiner's VS Story. Checked before any money moves.
+      if (!mediaUrl || typeof mediaUrl !== "string") throw httpsError("invalid-argument", "mediaUrl is required.");
+      if (userA?.mediaUrl && canonicalMediaUrl(env, mediaUrl) === canonicalMediaUrl(env, userA.mediaUrl)) {
+        throw httpsError("invalid-argument", "You must upload your own entry to join this battle.");
+      }
+      await assertOwnContestEntry(env, uid, mediaUrl);
 
       const user = await db.select().from(schema.users).where(eq(schema.users.uid, uid)).get();
       if (!user) throw httpsError("not-found", "User document not found.");
@@ -856,13 +887,23 @@ apiRoute.post("/", async (c) => {
       // and the ledger insert could fail after the slot was already claimed. Now
       // either all three apply or none do, so a player can never be charged for
       // a slot they did not get, and no balance moves without a ledger row.
+      //
+      // The same UPDATE marks the battle `vs_story_status = 'pending'`: the ONLY
+      // way a match becomes eligible for VS Story publication is this paid,
+      // server-validated claim (never a client-sent status). The extra guards make
+      // the database itself refuse a second participant, a self-join, or a match
+      // whose creator snapshot is missing — even if the checks above were raced.
       const claimGate = `EXISTS (SELECT 1 FROM contest_matches WHERE id = ? AND join_id_b = ?)`;
       const joinResults = await env.DB.batch([
         env.DB.prepare(
           `UPDATE contest_matches
               SET status = 'active', join_id_b = ?, activated_at = ?,
-                  min_votes_required = ?, prize_coins = ?, expires_at = ?, user_b = ?
-            WHERE id = ? AND status = 'waiting_for_opponent'
+                  min_votes_required = ?, prize_coins = ?, expires_at = ?, user_b = ?,
+                  vs_story_status = 'pending', vs_story_attempts = 0, vs_story_next_at = ?,
+                  vs_story_claim = NULL, vs_story_error = NULL
+            WHERE id = ? AND status = 'waiting_for_opponent' AND user_b IS NULL
+              AND json_extract(user_a, '$.uid') IS NOT NULL
+              AND json_extract(user_a, '$.uid') != ?
               AND EXISTS (SELECT 1 FROM users WHERE uid = ? AND dpcoin >= ?)`,
         ).bind(
           joinIdB,
@@ -871,7 +912,9 @@ apiRoute.post("/", async (c) => {
           prizeSnapshot,
           ts + Math.max(1, voteDays) * 24 * 60 * 60 * 1000,
           JSON.stringify(userBSnapshot),
+          ts,
           matchId,
+          uid,
           uid,
           fee,
         ),
@@ -902,39 +945,29 @@ apiRoute.post("/", async (c) => {
         // Nothing was charged and nothing was claimed. Tell the user which of
         // the two guards rejected them.
         const stillWaiting = await db
-          .select({ status: schema.contestMatches.status })
+          .select({ status: schema.contestMatches.status, userA: schema.contestMatches.userA, userB: schema.contestMatches.userB })
           .from(schema.contestMatches)
           .where(eq(schema.contestMatches.id, matchId))
           .get();
-        if (!stillWaiting || stillWaiting.status !== "waiting_for_opponent") {
+        // The claim's structural guards (slot already filled, missing creator)
+        // reject for reasons other than balance; say so instead of blaming coins.
+        if (!stillWaiting || stillWaiting.status !== "waiting_for_opponent" || stillWaiting.userB || !(stillWaiting.userA as any)?.uid) {
           throw httpsError("failed-precondition", "Match unavailable.");
+        }
+        if ((stillWaiting.userA as any).uid === uid) {
+          throw httpsError("failed-precondition", "You cannot join your own match.");
         }
         throw httpsError("failed-precondition", `Insufficient Dpcoin. Required: ${fee}, Current: ${user.dpcoin}`);
       }
 
-      // The battle now has two sides, so both participants get a head-to-head
-      // story and the creator's solo announcement is retired. Best-effort: the
-      // entry fee is already taken and the match is already live, so a story
-      // problem must not surface as a failed join. See lib/matchStories.ts.
+      // The battle now has two sides. Kick the server-owned VS publication
+      // (composite + both participants' stories) off the response path. It is
+      // idempotent and lease-guarded, and the cron reconciles anything this run
+      // does not finish, so the join never waits on — or fails because of —
+      // image rendering. The entry fee is already committed above.
       c.executionCtx.waitUntil(
-        publishVsStories(env, {
-          matchId,
-          contestTitle: match.title || "Contest",
-          userA: {
-            uid: userA.uid,
-            username: userA.username,
-            profilePic: userA.profilePic,
-            mediaUrl: userA.mediaUrl,
-            mediaType: userA.mediaType,
-          },
-          userB: {
-            uid,
-            username: user.username,
-            profilePic: user.profileImageUrl,
-            mediaUrl,
-            mediaType,
-          },
-          ts,
+        runVsPublication(env, matchId).catch((e) => {
+          console.error("[joinMatch] VS publication kick failed (cron will retry)", matchId, e);
         }),
       );
 
@@ -946,65 +979,112 @@ apiRoute.post("/", async (c) => {
         ),
       );
 
-      return c.json({ status: "active", joinId: joinIdB });
+      return c.json({ status: "active", joinId: joinIdB, matchId, vsStoryStatus: "preparing" });
     }
 
     /**
-     * Record the composite head-to-head image for a battle.
+     * Server-confirmed VS Story state for the caller's own battle.
      *
-     * The Worker cannot compose images (see migration 0033 and
-     * lib/matchStories.ts), so a participant's client captures the rendered card,
-     * uploads it to `vs-cards/`, and reports the url here. Both participants'
-     * stories then DISPLAY that single image, because the story viewer loads the
-     * match and prefers `vsImageUrl` over assembling the layout itself.
+     * The congratulations screen polls this instead of assuming success, so it
+     * never claims "your VS Story is live" before both rows exist. A participant
+     * polling a due publication also nudges the workflow (idempotent, leased,
+     * honours backoff) — a refresh can never re-charge or re-submit anything.
+     */
+    case "getMatchStoryStatus": {
+      await rateLimit(env, `vsstatus:${uid}`, 120, 3600);
+      const matchId = requiredId(body.matchId, "matchId", 128);
+      const m = await db
+        .select({
+          status: schema.contestMatches.status,
+          userA: schema.contestMatches.userA,
+          userB: schema.contestMatches.userB,
+          vsStoryStatus: schema.contestMatches.vsStoryStatus,
+          vsStoryNextAt: schema.contestMatches.vsStoryNextAt,
+          vsImageUrl: schema.contestMatches.vsImageUrl,
+        })
+        .from(schema.contestMatches)
+        .where(eq(schema.contestMatches.id, matchId))
+        .get();
+      if (!m) throw httpsError("not-found", "Match not found.");
+      const uidA = (m.userA as any)?.uid;
+      const uidB = (m.userB as any)?.uid;
+      if (uid !== uidA && uid !== uidB) throw httpsError("permission-denied", "Only a participant can check this battle's story.");
+
+      let storyStatus = publicVsStoryStatus(m);
+      let storyId: string | null = null;
+      if (storyStatus === "live") {
+        const own = await db
+          .select({ id: schema.stories.id })
+          .from(schema.stories)
+          .where(and(eq(schema.stories.matchId, matchId), eq(schema.stories.userId, uid), eq(schema.stories.type, "contest_vs")))
+          .get();
+        storyId = own?.id ?? null;
+        // Published, but this user's own row has since expired or been deleted.
+        if (!storyId) storyStatus = "unavailable";
+      } else if (
+        (m.vsStoryStatus === "pending" || m.vsStoryStatus === "processing") &&
+        Number(m.vsStoryNextAt || 0) <= now()
+      ) {
+        c.executionCtx.waitUntil(runVsPublication(env, matchId).catch(() => {}));
+      }
+      return c.json({
+        matchId,
+        matchStatus: m.status,
+        storyStatus,
+        storyId,
+        vsImageUrl: storyStatus === "live" ? m.vsImageUrl ?? null : null,
+      });
+    }
+
+    /**
+     * The canonical share asset for a battle: the server-rendered two-photo VS
+     * card. Every client share path (feed sheet, Story share, Save image, the
+     * congratulations screen) resolves through this, so they all send the same
+     * file — never one participant's raw entry.
      *
-     * ------------------------------------------------------------------------
-     * The card is recorded on the MATCH ONLY — never copied into `stories`
-     * ------------------------------------------------------------------------
-     * An earlier version of this also rewrote both `contest_vs` rows' `media_url`
-     * to the card. That was wrong twice over, and both are worth keeping written
-     * down because copying the url looks obviously convenient:
+     * Verifies the object still exists and regenerates it at the same
+     * deterministic key if it was swept (no Stories, ownership or money touched).
+     * Blocked viewers are refused, exactly like any other match interaction.
+     */
+    case "getMatchShareImage": {
+      // Reads are cheap (one row + one R2 HEAD); a sheet opening polls a few
+      // times while an image is being prepared.
+      await rateLimit(env, `vsshare:${uid}`, 600, 3600);
+      const matchId = requiredId(body.matchId, "matchId", 128);
+      await assertMatchInteractionAllowed(env, uid, matchId);
+      const out = await ensureMatchShareImage(env, matchId, {
+        // Only an actual (re)render counts against the per-battle budget, so
+        // popular battles or one noisy viewer cannot switch image sharing off
+        // for everyone by merely opening the sheet.
+        beforeRegenerate: () => rateLimit(env, `vsshare_regen:${matchId}`, 20, 3600),
+      });
+      if (out.status === "preparing") {
+        c.executionCtx.waitUntil(runVsPublication(env, matchId).catch(() => {}));
+      }
+      return c.json(out);
+    }
+
+    /**
+     * RETIRED as a writer: the battle card is now composed by the SERVER from the
+     * two accepted entries (lib/vsPublication.ts) and is no longer accepted from a
+     * client.
      *
-     *   - It defeated blocking. `/read/matches/:id` deliberately returns nothing
-     *     when either participant is blocked by the viewer, which is what makes
-     *     the story fall back to the single entry the row itself carries. Once
-     *     that row carried the composite, the fallback showed the blocked user's
-     *     photo anyway.
-     *   - It gave one R2 object two owners. Account deletion collects
-     *     `stories.media_url` for the departing user and deletes those objects, so
-     *     one participant leaving would have deleted the image the other
-     *     participant's live story was displaying.
+     * The old contract let a participant upload any image to `vs-cards/` and have
+     * it shown on the OTHER participant's story — an accepted defacement vector
+     * that only existed because the Worker could not compose images. It can now,
+     * so the residual risk is closed rather than bounded.
      *
-     * Keeping `media_url` as each user's own entry means the row is still
-     * meaningful to anything that renders it directly, blocking still works, and
-     * the card has exactly one owner: the match.
-     *
-     * Guards, because a participant is supplying a url that the OTHER
-     * participant's story will render:
-     *   1. the battle must be full — an unjoined match has nothing to depict, and
-     *      without this its creator could claim the card before an opponent
-     *      exists, permanently;
-     *   2. only a participant may set it;
-     *   3. the url must be an object in our own bucket under `vs-cards/`,
-     *      so a story can never be pointed at an arbitrary remote image;
-     *   4. first writer wins — never overwrite. Both clients plausibly try, and
-     *      silently swapping the image under a story that is already being viewed
-     *      is worse than keeping the first good one.
-     *
-     * What this does NOT establish is that the pixels are a real capture of the
-     * battle; see `vsImageKeyFromPublicUrl` for why that residual risk is
-     * accepted, and what it actually amounts to.
+     * Kept as an action so installs still running the capture-and-record code get
+     * a well-formed answer: the server's card when it exists, otherwise a refusal.
+     * Read-only: it never deletes anything (see below).
      */
     case "setMatchVsImage": {
-      // Fail closed: this action writes a url that renders on another user's
-      // story, so an outage of the counter store must not remove the ceiling.
       await rateLimit(env, `vsimage:${uid}`, 30, 3600, { failClosed: true });
       const matchId = requiredId(body.matchId, "matchId", 128);
       const imageUrl = requiredId(body.imageUrl, "imageUrl", 2048);
       if (!vsImageKeyFromPublicUrl(env, imageUrl)) {
         throw httpsError("invalid-argument", "imageUrl must be an uploaded battle card.");
       }
-
       const match = await db
         .select({
           userA: schema.contestMatches.userA,
@@ -1014,60 +1094,18 @@ apiRoute.post("/", async (c) => {
         .from(schema.contestMatches)
         .where(eq(schema.contestMatches.id, matchId))
         .get();
-      // The caller uploaded before calling, so from here on every rejection
-      // orphans that object unless we clean it up. R2 deletes are free and the
-      // key is pinned to the `vs-cards/` prefix, so this is unconditional.
-      if (!match) {
-        await deleteVsImageByPublicUrl(env, imageUrl);
-        throw httpsError("not-found", "Match not found.");
-      }
-
+      // NOTHING is deleted on this path any more. Clients can no longer write to
+      // `vs-cards/`, so a caller-supplied url can only name a SERVER card — and
+      // deleting "the url you sent" would let anyone erase another battle's live
+      // composite by naming it. Legacy client uploads expire via the R2
+      // lifecycle rule on the prefix.
+      if (!match) throw httpsError("not-found", "Match not found.");
       const uidA = (match.userA as any)?.uid;
       const uidB = (match.userB as any)?.uid;
-      // A head-to-head card of a battle with one side is not a thing that can
-      // exist. Checked before the participant test so a creator waiting for an
-      // opponent gets the honest reason.
-      if (!uidA || !uidB) {
-        await deleteVsImageByPublicUrl(env, imageUrl);
-        throw httpsError("failed-precondition", "This battle does not have two participants yet.");
-      }
-      if (uid !== uidA && uid !== uidB) {
-        await deleteVsImageByPublicUrl(env, imageUrl);
-        throw httpsError("permission-denied", "Only a participant can set the battle image.");
-      }
-      // Already recorded by whoever got there first. The card this caller just
-      // uploaded is now unreferenced, so throw it away rather than paying to
-      // store it forever — unless it IS the stored one (a retry of a call that
-      // actually succeeded), in which case deleting it would break a live story.
-      if (match.vsImageUrl) {
-        if (match.vsImageUrl !== imageUrl) await deleteVsImageByPublicUrl(env, imageUrl);
-        return c.json({ success: true, vsImageUrl: match.vsImageUrl, alreadySet: true });
-      }
-
-      // The `vs_image_url IS NULL` gate makes the first-writer-wins rule hold
-      // against a genuine race, not just against the read above.
-      const claimed = await db
-        .update(schema.contestMatches)
-        .set({ vsImageUrl: imageUrl })
-        .where(and(eq(schema.contestMatches.id, matchId), isNull(schema.contestMatches.vsImageUrl)))
-        .run();
-      if (Number(claimed.meta?.changes || 0) === 0) {
-        // Someone claimed it between the read and the update. Re-read to tell this
-        // client which card actually won, and discard the one it uploaded.
-        const current = await db
-          .select({ vsImageUrl: schema.contestMatches.vsImageUrl })
-          .from(schema.contestMatches)
-          .where(eq(schema.contestMatches.id, matchId))
-          .get();
-        if (current?.vsImageUrl !== imageUrl) await deleteVsImageByPublicUrl(env, imageUrl);
-        // A null here means the row was deleted underneath us, not that a card
-        // exists — reporting `alreadySet` for that would have the client cache a
-        // card that never existed.
-        if (!current?.vsImageUrl) throw httpsError("not-found", "Match not found.");
-        return c.json({ success: true, vsImageUrl: current.vsImageUrl, alreadySet: true });
-      }
-
-      return c.json({ success: true, vsImageUrl: imageUrl });
+      if (!uidA || !uidB) throw httpsError("failed-precondition", "This battle does not have two participants yet.");
+      if (uid !== uidA && uid !== uidB) throw httpsError("permission-denied", "Only a participant can set the battle image.");
+      if (match.vsImageUrl) return c.json({ success: true, vsImageUrl: match.vsImageUrl, alreadySet: true });
+      throw httpsError("failed-precondition", "The battle image is generated by the server.");
     }
 
     case "submitVote": {
@@ -1242,7 +1280,17 @@ apiRoute.post("/", async (c) => {
       if (story.userId !== uid && !(await isAdmin(c as any)))
         throw httpsError("permission-denied", "Not allowed.");
       // Provider-aware: a story's media is in R2 or in Bunny.
-      if (story.mediaUrl) await deleteMediaByUrl(env, story.mediaUrl);
+      //
+      // Only a PERSONAL story owns its media. A contest story's media is either
+      // the shared VS composite — owned by the match and still displayed by the
+      // other participant's story — or (legacy rows) the author's battle entry,
+      // which the battle itself still shows. Deleting either here would blank
+      // someone else's story or the battle. The composite is removed by the
+      // reference-aware sweep once no live story uses it (lib/matchStories.ts).
+      // The vs-card check covers a personal story that merely NAMES a composite.
+      if (story.mediaUrl && !isContestStoryType(story.type) && !vsImageKeyFromPublicUrl(env, story.mediaUrl)) {
+        await deleteMediaByUrl(env, story.mediaUrl);
+      }
       await db.delete(schema.stories).where(eq(schema.stories.id, storyId));
       return c.json({ success: true });
     }

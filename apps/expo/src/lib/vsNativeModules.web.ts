@@ -114,7 +114,7 @@ export function getViewShot(): ViewShotModule | null {
 /**
  * Share a captured card as a real image file via the Web Share API.
  *
- * `isAvailableAsync` is the gate the caller (`shareVsCard`) checks first, and it
+ * `isAvailableAsync` is the gate the caller (`shareImageFile` in src/lib/share.ts) checks first, and it
  * is honest about files specifically: `navigator.share` exists on some desktop
  * browsers that cannot attach a file, so we probe `canShare({ files })` with a
  * tiny throwaway file. When that is false the caller falls back to the text

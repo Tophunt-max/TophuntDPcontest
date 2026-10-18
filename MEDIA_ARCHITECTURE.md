@@ -56,7 +56,7 @@ disagree the code wins.
 | `chat/` | user | immutable | — | DM images |
 | `contests/` | user | immutable | — | Contest entries. What the current client sends |
 | `contest-entries/` | user | immutable | — | Legacy alias for builds still in the wild |
-| `vs-cards/` | user | immutable | 7 d | Composite battle cards; cron deletes at 24 h |
+| `vs-cards/` | server | immutable | 7 d | Server-rendered battle cards (`vs-cards/battles/<matchId>-v<N>.jpg`, see `VS_STORY_LIFECYCLE.md`); deleted once no live story references them |
 | `deposits/` | user | immutable | — | UPI screenshots. See the retention note below |
 | `reports/` | user | immutable | — | Abuse-report evidence |
 | `misc/` | user | immutable | — | Unclassified fallback |

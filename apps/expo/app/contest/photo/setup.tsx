@@ -310,7 +310,6 @@ export default function BattleSetupScreen() {
           contestName: selectedContest.title || selectedContest.name,
           isJoining,
           matchId: resultMatchId,
-          imageUrl: downloadUrl,
         });
       } catch (error: any) {
         console.error("[BattleSetup] Action Error:", error);

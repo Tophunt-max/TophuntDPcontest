@@ -202,7 +202,6 @@ export default function VideoContestScreen() {
         contestName: selectedContest.title || selectedContest.name,
         isJoining,
         matchId: resultMatchId,
-        imageUrl: downloadUrl,
       });
     } catch (error: any) {
       Alert.alert("Oops!", error.message || "Failed to submit.");

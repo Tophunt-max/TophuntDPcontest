@@ -326,14 +326,20 @@ export function fakeKV() {
  * concern, and cost regressions are the kind that go unnoticed for months.
  */
 export function fakeR2() {
-  const objects = new Map<string, { body: any; httpMetadata?: any }>();
+  const objects = new Map<string, { body: any; httpMetadata?: any; customMetadata?: Record<string, string>; size: number }>();
   const deleted: string[] = [];
+  const puts: string[] = [];
+  const sizeOf = (body: any): number =>
+    body == null ? 0 : typeof body === 'string' ? new TextEncoder().encode(body).length : Number(body.byteLength ?? body.length ?? 0);
   return {
     _objects: objects,
     /** Keys passed to delete(), in order, including keys that did not exist. */
     _deleted: deleted,
+    /** Keys passed to put(), in order — lets a test prove an object was NOT re-uploaded. */
+    _puts: puts,
     async put(key: string, body: any, opts?: any) {
-      objects.set(key, { body, httpMetadata: opts?.httpMetadata });
+      puts.push(key);
+      objects.set(key, { body, httpMetadata: opts?.httpMetadata, customMetadata: opts?.customMetadata, size: sizeOf(body) });
       return { key };
     },
     async get(key: string) {
@@ -348,12 +354,107 @@ export function fakeR2() {
      */
     async head(key: string) {
       const existing = objects.get(key);
-      return existing ? { key, size: 0, httpMetadata: existing.httpMetadata } : null;
+      return existing
+        ? { key, size: existing.size, httpMetadata: existing.httpMetadata, customMetadata: existing.customMetadata }
+        : null;
     },
     async delete(key: string) {
       deleted.push(key);
       objects.delete(key);
     },
+  };
+}
+
+/**
+ * A fake contest-entry image: real JPEG/PNG magic bytes (so the server's sniffer
+ * accepts it) followed by a marker naming the photo and its pixel size, which
+ * `fakeImages` reads back to report dimensions and to identify which entry was
+ * drawn where.
+ */
+export function fakePhoto(label: string, opts: { width?: number; height?: number; format?: 'jpeg' | 'png' } = {}): Uint8Array {
+  const magic = opts.format === 'png' ? [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] : [0xff, 0xd8, 0xff, 0xe0];
+  const marker = new TextEncoder().encode(`|${label}|${opts.width ?? 1080}x${opts.height ?? 1350}|`);
+  return new Uint8Array([...magic, ...marker]);
+}
+
+/**
+ * Recording stand-in for the Cloudflare Images binding (`env.IMAGES`).
+ *
+ * Implements the slice the VS renderer uses — info(), input().transform()
+ * .draw().output() — and records the resolved draw tree of every output, so a
+ * test can assert which participant's photo landed in which panel, with what
+ * crop, and where the badge went. A photo whose label contains "corrupt" fails
+ * decoding the way the real binding does (error 9412).
+ */
+export function fakeImages(opts: { failOutput?: () => Error | null } = {}) {
+  const outputs: any[] = [];
+  const read = async (s: any): Promise<Uint8Array> => new Uint8Array(await new Response(s).arrayBuffer());
+  const describe = (b: Uint8Array) => {
+    const m = new TextDecoder().decode(b).match(/\|([^|]*)\|(\d+)x(\d+)\|/);
+    return m ? { label: m[1], width: Number(m[2]), height: Number(m[3]) } : null;
+  };
+  const isPng = (b: Uint8Array) => b[0] === 0x89 && b[1] === 0x50;
+  const isJpeg = (b: Uint8Array) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
+
+  function transformer(source: Promise<Uint8Array>) {
+    const ops: any[] = [];
+    const t: any = {
+      _ops: ops,
+      _source: source,
+      transform(x: any) {
+        ops.push({ transform: x });
+        return t;
+      },
+      draw(img: any, o: any) {
+        ops.push({ draw: img, options: o });
+        return t;
+      },
+      async output(o: any) {
+        const tree = await resolve(t);
+        const err = opts.failOutput?.();
+        if (err) throw err;
+        outputs.push({ ...tree, output: o });
+        const bytes = new Uint8Array([0xff, 0xd8, 0xff, ...new TextEncoder().encode(JSON.stringify(tree))]);
+        return {
+          image: () => new Blob([bytes]).stream(),
+          contentType: () => o.format,
+          response: () => new Response(bytes),
+        };
+      },
+    };
+    return t;
+  }
+  async function resolve(t: any): Promise<any> {
+    const bytes = await t._source;
+    const d = describe(bytes);
+    return {
+      source: d?.label ?? (isPng(bytes) ? 'generated-png' : 'unknown'),
+      ops: await Promise.all(
+        t._ops.map(async (op: any) => {
+          if (!op.draw) return op;
+          const child = op.draw._ops ? await resolve(op.draw) : { source: describe(await read(op.draw))?.label ?? 'generated-png', ops: [] };
+          return { draw: child, options: op.options };
+        }),
+      ),
+    };
+  }
+  return {
+    _outputs: outputs,
+    async info(stream: any) {
+      const b = await read(stream);
+      const d = describe(b);
+      if ((!isJpeg(b) && !isPng(b)) || d?.label.includes('corrupt')) {
+        throw Object.assign(new Error('IMAGES_INFO_ERROR 9412: Input is not an image'), { code: 9412 });
+      }
+      return { format: isPng(b) ? 'image/png' : 'image/jpeg', fileSize: b.length, width: d?.width ?? 100, height: d?.height ?? 100 };
+    },
+    input(stream: any) {
+      return transformer(read(stream));
+    },
+    text() {
+      throw new Error('text() is intentionally unused by the VS renderer');
+    },
+    hosted: {} as any,
   };
 }
 

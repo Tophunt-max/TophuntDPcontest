@@ -70,6 +70,9 @@ import { isVideoStory, isVsStory, storyMediaKind, type StoryViewer } from '@/src
 import { StoryVsFrame } from '@/src/components/stories/StoryVsFrame';
 import { VsCaptureBoundary } from '@/src/components/stories/VsCaptureBoundary';
 import { useVsStoryCard } from '@/src/hooks/useVsStoryCard';
+import { contestService } from '@/src/services/contests/contestService';
+import { battleCaption, battleUrl, prepareShareFile, shareBattleLink, shareImageFile, shareOrigin } from '@/src/lib/share';
+import { createShareCounter, resolveBattleShareAsset, shareOutcomeMessage } from '@/src/lib/vsShareAsset';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
 import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -208,34 +211,110 @@ export default function StoryView() {
   // the two participants' own reels — so "my own battle story" is exactly the
   // permission the server checks, established without needing the match loaded.
   const isVsCurrent = !!currentStory && isVsStory(currentStory);
-  const { shotRef: vsShotRef, onCaptureReady: onVsCaptureReady, shareCard } = useVsStoryCard({
+  const { shotRef: vsShotRef, onCaptureReady: onVsCaptureReady, captureIfReady, releaseCapture } = useVsStoryCard({
     matchId: isVsCurrent ? currentStory!.matchId : null,
     canGenerate: isVsCurrent && isMyStory,
     setPaused: setIsPaused,
   });
+  const shareInFlight = useRef(false);
 
   /**
    * Share the current story.
    *
-   * This button existed with no `onPress` at all, so the paper-plane did nothing.
-   * A battle shares as the head-to-head image where the device can produce one;
-   * everything else, and every device that cannot, shares the text and link that
-   * the rest of the app already sends.
+   * A battle story (own or someone else's) shares the battle's ONE canonical VS
+   * image — the same file the feed share sheet and Save image use — resolved via
+   * `resolveBattleShareAsset`, with the on-screen frame capture only as a gated
+   * fallback. If no image can be produced it says so and offers the link
+   * explicitly; it never sends one participant's photo.
+   *
+   * A normal story keeps its plain text + link share.
    */
-  const handleShareStory = useCallback(() => {
-    const who = currentUserStories?.username ? `@${currentUserStories.username}` : 'someone';
-    const message = isVsCurrent
-      ? `${currentStory?.contestTitle || 'A battle'} is live on TopHunt — tap through to vote.\n\nhttps://tophunt.in`
-      : `Check out ${who}'s story on TopHunt.\n\nhttps://tophunt.in`;
-    void shareCard(async () => {
+  const handleShareStory = useCallback(async () => {
+    if (shareInFlight.current) return;
+    if (!isVsCurrent || !currentStory?.matchId) {
+      const who = currentUserStories?.username ? `@${currentUserStories.username}` : 'someone';
       try {
-        await Share.share({ message });
+        await Share.share({ message: `Check out ${who}'s story on TopHunt.\n\n${shareOrigin() || 'https://tophunt.in'}` });
       } catch (e) {
         // A dismissed share sheet rejects on some platforms; that is not an error.
         console.warn('[StoryView] share failed', e);
       }
-    });
-  }, [shareCard, isVsCurrent, currentStory?.contestTitle, currentUserStories?.username]);
+      return;
+    }
+
+    const matchId = currentStory.matchId;
+    const url = battleUrl(matchId);
+    const cachedMatch: any = queryClient.getQueryData(['match', matchId]);
+    const caption = battleCaption(cachedMatch ?? { title: currentStory.contestTitle }, url);
+    const counter = createShareCounter(() => contestService.shareMatch(matchId));
+    shareInFlight.current = true;
+    setIsPaused(true);
+    let captured: string | null = null;
+    // The story stays paused (and the button locked) until the user is done —
+    // including while an alert below is still open.
+    const done = () => {
+      if (captured) releaseCapture(captured);
+      captured = null;
+      shareInFlight.current = false;
+      setIsPaused(false);
+    };
+    let handedToAlert = false;
+    try {
+      const asset = await resolveBattleShareAsset(matchId, {
+        fetchShareImage: contestService.getMatchShareImage,
+        knownUrl: currentStory.mediaUrl,
+        capture: () => captureIfReady(matchId),
+      });
+      if (asset.status === 'ready') {
+        if (asset.source.kind === 'local') captured = asset.source.uri;
+        const source = asset.source;
+        // Web: have the file in hand so a follow-up tap can share inside its gesture.
+        const file = Platform.OS === 'web' ? await prepareShareFile(source) : null;
+        const outcome = await shareImageFile({ source, caption, url, file });
+        counter.record(outcome);
+        if (outcome === 'needs_gesture' && file) {
+          handedToAlert = true;
+          Alert.alert('Share VS image', 'Your VS image is ready.', [
+            { text: 'Cancel', style: 'cancel', onPress: done },
+            {
+              text: 'Share image',
+              onPress: () => {
+                void shareImageFile({ source, caption, url, file })
+                  .then((o) => {
+                    counter.record(o);
+                    const m = shareOutcomeMessage(o);
+                    if (m && o !== 'shared_image') Alert.alert('Share', m.text);
+                  })
+                  .finally(done);
+              },
+            },
+          ], { cancelable: true, onDismiss: done });
+          return;
+        }
+        const msg = shareOutcomeMessage(outcome);
+        if (msg && outcome !== 'shared_image') Alert.alert(msg.tone === 'error' ? 'Share failed' : 'Share', msg.text);
+        return;
+      }
+      const why =
+        asset.status === 'preparing'
+          ? 'The VS image is still being prepared. Try again in a moment.'
+          : 'The VS image isn’t available for this battle right now.';
+      handedToAlert = true;
+      Alert.alert('VS image not ready', why, [
+        { text: 'Cancel', style: 'cancel', onPress: done },
+        {
+          text: 'Share link only',
+          onPress: () => {
+            void shareBattleLink({ caption, url })
+              .then((o) => counter.record(o))
+              .finally(done);
+          },
+        },
+      ], { cancelable: true, onDismiss: done });
+    } finally {
+      if (!handedToAlert) done();
+    }
+  }, [isVsCurrent, currentStory?.matchId, currentStory?.mediaUrl, currentStory?.contestTitle, currentUserStories?.username, queryClient, captureIfReady, releaseCapture]);
 
   /**
    * Consulted for TWO things: to explain a playback failure, and — on web — to

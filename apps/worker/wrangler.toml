@@ -100,6 +100,14 @@ migrations_dir = "migrations"
 binding = "MEDIA"
 bucket_name = "tophunt-media"
 
+# Cloudflare Images binding: composes the server-side VS battle card
+# (src/lib/vsComposite.ts) — decode/crop/composite/encode run on Cloudflare
+# Images, not on the Worker's CPU budget. Billed as Images transformations
+# (free plan includes a monthly allowance). Without it, VS Stories stay
+# "preparing" (vs_story_error = renderer_unavailable) and are retried by cron.
+[images]
+binding = "IMAGES"
+
 # ---------------------------------------------------------------------------
 # KV namespaces (OTPs, settings cache, JWKS cache)
 # Create with:  wrangler kv namespace create OTP_KV   (repeat for each)
@@ -285,6 +293,9 @@ migrations_dir = "migrations"
 [[env.staging.r2_buckets]]
 binding = "MEDIA"
 bucket_name = "tophunt-media-staging"
+
+[env.staging.images]
+binding = "IMAGES"
 
 [[env.staging.kv_namespaces]]
 binding = "OTP_KV"

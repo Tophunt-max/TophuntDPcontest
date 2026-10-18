@@ -162,6 +162,50 @@ function IconBtn({ children, title, onClick }: any) {
   );
 }
 
+/**
+ * Server-owned VS Story publication state (migration 0055) with a repair action.
+ * Retry is full-admin and audited on the Worker; it never touches entry fees,
+ * refunds or settlement.
+ */
+function VsStoryPanel({ match: m }: { match: any }) {
+  const qc = useQueryClient();
+  const retry = useMutation({
+    mutationFn: () => api.retryVsStory(m.id),
+    onSuccess: (r) => {
+      toast.success(`VS Story: ${r.outcome}${r.reason ? ` (${r.reason})` : ""}`);
+      qc.invalidateQueries({ queryKey: ["match", m.id] });
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  if (!m.vsStoryStatus && !m.userB?.uid) return null;
+  const status: string = m.vsStoryStatus || "not eligible";
+  const canRetry = m.status === "active" && ["failed", "pending", "processing"].includes(m.vsStoryStatus);
+  return (
+    <div className="rounded-xl border border-border p-3 mb-4 text-xs">
+      <div className="flex items-center gap-2">
+        <span className="font-semibold text-foreground">VS Story</span>
+        <Badge variant={status === "published" ? "active" : status === "failed" ? "cancelled" : "pending"}>{status}</Badge>
+        {m.vsStoryAttempts ? <span className="text-muted-foreground">{m.vsStoryAttempts} attempt(s)</span> : null}
+        {canRetry && (
+          <button
+            onClick={() => retry.mutate()}
+            disabled={retry.isPending}
+            className="ml-auto px-3 py-1.5 rounded-lg border border-border font-semibold hover:bg-secondary disabled:opacity-50"
+          >
+            {retry.isPending ? "Retrying…" : "Retry VS Story"}
+          </button>
+        )}
+      </div>
+      {m.vsStoryError && <p className="mt-2 font-mono text-red-600 break-all">{m.vsStoryError}</p>}
+      {m.vsImageUrl && (
+        <a href={m.vsImageUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block text-primary underline">
+          View composite
+        </a>
+      )}
+    </div>
+  );
+}
+
 function MatchDetail({ id, onClose, onDeclare }: { id: string; onClose: () => void; onDeclare: (uid: string) => void }) {
   const match = useQuery({ queryKey: ["match", id], queryFn: () => api.match(id) });
   const votes = useQuery({ queryKey: ["match-votes", id], queryFn: () => api.matchVotes(id) });
@@ -203,6 +247,8 @@ function MatchDetail({ id, onClose, onDeclare }: { id: string; onClose: () => vo
               <Badge variant={m.status === "active" ? "active" : m.status === "completed" ? "ended" : "pending"}>{m.status?.replace(/_/g, " ")}</Badge>
               <span className="text-muted-foreground">Total votes: {fmtNumber(m.totalVotes)}</span>
             </div>
+
+            <VsStoryPanel match={m} />
 
             <FraudSignals data={audit.data} loading={audit.isLoading} usernameA={m.userA?.username} usernameB={m.userB?.username} />
 
