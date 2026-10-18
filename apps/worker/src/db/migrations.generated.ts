@@ -60,6 +60,7 @@ import m_0055_vs_story_publication_sql from "../../migrations/0055_vs_story_publ
 import m_0056_vs_image_retention_sql from "../../migrations/0056_vs_image_retention.sql";
 import m_0057_follow_requests_sql from "../../migrations/0057_follow_requests.sql";
 import m_0058_onboarding_daily_sql from "../../migrations/0058_onboarding_daily.sql";
+import m_0059_hot_read_order_indexes_sql from "../../migrations/0059_hot_read_order_indexes.sql";
 
 export interface Migration {
   name: string;
@@ -126,4 +127,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0056_vs_image_retention.sql", sql: m_0056_vs_image_retention_sql },
   { name: "0057_follow_requests.sql", sql: m_0057_follow_requests_sql },
   { name: "0058_onboarding_daily.sql", sql: m_0058_onboarding_daily_sql },
+  { name: "0059_hot_read_order_indexes.sql", sql: m_0059_hot_read_order_indexes_sql },
 ];
