@@ -65,6 +65,7 @@ converge when the TTL lapses, because the Cache API has no global purge.
 | Story cache (`stories`, `user_stories`) | Viewer (signed-in only) | server story id | Per-story `expires_at`. Network-first | Replaced on every feed fetch. Expired rows swept at launch | **No** (`clearLocalStories`) |
 | `pending_actions` | uid column | one row per (type, story, uid) | Swept after 7 days; 5 replay attempts | Replay only for the matching uid | Kept, but only that account ever replays them |
 | TanStack Query | Mixed. Several keys omit the viewer (`['profile', id]`, `['match', id]` and others) | — | 30s default | `queryClient.clear()` on any uid change | **No** |
+| Realtime channel sockets (`realtime.ts`) | Account that opened the socket | one per channel, ref-counted | Stays open 5s after the last listener leaves, so remounts reuse it | Retired after the linger; dropped while idle → not reconnected | **No.** A lingering socket is reused only by the same uid |
 | Notification badge (`notificationService.ts`) | uid | memory, per uid | Live socket + 180s safety poll | Dropped when the last subscriber leaves | **No** |
 | Media | Public URLs | expo-image / video cache | Platform policy | Settings → Clear cache | Yes (public bytes only) |
 
