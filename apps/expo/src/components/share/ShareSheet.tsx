@@ -186,7 +186,7 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId, match: matchPr
 
   const onDownload = useCallback(async () => {
     if (!vsImageUrl) {
-      addToast('The VS image isn’t ready yet — open the battle story once to generate it.', 'info');
+      addToast('The VS image is still being prepared — try again in a moment.', 'info');
       return;
     }
     const ok = await downloadBattleImage(vsImageUrl);

@@ -20,7 +20,9 @@ import { settleRefund, settleWinner } from "./lib/contestSettlement";
 import { matchPot, perPlayerEntryFee } from "./lib/money";
 import { normalizePrizeType, resolveMatchPrize, type PrizeFields } from "./lib/prizes";
 import { deleteMediaByUrl } from "./lib/mediaDelete";
-import { deleteVsImageByPublicUrl } from "./lib/r2";
+import { vsImageKeyFromPublicUrl } from "./lib/r2";
+import { sweepVsComposites } from "./lib/matchStories";
+import { reconcileVsPublications } from "./lib/vsPublication";
 import { newId, now } from "./lib/ids";
 import { runSeoAudit } from "./lib/seoAudit";
 import { getSeoAudit, invalidateSetting } from "./lib/settings";
@@ -377,51 +379,25 @@ export async function resolveContests(env: Env): Promise<void> {
   for (const s of expiredUserStories) {
     // Provider-aware: story videos now live in Bunny, and stories expire every
     // 24h, so an R2-only delete here would leak a video object per story.
-    if (s.mediaUrl) await deleteMediaByUrl(env, s.mediaUrl).catch(() => {});
+    // Never a battle card, even if a personal story named one: that object is
+    // owned by its match and may still back another participant's live story.
+    if (s.mediaUrl && !vsImageKeyFromPublicUrl(env, s.mediaUrl)) await deleteMediaByUrl(env, s.mediaUrl).catch(() => {});
   }
 
-  // The one contest-story object that IS ours to delete: the composite VS card.
-  //
-  // Unlike a participant's entry, the card is generated for the story and nothing
-  // else displays it, so when the battle stories expire it becomes unreachable.
-  // It is not covered by the sweep above (that is `type = 'user'` only) and no
-  // other code path deletes it, so without this every battle that generated a
-  // card would leave a permanent full-screen JPEG in the bucket.
-  //
-  // The column is cleared in the same pass. A match outlives its stories, and a
-  // client that later reads a `vs_image_url` pointing at a deleted object would
-  // render an empty frame; null puts it back on the live layout, which still
-  // works from the match itself.
-  const expiredVsStories = await db
-    .select({ matchId: schema.stories.matchId })
-    .from(schema.stories)
-    .where(and(lte(schema.stories.expiresAt, nowMs), eq(schema.stories.type, "contest_vs")))
-    .limit(500)
-    .all();
-  // Both participants hold a row for the same battle, so the ids arrive in pairs.
-  const expiredMatchIds = [...new Set(expiredVsStories.map((s) => s.matchId).filter(Boolean) as string[])];
-  for (const matchId of expiredMatchIds) {
-    try {
-      const m = await db
-        .select({ vsImageUrl: schema.contestMatches.vsImageUrl })
-        .from(schema.contestMatches)
-        .where(eq(schema.contestMatches.id, matchId))
-        .get();
-      if (!m?.vsImageUrl) continue;
-      await db
-        .update(schema.contestMatches)
-        .set({ vsImageUrl: null })
-        .where(eq(schema.contestMatches.id, matchId))
-        .run();
-      await deleteVsImageByPublicUrl(env, m.vsImageUrl);
-    } catch (e) {
-      // A card left behind costs storage; a throw here would stop the rest of the
-      // schedule, including match settlement.
-      console.error("[cron] battle card cleanup failed (continuing)", matchId, e);
-    }
-  }
+  // The shared VS composite: deleted only once NO live story of its battle still
+  // references it (one participant deleting or outliving the other must not
+  // blank the survivor). The match row and both entries are kept — match history
+  // outlives its stories. See lib/matchStories.ts#sweepVsComposites.
+  await sweepVsComposites(env, nowMs);
 
   await db.delete(schema.stories).where(lte(schema.stories.expiresAt, nowMs));
+
+  // Drive VS Story publications the join-time kick did not finish (transient
+  // render/R2 failures, expired leases, videos that became ready). Bounded per
+  // tick; failures are recorded on the match, never thrown into this schedule.
+  await reconcileVsPublications(env, { limit: 10 }).catch((e) =>
+    console.error("[cron] VS publication reconcile failed (continuing)", e),
+  );
 
   // due scheduled/segmented broadcasts
   await processScheduledNotifications(env);

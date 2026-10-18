@@ -844,6 +844,9 @@ export const api = {
   declareWinner: (id: string, winnerUid?: string) =>
     post(`/admin/matches/${id}/declare-winner`, winnerUid ? { winnerUid } : {}),
   cancelMatch: (id: string) => post(`/admin/matches/${id}/cancel`),
+  /** Requeue + run a failed/stuck VS Story publication (full admin, audited). */
+  retryVsStory: (id: string) =>
+    post<{ outcome: string; reason?: string }>(`/admin/matches/${id}/vs-story/retry`),
 
   // transactions + revenue
   transactions: (params?: { uid?: string; type?: string; limit?: number }) => {

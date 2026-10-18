@@ -6,6 +6,13 @@ export interface Env {
   // --- Bindings (wrangler.toml) ---
   DB: D1Database;
   MEDIA: R2Bucket;
+  /**
+   * Cloudflare Images binding (`[images] binding = "IMAGES"`). Used ONLY to
+   * compose the server-side VS battle card (lib/vsComposite.ts). Optional so a
+   * deployment without it degrades to "VS Story pending" instead of crashing;
+   * the publication workflow reports `renderer_unavailable` and retries.
+   */
+  IMAGES?: ImagesBinding;
   OTP_KV: KVNamespace;
   CACHE_KV: KVNamespace;
   REALTIME: DurableObjectNamespace;

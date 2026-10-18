@@ -23,6 +23,7 @@ import { publish } from "./publish";
 import { sendEmail } from "./email";
 import { accountDeletionScheduledEmail } from "./emailTemplates";
 import { DELETED_STATUS, PENDING_DELETION_STATUS, parseGraceDays } from "./accountStatus";
+import { isContestStoryType, purgeVsCompositesForUser } from "./matchStories";
 
 /**
  * Self-service account deletion.
@@ -700,12 +701,18 @@ async function phaseSnapshots(env: Env, uid: string): Promise<string[]> {
     if (row.url) media.add(row.url);
   }
   for (const row of await db
-    .select({ url: schema.stories.mediaUrl })
+    .select({ url: schema.stories.mediaUrl, type: schema.stories.type })
     .from(schema.stories)
     .where(eq(schema.stories.userId, uid))
     .all()) {
-    if (row.url) media.add(row.url);
+    // Contest stories do not own their media: the entry is collected from the
+    // match snapshot below, and a VS composite is handled by
+    // purgeVsCompositesForUser (it is shared with the other participant).
+    if (row.url && !isContestStoryType(row.type)) media.add(row.url);
   }
+  // Every battle card of theirs shows this user's face, so each one is destroyed
+  // and every story displaying it — the opponent's too — is removed.
+  for (const url of await purgeVsCompositesForUser(env, uid)) media.add(url);
 
   const balance = Number(user?.balance || 0);
   const suffix = uid.slice(-6).toLowerCase().replace(/[^a-z0-9]/g, "") || newId().slice(0, 6);

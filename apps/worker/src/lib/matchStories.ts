@@ -1,133 +1,219 @@
 /**
- * Auto-posted stories for a contest battle.
+ * Contest battle stories — read-side privacy and lifecycle cleanup.
  *
- * A battle is the app's headline content, so both participants get a story about
- * it. The shape of those stories changes at the moment the battle fills up:
+ * What changed (migration 0055)
+ * -----------------------------
+ * A battle used to auto-post a solo `contest_announcement` story with the
+ * creator's RAW entry the moment they created it (routes/api.ts `startMatch`),
+ * long before an opponent existed. That was the reported defect. Nothing is
+ * published at creation any more; publication is server-owned and happens only
+ * after a real two-participant join, through lib/vsPublication.ts, which writes:
  *
- *   creation  -> the creator posts a solo "I've entered, come challenge me"
- *                story (`contest_announcement`), because there is no opponent yet.
- *   join      -> the battle is live and has two sides, so BOTH users get a
- *                head-to-head story (`contest_vs`) and the creator's now-stale
- *                announcement is removed.
+ *   - ONE composite (`vs-cards/battles/<matchId>-v<N>.jpg`) owned by the MATCH, and
+ *   - TWO `contest_vs` story rows (one per participant, deterministic ids) whose
+ *     `media_url` is that shared composite.
  *
- * Two rows rather than one shared row, because `/read/stories/feed` groups
- * strictly by `stories.user_id` and the viewer plays one reel per user. A single
- * row could only ever appear on one participant's ring.
+ * Two rows rather than one because `/read/stories/feed` groups strictly by
+ * `stories.user_id`: each participant needs the story on their own ring.
  *
- * ---------------------------------------------------------------------------
- * Why the VS visual is NOT composed into an image HERE
- * ---------------------------------------------------------------------------
- * There is no server-side image composition available. `lib/media.ts` only builds
- * Cloudflare Image *Resizing* URLs — which cannot combine two sources — and it is
- * inert anyway until the media custom domain exists (`transformationsAvailable`).
- * The Worker has no canvas and no image library, so compositing would mean adding
- * a WASM decoder, then fetching, decoding, re-encoding and uploading a new R2
- * object on the paid-join hot path.
+ * Why sharing one composite is safe now
+ * -------------------------------------
+ * The previous design refused to put the composite on the story rows for two
+ * reasons; both are handled explicitly here instead:
  *
- * So each row stores that user's OWN entry as `media_url` — which keeps the story
- * meaningful on any client that just renders `media_url` — plus `match_id`. The
- * client reads `match_id`, loads the battle, and draws the head-to-head frame at
- * render time.
- *
- * A composite image DOES exist, but it is produced later and elsewhere: a
- * participant's device screenshots that rendered frame and reports it through the
- * `setMatchVsImage` action, which records it on `contest_matches.vs_image_url`.
- * Two things about it matter here:
- *
- *   - it is recorded on the MATCH, never copied into these rows. `media_url`
- *     staying each user's own entry is what keeps blocking working, and what keeps
- *     the card owned by one thing instead of two. `routes/api.ts` has the full
- *     reasoning at `setMatchVsImage`.
- *   - it is the one contest-story object that has an owner in cleanup: `cron.ts`
- *     deletes it when these stories expire, because nothing else displays it.
+ *   blocking  — `applyVsStoryPrivacy` rewrites a VS story for any viewer who has
+ *               hidden (blocked / muted / been blocked by) the OPPONENT: the row
+ *               falls back to the owner's own entry, so the hidden person is never
+ *               shown. The owner themselves is already filtered by the callers.
+ *   ownership — the composite is never deleted through a story. `deleteStory`
+ *               and account deletion skip contest-story media, and the object is
+ *               removed only by `sweepVsComposites` once NO live story of the
+ *               battle references it (or by account deletion of a participant,
+ *               whose face it contains).
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, lte, sql } from "drizzle-orm";
 import type { Env } from "../types";
-import { canonicalMediaUrl } from "./r2";
 import { getDb, schema } from "../db";
-import { newId } from "./ids";
+import { deleteVsImageByPublicUrl, vsImageKeyFromPublicUrl } from "./r2";
+import { STORY_TTL_MS } from "./vsPublication";
 
-/** Story lifetime, matching the 24h the rest of the story system assumes. */
-const STORY_TTL_MS = 24 * 60 * 60 * 1000;
+export { STORY_TTL_MS };
 
 /**
  * Normalise a participant's media type to what the client understands.
  *
- * The contest flows were writing `"photo"` while the story viewer only ever
- * checked for `"image"`, so every auto-posted contest story fell through to the
- * video branch and rendered an empty player with a progress bar that never
- * advanced. Anything that is not explicitly a video is an image.
+ * The contest flows write `"photo"` while the story viewer only checks for
+ * `"image"`. Anything that is not explicitly a video is an image.
  */
 export function storyMediaType(mediaType: unknown): "image" | "video" {
   return mediaType === "video" ? "video" : "image";
 }
 
-export interface VsParticipant {
-  uid: string;
-  username?: string | null;
-  profilePic?: string | null;
-  mediaUrl?: string | null;
-  mediaType?: string | null;
+/** Story kinds whose media is contest media, never the author's personal upload. */
+export const CONTEST_STORY_TYPES: readonly string[] = ["contest_vs", "contest_announcement", "contest_match_live"];
+
+export function isContestStoryType(type: unknown): boolean {
+  return typeof type === "string" && CONTEST_STORY_TYPES.includes(type);
 }
 
 /**
- * Replace the creator's solo announcement with a head-to-head story for both
- * participants.
+ * Per-viewer rewrite of VS stories whose opponent the viewer has hidden.
  *
- * Best-effort by design: a story is decoration on top of a transaction that has
- * already taken the joiner's entry fee and activated the battle. It must never
- * turn a successful, paid join into an error, so every failure is logged and
- * swallowed. The three writes go in one `db.batch` so the two users' stories
- * either both appear or neither does — one participant seeing a battle story the
- * other does not would look like a bug to both of them.
+ * Applied AFTER any shared cache (the composite is the same for everyone; the
+ * hidden set is not). One indexed lookup, and only when there is something to
+ * decide: a non-empty hidden set AND at least one VS row.
+ *
+ * A row that cannot fall back (the owner's own entry is gone) is dropped — never
+ * shown with the hidden person in it.
  */
-export async function publishVsStories(
+export async function applyVsStoryPrivacy<T extends Record<string, any>>(
   env: Env,
-  input: {
-    matchId: string;
-    contestTitle: string;
-    userA: VsParticipant;
-    userB: VsParticipant;
-    ts: number;
-  },
-): Promise<void> {
-  const { matchId, contestTitle, userA, userB, ts } = input;
-  if (!userA?.uid || !userB?.uid) return;
+  rows: T[],
+  hidden: Set<string>,
+): Promise<T[]> {
+  if (!hidden.size || !rows.length) return rows;
+  const vsRows = rows.filter((r) => r?.type === "contest_vs" && r?.matchId);
+  if (!vsRows.length) return rows;
 
-  const row = (p: VsParticipant) => ({
-    id: newId(),
-    userId: p.uid,
-    username: p.username || "Anonymous",
-    // Canonicalised onto the current media base. These values are copied out of
-    // the match's participant snapshot, so for any match created before the media
-    // domain cutover they still name the Worker proxy — and this function runs at
-    // JOIN time, which means a pre-cutover match was minting brand-new rows on the
-    // old host indefinitely. Canonicalising here breaks that propagation chain.
-    avatarUrl: canonicalMediaUrl(env, p.profilePic) || "",
-    // The participant's own entry, so a client that only understands
-    // `media_url` still shows something true rather than nothing.
-    mediaUrl: canonicalMediaUrl(env, p.mediaUrl) || "",
-    mediaType: storyMediaType(p.mediaType),
-    type: "contest_vs",
-    matchId,
-    contestTitle,
-    createdAt: ts,
-    expiresAt: ts + STORY_TTL_MS,
-  });
+  const matchIds = [...new Set(vsRows.map((r) => String(r.matchId)))].slice(0, 100);
+  const matches = await getDb(env)
+    .select({ id: schema.contestMatches.id, userA: schema.contestMatches.userA, userB: schema.contestMatches.userB })
+    .from(schema.contestMatches)
+    .where(inArray(schema.contestMatches.id, matchIds))
+    .all();
+  const byId = new Map(matches.map((m) => [m.id, m]));
 
-  try {
+  const out: T[] = [];
+  for (const r of rows) {
+    if (r?.type !== "contest_vs" || !r?.matchId) {
+      out.push(r);
+      continue;
+    }
+    const m = byId.get(String(r.matchId));
+    const a = m?.userA as any;
+    const b = m?.userB as any;
+    const own = a?.uid === r.userId ? a : b?.uid === r.userId ? b : null;
+    const opponent = own === a ? b : a;
+    if (!m || !own) {
+      // Cannot prove who is in the picture: fail closed.
+      continue;
+    }
+    if (!opponent?.uid || !hidden.has(String(opponent.uid))) {
+      out.push(r);
+      continue;
+    }
+    if (!own.mediaUrl) continue;
+    out.push({
+      ...r,
+      mediaUrl: own.mediaUrl,
+      mediaType: storyMediaType(own.mediaType),
+      // The client draws a head-to-head frame for `contest_vs`; as a solo entry
+      // this row must render as a plain story instead.
+      type: "contest_entry_solo",
+      opponentHidden: true,
+    });
+  }
+  return out;
+}
+
+/**
+ * Reference-aware cleanup of the shared composite.
+ *
+ * The composite is owned by the MATCH and displayed by up to two stories. It is
+ * deleted only when no live (unexpired) story of that battle remains — so one
+ * participant deleting their story, or one row expiring, never blanks the other.
+ *
+ * Candidates are (a) battles whose VS stories just expired, and (b) published
+ * battles older than the story window — the second catches the case where both
+ * participants deleted their stories early, which would otherwise leave the
+ * object referenced by nothing until the R2 lifecycle safety net.
+ *
+ * The match row and both original entries are untouched: match history stays.
+ */
+export async function sweepVsComposites(env: Env, nowMs: number): Promise<{ deleted: number }> {
+  const db = getDb(env);
+  const expired = await db
+    .select({ matchId: schema.stories.matchId })
+    .from(schema.stories)
+    .where(and(lte(schema.stories.expiresAt, nowMs), eq(schema.stories.type, "contest_vs")))
+    .limit(500)
+    .all();
+  const stale = await db
+    .select({ id: schema.contestMatches.id })
+    .from(schema.contestMatches)
+    .where(
+      and(
+        eq(schema.contestMatches.vsStoryStatus, "published"),
+        isNotNull(schema.contestMatches.vsImageUrl),
+        lte(schema.contestMatches.vsStoryPublishedAt, nowMs - STORY_TTL_MS),
+      ),
+    )
+    .limit(100)
+    .all();
+  const ids = [
+    ...new Set([...expired.map((s) => s.matchId), ...stale.map((m) => m.id)].filter(Boolean) as string[]),
+  ];
+
+  let deleted = 0;
+  for (const matchId of ids) {
+    try {
+      const live = await db
+        .select({ id: schema.stories.id })
+        .from(schema.stories)
+        .where(and(eq(schema.stories.matchId, matchId), gt(schema.stories.expiresAt, nowMs)))
+        .limit(1)
+        .get();
+      if (live) continue;
+      const m = await db
+        .select({ vsImageUrl: schema.contestMatches.vsImageUrl, vsStoryStatus: schema.contestMatches.vsStoryStatus })
+        .from(schema.contestMatches)
+        .where(eq(schema.contestMatches.id, matchId))
+        .get();
+      // Never pull the image out from under an in-flight publication.
+      if (!m?.vsImageUrl || m.vsStoryStatus === "processing" || m.vsStoryStatus === "pending") continue;
+      // Clear first, conditionally: a client reading a url that names a deleted
+      // object renders an empty frame, while null falls back to the live layout.
+      const cleared = await db
+        .update(schema.contestMatches)
+        .set({ vsImageUrl: null })
+        .where(and(eq(schema.contestMatches.id, matchId), eq(schema.contestMatches.vsImageUrl, m.vsImageUrl)))
+        .run();
+      if (!Number(cleared.meta?.changes || 0)) continue;
+      if (vsImageKeyFromPublicUrl(env, m.vsImageUrl)) {
+        await deleteVsImageByPublicUrl(env, m.vsImageUrl);
+        deleted++;
+      }
+    } catch (e) {
+      // A card left behind costs storage; a throw here would stop the rest of the
+      // schedule, including match settlement.
+      console.error("[matchStories] composite cleanup failed (continuing)", matchId, e);
+    }
+  }
+  return { deleted };
+}
+
+/**
+ * Account deletion: a departing participant's face is in every composite of
+ * theirs, so those objects are destroyed and every VS story that displays one
+ * (including the OTHER participant's) is removed. Returns the urls to delete.
+ */
+export async function purgeVsCompositesForUser(env: Env, uid: string): Promise<string[]> {
+  const rows = await env.DB.prepare(
+    `SELECT id, vs_image_url FROM contest_matches
+      WHERE vs_image_url IS NOT NULL
+        AND (json_extract(user_a, '$.uid') = ? OR json_extract(user_b, '$.uid') = ?)`,
+  )
+    .bind(uid, uid)
+    .all<{ id: string; vs_image_url: string }>();
+  const urls: string[] = [];
+  for (const r of rows.results || []) {
     await getDb(env).batch([
-      // The creator's solo "come challenge me" story is now wrong — the battle
-      // has an opponent. Leaving it would show them two stories about the same
-      // match, one of them out of date.
       getDb(env)
         .delete(schema.stories)
-        .where(and(eq(schema.stories.matchId, matchId), eq(schema.stories.type, "contest_announcement"))),
-      getDb(env).insert(schema.stories).values(row(userA)),
-      getDb(env).insert(schema.stories).values(row(userB)),
+        .where(and(eq(schema.stories.matchId, r.id), sql`${schema.stories.type} IN ('contest_vs', 'contest_match_live')`)),
+      getDb(env).update(schema.contestMatches).set({ vsImageUrl: null }).where(eq(schema.contestMatches.id, r.id)),
     ]);
-  } catch (e) {
-    // Never fail the join for a story.
-    console.error("[matchStories] could not publish VS stories", matchId, e);
+    if (vsImageKeyFromPublicUrl(env, r.vs_image_url)) urls.push(r.vs_image_url);
   }
+  return urls;
 }

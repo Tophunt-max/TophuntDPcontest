@@ -10,14 +10,24 @@
 /**
  * What produced a story.
  *
- * `contest_announcement` — someone entered a contest and is waiting for a rival.
- * `contest_vs`           — a battle filled up; both participants get one of these
- *                          and it renders as a head-to-head frame.
+ * `contest_vs`           — a battle filled up; the server rendered one VS card and
+ *                          published one of these for EACH participant, both
+ *                          pointing at that card (`mediaUrl`) and the match.
+ * `contest_entry_solo`   — a `contest_vs` row as served to a viewer who has hidden
+ *                          the OPPONENT: the server swapped in the owner's own entry,
+ *                          so it must render as a plain story, never a VS frame.
+ * `contest_announcement` — LEGACY only. Battles no longer auto-post a story while
+ *                          waiting for an opponent; old rows may still be read.
  *
  * `contest_match_live` is the retired name for what is now `contest_vs`; rows
  * written before that change may still carry it, so treat it as an alias.
  */
-export type StoryKind = 'user' | 'contest_announcement' | 'contest_vs' | 'contest_match_live';
+export type StoryKind =
+  | 'user'
+  | 'contest_announcement'
+  | 'contest_vs'
+  | 'contest_entry_solo'
+  | 'contest_match_live';
 
 export interface Story {
   id: string;

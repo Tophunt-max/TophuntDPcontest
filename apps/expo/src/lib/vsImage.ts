@@ -1,14 +1,13 @@
-import { callApi } from '@/src/services/api';
-import { uploadToR2 } from '@/src/lib/uploadToR2';
 import { getSharing, getViewShot } from '@/src/lib/vsNativeModules';
 
 /**
  * Turning a battle's head-to-head frame into one real image file.
  *
- * The frame itself is laid out in React (`components/stories/StoryVsFrame.tsx`)
- * because the Worker cannot compose images — see `migrations/0033_match_vs_image.sql`
- * for that reasoning. But a layout is not something you can hand to WhatsApp or
- * Instagram, which want a single file. So the rendered view is captured to an image.
+ * The battle's canonical VS card is now rendered by the SERVER from the two
+ * accepted entries (Worker `lib/vsPublication.ts`, migration 0055) and is what both
+ * participants' Stories display. This module no longer uploads or records anything:
+ * it only captures the frame on screen so the share sheet can attach a local file
+ * (a share sheet cannot attach a remote URL).
  *
  * The capture happens on the view that is ALREADY on screen in the story viewer,
  * deliberately. An off-screen host would have to prefetch both remote images and
@@ -90,34 +89,6 @@ export async function captureVsCard(ref: any): Promise<string | null> {
     return await mod.captureRef(ref, { format: 'jpg', quality: 0.92, result: 'tmpfile' });
   } catch (e) {
     console.warn('[vsImage] capture failed', e);
-    return null;
-  }
-}
-
-/**
- * Upload a captured card and record it against the battle.
- *
- * Best-effort and silent: this runs in the background off a story view, and there
- * is nothing useful to tell the user if it fails — the frame they are looking at is
- * already correct.
- *
- * Returns the url the card should be known by. That is the SERVER's answer, not
- * necessarily the one just uploaded: the server keeps the first card recorded for
- * a battle, so a client that lost the race is told about the winner instead (and
- * its own upload is deleted server-side).
- */
-export async function uploadAndRecordVsCard(localUri: string, matchId: string): Promise<string | null> {
-  try {
-    // `vs-cards` is its own upload prefix so the Worker can verify a recorded url
-    // really is one of these before pointing anyone's story at it.
-    const publicUrl = await uploadToR2(localUri, CARD_MIME, 'vs-cards');
-    if (!publicUrl) return null;
-    // The Worker checks the caller is a participant and that the url is ours, and
-    // keeps the first card if one already exists.
-    const res: any = await callApi('setMatchVsImage', { matchId, imageUrl: publicUrl });
-    return res?.vsImageUrl || publicUrl;
-  } catch (e) {
-    console.warn('[vsImage] upload/record failed', e);
     return null;
   }
 }

@@ -55,6 +55,8 @@ import {
   hiddenUidsFor,
   sqlExclusionList,
 } from "../lib/blocks";
+import { applyVsStoryPrivacy } from "../lib/matchStories";
+import { publicVsStoryStatus } from "../lib/vsPublication";
 import {
   DELETED_STATUS,
   PENDING_DELETION_STATUS,
@@ -1108,6 +1110,11 @@ const mapMatch = (r: any) => ({
    * to laying the two entries out itself.
    */
   vsImageUrl: r.vsImageUrl ?? null,
+  /**
+   * Server-confirmed VS Story state (migration 0055): waiting_for_opponent |
+   * preparing | live | failed | unavailable. Derived, so no error detail leaks.
+   */
+  vsStoryStatus: publicVsStoryStatus(r),
   minVotesRequired: r.minVotesRequired,
   endingSoonNotified: r.endingSoonNotified,
   createdAt: r.createdAt,
@@ -3281,9 +3288,12 @@ readRoute.get("/stories/feed", requireAuth, async (c) => {
   // showing me this person" has to cover both or the feature looks broken. The full
   // hidden set is filtered in JS (no SQL_EXCLUSION_MAX ceiling to work around now).
   const hiddenAuthors = await hiddenUidsFor(c.env, uid);
-  const rows = hiddenAuthors.size
+  const authorFiltered = hiddenAuthors.size
     ? excludeHiddenBy(baseRows as any[], hiddenAuthors, (r: any) => r.userId)
     : baseRows;
+  // A VS story also DEPICTS the opponent. Hiding the author is not enough when
+  // the viewer hid the other participant — see applyVsStoryPrivacy.
+  const rows = await applyVsStoryPrivacy(c.env, authorFiltered as any[], hiddenAuthors);
 
   const userIds = [...new Set(rows.map((r) => r.userId))];
   const userMap = await attachUsers(c, userIds);
@@ -3323,13 +3333,17 @@ readRoute.get("/users/:id/stories", optionalAuth, async (c) => {
   const userId = c.req.param("id");
   if (await profileHiddenFrom(c, userId)) return c.json(null);
   const nowMs = Date.now();
-  const rows = await db
+  const rawRows = await db
     .select()
     .from(schema.stories)
     .where(and(eq(schema.stories.userId, userId), gt(schema.stories.expiresAt, nowMs)))
     .orderBy(asc(schema.stories.createdAt))
     .limit(50)
     .all();
+  const storyViewer = c.get("user")?.uid;
+  const rows = storyViewer
+    ? await applyVsStoryPrivacy(c.env, rawRows, await hiddenUidsFor(c.env, storyViewer))
+    : rawRows;
   if (!rows.length) return c.json(null);
   const userMap = await attachUsers(c, [userId]);
   return c.json({
@@ -3418,11 +3432,15 @@ readRoute.get("/highlights/:id/stories", optionalAuth, async (c) => {
    * the list, which is the right failure mode for a read: the shelf renders with
    * what is legitimately on it.
    */
-  const rows = await db
+  const highlightRows = await db
     .select()
     .from(schema.stories)
     .where(and(inArray(schema.stories.id, storyIds), eq(schema.stories.userId, h.userId)))
     .all();
+  const highlightViewer = c.get("user")?.uid;
+  const rows = highlightViewer
+    ? await applyVsStoryPrivacy(c.env, highlightRows, await hiddenUidsFor(c.env, highlightViewer))
+    : highlightRows;
   if (!rows.length) return c.json(null);
   const userMap = await attachUsers(c, [h.userId]);
   return c.json({

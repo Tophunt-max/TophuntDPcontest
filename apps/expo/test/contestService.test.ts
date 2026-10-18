@@ -22,3 +22,15 @@ describe('contestService.voteOnMatch', () => {
     });
   });
 });
+
+describe('contestService.getMatchStoryStatus', () => {
+  it('asks the server for the confirmed state and sends nothing but the match id', async () => {
+    // No status, entry or fee travels with this call: the client can read the
+    // VS Story state, never declare it.
+    callApi.mockResolvedValueOnce({ storyStatus: 'preparing' } as any);
+    const { contestService } = await import('@/src/services/contests/contestService');
+    const res = await contestService.getMatchStoryStatus('m1');
+    expect(callApi).toHaveBeenCalledWith('getMatchStoryStatus', { matchId: 'm1' });
+    expect(res.storyStatus).toBe('preparing');
+  });
+});

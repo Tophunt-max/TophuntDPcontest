@@ -229,19 +229,23 @@ export const MEDIA_CATEGORIES: readonly MediaCategory[] = [
   },
   {
     prefix: VS_CARD_PREFIX,
-    writer: "user",
+    // SERVER-written since migration 0055: lib/vsPublication.ts composes the card
+    // from the two accepted entries at `vs-cards/battles/<matchId>-v<N>.jpg`. Clients
+    // may no longer upload here, which closes the old "a participant can put any
+    // image on the opponent's story" gap instead of merely bounding it.
+    writer: "server",
     kinds: ["image"],
     cache: "immutable",
-    // `cron.ts` deletes these when the battle stories expire (24h). Its own
-    // prefix, rather than reusing `stories`, is what lets
-    // `vsImageKeyFromPublicUrl` verify that a client-supplied URL really is one
-    // of these before recording it on another user's story.
+    // Deleted by the reference-aware sweep (lib/matchStories.ts) once no live
+    // story of the battle references the card; the 7-day lifecycle rule is the
+    // safety net. Its own prefix is what lets `vsImageKeyFromPublicUrl` scope
+    // every delete path to battle cards only.
     retentionDays: 7,
     dateSharded: true,
     legacyVideo: false,
 
     proxyOnly: true,
-    description: "Composite head-to-head battle cards, captured client-side. Always JPEG.",
+    description: "Composite head-to-head battle cards, rendered server-side (Images binding). Always JPEG.",
   },
 
   // --- Operational --------------------------------------------------------
