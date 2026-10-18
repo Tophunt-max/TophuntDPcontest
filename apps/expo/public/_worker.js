@@ -250,6 +250,13 @@ function battleIdFromPath(path) {
   return null;
 }
 
+/** `/battle/<id>/result` -> id (the winner page). */
+function battleResultIdFromPath(path) {
+  const segments = path.replace(/\/+$/, '').split('/').filter(Boolean);
+  if (segments.length === 3 && segments[0] === 'battle' && segments[2] === 'result') return segments[1];
+  return null;
+}
+
 /**
  * Short paths that people and crawlers guess, mapped to the real route.
  *
@@ -809,20 +816,23 @@ export default {
       });
     }
 
-    // --- shared battle: /battle/<id> ---------------------------------------
-    const battleId = battleIdFromPath(path);
+    // --- shared battle: /battle/<id> and its result page /battle/<id>/result ---
+    const resultId = battleResultIdFromPath(path);
+    const battleId = resultId || battleIdFromPath(path);
     if (battleId) {
       const shell = await fetchShell(env, origin);
       try {
         const match = await fetchMatch(apiBase, battleId);
-        if (match && (match.userA || match.userB)) return injectBattleSeo(shell, match, origin, battleId);
+        if (match && (match.userA || match.userB)) {
+          return injectBattleSeo(shell, match, origin, battleId, { result: !!resultId });
+        }
       } catch (_err) {
         /* fall through to a generic, still-noindex battle page */
       }
       return injectSeo(shell, {
-        title: `Battle | ${SITE_NAME}`,
-        description: 'Vote on a head-to-head battle on TopHunt.',
-        canonical: `${origin}/battle/${encodeURIComponent(battleId)}`,
+        title: resultId ? `Battle result | ${SITE_NAME}` : `Battle | ${SITE_NAME}`,
+        description: resultId ? 'See who won this battle on TopHunt.' : 'Vote on a head-to-head battle on TopHunt.',
+        canonical: `${origin}/battle/${encodeURIComponent(battleId)}${resultId ? '/result' : ''}`,
         robots: 'noindex, follow',
       });
     }
@@ -1354,19 +1364,51 @@ function injectSeo(shellResp, opts) {
  * server-side and retained for the voting window (Worker migrations 0055/0056),
  * so a live battle normally has one.
  */
-function injectBattleSeo(shellResp, match, origin, battleId) {
+function injectBattleSeo(shellResp, match, origin, battleId, opts = {}) {
   const a = match.userA || {};
   const b = match.userB || {};
   const nameA = a.username ? `@${a.username}` : 'someone';
   const nameB = b.username ? `@${b.username}` : 'a rival';
   const contest = (match.title || '').trim();
   const versus = b.username || a.username ? `${nameA} vs ${nameB}` : 'A head-to-head battle';
-  const title = contest ? `${contest} — ${versus}` : versus;
 
   const settled = match.status === 'completed' || match.status === 'ended';
-  const description = settled
+  // The result page names the winner in the unfurl itself.
+  const winner = settled && match.winnerUid ? (match.winnerUid === a.uid ? a : match.winnerUid === b.uid ? b : null) : null;
+  const winnerVotes = winner ? Math.max(0, Number(winner.votes) || 0) : 0;
+  let title = contest ? `${contest} — ${versus}` : versus;
+  let description = settled
     ? `${versus} went head to head on TopHunt${contest ? ` in ${contest}` : ''}. See who won.`
     : `${versus} are going head to head${contest ? ` in ${contest}` : ''}. Vote for your favourite on TopHunt.`;
+  if (opts.result) {
+    if (winner && winner.username) {
+      title = `🏆 @${winner.username} won${contest ? ` — ${contest}` : ''}`;
+      description = `@${winner.username} won ${versus} with ${winnerVotes} ${winnerVotes === 1 ? 'vote' : 'votes'} on TopHunt. Congratulations!`;
+    } else if (settled) {
+      title = `It's a tie — ${versus}`;
+      description = `${versus} ended in a tie on TopHunt.`;
+    } else {
+      title = `${title} — Result`;
+      description = `${versus} — the result is on its way. Vote on TopHunt.`;
+    }
+  }
+  const canonicalPath = `/battle/${encodeURIComponent(battleId)}${opts.result ? '/result' : ''}`;
+
+  // A battle auto-hidden by user reports is under review: its unfurl must not
+  // amplify the reported photos or names. Generic copy, no image.
+  if (match.moderationHeld) {
+    const heldTitle = opts.result ? `Battle result | ${SITE_NAME}` : `Battle | ${SITE_NAME}`;
+    const heldDescription = 'This battle is under review on TopHunt.';
+    return injectSeo(shellResp, {
+      title: heldTitle,
+      description: heldDescription,
+      canonical: `${origin}${canonicalPath}`,
+      image: '',
+      type: 'article',
+      robots: 'noindex, follow',
+      noscript: `<noscript><article><h1>${esc(heldTitle)}</h1><p>${esc(heldDescription)}</p></article></noscript>`,
+    });
+  }
 
   // Once a battle has BOTH sides, the only acceptable preview is the canonical
   // two-photo VS card. Falling back to one participant's entry (what this used
@@ -1389,7 +1431,7 @@ function injectBattleSeo(shellResp, match, origin, battleId) {
   return injectSeo(shellResp, {
     title,
     description,
-    canonical: `${origin}/battle/${encodeURIComponent(battleId)}`,
+    canonical: `${origin}${canonicalPath}`,
     image,
     type: 'article',
     robots: 'noindex, follow',

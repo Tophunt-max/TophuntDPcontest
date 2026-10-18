@@ -75,3 +75,39 @@ export async function captureVsCard(ref: any): Promise<string | null> {
     return null;
   }
 }
+
+/**
+ * Capture a designed share card (e.g. the 9:16 winner card) at an exact output
+ * size. Same engine as `captureVsCard`: react-native-view-shot on Android/iOS,
+ * html-to-image on web (vsNativeModules.web.ts), so web gets a real screenshot
+ * too. Returns a `file://` (native) or `blob:` (web) uri, or null on any failure.
+ */
+export async function captureShareCard(
+  ref: any,
+  opts: { width: number; height: number; quality?: number; backgroundColor?: string },
+): Promise<string | null> {
+  const mod = getViewShot();
+  if (!ref || typeof mod?.captureRef !== 'function') return null;
+  // iOS view-shot treats width/height as POINTS and renders at screen scale, so
+  // 1080 would come out 3240px wide on a @3x phone (a ~75MB bitmap, and the
+  // "blank capture" failure mode the library warns about for large views).
+  // Android and web take pixels.
+  // Required lazily: this module is also imported by Node tests that do not load
+  // react-native at all.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { PixelRatio, Platform } = require('react-native');
+  const scale = Platform.OS === 'ios' ? PixelRatio.get() || 1 : 1;
+  try {
+    return await mod.captureRef(ref, {
+      format: 'jpg',
+      quality: opts.quality ?? 0.92,
+      result: 'tmpfile',
+      width: opts.width / scale,
+      height: opts.height / scale,
+      backgroundColor: opts.backgroundColor,
+    });
+  } catch (e) {
+    console.warn('[vsImage] share card capture failed', e);
+    return null;
+  }
+}

@@ -25,6 +25,7 @@ const REGISTRY: Record<string, 'primitive' | 'battle' | 'non-battle'> = {
   'src/components/share/ShareSheet.tsx': 'battle',
   'app/story/view/[userId].tsx': 'battle',
   'app/contest/joined/index.tsx': 'battle',
+  'app/battle/[id]/result.tsx': 'battle', // winner card screenshot, falls back to the canonical VS card
   'app/setting/delete-account.tsx': 'non-battle', // personal data export
   'app/wallet/index.tsx': 'non-battle', // referral invite
   'src/screens/BlogDetailScreen.tsx': 'non-battle', // blog post link

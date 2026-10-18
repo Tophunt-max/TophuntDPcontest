@@ -60,3 +60,44 @@ describe('battle link preview image', () => {
     expect(ogImage(html)).toBe(A);
   });
 });
+
+describe('battle RESULT link preview', () => {
+  async function resultPreview(match: any) {
+    restore = stubApi({ '/read/matches/*': () => json(match) });
+    const res = await get('https://tophunt.in/battle/m1/result');
+    return res.text();
+  }
+  const base = {
+    id: 'm1', title: 'Best Smile', vsImageUrl: CARD,
+    userA: { uid: 'a', username: 'alice', mediaUrl: A, votes: 12 }, userB: { uid: 'b', username: 'bob', mediaUrl: B, votes: 7 },
+  };
+
+  it('names the winner and their votes, with the result canonical', async () => {
+    const html = await resultPreview({ ...base, status: 'completed', winnerUid: 'a' });
+    expect(html).toContain('@alice won');
+    expect(html).toContain('12 votes');
+    expect(html).toContain('https://tophunt.in/battle/m1/result');
+    expect(ogImage(html)).toBe(CARD);
+  });
+
+  it('a tie says so; a live battle says the result is coming', async () => {
+    expect(await resultPreview({ ...base, status: 'completed', winnerUid: null })).toContain('It&#39;s a tie');
+    restore?.();
+    expect(await resultPreview({ ...base, status: 'active' })).toContain('Result');
+  });
+
+  it("never falls back to one participant's photo on the result page either", async () => {
+    const html = await resultPreview({ ...base, status: 'completed', winnerUid: 'a', vsImageUrl: null });
+    expect(ogImage(html)).toBeNull();
+    expect(html).not.toContain(A);
+  });
+
+  it('a battle held after reports unfurls generically: no photos, no names', async () => {
+    const html = await resultPreview({ ...base, status: 'completed', winnerUid: 'a', moderationHeld: true });
+    expect(ogImage(html)).toBeNull();
+    expect(html).not.toContain(CARD);
+    expect(html).not.toContain(A);
+    expect(html).not.toContain('@alice');
+    expect(html).toContain('under review');
+  });
+});

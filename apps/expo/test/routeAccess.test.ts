@@ -11,7 +11,7 @@ const seg = (path: string) => path.split('/').filter(Boolean);
 describe('classifyRoute', () => {
   it('public content is open to guests', () => {
     for (const s of [
-      'home', 'explore', 'explore/leaderboard', 'battle/[id]', 'blog', 'blog/[slug]', '[slug]',
+      'home', 'explore', 'explore/leaderboard', 'battle/[id]', 'battle/[id]/index', 'battle/[id]/result', 'blog', 'blog/[slug]', '[slug]',
       'legal/terms', 'legal/privacy', 'legal/refund', 'legal/guidelines',
       'story/view/[userId]', 'story/highlight/[userId]', 'contest/photo', 'contest/photo/index',
       'contest/video', 'profile/connections', 'profile/wins', '+not-found',

@@ -67,18 +67,52 @@ function resolveDomNode(ref: any): HTMLElement | null {
  * frame. `pixelRatio` is capped so a 3x retina screen does not produce a
  * needlessly huge upload.
  */
-async function captureRef(ref: any, opts?: { quality?: number }): Promise<string> {
+async function captureRef(
+  ref: any,
+  opts?: { quality?: number; width?: number; height?: number; backgroundColor?: string },
+): Promise<string> {
   const node = resolveDomNode(ref);
   if (!node) throw new Error('VS capture: no DOM node to screenshot.');
 
   const quality = typeof opts?.quality === 'number' ? opts.quality : 0.92;
-  const pixelRatio = Math.min((typeof window !== 'undefined' && window.devicePixelRatio) || 1, 2);
+  // A requested output WIDTH (e.g. 1080 for a 9:16 story card) wins over the
+  // screen's density, so web produces the same pixel size as native view-shot
+  // instead of whatever the laptop's devicePixelRatio happens to be.
+  const cssWidth = node.getBoundingClientRect?.().width || node.offsetWidth || 0;
+  const pixelRatio =
+    typeof opts?.width === 'number' && opts.width > 0 && cssWidth > 0
+      ? Math.min(opts.width / cssWidth, 4)
+      : Math.min((typeof window !== 'undefined' && window.devicePixelRatio) || 1, 2);
+
+  // html-to-image REPLACES any image it cannot fetch with an empty one and still
+  // "succeeds", which would share a card with a blank photo frame. Fetch every
+  // image the node shows first (the same CORS request html-to-image makes); if
+  // any fails, fail the capture so the caller falls back (e.g. to the server card).
+  const imgs = typeof node.querySelectorAll === 'function' ? Array.from(node.querySelectorAll('img')) : [];
+  const srcs = imgs
+    .map((img) => (img as HTMLImageElement).currentSrc || (img as HTMLImageElement).src)
+    .filter((u) => !!u && !u.startsWith('data:') && !u.startsWith('blob:'));
+  await Promise.all(
+    [...new Set(srcs)].map(async (u) => {
+      const res = await fetch(u, { mode: 'cors', cache: 'force-cache' });
+      if (!res.ok) throw new Error(`VS capture: image not readable (${res.status})`);
+    }),
+  );
+
+  // An exact output size (width AND height) is honoured to the pixel: the canvas
+  // is sized in CSS px and multiplied by `pixelRatio`, so 1080×1920 stays exact
+  // even when the on-screen box is fractional.
+  const exact =
+    typeof opts?.width === 'number' && typeof opts?.height === 'number' && opts.width > 0 && opts.height > 0 && cssWidth > 0
+      ? { canvasWidth: opts.width / pixelRatio, canvasHeight: opts.height / pixelRatio }
+      : {};
 
   const canvas = await toCanvas(node, {
     // Flatten transparency to the story's dark background rather than to JPEG's
     // default black, so any gap around the frame matches what is on screen.
-    backgroundColor: '#1B1226',
+    backgroundColor: opts?.backgroundColor || '#1B1226',
     pixelRatio,
+    ...exact,
     // Re-fetch entry images with a cache-buster so a previously cached response
     // without CORS headers is not what taints the canvas.
     cacheBust: true,

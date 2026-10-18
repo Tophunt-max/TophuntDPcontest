@@ -69,6 +69,11 @@ export function battleUrl(matchId: string): string {
   return `${shareOrigin()}/battle/${encodeURIComponent(matchId)}`;
 }
 
+/** The public result page link: `https://tophunt.in/battle/<id>/result`. */
+export function battleResultUrl(matchId: string): string {
+  return `${battleUrl(matchId)}/result`;
+}
+
 /**
  * Human caption with both handles and the link, e.g.
  * `Best Smile — @alice vs @bob. Vote now on TopHunt 👇\nhttps://tophunt.in/battle/m1`.
@@ -329,7 +334,7 @@ export async function shareBattleLink(opts: { caption: string; url: string }): P
  * native both paths re-encode the same source into the app's cache directory,
  * which the OS manages — no file-system dependency is added to delete it.)
  */
-export async function downloadBattleImage(vsImageUrl?: string | null): Promise<boolean> {
+export async function downloadBattleImage(vsImageUrl?: string | null, fileName = 'tophunt-battle.jpg'): Promise<boolean> {
   if (!vsImageUrl) return false;
 
   if (Platform.OS === 'web') {
@@ -341,7 +346,7 @@ export async function downloadBattleImage(vsImageUrl?: string | null): Promise<b
       const href = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = href;
-      a.download = 'tophunt-battle.jpg';
+      a.download = fileName;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -355,7 +360,8 @@ export async function downloadBattleImage(vsImageUrl?: string | null): Promise<b
 
   const sharing = getSharing();
   if (typeof sharing?.shareAsync !== 'function') return false;
-  const local = await localImageFile(vsImageUrl);
+  // A capture is already a local file; only remote images need materialising.
+  const local = vsImageUrl.startsWith('file:') ? vsImageUrl : await localImageFile(vsImageUrl);
   if (!local) return false;
   try {
     await sharing.shareAsync(local, { mimeType: CARD_MIME, dialogTitle: 'Save this battle', UTI: 'public.jpeg' });
@@ -431,4 +437,18 @@ export async function shareApp(): Promise<ShareOutcome> {
   if (!origin) return 'failed';
   const caption = `Join me on TopHunt — enter photo and video contests and vote on live battles 👇\n${origin}`;
   return shareBattleLink({ caption, url: origin });
+}
+
+/**
+ * Web fallback when the browser cannot attach a file to a share (most desktop
+ * browsers, Firefox): DOWNLOAD the image and copy the caption, so the user still
+ * leaves with the actual picture to post — not just a link. Native never needs
+ * this (the OS sheet always takes a file). Returns `image_saved` or `failed`.
+ */
+export async function saveImageAndCopyCaption(source: ShareImageSource, caption: string, fileName = 'tophunt-battle.jpg'): Promise<ShareOutcome> {
+  const url = source.kind === 'remote' ? source.url : source.uri;
+  const ok = await downloadBattleImage(url, fileName);
+  if (!ok) return 'failed';
+  await Clipboard.setStringAsync(caption).catch(() => undefined);
+  return 'image_saved';
 }

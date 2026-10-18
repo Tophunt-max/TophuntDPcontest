@@ -42,6 +42,9 @@ import {
   Bookmark_Filled 
 } from '@/assets/svgs';
 import { needsCatchUp, shouldListen } from '@/src/lib/liveWindow';
+import { battleResultPath, RESULT_REFETCH_DELAYS_MS } from '@/src/lib/battleResult';
+import { ArrowIcon } from '../ui/ArrowIcon';
+import { Alert } from '@/src/lib/appAlert';
 
 interface PostCardProps {
     item: any;
@@ -211,6 +214,22 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
   const liveEndedAtRef = useRef<number | null>(Date.now());
   const canListen = shouldListen({ liveActive, signedIn: !!user?.uid, status: matchStatus });
 
+  /** Apply a full `/read/matches/:id` answer to the card. */
+  const applyDetail = useCallback((data: any) => {
+    if (!data) return;
+    applyTally(Number(data.userA?.votes || 0), Number(data.userB?.votes || 0));
+    setLikeCount(data.likeCount || 0);
+    setCommentCount(data.commentCount || 0);
+    setShareCount(data.shareCount || 0);
+    setMatchStatus(data.status || 'active');
+    if (typeof data.hasVoted === 'boolean') setHasVoted(data.hasVoted);
+    if ('votedForUid' in data) setVotedForUid(data.votedForUid || null);
+    if ('winnerUid' in data) setWinnerUid(data.winnerUid || null);
+    // Keep the viewer's own like/bookmark state in sync (survives refresh).
+    if (typeof data.isLiked === 'boolean') setIsLiked(data.isLiked);
+    if (typeof data.isBookmarked === 'boolean') setIsBookmarked(data.isBookmarked);
+  }, [applyTally]);
+
   useEffect(() => {
     if (!item.id || !canListen) return;
     const catchUp = needsCatchUp(liveEndedAtRef.current);
@@ -221,20 +240,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
     const unsub = live<any>(
       `match:${item.id}`,
       () => readApi(`/read/matches/${item.id}`),
-      (data) => {
-        if (!data) return;
-        applyTally(Number(data.userA?.votes || 0), Number(data.userB?.votes || 0));
-        setLikeCount(data.likeCount || 0);
-        setCommentCount(data.commentCount || 0);
-        setShareCount(data.shareCount || 0);
-        setMatchStatus(data.status || 'active');
-        if (typeof data.hasVoted === 'boolean') setHasVoted(data.hasVoted);
-        if ('votedForUid' in data) setVotedForUid(data.votedForUid || null);
-        if ('winnerUid' in data) setWinnerUid(data.winnerUid || null);
-        // Keep the viewer's own like/bookmark state in sync (survives refresh).
-        if (typeof data.isLiked === 'boolean') setIsLiked(data.isLiked);
-        if (typeof data.isBookmarked === 'boolean') setIsBookmarked(data.isBookmarked);
-      },
+      applyDetail,
       {
         // The feed/profile list already hydrated this card (votes, counts,
         // isLiked/hasVoted, winner), so skip the redundant initial GET of
@@ -288,7 +294,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
       unsub();
       liveEndedAtRef.current = Date.now();
     };
-  }, [applyTally, item.id, user?.uid, canListen]);
+  }, [applyTally, applyDetail, item.id, user?.uid, canListen]);
 
   useEffect(() => {
     // Cancelled/voided battles disappear; completed ones stay to show the result.
@@ -456,7 +462,8 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
   // Shared with the contest cards — see src/hooks/useCountdown.ts. A match with
   // no expiresAt has always been treated as closed here (unlike a contest with
   // no endsAt, which never expires), so that mapping is kept explicit.
-  const countdown = useCountdown(item.expiresAt);
+  // Per-second: the card shows a live HH:MM:SS clock.
+  const countdown = useCountdown(item.expiresAt, { precision: 'second' });
   const timeRemaining = countdown.label ?? 'Ended';
 
   const votingClosed = matchStatus !== 'active' || countdown.ended || countdown.label === null;
@@ -477,6 +484,75 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
 
   // Urgency: highlight the countdown chip in the final hour of an open battle.
   const isUrgent = !votingClosed && countdown.urgent;
+
+  // Voting is over but the server has not declared the result yet. Normally a
+  // few seconds: the first re-read below kicks the Worker's settlement
+  // (lib/settleDue.ts) and the realtime `match_status` event lands right after.
+  const isPendingResult = matchStatus === 'active' && countdown.ended;
+  useEffect(() => {
+    // Only for a card someone can see: a long feed must not poll for every
+    // off-screen battle that happened to end.
+    if (!isPendingResult || !item.id || !liveActive) return;
+    let cancelled = false;
+    const timers = RESULT_REFETCH_DELAYS_MS.map((delay) =>
+      setTimeout(async () => {
+        if (cancelled) return;
+        try {
+          const data = await readApi(`/read/matches/${item.id}`);
+          if (!cancelled) applyDetail(data);
+        } catch {
+          /* the next attempt, the socket event or the safety-net poll will retry */
+        }
+      }, delay),
+    );
+    // Remaining attempts are cancelled the moment the status changes.
+    return () => {
+      cancelled = true;
+      timers.forEach(clearTimeout);
+    };
+  }, [isPendingResult, item.id, liveActive, applyDetail]);
+
+  // The result landing WHILE the card is on screen gets a small celebration.
+  // (Not on first render: a feed full of finished battles must not all burst.)
+  const prevStatusRef = useRef(matchStatus);
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    prevStatusRef.current = matchStatus;
+    if (prev === 'active' && matchStatus === 'completed') {
+      setShowConfetti(true);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      const t = setTimeout(() => setShowConfetti(false), 3500);
+      return () => clearTimeout(t);
+    }
+  }, [matchStatus]);
+
+  /** Report spam / QR-payment scams / fake entries. Server dedupes per user. */
+  const handleReport = useCallback(() => {
+    if (!user) return void requireAuth('report');
+    Alert.alert(
+      'Report this battle?',
+      'QR code / payment scam, spam, fake ya galat photo? Hamari team review karegi.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Report',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await contestService.reportMatch(item.id, 'Reported from battle card: spam / QR / fake entry');
+              addToast('Thanks — report submit ho gaya. Team review karegi.', 'success');
+            } catch {
+              addToast('Report submit nahi ho paya. Dobara try karein.', 'error');
+            }
+          },
+        },
+      ],
+    );
+  }, [user, requireAuth, item.id, addToast]);
+
+  const openResult = useCallback(() => {
+    if (item.id) router.push(battleResultPath(item.id) as any);
+  }, [item.id, router]);
 
   const isVideo = item.type === 'video';
   const isALeading = votesA > votesB;
@@ -680,17 +756,24 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
         </View>
         <View style={styles.voteLabels}>
           <Text style={[styles.votePercent, { color: '#FF4D7E' }]}>{Math.round(progressA * 100)}%</Text>
-          <View style={[styles.timeChip, { backgroundColor: trackColor }, isUrgent && styles.timeChipUrgent]}>
+          <View
+            style={[styles.timeChip, { backgroundColor: trackColor }, isUrgent && styles.timeChipUrgent]}
+            accessibilityRole="timer"
+            accessibilityLabel={votingClosed ? 'Contest ended' : `Time left ${timeRemaining}`}
+          >
             {votingClosed
               ? <Ionicons name="lock-closed" size={11} color={subTextColor} />
               : <Animated.View style={[styles.liveDot, isUrgent && styles.liveDotUrgent, liveDotStyle]} />}
             <Text
               style={[
                 styles.timeChipText,
+                // Fixed-width digits so the chip does not jitter every second.
+                !votingClosed && styles.timeChipClock,
+                countdown.finalMinute && styles.timeChipFinal,
                 { color: isUrgent ? '#FFF' : (votingClosed ? subTextColor : textColor) },
               ]}
             >
-              {votingClosed ? 'Ended' : timeRemaining}
+              {votingClosed ? 'Ended' : countdown.clock ?? timeRemaining}
             </Text>
           </View>
           <Text style={[styles.votePercent, { color: '#FF8A4D' }]}>{Math.round((1 - progressA) * 100)}%</Text>
@@ -711,25 +794,50 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
         </View>
       </View>
 
-      {/* Finished battle → show the result banner instead of vote buttons */}
-      {isCompleted && (
+      {/* Deadline passed, result being declared (normally seconds). */}
+      {isPendingResult && (
         <View style={styles.resultSection}>
-          {isTie ? (
-            <View style={[styles.resultBanner, styles.resultTie]}>
-              <Ionicons name="hand-left" size={16} color="#8A6D00" />
-              <Text style={styles.resultTieText}>It&apos;s a tie!</Text>
-            </View>
-          ) : (
-            <View style={[styles.resultBanner, styles.resultWin]}>
-              <MaterialCommunityIcons name="crown" size={16} color="#FFF" />
-              <Text style={styles.resultWinText} numberOfLines={1}>Winner: {winnerName}</Text>
-            </View>
-          )}
+          <View style={[styles.resultBanner, styles.resultPending]} accessibilityLiveRegion="polite">
+            <ActivityIndicator size="small" color="#FFF" />
+            <Text style={styles.resultPendingText} numberOfLines={1}>Contest Ended · Result aa raha hai…</Text>
+          </View>
         </View>
       )}
 
-      {/* Vote buttons (hidden once the battle is finished) */}
-      {!isCompleted && (
+      {/* Finished battle → "Contest Ended", the result and the way into it. */}
+      {isCompleted && (
+        <View style={styles.resultSection}>
+          <Text style={[styles.endedLabel, { color: subTextColor }]}>🏁 CONTEST ENDED</Text>
+          <Pressable
+            onPress={openResult}
+            accessibilityRole="button"
+            accessibilityLabel={isTie ? 'It is a tie. View result' : `Winner ${winnerName}. View result`}
+            style={({ pressed }) => [styles.resultBanner, isTie ? styles.resultTie : styles.resultWin, pressed && { opacity: 0.85 }]}
+          >
+            {isTie ? (
+              <>
+                <Ionicons name="hand-left" size={16} color="#8A6D00" />
+                <Text style={styles.resultTieText}>It&apos;s a tie!</Text>
+              </>
+            ) : (
+              <>
+                <MaterialCommunityIcons name="crown" size={16} color="#FFF" />
+                <Text style={styles.resultWinText} numberOfLines={1}>Winner: {winnerName}</Text>
+              </>
+            )}
+          </Pressable>
+          <TouchableOpacity onPress={openResult} activeOpacity={0.85} accessibilityRole="button" accessibilityLabel="View result">
+            <LinearGradient colors={['#FF4D67', '#FF8A4D']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.viewResultBtn}>
+              <Ionicons name="trophy" size={16} color="#FFF" />
+              <Text style={styles.viewResultText}>View Result</Text>
+              <ArrowIcon variant="chevron" direction="right" size={16} color="#FFF" />
+            </LinearGradient>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Vote buttons (hidden once voting is over) */}
+      {!isCompleted && !isPendingResult && (
       <View style={styles.voteButtonSection}>
         <AnimatedTouchable
           style={[
@@ -809,9 +917,20 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
             </TouchableOpacity>
         </View>
         
-        <TouchableOpacity onPress={handleBookmark}>
-            {isBookmarked ? <Bookmark_Filled width={26} height={26} color="#FF4D67" /> : <Bookmark_Outline width={26} height={26} color={textColor} />}
-        </TouchableOpacity>
+        <View style={styles.rightActions}>
+          <TouchableOpacity
+            onPress={handleReport}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel="Report this battle"
+            style={styles.reportBtn}
+          >
+            <Ionicons name="flag-outline" size={20} color={subTextColor} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={handleBookmark}>
+              {isBookmarked ? <Bookmark_Filled width={26} height={26} color="#FF4D67" /> : <Bookmark_Outline width={26} height={26} color={textColor} />}
+          </TouchableOpacity>
+        </View>
       </View>
       
       <CommentSheet postId={item.id} visible={showComments} onDismiss={() => setShowComments(false)} isDark={isDark} isContestMatch={true} />
@@ -890,6 +1009,8 @@ const styles = StyleSheet.create({
   timeChip: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 20, minWidth: 108 },
   timeChipUrgent: { backgroundColor: '#F0413E' },
   timeChipText: { fontFamily: 'Urbanist-Bold', fontSize: 12, letterSpacing: 0.3 },
+  timeChipClock: { fontVariant: ['tabular-nums'] },
+  timeChipFinal: { fontSize: 14 },
   liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#22A559' },
   liveDotUrgent: { backgroundColor: '#FFF' },
 
@@ -901,6 +1022,11 @@ const styles = StyleSheet.create({
   resultWinText: { fontFamily: 'Urbanist-Bold', fontSize: 14, color: '#FFF', flexShrink: 1 },
   resultTie: { backgroundColor: '#FFE68A', borderWidth: 1, borderColor: '#FFD700' },
   resultTieText: { fontFamily: 'Urbanist-Bold', fontSize: 14, color: '#8A6D00' },
+  resultPending: { backgroundColor: '#5B5F6B' },
+  resultPendingText: { fontFamily: 'Urbanist-Bold', fontSize: 14, color: '#FFF', flexShrink: 1 },
+  endedLabel: { fontFamily: 'Urbanist-Bold', fontSize: 11, letterSpacing: 1.2, textAlign: 'center', marginBottom: 6 },
+  viewResultBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, minHeight: 44, borderRadius: 16, marginTop: 8 },
+  viewResultText: { fontFamily: 'Urbanist-Bold', fontSize: 15, color: '#FFF' },
   voteButton: { flex: 1, minHeight: 46, paddingVertical: 12, paddingHorizontal: 8, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   voteButtonA: { backgroundColor: '#FF4D67' },
   voteButtonB: { backgroundColor: '#FF8A4D' },
@@ -912,6 +1038,8 @@ const styles = StyleSheet.create({
   // Action bar
   actionBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8, marginTop: 16, borderTopWidth: 1 },
   leftActions: { flexDirection: 'row', alignItems: 'center' },
+  rightActions: { flexDirection: 'row', alignItems: 'center', gap: 18 },
+  reportBtn: { padding: 2 },
   actionItem: { flexDirection: 'row', alignItems: 'center', marginRight: 28 },
   actionCount: { fontFamily: 'Urbanist-Bold', fontSize: 14, marginLeft: 8 },
 });
