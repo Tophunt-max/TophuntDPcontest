@@ -397,6 +397,20 @@ export const readApiWithCursor = async <T = any>(
 };
 
 /**
+ * Like `readApi` but returns the response headers too, for endpoints that carry
+ * a side value in an exposed header (e.g. `/read/notifications?withUnread=1`
+ * returns the badge count in `X-Unread-Count`). Headers must be listed in the
+ * Worker's API_EXPOSED_HEADERS to be readable on web.
+ */
+export const readApiWithHeaders = async <T = any>(
+  path: string,
+  params?: Record<string, any>,
+): Promise<{ data: T; headers: Headers }> => {
+  const { data, headers } = await request<T>(buildUrl(path, params));
+  return { data, headers };
+};
+
+/**
  * Realtime-by-polling. Replaces Firestore onSnapshot: repeatedly calls `fetcher`
  * and invokes `callback` with the result. Returns an unsubscribe function with
  * the same ergonomics as a Firestore listener.

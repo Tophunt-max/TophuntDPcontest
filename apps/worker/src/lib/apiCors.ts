@@ -24,7 +24,7 @@
 import type { Env } from "../types";
 
 /** Response headers the browser may read on an API response. */
-export const API_EXPOSED_HEADERS = ["X-Next-Cursor", "X-Request-Id"] as const;
+export const API_EXPOSED_HEADERS = ["X-Next-Cursor", "X-Request-Id", "X-Unread-Count"] as const;
 
 /** Request headers the browser may send. */
 export const API_ALLOWED_HEADERS = ["Content-Type", "Authorization"] as const;

@@ -314,22 +314,77 @@ export const reactToStoryLocally = async (_storyId: string, _emoji: string): Pro
 // Pending action queue
 // ============================================
 
+/**
+ * Hard ceiling on queued offline actions. Oldest are evicted first. A queue that
+ * grows without bound is a storage leak and, worse, a burst of hundreds of replays
+ * the moment connectivity returns.
+ */
+export const MAX_PENDING_ACTIONS = 200;
+
+/**
+ * Only actions that are SAFE TO REPLAY are queued.
+ *
+ * Both are idempotent server-side: a story view is an upsert on
+ * (story_id, viewer_id) and a reaction overwrites the same row's `reaction`
+ * (routes/api.ts, story_views onConflictDoUpdate), so a replay after a lost
+ * response cannot double-count. `create` / `delete` were never replayed by
+ * `syncPendingActions` and are refused here rather than stored and dropped.
+ * Money, contest-entry, wallet and withdrawal actions must NEVER be added: they go
+ * through callApi with server idempotency keys and must be re-confirmed by the user,
+ * not replayed blindly.
+ */
+const REPLAYABLE: ReadonlySet<PendingActionType> = new Set(['view', 'reaction']);
+
 export const queuePendingAction = async (action: {
   type: PendingActionType;
   storyId: string;
   userId: string;
   data: any;
 }): Promise<void> => {
+  if (!REPLAYABLE.has(action.type)) return;
   try {
     await database.write(async () => {
-      await database.get<PendingActionModel>('pending_actions').create((r) => {
-        r.type = action.type;
-        r.storyId = action.storyId;
-        r.userId = action.userId;
-        r.data = JSON.stringify(action.data ?? {});
-        r.timestamp = Date.now();
-        r.retries = 0;
-      });
+      const col = database.get<PendingActionModel>('pending_actions');
+      // One row per (type, story, user): repeated failed views of the same story
+      // used to add a row each time. A view needs replaying once; for a reaction
+      // the latest emoji is the one the user meant, so it replaces the old one.
+      const same = await col
+        .query(
+          Q.where('type', action.type),
+          Q.where('story_id', action.storyId),
+          Q.where('user_id', action.userId),
+        )
+        .fetch();
+      if (same.length > 0) {
+        const [keep, ...dupes] = same;
+        const ops: any[] = dupes.map((d) => d.prepareDestroyPermanently());
+        if (action.type === 'reaction') {
+          ops.push(
+            keep.prepareUpdate((r) => {
+              r.data = JSON.stringify(action.data ?? {});
+              r.timestamp = Date.now();
+              r.retries = 0;
+            }),
+          );
+        }
+        if (ops.length) await database.batch(...ops);
+        return;
+      }
+
+      const queued = await col.query(Q.sortBy('timestamp', Q.asc)).fetch();
+      const overflow = queued.length - MAX_PENDING_ACTIONS + 1;
+      const ops: any[] = overflow > 0 ? queued.slice(0, overflow).map((r) => r.prepareDestroyPermanently()) : [];
+      ops.push(
+        col.prepareCreate((r) => {
+          r.type = action.type;
+          r.storyId = action.storyId;
+          r.userId = action.userId;
+          r.data = JSON.stringify(action.data ?? {});
+          r.timestamp = Date.now();
+          r.retries = 0;
+        }),
+      );
+      await database.batch(...ops);
     });
   } catch (error) {
     console.error('[queuePendingAction] Error:', error);
@@ -348,10 +403,15 @@ export const getPendingActions = async (): Promise<PendingActionModel[]> => {
   }
 };
 
-export const removePendingAction = async (actionId: string): Promise<void> => {
+/**
+ * Remove a queued action. With `ifTimestamp`, only if the row was not rewritten
+ * since (see the reaction note in syncPendingActions).
+ */
+export const removePendingAction = async (actionId: string, ifTimestamp?: number): Promise<void> => {
   try {
     const action = await findOrNull<PendingActionModel>('pending_actions', actionId);
     if (!action) return;
+    if (ifTimestamp != null && action.timestamp !== ifTimestamp) return;
     await database.write(async () => {
       await action.destroyPermanently();
     });
@@ -423,6 +483,10 @@ export const syncPendingActions = async (): Promise<void> => {
 
     for (const action of actions) {
       if (action.userId && action.userId !== currentUid) continue;
+      // `queuePendingAction` rewrites a reaction row in place (latest emoji wins).
+      // If that happens while this replay is in flight, the row now holds a NEWER
+      // emoji than the one sent — so it must survive for the next sync.
+      const replayedTimestamp = action.timestamp;
       try {
         switch (action.type) {
           case 'view':
@@ -439,7 +503,7 @@ export const syncPendingActions = async (): Promise<void> => {
             // Unknown/unsupported type — drop it rather than retry forever.
             break;
         }
-        await removePendingAction(action.id);
+        await removePendingAction(action.id, replayedTimestamp);
       } catch (error) {
         console.error(`[syncPendingActions] Failed to sync action ${action.id}:`, error);
         if (action.retries + 1 >= MAX_SYNC_RETRIES) {

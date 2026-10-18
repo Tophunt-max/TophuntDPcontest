@@ -2,7 +2,7 @@ import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getApp } from 'firebase/app';
-import { callApi, readApi, readApiWithCursor } from '../api';
+import { callApi, readApi, readApiWithCursor, readApiWithHeaders } from '../api';
 import { live } from '../realtime';
 import { ANDROID_CHANNEL_ID, type NotificationType } from './notificationMeta';
 
@@ -59,6 +59,71 @@ const PUSH_TOKEN_KEY = 'push::deviceToken';
  * still arrives instantly over the socket. See D1_R2_LOAD_AUDIT.md §5.
  */
 const NOTIFICATION_FALLBACK_MS = 180_000;
+
+/**
+ * Shared per-account badge state.
+ *
+ * The bell (HeartNotificationIcon, on Home) and the open notifications screen
+ * both subscribe to the same `user:<uid>` channel with the same filter. They
+ * already share ONE WebSocket (realtime.ts multiplexes per channel), but each
+ * `notification` event made each of them fetch — two requests, two auth checks,
+ * two block/mute lookups for one change. While the list is open, its fetch now
+ * asks for the count too (`withUnread=1` → `X-Unread-Count`) and hands it to the
+ * bell, which skips its own refresh. Against a Worker that predates the header
+ * the bell simply keeps fetching for itself (`headerSupported` stays false).
+ *
+ * Keyed by uid, so one account's count can never reach another account's bell;
+ * the entry is dropped when its last subscriber leaves.
+ */
+interface BadgeState {
+    count: number | null;
+    at: number;
+    /**
+     * Bumped when a mark-all-seen starts and again when it finishes. A list fetch
+     * publishes its count only if this did not move while it was in flight, so a
+     * response computed before the mark cannot repaint the dot after the 0.
+     */
+    markEpoch: number;
+    markInFlight: number;
+    headerSupported: boolean;
+    listSubscribers: number;
+    listeners: Set<(count: number) => void>;
+}
+const badgeStates = new Map<string, BadgeState>();
+/** A count published by the list within this window satisfies a bell refresh. */
+const SHARED_COUNT_MAX_AGE_MS = 15_000;
+
+function badgeState(uid: string): BadgeState {
+    let st = badgeStates.get(uid);
+    if (!st) {
+        st = { count: null, at: 0, markEpoch: 0, markInFlight: 0, headerSupported: false, listSubscribers: 0, listeners: new Set() };
+        badgeStates.set(uid, st);
+    }
+    return st;
+}
+
+function releaseBadgeState(uid: string): void {
+    const st = badgeStates.get(uid);
+    if (st && st.listeners.size === 0 && st.listSubscribers === 0) badgeStates.delete(uid);
+}
+
+function publishBadgeCount(uid: string, count: number): void {
+    const st = badgeStates.get(uid);
+    if (!st) return;
+    st.count = count;
+    st.at = Date.now();
+    for (const fn of st.listeners) fn(count);
+}
+
+/** The list is open and is delivering the count: the bell need not fetch. */
+function listCarriesCount(st: BadgeState): boolean {
+    return st.listSubscribers > 0 && st.headerSupported;
+}
+
+/** Test hook. */
+export function __resetBadgeStateForTests(): void {
+    badgeStates.clear();
+}
 
 export interface NotificationItem {
     id: string;
@@ -271,12 +336,36 @@ class NotificationService {
 
     // 2. Real-time unread count — instant via the user's WebSocket channel.
     subscribeToUnreadCount(userId: string, callback: (count: number) => void): () => void {
-        return live(
+        const st = badgeState(userId);
+        st.listeners.add(callback);
+        const unsubscribe = live(
             `user:${userId}`,
-            () => readApi('/read/notifications/unread-count'),
-            (res: any) => callback(res?.count ?? 0),
-            { filter: (e) => e.type === 'notification', fallbackMs: NOTIFICATION_FALLBACK_MS },
+            async () => {
+                // A fresh count from the open list's fetch answers this refresh.
+                if (listCarriesCount(st) && st.count != null && Date.now() - st.at < SHARED_COUNT_MAX_AGE_MS) {
+                    return { count: st.count, shared: true };
+                }
+                return readApi('/read/notifications/unread-count');
+            },
+            (res: any) => {
+                // A shared count was already published to the bells that existed
+                // then — but THIS one may have subscribed since (e.g. a Header
+                // mounting while the list is open), so tell it directly.
+                if (res?.shared) callback(Number(res.count ?? 0));
+                else publishBadgeCount(userId, Number(res?.count ?? 0));
+            },
+            {
+                filter: (e) => e.type === 'notification',
+                fallbackMs: NOTIFICATION_FALLBACK_MS,
+                // The list's own refresh for this same event will deliver the count.
+                shouldRefresh: () => !listCarriesCount(st),
+            },
         );
+        return () => {
+            st.listeners.delete(callback);
+            unsubscribe();
+            releaseBadgeState(userId);
+        };
     }
 
     // 3. Notifications list — instant via the user's WebSocket channel.
@@ -291,12 +380,33 @@ class NotificationService {
         callback: (items: NotificationItem[]) => void,
         onError?: (reason: 'fetch_failed' | 'backgrounded', error?: unknown) => void,
     ): () => void {
-        return live(
+        const st = badgeState(userId);
+        st.listSubscribers += 1;
+        const unsubscribe = live(
             `user:${userId}`,
-            () => readApi('/read/notifications', { limit: limitCount }),
+            async () => {
+                const epoch = st.markEpoch;
+                const { data, headers } = await readApiWithHeaders<NotificationItem[]>('/read/notifications', {
+                    limit: limitCount,
+                    withUnread: 1,
+                });
+                const raw = headers?.get?.('X-Unread-Count');
+                const n = raw == null ? NaN : Number(raw);
+                if (Number.isFinite(n)) {
+                    st.headerSupported = true;
+                    // Skip a count that may predate a mark-all-seen (see markEpoch).
+                    if (st.markInFlight === 0 && epoch === st.markEpoch) publishBadgeCount(userId, n);
+                }
+                return data;
+            },
             (items: NotificationItem[]) => callback(items || []),
             { filter: (e) => e.type === 'notification', fallbackMs: NOTIFICATION_FALLBACK_MS, onError },
         );
+        return () => {
+            st.listSubscribers = Math.max(0, st.listSubscribers - 1);
+            unsubscribe();
+            releaseBadgeState(userId);
+        };
     }
 
     // 4. Mark as read -> Worker (was Firestore writeBatch)
@@ -329,7 +439,23 @@ class NotificationService {
      * what the user had actually engaged with.
      */
     async markAllAsSeen() {
-        try { await callApi('markAllNotificationsSeen', {}); } catch { /* best-effort */ }
+        const states = [...badgeStates.values()];
+        for (const st of states) {
+            st.markEpoch += 1;
+            st.markInFlight += 1;
+        }
+        try {
+            await callApi('markAllNotificationsSeen', {});
+            // The server count is now 0; tell the bell without another request.
+            // (Previously it kept showing the dot until the next event or the
+            // 3-minute safety-net poll.)
+            for (const uid of badgeStates.keys()) publishBadgeCount(uid, 0);
+        } catch { /* best-effort */ } finally {
+            for (const st of states) {
+                st.markEpoch += 1;
+                st.markInFlight = Math.max(0, st.markInFlight - 1);
+            }
+        }
     }
 
     /**

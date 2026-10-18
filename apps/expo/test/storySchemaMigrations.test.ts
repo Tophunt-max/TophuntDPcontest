@@ -92,6 +92,20 @@ describe('local cache schema ↔ migrations', () => {
     }
   });
 
+  it('creates the feed_snapshots table (v5) with exactly the schema’s columns', () => {
+    const created = allMigrations()
+      .flatMap((m: any) => m.steps ?? [])
+      .filter((step: any) => step.type === 'create_table' && step.schema?.name === 'feed_snapshots');
+    expect(created, 'no createTable step for feed_snapshots').toHaveLength(1);
+    const migratedCols = Object.keys(created[0].schema.columns).sort();
+    expect(migratedCols).toEqual(schemaColumns('feed_snapshots').sort());
+    // Same types/optionality/indexing as the declaration, or upgraded devices and
+    // fresh installs disagree about the table.
+    for (const name of migratedCols) {
+      expect(created[0].schema.columns[name], name).toEqual((schema.tables as any).feed_snapshots.columns[name]);
+    }
+  });
+
   it('still carries the contest columns that broke battle stories', () => {
     const declared = schemaColumns('stories');
     const migrated = migratedColumns('stories');

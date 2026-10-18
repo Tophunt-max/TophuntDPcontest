@@ -110,6 +110,8 @@ app.use("*", async (c, next) => {
       path,
       status: c.res.status,
       ms,
+      // Shared read-cache outcome, when the route used one (see Variables.edgeCache).
+      ...(c.get("edgeCache") ? { edgeCache: c.get("edgeCache") } : {}),
     }),
   );
 });

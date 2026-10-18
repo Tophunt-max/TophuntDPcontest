@@ -210,9 +210,29 @@ function RootLayoutNav() {
       void import('@/src/services/stories/offlineStoryService')
         .then(({ clearLocalStories }) => clearLocalStories())
         .catch((e) => console.error('Story cache clear failed', e));
+      // Same for the Home feed snapshot: it carries the previous viewer's
+      // vote/like/bookmark flags and their personalised ordering. Home also keys
+      // its reads by uid, so this is defence in depth plus the storage bound.
+      void import('@/src/lib/feedSnapshot')
+        .then(({ clearFeedSnapshots }) => clearFeedSnapshots())
+        .catch((e) => console.error('Feed snapshot clear failed', e));
     }
     lastUidRef.current = uid;
   }, [user?.uid, loading]);
+
+  // Local-database housekeeping, once per launch and off the critical path:
+  // expired Story rows and week-old queued actions. Both helpers existed but had
+  // no caller, so the tables were bounded only by the next account switch.
+  React.useEffect(() => {
+    const t = setTimeout(() => {
+      void import('@/src/services/stories/offlineStoryService')
+        .then(({ clearExpiredStories, clearOldPendingActions }) =>
+          Promise.all([clearExpiredStories(), clearOldPendingActions()]),
+        )
+        .catch((e) => console.error('Local cache housekeeping failed', e));
+    }, 5000);
+    return () => clearTimeout(t);
+  }, []);
   const segments = useSegments();
   const router = useRouter();
 

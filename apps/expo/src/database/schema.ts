@@ -1,7 +1,8 @@
 import { appSchema, tableSchema } from '@nozbe/watermelondb';
 
 /**
- * Local (offline) schema for the stories cache.
+ * Local (offline) schema: the stories cache, its pending-action queue, and (v5)
+ * the Home feed snapshot.
  *
  * Notes for anyone editing this file:
  *
@@ -16,7 +17,7 @@ import { appSchema, tableSchema } from '@nozbe/watermelondb';
  *   are safe to own ourselves.
  */
 export const schema = appSchema({
-  version: 4,
+  version: 5,
   tables: [
     tableSchema({
       name: 'stories',
@@ -83,6 +84,25 @@ export const schema = appSchema({
         { name: 'data', type: 'string' }, // JSON payload
         { name: 'timestamp', type: 'number', isIndexed: true },
         { name: 'retries', type: 'number' },
+        { name: 'updated_at', type: 'number' },
+      ],
+    }),
+    // Home feed first-page snapshot (schema v5) — see src/lib/feedSnapshot.ts.
+    //
+    // One row per (viewer, tab); the record id is `${owner}|${tab}`, so a refresh
+    // is an idempotent upsert and the table holds at most two rows (rows owned by
+    // any other viewer are deleted on every write and on account change). `items`
+    // is a size-capped JSON array of match SUMMARIES — URLs only, never media bytes
+    // or data: URIs; the bytes stay in expo-image / the video cache.
+    tableSchema({
+      name: 'feed_snapshots',
+      columns: [
+        { name: 'owner', type: 'string', isIndexed: true }, // `u:<uid>` | 'guest'
+        { name: 'tab', type: 'string' }, // 'foryou' | 'following'
+        { name: 'items', type: 'string' }, // JSON array (sanitised, capped)
+        { name: 'next_cursor', type: 'string', isOptional: true },
+        { name: 'fetched_at', type: 'number' }, // epoch ms of the network read
+        { name: 'format', type: 'number' }, // snapshot payload format version
         { name: 'updated_at', type: 'number' },
       ],
     }),

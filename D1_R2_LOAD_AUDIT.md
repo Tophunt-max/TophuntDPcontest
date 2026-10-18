@@ -1,5 +1,11 @@
 # D1 + R2 load audit
 
+> **2026-10-18 re-verification:** see [CACHE_POLICY.md](CACHE_POLICY.md). Resolved since this was
+> written: the notifications hard-prune scan, the `/read/matches` and comment-thread temp-sorts
+> (migration `0059`, pinned by `apps/worker/test/queryPlans.test.ts`), and the list + badge double
+> fetch (`/read/notifications?withUnread=1`). Still open: `sort=hot`, `SELECT *` on wide tables, the
+> unbounded profile following list, blog view-count writes and the cron N+1 (CACHE_POLICY.md §6).
+
 **Date:** 2026-08-24 · **Scope:** `apps/worker`, plus the client polling that drives it
 
 ## How to read this

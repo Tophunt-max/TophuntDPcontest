@@ -354,6 +354,8 @@ export const contestMatches = sqliteTable(
     statusIdx: index("idx_matches_status").on(t.status),
     expiresIdx: index("idx_matches_expires").on(t.expiresAt),
     statusExpiresIdx: index("idx_matches_status_expires").on(t.status, t.expiresAt),
+    // /read/matches keyset page: WHERE status [AND created_at < ?] ORDER BY created_at DESC (0059).
+    statusCreatedIdx: index("idx_matches_status_created").on(t.status, t.createdAt),
     vsImageRetainIdx: index("idx_matches_vs_image_retain")
       .on(t.vsImageRetainUntil)
       .where(sql`${t.vsImageUrl} IS NOT NULL`),
@@ -550,7 +552,11 @@ export const postComments = sqliteTable(
     likeCount: integer("like_count").default(0),
     createdAt: integer("created_at").notNull(),
   },
-  (t) => ({ postIdx: index("idx_comments_post").on(t.postId) }),
+  (t) => ({
+    postIdx: index("idx_comments_post").on(t.postId),
+    // Keyset thread page ORDER BY created_at DESC, id DESC (0059).
+    postCreatedIdx: index("idx_post_comments_post_created").on(t.postId, t.createdAt, t.id),
+  }),
 );
 
 export const commentLikes = sqliteTable(
@@ -653,7 +659,11 @@ export const matchComments = sqliteTable(
     likeCount: integer("like_count").default(0),
     createdAt: integer("created_at").notNull(),
   },
-  (t) => ({ matchIdx: index("idx_match_comments_match").on(t.matchId) }),
+  (t) => ({
+    matchIdx: index("idx_match_comments_match").on(t.matchId),
+    // Keyset thread page ORDER BY created_at DESC, id DESC (0059).
+    matchCreatedIdx: index("idx_match_comments_match_created").on(t.matchId, t.createdAt, t.id),
+  }),
 );
 
 export const matchReactions = sqliteTable(
@@ -749,6 +759,8 @@ export const notifications = sqliteTable(
     unseenIdx: index("idx_notif_unseen").on(t.recipientId).where(sql`${t.seen} = 0`),
     // Collapse lookup: WHERE recipient_id = ? AND collapse_key = ?
     collapseIdx: index("idx_notif_collapse").on(t.recipientId, t.collapseKey),
+    // Hard-retention prune WHERE created_at < ? (0059) — without it the hourly prune scanned the table.
+    createdIdx: index("idx_notifications_created").on(t.createdAt),
   }),
 );
 

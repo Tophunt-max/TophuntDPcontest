@@ -19,9 +19,27 @@
  */
 let version = 0;
 
+const listeners = new Set<() => void>();
+
 /** Call after any change to blocks or mutes. */
 export function bumpSocialGraphVersion(): void {
   version += 1;
+  // Persistent caches holding viewer-filtered content (the Home feed snapshot)
+  // subscribe here so a block/mute also invalidates what survives a restart —
+  // the version counter itself is session-only.
+  for (const fn of listeners) {
+    try {
+      fn();
+    } catch (e) {
+      console.warn('[socialGraphVersion] listener failed (continuing)', e);
+    }
+  }
+}
+
+/** Run `fn` after every block/mute change. Returns an unsubscribe. */
+export function onSocialGraphChange(fn: () => void): () => void {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
 }
 
 /** The current version. Compare against the value held when data was last loaded. */
