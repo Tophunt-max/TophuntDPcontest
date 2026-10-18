@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="960" viewBox="0 0 1200 960">
+  <!-- background blob + clouds, same palette as onBordingLight1-3 -->
+  <path d="M120 760 C 40 640, 120 470, 300 450 C 470 430, 520 300, 700 260 C 900 215, 1110 330, 1120 520 C 1130 700, 980 820, 760 830 C 560 840, 230 900, 120 760 Z" fill="#2F2E41"/>
+  <circle cx="230" cy="560" r="7" fill="#fff"/><circle cx="1010" cy="420" r="6" fill="#fff"/>
+  <circle cx="960" cy="720" r="9" fill="#FF4D67"/><circle cx="330" cy="690" r="5" fill="#fff"/>
+  <circle cx="880" cy="300" r="5" fill="#fff"/>
+  <g fill="#F2F2F2">
+    <circle cx="150" cy="150" r="50"/><circle cx="215" cy="125" r="62"/><circle cx="285" cy="155" r="44"/>
+    <rect x="100" y="150" width="230" height="50" rx="4"/>
+    <circle cx="960" cy="110" r="38"/><circle cx="1010" cy="92" r="48"/><circle cx="1062" cy="115" r="34"/>
+    <rect x="922" y="112" width="176" height="38" rx="4"/>
+  </g>
+  <circle cx="125" cy="120" r="44" fill="#FF6584" opacity=".9"/>
+  <g fill="#F2F2F2"><circle cx="150" cy="150" r="50"/><rect x="100" y="150" width="120" height="50"/></g>
+
+  <!-- phone -->
+  <rect x="560" y="210" width="330" height="620" rx="42" fill="#3F3D56"/>
+  <rect x="580" y="250" width="290" height="545" rx="22" fill="#fff"/>
+  <rect x="680" y="226" width="90" height="10" rx="5" fill="#2F2E41"/>
+  <!-- story rings -->
+  <g>
+    <circle cx="638" cy="315" r="34" fill="none" stroke="#FF4D67" stroke-width="7"/>
+    <circle cx="638" cy="315" r="25" fill="#FFB6B6"/>
+    <circle cx="725" cy="315" r="34" fill="none" stroke="#FF4D67" stroke-width="7"/>
+    <circle cx="725" cy="315" r="25" fill="#2F2E41"/>
+    <circle cx="812" cy="315" r="34" fill="none" stroke="#E6E6E6" stroke-width="7"/>
+    <circle cx="812" cy="315" r="25" fill="#FFB6B6"/>
+  </g>
+  <!-- creator card -->
+  <rect x="604" y="380" width="242" height="250" rx="18" fill="#F2F2F2"/>
+  <circle cx="725" cy="450" r="44" fill="#FF4D67"/>
+  <path d="M697 438 a28 28 0 0 1 56 0 v6 h-56 z" fill="#2F2E41"/>
+  <circle cx="725" cy="458" r="22" fill="#FFB6B6"/>
+  <rect x="660" y="510" width="130" height="14" rx="7" fill="#3F3D56"/>
+  <rect x="680" y="536" width="90" height="10" rx="5" fill="#CCCCCC"/>
+  <rect x="655" y="570" width="140" height="42" rx="21" fill="#FF4D67"/>
+  <path d="M690 591 h20 M700 581 v20" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
+  <rect x="718" y="585" width="52" height="12" rx="6" fill="#fff"/>
+  <!-- feed thumbnails -->
+  <rect x="604" y="650" width="115" height="120" rx="14" fill="#FF4D67" opacity=".85"/>
+  <rect x="731" y="650" width="115" height="120" rx="14" fill="#3F3D56"/>
+  <path d="M640 740 l25 -35 l20 25 l12 -14 l20 24 z" fill="#fff" opacity=".9"/>
+  <path d="M775 690 v40 l32 -20 z" fill="#fff"/>
+
+  <!-- person pointing at the phone -->
+  <circle cx="380" cy="300" r="46" fill="#FFB6B6"/>
+  <path d="M332 292 c 0 -50, 40 -70, 70 -60 c 30 8, 40 30, 30 50 c -20 -18, -60 -18, -100 10 z" fill="#2F2E41"/>
+  <path d="M320 360 h120 l20 230 h-160 z" fill="#FF4D67"/>
+  <path d="M440 380 l120 -10 l4 26 l-118 30 z" fill="#FF4D67"/>
+  <circle cx="568" cy="382" r="16" fill="#FFB6B6"/>
+  <path d="M325 380 l-35 150 l26 6 l40 -130 z" fill="#FF4D67"/>
+  <circle cx="300" cy="545" r="15" fill="#FFB6B6"/>
+  <path d="M305 590 h150 l-10 250 h-36 l-25 -190 l-30 190 h-36 z" fill="#E6E6E6"/>
+  <path d="M345 840 h-46 l-6 20 h52 z M440 840 h-36 l-2 20 h52 z" fill="#FF4D67"/>
+  <!-- little hearts floating -->
+  <path d="M930 260 c -10 -14, -32 -2, -20 14 l20 18 l20 -18 c 12 -16, -10 -28, -20 -14 z" fill="#FF4D67"/>
+  <path d="M990 190 c -6 -9, -20 -1, -12 9 l12 11 l12 -11 c 8 -10, -6 -18, -12 -9 z" fill="#FF6584"/>
+</svg>

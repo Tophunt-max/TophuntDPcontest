@@ -4,6 +4,7 @@ import {
   StyleSheet,
   Image,
   Text,
+  Linking,
 } from 'react-native';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useRouter } from 'expo-router';
@@ -23,6 +24,7 @@ import Animated, {
 import { Colors } from '@/constants/theme';
 import { getAppConfig } from '../src/services/appSettings';
 import { readApi } from '../src/services/api';
+import { guestStartRoute, ONBOARDING_SEEN_KEY, sessionEntryKind } from '../src/lib/onboarding';
 
 
 // Loading Spinner Component
@@ -64,6 +66,8 @@ export default function SplashScreen() {
   const router = useRouter();
   const [appIsReady, setAppIsReady] = useState(false);
   const [splashImage, setSplashImage] = useState<string | null>(null);
+  // Admin switch for the first-launch intro; unknown (config failed) = on.
+  const onboardingEnabledRef = React.useRef(true);
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
@@ -90,6 +94,7 @@ export default function SplashScreen() {
         if (config?.splashImageUrl) {
             setSplashImage(config.splashImageUrl);
         }
+        if (config && config.onboardingEnabled === false) onboardingEnabledRef.current = false;
 
         // Fonts are NOT loaded here. They are loaded by the root layout
         // (app/_layout.tsx), which is the only component that mounts for every
@@ -117,12 +122,20 @@ export default function SplashScreen() {
     let unsubscribe: (() => void) | undefined;
 
     const performNavigationCheck = async () => {
-        const hasSeenOnboarding = await AsyncStorage.getItem('hasSeenOnboarding');
+        const hasSeenOnboarding = await AsyncStorage.getItem(ONBOARDING_SEEN_KEY).catch(() => null);
+        // Opened from a link (shared battle/profile, blog, `/?ref=…`)? Then no
+        // intro this session — see src/lib/onboarding.ts.
+        const entry = await sessionEntryKind(() => Linking.getInitialURL());
 
         unsubscribe = onAuthStateChanged(auth, async (user: User | null) => {
             console.log("Auth state:", user ? "Logged in" : "Guest");
 
             if (user) {
+                // A signed-in user never gets the intro — not now, and not after
+                // signing out later (src/lib/onboarding.ts).
+                if (hasSeenOnboarding !== 'true') {
+                    void AsyncStorage.setItem(ONBOARDING_SEEN_KEY, 'true').catch(() => {});
+                }
                 try {
                     // Account scheduled for deletion? Route to the reactivation gate
                     // instead of home. This MUST be checked before the profile lookup
@@ -157,15 +170,11 @@ export default function SplashScreen() {
                     router.replace('/home');
                 }
             } else {
-                // Guest-first: new and returning guests both land on the public
-                // Home feed. Sign-in is asked for only when they open a personal
-                // screen or tap a protected action (src/hooks/useAuthGate.ts).
-                // Marking onboarding as seen keeps the old intro from being shown
-                // ahead of content on a later launch.
-                if (hasSeenOnboarding !== 'true') {
-                    await AsyncStorage.setItem('hasSeenOnboarding', 'true').catch(() => {});
-                }
-                router.replace('/home');
+                // Guest-first: a brand-new guest gets the short TopHunt intro
+                // once (Skip is always there); every later launch goes straight
+                // to the public Home feed. Sign-in is asked for only when they
+                // open a personal screen or tap a protected action.
+                router.replace(guestStartRoute(hasSeenOnboarding, { entry, enabled: onboardingEnabledRef.current }));
             }
         });
     };

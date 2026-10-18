@@ -19,11 +19,15 @@ export interface AppConfig {
   withdrawal?: { enabled?: boolean; minAmount?: number; conversionRate?: number };
   splashImageUrl?: string;
   headerLogoUrl?: string;
+  /** First-launch intro slides, managed from the admin panel's Onboarding page. Empty = built-in. */
   onboarding?: {
     title: string;
-    description: string;
-    imageUrl: string;
+    description?: string;
+    /** "" = the built-in art for that position. */
+    imageUrl?: string;
   }[];
+  /** false = an admin switched the intro off. */
+  onboardingEnabled?: boolean;
   legalSettings?: {
     termsOfService?: string;
     privacyPolicy?: string;

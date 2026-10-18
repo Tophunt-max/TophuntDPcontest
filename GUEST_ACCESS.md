@@ -12,7 +12,7 @@ Guests can open the app and browse public content. They are asked to sign in onl
 
 | Surface | Before | Now | Change (file) |
 |---|---|---|---|
-| Cold start (`splash.tsx`) | Returning guest → `/auth/login`; first launch → onboarding → login | Guest → `/home` | `app/splash.tsx`, `app/onboarding/index.tsx` |
+| Cold start (`splash.tsx`) | Returning guest → `/auth/login`; first launch → onboarding → login | New guest who opened TopHunt **directly** (app icon / bare `tophunt.in`) → intro once (5 built-in slides or the admin's; Skip / Get started → `/home`, or Log in) → later launches straight to `/home`. Never for signed-in users, never when the session started from a link (battle, profile, blog, Story, `/?ref=`/`/?utm_`), never when the admin switched it off (`onboardingEnabled`). Admin panel → Onboarding | `app/splash.tsx`, `app/onboarding/index.tsx`, `src/lib/onboarding.ts` |
 | Root guard (`_layout.tsx`) | Every route except blog/legal/`[slug]` → login; signed-in users bounced off **all** `auth/*`, including profile setup and action links | Policy table: guests browse public routes; private → login with a sanitized `redirect`; just signed out → `/home`; signed in on login → leave it; `auth/action` and post-signup steps are never bounced | `app/_layout.tsx`, `src/lib/routeAccess.ts` |
 | `/@handle`, `/profile?userId=` | Guest → login | Public profile, field allow-list enforced by the Worker. Bare `/profile` (own profile) → login | `src/screens/ProfileScreen.tsx` |
 | `GET /read/stories/feed` | `requireAuth`, **and returned followers-only Stories to every signed-in user** | `optionalAuth` + the audience rule | `routes/read.ts`, `lib/storyAudience.ts` |
@@ -95,7 +95,12 @@ The rule is in `lib/privateAccount.ts`. Only an **approved** follow (a `follows`
 
 ## Staging QA checklist
 
-1. Fresh install / private window → app opens on Home; no login.
+1. Intro (onboarding):
+    - Fresh install or private window, opened directly → the intro shows once, and Skip works. The next launch opens Home, with no login.
+    - Fresh install via a shared link (`/battle/<id>`, `/@handle`, `/?ref=x`) → that content opens and no intro is shown, even after going back to Home.
+    - Sign in on a fresh install → no intro, now or after signing out.
+    - Admin panel → Onboarding: edit a title, upload an image, Save → a new private window shows it within about 2 minutes. Switch it off → a new private window goes straight to Home.
+    - Admin panel → Onboarding → "How the intro performs": after a few intros, Shown / Completed / Skipped / Log in and the per-slide counts go up. The counters are anonymous: `POST /telemetry/onboarding` writes per-day counts only (migration 0058), capped at 120 per IP per hour.
 2. As a guest, scroll the feed and open a battle, a profile (`/@handle`), Explore, the leaderboard and a contest listing.
 3. As a guest, tap like / vote / comment / follow / bookmark / Story reply → each shows a "Sign in to …" prompt. Choose "Sign in", finish, and confirm you land back on the same screen with the action **not** performed.
 4. As a guest, open `/wallet`, `/messages`, `/setting` and `/notifications` directly → login with `?redirect=`. After signing in you land on that screen.

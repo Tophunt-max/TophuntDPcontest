@@ -13,29 +13,91 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getAppConfig } from '../../src/services/appSettings';
+import { ONBOARDING_SEEN_KEY } from '../../src/lib/onboarding';
+import { loginHref } from '../../src/lib/authGate';
+import { Ionicons } from '@/src/lib/icons';
+import { trackOnboarding } from '../../src/services/onboardingTelemetry';
 import { Colors } from '@/constants/theme';
 import { designWidth, PHONE_MAX_WIDTH, useDesignWindow } from '@/src/lib/layout';
 
+/**
+ * The first-launch intro: what TopHunt is, in three slides. Shown once to a new
+ * guest (see src/lib/onboarding.ts); Skip is always available. An admin can
+ * override a slide's title and image through app config (`onboarding`).
+ */
 const DEFAULT_ONBOARDING = [
   {
     id: '1',
-    title: 'The Best Social Media App of the Century',
-    description: 'Connect with people all over the world and share your moments.',
+    title: 'Photo & video battles',
+    description: 'Two entries go head to head. Watch live battles from creators all over India.',
     image: require('../../assets/images/onBordingLight1.png'),
   },
   {
     id: '2',
-    title: 'Let\'s Connect with Everyone in the World',
-    description: 'Building a community that values your privacy and creativity.',
+    title: 'You decide the winner',
+    description: 'Vote for your favourite, like, comment and follow the creators you love.',
     image: require('../../assets/images/onBordingLight2.png'),
   },
   {
     id: '3',
-    title: 'Everything You Can Do in the App',
-    description: 'Explore, discover, and express yourself like never before.',
+    title: 'Enter and win',
+    description: 'Join a contest with your best photo or video and win coins and prizes.',
     image: require('../../assets/images/onBordingLight3.png'),
   },
+  // Art for 4 and 5 is drawn to match 1-3 (sources: design/onboarding/*.svg).
+  // An admin can upload a picture for any slide from the panel's Onboarding page.
+  {
+    id: '4',
+    title: 'Follow creators & Stories',
+    description: 'Follow the people you like and catch their Stories and new battles first.',
+    image: require('../../assets/images/onBordingLight4.png'),
+    icon: 'people',
+  },
+  {
+    id: '5',
+    title: 'Rewards every day',
+    description: 'Claim daily rewards, invite friends and grow your coin wallet.',
+    image: require('../../assets/images/onBordingLight5.png'),
+    icon: 'gift',
+  },
 ];
+
+type Slide = { id: string; title: string; description: string; image: any; icon?: string };
+
+/** Slide picture: an uploaded/bundled image, else an icon badge in the brand colour. */
+function SlideArt({ slide, size, isDark }: { slide: Slide; size: number; isDark: boolean }) {
+  if (slide.image) {
+    return <Image source={slide.image} style={[styles.image, { width: size, height: size }]} resizeMode="contain" />;
+  }
+  return (
+    <View
+      style={[
+        styles.image,
+        styles.iconArt,
+        { width: size * 0.8, height: size * 0.8, borderRadius: size * 0.4, backgroundColor: isDark ? '#2A1F24' : '#FEF1F3' },
+      ]}
+    >
+      <Ionicons name={(slide.icon || 'flame') as any} size={size * 0.34} color="#FF4D67" />
+    </View>
+  );
+}
+
+/**
+ * Admin slides (appConfig.onboarding) replace the built-in list. A slide without
+ * an uploaded image keeps the built-in art for its position, or an icon past it.
+ */
+function slidesFromConfig(list: { title?: string; description?: string; imageUrl?: string }[]): Slide[] {
+  return list.map((item, index) => {
+    const builtIn = DEFAULT_ONBOARDING[index];
+    return {
+      id: String(index + 1),
+      title: item.title || builtIn?.title || '',
+      description: item.description || builtIn?.description || '',
+      image: item.imageUrl ? { uri: item.imageUrl } : builtIn?.image ?? null,
+      icon: builtIn?.icon ?? 'flame',
+    };
+  });
+}
 
 export default function OnboardingScreen() {
   const router = useRouter();
@@ -51,39 +113,57 @@ export default function OnboardingScreen() {
   // its 40px margin, left no room for the title and description — the whole point
   // of an onboarding slide — so they sat below the fold on a screen most people
   // never think to scroll. 32% of the window keeps the copy visible.
-  const artSize = Math.min(designWidth(windowWidth) * 0.8, windowHeight * 0.32);
+  // Short windows (a laptop browser ~577px tall) get a smaller share, or the
+  // description slid under the pagination dots (seen in a headless check).
+  const artSize = Math.min(designWidth(windowWidth) * 0.8, windowHeight * (windowHeight < 700 ? 0.24 : 0.32));
   // The width the pager is actually drawn at: the phone column on desktop web
   // (PhoneFrame), the full window everywhere else.
   const { width: pageWidth } = useDesignWindow();
 
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [onboardingData, setOnboardingData] = useState<any[]>(DEFAULT_ONBOARDING);
+  const [onboardingData, setOnboardingData] = useState<Slide[]>(DEFAULT_ONBOARDING);
   const flatListRef = useRef<FlatList>(null);
 
   useEffect(() => {
     async function fetchConfig() {
       const config = await getAppConfig();
-      if (config && config.onboarding && config.onboarding.length > 0) {
-        const mergedData = config.onboarding.map((item, index) => ({
-          id: String(index + 1),
-          title: item.title || DEFAULT_ONBOARDING[index].title,
-          description: DEFAULT_ONBOARDING[index].description,
-          image: item.imageUrl ? { uri: item.imageUrl } : DEFAULT_ONBOARDING[index].image,
-        }));
-        setOnboardingData(mergedData);
+      if (config && Array.isArray(config.onboarding) && config.onboarding.length > 0) {
+        setOnboardingData(slidesFromConfig(config.onboarding));
       }
     }
     fetchConfig();
   }, []);
 
-  const handleFinishOnboarding = async () => {
+  /**
+   * Leave the intro for `to`. Marked seen first so it never comes back — and
+   * the navigation happens even if storage fails, so nobody is stuck here.
+   */
+  const finish = async (to: string = '/home') => {
     try {
-      await AsyncStorage.setItem('hasSeenOnboarding', 'true');
-      // Guest-first: finish into the public feed; sign-in happens on demand.
-      router.replace('/home');
+      await AsyncStorage.setItem(ONBOARDING_SEEN_KEY, 'true');
     } catch (error) {
       console.error('Error saving onboarding status:', error);
     }
+    // Guest-first: finish into the public feed; sign-in happens on demand.
+    router.replace(to as any);
+  };
+  // Funnel counters (anonymous, aggregate): admin panel → Onboarding.
+  const currentRef = useRef(0);
+  const reachedRef = useRef(new Set<number>());
+  useEffect(() => {
+    trackOnboarding('shown');
+  }, []);
+  const handleSkip = () => {
+    trackOnboarding('skipped', currentRef.current);
+    void finish('/home');
+  };
+  const handleLogin = () => {
+    trackOnboarding('login', currentRef.current);
+    void finish(loginHref('/home'));
+  };
+  const handleFinishOnboarding = () => {
+    trackOnboarding('completed');
+    void finish('/home');
   };
 
   const handleNext = () => {
@@ -99,13 +179,19 @@ export default function OnboardingScreen() {
 
   const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: any[] }) => {
     if (viewableItems.length > 0) {
-      setCurrentIndex(viewableItems[0].index);
+      const index = viewableItems[0].index ?? 0;
+      setCurrentIndex(index);
+      currentRef.current = index;
+      if (!reachedRef.current.has(index)) {
+        reachedRef.current.add(index);
+        trackOnboarding('reached', index);
+      }
     }
   }).current;
 
   const viewConfig = useRef({ viewAreaCoveragePercentThreshold: 50 }).current;
 
-  const renderItem = ({ item }: { item: any }) => (
+  const renderItem = ({ item }: { item: Slide }) => (
     // The page must be exactly the pager's width for `pagingEnabled` to land on
     // slide boundaries. On desktop web the pager sits in the phone column
     // (PhoneFrame), so that is the design width, not the browser width. It must be
@@ -123,13 +209,8 @@ export default function OnboardingScreen() {
         contentContainerStyle={styles.itemScrollContent}
         showsVerticalScrollIndicator={false}
       >
-        <Image
-          source={item.image}
-          // Clamped: at 1280px wide this was a 1024x1024 image, which on its own
-          // is taller than most desktop viewports.
-          style={[styles.image, { width: artSize, height: artSize }]}
-          resizeMode="contain"
-        />
+        {/* Clamped: at 1280px wide the art was 1024x1024, taller than most desktop viewports. */}
+        <SlideArt slide={item} size={artSize} isDark={isDark} />
         <View style={styles.textContainer}>
           <Text style={[styles.title, isDark && styles.textDark]}>{item.title}</Text>
           <Text style={[styles.description, { color: isDark ? '#E0E0E0' : '#616161' }]}>{item.description}</Text>
@@ -177,8 +258,25 @@ export default function OnboardingScreen() {
                 <Text style={styles.nextButtonText}>{currentIndex === onboardingData.length - 1 ? 'Get Started' : 'Next'}</Text>
             </TouchableOpacity>
             
-            <TouchableOpacity style={[styles.skipButton, { backgroundColor: isDark ? '#35383F' : '#FEF1F3' }]} onPress={handleFinishOnboarding}>
+            <TouchableOpacity
+                style={[styles.skipButton, { backgroundColor: isDark ? '#35383F' : '#FEF1F3' }]}
+                onPress={handleSkip}
+                accessibilityRole="button"
+                accessibilityLabel="Skip intro"
+            >
                 <Text style={[styles.skipButtonText, isDark && styles.textDark]}>Skip</Text>
+            </TouchableOpacity>
+
+            {/* Returning users on a new device: straight to sign-in, then Home. */}
+            <TouchableOpacity
+                style={styles.loginLink}
+                onPress={handleLogin}
+                accessibilityRole="button"
+                accessibilityLabel="Already have an account? Log in"
+            >
+                <Text style={[styles.loginLinkText, { color: isDark ? '#BDBDBD' : '#616161' }]}>
+                    Already have an account? <Text style={styles.loginLinkStrong}>Log in</Text>
+                </Text>
             </TouchableOpacity>
         </View>
         </View>
@@ -207,6 +305,7 @@ const styles = StyleSheet.create({
     paddingBottom: 24,
   },
   image: { marginBottom: 24 },
+  iconArt: { alignItems: 'center', justifyContent: 'center', alignSelf: 'center' },
   textContainer: { alignItems: 'center', paddingHorizontal: 10 },
   title: { fontSize: 28, fontFamily: 'Urbanist-Bold', textAlign: 'center', marginBottom: 16, color: '#212121' },
   description: { fontSize: 16, fontFamily: 'Urbanist-Regular', textAlign: 'center', lineHeight: 24 },
@@ -225,4 +324,7 @@ const styles = StyleSheet.create({
   nextButtonText: { color: '#fff', fontSize: 16, fontFamily: 'Urbanist-Bold' },
   skipButton: { height: 58, justifyContent: 'center', alignItems: 'center', borderRadius: 100 },
   skipButtonText: { color: '#FF4D67', fontFamily: 'Urbanist-Bold', fontSize: 16 },
+  loginLink: { marginTop: 16, minHeight: 36, justifyContent: 'center', alignItems: 'center' },
+  loginLinkText: { fontFamily: 'Urbanist-Medium', fontSize: 14 },
+  loginLinkStrong: { color: '#FF4D67', fontFamily: 'Urbanist-Bold' },
 });

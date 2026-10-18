@@ -351,6 +351,19 @@ const uploadContestBanner = (file: File, onProgress?: UploadProgressHandler) =>
 const uploadPaymentQr = (file: File, onProgress?: UploadProgressHandler) =>
   uploadBinary("/admin/media/payment-qr", file, onProgress, "QR upload failed. Check your connection and try again.");
 
+export interface OnboardingStats {
+  days: number;
+  since: string;
+  totals: { shown: number; completed: number; skipped: number; login: number };
+  reachedBySlide: number[];
+  skippedBySlide: number[];
+  byPlatform: Record<string, { shown: number; completed: number }>;
+  daily: { day: string; shown: number; completed: number; skipped: number }[];
+}
+
+const uploadOnboardingImage = (file: File, onProgress?: UploadProgressHandler) =>
+  uploadBinary("/admin/media/onboarding-image", file, onProgress, "Image upload failed. Check your connection and try again.");
+
 const uploadProductImage = (file: File, onProgress?: UploadProgressHandler) =>
   uploadBinary("/admin/media/product-image", file, onProgress, "Product image upload failed. Check your connection and try again.");
 
@@ -805,6 +818,8 @@ export const api = {
   saveRewards: (payload: any) => post("/admin/rewards", payload),
   appSettings: () => get<any>("/admin/app-settings"),
   saveAppSettings: (payload: any) => post("/admin/app-settings", payload),
+  uploadOnboardingImage,
+  onboardingStats: (days = 30) => get<OnboardingStats>(`/admin/onboarding/stats?days=${days}`),
   verificationReward: () => get<any>("/admin/verification-reward"),
 
   // Legal documents. `legal()` returns each doc's EFFECTIVE raw content (a stored

@@ -28,6 +28,7 @@ import { ApiError, errorBody } from "./lib/http";
 import { authRoute } from "./routes/auth";
 import { apiRoute } from "./routes/api";
 import { readRoute } from "./routes/read";
+import { telemetryRoute } from "./routes/telemetry";
 import { adminRoute } from "./routes/admin";
 import { webhookRoute } from "./routes/webhook";
 import { uploadRoute } from "./routes/upload";
@@ -417,6 +418,8 @@ app.route("/api", apiRoute);
 app.route("/upload", uploadRoute);
 app.route("/read", readRoute);
 app.route("/admin", adminRoute);
+// Anonymous aggregate counters guests may send (onboarding funnel).
+app.route("/telemetry", telemetryRoute);
 // Public payment-gateway webhooks (no Firebase auth — trust = signature check).
 app.route("/webhook", webhookRoute);
 
