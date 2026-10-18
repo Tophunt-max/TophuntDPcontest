@@ -82,3 +82,73 @@ describe('onboarding in app config', () => {
     expect(USER_UPLOAD_FOLDERS).not.toContain('onboarding');
   });
 });
+
+async function track(env: TestEnv, body: any, ip = '198.51.100.7') {
+  const res = await app.request(
+    '/telemetry/onboarding',
+    { method: 'POST', headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': ip }, body: JSON.stringify(body) },
+    env,
+    fakeCtx(),
+  );
+  return res.status;
+}
+
+describe('onboarding funnel (anonymous counters)', () => {
+  it('counts events per slide and platform, and the admin sees the funnel', async () => {
+    const { env } = makeEnv();
+    for (let i = 0; i < 3; i++) expect(await track(env, { event: 'shown', platform: 'android' })).toBe(204);
+    await track(env, { event: 'shown', platform: 'web' });
+    for (const slide of [0, 1, 2]) await track(env, { event: 'reached', slide, platform: 'android' });
+    await track(env, { event: 'reached', slide: 0, platform: 'web' });
+    await track(env, { event: 'skipped', slide: 1, platform: 'android' });
+    await track(env, { event: 'completed', platform: 'android' });
+    await track(env, { event: 'login', slide: 4, platform: 'web' });
+
+    const r = await admin(env, 'GET', '/onboarding/stats?days=7');
+    expect(r.status).toBe(200);
+    expect(r.body.totals).toEqual({ shown: 4, completed: 1, skipped: 1, login: 1 });
+    expect(r.body.reachedBySlide).toEqual([2, 1, 1]);
+    expect(r.body.skippedBySlide).toEqual([0, 1]);
+    expect(r.body.byPlatform).toEqual({ android: { shown: 3, completed: 1 }, web: { shown: 1, completed: 0 } });
+    expect(r.body.daily).toHaveLength(1);
+  });
+
+  it('accepts only the known events and slide numbers', async () => {
+    const { env } = makeEnv();
+    expect(await track(env, { event: 'hacked' })).toBe(400);
+    expect(await track(env, { event: 'reached' })).toBe(400);
+    expect(await track(env, { event: 'reached', slide: 99 })).toBe(400);
+    expect(await track(env, { event: 'skipped', slide: -1 })).toBe(400);
+    // Unknown platform is bucketed, not trusted.
+    expect(await track(env, { event: 'shown', platform: '<script>' })).toBe(204);
+    const r = await admin(env, 'GET', '/onboarding/stats');
+    expect(Object.keys(r.body.byPlatform)).toEqual(['other']);
+  });
+
+  it('over the per-IP budget it still answers 204 but stops counting', async () => {
+    const { env } = makeEnv();
+    for (let i = 0; i < 125; i++) await track(env, { event: 'shown', platform: 'web' }, '203.0.113.50');
+    const r = await admin(env, 'GET', '/onboarding/stats');
+    expect(r.body.totals.shown).toBe(120);
+  });
+
+  it('the stats are for admins only', async () => {
+    const { env } = makeEnv();
+    const res = await app.request('/admin/onboarding/stats', {}, env, fakeCtx());
+    expect([401, 403]).toContain(res.status);
+  });
+});
+
+describe('onboarding funnel from a browser', () => {
+  it('accepts the text/plain body the app sends to avoid a CORS preflight', async () => {
+    const { env } = makeEnv();
+    const res = await app.request(
+      '/telemetry/onboarding',
+      { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8' }, body: JSON.stringify({ event: 'shown', platform: 'web' }) },
+      env,
+      fakeCtx(),
+    );
+    expect(res.status).toBe(204);
+    expect((await admin(env, 'GET', '/onboarding/stats')).body.totals.shown).toBe(1);
+  });
+});

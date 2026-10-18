@@ -100,6 +100,7 @@ The rule is in `lib/privateAccount.ts`. Only an **approved** follow (a `follows`
     - Fresh install via a shared link (`/battle/<id>`, `/@handle`, `/?ref=x`) → that content opens and no intro is shown, even after going back to Home.
     - Sign in on a fresh install → no intro, now or after signing out.
     - Admin panel → Onboarding: edit a title, upload an image, Save → a new private window shows it within about 2 minutes. Switch it off → a new private window goes straight to Home.
+    - Admin panel → Onboarding → "How the intro performs": after a few intros, Shown / Completed / Skipped / Log in and the per-slide counts go up. The counters are anonymous: `POST /telemetry/onboarding` writes per-day counts only (migration 0058), capped at 120 per IP per hour.
 2. As a guest, scroll the feed and open a battle, a profile (`/@handle`), Explore, the leaderboard and a contest listing.
 3. As a guest, tap like / vote / comment / follow / bookmark / Story reply → each shows a "Sign in to …" prompt. Choose "Sign in", finish, and confirm you land back on the same screen with the action **not** performed.
 4. As a guest, open `/wallet`, `/messages`, `/setting` and `/notifications` directly → login with `?redirect=`. After signing in you land on that screen.

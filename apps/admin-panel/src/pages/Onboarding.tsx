@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, ImagePlus, Plus, RotateCcw, Save, Smartphone, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, BarChart3, ImagePlus, Languages, Plus, RotateCcw, Save, Smartphone, Trash2, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { PageHeader } from "@/lib/format";
 import { toast } from "@/lib/toast";
@@ -35,6 +35,15 @@ const BUILT_IN: Slide[] = [
   { title: "Enter and win", description: "Join a contest with your best photo or video and win coins and prizes.", imageUrl: "" },
   { title: "Follow creators & Stories", description: "Follow the people you like and catch their Stories and new battles first.", imageUrl: "" },
   { title: "Rewards every day", description: "Claim daily rewards, invite friends and grow your coin wallet.", imageUrl: "" },
+];
+
+/** The same five slides in Hinglish — a preset an admin can load and edit. */
+const HINGLISH: Slide[] = [
+  { title: "Photo & video battles", description: "Do entries aamne-saamne. Poore India ke creators ki live battles dekho.", imageUrl: "" },
+  { title: "Winner aap chuniye", description: "Apne favourite ko vote karo, like, comment aur creators ko follow karo.", imageUrl: "" },
+  { title: "Contest join karo, jeeto", description: "Apni best photo ya video ke saath contest mein utro aur coins aur prizes jeeto.", imageUrl: "" },
+  { title: "Creators ko follow karo", description: "Pasand ke logon ko follow karo aur unki Stories aur nayi battles sabse pehle dekho.", imageUrl: "" },
+  { title: "Roz milenge rewards", description: "Daily reward claim karo, dosto ko invite karo aur apna coin wallet badhao.", imageUrl: "" },
 ];
 
 const field =
@@ -188,6 +197,8 @@ export default function Onboarding() {
             </label>
           </div>
 
+          <FunnelCard slideTitles={(usingBuiltIn ? BUILT_IN : slides).map((s) => s.title)} />
+
           {/* Slides */}
           <div className="bg-card border border-border rounded-2xl p-5">
             <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
@@ -200,6 +211,17 @@ export default function Onboarding() {
                 </p>
               </div>
               <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    // Keeps any images already uploaded for each position.
+                    if (!usingBuiltIn && !window.confirm("Replace the slide text with the Hinglish preset? Images are kept.")) return;
+                    setSlides((list) => HINGLISH.map((h, i) => ({ ...h, imageUrl: list[i]?.imageUrl ?? "" })));
+                    setSelected(0);
+                  }}
+                  className="flex items-center gap-1.5 text-sm font-semibold px-3 py-2 rounded-xl border border-border hover:bg-secondary"
+                >
+                  <Languages size={14} /> Hinglish text
+                </button>
                 {usingBuiltIn ? (
                   <button
                     onClick={() => {
@@ -364,6 +386,94 @@ export default function Onboarding() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+const pct = (n: number, d: number) => (d > 0 ? `${Math.round((n / d) * 100)}%` : "—");
+
+/** Anonymous funnel from the app (Worker /admin/onboarding/stats). */
+function FunnelCard({ slideTitles }: { slideTitles: string[] }) {
+  const [days, setDays] = useState(30);
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["onboarding-stats", days],
+    queryFn: () => api.onboardingStats(days),
+  });
+  const t = data?.totals;
+  const reached = data?.reachedBySlide ?? [];
+  const skipped = data?.skippedBySlide ?? [];
+  const rows = Math.max(reached.length, skipped.length, slideTitles.length);
+  const top = Math.max(1, t?.shown ?? 0, ...reached);
+  return (
+    <div className="bg-card border border-border rounded-2xl p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div className="flex items-start gap-3">
+          <div className="w-9 h-9 rounded-xl bg-secondary flex items-center justify-center shrink-0">
+            <BarChart3 size={17} />
+          </div>
+          <div>
+            <h3 className="font-bold text-foreground leading-tight">How the intro performs</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Anonymous counts from the app: no user, device or IP is stored. Days are UTC.
+            </p>
+          </div>
+        </div>
+        <select className="px-3 py-2 rounded-xl border border-border bg-background text-sm" value={days} onChange={(e) => setDays(Number(e.target.value))}>
+          <option value={7}>Last 7 days</option>
+          <option value={30}>Last 30 days</option>
+          <option value={90}>Last 90 days</option>
+        </select>
+      </div>
+      {isLoading ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : isError || !t ? (
+        <p className="text-sm text-muted-foreground">Could not load the numbers.</p>
+      ) : t.shown === 0 ? (
+        <p className="text-sm text-muted-foreground">No intro has been shown in this period yet.</p>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+            <Stat label="Shown" value={t.shown} />
+            <Stat label="Completed" value={t.completed} sub={pct(t.completed, t.shown)} />
+            <Stat label="Skipped" value={t.skipped} sub={pct(t.skipped, t.shown)} />
+            <Stat label="Tapped Log in" value={t.login} sub={pct(t.login, t.shown)} />
+          </div>
+          <div className="space-y-2">
+            {Array.from({ length: rows }, (_, i) => (
+              <div key={i} className="text-xs">
+                <div className="flex justify-between mb-1">
+                  <span className="font-medium text-foreground truncate pr-2">
+                    {i + 1}. {slideTitles[i] || "(slide)"}
+                  </span>
+                  <span className="text-muted-foreground shrink-0">
+                    reached {reached[i] ?? 0} · skipped here {skipped[i] ?? 0}
+                  </span>
+                </div>
+                <div className="h-2 rounded-full bg-secondary overflow-hidden">
+                  <div className="h-full bg-primary rounded-full" style={{ width: `${((reached[i] ?? 0) / top) * 100}%` }} />
+                </div>
+              </div>
+            ))}
+          </div>
+          {Object.keys(data!.byPlatform).length > 0 && (
+            <p className="text-[11px] text-muted-foreground mt-4">
+              {Object.entries(data!.byPlatform)
+                .map(([p, v]) => `${p}: ${v.shown} shown, ${pct(v.completed, v.shown)} completed`)
+                .join(" · ")}
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value, sub }: { label: string; value: number; sub?: string }) {
+  return (
+    <div className="rounded-xl border border-border p-3">
+      <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">{label}</div>
+      <div className="text-xl font-bold text-foreground mt-1">{value.toLocaleString()}</div>
+      {sub && <div className="text-[11px] text-muted-foreground">{sub}</div>}
     </div>
   );
 }

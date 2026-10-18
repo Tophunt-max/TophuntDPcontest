@@ -150,6 +150,21 @@ export const follows = sqliteTable(
 );
 
 // ---------------------------------------------------------------------------
+// onboarding_daily  (migration 0058) — anonymous first-launch intro funnel.
+// ---------------------------------------------------------------------------
+export const onboardingDaily = sqliteTable(
+  "onboarding_daily",
+  {
+    day: text("day").notNull(),
+    event: text("event").notNull(),
+    slide: integer("slide").notNull(),
+    platform: text("platform").notNull(),
+    count: integer("count").notNull().default(0),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.day, t.event, t.slide, t.platform] }) }),
+);
+
+// ---------------------------------------------------------------------------
 // follow_requests  (migration 0057) — pending follows of PRIVATE accounts.
 // Confirming one moves it into `follows`; nothing else reads this table, so a
 // pending request can never count as a follow by accident.

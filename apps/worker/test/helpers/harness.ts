@@ -26,6 +26,7 @@ import { normalizeSpec, windowIdFor } from '../../src/lib/rateLimitWindow';
 import { apiRoute } from '../../src/routes/api';
 import { readRoute } from '../../src/routes/read';
 import { adminRoute } from '../../src/routes/admin';
+import { telemetryRoute } from '../../src/routes/telemetry';
 import { authRoute } from '../../src/routes/auth';
 
 const MIGRATIONS_DIR = path.join(import.meta.dirname, '..', '..', 'migrations');
@@ -633,6 +634,7 @@ export function makeApp() {
   // `X-Admin-Secret: ADMIN_PROXY_SECRET` header, which the gate treats as
   // superadmin and so satisfies requireFullAdmin without a Firebase token.
   app.route('/admin', adminRoute);
+  app.route('/telemetry', telemetryRoute);
   return app;
 }
 

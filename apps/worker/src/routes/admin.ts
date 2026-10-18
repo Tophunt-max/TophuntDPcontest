@@ -583,6 +583,57 @@ adminRoute.post("/media/contest-banner", async (c) => {
  * image routes (declared type, size, exact-type sniff); the returned public URL
  * is what the panel saves into `appConfig.onboarding[i].imageUrl`.
  */
+/**
+ * Onboarding funnel for the last `days` (1..90, default 30) UTC days, from the
+ * anonymous counters in `onboarding_daily` (routes/telemetry.ts).
+ */
+adminRoute.get("/onboarding/stats", async (c) => {
+  const days = Math.min(90, Math.max(1, Math.floor(Number(c.req.query("days") ?? 30)) || 30));
+  const since = new Date(Date.now() - (days - 1) * 86_400_000).toISOString().slice(0, 10);
+  const { results } = await c.env.DB.prepare(
+    `SELECT day, event, slide, platform, SUM(count) AS n FROM onboarding_daily
+      WHERE day >= ? GROUP BY day, event, slide, platform`,
+  )
+    .bind(since)
+    .all<{ day: string; event: string; slide: number; platform: string; n: number }>();
+  const rows = results || [];
+  const total = (event: string) => rows.filter((r) => r.event === event).reduce((a, r) => a + Number(r.n), 0);
+  const bySlide = (event: string) => {
+    const out: number[] = [];
+    for (const r of rows) if (r.event === event && r.slide >= 0) out[r.slide] = (out[r.slide] || 0) + Number(r.n);
+    return Array.from({ length: out.length }, (_, i) => out[i] || 0);
+  };
+  const byPlatform: Record<string, { shown: number; completed: number }> = {};
+  for (const r of rows) {
+    if (r.event !== "shown" && r.event !== "completed") continue;
+    const p = (byPlatform[r.platform] ||= { shown: 0, completed: 0 });
+    p[r.event as "shown" | "completed"] += Number(r.n);
+  }
+  const daily: Record<string, { shown: number; completed: number; skipped: number }> = {};
+  for (const r of rows) {
+    if (r.event !== "shown" && r.event !== "completed" && r.event !== "skipped") continue;
+    const d = (daily[r.day] ||= { shown: 0, completed: 0, skipped: 0 });
+    d[r.event as "shown" | "completed" | "skipped"] += Number(r.n);
+  }
+  c.header("Cache-Control", "private, no-store");
+  return c.json({
+    days,
+    since,
+    totals: {
+      shown: total("shown"),
+      completed: total("completed"),
+      skipped: total("skipped"),
+      login: total("login"),
+    },
+    reachedBySlide: bySlide("reached"),
+    skippedBySlide: bySlide("skipped"),
+    byPlatform,
+    daily: Object.entries(daily)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([day, v]) => ({ day, ...v })),
+  });
+});
+
 adminRoute.post("/media/onboarding-image", async (c) => {
   requireFullAdmin(c);
   const fileType = assertAdminImageUpload(c);

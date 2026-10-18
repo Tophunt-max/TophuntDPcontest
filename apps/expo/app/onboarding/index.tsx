@@ -16,6 +16,7 @@ import { getAppConfig } from '../../src/services/appSettings';
 import { ONBOARDING_SEEN_KEY } from '../../src/lib/onboarding';
 import { loginHref } from '../../src/lib/authGate';
 import { Ionicons } from '@/src/lib/icons';
+import { trackOnboarding } from '../../src/services/onboardingTelemetry';
 import { Colors } from '@/constants/theme';
 import { designWidth, PHONE_MAX_WIDTH, useDesignWindow } from '@/src/lib/layout';
 
@@ -43,20 +44,20 @@ const DEFAULT_ONBOARDING = [
     description: 'Join a contest with your best photo or video and win coins and prizes.',
     image: require('../../assets/images/onBordingLight3.png'),
   },
-  // No bundled art for these two: they draw an icon badge (see `SlideArt`).
+  // Art for 4 and 5 is drawn to match 1-3 (sources: design/onboarding/*.svg).
   // An admin can upload a picture for any slide from the panel's Onboarding page.
   {
     id: '4',
     title: 'Follow creators & Stories',
     description: 'Follow the people you like and catch their Stories and new battles first.',
-    image: null,
+    image: require('../../assets/images/onBordingLight4.png'),
     icon: 'people',
   },
   {
     id: '5',
     title: 'Rewards every day',
     description: 'Claim daily rewards, invite friends and grow your coin wallet.',
-    image: null,
+    image: require('../../assets/images/onBordingLight5.png'),
     icon: 'gift',
   },
 ];
@@ -112,7 +113,9 @@ export default function OnboardingScreen() {
   // its 40px margin, left no room for the title and description — the whole point
   // of an onboarding slide — so they sat below the fold on a screen most people
   // never think to scroll. 32% of the window keeps the copy visible.
-  const artSize = Math.min(designWidth(windowWidth) * 0.8, windowHeight * 0.32);
+  // Short windows (a laptop browser ~577px tall) get a smaller share, or the
+  // description slid under the pagination dots (seen in a headless check).
+  const artSize = Math.min(designWidth(windowWidth) * 0.8, windowHeight * (windowHeight < 700 ? 0.24 : 0.32));
   // The width the pager is actually drawn at: the phone column on desktop web
   // (PhoneFrame), the full window everywhere else.
   const { width: pageWidth } = useDesignWindow();
@@ -144,7 +147,24 @@ export default function OnboardingScreen() {
     // Guest-first: finish into the public feed; sign-in happens on demand.
     router.replace(to as any);
   };
-  const handleFinishOnboarding = () => finish('/home');
+  // Funnel counters (anonymous, aggregate): admin panel → Onboarding.
+  const currentRef = useRef(0);
+  const reachedRef = useRef(new Set<number>());
+  useEffect(() => {
+    trackOnboarding('shown');
+  }, []);
+  const handleSkip = () => {
+    trackOnboarding('skipped', currentRef.current);
+    void finish('/home');
+  };
+  const handleLogin = () => {
+    trackOnboarding('login', currentRef.current);
+    void finish(loginHref('/home'));
+  };
+  const handleFinishOnboarding = () => {
+    trackOnboarding('completed');
+    void finish('/home');
+  };
 
   const handleNext = () => {
     if (currentIndex < onboardingData.length - 1) {
@@ -159,7 +179,13 @@ export default function OnboardingScreen() {
 
   const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: any[] }) => {
     if (viewableItems.length > 0) {
-      setCurrentIndex(viewableItems[0].index);
+      const index = viewableItems[0].index ?? 0;
+      setCurrentIndex(index);
+      currentRef.current = index;
+      if (!reachedRef.current.has(index)) {
+        reachedRef.current.add(index);
+        trackOnboarding('reached', index);
+      }
     }
   }).current;
 
@@ -234,7 +260,7 @@ export default function OnboardingScreen() {
             
             <TouchableOpacity
                 style={[styles.skipButton, { backgroundColor: isDark ? '#35383F' : '#FEF1F3' }]}
-                onPress={handleFinishOnboarding}
+                onPress={handleSkip}
                 accessibilityRole="button"
                 accessibilityLabel="Skip intro"
             >
@@ -244,7 +270,7 @@ export default function OnboardingScreen() {
             {/* Returning users on a new device: straight to sign-in, then Home. */}
             <TouchableOpacity
                 style={styles.loginLink}
-                onPress={() => finish(loginHref('/home'))}
+                onPress={handleLogin}
                 accessibilityRole="button"
                 accessibilityLabel="Already have an account? Log in"
             >
