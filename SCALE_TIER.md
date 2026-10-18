@@ -28,6 +28,21 @@ either plan; the only free-plan cost is that auth-caching uses some of the 1,000
 KV write budget (failing open when spent), which is exactly the moment the capacity
 monitor (`CAPACITY_MONITORING.md`) tells you to upgrade.
 
+**2026-10 — `auto` now backs off on its own** (`apps/worker/src/lib/kvQuota.ts`). The
+gap above was real: on a free account the auth-state cache spent the 1,000/day budget
+EVERY day, starving the settings / block-list / feed-seen caches until UTC midnight.
+Now the first KV put that fails with the platform's *daily-limit* error:
+
+1. stops this isolate attempting further KV puts until UTC midnight, and
+2. records the event once in D1 (`settings` row `kvQuota`, never via KV).
+
+While that event is younger than 7 days, `auto` reads the account state from **D1**
+instead of caching it, which leaves the KV budget to the other caches. After 7 quiet
+days it tries again. On paid, KV writes bill as overage rather than failing, so the
+event never fires and `auto` keeps caching. A skipped auth cache means a direct D1
+read, the authoritative path, so block and revocation enforcement is never delayed.
+Pinned by `apps/worker/test/kvQuota.test.ts`.
+
 **Explicit overrides** remain: `"free"` forces the auth-cache OFF (guarantees zero
 auth-cache KV writes — best for a very large free deployment), `"paid"` forces it ON.
 An unset or unrecognised value resolves to **free** (never writes extra), so a typo is

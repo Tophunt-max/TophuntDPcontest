@@ -7,6 +7,7 @@ import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { delCache, kvWritesDisabled } from "./cache";
 import { memoDelete } from "./memo";
+import { kvPutsSuspended, noteKvPutFailure } from "./kvQuota";
 
 /**
  * KV lifetime.
@@ -56,11 +57,12 @@ async function readSetting(env: Env, id: string): Promise<any> {
   // Never let a KV write failure (e.g. the daily put() quota being exhausted)
   // break config reads — we already have the data from D1. Fail open: skip the
   // cache write and just serve the fresh value.
-  if (!kvWritesDisabled(env)) {
+  if (!kvWritesDisabled(env) && !kvPutsSuspended()) {
     try {
       await env.CACHE_KV.put(cacheKey, JSON.stringify(data), { expirationTtl: CACHE_TTL });
     } catch (e) {
       console.error("[settings] cache write failed (continuing)", e);
+      await noteKvPutFailure(env, e);
     }
   }
   return data;

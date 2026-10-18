@@ -13,6 +13,7 @@ import {
   SELF_SERVICE_ACTIONS,
 } from "../lib/accountStatus";
 import { scaleConfig } from "../lib/scale";
+import { autoAuthCacheAllowed } from "../lib/kvQuota";
 import { authStateCacheKey, cacheGetJson, cachePutJson } from "../lib/cache";
 
 type MW = { Bindings: Env; Variables: Variables };
@@ -56,6 +57,10 @@ function readAccountStateFromDb(env: Env, uid: string): Promise<AccountState | u
 async function readAccountState(env: Env, uid: string): Promise<AccountState | undefined> {
   const cfg = scaleConfig(env);
   if (!cfg.cacheAuthState) return readAccountStateFromDb(env, uid);
+  // "auto" self-adapts: after the KV daily write limit trips it reads D1 directly
+  // for a while, leaving the KV budget to the other caches (lib/kvQuota.ts). D1 is
+  // the authoritative path, so this can only make the check fresher, never staler.
+  if (cfg.tier === "auto" && !(await autoAuthCacheAllowed(env))) return readAccountStateFromDb(env, uid);
 
   const key = authStateCacheKey(uid);
   const cached = await cacheGetJson<AccountState>(env, key);
