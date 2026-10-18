@@ -50,6 +50,10 @@ const MANAGED_KEYS = [
   "supportEmail",
   "legalContent",
   "socialLinks",
+  // Edited on the Onboarding page; kept out of Advanced so a save here can
+  // never re-post a stale copy over it.
+  "onboarding",
+  "onboardingEnabled",
 ];
 
 interface VerificationRewardCfg {

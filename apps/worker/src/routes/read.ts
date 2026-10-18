@@ -66,6 +66,7 @@ import {
   isHiddenAccountStatus,
 } from "../lib/accountStatus";
 import { resolveUsername } from "../lib/userIdentifiers";
+import { ONBOARDING_MAX_SLIDES, onboardingEnabled } from "../lib/onboardingConfig";
 import { followStateOf, isPrivateAccount, privateContentLocked, viewerFollows } from "../lib/privateAccount";
 
 export const readRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -1594,6 +1595,16 @@ readRoute.get("/app-config", async (c) => {
       // NB: `legalContent` is deliberately NOT here — see GET /read/legal below.
       supportEmail: cfg.supportEmail || "",
       socialLinks: cfg.socialLinks || {},
+      // First-launch intro (lib/onboardingConfig.ts). Validated on save; projected
+      // again here so only the three display fields of a bounded list go out.
+      onboardingEnabled: onboardingEnabled(cfg),
+      onboarding: Array.isArray(cfg.onboarding)
+        ? cfg.onboarding.slice(0, ONBOARDING_MAX_SLIDES).map((s: any) => ({
+            title: typeof s?.title === "string" ? s.title : "",
+            description: typeof s?.description === "string" ? s.description : "",
+            imageUrl: typeof s?.imageUrl === "string" ? s.imageUrl : "",
+          }))
+        : [],
     };
   });
 });

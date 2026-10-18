@@ -1,3 +1,6 @@
+// FIRST import, on purpose: it records how this session started (the launch
+// URL) before the router can rewrite the address bar. See src/lib/onboarding.ts.
+import '@/src/lib/onboarding';
 import { ThemeProvider } from '@react-navigation/native';
 import { Stack, useGlobalSearchParams, usePathname, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';

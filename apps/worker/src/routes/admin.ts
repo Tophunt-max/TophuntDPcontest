@@ -57,7 +57,8 @@ import {
   validateContestInput,
 } from "../lib/contestAdmin";
 import { normalizePrizeType, publicPrize, resolveMatchPrize } from "../lib/prizes";
-import { PRODUCT_IMAGE_PREFIX } from "../lib/mediaCategories";
+import { ONBOARDING_IMAGE_PREFIX, PRODUCT_IMAGE_PREFIX } from "../lib/mediaCategories";
+import { sanitizeOnboardingSlides } from "../lib/onboardingConfig";
 import { formatDeliveryAddress, summariseDeliveryAddress } from "../lib/deliveryAddress";
 import {
   contestBannerKeyFromPublicUrl,
@@ -305,6 +306,16 @@ adminRoute.post("/app-settings", async (c) => {
       announcement.link = link;
     }
   }
+  // First-launch intro: shown to every new guest, so validated here (bounded
+  // text, at most N slides, images only from our own `onboarding/` uploads).
+  if (body?.onboarding !== undefined) {
+    body.onboarding = sanitizeOnboardingSlides(c.env, body.onboarding);
+  }
+  if (body?.onboardingEnabled !== undefined) {
+    if (typeof body.onboardingEnabled !== "boolean") {
+      throw httpsError("invalid-argument", "onboardingEnabled must be true or false.");
+    }
+  }
   const existing = (await getAppConfig(c.env)) || {};
   if (body?.verificationReward !== undefined) {
     // Validated against the MERGED result, so a partial patch (one field) is
@@ -317,10 +328,15 @@ adminRoute.post("/app-settings", async (c) => {
     .values({ id: "appConfig", data: merged, updatedAt: now() })
     .onConflictDoUpdate({ target: schema.settings.id, set: { data: merged, updatedAt: now() } });
   await invalidateSetting(c.env, "appConfig");
+  // The public projection is edge-cached for 120s. Purging this colo makes an
+  // admin's own check (e.g. the onboarding preview on a phone) show the change
+  // at once; other colos follow within the TTL.
+  edgePurgeUrl(c, "/read/app-config");
   // Coin amounts credited to user balances are money settings: record who
   // changed them, from what, to what. (Only these sections — the rest of App
   // Control is cosmetic and is not audited by this handler.)
-  for (const section of ["verificationReward", "rewardSettings"] as const) {
+  // The intro is what every new user sees first, so its edits are audited too.
+  for (const section of ["verificationReward", "rewardSettings", "onboarding", "onboardingEnabled"] as const) {
     if (body?.[section] !== undefined) {
       await logAudit(c, `settings.${section}.update`, "settings", "appConfig", {
         before: existing[section] ?? null,
@@ -562,6 +578,20 @@ adminRoute.post("/media/contest-banner", async (c) => {
 // Upload the manual payment QR image (stored in R2). Returns a public URL that
 // the admin saves into appConfig.paymentGateway.qrImageUrl — so the app keeps
 // reading a single URL, but it's now an uploaded image (no external hosting).
+/**
+ * Upload an image for an onboarding slide. Same pre-checks as the other admin
+ * image routes (declared type, size, exact-type sniff); the returned public URL
+ * is what the panel saves into `appConfig.onboarding[i].imageUrl`.
+ */
+adminRoute.post("/media/onboarding-image", async (c) => {
+  requireFullAdmin(c);
+  const fileType = assertAdminImageUpload(c);
+  const body = await readAdminImageBody(c);
+  const uploaded = await uploadToR2(c.env, fileType, ONBOARDING_IMAGE_PREFIX, body, [fileType]);
+  await logAudit(c, "onboarding.image.upload", "onboarding-image", uploaded.fileKey, { publicUrl: uploaded.publicUrl });
+  return c.json(uploaded);
+});
+
 adminRoute.post("/media/payment-qr", async (c) => {
   requireFullAdmin(c);
   const fileType = assertAdminImageUpload(c);

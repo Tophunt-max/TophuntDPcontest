@@ -129,6 +129,8 @@ export const BANNER_PREFIX = "contest-banners";
 export const PRODUCT_IMAGE_PREFIX = "product-images";
 export const VS_CARD_PREFIX = "vs-cards";
 export const PAYMENT_QR_PREFIX = "payment-qr";
+/** Images for the app's first-launch intro, set from the admin panel. */
+export const ONBOARDING_IMAGE_PREFIX = "onboarding";
 export const BLOG_IMPORT_PREFIX = "blog/imported";
 
 /**
@@ -333,6 +335,19 @@ export const MEDIA_CATEGORIES: readonly MediaCategory[] = [
 
     proxyOnly: false,
     description: "Manual payment QR code shown on the deposit screen.",
+  },
+  {
+    prefix: ONBOARDING_IMAGE_PREFIX,
+    writer: "admin",
+    kinds: ["image"],
+    // Every upload gets a new key, and the app config names the exact object,
+    // so an image never changes in place.
+    cache: "immutable",
+    retentionDays: null,
+    dateSharded: true,
+    legacyVideo: false,
+    proxyOnly: false,
+    description: "Slide images for the first-launch intro (onboarding), set from the admin panel.",
   },
 
   // --- Server-written -----------------------------------------------------

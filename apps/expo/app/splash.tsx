@@ -4,6 +4,7 @@ import {
   StyleSheet,
   Image,
   Text,
+  Linking,
 } from 'react-native';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useRouter } from 'expo-router';
@@ -23,7 +24,7 @@ import Animated, {
 import { Colors } from '@/constants/theme';
 import { getAppConfig } from '../src/services/appSettings';
 import { readApi } from '../src/services/api';
-import { guestStartRoute, ONBOARDING_SEEN_KEY } from '../src/lib/onboarding';
+import { guestStartRoute, ONBOARDING_SEEN_KEY, sessionEntryKind } from '../src/lib/onboarding';
 
 
 // Loading Spinner Component
@@ -65,6 +66,8 @@ export default function SplashScreen() {
   const router = useRouter();
   const [appIsReady, setAppIsReady] = useState(false);
   const [splashImage, setSplashImage] = useState<string | null>(null);
+  // Admin switch for the first-launch intro; unknown (config failed) = on.
+  const onboardingEnabledRef = React.useRef(true);
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
@@ -91,6 +94,7 @@ export default function SplashScreen() {
         if (config?.splashImageUrl) {
             setSplashImage(config.splashImageUrl);
         }
+        if (config && config.onboardingEnabled === false) onboardingEnabledRef.current = false;
 
         // Fonts are NOT loaded here. They are loaded by the root layout
         // (app/_layout.tsx), which is the only component that mounts for every
@@ -119,6 +123,9 @@ export default function SplashScreen() {
 
     const performNavigationCheck = async () => {
         const hasSeenOnboarding = await AsyncStorage.getItem(ONBOARDING_SEEN_KEY).catch(() => null);
+        // Opened from a link (shared battle/profile, blog, `/?ref=…`)? Then no
+        // intro this session — see src/lib/onboarding.ts.
+        const entry = await sessionEntryKind(() => Linking.getInitialURL());
 
         unsubscribe = onAuthStateChanged(auth, async (user: User | null) => {
             console.log("Auth state:", user ? "Logged in" : "Guest");
@@ -167,7 +174,7 @@ export default function SplashScreen() {
                 // once (Skip is always there); every later launch goes straight
                 // to the public Home feed. Sign-in is asked for only when they
                 // open a personal screen or tap a protected action.
-                router.replace(guestStartRoute(hasSeenOnboarding));
+                router.replace(guestStartRoute(hasSeenOnboarding, { entry, enabled: onboardingEnabledRef.current }));
             }
         });
     };

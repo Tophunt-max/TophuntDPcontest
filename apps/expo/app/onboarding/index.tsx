@@ -15,6 +15,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getAppConfig } from '../../src/services/appSettings';
 import { ONBOARDING_SEEN_KEY } from '../../src/lib/onboarding';
 import { loginHref } from '../../src/lib/authGate';
+import { Ionicons } from '@/src/lib/icons';
 import { Colors } from '@/constants/theme';
 import { designWidth, PHONE_MAX_WIDTH, useDesignWindow } from '@/src/lib/layout';
 
@@ -42,7 +43,60 @@ const DEFAULT_ONBOARDING = [
     description: 'Join a contest with your best photo or video and win coins and prizes.',
     image: require('../../assets/images/onBordingLight3.png'),
   },
+  // No bundled art for these two: they draw an icon badge (see `SlideArt`).
+  // An admin can upload a picture for any slide from the panel's Onboarding page.
+  {
+    id: '4',
+    title: 'Follow creators & Stories',
+    description: 'Follow the people you like and catch their Stories and new battles first.',
+    image: null,
+    icon: 'people',
+  },
+  {
+    id: '5',
+    title: 'Rewards every day',
+    description: 'Claim daily rewards, invite friends and grow your coin wallet.',
+    image: null,
+    icon: 'gift',
+  },
 ];
+
+type Slide = { id: string; title: string; description: string; image: any; icon?: string };
+
+/** Slide picture: an uploaded/bundled image, else an icon badge in the brand colour. */
+function SlideArt({ slide, size, isDark }: { slide: Slide; size: number; isDark: boolean }) {
+  if (slide.image) {
+    return <Image source={slide.image} style={[styles.image, { width: size, height: size }]} resizeMode="contain" />;
+  }
+  return (
+    <View
+      style={[
+        styles.image,
+        styles.iconArt,
+        { width: size * 0.8, height: size * 0.8, borderRadius: size * 0.4, backgroundColor: isDark ? '#2A1F24' : '#FEF1F3' },
+      ]}
+    >
+      <Ionicons name={(slide.icon || 'flame') as any} size={size * 0.34} color="#FF4D67" />
+    </View>
+  );
+}
+
+/**
+ * Admin slides (appConfig.onboarding) replace the built-in list. A slide without
+ * an uploaded image keeps the built-in art for its position, or an icon past it.
+ */
+function slidesFromConfig(list: { title?: string; description?: string; imageUrl?: string }[]): Slide[] {
+  return list.map((item, index) => {
+    const builtIn = DEFAULT_ONBOARDING[index];
+    return {
+      id: String(index + 1),
+      title: item.title || builtIn?.title || '',
+      description: item.description || builtIn?.description || '',
+      image: item.imageUrl ? { uri: item.imageUrl } : builtIn?.image ?? null,
+      icon: builtIn?.icon ?? 'flame',
+    };
+  });
+}
 
 export default function OnboardingScreen() {
   const router = useRouter();
@@ -64,20 +118,14 @@ export default function OnboardingScreen() {
   const { width: pageWidth } = useDesignWindow();
 
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [onboardingData, setOnboardingData] = useState<any[]>(DEFAULT_ONBOARDING);
+  const [onboardingData, setOnboardingData] = useState<Slide[]>(DEFAULT_ONBOARDING);
   const flatListRef = useRef<FlatList>(null);
 
   useEffect(() => {
     async function fetchConfig() {
       const config = await getAppConfig();
-      if (config && config.onboarding && config.onboarding.length > 0) {
-        const mergedData = config.onboarding.map((item, index) => ({
-          id: String(index + 1),
-          title: item.title || DEFAULT_ONBOARDING[index]?.title || '',
-          description: item.description || DEFAULT_ONBOARDING[index]?.description || '',
-          image: item.imageUrl ? { uri: item.imageUrl } : DEFAULT_ONBOARDING[index % DEFAULT_ONBOARDING.length].image,
-        }));
-        setOnboardingData(mergedData);
+      if (config && Array.isArray(config.onboarding) && config.onboarding.length > 0) {
+        setOnboardingData(slidesFromConfig(config.onboarding));
       }
     }
     fetchConfig();
@@ -117,7 +165,7 @@ export default function OnboardingScreen() {
 
   const viewConfig = useRef({ viewAreaCoveragePercentThreshold: 50 }).current;
 
-  const renderItem = ({ item }: { item: any }) => (
+  const renderItem = ({ item }: { item: Slide }) => (
     // The page must be exactly the pager's width for `pagingEnabled` to land on
     // slide boundaries. On desktop web the pager sits in the phone column
     // (PhoneFrame), so that is the design width, not the browser width. It must be
@@ -135,13 +183,8 @@ export default function OnboardingScreen() {
         contentContainerStyle={styles.itemScrollContent}
         showsVerticalScrollIndicator={false}
       >
-        <Image
-          source={item.image}
-          // Clamped: at 1280px wide this was a 1024x1024 image, which on its own
-          // is taller than most desktop viewports.
-          style={[styles.image, { width: artSize, height: artSize }]}
-          resizeMode="contain"
-        />
+        {/* Clamped: at 1280px wide the art was 1024x1024, taller than most desktop viewports. */}
+        <SlideArt slide={item} size={artSize} isDark={isDark} />
         <View style={styles.textContainer}>
           <Text style={[styles.title, isDark && styles.textDark]}>{item.title}</Text>
           <Text style={[styles.description, { color: isDark ? '#E0E0E0' : '#616161' }]}>{item.description}</Text>
@@ -236,6 +279,7 @@ const styles = StyleSheet.create({
     paddingBottom: 24,
   },
   image: { marginBottom: 24 },
+  iconArt: { alignItems: 'center', justifyContent: 'center', alignSelf: 'center' },
   textContainer: { alignItems: 'center', paddingHorizontal: 10 },
   title: { fontSize: 28, fontFamily: 'Urbanist-Bold', textAlign: 'center', marginBottom: 16, color: '#212121' },
   description: { fontSize: 16, fontFamily: 'Urbanist-Regular', textAlign: 'center', lineHeight: 24 },
