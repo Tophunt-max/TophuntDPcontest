@@ -28,6 +28,7 @@ import { reportError } from '@/src/lib/reportError';
 import { useDesignWindow } from '@/src/lib/layout';
 import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
 import { useAuthGate } from '@/src/hooks/useAuthGate';
+import { followButtonLabel, isFollowActive, type FollowState } from '@/src/lib/followState';
 
 
 type ProfileHeaderProps = {
@@ -35,6 +36,13 @@ type ProfileHeaderProps = {
   isOwnProfile: boolean;
   onToggleFollow: () => void;
   isFollowing?: boolean; 
+  /** Follow / Requested / Following. Wins over `isFollowing` when given. */
+  followState?: FollowState;
+  /**
+   * A private account the viewer may not see behind (`profile.locked`): the
+   * followers/following counts are shown but cannot be opened, as on Instagram.
+   */
+  connectionsLocked?: boolean;
   onRefresh?: () => void;
 };
 
@@ -90,7 +98,9 @@ const calculateLevelInfo = (xp: number) => {
     return { level, progressXp: currentLevelProgress, nextLevelXp: nextLevelThreshold, percentage: Math.min(percentage, 100) };
 };
 
-const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onToggleFollow, isFollowing, onRefresh }) => {
+const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onToggleFollow, isFollowing: isFollowingProp, followState, connectionsLocked, onRefresh }) => {
+  const state: FollowState = followState ?? (isFollowingProp ? 'following' : 'none');
+  const isFollowing = isFollowActive(state);
   const { requireAuth } = useAuthGate();
   const { width: designW } = useDesignWindow();
   const router = useRouter();
@@ -217,6 +227,8 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
   const profileImage = user.profileImageUrl ? { uri: user.profileImageUrl } : require('@/assets/images/userLight.png');
 
   const navigateToConnections = (type: 'followers' | 'following') => {
+    // Locked behind a private account: the server would answer an empty list.
+    if (connectionsLocked) return;
     router.push({
       pathname: '/profile/connections',
       params: { userId: user.uid, type },
@@ -315,9 +327,11 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
                 <TouchableOpacity 
                     style={[styles.followButton, isFollowing && styles.followingButton, isFollowing && { backgroundColor, borderColor: isDark ? '#35383F' : '#DDD' }]} 
                     onPress={onToggleFollow}
+                    accessibilityRole="button"
+                    accessibilityLabel={state === 'requested' ? 'Requested. Tap to cancel the follow request' : followButtonLabel(state)}
                 >
                     <Text style={[styles.followButtonText, isFollowing && { color: textColor }]}>
-                        {isFollowing ? 'Following' : 'Follow'}
+                        {followButtonLabel(state)}
                     </Text>
                 </TouchableOpacity>
                 

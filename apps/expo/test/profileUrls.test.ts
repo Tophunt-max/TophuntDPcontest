@@ -102,13 +102,22 @@ describe('/@handle renders the profile', () => {
     expect(html).toContain('Contest winner, three times over.');
   });
 
-  it('is NOINDEX, because the screen behind it still requires a sign-in', async () => {
-    // Deliberate, and documented at `injectProfileSeo`: indexing a login-gated page is
-    // the soft-404 pattern this Worker exists to remove. This single value is what
-    // changes if profiles are ever made publicly viewable.
+  it('indexes a PUBLIC account, now that guests can browse profiles', async () => {
+    // Documented at `injectProfileSeo`: the crawler sees what a signed-out visitor
+    // sees, so a public profile is a real page, not a login redirect.
     stubProfiles({ byHandle: () => json(PROFILE) });
     const html = await head(await get(`${ORIGIN}/@alice`));
+    expect(html).toContain('name="robots" content="index, follow"');
+  });
+
+  it('keeps a PRIVATE account out of the index and says it is private', async () => {
+    // Instagram semantics: the header is visible, everything behind it is for
+    // approved followers, so there is nothing for a search result to point at.
+    stubProfiles({ byHandle: () => json({ ...PROFILE, isPrivate: true }) });
+    const html = await head(await get(`${ORIGIN}/@alice`));
     expect(html).toContain('name="robots" content="noindex, follow"');
+    expect(html).toContain('This account is private.');
+    expect(html).not.toContain('Contest winner, three times over.');
   });
 
   it('falls back to a generated description when the bio is empty', async () => {

@@ -22,6 +22,9 @@ import { contestService } from '@/src/services/contests/contestService';
 import { useFocusEffect } from 'expo-router';
 import { getSocialGraphVersion } from '@/src/lib/socialGraphVersion';
 import { Colors } from '@/constants/theme';
+import { useAuthGate } from '@/src/hooks/useAuthGate';
+import { GuestLoginWall } from '@/src/components/auth/GuestLoginWall';
+import { seenAfterViewable, shouldShowGuestWall } from '@/src/lib/guestWall';
 
 type FeedTab = 'foryou' | 'following';
 const PAGE_SIZE = 8;
@@ -47,6 +50,34 @@ export default function HomeScreen() {
   const reqIdRef = useRef(0);
   // Block/mute version this feed was last loaded at (see the focus effect below).
   const graphVersionRef = useRef(getSocialGraphVersion());
+
+  // Soft login wall for guests (src/lib/guestWall.ts): counts the furthest
+  // battle seen and nudges after every N. Refs + one state flag, so scrolling
+  // never re-renders the list.
+  const { isGuest } = useAuthGate();
+  const isGuestRef = useRef(isGuest);
+  isGuestRef.current = isGuest;
+  const seenRef = useRef(0);
+  const wallDismissalsRef = useRef(0);
+  const [showWall, setShowWall] = useState(false);
+  // Stable identity is required: FlatList throws if onViewableItemsChanged changes.
+  const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: { index: number | null; item: any }[] }) => {
+    // Skeleton rows (numbers) are not battles.
+    const indices = viewableItems.filter((v) => typeof v.item === 'object').map((v) => v.index);
+    seenRef.current = seenAfterViewable(seenRef.current, indices);
+    if (shouldShowGuestWall({ isGuest: isGuestRef.current, seen: seenRef.current, dismissals: wallDismissalsRef.current })) {
+      setShowWall(true);
+    }
+  }).current;
+  const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 50 }).current;
+  const dismissWall = useCallback(() => {
+    wallDismissalsRef.current += 1;
+    setShowWall(false);
+  }, []);
+  // Signing in closes the wall for good.
+  useEffect(() => {
+    if (!isGuest) setShowWall(false);
+  }, [isGuest]);
 
   const loadFeed = useCallback(async (tab: FeedTab, isRefresh = false) => {
     const reqId = ++reqIdRef.current; // ignore results from superseded requests
@@ -203,6 +234,8 @@ export default function HomeScreen() {
         ListFooterComponent={!isLoading ? ListFooter : null}
         onEndReached={loadMore}
         onEndReachedThreshold={0.5}
+        onViewableItemsChanged={onViewableItemsChanged}
+        viewabilityConfig={viewabilityConfig}
         removeClippedSubviews
         initialNumToRender={4}
         maxToRenderPerBatch={5}
@@ -225,12 +258,14 @@ export default function HomeScreen() {
             )}
           </View>
         ) : null}
-        contentContainerStyle={{ paddingBottom: 100 }}
+        // Guests also have the Log in / Sign up strip above the nav.
+        contentContainerStyle={{ paddingBottom: isGuest ? 160 : 100 }}
         showsVerticalScrollIndicator={false}
       />
       <View style={styles.navContainer}>
         <BottomNav backgroundColor={backgroundColor} isDark={isDark} />
       </View>
+      <GuestLoginWall visible={showWall && isGuest} isDark={isDark} onDismiss={dismissWall} />
     </SafeAreaView>
   );
 }

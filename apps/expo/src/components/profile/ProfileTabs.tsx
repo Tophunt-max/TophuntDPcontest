@@ -8,6 +8,7 @@ export type ProfileTab = 'photo' | 'video' | 'tags';
 type ProfileTabsProps = {
   activeTab: ProfileTab;
   onChangeTab: (tab: ProfileTab) => void;
+  /** True only while the viewer is locked out of a private account (then only Photo is tappable). */
   isPrivate: boolean;
   /**
    * Show the "Saved" tab. Bookmarks are private to their owner, so this must

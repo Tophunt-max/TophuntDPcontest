@@ -150,6 +150,24 @@ export const follows = sqliteTable(
 );
 
 // ---------------------------------------------------------------------------
+// follow_requests  (migration 0057) — pending follows of PRIVATE accounts.
+// Confirming one moves it into `follows`; nothing else reads this table, so a
+// pending request can never count as a follow by accident.
+// ---------------------------------------------------------------------------
+export const followRequests = sqliteTable(
+  "follow_requests",
+  {
+    requesterId: text("requester_id").notNull(),
+    targetId: text("target_id").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.requesterId, t.targetId] }),
+    targetCreatedIdx: index("idx_follow_requests_target_created").on(t.targetId, t.createdAt),
+  }),
+);
+
+// ---------------------------------------------------------------------------
 // user_blocks / user_mutes  (migration 0032)
 //
 // Self-serve safety relations between two ordinary users. NOT the same thing as
@@ -1310,6 +1328,12 @@ export const deletionRequests = sqliteTable(
     balanceAtRequest: real("balance_at_request").notNull().default(0),
     /** app | web | admin */
     source: text("source").notNull().default("app"),
+    /**
+     * `users.is_private` when the request was made (migration 0057), restored on
+     * cancel. NULL on older requests: their prior value is unknown, so cancel
+     * leaves the account private.
+     */
+    wasPrivate: integer("was_private", { mode: "boolean" }),
     cancelledAt: integer("cancelled_at"),
     completedAt: integer("completed_at"),
     createdAt: integer("created_at").notNull(),

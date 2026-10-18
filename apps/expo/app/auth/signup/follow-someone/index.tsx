@@ -88,7 +88,8 @@ export default function FollowSomeone() {
     if (!auth.currentUser) return;
 
     try {
-      await toggleFollowService(id);
+      // Explicit intent: this list only knows "selected or not".
+      await toggleFollowService(id, originalFollowList.includes(id) ? 'unfollow' : 'follow');
     } catch (error) {
       setMultiple({ following: originalFollowList });
     }

@@ -26,6 +26,7 @@ import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { contestService } from '@/src/services/contests/contestService';
 import { fetchSuggestedUsers, toggleFollowService, searchUsers } from '@/src/services/users';
+import { followButtonLabel, followStateFromResult, intentFor, stateInSets, withStateInSets, type FollowState } from '@/src/lib/followState';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
 import { useAuth } from '@/src/hooks/useAuth';
@@ -128,6 +129,8 @@ export default function DiscoverScreen() {
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [searching, setSearching] = useState(false);
   const [followedUsers, setFollowedUsers] = useState<Set<string>>(new Set());
+  // Pending requests to PRIVATE accounts — not follows (src/lib/followState.ts).
+  const [requestedUsers, setRequestedUsers] = useState<Set<string>>(new Set());
 
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<TabKey>('all');
@@ -250,20 +253,18 @@ export default function DiscoverScreen() {
   const handleFollow = async (targetId: string) => {
     handleAction(async () => {
       if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-      const isFollowing = followedUsers.has(targetId);
-      setFollowedUsers(prev => {
-        const s = new Set(prev);
-        isFollowing ? s.delete(targetId) : s.add(targetId);
-        return s;
-      });
+      const before: FollowState = stateInSets(followedUsers, requestedUsers, targetId);
+      const apply = (state: FollowState) => {
+        setFollowedUsers((f) => withStateInSets(f, requestedUsers, targetId, state).followed);
+        setRequestedUsers((r) => withStateInSets(followedUsers, r, targetId, state).requested);
+      };
+      // Optimistic: an active button turns off; an inactive one shows Following
+      // until the server says whether this was a request (private account).
+      apply(before === 'none' ? 'following' : 'none');
       try {
-        await toggleFollowService(targetId);
+        apply(followStateFromResult(await toggleFollowService(targetId, intentFor(before))));
       } catch {
-        setFollowedUsers(prev => {
-          const s = new Set(prev);
-          isFollowing ? s.add(targetId) : s.delete(targetId);
-          return s;
-        });
+        apply(before);
         addToast('Failed to update follow status.', 'error');
       }
     });
@@ -567,7 +568,8 @@ export default function DiscoverScreen() {
   // PEOPLE CARD (2-col grid)
   // ================================================================
   const renderPerson = (item: any) => {
-    const isFollowed = followedUsers.has(item.id);
+    const followState = stateInSets(followedUsers, requestedUsers, item.id);
+    const isFollowed = followState !== 'none';
     return (
       <View key={item.id} style={[styles.personCard, { backgroundColor: cardBg, borderColor, width: PEOPLE_CARD_W }]}>
         <TouchableOpacity activeOpacity={0.85} onPress={() => handleAction(() => router.push(`/profile?userId=${item.id}`))} style={{ alignItems: 'center' }}>
@@ -587,7 +589,7 @@ export default function DiscoverScreen() {
         >
           {!isFollowed && <Ionicons name="add" size={15} color="#FFF" />}
           <Text style={[styles.personFollowText, { color: isFollowed ? textColor : '#FFF' }]}>
-            {isFollowed ? 'Following' : 'Follow'}
+            {followButtonLabel(followState)}
           </Text>
         </TouchableOpacity>
       </View>

@@ -1,5 +1,6 @@
-import { callApi, readApi } from "./api";
+import { callApi, readApi, readApiWithCursor } from "./api";
 import { Badge } from "../types/user";
+import type { FollowIntent } from "../lib/followState";
 
 /** Haversine distance in km. */
 function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number) {
@@ -76,14 +77,57 @@ export async function searchUsers(q: string) {
   }
 }
 
-export const toggleFollowService = async (targetUserId: string) => {
+/**
+ * Follow / unfollow / cancel a request. Pass `intent` whenever the caller knows
+ * what the button showed (see `intentFor` in src/lib/followState.ts): without
+ * it the server toggles, and a screen that does not know about a pending
+ * request would withdraw it instead of sending it.
+ */
+export const toggleFollowService = async (targetUserId: string, intent?: FollowIntent) => {
   try {
-    return await callApi("toggleFollow", { targetUserId });
+    return await callApi("toggleFollow", intent ? { targetUserId, intent } : { targetUserId });
   } catch (error) {
     console.error("Error calling toggleFollow service:", error);
     throw error;
   }
 };
+
+/**
+ * Follow requests (private accounts). Only the account's owner can read or
+ * answer them; the Worker derives the owner from the token.
+ */
+export interface FollowRequest {
+  id: string;
+  username: string;
+  fullName?: string | null;
+  profileImageUrl?: string | null;
+  profileImageUrlThumb?: string | null;
+  verified?: boolean;
+  requestedAt: number;
+}
+
+/** One page of requests, newest first. `cursor` comes from the previous page. */
+export async function fetchFollowRequestsPage(
+  cursor?: string | null,
+): Promise<{ items: FollowRequest[]; nextCursor: string | null }> {
+  const { data, nextCursor } = await readApiWithCursor('/read/follow-requests', {
+    limit: 50,
+    ...(cursor ? { cursor } : {}),
+  });
+  return { items: Array.isArray(data) ? (data as FollowRequest[]) : [], nextCursor };
+}
+
+export async function fetchFollowRequestCount(): Promise<number> {
+  const res: any = await readApi('/read/follow-requests/count');
+  return Number(res?.count ?? 0);
+}
+
+/** Confirm (`accept: true`) or delete a request. Idempotent on the server. */
+export const respondFollowRequestService = (requesterId: string, accept: boolean) =>
+  callApi('respondFollowRequest', { requesterId, accept });
+
+/** Remove someone from your followers (no notification is sent). */
+export const removeFollowerService = (followerId: string) => callApi('removeFollower', { followerId });
 
 /**
  * Block / mute.

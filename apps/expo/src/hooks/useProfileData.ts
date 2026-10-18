@@ -5,11 +5,15 @@ import { callApi, readApi } from '../services/api';
 import {
   blockUserService,
   fetchBlockedAccounts,
+  fetchFollowRequestCount,
+  fetchFollowRequestsPage,
+  respondFollowRequestService,
   muteUserService,
   unblockUserService,
   unmuteUserService,
 } from '../services/users';
 import { bumpSocialGraphVersion } from '../lib/socialGraphVersion';
+import { followStateFromResult, type FollowIntent, type FollowState, type ToggleFollowResult } from '../lib/followState';
 
 /**
  * Profile data now comes from the Cloudflare Worker (D1) via /read endpoints.
@@ -141,18 +145,86 @@ export const useUserBookmarks = (userId: string, enabled = true) => {
   });
 };
 
+/**
+ * The signed-in viewer's relationship to `targetUserId`: following, requested
+ * (a pending request to a private account), none, or self. Its own query so
+ * the profile itself can stay a shared, viewer-agnostic cache entry.
+ */
+export const useRelationship = (targetUserId: string, enabled = true) => {
+  const { user } = useAuth();
+  return useQuery({
+    queryKey: ['relationship', targetUserId, user?.uid],
+    queryFn: async (): Promise<FollowState> => {
+      const res: any = await readApi(`/read/users/${targetUserId}/relationship`);
+      const s = res?.state;
+      return s === 'following' || s === 'requested' || s === 'self' ? s : 'none';
+    },
+    enabled: !!user && !!targetUserId && enabled,
+    staleTime: 15_000,
+  });
+};
+
 export const useToggleFollow = () => {
   const queryClient = useQueryClient();
   const { user } = useAuth();
 
   return useMutation({
-    mutationFn: async (targetUserId: string) => {
+    mutationFn: async ({ targetUserId, intent }: { targetUserId: string; intent: FollowIntent }): Promise<ToggleFollowResult> => {
       if (!user) throw new Error("Authentication required");
-      return await callApi('toggleFollow', { targetUserId });
+      return (await callApi('toggleFollow', { targetUserId, intent })) as ToggleFollowResult;
     },
-    onSuccess: (_, targetUserId) => {
+    onSuccess: (result, { targetUserId }) => {
+      // The server's answer is authoritative: a private account answers
+      // `requested`, not `following`.
+      queryClient.setQueryData(['relationship', targetUserId, user?.uid], followStateFromResult(result));
       queryClient.invalidateQueries({ queryKey: ['profile', targetUserId] });
       queryClient.invalidateQueries({ queryKey: ['profile', user?.uid] });
+      // Following (or unfollowing) a PRIVATE account changes what is unlocked.
+      queryClient.invalidateQueries({ queryKey: ['userMatches', targetUserId] });
+      queryClient.invalidateQueries({ queryKey: ['userWins', targetUserId] });
+    },
+  });
+};
+
+/** The owner's pending follow requests (private accounts), paged by cursor. */
+export const useFollowRequests = () => {
+  const { user } = useAuth();
+  return useInfiniteQuery({
+    queryKey: ['followRequests', user?.uid],
+    queryFn: ({ pageParam }) => fetchFollowRequestsPage(pageParam),
+    initialPageParam: null as string | null,
+    // A page can come back short (hidden requesters are filtered after the
+    // LIMIT) yet still have a next cursor, so the cursor alone decides.
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+    enabled: !!user,
+    staleTime: 10_000,
+  });
+};
+
+export const useFollowRequestCount = () => {
+  const { user } = useAuth();
+  return useQuery({
+    queryKey: ['followRequestCount', user?.uid],
+    queryFn: fetchFollowRequestCount,
+    enabled: !!user,
+    staleTime: 15_000,
+  });
+};
+
+/** Confirm (`accept: true`) or delete a request. Refreshes the list, the count and both profiles. */
+export const useRespondFollowRequest = () => {
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
+  return useMutation({
+    mutationFn: ({ requesterId, accept }: { requesterId: string; accept: boolean }) =>
+      respondFollowRequestService(requesterId, accept),
+    onSettled: (_r, _e, { requesterId }) => {
+      // On error too: a refused confirm (e.g. after a block) has already
+      // removed the request server-side.
+      queryClient.invalidateQueries({ queryKey: ['followRequests'] });
+      queryClient.invalidateQueries({ queryKey: ['followRequestCount'] });
+      queryClient.invalidateQueries({ queryKey: ['profile', user?.uid] });
+      queryClient.invalidateQueries({ queryKey: ['profile', requesterId] });
     },
   });
 };

@@ -12,10 +12,13 @@ import {
 } from 'react-native';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
+import { useQueryClient } from '@tanstack/react-query';
 import { readApi } from "@/src/services/api";
 import { Ionicons } from '@/src/lib/icons';
 import { UserListSkeleton } from '@/src/components/skeletons/UserListSkeleton';
-import { toggleFollowService } from '@/src/services/users';
+import { removeFollowerService, toggleFollowService } from '@/src/services/users';
+import { followButtonLabel, followStateFromResult, intentFor, stateInSets, withStateInSets, type FollowState } from '@/src/lib/followState';
+import { Alert } from '@/src/lib/appAlert';
 import { useAuth } from '@/src/hooks/useAuth';
 import { useAuthGate } from '@/src/hooks/useAuthGate';
 import { Avatar } from '@/src/components/ui/Avatar';
@@ -59,7 +62,10 @@ export default function ConnectionsScreen() {
 
   const [loading, setLoading] = useState(true);
   const [users, setUsers] = useState<User[]>([]);
+  const queryClient = useQueryClient();
   const [followedUsers, setFollowedUsers] = useState<Set<string>>(new Set());
+  // Pending requests to PRIVATE accounts — not follows (src/lib/followState.ts).
+  const [requestedUsers, setRequestedUsers] = useState<Set<string>>(new Set());
 
   // State
   const [searchQuery, setSearchQuery] = useState('');
@@ -112,29 +118,51 @@ export default function ConnectionsScreen() {
 
   const handleFollow = async (targetId: string) => {
       handleAction(async () => {
-          // Optimistic Update
-          const isFollowing = followedUsers.has(targetId);
-          setFollowedUsers(prev => {
-              const newSet = new Set(prev);
-              if (isFollowing) newSet.delete(targetId);
-              else newSet.add(targetId);
-              return newSet;
-          });
-
+          const before: FollowState = stateInSets(followedUsers, requestedUsers, targetId);
+          const apply = (state: FollowState) => {
+            setFollowedUsers((f) => withStateInSets(f, requestedUsers, targetId, state).followed);
+            setRequestedUsers((r) => withStateInSets(followedUsers, r, targetId, state).requested);
+          };
+          // Optimistic, then the server's answer: a private account answers
+          // `requested`, not `following`.
+          apply(before === 'none' ? 'following' : 'none');
           try {
-            await toggleFollowService(targetId);
-            // addToast(isFollowing ? "Unfollowed" : "Followed successfully!", "success");
+            apply(followStateFromResult(await toggleFollowService(targetId, intentFor(before))));
           } catch (error) {
-            // Revert on failure
-            setFollowedUsers(prev => {
-                const newSet = new Set(prev);
-                if (isFollowing) newSet.add(targetId);
-                else newSet.delete(targetId);
-                return newSet;
-            });
+            apply(before);
             addToast("Failed to update follow status.", "error");
           }
       });
+  };
+
+  // Your OWN followers list: "Remove" takes someone out of your followers
+  // without blocking them (they are not told). On a private account this is
+  // how you take back access.
+  const isOwnFollowers = !!user?.uid && user.uid === userId && type === 'followers';
+  const handleRemoveFollower = (target: User) => {
+    Alert.alert(
+      'Remove follower?',
+      `TopHunt won't tell @${target.username || 'them'} they were removed from your followers.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            const previous = users;
+            setUsers((list) => list.filter((u) => u.id !== target.id));
+            try {
+              await removeFollowerService(target.id);
+              // Your follower count moved.
+              void queryClient.invalidateQueries({ queryKey: ['profile', user?.uid] });
+            } catch {
+              setUsers(previous);
+              addToast('Could not remove follower.', 'error');
+            }
+          },
+        },
+      ],
+    );
   };
 
   // Filtering
@@ -167,7 +195,8 @@ export default function ConnectionsScreen() {
   );
 
   const renderUserCard = ({ item }: { item: any }) => {
-      const isFollowed = followedUsers.has(item.id);
+      const followState = stateInSets(followedUsers, requestedUsers, item.id);
+      const isFollowed = followState !== 'none';
       const isCurrentUser = item.id === user?.uid;
       return (
       <TouchableOpacity
@@ -200,8 +229,18 @@ export default function ConnectionsScreen() {
                     styles.followText,
                     { color: isFollowed ? textColor : '#FFF' }
                 ]}>
-                    {isFollowed ? 'Following' : 'Follow'}
+                    {followButtonLabel(followState)}
                 </Text>
+            </TouchableOpacity>
+          )}
+          {isOwnFollowers && !isCurrentUser && (
+            <TouchableOpacity
+                style={[styles.followBtn, { backgroundColor: isDark ? '#333' : '#EEE', marginLeft: 8 }]}
+                onPress={() => handleRemoveFollower(item)}
+                accessibilityRole="button"
+                accessibilityLabel={`Remove ${item.username || 'follower'}`}
+            >
+                <Text style={[styles.followText, { color: textColor }]}>Remove</Text>
             </TouchableOpacity>
           )}
       </TouchableOpacity>

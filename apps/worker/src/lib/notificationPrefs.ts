@@ -30,6 +30,10 @@ export type NotificationCategory = "social" | "contest" | "wallet" | "admin";
 export const CATEGORY_BY_TYPE: Record<string, NotificationCategory> = {
   // --- social ---
   follow: "social",
+  // Private accounts (migration 0057). Never collapsed: each request is
+  // confirmed or deleted on its own.
+  follow_request: "social",
+  follow_accept: "social",
   profile_visit: "social",
   like: "social",
   match_like: "social",

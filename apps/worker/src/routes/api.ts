@@ -41,6 +41,14 @@ import {
 } from "../lib/cache";
 import { purgeShared } from "../lib/edgeCache";
 import { STORIES_FEED_CACHE_KEY } from "../lib/storyAudience";
+import { isPrivateAccount } from "../lib/privateAccount";
+import {
+  approveAllFollowRequests,
+  approveFollowRequest,
+  deleteFollowRequest,
+  deleteRequestsBetweenStmts,
+  hasPendingRequest,
+} from "../lib/followRequests";
 import { assertContestOpenNow, createContestExtra, validateContestInput } from "../lib/contestAdmin";
 import { parsePayoutDestination, readWithdrawalPolicy } from "../lib/payouts";
 import { parseDeliveryAddress } from "../lib/deliveryAddress";
@@ -1303,6 +1311,16 @@ apiRoute.post("/", async (c) => {
       const { targetUserId } = body;
       if (!targetUserId) throw httpsError("invalid-argument", "The function must be called with a 'targetUserId'.");
       if (targetUserId === uid) throw httpsError("invalid-argument", "You cannot follow yourself.");
+      /**
+       * Optional explicit intent. Without it this is a toggle (older clients).
+       * With it, a tap can never do the OPPOSITE of what the button showed: a
+       * list screen that does not know about a pending request shows "Follow",
+       * and a bare toggle would withdraw the request the user meant to send.
+       *   follow   → follow / request; a no-op if already following or requested
+       *   unfollow / cancel → remove the follow or the request; a no-op if neither
+       */
+      const intent = body.intent === "follow" || body.intent === "unfollow" || body.intent === "cancel" ? body.intent : null;
+      const wantsOff = intent === "unfollow" || intent === "cancel";
       const existing = await db
         .select()
         .from(schema.follows)
@@ -1321,6 +1339,7 @@ apiRoute.post("/", async (c) => {
           userCacheKey(targetUserId),
         );
 
+      if (existing && intent === "follow") return c.json({ success: true, isFollowing: true, requested: false });
       if (existing) {
         // Unfollow: one atomic round-trip instead of three sequential ones.
         await db.batch([
@@ -1329,19 +1348,64 @@ apiRoute.post("/", async (c) => {
           db.update(schema.users).set({ followersCount: sql`MAX(${schema.users.followersCount} - 1, 0)` }).where(eq(schema.users.uid, targetUserId)),
         ]);
         c.executionCtx.waitUntil(invalidateFollowCaches());
-        return c.json({ success: true, isFollowing: false });
+        return c.json({ success: true, isFollowing: false, requested: false });
       }
+      // A pending request to a private account: tapping "Requested" withdraws it.
+      // Checked before the privacy read so a request survives the account going
+      // public only until the owner's switch approves it (lib/followRequests.ts).
+      if (await hasPendingRequest(env, uid, targetUserId)) {
+        if (intent === "follow") return c.json({ success: true, isFollowing: false, requested: true });
+        await deleteFollowRequest(env, uid, targetUserId);
+        return c.json({ success: true, isFollowing: false, requested: false });
+      }
+      if (wantsOff) return c.json({ success: true, isFollowing: false, requested: false });
       // Guarded on the FOLLOW branch only. Unfollowing must stay possible
       // whatever the relationship is — refusing it could strand an edge that
       // predates the block and leave the user unable to clean it up.
       await assertNotBlocked(env, uid, targetUserId);
+      const me = await db.select({ username: schema.users.username, fullName: schema.users.fullName, avatar: schema.users.profileImageUrl }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+      // PRIVATE target → a pending request instead of a follow (Instagram rule).
+      // Nothing behind the profile header unlocks until the owner confirms.
+      //
+      // The insert is gated on the account STILL being private in the same
+      // statement. The owner's switch to public writes `is_private = 0` and then
+      // approves pending requests; a request read as private just before that
+      // write could otherwise land after the approval and sit, unanswerable, on
+      // a public account. Gated, it inserts nothing and falls through to a
+      // direct follow below.
+      let requested = false;
+      if (await isPrivateAccount(env, targetUserId)) {
+        const ins = await env.DB.prepare(
+          `INSERT OR IGNORE INTO follow_requests (requester_id, target_id, created_at)
+           SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM users WHERE uid = ? AND is_private = 1)`,
+        )
+          .bind(uid, targetUserId, now(), targetUserId)
+          .run();
+        requested = (ins.meta?.changes ?? 0) > 0 || (await hasPendingRequest(env, uid, targetUserId));
+      }
+      if (requested) {
+        // Request → cancel → request is a way to push the owner repeatedly (the
+        // cancel removes the row, not the push already delivered). The request
+        // itself always goes through; only the notification is capped per pair.
+        const notify = await consumeRateLimit(env, `followreq_notify:${uid}:${targetUserId}`, 3, 3600);
+        if (notify) c.executionCtx.waitUntil(
+          createNotification(env, targetUserId, {
+            title: "Follow request",
+            body: `${me?.username || me?.fullName || "Someone"} wants to follow you.`,
+            type: "follow_request", targetId: uid, image: me?.avatar || undefined,
+            actor: { uid, username: me?.username || me?.fullName, avatarUrl: me?.avatar },
+            // One row per requester: each one is confirmed or deleted on its own.
+            noCollapse: true,
+          }),
+        );
+        return c.json({ success: true, isFollowing: false, requested: true });
+      }
       // Follow: insert edge + bump both counters atomically in a single batch.
       await db.batch([
         db.insert(schema.follows).values({ followerId: uid, followingId: targetUserId, createdAt: now() }),
         db.update(schema.users).set({ followingCount: sql`${schema.users.followingCount} + 1` }).where(eq(schema.users.uid, uid)),
         db.update(schema.users).set({ followersCount: sql`${schema.users.followersCount} + 1` }).where(eq(schema.users.uid, targetUserId)),
       ]);
-      const me = await db.select({ username: schema.users.username, fullName: schema.users.fullName, avatar: schema.users.profileImageUrl }).from(schema.users).where(eq(schema.users.uid, uid)).get();
       c.executionCtx.waitUntil(
         Promise.all([
           invalidateFollowCaches(),
@@ -1354,7 +1418,64 @@ apiRoute.post("/", async (c) => {
           }),
         ]),
       );
-      return c.json({ success: true, isFollowing: true });
+      return c.json({ success: true, isFollowing: true, requested: false });
+    }
+
+    // ================= FOLLOW REQUESTS (private accounts) =================
+    // The OWNER answers a request. `accept: true` confirms it (the requester
+    // becomes a follower); `accept: false` deletes it silently, as Instagram does.
+    // Both are idempotent: answering an already-answered or withdrawn request is
+    // a no-op success, so a double tap never errors.
+    case "respondFollowRequest": {
+      await rateLimit(env, `followreq:${uid}`, 300, 3600);
+      const requesterId = requiredId(body.requesterId, "requesterId", 128);
+      const accept = body.accept === true;
+      if (!accept) {
+        await deleteFollowRequest(env, requesterId, uid);
+        return c.json({ success: true, accepted: false });
+      }
+      // A block since the request was sent: drop it rather than create a follow.
+      if (await isBlockedBetween(env, uid, requesterId)) {
+        await deleteFollowRequest(env, requesterId, uid);
+        throw httpsError("permission-denied", "This action isn't available for this account.");
+      }
+      const accepted = await approveFollowRequest(env, requesterId, uid, now());
+      if (!accepted) return c.json({ success: true, accepted: false });
+      const me = await db.select({ username: schema.users.username, fullName: schema.users.fullName, avatar: schema.users.profileImageUrl }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+      c.executionCtx.waitUntil(
+        Promise.all([
+          purgeShared(c, followingCacheKey(requesterId), followersCacheKey(uid), userCacheKey(requesterId), userCacheKey(uid)),
+          createNotification(env, requesterId, {
+            title: "Request accepted",
+            body: `${me?.username || me?.fullName || "Someone"} accepted your follow request.`,
+            type: "follow_accept", targetId: uid, image: me?.avatar || undefined,
+            actor: { uid, username: me?.username || me?.fullName, avatarUrl: me?.avatar },
+            noCollapse: true,
+          }),
+        ]),
+      );
+      return c.json({ success: true, accepted: true });
+    }
+
+    // The owner removes someone from their followers (Instagram's "Remove").
+    // Mostly for private accounts: it is how an owner takes back access without
+    // blocking. The removed account is not notified. Counters are gated on the
+    // edge still existing and ordered before its delete (same reasoning as the
+    // block path below), so a concurrent unfollow cannot double-decrement.
+    case "removeFollower": {
+      await rateLimit(env, `follow:${uid}`, 120, 3600);
+      const followerId = requiredId(body.followerId, "followerId", 128);
+      if (followerId === uid) throw httpsError("invalid-argument", "You cannot remove yourself.");
+      const edge = sql`EXISTS (SELECT 1 FROM follows WHERE follower_id = ${followerId} AND following_id = ${uid})`;
+      await db.batch([
+        db.update(schema.users).set({ followingCount: sql`MAX(${schema.users.followingCount} - 1, 0)` }).where(and(eq(schema.users.uid, followerId), edge)),
+        db.update(schema.users).set({ followersCount: sql`MAX(${schema.users.followersCount} - 1, 0)` }).where(and(eq(schema.users.uid, uid), edge)),
+        db.delete(schema.follows).where(and(eq(schema.follows.followerId, followerId), eq(schema.follows.followingId, uid))),
+      ]);
+      c.executionCtx.waitUntil(
+        purgeShared(c, followingCacheKey(followerId), followersCacheKey(uid), userCacheKey(followerId), userCacheKey(uid)),
+      );
+      return c.json({ success: true });
     }
 
     // ================= BLOCK / MUTE =================
@@ -1436,6 +1557,9 @@ apiRoute.post("/", async (c) => {
             and(eq(schema.follows.followerId, targetUserId), eq(schema.follows.followingId, uid)),
           ),
         ),
+        // Pending follow requests in either direction go too: a block must not
+        // leave a request the blocked account could later see confirmed.
+        ...deleteRequestsBetweenStmts(db, uid, targetUserId),
       );
       await db.batch(stmts as any);
 
@@ -3181,6 +3305,15 @@ apiRoute.post("/", async (c) => {
           }
         }
       }
+      const privacyChanged = !!fields && Object.prototype.hasOwnProperty.call(fields, "isPrivate");
+      // Going PUBLIC approves every pending follow request (Instagram does the
+      // same): with nothing left to protect, a pending request would only be a
+      // follow the owner can no longer act on. After the write above, so a
+      // request arriving concurrently sees a public account and follows directly.
+      let approved: string[] = [];
+      if (privacyChanged && !(fields as any).isPrivate) {
+        approved = await approveAllFollowRequests(env, uid, now());
+      }
       // Invalidate the cached public profile so the user sees their edits
       // immediately (GET /users/:id serves a short-lived shared copy).
       c.executionCtx.waitUntil(
@@ -3189,10 +3322,13 @@ apiRoute.post("/", async (c) => {
           userCacheKey(uid),
           // Going private (or public) changes who may see this account's Stories;
           // the shared stories-bar base carries that fact (lib/storyAudience.ts).
-          ...(fields && Object.prototype.hasOwnProperty.call(fields, "isPrivate") ? [STORIES_FEED_CACHE_KEY] : []),
+          // The connections lists are locked/unlocked by the same switch.
+          ...(privacyChanged ? [STORIES_FEED_CACHE_KEY, followersCacheKey(uid), followingCacheKey(uid)] : []),
+          // Bounded: these are the requesters whose following lists just grew.
+          ...approved.slice(0, 50).flatMap((r) => [followingCacheKey(r), userCacheKey(r)]),
         ),
       );
-      return c.json({ success: true });
+      return c.json({ success: true, ...(privacyChanged ? { approvedRequests: approved.length } : {}) });
     }
 
     // ================= STORIES (views / reactions / highlights) =================

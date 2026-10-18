@@ -14,6 +14,8 @@
 /** All notification type strings the backend can emit (+ legacy aliases). */
 export type NotificationType =
   | "follow"
+  | "follow_request"
+  | "follow_accept"
   | "profile_visit"
   | "match_like"
   | "match_comment"
@@ -57,21 +59,30 @@ export function getNotificationDestination(
   switch (type) {
     case "follow":
     case "profile_visit":
+    // "X accepted your follow request": open their (now unlocked) profile.
+    case "follow_accept":
       return targetId ? `/profile?userId=${encodeURIComponent(targetId)}` : "/profile";
+
+    // "X wants to follow you": the owner's Follow requests list, where it is
+    // confirmed or deleted.
+    case "follow_request":
+      return "/notifications/requests";
 
     // Post permalinks live at the root-level app/[slug].tsx route.
     case "like":
     case "comment":
       return targetId ? `/${encodeURIComponent(targetId)}` : null;
 
-    // Battle/match engagement — no standalone match detail route exists yet,
-    // so send the user to the live battles feed on home.
+    // Battle engagement and results open that battle's detail page
+    // (app/battle/[id].tsx). `targetId` is the match id on all of these; without
+    // one there is nothing specific to open, so the feed.
     case "match_like":
     case "match_comment":
     case "match":
-    case "contest":
     case "contest-win":
     case "contest-loss":
+      return targetId ? `/battle/${encodeURIComponent(targetId)}` : "/home";
+    case "contest":
       return "/home";
 
     /**
@@ -128,6 +139,10 @@ export function getNotificationTag(type: NotificationType | undefined): Notifica
   switch (type) {
     case "follow":
       return { label: "Follow", color: "#3B82F6", icon: "person" };
+    case "follow_request":
+      return { label: "Request", color: "#3B82F6", icon: "person-add" };
+    case "follow_accept":
+      return { label: "Accepted", color: "#22C55E", icon: "person" };
     case "profile_visit":
       return { label: "Visit", color: "#6366F1", icon: "eye-outline" };
     case "match_like":
@@ -182,6 +197,8 @@ export type NotificationCategory = "social" | "contest" | "wallet" | "admin";
 export const CATEGORY_BY_TYPE: Record<string, NotificationCategory> = {
   // social
   follow: "social",
+  follow_request: "social",
+  follow_accept: "social",
   profile_visit: "social",
   like: "social",
   match_like: "social",

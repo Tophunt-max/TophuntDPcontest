@@ -11,6 +11,7 @@ import { CloseIcon } from '@/src/components/ui/CloseIcon';
 import { webPhoneColumn } from '@/src/lib/layout';
 import { useAuthGate } from '@/src/hooks/useAuthGate';
 import type { GatedAction } from '@/src/lib/authGate';
+import { GuestBanner } from '@/src/components/auth/GuestBanner';
 
 // Height only: the add-menu sheet slides up from below the window.
 const { height } = Dimensions.get('window');
@@ -134,6 +135,9 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
   });
 
   return (
+    <View>
+    {/* Guests only: the persistent Log in / Sign up strip (renders nothing when signed in). */}
+    <GuestBanner isDark={isDark} />
     <View style={[
         styles.bottomNav, 
         { 
@@ -265,6 +269,7 @@ export const BottomNav = ({ backgroundColor, isDark }: BottomNavProps) => {
                 </Animated.View>
             </View>
         </Modal>
+    </View>
     </View>
   );
 };

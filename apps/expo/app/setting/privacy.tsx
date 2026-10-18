@@ -87,15 +87,25 @@ export default function PrivacySettingsScreen() {
     setIsPrivate(next);
     setSaving(true);
     try {
-      await callApi('updateProfile', { isPrivate: next });
+      const res: any = await callApi('updateProfile', { isPrivate: next });
+      const approved = Number(res?.approvedRequests || 0);
       // Keep every other screen reading the same value — the profile header shows
       // a private badge and the tab strip disables itself from this field.
       queryClient.setQueryData(['profile', user.uid], (old: any) =>
         old ? { ...old, isPrivate: next } : old,
       );
       void queryClient.invalidateQueries({ queryKey: ['profile', user.uid] });
+      // Going public approves every pending follow request (as on Instagram).
+      if (approved > 0) {
+        void queryClient.invalidateQueries({ queryKey: ['followRequests'] });
+        void queryClient.invalidateQueries({ queryKey: ['followRequestCount'] });
+      }
       emitToast(
-        next ? 'Your account is now private.' : 'Your account is now public.',
+        next
+          ? 'Your account is now private. New followers will need your approval.'
+          : approved > 0
+            ? `Your account is now public. ${approved} pending request${approved === 1 ? ' was' : 's were'} approved.`
+            : 'Your account is now public.',
         'success',
       );
     } catch (e: any) {
@@ -193,8 +203,9 @@ export default function PrivacySettingsScreen() {
             <View style={styles.rowText}>
               <Text style={[styles.rowTitle, { color: textColor }]}>Private account</Text>
               <Text style={[styles.rowDesc, { color: subTextColor }]}>
-                Only people you approve can see your entries and stories. You stay out
-                of search and suggestions.
+                New followers need your approval. Only approved followers see your
+                profile&apos;s battles, wins, followers and stories. Battles you enter still
+                appear in the public feed, because the other player and voters share them.
               </Text>
             </View>
             {isLoading && isPrivate === null ? (

@@ -24,6 +24,10 @@ export interface Env {
   // which a KV read-then-write on an eventually-consistent store never was.
   // Typed for native RPC calls. See lib/rateLimit.ts for the client.
   RATE_LIMITER: DurableObjectNamespace<import("./rateLimiter").RateLimiter>;
+  // Workers Rate Limiting binding for guest reads (middleware/auth.ts
+  // `guestReadLimit`). Optional: absent locally and in tests, where the check
+  // fails open.
+  GUEST_READ_LIMITER?: { limit(opts: { key: string }): Promise<{ success: boolean }> };
   // Per-chat message store (SQLite-backed DO). Owns chat message BODIES, keeping
   // the fastest-growing write path off D1's single writer. The `chats` preview
   // row + `chat_members` index stay in D1 (cross-chat inbox queries). Typed for

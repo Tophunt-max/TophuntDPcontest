@@ -56,6 +56,16 @@ export function loginHref(returnTo?: string | null): string {
 }
 
 /**
+ * The sign-up href. The sign-up flow (profile, follow suggestions, welcome)
+ * does not take a return path today, so `returnTo` is not forwarded — a new
+ * account finishes onboarding and lands on Home. Kept as a function so the call
+ * sites do not change if the flow learns `redirect` later.
+ */
+export function signupHref(_returnTo?: string | null): string {
+  return '/auth/signup';
+}
+
+/**
  * `pathname` + query string from Expo Router's pathname, global params and
  * segments. Params that are DYNAMIC SEGMENTS of the route (`[userId]`,
  * `[...rest]`) are already in the pathname and are not repeated.

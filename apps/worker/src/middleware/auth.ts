@@ -236,6 +236,40 @@ export const optionalAuth = createMiddleware<MW>(async (c, next) => {
 });
 
 /**
+ * Per-IP throttle for GUEST reads of public content (profiles, their lists,
+ * battles, comments, Stories). Place it AFTER `optionalAuth`: a request with a
+ * bogus bearer token is a guest too, so the check must look at the verified
+ * user, not at whether an Authorization header was sent.
+ *
+ * Backed by the Workers Rate Limiting binding (`GUEST_READ_LIMITER`, see
+ * wrangler.toml), not the RateLimiter Durable Object: it is in-memory per colo
+ * and costs no DO request, which matters on the hottest read paths in the app
+ * against a 100k/day DO budget. The limit is generous (1000/min per IP per colo)
+ * because mobile carriers put many people behind one IP; it exists to slow bulk
+ * scraping, not to meter people. Fails OPEN when the binding is missing (local,
+ * tests) or errors — a limiter outage must not take public pages down. The
+ * Cloudflare WAF rule in GUEST_ACCESS.md is the edge-level backstop.
+ */
+export const guestReadLimit = createMiddleware<MW>(async (c, next) => {
+  const limiter = c.env.GUEST_READ_LIMITER;
+  if (!c.get("user") && limiter) {
+    const ip =
+      c.req.header("CF-Connecting-IP") || c.req.header("X-Forwarded-For")?.split(",")[0]?.trim() || "unknown";
+    let allowed = true;
+    try {
+      allowed = (await limiter.limit({ key: `guestread:${ip}` })).success;
+    } catch (e) {
+      console.error("[guestReadLimit] limiter unavailable (failing open)", e);
+    }
+    if (!allowed) {
+      c.header("Retry-After", "60");
+      throw httpsError("resource-exhausted", "Too many requests. Sign in or try again in a minute.");
+    }
+  }
+  await next();
+});
+
+/**
  * True if the user is an admin — via the `role` custom claim OR the D1 users
  * row (mirrors utils/firebase.ts isAdmin + firestore.rules).
  */

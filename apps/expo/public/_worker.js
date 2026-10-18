@@ -1203,23 +1203,23 @@ async function fetchHandleForUid(apiBase, uid) {
 /**
  * Meta for a public profile.
  *
- * NOINDEX, and that is not an oversight. The profile screen still requires a sign-in
- * (see `ProfileScreen`), so letting Google index it would index a login redirect —
- * a page that answers 200 with no content for the crawler is the soft-404 pattern
- * this Worker exists to remove. The og/twitter tags are still worth emitting: they
- * are what makes a shared `/@handle` link render as a card in WhatsApp, iMessage and
- * Twitter, and those scrapers do not need to get past the gate.
- *
- * IF profiles are ever made publicly viewable, this single `robots` value is what
- * changes — to `index, follow` for a public account and `noindex, follow` when
- * `isPrivate`, matching Instagram. Nothing else here needs to move.
+ * Indexing follows Instagram: a PUBLIC account's profile is `index, follow` —
+ * guests can now browse it without signing in (GUEST_ACCESS.md), so the crawler
+ * gets the same page a visitor does. A PRIVATE account stays `noindex, follow`
+ * and its description says so: the header is visible, but everything behind it
+ * is for approved followers only, so there is nothing for a search result to
+ * point at. The og/twitter tags are emitted either way — they are what makes a
+ * shared `/@handle` link render as a card.
  */
 function injectProfileSeo(shellResp, profile, origin, handleLower) {
   const handle = profile.username || handleLower;
   const name = (profile.fullName || '').trim();
   const title = name ? `${name} (@${handle})` : `@${handle}`;
   const bio = (profile.bio || '').trim();
-  const description = bio || `See @${handle}'s battles, wins and photos on TopHunt.`;
+  const isPrivate = !!profile.isPrivate;
+  const description = isPrivate
+    ? `This account is private. Follow @${handle} on TopHunt to see their battles.`
+    : bio || `See @${handle}'s battles, wins and photos on TopHunt.`;
   const image = profile.profileImageUrl || '';
   const canonical = `${origin}/@${handleLower}`;
 
@@ -1229,7 +1229,7 @@ function injectProfileSeo(shellResp, profile, origin, handleLower) {
     canonical,
     image,
     type: 'profile',
-    robots: 'noindex, follow',
+    robots: isPrivate ? 'noindex, follow' : 'index, follow',
     // Non-JS crawlers and social scrapers that read the body get the essentials.
     noscript:
       `<noscript><article>` +
@@ -1448,6 +1448,7 @@ function robotsTxt(origin) {
     ...PRIVATE_PREFIXES.flatMap((p) => [`Disallow: ${p}$`, `Disallow: ${p}/`, `Disallow: ${p}?`]),
     // Shared battles are fine to fetch (that is how a preview gets built) but
     // carry noindex; keeping them crawlable is what lets the unfurl work.
+    // `/@handle` of a PUBLIC account is indexed (injectProfileSeo).
     '',
     `Sitemap: ${origin}/sitemap.xml`,
     '',

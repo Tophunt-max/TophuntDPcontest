@@ -18,9 +18,7 @@ import localizedFormat from 'dayjs/plugin/localizedFormat';
 import customParseFormat from 'dayjs/plugin/customParseFormat';
 import calendar from 'dayjs/plugin/calendar';
 import utc from 'dayjs/plugin/utc';
-import { classifyRoute, guardDecision } from '@/src/lib/routeAccess';
-import { loginHref, pathWithQuery } from '@/src/lib/authGate';
-import { postAuthDestination } from '@/src/lib/postAuthRedirect';
+import { createRootGuard } from '@/src/lib/rootGuard';
 
 // Initialize all dayjs plugins globally at the root
 dayjs.extend(localeData);
@@ -284,31 +282,24 @@ function RootLayoutNav() {
    */
   const pathname = usePathname();
   const globalParams = useGlobalSearchParams();
-  const wasSignedIn = React.useRef<boolean | undefined>(undefined);
+  // One guard per mount; it remembers the previous signed-in state (see
+  // src/lib/rootGuard.ts, which is where this behaviour is tested).
+  const guardRef = React.useRef(createRootGuard());
   useEffect(() => {
-    if (loading) return;
-    const signedIn = !!user;
-    const justSignedIn = wasSignedIn.current === false && signedIn;
-    const justSignedOut = wasSignedIn.current === true && !signedIn;
-    wasSignedIn.current = signedIn;
-    const params = globalParams as Record<string, unknown>;
-    const decision = guardDecision({
-      access: classifyRoute(segments as string[], params),
-      signedIn,
-      authLoading: loading,
-      justSignedIn,
-      justSignedOut,
-      currentPath: pathWithQuery(pathname, params, segments as string[]),
-      destination: postAuthDestination(params.redirect as string | string[] | undefined),
-      loginHref,
-    });
-    if (decision.type === 'redirect') router.replace(decision.to as any);
-    else if (decision.type === 'leave-auth') {
-      // Reached with Back after a gated sign-in: skip the stale login entry
-      // instead of re-showing the destination on top of it.
-      if (router.canGoBack()) router.back();
-      else router.replace(decision.to as any);
-    }
+    guardRef.current.run(
+      {
+        signedIn: !!user,
+        loading,
+        segments: segments as string[],
+        params: globalParams as Record<string, unknown>,
+        pathname,
+      },
+      {
+        replace: (to) => router.replace(to as any),
+        back: () => router.back(),
+        canGoBack: () => router.canGoBack(),
+      },
+    );
   }, [user, loading, segments, pathname, globalParams]);
 
   useEffect(() => {
@@ -341,6 +332,7 @@ function RootLayoutNav() {
             <Stack.Screen name="force-update" options={{ gestureEnabled: false }} />
             <Stack.Screen name="account-scheduled-deletion" options={{ gestureEnabled: false }} />
             <Stack.Screen name="notifications/index" options={{ presentation: 'modal', title: 'Notifications' }} />
+            <Stack.Screen name="notifications/requests" options={{ presentation: 'modal', title: 'Follow requests' }} />
           </Stack>
           {/* Admin-controlled announcement banner (renders only on the home screen; dismissal persists). */}
           <AnnouncementBanner />

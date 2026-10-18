@@ -13,7 +13,7 @@ import {
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useAuth } from '@/src/services/auth';
-import { useProfile, useToggleFollow, useUserBookmarks, useUserMatches } from '@/src/hooks/useProfileData';
+import { useProfile, useRelationship, useToggleFollow, useUserBookmarks, useUserMatches } from '@/src/hooks/useProfileData';
 import ProfileHeader from '@/src/components/profile/ProfileHeader';
 import Highlights from '@/src/components/profile/Highlights';
 import ProfileTabs, { ProfileTab } from '@/src/components/profile/ProfileTabs';
@@ -26,6 +26,9 @@ import { fetchProfileByHandle, profilePath } from '@/src/services/users';
 import { Colors } from '@/constants/theme';
 import { PostCard } from '@/src/components/home/PostCard';
 import { useAuthGate } from '@/src/hooks/useAuthGate';
+import { PrivateAccountNotice } from '@/src/components/profile/PrivateAccountNotice';
+import { intentFor, type FollowState } from '@/src/lib/followState';
+import { Alert } from '@/src/lib/appAlert';
 
 interface ProfileScreenProps {
   /**
@@ -248,6 +251,18 @@ const ProfileContent = ({
     return myProfile?.following?.includes(targetUserId) || false;
   }, [myProfile, targetUserId]);
 
+  // Follow / Requested / Following. The relationship read is the only source
+  // that knows about a PENDING request; `myProfile.following` is the fallback
+  // while it loads (and covers approved follows).
+  const { data: relationship } = useRelationship(targetUserId, !!currentUser && !isOwnProfile);
+  const followState: FollowState = isOwnProfile
+    ? 'self'
+    : relationship ?? (isFollowing ? 'following' : 'none');
+
+  // Private account the viewer may not see behind (server-decided). Nothing
+  // below the header is requested, and the lock notice replaces it.
+  const locked = !isOwnProfile && !!(profile as any)?.locked;
+
   const { mutate: toggleFollow } = useToggleFollow();
   const [selectedTab, setSelectedTab] = useState<ProfileTab>('photo');
 
@@ -258,8 +273,8 @@ const ProfileContent = ({
 
   // Lazy per-tab loading: only the active tab hits the network; already-loaded
   // tabs stay cached. Photo is the default so it loads on open.
-  const { data: photoMatches, isLoading: photoLoading, refetch: refetchPhoto, isRefetching: photoRefetching } = useUserMatches(targetUserId, 'photo', activeTab === 'photo');
-  const { data: videoMatches, isLoading: videoLoading, refetch: refetchVideo, isRefetching: videoRefetching } = useUserMatches(targetUserId, 'video', activeTab === 'video');
+  const { data: photoMatches, isLoading: photoLoading, refetch: refetchPhoto, isRefetching: photoRefetching } = useUserMatches(targetUserId, 'photo', activeTab === 'photo' && !!profile && !locked);
+  const { data: videoMatches, isLoading: videoLoading, refetch: refetchVideo, isRefetching: videoRefetching } = useUserMatches(targetUserId, 'video', activeTab === 'video' && !!profile && !locked);
   // Bookmarks are private to their owner — only ever request your own.
   const { data: bookmarks, isLoading: bookmarksLoading, refetch: refetchBookmarks } = useUserBookmarks(targetUserId, activeTab === 'tags' && isOwnProfile);
 
@@ -286,14 +301,33 @@ const ProfileContent = ({
     if (next) router.replace(next);
   }, [addressedByUid, profile?.username, router]);
 
-  const { requireAuth } = useAuthGate();
+  const { requireAuth, isGuest } = useAuthGate();
   const handleToggleFollow = () => {
     if (isOwnProfile) return;
     if (!requireAuth('follow')) return;
-    toggleFollow(targetUserId);
+    // Unfollowing a PRIVATE account takes access away, and getting it back
+    // needs a new request the owner has to accept — so ask first, as Instagram does.
+    if (followState === 'following' && profile?.isPrivate) {
+      Alert.alert(
+        `Unfollow @${profile?.username || 'user'}?`,
+        "This account is private. If you change your mind, you'll have to request to follow again.",
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Unfollow', style: 'destructive', onPress: () => toggleFollow({ targetUserId, intent: 'unfollow' }) },
+        ],
+      );
+      return;
+    }
+    toggleFollow({ targetUserId, intent: intentFor(followState) });
   };
 
   const handleRefresh = async () => {
+    // A locked profile has no lists to refresh — only the header (and with it
+    // `locked`, which flips once a request is accepted).
+    if (locked) {
+      await refetchProfile();
+      return;
+    }
     await Promise.all([refetchProfile(), refetchPhoto(), refetchVideo(), refetchBookmarks()]);
   };
 
@@ -358,7 +392,7 @@ const ProfileContent = ({
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
       <FlatList
-        data={isBlockedByMe ? [] : currentData}
+        data={isBlockedByMe || locked ? [] : currentData}
         keyExtractor={(item: any) => item.id}
         renderItem={({ item }) => <PostCard item={item} isDark={isDark} />}
         refreshControl={
@@ -376,6 +410,8 @@ const ProfileContent = ({
               isOwnProfile={isOwnProfile}
               onToggleFollow={handleToggleFollow}
               isFollowing={isFollowing}
+              followState={followState}
+              connectionsLocked={locked}
               onRefresh={handleRefresh}
             />
             {/*
@@ -384,7 +420,9 @@ const ProfileContent = ({
               sub-resource, so leaving the tabs mounted would show a row of tabs
               over a permanently empty grid and read as a loading failure.
             */}
-            {isBlockedByMe ? null : (
+            {isBlockedByMe ? null : locked ? (
+              <PrivateAccountNotice isDark={isDark} followState={followState} isGuest={isGuest} />
+            ) : (
             <>
             {isOwnProfile && (
               <>
@@ -407,7 +445,11 @@ const ProfileContent = ({
             <ProfileTabs
               activeTab={activeTab}
               onChangeTab={setSelectedTab}
-              isPrivate={!!profile?.isPrivate}
+              // The lock is decided by the server (`locked`), and the tabs only
+              // render when unlocked. Passing `isPrivate` here used to disable
+              // the Video and Saved tabs for every viewer of a private account —
+              // its owner and approved followers included.
+              isPrivate={locked}
               showSaved={isOwnProfile}
             />
             </>
@@ -415,7 +457,7 @@ const ProfileContent = ({
           </>
         }
         ListEmptyComponent={
-          isBlockedByMe ? null : !currentLoading ? (
+          isBlockedByMe || locked ? null : !currentLoading ? (
             <View style={{ alignItems: 'center', marginTop: 40 }}>
               <Text style={{ color: isDark ? '#FFF' : '#616161', fontFamily: 'Urbanist-Medium' }}>{emptyText}</Text>
             </View>

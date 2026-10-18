@@ -21,6 +21,7 @@ import { Colors } from '@/constants/theme';
 import { NotificationSkeleton } from '@/src/components/notifications/NotificationSkeleton';
 import { BackButton } from '@/src/components/ui/BackButton';
 import { Ionicons } from '@/src/lib/icons';
+import { useFollowRequestCount } from '@/src/hooks/useProfileData';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 
@@ -53,7 +54,8 @@ const NotificationRow = React.memo(({ item, isDark, onPress }: RowProps) => {
     const subTextColor = isDark ? '#9BA1A6' : '#6B7280';
 
     const tag = getNotificationTag(item.type);
-    const showThumb = item.type !== 'follow' && item.type !== 'admin' && !!(item.imageThumb || item.image);
+    // Person-only notifications: the image is the actor's avatar, already shown.
+    const showThumb = !['follow', 'follow_request', 'follow_accept', 'admin'].includes(String(item.type)) && !!(item.imageThumb || item.image);
     // Prefer the most recent ACTOR's avatar on grouped notifications — for
     // "Asha and 4 others liked your post" the useful face is Asha's, not the
     // post thumbnail. Falls back to the notification image for ungrouped types.
@@ -285,6 +287,31 @@ export default function NotificationsScreen() {
 
     const keyExtractor = useCallback((item: NotificationItem) => item.id, []);
 
+    // "Follow requests (N)" at the top, as on Instagram — only when something
+    // is pending (private accounts). Refreshed with the list.
+    const { data: requestCount = 0, refetch: refetchRequestCount } = useFollowRequestCount();
+    const requestsHeader = requestCount > 0 ? (
+        <TouchableOpacity
+            style={[styles.itemContainer, { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: borderColor }]}
+            onPress={() => router.push('/notifications/requests' as any)}
+            accessibilityRole="button"
+            accessibilityLabel={`Follow requests, ${requestCount} pending`}
+        >
+            <View style={[styles.avatar, { alignItems: 'center', justifyContent: 'center', backgroundColor: isDark ? '#1C1C1E' : '#F2F2F7', marginRight: 12 }]}>
+                <Ionicons name="person-add" size={22} color={textColor} />
+            </View>
+            <View style={styles.textContainer}>
+                <Text style={{ color: textColor, fontFamily: 'Urbanist-Bold', fontSize: 15 }}>Follow requests</Text>
+                <Text style={{ color: subTextColor, fontFamily: 'Urbanist-Regular', fontSize: 13, marginTop: 2 }}>
+                    Approve or ignore requests
+                </Text>
+            </View>
+            <View style={{ minWidth: 22, height: 22, borderRadius: 11, paddingHorizontal: 6, backgroundColor: '#FF4D67', alignItems: 'center', justifyContent: 'center' }}>
+                <Text style={{ color: '#FFF', fontFamily: 'Urbanist-Bold', fontSize: 12 }}>{requestCount > 99 ? '99+' : requestCount}</Text>
+            </View>
+        </TouchableOpacity>
+    ) : null;
+
     /** Re-subscribe and fetch again — the "Try Again" button. */
     const retry = useCallback(() => {
         setLoadFailed(false);
@@ -333,8 +360,13 @@ export default function NotificationsScreen() {
                     data={notifications}
                     keyExtractor={keyExtractor}
                     renderItem={renderItem}
+                    ListHeaderComponent={requestsHeader}
                     refreshControl={
-                        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={textColor} />
+                        <RefreshControl
+                            refreshing={refreshing}
+                            onRefresh={() => { void refetchRequestCount(); void onRefresh(); }}
+                            tintColor={textColor}
+                        />
                     }
                     ListEmptyComponent={
                         <View style={styles.emptyContainer}>
