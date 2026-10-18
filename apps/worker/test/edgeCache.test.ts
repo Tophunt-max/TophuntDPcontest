@@ -45,6 +45,7 @@ import { makeEnv, makeApp, fakeCtx, drizzleOf, installEdgeCache, type TestEnv } 
 import * as schema from '../src/db/schema';
 import { READ_CACHE_TTLS } from '../src/routes/read';
 import { KV_MIN_TTL_SEC } from '../src/lib/cache';
+import { flushBlogViews, __pendingBlogViews, __resetBlogViewsForTests } from '../src/lib/viewCounter';
 
 const app = makeApp();
 
@@ -486,21 +487,47 @@ describe('blog reads', () => {
     expect(await again.json()).toBeNull();
   });
 
-  it('counts a view on every request, including cache hits', async () => {
+  it('counts a view on every request, including cache hits — in ONE coalesced write', async () => {
     const { env } = makeEnv();
     await seedPost(env);
+    __resetBlogViewsForTests();
+    let batches = 0;
+    const origBatch = env.DB.batch.bind(env.DB);
+    (env.DB as any).batch = async (stmts: any[]) => {
+      batches += 1;
+      return origBatch(stmts);
+    };
     await getPost(env); // populates the cache
     await getPost(env); // cache hit
     await getPost(env); // cache hit
+    // Buffered, not yet written: one D1 write per window, not one per page view.
+    expect([...__pendingBlogViews().values()]).toEqual([3]);
+    await flushBlogViews(env as any); // what the scheduled waitUntil does after the window
     const row = await drizzleOf(env)
       .select({ viewCount: schema.blogPosts.viewCount })
       .from(schema.blogPosts)
       .get();
-    // The payload is cached; the analytics deliberately are not. Note what this does
-    // and does not prove: the harness's sqlite resolves synchronously and
-    // `fakeCtx().waitUntil` swallows, so this pins that the increment is ISSUED on a
-    // cache hit — not that it is durable.
+    // The payload is cached; the analytics deliberately are not.
     expect(Number(row?.viewCount)).toBe(3);
+    expect(batches).toBe(1);
+  });
+
+  it('puts a failed flush back for the next window instead of dropping it', async () => {
+    const { env } = makeEnv();
+    await seedPost(env);
+    __resetBlogViewsForTests();
+    await getPost(env);
+    await getPost(env);
+    const origBatch = env.DB.batch.bind(env.DB);
+    (env.DB as any).batch = async () => {
+      throw new Error('D1 unavailable');
+    };
+    expect(await flushBlogViews(env as any)).toBe(0);
+    expect([...__pendingBlogViews().values()]).toEqual([2]);
+    (env.DB as any).batch = origBatch;
+    await flushBlogViews(env as any);
+    const row = await drizzleOf(env).select({ viewCount: schema.blogPosts.viewCount }).from(schema.blogPosts).get();
+    expect(Number(row?.viewCount)).toBe(2);
   });
 });
 

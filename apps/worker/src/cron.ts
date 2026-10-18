@@ -11,7 +11,7 @@ import { and, eq, lte, gt, desc, sql, asc, isNull, isNotNull, inArray, ne, or } 
 import type { Env } from "./types";
 import { getDb, schema } from "./db";
 import { invalidateContestCaches } from "./lib/edgeCache";
-import { createNotification } from "./lib/notify";
+import { createNotification, createNotificationsBulk } from "./lib/notify";
 import { sendUserEmail } from "./lib/email";
 import { contestWinEmail, contestRefundEmail, prizeClaimEmail } from "./lib/emailTemplates";
 import { drainBroadcastJobs, enqueueBroadcast } from "./lib/broadcast";
@@ -193,8 +193,8 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
     if (!settled) return;
     await publishMatchStatus(env, match.id, "cancelled", votesA, votesB);
     const message = `The battle ended with ${totalVotes} of ${minVotes} required votes. Entry fees were refunded.`;
-    await createNotification(env, userA.uid, { title: "Battle Voided", body: message, type: "contest-refund", targetId: "wallet" });
-    await createNotification(env, userB.uid, { title: "Battle Voided", body: message, type: "contest-refund", targetId: "wallet" });
+    // Same actor-less message to both sides: one batched write (lib/notify.ts).
+    await createNotificationsBulk(env, [userA.uid, userB.uid], { title: "Battle Voided", body: message, type: "contest-refund", targetId: "wallet" });
     // Entry fees moved back — receipt to both. Awaited (no request to outlive in
     // cron) and best-effort, so a mail blip never stalls settlement.
     const voidReason = `it did not reach the minimum ${minVotes} votes`;
@@ -219,8 +219,7 @@ async function resolveMatch(env: Env, match: Match): Promise<void> {
     });
     if (!settled) return;
     await publishMatchStatus(env, match.id, "completed", votesA, votesB);
-    await createNotification(env, userA.uid, { title: "It's a Tie!", body: "The match ended in a tie. Entry fees refunded.", type: "contest-tie", targetId: "wallet" });
-    await createNotification(env, userB.uid, { title: "It's a Tie!", body: "The match ended in a tie. Entry fees refunded.", type: "contest-tie", targetId: "wallet" });
+    await createNotificationsBulk(env, [userA.uid, userB.uid], { title: "It's a Tie!", body: "The match ended in a tie. Entry fees refunded.", type: "contest-tie", targetId: "wallet" });
     await sendUserEmail(env, userA.uid, contestRefundEmail(match.title, "it ended in a tie"));
     await sendUserEmail(env, userB.uid, contestRefundEmail(match.title, "it ended in a tie"));
     return;
@@ -361,13 +360,32 @@ export async function resolveContests(env: Env): Promise<void> {
       eq(schema.contestMatches.endingSoonNotified, false),
     ))
     .limit(50).all();
-  for (const m of soon) {
-    const userA = m.userA as any;
-    const userB = m.userB as any;
-    const msg = `⏳ Hurry! The battle "${m.title || "Match"}" ends in less than an hour. Get more votes!`;
-    if (userA?.uid) await createNotification(env, userA.uid, { title: "Battle Ending Soon!", body: msg, type: "contest-ending", targetId: m.id });
-    if (userB?.uid) await createNotification(env, userB.uid, { title: "Battle Ending Soon!", body: msg, type: "contest-ending", targetId: m.id });
-    await db.update(schema.contestMatches).set({ endingSoonNotified: true }).where(eq(schema.contestMatches.id, m.id));
+  // CLAIM first, in one statement, then notify. The old loop notified and then
+  // flagged each match with its own UPDATE (one round trip per match), and an
+  // overlapping tick could notify the same match twice. `ending_soon_notified = 0`
+  // in the WHERE makes the claim atomic; only rows this tick flipped are notified.
+  // A crash after the claim skips a reminder rather than duplicating it — the right
+  // trade for a nudge.
+  if (soon.length) {
+    const claimed = new Set<string>();
+    for (let i = 0; i < soon.length; i += 90) {
+      const ids = soon.slice(i, i + 90).map((m) => m.id);
+      const res = await env.DB.prepare(
+        `UPDATE contest_matches SET ending_soon_notified = 1 WHERE ending_soon_notified = 0 AND id IN (${ids.map(() => "?").join(",")}) RETURNING id`,
+      )
+        .bind(...ids)
+        .all<{ id: string }>();
+      for (const r of res.results ?? []) claimed.add(r.id);
+    }
+    for (const m of soon) {
+      if (!claimed.has(m.id)) continue;
+      const userA = m.userA as any;
+      const userB = m.userB as any;
+      const msg = `⏳ Hurry! The battle "${m.title || "Match"}" ends in less than an hour. Get more votes!`;
+      await createNotificationsBulk(env, [userA?.uid, userB?.uid].filter(Boolean), {
+        title: "Battle Ending Soon!", body: msg, type: "contest-ending", targetId: m.id,
+      });
+    }
   }
 
   // expired story cleanup — also delete the R2 media of expired PERSONAL

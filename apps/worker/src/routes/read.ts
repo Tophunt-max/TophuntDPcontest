@@ -31,6 +31,7 @@ import {
 } from "../lib/cache";
 import { cachedJson, cachedResponse } from "../lib/edgeCache";
 import { memoGet, memoPut } from "../lib/memo";
+import { recordBlogView } from "../lib/viewCounter";
 import { getLiveTally, getViewerVote } from "../lib/voteCounter";
 import { publicPrize } from "../lib/prizes";
 import { clientIp, rateLimit } from "../lib/rateLimit";
@@ -887,7 +888,7 @@ async function servePersonalizedFeed(
   if (!candidates) {
     const typeConds = type ? [eq(schema.contestMatches.type, type)] : [];
     const activeRows = await db
-      .select()
+      .select(MATCH_LIST_COLUMNS)
       .from(schema.contestMatches)
       .where(and(eq(schema.contestMatches.status, status), ...typeConds))
       .orderBy(desc(schema.contestMatches.createdAt))
@@ -900,7 +901,7 @@ async function servePersonalizedFeed(
     if (status === "active") {
       const cutoff = now - FEED_RESULT_WINDOW_MS;
       const completedRows = await db
-        .select()
+        .select(MATCH_LIST_COLUMNS)
         .from(schema.contestMatches)
         .where(and(eq(schema.contestMatches.status, "completed"), gt(schema.contestMatches.expiresAt, cutoff), ...typeConds))
         .orderBy(desc(schema.contestMatches.expiresAt))
@@ -1101,6 +1102,74 @@ const mapContest = (r: any) => ({
   createdBy: r.createdBy,
   createdAt: r.createdAt,
 });
+
+/**
+ * The `contest_matches` columns a LIST read needs: everything `mapMatch`,
+ * `publicPrize`, `publicVsStoryStatus` and the feed ranker (`rankBaseScore`, which
+ * reads `reactions`) consume — and nothing else.
+ *
+ * `SELECT *` also pulled the settlement token, the VS-publication lease/error
+ * bookkeeping and the `vs_image_meta` JSON blob for up to 190 rows per feed-pool
+ * refill and 30 per list page, only for `mapMatch` to drop them. D1 bills rows
+ * read, not columns, so this does not change rows_read; it cuts bytes transferred,
+ * JSON parsing and isolate memory (the pool is memoised and structured-cloned on
+ * every request). `test/cacheAudit.test.ts` asserts the projection still covers
+ * every field `mapMatch` emits, so adding a field there without adding it here fails.
+ */
+const MATCH_LIST_COLUMNS = {
+  id: schema.contestMatches.id,
+  contestId: schema.contestMatches.contestId,
+  status: schema.contestMatches.status,
+  type: schema.contestMatches.type,
+  title: schema.contestMatches.title,
+  entryFee: schema.contestMatches.entryFee,
+  isPrivate: schema.contestMatches.isPrivate,
+  invitedUid: schema.contestMatches.invitedUid,
+  joinIdA: schema.contestMatches.joinIdA,
+  joinIdB: schema.contestMatches.joinIdB,
+  userA: schema.contestMatches.userA,
+  userB: schema.contestMatches.userB,
+  totalVotes: schema.contestMatches.totalVotes,
+  likeCount: schema.contestMatches.likeCount,
+  commentCount: schema.contestMatches.commentCount,
+  shareCount: schema.contestMatches.shareCount,
+  winnerUid: schema.contestMatches.winnerUid,
+  rewardAmount: schema.contestMatches.rewardAmount,
+  minVotesRequired: schema.contestMatches.minVotesRequired,
+  prizeType: schema.contestMatches.prizeType,
+  prizeProductTitle: schema.contestMatches.prizeProductTitle,
+  prizeProductImageUrl: schema.contestMatches.prizeProductImageUrl,
+  prizeProductValue: schema.contestMatches.prizeProductValue,
+  reactions: schema.contestMatches.reactions,
+  vsImageUrl: schema.contestMatches.vsImageUrl,
+  vsStoryStatus: schema.contestMatches.vsStoryStatus,
+  endingSoonNotified: schema.contestMatches.endingSoonNotified,
+  createdAt: schema.contestMatches.createdAt,
+  activatedAt: schema.contestMatches.activatedAt,
+  completedAt: schema.contestMatches.completedAt,
+  expiresAt: schema.contestMatches.expiresAt,
+} as const;
+/** Exported for the projection-coverage test. */
+export const __MATCH_LIST_COLUMN_NAMES = Object.keys(MATCH_LIST_COLUMNS);
+
+/**
+ * Blog LIST columns: `mapBlogPost` without `withContent` never reads `content`
+ * (the full article HTML — by far the widest column), `metaTitle`,
+ * `metaDescription` or `canonicalUrl`.
+ */
+const BLOG_LIST_COLUMNS = {
+  id: schema.blogPosts.id,
+  slug: schema.blogPosts.slug,
+  title: schema.blogPosts.title,
+  excerpt: schema.blogPosts.excerpt,
+  coverImageUrl: schema.blogPosts.coverImageUrl,
+  category: schema.blogPosts.category,
+  tags: schema.blogPosts.tags,
+  author: schema.blogPosts.author,
+  viewCount: schema.blogPosts.viewCount,
+  publishedAt: schema.blogPosts.publishedAt,
+  createdAt: schema.blogPosts.createdAt,
+} as const;
 
 const mapMatch = (r: any) => ({
   id: r.id,
@@ -1380,7 +1449,7 @@ readRoute.get("/matches", optionalAuth, guestReadLimit, async (c) => {
           + ${schema.contestMatches.shareCount} * 3
         )`;
         const rows = await db
-          .select()
+          .select(MATCH_LIST_COLUMNS)
           .from(schema.contestMatches)
           .where(and(...conds))
           .orderBy(desc(score), desc(schema.contestMatches.createdAt))
@@ -1396,7 +1465,7 @@ readRoute.get("/matches", optionalAuth, guestReadLimit, async (c) => {
       const matchesCursor = pageCursor(cursorRaw);
       if (matchesCursor != null) conds.push(lt(schema.contestMatches.createdAt, matchesCursor));
       const rows = await db
-        .select()
+        .select(MATCH_LIST_COLUMNS)
         .from(schema.contestMatches)
         .where(and(...conds))
         .orderBy(desc(schema.contestMatches.createdAt))
@@ -2260,6 +2329,8 @@ export const PUBLIC_PROFILE_FIELDS = [
   "isPrivate",
   // The target's OWN follow list. Filtered per viewer afterwards by `forViewer`.
   "following",
+  // True when `following` above was cut at PUBLIC_FOLLOWING_LIMIT.
+  "followingTruncated",
   // Social links. These live in `extra` and are merged to the top level, so they
   // have to be named individually — and naming them is also what stops any OTHER
   // key a client shoved into `extra` from reaching a stranger.
@@ -2272,6 +2343,12 @@ export const PUBLIC_PROFILE_FIELDS = [
   // Internal: read by the hidden-account guard below. See the note above.
   "status",
 ] as const;
+
+/**
+ * How many of someone ELSE's followed uids a profile read returns. The full list
+ * is paginated at `/read/users/:id/following`; see loadFullProfile.
+ */
+export const PUBLIC_FOLLOWING_LIMIT = 200;
 
 /**
  * Project a full profile row down to `PUBLIC_PROFILE_FIELDS`.
@@ -2377,7 +2454,7 @@ async function serveUserProfile(c: any, id: string): Promise<Response> {
    * Shared by both paths below so the two can never disagree about how a profile is
    * assembled — only about how much of it is handed out.
    */
-  const loadFullProfile = async (): Promise<Record<string, any> | null> => {
+  const loadFullProfile = async (opts: { followingLimit?: number } = {}): Promise<Record<string, any> | null> => {
     const db = getDb(c.env);
     const row = await db.select().from(schema.users).where(eq(schema.users.uid, id)).get();
     if (!row) return null;
@@ -2404,9 +2481,25 @@ async function serveUserProfile(c: any, id: string): Promise<Response> {
       columns.extra && typeof columns.extra === "object"
         ? { ...columns.extra, ...columns }
         : columns;
-    // expose following[] (list of uids) for screens that expect it
-    const following = await db.select({ id: schema.follows.followingId }).from(schema.follows).where(eq(schema.follows.followerId, row.uid)).all();
-    safe.following = following.map((f) => f.id);
+    // expose following[] (list of uids) for screens that expect it.
+    //
+    // Bounded on the SHARED path. The app reads `following` only from the viewer's
+    // OWN profile (explore, connections and the follow button check "do I follow
+    // X?"), never from somebody else's — yet every shared-cache miss on a popular
+    // account read its entire follow list. Strangers now get the most recent
+    // PUBLIC_FOLLOWING_LIMIT (newest first, idx_follows_follower_created) plus
+    // `followingTruncated`; the owner's own uncached read stays complete because
+    // their UI depends on it.
+    const limit = opts.followingLimit;
+    const followingQuery = db
+      .select({ id: schema.follows.followingId })
+      .from(schema.follows)
+      .where(eq(schema.follows.followerId, row.uid))
+      .orderBy(desc(schema.follows.createdAt));
+    const following = limit != null ? await followingQuery.limit(limit + 1).all() : await followingQuery.all();
+    const truncated = limit != null && following.length > limit;
+    safe.following = (truncated ? following.slice(0, limit) : following).map((f) => f.id);
+    if (limit != null) safe.followingTruncated = truncated;
     safe.profileImageUrlThumb = avatarUrl(c.env, safe.profileImageUrl);
     // Level is DERIVED from xp, not read from the stored column. Nothing updates
     // `users.level` any more (see lib/gamification.ts#levelForXp), so the column is
@@ -2484,7 +2577,7 @@ async function serveUserProfile(c: any, id: string): Promise<Response> {
     edgeTtlSec: READ_CACHE_TTLS.userProfile.edge,
     kvTtlSec: READ_CACHE_TTLS.userProfile.kv,
     load: async () => {
-      const full = await loadFullProfile();
+      const full = await loadFullProfile({ followingLimit: PUBLIC_FOLLOWING_LIMIT });
       return { profile: full ? publicProfile(full) : null };
     },
     /**
@@ -3822,7 +3915,7 @@ readRoute.get("/blog", async (c) => {
 
   const load = async () => {
     const rows = await db
-      .select()
+      .select(BLOG_LIST_COLUMNS)
       .from(schema.blogPosts)
       .where(and(...conds))
       .orderBy(desc(schema.blogPosts.publishedAt))
@@ -4103,17 +4196,9 @@ readRoute.get("/blog/:slug", async (c) => {
   // an unchanged shape.
   if (!post) return c.json(null, 404);
   // Best-effort view counter — the payload is cached, the analytics deliberately are
-  // not, so this fires on cache hits too. Handed to `waitUntil` rather than left
-  // floating: on an edge hit nothing else in this handler registers any pending
-  // work, so the isolate could be torn down before an unawaited write lands.
-  c.executionCtx.waitUntil(
-    db
-      .update(schema.blogPosts)
-      .set({ viewCount: sql`${schema.blogPosts.viewCount} + 1` })
-      .where(eq(schema.blogPosts.id, post.id as string))
-      .run()
-      .catch(() => {}),
-  );
+  // not, so this counts cache hits too. Coalesced per isolate into one batched write
+  // per window (lib/viewCounter.ts) instead of one D1 write per page view.
+  recordBlogView(c.env, c.executionCtx, post.id as string);
   return c.json(post);
 });
 

@@ -400,3 +400,153 @@ describe('expired-story sweep', () => {
     expect(left).toEqual(['fresh']);
   });
 });
+
+describe('list projections drop no field the app reads', () => {
+  it('a feed/list item carries every field the full-row detail read does', async () => {
+    const { env } = makeEnv();
+    await seedUsersAndBattle(env);
+    await drizzleOf(env)
+      .update(schema.contestMatches)
+      .set({
+        prizeType: 'product', prizeProductTitle: 'Headphones', prizeProductImageUrl: 'https://cdn.example/p.jpg',
+        prizeProductValue: 999, vsImageUrl: 'https://cdn.example/vs.jpg', vsStoryStatus: 'published',
+        minVotesRequired: 5, reactions: { fire: 2 }, winnerUid: null, rewardAmount: 40, entryFee: 20,
+        vsImageMeta: { w: 1080 }, settlementId: 'settle-1',
+      } as any);
+    const detail = (await get(env, '/matches/m1')).body;
+    const recent = (await get(env, '/matches?status=active&sort=recent')).body[0];
+    const feed = (await get(env, '/matches?status=active&sort=foryou&limit=8')).body.items[0];
+    for (const [name, item] of [['recent', recent], ['foryou', feed]] as const) {
+      for (const [k, v] of Object.entries(detail)) {
+        // Live tally / viewer state are layered per request, not part of the row.
+        if (['hasVoted', 'votedForUid', 'isLiked', 'isBookmarked', 'userA', 'userB', 'totalVotes'].includes(k)) continue;
+        expect(item, `${name} missing ${k}`).toHaveProperty(k);
+        expect(item[k], `${name}.${k}`).toEqual(v);
+      }
+    }
+    // …and the internal bookkeeping never leaves the Worker.
+    expect(recent).not.toHaveProperty('settlementId');
+    expect(recent).not.toHaveProperty('vsImageMeta');
+  });
+});
+
+describe('someone else’s profile carries a bounded following list', () => {
+  it('strangers get the newest PUBLIC_FOLLOWING_LIMIT; the owner still gets all', async () => {
+    const { PUBLIC_FOLLOWING_LIMIT } = await import('../src/routes/read');
+    const { env } = makeEnv();
+    await seedUsersAndBattle(env);
+    const ts = Date.now();
+    const total = PUBLIC_FOLLOWING_LIMIT + 5;
+    const db = drizzleOf(env);
+    const rows = Array.from({ length: total }, (_, i) => ({ followerId: 'alice', followingId: `f${i}`, createdAt: ts + i }));
+    for (let i = 0; i < rows.length; i += 50) await db.insert(schema.follows).values(rows.slice(i, i + 50) as any);
+
+    const stranger = (await get(env, '/users/alice', 'bob')).body;
+    expect(stranger.following).toHaveLength(PUBLIC_FOLLOWING_LIMIT);
+    expect(stranger.followingTruncated).toBe(true);
+    expect(stranger.following[0]).toBe(`f${total - 1}`); // newest first
+
+    const own = (await get(env, '/users/alice', 'alice')).body;
+    expect(own.following).toHaveLength(total); // explore / connections need the full set
+    expect(own).not.toHaveProperty('followingTruncated');
+  });
+});
+
+describe('bulk notifications', () => {
+  it('writes every recipient in one batch, de-duplicated, with the same rows as before', async () => {
+    const { createNotificationsBulk } = await import('../src/lib/notify');
+    const { env } = makeEnv();
+    await seedUsersAndBattle(env);
+    let batches = 0;
+    const origBatch = env.DB.batch.bind(env.DB);
+    (env.DB as any).batch = async (stmts: any[]) => {
+      batches += 1;
+      return origBatch(stmts);
+    };
+    const { written } = await createNotificationsBulk(env as any, ['alice', 'bob', 'alice', ''], {
+      title: 'It’s a Tie!', body: 'refunded', type: 'contest-tie', targetId: 'wallet',
+    });
+    expect(written.sort()).toEqual(['alice', 'bob']);
+    expect(batches).toBe(1);
+    const rows = await drizzleOf(env).select().from(schema.notifications).all();
+    expect(rows).toHaveLength(2);
+    for (const r of rows as any[]) {
+      expect(r).toMatchObject({ title: 'It’s a Tie!', type: 'contest-tie', targetId: 'wallet', actorId: null, collapseKey: null });
+      expect(r.read).toBeFalsy();
+      expect(r.seen).toBeFalsy();
+    }
+  });
+
+  it('refuses actor notifications (they need block/mute and collapse handling)', async () => {
+    const { createNotificationsBulk } = await import('../src/lib/notify');
+    const { env } = makeEnv();
+    await expect(
+      createNotificationsBulk(env as any, ['alice'], { title: 't', body: 'b', type: 'like', targetId: 'x', actor: { uid: 'bob' } } as any),
+    ).rejects.toThrow(/actor/);
+  });
+
+  it('an ending-soon reminder is sent once even if two ticks overlap', async () => {
+    const { env } = makeEnv();
+    await seedUsersAndBattle(env);
+    await drizzleOf(env).update(schema.contestMatches).set({ expiresAt: Date.now() + 30 * 60_000 } as any);
+    await resolveContests(env as any);
+    await resolveContests(env as any);
+    const rows = (await drizzleOf(env).select().from(schema.notifications).all()).filter((r: any) => r.type === 'contest-ending');
+    expect(rows.map((r: any) => r.recipientId).sort()).toEqual(['alice', 'bob']);
+  });
+});
+
+describe('blog view counting', () => {
+  it('buffers views instead of writing one row per page view', async () => {
+    const { recordBlogView, __pendingBlogViews, __resetBlogViewsForTests, flushBlogViews } = await import('../src/lib/viewCounter');
+    const { env } = makeEnv();
+    __resetBlogViewsForTests();
+    const waits: Promise<unknown>[] = [];
+    const ctx = { waitUntil: (p: Promise<unknown>) => waits.push(p) };
+    for (let i = 0; i < 50; i++) recordBlogView(env as any, ctx, 'post-1', 60_000);
+    recordBlogView(env as any, ctx, 'post-2', 60_000);
+    expect(Object.fromEntries(__pendingBlogViews())).toEqual({ 'post-1': 50, 'post-2': 1 });
+    expect(waits).toHaveLength(1); // ONE scheduled flush for the whole window
+    await flushBlogViews(env as any);
+    __resetBlogViewsForTests();
+  });
+});
+
+describe('bulk notification failure granularity', () => {
+  it('a failed batch costs only the rows that really fail', async () => {
+    const { createNotificationsBulk } = await import('../src/lib/notify');
+    const { env } = makeEnv();
+    await seedUsersAndBattle(env);
+    (env.DB as any).batch = async () => {
+      throw new Error('D1 batch failed');
+    };
+    const { written } = await createNotificationsBulk(env as any, ['alice', 'bob', 'carol'], {
+      title: 't', body: 'b', type: 'contest-tie', targetId: 'wallet',
+    });
+    expect(written.sort()).toEqual(['alice', 'bob', 'carol']);
+    expect(await drizzleOf(env).select().from(schema.notifications).all()).toHaveLength(3);
+  });
+});
+
+describe('blog view flush re-arms', () => {
+  it('schedules a new flush when the previous one is overdue (its waitUntil never ran)', async () => {
+    const { recordBlogView, __resetBlogViewsForTests } = await import('../src/lib/viewCounter');
+    const { env } = makeEnv();
+    __resetBlogViewsForTests();
+    const waits: Promise<unknown>[] = [];
+    const ctx = { waitUntil: (p: Promise<unknown>) => void waits.push(p) };
+    const t0 = Date.now();
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(t0);
+    try {
+      recordBlogView(env as any, ctx, 'p', 10_000);
+      recordBlogView(env as any, ctx, 'p', 10_000);
+      expect(waits).toHaveLength(1);
+      spy.mockReturnValue(t0 + 25_000); // > 2 windows: the scheduled flush was lost
+      recordBlogView(env as any, ctx, 'p', 10_000);
+      expect(waits).toHaveLength(2);
+    } finally {
+      spy.mockRestore();
+      __resetBlogViewsForTests();
+    }
+  });
+});

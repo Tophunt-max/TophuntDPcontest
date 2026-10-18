@@ -22,7 +22,7 @@
  *  - **Failures never propagate.** A notification is a side effect of some other
  *    action (a like, a payout); it must not fail that action.
  */
-import { and, desc, eq, gt, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import type { Env } from "../types";
 import { getDb, schema, type NotificationActor } from "../db";
 import { newId, now } from "./ids";
@@ -326,6 +326,77 @@ async function deliverToTokens(
 }
 
 /**
+ * The push half of a notification, after its in-app row is written and published.
+ *
+ * Shared by `createNotification` and `createNotificationsBulk` so both apply the
+ * SAME gating: preferences and quiet hours, the per-type burst cap, the daily
+ * fatigue cap (wallet exempt) and token pruning. `badge` may be supplied by a bulk
+ * caller that counted every recipient's unread total in one query.
+ */
+async function pushAfterWrite(
+  env: Env,
+  recipientId: string,
+  user: { fcmTokens?: unknown; notificationPrefs?: unknown } | undefined,
+  n: NotificationInput,
+  w: { title: string; body: string; collapseKey: string | null; ts: number; badge?: number },
+): Promise<void> {
+  const { title, body, collapseKey, ts } = w;
+  const prefs: NotificationPrefs = resolvePrefs(user?.notificationPrefs as any);
+  const category = categoryForType(n.type);
+  // ---- push gating -------------------------------------------------------
+  if (!shouldSendPush(prefs, n.type, ts)) return;
+
+  const tokens: string[] = (user?.fcmTokens as string[]) || [];
+  if (!tokens.length) return;
+
+  // Anti-spam: cap PUSHES per recipient per type, and cap total daily pushes
+  // (notification fatigue). The row is already written, so nothing is lost when
+  // either trips — the device just stops buzzing. Money notifications bypass the
+  // daily cap: being rate-limited out of "your payout was sent" is unacceptable.
+  //
+  // Both keys put the RECIPIENT after the colon on purpose. The per-type key was
+  // `push:{uid}:{type}`, which made the subject `{uid}:{type}` — a different
+  // rate-limit actor per notification type per user, and a different one again
+  // from `pushday:{uid}`. That cost two Durable Object requests per push on two
+  // objects, on the paths that generate the most notifications (likes, comments,
+  // follows). With the type in the ACTION half, both keys share the recipient's
+  // actor and go out as a single batched call.
+  // The type goes in the ACTION half, so any colon inside it would move the
+  // boundary the limiter shards on and send this key to an actor named after part
+  // of the type instead of the recipient. `n.type` is a plain enum-ish string
+  // today, but it is caller-supplied and this is the one character that matters.
+  const pushType = String(n.type ?? "unknown").replace(/:/g, "_");
+  const pushLimits: LimitSpec[] = [
+    { key: `push_${pushType}:${recipientId}`, max: PUSH_BURST_MAX, windowSec: PUSH_BURST_WINDOW_SEC },
+  ];
+  if (!PUSH_CAP_EXEMPT_CATEGORIES.has(category)) {
+    pushLimits.push({
+      key: `pushday:${recipientId}`,
+      max: PUSH_DAILY_MAX,
+      windowSec: PUSH_DAILY_WINDOW_SEC,
+    });
+  }
+  if (!(await consumeRateLimitAll(env, pushLimits))) return;
+
+  await deliverToTokens(
+    env,
+    recipientId,
+    tokens,
+    title,
+    body,
+    n.type,
+    { targetId: n.targetId, image: n.image || "", ...(n.data || {}) },
+    {
+      badge: w.badge !== undefined ? w.badge : await unreadCount(env, recipientId),
+      // Makes the OS REPLACE the previous notification for this target rather
+      // than stacking a new one per like.
+      collapseKey: collapseKey ?? undefined,
+      category,
+    },
+  );
+}
+
+/**
  * Write a notification and deliver it.
  *
  * For collapsible types with an `actor`, this may UPDATE an existing row instead
@@ -371,9 +442,6 @@ export async function createNotification(
       .from(schema.users)
       .where(eq(schema.users.uid, recipientId))
       .get();
-
-    const prefs: NotificationPrefs = resolvePrefs(user?.notificationPrefs);
-    const category = categoryForType(n.type);
 
     const collapsible = !n.noCollapse && isCollapsibleType(n.type) && !!n.targetId && !!n.actor;
     const collapseKey = collapsible ? `${n.type}:${n.targetId}` : null;
@@ -492,58 +560,151 @@ export async function createNotification(
       },
     });
 
-    // ---- push gating -------------------------------------------------------
-    if (!shouldSendPush(prefs, n.type, ts)) return;
-
-    const tokens: string[] = (user?.fcmTokens as string[]) || [];
-    if (!tokens.length) return;
-
-    // Anti-spam: cap PUSHES per recipient per type, and cap total daily pushes
-    // (notification fatigue). The row is already written, so nothing is lost when
-    // either trips — the device just stops buzzing. Money notifications bypass the
-    // daily cap: being rate-limited out of "your payout was sent" is unacceptable.
-    //
-    // Both keys put the RECIPIENT after the colon on purpose. The per-type key was
-    // `push:{uid}:{type}`, which made the subject `{uid}:{type}` — a different
-    // rate-limit actor per notification type per user, and a different one again
-    // from `pushday:{uid}`. That cost two Durable Object requests per push on two
-    // objects, on the paths that generate the most notifications (likes, comments,
-    // follows). With the type in the ACTION half, both keys share the recipient's
-    // actor and go out as a single batched call.
-    // The type goes in the ACTION half, so any colon inside it would move the
-    // boundary the limiter shards on and send this key to an actor named after part
-    // of the type instead of the recipient. `n.type` is a plain enum-ish string
-    // today, but it is caller-supplied and this is the one character that matters.
-    const pushType = String(n.type ?? "unknown").replace(/:/g, "_");
-    const pushLimits: LimitSpec[] = [
-      { key: `push_${pushType}:${recipientId}`, max: PUSH_BURST_MAX, windowSec: PUSH_BURST_WINDOW_SEC },
-    ];
-    if (!PUSH_CAP_EXEMPT_CATEGORIES.has(category)) {
-      pushLimits.push({
-        key: `pushday:${recipientId}`,
-        max: PUSH_DAILY_MAX,
-        windowSec: PUSH_DAILY_WINDOW_SEC,
-      });
-    }
-    if (!(await consumeRateLimitAll(env, pushLimits))) return;
-
-    await deliverToTokens(
-      env,
-      recipientId,
-      tokens,
-      title,
-      body,
-      n.type,
-      { targetId: n.targetId, image: n.image || "", ...(n.data || {}) },
-      {
-        badge: await unreadCount(env, recipientId),
-        // Makes the OS REPLACE the previous notification for this target rather
-        // than stacking a new one per like.
-        collapseKey: collapseKey ?? undefined,
-        category,
-      },
-    );
+    await pushAfterWrite(env, recipientId, user, n, { title, body, collapseKey, ts });
   } catch (e) {
     console.error("[notify] createNotification failed", e);
   }
+}
+
+/**
+ * The same notification to MANY recipients, with the D1 work batched.
+ *
+ * `createNotification` costs, per recipient: a user lookup, an INSERT and (when a
+ * push goes out) an unread COUNT — so a 100-recipient broadcast page was ~300
+ * sequential D1 round trips. Here the user lookup is one `IN` query per chunk, the
+ * rows are written in one `DB.batch`, and the badge counts are one grouped query.
+ * Socket publishes and pushes stay per recipient, run with bounded concurrency,
+ * and go through the SAME `pushAfterWrite` gating as a single notification.
+ *
+ * Deliberately limited to notifications that never collapse or carry an actor —
+ * system, admin, contest and wallet messages. Those are exactly the cases with no
+ * per-recipient read-modify-write (collapse lookup) and no block/mute check (there
+ * is no actor to block), so batching cannot change their semantics. Anything with
+ * an actor must keep using `createNotification`.
+ *
+ * Returns the recipients whose row was written. Never throws.
+ */
+export async function createNotificationsBulk(
+  env: Env,
+  recipientIds: string[],
+  n: Omit<NotificationInput, "actor">,
+): Promise<{ written: string[] }> {
+  const ids = [...new Set(recipientIds.filter(Boolean))];
+  const written: string[] = [];
+  if (ids.length === 0) return { written };
+  if ((n as NotificationInput).actor) throw new Error("createNotificationsBulk: actor notifications must use createNotification");
+
+  const db = getDb(env);
+  for (let i = 0; i < ids.length; i += BULK_CHUNK) {
+    const chunk = ids.slice(i, i + BULK_CHUNK);
+    const ts = now();
+    try {
+      const users = await db
+        .select({
+          uid: schema.users.uid,
+          fcmTokens: schema.users.fcmTokens,
+          notificationPrefs: schema.users.notificationPrefs,
+        })
+        .from(schema.users)
+        .where(inArray(schema.users.uid, chunk))
+        .all();
+      const byUid = new Map(users.map((u) => [u.uid, u]));
+
+      const rows = chunk.map((recipientId) => ({
+        id: newId(),
+        recipientId,
+        title: n.title,
+        body: n.body,
+        type: n.type,
+        targetId: n.targetId,
+        image: n.image ?? null,
+        data: n.data ?? null,
+        read: false,
+        seen: false,
+        actorId: null,
+        actors: null,
+        actorCount: 1,
+        collapseKey: null,
+        createdAt: ts,
+        updatedAt: ts,
+      }));
+      // One batch for the chunk. A batch is all-or-nothing, so on failure fall back
+      // to row-by-row inserts: one bad row (or a transient error) must cost that
+      // recipient, not all 90 — the broadcast cursor moves past the page either way.
+      let insertedRows = rows;
+      try {
+        await db.batch(rows.map((r) => db.insert(schema.notifications).values(r)) as any);
+      } catch (e) {
+        console.error("[notify] bulk batch failed; retrying row by row", rows.length, e);
+        insertedRows = [];
+        for (const r of rows) {
+          try {
+            await db.insert(schema.notifications).values(r);
+            insertedRows.push(r);
+          } catch (rowErr) {
+            console.error("[notify] bulk row failed (continuing)", r.recipientId, rowErr);
+          }
+        }
+      }
+      written.push(...insertedRows.map((r) => r.recipientId));
+
+      // Badge counts for every recipient that could get a push, in ONE grouped query
+      // (idx_notif_unread). A failure only drops the badge number, as before.
+      const pushable = insertedRows
+        .map((r) => r.recipientId)
+        .filter((uid) => ((byUid.get(uid)?.fcmTokens as string[] | null) ?? []).length > 0);
+      const badges = new Map<string, number>();
+      if (pushable.length) {
+        try {
+          const counts = await db
+            .select({ uid: schema.notifications.recipientId, v: sql<number>`count(*)` })
+            .from(schema.notifications)
+            .where(and(inArray(schema.notifications.recipientId, pushable), eq(schema.notifications.read, false)))
+            .groupBy(schema.notifications.recipientId)
+            .all();
+          for (const r of counts) badges.set(r.uid, Number(r.v));
+        } catch {
+          /* badge omitted */
+        }
+      }
+
+      await mapLimit(insertedRows, BULK_DELIVERY_CONCURRENCY, async (row) => {
+        try {
+          await publish(env, `user:${row.recipientId}`, {
+            type: "notification",
+            notification: { id: row.id, title: row.title, body: row.body, notifType: n.type, targetId: n.targetId, image: row.image },
+          });
+          await pushAfterWrite(env, row.recipientId, byUid.get(row.recipientId), n, {
+            title: n.title,
+            body: n.body,
+            collapseKey: null,
+            ts,
+            // Missing (count failed) → undefined → pushAfterWrite counts this one itself.
+            badge: badges.get(row.recipientId),
+          });
+        } catch (e) {
+          console.error("[notify] bulk delivery failed for one recipient (continuing)", e);
+        }
+      });
+    } catch (e) {
+      console.error("[notify] createNotificationsBulk chunk failed", chunk.length, e);
+    }
+  }
+  return { written };
+}
+
+/** Recipients per bulk chunk — under D1's bound-parameter ceiling for the IN lists. */
+const BULK_CHUNK = 90;
+/** Concurrent socket publishes / pushes during a bulk send. */
+const BULK_DELIVERY_CONCURRENCY = 6;
+
+async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const item = items[next++];
+      await fn(item);
+    }
+  });
+  await Promise.all(workers);
 }

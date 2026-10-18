@@ -25,7 +25,7 @@ import { and, asc, eq, gt, gte, sql } from "drizzle-orm";
 import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { newId, now } from "./ids";
-import { createNotification } from "./notify";
+import { createNotificationsBulk } from "./notify";
 
 export interface BroadcastSegment {
   /** Only users on this platform ("web" | "android" | "ios"). */
@@ -183,27 +183,28 @@ async function runBroadcastPage(env: Env, job: BroadcastJob): Promise<{ done: bo
     return { done: true };
   }
 
-  let processed = 0;
-  let failed = 0;
-  for (const row of page) {
-    try {
-      await createNotification(env, row.uid, {
-        title: job.title,
-        body: job.body,
-        type: job.type,
-        targetId: "broadcast",
-        image: job.image ?? undefined,
-        data: (job.data as Record<string, string>) ?? undefined,
-        // Every recipient gets their own distinct notification — grouping makes
-        // no sense for a broadcast.
-        noCollapse: true,
-      });
-      processed += 1;
-    } catch (e) {
-      failed += 1;
-      console.error("[broadcast] recipient failed", job.id, row.uid, e);
-    }
-  }
+  // One batched write per page instead of a sequential createNotification per
+  // recipient (~3 D1 round trips each). Broadcasts are actor-less and never
+  // collapse — exactly the shape createNotificationsBulk is limited to — and pushes
+  // still go through the same preference / quiet-hours / fatigue gating.
+  const { written } = await createNotificationsBulk(
+    env,
+    page.map((r) => r.uid),
+    {
+      title: job.title,
+      body: job.body,
+      type: job.type,
+      targetId: "broadcast",
+      image: job.image ?? undefined,
+      data: (job.data as Record<string, string>) ?? undefined,
+      // Every recipient gets their own distinct notification — grouping makes
+      // no sense for a broadcast.
+      noCollapse: true,
+    },
+  );
+  const processed = written.length;
+  const failed = page.length - processed;
+  if (failed > 0) console.error("[broadcast] recipients not written", job.id, failed);
 
   const lastUid = page[page.length - 1].uid;
   const exhausted = page.length < PAGE_SIZE;
