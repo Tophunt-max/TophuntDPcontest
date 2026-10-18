@@ -90,6 +90,7 @@ export const CATEGORY_BY_TYPE: Record<string, NotificationCategory> = {
   referral: "wallet",
   referral_bonus: "wallet",
   signup_bonus: "wallet",
+  verification_bonus: "wallet",
   daily_reward: "wallet",
   daily_task: "wallet",
   ad_reward: "wallet",

@@ -66,6 +66,9 @@ import { DELETED_STATUS, PENDING_DELETION_STATUS, parseGraceDays } from "./accou
  *    by the subject of those actions.
  *  - `account_deletions` — the compliance record of the deletion itself. Holds no
  *    personal data.
+ *  - `verification_reward_claims` — one-way SHA-256 hashes of the email address
+ *    and mobile number that already earned the verification bonus, so deleting
+ *    and re-registering cannot claim it twice. No raw contact data.
  *
  * Everything else belonging to the user is destroyed.
  */
@@ -1065,6 +1068,9 @@ async function phaseSocial(env: Env, uid: string): Promise<void> {
   );
 
   await db.batch([
+    // Reward enrolment + reminder state. (The hashed identifier claims in
+    // verification_reward_claims are deliberately RETAINED — see the header.)
+    db.delete(schema.verificationRewards).where(eq(schema.verificationRewards.uid, uid)),
     db.delete(schema.follows).where(eq(schema.follows.followerId, uid)),
     db.delete(schema.follows).where(eq(schema.follows.followingId, uid)),
     db.delete(schema.profileVisits).where(eq(schema.profileVisits.userId, uid)),

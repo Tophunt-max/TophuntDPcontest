@@ -5,6 +5,7 @@
  * the existing screens already consume, so UI code stays unchanged.
  */
 import { Hono } from "hono";
+import { getVerificationStatus } from "../lib/verificationReward";
 import { and, or, eq, desc, asc, gt, gte, lt, lte, sql, inArray, notInArray, isNull, like, exists } from "drizzle-orm";
 import type { Env, Variables } from "../types";
 import { getDb, schema, type NotificationActor } from "../db";
@@ -2756,6 +2757,17 @@ readRoute.get("/users/:id/following", optionalAuth, (c) => connectionsHandler(c,
  * Never cached — it gates access and must reflect a cancel/restore on the very next
  * request.
  */
+/**
+ * The caller's email/mobile verification state and registration-reward progress
+ * (lib/verificationReward.ts). Owner-only by construction: the uid is the token's.
+ * Contact details are masked; never cached (it changes the moment a code is
+ * verified, and it is per-user).
+ */
+readRoute.get("/me/verification", requireAuth, async (c) => {
+  const status = await getVerificationStatus(c.env, c.get("user").uid);
+  return c.json(status, 200, { "Cache-Control": "private, no-store" });
+});
+
 readRoute.get("/me/status", requireAuth, async (c) => {
   const db = getDb(c.env);
   const uid = c.get("user").uid;

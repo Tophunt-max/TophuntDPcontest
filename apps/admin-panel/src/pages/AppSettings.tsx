@@ -14,6 +14,7 @@ import {
   AlertTriangle,
   ChevronDown,
   Tv,
+  ShieldCheck,
 } from "lucide-react";
 
 /**
@@ -41,6 +42,7 @@ const hint = "text-[11px] text-muted-foreground mt-1";
 /** Keys this form owns. Anything else is shown in the Advanced JSON section. */
 const MANAGED_KEYS = [
   "rewardSettings",
+  "verificationReward",
   "withdrawal",
   "paymentGateway",
   "ads",
@@ -50,8 +52,23 @@ const MANAGED_KEYS = [
   "socialLinks",
 ];
 
+interface VerificationRewardCfg {
+  enabled: boolean;
+  registrationReward: number;
+  completionReward: number;
+  maxTotalReward: number;
+  requireEmail: boolean;
+  requirePhone: boolean;
+  initialReminderDays: number;
+  repeatReminderDays: number;
+  maxReminders: number;
+  emailResendCooldownSec: number;
+  smsResendCooldownSec: number;
+}
+
 interface Cfg {
   rewardSettings: { signupBonus: number; referralBonus: number };
+  verificationReward: VerificationRewardCfg;
   withdrawal: {
     enabled: boolean;
     payoutsFrozen: boolean;
@@ -73,6 +90,21 @@ interface Cfg {
 
 const DEFAULTS: Cfg = {
   rewardSettings: { signupBonus: 100, referralBonus: 50 },
+  // Mirrors VERIFICATION_REWARD_DEFAULTS in apps/worker/src/lib/verificationReward.ts.
+  // The Worker is authoritative and re-validates everything on save.
+  verificationReward: {
+    enabled: true,
+    registrationReward: 10,
+    completionReward: 90,
+    maxTotalReward: 100,
+    requireEmail: true,
+    requirePhone: true,
+    initialReminderDays: 3,
+    repeatReminderDays: 7,
+    maxReminders: 5,
+    emailResendCooldownSec: 60,
+    smsResendCooldownSec: 60,
+  },
   withdrawal: {
     enabled: true,
     payoutsFrozen: false,
@@ -165,12 +197,40 @@ export default function AppSettings() {
     return Object.fromEntries(Object.entries(data).filter(([k]) => !MANAGED_KEYS.includes(k)));
   }, [data]);
 
+  const { data: vrInfo } = useQuery({ queryKey: ["verification-reward"], queryFn: api.verificationReward });
+
+  // Same rules the Worker enforces (lib/verificationReward.ts), shown before save.
+  const verificationError = useMemo(() => {
+    const v = cfg.verificationReward;
+    const ints: [string, number, number, number][] = [
+      ["Registration reward", v.registrationReward, 0, 1_000_000],
+      ["Completion reward", v.completionReward, 0, 1_000_000],
+      ["Maximum combined reward", v.maxTotalReward, 0, 1_000_000],
+      ["Initial reminder delay", v.initialReminderDays, 1, 365],
+      ["Repeat reminder interval", v.repeatReminderDays, 1, 365],
+      ["Maximum reminders", v.maxReminders, 0, 50],
+      ["Email resend cooldown", v.emailResendCooldownSec, 60, 3600],
+      ["SMS resend cooldown", v.smsResendCooldownSec, 60, 3600],
+    ];
+    for (const [name, n, min, max] of ints) {
+      if (!Number.isInteger(n) || n < min || n > max) return `${name} must be a whole number between ${min} and ${max}.`;
+    }
+    if (v.registrationReward + v.completionReward > v.maxTotalReward) {
+      return `Registration (${v.registrationReward}) + completion (${v.completionReward}) exceeds the maximum combined reward (${v.maxTotalReward}).`;
+    }
+    if (!v.requireEmail && !v.requirePhone && v.completionReward > 0) {
+      return "Require at least one of email or mobile verification for a completion reward.";
+    }
+    return null;
+  }, [cfg.verificationReward]);
+
   useEffect(() => {
     if (!data) return;
     setCfg({
       ...DEFAULTS,
       ...data,
       rewardSettings: { ...DEFAULTS.rewardSettings, ...(data.rewardSettings || {}) },
+      verificationReward: { ...DEFAULTS.verificationReward, ...(data.verificationReward || {}) },
       withdrawal: { ...DEFAULTS.withdrawal, ...(data.withdrawal || {}) },
       paymentGateway: { ...DEFAULTS.paymentGateway, ...(data.paymentGateway || {}) },
       ads: { ...DEFAULTS.ads, ...(data.ads || {}) },
@@ -200,6 +260,10 @@ export default function AppSettings() {
       }
     }
     setAdvancedErr(null);
+    if (verificationError) {
+      toast.error(verificationError);
+      return;
+    }
     // Advanced first so the structured fields always win for keys they own.
     saveMut.mutate({ ...advanced, ...cfg });
   };
@@ -207,6 +271,8 @@ export default function AppSettings() {
   if (isLoading) return <div className="text-sm text-muted-foreground py-10 text-center">Loading…</div>;
 
   const num = (v: string) => (v === "" ? 0 : Number(v));
+  const vr = cfg.verificationReward;
+  const setVr = (patch: Partial<VerificationRewardCfg>) => setCfg({ ...cfg, verificationReward: { ...vr, ...patch } });
   const cashPreview = cfg.withdrawal.minAmount * cfg.withdrawal.conversionRate;
 
   return (
@@ -240,6 +306,9 @@ export default function AppSettings() {
                 }
                 className={field}
               />
+              {cfg.verificationReward.enabled && (
+                <p className={hint}>Not used while the verification reward below is enabled.</p>
+              )}
             </div>
             <div>
               <label className={label}>Referral bonus (coins)</label>
@@ -254,6 +323,82 @@ export default function AppSettings() {
               />
             </div>
           </div>
+        </Section>
+
+        {/* ---- Registration verification reward ---- */}
+        <Section
+          icon={ShieldCheck}
+          title="Registration verification reward"
+          blurb="Coins at signup, plus a one-time bonus once BOTH email and mobile are verified."
+        >
+          <Toggle
+            checked={vr.enabled}
+            onChange={(v) => setVr({ enabled: v })}
+            title="Enabled"
+            description="Off: new signups get the legacy signup bonus above. Turning it off PAUSES completion bonuses for already-enrolled users; their promised amount is kept."
+          />
+          <div className="grid grid-cols-3 gap-3 mt-2">
+            {(
+              [
+                ["registrationReward", "At signup"],
+                ["completionReward", "On completion"],
+                ["maxTotalReward", "Max combined"],
+              ] as const
+            ).map(([key, text]) => (
+              <div key={key}>
+                <label className={label}>{text} (coins)</label>
+                <input type="number" min={0} step={1} value={vr[key]} onChange={(e) => setVr({ [key]: num(e.target.value) } as any)} className={field} />
+              </div>
+            ))}
+          </div>
+          <p className={hint}>
+            Users see: “Register karne par {vr.registrationReward} coins milte hain. Email aur mobile number dono verify karne par
+            additional {vr.completionReward} coins milenge. Total reward: {vr.registrationReward + vr.completionReward} coins.” Amounts are
+            locked in per user at signup; changes apply to new signups only.
+          </p>
+          <Toggle checked={vr.requireEmail} onChange={(v) => setVr({ requireEmail: v })} title="Require email verification" />
+          <Toggle checked={vr.requirePhone} onChange={(v) => setVr({ requirePhone: v })} title="Require mobile verification" />
+          <div className="grid grid-cols-3 gap-3 mt-2">
+            {(
+              [
+                ["initialReminderDays", "First reminder after (days)"],
+                ["repeatReminderDays", "Then every (days)"],
+                ["maxReminders", "Max prompts"],
+                ["emailResendCooldownSec", "Email resend (sec)"],
+                ["smsResendCooldownSec", "SMS resend (sec)"],
+              ] as const
+            ).map(([key, text]) => (
+              <div key={key}>
+                <label className={label}>{text}</label>
+                <input type="number" min={0} step={1} value={vr[key]} onChange={(e) => setVr({ [key]: num(e.target.value) } as any)} className={field} />
+              </div>
+            ))}
+          </div>
+          <p className={hint}>In-app prompts only — no SMS or email reminders are sent. Resend cooldowns can be raised, never below 60s.</p>
+          {verificationError && (
+            <p className="text-xs text-red-600 mt-2 flex items-center gap-1.5">
+              <AlertTriangle size={13} /> {verificationError}
+            </p>
+          )}
+          {vrInfo?.stats && (
+            <div className="grid grid-cols-3 gap-2 mt-4 text-center">
+              {(
+                [
+                  ["Enrolled", vrInfo.stats.enrolled],
+                  ["Completed", vrInfo.stats.completed],
+                  ["Email only", vrInfo.stats.pendingEmailOnly],
+                  ["Mobile only", vrInfo.stats.pendingPhoneOnly],
+                  ["Neither yet", vrInfo.stats.pendingNeither],
+                  ["Bonus coins paid", vrInfo.stats.completionCoinsCredited],
+                ] as const
+              ).map(([name, n]) => (
+                <div key={name} className="rounded-xl bg-secondary py-2">
+                  <div className="text-base font-bold text-foreground">{Number(n ?? 0).toLocaleString()}</div>
+                  <div className="text-[11px] text-muted-foreground">{name}</div>
+                </div>
+              ))}
+            </div>
+          )}
         </Section>
 
         {/* ---- Payment mode ---- */}

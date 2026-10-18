@@ -34,6 +34,8 @@ import { callApi } from "@/src/services/api"; // Centralized Worker API Caller
 import { ReanimatedBottomSheet } from "@/src/components/modals/ReanimatedBottomSheet";
 import { ReauthPrompt } from "@/src/components/modals/ReauthPrompt";
 import { isReauthRequired } from "@/src/services/auth/reauth";
+import { rewardOutcomeMessage } from "@/src/lib/verificationReward";
+import { verificationStatusKey } from "@/src/services/verificationReward";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -337,6 +339,11 @@ export default function EditProfileScreen() {
               setShowEmailOtpModal(false);
               setEmailOtp("");
               refetch();
+              // The server may have just completed the verification reward.
+              // Only its response decides what (if anything) was credited.
+              void queryClient.invalidateQueries({ queryKey: verificationStatusKey(authUser?.uid) });
+              const rewardMsg = rewardOutcomeMessage(result.verificationReward);
+              if (rewardMsg) Alert.alert(result.verificationReward?.credited ? "Reward unlocked 🎉" : "Verification reward", rewardMsg);
           }
       } catch (error: any) {
           Alert.alert("Error", error.message || "Invalid OTP.");
@@ -391,6 +398,11 @@ export default function EditProfileScreen() {
               setShowPhoneOtpModal(false);
               setPhoneOtp("");
               refetch();
+              // The server may have just completed the verification reward.
+              // Only its response decides what (if anything) was credited.
+              void queryClient.invalidateQueries({ queryKey: verificationStatusKey(authUser?.uid) });
+              const rewardMsg = rewardOutcomeMessage(result.verificationReward);
+              if (rewardMsg) Alert.alert(result.verificationReward?.credited ? "Reward unlocked 🎉" : "Verification reward", rewardMsg);
           }
       } catch (error: any) {
           Alert.alert("Error", error.message || "Invalid OTP.");

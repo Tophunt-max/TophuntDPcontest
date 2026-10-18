@@ -81,6 +81,11 @@ import { enforceAdminIdempotency } from "../lib/idempotency";
 import { registerIntegrationRoutes } from "./integrations";
 import { assertIdentifiersAvailable, recordUsernameTransition, validateUsername } from "../lib/userIdentifiers";
 import { revokeAllSessions } from "../lib/sessionRevocation";
+import {
+  getVerificationRewardConfig,
+  validateVerificationRewardConfig,
+  verificationRewardStats,
+} from "../lib/verificationReward";
 import { computeDeepHealth } from "../lib/health";
 import { computeMoneyHealth } from "../lib/moneyHealth";
 import { cronHealth } from "../lib/ops";
@@ -298,13 +303,36 @@ adminRoute.post("/app-settings", async (c) => {
     }
   }
   const existing = (await getAppConfig(c.env)) || {};
+  if (body?.verificationReward !== undefined) {
+    // Validated against the MERGED result, so a partial patch (one field) is
+    // checked for consistency with the values already stored.
+    validateVerificationRewardConfig({ ...(existing.verificationReward || {}), ...(body.verificationReward || {}) });
+  }
   const merged = mergeSettings(existing, body);
   await db
     .insert(schema.settings)
     .values({ id: "appConfig", data: merged, updatedAt: now() })
     .onConflictDoUpdate({ target: schema.settings.id, set: { data: merged, updatedAt: now() } });
   await invalidateSetting(c.env, "appConfig");
+  // Coin amounts credited to user balances are money settings: record who
+  // changed them, from what, to what. (Only these sections — the rest of App
+  // Control is cosmetic and is not audited by this handler.)
+  for (const section of ["verificationReward", "rewardSettings"] as const) {
+    if (body?.[section] !== undefined) {
+      await logAudit(c, `settings.${section}.update`, "settings", "appConfig", {
+        before: existing[section] ?? null,
+        after: merged[section] ?? null,
+      });
+    }
+  }
   return c.json({ message: "Settings updated successfully" });
+});
+
+// ---- registration verification reward: effective config + counters ----
+adminRoute.get("/verification-reward", async (c) => {
+  requireFullAdmin(c);
+  const [config, stats] = await Promise.all([getVerificationRewardConfig(c.env), verificationRewardStats(c.env)]);
+  return c.json({ config, stats });
 });
 
 // ---- legal documents (settings/appConfig.legalContent) ----

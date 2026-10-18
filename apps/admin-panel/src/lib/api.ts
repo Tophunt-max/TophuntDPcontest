@@ -805,6 +805,7 @@ export const api = {
   saveRewards: (payload: any) => post("/admin/rewards", payload),
   appSettings: () => get<any>("/admin/app-settings"),
   saveAppSettings: (payload: any) => post("/admin/app-settings", payload),
+  verificationReward: () => get<any>("/admin/verification-reward"),
 
   // Legal documents. `legal()` returns each doc's EFFECTIVE raw content (a stored
   // override, or the bundled default) so the editor is never blank; `saveLegal`

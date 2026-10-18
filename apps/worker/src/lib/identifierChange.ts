@@ -1,3 +1,4 @@
+import { getVerificationRewardConfig } from "./verificationReward";
 import { eq } from "drizzle-orm";
 import type { AuthUser, Env } from "../types";
 import { getDb, schema } from "../db";
@@ -198,6 +199,8 @@ export async function requestEmailChange(
   rawEmail: unknown,
   ip: string,
 ): Promise<ChangeRequestResult> {
+  // Admin-configurable (App Control → verification reward), never below the built-in floor.
+  const emailCooldown = Math.max(OTP_SEND_COOLDOWN, (await getVerificationRewardConfig(env)).emailResendCooldownSec);
   const uid = user.uid;
   const email = assertValidEmail(rawEmail);
   const current = await readIdentifiers(env, uid);
@@ -244,13 +247,13 @@ export async function requestEmailChange(
   // Cooldown on BOTH the caller and the destination. Keying it only on the caller
   // is what allowed one account to walk through many different targets, one per
   // minute, without ever tripping its own cooldown.
-  await enforceSendCooldown(env, "email", uid, OTP_SEND_COOLDOWN);
-  await enforceSendCooldown(env, "emailto", email, OTP_SEND_COOLDOWN);
+  await enforceSendCooldown(env, "email", uid, emailCooldown);
+  await enforceSendCooldown(env, "emailto", email, emailCooldown);
 
   const otp = generateOtp();
   await setOtp(env, "email", uid, { otp, newEmail: email, verifyOnly, createdAt: now() });
-  await markSent(env, "email", uid, OTP_SEND_COOLDOWN);
-  await markSent(env, "emailto", email, OTP_SEND_COOLDOWN);
+  await markSent(env, "email", uid, emailCooldown);
+  await markSent(env, "emailto", email, emailCooldown);
 
   const sent = await sendEmail(env, { to: email, ...verificationCodeEmail(otp) });
 
@@ -267,7 +270,7 @@ export async function requestEmailChange(
     throw httpsError("internal", "We couldn't send the code right now. Please try again in a moment.");
   }
 
-  return { cooldownSeconds: OTP_SEND_COOLDOWN, sentTo: maskEmail(email), verifyOnly };
+  return { cooldownSeconds: emailCooldown, sentTo: maskEmail(email), verifyOnly };
 }
 
 /**
@@ -353,6 +356,8 @@ export async function requestPhoneChange(
   rawPhone: unknown,
   ip: string,
 ): Promise<ChangeRequestResult> {
+  // Admin-configurable (App Control → verification reward), never below the built-in floor.
+  const smsCooldown = Math.max(OTP_SEND_COOLDOWN, (await getVerificationRewardConfig(env)).smsResendCooldownSec);
   const uid = user.uid;
   const phone = assertValidPhone(rawPhone);
   const current = await readIdentifiers(env, uid);
@@ -376,13 +381,13 @@ export async function requestPhoneChange(
   // The per-number daily cap. Each SMS is real money and this is the only limit
   // that stops us being used to text a number its owner never gave us.
   await rateLimit(env, `phonechange_to:${phone}`, 5, 86_400, { failClosed: true });
-  await enforceSendCooldown(env, "phone", uid, OTP_SEND_COOLDOWN);
-  await enforceSendCooldown(env, "phoneto", phone, OTP_SEND_COOLDOWN);
+  await enforceSendCooldown(env, "phone", uid, smsCooldown);
+  await enforceSendCooldown(env, "phoneto", phone, smsCooldown);
 
   const otp = generateOtp();
   await setOtp(env, "phone", uid, { otp, newPhone: phone, verifyOnly, createdAt: now() });
-  await markSent(env, "phone", uid, OTP_SEND_COOLDOWN);
-  await markSent(env, "phoneto", phone, OTP_SEND_COOLDOWN);
+  await markSent(env, "phone", uid, smsCooldown);
+  await markSent(env, "phoneto", phone, smsCooldown);
 
   const sent = await sendSms(
     env,
@@ -399,7 +404,7 @@ export async function requestPhoneChange(
     throw httpsError("internal", "We couldn't send the code right now. Please try again in a moment.");
   }
 
-  return { cooldownSeconds: OTP_SEND_COOLDOWN, sentTo: maskPhone(phone), verifyOnly };
+  return { cooldownSeconds: smsCooldown, sentTo: maskPhone(phone), verifyOnly };
 }
 
 /**
