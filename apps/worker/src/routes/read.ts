@@ -6,7 +6,7 @@
  */
 import { Hono } from "hono";
 import { getVerificationStatus } from "../lib/verificationReward";
-import { and, or, eq, desc, asc, gt, gte, lt, lte, sql, inArray, notInArray, isNull, like, exists } from "drizzle-orm";
+import { and, or, eq, desc, asc, gt, gte, lt, lte, sql, inArray, notInArray, isNull, isNotNull, like, exists } from "drizzle-orm";
 import type { Env, Variables } from "../types";
 import { getDb, schema, type NotificationActor } from "../db";
 import { perPlayerEntryFee } from "../lib/money";
@@ -32,6 +32,7 @@ import {
 import { cachedJson, cachedResponse } from "../lib/edgeCache";
 import { memoGet, memoPut } from "../lib/memo";
 import { recordBlogView } from "../lib/viewCounter";
+import { kickSettlementIfDue } from "../lib/settleDue";
 import { getLiveTally, getViewerVote } from "../lib/voteCounter";
 import { publicPrize } from "../lib/prizes";
 import { clientIp, rateLimit } from "../lib/rateLimit";
@@ -886,7 +887,11 @@ async function servePersonalizedFeed(
   const pooled = memoGet<any[]>(candKey);
   let candidates: any[] | null = pooled ? structuredClone(pooled) : null;
   if (!candidates) {
-    const typeConds = type ? [eq(schema.contestMatches.type, type)] : [];
+    // Held for moderation review (migration 0060): out of the shared pool.
+    const typeConds = [
+      ...(type ? [eq(schema.contestMatches.type, type)] : []),
+      isNull(schema.contestMatches.moderationHoldAt),
+    ];
     const activeRows = await db
       .select(MATCH_LIST_COLUMNS)
       .from(schema.contestMatches)
@@ -1436,7 +1441,7 @@ readRoute.get("/matches", optionalAuth, guestReadLimit, async (c) => {
     edgeTtlSec: READ_CACHE_TTLS.matchesPage.edge,
     kvTtlSec: READ_CACHE_TTLS.matchesPage.kv,
     load: async () => {
-      const conds = [eq(schema.contestMatches.status, status)];
+      const conds = [eq(schema.contestMatches.status, status), isNull(schema.contestMatches.moderationHoldAt)];
       if (type) conds.push(eq(schema.contestMatches.type, type));
 
       if (sort === "hot") {
@@ -1536,7 +1541,18 @@ readRoute.get("/matches/:id", optionalAuth, guestReadLimit, async (c) => {
     const pb = (row.userB as any)?.uid;
     if ((pa && blocked.has(pa)) || (pb && blocked.has(pb))) return c.json(null);
   }
+  // Voting is over but the cron has not declared the result yet: settle now, in
+  // the background, so a viewer whose countdown just hit zero sees the winner in
+  // seconds instead of up to 10 minutes (lib/settleDue.ts). This answer still
+  // reports `active`; the client re-reads shortly and the realtime
+  // `match_status` event arrives as soon as the settlement commits.
+  const settling = kickSettlementIfDue(c.env, c.executionCtx, row);
   const out: any = mapMatch(row);
+  if (row.status === "active" && Number(row.expiresAt) <= Date.now()) out.resultPending = true;
+  // Held for review: the page stays reachable, but the client does not turn it
+  // into a shareable winner card (app/battle/[id]/result.tsx).
+  if (row.moderationHoldAt) out.moderationHeld = true;
+  if (settling) out.settling = true;
   await enrichParticipants(c.env, [out]);
   // For LIVE battles, surface the authoritative vote tally straight from the
   // per-match VoteCounter DO — D1 only holds the last (up to 5s) flushed
@@ -3653,8 +3669,21 @@ readRoute.get("/stories/feed", optionalAuth, guestReadLimit, async (c) => {
         // Stories for viewers who follow few people. One cached read per minute.
         .limit(250)
         .all();
-      const owners = await storyOwnerMeta(c.env, rows.map((r) => r.userId));
-      return { rows: rows as any[], owners: Object.fromEntries(owners) };
+      // A battle held for moderation review (migration 0060) must not keep
+      // circulating on both participants' story rings. Once per cache fill.
+      const vsMatchIds = [...new Set(rows.filter((r: any) => r.type === "contest_vs" && r.matchId).map((r: any) => String(r.matchId)))];
+      let heldIds = new Set<string>();
+      if (vsMatchIds.length) {
+        const held = await db
+          .select({ id: schema.contestMatches.id })
+          .from(schema.contestMatches)
+          .where(and(inArray(schema.contestMatches.id, vsMatchIds.slice(0, 90)), isNotNull(schema.contestMatches.moderationHoldAt)))
+          .all();
+        heldIds = new Set(held.map((h) => h.id));
+      }
+      const visibleRows = heldIds.size ? rows.filter((r: any) => !(r.type === "contest_vs" && heldIds.has(String(r.matchId)))) : rows;
+      const owners = await storyOwnerMeta(c.env, visibleRows.map((r) => r.userId));
+      return { rows: visibleRows as any[], owners: Object.fromEntries(owners) };
     },
   });
   const baseRows = base.rows || [];

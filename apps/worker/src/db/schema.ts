@@ -345,6 +345,8 @@ export const contestMatches = sqliteTable(
      * sweep never deletes before this, nor while a live Story references it.
      */
     vsImageRetainUntil: integer("vs_image_retain_until"),
+    /** Community moderation hold (migration 0060): set at N distinct reports, hides from feeds. */
+    moderationHoldAt: integer("moderation_hold_at"),
     createdAt: integer("created_at").notNull(),
     activatedAt: integer("activated_at"),
     completedAt: integer("completed_at"),
