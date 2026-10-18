@@ -12,7 +12,7 @@ Guests can open the app and browse public content. They are asked to sign in onl
 
 | Surface | Before | Now | Change (file) |
 |---|---|---|---|
-| Cold start (`splash.tsx`) | Returning guest → `/auth/login`; first launch → onboarding → login | Guest → `/home` | `app/splash.tsx`, `app/onboarding/index.tsx` |
+| Cold start (`splash.tsx`) | Returning guest → `/auth/login`; first launch → onboarding → login | New guest → 3-slide TopHunt intro once (Skip / Get started → `/home`, or Log in) → later launches straight to `/home`. Signed-in users never see the intro | `app/splash.tsx`, `app/onboarding/index.tsx`, `src/lib/onboarding.ts` |
 | Root guard (`_layout.tsx`) | Every route except blog/legal/`[slug]` → login; signed-in users bounced off **all** `auth/*`, including profile setup and action links | Policy table: guests browse public routes; private → login with a sanitized `redirect`; just signed out → `/home`; signed in on login → leave it; `auth/action` and post-signup steps are never bounced | `app/_layout.tsx`, `src/lib/routeAccess.ts` |
 | `/@handle`, `/profile?userId=` | Guest → login | Public profile, field allow-list enforced by the Worker. Bare `/profile` (own profile) → login | `src/screens/ProfileScreen.tsx` |
 | `GET /read/stories/feed` | `requireAuth`, **and returned followers-only Stories to every signed-in user** | `optionalAuth` + the audience rule | `routes/read.ts`, `lib/storyAudience.ts` |
@@ -95,7 +95,7 @@ The rule is in `lib/privateAccount.ts`. Only an **approved** follow (a `follows`
 
 ## Staging QA checklist
 
-1. Fresh install / private window → app opens on Home; no login.
+1. Fresh install / private window → the intro shows once (Skip works). The next launch opens straight on Home, with no login. Sign in on a fresh install → no intro, now or after signing out. A shared `/battle/<id>` link opens the battle directly, without the intro.
 2. As a guest, scroll the feed and open a battle, a profile (`/@handle`), Explore, the leaderboard and a contest listing.
 3. As a guest, tap like / vote / comment / follow / bookmark / Story reply → each shows a "Sign in to …" prompt. Choose "Sign in", finish, and confirm you land back on the same screen with the action **not** performed.
 4. As a guest, open `/wallet`, `/messages`, `/setting` and `/notifications` directly → login with `?redirect=`. After signing in you land on that screen.

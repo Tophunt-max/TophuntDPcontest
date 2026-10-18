@@ -13,26 +13,33 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getAppConfig } from '../../src/services/appSettings';
+import { ONBOARDING_SEEN_KEY } from '../../src/lib/onboarding';
+import { loginHref } from '../../src/lib/authGate';
 import { Colors } from '@/constants/theme';
 import { designWidth, PHONE_MAX_WIDTH, useDesignWindow } from '@/src/lib/layout';
 
+/**
+ * The first-launch intro: what TopHunt is, in three slides. Shown once to a new
+ * guest (see src/lib/onboarding.ts); Skip is always available. An admin can
+ * override a slide's title and image through app config (`onboarding`).
+ */
 const DEFAULT_ONBOARDING = [
   {
     id: '1',
-    title: 'The Best Social Media App of the Century',
-    description: 'Connect with people all over the world and share your moments.',
+    title: 'Photo & video battles',
+    description: 'Two entries go head to head. Watch live battles from creators all over India.',
     image: require('../../assets/images/onBordingLight1.png'),
   },
   {
     id: '2',
-    title: 'Let\'s Connect with Everyone in the World',
-    description: 'Building a community that values your privacy and creativity.',
+    title: 'You decide the winner',
+    description: 'Vote for your favourite, like, comment and follow the creators you love.',
     image: require('../../assets/images/onBordingLight2.png'),
   },
   {
     id: '3',
-    title: 'Everything You Can Do in the App',
-    description: 'Explore, discover, and express yourself like never before.',
+    title: 'Enter and win',
+    description: 'Join a contest with your best photo or video and win coins and prizes.',
     image: require('../../assets/images/onBordingLight3.png'),
   },
 ];
@@ -66,9 +73,9 @@ export default function OnboardingScreen() {
       if (config && config.onboarding && config.onboarding.length > 0) {
         const mergedData = config.onboarding.map((item, index) => ({
           id: String(index + 1),
-          title: item.title || DEFAULT_ONBOARDING[index].title,
-          description: DEFAULT_ONBOARDING[index].description,
-          image: item.imageUrl ? { uri: item.imageUrl } : DEFAULT_ONBOARDING[index].image,
+          title: item.title || DEFAULT_ONBOARDING[index]?.title || '',
+          description: item.description || DEFAULT_ONBOARDING[index]?.description || '',
+          image: item.imageUrl ? { uri: item.imageUrl } : DEFAULT_ONBOARDING[index % DEFAULT_ONBOARDING.length].image,
         }));
         setOnboardingData(mergedData);
       }
@@ -76,15 +83,20 @@ export default function OnboardingScreen() {
     fetchConfig();
   }, []);
 
-  const handleFinishOnboarding = async () => {
+  /**
+   * Leave the intro for `to`. Marked seen first so it never comes back — and
+   * the navigation happens even if storage fails, so nobody is stuck here.
+   */
+  const finish = async (to: string = '/home') => {
     try {
-      await AsyncStorage.setItem('hasSeenOnboarding', 'true');
-      // Guest-first: finish into the public feed; sign-in happens on demand.
-      router.replace('/home');
+      await AsyncStorage.setItem(ONBOARDING_SEEN_KEY, 'true');
     } catch (error) {
       console.error('Error saving onboarding status:', error);
     }
+    // Guest-first: finish into the public feed; sign-in happens on demand.
+    router.replace(to as any);
   };
+  const handleFinishOnboarding = () => finish('/home');
 
   const handleNext = () => {
     if (currentIndex < onboardingData.length - 1) {
@@ -177,8 +189,25 @@ export default function OnboardingScreen() {
                 <Text style={styles.nextButtonText}>{currentIndex === onboardingData.length - 1 ? 'Get Started' : 'Next'}</Text>
             </TouchableOpacity>
             
-            <TouchableOpacity style={[styles.skipButton, { backgroundColor: isDark ? '#35383F' : '#FEF1F3' }]} onPress={handleFinishOnboarding}>
+            <TouchableOpacity
+                style={[styles.skipButton, { backgroundColor: isDark ? '#35383F' : '#FEF1F3' }]}
+                onPress={handleFinishOnboarding}
+                accessibilityRole="button"
+                accessibilityLabel="Skip intro"
+            >
                 <Text style={[styles.skipButtonText, isDark && styles.textDark]}>Skip</Text>
+            </TouchableOpacity>
+
+            {/* Returning users on a new device: straight to sign-in, then Home. */}
+            <TouchableOpacity
+                style={styles.loginLink}
+                onPress={() => finish(loginHref('/home'))}
+                accessibilityRole="button"
+                accessibilityLabel="Already have an account? Log in"
+            >
+                <Text style={[styles.loginLinkText, { color: isDark ? '#BDBDBD' : '#616161' }]}>
+                    Already have an account? <Text style={styles.loginLinkStrong}>Log in</Text>
+                </Text>
             </TouchableOpacity>
         </View>
         </View>
@@ -225,4 +254,7 @@ const styles = StyleSheet.create({
   nextButtonText: { color: '#fff', fontSize: 16, fontFamily: 'Urbanist-Bold' },
   skipButton: { height: 58, justifyContent: 'center', alignItems: 'center', borderRadius: 100 },
   skipButtonText: { color: '#FF4D67', fontFamily: 'Urbanist-Bold', fontSize: 16 },
+  loginLink: { marginTop: 16, minHeight: 36, justifyContent: 'center', alignItems: 'center' },
+  loginLinkText: { fontFamily: 'Urbanist-Medium', fontSize: 14 },
+  loginLinkStrong: { color: '#FF4D67', fontFamily: 'Urbanist-Bold' },
 });
