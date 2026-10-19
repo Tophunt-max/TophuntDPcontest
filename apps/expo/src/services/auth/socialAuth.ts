@@ -3,9 +3,12 @@ import {
   GoogleAuthProvider,
   OAuthProvider,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signInWithCredential,
   browserPopupRedirectResolver,
   getAuth,
+  signOut,
   type UserCredential,
 } from 'firebase/auth';
 import { Platform } from 'react-native';
@@ -18,6 +21,20 @@ import { readApi } from '../api';
 import { useSignupStore } from '../../store/signup';
 import { reportError } from '@/src/lib/reportError';
 import { postAuthDestination } from '@/src/lib/postAuthRedirect';
+import { friendlyAuthError, isAuthCancellation } from '@/src/lib/authErrors';
+import { signupBlockedReason, signupKeyForProvider, type ClientAuthMethods } from '@/src/lib/authMethods';
+import { isSameSiteAuth } from '@/src/lib/authDomain';
+import { detectInAppBrowser } from '@/src/lib/inAppBrowser';
+import { rememberAuthMethod } from '@/src/lib/lastAuthMethod';
+
+type ProviderName = 'Google' | 'Apple' | 'Facebook';
+const PROVIDER_ID: Record<ProviderName, string> = { Google: 'google.com', Apple: 'apple.com', Facebook: 'facebook.com' };
+
+/** Options every entry point accepts. */
+export interface SocialLoginOptions {
+  /** The admin's switches, so a closed signup is caught before the profile form. */
+  methods?: ClientAuthMethods;
+}
 
 /**
  * Social sign-in.
@@ -98,17 +115,32 @@ async function routeAfterSignIn(
   router: any,
   addToast: any,
   credential: UserCredential,
-  providerName: string,
+  providerName: ProviderName,
   redirect?: string | null,
+  methods?: ClientAuthMethods,
 ) {
   const user = credential.user;
   const signupStore = useSignupStore.getState();
 
   // Look up the user's profile in D1 (via the Worker), keyed by uid.
   const userData: any = await readApi(`/read/users/${user.uid}`).catch(() => null);
+  const returning = !!userData && (userData.signupCompleted === true || !!userData.username);
+
+  // A NEW account through a method the admin switched off (or with signups
+  // closed): say so now, not after the whole profile form. The Worker refuses it
+  // regardless (lib/authMethods.ts); this is the early, friendly version.
+  if (!returning && methods) {
+    const blocked = signupBlockedReason(methods, signupKeyForProvider(PROVIDER_ID[providerName]));
+    if (blocked) {
+      await signOut(getAuth(app)).catch(() => {});
+      addToast(blocked, 'info');
+      return null;
+    }
+  }
+  void rememberAuthMethod(providerName.toLowerCase() as 'google' | 'facebook' | 'apple');
 
   if (userData) {
-    if (userData.signupCompleted === true || userData.username) {
+    if (returning) {
       addToast('Welcome back!', 'success');
       router.replace(postAuthDestination(redirect));
     } else {
@@ -138,12 +170,71 @@ async function routeAfterSignIn(
   return user;
 }
 
-/** Web-only popup flow (unchanged behaviour on web). */
-async function webPopupSignIn(provider: any): Promise<UserCredential> {
+const PENDING_REDIRECT_KEY = 'tophunt:auth:pendingRedirect';
+
+/** Thrown after `signInWithRedirect` starts: the page is navigating away. */
+class RedirectStarted extends Error {
+  constructor() {
+    super('redirect-started');
+    this.name = 'RedirectStarted';
+  }
+}
+
+/**
+ * Web sign-in: a popup, falling back to a full-page redirect when the browser
+ * blocks the popup — but only where the redirect is reliable, i.e. when sign-in
+ * runs on our own origin (lib/authDomain.ts). Cross-site, modern browsers drop
+ * the redirect result, so there the user is told to allow the popup instead.
+ */
+async function webPopupSignIn(provider: any, providerName: ProviderName, redirect?: string | null): Promise<UserCredential> {
   const auth = getAuth(app);
-  // Auth is initialised via initializeAuth() WITHOUT a popupRedirectResolver, so
-  // the resolver must be passed explicitly or Firebase throws auth/argument-error.
-  return signInWithPopup(auth, provider, browserPopupRedirectResolver);
+  try {
+    // The resolver is passed explicitly as well as at init, so a getAuth()
+    // fallback instance (Fast Refresh) cannot throw auth/argument-error.
+    return await signInWithPopup(auth, provider, browserPopupRedirectResolver);
+  } catch (error: any) {
+    const host = typeof window !== 'undefined' ? window.location.hostname : null;
+    if (error?.code === 'auth/popup-blocked' && isSameSiteAuth(String(auth.config.authDomain || ''), host)) {
+      try {
+        window.sessionStorage.setItem(PENDING_REDIRECT_KEY, JSON.stringify({ providerName, redirect: redirect ?? null }));
+      } catch {
+        // Storage off: the redirect still signs the user in; only the post-login
+        // destination is lost.
+      }
+      await signInWithRedirect(auth, provider, browserPopupRedirectResolver);
+      throw new RedirectStarted();
+    }
+    throw error;
+  }
+}
+
+/**
+ * Finish a `signInWithRedirect` started above, after the page comes back. Call
+ * once when the login/signup screen mounts on web; a no-op otherwise.
+ */
+export async function completeWebRedirectSignIn(router: any, addToast: any, methods?: ClientAuthMethods): Promise<void> {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+  let pending: { providerName: ProviderName; redirect: string | null } | null = null;
+  try {
+    const raw = window.sessionStorage.getItem(PENDING_REDIRECT_KEY);
+    pending = raw ? JSON.parse(raw) : null;
+  } catch {
+    pending = null;
+  }
+  if (!pending) return;
+  try {
+    window.sessionStorage.removeItem(PENDING_REDIRECT_KEY);
+  } catch {
+    // ignore
+  }
+  try {
+    const result = await getRedirectResult(getAuth(app), browserPopupRedirectResolver);
+    if (result) await routeAfterSignIn(router, addToast, result, pending.providerName, pending.redirect, methods);
+  } catch (error: any) {
+    if (isAuthCancellation(error)) return;
+    reportError(error, { flow: 'social-auth-redirect', provider: pending.providerName });
+    addToast(friendlyAuthError(error, `${pending.providerName} login nahi ho paya. Dobara try karo.`), 'error');
+  }
 }
 
 /**
@@ -258,45 +349,69 @@ async function facebookNativeSignIn(): Promise<UserCredential> {
 async function run(
   router: any,
   addToast: any,
-  providerName: 'Google' | 'Apple' | 'Facebook',
+  providerName: ProviderName,
   native: () => Promise<UserCredential>,
   webProvider: () => any,
   redirect?: string | null,
+  options?: SocialLoginOptions,
 ) {
   try {
+    if (Platform.OS === 'web' && providerName === 'Google' && typeof navigator !== 'undefined') {
+      // Google refuses OAuth inside Instagram/Facebook/… webviews
+      // ("disallowed_useragent"): stop here with the fix instead of Google's error page.
+      const iab = detectInAppBrowser(navigator.userAgent);
+      if (iab.inApp) {
+        throw new SocialAuthUnavailable(
+          `${iab.name || 'Is app'} ke andar Google login kaam nahi karta. Upar ke menu se "Open in browser" / Chrome mein kholo, ya Phone se login karo.`,
+        );
+      }
+    }
     const credential =
-      Platform.OS === 'web' ? await webPopupSignIn(webProvider()) : await native();
-    return await routeAfterSignIn(router, addToast, credential, providerName, redirect);
+      Platform.OS === 'web' ? await webPopupSignIn(webProvider(), providerName, redirect) : await native();
+    return await routeAfterSignIn(router, addToast, credential, providerName, redirect, options?.methods);
   } catch (error: any) {
+    // The page is navigating to the provider; nothing to report or show.
+    if (error instanceof RedirectStarted) throw error;
     // A user closing the sheet is not an error worth reporting or shouting about.
-    const cancelled =
-      error?.message === 'cancelled' ||
-      error?.code === 'auth/popup-closed-by-user' ||
-      error?.code === 'ERR_REQUEST_CANCELED' ||
-      error?.code === 'ERR_CANCELED';
-    if (cancelled) throw error;
+    if (isAuthCancellation(error)) throw error;
 
     if (error instanceof SocialAuthUnavailable) {
       addToast(error.message, 'info');
       throw error;
     }
 
-    reportError(error, { flow: 'social-auth', provider: providerName });
-    addToast(
-      error?.message || `${providerName} sign-in failed. Please try again or use email.`,
-      'error',
-    );
+    // Configuration states, not bugs: shown, not reported.
+    const expected = ['auth/operation-not-allowed', 'auth/account-exists-with-different-credential', 'auth/popup-blocked', 'auth/network-request-failed', 'auth/too-many-requests', 'auth/user-disabled'];
+    if (!expected.includes(String(error?.code || ''))) {
+      reportError(error, { flow: 'social-auth', provider: providerName });
+    }
+    addToast(friendlyAuthError(error, `${providerName} login nahi ho paya. Dobara try karo ya email/phone use karo.`), 'error');
     throw error;
   }
 }
 
 export const SocialAuthService = {
-  googleLogin: (router: any, addToast: any, redirect?: string | null) =>
-    run(router, addToast, 'Google', googleNativeSignIn, () => new GoogleAuthProvider(), redirect),
+  googleLogin: (router: any, addToast: any, redirect?: string | null, options?: SocialLoginOptions) =>
+    run(router, addToast, 'Google', googleNativeSignIn, () => {
+      const p = new GoogleAuthProvider();
+      // Always show the account chooser, so a shared device does not silently
+      // sign in as whoever used it last.
+      p.setCustomParameters({ prompt: 'select_account' });
+      return p;
+    }, redirect, options),
 
-  appleLogin: (router: any, addToast: any, redirect?: string | null) =>
-    run(router, addToast, 'Apple', appleNativeSignIn, () => new OAuthProvider('apple.com'), redirect),
+  appleLogin: (router: any, addToast: any, redirect?: string | null, options?: SocialLoginOptions) =>
+    run(router, addToast, 'Apple', appleNativeSignIn, () => {
+      const p = new OAuthProvider('apple.com');
+      p.addScope('email');
+      p.addScope('name');
+      return p;
+    }, redirect, options),
 
-  facebookLogin: (router: any, addToast: any, redirect?: string | null) =>
-    run(router, addToast, 'Facebook', facebookNativeSignIn, () => new FacebookAuthProvider(), redirect),
+  facebookLogin: (router: any, addToast: any, redirect?: string | null, options?: SocialLoginOptions) =>
+    run(router, addToast, 'Facebook', facebookNativeSignIn, () => {
+      const p = new FacebookAuthProvider();
+      p.addScope('email');
+      return p;
+    }, redirect, options),
 };

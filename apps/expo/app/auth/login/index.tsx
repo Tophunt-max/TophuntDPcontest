@@ -22,17 +22,11 @@ import {
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useToast } from "../../../src/components/toast/ToastProvider";
 import { Colors } from "@/constants/theme";
-import { SocialAuthService, socialProviderAvailability } from "../../../src/services/auth/socialAuth";
-import { readApi, poll } from "../../../src/services/api";
+import { SocialAuthService, socialProviderAvailability, completeWebRedirectSignIn } from "../../../src/services/auth/socialAuth";
 import { designWidth, PHONE_MAX_WIDTH } from "@/src/lib/layout";
-
-interface AuthConfig {
-  googleLogin: boolean;
-  facebookLogin: boolean;
-  appleLogin: boolean;
-  phoneLogin: boolean;
-  passwordLogin: boolean;
-}
+import { useAuthMethods } from "@/src/hooks/useAuthMethods";
+import { lastAuthMethod, type LastAuthMethod } from "@/src/lib/lastAuthMethod";
+import { InAppBrowserNotice } from "@/src/components/auth/InAppBrowserNotice";
 
 export default function LoginWelcomeScreen() {
   const router = useRouter();
@@ -57,50 +51,28 @@ export default function LoginWelcomeScreen() {
   // the button is hidden rather than shown and then failing.
   const socialAvailable = socialProviderAvailability();
   const [loading, setLoading] = useState<string | null>(null);
-  const [isConfigLoading, setIsConfigLoading] = useState(true);
-  const [config, setConfig] = useState<AuthConfig>({
-    googleLogin: true,
-    facebookLogin: true,
-    appleLogin: true,
-    phoneLogin: true,
-    passwordLogin: true
-  });
-
-  // Sync with Admin Settings (polling the Worker /read/app-config).
+  // Admin-managed switches (App Control -> Login & Signup), for this platform.
+  const { methods, ready } = useAuthMethods();
+  const show = {
+    facebook: methods.facebook && socialAvailable.facebook,
+    google: methods.google && socialAvailable.google,
+    apple: methods.apple && socialAvailable.apple,
+    phone: methods.phone,
+    password: methods.password,
+  };
+  const anySocial = show.facebook || show.google || show.apple || show.phone;
+  const [lastUsed, setLastUsed] = useState<LastAuthMethod | null>(null);
   useEffect(() => {
-    const unsubscribe = poll<any>(
-      () => readApi("/read/app-config"),
-      (data) => {
-        if (data?.authSettings) {
-          const a = data.authSettings;
-          setConfig({
-            googleLogin: a.googleLogin ?? true,
-            facebookLogin: a.facebookLogin ?? true,
-            appleLogin: a.appleLogin ?? true,
-            phoneLogin: a.phoneLogin ?? true,
-            passwordLogin: a.passwordLogin ?? true,
-          });
-        }
-        setIsConfigLoading(false);
-      },
-      30000,
-      // Without this the failure path never cleared `isConfigLoading`, so any
-      // config fetch error — CORS, offline, API blip — left this screen on
-      // "Connecting…" FOREVER with no error and no way to sign in.
-      () => setIsConfigLoading(false),
-    );
-
-    // Belt and braces: `poll` only reports an error once a request actually
-    // fails. A request that never settles reports nothing, so bound the gate by
-    // time too. The defaults above are permissive, so the worst case is briefly
-    // offering a provider the admin has disabled — infinitely better than
-    // locking every user out of the app.
-    const gate = setTimeout(() => setIsConfigLoading(false), 2500);
-    return () => {
-      clearTimeout(gate);
-      unsubscribe();
-    };
+    void lastAuthMethod().then(setLastUsed);
   }, []);
+
+  // Web: finish a sign-in that fell back from a blocked popup to a redirect.
+  const redirectChecked = React.useRef(false);
+  useEffect(() => {
+    if (!ready || redirectChecked.current) return;
+    redirectChecked.current = true;
+    void completeWebRedirectSignIn(router, addToast, methods);
+  }, [ready, router, addToast, methods]);
 
   const handleSocialLogin = async (provider: string) => {
     // `redirect` is forwarded to EVERY branch, not just the password one. A shared
@@ -116,11 +88,11 @@ export default function LoginWelcomeScreen() {
     setLoading(provider);
     try {
       if (provider === "Google") {
-        await SocialAuthService.googleLogin(router, addToast, redirect);
+        await SocialAuthService.googleLogin(router, addToast, redirect, { methods });
       } else if (provider === "Facebook") {
-        await SocialAuthService.facebookLogin(router, addToast, redirect);
+        await SocialAuthService.facebookLogin(router, addToast, redirect, { methods });
       } else if (provider === "Apple") {
-        await SocialAuthService.appleLogin(router, addToast, redirect);
+        await SocialAuthService.appleLogin(router, addToast, redirect, { methods });
       }
     } catch (error: any) {
       // Error handled in service
@@ -137,7 +109,7 @@ export default function LoginWelcomeScreen() {
     }
   };
 
-  if (isConfigLoading) {
+  if (!ready) {
     return (
       <View style={[styles.container, { backgroundColor, justifyContent: 'center' }]}>
         <ActivityIndicator size="large" color="#FF4D67" />
@@ -189,8 +161,16 @@ export default function LoginWelcomeScreen() {
 
         <Text style={[styles.title, { color: textColor, fontFamily: 'Urbanist-Bold' }]}>Let&apos;s you in</Text>
 
+        <InAppBrowserNotice isDark={isDark} />
+
+        {!anySocial && !show.password && (
+          <Text style={[styles.noMethods, { color: textColor }]}>
+            Login abhi thodi der ke liye band hai. Kuch der baad try karo.
+          </Text>
+        )}
+
         <View style={styles.socialButtonsContainer}>
-          {config.facebookLogin && socialAvailable.facebook && (
+          {show.facebook && (
             <TouchableOpacity
               style={[styles.socialButton, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]}
               onPress={() => handleSocialLogin("Facebook")}
@@ -200,12 +180,13 @@ export default function LoginWelcomeScreen() {
                 <>
                   <Facebook_Icon width={24} height={24} />
                   <Text style={[styles.socialButtonText, { color: textColor, fontFamily: 'Urbanist-Medium' }]}>Continue with Facebook</Text>
+                  {lastUsed === 'facebook' && <LastUsedPill />}
                 </>
               )}
             </TouchableOpacity>
           )}
 
-          {config.googleLogin && socialAvailable.google && (
+          {show.google && (
             <TouchableOpacity
               style={[styles.socialButton, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]}
               onPress={() => handleSocialLogin("Google")}
@@ -215,12 +196,13 @@ export default function LoginWelcomeScreen() {
                 <>
                   <Google_Icon width={24} height={24} />
                   <Text style={[styles.socialButtonText, { color: textColor, fontFamily: 'Urbanist-Medium' }]}>Continue with Google</Text>
+                  {lastUsed === 'google' && <LastUsedPill />}
                 </>
               )}
             </TouchableOpacity>
           )}
 
-          {config.appleLogin && socialAvailable.apple && (
+          {show.apple && (
             <TouchableOpacity
               style={[styles.socialButton, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]}
               onPress={() => handleSocialLogin("Apple")}
@@ -230,12 +212,13 @@ export default function LoginWelcomeScreen() {
                 <>
                   {isDark ? <Apple_Light width={24} height={24} /> : <Apple_Dark width={24} height={24} />}
                   <Text style={[styles.socialButtonText, { color: textColor, fontFamily: 'Urbanist-Medium' }]}>Continue with Apple</Text>
+                  {lastUsed === 'apple' && <LastUsedPill />}
                 </>
               )}
             </TouchableOpacity>
           )}
 
-          {config.phoneLogin && (
+          {show.phone && (
             <TouchableOpacity
               style={[styles.socialButton, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]}
               onPress={() => handleSocialLogin("Phone")}
@@ -243,11 +226,12 @@ export default function LoginWelcomeScreen() {
             >
               <Phone_Color width={24} height={24} />
               <Text style={[styles.socialButtonText, { color: textColor, fontFamily: 'Urbanist-Medium' }]}>Continue with Phone</Text>
+              {lastUsed === 'phone' && <LastUsedPill />}
             </TouchableOpacity>
           )}
         </View>
 
-        {((config.facebookLogin && socialAvailable.facebook) || (config.googleLogin && socialAvailable.google) || (config.appleLogin && socialAvailable.apple) || config.phoneLogin) && config.passwordLogin && (
+        {anySocial && show.password && (
           <View style={styles.dividerContainer}>
             <View style={[styles.dividerLine, { backgroundColor: isDark ? '#35383F' : '#eee' }]} />
             <Text style={[styles.dividerText, { color: textColor, fontFamily: 'Urbanist-Medium' }]}>or</Text>
@@ -255,26 +239,43 @@ export default function LoginWelcomeScreen() {
           </View>
         )}
 
-        {config.passwordLogin && (
+        {show.password && (
           <TouchableOpacity
             style={styles.passwordButton}
             onPress={handlePasswordLogin}
             disabled={loading !== null}
           >
-            <Text style={[styles.passwordButtonText, { fontFamily: 'Urbanist-Bold' }]}>Sign in with password</Text>
+            <Text style={[styles.passwordButtonText, { fontFamily: 'Urbanist-Bold' }]}>
+              Sign in with password{lastUsed === 'password' ? '  · Last used' : ''}
+            </Text>
           </TouchableOpacity>
         )}
 
-        <View style={styles.footerContainer}>
-          <Text style={[styles.footerText, { color: isDark ? '#E0E0E0' : 'gray', fontFamily: 'Urbanist-Regular' }]}>
-            Don&apos;t have an account?{" "}
+        {methods.signupsOpen ? (
+          <View style={styles.footerContainer}>
+            <Text style={[styles.footerText, { color: isDark ? '#E0E0E0' : 'gray', fontFamily: 'Urbanist-Regular' }]}>
+              Don&apos;t have an account?{" "}
+            </Text>
+            <TouchableOpacity onPress={() => router.push("/auth/signup")}>
+              <Text style={[styles.signupText, { fontFamily: 'Urbanist-Bold' }]}>Sign up</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <Text style={[styles.footerText, { color: isDark ? '#E0E0E0' : 'gray', fontFamily: 'Urbanist-Regular', textAlign: 'center' }]}>
+            {methods.signupsClosedMessage}
           </Text>
-          <TouchableOpacity onPress={() => router.push("/auth/signup")}>
-            <Text style={[styles.signupText, { fontFamily: 'Urbanist-Bold' }]}>Sign up</Text>
-          </TouchableOpacity>
-        </View>
+        )}
         </View>
       </ScrollView>
+    </View>
+  );
+}
+
+/** "Last used" marker on the method this device signed in with last time. */
+function LastUsedPill() {
+  return (
+    <View style={styles.lastUsedPill}>
+      <Text style={styles.lastUsedText}>Last used</Text>
     </View>
   );
 }
@@ -282,6 +283,24 @@ export default function LoginWelcomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  lastUsedPill: {
+    marginLeft: 10,
+    backgroundColor: "#FFE8EC",
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  lastUsedText: {
+    color: "#FF4D67",
+    fontSize: 11,
+    fontFamily: "Urbanist-Bold",
+  },
+  noMethods: {
+    fontSize: 15,
+    textAlign: "center",
+    marginBottom: 20,
+    fontFamily: "Urbanist-Medium",
   },
   contentContainer: {
     // flexGrow, NOT flex. See the ScrollView above: `flex: 1` implies

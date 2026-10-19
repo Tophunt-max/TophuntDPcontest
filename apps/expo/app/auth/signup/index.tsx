@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { SocialAuthService, socialProviderAvailability } from '@/src/services/auth/socialAuth';
+import { SocialAuthService, socialProviderAvailability, completeWebRedirectSignIn } from '@/src/services/auth/socialAuth';
+import { useAuthMethods } from '@/src/hooks/useAuthMethods';
+import { InAppBrowserNotice } from '@/src/components/auth/InAppBrowserNotice';
 import {
   View,
   Text,
@@ -36,7 +38,7 @@ import { FormInput } from "@/src/components/inputs/FormInput";
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
 import { useSignupStore, SIGNUP_STEP_ROUTE } from "@/src/store/signup";
 import { auth } from "../../../src/services/firebase/initFirebase";
-import { callApi, readApi, poll } from "@/src/services/api"; // Centralized Worker API
+import { callApi } from "@/src/services/api"; // Centralized Worker API
 import { useToast } from "@/src/components/toast/ToastProvider";
 import PasswordStrength from "@/src/components/inputs/PasswordStrength";
 import { Colors } from '@/constants/theme';
@@ -82,57 +84,22 @@ export default function SignupEntryScreen() {
   const [isEmailAlreadyExists, setIsEmailAlreadyExists] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showPasswordConfirmation, setShowPasswordConfirmation] = useState(false);
-  const [isConfigLoading, setIsConfigLoading] = useState(true);
-  const [config, setConfig] = useState({
-    googleLogin: true,
-    facebookLogin: true,
-    appleLogin: true,
-    emailSignup: true,
-    legalSettings: {
-        termsOfService: "/legal/terms",
-        privacyPolicy: "/legal/privacy"
-    }
-  });
+  // Admin-managed switches (App Control -> Login & Signup), for this platform.
+  const { methods, ready } = useAuthMethods();
+  const show = {
+    facebook: methods.facebook && socialAvailable.facebook,
+    google: methods.google && socialAvailable.google,
+    apple: methods.apple && socialAvailable.apple,
+  };
+  const anySocial = show.facebook || show.google || show.apple;
 
-  // Sync with Admin Settings (polling the Worker /read/app-config).
+  // Web: finish a sign-in that fell back from a blocked popup to a redirect.
+  const redirectChecked = React.useRef(false);
   useEffect(() => {
-    const unsubscribe = poll<any>(
-      () => readApi("/read/app-config"),
-      (data) => {
-        if (data?.authSettings) {
-          const a = data.authSettings;
-          setConfig(prev => ({
-            ...prev,
-            googleLogin: a.googleLogin ?? true,
-            facebookLogin: a.facebookLogin ?? true,
-            appleLogin: a.appleLogin ?? true,
-            emailSignup: a.emailSignup ?? true,
-          }));
-          if (a.emailSignup === false) {
-            addToast("Email signup is currently disabled.", "info");
-            router.replace("/auth/login");
-          }
-        }
-        setIsConfigLoading(false);
-      },
-      30000,
-      // Without this the failure path never cleared `isConfigLoading`, so any
-      // config fetch error — CORS, offline, API blip — left this screen on
-      // "Connecting…" FOREVER with no error and no way to sign in.
-      () => setIsConfigLoading(false),
-    );
-
-    // Belt and braces: `poll` only reports an error once a request actually
-    // fails. A request that never settles reports nothing, so bound the gate by
-    // time too. The defaults above are permissive, so the worst case is briefly
-    // offering a provider the admin has disabled — infinitely better than
-    // locking every user out of the app.
-    const gate = setTimeout(() => setIsConfigLoading(false), 2500);
-    return () => {
-      clearTimeout(gate);
-      unsubscribe();
-    };
-  }, []);
+    if (!ready || redirectChecked.current) return;
+    redirectChecked.current = true;
+    void completeWebRedirectSignIn(router, addToast, methods);
+  }, [ready, router, addToast, methods]);
 
   const {
     control,
@@ -285,10 +252,21 @@ export default function SignupEntryScreen() {
     }
   };
 
-  if (isConfigLoading) {
+  if (!ready) {
     return (
       <View style={[styles.container, { backgroundColor, justifyContent: 'center' }]}>
         <ActivityIndicator size="large" color="#FF4D67" />
+      </View>
+    );
+  }
+
+  // Registration closed by an admin: say so, and point at sign-in.
+  if (!methods.signupsOpen) {
+    return (
+      <View style={[styles.container, styles.closedWrap, { backgroundColor, paddingTop: insets.top, paddingBottom: insets.bottom }]}>
+        <Text style={[styles.closedTitle, { color: textColor }]}>Signup abhi band hai</Text>
+        <Text style={[styles.closedBody, { color: isDark ? '#BDBDBD' : '#616161' }]}>{methods.signupsClosedMessage}</Text>
+        <PrimaryButton title="Sign in" onPress={() => router.replace("/auth/login")} style={{ marginTop: 24, alignSelf: 'stretch' }} />
       </View>
     );
   }
@@ -318,6 +296,10 @@ export default function SignupEntryScreen() {
               Create your Account
             </Text>
 
+            <InAppBrowserNotice isDark={isDark} />
+
+            {methods.emailSignup ? (
+            <>
             <FormInput
               control={control}
               name="email"
@@ -398,41 +380,49 @@ export default function SignupEntryScreen() {
               disabled={!termsAccepted || isEmailAlreadyExists}
               style={{ marginBottom: 20 }}
             />
+            </>
+            ) : (
+              <Text style={[styles.closedBody, { color: isDark ? '#BDBDBD' : '#616161', marginBottom: 16 }]}>
+                Email se signup abhi band hai. Neeche diye tarikon se account banao.
+              </Text>
+            )}
 
+            {anySocial && methods.emailSignup && (
             <View style={styles.dividerContainer}>
               <View style={[styles.dividerLine, { backgroundColor: isDark ? '#35383F' : '#eee' }]} />
               <Text style={[styles.dividerText, { color: isDark ? '#BDBDBD' : "#616161" }]}>or continue with</Text>
               <View style={[styles.dividerLine, { backgroundColor: isDark ? '#35383F' : '#eee' }]} />
             </View>
+            )}
 
             <View style={styles.socialButtonsContainer}>
               {/* These were placeholder "coming soon" toasts; they now run the real
                   sign-in, and are hidden when the provider is not configured for
                   this platform. */}
-              {config.facebookLogin && socialAvailable.facebook && (
+              {show.facebook && (
                 <TouchableOpacity
                   style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]}
-                  onPress={() => void SocialAuthService.facebookLogin(router, addToast).catch(() => {})}
+                  onPress={() => void SocialAuthService.facebookLogin(router, addToast, null, { methods }).catch(() => {})}
                   accessibilityRole="button"
                   accessibilityLabel="Continue with Facebook"
                 >
                     <Facebook_Icon width={24} height={24} />
                 </TouchableOpacity>
               )}
-              {config.googleLogin && socialAvailable.google && (
+              {show.google && (
                 <TouchableOpacity
                   style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]}
-                  onPress={() => void SocialAuthService.googleLogin(router, addToast).catch(() => {})}
+                  onPress={() => void SocialAuthService.googleLogin(router, addToast, null, { methods }).catch(() => {})}
                   accessibilityRole="button"
                   accessibilityLabel="Continue with Google"
                 >
                     <Google_Icon width={24} height={24} />
                 </TouchableOpacity>
               )}
-              {config.appleLogin && socialAvailable.apple && (
+              {show.apple && (
                 <TouchableOpacity
                   style={[styles.socialIcon, { backgroundColor: isDark ? '#1F222A' : '#fff', borderColor: isDark ? '#35383F' : '#eee' }]}
-                  onPress={() => void SocialAuthService.appleLogin(router, addToast).catch(() => {})}
+                  onPress={() => void SocialAuthService.appleLogin(router, addToast, null, { methods }).catch(() => {})}
                   accessibilityRole="button"
                   accessibilityLabel="Continue with Apple"
                 >
@@ -458,6 +448,9 @@ export default function SignupEntryScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  closedWrap: { justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24 },
+  closedTitle: { fontSize: 26, fontFamily: 'Urbanist-Bold', textAlign: 'center' },
+  closedBody: { fontSize: 15, fontFamily: 'Urbanist-Medium', textAlign: 'center', marginTop: 10, lineHeight: 21 },
   header: { paddingHorizontal: 24, paddingVertical: 10, alignItems: 'flex-start' },
   backButton: { padding: 8, marginLeft: -8 },
   contentContainer: { flex: 1, paddingHorizontal: 24, paddingTop: 0, justifyContent: 'center' },
