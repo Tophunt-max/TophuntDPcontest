@@ -55,7 +55,12 @@ export default function CoinStoreScreen() {
   // pushed over realtime, so a price on screen is never a stale one.
   const { data: packages, isLoading, isError, refetch } = useCoinPackages();
 
-  const formatInr = (v: number) => `₹${Number(v).toLocaleString('en-IN')}`;
+  // Prices are base coins × coin value, so paise are common: ₹7.50, not ₹7.5.
+  const formatInr = (v: number) => {
+    const n = Number(v) || 0;
+    const frac = Math.round(n * 100) % 100 !== 0;
+    return `₹${n.toLocaleString('en-IN', { minimumFractionDigits: frac ? 2 : 0, maximumFractionDigits: 2 })}`;
+  };
 
   const handlePurchase = async (pkg: CoinPackage) => {
     if (loading) return;
@@ -119,7 +124,8 @@ export default function CoinStoreScreen() {
           item.popular && styles.popularCard,
         ]}
         onPress={() => handlePurchase(item)}
-        disabled={!!loading}
+        // Price = base coins × coin value; under ₹1 cannot be paid for.
+        disabled={!!loading || item.purchasable === false}
         activeOpacity={0.85}
       >
         {item.popular && (
@@ -150,7 +156,7 @@ export default function CoinStoreScreen() {
           {isBusy ? (
             <ActivityIndicator color="white" size="small" />
           ) : (
-            <Text style={styles.priceText}>{formatInr(item.priceInr)}</Text>
+            <Text style={styles.priceText}>{item.purchasable === false ? 'Min ₹1' : formatInr(item.priceInr)}</Text>
           )}
         </View>
       </TouchableOpacity>

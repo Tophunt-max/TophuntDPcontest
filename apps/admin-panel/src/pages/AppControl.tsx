@@ -436,6 +436,9 @@ function WithdrawalCard({ data, pending, onSave, confirm }: CardProps) {
         <div>
           <label className={label}>Coin → ₹ rate</label>
           <input type="number" step="0.01" min={0} className={field} value={rate} onChange={(e) => setRate(e.target.value)} />
+          <p className="mt-1 text-xs text-muted-foreground">
+            Coin package price bhi isi se banta hai: base coins × rate (bonus free). Save karte hi store ke saare daam badal jayenge.
+          </p>
         </div>
       </div>
     </Card>

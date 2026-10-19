@@ -25,6 +25,7 @@ import { resolveAuthMethods, validateAuthMethods } from "../lib/authMethods";
 import { AUDITED_SECTIONS, appConfigChannels, publicAppConfig, validateAppControlPatch } from "../lib/appControl";
 import { publishMany } from "../lib/publish";
 import { publishCoinCatalog } from "../lib/coinCatalog";
+import { coinValueFromConfig, packagePriceInr, pricePackage } from "../lib/coinPricing";
 import { assertSessionUsable } from "../middleware/auth";
 import { getAppConfig, getGamificationSettings, getSeoAudit, invalidateSetting } from "../lib/settings";
 import { legalDocsForAdmin, LEGAL_DOC_KEYS, LEGAL_LAST_UPDATED } from "../content/legal";
@@ -374,6 +375,16 @@ adminRoute.post("/app-settings", async (c) => {
   // maintenance / flags / banner change within seconds instead of on the next poll.
   const pushed = publicAppConfig(merged, Date.now());
   c.executionCtx.waitUntil(publishMany(c.env, appConfigChannels(), { type: "config", config: pushed }));
+  // Package prices are base coins × coin value: a new coin value re-prices the
+  // whole store, so push the catalog too (and refresh the stored snapshots).
+  if (coinValueFromConfig(existing) !== coinValueFromConfig(merged)) {
+    const rate = coinValueFromConfig(merged);
+    const pkgs = await db.select({ id: schema.coinPackages.id, coins: schema.coinPackages.coins }).from(schema.coinPackages).all();
+    for (const p of pkgs) {
+      await db.update(schema.coinPackages).set({ priceInr: packagePriceInr(Number(p.coins), rate) }).where(eq(schema.coinPackages.id, p.id));
+    }
+    c.executionCtx.waitUntil(publishCoinCatalog(c.env));
+  }
   // Coin amounts credited to user balances are money settings: record who
   // changed them, from what, to what. (Only these sections — the rest of App
   // Control is cosmetic and is not audited by this handler.)
@@ -4260,7 +4271,14 @@ adminRoute.post("/seo/scan", async (c) => {
 adminRoute.get("/coin-packages", async (c) => {
   const db = getDb(c.env);
   const rows = await db.select().from(schema.coinPackages).orderBy(schema.coinPackages.sortOrder).all();
-  return c.json(rows.map((r) => ({ ...r, active: !!r.active })));
+  // The LIVE price (base coins × coin value), not the stored snapshot.
+  const rate = coinValueFromConfig(await getAppConfig(c.env));
+  return c.json(
+    rows.map((r) => {
+      const priced = pricePackage(r, rate);
+      return { ...r, active: !!r.active, priceInr: priced.priceInr, purchasable: priced.purchasable, coinValue: rate };
+    }),
+  );
 });
 
 adminRoute.post("/coin-packages", async (c) => {
@@ -4269,9 +4287,12 @@ adminRoute.post("/coin-packages", async (c) => {
   const b = await c.req.json<any>();
   // Packages price every real purchase, so they are validated on the way IN.
   const values = validateCoinPackage(b);
-  if (values.coins == null || values.priceInr == null) {
-    throw httpsError("invalid-argument", "coins and priceInr are required.");
+  if (values.coins == null) {
+    throw httpsError("invalid-argument", "coins is required.");
   }
+  // The price is not entered: it is base coins × coin value (lib/coinPricing.ts).
+  // The column keeps a snapshot of it, for reference only.
+  values.priceInr = packagePriceInr(values.coins, coinValueFromConfig(await getAppConfig(c.env)));
   const id = newId();
   const ts = now();
   await db.insert(schema.coinPackages).values({
@@ -4304,6 +4325,8 @@ adminRoute.patch("/coin-packages/:id", async (c) => {
     bonusCoins: Number(current.bonusCoins),
   });
   const set: any = { ...values, updatedAt: now() };
+  // Price follows the coin value; keep the reference snapshot in step.
+  set.priceInr = packagePriceInr(values.coins ?? Number(current.coins), coinValueFromConfig(await getAppConfig(c.env)));
   await db.update(schema.coinPackages).set(set).where(eq(schema.coinPackages.id, id));
   await logAudit(c, "coin-package.update", "coin_package", id, set);
   c.executionCtx.waitUntil(publishCoinCatalog(c.env));

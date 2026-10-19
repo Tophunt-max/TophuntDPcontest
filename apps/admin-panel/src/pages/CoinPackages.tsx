@@ -14,6 +14,10 @@ export default function CoinPackages() {
   const [dialog, setDialog] = useState<any | "new" | null>(null);
 
   const { data = [], isLoading } = useQuery({ queryKey: ["coin-packages"], queryFn: api.coinPackages });
+  // Price = base coins × coin value (App Control → Withdrawal → "Coin → ₹ rate").
+  const { data: settings } = useQuery({ queryKey: ["app-settings"], queryFn: api.appSettings });
+  const rateRaw = (settings as any)?.withdrawal?.conversionRate;
+  const rate = rateRaw === undefined || rateRaw === null || rateRaw === "" ? 1 : Number(rateRaw);
   const invalidate = () => qc.invalidateQueries({ queryKey: ["coin-packages"] });
 
   const delMut = useMutation({
@@ -31,7 +35,7 @@ export default function CoinPackages() {
     <div>
       <PageHeader
         title="Coin Packages"
-        subtitle={`${data.length} top-up packages`}
+        subtitle={`${data.length} top-up packages · Price = coins × coin value (₹${fmtNumber(rate)}/coin), bonus free — coin value App Control → Withdrawal mein badlo`}
         action={
           <button onClick={() => setDialog("new")} className="flex items-center gap-2 gradient-purple text-white text-sm font-semibold px-4 py-2 rounded-xl">
             <Plus size={16} /> New Package
@@ -47,7 +51,16 @@ export default function CoinPackages() {
         columns={[
           { key: "name", header: "Name", render: (p: any) => <span className="font-medium text-foreground">{p.name || "Untitled"}</span> },
           { key: "coins", header: "Coins", render: (p: any) => <span>{fmtNumber(p.coins)}{p.bonusCoins ? <span className="text-green-600"> +{fmtNumber(p.bonusCoins)}</span> : null}</span> },
-          { key: "price", header: "Price", render: (p: any) => <span className="font-bold">₹{fmtNumber(p.priceInr)}</span> },
+          {
+            key: "price",
+            header: "Price (auto)",
+            render: (p: any) => (
+              <span className="font-bold">
+                ₹{fmtNumber(p.priceInr)}
+                {p.purchasable === false ? <span className="ml-2 text-xs font-medium text-red-600">₹1 se kam — app mein buy nahi hoga</span> : null}
+              </span>
+            ),
+          },
           { key: "order", header: "Order", render: (p: any) => <span className="text-muted-foreground">{p.sortOrder}</span> },
           {
             key: "active",
@@ -72,18 +85,17 @@ export default function CoinPackages() {
         ]}
       />
 
-      {dialog && <PackageDialog pkg={dialog === "new" ? undefined : dialog} onClose={() => setDialog(null)} onDone={invalidate} />}
+      {dialog && <PackageDialog pkg={dialog === "new" ? undefined : dialog} rate={rate} onClose={() => setDialog(null)} onDone={invalidate} />}
     </div>
   );
 }
 
-function PackageDialog({ pkg, onClose, onDone }: { pkg?: any; onClose: () => void; onDone: () => void }) {
+function PackageDialog({ pkg, rate, onClose, onDone }: { pkg?: any; rate: number; onClose: () => void; onDone: () => void }) {
   const isEdit = !!pkg;
   const [form, setForm] = useState({
     name: pkg?.name || "",
     coins: String(pkg?.coins ?? 0),
     bonusCoins: String(pkg?.bonusCoins ?? 0),
-    priceInr: String(pkg?.priceInr ?? 0),
     sortOrder: String(pkg?.sortOrder ?? 0),
     active: pkg?.active !== false,
   });
@@ -92,7 +104,6 @@ function PackageDialog({ pkg, onClose, onDone }: { pkg?: any; onClose: () => voi
     name: form.name,
     coins: Number(form.coins),
     bonusCoins: Number(form.bonusCoins),
-    priceInr: Number(form.priceInr),
     sortOrder: Number(form.sortOrder),
     active: form.active,
   });
@@ -112,8 +123,16 @@ function PackageDialog({ pkg, onClose, onDone }: { pkg?: any; onClose: () => voi
           <div className="grid grid-cols-2 gap-3">
             <Num label="Coins" v={form.coins} on={(v: string) => set("coins", v)} cls={field} />
             <Num label="Bonus coins" v={form.bonusCoins} on={(v: string) => set("bonusCoins", v)} cls={field} />
-            <Num label="Price (₹)" v={form.priceInr} on={(v: string) => set("priceInr", v)} cls={field} />
             <Num label="Sort order" v={form.sortOrder} on={(v: string) => set("sortOrder", v)} cls={field} />
+          </div>
+          <div className="rounded-xl bg-secondary px-3 py-2.5 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">Price (auto)</span>
+              <span className="font-bold text-foreground">₹{fmtNumber(Math.round((Number(form.coins) || 0) * rate * 100) / 100)}</span>
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {fmtNumber(Number(form.coins) || 0)} coins × ₹{fmtNumber(rate)} coin value. Bonus coins free hain. Price badalne ke liye App Control → Withdrawal → "Coin → ₹ rate" badlo.
+            </p>
           </div>
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.active} onChange={(e) => set("active", e.target.checked)} /> Active (visible in app)</label>
         </div>

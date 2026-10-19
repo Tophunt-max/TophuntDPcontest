@@ -89,17 +89,42 @@ afterEach(() => {
 
 // ===========================================================================
 describe('createOrder', () => {
+  it('a manual QR/UPI deposit is priced by the same rule: base coins × coin value, bonus free', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice');
+    await seedPackage(env, 'pq', 15, 5, 10); // stored ₹10 is ignored
+    await seedSettings(env, 'appConfig', { withdrawal: { conversionRate: 0.5 }, paymentGateway: { mode: 'manual' } });
+    const r = await call(env, 'alice', 'requestDeposit', { packageId: 'pq', utr: 'UTR-778899' });
+    expect(r.status).toBe(200);
+    const dep = await drizzleOf(env).select().from(schema.deposits).where(eq(schema.deposits.userId, 'alice')).get();
+    expect(Number(dep?.payAmount)).toBe(7.5);
+    expect(Number(dep?.amount)).toBe(20);
+  });
+
+  it('refuses a package priced under ₹1 instead of charging it', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice');
+    await seedPackage(env, 'tiny', 15, 5, 10);
+    await seedSettings(env, 'appConfig', { withdrawal: { conversionRate: 0.05 } });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ id: 'order_x' }), { status: 200 })));
+    const r = await call(env, 'alice', 'createOrder', { packageId: 'tiny' });
+    expect(r.status).toBe(412);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('creates a server-priced order and persists the intent in D1, not KV', async () => {
     const { env } = makeEnv();
     await seedUser(env, 'alice');
-    await seedPackage(env, 'pkg1', 100, 20, 199);
+    // The stored price_inr (5) is ignored: price = BASE coins × coin value.
+    await seedPackage(env, 'pkg1', 100, 20, 5);
+    await seedSettings(env, 'appConfig', { withdrawal: { conversionRate: 1.99 } });
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ id: 'order_abc' }), { status: 200 })));
 
     const { status, body } = await call(env, 'alice', 'createOrder', { packageId: 'pkg1' });
 
     expect(status).toBe(200);
     expect(body.orderId).toBe('order_abc');
-    expect(body.amount).toBe(19900); // paise
+    expect(body.amount).toBe(19900); // paise: 100 base coins × ₹1.99, the 20 bonus coins are free
     expect(body.coins).toBe(120); // coins + bonus
 
     // The DURABLE record is the `payment_orders` row, and it is the only one.
@@ -659,6 +684,8 @@ describe('payment records money and coins separately', () => {
     const { env } = makeEnv();
     await seedUser(env, 'alice', 0);
     await seedPackage(env, 'p1', 500, 50, 99);
+    // 500 base coins × ₹0.198 = ₹99.
+    await seedSettings(env, 'appConfig', { withdrawal: { conversionRate: 0.198 } });
     vi.stubGlobal('fetch', fakeRazorpay('order_money', 9900));
 
     const order = await call(env, 'alice', 'createOrder', { packageId: 'p1' });
