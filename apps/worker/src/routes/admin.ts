@@ -107,6 +107,7 @@ import {
 import { computeDeepHealth } from "../lib/health";
 import { computeMoneyHealth } from "../lib/moneyHealth";
 import { cronHealth } from "../lib/ops";
+import { decideReferral, parseReferralConfig, qualifyReferral, reconcileReferrals } from "../lib/referralProgram";
 
 /**
  * Record a sensitive admin action in the audit trail. Best-effort — never
@@ -279,7 +280,7 @@ function mergeSettings(existing: any, patch: any): any {
  * invariant and a negative one would DEBIT a new user. Validated here at the point
  * of entry; getRewardSettings() floors again as a second line of defence.
  */
-const REWARD_SETTINGS_COIN_KEYS = ["signupBonus", "referralBonus"] as const;
+const REWARD_SETTINGS_COIN_KEYS = ["referralBonus"] as const;
 
 adminRoute.get("/app-settings", async (c) => c.json((await getAppConfig(c.env)) || {}));
 
@@ -309,6 +310,12 @@ adminRoute.post("/app-settings", async (c) => {
   const body = await c.req.json<any>();
   const rewardSettings = body?.rewardSettings;
   if (rewardSettings && typeof rewardSettings === "object") {
+    // The signup bonus no longer exists (coins for joining come only from a
+    // referral, lib/referralProgram.ts). A save that still sets one is refused, so
+    // an old admin client cannot believe it configured a bonus.
+    if (rewardSettings.signupBonus !== undefined && rewardSettings.signupBonus !== null && Number(rewardSettings.signupBonus) !== 0) {
+      throw httpsError("invalid-argument", "Signup bonus has been removed. Use the Referral program to reward new users.");
+    }
     for (const key of REWARD_SETTINGS_COIN_KEYS) {
       if (rewardSettings[key] === undefined || rewardSettings[key] === null) continue;
       const n = Number(rewardSettings[key]);
@@ -3777,29 +3784,75 @@ adminRoute.get("/deposits", async (c) => {
 
 // ======================= REFERRALS =======================
 adminRoute.get("/referrals", async (c) => {
-  // Full admins only: referral payouts.
+  // Full admins only: referral attribution names both accounts.
   requireFullAdmin(c);
-  const db = getDb(c.env);
-  const referrer = alias(schema.users, "ref_user");
-  const referred = alias(schema.users, "invited_user");
-  const rows = await db
-    .select({
-      id: schema.referrals.id,
-      referrerUid: schema.referrals.referrerUid,
-      referredUid: schema.referrals.referredUid,
-      bonus: schema.referrals.bonus,
-      createdAt: schema.referrals.createdAt,
-      referrerName: referrer.username,
-      referredName: referred.username,
-    })
-    .from(schema.referrals)
-    .leftJoin(referrer, eq(referrer.uid, schema.referrals.referrerUid))
-    .leftJoin(referred, eq(referred.uid, schema.referrals.referredUid))
-    .orderBy(desc(schema.referrals.createdAt))
-    .limit(200)
+  const status = c.req.query("status");
+  const q = String(c.req.query("q") || "").trim().toLowerCase().slice(0, 64);
+  const limit = boundedQueryInt(c.req.query("limit"), 200, 1, 500);
+  const where: string[] = [];
+  const binds: unknown[] = [];
+  if (status) {
+    where.push("r.status = ?");
+    binds.push(status);
+  }
+  if (q) {
+    where.push("(lower(ru.username) LIKE ? OR lower(iu.username) LIKE ? OR upper(r.code) LIKE ?)");
+    binds.push(`${q}%`, `${q}%`, `${q.toUpperCase()}%`);
+  }
+  const rows = await c.env.DB.prepare(
+    `SELECT r.id, r.referrer_uid AS referrerUid, r.referred_uid AS referredUid, r.status, r.code,
+            r.referrer_reward AS referrerReward, r.referee_reward AS refereeReward, r.qualify_action AS qualifyAction,
+            r.qualified_at AS qualifiedAt, r.rewarded_at AS rewardedAt, r.expires_at AS expiresAt,
+            r.reject_reason AS rejectReason, r.device_id AS deviceId, r.decided_by AS decidedBy, r.created_at AS createdAt,
+            ru.username AS referrerUsername, iu.username AS referredUsername,
+            iu.email_verified AS referredEmailVerified, iu.phone_verified AS referredPhoneVerified,
+            iu.contests_joined AS referredContests
+       FROM referrals r
+       LEFT JOIN users ru ON ru.uid = r.referrer_uid
+       LEFT JOIN users iu ON iu.uid = r.referred_uid
+      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      ORDER BY r.created_at DESC
+      LIMIT ?`,
+  )
+    .bind(...binds, limit)
     .all();
-  return c.json(rows.map((r) => ({ ...r, createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null })));
+  const stats = await c.env.DB.prepare(
+    `SELECT status, COUNT(*) AS n, COALESCE(SUM(referrer_reward + referee_reward), 0) AS paid
+       FROM referrals GROUP BY status`,
+  ).all<{ status: string; n: number; paid: number }>();
+  const milestones = await c.env.DB.prepare(
+    `SELECT COALESCE(SUM(amount), 0) AS s FROM coin_transactions WHERE id LIKE 'referral_milestone:%'`,
+  ).first<{ s: number }>();
+  const top = await c.env.DB.prepare(
+    `SELECT r.referrer_uid AS uid, u.username, COUNT(*) AS rewarded, COALESCE(SUM(r.referrer_reward), 0) AS earned
+       FROM referrals r LEFT JOIN users u ON u.uid = r.referrer_uid
+      WHERE r.status = 'rewarded' GROUP BY r.referrer_uid ORDER BY rewarded DESC LIMIT 10`,
+  ).all();
+  const byStatus = Object.fromEntries((stats.results || []).map((r) => [r.status, Number(r.n) || 0]));
+  const coinsPaid = (stats.results || []).filter((r) => r.status === "rewarded").reduce((t, r) => t + (Number(r.paid) || 0), 0);
+  return c.json({
+    rows: (rows.results || []).map((r: any) => ({
+      ...r,
+      referredEmailVerified: !!r.referredEmailVerified,
+      referredPhoneVerified: !!r.referredPhoneVerified,
+    })),
+    stats: { byStatus, coinsPaid: coinsPaid + Number(milestones?.s || 0), milestonePaid: Number(milestones?.s || 0) },
+    topReferrers: top.results || [],
+    program: parseReferralConfig(await getAppConfig(c.env)),
+  });
 });
+
+/** Approve (pay) or reject a pending / in-review referral. Audited. */
+adminRoute.patch("/referrals/:id", async (c) => {
+  requireFullAdmin(c);
+  const id = c.req.param("id");
+  const { action, reason } = await c.req.json<any>();
+  if (action !== "approve" && action !== "reject") throw httpsError("invalid-argument", "action must be approve or reject.");
+  const result = await decideReferral(c.env, id, action, c.get("user")?.uid ?? null, reason);
+  await logAudit(c, `referral.${action}`, "referral", id, { reason: reason ?? null });
+  return c.json({ success: true, ...result });
+});
+
 
 // ======================= FINANCE TRENDS =======================
 /**
@@ -4010,6 +4063,9 @@ adminRoute.patch("/deposits/:id", async (c) => {
   if (action === "approve") {
     c.executionCtx.waitUntil(sendUserEmail(c.env, d.userId, coinsAddedEmail(Number(d.amount) || 0)));
   }
+  // Referral: an approved first deposit may qualify the user's pending referral
+  // (lib/referralProgram.ts — never throws).
+  if (action === "approve") c.executionCtx.waitUntil(qualifyReferral(c.env, d.userId, "purchase"));
   await logAudit(c, `deposit.${action}`, "deposit", id, { amount: d.amount, utr: d.utr });
   return c.json({ message: `Deposit ${status}` });
 });

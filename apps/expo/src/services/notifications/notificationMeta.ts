@@ -107,6 +107,10 @@ export function getNotificationDestination(
     case "purchase":
       return "/wallet";
 
+    // Referral rewards / review / milestones open Refer & Earn.
+    case "referral" as NotificationType:
+      return "/referral";
+
     case "admin":
       return null; // url already handled above; nothing else to open
 

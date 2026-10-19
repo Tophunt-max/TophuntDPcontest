@@ -17,6 +17,7 @@ import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { newId, now } from "./ids";
 import { getRazorpayCredentials } from "./integrations";
+import { qualifyReferral } from "./referralProgram";
 
 type Db = ReturnType<typeof getDb>;
 
@@ -184,6 +185,9 @@ export async function creditPaymentOrder(
     ts,
   });
 
+  // Referral: a first coin purchase may qualify this user's pending referral
+  // (lib/referralProgram.ts — never throws).
+  if (applied) await qualifyReferral(env, order.userId, "purchase");
   return applied
     ? { credited: true, reason: "credited", coins, uid: order.userId }
     : { credited: false, reason: "already", coins, uid: order.userId };

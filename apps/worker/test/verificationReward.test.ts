@@ -142,17 +142,16 @@ async function verifyPhone(env: TestEnv, uid: string, phone = PHONE) {
 
 // ===========================================================================
 describe('registration reward', () => {
-  it('a new account receives exactly 10 coins, ledgered, and is enrolled for 90 more', async () => {
+  it('a new account gets NO signup coins (there is no signup bonus) and is enrolled for the verification reward', async () => {
     const { env } = makeEnv();
     await signup(env, 'alice');
-    expect(await balance(env, 'alice')).toBe(10);
-    const rows = await ledger(env, 'alice');
-    expect(rows.map((r: any) => [r.id, r.type, Number(r.amount)])).toEqual([['signup_bonus:alice', 'signup_bonus', 10]]);
-    expect(await enrolment(env, 'alice')).toMatchObject({ registrationReward: 10, completionReward: 90, completedAt: null });
+    expect(await balance(env, 'alice')).toBe(0);
+    expect(await ledger(env, 'alice')).toHaveLength(0);
+    expect(await enrolment(env, 'alice')).toMatchObject({ registrationReward: 0, completionReward: 90, completedAt: null });
 
     const s = await status(env, 'alice');
     expect(s.body).toMatchObject({
-      enrolled: true, registrationReward: 10, completionReward: 90, totalReward: 100, earnedReward: 10,
+      enrolled: true, registrationReward: 0, completionReward: 90, totalReward: 90, earnedReward: 0,
       completed: false, emailVerified: false, phoneVerified: false, remaining: ['email', 'phone'],
     });
   });
@@ -161,25 +160,25 @@ describe('registration reward', () => {
     const { env } = makeEnv();
     await signup(env, 'alice');
     await signup(env, 'alice');
-    expect(await balance(env, 'alice')).toBe(10);
-    expect(await ledger(env, 'alice')).toHaveLength(1);
+    expect(await balance(env, 'alice')).toBe(0);
+    expect(await ledger(env, 'alice')).toHaveLength(0);
   });
 
-  it('uses the admin-configured amounts, snapshotting the promise at signup', async () => {
+  it('uses the admin-configured completion amount, snapshotting the promise at signup (a configured registration reward is ignored)', async () => {
     const { env } = makeEnv();
     await seedConfig(env, { verificationReward: { registrationReward: 20, completionReward: 80 } });
     await signup(env, 'alice');
-    expect(await balance(env, 'alice')).toBe(20);
+    expect(await balance(env, 'alice')).toBe(0);
     // A later change does not re-price alice's promise.
     await seedConfig(env, { verificationReward: { registrationReward: 5, completionReward: 10, maxTotalReward: 15 } });
     expect((await enrolment(env, 'alice'))?.completionReward).toBe(80);
   });
 
-  it('feature disabled: legacy signup bonus, no enrolment, no completion bonus', async () => {
+  it('feature disabled: no signup coins (even with a legacy signupBonus stored), no enrolment', async () => {
     const { env } = makeEnv();
     await seedConfig(env, { rewardSettings: { signupBonus: 100 }, verificationReward: { enabled: false } });
     await signup(env, 'alice');
-    expect(await balance(env, 'alice')).toBe(100);
+    expect(await balance(env, 'alice')).toBe(0);
     expect(await enrolment(env, 'alice')).toBeUndefined();
   });
 });
@@ -192,8 +191,8 @@ describe('completion bonus requires BOTH verifications', () => {
     const r = await verifyEmail(env, 'alice');
     expect(r.status).toBe(200);
     expect(r.body.verificationReward).toMatchObject({ credited: false, reason: 'phone_unverified' });
-    expect(await balance(env, 'alice')).toBe(10);
-    expect((await status(env, 'alice')).body).toMatchObject({ emailVerified: true, phoneVerified: false, earnedReward: 10, remaining: ['phone'] });
+    expect(await balance(env, 'alice')).toBe(0);
+    expect((await status(env, 'alice')).body).toMatchObject({ emailVerified: true, phoneVerified: false, earnedReward: 0, remaining: ['phone'] });
   });
 
   it('phone only: no bonus', async () => {
@@ -201,19 +200,19 @@ describe('completion bonus requires BOTH verifications', () => {
     await signup(env, 'alice');
     const r = await verifyPhone(env, 'alice');
     expect(r.body.verificationReward).toMatchObject({ credited: false, reason: 'email_unverified' });
-    expect(await balance(env, 'alice')).toBe(10);
+    expect(await balance(env, 'alice')).toBe(0);
   });
 
-  it('both: exactly 90 more, total 100, ledger explains the balance', async () => {
+  it('both: exactly 90, ledger explains the balance', async () => {
     const { env } = makeEnv();
     await signup(env, 'alice');
     await verifyEmail(env, 'alice');
     const r = await verifyPhone(env, 'alice');
     expect(r.body.verificationReward).toEqual({ credited: true, coins: 90, reason: 'credited' });
-    expect(await balance(env, 'alice')).toBe(100);
-    expect(await ledgerSum(env, 'alice')).toBe(100);
-    expect((await ledger(env, 'alice')).map((x: any) => x.id).sort()).toEqual(['signup_bonus:alice', 'verification_bonus:alice']);
-    expect((await status(env, 'alice')).body).toMatchObject({ completed: true, earnedReward: 100, remaining: [], promptDue: false });
+    expect(await balance(env, 'alice')).toBe(90);
+    expect(await ledgerSum(env, 'alice')).toBe(90);
+    expect((await ledger(env, 'alice')).map((x: any) => x.id).sort()).toEqual(['verification_bonus:alice']);
+    expect((await status(env, 'alice')).body).toMatchObject({ completed: true, earnedReward: 90, remaining: [], promptDue: false });
   });
 
   it('re-verifying and re-claiming after completion credits nothing more', async () => {
@@ -225,8 +224,8 @@ describe('completion bonus requires BOTH verifications', () => {
     expect(again.body.verificationReward).toMatchObject({ credited: false, reason: 'already_completed' });
     const claim = await api(env, 'alice', 'claimVerificationReward');
     expect(claim.body.reward).toMatchObject({ credited: false, reason: 'already_completed' });
-    expect(await balance(env, 'alice')).toBe(100);
-    expect(await ledger(env, 'alice')).toHaveLength(2);
+    expect(await balance(env, 'alice')).toBe(90);
+    expect(await ledger(env, 'alice')).toHaveLength(1);
   });
 
   it('a wrong OTP verifies nothing and pays nothing', async () => {
@@ -239,7 +238,7 @@ describe('completion bonus requires BOTH verifications', () => {
     const bad = await auth(env, 'alice', 'verifyPhoneOtp', { otp: real === '000000' ? '111111' : '000000' });
     expect(bad.status).toBe(400);
     expect((await user(env, 'alice'))?.phoneVerified).toBe(false);
-    expect(await balance(env, 'alice')).toBe(10);
+    expect(await balance(env, 'alice')).toBe(0);
   });
 
   it('honours the configured resend cooldown', async () => {
@@ -265,8 +264,8 @@ describe('idempotency, concurrency and partial failure', () => {
     await bothVerifiedDirect(env, 'alice');
     const results = await Promise.all(Array.from({ length: 6 }, () => api(env, 'alice', 'claimVerificationReward')));
     expect(results.filter((r) => r.body.reward?.credited)).toHaveLength(1);
-    expect(await balance(env, 'alice')).toBe(100);
-    expect(await ledger(env, 'alice')).toHaveLength(2);
+    expect(await balance(env, 'alice')).toBe(90);
+    expect(await ledger(env, 'alice')).toHaveLength(1);
   });
 
   it('a retry after a committed credit (response lost) does not pay again', async () => {
@@ -275,7 +274,7 @@ describe('idempotency, concurrency and partial failure', () => {
     expect((await tryCreditVerificationReward(env as any, 'alice')).credited).toBe(true);
     // The client never saw that response and retries:
     expect(await tryCreditVerificationReward(env as any, 'alice')).toMatchObject({ credited: false, reason: 'already_completed' });
-    expect(await balance(env, 'alice')).toBe(100);
+    expect(await balance(env, 'alice')).toBe(90);
   });
 
   it('a failure inside the credit leaves no partial reward, and a retry then succeeds once', async () => {
@@ -292,12 +291,12 @@ describe('idempotency, concurrency and partial failure', () => {
       return original(stmts);
     };
     await expect(tryCreditVerificationReward(env as any, 'alice')).rejects.toThrow();
-    expect(await balance(env, 'alice')).toBe(10);
-    expect(await ledger(env, 'alice')).toHaveLength(1);
+    expect(await balance(env, 'alice')).toBe(0);
+    expect(await ledger(env, 'alice')).toHaveLength(0);
     expect((await enrolment(env, 'alice'))?.completedAt).toBeNull();
 
     expect((await tryCreditVerificationReward(env as any, 'alice')).credited).toBe(true);
-    expect(await balance(env, 'alice')).toBe(100);
+    expect(await balance(env, 'alice')).toBe(90);
   });
 
   it('a phone (or email) that already earned the bonus on another account cannot earn it again', async () => {
@@ -310,7 +309,7 @@ describe('idempotency, concurrency and partial failure', () => {
     await signup(env, 'bob', '9876543210');
     await env.DB.prepare(`UPDATE users SET email_verified = 1, phone_verified = 1 WHERE uid = 'bob'`).run();
     expect(await tryCreditVerificationReward(env as any, 'bob')).toMatchObject({ credited: false, reason: 'identifier_already_rewarded' });
-    expect(await balance(env, 'bob')).toBe(10);
+    expect(await balance(env, 'bob')).toBe(0);
   });
 
   it('existing (pre-feature) accounts are never enrolled or paid, even fully verified', async () => {
@@ -331,7 +330,7 @@ describe('idempotency, concurrency and partial failure', () => {
     await bothVerifiedDirect(env, 'alice');
     await env.DB.prepare(`UPDATE users SET is_blocked = 1 WHERE uid = 'alice'`).run();
     expect(await tryCreditVerificationReward(env as any, 'alice')).toMatchObject({ credited: false, reason: 'account_restricted' });
-    expect(await balance(env, 'alice')).toBe(10);
+    expect(await balance(env, 'alice')).toBe(0);
   });
 
   it('disabling the feature pauses completion credits without losing the promise', async () => {
@@ -356,8 +355,8 @@ describe('never trusts the client', () => {
       uid: 'bob', userId: 'bob', amount: 5000, coins: 5000, emailVerified: true, phoneVerified: true,
     });
     expect(forged.body.reward).toMatchObject({ credited: false, reason: 'email_unverified' });
-    expect(await balance(env, 'alice')).toBe(10);
-    expect(await balance(env, 'bob')).toBe(10); // not paid via alice's request
+    expect(await balance(env, 'alice')).toBe(0);
+    expect(await balance(env, 'bob')).toBe(0); // not paid via alice's request
 
     await api(env, 'alice', 'updateProfile', { emailVerified: true, phoneVerified: true, email_verified: 1 });
     const a = await user(env, 'alice');
@@ -396,7 +395,7 @@ describe('trusted refresh from Firebase', () => {
     const r = await api(env, 'alice', 'refreshVerification');
     expect(r.status).toBe(200);
     expect(r.body.reward).toMatchObject({ credited: true, coins: 90 });
-    expect(await balance(env, 'alice')).toBe(100);
+    expect(await balance(env, 'alice')).toBe(90);
   });
 
   it('does not accept an unverified Firebase email or a different phone', async () => {
@@ -405,7 +404,7 @@ describe('trusted refresh from Firebase', () => {
     firebaseUsers.set('alice', { email: 'alice@example.com', emailVerified: false, phoneNumber: '+919000000009' });
     const r = await api(env, 'alice', 'refreshVerification');
     expect(r.body.status).toMatchObject({ emailVerified: false, phoneVerified: false });
-    expect(await balance(env, 'alice')).toBe(10);
+    expect(await balance(env, 'alice')).toBe(0);
   });
 });
 
@@ -502,7 +501,7 @@ describe('admin configuration', () => {
     const res = await app.request('/admin/verification-reward', { headers: { 'X-Admin-Secret': 'test-admin-secret' } }, env, fakeCtx());
     expect(res.status).toBe(200);
     const body: any = await res.json();
-    expect(body.config).toMatchObject({ registrationReward: 10, completionReward: 90, maxTotalReward: 100 });
+    expect(body.config).toMatchObject({ registrationReward: 0, completionReward: 90, maxTotalReward: 100 });
     expect(body.stats).toMatchObject({ enrolled: 2, completed: 1, pendingEmailOnly: 1, completionCoinsCredited: 90, completionCredits: 1 });
 
     await drizzleOf(env).insert(schema.users).values({ signupCompleted: true, uid: 'mod', username: 'mod', fullName: 'm', role: 'moderator', createdAt: 1, updatedAt: 1 } as any);
@@ -512,10 +511,14 @@ describe('admin configuration', () => {
 
   it('parsing a stored config never exceeds the cap', () => {
     expect(parseVerificationRewardConfig({ registrationReward: 60, completionReward: 90, maxTotalReward: 100 })).toMatchObject({
-      registrationReward: 60, completionReward: 40,
+      // There is no signup bonus any more: a stored registration reward is ignored.
+      registrationReward: 0, completionReward: 90,
+    });
+    expect(parseVerificationRewardConfig({ registrationReward: 30, completionReward: 90, maxTotalReward: 50 })).toMatchObject({
+      registrationReward: 0, completionReward: 50,
     });
     expect(parseVerificationRewardConfig({ registrationReward: -5, completionReward: 'x' })).toMatchObject({
-      registrationReward: 10, completionReward: 90,
+      registrationReward: 0, completionReward: 90,
     });
   });
 });

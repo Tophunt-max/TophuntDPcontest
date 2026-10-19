@@ -107,10 +107,11 @@ import {
 } from "../lib/bunny";
 import { applyBunnyEncodeResult, LIVE_STATUS_RECHECK_MS } from "../lib/videoReconcile";
 import { mediaRouting } from "../lib/mediaRouting";
-import { getAppConfig, getAppControlConfig, getRewardedAdConfig, getRewardSettings } from "../lib/settings";
+import { getAppConfig, getAppControlConfig, getRewardedAdConfig } from "../lib/settings";
 import { appControlGate } from "../lib/appControl";
 import { PROFILE_INCOMPLETE_CODE } from "../lib/accountStatus";
 import { chargeablePackage } from "../lib/coinPricing";
+import { applyReferralCode, ensureReferralCode, qualifyReferral } from "../lib/referralProgram";
 import { chargeableWithdrawal, feeRuleFromConfig } from "../lib/withdrawalFee";
 import { getSettings } from "../lib/gamification";
 import { sendEmail, sendUserEmail } from "../lib/email";
@@ -122,75 +123,6 @@ function alertAdminEmail(c: any, cfg: any, subject: string, html: string): void 
   const to = (cfg?.adminAlertEmail as string) || "";
   if (!to) return;
   c.executionCtx.waitUntil(sendEmail(c.env, { to, subject, html }).catch(() => {}));
-}
-
-/**
- * A referral is a WELCOME bonus, so it may only be applied to a freshly created
- * account. Without this, any long-existing user who was never referred could call
- * `completeSignup` with a code at any time and mint themselves — and a referrer —
- * a bonus. The client only ever calls completeSignup right after signup, so a
- * generous window covers a legitimately interrupted onboarding while still
- * blocking every older account.
- */
-const REFERRAL_WELCOME_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
-
-/** A short, URL-safe referral code (crypto RNG so codes are unguessable). */
-function makeReferralCode(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(6));
-  let s = "";
-  for (const b of bytes) s += (b % 36).toString(36);
-  return "TH" + s.toUpperCase();
-}
-
-/**
- * Assign this user a referral code if they lack one, retrying on the (astronomically
- * rare) collision now that `referral_code` has a UNIQUE index. Returns nothing —
- * callers that need the code re-read the row.
- */
-async function ensureReferralCode(db: ReturnType<typeof getDb>, uid: string, hasCode: boolean): Promise<void> {
-  if (hasCode) return;
-  for (let attempt = 0; attempt < 5; attempt++) {
-    try {
-      await db
-        .update(schema.users)
-        .set({ referralCode: makeReferralCode() })
-        .where(and(eq(schema.users.uid, uid), isNull(schema.users.referralCode)));
-      return;
-    } catch (err) {
-      // UNIQUE collision on referral_code — try a different code. Any other error
-      // is not ours to swallow.
-      if (attempt === 4 || !/unique/i.test(String((err as Error)?.message))) throw err;
-    }
-  }
-}
-
-/**
- * Credit a referral bonus through the canonical wallet path, treating a replay as
- * success. `adjustUserWallet` is atomic (balance + ledger in one txn) and, with a
- * deterministic `claimKey`, applied exactly once — a retry or a concurrent
- * duplicate throws `WalletReplay`, which here simply means "already credited".
- */
-async function creditReferralOnce(
-  env: Env,
-  uid: string,
-  amount: number,
-  description: string,
-  claimKey: string,
-): Promise<void> {
-  try {
-    await adjustUserWallet(env, {
-      uid,
-      amount,
-      direction: "add",
-      type: "referral_bonus",
-      description,
-      claimKey,
-      ledgerId: claimKey,
-    });
-  } catch (err) {
-    if (err instanceof WalletReplay) return;
-    throw err;
-  }
 }
 
 /** Days since epoch in UTC (stable daily bucket key). */
@@ -868,6 +800,14 @@ apiRoute.post("/", async (c) => {
       // gets stories only after a real two-participant join, from the server-owned
       // workflow in lib/vsPublication.ts. Manual stories (createStory) are
       // unaffected.
+      // Referral: a first contest entry may qualify this user's pending referral;
+      // remember the device for referral fraud checks. Never blocks the entry.
+      c.executionCtx.waitUntil(
+        (async () => {
+          if (deviceId) await env.DB.prepare(`UPDATE users SET device_id = ? WHERE uid = ?`).bind(String(deviceId).slice(0, 128), uid).run();
+          await qualifyReferral(env, uid, "contest");
+        })().catch((e) => console.error("[referral] contest hook failed", e)),
+      );
       return c.json({ matchId, joinId: joinIdA, status: "waiting_for_opponent", vsStoryStatus: "waiting_for_opponent" });
       } catch (e) {
         if (startIdemKey) await releaseIdempotency(env, uid, startIdemKey);
@@ -1051,6 +991,14 @@ apiRoute.post("/", async (c) => {
         ),
       );
 
+      // Referral: a first contest entry may qualify this user's pending referral;
+      // remember the device for referral fraud checks. Never blocks the entry.
+      c.executionCtx.waitUntil(
+        (async () => {
+          if (deviceId) await env.DB.prepare(`UPDATE users SET device_id = ? WHERE uid = ?`).bind(String(deviceId).slice(0, 128), uid).run();
+          await qualifyReferral(env, uid, "contest");
+        })().catch((e) => console.error("[referral] contest hook failed", e)),
+      );
       return c.json({ status: "active", joinId: joinIdB, matchId, vsStoryStatus: "preparing" });
     }
 
@@ -1765,6 +1713,8 @@ apiRoute.post("/", async (c) => {
       // One outbound Firebase lookup per call; money can follow, so fail closed.
       await rateLimit(env, `verifyrefresh:${uid}`, 20, 3600, { failClosed: true });
       await refreshVerificationFromFirebase(env, uid);
+      // Referral: email AND mobile verified may qualify a pending referral.
+      await qualifyReferral(env, uid, "verified");
       const reward = await tryCreditVerificationReward(env, uid);
       const status = await getVerificationStatus(env, uid);
       return c.json({ success: true, reward: { credited: reward.credited, coins: reward.coins, reason: reward.reason }, status });
@@ -3341,62 +3291,22 @@ apiRoute.post("/", async (c) => {
         throw httpsError("failed-precondition", `${PROFILE_INCOMPLETE_CODE}: Finish creating your profile to continue.`);
       }
 
-      // Ensure a referral code + apply an inbound referral (once) at signup.
-      const meRow = await db
-        .select({
-          referralCode: schema.users.referralCode,
-          referredBy: schema.users.referredBy,
-          createdAt: schema.users.createdAt,
-        })
-        .from(schema.users)
-        .where(eq(schema.users.uid, uid))
-        .get();
-      // Everyone gets a shareable code (collision-safe now that referral_code is UNIQUE).
-      await ensureReferralCode(db, uid, !!meRow?.referralCode);
-
-      const refCode = String(body.referralCode || body.referredByCode || "").trim().toUpperCase();
-      // A referral is a WELCOME bonus: only a freshly created account may claim it,
-      // so a long-existing never-referred user cannot mint one on demand.
-      const withinWelcomeWindow =
-        !!meRow &&
-        Number.isFinite(Number(meRow.createdAt)) &&
-        now() - Number(meRow.createdAt) <= REFERRAL_WELCOME_WINDOW_MS;
-      if (action === "completeSignup" && refCode && meRow && !meRow.referredBy && withinWelcomeWindow) {
-        const referrer = await db
-          .select({ uid: schema.users.uid })
-          .from(schema.users)
-          .where(eq(schema.users.referralCode, refCode))
-          .get();
-        if (referrer && referrer.uid !== uid) {
-          // Single source of truth: appConfig.rewardSettings (the App Settings knob),
-          // NOT the gamification row it used to — silently — read.
-          const { referralBonus: bonus } = await getRewardSettings(env);
-          const ts2 = now();
-          // Credit FIRST, through the canonical, replay-safe wallet path. Because
-          // each grant is idempotent per claimKey, a crash between the two credits
-          // — or a retry, or a concurrent duplicate — can neither double-pay nor
-          // strand a credit. This is why the old insert-then-credit gate (which
-          // lost the bonus permanently on a mid-flight failure) is gone.
-          if (bonus > 0) {
-            await creditReferralOnce(env, referrer.uid, bonus, "Referral bonus — invited a friend", `referral_bonus:referrer:${uid}`);
-            await creditReferralOnce(env, uid, bonus, "Referral welcome bonus", `referral_bonus:referred:${uid}`);
-          }
-          // Record attribution only AFTER crediting. Both writes are idempotent
-          // (UNIQUE referred_uid; a fixed referredBy value), and setting referredBy
-          // is what makes this whole block skip on any later call for this user.
-          await db.batch([
-            db
-              .insert(schema.referrals)
-              .values({ id: newId(), referrerUid: referrer.uid, referredUid: uid, bonus, createdAt: ts2 })
-              .onConflictDoNothing(),
-            db.update(schema.users).set({ referredBy: referrer.uid, updatedAt: ts2 }).where(eq(schema.users.uid, uid)),
-          ]);
-          // Purely cosmetic, and dead last: a failed push must never undo a credit
-          // or the attribution above (both already durably committed).
-          if (bonus > 0) {
-            try {
-              await createNotification(env, referrer.uid, { title: "Referral Bonus! 🎉", body: `You earned ${bonus} coins — a friend joined with your code!`, type: "referral", targetId: "wallet" });
-            } catch { /* notification is best-effort */ }
+      // Everyone gets a shareable referral code. On `completeSignup`, an inbound
+      // code is APPLIED — a pending referral that pays both sides only once the
+      // new user completes the admin's qualifying action (lib/referralProgram.ts).
+      // A bad code never fails signup: the outcome is reported instead.
+      await ensureReferralCode(env, uid);
+      let referral: Record<string, unknown> | undefined;
+      const refCode = String(body.referralCode || body.referredByCode || "").trim();
+      if (action === "completeSignup") {
+        if (body.deviceId) {
+          await db.update(schema.users).set({ deviceId: String(body.deviceId).slice(0, 128) }).where(eq(schema.users.uid, uid));
+        }
+        if (refCode) {
+          try {
+            referral = await applyReferralCode(env, uid, refCode, { deviceId: body.deviceId ?? null });
+          } catch (e: any) {
+            referral = { status: "refused", message: e?.message || "Referral code could not be applied." };
           }
         }
       }
@@ -3423,7 +3333,19 @@ apiRoute.post("/", async (c) => {
           ...approved.slice(0, 50).flatMap((r) => [followingCacheKey(r), userCacheKey(r)]),
         ),
       );
-      return c.json({ success: true, ...(privacyChanged ? { approvedRequests: approved.length } : {}) });
+      return c.json({
+        success: true,
+        ...(privacyChanged ? { approvedRequests: approved.length } : {}),
+        ...(referral ? { referral } : {}),
+      });
+    }
+
+    // Apply a friend's referral code after signup (within the program's apply
+    // window). Same rules and fraud checks as the signup path.
+    case "applyReferralCode": {
+      await rateLimit(env, `refapply:${uid}`, 10, 3600, { failClosed: true });
+      const result = await applyReferralCode(env, uid, body.code, { deviceId: body.deviceId ?? null });
+      return c.json({ success: true, ...result });
     }
 
     // ================= STORIES (views / reactions / highlights) =================

@@ -46,6 +46,8 @@ export interface Env {
   FIREBASE_PROJECT_ID: string;
   /** Base url new media is written under, e.g. "https://media.tophunt.in". */
   R2_PUBLIC_BASE_URL: string;
+  /** Public web origin for share links (default https://tophunt.in). */
+  PUBLIC_SITE_ORIGIN?: string;
   /**
    * Comma-separated media bases this deployment ALSO owns — the hosts that
    * `R2_PUBLIC_BASE_URL` used to be. Media urls are stored absolute, so without

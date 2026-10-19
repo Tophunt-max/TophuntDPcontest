@@ -148,7 +148,7 @@ describe('createProfile', () => {
     expect(await user(env, 'pat')).toMatchObject({ phone: '+919812345678', phoneVerified: true, email: null });
   });
 
-  it('completes a half-created row: whole form stored, welcome bonus granted exactly once', async () => {
+  it('completes a half-created row: whole form stored, no signup coins (there is no signup bonus)', async () => {
     const { env } = makeEnv();
     await seedConfig(env);
     await seedHalfCreated(env, 'half');
@@ -158,9 +158,9 @@ describe('createProfile', () => {
     expect((await auth(env, 'half|google.com', 'createProfile', body)).status).toBe(200);
     const row = await user(env, 'half');
     expect(row).toMatchObject({ username: 'santali_real', dob: '1999-05-05', gender: 'Male', signupCompleted: true });
-    expect(Number(row?.dpcoin)).toBe(100);
+    expect(Number(row?.dpcoin)).toBe(0);
     const ledger = await drizzleOf(env).select().from(schema.coinTransactions).where(eq(schema.coinTransactions.uid, 'half')).all();
-    expect(ledger).toHaveLength(1);
+    expect(ledger).toHaveLength(0);
     // And the account now works.
     expect(isIncomplete(await api(env, 'half', 'updateProfile', { bio: 'hello' }))).toBe(false);
   });

@@ -136,7 +136,7 @@ We detect these through device signals, voting patterns and account relationship
 
 **Buying coins.** Coin packages are priced in Indian rupees and processed by Razorpay. We do not see or store your card, UPI or bank credentials. Price and coin quantity are set on our servers at the moment you order, so what you are charged is always the amount shown on the package you tapped.
 
-**Earning coins.** Coins can also arrive without payment — signup and referral bonuses, daily rewards, contest prizes and, where enabled, rewarded ads. We may adjust the rate of any reward at any time. Rewards are promotional, and we may reverse them if they were obtained by abusing the mechanism.
+**Earning coins.** Coins can also arrive without payment — referral rewards (paid to both you and the friend you invite once they complete the qualifying action shown in the app), account-verification rewards, daily rewards, contest prizes and, where enabled, rewarded ads. We may adjust the rate of any reward at any time. Rewards are promotional, and we may reverse them if they were obtained by abusing the mechanism.
 
 **Spending coins.** Coins pay contest entry fees and anything else the app offers them for. Spending is deducted from your balance immediately.
 

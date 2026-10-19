@@ -67,6 +67,8 @@ const TABLE: Record<string, RouteAccess> = {
   'contest/video': 'public', // listing; submitting is gated
   'profile/connections': 'public',
   'profile/wins': 'public',
+  // Friend's invite link: stores the code, then routes to signup or Refer & Earn.
+  'invite/[code]': 'public',
   '+not-found': 'public',
   onboarding: 'auth-entry',
 

@@ -89,7 +89,9 @@ export function VerificationRewardPopup() {
           <ScrollView contentContainerStyle={{ paddingTop: 8 }} showsVerticalScrollIndicator={false}>
             <Text style={styles.emoji} accessibilityElementsHidden>🎉</Text>
             <Text style={[styles.title, { color: textColor }]}>
-              {status.registrationReward} welcome coins added!
+              {status.registrationReward > 0
+                ? `${status.registrationReward} welcome coins added!`
+                : `Verify karo, ${status.completionReward} coins pao!`}
             </Text>
             <Text style={[styles.body, { color: subTextColor }]}>{rewardExplainer(status)}</Text>
 

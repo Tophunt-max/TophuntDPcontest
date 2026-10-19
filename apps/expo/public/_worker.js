@@ -324,6 +324,8 @@ const RESERVED = new Set([
   'profile',
   'setting',
   'story',
+  'invite',
+  'referral',
   'wallet',
   'force-update',
   'assets',

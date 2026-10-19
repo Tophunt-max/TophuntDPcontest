@@ -107,6 +107,8 @@ const PRIVATE_USER_FIELDS = [
   // Referral ledger.
   'referralCode',
   'referredBy',
+  // Referral fraud signal (device fingerprint). Never exposed.
+  'deviceId',
   // Push tokens. Stripped before the projection even runs, and must stay that way:
   // a device token is a handle for sending someone notifications.
   'fcmTokens',

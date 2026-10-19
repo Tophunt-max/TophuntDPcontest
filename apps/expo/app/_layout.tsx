@@ -68,6 +68,7 @@ focusManager.setEventListener((handleFocus) => {
 });
 
 import { useAuth } from '@/src/hooks/useAuth'; // Import useAuth hook
+import { savePendingInvite } from '@/src/services/referrals';
 import { notificationService } from '@/src/services/notifications/notificationService';
 import { AnnouncementBanner } from '@/src/components/ui/AnnouncementBanner';
 import { VerificationRewardPopup } from '@/src/components/verification/VerificationRewardPopup';
@@ -327,6 +328,12 @@ function RootLayoutNav() {
    */
   const pathname = usePathname();
   const globalParams = useGlobalSearchParams();
+  // `?ref=CODE` on any link (e.g. tophunt.in/?ref=THX1Y2Z3): remember the code
+  // for signup, like an /invite/CODE link (src/services/referrals.ts).
+  const refParam = typeof globalParams.ref === 'string' ? globalParams.ref : null;
+  useEffect(() => {
+    if (refParam) void savePendingInvite(refParam);
+  }, [refParam]);
   // One guard per mount; it remembers the previous signed-in state (see
   // src/lib/rootGuard.ts, which is where this behaviour is tested).
   const guardRef = React.useRef(createRootGuard());
