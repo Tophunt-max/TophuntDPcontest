@@ -8,6 +8,7 @@
  */
 import { hasEnded } from './countdown';
 import { matchPrize } from './contestPrize';
+import { resultCaption } from './shareCaptions';
 
 export type BattleOutcome =
   /** Voting still open. */
@@ -184,19 +185,9 @@ export function cardSafePrizeImage(prizeUrl: string | null | undefined, entryUrl
   }
 }
 
-/** Share caption for the winner card. */
+/** Share caption for the winner card (written in src/lib/shareCaptions.ts). */
 export function winnerCaption(s: BattleResultSummary, url: string): string {
-  if (s.outcome === 'winner' && s.winner) {
-    const prize =
-      s.prize?.kind === 'coins' ? ` and won ${coinsLabel(s.prize.coins)} Dpcoins 🪙`
-      : s.prize?.kind === 'product' ? ` and won ${s.prize.title} 🎁`
-      : '';
-    return `🏆 @${s.winner.username} won "${s.title}" on TopHunt with ${votesLabel(s.winner.votes)}${prize}! Congratulations 🎉\n${url}`;
-  }
-  if (s.outcome === 'tie' && s.a && s.b) {
-    return `🤝 @${s.a.username} vs @${s.b.username} ended in a tie on TopHunt!\n${url}`;
-  }
-  return `See the result on TopHunt 👇\n${url}`;
+  return resultCaption(s, url);
 }
 
 /** App route for a battle's result page. */

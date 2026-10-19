@@ -4,6 +4,7 @@ import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { getSharing } from '@/src/lib/vsNativeModules';
 import { API_BASE_URL } from '@/src/services/api';
 import { readImageBlob } from '@/src/lib/shareMedia';
+import { appCaption, battleCaption as buildBattleCaption } from '@/src/lib/shareCaptions';
 
 /**
  * One correct implementation of "share this battle", used by the share sheet and
@@ -60,8 +61,10 @@ const CARD_MIME = 'image/jpeg';
 export interface ShareMatchLike {
   id?: string;
   title?: string | null;
-  userA?: { username?: string | null } | null;
-  userB?: { username?: string | null } | null;
+  status?: string | null;
+  expiresAt?: string | number | null;
+  userA?: { username?: string | null; votes?: number | null } | null;
+  userB?: { username?: string | null; votes?: number | null } | null;
   vsImageUrl?: string | null;
 }
 
@@ -76,14 +79,11 @@ export function battleResultUrl(matchId: string): string {
 }
 
 /**
- * Human caption with both handles and the link, e.g.
- * `Best Smile — @alice vs @bob. Vote now on TopHunt 👇\nhttps://tophunt.in/battle/m1`.
+ * Engaging caption for a battle share: hook with both handles, live score, time
+ * left, a vote CTA and the link (src/lib/shareCaptions.ts).
  */
 export function battleCaption(match: ShareMatchLike, url: string): string {
-  const a = match?.userA?.username ? `@${match.userA.username}` : 'someone';
-  const b = match?.userB?.username ? `@${match.userB.username}` : 'a rival';
-  const title = (match?.title || '').trim() || 'This battle';
-  return `${title} — ${a} vs ${b}. Vote now on TopHunt 👇\n${url}`;
+  return buildBattleCaption(match, url);
 }
 
 // ---------------------------------------------------------------------------
@@ -435,7 +435,7 @@ export function canShareApp(): boolean {
 export async function shareApp(): Promise<ShareOutcome> {
   const origin = appShareOrigin();
   if (!origin) return 'failed';
-  const caption = `Join me on TopHunt — enter photo and video contests and vote on live battles 👇\n${origin}`;
+  const caption = appCaption(origin);
   return shareBattleLink({ caption, url: origin });
 }
 

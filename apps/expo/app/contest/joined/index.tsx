@@ -8,6 +8,7 @@ import { useThemeColor } from '@/hooks/use-theme-color';
 import { designWidth } from '@/src/lib/layout';
 import { battleUrl, shareOrigin, shareBattleLink, shareImageFile, prepareShareFile, type ShareOutcome } from '@/src/lib/share';
 import { createShareCounter, resolveBattleShareAsset, shareOutcomeMessage } from '@/src/lib/vsShareAsset';
+import { joinedBattleCaption, voteLinkCaption } from '@/src/lib/shareCaptions';
 import { contestSuccessCopy, type VsStoryState } from '@/src/lib/contestSuccess';
 import { contestService } from '@/src/services/contests/contestService';
 
@@ -116,10 +117,7 @@ export default function ContestJoinedScreen() {
     setShareNote(null);
     try {
       const link = matchId ? battleUrl(matchId) : shareOrigin();
-      const intro = isJoining
-        ? `I just joined the ${contestName} battle on TopHunt! Vote for me and let's win some coins.`
-        : `I just started a ${contestName} battle on TopHunt! Come challenge me and win coins.`;
-      const caption = link ? `${intro}\n${link}` : intro;
+      const caption = joinedBattleCaption({ contestName, joining: !!isJoining, url: link || null });
       let outcome: ShareOutcome;
       if (isJoining && matchId) {
         const asset = await resolveBattleShareAsset(matchId, {
@@ -153,7 +151,7 @@ export default function ContestJoinedScreen() {
     setSharing(true);
     try {
       const link = battleUrl(matchId);
-      const outcome = await shareBattleLink({ caption: `Vote in the ${contestName} battle on TopHunt!\n${link}`, url: link });
+      const outcome = await shareBattleLink({ caption: voteLinkCaption(contestName, link), url: link });
       shareCounter.record(outcome);
       const msg = shareOutcomeMessage(outcome);
       if (msg) setShareNote(msg.text);
