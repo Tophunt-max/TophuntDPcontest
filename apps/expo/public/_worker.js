@@ -753,7 +753,7 @@ export default {
 
     // --- same-origin media reads for share / save / card capture -----------
     // See shareMediaUpstream: lets the page read image BYTES without CORS.
-    if (url.pathname.startsWith(SHARE_MEDIA_PATH)) return proxyShareMedia(request, url, ctx);
+    if (url.pathname.startsWith(SHARE_MEDIA_PATH)) return proxyShareMedia(request, url, apiBase);
 
     // --- retired WordPress url space ---------------------------------------
     // 410 Gone, and checked BEFORE the normalising redirect so `/wp-admin/`
@@ -972,21 +972,41 @@ export function shareMediaUpstream(pathname) {
   return `${SHARE_MEDIA_ORIGIN}/${rest}`;
 }
 
-async function proxyShareMedia(request, url, ctx) {
+async function proxyShareMedia(request, url, apiBase) {
+  try {
+    return await proxyShareMediaInner(request, url, apiBase);
+  } catch (err) {
+    return withSecurityHeaders(
+      new Response('Share media error', {
+        status: 502,
+        headers: { 'cache-control': 'no-store', 'x-share-media-error': String((err && err.message) || err).slice(0, 120) },
+      }),
+    );
+  }
+}
+
+async function proxyShareMediaInner(request, url, apiBase) {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     return withSecurityHeaders(new Response('Method not allowed', { status: 405, headers: { allow: 'GET, HEAD' } }));
   }
-  const upstream = shareMediaUpstream(url.pathname);
-  if (!upstream) return notFoundAsset();
+  const target = shareMediaUpstream(url.pathname);
+  if (!target) return notFoundAsset();
+  // R2 keys are read through the API Worker's `/media/*` route rather than the
+  // R2 custom domain: a Pages subrequest to media.tophunt.in (same zone) was
+  // answered with a bare Cloudflare 502. The API route serves the same bucket.
+  const upstream = target.startsWith(`${SHARE_MEDIA_ORIGIN}/`)
+    ? `${apiBase.replace(/\/$/, '')}/media/${target.slice(SHARE_MEDIA_ORIGIN.length + 1)}`
+    : target;
   let res;
   try {
-    res = await fetch(upstream, {
-      method: request.method,
-      redirect: 'error',
-      cf: { cacheEverything: true, cacheTtl: 3600 },
-    });
-  } catch (_err) {
-    return withSecurityHeaders(new Response('Upstream unavailable', { status: 502, headers: { 'cache-control': 'no-store' } }));
+    res = await fetch(upstream, { method: request.method, redirect: 'manual' });
+  } catch (err) {
+    return withSecurityHeaders(
+      new Response('Upstream unavailable', {
+        status: 502,
+        headers: { 'cache-control': 'no-store', 'x-share-media-error': String((err && err.message) || err).slice(0, 120) },
+      }),
+    );
   }
   const type = res.headers.get('content-type') || '';
   if (!res.ok || !type.startsWith('image/')) {
