@@ -14,8 +14,8 @@ import { Ionicons } from '@/src/lib/icons';
 import { CoinStoreSkeleton } from '@/src/components/skeletons/CoinStoreSkeleton';
 import { CoinIcon } from '@/src/components/ui/CoinIcon';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useQuery } from '@tanstack/react-query';
-import { readApi } from '@/src/services/api';
+import { useCoinPackages, useCoinRate } from '@/src/hooks/useCoinPackages';
+import { coinsInInr, type CoinPackage } from '@/src/lib/coinValue';
 import { purchasePackage } from '@/src/services/wallet/razorpayCheckout';
 import { useAuth } from '@/src/hooks/useAuth';
 import { useProfile } from '@/src/hooks/useProfileData';
@@ -24,21 +24,14 @@ import { Colors } from '@/constants/theme';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
 import { useAppConfig } from '@/src/services/appSettings';
 
-interface CoinPackage {
-  id: string;
-  name?: string;
-  coins: number;
-  bonusCoins: number;
-  priceInr: number;
-  totalCoins: number;
-  popular?: boolean;
-}
 
 export default function CoinStoreScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const { data: profile, refetch: refetchProfile } = useProfile(user?.uid || '');
   const { addToast } = useToast();
+  // ₹ per coin (live from App Control).
+  const rate = useCoinRate();
   const [loading, setLoading] = useState<string | null>(null);
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
@@ -58,24 +51,9 @@ export default function CoinStoreScreen() {
   const cardBorder = isDark ? '#35383F' : '#EEEEEE';
   const subText = isDark ? '#9BA1A6' : '#8A8A8E';
 
-  // Real, server-priced packages (pricing lives in the coin_packages table).
-  const { data: packages, isLoading, isError, refetch } = useQuery({
-    queryKey: ['coin-packages'],
-    queryFn: async () => {
-      const rows = (await readApi('/read/coin-packages')) as CoinPackage[];
-      // Flag the best-value package (highest coins-per-rupee) for the UI badge.
-      if (rows && rows.length) {
-        let bestIdx = 0;
-        let bestRatio = 0;
-        rows.forEach((p, i) => {
-          const ratio = p.priceInr > 0 ? p.totalCoins / p.priceInr : 0;
-          if (ratio > bestRatio) { bestRatio = ratio; bestIdx = i; }
-        });
-        rows[bestIdx].popular = true;
-      }
-      return rows;
-    },
-  });
+  // Real, server-priced packages (coin_packages table). Live: an admin edit is
+  // pushed over realtime, so a price on screen is never a stale one.
+  const { data: packages, isLoading, isError, refetch } = useCoinPackages();
 
   const formatInr = (v: number) => `₹${Number(v).toLocaleString('en-IN')}`;
 
@@ -94,7 +72,7 @@ export default function CoinStoreScreen() {
     setLoading(pkg.id);
     try {
       const { coins, pending } = await purchasePackage(
-        { id: pkg.id, name: pkg.name },
+        { id: pkg.id, name: pkg.name ?? undefined },
         {
           email: profile?.email || undefined,
           name: profile?.fullName || undefined,
@@ -156,6 +134,9 @@ export default function CoinStoreScreen() {
           </View>
           <Text style={[styles.coinText, { color: textColor }]}>{item.totalCoins}</Text>
           <Text style={[styles.coinLabel, { color: subText }]}>Dpcoins</Text>
+          {coinsInInr(item.totalCoins, rate) ? (
+            <Text style={[styles.coinLabel, { color: subText, fontSize: 11 }]}>Value {coinsInInr(item.totalCoins, rate)}</Text>
+          ) : null}
           {item.bonusCoins > 0 ? (
             <View style={styles.bonusPill}>
               <Text style={styles.bonusLabel}>+{item.bonusCoins} bonus</Text>
@@ -202,6 +183,9 @@ export default function CoinStoreScreen() {
             <CoinIcon size={24} color="white" style={{ marginRight: 8 }} />
             <Text style={styles.balanceValue}>{profile?.Dpcoin ?? 0} Dpcoins</Text>
           </View>
+          {coinsInInr(profile?.Dpcoin ?? 0, rate) ? (
+            <Text style={[styles.balanceLabel, { marginTop: 4 }]}>{coinsInInr(profile?.Dpcoin ?? 0, rate)}</Text>
+          ) : null}
         </LinearGradient>
       </View>
 

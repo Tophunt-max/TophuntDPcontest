@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -13,7 +13,6 @@ import { Alert } from '@/src/lib/appAlert';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@/src/lib/icons';
 import { BackButton } from '@/src/components/ui/BackButton';
 import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
@@ -27,15 +26,9 @@ import { Colors } from '@/constants/theme';
 import { walletService } from '@/src/services/wallet/walletService';
 import { useAppConfig } from '@/src/services/appSettings';
 import { readApi } from '@/src/services/api';
+import { useCoinPackages } from '@/src/hooks/useCoinPackages';
+import { selectedPackageChange } from '@/src/lib/coinValue';
 
-interface CoinPackage {
-  id: string;
-  name?: string;
-  coins: number;
-  bonusCoins: number;
-  priceInr: number;
-  totalCoins: number;
-}
 
 export default function DepositScreen() {
   const router = useRouter();
@@ -66,18 +59,31 @@ export default function DepositScreen() {
   const { packageId: packageIdParam } = useLocalSearchParams<{ packageId?: string }>();
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const { data: packages, isLoading: packagesLoading } = useQuery({
-    queryKey: ['coin-packages'],
-    queryFn: async () => (await readApi('/read/coin-packages')) as CoinPackage[],
-  });
+  // Live catalog: an admin price edit / removal arrives over realtime.
+  const { data: packages, isLoading: packagesLoading } = useCoinPackages();
 
   // Preselect whatever the store sent over; otherwise the first package, so the
-  // QR is never shown without a price attached to it.
+  // QR is never shown without a price attached to it. If the selected package is
+  // removed while the user is here, move to the first one instead of showing a
+  // price that no longer exists.
   useEffect(() => {
-    if (selectedId || !packages?.length) return;
-    const fromParam = packageIdParam && packages.find((p) => p.id === packageIdParam);
+    if (!packages?.length) {
+      if (selectedId && packages) setSelectedId(null);
+      return;
+    }
+    if (selectedId && packages.some((p) => p.id === selectedId)) return;
+    const fromParam = !selectedId && packageIdParam && packages.find((p) => p.id === packageIdParam);
     setSelectedId(fromParam ? fromParam.id : packages[0].id);
   }, [packages, packageIdParam, selectedId]);
+
+  // The user is about to pay this exact amount by QR: say so if it just changed.
+  const prevPackages = useRef(packages);
+  useEffect(() => {
+    const change = selectedPackageChange(prevPackages.current, packages, selectedId);
+    prevPackages.current = packages;
+    if (change === 'price') Alert.alert('Price update hua', 'Admin ne is package ka price badla hai. Naya amount neeche dikh raha hai — wahi pay karo.');
+    if (change === 'gone') Alert.alert('Package hata diya gaya', 'Ye package ab available nahi hai. Doosra package chuno.');
+  }, [packages, selectedId]);
 
   const selected = packages?.find((p) => p.id === selectedId) || null;
   const payInr = Number(selected?.priceInr) || 0;

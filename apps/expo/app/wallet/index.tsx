@@ -26,6 +26,7 @@ import { useAuth } from '@/src/services/auth';
 import { Colors } from '@/constants/theme';
 import { useProfile } from '@/src/hooks/useProfileData';
 import { useAppConfig } from '@/src/services/appSettings';
+import { coinRate, coinsInInr } from '@/src/lib/coinValue';
 import { walletService } from '@/src/services/wallet/walletService';
 import { useFeature } from '@/src/services/appSettings';
 import { readApi } from '@/src/services/api';
@@ -408,6 +409,10 @@ export default function WalletScreen() {
                         <View style={styles.row}>
                             <Text style={styles.balanceValue}>{profile?.Dpcoin || 0}</Text>
                         </View>
+                        {/* Live ₹ value at the admin's coin rate (App Control). */}
+                        {coinsInInr(profile?.Dpcoin || 0, coinRate(appConfig)) ? (
+                            <Text style={styles.balanceLabel}>Value {coinsInInr(profile?.Dpcoin || 0, coinRate(appConfig))}</Text>
+                        ) : null}
                         
                         {topupsEnabled && (
                         <TouchableOpacity 

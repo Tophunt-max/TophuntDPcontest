@@ -18,7 +18,7 @@ export default function CoinPackages() {
 
   const delMut = useMutation({
     mutationFn: (id: string) => api.deleteCoinPackage(id),
-    onSuccess: () => { toast.success("Package deleted"); invalidate(); },
+    onSuccess: () => { toast.success("Package deleted — app se turant hat gaya"); invalidate(); },
     onError: (e: any) => toast.error(e.message),
   });
   const toggleMut = useMutation({
@@ -98,7 +98,7 @@ function PackageDialog({ pkg, onClose, onDone }: { pkg?: any; onClose: () => voi
   });
   const mut = useMutation({
     mutationFn: () => (isEdit ? api.updateCoinPackage(pkg.id, payload()) : api.createCoinPackage(payload())),
-    onSuccess: () => { toast.success(isEdit ? "Package updated" : "Package created"); onDone(); onClose(); },
+    onSuccess: () => { toast.success(isEdit ? "Package updated — users ke app mein turant live" : "Package created — users ke app mein turant live"); onDone(); onClose(); },
     onError: (e: any) => toast.error(e.message),
   });
   const field = "w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring";
