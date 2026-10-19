@@ -24,6 +24,10 @@ The email channel uses Firebase's built-in emails.
 - Console → **Authentication → Templates** → set a **custom SMTP / sender
   domain**, branding, and language (default `noreply@<project>.firebaseapp.com`
   often lands in spam).
+- **Password reset** template: paste the body of
+  [`email-templates/firebase-password-reset.html`](email-templates/firebase-password-reset.html)
+  into the Message field (subject: `Reset your TopHunt password`). It uses the
+  same brand layout as the Worker's emails.
 - Add the reset/verify action domain under **Authentication → Settings →
   Authorized domains**.
 
