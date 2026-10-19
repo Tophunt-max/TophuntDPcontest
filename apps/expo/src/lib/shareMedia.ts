@@ -116,13 +116,15 @@ export async function readImageBlob(url: string, opts: { timeoutMs?: number } = 
   // of downloading the photo a second time.
   const origin = pageOrigin();
   if (origin && url.startsWith(`${origin}${SHARE_MEDIA_PATH}`)) {
-    return readOnce(url, { credentials: 'omit' }, timeoutMs);
+    // Default credentials, matching the <img> that loaded it: Chrome keys its
+    // HTTP cache on the credentials mode, so `omit` would miss and re-download.
+    return readOnce(url, {}, timeoutMs);
   }
   const proxied = sameOriginMediaUrl(url);
   let firstError: unknown = null;
   if (proxied) {
     try {
-      return await readOnce(proxied, { credentials: 'omit' }, timeoutMs);
+      return await readOnce(proxied, {}, timeoutMs);
     } catch (e) {
       firstError = e;
     }
