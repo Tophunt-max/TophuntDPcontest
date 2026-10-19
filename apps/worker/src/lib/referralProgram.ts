@@ -184,9 +184,16 @@ export function publicReferralConfig(cfg: ReferralProgramConfig) {
 
 /** A short, URL-safe code (crypto RNG, so codes are unguessable). */
 export function makeReferralCode(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(6));
+  // Rejection sampling: only bytes below 252 (= 7 × 36) are used, so every one
+  // of the 36 characters is equally likely (a plain `% 36` would be biased).
   let s = "";
-  for (const b of bytes) s += (b % 36).toString(36);
+  while (s.length < 6) {
+    for (const b of crypto.getRandomValues(new Uint8Array(12))) {
+      if (b >= 252) continue;
+      s += (b % 36).toString(36);
+      if (s.length === 6) break;
+    }
+  }
   return "TH" + s.toUpperCase();
 }
 
