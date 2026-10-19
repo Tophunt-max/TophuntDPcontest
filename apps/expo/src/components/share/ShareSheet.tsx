@@ -45,6 +45,7 @@ import {
   canShareFilesOnWeb,
   isCompletedShare,
   prepareShareFile,
+  saveImageAndCopyCaption,
   type ShareMatchLike,
   type ShareOutcome,
 } from '@/src/lib/share';
@@ -52,6 +53,8 @@ import { useBattleShareAsset } from '@/src/hooks/useBattleShareAsset';
 import { useAuthGate } from '@/src/hooks/useAuthGate';
 import { auth } from '@/src/services/firebase/initFirebase';
 import { createShareCounter, platformShareMode, shareOutcomeMessage } from '@/src/lib/vsShareAsset';
+import { useRouter } from 'expo-router';
+import { battleResultPath } from '@/src/lib/battleResult';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SHEET_HEIGHT = SCREEN_HEIGHT * 0.75;
@@ -206,14 +209,28 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId, match: matchPr
     if (assetStatus === 'preparing' || assetStatus === 'loading') return notReadyToast();
     setBusy(true);
     try {
-      const outcome = imageUrl
+      let outcome = imageUrl
         ? await shareImageFile({ source: { kind: 'remote', url: imageUrl }, caption, url, file: preparedFile })
         : await shareBattleLink({ caption, url });
+      // Web browsers that cannot attach a file (most desktops): hand over the
+      // actual image as a download + the caption on the clipboard, instead of a
+      // dead end. (Native always attaches the file.)
+      if (outcome === 'image_unsupported' && isWeb && imageUrl) {
+        outcome = await saveImageAndCopyCaption({ kind: 'remote', url: imageUrl }, caption);
+      }
       if (finish(outcome)) closeSheet();
     } finally {
       setBusy(false);
     }
-  }, [busy, assetStatus, imageUrl, preparedFile, caption, url, finish, closeSheet, notReadyToast]);
+  }, [busy, assetStatus, imageUrl, preparedFile, caption, url, finish, closeSheet, notReadyToast, isWeb]);
+
+  // A finished battle has a branded winner card; offer it first.
+  const router = useRouter();
+  const hasResult = match && ((match as any).status === 'completed' || (match as any).status === 'ended');
+  const openWinnerCard = useCallback(() => {
+    closeSheet();
+    router.push(battleResultPath(matchId) as any);
+  }, [closeSheet, router, matchId]);
 
   /** A specific app — routed by what that app can actually receive. */
   const onPlatform = useCallback(async (platformId: string) => {
@@ -320,6 +337,20 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId, match: matchPr
             </View>
 
             {/* What will actually be shared — stated, not implied. */}
+            {hasResult ? (
+              <TouchableOpacity
+                style={styles.winnerRow}
+                onPress={openWinnerCard}
+                accessibilityRole="button"
+                accessibilityLabel="Share the winner card"
+              >
+                <Ionicons name="trophy" size={20} color="#5A3A00" />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.winnerRowTitle}>Share the winner card 🏆</Text>
+                  <Text style={styles.winnerRowSub}>Congratulations card with photo and votes</Text>
+                </View>
+              </TouchableOpacity>
+            ) : null}
             <View style={[styles.previewRow, { borderColor }]}>
               {imageUrl ? (
                 <Image source={{ uri: imageUrl }} style={styles.previewImage} accessibilityLabel="VS battle image" />
@@ -443,6 +474,9 @@ const styles = StyleSheet.create({
   searchContainer: { paddingHorizontal: 16, marginBottom: 15 },
   previewRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: 16, marginBottom: 12, padding: 10, borderWidth: 1, borderRadius: 14 },
   previewImage: { width: 45, height: 80, borderRadius: 8 },
+  winnerRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginHorizontal: 16, marginBottom: 10, padding: 12, borderRadius: 14, backgroundColor: '#FFE68A' },
+  winnerRowTitle: { fontFamily: 'Urbanist-Bold', fontSize: 14, color: '#5A3A00' },
+  winnerRowSub: { fontFamily: 'Urbanist-Medium', fontSize: 12, color: '#7A5A10', marginTop: 2 },
   previewPlaceholder: { alignItems: 'center', justifyContent: 'center' },
   previewTitle: { fontFamily: 'Urbanist-Bold', fontSize: 14 },
   previewSub: { fontFamily: 'Urbanist-Regular', fontSize: 12, marginTop: 2 },

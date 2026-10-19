@@ -74,14 +74,16 @@ export function getNotificationDestination(
       return targetId ? `/${encodeURIComponent(targetId)}` : null;
 
     // Battle engagement and results open that battle's detail page
-    // (app/battle/[id].tsx). `targetId` is the match id on all of these; without
+    // (app/battle/[id]/index.tsx). `targetId` is the match id on all of these; without
     // one there is nothing specific to open, so the feed.
     case "match_like":
     case "match_comment":
     case "match":
+      return targetId ? `/battle/${encodeURIComponent(targetId)}` : "/home";
+    // The result itself: straight to the winner page (app/battle/[id]/result.tsx).
     case "contest-win":
     case "contest-loss":
-      return targetId ? `/battle/${encodeURIComponent(targetId)}` : "/home";
+      return targetId ? `/battle/${encodeURIComponent(targetId)}/result` : "/home";
     case "contest":
       return "/home";
 

@@ -45,8 +45,21 @@ export default function Reports() {
                       <ImageOff size={16} className="text-muted-foreground" />
                     )}
                   </div>
+                  {/* Battles: the reported image is often the OTHER side, so show both. */}
+                  {p?.kind === "match" && (
+                    <div className="w-12 h-12 rounded-lg overflow-hidden bg-secondary flex items-center justify-center flex-shrink-0 -ml-2">
+                      {p?.mediaUrlB ? (
+                        <img src={p.mediaUrlB} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <ImageOff size={16} className="text-muted-foreground" />
+                      )}
+                    </div>
+                  )}
                   <div className="min-w-0">
-                    <p className="text-sm font-medium text-foreground">{r.targetType || "content"}{p?.missing ? " (deleted)" : ""}</p>
+                    <p className="text-sm font-medium text-foreground flex items-center gap-1.5">
+                      {r.targetType || "content"}{p?.missing ? " (deleted)" : ""}
+                      {p?.heldAt ? <Badge variant="danger">Held</Badge> : null}
+                    </p>
                     <p className="text-xs text-muted-foreground truncate max-w-[200px]">{p?.text || r.targetId}</p>
                   </div>
                 </div>
@@ -66,7 +79,7 @@ export default function Reports() {
                 <button
                   title="Remove reported content"
                   onClick={async () => {
-                    if (await confirm({ title: "Remove content?", description: "This deletes the reported content and closes the report.", variant: "destructive" }))
+                    if (await confirm({ title: "Remove content?", description: "This deletes the reported content and closes the report. A live or waiting battle is cancelled and both entry fees are refunded.", variant: "destructive" }))
                       resolveMut.mutate({ id: r.id, action: "remove" });
                   }}
                   className="p-2 rounded-lg hover:bg-secondary text-red-600"
@@ -76,7 +89,7 @@ export default function Reports() {
                 <button
                   title="Dismiss report"
                   onClick={async () => {
-                    if (await confirm({ title: "Dismiss report?", description: "Keep the content and remove the report from the queue." }))
+                    if (await confirm({ title: "Dismiss report?", description: "Keep the content and close the report. A battle auto-hidden by reports is shown again once no open report remains." }))
                       resolveMut.mutate({ id: r.id, action: "dismiss" });
                   }}
                   className="p-2 rounded-lg hover:bg-secondary text-muted-foreground hover:text-foreground"

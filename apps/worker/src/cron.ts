@@ -28,7 +28,7 @@ import { runSeoAudit } from "./lib/seoAudit";
 import { getSeoAudit, invalidateSetting } from "./lib/settings";
 import { publish } from "./lib/publish";
 
-type Match = typeof schema.contestMatches.$inferSelect;
+export type Match = typeof schema.contestMatches.$inferSelect;
 
 async function publishMatchStatus(
   env: Env,
@@ -49,7 +49,7 @@ async function publishMatchStatus(
   });
 }
 
-async function resolveMatch(env: Env, match: Match): Promise<void> {
+export async function resolveMatch(env: Env, match: Match): Promise<void> {
   const db = getDb(env);
   const userA = match.userA as any;
   const userB = match.userB as any;

@@ -84,8 +84,12 @@ describe('follow notifications and battle links', () => {
   });
 
   it('battle likes, comments and results open that battle', () => {
-    for (const t of ['match_like', 'match_comment', 'contest-win', 'contest-loss']) {
+    for (const t of ['match_like', 'match_comment']) {
       expect(getNotificationDestination(t, 'm 1'), t).toBe('/battle/m%201');
+    }
+    // A result notification opens the winner page directly.
+    for (const t of ['contest-win', 'contest-loss']) {
+      expect(getNotificationDestination(t, 'm 1'), t).toBe('/battle/m%201/result');
     }
     expect(getNotificationDestination('match_like', null)).toBe('/home');
   });

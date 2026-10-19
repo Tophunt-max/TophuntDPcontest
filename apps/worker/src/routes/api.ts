@@ -249,6 +249,51 @@ const USER_COLUMN_KEYS = new Set<string>(
   ]),
 );
 
+/**
+ * Reports from this many DIFFERENT users hide a battle from the shared feeds until
+ * an admin reviews it (migration 0060). Not a status change: the battle still
+ * settles or refunds exactly as before, and its page stays reachable by link.
+ *
+ * Who counts, so the hold is not a cheap weapon in a live battle:
+ *  - only OPEN reports (a dismissed one is kept as a row, for dedupe, but no
+ *    longer counts — and its reporter cannot report the battle again);
+ *  - never the battle's own participants (the leader could otherwise freeze
+ *    their lead with two friends);
+ *  - only accounts older than MATCH_REPORTER_MIN_AGE_MS (no fresh throwaways).
+ */
+export const MATCH_REPORT_HOLD_THRESHOLD = 3;
+export const MATCH_REPORTER_MIN_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** Stamp the hold if the threshold is reached. Returns true when THIS call stamped it. */
+async function maybeHoldReportedMatch(env: Env, matchId: string, ts: number): Promise<boolean> {
+  try {
+    const row = await env.DB.prepare(
+      `SELECT COUNT(DISTINCT r.reporter_id) AS n
+         FROM reports r
+         JOIN users u ON u.uid = r.reporter_id
+         JOIN contest_matches m ON m.id = r.target_id
+        WHERE r.target_id = ?
+          AND r.target_type IN ('match','contestMatch','contestMatches')
+          AND r.status = 'open'
+          AND u.created_at <= ?
+          AND r.reporter_id <> COALESCE(json_extract(m.user_a, '$.uid'), '')
+          AND r.reporter_id <> COALESCE(json_extract(m.user_b, '$.uid'), '')`,
+    )
+      .bind(matchId, ts - MATCH_REPORTER_MIN_AGE_MS)
+      .first<{ n: number }>();
+    if (Number(row?.n ?? 0) < MATCH_REPORT_HOLD_THRESHOLD) return false;
+    const res = await env.DB.prepare(
+      "UPDATE contest_matches SET moderation_hold_at = ? WHERE id = ? AND moderation_hold_at IS NULL",
+    )
+      .bind(ts, matchId)
+      .run();
+    return (res.meta?.changes ?? 0) > 0;
+  } catch (e) {
+    console.error("[report] moderation hold failed (continuing)", matchId, e);
+    return false;
+  }
+}
+
 export const apiRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 // All /api actions require a valid Firebase ID token (matches callable auth).
@@ -3444,11 +3489,40 @@ apiRoute.post("/", async (c) => {
       // Reports raise admin notifications; unbounded reporting is a way to bury
       // the moderation queue.
       await rateLimit(env, `report:${uid}`, 20, 3600);
-      const { targetType, targetId, reason } = body;
+      const { targetId } = body;
+      // Never NULL: the per-reporter unique index treats NULLs as distinct, so a
+      // typeless report would stack without limit.
+      const targetType = typeof body.targetType === "string" && body.targetType ? body.targetType.slice(0, 40) : "unknown";
+      // Bounded free text: this lands in the admin queue verbatim.
+      const reason = typeof body.reason === "string" ? body.reason.slice(0, 300) : null;
       const id = newId();
       const ts = now();
-      await db.insert(schema.reports).values({ id, reporterId: uid, targetType: targetType || null, targetId: targetId || null, reason: reason || null, status: "open", createdAt: ts });
-      await db.insert(schema.adminNotifications).values({ id: newId(), title: "New Report", message: `A ${targetType || "content"} was reported.`, link: "/reports", scope: "moderation", isRead: false, createdAt: ts });
+      // One report per reporter per target (unique index, migration 0060): a
+      // repeat tap is acknowledged, not stacked.
+      const inserted = await db
+        .insert(schema.reports)
+        .values({ id, reporterId: uid, targetType: targetType || null, targetId: targetId || null, reason, status: "open", createdAt: ts })
+        .onConflictDoNothing()
+        .run();
+      if (!(inserted.meta?.changes ?? 0)) return c.json({ success: true, duplicate: true });
+
+      const isMatch = targetType === "match" || targetType === "contestMatch" || targetType === "contestMatches";
+      let held = false;
+      if (isMatch && targetId) held = await maybeHoldReportedMatch(env, String(targetId), ts);
+      // The held battle's VS stories leave the shared stories feed now in this
+      // colo; elsewhere within the feed's edge TTL.
+      if (held) c.executionCtx.waitUntil(purgeShared(c, STORIES_FEED_CACHE_KEY).catch(() => {}));
+      await db.insert(schema.adminNotifications).values({
+        id: newId(),
+        title: held ? "Battle auto-hidden after reports" : "New Report",
+        message: held
+          ? `A battle reached ${MATCH_REPORT_HOLD_THRESHOLD} reports from different users and was hidden from feeds pending review.`
+          : `A ${targetType || "content"} was reported.`,
+        link: "/reports",
+        scope: "moderation",
+        isRead: false,
+        createdAt: ts,
+      });
       return c.json({ success: true, reportId: id });
     }
     case "createSupportTicket": {

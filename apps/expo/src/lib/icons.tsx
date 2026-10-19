@@ -63,6 +63,7 @@ import FerrisWheel from 'lucide-react-native/icons/ferris-wheel';
 import File from 'lucide-react-native/icons/file';
 import FileText from 'lucide-react-native/icons/file-text';
 import Filter from 'lucide-react-native/icons/funnel';
+import Flag from 'lucide-react-native/icons/flag';
 import Flame from 'lucide-react-native/icons/flame';
 import Frown from 'lucide-react-native/icons/face-slightly-frowning';
 import Gamepad2 from 'lucide-react-native/icons/gamepad-2';
@@ -177,7 +178,7 @@ export interface IconProps {
 type LucideIcon = React.ComponentType<any>;
 
 // name -> component lookup (built from the per-icon imports above).
-const I: Record<string, LucideIcon> = { AlarmClock, AlertCircle, ArrowDown, ArrowLeft, ArrowLeftRight, ArrowRight, ArrowUp, AtSign, AudioLines, Award, Ban, Banknote, Bell, Bookmark, Calendar, Camera, ChartColumn, ChartLine, Check, CheckCheck, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleCheck, CircleHelp, CircleUser, Clapperboard, Clock, Cloud, CloudOff, Coins, Compass, Copy, CreditCard, Crop, Crown, Dices, Download, Expand, Eye, EyeOff, FerrisWheel, File, FileText, Filter, Flame, Frown, Gamepad2, Gem, Gift, Globe, Hand, Heart, HeartCrack, HeartHandshake, Home, Hourglass, Image, Images, IndianRupee, Info, Landmark, LayoutGrid, Link, List, Lock, LockOpen, LogIn, LogOut, Mail, MapPin, Medal, Megaphone, Menu, MessageCircle, MessagesSquare, Mic, Moon, MoreHorizontal, MoreVertical, Music, Newspaper, Package, Palette, PartyPopper, Pause, Pencil, Phone, Play, PlayCircle, Plus, PlusCircle, QrCode, Receipt, RefreshCw, Rocket, RotateCw, ScanLine, Search, Send, Settings, Share2, Shield, ShieldCheck, SlidersHorizontal, Smartphone, Smile, Sparkles, Sprout, SquarePen, Star, Sticker, Sun, SwitchCamera, Swords, Tag, Tags, Target, Ticket, Timer, TrafficCone, Trash2, TrendingDown, TrendingUp, TriangleAlert, Trophy, Truck, Tv, Type, Upload, UploadCloud, User, UserPlus, Users, Video, VideoOff, Volume2, VolumeX, Vote, Wallet, Wand2, Wifi, WifiOff, Wrench, X, XCircle, Zap };
+const I: Record<string, LucideIcon> = { AlarmClock, AlertCircle, ArrowDown, ArrowLeft, ArrowLeftRight, ArrowRight, ArrowUp, AtSign, AudioLines, Award, Ban, Banknote, Bell, Bookmark, Calendar, Camera, ChartColumn, ChartLine, Check, CheckCheck, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleCheck, CircleHelp, CircleUser, Clapperboard, Clock, Cloud, CloudOff, Coins, Compass, Copy, CreditCard, Crop, Crown, Dices, Download, Expand, Eye, EyeOff, FerrisWheel, File, FileText, Filter, Flag, Flame, Frown, Gamepad2, Gem, Gift, Globe, Hand, Heart, HeartCrack, HeartHandshake, Home, Hourglass, Image, Images, IndianRupee, Info, Landmark, LayoutGrid, Link, List, Lock, LockOpen, LogIn, LogOut, Mail, MapPin, Medal, Megaphone, Menu, MessageCircle, MessagesSquare, Mic, Moon, MoreHorizontal, MoreVertical, Music, Newspaper, Package, Palette, PartyPopper, Pause, Pencil, Phone, Play, PlayCircle, Plus, PlusCircle, QrCode, Receipt, RefreshCw, Rocket, RotateCw, ScanLine, Search, Send, Settings, Share2, Shield, ShieldCheck, SlidersHorizontal, Smartphone, Smile, Sparkles, Sprout, SquarePen, Star, Sticker, Sun, SwitchCamera, Swords, Tag, Tags, Target, Ticket, Timer, TrafficCone, Trash2, TrendingDown, TrendingUp, TriangleAlert, Trophy, Truck, Tv, Type, Upload, UploadCloud, User, UserPlus, Users, Video, VideoOff, Volume2, VolumeX, Vote, Wallet, Wand2, Wifi, WifiOff, Wrench, X, XCircle, Zap };
 
 // Resolve an icon by its lucide PascalCase name, falling back safely.
 const ic = (n: string): LucideIcon => I[n] || Circle;
@@ -246,6 +247,8 @@ const ionicons: Record<string, LucideIcon> = {
   'sad-outline': ic('Frown'), 'happy-outline': ic('Smile'),
   'scan-outline': ic('ScanLine'), 'search': ic('Search'), 'search-outline': ic('Search'),
   'share-social': ic('Share2'), 'share-social-outline': ic('Share2'), 'share-outline': ic('Share2'),
+  'link': ic('Link'), 'link-outline': ic('Link'),
+  'flag': ic('Flag'), 'flag-outline': ic('Flag'),
   'star': ic('Star'), 'star-outline': ic('Star'),
   'ticket-outline': ic('Ticket'), 'ticket': ic('Ticket'),
   'trash-outline': ic('Trash2'), 'trash': ic('Trash2'),

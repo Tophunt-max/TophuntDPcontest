@@ -930,7 +930,11 @@ async function reportPreview(db: any, targetType: string | null, targetId: strin
       case "contestMatches": {
         const m = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, targetId)).get();
         const a = (m?.userA as any) || {};
-        return m ? { kind: "match", mediaUrl: a.mediaUrl, text: m.title } : { kind: "match", missing: true };
+        const b = (m?.userB as any) || {};
+        // BOTH entries: the reported content is often only one side of the battle.
+        return m
+          ? { kind: "match", mediaUrl: a.mediaUrl, mediaUrlB: b.mediaUrl ?? null, text: m.title, heldAt: m.moderationHoldAt ?? null }
+          : { kind: "match", missing: true };
       }
       case "comment": {
         const cm = await db.select({ text: schema.postComments.text, userId: schema.postComments.userId }).from(schema.postComments).where(eq(schema.postComments.id, targetId)).get();
@@ -948,9 +952,45 @@ async function reportPreview(db: any, targetType: string | null, targetId: strin
   }
 }
 
+const MATCH_REPORT_TARGETS = ["match", "contestMatch", "contestMatches"];
+
+/**
+ * Release a battle's moderation hold once no OPEN report on it remains. A no-op
+ * for non-match targets and for battles that were never held.
+ */
+async function releaseMatchHoldIfClear(db: any, targetType: string | null, targetId: string | null): Promise<void> {
+  if (!targetId || !MATCH_REPORT_TARGETS.includes(String(targetType))) return;
+  const open = await db
+    .select({ id: schema.reports.id })
+    .from(schema.reports)
+    .where(
+      and(
+        eq(schema.reports.targetId, targetId),
+        inArray(schema.reports.targetType, MATCH_REPORT_TARGETS),
+        sql`COALESCE(${schema.reports.status}, 'open') = 'open'`,
+      ),
+    )
+    .limit(1)
+    .all();
+  if (open.length === 0) {
+    await db
+      .update(schema.contestMatches)
+      .set({ moderationHoldAt: null } as any)
+      .where(eq(schema.contestMatches.id, targetId));
+  }
+}
+
 adminRoute.get("/reports", async (c) => {
   const db = getDb(c.env);
-  const rows = await db.select().from(schema.reports).orderBy(desc(schema.reports.createdAt)).limit(100).all();
+  // Dismissed rows are kept (they make a re-report a no-op duplicate) but are
+  // closed, so the queue only shows what still needs a decision.
+  const rows = await db
+    .select()
+    .from(schema.reports)
+    .where(sql`COALESCE(${schema.reports.status}, 'open') <> 'dismissed'`)
+    .orderBy(desc(schema.reports.createdAt))
+    .limit(100)
+    .all();
   const out = await Promise.all(
     rows.map(async (r) => ({
       ...r,
@@ -963,7 +1003,11 @@ adminRoute.get("/reports", async (c) => {
 adminRoute.delete("/reports", async (c) => {
   const db = getDb(c.env);
   const id = c.req.query("id");
-  if (id) await db.delete(schema.reports).where(eq(schema.reports.id, id));
+  if (id) {
+    const r = await db.select().from(schema.reports).where(eq(schema.reports.id, id)).get();
+    await db.delete(schema.reports).where(eq(schema.reports.id, id));
+    if (r) await releaseMatchHoldIfClear(db, r.targetType, r.targetId);
+  }
   return c.json({ message: "Report deleted" });
 });
 
@@ -991,18 +1035,38 @@ adminRoute.post("/reports/:id/resolve", async (c) => {
         break;
       case "match":
       case "contestMatch":
-      case "contestMatches":
-        await db.update(schema.contestMatches).set({ status: "cancelled" }).where(eq(schema.contestMatches.id, r.targetId as string));
-        // Removed content must not stay on either participant's story ring.
-        await teardownVsStories(c.env, r.targetId as string).catch((e) =>
-          console.error("[admin] report removal: VS story teardown failed (continuing)", r.targetId, e),
-        );
+      case "contestMatches": {
+        const m = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, r.targetId as string)).get();
+        if (m && (m.status === "active" || m.status === "waiting_for_opponent")) {
+          // A battle still holding entry fees is cancelled WITH a refund — the
+          // same path as the admin cancel button — never a bare status flip that
+          // would swallow both players' coins.
+          const settled = await cancelMatchWithRefund(c, m, { reason: "Removed by moderation:", audit: "match.cancel.report" });
+          if (!settled) throw httpsError("failed-precondition", "The battle settled meanwhile — reload and try again.");
+        } else if (m && m.status !== "cancelled") {
+          // Already settled: payouts stand; the content is just taken down.
+          await db.update(schema.contestMatches).set({ status: "cancelled" }).where(eq(schema.contestMatches.id, m.id));
+          // Removed content must not stay on either participant's story ring.
+          await teardownVsStories(c.env, m.id).catch((e) =>
+            console.error("[admin] report removal: VS story teardown failed (continuing)", m.id, e),
+          );
+        }
         break;
+      }
       default:
         break;
     }
   }
-  await db.delete(schema.reports).where(eq(schema.reports.id, id));
+  if (action === "remove") {
+    // The content is gone; its reports have nothing left to decide.
+    await db.delete(schema.reports).where(eq(schema.reports.id, id));
+  } else {
+    // Dismiss keeps the row as 'dismissed' so the same reporter re-reporting is
+    // a duplicate (unique reporter/target) rather than a fresh vote toward the
+    // auto-hold. The hold is released once no OPEN report on the battle remains.
+    await db.update(schema.reports).set({ status: "dismissed" }).where(eq(schema.reports.id, id));
+    await releaseMatchHoldIfClear(db, r.targetType, r.targetId);
+  }
   await logAudit(c, `report.${action === "remove" ? "remove" : "dismiss"}`, r.targetType || "report", r.targetId || id);
   return c.json({ message: action === "remove" ? "Content removed" : "Report dismissed" });
 });
@@ -2806,15 +2870,18 @@ adminRoute.post("/matches/:id/declare-winner", async (c) => {
  * Cancel a match and refund both participants' entry fees. Only cancels a match
  * that isn't already completed/cancelled. Idempotent via an atomic status claim.
  */
-adminRoute.post("/matches/:id/cancel", async (c) => {
-  requireFullAdmin(c);
-  const db = getDb(c.env);
-  const id = c.req.param("id");
-  const m = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, id)).get();
-  if (!m) throw httpsError("not-found", "Match not found.");
-  if (m.status !== "active" && m.status !== "waiting_for_opponent") {
-    throw httpsError("failed-precondition", "Only an active or waiting match can be cancelled.");
-  }
+/**
+ * Cancel an active/waiting match and refund both participants' entry fees.
+ * Shared by the admin cancel endpoint and report removal so a moderated battle
+ * never swallows entry fees. Idempotent via the atomic settlement claim; returns
+ * false when another resolver already settled it.
+ */
+async function cancelMatchWithRefund(
+  c: any,
+  m: typeof schema.contestMatches.$inferSelect,
+  opts: { reason: string; audit: string },
+): Promise<boolean> {
+  const id = m.id;
   const userA = m.userA as any;
   const userB = m.userB as any;
   if (m.status === "active") {
@@ -2837,10 +2904,10 @@ adminRoute.post("/matches/:id/cancel", async (c) => {
     participantUids: participants,
     // Refund exactly what each player was charged (whole coins, floored).
     refundPerUser: perPlayerEntryFee(m.entryFee),
-    description: `Admin cancelled "${m.title}" — entry fee refunded`,
+    description: `${opts.reason} "${m.title}" — entry fee refunded`,
     completedAt: ts,
   });
-  if (!settled) throw httpsError("failed-precondition", "Match could not be cancelled.");
+  if (!settled) return false;
   for (const u of [userA, userB]) {
     if (u?.uid) {
       await createNotification(c.env, u.uid, { title: "Battle Cancelled", body: `The battle "${m.title}" was cancelled by an admin and your entry fee was refunded.`, type: "contest-refund", targetId: "wallet" });
@@ -2857,10 +2924,24 @@ adminRoute.post("/matches/:id/cancel", async (c) => {
   } catch (e) {
     console.error("[admin] cancel: VS story teardown failed (continuing)", id, e);
   }
-  await logAudit(c, "match.cancel", "match", id, {
+  await logAudit(c, opts.audit, "match", id, {
     refundPerUser: perPlayerEntryFee(m.entryFee),
     participants: participants.length,
   });
+  return true;
+}
+
+adminRoute.post("/matches/:id/cancel", async (c) => {
+  requireFullAdmin(c);
+  const db = getDb(c.env);
+  const id = c.req.param("id");
+  const m = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, id)).get();
+  if (!m) throw httpsError("not-found", "Match not found.");
+  if (m.status !== "active" && m.status !== "waiting_for_opponent") {
+    throw httpsError("failed-precondition", "Only an active or waiting match can be cancelled.");
+  }
+  const settled = await cancelMatchWithRefund(c, m, { reason: "Admin cancelled", audit: "match.cancel" });
+  if (!settled) throw httpsError("failed-precondition", "Match could not be cancelled.");
   return c.json({ message: "Match cancelled and refunded" });
 });
 

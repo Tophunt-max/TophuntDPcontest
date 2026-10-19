@@ -106,3 +106,27 @@ export const MAX_TIMEOUT_MS = 2_147_000_000;
 export function clampTimeout(ms: number): number {
   return Math.min(Math.max(ms, 0), MAX_TIMEOUT_MS);
 }
+
+/** Two-digit pad. */
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+/**
+ * A live clock for a running battle: `04:12:09`, or `2d 04:12:09` beyond a day.
+ *
+ * Unlike `formatTimeRemaining` (two units, minutes-resolution above an hour —
+ * right for contest listings), this ALWAYS shows seconds, so a battle card's timer
+ * visibly ticks every second. Same null / `ENDED` contract.
+ */
+export function formatClock(v: Deadline, now: number = Date.now()): string | null {
+  const end = deadlineMs(v);
+  if (end === null) return null;
+  const diff = end - now;
+  if (diff <= 0) return ENDED;
+  const total = Math.floor(diff / 1000);
+  const days = Math.floor(total / 86_400);
+  const h = Math.floor((total % 86_400) / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const clock = `${pad2(h)}:${pad2(m)}:${pad2(s)}`;
+  return days > 0 ? `${days}d ${clock}` : clock;
+}

@@ -87,6 +87,24 @@ describe('getViewShot (web capture)', () => {
     await expect(mod.captureRef!({ nodeType: 1 })).rejects.toThrow(/CORS|no image/i);
   });
 
+  it('fails (instead of sharing a blank photo frame) when an image in the node is unreadable', async () => {
+    // html-to-image silently swaps an unfetchable image for an empty one; the
+    // pre-check turns that into a capture failure so the caller falls back.
+    toCanvas.mockResolvedValue(fakeCanvas(new Blob(['x'], { type: 'image/jpeg' })));
+    const fetchMock = vi.fn(async (u: string) => ({ ok: !u.includes('blocked'), status: u.includes('blocked') ? 403 : 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const node = (srcs: string[]) => ({ nodeType: 1, querySelectorAll: () => srcs.map((src) => ({ src, currentSrc: src })) });
+    const mod = getViewShot()!;
+
+    await expect(mod.captureRef!(node(['https://media.tophunt.in/ok.jpg', 'https://other.example/blocked.jpg']))).rejects.toThrow(/not readable/);
+    expect(toCanvas).not.toHaveBeenCalled();
+
+    // Readable images (and inline data:/blob: ones, which are never fetched) capture normally.
+    fetchMock.mockClear();
+    await expect(mod.captureRef!(node(['https://media.tophunt.in/ok.jpg', 'data:image/png;base64,AA']))).resolves.toMatch(/^blob:/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('revokes only blob: URLs on release', () => {
     const mod = getViewShot()!;
     mod.releaseCapture!('blob:https://app.tophunt.in/generated');

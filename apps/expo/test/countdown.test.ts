@@ -11,7 +11,7 @@
  */
 import { describe, it, expect } from 'vitest';
 
-import { ENDED, deadlineMs, formatTimeRemaining, hasEnded } from '@/src/lib/countdown';
+import { ENDED, deadlineMs, formatTimeRemaining, hasEnded, formatClock } from '@/src/lib/countdown';
 
 const NOW = Date.UTC(2026, 0, 1, 12, 0, 0);
 const SEC = 1000;
@@ -80,5 +80,26 @@ describe('formatTimeRemaining', () => {
     // having ended in 1970.
     expect(deadlineMs(null)).toBeNull();
     expect(hasEnded(0, NOW)).toBe(true);
+  });
+});
+
+describe('formatClock (live battle timer)', () => {
+  const now = 1_700_000_000_000;
+  it('always shows seconds, zero-padded', () => {
+    expect(formatClock(now + 5_000, now)).toBe('00:00:05');
+    expect(formatClock(now + 59 * 60_000 + 59_000, now)).toBe('00:59:59');
+    expect(formatClock(now + 4 * 3_600_000 + 12 * 60_000 + 9_000, now)).toBe('04:12:09');
+  });
+  it('adds days beyond 24h', () => {
+    expect(formatClock(now + 2 * 86_400_000 + 3_600_000, now)).toBe('2d 01:00:00');
+  });
+  it('changes every second, even far from the deadline', () => {
+    const end = now + 10 * 3_600_000;
+    expect(formatClock(end, now)).not.toBe(formatClock(end, now + 1000));
+  });
+  it('keeps the null / Ended contract', () => {
+    expect(formatClock(null, now)).toBeNull();
+    expect(formatClock(now, now)).toBe('Ended');
+    expect(formatClock(now - 1, now)).toBe('Ended');
   });
 });

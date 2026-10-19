@@ -46,6 +46,7 @@ const TABLE: Record<string, RouteAccess> = {
   explore: 'public',
   'explore/leaderboard': 'public',
   'battle/[id]': 'public',
+  'battle/[id]/result': 'public', // winner page; shared result links open for guests
   blog: 'public',
   'blog/[slug]': 'public',
   '[slug]': 'public', // `/@handle` profiles and root blog permalinks
