@@ -1,6 +1,8 @@
 import Constants from "expo-constants";
-import { useQuery } from "@tanstack/react-query";
-import { readApi } from "./api";
+import { useQuery, type QueryClient } from "@tanstack/react-query";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { readApi, readApiLive } from "./api";
+import { compareVersions as compareVersionsStrict, newerConfig } from "@/src/lib/appControl";
 
 export interface AppConfig {
   appName: string;
@@ -16,7 +18,16 @@ export interface AppConfig {
   // Feature flags — a feature is ON unless explicitly set to false.
   features?: Record<string, boolean>;
   // Withdrawal config
-  withdrawal?: { enabled?: boolean; minAmount?: number; conversionRate?: number };
+  withdrawal?: {
+    enabled?: boolean;
+    payoutsFrozen?: boolean;
+    minAmount?: number;
+    maxAmount?: number;
+    maxPerDay?: number;
+    conversionRate?: number;
+  };
+  /** Bumped on every admin save; the newer copy wins. */
+  version?: number;
   splashImageUrl?: string;
   headerLogoUrl?: string;
   /** First-launch intro slides, managed from the admin panel's Onboarding page. Empty = built-in. */
@@ -40,18 +51,12 @@ export function isFeatureEnabled(config: AppConfig | null | undefined, key: stri
   return config?.features?.[key] !== false;
 }
 
-/** Semantic-ish version compare: returns -1, 0, or 1 for a<b, a==b, a>b. */
+/**
+ * Version compare: -1, 0 or 1. Tolerates a leading "v" and pre-release tags
+ * ("v1.4.0-beta" == 1.4.0), which used to parse as 0.4.0 and never trigger.
+ */
 export function compareVersions(a: string, b: string): number {
-  const pa = String(a || "0").split(".").map((n) => parseInt(n, 10) || 0);
-  const pb = String(b || "0").split(".").map((n) => parseInt(n, 10) || 0);
-  const len = Math.max(pa.length, pb.length);
-  for (let i = 0; i < len; i++) {
-    const x = pa[i] || 0;
-    const y = pb[i] || 0;
-    if (x < y) return -1;
-    if (x > y) return 1;
-  }
-  return 0;
+  return compareVersionsStrict(a, b);
 }
 
 /** The current installed app version (from app.json / expo config). */
@@ -71,26 +76,82 @@ export function useFeature(key: string): boolean {
   return isFeatureEnabled(config, key);
 }
 
+export const APP_CONFIG_QUERY_KEY = ["app-config"] as const;
+const PERSIST_KEY = "app-config:last:v1";
+
 /**
- * App config, shared across ALL consumers via a single react-query cache.
- * Previously every component that called useAppConfig() spun up its own 30s
- * poll of /read/app-config — a screen with 4-5 consumers meant 4-5× the
- * requests. react-query dedupes by queryKey, so now there is ONE request
- * regardless of how many components read it, refreshed at most every 5 min
- * (app config changes rarely). This is a big win for load time + Worker/D1 cost.
+ * Fetch the live config. Throws on failure, so react-query KEEPS the last good
+ * copy: returning null here (as it used to) made one network blip read as
+ * "maintenance off, every feature on" and let users back into a closed app.
+ * Bypasses every HTTP cache, and records the server/device clock difference so
+ * scheduled maintenance switches at the server's minute, not the phone's.
+ */
+export async function fetchAppConfig(): Promise<AppConfig> {
+  const t0 = Date.now();
+  const cfg = (await readApiLive("/read/app-config", { _: t0 })) as AppConfig;
+  const serverTime = Number((cfg as any)?.serverTime);
+  return {
+    ...cfg,
+    _skewMs: Number.isFinite(serverTime) ? serverTime - Math.round((t0 + Date.now()) / 2) : 0,
+  } as AppConfig;
+}
+
+/** Keep the newer of the cached and incoming config, and remember it on the device. */
+export function applyAppConfig(queryClient: QueryClient, incoming: AppConfig | null | undefined): void {
+  if (!incoming) return;
+  const next = newerConfig(queryClient.getQueryData<AppConfig>(APP_CONFIG_QUERY_KEY) as any, incoming as any);
+  queryClient.setQueryData(APP_CONFIG_QUERY_KEY, next);
+  void AsyncStorage.setItem(PERSIST_KEY, JSON.stringify(next)).catch(() => {});
+}
+
+/**
+ * Seed the cache from the last config this device saw, so a cold start with no
+ * network still honours maintenance / disabled features instead of failing open.
+ */
+export async function hydrateAppConfig(queryClient: QueryClient): Promise<void> {
+  try {
+    const raw = await AsyncStorage.getItem(PERSIST_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    if (!queryClient.getQueryData(APP_CONFIG_QUERY_KEY)) {
+      // Stale on purpose (updatedAt 0), so the first mount still fetches.
+      queryClient.setQueryData(APP_CONFIG_QUERY_KEY, saved, { updatedAt: 0 });
+    }
+  } catch {
+    /* nothing saved, or unreadable */
+  }
+}
+
+/**
+ * App config, shared by every consumer through ONE react-query cache entry.
+ *
+ * Kept live by three things (src/components/system/LiveAppConfig.tsx):
+ *  - an admin save pushes the new config over realtime (seconds);
+ *  - returning to the app / regaining the network refetches;
+ *  - a 60s safety poll while the app is in the foreground.
+ * A pushed copy and a polled copy are merged by `version`, newest wins.
  */
 export function useAppConfig() {
   const { data, isLoading } = useQuery({
-    queryKey: ["app-config"],
-    queryFn: () => getAppConfig(),
-    staleTime: 5 * 60_000,
-    refetchInterval: 5 * 60_000,
+    queryKey: APP_CONFIG_QUERY_KEY,
+    queryFn: async () => {
+      const fresh = await fetchAppConfig();
+      void AsyncStorage.setItem(PERSIST_KEY, JSON.stringify(fresh)).catch(() => {});
+      return fresh;
+    },
+    staleTime: 20_000,
+    refetchInterval: 60_000,
     refetchOnMount: false,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+    // A polled answer must never replace a newer pushed one.
+    structuralSharing: (prev: unknown, next: unknown) => newerConfig(prev as any, next as any) as any,
   });
-  return { config: (data as AppConfig) ?? null, loading: isLoading };
+  return { config: (data as AppConfig) ?? null, loading: isLoading && !data };
 }
 
-// One-time fetch (used in splash / onboarding).
+// One-time fetch (used in splash / onboarding). Null on error: those callers
+// only read cosmetic fields and fall back to built-ins.
 export async function getAppConfig(): Promise<AppConfig | null> {
   try {
     return (await readApi("/read/app-config")) as AppConfig;

@@ -424,9 +424,24 @@ export async function cachedResponse<T>(
     varyParams?: Record<string, string | number | null | undefined>;
     /** Defaults to the request's own path. */
     pathname?: string;
+    /**
+     * Cache-Control sent to the CALLER, when it must differ from the colo TTL.
+     *
+     * Needed for anything a client must see change quickly: Cloudflare re-stamps
+     * a cached response's browser max-age with the zone's Browser Cache TTL (4h on
+     * this zone — observed on /read/app-config), so a hit could tell browsers and
+     * phones to keep a maintenance switch for hours. The colo copy keeps `ttlSec`.
+     */
+    clientCacheControl?: string;
   } = {},
 ): Promise<Response> {
-  const { varyParams } = opts;
+  const { varyParams, clientCacheControl } = opts;
+  const forClient = (r: Response): Response => {
+    if (!clientCacheControl) return r;
+    const out = new Response(r.body, r);
+    out.headers.set("Cache-Control", clientCacheControl);
+    return out;
+  };
   const pathname = opts.pathname ?? new URL(c.req.url).pathname;
   const cache = defaultCache();
   const cacheKey = urlEdgeKey(c, pathname, varyParams);
@@ -434,7 +449,7 @@ export async function cachedResponse<T>(
     const hit = cache ? await cache.match(cacheKey) : null;
     if (hit) {
       noteCache(c, "hit");
-      return hit;
+      return forClient(hit);
     }
   } catch {
     /* cache unavailable — fall through */
@@ -452,5 +467,5 @@ export async function cachedResponse<T>(
     /* best-effort */
   }
   noteCache(c, cache ? "miss" : "bypass");
-  return res;
+  return forClient(res);
 }

@@ -55,7 +55,7 @@ import {
 import { applyPublicMediaCors, preflightMediaCorsHeaders } from "./lib/mediaCors";
 import { cachePolicyForKey } from "./lib/mediaCategories";
 import { clientIp, rateLimit } from "./lib/rateLimit";
-import { authorizeGuestMatchSocket, GUEST_SOCKET_UID, parseWsChannel, trustedHubHeaders } from "./lib/wsGuest";
+import { authorizeGuestMatchSocket, GUEST_SOCKET_UID, parseWsChannel, trustedHubHeaders, authorizeAppConfigSocket, MAX_APP_CONFIG_SOCKETS } from "./lib/wsGuest";
 
 // Durable Object for real-time WebSocket push.
 export { RealtimeHub } from "./realtime";
@@ -366,6 +366,19 @@ app.get("/ws", async (c) => {
   const parsed = parseWsChannel(channel);
   if (!parsed) return c.text("Unknown channel.", 400);
 
+  // App Control push: always anonymous, token or not (see authorizeAppConfigSocket).
+  if (parsed.kind === "app") {
+    const ip = c.req.header("CF-Connecting-IP") || c.req.header("X-Forwarded-For")?.split(",")[0]?.trim() || "unknown";
+    const decision = await authorizeAppConfigSocket(c.env, ip);
+    if (!decision.ok) return c.text(decision.reason, decision.status);
+    const appHeaders = trustedHubHeaders(c.req.raw.headers);
+    appHeaders.set("X-Authenticated-Uid", GUEST_SOCKET_UID);
+    appHeaders.set("X-Guest-Socket", "1");
+    appHeaders.set("X-Guest-Cap", String(MAX_APP_CONFIG_SOCKETS));
+    const appStub = c.env.REALTIME.get(c.env.REALTIME.idFromName(channel));
+    return appStub.fetch(new Request(c.req.raw, { headers: appHeaders }));
+  }
+
   if (!token) {
     if (parsed.kind !== "match") return c.text("Missing channel or token.", 400);
     const guestRef = parsed.ref;
@@ -466,7 +479,7 @@ app.onError((err, c) => {
     //
     // 4xx stays unlogged on purpose — those are the client's problem and are
     // ordinary traffic, so recording them would bury exactly this kind of fault.
-    if (err.status >= 500) {
+    if (err.status >= 500 && !err.reason) {
       const apiErrCtx = { requestId, path: errPath, method: c.req.method, status: err.status };
       c.executionCtx.waitUntil(logErrorToDb(c.env, err, apiErrCtx));
       c.executionCtx.waitUntil(captureError(c.env, err, apiErrCtx));

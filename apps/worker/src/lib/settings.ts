@@ -7,7 +7,7 @@ import { resolveAuthMethods, type AuthMethods } from "./authMethods";
 import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { delCache, kvWritesDisabled } from "./cache";
-import { memoDelete } from "./memo";
+import { memoDelete, memoGet, memoPut } from "./memo";
 import { kvPutsSuspended, noteKvPutFailure } from "./kvQuota";
 
 /**
@@ -191,6 +191,23 @@ export async function invalidateSetting(env: Env, id: string): Promise<void> {
  * values may be derived this way — nothing a security or money decision reads.
  */
 export const FEED_WEIGHTS_MEMO_KEY = "memo:feedWeights";
+/**
+ * The App Control gate (lib/appControl.ts) runs on every /api write. It reads
+ * appConfig through a 5-second isolate memo so a busy isolate does not spend a
+ * KV read per request. Availability switches only (maintenance, feature flags,
+ * minimum version) — never a money decision, which keeps reading KV directly
+ * (the payoutsFrozen kill switch in requestWithdrawal).
+ */
+export const APP_CONTROL_MEMO_KEY = "memo:appControlGate";
+const APP_CONTROL_MEMO_SEC = 5;
+
+export async function getAppControlConfig(env: Env): Promise<any> {
+  const hit = memoGet<{ v: any }>(APP_CONTROL_MEMO_KEY);
+  if (hit) return hit.v;
+  const v = (await readSetting(env, "appConfig")) || {};
+  memoPut(APP_CONTROL_MEMO_KEY, { v }, APP_CONTROL_MEMO_SEC);
+  return v;
+}
 const DERIVED_MEMO_KEYS: Record<string, string[]> = {
-  appConfig: [FEED_WEIGHTS_MEMO_KEY],
+  appConfig: [FEED_WEIGHTS_MEMO_KEY, APP_CONTROL_MEMO_KEY],
 };

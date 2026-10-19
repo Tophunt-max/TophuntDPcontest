@@ -33,7 +33,9 @@ import { cachedJson, cachedResponse } from "../lib/edgeCache";
 import { memoGet, memoPut } from "../lib/memo";
 import { recordBlogView } from "../lib/viewCounter";
 import { kickSettlementIfDue } from "../lib/settleDue";
-import { legacyAuthSettings, methodAllowed, resolveAuthMethods } from "../lib/authMethods";
+import { publicAppConfig } from "../lib/appControl";
+
+const APP_CONFIG_EDGE_TTL_SEC = 30;
 import { getLiveTally, getViewerVote } from "../lib/voteCounter";
 import { publicPrize } from "../lib/prizes";
 import { clientIp, rateLimit } from "../lib/rateLimit";
@@ -1703,61 +1705,16 @@ readRoute.get("/leaderboard", optionalAuth, guestReadLimit, async (c) => {
 readRoute.get("/app-config", async (c) => {
   // No query parameters: the edge key is the bare path, so `?anything=1` cannot
   // mint extra colo entries for a byte-identical response. See `urlEdgeKey`.
-  return cachedResponse(c, 120, async () => {
-    const cfg: any = (await getAppConfig(c.env)) || {};
-    const ads = cfg.ads || {};
-    const withdrawal = cfg.withdrawal || {};
-    const authMethods = resolveAuthMethods(cfg);
-    return {
-      // Gates the client must honour before/at login.
-      maintenanceMode: !!cfg.maintenanceMode,
-      maintenanceMessage: cfg.maintenanceMessage || "",
-      forceUpdate: !!cfg.forceUpdate,
-      minAppVersion: cfg.minAppVersion || "",
-      announcement: {
-        enabled: !!cfg.announcement?.enabled,
-        message: cfg.announcement?.message || "",
-        link: cfg.announcement?.link || "",
-      },
-      features: cfg.features || {},
-      // Sign-in / sign-up switches (lib/authMethods.ts), per platform. The app
-      // hides every method that is off; the signup writers enforce the same rules.
-      authMethods,
-      // The shape already-shipped builds read (`data.authSettings.googleLogin`),
-      // so admin switches reach them too. Platform-agnostic.
-      authSettings: legacyAuthSettings(authMethods),
-      // Legacy top-level flags, now derived from the same switches.
-      googleLogin: methodAllowed(authMethods, "google"),
-      appleLogin: methodAllowed(authMethods, "apple"),
-      facebookLogin: methodAllowed(authMethods, "facebook"),
-      // Wallet rules the wallet screens render. Deliberately only the limits the
-      // user is subject to — never internal accounting fields.
-      withdrawal: {
-        enabled: withdrawal.enabled !== false,
-        payoutsFrozen: withdrawal.payoutsFrozen === true,
-        minAmount: Number(withdrawal.minAmount ?? 0),
-        maxAmount: Number(withdrawal.maxAmount ?? 0),
-        maxPerDay: Number(withdrawal.maxPerDay ?? 0),
-        conversionRate: Number(withdrawal.conversionRate ?? 1),
-      },
-      paymentGateway: { mode: cfg.paymentGateway?.mode || "auto" },
-      // Whether to show the rewarded-ad task at all.
-      ads: { enabled: ads.enabled === true, reward: Number(ads.reward ?? 0), dailyCap: Number(ads.dailyCap ?? 0) },
-      // NB: `legalContent` is deliberately NOT here — see GET /read/legal below.
-      supportEmail: cfg.supportEmail || "",
-      socialLinks: cfg.socialLinks || {},
-      // First-launch intro (lib/onboardingConfig.ts). Validated on save; projected
-      // again here so only the three display fields of a bounded list go out.
-      onboardingEnabled: onboardingEnabled(cfg),
-      onboarding: Array.isArray(cfg.onboarding)
-        ? cfg.onboarding.slice(0, ONBOARDING_MAX_SLIDES).map((s: any) => ({
-            title: typeof s?.title === "string" ? s.title : "",
-            description: typeof s?.description === "string" ? s.description : "",
-            imageUrl: typeof s?.imageUrl === "string" ? s.imageUrl : "",
-          }))
-        : [],
-    };
-  });
+  //
+  // 30s in the colo (admin saves also purge it and push the new copy over
+  // realtime, lib/appControl.ts), and never cached by browsers or phones: a
+  // maintenance switch must not be held for the zone's 4-hour browser TTL.
+  return cachedResponse(
+    c,
+    APP_CONFIG_EDGE_TTL_SEC,
+    async () => publicAppConfig((await getAppConfig(c.env)) || {}, Date.now()),
+    { clientCacheControl: "no-store, max-age=0" },
+  );
 });
 
 /**

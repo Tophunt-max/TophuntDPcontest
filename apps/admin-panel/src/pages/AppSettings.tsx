@@ -54,7 +54,36 @@ const MANAGED_KEYS = [
   // never re-post a stale copy over it.
   "onboarding",
   "onboardingEnabled",
+  // Owned by App Control (live switches). Never re-posted from this page: a
+  // stale copy here would silently undo maintenance / flags / banner changes.
+  "maintenanceMode",
+  "maintenanceMessage",
+  "maintenanceEta",
+  "maintenanceSchedule",
+  "forceUpdate",
+  "forceUpdateMode",
+  "minAppVersion",
+  "updateUrls",
+  "updateUrl",
+  "updateMessage",
+  "announcement",
+  "features",
+  "authMethods",
+  // Server-stamped.
+  "_version",
 ];
+
+/** The keys THIS form edits and sends. Everything else is left untouched server-side. */
+const FORM_KEYS = [
+  "rewardSettings",
+  "verificationReward",
+  "withdrawal",
+  "paymentGateway",
+  "ads",
+  "adminAlertEmail",
+  "supportEmail",
+  "socialLinks",
+] as const;
 
 interface VerificationRewardCfg {
   enabled: boolean;
@@ -112,7 +141,7 @@ const DEFAULTS: Cfg = {
   withdrawal: {
     enabled: true,
     payoutsFrozen: false,
-    minAmount: 100,
+    minAmount: 0,
     maxAmount: 0,
     maxPerDay: 0,
     conversionRate: 1,
@@ -268,8 +297,12 @@ export default function AppSettings() {
       toast.error(verificationError);
       return;
     }
-    // Advanced first so the structured fields always win for keys they own.
-    saveMut.mutate({ ...advanced, ...cfg });
+    // Only this form's keys (plus Advanced extras): the Worker merges, so
+    // nothing owned by another page — legal text, onboarding, App Control's live
+    // switches — is re-posted from a stale copy. Structured fields win.
+    const own = Object.fromEntries(FORM_KEYS.map((k) => [k, (cfg as any)[k]]));
+    const extras = Object.fromEntries(Object.entries(advanced).filter(([k]) => !MANAGED_KEYS.includes(k)));
+    saveMut.mutate({ ...extras, ...own });
   };
 
   if (isLoading) return <div className="text-sm text-muted-foreground py-10 text-center">Loading…</div>;

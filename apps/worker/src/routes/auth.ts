@@ -16,7 +16,8 @@ import {
   updateAuthUser,
   deleteAuthUser,
 } from "../lib/firebaseAdmin";
-import { getAuthMethods, getRewardSettings } from "../lib/settings";
+import { getAppControlConfig, getAuthMethods, getRewardSettings } from "../lib/settings";
+import { appControlGate } from "../lib/appControl";
 import { assertLoginAllowed, assertSignupAllowed, normalizePlatform, signupMethodForProvider, type AuthMethodKey } from "../lib/authMethods";
 import { setOtp, generateOtp, verifyOtp, deleteOtp } from "../lib/otp";
 import { validatePasswordStrength } from "../lib/password";
@@ -258,6 +259,12 @@ authRoute.post("/", async (c) => {
   const db = getDb(env);
   const uid = c.get("user")?.uid;
   const ip = clientIp(c.req.raw.headers);
+
+  // No new accounts during maintenance: the app is closed. Sign-in stays open so
+  // staff can log in to check it.
+  if (action === "create" || action === "createProfile") {
+    appControlGate(await getAppControlConfig(env), { action, role: c.get("user")?.role ?? null });
+  }
 
   switch (action) {
     case "check": {

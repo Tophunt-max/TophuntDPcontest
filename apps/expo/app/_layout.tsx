@@ -22,6 +22,10 @@ import customParseFormat from 'dayjs/plugin/customParseFormat';
 import calendar from 'dayjs/plugin/calendar';
 import utc from 'dayjs/plugin/utc';
 import { createRootGuard } from '@/src/lib/rootGuard';
+import { useAppControl, useViewer } from '@/src/hooks/useAppControl';
+import { allowedDuringMaintenance, featureForRoute, featureOn } from '@/src/lib/appControl';
+import { LiveAppConfig } from '@/src/components/system/LiveAppConfig';
+import { AppControlBars } from '@/src/components/system/AppControlBars';
 
 // Initialize all dayjs plugins globally at the root
 dayjs.extend(localeData);
@@ -55,7 +59,7 @@ focusManager.setEventListener((handleFocus) => {
   const sub = AppState.addEventListener('change', (state) => handleFocus(state === 'active'));
   return () => sub.remove();
 });
-import { useAppConfig, isUpdateRequired } from '@/src/services/appSettings';
+
 import { useAuth } from '@/src/hooks/useAuth'; // Import useAuth hook
 import { notificationService } from '@/src/services/notifications/notificationService';
 import { AnnouncementBanner } from '@/src/components/ui/AnnouncementBanner';
@@ -113,33 +117,44 @@ const queryClient = new QueryClient({
   },
 });
 
-// Component to handle maintenance redirect logic
+/**
+ * App Control gate (admin panel → App Control), for every route.
+ *
+ *  1. Maintenance (manual or scheduled; staff may enter anyway) → /maintenance.
+ *     Sign-in and legal pages stay reachable, so staff can log in.
+ *  2. A required update (native only; "soft" can be snoozed) → /force-update.
+ *  3. A route whose feature is switched off → /feature-off.
+ * Everything is live: LiveAppConfig pushes admin changes in seconds, and a
+ * scheduled window switches at its minute without a fetch.
+ */
 function MaintenanceGuard({ children }: { children: React.ReactNode }) {
-  const { config, loading } = useAppConfig();
-  const segments = useSegments();
+  const { control, config, loading } = useAppControl();
+  const viewer = useViewer();
+  const segments = useSegments() as string[];
   const router = useRouter();
+  const top = segments[0];
+  const blocked = control.maintenance.active && !control.maintenance.bypassed;
+  const routeFeature = featureForRoute(segments);
+  // Signed-in only: every feature route is private, so a guest is sent to sign
+  // in by the root guard — two guards redirecting at once would race.
+  const featureBlocked = viewer.signedIn && !!routeFeature && !featureOn(config, routeFeature);
 
   useEffect(() => {
     if (loading) return;
-
-    const isMaintenancePage = segments[0] === 'maintenance';
-    const isForceUpdatePage = segments[0] === 'force-update';
-
-    // 1) Maintenance takes top priority.
-    if (config?.maintenanceMode) {
-      if (!isMaintenancePage) router.replace('/maintenance');
+    if (blocked) {
+      if (!allowedDuringMaintenance(segments)) router.replace('/maintenance');
       return;
     }
-    // 2) Force update (app version below the admin-set minimum).
-    if (isUpdateRequired(config)) {
-      if (!isForceUpdatePage) router.replace('/force-update');
+    if (control.update.required) {
+      if (top !== 'force-update') router.replace('/force-update');
       return;
     }
-    // 3) Neither active — leave the gate screens if we're stuck on one.
-    if (isMaintenancePage || isForceUpdatePage) {
+    if (top === 'maintenance' || top === 'force-update') {
       router.replace('/');
+      return;
     }
-  }, [config?.maintenanceMode, config?.forceUpdate, config?.minAppVersion, loading, segments]);
+    if (featureBlocked && routeFeature) router.replace(`/feature-off?f=${routeFeature}` as any);
+  }, [loading, blocked, control.update.required, featureBlocked, routeFeature, top, segments, router]);
 
   return <>{children}</>;
 }
@@ -353,11 +368,16 @@ function RootLayoutNav() {
             <Stack.Screen name="home" />
             <Stack.Screen name="maintenance" options={{ gestureEnabled: false }} />
             <Stack.Screen name="force-update" options={{ gestureEnabled: false }} />
+            <Stack.Screen name="feature-off" options={{ gestureEnabled: false }} />
             <Stack.Screen name="account-scheduled-deletion" options={{ gestureEnabled: false }} />
             <Stack.Screen name="notifications/index" options={{ presentation: 'modal', title: 'Notifications' }} />
             <Stack.Screen name="notifications/requests" options={{ presentation: 'modal', title: 'Follow requests' }} />
           </Stack>
-          {/* Admin-controlled announcement banner (renders only on the home screen; dismissal persists). */}
+          {/* Keeps App Control (maintenance, update, flags, banner) live on this device. */}
+          <LiveAppConfig />
+          {/* Upcoming-maintenance notice, and the staff "maintenance is ON" bar. */}
+          <AppControlBars />
+          {/* Admin-controlled announcement banner (main screens; dismissal persists per announcement). */}
           <AnnouncementBanner />
           {/* Admin-controlled announcement popup (targeted, 24h-snooze modal). */}
           <AnnouncementPopup />

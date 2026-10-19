@@ -22,6 +22,7 @@
  */
 import type { Env } from "../types";
 import { memoGet, memoPut } from "./memo";
+import { APP_CONFIG_SHARDS } from "./appControl";
 
 const MATCH_ID = /^[A-Za-z0-9_-]{6,64}$/;
 const LIVE_STATUSES = new Set(["active", "waiting_for_opponent"]);
@@ -70,7 +71,7 @@ export async function authorizeGuestMatchSocket(env: Env, ref: string, ip: strin
  */
 export function trustedHubHeaders(incoming: Headers): Headers {
   const h = new Headers(incoming);
-  for (const name of ["X-Authenticated-Uid", "X-Presence-Uid", "X-Guest-Socket"]) h.delete(name);
+  for (const name of ["X-Authenticated-Uid", "X-Presence-Uid", "X-Guest-Socket", "X-Guest-Cap"]) h.delete(name);
   return h;
 }
 
@@ -78,12 +79,40 @@ export function trustedHubHeaders(incoming: Headers): Headers {
  * Split a `/ws` channel into kind and ref, or null. The whole string must be
  * exactly `<kind>:<ref>` with a known kind — it becomes the Durable Object name.
  */
-export function parseWsChannel(channel: string): { kind: "user" | "chat" | "match"; ref: string } | null {
+export function parseWsChannel(channel: string): { kind: "user" | "chat" | "match" | "app"; ref: string } | null {
   const i = channel.indexOf(":");
   if (i <= 0) return null;
   const kind = channel.slice(0, i);
   const ref = channel.slice(i + 1);
-  if (kind !== "user" && kind !== "chat" && kind !== "match") return null;
+  if (kind !== "user" && kind !== "chat" && kind !== "match" && kind !== "app") return null;
   if (!ref || ref.includes(":") || ref.length > 128) return null;
+  // `app:cfg<N>` only, N < APP_CONFIG_SHARDS: a fixed, small set of DO names.
+  if (kind === "app") {
+    const m = ref.match(/^cfg(\d{1,2})$/);
+    if (!m || Number(m[1]) >= APP_CONFIG_SHARDS) return null;
+  }
   return { kind, ref };
+}
+
+/** Anonymous sockets one `app:cfg<N>` shard accepts (16 shards). */
+export const MAX_APP_CONFIG_SOCKETS = 15000;
+
+/**
+ * App Control push (`app:cfg<N>`): public, the same payload GET /read/app-config
+ * serves to anyone. Every app instance — signed in or not — holds one socket,
+ * always anonymous (no token verify or account read per connect). Bounded by the
+ * per-IP limiter and the per-shard cap.
+ */
+export async function authorizeAppConfigSocket(env: Env, ip: string): Promise<GuestWsDecision> {
+  const limiter = env.GUEST_READ_LIMITER;
+  if (limiter) {
+    try {
+      if (!(await limiter.limit({ key: `appws:${ip || "unknown"}` })).success) {
+        return { ok: false, status: 429, reason: "Too many connections." };
+      }
+    } catch (e) {
+      console.error("[wsGuest] limiter unavailable (failing open)", e);
+    }
+  }
+  return { ok: true };
 }

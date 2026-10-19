@@ -1,77 +1,56 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Linking } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSegments } from 'expo-router';
 import { Ionicons } from '@/src/lib/icons';
-import { useAppConfig } from '@/src/services/appSettings';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
-import { loadDismissedBanner, dismissBanner } from '@/src/lib/bannerDismiss';
-import { bannerLink, bannerMessage, shouldShowBanner } from '@/src/lib/announcementBanner';
+import { useAppControl } from '@/src/hooks/useAppControl';
+import { dismissAnnouncement, useControlChoices } from '@/src/lib/controlStore';
+import { bannerVisibleOn } from '@/src/lib/announcementBanner';
+
+const TONES = {
+  info: { bg: '#7C3AED', icon: 'megaphone' },
+  warning: { bg: '#D97706', icon: 'warning' },
+  success: { bg: '#059669', icon: 'checkmark-circle' },
+  danger: { bg: '#DC2626', icon: 'alert-circle' },
+} as const;
 
 /**
- * Admin-controlled announcement banner. Driven by appConfig.announcement
- * (App Control Center → "In-App Announcement Banner").
+ * Admin-controlled announcement banner (App Control → "In-App Announcement
+ * Banner"). Live: an admin save reaches it within seconds (LiveAppConfig).
  *
- * Shows ONLY on the home screen. It is mounted globally in app/_layout.tsx, so
- * without this gate it overlaid every screen — login, splash, onboarding and the
- * rest — which is not what a "home" announcement should do.
- *
- * Dismissal is PERSISTED (AsyncStorage), keyed by the message text: once the
- * user closes it, it stays closed across reloads and app restarts, and only
- * re-appears when the admin changes the message.
- *
- * The show/hide and link decisions live in src/lib/announcementBanner.ts (pure,
- * unit-tested); this component is only the view + wiring.
+ * Shown on the app's main screens (not login, splash, onboarding or the gate
+ * screens); honours the admin's tone, audience and start/end window. Dismissal
+ * is persisted per announcement ID, so a new announcement (or an explicit
+ * "show again") reaches people who closed the previous one, and a typo fix to the
+ * same one does not.
  */
 export function AnnouncementBanner() {
-  const { config } = useAppConfig();
+  const { control } = useAppControl();
+  const choices = useControlChoices();
   const insets = useSafeAreaInsets();
-  const segments = useSegments();
-  const [dismissedMsg, setDismissedMsg] = useState<string | null>(null);
-  const [ready, setReady] = useState(false);
+  const segments = useSegments() as string[];
+  const a = control.announcement;
 
-  // Hydrate the persisted dismissal once, before the first paint decision.
-  useEffect(() => {
-    let alive = true;
-    loadDismissedBanner().then((msg) => {
-      if (alive) {
-        setDismissedMsg(msg);
-        setReady(true);
-      }
-    });
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  const ann = config?.announcement;
-  const message = bannerMessage(ann);
-  const link = bannerLink(ann?.link);
-
-  // Home screen only. `segments[0]` is the top-level route slug ('home', 'auth',
-  // 'splash', …); everything else must not carry the banner.
-  const onHome = segments[0] === 'home';
-
-  if (!shouldShowBanner({ onHome, ready, enabled: ann?.enabled, message, dismissedMessage: dismissedMsg })) {
+  if (!choices.hydrated || !a.visible || !bannerVisibleOn(segments)) return null;
+  // Another strip (upcoming maintenance / staff bar) takes the top slot first.
+  if (control.maintenance.bypassed || (control.maintenance.upcoming && choices.dismissedUpcomingAt !== control.maintenance.upcoming.startAt)) {
     return null;
   }
-
-  const handleDismiss = () => {
-    setDismissedMsg(message!);
-    void dismissBanner(message!);
-  };
+  const tone = TONES[a.tone] || TONES.info;
 
   return (
     <View style={[styles.wrap, { paddingTop: insets.top + 8 }]} pointerEvents="box-none">
       <TouchableOpacity
-        activeOpacity={link ? 0.85 : 1}
-        onPress={() => link && Linking.openURL(link).catch(() => {})}
-        style={styles.banner}
+        activeOpacity={a.link ? 0.85 : 1}
+        onPress={() => a.link && Linking.openURL(a.link).catch(() => {})}
+        style={[styles.banner, { backgroundColor: tone.bg }]}
+        accessibilityRole={a.link ? 'link' : undefined}
       >
-        <Ionicons name="megaphone" size={18} color="#FFF" />
-        <Text style={styles.text} numberOfLines={2}>{message}</Text>
+        <Ionicons name={tone.icon as any} size={18} color="#FFF" />
+        <Text style={styles.text} numberOfLines={3}>{a.message}</Text>
         <TouchableOpacity
-          onPress={handleDismiss}
+          onPress={() => dismissAnnouncement(a.id)}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           accessibilityRole="button"
           accessibilityLabel="Dismiss announcement"
@@ -89,7 +68,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    backgroundColor: '#7C3AED',
     borderRadius: 14,
     paddingVertical: 10,
     paddingHorizontal: 14,
