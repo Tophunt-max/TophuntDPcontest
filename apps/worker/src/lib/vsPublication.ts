@@ -672,6 +672,11 @@ export interface ShareImageResult {
   kind: "photo" | "video";
   /** Safe failure category for `unavailable` (no error text, no paths). */
   reason?: string;
+  /**
+   * `unavailable` because the RENDERER failed transiently, not because sharing
+   * is refused — the client may fall back to a card it draws itself.
+   */
+  retryable?: boolean;
 }
 
 /**
@@ -741,7 +746,15 @@ export async function ensureMatchShareImage(
   if (match.status === "waiting_for_opponent" || !uidB) return result("waiting_for_opponent");
   if (!uidA) return result("unavailable", { reason: "missing_participant" });
   if (match.status === "cancelled") return result("unavailable", { reason: "cancelled" });
-  if (match.vsStoryStatus === "pending" || match.vsStoryStatus === "processing") return result("preparing");
+  if (match.vsStoryStatus === "pending" || match.vsStoryStatus === "processing") {
+    if (match.status === "active") return result("preparing");
+    // The battle is over but its publication never ran (or its lease expired):
+    // it can never publish now. Retire it inline instead of answering
+    // "preparing" and leaving that to a background pass, so the share image can
+    // be resolved on THIS request. A live lease is still left to its owner.
+    if ((await explainUnclaimed(env, matchId, ts)).outcome !== "skipped") return result("preparing");
+    match.vsStoryStatus = "skipped";
+  }
 
   const currentRetain = Number(match.vsImageRetainUntil || 0);
   const extend = Math.max(currentRetain, ts + VS_IMAGE_RETAIN_MS);
@@ -834,8 +847,29 @@ export async function ensureMatchShareImage(
     return result("ready", { url: produced.publicUrl });
   } catch (e: any) {
     await release().catch(() => {});
-    const reason = e?.reason || "render_failed";
-    console.error("[vsShare] could not resolve share image", matchId, reason);
-    return result(e instanceof TransientVsError ? "preparing" : "unavailable", e instanceof TransientVsError ? {} : { reason });
+    const reason: string = e?.reason || "render_failed";
+    const detail = `${reason}${e?.message && e.message !== reason ? `: ${String(e.message).slice(0, 300)}` : ""}`;
+    console.error("[vsShare] could not resolve share image", matchId, detail);
+    // Record WHY, where an admin can see it. This path used to only log to the
+    // console, so a renderer failing for every battle was invisible: every share
+    // answered "preparing" forever and nothing anywhere said what was wrong.
+    // `vs_story_error` is shown per match in the admin panel; the error log is
+    // the cross-battle view. The status column is deliberately not touched.
+    await env.DB.prepare(`UPDATE contest_matches SET vs_story_error = ? WHERE id = ?`)
+      .bind(`share_regen:${detail}`, matchId)
+      .run()
+      .catch(() => {});
+    await logErrorToDb(env, new Error(`VS share image render failed for match ${matchId}: ${detail}`), {
+      path: "vsShare",
+      tags: { matchId, reason },
+    });
+    if (e instanceof TransientVsError) {
+      // A transient RENDER failure is not "preparing": nothing is in flight, and
+      // answering "preparing" made clients poll and wait indefinitely. Report it
+      // as unavailable-but-retryable so a client can draw its own card now; the
+      // next request (per-battle regen limit permitting) renders again.
+      return result("unavailable", { reason, retryable: true });
+    }
+    return result("unavailable", { reason });
   }
 }

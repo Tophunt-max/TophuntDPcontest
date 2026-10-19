@@ -3,6 +3,7 @@ import * as Clipboard from 'expo-clipboard';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { getSharing } from '@/src/lib/vsNativeModules';
 import { API_BASE_URL } from '@/src/services/api';
+import { readImageBlob } from '@/src/lib/shareMedia';
 
 /**
  * One correct implementation of "share this battle", used by the share sheet and
@@ -217,13 +218,14 @@ export function canShareFilesOnWeb(): boolean {
  * activation. Surfaces prefetch with this as soon as the image is known, so the
  * tap itself calls `share` with no network wait. Null on any failure.
  */
-export async function prepareShareFile(source: ShareImageSource): Promise<File | null> {
+export async function prepareShareFile(source: ShareImageSource, fileName = 'tophunt-battle.jpg'): Promise<File | null> {
   try {
-    const res = await fetch(source.kind === 'remote' ? source.url : source.uri);
-    if (!res.ok) return null;
-    const blob = await res.blob();
-    return new File([blob], 'tophunt-battle.jpg', { type: blob.type || CARD_MIME });
-  } catch {
+    // Same-origin proxy first (src/lib/shareMedia.ts): a plain CORS fetch of a
+    // media.tophunt.in url can be answered from a header-less cache entry.
+    const blob = await readImageBlob(source.kind === 'remote' ? source.url : source.uri);
+    return new File([blob], fileName, { type: blob.type || CARD_MIME });
+  } catch (e) {
+    console.warn('[share] could not prepare the image file', e);
     return null;
   }
 }
@@ -339,9 +341,7 @@ export async function downloadBattleImage(vsImageUrl?: string | null, fileName =
 
   if (Platform.OS === 'web') {
     try {
-      const res = await fetch(vsImageUrl);
-      if (!res.ok) return false;
-      const blob = await res.blob();
+      const blob = await readImageBlob(vsImageUrl);
       if (typeof document === 'undefined') return false;
       const href = URL.createObjectURL(blob);
       const a = document.createElement('a');

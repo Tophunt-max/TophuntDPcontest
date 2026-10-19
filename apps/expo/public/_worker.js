@@ -751,6 +751,10 @@ export default {
     const authProxyTarget = firebaseAuthProxyTarget(url, env);
     if (authProxyTarget) return proxyFirebaseAuth(request, authProxyTarget);
 
+    // --- same-origin media reads for share / save / card capture -----------
+    // See shareMediaUpstream: lets the page read image BYTES without CORS.
+    if (url.pathname.startsWith(SHARE_MEDIA_PATH)) return proxyShareMedia(request, url, ctx);
+
     // --- retired WordPress url space ---------------------------------------
     // 410 Gone, and checked BEFORE the normalising redirect so `/wp-admin/`
     // answers in one hop rather than 301-ing to `/wp-admin` first. See LEGACY_GONE:
@@ -929,6 +933,80 @@ export default {
     });
   },
 };
+
+// ---------------------------------------------------------------------------
+// Same-origin media proxy: /share-media/<key>
+//
+// Sharing, "Save image" and the winner-card screenshot all need to READ an
+// image's bytes from script (fetch / canvas), which requires CORS. The R2 custom
+// domain only sends CORS headers when the request has an Origin, and without
+// `Vary: Origin` on the plain response, so a photo first loaded by a normal
+// <img> gets cached header-less and a later fetch() from script fails the CORS
+// check. That made the winner-card capture fail on phones and sharing fall back
+// to a text link. Serving the same objects from tophunt.in itself removes CORS
+// from the picture. Client side: src/lib/shareMedia.ts.
+//
+// Deliberately narrow: GET/HEAD only, a fixed upstream host per route, an
+// allow-list of key prefixes, no query string forwarded, and only image/*
+// responses are passed through — this must never become an open proxy.
+// ---------------------------------------------------------------------------
+const SHARE_MEDIA_PATH = '/share-media/';
+const SHARE_MEDIA_ORIGIN = 'https://media.tophunt.in';
+/** R2 key prefixes a share surface can legitimately need. */
+// (mirrors worker/src/lib/mediaCategories.ts: entries, avatars, VS cards, prize
+// product photos — never deposits, reports, chat or payment QR codes)
+const SHARE_MEDIA_PREFIXES = ['contests/', 'contest-entries/', 'avatars/', 'vs-cards/', 'product-images/'];
+const BUNNY_POSTER_HOST = /^[a-z0-9-]+\.b-cdn\.net$/i;
+
+/** The upstream url for a /share-media/ path, or null when it is not allowed. */
+export function shareMediaUpstream(pathname) {
+  const rest = pathname.slice(SHARE_MEDIA_PATH.length);
+  if (!rest || rest.includes('..') || rest.includes('//') || /[\\\s]/.test(rest)) return null;
+  if (rest.startsWith('bunny/')) {
+    const [host, ...parts] = rest.slice('bunny/'.length).split('/');
+    const tail = parts.join('/');
+    if (!host || !BUNNY_POSTER_HOST.test(host) || !/\.(jpe?g|png|webp)$/i.test(tail)) return null;
+    return `https://${host.toLowerCase()}/${tail}`;
+  }
+  if (!SHARE_MEDIA_PREFIXES.some((p) => rest.startsWith(p))) return null;
+  return `${SHARE_MEDIA_ORIGIN}/${rest}`;
+}
+
+async function proxyShareMedia(request, url, ctx) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return withSecurityHeaders(new Response('Method not allowed', { status: 405, headers: { allow: 'GET, HEAD' } }));
+  }
+  const upstream = shareMediaUpstream(url.pathname);
+  if (!upstream) return notFoundAsset();
+  let res;
+  try {
+    res = await fetch(upstream, {
+      method: request.method,
+      redirect: 'error',
+      cf: { cacheEverything: true, cacheTtl: 3600 },
+    });
+  } catch (_err) {
+    return withSecurityHeaders(new Response('Upstream unavailable', { status: 502, headers: { 'cache-control': 'no-store' } }));
+  }
+  const type = res.headers.get('content-type') || '';
+  if (!res.ok || !type.startsWith('image/')) {
+    return withSecurityHeaders(
+      new Response('Not found', { status: res.status === 404 || res.ok ? 404 : 502, headers: { 'cache-control': 'no-store' } }),
+    );
+  }
+  const headers = new Headers({
+    'content-type': type,
+    // Short: a VS card is rewritten at the same key after a sweep, and entries
+    // can be purged by moderation.
+    'cache-control': 'public, max-age=600',
+    'cross-origin-resource-policy': 'same-origin',
+  });
+  const len = res.headers.get('content-length');
+  if (len) headers.set('content-length', len);
+  const etag = res.headers.get('etag');
+  if (etag) headers.set('etag', etag);
+  return withSecurityHeaders(new Response(request.method === 'HEAD' ? null : res.body, { status: 200, headers }));
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
