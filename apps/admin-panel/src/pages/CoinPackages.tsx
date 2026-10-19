@@ -14,10 +14,14 @@ export default function CoinPackages() {
   const [dialog, setDialog] = useState<any | "new" | null>(null);
 
   const { data = [], isLoading } = useQuery({ queryKey: ["coin-packages"], queryFn: api.coinPackages });
-  // Price = base coins × coin value (App Control → Withdrawal → "Coin → ₹ rate").
+  // Price = base coins × BUY rate (App Control → Coin Pricing). Payout rate is
+  // what a coin is worth on withdrawal (App Control → Withdrawal).
   const { data: settings } = useQuery({ queryKey: ["app-settings"], queryFn: api.appSettings });
-  const rateRaw = (settings as any)?.withdrawal?.conversionRate;
-  const rate = rateRaw === undefined || rateRaw === null || rateRaw === "" ? 1 : Number(rateRaw);
+  const payoutRaw = (settings as any)?.withdrawal?.conversionRate;
+  const payout = payoutRaw === undefined || payoutRaw === null || payoutRaw === "" ? 1 : Number(payoutRaw);
+  const buyRaw = (settings as any)?.coinPricing?.buyRate;
+  const buyRateSet = !(buyRaw === undefined || buyRaw === null || buyRaw === "");
+  const rate = buyRateSet ? Number(buyRaw) : payout;
   const invalidate = () => qc.invalidateQueries({ queryKey: ["coin-packages"] });
 
   const delMut = useMutation({
@@ -35,7 +39,7 @@ export default function CoinPackages() {
     <div>
       <PageHeader
         title="Coin Packages"
-        subtitle={`${data.length} top-up packages · Price = coins × coin value (₹${fmtNumber(rate)}/coin), bonus free — coin value App Control → Withdrawal mein badlo`}
+        subtitle={`${data.length} top-up packages · Price = base coins × buy rate (₹${fmtNumber(rate)}/coin), bonus free · payout ₹${fmtNumber(payout)}/coin — rates App Control mein badlo`}
         action={
           <button onClick={() => setDialog("new")} className="flex items-center gap-2 gradient-purple text-white text-sm font-semibold px-4 py-2 rounded-xl">
             <Plus size={16} /> New Package
@@ -57,7 +61,12 @@ export default function CoinPackages() {
             render: (p: any) => (
               <span className="font-bold">
                 ₹{fmtNumber(p.priceInr)}
-                {p.purchasable === false ? <span className="ml-2 text-xs font-medium text-red-600">₹1 se kam — app mein buy nahi hoga</span> : null}
+                {p.reason === "below_minimum" ? <span className="ml-2 text-xs font-medium text-red-600">₹1 se kam — app mein buy nahi hoga</span> : null}
+                {p.reason === "pays_out_more" ? (
+                  <span className="ml-2 text-xs font-medium text-red-600">
+                    Nuksaan: payout ₹{fmtNumber(p.payoutInr)} &gt; daam — bik nahi raha. Buy rate ≥ ₹{fmtNumber(p.minSafeBuyRate)} rakho
+                  </span>
+                ) : null}
               </span>
             ),
           },
@@ -85,12 +94,17 @@ export default function CoinPackages() {
         ]}
       />
 
-      {dialog && <PackageDialog pkg={dialog === "new" ? undefined : dialog} rate={rate} onClose={() => setDialog(null)} onDone={invalidate} />}
+      {!buyRateSet ? (
+        <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          Buy rate set nahi hai — daam payout rate se ban rahe hain, isliye bonus wale packages nahi bik rahe. App Control → Coin Pricing mein Buy rate set karo.
+        </div>
+      ) : null}
+      {dialog && <PackageDialog pkg={dialog === "new" ? undefined : dialog} rate={rate} payout={payout} onClose={() => setDialog(null)} onDone={invalidate} />}
     </div>
   );
 }
 
-function PackageDialog({ pkg, rate, onClose, onDone }: { pkg?: any; rate: number; onClose: () => void; onDone: () => void }) {
+function PackageDialog({ pkg, rate, payout, onClose, onDone }: { pkg?: any; rate: number; payout: number; onClose: () => void; onDone: () => void }) {
   const isEdit = !!pkg;
   const [form, setForm] = useState({
     name: pkg?.name || "",
@@ -131,8 +145,17 @@ function PackageDialog({ pkg, rate, onClose, onDone }: { pkg?: any; rate: number
               <span className="font-bold text-foreground">₹{fmtNumber(Math.round((Number(form.coins) || 0) * rate * 100) / 100)}</span>
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
-              {fmtNumber(Number(form.coins) || 0)} coins × ₹{fmtNumber(rate)} coin value. Bonus coins free hain. Price badalne ke liye App Control → Withdrawal → "Coin → ₹ rate" badlo.
+              {fmtNumber(Number(form.coins) || 0)} coins × ₹{fmtNumber(rate)} buy rate. Bonus coins free hain. Daam badalne ke liye App Control → Coin Pricing.
             </p>
+            {(() => {
+              const price = Math.round((Number(form.coins) || 0) * rate * 100) / 100;
+              const out = Math.round(((Number(form.coins) || 0) + (Number(form.bonusCoins) || 0)) * payout * 100) / 100;
+              return out > price + 0.005 ? (
+                <p className="mt-1 text-xs font-medium text-red-600">
+                  Nuksaan: user ₹{fmtNumber(price)} dekar ₹{fmtNumber(out)} nikal sakta hai — server ye package save nahi karega. Bonus kam karo.
+                </p>
+              ) : null;
+            })()}
           </div>
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.active} onChange={(e) => set("active", e.target.checked)} /> Active (visible in app)</label>
         </div>

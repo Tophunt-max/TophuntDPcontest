@@ -22,6 +22,7 @@
  *   withdrawal { enabled, payoutsFrozen, minAmount, maxAmount, maxPerDay, conversionRate },
  *   _version (ms; bumped on every save).
  */
+import { validateCoinPricingPatch } from "./coinPricing";
 import { httpsError } from "./http";
 import { legacyAuthSettings, methodAllowed, resolveAuthMethods } from "./authMethods";
 import { onboardingEnabled, ONBOARDING_MAX_SLIDES } from "./onboardingConfig";
@@ -337,6 +338,9 @@ export function validateAppControlPatch(body: any, existing: any, nowMs: number 
       bad("Minimum payout cannot be more than the maximum.");
     }
   }
+  // Coin package buy rate (lib/coinPricing.ts). Checked against the packages by
+  // the save handler, which has them.
+  if (body.coinPricing !== undefined) validateCoinPricingPatch(body.coinPricing);
 }
 
 // ---------------------------------------------------------------- the gate
@@ -420,6 +424,7 @@ export function appControlGate(cfg: any, input: GateInput, nowMs: number = Date.
 
 /** Sections whose edits are audited (who changed what, from what, to what). */
 export const AUDITED_SECTIONS = [
+  "coinPricing",
   "verificationReward",
   "rewardSettings",
   "onboarding",
