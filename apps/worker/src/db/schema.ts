@@ -1133,7 +1133,13 @@ export const withdrawals = sqliteTable(
     id: text("id").primaryKey(),
     userId: text("user_id").notNull(),
     amount: real("amount").notNull(), // Dpcoins requested
-    cashAmount: real("cash_amount").default(0), // local currency value
+    cashAmount: real("cash_amount").default(0), // NET ₹ actually paid (after the platform fee)
+    /** coins × payout rate at request time (migration 0062). */
+    grossAmount: real("gross_amount"),
+    /** Platform fee deducted from the payout, ₹ (lib/withdrawalFee.ts). */
+    feeAmount: real("fee_amount").notNull().default(0),
+    /** JSON of the fee rule used, locked at request time. */
+    feeDetail: text("fee_detail"),
     method: text("method").default("upi"), // upi | bank | paytm ...
     accountDetails: text("account_details"), // UPI id / bank details
     status: text("status").notNull().default("pending"), // pending | approved | rejected | paid

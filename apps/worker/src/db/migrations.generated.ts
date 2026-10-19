@@ -63,6 +63,7 @@ import m_0058_onboarding_daily_sql from "../../migrations/0058_onboarding_daily.
 import m_0059_hot_read_order_indexes_sql from "../../migrations/0059_hot_read_order_indexes.sql";
 import m_0060_match_moderation_hold_sql from "../../migrations/0060_match_moderation_hold.sql";
 import m_0061_signup_completed_backfill_sql from "../../migrations/0061_signup_completed_backfill.sql";
+import m_0062_withdrawal_platform_fee_sql from "../../migrations/0062_withdrawal_platform_fee.sql";
 
 export interface Migration {
   name: string;
@@ -132,4 +133,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0059_hot_read_order_indexes.sql", sql: m_0059_hot_read_order_indexes_sql },
   { name: "0060_match_moderation_hold.sql", sql: m_0060_match_moderation_hold_sql },
   { name: "0061_signup_completed_backfill.sql", sql: m_0061_signup_completed_backfill_sql },
+  { name: "0062_withdrawal_platform_fee.sql", sql: m_0062_withdrawal_platform_fee_sql },
 ];

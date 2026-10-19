@@ -1814,7 +1814,10 @@ readRoute.get("/withdrawals", requireAuth, async (c) => {
     rows.map((r) => ({
       id: r.id,
       amount: r.amount,
+      // NET: what is actually paid, after the platform fee.
       cashAmount: r.cashAmount,
+      grossAmount: r.grossAmount ?? r.cashAmount,
+      feeAmount: Number(r.feeAmount) || 0,
       method: r.method,
       status: r.status,
       adminNote: r.adminNote,

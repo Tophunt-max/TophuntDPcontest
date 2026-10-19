@@ -24,6 +24,7 @@ import { useProfile } from '@/src/hooks/useProfileData';
 import { walletService } from '@/src/services/wallet/walletService';
 import { useAppConfig } from '@/src/services/appSettings';
 import { readApi } from '@/src/services/api';
+import { describeFeeRule, feeRuleFromWithdrawalConfig, MIN_NET_PAYOUT_INR, quoteWithdrawal } from '@/src/lib/withdrawalFee';
 
 const METHODS = [
   { key: 'upi', label: 'UPI', placeholder: 'yourname@upi' },
@@ -68,7 +69,11 @@ export default function WithdrawScreen() {
 
   const balance = Number(profile?.Dpcoin || 0);
   const amt = Number(amount) || 0;
-  const cash = amt * rate;
+  // Platform fee, deducted from the payout (src/lib/withdrawalFee.ts — same
+  // formula the server charges with; it refuses if this quote is stale).
+  const feeRule = feeRuleFromWithdrawalConfig(wcfg);
+  const feeText = describeFeeRule(feeRule);
+  const quote = quoteWithdrawal(amt, rateValid ? rate : 0, feeRule);
 
   const loadHistory = async () => {
     try {
@@ -87,12 +92,16 @@ export default function WithdrawScreen() {
     if (maxAmount > 0 && amt > maxAmount) return Alert.alert('Above maximum', `Ek baar mein zyada se zyada ${maxAmount} coins nikal sakte ho.`);
     if (amt > balance) return Alert.alert('Insufficient balance', 'You do not have enough coins.');
     if (!account.trim()) return Alert.alert('Account required', 'Enter your payout account details.');
+    if (quote.netInr < MIN_NET_PAYOUT_INR) {
+      return Alert.alert('Amount too small', `Platform fee ₹${quote.feeInr.toFixed(2)} ke baad kam se kam ₹${MIN_NET_PAYOUT_INR} milna chahiye. Zyada coins withdraw karo.`);
+    }
 
     setLoading(true);
     try {
-      await walletService.requestWithdrawal(amt, method, account.trim());
+      const res: any = await walletService.requestWithdrawal(amt, method, account.trim(), quote.feeInr);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert('Request submitted', 'Your payout request is pending admin approval.');
+      const net = Number(res?.cashAmount ?? quote.netInr);
+      Alert.alert('Request submitted', `Aapko ₹${net.toFixed(2)} milenge${quote.feeInr > 0 ? ` (platform fee ₹${Number(res?.feeAmount ?? quote.feeInr).toFixed(2)} kati)` : ''}. Request admin approval ke liye pending hai.`);
       setAmount(''); setAccount('');
       refetch();
       loadHistory();
@@ -132,6 +141,9 @@ export default function WithdrawScreen() {
               <Text style={[styles.hint, { color: subTextColor }]}>
                 Min {minAmount} coins{maxAmount > 0 ? ` • Max ${maxAmount}` : ''}{maxPerDay > 0 ? ` • Roz ${maxPerDay} request` : ''} • Rate ₹{rate}/coin
               </Text>
+              {feeText ? (
+                <Text style={[styles.hint, { color: subTextColor }]}>Platform fee: {feeText} — payout se kategi</Text>
+              ) : null}
             </View>
 
             <View style={[styles.card, { backgroundColor: cardBg }]}>
@@ -144,7 +156,26 @@ export default function WithdrawScreen() {
                 placeholderTextColor={subTextColor}
                 style={[styles.input, { color: textColor, borderColor: isDark ? '#35383F' : '#EEE' }]}
               />
-              {amt > 0 && <Text style={[styles.cashPreview, { color: primaryColor }]}>You&apos;ll receive ≈ ₹{cash.toFixed(2)}</Text>}
+              {amt > 0 ? (
+                quote.feeInr > 0 ? (
+                  <View style={[styles.breakdown, { borderColor: isDark ? '#35383F' : '#EEE' }]}>
+                    <View style={styles.breakRow}>
+                      <Text style={[styles.breakLabel, { color: subTextColor }]}>Coins ki value</Text>
+                      <Text style={[styles.breakValue, { color: textColor }]}>₹{quote.grossInr.toFixed(2)}</Text>
+                    </View>
+                    <View style={styles.breakRow}>
+                      <Text style={[styles.breakLabel, { color: subTextColor }]}>Platform fee</Text>
+                      <Text style={[styles.breakValue, { color: textColor }]}>− ₹{quote.feeInr.toFixed(2)}</Text>
+                    </View>
+                    <View style={[styles.breakRow, styles.breakTotal, { borderTopColor: isDark ? '#35383F' : '#EEE' }]}>
+                      <Text style={[styles.breakLabel, { color: textColor, fontFamily: 'Urbanist-Bold' }]}>Aapko milega</Text>
+                      <Text style={[styles.cashPreview, { color: primaryColor, marginTop: 0 }]}>₹{quote.netInr.toFixed(2)}</Text>
+                    </View>
+                  </View>
+                ) : (
+                  <Text style={[styles.cashPreview, { color: primaryColor }]}>You&apos;ll receive ₹{quote.netInr.toFixed(2)}</Text>
+                )
+              ) : null}
 
               <Text style={[styles.label, { color: subTextColor, marginTop: 16 }]}>Method</Text>
               <View style={styles.methodRow}>
@@ -188,7 +219,10 @@ export default function WithdrawScreen() {
                   <ArrowIcon size={13} color={subTextColor} variant="arrow" />
                   <Text style={[styles.histAmount, { color: textColor }]}>₹{Number(w.cashAmount || 0).toFixed(2)}</Text>
                 </View>
-                <Text style={[styles.hint, { color: subTextColor }]}>{String(w.method || '').toUpperCase()}</Text>
+                <Text style={[styles.hint, { color: subTextColor }]}>
+                  {String(w.method || '').toUpperCase()}
+                  {Number(w.feeAmount) > 0 ? ` • Fee ₹${Number(w.feeAmount).toFixed(2)} (gross ₹${Number(w.grossAmount ?? 0).toFixed(2)})` : ''}
+                </Text>
               </View>
               <View style={[styles.statusPill, { backgroundColor: statusColor(w.status) + '22' }]}>
                 <Text style={{ color: statusColor(w.status), fontFamily: 'Urbanist-Bold', fontSize: 12 }}>{w.status}</Text>
@@ -211,6 +245,11 @@ const styles = StyleSheet.create({
   hint: { fontSize: 12, fontFamily: 'Urbanist-Medium', marginTop: 4 },
   input: { borderWidth: 1, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16, fontFamily: 'Urbanist-Bold' },
   cashPreview: { fontSize: 14, fontFamily: 'Urbanist-Bold', marginTop: 8 },
+  breakdown: { marginTop: 10, borderWidth: 1, borderRadius: 14, padding: 12, gap: 6 },
+  breakRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  breakTotal: { borderTopWidth: 1, paddingTop: 8, marginTop: 2 },
+  breakLabel: { fontSize: 13, fontFamily: 'Urbanist-Medium' },
+  breakValue: { fontSize: 13, fontFamily: 'Urbanist-Bold' },
   methodRow: { flexDirection: 'row', gap: 10 },
   methodChip: { paddingHorizontal: 18, paddingVertical: 10, borderRadius: 14 },
   submitBtn: { marginTop: 20, paddingVertical: 15, borderRadius: 16, alignItems: 'center' },

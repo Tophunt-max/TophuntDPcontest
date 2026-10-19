@@ -3466,6 +3466,8 @@ adminRoute.get("/withdrawals", async (c) => {
       userId: schema.withdrawals.userId,
       amount: schema.withdrawals.amount,
       cashAmount: schema.withdrawals.cashAmount,
+      grossAmount: schema.withdrawals.grossAmount,
+      feeAmount: schema.withdrawals.feeAmount,
       method: schema.withdrawals.method,
       accountDetails: schema.withdrawals.accountDetails,
       status: schema.withdrawals.status,

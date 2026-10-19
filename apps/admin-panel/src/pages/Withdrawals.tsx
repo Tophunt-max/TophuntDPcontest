@@ -8,7 +8,7 @@ import { StatCard } from "@/components/ui/StatCard";
 import { PageHeader, fmtDateTime, fmtNumber, exportCsv } from "@/lib/format";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { toast } from "@/lib/toast";
-import { Check, X, BadgeCheck, Download, Banknote, Coins, IndianRupee, Hourglass } from "lucide-react";
+import { Check, X, BadgeCheck, Download, Banknote, Coins, IndianRupee, Hourglass, Percent } from "lucide-react";
 import { SegTabs, UserCell, MethodBadge, ActionBtn } from "@/components/finance/bits";
 
 const TABS = [
@@ -32,9 +32,13 @@ export default function Withdrawals() {
 
   const stats = useMemo(() => {
     const dp = data.reduce((s: number, w: any) => s + (Number(w.amount) || 0), 0);
+    // cashAmount is NET (what is sent, after the platform fee).
     const cash = data.reduce((s: number, w: any) => s + (Number(w.cashAmount) || 0), 0);
+    const fees = data
+      .filter((w: any) => w.status !== "rejected")
+      .reduce((s: number, w: any) => s + (Number(w.feeAmount) || 0), 0);
     const pending = data.filter((w: any) => w.status === "pending").length;
-    return { count: data.length, dp, cash, pending };
+    return { count: data.length, dp, cash, fees, pending };
   }, [data]);
 
   // The withdrawal being marked as paid, plus its bank reference.
@@ -55,7 +59,7 @@ export default function Withdrawals() {
         subtitle="Cash payout requests"
         action={
           <button
-            onClick={() => exportCsv(`withdrawals-${Date.now()}.csv`, data, ["id", "userId", "username", "amount", "cashAmount", "method", "accountDetails", "status", "payoutRef", "paidAt", "createdAt"])}
+            onClick={() => exportCsv(`withdrawals-${Date.now()}.csv`, data, ["id", "userId", "username", "amount", "grossAmount", "feeAmount", "cashAmount", "method", "accountDetails", "status", "payoutRef", "paidAt", "createdAt"])}
             className="flex items-center gap-2 px-4 py-2 rounded-xl bg-secondary text-sm font-medium hover:bg-secondary/70 transition-colors"
           >
             <Download size={15} /> Export CSV
@@ -64,10 +68,11 @@ export default function Withdrawals() {
       />
 
       {/* Summary */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
         <StatCard icon={Banknote} label={`Requests (${tab || "all"})`} value={fmtNumber(stats.count)} gradient="gradient-blue" />
         <StatCard icon={Coins} label="DP to pay out" value={fmtNumber(stats.dp)} gradient="gradient-purple" />
-        <StatCard icon={IndianRupee} label="Cash payout" value={`₹${fmtNumber(stats.cash)}`} gradient="gradient-green" />
+        <StatCard icon={IndianRupee} label="Cash payout (net)" value={`₹${fmtNumber(stats.cash)}`} gradient="gradient-green" />
+        <StatCard icon={Percent} label="Platform fees" value={`₹${fmtNumber(Math.round(stats.fees * 100) / 100)}`} gradient="gradient-cyan" />
         <StatCard icon={Hourglass} label="Pending" value={fmtNumber(stats.pending)} gradient="gradient-orange" />
       </div>
 
@@ -93,7 +98,20 @@ export default function Withdrawals() {
               </span>
             ),
           },
-          { key: "cash", header: "Cash", render: (w: any) => <span className="font-medium">{w.cashAmount ? `₹${fmtNumber(w.cashAmount)}` : "—"}</span> },
+          {
+            key: "cash",
+            header: "Pay (net)",
+            render: (w: any) => (
+              <div>
+                <span className="font-bold text-foreground">{w.cashAmount ? `₹${fmtNumber(w.cashAmount)}` : "—"}</span>
+                {Number(w.feeAmount) > 0 ? (
+                  <div className="text-[11px] text-muted-foreground">
+                    ₹{fmtNumber(w.grossAmount)} − fee ₹{fmtNumber(w.feeAmount)}
+                  </div>
+                ) : null}
+              </div>
+            ),
+          },
           { key: "method", header: "Method", render: (w: any) => <MethodBadge method={w.method} /> },
           { key: "account", header: "Account", render: (w: any) => <span className="text-xs text-muted-foreground font-mono">{w.accountDetails || "—"}</span> },
           { key: "status", header: "Status", render: (w: any) => <Badge variant={w.status === "approved" ? "success" : w.status === "paid" ? "paid" : w.status === "rejected" ? "danger" : "pending"}>{w.status}</Badge> },
@@ -145,7 +163,12 @@ export default function Withdrawals() {
         >
           <p className="text-sm text-muted-foreground mb-4">
             Paying <span className="font-semibold text-foreground">{fmtNumber(payFor?.amount)} DP</span>
-            {payFor?.cashAmount ? <> (₹{fmtNumber(payFor.cashAmount)})</> : null} to{" "}
+            {payFor?.cashAmount ? (
+              <>
+                {" "}— send <span className="font-semibold text-foreground">₹{fmtNumber(payFor.cashAmount)}</span>
+                {Number(payFor.feeAmount) > 0 ? <> (₹{fmtNumber(payFor.grossAmount)} − platform fee ₹{fmtNumber(payFor.feeAmount)})</> : null}
+              </>
+            ) : null}{" "}to{" "}
             <span className="font-mono text-xs">{payFor?.accountDetails || "—"}</span>.
           </p>
           <label className="block text-sm font-medium mb-1.5" htmlFor="payoutRef">

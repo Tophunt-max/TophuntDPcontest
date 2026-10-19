@@ -70,8 +70,14 @@ export const walletService = {
    * withdrawal config (enabled / min amount / conversion rate) and creates a
    * pending request; coins are held by the admin on approval.
    */
-  requestWithdrawal: async (amount: number, method: string, accountDetails: string) => {
-    return await callApi('requestWithdrawal', { amount, method, accountDetails });
+  /** `quotedFee`: the platform fee shown to the user; the server refuses if it no longer matches. */
+  requestWithdrawal: async (amount: number, method: string, accountDetails: string, quotedFee?: number) => {
+    return await callApi('requestWithdrawal', {
+      amount,
+      method,
+      accountDetails,
+      ...(quotedFee !== undefined ? { quotedFee } : {}),
+    });
   },
 
   /**
