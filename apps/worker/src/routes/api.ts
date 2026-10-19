@@ -107,7 +107,8 @@ import {
 } from "../lib/bunny";
 import { applyBunnyEncodeResult, LIVE_STATUS_RECHECK_MS } from "../lib/videoReconcile";
 import { mediaRouting } from "../lib/mediaRouting";
-import { getAppConfig, getRewardedAdConfig, getRewardSettings } from "../lib/settings";
+import { getAppConfig, getAuthMethods, getRewardedAdConfig, getRewardSettings } from "../lib/settings";
+import { assertSignupAllowed, normalizePlatform, signupMethodForProvider } from "../lib/authMethods";
 import { getSettings } from "../lib/gamification";
 import { sendEmail, sendUserEmail } from "../lib/email";
 import { passwordChangedEmail, dataExportEmail } from "../lib/emailTemplates";
@@ -3289,7 +3290,14 @@ apiRoute.post("/", async (c) => {
 
       const upd = await db.update(schema.users).set(set).where(eq(schema.users.uid, uid)).run();
       if (upd.meta.changes === 0) {
-        // profile row doesn't exist yet — create it
+        // profile row doesn't exist yet — create it. That is a NEW account, so it
+        // is held to the admin's sign-up switches like every other signup path.
+        const signInProvider = c.get("user")?.signInProvider ?? null;
+        assertSignupAllowed(
+          await getAuthMethods(env),
+          signupMethodForProvider(signInProvider),
+          normalizePlatform(body.platform),
+        );
         await db.insert(schema.users).values({
           uid,
           email: c.get("user").email ?? null,

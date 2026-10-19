@@ -33,6 +33,7 @@ import { cachedJson, cachedResponse } from "../lib/edgeCache";
 import { memoGet, memoPut } from "../lib/memo";
 import { recordBlogView } from "../lib/viewCounter";
 import { kickSettlementIfDue } from "../lib/settleDue";
+import { legacyAuthSettings, methodAllowed, resolveAuthMethods } from "../lib/authMethods";
 import { getLiveTally, getViewerVote } from "../lib/voteCounter";
 import { publicPrize } from "../lib/prizes";
 import { clientIp, rateLimit } from "../lib/rateLimit";
@@ -1706,6 +1707,7 @@ readRoute.get("/app-config", async (c) => {
     const cfg: any = (await getAppConfig(c.env)) || {};
     const ads = cfg.ads || {};
     const withdrawal = cfg.withdrawal || {};
+    const authMethods = resolveAuthMethods(cfg);
     return {
       // Gates the client must honour before/at login.
       maintenanceMode: !!cfg.maintenanceMode,
@@ -1718,10 +1720,16 @@ readRoute.get("/app-config", async (c) => {
         link: cfg.announcement?.link || "",
       },
       features: cfg.features || {},
-      // Auth method availability, so the client can hide what is not configured.
-      googleLogin: cfg.googleLogin !== false,
-      appleLogin: cfg.appleLogin !== false,
-      facebookLogin: cfg.facebookLogin === true,
+      // Sign-in / sign-up switches (lib/authMethods.ts), per platform. The app
+      // hides every method that is off; the signup writers enforce the same rules.
+      authMethods,
+      // The shape already-shipped builds read (`data.authSettings.googleLogin`),
+      // so admin switches reach them too. Platform-agnostic.
+      authSettings: legacyAuthSettings(authMethods),
+      // Legacy top-level flags, now derived from the same switches.
+      googleLogin: methodAllowed(authMethods, "google"),
+      appleLogin: methodAllowed(authMethods, "apple"),
+      facebookLogin: methodAllowed(authMethods, "facebook"),
       // Wallet rules the wallet screens render. Deliberately only the limits the
       // user is subject to — never internal accounting fields.
       withdrawal: {

@@ -3,6 +3,7 @@
  * cached in KV for a short TTL to avoid a DB hit on hot paths.
  */
 import { eq } from "drizzle-orm";
+import { resolveAuthMethods, type AuthMethods } from "./authMethods";
 import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { delCache, kvWritesDisabled } from "./cache";
@@ -104,6 +105,11 @@ export async function getRewardSettings(env: Env): Promise<{ signupBonus: number
 
 export async function getGamificationSettings(env: Env): Promise<any> {
   return readSetting(env, "gamification");
+}
+
+/** Admin-managed sign-in / sign-up switches, resolved with legacy fallbacks. */
+export async function getAuthMethods(env: Env): Promise<AuthMethods> {
+  return resolveAuthMethods(await readSetting(env, "appConfig"));
 }
 
 export async function getAppConfig(env: Env): Promise<any> {

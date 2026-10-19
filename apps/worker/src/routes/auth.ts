@@ -16,7 +16,8 @@ import {
   updateAuthUser,
   deleteAuthUser,
 } from "../lib/firebaseAdmin";
-import { getRewardSettings } from "../lib/settings";
+import { getAuthMethods, getRewardSettings } from "../lib/settings";
+import { assertLoginAllowed, assertSignupAllowed, normalizePlatform, signupMethodForProvider, type AuthMethodKey } from "../lib/authMethods";
 import { setOtp, generateOtp, verifyOtp, deleteOtp } from "../lib/otp";
 import { validatePasswordStrength } from "../lib/password";
 import { rateLimit, enforceSendCooldown, markSent, clearSendCooldown, clientIp } from "../lib/rateLimit";
@@ -80,7 +81,13 @@ async function creditAfterVerification(env: Env, uid: string) {
   }
 }
 
-async function createUserProfile(env: Env, uid: string, data: any, legacySignupBonus: number) {
+async function createUserProfile(
+  env: Env,
+  uid: string,
+  data: any,
+  legacySignupBonus: number,
+  signup: { method: AuthMethodKey | null; provider: string | null },
+) {
   const db = getDb(env);
   const ts = now();
   // With the verification reward enabled, signup credits only the registration
@@ -103,10 +110,16 @@ async function createUserProfile(env: Env, uid: string, data: any, legacySignupB
   // Idempotency: the signup bonus must be granted at most once per uid, even if
   // this runs again on a retried/interrupted signup.
   const alreadyExisted = await db
-    .select({ uid: schema.users.uid })
+    .select({ uid: schema.users.uid, signupCompleted: schema.users.signupCompleted })
     .from(schema.users)
     .where(eq(schema.users.uid, uid))
     .get();
+  // A uid with no COMPLETED profile is registering, so it is held to the admin's
+  // sign-up switches (lib/authMethods.ts). A finished account re-running this
+  // (a retried request) is not a new signup and is never refused.
+  if (!alreadyExisted?.signupCompleted) {
+    assertSignupAllowed(await getAuthMethods(env), signup.method, normalizePlatform(data.platform));
+  }
 
   // The bonus is credited by the `dpcoin` column in the insert below, so its
   // ledger row has to be written in the SAME transaction. It used to be a
@@ -172,6 +185,9 @@ async function createUserProfile(env: Env, uid: string, data: any, legacySignupB
       occupation: data.occupation ?? null,
       gender: data.gender ?? null,
       platform: data.platform ?? "unknown",
+      // How the account was created ("google.com", "password", "custom" = phone …),
+      // for the admin's sign-ups-by-method numbers.
+      authProvider: signup.provider,
       coordinates: data.coordinates ?? null,
       dpcoin: signupBonus,
       xp: 0,
@@ -320,6 +336,9 @@ authRoute.post("/", async (c) => {
       // bypassable, so this is the only real guarantee.
       validatePasswordStrength(password);
       const validatedUsername = validateUsername(username);
+      // Refuse BEFORE minting a Firebase identity when email sign-up is switched
+      // off, so a closed door does not leave orphan auth accounts behind.
+      assertSignupAllowed(await getAuthMethods(env), "emailSignup", normalizePlatform(body.platform));
 
       // Idempotent create: if a previous attempt was interrupted (e.g. the auth
       // user was created but the profile write or client sign-in failed), a
@@ -355,7 +374,10 @@ authRoute.post("/", async (c) => {
 
       try {
         const reward = await getRewardSettings(env);
-        await createUserProfile(env, newUid, { ...body, username: validatedUsername }, reward.signupBonus || 0);
+        await createUserProfile(env, newUid, { ...body, username: validatedUsername }, reward.signupBonus || 0, {
+          method: "emailSignup",
+          provider: "password",
+        });
         return c.json({ status: "success", uid: newUid, message: "User created successfully" });
       } catch (e: any) {
         // Roll back ONLY an auth user we freshly minted in this call — never an
@@ -378,7 +400,12 @@ authRoute.post("/", async (c) => {
       if (body.email && isDisposableEmail(body.email))
         throw httpsError("invalid-argument", "Disposable email blocked.");
       const reward = await getRewardSettings(env);
-      await createUserProfile(env, uid, body, reward.signupBonus || 0);
+      // The provider comes from the verified token, never from the body.
+      const provider = c.get("user")?.signInProvider ?? null;
+      await createUserProfile(env, uid, body, reward.signupBonus || 0, {
+        method: signupMethodForProvider(provider),
+        provider,
+      });
       return c.json({ status: "success", uid, message: "Profile created successfully" });
     }
 
@@ -428,6 +455,8 @@ authRoute.post("/", async (c) => {
       if (!normalizedPhone || !/^\+?\d{7,15}$/.test(normalizedPhone)) {
         throw httpsError("invalid-argument", "Enter a valid phone number.");
       }
+      // Phone sign-in switched off by an admin: no code is sent (no SMS spend).
+      assertLoginAllowed(await getAuthMethods(env), "phone", normalizePlatform(body.platform));
       // Each SMS costs real money, so the caps here are about spend as much as
       // security: per-IP burst, per-number cooldown, and a per-number daily cap.
       await rateLimit(env, `loginotp:${ip}`, 15, 3600, { failClosed: true });
@@ -476,6 +505,10 @@ authRoute.post("/", async (c) => {
       }
       await rateLimit(env, `phonesignin:${normalizedPhone}`, 15, 3600, { failClosed: true });
       await rateLimit(env, `phonesignin_ip:${ip}`, 40, 3600, { failClosed: true });
+      const authMethods = await getAuthMethods(env);
+      const platform = normalizePlatform(body.platform);
+      // Checked before the code is consumed, so a refused attempt keeps it valid.
+      assertLoginAllowed(authMethods, "phone", platform);
 
       // Single-use, attempt-limited, constant-time compared, fixed lifetime.
       await verifyOtp(env, "phone", `login:${normalizedPhone}`, String(body.code));
@@ -498,6 +531,10 @@ authRoute.post("/", async (c) => {
       let isNewUser = false;
 
       if (!uid) {
+        // An unknown number is a sign-up. Refused AFTER the code is verified, so
+        // only the number's owner learns that registration is closed (this is
+        // not a "which numbers are registered" oracle).
+        assertSignupAllowed(authMethods, "phone", platform);
         // Create the Firebase identity now so the custom token has a subject; the
         // D1 profile is created by `createProfile` once the user finishes signup.
         uid = await createAuthUser(env, { phone: normalizedPhone });
