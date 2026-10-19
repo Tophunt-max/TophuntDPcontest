@@ -50,6 +50,7 @@ import {
   tryCreditVerificationReward,
 } from "../lib/verificationReward";
 import { now } from "../lib/ids";
+import { qualifyReferral } from "../lib/referralProgram";
 
 const DISPOSABLE_DOMAINS = new Set([
   "yopmail.com", "mailinator.com", "temp-mail.org", "10minutemail.com",
@@ -75,6 +76,8 @@ function isDisposableEmail(email: string): boolean {
  * is retried idempotently by the next status refresh / claim.
  */
 async function creditAfterVerification(env: Env, uid: string) {
+  // Referral: email AND mobile verified may qualify a pending referral.
+  await qualifyReferral(env, uid, "verified");
   try {
     const r = await tryCreditVerificationReward(env, uid);
     return { credited: r.credited, coins: r.coins, reason: r.reason };

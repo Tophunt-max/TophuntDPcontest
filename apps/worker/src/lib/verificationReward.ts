@@ -1,7 +1,10 @@
 /**
  * Registration verification reward.
  *
- *   signup                         → `registrationReward` (default 10) coins
+ *   signup                         → nothing. The signup bonus was removed; new users
+ *                                    are rewarded only through the referral program
+ *                                    (lib/referralProgram.ts). `registrationReward` is
+ *                                    kept in the schema for history and is always 0.
  *   email AND mobile both verified → `completionReward`   (default 90) coins, once
  *
  * Everything here is server-authoritative:
@@ -47,7 +50,7 @@ export interface VerificationRewardConfig {
 
 export const VERIFICATION_REWARD_DEFAULTS: VerificationRewardConfig = {
   enabled: true,
-  registrationReward: 10,
+  registrationReward: 0,
   completionReward: 90,
   maxTotalReward: 100,
   requireEmail: true,
@@ -91,7 +94,8 @@ export function parseVerificationRewardConfig(raw: unknown): VerificationRewardC
     const n = Number(src[key]);
     if (src[key] !== undefined && src[key] !== null && Number.isInteger(n) && n >= min && n <= max) out[key] = n;
   }
-  if (out.registrationReward > out.maxTotalReward) out.registrationReward = out.maxTotalReward;
+  // No signup bonus: the registration part of the reward is always 0.
+  out.registrationReward = 0;
   if (out.registrationReward + out.completionReward > out.maxTotalReward) {
     out.completionReward = out.maxTotalReward - out.registrationReward;
   }
@@ -181,8 +185,12 @@ export function signupGrant(
   cfg: VerificationRewardConfig,
   legacySignupBonus: number,
 ): { amount: number; enrol: boolean; completionReward: number } {
-  if (!cfg.enabled) return { amount: legacySignupBonus, enrol: false, completionReward: 0 };
-  return { amount: cfg.registrationReward, enrol: true, completionReward: cfg.completionReward };
+  // There is NO signup bonus any more: joining earns coins only through a referral
+  // (lib/referralProgram.ts). The verification reward pays only on completing
+  // email + mobile verification. `legacySignupBonus` is ignored.
+  void legacySignupBonus;
+  if (!cfg.enabled) return { amount: 0, enrol: false, completionReward: 0 };
+  return { amount: 0, enrol: true, completionReward: cfg.completionReward };
 }
 
 // ---------------------------------------------------------------------------

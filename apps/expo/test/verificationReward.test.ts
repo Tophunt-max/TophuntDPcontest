@@ -39,6 +39,13 @@ describe('copy', () => {
     );
   });
 
+  it('a new account (no signup bonus) is only told about the verification reward', () => {
+    expect(rewardExplainer({ registrationReward: 0, completionReward: 90, totalReward: 90 })).toBe(
+      'Email aur mobile number dono verify karne par 90 coins milenge.',
+    );
+    expect(progressLabel({ earnedReward: 0, totalReward: 90 })).toBe('0/90 coins');
+  });
+
   it('shows progress and what is still missing for each state', () => {
     expect(progressLabel(base)).toBe('10/100 coins');
     expect(remainingMessage(base)).toMatch(/email and mobile/);

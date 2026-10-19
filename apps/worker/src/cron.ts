@@ -23,6 +23,7 @@ import { deleteMediaByUrl } from "./lib/mediaDelete";
 import { vsImageKeyFromPublicUrl } from "./lib/r2";
 import { sweepVsComposites } from "./lib/matchStories";
 import { reconcileVsPublications } from "./lib/vsPublication";
+import { reconcileReferrals } from "./lib/referralProgram";
 import { newId, now } from "./lib/ids";
 import { runSeoAudit } from "./lib/seoAudit";
 import { getSeoAudit, invalidateSetting } from "./lib/settings";
@@ -467,6 +468,10 @@ export async function resolveContests(env: Env): Promise<void> {
   await reconcileVsPublications(env, { limit: 5 }).catch((e) =>
     console.error("[cron] VS publication reconcile failed (continuing)", e),
   );
+
+  // Referrals: expire the ones that never qualified, and pay any whose payout
+  // was interrupted (lib/referralProgram.ts — every step idempotent).
+  await reconcileReferrals(env).catch((e) => console.error("[cron] referral reconcile failed (continuing)", e));
 
   // Advance any in-flight broadcast by one page. Deliberately last, and one page
   // per tick, so a large broadcast can never starve the rest of this schedule.

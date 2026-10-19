@@ -37,8 +37,15 @@ export interface RewardOutcome {
   reason: string;
 }
 
-/** The explainer line, with the server's amounts. Defaults read 10 / 90 / 100. */
+/**
+ * The explainer line, with the server's amounts. There is no signup bonus any
+ * more (registrationReward is 0 for new accounts); accounts enrolled before it
+ * was removed did receive one, so their line still says so.
+ */
 export function rewardExplainer(s: Pick<VerificationStatus, 'registrationReward' | 'completionReward' | 'totalReward'>): string {
+  if (!(s.registrationReward > 0)) {
+    return `Email aur mobile number dono verify karne par ${s.completionReward} coins milenge.`;
+  }
   return (
     `Register karne par ${s.registrationReward} coins milte hain. ` +
     `Email aur mobile number dono verify karne par additional ${s.completionReward} coins milenge. ` +

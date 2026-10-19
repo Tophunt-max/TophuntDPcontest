@@ -23,6 +23,9 @@ import { optimizeImageForUpload } from '@/src/lib/imageOptimize';
 import { signInWithEmailAndPassword, sendEmailVerification } from "firebase/auth";
 import { designWidth } from "@/src/lib/layout";
 import { markOnboardingComplete } from "@/src/lib/profileCompletion";
+import { getDeviceId } from "@/src/lib/deviceId";
+import { emitToast } from "@/src/lib/toastBridge";
+import { QUALIFY_COPY, clearPendingInvite, getPendingInvite } from "@/src/services/referrals";
 
 export default function CongratulationsScreen() {
   const router = useRouter();
@@ -160,10 +163,26 @@ export default function CongratulationsScreen() {
           }
         }
 
-        // Generate the user's referral code + apply an inbound referral bonus
-        // (if a code was entered during signup). Best-effort — never block signup.
+        // Generate the user's referral code + apply an inbound referral code (if
+        // one was entered or came from an invite link). This creates a PENDING
+        // referral: both sides are paid once the friend completes the program's
+        // qualifying action. Best-effort — never block signup.
         try {
-          await callApi('completeSignup', { referralCode: signupData.referralCode || undefined });
+          const referralCode = signupData.referralCode || (await getPendingInvite()) || undefined;
+          const deviceId = await getDeviceId().catch(() => null);
+          const done: any = await callApi('completeSignup', { referralCode, deviceId });
+          const outcome = done?.referral;
+          if (outcome?.status === 'applied') {
+            emitToast(
+              outcome.referralStatus === 'rewarded'
+                ? 'Referral reward aapke wallet mein aa gaya! 🎉'
+                : `Referral code lag gaya! ${QUALIFY_COPY[outcome.qualifyAction as keyof typeof QUALIFY_COPY]?.short ?? 'qualify'} karte hi coins milenge.`,
+              'success',
+            );
+          } else if (outcome?.status === 'refused' && outcome.message) {
+            emitToast(outcome.message, 'error');
+          }
+          await clearPendingInvite();
         } catch (e) {
           console.warn('completeSignup/referral step failed', e);
         }

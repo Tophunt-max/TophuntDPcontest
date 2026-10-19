@@ -25,6 +25,7 @@
  */
 import { validateCoinPricingPatch } from "./coinPricing";
 import { feeRuleFromConfig, validateWithdrawalFeePatch } from "./withdrawalFee";
+import { parseReferralConfig, publicReferralConfig, validateReferralPatch } from "./referralProgram";
 import { httpsError } from "./http";
 import { legacyAuthSettings, methodAllowed, resolveAuthMethods } from "./authMethods";
 import { onboardingEnabled, ONBOARDING_MAX_SLIDES } from "./onboardingConfig";
@@ -197,6 +198,8 @@ export function publicAppConfig(cfg: any, nowMs: number = Date.now()) {
       ...feeRuleFromConfig(cfg),
     },
     paymentGateway: { mode: cfg.paymentGateway?.mode || "auto" },
+    // What the signup and invite screens may show (rewards, qualifying action).
+    referral: publicReferralConfig(parseReferralConfig(cfg)),
     ads: { enabled: ads.enabled === true, reward: Number(ads.reward ?? 0), dailyCap: Number(ads.dailyCap ?? 0) },
     supportEmail: cfg.supportEmail || "",
     socialLinks: cfg.socialLinks || {},
@@ -347,6 +350,8 @@ export function validateAppControlPatch(body: any, existing: any, nowMs: number 
   // Coin package buy rate (lib/coinPricing.ts). Checked against the packages by
   // the save handler, which has them.
   if (body.coinPricing !== undefined) validateCoinPricingPatch(body.coinPricing);
+  // Referral program (lib/referralProgram.ts).
+  if (body.referralProgram !== undefined) validateReferralPatch(body.referralProgram);
 }
 
 // ---------------------------------------------------------------- the gate
@@ -431,6 +436,7 @@ export function appControlGate(cfg: any, input: GateInput, nowMs: number = Date.
 /** Sections whose edits are audited (who changed what, from what, to what). */
 export const AUDITED_SECTIONS = [
   "coinPricing",
+  "referralProgram",
   "verificationReward",
   "rewardSettings",
   "onboarding",

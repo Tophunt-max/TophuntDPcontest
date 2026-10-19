@@ -42,7 +42,11 @@ const hint = "text-[11px] text-muted-foreground mt-1";
 
 /** Keys this form owns. Anything else is shown in the Advanced JSON section. */
 const MANAGED_KEYS = [
+  // Legacy: the signup bonus is gone and the referral reward moved to the
+  // Referrals page (`referralProgram`). Kept here so it is never re-posted.
   "rewardSettings",
+  // Owned by the Referrals page.
+  "referralProgram",
   "verificationReward",
   "paymentGateway",
   "ads",
@@ -80,7 +84,6 @@ const MANAGED_KEYS = [
 
 /** The keys THIS form edits and sends. Everything else is left untouched server-side. */
 const FORM_KEYS = [
-  "rewardSettings",
   "verificationReward",
   "paymentGateway",
   "ads",
@@ -104,7 +107,6 @@ interface VerificationRewardCfg {
 }
 
 interface Cfg {
-  rewardSettings: { signupBonus: number; referralBonus: number };
   verificationReward: VerificationRewardCfg;
   paymentGateway: { mode: "auto" | "manual" | "both" };
   ads: { enabled: boolean; trustClient: boolean; provider: string; reward: number; dailyCap: number };
@@ -118,12 +120,12 @@ interface Cfg {
 }
 
 const DEFAULTS: Cfg = {
-  rewardSettings: { signupBonus: 100, referralBonus: 50 },
   // Mirrors VERIFICATION_REWARD_DEFAULTS in apps/worker/src/lib/verificationReward.ts.
   // The Worker is authoritative and re-validates everything on save.
   verificationReward: {
     enabled: true,
-    registrationReward: 10,
+    // There is no signup bonus any more; always 0 (the Worker enforces it too).
+    registrationReward: 0,
     completionReward: 90,
     maxTotalReward: 100,
     requireEmail: true,
@@ -224,7 +226,6 @@ export default function AppSettings() {
   const verificationError = useMemo(() => {
     const v = cfg.verificationReward;
     const ints: [string, number, number, number][] = [
-      ["Registration reward", v.registrationReward, 0, 1_000_000],
       ["Completion reward", v.completionReward, 0, 1_000_000],
       ["Maximum combined reward", v.maxTotalReward, 0, 1_000_000],
       ["Initial reminder delay", v.initialReminderDays, 1, 365],
@@ -236,8 +237,8 @@ export default function AppSettings() {
     for (const [name, n, min, max] of ints) {
       if (!Number.isInteger(n) || n < min || n > max) return `${name} must be a whole number between ${min} and ${max}.`;
     }
-    if (v.registrationReward + v.completionReward > v.maxTotalReward) {
-      return `Registration (${v.registrationReward}) + completion (${v.completionReward}) exceeds the maximum combined reward (${v.maxTotalReward}).`;
+    if (v.completionReward > v.maxTotalReward) {
+      return `Completion reward (${v.completionReward}) exceeds the maximum reward (${v.maxTotalReward}).`;
     }
     if (!v.requireEmail && !v.requirePhone && v.completionReward > 0) {
       return "Require at least one of email or mobile verification for a completion reward.";
@@ -250,8 +251,7 @@ export default function AppSettings() {
     setCfg({
       ...DEFAULTS,
       ...data,
-      rewardSettings: { ...DEFAULTS.rewardSettings, ...(data.rewardSettings || {}) },
-      verificationReward: { ...DEFAULTS.verificationReward, ...(data.verificationReward || {}) },
+      verificationReward: { ...DEFAULTS.verificationReward, ...(data.verificationReward || {}), registrationReward: 0 },
       paymentGateway: { ...DEFAULTS.paymentGateway, ...(data.paymentGateway || {}) },
       ads: { ...DEFAULTS.ads, ...(data.ads || {}) },
       socialLinks: { ...DEFAULTS.socialLinks, ...(data.socialLinks || {}) },
@@ -316,56 +316,33 @@ export default function AppSettings() {
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
         {/* ---- Rewards ---- */}
-        <Section icon={Coins} title="Joining & referral rewards" blurb="Coins granted automatically.">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className={label}>Signup bonus (coins)</label>
-              <input
-                type="number"
-                min={0}
-                value={cfg.rewardSettings.signupBonus}
-                onChange={(e) =>
-                  setCfg({ ...cfg, rewardSettings: { ...cfg.rewardSettings, signupBonus: num(e.target.value) } })
-                }
-                className={field}
-              />
-              {cfg.verificationReward.enabled && (
-                <p className={hint}>Not used while the verification reward below is enabled.</p>
-              )}
-            </div>
-            <div>
-              <label className={label}>Referral bonus (coins)</label>
-              <input
-                type="number"
-                min={0}
-                value={cfg.rewardSettings.referralBonus}
-                onChange={(e) =>
-                  setCfg({ ...cfg, rewardSettings: { ...cfg.rewardSettings, referralBonus: num(e.target.value) } })
-                }
-                className={field}
-              />
-            </div>
-          </div>
+        <Section icon={Coins} title="Referral rewards" blurb="There is no signup bonus — new users earn coins only through a referral.">
+          <p className="text-sm text-muted-foreground">
+            Rewards for the inviter and the invited friend, the qualifying action, fraud limits and milestones are managed on
+            the Referrals page.
+          </p>
+          <Link href="/referrals" className="inline-flex mt-3 text-sm font-semibold text-primary hover:underline">
+            Open Referral program →
+          </Link>
         </Section>
 
         {/* ---- Registration verification reward ---- */}
         <Section
           icon={ShieldCheck}
           title="Registration verification reward"
-          blurb="Coins at signup, plus a one-time bonus once BOTH email and mobile are verified."
+          blurb="A one-time bonus once BOTH email and mobile are verified. (Nothing is paid at signup.)"
         >
           <Toggle
             checked={vr.enabled}
             onChange={(v) => setVr({ enabled: v })}
             title="Enabled"
-            description="Off: new signups get the legacy signup bonus above. Turning it off PAUSES completion bonuses for already-enrolled users; their promised amount is kept."
+            description="Turning it off PAUSES completion bonuses for already-enrolled users; their promised amount is kept."
           />
-          <div className="grid grid-cols-3 gap-3 mt-2">
+          <div className="grid grid-cols-2 gap-3 mt-2">
             {(
               [
-                ["registrationReward", "At signup"],
                 ["completionReward", "On completion"],
-                ["maxTotalReward", "Max combined"],
+                ["maxTotalReward", "Maximum"],
               ] as const
             ).map(([key, text]) => (
               <div key={key}>
@@ -375,9 +352,8 @@ export default function AppSettings() {
             ))}
           </div>
           <p className={hint}>
-            Users see: “Register karne par {vr.registrationReward} coins milte hain. Email aur mobile number dono verify karne par
-            additional {vr.completionReward} coins milenge. Total reward: {vr.registrationReward + vr.completionReward} coins.” Amounts are
-            locked in per user at signup; changes apply to new signups only.
+            Users see: “Email aur mobile number dono verify karne par {vr.completionReward} coins milenge.” The amount is locked in per
+            user at signup; changes apply to new signups only.
           </p>
           <Toggle checked={vr.requireEmail} onChange={(v) => setVr({ requireEmail: v })} title="Require email verification" />
           <Toggle checked={vr.requirePhone} onChange={(v) => setVr({ requirePhone: v })} title="Require mobile verification" />

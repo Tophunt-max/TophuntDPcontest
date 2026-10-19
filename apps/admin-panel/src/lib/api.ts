@@ -769,7 +769,20 @@ export const api = {
     post(`/admin/reports/${id}/resolve`, { action }),
 
   // referrals + finance trends
-  referrals: () => get<any[]>("/admin/referrals"),
+  referrals: (params: { status?: string; q?: string } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.status) qs.set("status", params.status);
+    if (params.q) qs.set("q", params.q);
+    const s = qs.toString();
+    return get<{
+      rows: any[];
+      stats: { byStatus: Record<string, number>; coinsPaid: number; milestonePaid: number };
+      topReferrers: { uid: string; username: string | null; rewarded: number; earned: number }[];
+      program: any;
+    }>(`/admin/referrals${s ? `?${s}` : ""}`);
+  },
+  decideReferral: (id: string, action: "approve" | "reject", reason?: string) =>
+    patch(`/admin/referrals/${encodeURIComponent(id)}`, { action, reason }),
   // `deposits` / `withdrawals` are RUPEES (they used to be coin counts charted as
   // money); the *Coins fields carry the coin volume.
   financeTrends: () =>

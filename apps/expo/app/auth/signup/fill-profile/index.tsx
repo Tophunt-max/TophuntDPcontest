@@ -33,6 +33,8 @@ import { callApi } from "@/src/services/api"; // Centralized API Caller
 import { auth } from "@/src/services/firebase/initFirebase";
 import { Alert } from "@/src/lib/appAlert";
 import { onboardingDraftFor, onboardingSnapshot, resetOnboarding } from "@/src/lib/profileCompletion";
+import { useAppConfig } from "@/src/services/appSettings";
+import { getPendingInvite, offerLine } from "@/src/services/referrals";
 
 /**
  * Minimum age.
@@ -108,6 +110,15 @@ const CircularProgress = ({ progress, size = 60 }: { progress: number, size?: nu
 
 const FillProfile: React.FC = () => {
   const { data: signupData, setMultiple, setField, setStep } = useSignupStore();
+  // Referral offer (admin-managed, /read/app-config) and a code from an invite link.
+  const { config: appConfig } = useAppConfig();
+  const referralOffer = appConfig?.referral?.enabled ? offerLine(appConfig.referral) : null;
+  useEffect(() => {
+    if (signupData.referralCode) return;
+    getPendingInvite().then((code) => {
+      if (code && !useSignupStore.getState().data.referralCode) setField('referralCode', code);
+    });
+  }, []);
   const { addToast } = useToast();
   const { adjustPicked, readjust, canReadjust, host: adjusterHost } = useReadjustablePhoto(1);
   
@@ -326,7 +337,11 @@ const FillProfile: React.FC = () => {
 
         <DatePickerField control={control} name="dateOfBirth" placeholder="Date of Birth" errorMessage={errors.dateOfBirth?.message as string | undefined} />
 
-        {/* Optional referral code — credits both users on signup. */}
+        {/* Optional referral code — pays both users once the friend qualifies
+            (lib/referralProgram.ts). There is no signup bonus. */}
+        {appConfig?.referral?.enabled !== false && (
+        <>
+        {referralOffer ? <Text style={styles.referralHint}>🎁 {referralOffer}</Text> : null}
         <TextInput
           value={signupData.referralCode || ''}
           onChangeText={(t) => setField('referralCode', t.trim().toUpperCase())}
@@ -335,6 +350,8 @@ const FillProfile: React.FC = () => {
           autoCapitalize="characters"
           style={styles.referralInput}
         />
+        </>
+        )}
 
         <TouchableOpacity onPress={handleSubmit(onSubmit)} style={styles.continueButton} disabled={isLoading || isUploading || usernameChecking}>
           {isLoading ? <ActivityIndicator color="white" /> : <Text style={styles.continueButtonText}>Continue</Text>}
@@ -384,6 +401,7 @@ const styles = StyleSheet.create({
   flagText: { fontSize: 16, fontFamily: "Urbanist-Medium" },
   phoneField: { flex: 1 },
   dropdown: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#FAFAFA', borderRadius: 12, paddingHorizontal: 16, height: 56, marginBottom: 20, borderWidth: 1, borderColor: '#f0f0f0' },
+  referralHint: { fontFamily: 'Urbanist-SemiBold', fontSize: 13, color: '#ff4466', marginBottom: 8 },
   referralInput: { backgroundColor: '#FAFAFA', borderRadius: 12, paddingHorizontal: 16, height: 56, marginBottom: 20, borderWidth: 1, borderColor: '#f0f0f0', fontFamily: 'Urbanist-Medium', color: '#000' },
   continueButton: { backgroundColor: "#ff4466", paddingVertical: 18, borderRadius: 30, marginTop: 10 },
   continueButtonText: { color: "white", textAlign: "center", fontSize: 16, fontFamily: "Urbanist-Bold" },

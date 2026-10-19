@@ -74,6 +74,7 @@ import {
 import { resolveUsername } from "../lib/userIdentifiers";
 import { ONBOARDING_MAX_SLIDES, onboardingEnabled } from "../lib/onboardingConfig";
 import { followStateOf, isPrivateAccount, privateContentLocked, viewerFollows } from "../lib/privateAccount";
+import { referralSummary } from "../lib/referralProgram";
 
 export const readRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -1800,6 +1801,19 @@ readRoute.get("/deposits", requireAuth, async (c) => {
 });
 
 // The signed-in user's own withdrawal requests.
+/**
+ * The signed-in user's referral dashboard: code + share link, program terms,
+ * stats, the friends they invited (with status), their own referral (if any) and
+ * whether they can still apply a code. Private, never cached.
+ */
+readRoute.get("/me/referrals", requireAuth, async (c) => {
+  const uid = c.get("user").uid;
+  const origin = String(c.env.PUBLIC_SITE_ORIGIN || "https://tophunt.in");
+  const summary = await referralSummary(c.env, uid, origin);
+  c.header("Cache-Control", "private, no-store");
+  return c.json(summary);
+});
+
 readRoute.get("/withdrawals", requireAuth, async (c) => {
   const db = getDb(c.env);
   const uid = c.get("user").uid;

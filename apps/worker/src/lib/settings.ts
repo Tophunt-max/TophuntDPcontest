@@ -98,7 +98,10 @@ export async function getRewardSettings(env: Env): Promise<{ signupBonus: number
   const cfg = await readSetting(env, "appConfig");
   const rs = (cfg?.rewardSettings ?? {}) as Record<string, unknown>;
   return {
-    signupBonus: sanitizeRewardCoins(rs.signupBonus, 100),
+    // The signup bonus is gone: coins for joining come only from a referral
+    // (lib/referralProgram.ts). Kept in the shape so old callers read 0.
+    signupBonus: 0,
+    // Legacy seed for the referral program before the admin saves one.
     referralBonus: sanitizeRewardCoins(rs.referralBonus, 50),
   };
 }

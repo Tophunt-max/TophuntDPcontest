@@ -320,11 +320,11 @@ describe('reward settings cannot corrupt a balance', () => {
 });
 
 // ===========================================================================
-describe('the signup bonus is ledgered with the balance that grants it', () => {
+describe('there is no signup bonus', () => {
   /**
-   * The LEGACY bonus: appConfig.rewardSettings.signupBonus, which applies when the
-   * registration verification reward is switched off (it is on by default and
-   * covered in test/verificationReward.test.ts).
+   * The signup bonus was removed: new users are rewarded only through the referral
+   * program (lib/referralProgram.ts). A legacy `rewardSettings.signupBonus` still
+   * stored in app settings must mint nothing.
    */
   async function seedSignupBonus(env: TestEnv, signupBonus: number) {
     await drizzleOf(env).insert(schema.settings).values({
@@ -348,39 +348,21 @@ describe('the signup bonus is ledgered with the balance that grants it', () => {
       fakeCtx(),
     );
 
-  it('writes the balance and exactly one ledger row', async () => {
+  it('a stored legacy signupBonus grants nothing', async () => {
     const { env } = makeEnv();
     await seedSignupBonus(env, 100);
 
     const res = await createProfile(env, 'newbie');
     expect(res.status).toBe(200);
+    await createProfile(env, 'newbie');
 
-    expect(Number((await getUser(env, 'newbie'))?.dpcoin)).toBe(100);
-    const rows = await ledger(env, 'newbie');
-    expect(rows).toHaveLength(1);
-    expect(rows[0].type).toBe('signup_bonus');
-    expect(rows[0].id).toBe('signup_bonus:newbie');
-    // The ledger explains the whole balance — nothing appeared from nowhere.
-    expect(await ledgerSum(env, 'newbie')).toBe(100);
+    expect(Number((await getUser(env, 'newbie'))?.dpcoin)).toBe(0);
+    expect(await ledger(env, 'newbie')).toHaveLength(0);
   });
 
-  it('never re-grants or duplicates on a repeated signup', async () => {
+  it('nor with the verification reward on (its registration part is gone too)', async () => {
     const { env } = makeEnv();
-    await seedSignupBonus(env, 100);
-
     await createProfile(env, 'newbie');
-    await createProfile(env, 'newbie');
-
-    expect(Number((await getUser(env, 'newbie'))?.dpcoin)).toBe(100);
-    expect(await ledger(env, 'newbie')).toHaveLength(1);
-  });
-
-  it('writes no ledger row when the bonus is switched off', async () => {
-    const { env } = makeEnv();
-    await seedSignupBonus(env, 0);
-
-    await createProfile(env, 'newbie');
-
     expect(Number((await getUser(env, 'newbie'))?.dpcoin)).toBe(0);
     expect(await ledger(env, 'newbie')).toHaveLength(0);
   });
@@ -545,75 +527,80 @@ describe('no unledgered coin printer remains', () => {
 
 // ===========================================================================
 describe('reward settings in app-settings cannot corrupt a balance', () => {
-  it('rejects a fractional, negative, non-numeric or oversized signup/referral bonus', async () => {
+  it('rejects a fractional, negative, non-numeric or oversized referral bonus, and any signup bonus', async () => {
     const { env } = makeEnv();
 
-    // These are credited straight to a balance, so the same whole-number rule the
-    // gamification rewards get is enforced here, at the point of entry.
-    expect((await admin(env, 'POST', '/app-settings', { rewardSettings: { signupBonus: 10.5 } })).status).toBe(400);
+    expect((await admin(env, 'POST', '/app-settings', { rewardSettings: { referralBonus: 10.5 } })).status).toBe(400);
     expect((await admin(env, 'POST', '/app-settings', { rewardSettings: { referralBonus: -1 } })).status).toBe(400);
-    expect((await admin(env, 'POST', '/app-settings', { rewardSettings: { signupBonus: 'free' } })).status).toBe(400);
+    expect((await admin(env, 'POST', '/app-settings', { rewardSettings: { referralBonus: 'free' } })).status).toBe(400);
     expect((await admin(env, 'POST', '/app-settings', { rewardSettings: { referralBonus: 2_000_000 } })).status).toBe(400);
+    // The signup bonus was removed: any non-zero value is refused with an explanation.
+    const signup = await admin(env, 'POST', '/app-settings', { rewardSettings: { signupBonus: 100 } });
+    expect(signup.status).toBe(400);
+    expect(JSON.stringify(signup.body)).toMatch(/Signup bonus has been removed/);
     // Nothing bad was stored.
     expect(await drizzleOf(env).select().from(schema.settings).all()).toHaveLength(0);
 
-    // Whole values within range are accepted.
+    // Whole values within range are accepted (and a zero signup bonus is harmless).
     expect(
-      (await admin(env, 'POST', '/app-settings', { rewardSettings: { signupBonus: 100, referralBonus: 50 } })).status,
+      (await admin(env, 'POST', '/app-settings', { rewardSettings: { signupBonus: 0, referralBonus: 50 } })).status,
     ).toBe(200);
   });
 });
 
 // ===========================================================================
 describe('the referral bonus is credited once, atomically, from app settings', () => {
-  /** The referral bonus lives in appConfig.rewardSettings — NOT the gamification row. */
-  async function seedReferralBonus(env: TestEnv, referralBonus: number) {
+  async function seedProgram(env: TestEnv, referralProgram: Record<string, any>) {
     await drizzleOf(env).insert(schema.settings).values({
-      id: 'appConfig', data: { rewardSettings: { referralBonus } } as any, updatedAt: Date.now(),
+      id: 'appConfig', data: { referralProgram } as any, updatedAt: Date.now(),
     } as any);
     await env.CACHE_KV.delete('settings:appConfig');
   }
 
-  it('credits both the referrer and the new user exactly once, each with a ledger row', async () => {
+  it('with qualifyAction=signup, credits both sides exactly once, each with a ledger row', async () => {
     const { env } = makeEnv();
-    await seedReferralBonus(env, 50);
+    await seedProgram(env, { qualifyAction: 'signup', referrerReward: 40, refereeReward: 60 });
     await seedUser(env, 'ref', 0, { referralCode: 'THTEST1' });
     await seedUser(env, 'newbie', 0);
 
     const res = await call(env, 'newbie', 'completeSignup', { referralCode: 'THTEST1' });
     expect(res.status).toBe(200);
+    await call(env, 'newbie', 'completeSignup', { referralCode: 'THTEST1' });
 
-    expect(Number((await getUser(env, 'ref'))?.dpcoin)).toBe(50);
-    expect(Number((await getUser(env, 'newbie'))?.dpcoin)).toBe(50);
+    expect(Number((await getUser(env, 'ref'))?.dpcoin)).toBe(40);
+    expect(Number((await getUser(env, 'newbie'))?.dpcoin)).toBe(60);
     // The ledger explains both balances — nothing appeared from nowhere.
-    expect(await ledgerSum(env, 'ref')).toBe(50);
-    expect(await ledgerSum(env, 'newbie')).toBe(50);
-    // Attribution recorded exactly once.
+    expect(await ledgerSum(env, 'ref')).toBe(40);
+    expect(await ledgerSum(env, 'newbie')).toBe(60);
     expect((await getUser(env, 'newbie'))?.referredBy).toBe('ref');
-    expect(await drizzleOf(env).select().from(schema.referrals).all()).toHaveLength(1);
+    const rows = await drizzleOf(env).select().from(schema.referrals).all();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'rewarded', referrerReward: 40, refereeReward: 60 });
   });
 
-  it('never double-credits on a repeated completeSignup', async () => {
+  it('by default (first contest) pays nothing at signup: the referral is pending', async () => {
     const { env } = makeEnv();
-    await seedReferralBonus(env, 50);
+    await seedProgram(env, { referrerReward: 50, refereeReward: 50 });
     await seedUser(env, 'ref', 0, { referralCode: 'THTEST1' });
     await seedUser(env, 'newbie', 0);
 
     await call(env, 'newbie', 'completeSignup', { referralCode: 'THTEST1' });
-    await call(env, 'newbie', 'completeSignup', { referralCode: 'THTEST1' });
 
-    expect(Number((await getUser(env, 'ref'))?.dpcoin)).toBe(50);
-    expect(Number((await getUser(env, 'newbie'))?.dpcoin)).toBe(50);
-    expect(await drizzleOf(env).select().from(schema.referrals).all()).toHaveLength(1);
+    expect(Number((await getUser(env, 'ref'))?.dpcoin)).toBe(0);
+    expect(Number((await getUser(env, 'newbie'))?.dpcoin)).toBe(0);
+    const rows = await drizzleOf(env).select().from(schema.referrals).all();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'pending', qualifyAction: 'first_contest' });
   });
 
   it('refuses a self-referral', async () => {
     const { env } = makeEnv();
-    await seedReferralBonus(env, 50);
+    await seedProgram(env, { qualifyAction: 'signup' });
     await seedUser(env, 'solo', 0, { referralCode: 'THSELF1' });
 
     const res = await call(env, 'solo', 'completeSignup', { referralCode: 'THSELF1' });
     expect(res.status).toBe(200); // signup completion itself still succeeds
+    expect(res.body.referral?.status).toBe('refused');
 
     expect(Number((await getUser(env, 'solo'))?.dpcoin)).toBe(0);
     expect(await drizzleOf(env).select().from(schema.referrals).all()).toHaveLength(0);
@@ -621,24 +608,25 @@ describe('the referral bonus is credited once, atomically, from app settings', (
 
   it('refuses a retroactive claim from an older account', async () => {
     const { env } = makeEnv();
-    await seedReferralBonus(env, 50);
+    await seedProgram(env, { qualifyAction: 'signup' });
     await seedUser(env, 'ref', 0, { referralCode: 'THTEST1' });
-    // Created well outside the welcome window — a long-existing user.
+    // Created well outside the apply window — a long-existing user.
     await seedUser(env, 'veteran', 0, { createdAt: Date.now() - 30 * 24 * 60 * 60 * 1000 });
 
     const res = await call(env, 'veteran', 'completeSignup', { referralCode: 'THTEST1' });
     expect(res.status).toBe(200);
 
-    // No bonus minted for either side, and no attribution recorded.
     expect(Number((await getUser(env, 'ref'))?.dpcoin)).toBe(0);
     expect(Number((await getUser(env, 'veteran'))?.dpcoin)).toBe(0);
     expect((await getUser(env, 'veteran'))?.referredBy).toBeFalsy();
     expect(await drizzleOf(env).select().from(schema.referrals).all()).toHaveLength(0);
   });
 
-  it('takes the amount from app settings, ignoring any stale gamification value', async () => {
+  it('before a program is saved, the legacy referralBonus seeds both rewards; gamification is ignored', async () => {
     const { env } = makeEnv();
-    await seedReferralBonus(env, 77);
+    await drizzleOf(env).insert(schema.settings).values({
+      id: 'appConfig', data: { rewardSettings: { referralBonus: 77 }, referralProgram: { qualifyAction: 'signup' } } as any, updatedAt: Date.now(),
+    } as any);
     // A leftover gamification.referralBonus must have NO effect on the payout.
     await drizzleOf(env).insert(schema.settings).values({
       id: 'gamification', data: { referralBonus: 999 } as any, updatedAt: Date.now(),

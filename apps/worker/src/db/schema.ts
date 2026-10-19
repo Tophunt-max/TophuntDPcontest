@@ -105,6 +105,8 @@ export const users = sqliteTable(
     // referral program
     referralCode: text("referral_code"),
     referredBy: text("referred_by"),
+    /** Device the account last acted from — referral fraud checks only (migration 0063). */
+    deviceId: text("device_id"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
@@ -1176,6 +1178,19 @@ export const referrals = sqliteTable(
     referredUid: text("referred_uid").notNull().unique(),
     bonus: real("bonus").default(0),
     createdAt: integer("created_at").notNull(),
+    /** pending | review | rewarded | rejected | expired (migration 0063, lib/referralProgram.ts). */
+    status: text("status").notNull().default("rewarded"),
+    code: text("code"),
+    referrerReward: real("referrer_reward").notNull().default(0),
+    refereeReward: real("referee_reward").notNull().default(0),
+    qualifyAction: text("qualify_action"),
+    qualifiedAt: integer("qualified_at"),
+    rewardedAt: integer("rewarded_at"),
+    expiresAt: integer("expires_at"),
+    rejectReason: text("reject_reason"),
+    deviceId: text("device_id"),
+    decidedBy: text("decided_by"),
+    updatedAt: integer("updated_at"),
   },
   (t) => ({ referrerIdx: index("idx_referrals_referrer").on(t.referrerUid) }),
 );

@@ -174,7 +174,10 @@ export default function WalletScreen() {
     Haptics.selectionAsync();
     try {
       const code = referralCode || 'TOPHUNT';
-      await Share.share({ message: referralCaption(code, appShareOrigin()) });
+      const origin = appShareOrigin();
+      // The invite link pre-fills the code at signup (app/invite/[code].tsx).
+      const url = origin && referralCode ? `${origin.replace(/\/$/, '')}/invite/${encodeURIComponent(referralCode)}` : origin;
+      await Share.share({ message: referralCaption(code, url) });
     } catch (error) {
       Alert.alert('Error', 'Could not open share dialog');
     }
@@ -474,7 +477,7 @@ export default function WalletScreen() {
                 {/* Refer & Earn Banner */}
                 <Animated.View entering={FadeInRight.delay(200).duration(500)}>
                     <TouchableOpacity 
-                        onPress={handleRefer} 
+                        onPress={() => { Haptics.selectionAsync(); router.push('/referral' as any); }} 
                         style={[styles.referContainer, { backgroundColor: isDark ? '#2A2D35' : '#FFF' }]}
                         activeOpacity={0.9}
                     >
@@ -489,7 +492,12 @@ export default function WalletScreen() {
                             </View>
                             <View style={{ flex: 1, marginLeft: 12 }}>
                                 <Text style={[styles.referTitle, { color: isDark ? '#fff' : '#101010' }]}>Refer & Earn</Text>
-                                <Text style={styles.referDesc}>{referralCode ? <>Your code: <Text style={{fontWeight: '800', color: '#FF4D67'}}>{referralCode}</Text></> : 'Invite friends & earn bonus coins!'}</Text>
+                                <Text style={styles.referDesc}>
+                                    {appConfig?.referral?.enabled && Number(appConfig.referral.referrerReward) > 0
+                                        ? `Har dost par ${appConfig.referral.referrerReward} coins — dost ko bhi ${appConfig.referral.refereeReward}!`
+                                        : 'Invite friends & earn bonus coins!'}
+                                </Text>
+                                {referralCode ? <Text style={styles.referDesc}>Your code: <Text style={{fontWeight: '800', color: '#FF4D67'}}>{referralCode}</Text></Text> : null}
                             </View>
                             <ArrowIcon size={18} direction="right" color={subTextColor} />
                         </View>
