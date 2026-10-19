@@ -76,7 +76,10 @@ export const CONTENT_SECURITY_POLICY =
   // beacon into every HTML response when the feature is on for the project, so
   // it is not optional from the app's side: leaving it out produced a CSP
   // violation on every single page load.
-  "script-src 'self' 'unsafe-inline' https://checkout.razorpay.com https://*.gstatic.com https://*.googleapis.com https://static.cloudflareinsights.com; " +
+  // apis.google.com serves gapi (`/js/api.js`), which Firebase's web SDK loads to
+  // run Google / Facebook / Apple sign-in. Without it every social sign-in failed
+  // with "auth/internal-error" before the popup even opened.
+  "script-src 'self' 'unsafe-inline' https://apis.google.com https://checkout.razorpay.com https://*.gstatic.com https://*.googleapis.com https://static.cloudflareinsights.com; " +
   "style-src 'self' 'unsafe-inline'; " +
   "img-src 'self' data: blob: https:; " +
   "media-src 'self' blob: https:; " +
@@ -95,7 +98,9 @@ export const CONTENT_SECURITY_POLICY =
   'https://fcmregistrations.googleapis.com https://lumberjack.razorpay.com https://api.razorpay.com ' +
   // The analytics beacon POSTs its payload back to this host.
   'https://cloudflareinsights.com; ' +
-  'frame-src https://api.razorpay.com https://checkout.razorpay.com https://*.firebaseapp.com; ' +
+  // 'self': on tophunt.in the Firebase auth iframe is served first-party from
+  // `/__/auth/iframe` (see FIREBASE_AUTH_PROXY below).
+  "frame-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.firebaseapp.com; " +
   // `blob:` is required by hls.js, which plays Bunny HLS on the web: it spawns
   // its demuxer in a Web Worker created from a blob URL. Without this the worker
   // is blocked and playback degrades to the main thread (or fails outright).
@@ -633,6 +638,49 @@ function archivePath(page, category) {
   return page > 1 ? `${base}/page/${page}` : base;
 }
 
+/**
+ * Firebase Auth's hosted helper pages (`/__/auth/handler`, `/__/auth/iframe`,
+ * their scripts, and `/__/firebase/init.json`), proxied from the project's
+ * firebaseapp.com host.
+ *
+ * Web sign-in talks to `https://<authDomain>/__/auth/…` through a hidden iframe.
+ * With authDomain = tophuntdpcontest.firebaseapp.com that iframe is third-party
+ * on tophunt.in, and Brave / Safari ITP / Firefox strict / Chrome storage
+ * partitioning break it. Proxying the paths makes authDomain = tophunt.in work
+ * (src/lib/authDomain.ts), which is Firebase's documented fix. The OAuth
+ * redirect URI `https://tophunt.in/__/auth/handler` must be registered with each
+ * identity provider for this to sign anyone in.
+ *
+ * `/__/auth/action` is NOT proxied: it is our own email-action page (above).
+ * Responses pass through untouched — they are Firebase's pages, with Firebase's
+ * headers, not app documents, so the app CSP is not applied to them.
+ */
+const FIREBASE_AUTH_HOST = 'tophuntdpcontest.firebaseapp.com';
+
+export function firebaseAuthProxyTarget(url, env) {
+  const p = url.pathname;
+  if (p === '/__/auth/action') return null;
+  if (!(p.startsWith('/__/auth/') || p.startsWith('/__/firebase/'))) return null;
+  const host = (env && env.FIREBASE_AUTH_HOST) || FIREBASE_AUTH_HOST;
+  return `https://${host}${p}${url.search}`;
+}
+
+async function proxyFirebaseAuth(request, target) {
+  const headers = new Headers(request.headers);
+  headers.delete('host');
+  const init = {
+    method: request.method,
+    headers,
+    // Apple returns to the handler with a form POST.
+    body: request.method === 'GET' || request.method === 'HEAD' ? undefined : request.body,
+    redirect: 'manual',
+  };
+  const upstream = await fetch(target, init);
+  const res = new Response(upstream.body, upstream);
+  for (const [k, v] of Object.entries(TRANSPORT_HEADERS)) res.headers.set(k, v);
+  return res;
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -696,6 +744,12 @@ export default {
     if ((isActionPayload || path === '/__/auth/action') && path !== '/auth/action') {
       return Response.redirect(new URL('/auth/action' + url.search, url.origin).toString(), 302);
     }
+
+    // --- Firebase sign-in helper pages, served first-party -----------------
+    // See firebaseAuthProxyTarget: the OAuth handler/iframe live on our own
+    // origin so browsers that block third-party storage can still sign in.
+    const authProxyTarget = firebaseAuthProxyTarget(url, env);
+    if (authProxyTarget) return proxyFirebaseAuth(request, authProxyTarget);
 
     // --- retired WordPress url space ---------------------------------------
     // 410 Gone, and checked BEFORE the normalising redirect so `/wp-admin/`
