@@ -207,8 +207,8 @@ describe('the /__/auth/action redirect in public/_worker.js', () => {
 
   it('the app CSP allows the scripts and frames Firebase sign-in needs', async () => {
     const res = await get('https://tophunt.in/auth/login');
-    const csp = res.headers.get('content-security-policy') || '';
-    const directive = (name: string) => csp.split(';').map((d) => d.trim()).find((d) => d.startsWith(name + ' ')) || '';
+    const csp: string = res.headers.get('content-security-policy') || '';
+    const directive = (name: string) => csp.split(';').map((d: string) => d.trim()).find((d: string) => d.startsWith(name + ' ')) || '';
     // gapi: without it every social sign-in failed with auth/internal-error.
     expect(directive('script-src')).toContain('https://apis.google.com');
     // The auth iframe, first-party on tophunt.in, or on firebaseapp.com elsewhere.
