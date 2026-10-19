@@ -73,6 +73,8 @@ import { formatClock } from '@/src/lib/countdown';
  * States: still live (countdown + back to the battle), result pending (polls
  * while the server settles), winner, tie, voided, missing.
  */
+/** How long a Share tap waits for a card still being prepared (< ~5s user activation). */
+const SHARE_WAIT_MS = 3500;
 const PENDING_POLL_MS = 3000;
 const PENDING_MAX_POLLS = 40;
 
@@ -217,16 +219,26 @@ export default function BattleResult() {
     return null;
   }, [capture, fallback]);
   const sharePreparing = hasResult && !capture && (!captureFailed || fallback === null);
+  // Latest values for a tap that is waiting on the card (see onShare).
+  const latest = useRef({ sharePreparing, shareSource });
+  latest.current = { sharePreparing, shareSource };
 
   const onShare = useCallback(async () => {
     if (busy) return;
-    if (sharePreparing) {
-      addToast('Winner card taiyaar ho raha hai — ek second…', 'info');
-      return;
-    }
     setBusy(true);
     try {
-      const picked = shareSource();
+      // Tapped before the card finished: wait briefly instead of bouncing the
+      // tap with a toast. Bounded well inside the browser's ~5s user-activation
+      // window, so navigator.share still runs as part of this tap.
+      const deadline = Date.now() + SHARE_WAIT_MS;
+      while (latest.current.sharePreparing && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      if (latest.current.sharePreparing) {
+        addToast('Winner card taiyaar ho raha hai — ek second…', 'info');
+        return;
+      }
+      const picked = latest.current.shareSource();
       if (!picked) {
         // Say so: the user asked for the card and is getting only a link.
         addToast('Card image nahi ban payi — result link share kar rahe hain.', 'info');
@@ -242,7 +254,7 @@ export default function BattleResult() {
     } finally {
       setBusy(false);
     }
-  }, [busy, sharePreparing, shareSource, caption, url, toastFor, addToast]);
+  }, [busy, caption, url, toastFor, addToast]);
 
   const onSave = useCallback(async () => {
     if (busy) return;

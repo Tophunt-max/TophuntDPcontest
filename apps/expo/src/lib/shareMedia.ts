@@ -111,6 +111,13 @@ async function readOnce(url: string, init: RequestInit, timeoutMs: number): Prom
 export async function readImageBlob(url: string, opts: { timeoutMs?: number } = {}): Promise<Blob> {
   const timeoutMs = opts.timeoutMs ?? MEDIA_READ_TIMEOUT_MS;
   if (url.startsWith('blob:') || url.startsWith('data:')) return readOnce(url, {}, timeoutMs);
+  // Already a same-origin proxy url (e.g. the winner card displays photos this
+  // way on web): the browser cache holds a CORS-free copy, so reuse it instead
+  // of downloading the photo a second time.
+  const origin = pageOrigin();
+  if (origin && url.startsWith(`${origin}${SHARE_MEDIA_PATH}`)) {
+    return readOnce(url, { credentials: 'omit' }, timeoutMs);
+  }
   const proxied = sameOriginMediaUrl(url);
   let firstError: unknown = null;
   if (proxied) {

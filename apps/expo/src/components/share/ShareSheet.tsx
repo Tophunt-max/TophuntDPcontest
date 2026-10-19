@@ -53,7 +53,7 @@ import {
 import { useBattleShareAsset } from '@/src/hooks/useBattleShareAsset';
 import { useAuthGate } from '@/src/hooks/useAuthGate';
 import { auth } from '@/src/services/firebase/initFirebase';
-import { createShareCounter, platformShareMode, shareOutcomeMessage } from '@/src/lib/vsShareAsset';
+import { createShareCounter, platformShareMode, shareOutcomeMessage, type ShareImageStatus } from '@/src/lib/vsShareAsset';
 import { useRouter } from 'expo-router';
 import { battleResultPath } from '@/src/lib/battleResult';
 
@@ -187,6 +187,27 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId, match: matchPr
     return outcome === 'intent_opened' || isCompletedShare(outcome as ShareOutcome);
   }, [counter, addToast]);
 
+  // A tap that lands while the image (or its web File) is still being prepared
+  // waits briefly instead of being bounced with a toast. Bounded well inside the
+  // browser's ~5s user-activation window so navigator.share still counts as
+  // part of the tap.
+  const live = React.useRef<{ assetStatus: ShareImageStatus | 'loading'; imageSource: ShareImageSource | null; preparedFile: File | null }>({
+    assetStatus,
+    imageSource,
+    preparedFile,
+  });
+  live.current = { assetStatus, imageSource, preparedFile };
+  const waitForImage = useCallback(async () => {
+    const deadline = Date.now() + 3500;
+    const pending = () => {
+      const s = live.current;
+      if (s.assetStatus === 'preparing' || s.assetStatus === 'loading') return true;
+      return isWeb && webFiles && !!s.imageSource && !s.preparedFile;
+    };
+    while (pending() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+    return live.current;
+  }, [isWeb, webFiles]);
+
   const notReadyToast = useCallback(() => {
     if (assetStatus === 'preparing' || assetStatus === 'loading') {
       addToast('The VS image is still being prepared — try again in a moment.', 'info');
@@ -211,9 +232,10 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId, match: matchPr
    */
   const doOSShare = useCallback(async () => {
     if (busy) return;
-    if (assetStatus === 'preparing' || assetStatus === 'loading') return notReadyToast();
     setBusy(true);
     try {
+      const { assetStatus, imageSource, preparedFile } = await waitForImage();
+      if (assetStatus === 'preparing' || assetStatus === 'loading') return notReadyToast();
       let outcome = imageSource
         ? await shareImageFile({ source: imageSource, caption, url, file: preparedFile })
         : await shareBattleLink({ caption, url });
@@ -227,7 +249,7 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId, match: matchPr
     } finally {
       setBusy(false);
     }
-  }, [busy, assetStatus, imageSource, preparedFile, caption, url, finish, closeSheet, notReadyToast, isWeb]);
+  }, [busy, waitForImage, caption, url, finish, closeSheet, notReadyToast, isWeb]);
 
   // A finished battle has a branded winner card; offer it first.
   const router = useRouter();
@@ -240,12 +262,22 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId, match: matchPr
   /** A specific app — routed by what that app can actually receive. */
   const onPlatform = useCallback(async (platformId: string) => {
     if (busy) return;
-    const mode = platformShareMode(platformId, { isWeb, assetStatus, webCanShareFiles: webFiles });
-    if (mode === 'wait') return notReadyToast();
-    if (mode === 'image_sheet' && imageSource) {
+    let snap = live.current;
+    let mode = platformShareMode(platformId, { isWeb, assetStatus, webCanShareFiles: webFiles });
+    if (mode === 'wait' || mode === 'image_sheet') {
       setBusy(true);
       try {
-        const outcome = await shareImageFile({ source: imageSource, caption, url, file: preparedFile });
+        snap = await waitForImage();
+      } finally {
+        setBusy(false);
+      }
+      mode = platformShareMode(platformId, { isWeb, assetStatus: snap.assetStatus, webCanShareFiles: webFiles });
+    }
+    if (mode === 'wait') return notReadyToast();
+    if (mode === 'image_sheet' && snap.imageSource) {
+      setBusy(true);
+      try {
+        const outcome = await shareImageFile({ source: snap.imageSource, caption, url, file: snap.preparedFile });
         if (finish(outcome)) closeSheet();
       } finally {
         setBusy(false);
@@ -266,7 +298,7 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId, match: matchPr
     } finally {
       setBusy(false);
     }
-  }, [busy, isWeb, assetStatus, webFiles, imageSource, preparedFile, caption, url, finish, closeSheet, notReadyToast]);
+  }, [busy, isWeb, assetStatus, webFiles, imageSource, preparedFile, waitForImage, caption, url, finish, closeSheet, notReadyToast]);
 
   /** Send the battle straight into a DM with the tapped user (caption + link). */
   const onSendToUser = useCallback(async (u: any) => {
