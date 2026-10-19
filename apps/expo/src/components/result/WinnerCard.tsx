@@ -7,6 +7,7 @@ import images from '@/assets/images';
 import { useVideoStatus } from '@/src/hooks/useVideoStatus';
 import { cardSafePrizeImage, coinsLabel, votesLabel, type BattleResultSummary, type ResultSide } from '@/src/lib/battleResult';
 import { CoinMedallion } from './CoinMedallion';
+import { sameOriginMediaUrl } from '@/src/lib/shareMedia';
 
 /**
  * The shareable 9:16 winner card (story size).
@@ -16,9 +17,9 @@ import { CoinMedallion } from './CoinMedallion';
  * web — so the image people post is exactly what is on screen.
  *
  * Everything inside must be capturable on web too, which is why:
- *  - photos use the ORIGINAL media url on web. The `cdn-cgi/image/...` resized
- *    variant is served without CORS headers, so html-to-image cannot read it and
- *    the capture would fail; the original is served with CORS for tophunt.in.
+ *  - photos use the ORIGINAL media url on web, served through the same-origin
+ *    `/share-media/` proxy (src/lib/shareMedia.ts). The capture then reads the
+ *    copy already in the browser cache: no CORS, and no second download.
  *  - decorations are plain Views (no Lottie, no video): a screenshot of a
  *    VideoView is black.
  *  - `onReady` fires only once the hero photo (or its fallback) has painted, so
@@ -42,9 +43,19 @@ export function cardSize(screenWidth: number, screenHeight: number): { width: nu
 /** Pick the capturable still for an entry. */
 function stillFor(side: ResultSide | null, videoPoster: string | null): string | null {
   if (!side) return null;
-  if (side.isVideo) return videoPoster || side.avatarUrl;
-  if (Platform.OS === 'web') return side.mediaUrl || side.photoUrl;
+  if (side.isVideo) return webCapturable(videoPoster || side.avatarUrl);
+  if (Platform.OS === 'web') return webCapturable(side.mediaUrl || side.photoUrl);
   return side.photoUrl || side.mediaUrl;
+}
+
+/**
+ * Web: show the photo from the same-origin `/share-media/` proxy, so the bytes the
+ * capture needs are already in the browser cache (one download, not two, and no
+ * CORS). Falls back to the url itself when it is not proxyable.
+ */
+function webCapturable(url: string | null | undefined): string | null {
+  if (!url) return null;
+  return Platform.OS === 'web' ? sameOriginMediaUrl(url) ?? url : url;
 }
 
 /**
@@ -92,8 +103,9 @@ export const WinnerCard = forwardRef<View, Props>(({ summary, width, onReady }, 
   );
   const prize = summary.prize;
   // Product photo for the prize block, only when the capture can read it.
-  const prizeImage =
+  const safePrize =
     prize?.kind === 'product' ? cardSafePrizeImage(prize.imageUrl, hero?.mediaUrl ?? photos[0], Platform.OS === 'web') : null;
+  const prizeImage = safePrize ? webCapturable(safePrize) : null;
 
   // Ready once the logo and every CURRENT photo have loaded or errored. Tracked
   // per slot+uri (a Set, not a counter), so a repeated onLoad cannot over-count
