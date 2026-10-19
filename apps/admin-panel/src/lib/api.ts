@@ -818,6 +818,9 @@ export const api = {
   saveRewards: (payload: any) => post("/admin/rewards", payload),
   appSettings: () => get<any>("/admin/app-settings"),
   saveAppSettings: (payload: any) => post("/admin/app-settings", payload),
+  // Sign-in / sign-up switches (resolved) + sign-ups per method over 30 days.
+  authMethods: () => get<any>("/admin/auth-methods"),
+  saveAuthMethods: (authMethods: any) => post("/admin/app-settings", { authMethods }),
   uploadOnboardingImage,
   onboardingStats: (days = 30) => get<OnboardingStats>(`/admin/onboarding/stats?days=${days}`),
   verificationReward: () => get<any>("/admin/verification-reward"),
