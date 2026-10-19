@@ -24,6 +24,7 @@ import { verifyIdToken, bearerToken } from "../lib/firebaseAuth";
 import { resolveAuthMethods, validateAuthMethods } from "../lib/authMethods";
 import { AUDITED_SECTIONS, appConfigChannels, publicAppConfig, validateAppControlPatch } from "../lib/appControl";
 import { publishMany } from "../lib/publish";
+import { publishCoinCatalog } from "../lib/coinCatalog";
 import { assertSessionUsable } from "../middleware/auth";
 import { getAppConfig, getGamificationSettings, getSeoAudit, invalidateSetting } from "../lib/settings";
 import { legalDocsForAdmin, LEGAL_DOC_KEYS, LEGAL_LAST_UPDATED } from "../content/legal";
@@ -4285,6 +4286,7 @@ adminRoute.post("/coin-packages", async (c) => {
     updatedAt: ts,
   });
   await logAudit(c, "coin-package.create", "coin_package", id, values);
+  c.executionCtx.waitUntil(publishCoinCatalog(c.env));
   return c.json({ success: true, id });
 });
 
@@ -4304,6 +4306,7 @@ adminRoute.patch("/coin-packages/:id", async (c) => {
   const set: any = { ...values, updatedAt: now() };
   await db.update(schema.coinPackages).set(set).where(eq(schema.coinPackages.id, id));
   await logAudit(c, "coin-package.update", "coin_package", id, set);
+  c.executionCtx.waitUntil(publishCoinCatalog(c.env));
   return c.json({ message: "Package updated" });
 });
 
@@ -4313,6 +4316,7 @@ adminRoute.delete("/coin-packages/:id", async (c) => {
   const id = c.req.param("id");
   await db.delete(schema.coinPackages).where(eq(schema.coinPackages.id, id));
   await logAudit(c, "coin-package.delete", "coin_package", id);
+  c.executionCtx.waitUntil(publishCoinCatalog(c.env));
   return c.json({ message: "Package deleted" });
 });
 

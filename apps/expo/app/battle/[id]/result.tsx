@@ -38,6 +38,8 @@ import {
 } from '@/src/lib/share';
 import { AppImage } from '@/src/components/ui/AppImage';
 import { CoinMedallion } from '@/src/components/result/CoinMedallion';
+import { useCoinRate } from '@/src/hooks/useCoinPackages';
+import { coinsInInr } from '@/src/lib/coinValue';
 import {
   coinsLabel,
   resultHeadline,
@@ -390,6 +392,9 @@ function PrizeSection(props: {
 }) {
   const { summary, isWinner, isDark, textColor, sub } = props;
   const prize = summary.prize;
+  // Live ₹ value of a coin prize at the admin's coin rate.
+  const rate = useCoinRate();
+  const coinValue = prize?.kind === 'coins' ? coinsInInr(prize.coins, rate) : null;
   const winnerName = summary.winner ? `@${summary.winner.username}` : 'Winner';
   const box = [styles.prizeSection, { backgroundColor: isDark ? '#2A2410' : '#FFF8DB', borderColor: isDark ? '#5C4A12' : '#FFE08A' }];
 
@@ -414,6 +419,7 @@ function PrizeSection(props: {
             <Text style={[styles.prizeAmount, { color: textColor }]} numberOfLines={1}>
               {coinsLabel(prize.coins)} <Text style={styles.prizeUnit}>Dpcoins</Text>
             </Text>
+            {coinValue ? <Text style={[styles.prizeNote, { color: sub, marginTop: 2 }]}>Value {coinValue}</Text> : null}
             <Text style={[styles.prizeNote, { color: sub }]}>
               {isWinner ? 'Aapke wallet mein credit ho gaye ✅' : `${winnerName} ne jeete`}
             </Text>

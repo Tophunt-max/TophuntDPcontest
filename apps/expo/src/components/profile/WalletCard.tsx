@@ -3,6 +3,8 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { UserProfile } from '../../types/user';
 import { LinearGradient } from 'expo-linear-gradient';
 import { CoinIcon } from '@/src/components/ui/CoinIcon';
+import { useCoinRate } from '@/src/hooks/useCoinPackages';
+import { coinsInInr } from '@/src/lib/coinValue';
 
 interface WalletCardProps {
   Dpcoin: number;
@@ -13,6 +15,8 @@ interface WalletCardProps {
 }
 
 export const WalletCard = ({ Dpcoin, stats, onPress, onPressWins }: WalletCardProps) => {
+  // Live ₹ value at the admin's coin rate.
+  const value = coinsInInr(Dpcoin || 0, useCoinRate());
   return (
     <LinearGradient
       colors={['#FF4D67', '#FF8A9B']}
@@ -29,6 +33,7 @@ export const WalletCard = ({ Dpcoin, stats, onPress, onPressWins }: WalletCardPr
             <Text style={styles.coinValue}>{Dpcoin || 0}</Text>
             <Text style={styles.coinUnit}> Dpcoins</Text>
           </View>
+          {value ? <Text style={styles.label}>Value {value}</Text> : null}
         </View>
         <View style={styles.badge}>
           <Text style={styles.badgeText}>Active</Text>

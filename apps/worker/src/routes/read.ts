@@ -34,6 +34,7 @@ import { memoGet, memoPut } from "../lib/memo";
 import { recordBlogView } from "../lib/viewCounter";
 import { kickSettlementIfDue } from "../lib/settleDue";
 import { publicAppConfig } from "../lib/appControl";
+import { listPublicCoinPackages } from "../lib/coinCatalog";
 
 const APP_CONFIG_EDGE_TTL_SEC = 30;
 import { getLiveTally, getViewerVote } from "../lib/voteCounter";
@@ -2093,26 +2094,14 @@ readRoute.get("/transactions", requireAuth, async (c) => {
 
 // Public catalog of purchasable coin packages (used by the store to build a
 // Razorpay order via the server-authoritative `createOrder` action). Only
-// active packages are exposed; pricing lives server-side.
-readRoute.get("/coin-packages", async (c) =>
-  cachedResponse(c, 120, async () => {
-    const db = getDb(c.env);
-    const rows = await db
-      .select()
-      .from(schema.coinPackages)
-      .where(eq(schema.coinPackages.active, true))
-      .orderBy(asc(schema.coinPackages.sortOrder))
-      .all();
-    return rows.map((p: any) => ({
-      id: p.id,
-      name: p.name,
-      coins: p.coins,
-      bonusCoins: p.bonusCoins,
-      priceInr: p.priceInr,
-      totalCoins: (Number(p.coins) || 0) + (Number(p.bonusCoins) || 0),
-    }));
-  }),
-);
+// active packages are exposed; pricing lives server-side. Never cached by
+// browsers, phones or the edge: an admin's price edit must show at once (it is
+// also pushed live — lib/coinCatalog.ts).
+readRoute.get("/coin-packages", async (c) => {
+  const res = c.json(await listPublicCoinPackages(c.env));
+  res.headers.set("Cache-Control", "no-store, max-age=0");
+  return res;
+});
 
 // ================= USERS =================
 /**
