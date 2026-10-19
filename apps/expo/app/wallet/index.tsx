@@ -32,6 +32,8 @@ import { useFeature } from '@/src/services/appSettings';
 import { readApi } from '@/src/services/api';
 import { useQuery } from '@tanstack/react-query';
 import { useDesignWindow } from '@/src/lib/layout';
+import { appShareOrigin } from '@/src/lib/share';
+import { referralCaption } from '@/src/lib/shareCaptions';
 
 
 const DAILY_REWARDS = [10, 15, 20, 25, 30, 50, 100];
@@ -172,9 +174,7 @@ export default function WalletScreen() {
     Haptics.selectionAsync();
     try {
       const code = referralCode || 'TOPHUNT';
-      await Share.share({
-        message: `Join me on TopHunt and earn free Dpcoins! Use my referral code: ${code}`,
-      });
+      await Share.share({ message: referralCaption(code, appShareOrigin()) });
     } catch (error) {
       Alert.alert('Error', 'Could not open share dialog');
     }

@@ -19,6 +19,7 @@ import BlogComments from '@/src/components/blog/BlogComments';
 import { Header } from '@/src/components/home/Header';
 import { useWebSeo } from '@/src/lib/webSeo';
 import { shareOrigin } from '@/src/lib/share';
+import { blogCaption } from '@/src/lib/shareCaptions';
 import { NotFoundView } from '@/src/components/ui/NotFoundView';
 import { reportError } from '@/src/lib/reportError';
 
@@ -169,7 +170,7 @@ export default function BlogDetailScreen({ permalink = false }: Props) {
     try {
       // Share the post on whatever host the app is served from — same automatic
       // origin the battle share uses — instead of a hard-coded domain.
-      await Share.share({ message: `${post.title}\n\n${shareOrigin()}/${post.slug}` });
+      await Share.share({ message: blogCaption(post.title, `${shareOrigin()}/${post.slug}`) });
     } catch {
       /* cancelled */
     }

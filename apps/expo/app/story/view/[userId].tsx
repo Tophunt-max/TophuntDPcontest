@@ -74,6 +74,7 @@ import { useVsStoryCard } from '@/src/hooks/useVsStoryCard';
 import { useAuthGate } from '@/src/hooks/useAuthGate';
 import { contestService } from '@/src/services/contests/contestService';
 import { battleCaption, battleUrl, prepareShareFile, shareBattleLink, shareImageFile, shareOrigin } from '@/src/lib/share';
+import { storyCaption } from '@/src/lib/shareCaptions';
 import { createShareCounter, resolveBattleShareAsset, shareOutcomeMessage } from '@/src/lib/vsShareAsset';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
 import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
@@ -249,9 +250,8 @@ export default function StoryView() {
   const handleShareStory = useCallback(async () => {
     if (shareInFlight.current) return;
     if (!isVsCurrent || !currentStory?.matchId) {
-      const who = currentUserStories?.username ? `@${currentUserStories.username}` : 'someone';
       try {
-        await Share.share({ message: `Check out ${who}'s story on TopHunt.\n\n${shareOrigin() || 'https://tophunt.in'}` });
+        await Share.share({ message: storyCaption(currentUserStories?.username, shareOrigin() || 'https://tophunt.in') });
       } catch (e) {
         // A dismissed share sheet rejects on some platforms; that is not an error.
         console.warn('[StoryView] share failed', e);
