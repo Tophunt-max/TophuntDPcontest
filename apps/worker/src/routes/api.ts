@@ -111,6 +111,7 @@ import { getAppConfig, getAppControlConfig, getRewardedAdConfig, getRewardSettin
 import { appControlGate } from "../lib/appControl";
 import { PROFILE_INCOMPLETE_CODE } from "../lib/accountStatus";
 import { chargeablePackage } from "../lib/coinPricing";
+import { chargeableWithdrawal, feeRuleFromConfig } from "../lib/withdrawalFee";
 import { getSettings } from "../lib/gamification";
 import { sendEmail, sendUserEmail } from "../lib/email";
 import { passwordChangedEmail, dataExportEmail } from "../lib/emailTemplates";
@@ -2199,9 +2200,24 @@ apiRoute.post("/", async (c) => {
         }
       }
 
+      // Platform fee (lib/withdrawalFee.ts): deducted from the payout, quoted to
+      // the user before they confirm, and LOCKED on the row below. If the app's
+      // quote no longer matches (the fee changed while the screen was open), refuse
+      // instead of charging an amount the user never saw.
+      const quote = chargeableWithdrawal(amt, policy.conversionRate, feeRuleFromConfig(cfg));
+      if (body.quotedFee !== undefined && body.quotedFee !== null) {
+        const seen = Number(body.quotedFee);
+        if (!Number.isFinite(seen) || Math.abs(seen - quote.feeInr) > 0.005) {
+          throw httpsError(
+            "failed-precondition",
+            `FEE_CHANGED: Platform fee badal gayi hai: ab ₹${quote.feeInr.toFixed(2)} hai, aapko ₹${quote.netInr.toFixed(2)} milenge. Dobara confirm karo.`,
+          );
+        }
+      }
+
       const ts = now();
       const id = newId();
-      const cashAmount = roundFiat(amt * policy.conversionRate);
+      const cashAmount = quote.netInr;
 
       // Escrow the coins, create the withdrawal row and write the hold ledger
       // entry in ONE transaction.
@@ -2230,14 +2246,17 @@ apiRoute.post("/", async (c) => {
       const withdrawalResults = await env.DB.batch([
         env.DB.prepare(
           `INSERT INTO withdrawals
-             (id, user_id, amount, cash_amount, method, account_details, status, reserved, created_at, updated_at)
-           SELECT ?, ?, ?, ?, ?, ?, 'pending', 1, ?, ?
+             (id, user_id, amount, cash_amount, gross_amount, fee_amount, fee_detail, method, account_details, status, reserved, created_at, updated_at)
+           SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?, ?
             WHERE ${solvent} ${capGate}`,
         ).bind(
           id,
           uid,
           amt,
           cashAmount,
+          quote.grossInr,
+          quote.feeInr,
+          JSON.stringify(quote.rule),
           destination.method,
           destination.accountDetails,
           ts,
@@ -2277,12 +2296,12 @@ apiRoute.post("/", async (c) => {
 
       await db.insert(schema.adminNotifications).values({
         id: newId(), title: "New Withdrawal Request",
-        message: `A user requested a payout of ${amt} coins to ${destination.masked}.`,
+        message: `A user requested a payout of ${amt} coins to ${destination.masked} — pay ₹${quote.netInr.toFixed(2)} (gross ₹${quote.grossInr.toFixed(2)} − platform fee ₹${quote.feeInr.toFixed(2)}).`,
         link: "/withdrawals", isRead: false, createdAt: ts,
       });
       alertAdminEmail(c, cfg, "New Withdrawal Request",
-        `<p>A user requested a payout of <b>${amt} coins</b> (₹${cashAmount.toFixed(2)}) via ${destination.method}.</p><p>Review it in the admin panel → Withdrawals.</p>`);
-      return c.json({ success: true, withdrawalId: id, cashAmount });
+        `<p>A user requested a payout of <b>${amt} coins</b> via ${destination.method}: pay <b>₹${cashAmount.toFixed(2)}</b> (gross ₹${quote.grossInr.toFixed(2)} − platform fee ₹${quote.feeInr.toFixed(2)}).</p><p>Review it in the admin panel → Withdrawals.</p>`);
+      return c.json({ success: true, withdrawalId: id, cashAmount, grossAmount: quote.grossInr, feeAmount: quote.feeInr });
     }
 
     // Manual QR/UPI deposit: user pays externally then submits the UTR here.

@@ -19,10 +19,12 @@
  *   updateUrls { android, ios }, updateUrl (legacy), updateMessage,
  *   announcement { id, enabled, message, link, tone, audience, startAt, endAt },
  *   features { contests, chat, stories, topups, withdrawals, posts },
- *   withdrawal { enabled, payoutsFrozen, minAmount, maxAmount, maxPerDay, conversionRate },
+ *   withdrawal { enabled, payoutsFrozen, minAmount, maxAmount, maxPerDay, conversionRate,
+ *               feePercent, feeFlat, feeMin, feeMax },
  *   _version (ms; bumped on every save).
  */
 import { validateCoinPricingPatch } from "./coinPricing";
+import { feeRuleFromConfig, validateWithdrawalFeePatch } from "./withdrawalFee";
 import { httpsError } from "./http";
 import { legacyAuthSettings, methodAllowed, resolveAuthMethods } from "./authMethods";
 import { onboardingEnabled, ONBOARDING_MAX_SLIDES } from "./onboardingConfig";
@@ -191,6 +193,8 @@ export function publicAppConfig(cfg: any, nowMs: number = Date.now()) {
       maxAmount: Number(withdrawal.maxAmount ?? 0),
       maxPerDay: Number(withdrawal.maxPerDay ?? 0),
       conversionRate: Number(withdrawal.conversionRate ?? 1),
+      // Platform fee, shown to the user before they confirm (lib/withdrawalFee.ts).
+      ...feeRuleFromConfig(cfg),
     },
     paymentGateway: { mode: cfg.paymentGateway?.mode || "auto" },
     ads: { enabled: ads.enabled === true, reward: Number(ads.reward ?? 0), dailyCap: Number(ads.dailyCap ?? 0) },
@@ -337,6 +341,8 @@ export function validateAppControlPatch(body: any, existing: any, nowMs: number 
     if (Number(merged.maxAmount) > 0 && Number(merged.minAmount) > Number(merged.maxAmount)) {
       bad("Minimum payout cannot be more than the maximum.");
     }
+    // Platform fee on payouts (lib/withdrawalFee.ts).
+    validateWithdrawalFeePatch(w, existing);
   }
   // Coin package buy rate (lib/coinPricing.ts). Checked against the packages by
   // the save handler, which has them.
