@@ -36,6 +36,8 @@ import { useToast } from "@/src/components/toast/ToastProvider";
 import { Colors } from '@/constants/theme';
 import { SocialAuthService } from "../../../../src/services/auth/socialAuth";
 import { postAuthDestination } from "@/src/lib/postAuthRedirect";
+import { friendlyAuthError } from "@/src/lib/authErrors";
+import { rememberAuthMethod } from "@/src/lib/lastAuthMethod";
 
 // Validation Schema
 const loginSchema = z.object({
@@ -96,6 +98,7 @@ export default function PasswordLoginScreen() {
       // 1. Firebase Sign In
       const userCredential = await signInWithEmailAndPassword(auth, data.email, data.password);
       const user = userCredential.user;
+      void rememberAuthMethod("password");
 
       // Soft email-verification reminder. Non-blocking on purpose: hard-blocking
       // would lock out the entire existing (pre-verification) user base. Sensitive
@@ -134,13 +137,7 @@ export default function PasswordLoginScreen() {
 
     } catch (error: any) {
       console.error("Login error:", error);
-      let errorMessage = "Something went wrong. Please try again.";
-      if (error.code === 'auth/invalid-credential' || error.code === 'auth/wrong-password') {
-        errorMessage = "Invalid email or password.";
-      } else if (error.code === 'auth/user-not-found') {
-        errorMessage = "No account found with this email.";
-      }
-      addToast(errorMessage, "error");
+      addToast(friendlyAuthError(error, "Login nahi ho paya. Dobara try karo."), "error");
     } finally {
       setIsLoading(false);
     }

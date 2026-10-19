@@ -4,6 +4,7 @@ import { api } from "@/lib/api";
 import { PageHeader } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import { Power, Megaphone, ArrowUpCircle, ToggleLeft, Banknote, Save } from "lucide-react";
+import { AuthMethodsCard } from "@/components/AuthMethodsCard";
 
 type Cfg = {
   maintenanceMode: boolean;
@@ -66,7 +67,9 @@ export default function AppControl() {
     }
     const next: Cfg = { ...cfg, announcement: { ...cfg.announcement, link } };
     setCfg(next);
-    saveMut.mutate(next);
+    // Login & Signup saves itself; never resend a stale copy of it from here.
+    const { authMethods: _authMethods, ...rest } = next as any;
+    saveMut.mutate(rest);
   };
 
   const field = "w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring";
@@ -86,6 +89,9 @@ export default function AppControl() {
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Login & signup methods (own Save) */}
+        <AuthMethodsCard />
+
         {/* Maintenance */}
         <Card icon={Power} title="Maintenance Mode" tint="text-red-500">
           <Toggle label="App under maintenance (read-only / blocked)" checked={cfg.maintenanceMode} onChange={(v) => setCfg({ ...cfg, maintenanceMode: v })} />

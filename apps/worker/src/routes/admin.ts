@@ -21,6 +21,7 @@ import { STORIES_FEED_CACHE_KEY } from "../lib/storyAudience";
 import { httpsError, ApiError } from "../lib/http";
 import { timingSafeEqualSecret } from "../lib/timingSafe";
 import { verifyIdToken, bearerToken } from "../lib/firebaseAuth";
+import { resolveAuthMethods, validateAuthMethods } from "../lib/authMethods";
 import { assertSessionUsable } from "../middleware/auth";
 import { getAppConfig, getGamificationSettings, getSeoAudit, invalidateSetting } from "../lib/settings";
 import { legalDocsForAdmin, LEGAL_DOC_KEYS, LEGAL_LAST_UPDATED } from "../content/legal";
@@ -268,6 +269,27 @@ function mergeSettings(existing: any, patch: any): any {
 const REWARD_SETTINGS_COIN_KEYS = ["signupBonus", "referralBonus"] as const;
 
 adminRoute.get("/app-settings", async (c) => c.json((await getAppConfig(c.env)) || {}));
+
+/**
+ * Sign-in / sign-up switches, resolved (legacy flags applied), plus how many
+ * accounts each method brought in over the last 30 days. `auth_provider` is
+ * recorded at signup from the verified token (routes/auth.ts createUserProfile);
+ * accounts created before that read as "unknown".
+ */
+adminRoute.get("/auth-methods", async (c) => {
+  const cfg = await getAppConfig(c.env);
+  const since = Date.now() - 30 * 86_400_000;
+  const rows = await c.env.DB.prepare(
+    `SELECT COALESCE(auth_provider, 'unknown') AS provider, COUNT(*) AS n
+       FROM users WHERE created_at >= ? GROUP BY 1 ORDER BY n DESC`,
+  )
+    .bind(since)
+    .all<{ provider: string; n: number }>();
+  return c.json({
+    methods: resolveAuthMethods(cfg),
+    signups30d: (rows.results || []).map((r) => ({ provider: r.provider, count: Number(r.n) || 0 })),
+  });
+});
 adminRoute.post("/app-settings", async (c) => {
   requireFullAdmin(c);
   const db = getDb(c.env);
@@ -323,6 +345,10 @@ adminRoute.post("/app-settings", async (c) => {
     validateVerificationRewardConfig({ ...(existing.verificationReward || {}), ...(body.verificationReward || {}) });
   }
   const merged = mergeSettings(existing, body);
+  // Sign-in / sign-up switches: validated against the MERGED result, so a save
+  // can never leave a platform with no way to sign in.
+  const authMethodsError = validateAuthMethods(body?.authMethods, merged);
+  if (authMethodsError) throw httpsError("invalid-argument", authMethodsError);
   await db
     .insert(schema.settings)
     .values({ id: "appConfig", data: merged, updatedAt: now() })
@@ -336,7 +362,7 @@ adminRoute.post("/app-settings", async (c) => {
   // changed them, from what, to what. (Only these sections — the rest of App
   // Control is cosmetic and is not audited by this handler.)
   // The intro is what every new user sees first, so its edits are audited too.
-  for (const section of ["verificationReward", "rewardSettings", "onboarding", "onboardingEnabled"] as const) {
+  for (const section of ["verificationReward", "rewardSettings", "onboarding", "onboardingEnabled", "authMethods"] as const) {
     if (body?.[section] !== undefined) {
       await logAudit(c, `settings.${section}.update`, "settings", "appConfig", {
         before: existing[section] ?? null,

@@ -17,6 +17,7 @@ const getReactNativePersistence = (firebaseAuth as any).getReactNativePersistenc
 import { firebaseConfig } from "@/src/firebaseConfig";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Platform } from "react-native";
+import { webAuthDomain } from "@/src/lib/authDomain";
 
 // NOTE: firebase/compat used to be imported here purely to satisfy
 // expo-firebase-recaptcha. Phone sign-in now goes through our own Worker (OTP +
@@ -24,7 +25,22 @@ import { Platform } from "react-native";
 // auth bundle — is gone.
 
 // 1. Initialize Modular App
-const app: FirebaseApp = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+// On web the OAuth helper pages are served first-party from our own origin when
+// this host is allowed to (src/lib/authDomain.ts; public/_worker.js proxies
+// `/__/auth/*` to firebaseapp.com). Native sign-in exchanges credentials and never
+// uses authDomain, so it keeps the default.
+const resolvedConfig =
+  Platform.OS === 'web' && typeof window !== 'undefined'
+    ? {
+        ...firebaseConfig,
+        authDomain: webAuthDomain(
+          window.location.hostname,
+          firebaseConfig.authDomain,
+          process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
+        ),
+      }
+    : firebaseConfig;
+const app: FirebaseApp = getApps().length === 0 ? initializeApp(resolvedConfig) : getApp();
 
 // 2. Initialize Auth with Persistence.
 // NOTE: The previous guard used `getApps().length === 0`, but an app was always

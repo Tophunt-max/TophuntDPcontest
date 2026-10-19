@@ -26,6 +26,9 @@ import { postAuthDestination } from "@/src/lib/postAuthRedirect";
 import { useSignupStore } from "../../../../src/store/signup";
 import { CountryPicker } from "react-native-country-codes-picker";
 import { Ionicons } from "@/src/lib/icons";
+import { useAuthMethods } from "@/src/hooks/useAuthMethods";
+import { friendlyAuthError } from "@/src/lib/authErrors";
+import { rememberAuthMethod } from "@/src/lib/lastAuthMethod";
 
 export default function PhoneLoginScreen() {
   const router = useRouter();
@@ -52,6 +55,9 @@ export default function PhoneLoginScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
   const [resendIn, setResendIn] = useState(0);
+  // Admin switch (App Control -> Login & Signup). The Worker refuses to send a
+  // code while it is off; this keeps the screen honest about it.
+  const { methods, ready: methodsReady } = useAuthMethods();
 
   /**
    * Request a login code from our backend.
@@ -71,7 +77,7 @@ export default function PhoneLoginScreen() {
 
     setIsLoading(true);
     try {
-      const res: any = await callApi("sendPhoneLoginOtp", { phone: countryCode + digits });
+      const res: any = await callApi("sendPhoneLoginOtp", { phone: countryCode + digits, platform: Platform.OS });
       setCodeSent(true);
       setVerificationCode("");
       setResendIn(Number(res?.cooldownSeconds) || 60);
@@ -79,7 +85,7 @@ export default function PhoneLoginScreen() {
     } catch (error: any) {
       // The server distinguishes "couldn't send" from "too many requests"; pass
       // its message through rather than inventing one.
-      addToast(error?.message || "Failed to send the code. Please try again.", "error");
+      addToast(friendlyAuthError(error, "Code nahi bhej paye. Thodi der baad try karo."), "error");
     } finally {
       setIsLoading(false);
     }
@@ -99,11 +105,13 @@ export default function PhoneLoginScreen() {
       const result: any = await callApi("phoneSignIn", {
         phone: countryCode + phoneNumber.replace(/\D/g, ""),
         code: verificationCode,
+        platform: Platform.OS,
       });
       if (!result?.customToken) throw new Error("Sign-in failed. Please try again.");
 
       const userCredential = await signInWithCustomToken(auth, result.customToken);
       const user = userCredential.user;
+      void rememberAuthMethod("phone");
       const normalizedPhone = String(result.phone || countryCode + phoneNumber).replace(/[^\d+]/g, "");
 
       // Look up the profile in D1 (via the Worker), keyed by uid.
@@ -143,7 +151,7 @@ export default function PhoneLoginScreen() {
       const wrongCode =
         error?.code === "functions/invalid-argument" || error?.code === "functions/not-found";
       if (!wrongCode) reportError(error, { flow: "phone-login", step: "verify" });
-      addToast(error?.message || "Invalid verification code", "error");
+      addToast(friendlyAuthError(error, "Code galat hai ya expire ho gaya."), "error");
     } finally {
       setIsLoading(false);
     }
@@ -177,6 +185,17 @@ export default function PhoneLoginScreen() {
       borderWidth: 1,
     }
   ];
+
+  if (methodsReady && !methods.phone) {
+    return (
+      <View style={[styles.disabledWrap, { backgroundColor, paddingTop: insets.top + 24 }]}>
+        <Ionicons name="call-outline" size={40} color="#FF4D67" />
+        <Text style={[styles.disabledTitle, { color: textColor }]}>Phone login abhi band hai</Text>
+        <Text style={[styles.disabledBody, { color: isDark ? "#BDBDBD" : "#616161" }]}>Koi aur tarika use karke login karo.</Text>
+        <PrimaryButton title="Back to login" onPress={() => router.replace("/auth/login")} style={{ marginTop: 24, alignSelf: "stretch" }} />
+      </View>
+    );
+  }
 
   return (
     <KeyboardAvoidingView
@@ -310,6 +329,9 @@ export default function PhoneLoginScreen() {
 }
 
 const styles = StyleSheet.create({
+  disabledWrap: { flex: 1, alignItems: "center", paddingHorizontal: 24 },
+  disabledTitle: { fontSize: 22, fontFamily: "Urbanist-Bold", marginTop: 16, textAlign: "center" },
+  disabledBody: { fontSize: 15, fontFamily: "Urbanist-Medium", marginTop: 8, textAlign: "center" },
   container: {
     flex: 1,
   },

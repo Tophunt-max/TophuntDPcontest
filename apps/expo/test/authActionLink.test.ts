@@ -20,7 +20,7 @@
  *     exactly like an expired link and would send everyone hunting the wrong
  *     problem.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const verifyPasswordResetCode = vi.fn(async () => 'user@example.com');
 const confirmPasswordReset = vi.fn(async () => {});
@@ -141,12 +141,79 @@ describe('the /__/auth/action redirect in public/_worker.js', () => {
     expect(location).toContain('lang=en');
   });
 
-  it('does NOT capture the OAuth handler path', async () => {
-    // /__/auth/handler belongs to authDomain (tophuntdpcontest.firebaseapp.com)
-    // and needs Firebase's own hosted files. Redirecting it would break social
-    // sign-in.
-    const res = await get('https://tophunt.in/__/auth/handler?foo=1');
-    expect(res.status).not.toBe(302);
+  describe('Firebase sign-in helper pages are proxied first-party', () => {
+    const realFetch = globalThis.fetch;
+    let calls: { url: string; method: string; body: string | null }[] = [];
+    beforeEach(() => {
+      calls = [];
+      (globalThis as any).fetch = vi.fn(async (input: any, init: any = {}) => {
+        const body = init.body ? await new Response(init.body).text() : null;
+        calls.push({ url: String(input), method: init.method || 'GET', body });
+        return new Response('<html>firebase handler</html>', {
+          status: 200,
+          headers: { 'content-type': 'text/html', 'x-upstream': 'firebase' },
+        });
+      });
+    });
+    afterEach(() => {
+      globalThis.fetch = realFetch;
+    });
+
+    it('serves /__/auth/handler from firebaseapp.com, query intact, never redirected', async () => {
+      // The OAuth handler needs Firebase's own hosted files: redirecting it would
+      // break social sign-in, so it is fetched and passed through.
+      const res = await get('https://tophunt.in/__/auth/handler?apiKey=K&providerId=google.com&v=10');
+      expect(res.status).toBe(200);
+      expect(calls[0].url).toBe('https://tophuntdpcontest.firebaseapp.com/__/auth/handler?apiKey=K&providerId=google.com&v=10');
+      expect(await res.text()).toContain('firebase handler');
+      expect(res.headers.get('x-upstream')).toBe('firebase');
+      // Firebase's page, not ours: the app CSP must not be stamped on it.
+      expect(res.headers.get('content-security-policy')).toBeNull();
+      expect(res.headers.get('strict-transport-security')).toBeTruthy();
+    });
+
+    it('proxies the iframe, its scripts and /__/firebase/init.json', async () => {
+      for (const path of ['/__/auth/iframe?apiKey=K', '/__/auth/handler.js', '/__/firebase/init.json']) {
+        await get(`https://tophunt.in${path}`);
+      }
+      expect(calls.map((c) => c.url)).toEqual([
+        'https://tophuntdpcontest.firebaseapp.com/__/auth/iframe?apiKey=K',
+        'https://tophuntdpcontest.firebaseapp.com/__/auth/handler.js',
+        'https://tophuntdpcontest.firebaseapp.com/__/firebase/init.json',
+      ]);
+    });
+
+    it("forwards Apple's form POST back to the handler", async () => {
+      const worker = await load();
+      await worker.fetch(
+        new Request('https://tophunt.in/__/auth/handler', {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: 'code=abc&state=xyz',
+        }),
+        fakeEnv,
+        fakeCtx,
+      );
+      expect(calls[0].method).toBe('POST');
+      expect(calls[0].body).toBe('code=abc&state=xyz');
+    });
+
+    it('does not proxy the email-action path or anything outside /__/', async () => {
+      await get('https://tophunt.in/__/auth/action?mode=resetPassword&oobCode=A');
+      await get('https://tophunt.in/auth/login');
+      expect(calls).toHaveLength(0);
+    });
+  });
+
+  it('the app CSP allows the scripts and frames Firebase sign-in needs', async () => {
+    const res = await get('https://tophunt.in/auth/login');
+    const csp: string = res.headers.get('content-security-policy') || '';
+    const directive = (name: string) => csp.split(';').map((d: string) => d.trim()).find((d: string) => d.startsWith(name + ' ')) || '';
+    // gapi: without it every social sign-in failed with auth/internal-error.
+    expect(directive('script-src')).toContain('https://apis.google.com');
+    // The auth iframe, first-party on tophunt.in, or on firebaseapp.com elsewhere.
+    expect(directive('frame-src')).toContain("'self'");
+    expect(directive('frame-src')).toContain('https://*.firebaseapp.com');
   });
 
   it('leaves the handler route itself alone, so the redirect cannot loop', async () => {

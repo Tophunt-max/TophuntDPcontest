@@ -206,6 +206,12 @@ export interface AuthUser {
    * treated as "not recent", never as "fine".
    */
   authTime?: number;
+  /**
+   * Firebase `firebase.sign_in_provider` claim: "password", "google.com",
+   * "facebook.com", "apple.com", "custom" (our phone OTP), … Used to hold a NEW
+   * account to the admin's sign-up switches (lib/authMethods.ts).
+   */
+  signInProvider?: string;
 }
 
 /** Hono context variables. */

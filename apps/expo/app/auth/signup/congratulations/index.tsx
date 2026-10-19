@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { friendlyAuthError } from "@/src/lib/authErrors";
 import {
   View,
   Text,
@@ -154,7 +155,7 @@ export default function CongratulationsScreen() {
         hasFinalized.current = false;
         Alert.alert(
             "Signup Failed", 
-            error.message || "Could not complete the process. Please try again.",
+            friendlyAuthError(error, "Signup complete nahi ho paya. Dobara try karo."),
             [
                 { text: "Go to Login", onPress: () => router.replace("/auth/login") },
                 { text: "Retry", onPress: () => finalizeSignup() }

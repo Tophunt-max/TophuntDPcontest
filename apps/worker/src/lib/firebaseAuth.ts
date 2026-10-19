@@ -136,6 +136,10 @@ export async function verifyIdToken(token: string, env: Env): Promise<AuthUser> 
       // before you delete the account" was not expressible. See lib/reauth.ts.
       authTime:
         typeof payload.auth_time === "number" ? (payload.auth_time as number) : undefined,
+      signInProvider:
+        typeof (payload as any).firebase?.sign_in_provider === "string"
+          ? String((payload as any).firebase.sign_in_provider)
+          : undefined,
     };
   } catch {
     throw httpsError("unauthenticated", "Invalid or expired authentication token.");
