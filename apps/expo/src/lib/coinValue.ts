@@ -30,9 +30,9 @@ export interface CoinPackage {
   name?: string | null;
   coins: number;
   bonusCoins: number;
-  /** Base coins × the admin's coin value (bonus free), computed by the Worker. */
+  /** Base coins × the admin's buy rate (bonus free), computed by the Worker. */
   priceInr: number;
-  /** False when the price is under ₹1: shown, but cannot be bought. */
+  /** False when under ₹1, or when it would pay out more than it costs: shown, not sold. */
   purchasable?: boolean;
   totalCoins: number;
   popular?: boolean;

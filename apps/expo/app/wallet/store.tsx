@@ -156,7 +156,7 @@ export default function CoinStoreScreen() {
           {isBusy ? (
             <ActivityIndicator color="white" size="small" />
           ) : (
-            <Text style={styles.priceText}>{item.purchasable === false ? 'Min ₹1' : formatInr(item.priceInr)}</Text>
+            <Text style={styles.priceText}>{item.purchasable === false ? (item.priceInr < 1 ? 'Min ₹1' : 'Unavailable') : formatInr(item.priceInr)}</Text>
           )}
         </View>
       </TouchableOpacity>

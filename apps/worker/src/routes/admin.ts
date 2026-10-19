@@ -25,7 +25,16 @@ import { resolveAuthMethods, validateAuthMethods } from "../lib/authMethods";
 import { AUDITED_SECTIONS, appConfigChannels, publicAppConfig, validateAppControlPatch } from "../lib/appControl";
 import { publishMany } from "../lib/publish";
 import { publishCoinCatalog } from "../lib/coinCatalog";
-import { coinValueFromConfig, packagePriceInr, pricePackage } from "../lib/coinPricing";
+import {
+  assertPackagesSafe,
+  buyRateFromConfig,
+  coinValueFromConfig,
+  hasExplicitBuyRate,
+  minSafeBuyRate,
+  packagePriceInr,
+  pricePackage,
+  ratesFromConfig,
+} from "../lib/coinPricing";
 import { assertSessionUsable } from "../middleware/auth";
 import { getAppConfig, getGamificationSettings, getSeoAudit, invalidateSetting } from "../lib/settings";
 import { legalDocsForAdmin, LEGAL_DOC_KEYS, LEGAL_LAST_UPDATED } from "../content/legal";
@@ -356,6 +365,19 @@ adminRoute.post("/app-settings", async (c) => {
     validateVerificationRewardConfig({ ...(existing.verificationReward || {}), ...(body.verificationReward || {}) });
   }
   const merged = mergeSettings(existing, body);
+  // Coin package pricing (lib/coinPricing.ts): if either rate moves, every
+  // active package must still not pay out more than it costs — refused BEFORE
+  // anything is written, naming the minimum safe buy rate.
+  const oldRates = ratesFromConfig(existing);
+  const newRates = ratesFromConfig(merged);
+  const ratesChanged = oldRates.buyRate !== newRates.buyRate || oldRates.payoutRate !== newRates.payoutRate;
+  const allPkgs = ratesChanged
+    ? await db
+        .select({ id: schema.coinPackages.id, name: schema.coinPackages.name, coins: schema.coinPackages.coins, bonusCoins: schema.coinPackages.bonusCoins, active: schema.coinPackages.active })
+        .from(schema.coinPackages)
+        .all()
+    : [];
+  if (ratesChanged) assertPackagesSafe(allPkgs, newRates);
   // Monotonic: the app keeps whichever copy is newer (pushed vs polled).
   merged._version = Math.max(Date.now(), (Number(existing._version) || 0) + 1);
   // Sign-in / sign-up switches: validated against the MERGED result, so a save
@@ -375,13 +397,13 @@ adminRoute.post("/app-settings", async (c) => {
   // maintenance / flags / banner change within seconds instead of on the next poll.
   const pushed = publicAppConfig(merged, Date.now());
   c.executionCtx.waitUntil(publishMany(c.env, appConfigChannels(), { type: "config", config: pushed }));
-  // Package prices are base coins × coin value: a new coin value re-prices the
-  // whole store, so push the catalog too (and refresh the stored snapshots).
-  if (coinValueFromConfig(existing) !== coinValueFromConfig(merged)) {
-    const rate = coinValueFromConfig(merged);
-    const pkgs = await db.select({ id: schema.coinPackages.id, coins: schema.coinPackages.coins }).from(schema.coinPackages).all();
-    for (const p of pkgs) {
-      await db.update(schema.coinPackages).set({ priceInr: packagePriceInr(Number(p.coins), rate) }).where(eq(schema.coinPackages.id, p.id));
+  // Package prices are base coins × buy rate: a new buy rate re-prices the whole
+  // store, and a new payout rate can change which packages are sellable, so push
+  // the catalog too (and refresh the stored price snapshots).
+  if (ratesChanged) {
+    const buyRate = buyRateFromConfig(merged);
+    for (const p of allPkgs) {
+      await db.update(schema.coinPackages).set({ priceInr: packagePriceInr(Number(p.coins), buyRate) }).where(eq(schema.coinPackages.id, p.id));
     }
     c.executionCtx.waitUntil(publishCoinCatalog(c.env));
   }
@@ -4271,12 +4293,25 @@ adminRoute.post("/seo/scan", async (c) => {
 adminRoute.get("/coin-packages", async (c) => {
   const db = getDb(c.env);
   const rows = await db.select().from(schema.coinPackages).orderBy(schema.coinPackages.sortOrder).all();
-  // The LIVE price (base coins × coin value), not the stored snapshot.
-  const rate = coinValueFromConfig(await getAppConfig(c.env));
+  // The LIVE price (base coins × buy rate), not the stored snapshot, plus what
+  // the admin needs to keep it safe (lib/coinPricing.ts).
+  const cfg = await getAppConfig(c.env);
+  const rates = ratesFromConfig(cfg);
   return c.json(
     rows.map((r) => {
-      const priced = pricePackage(r, rate);
-      return { ...r, active: !!r.active, priceInr: priced.priceInr, purchasable: priced.purchasable, coinValue: rate };
+      const priced = pricePackage(r, rates);
+      return {
+        ...r,
+        active: !!r.active,
+        priceInr: priced.priceInr,
+        payoutInr: priced.payoutInr,
+        purchasable: priced.purchasable,
+        reason: priced.reason ?? null,
+        minSafeBuyRate: minSafeBuyRate(r, rates.payoutRate),
+        buyRate: rates.buyRate,
+        payoutRate: rates.payoutRate,
+        buyRateSet: hasExplicitBuyRate(cfg),
+      };
     }),
   );
 });
@@ -4290,9 +4325,12 @@ adminRoute.post("/coin-packages", async (c) => {
   if (values.coins == null) {
     throw httpsError("invalid-argument", "coins is required.");
   }
-  // The price is not entered: it is base coins × coin value (lib/coinPricing.ts).
-  // The column keeps a snapshot of it, for reference only.
-  values.priceInr = packagePriceInr(values.coins, coinValueFromConfig(await getAppConfig(c.env)));
+  // The price is not entered: it is base coins × buy rate (lib/coinPricing.ts).
+  // The column keeps a snapshot of it, for reference only. A package that would
+  // pay out more than it costs is refused.
+  const rates = ratesFromConfig(await getAppConfig(c.env));
+  assertPackagesSafe([{ name: values.name, coins: values.coins, bonusCoins: values.bonusCoins ?? 0, active: values.active ?? true }], rates);
+  values.priceInr = packagePriceInr(values.coins, rates.buyRate);
   const id = newId();
   const ts = now();
   await db.insert(schema.coinPackages).values({
@@ -4325,8 +4363,19 @@ adminRoute.patch("/coin-packages/:id", async (c) => {
     bonusCoins: Number(current.bonusCoins),
   });
   const set: any = { ...values, updatedAt: now() };
-  // Price follows the coin value; keep the reference snapshot in step.
-  set.priceInr = packagePriceInr(values.coins ?? Number(current.coins), coinValueFromConfig(await getAppConfig(c.env)));
+  // Price follows the buy rate; keep the reference snapshot in step, and refuse
+  // an edit that would make the package pay out more than it costs.
+  const rates = ratesFromConfig(await getAppConfig(c.env));
+  assertPackagesSafe(
+    [{
+      name: values.name ?? current.name,
+      coins: values.coins ?? current.coins,
+      bonusCoins: values.bonusCoins ?? current.bonusCoins,
+      active: values.active ?? current.active,
+    }],
+    rates,
+  );
+  set.priceInr = packagePriceInr(values.coins ?? Number(current.coins), rates.buyRate);
   await db.update(schema.coinPackages).set(set).where(eq(schema.coinPackages.id, id));
   await logAudit(c, "coin-package.update", "coin_package", id, set);
   c.executionCtx.waitUntil(publishCoinCatalog(c.env));

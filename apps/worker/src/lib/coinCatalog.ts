@@ -15,17 +15,17 @@ import { getDb, schema } from "../db";
 import { appConfigChannels } from "./appControl";
 import { publishMany } from "./publish";
 import { getAppConfig } from "./settings";
-import { coinValueFromConfig, pricePackage } from "./coinPricing";
+import { pricePackage, ratesFromConfig } from "./coinPricing";
 
 export interface PublicCoinPackage {
   id: string;
   name: string | null;
   coins: number;
   bonusCoins: number;
-  /** Base coins × coin value (lib/coinPricing.ts). Bonus coins are free. */
+  /** Base coins × buy rate (lib/coinPricing.ts). Bonus coins are free. */
   priceInr: number;
   totalCoins: number;
-  /** False when the price is under ₹1 (or the coin value is unusable): shown, not sold. */
+  /** False when under ₹1, or when it would pay out more than it costs: shown, not sold. */
   purchasable: boolean;
 }
 
@@ -39,9 +39,9 @@ export async function listPublicCoinPackages(env: Env): Promise<PublicCoinPackag
     .all(),
     getAppConfig(env),
   ]);
-  const rate = coinValueFromConfig(cfg);
+  const rates = ratesFromConfig(cfg);
   return rows.map((p: any) => {
-    const priced = pricePackage(p, rate);
+    const priced = pricePackage(p, rates);
     return {
       id: p.id,
       name: p.name ?? null,

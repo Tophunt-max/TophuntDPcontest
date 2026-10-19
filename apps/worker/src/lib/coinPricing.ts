@@ -1,34 +1,51 @@
 /**
- * Coin package pricing: price = BASE coins × coin value (₹ per coin).
+ * Coin package pricing — two rates, and one rule that keeps them honest.
  *
- * The admin's coin value (App Control → Withdrawal → "Coin → ₹ rate",
- * `appConfig.withdrawal.conversionRate`) is now the ONE number that prices every
- * package. Bonus coins are free: they are never part of the price.
+ *   BUY rate    `appConfig.coinPricing.buyRate`         ₹ per coin when BUYING
+ *   PAYOUT rate `appConfig.withdrawal.conversionRate`   ₹ per coin when WITHDRAWING
  *
- *   15 coins + 5 bonus at ₹0.50/coin  ->  ₹7.50, credits 20 coins
+ *   price = BASE coins × buy rate        (bonus coins are free)
  *
- * Before this, each package carried its own stored `price_inr`, so changing the
- * coin value moved every "≈ ₹" estimate in the app but left every price where it
- * was. The stored column is now only a snapshot written for reference.
+ * The rule: **no package may pay out more than it costs.** Every coin it credits
+ * (base + bonus) can be withdrawn at the payout rate, so
  *
- * Every path that SHOWS or CHARGES a price uses this module — the public catalog
- * (`coinCatalog.ts`), Razorpay `createOrder` and the manual `requestDeposit` — so
- * the price a user sees is the price they are charged. An order or deposit
- * records its amount when it is created, so a rate change never alters one that
- * is already in flight.
+ *   base × buyRate  >=  (base + bonus) × payoutRate
+ *
+ * Without it, a ₹1 package of 10 coins + 5 bonus at a ₹0.10 payout rate could be
+ * bought for ₹1 and withdrawn for ₹1.50 — with one rate for both, every bonus
+ * coin was money handed out. The rule is enforced when an admin saves either
+ * rate or a package (the save is refused, naming the minimum safe buy rate), and
+ * again at charge time, so a package that breaks it is never sold.
+ *
+ * Until a buy rate is set, the buy rate falls back to the payout rate (the
+ * previous single-rate behaviour) — which the rule then blocks for any package
+ * with bonus coins, telling the admin exactly what to set.
+ *
+ * Every path that SHOWS or CHARGES a price uses this module — the public catalog,
+ * Razorpay `createOrder` and the manual `requestDeposit` — so the price a user
+ * sees is the price they are charged. An order or deposit records its amount
+ * when it is created, so a rate change never alters one already in flight.
  */
 import { httpsError } from "./http";
 
 /** Smallest amount Razorpay (and UPI) will accept. */
 export const MIN_PACKAGE_PRICE_INR = 1;
+const MAX_RATE = 1000;
+/** Half a paisa: price and payout are each rounded to the paisa. */
+const EPS = 0.005;
+
+const validRate = (raw: unknown): number | null => {
+  if (raw === undefined || raw === null || raw === "") return null;
+  const r = Number(raw);
+  return Number.isFinite(r) && r > 0 && r <= MAX_RATE ? r : null;
+};
 
 /**
- * The coin value that prices packages, or null when it is unusable.
+ * The PAYOUT rate (₹ per coin withdrawn), or null when unusable.
  *
  * Mirrors the withdrawal policy (lib/payouts.ts readWithdrawalPolicy): an unset
  * rate keeps the historical default of 1, while an explicitly configured rate
- * that is zero, negative or non-numeric is treated as unusable (null). That makes
- * every package unpurchasable rather than guessing at a price.
+ * that is zero, negative or non-numeric is unusable (null).
  */
 export function coinValueFromConfig(cfg: any): number | null {
   const raw = cfg?.withdrawal?.conversionRate;
@@ -37,45 +54,120 @@ export function coinValueFromConfig(cfg: any): number | null {
   return Number.isFinite(rate) && rate > 0 ? rate : null;
 }
 
-/** Price in rupees for a package, rounded to the paisa. Bonus coins are free. */
-export function packagePriceInr(baseCoins: number, rate: number | null): number {
-  const coins = Number(baseCoins) || 0;
-  if (!rate || coins <= 0) return 0;
-  return Math.round(coins * rate * 100) / 100;
+/** True when the admin has set an explicit buy rate. */
+export function hasExplicitBuyRate(cfg: any): boolean {
+  return validRate(cfg?.coinPricing?.buyRate) !== null;
 }
+
+/** The BUY rate (₹ per base coin bought). Falls back to the payout rate until set. */
+export function buyRateFromConfig(cfg: any): number | null {
+  return validRate(cfg?.coinPricing?.buyRate) ?? coinValueFromConfig(cfg);
+}
+
+const paise = (n: number) => Math.round(n * 100) / 100;
+
+/** Price in rupees for a package, rounded to the paisa. Bonus coins are free. */
+export function packagePriceInr(baseCoins: number, buyRate: number | null): number {
+  const coins = Number(baseCoins) || 0;
+  if (!buyRate || coins <= 0) return 0;
+  return paise(coins * buyRate);
+}
+
+/** The lowest buy rate at which this package does not pay out more than it costs. */
+export function minSafeBuyRate(pkg: { coins?: unknown; bonusCoins?: unknown }, payoutRate: number | null): number {
+  const base = Number(pkg.coins) || 0;
+  const total = base + (Number(pkg.bonusCoins) || 0);
+  if (!payoutRate || base <= 0) return 0;
+  // Rounded UP to the paisa, so the suggested rate always passes the rule.
+  return Math.ceil(((payoutRate * total) / base) * 100 - 1e-9) / 100;
+}
+
+export type NotPurchasableReason = "below_minimum" | "pays_out_more" | "no_rate";
 
 export interface PricedPackage {
   baseCoins: number;
   bonusCoins: number;
   totalCoins: number;
   priceInr: number;
-  /** False when the price is below MIN_PACKAGE_PRICE_INR or the coin value is unusable. */
+  /** What the credited coins are worth at the payout rate. */
+  payoutInr: number;
   purchasable: boolean;
+  reason?: NotPurchasableReason;
 }
 
-export function pricePackage(pkg: { coins?: unknown; bonusCoins?: unknown }, rate: number | null): PricedPackage {
+export interface Rates {
+  buyRate: number | null;
+  payoutRate: number | null;
+}
+
+export function ratesFromConfig(cfg: any): Rates {
+  return { buyRate: buyRateFromConfig(cfg), payoutRate: coinValueFromConfig(cfg) };
+}
+
+export function pricePackage(pkg: { coins?: unknown; bonusCoins?: unknown }, rates: Rates): PricedPackage {
   const baseCoins = Number(pkg.coins) || 0;
   const bonusCoins = Number(pkg.bonusCoins) || 0;
-  const priceInr = packagePriceInr(baseCoins, rate);
-  return {
-    baseCoins,
-    bonusCoins,
-    totalCoins: baseCoins + bonusCoins,
-    priceInr,
-    purchasable: priceInr >= MIN_PACKAGE_PRICE_INR,
-  };
+  const totalCoins = baseCoins + bonusCoins;
+  const priceInr = packagePriceInr(baseCoins, rates.buyRate);
+  const payoutInr = rates.payoutRate ? paise(totalCoins * rates.payoutRate) : 0;
+  let reason: NotPurchasableReason | undefined;
+  if (!rates.buyRate) reason = "no_rate";
+  else if (priceInr < MIN_PACKAGE_PRICE_INR) reason = "below_minimum";
+  else if (rates.payoutRate && priceInr + EPS < payoutInr) reason = "pays_out_more";
+  return { baseCoins, bonusCoins, totalCoins, priceInr, payoutInr, purchasable: !reason, ...(reason ? { reason } : {}) };
 }
 
 /** Price a package for a real charge, or refuse with a message the user can act on. */
 export function chargeablePackage(pkg: { coins?: unknown; bonusCoins?: unknown }, cfg: any): PricedPackage {
-  const rate = coinValueFromConfig(cfg);
-  if (rate === null) throw httpsError("failed-precondition", "Coin purchases are paused right now. Please try again later.");
-  const priced = pricePackage(pkg, rate);
-  if (priced.totalCoins <= 0 || priced.baseCoins <= 0) {
+  const priced = pricePackage(pkg, ratesFromConfig(cfg));
+  if (priced.baseCoins <= 0 || priced.totalCoins <= 0) {
     throw httpsError("failed-precondition", "This coin package is misconfigured.");
   }
-  if (!priced.purchasable) {
+  if (priced.reason === "below_minimum") {
     throw httpsError("failed-precondition", `This package costs less than ₹${MIN_PACKAGE_PRICE_INR} and can't be paid for. Please pick a bigger one.`);
   }
+  if (priced.reason) {
+    // no_rate / pays_out_more: an admin pricing problem, never the buyer's fault.
+    throw httpsError("failed-precondition", "This package isn't available right now. Please try again later.");
+  }
   return priced;
+}
+
+/**
+ * Admin-side check of the rule for a set of packages under the given rates.
+ * Throws a message naming the first offending package and the minimum safe buy
+ * rate, so the admin knows exactly what to change. Inactive packages are skipped:
+ * they cannot be bought, and are checked again when re-activated.
+ */
+export function assertPackagesSafe(
+  packages: { name?: string | null; coins?: unknown; bonusCoins?: unknown; active?: unknown }[],
+  rates: Rates,
+): void {
+  if (!rates.payoutRate || !rates.buyRate) return;
+  let worst: { name: string; need: number } | null = null;
+  for (const p of packages) {
+    if (p.active === false || p.active === 0) continue;
+    const priced = pricePackage(p, rates);
+    if (priced.reason !== "pays_out_more") continue;
+    const need = minSafeBuyRate(p, rates.payoutRate);
+    if (!worst || need > worst.need) worst = { name: p.name || "Untitled", need };
+  }
+  if (worst) {
+    throw httpsError(
+      "invalid-argument",
+      `Nuksaan wala daam: package "${worst.name}" ki bonus coins milake payout (₹${rates.payoutRate}/coin) uske daam se zyada ho jayega. ` +
+        `Buy rate kam se kam ₹${worst.need}/coin rakho, ya bonus kam karo.`,
+    );
+  }
+}
+
+/** Validate an admin `coinPricing` patch in place. */
+export function validateCoinPricingPatch(cp: any): void {
+  if (!cp || typeof cp !== "object") throw httpsError("invalid-argument", "coinPricing must be an object.");
+  if (cp.buyRate !== undefined) {
+    const r = Number(cp.buyRate);
+    if (!Number.isFinite(r) || r <= 0 || r > MAX_RATE) throw httpsError("invalid-argument", "Buy rate must be more than 0 (₹ per coin).");
+    if (Math.round(r * 10000) !== Number((r * 10000).toFixed(4))) throw httpsError("invalid-argument", "Buy rate: at most 4 decimal places.");
+    cp.buyRate = r;
+  }
 }

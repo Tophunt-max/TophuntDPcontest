@@ -521,7 +521,7 @@ export default function AppSettings() {
                 className={field}
               />
               <p className={hint}>
-                {cfg.withdrawal.minAmount} coins = ₹{cashPreview.toFixed(2)}. Coin package price bhi = base coins × ye rate (bonus free).
+                {cfg.withdrawal.minAmount} coins = ₹{cashPreview.toFixed(2)}. Ye payout rate hai; package ka daam App Control → Coin Pricing ke Buy rate se banta hai.
               </p>
             </div>
           </div>

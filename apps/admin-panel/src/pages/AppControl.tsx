@@ -4,7 +4,7 @@ import { api } from "@/lib/api";
 import { PageHeader } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import { useConfirm } from "@/components/ConfirmDialog";
-import { Power, Megaphone, ArrowUpCircle, ToggleLeft, Banknote, Save, Radio, CalendarClock } from "lucide-react";
+import { Power, Megaphone, ArrowUpCircle, ToggleLeft, Banknote, Coins, Save, Radio, CalendarClock } from "lucide-react";
 import { AuthMethodsCard } from "@/components/AuthMethodsCard";
 
 /**
@@ -103,6 +103,7 @@ export default function AppControl() {
         <AnnouncementCard data={data} pending={save.isPending} onSave={(p) => save.mutate(p)} />
         <FeaturesCard data={data} pending={save.isPending} onSave={(p) => save.mutate(p)} confirm={confirm} />
         <WithdrawalCard data={data} pending={save.isPending} onSave={(p) => save.mutate(p)} confirm={confirm} />
+        <CoinPricingCard data={data} pending={save.isPending} onSave={(p) => save.mutate(p)} />
       </div>
 
       <p className="text-xs text-muted-foreground mt-6 flex items-center gap-1.5">
@@ -437,10 +438,48 @@ function WithdrawalCard({ data, pending, onSave, confirm }: CardProps) {
           <label className={label}>Coin → ₹ rate</label>
           <input type="number" step="0.01" min={0} className={field} value={rate} onChange={(e) => setRate(e.target.value)} />
           <p className="mt-1 text-xs text-muted-foreground">
-            Coin package price bhi isi se banta hai: base coins × rate (bonus free). Save karte hi store ke saare daam badal jayenge.
+            Payout rate: withdrawal par user ko 1 coin ke kitne ₹ milenge. Package ka daam "Coin Pricing" ke Buy rate se banta hai.
           </p>
         </div>
       </div>
+    </Card>
+  );
+}
+
+// --------------------------------------------------------------- coin pricing
+/**
+ * Buy rate: ₹ per BASE coin when buying a package (bonus coins are free).
+ * The server refuses any buy rate (or payout rate, or package) under which a
+ * package would pay out more than it costs, and names the minimum safe rate.
+ */
+function CoinPricingCard({ data, pending, onSave }: CardProps) {
+  const payout = Number(data.withdrawal?.conversionRate ?? 1) || 1;
+  const stored = data.coinPricing?.buyRate;
+  const [buyRate, setBuyRate] = useState("");
+  useEffect(() => {
+    setBuyRate(stored !== undefined && stored !== null && stored !== "" ? String(stored) : "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
+  const r = Number(buyRate);
+  const margin = buyRate.trim() && Number.isFinite(r) && r > 0 ? r / payout : null;
+  const submit = () => {
+    if (!buyRate.trim() || !Number.isFinite(r) || r <= 0) return toast.error("Buy rate 0 se zyada hona chahiye (₹ per coin).");
+    if (r < payout) return toast.error(`Buy rate payout rate (₹${payout}/coin) se kam nahi ho sakta — warna har coin par nuksaan.`);
+    onSave({ coinPricing: { buyRate: r } });
+  };
+  return (
+    <Card icon={Coins} title="Coin Pricing (Buy rate)" tint="text-pink-500" onSave={submit} pending={pending}>
+      {stored === undefined || stored === null || stored === "" ? (
+        <div className="mb-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          Buy rate abhi set nahi hai — daam payout rate (₹{payout}/coin) se ban raha hai, isliye bonus wale packages bik nahi rahe (nuksaan se bachne ke liye). Buy rate set karo.
+        </div>
+      ) : null}
+      <label className={label}>Buy rate (₹ per coin)</label>
+      <input type="number" step="0.01" min={0} className={field} value={buyRate} placeholder={`e.g. ${(payout * 2).toFixed(2)}`} onChange={(e) => setBuyRate(e.target.value)} />
+      <p className="mt-1 text-xs text-muted-foreground">
+        Package daam = base coins × buy rate (bonus free). Payout rate ₹{payout}/coin.
+        {margin ? ` Har base coin par ${(Math.max(0, (margin - 1) * 100)).toFixed(0)}% margin.` : ""} Jo package bonus milake daam se zyada payout de, use server bechne nahi deta — save karne par minimum safe rate bata dega.
+      </p>
     </Card>
   );
 }
