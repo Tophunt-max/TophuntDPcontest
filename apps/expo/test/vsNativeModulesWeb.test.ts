@@ -91,7 +91,13 @@ describe('getViewShot (web capture)', () => {
     // html-to-image silently swaps an unfetchable image for an empty one; the
     // pre-check turns that into a capture failure so the caller falls back.
     toCanvas.mockResolvedValue(fakeCanvas(new Blob(['x'], { type: 'image/jpeg' })));
-    const fetchMock = vi.fn(async (u: string) => ({ ok: !u.includes('blocked'), status: u.includes('blocked') ? 403 : 200 }));
+    // The capture now READS each image (to swap in a local blob: copy), so the
+    // stub answers with real image bytes.
+    const fetchMock = vi.fn(async (u: string) => ({
+      ok: !u.includes('blocked'),
+      status: u.includes('blocked') ? 403 : 200,
+      blob: async () => new Blob(['x'], { type: 'image/jpeg' }),
+    }));
     vi.stubGlobal('fetch', fetchMock);
     const node = (srcs: string[]) => ({ nodeType: 1, querySelectorAll: () => srcs.map((src) => ({ src, currentSrc: src })) });
     const mod = getViewShot()!;

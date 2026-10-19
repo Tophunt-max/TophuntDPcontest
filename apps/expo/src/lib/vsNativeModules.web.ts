@@ -29,6 +29,7 @@
  * feature is an enhancement of the web experience, never a requirement of it.
  */
 import { toCanvas } from 'html-to-image';
+import { readImageBlob, withTimeout } from './shareMedia';
 
 import type { ViewShotModule, SharingModule } from './vsNativeModules';
 
@@ -85,49 +86,105 @@ async function captureRef(
       : Math.min((typeof window !== 'undefined' && window.devicePixelRatio) || 1, 2);
 
   // html-to-image REPLACES any image it cannot fetch with an empty one and still
-  // "succeeds", which would share a card with a blank photo frame. Fetch every
-  // image the node shows first (the same CORS request html-to-image makes); if
-  // any fails, fail the capture so the caller falls back (e.g. to the server card).
-  const imgs = typeof node.querySelectorAll === 'function' ? Array.from(node.querySelectorAll('img')) : [];
-  const srcs = imgs
-    .map((img) => (img as HTMLImageElement).currentSrc || (img as HTMLImageElement).src)
-    .filter((u) => !!u && !u.startsWith('data:') && !u.startsWith('blob:'));
-  await Promise.all(
-    [...new Set(srcs)].map(async (u) => {
-      const res = await fetch(u, { mode: 'cors', cache: 'force-cache' });
-      if (!res.ok) throw new Error(`VS capture: image not readable (${res.status})`);
-    }),
-  );
-
-  // An exact output size (width AND height) is honoured to the pixel: the canvas
-  // is sized in CSS px and multiplied by `pixelRatio`, so 1080×1920 stays exact
-  // even when the on-screen box is fractional.
-  const exact =
-    typeof opts?.width === 'number' && typeof opts?.height === 'number' && opts.width > 0 && opts.height > 0 && cssWidth > 0
-      ? { canvasWidth: opts.width / pixelRatio, canvasHeight: opts.height / pixelRatio }
-      : {};
-
-  const canvas = await toCanvas(node, {
-    // Flatten transparency to the story's dark background rather than to JPEG's
-    // default black, so any gap around the frame matches what is on screen.
-    backgroundColor: opts?.backgroundColor || '#1B1226',
-    pixelRatio,
-    ...exact,
-    // Re-fetch entry images with a cache-buster so a previously cached response
-    // without CORS headers is not what taints the canvas.
-    cacheBust: true,
+  // "succeeds", which would share a card with a blank photo frame. So every
+  // remote image the node shows is read FIRST (src/lib/shareMedia.ts: same-origin
+  // proxy, then a no-store CORS read — never the <img>'s possibly header-less
+  // cache entry) and swapped for a local `blob:` copy for the duration of the
+  // capture. html-to-image then needs no network at all, so CORS cannot taint the
+  // canvas. Any unreadable image fails the capture so the caller falls back.
+  const imgs: HTMLImageElement[] =
+    typeof node.querySelectorAll === 'function' ? (Array.from(node.querySelectorAll('img')) as HTMLImageElement[]) : [];
+  const remote = imgs.filter((img) => {
+    const u = img.currentSrc || img.src;
+    return !!u && !u.startsWith('data:') && !u.startsWith('blob:');
   });
-
-  const blob: Blob = await new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (b) => (b ? resolve(b) : reject(new Error('VS capture: canvas produced no image (likely a CORS-tainted entry image).'))),
-      'image/jpeg',
-      quality,
+  const localCopies = new Map<string, string>();
+  const restore: (() => void)[] = [];
+  try {
+    await Promise.all(
+      [...new Set(remote.map((img) => img.currentSrc || img.src))].map(async (u) => {
+        let blob: Blob;
+        try {
+          blob = await readImageBlob(u);
+        } catch (e: any) {
+          throw new Error(`VS capture: image not readable (${e?.message || 'unknown'})`);
+        }
+        localCopies.set(u, URL.createObjectURL(blob));
+      }),
     );
-  });
+    await Promise.all(
+      remote.map(async (img) => {
+        const local = localCopies.get(img.currentSrc || img.src);
+        if (!local || typeof img.setAttribute !== 'function') return;
+        const srcAttr = img.getAttribute?.('src') ?? img.src;
+        const srcset = img.getAttribute?.('srcset') ?? null;
+        restore.push(() => {
+          if (srcset !== null) img.setAttribute('srcset', srcset);
+          img.setAttribute('src', srcAttr);
+        });
+        if (srcset !== null) img.removeAttribute('srcset');
+        img.setAttribute('src', local);
+        try {
+          await withTimeout(img.decode ? img.decode() : Promise.resolve(), 5000, 'image decode');
+        } catch {
+          /* html-to-image re-reads the blob itself; decode is only a paint hint */
+        }
+      }),
+    );
 
-  return URL.createObjectURL(blob);
+    // An exact output size (width AND height) is honoured to the pixel: the canvas
+    // is sized in CSS px and multiplied by `pixelRatio`, so 1080×1920 stays exact
+    // even when the on-screen box is fractional.
+    const exact =
+      typeof opts?.width === 'number' && typeof opts?.height === 'number' && opts.width > 0 && opts.height > 0 && cssWidth > 0
+        ? { canvasWidth: opts.width / pixelRatio, canvasHeight: opts.height / pixelRatio }
+        : {};
+
+    const canvas = await withTimeout(
+      toCanvas(node, {
+        // Flatten transparency to the story's dark background rather than to JPEG's
+        // default black, so any gap around the frame matches what is on screen.
+        backgroundColor: opts?.backgroundColor || '#1B1226',
+        pixelRatio,
+        ...exact,
+      }),
+      CAPTURE_TIMEOUT_MS,
+      'VS capture',
+    );
+
+    const blob: Blob = await withTimeout(
+      new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob(
+          (b) => (b ? resolve(b) : reject(new Error('VS capture: canvas produced no image (likely a CORS-tainted entry image).'))),
+          'image/jpeg',
+          quality,
+        );
+      }),
+      CAPTURE_TIMEOUT_MS,
+      'VS capture encode',
+    );
+
+    return URL.createObjectURL(blob);
+  } finally {
+    for (const undo of restore) {
+      try {
+        undo();
+      } catch {
+        /* node unmounted */
+      }
+    }
+    for (const local of localCopies.values()) {
+      try {
+        URL.revokeObjectURL(local);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 }
+
+/** Bound on the DOM-to-canvas render and the JPEG encode, each. */
+const CAPTURE_TIMEOUT_MS = 15_000;
 
 /** Free a `blob:` URL from `captureRef`. Safe with anything, including a non-blob URL. */
 function releaseCapture(uri: string): void {

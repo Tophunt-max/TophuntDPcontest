@@ -36,6 +36,11 @@ export interface ShareImageResponse {
   url?: string | null;
   kind?: 'photo' | 'video';
   reason?: string;
+  /**
+   * True when `unavailable` is the server's RENDERER failing (not a refusal):
+   * the client may draw its own card instead of telling the user there is none.
+   */
+  retryable?: boolean;
 }
 
 export type BattleShareAsset =
@@ -73,11 +78,17 @@ export async function resolveBattleShareAsset(
     knownUrl?: string | null;
     /** On-screen frame capture; return null unless the frame reported capture-ready. */
     capture?: () => Promise<string | null>;
+    /**
+     * Allow `capture` for VIDEO battles. Only for captures that draw stills
+     * (posters) themselves — a screenshot of a VideoView is black.
+     */
+    captureVideo?: boolean;
   },
 ): Promise<BattleShareAsset> {
   let status: Exclude<ShareImageStatus, 'ready'> = 'unavailable';
   let reason: string | undefined;
   let kind: 'photo' | 'video' | undefined;
+  let retryable = false;
   try {
     const res = await opts.fetchShareImage(matchId);
     if (res?.matchId && res.matchId !== matchId) {
@@ -91,6 +102,7 @@ export async function resolveBattleShareAsset(
       }
       status = res?.status && res.status !== 'ready' ? res.status : 'unavailable';
       reason = res?.reason ?? (res?.status === 'ready' ? 'invalid_url' : undefined);
+      retryable = status === 'unavailable' && res?.retryable === true;
     }
   } catch (e) {
     if (!isTransportError(e)) {
@@ -106,11 +118,12 @@ export async function resolveBattleShareAsset(
     reason = 'network';
   }
 
-  // Capture only when the image is merely LATE (still preparing, or the server
-  // could not be reached) — never to work around a refusal such as a cancelled
+  // Capture only when the image is merely LATE (still preparing, the server
+  // could not be reached, or its renderer failed) — never to work around a refusal such as a cancelled
   // battle, a blocked pair, a removed participant or untrusted media.
-  const captureAllowed = status === 'preparing' || reason === 'network';
-  if (opts.capture && kind !== 'video' && captureAllowed) {
+  // A failing server RENDERER (`retryable`) is lateness too, not a refusal.
+  const captureAllowed = status === 'preparing' || reason === 'network' || retryable;
+  if (opts.capture && (kind !== 'video' || opts.captureVideo) && captureAllowed) {
     let uri: string | null = null;
     try {
       uri = await opts.capture();

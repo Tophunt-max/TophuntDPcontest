@@ -46,6 +46,7 @@ import {
   isCompletedShare,
   prepareShareFile,
   saveImageAndCopyCaption,
+  type ShareImageSource,
   type ShareMatchLike,
   type ShareOutcome,
 } from '@/src/lib/share';
@@ -101,21 +102,25 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId, match: matchPr
   const { addToast } = useToast();
   const { asset, loading: assetLoading, retry: retryAsset } = useBattleShareAsset(matchId, visible);
   const assetStatus = asset?.status ?? 'loading';
-  const imageUrl = asset?.status === 'ready' && asset.source.kind === 'remote' ? asset.source.url : null;
+  // The server card (remote), or — on web, when that is late or failing — a card
+  // drawn in the browser (local blob:). Both are the same two-photo VS layout.
+  const imageSource: ShareImageSource | null = asset?.status === 'ready' ? asset.source : null;
+  const imageUrl = imageSource ? (imageSource.kind === 'remote' ? imageSource.url : imageSource.uri) : null;
   const isWeb = Platform.OS === 'web';
   const webFiles = isWeb && visible ? canShareFilesOnWeb() : false;
   // Web: fetch the image into a File as soon as it is known, so the tap calls
   // navigator.share with no network wait (Safari drops the gesture otherwise).
   const [prepared, setPrepared] = useState<{ url: string; file: File } | null>(null);
   useEffect(() => {
-    if (!isWeb || !webFiles || !imageUrl) return;
+    if (!isWeb || !webFiles || !imageSource || !imageUrl) return;
     let alive = true;
-    void prepareShareFile({ kind: 'remote', url: imageUrl }).then((file) => {
+    void prepareShareFile(imageSource).then((file) => {
       if (alive && file) setPrepared({ url: imageUrl, file });
     });
     return () => {
       alive = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isWeb, webFiles, imageUrl]);
   const preparedFile = prepared && prepared.url === imageUrl ? prepared.file : null;
   // The share count is an authenticated action; a guest's share is real but not
@@ -209,20 +214,20 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId, match: matchPr
     if (assetStatus === 'preparing' || assetStatus === 'loading') return notReadyToast();
     setBusy(true);
     try {
-      let outcome = imageUrl
-        ? await shareImageFile({ source: { kind: 'remote', url: imageUrl }, caption, url, file: preparedFile })
+      let outcome = imageSource
+        ? await shareImageFile({ source: imageSource, caption, url, file: preparedFile })
         : await shareBattleLink({ caption, url });
       // Web browsers that cannot attach a file (most desktops): hand over the
       // actual image as a download + the caption on the clipboard, instead of a
       // dead end. (Native always attaches the file.)
-      if (outcome === 'image_unsupported' && isWeb && imageUrl) {
-        outcome = await saveImageAndCopyCaption({ kind: 'remote', url: imageUrl }, caption);
+      if (outcome === 'image_unsupported' && isWeb && imageSource) {
+        outcome = await saveImageAndCopyCaption(imageSource, caption);
       }
       if (finish(outcome)) closeSheet();
     } finally {
       setBusy(false);
     }
-  }, [busy, assetStatus, imageUrl, preparedFile, caption, url, finish, closeSheet, notReadyToast, isWeb]);
+  }, [busy, assetStatus, imageSource, preparedFile, caption, url, finish, closeSheet, notReadyToast, isWeb]);
 
   // A finished battle has a branded winner card; offer it first.
   const router = useRouter();
@@ -237,10 +242,10 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId, match: matchPr
     if (busy) return;
     const mode = platformShareMode(platformId, { isWeb, assetStatus, webCanShareFiles: webFiles });
     if (mode === 'wait') return notReadyToast();
-    if (mode === 'image_sheet' && imageUrl) {
+    if (mode === 'image_sheet' && imageSource) {
       setBusy(true);
       try {
-        const outcome = await shareImageFile({ source: { kind: 'remote', url: imageUrl }, caption, url, file: preparedFile });
+        const outcome = await shareImageFile({ source: imageSource, caption, url, file: preparedFile });
         if (finish(outcome)) closeSheet();
       } finally {
         setBusy(false);
@@ -261,7 +266,7 @@ export const ShareSheet = ({ visible, onDismiss, isDark, matchId, match: matchPr
     } finally {
       setBusy(false);
     }
-  }, [busy, isWeb, assetStatus, webFiles, imageUrl, preparedFile, caption, url, finish, closeSheet, notReadyToast]);
+  }, [busy, isWeb, assetStatus, webFiles, imageSource, preparedFile, caption, url, finish, closeSheet, notReadyToast]);
 
   /** Send the battle straight into a DM with the tapped user (caption + link). */
   const onSendToUser = useCallback(async (u: any) => {

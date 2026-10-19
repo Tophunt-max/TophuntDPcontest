@@ -25,6 +25,7 @@ import { useWebSeo } from '@/src/lib/webSeo';
 import { WinnerCard, CARD_EXPORT, WINNER_CARD_BG, cardSize } from '@/src/components/result/WinnerCard';
 import { captureShareCard, releaseVsCard } from '@/src/lib/vsImage';
 import { resolveBattleShareAsset } from '@/src/lib/vsShareAsset';
+import { drawWebVsCard } from '@/src/hooks/useBattleShareAsset';
 import {
   battleResultUrl,
   copyBattleLink,
@@ -59,8 +60,13 @@ import { formatClock } from '@/src/lib/countdown';
  *   2. Share sends that image through the OS / Web Share sheet;
  *   3. a browser that cannot attach files downloads the image and copies the
  *      caption instead, so the user still leaves with the picture;
- *   4. if the capture is impossible (old native build, CORS on a preview host),
- *      it falls back to the server-rendered VS card, then to the link.
+ *   4. if the capture is impossible (old native build, unreadable image), it
+ *      falls back to the server-rendered VS card — or, on web, a VS card drawn
+ *      in the browser when the server's is late — and only then to the link,
+ *      saying so.
+ *
+ * Web capture reads every photo through the same-origin `/share-media/` proxy
+ * (src/lib/shareMedia.ts), so CORS on media.tophunt.in cannot break it.
  *
  * States: still live (countdown + back to the battle), result pending (polls
  * while the server settles), winner, tie, voided, missing.
@@ -146,7 +152,7 @@ export default function BattleResult() {
         return;
       }
       // Web: hold a File so the Share tap can call navigator.share immediately.
-      const file = Platform.OS === 'web' ? await prepareShareFile({ kind: 'local', uri }) : null;
+      const file = Platform.OS === 'web' ? await prepareShareFile({ kind: 'local', uri }, 'tophunt-winner.jpg') : null;
       if (alive) setCapture({ uri, file });
       else releaseVsCard(uri);
     })();
@@ -178,16 +184,29 @@ export default function BattleResult() {
     if (!captureFailed || fallback !== null || !hasResult) return;
     let alive = true;
     (async () => {
-      const asset = await resolveBattleShareAsset(id, { fetchShareImage: contestService.getMatchShareImage });
-      if (!alive) return;
+      // Server VS card first; on web, if that is late or its renderer is failing,
+      // a VS card drawn in the browser — so this never degrades to a text link
+      // just because the server is slow.
+      const asset = await resolveBattleShareAsset(id, {
+        fetchShareImage: contestService.getMatchShareImage,
+        capture: Platform.OS === 'web' ? () => drawWebVsCard(id) : undefined,
+        captureVideo: Platform.OS === 'web',
+      });
+      if (!alive) {
+        if (asset.status === 'ready' && asset.source.kind === 'local') releaseVsCard(asset.source.uri);
+        return;
+      }
       if (asset.status !== 'ready') return setFallback('none');
-      const file = Platform.OS === 'web' ? await prepareShareFile(asset.source) : null;
+      const file = Platform.OS === 'web' ? await prepareShareFile(asset.source, 'tophunt-winner.jpg') : null;
       if (alive) setFallback({ source: asset.source, file });
     })();
     return () => {
       alive = false;
     };
   }, [captureFailed, fallback, hasResult, id]);
+
+  const fallbackLocal = fallback && fallback !== 'none' && fallback.source.kind === 'local' ? fallback.source.uri : null;
+  useEffect(() => () => releaseVsCard(fallbackLocal), [fallbackLocal]);
 
   /** The image to send, already prepared: the card screenshot, else the server VS card, else none. */
   const shareSource = useCallback((): { source: ShareImageSource; file: File | null } | null => {
@@ -207,6 +226,8 @@ export default function BattleResult() {
     try {
       const picked = shareSource();
       if (!picked) {
+        // Say so: the user asked for the card and is getting only a link.
+        addToast('Card image nahi ban payi — result link share kar rahe hain.', 'info');
         toastFor(await shareBattleLink({ caption, url }));
         return;
       }
