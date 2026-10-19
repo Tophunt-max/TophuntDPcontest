@@ -12,6 +12,8 @@ import { API_BASE_URL, endRejectedSession } from './api';
  *   user:<uid>     notifications + chat-list bumps
  *   chat:<chatId>  new messages
  *   match:<id>     live vote/like/comment/reaction counts
+ *   app:cfg<N>     App Control pushes (maintenance, flags, banner) — public,
+ *                  always opened WITHOUT a token, signed in or not
  */
 const WS_BASE = API_BASE_URL.replace(/^http/i, 'ws');
 
@@ -68,15 +70,18 @@ const conns = new Map<string, Conn>();
 
 async function openSocket(channel: string, conn: Conn) {
   if (conn.closedByUs) return;
+  // App Control is public: never send a token (no verify / account read per connect,
+  // and a refused socket can never be mistaken for a revoked session).
+  const anonymous = channel.startsWith('app:');
   let token: string | null = null;
   try {
-    token = auth.currentUser ? await auth.currentUser.getIdToken() : null;
+    token = !anonymous && auth.currentUser ? await auth.currentUser.getIdToken() : null;
   } catch {
     token = null;
   }
   // A battle's public tallies are open to guests (worker lib/wsGuest.ts), so a
   // signed-out viewer connects without a token instead of retrying forever.
-  const guestOk = !token && channel.startsWith('match:');
+  const guestOk = !token && (channel.startsWith('match:') || anonymous);
   if (!token && !guestOk) {
     // Not signed in yet — retry shortly. Private channels (user:, chat:) only.
     conn.reconnectTimer = setTimeout(() => openSocket(channel, conn), 2000);
@@ -161,7 +166,7 @@ async function openSocket(channel: string, conn: Conn) {
      */
     if (!opened) {
       conn.preOpenFailures += 1;
-      if (conn.preOpenFailures >= PRE_OPEN_FAILURES_BEFORE_SIGNOUT && auth.currentUser) {
+      if (conn.preOpenFailures >= PRE_OPEN_FAILURES_BEFORE_SIGNOUT && auth.currentUser && token) {
         conn.preOpenFailures = 0;
         void endRejectedSession();
         return;

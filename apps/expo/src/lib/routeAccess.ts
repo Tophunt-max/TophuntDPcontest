@@ -39,6 +39,8 @@ const TABLE: Record<string, RouteAccess> = {
   splash: 'system',
   maintenance: 'system',
   'force-update': 'system',
+  // App Control: where a link into a switched-off feature lands (guests too).
+  'feature-off': 'system',
   'account-scheduled-deletion': 'system',
 
   // Public content

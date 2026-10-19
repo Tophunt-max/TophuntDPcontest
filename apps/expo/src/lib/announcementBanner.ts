@@ -52,3 +52,17 @@ export function shouldShowBanner(input: {
   if (dismissedMessage === message) return false;
   return true;
 }
+
+/**
+ * Screens the banner may cover: the main tab-level screens (it overlays the top
+ * of the screen, so never one with a back button or full-screen content, and
+ * never login/splash/onboarding or the gate screens).
+ */
+const BANNER_SCREENS = new Set(['home', 'explore', 'profile', 'wallet', 'notifications', 'prizes']);
+
+export function bannerVisibleOn(segments: readonly string[]): boolean {
+  const [top, second] = segments;
+  if (!top || !BANNER_SCREENS.has(top)) return false;
+  // Tab roots only: `/wallet` yes, `/wallet/withdraw` no.
+  return !second || second === 'index';
+}

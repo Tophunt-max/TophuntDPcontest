@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useQuery } from '@tanstack/react-query';
-import { getAppConfig } from '@/src/services/appSettings';
+import { APP_CONFIG_QUERY_KEY, fetchAppConfig } from '@/src/services/appSettings';
+import { newerConfig } from '@/src/lib/appControl';
 import { FALLBACK_AUTH_METHODS, resolveClientAuthMethods, type ClientAuthMethods, type ClientPlatform } from '@/src/lib/authMethods';
 
 const CACHE_KEY = 'auth:methods:v1';
@@ -22,10 +23,12 @@ const platform: ClientPlatform = Platform.OS === 'ios' ? 'ios' : Platform.OS ===
  */
 export function useAuthMethods(): { methods: ClientAuthMethods; ready: boolean } {
   const { data, isFetched } = useQuery({
-    queryKey: ['app-config'],
-    queryFn: () => getAppConfig(),
-    staleTime: 5 * 60_000,
+    queryKey: APP_CONFIG_QUERY_KEY,
+    // Same fetcher as useAppConfig: one cache entry must have one shape.
+    queryFn: () => fetchAppConfig(),
+    staleTime: 20_000,
     refetchOnMount: 'always',
+    structuralSharing: (prev: unknown, next: unknown) => newerConfig(prev as any, next as any) as any,
   });
   const [cached, setCached] = useState<ClientAuthMethods | null>(null);
   const [cacheRead, setCacheRead] = useState(false);

@@ -245,6 +245,31 @@ interface RequestOptions {
   retries?: number;
   /** Suppress the automatic session-expiry sign-out (used by auth screens). */
   allowUnauthenticated?: boolean;
+  /** Bypass every HTTP cache (browser, OS) — for state that must be live. */
+  noStore?: boolean;
+}
+
+/**
+ * App Control refusals the server marks with a machine-readable `reason`
+ * ("maintenance", "update_required", "feature_disabled"). The live-config
+ * component listens and refetches, so the screen catches up with the server.
+ */
+type ControlSignalListener = (reason: string) => void;
+const controlSignalListeners = new Set<ControlSignalListener>();
+export function onControlSignal(fn: ControlSignalListener): () => void {
+  controlSignalListeners.add(fn);
+  return () => controlSignalListeners.delete(fn);
+}
+
+/**
+ * Native builds tell the server their version, for the hard-update gate (web
+ * never). Set once at startup by the root layout (`setClientVersionHeaders`),
+ * so this module stays free of native-only imports.
+ */
+let NATIVE_VERSION_HEADERS: Record<string, string> = {};
+export function setClientVersionHeaders(platform: string, version: string): void {
+  NATIVE_VERSION_HEADERS =
+    platform === 'android' || platform === 'ios' ? { 'X-App-Platform': platform, 'X-App-Version': version } : {};
 }
 
 interface RawResponse<T> {
@@ -263,6 +288,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<R
     timeoutMs = DEFAULT_TIMEOUT_MS,
     retries = method === 'GET' ? READ_RETRIES : 0,
     allowUnauthenticated = false,
+    noStore = false,
   } = options;
 
   let lastError: unknown;
@@ -273,6 +299,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<R
 
     for (let authTry = 0; authTry < 2; authTry++) {
       const headers: Record<string, string> = {
+        ...NATIVE_VERSION_HEADERS,
         ...(await authHeader(authTry === 1)),
       };
       if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -282,6 +309,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<R
           method,
           headers,
           body: body === undefined ? undefined : JSON.stringify(body),
+          ...(noStore ? { cache: 'no-store' as RequestCache } : {}),
           // AbortSignal.timeout is available on Hermes/RN 0.74+ and every browser
           // the web build targets.
           signal: AbortSignal.timeout(timeoutMs),
@@ -324,6 +352,14 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<R
           void routeToDeletionGate();
         }
 
+        const reason = typeof json?.error?.reason === 'string' ? json.error.reason : '';
+        if (reason) controlSignalListeners.forEach((fn) => {
+          try {
+            fn(reason);
+          } catch {
+            /* listener errors never break a request */
+          }
+        });
         const status = (json?.error?.status || 'INTERNAL').toLowerCase().replace(/_/g, '-');
         throw new ApiCallError(
           `functions/${status}`,
@@ -380,6 +416,12 @@ function buildUrl(path: string, params?: Record<string, any>): string {
 /** GET a /read endpoint on the Worker, attaching the ID token if present. */
 export const readApi = async (path: string, params?: Record<string, any>) => {
   const { data } = await request<any>(buildUrl(path, params));
+  return data;
+};
+
+/** `readApi` that bypasses every HTTP cache (live state such as App Control). */
+export const readApiLive = async (path: string, params?: Record<string, any>) => {
+  const { data } = await request<any>(buildUrl(path, params), { noStore: true });
   return data;
 };
 

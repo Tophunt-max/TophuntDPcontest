@@ -45,10 +45,20 @@ export default function WithdrawScreen() {
   const subTextColor = isDark ? '#A0A0A0' : '#757575';
   const primaryColor = '#FF4D67';
 
+  // The same rules the server enforces (Worker lib/payouts.ts), shown up front
+  // instead of after a refused submit. Live: App Control changes arrive in seconds.
   const wcfg = config?.withdrawal || {};
-  const enabled = wcfg.enabled !== false;
+  const frozen = wcfg.payoutsFrozen === true;
+  const featureOff = config?.features?.withdrawals === false;
   const minAmount = Number(wcfg.minAmount ?? 0);
+  const maxAmount = Number(wcfg.maxAmount ?? 0);
+  const maxPerDay = Number(wcfg.maxPerDay ?? 0);
   const rate = Number(wcfg.conversionRate ?? 1);
+  const rateValid = Number.isFinite(rate) && rate > 0;
+  const enabled = wcfg.enabled !== false && !frozen && !featureOff && rateValid;
+  const closedReason = frozen
+    ? 'Withdrawals abhi kuch der ke liye rok diye gaye hain. Aapke coins safe hain.'
+    : 'Withdrawals are currently disabled. Please check back later.';
 
   const [amount, setAmount] = useState('');
   const [method, setMethod] = useState('upi');
@@ -74,6 +84,7 @@ export default function WithdrawScreen() {
     if (!enabled) return;
     if (!Number.isInteger(amt) || amt <= 0) return Alert.alert('Invalid amount', 'Enter a valid whole number of coins.');
     if (amt < minAmount) return Alert.alert('Below minimum', `Minimum withdrawal is ${minAmount} coins.`);
+    if (maxAmount > 0 && amt > maxAmount) return Alert.alert('Above maximum', `Ek baar mein zyada se zyada ${maxAmount} coins nikal sakte ho.`);
     if (amt > balance) return Alert.alert('Insufficient balance', 'You do not have enough coins.');
     if (!account.trim()) return Alert.alert('Account required', 'Enter your payout account details.');
 
@@ -108,7 +119,7 @@ export default function WithdrawScreen() {
         {!enabled ? (
           <View style={[styles.card, { backgroundColor: cardBg, alignItems: 'center' }]}>
             <Ionicons name="lock-closed-outline" size={40} color={subTextColor} />
-            <Text style={[styles.disabledText, { color: subTextColor }]}>Withdrawals are currently disabled. Please check back later.</Text>
+            <Text style={[styles.disabledText, { color: subTextColor }]}>{closedReason}</Text>
           </View>
         ) : (
           <>
@@ -118,7 +129,9 @@ export default function WithdrawScreen() {
                 <CoinIcon size={26} />
                 <Text style={[styles.balance, { color: textColor }]}>{balance} <Text style={{ fontSize: 16, color: subTextColor }}>coins</Text></Text>
               </View>
-              <Text style={[styles.hint, { color: subTextColor }]}>Min {minAmount} coins • Rate ₹{rate}/coin</Text>
+              <Text style={[styles.hint, { color: subTextColor }]}>
+                Min {minAmount} coins{maxAmount > 0 ? ` • Max ${maxAmount}` : ''}{maxPerDay > 0 ? ` • Roz ${maxPerDay} request` : ''} • Rate ₹{rate}/coin
+              </Text>
             </View>
 
             <View style={[styles.card, { backgroundColor: cardBg }]}>
