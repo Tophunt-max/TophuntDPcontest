@@ -93,7 +93,7 @@ async function seedUser(uid: string) {
   const ts = Date.now();
   await drizzleOf(env)
     .insert(schema.users)
-    .values({ uid, username: uid, fullName: `${uid} name`, dpcoin: 0, createdAt: ts, updatedAt: ts } as any);
+    .values({ signupCompleted: true, uid, username: uid, fullName: `${uid} name`, dpcoin: 0, createdAt: ts, updatedAt: ts } as any);
 }
 
 async function seedArticle(id: string, over: Record<string, any> = {}) {

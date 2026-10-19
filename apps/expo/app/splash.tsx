@@ -25,6 +25,7 @@ import { Colors } from '@/constants/theme';
 import { getAppConfig } from '../src/services/appSettings';
 import { readApi } from '../src/services/api';
 import { guestStartRoute, ONBOARDING_SEEN_KEY, sessionEntryKind } from '../src/lib/onboarding';
+import { isProfileComplete } from '../src/lib/profileCompletion';
 
 
 // Loading Spinner Component
@@ -152,7 +153,8 @@ export default function SplashScreen() {
                     const userData: any = await readApi(`/read/users/${user.uid}`).catch(() => null);
 
                     if (userData) {
-                        if (userData.signupCompleted === true || userData.username) {
+                        // The server's flag only (src/lib/profileCompletion.ts).
+                        if (isProfileComplete(userData)) {
                             console.log("Profile complete -> Home");
                             router.replace('/home');
                         } else {

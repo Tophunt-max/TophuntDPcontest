@@ -431,7 +431,7 @@ describe('email gateway dispatch', () => {
 describe('sendUserEmail (uid -> address)', () => {
   async function seedUser(e: TestEnv, uid: string, email: string | null) {
     const ts = Date.now();
-    await drizzleOf(e).insert(schema.users).values({
+    await drizzleOf(e).insert(schema.users).values({ signupCompleted: true,
       uid, username: uid, fullName: uid, email, status: 'active', dpcoin: 0, createdAt: ts, updatedAt: ts,
     } as any);
   }

@@ -13,9 +13,11 @@ import {
   createAuthUser,
   createCustomToken,
   getUserByEmail,
+  lookupAuthUser,
   updateAuthUser,
   deleteAuthUser,
 } from "../lib/firebaseAdmin";
+import { invalidateAuthState } from "../lib/cache";
 import { getAppControlConfig, getAuthMethods, getRewardSettings } from "../lib/settings";
 import { appControlGate } from "../lib/appControl";
 import { assertLoginAllowed, assertSignupAllowed, normalizePlatform, signupMethodForProvider, type AuthMethodKey } from "../lib/authMethods";
@@ -87,7 +89,16 @@ async function createUserProfile(
   uid: string,
   data: any,
   legacySignupBonus: number,
-  signup: { method: AuthMethodKey | null; provider: string | null },
+  signup: {
+    method: AuthMethodKey | null;
+    provider: string | null;
+    /**
+     * Identifiers already PROVEN by the sign-in itself (Firebase's own record:
+     * a Google-verified email, the phone number an OTP sign-in used). Never
+     * taken from the request body.
+     */
+    verified?: { email?: boolean; phone?: boolean };
+  },
 ) {
   const db = getDb(env);
   const ts = now();
@@ -110,15 +121,20 @@ async function createUserProfile(
   });
   // Idempotency: the signup bonus must be granted at most once per uid, even if
   // this runs again on a retried/interrupted signup.
-  const alreadyExisted = await db
+  const existingRow = await db
     .select({ uid: schema.users.uid, signupCompleted: schema.users.signupCompleted })
     .from(schema.users)
     .where(eq(schema.users.uid, uid))
     .get();
+  // An INCOMPLETE row (left by the old client auto-create, migration 0061) is
+  // still a registration: it gets the welcome grant and the verification
+  // enrolment it never received, exactly once. Only a COMPLETED row is "already
+  // existed" for the purposes of the grant.
+  const alreadyExisted = existingRow?.signupCompleted ? existingRow : undefined;
   // A uid with no COMPLETED profile is registering, so it is held to the admin's
   // sign-up switches (lib/authMethods.ts). A finished account re-running this
   // (a retried request) is not a new signup and is never refused.
-  if (!alreadyExisted?.signupCompleted) {
+  if (!alreadyExisted) {
     assertSignupAllowed(await getAuthMethods(env), signup.method, normalizePlatform(data.platform));
   }
 
@@ -149,6 +165,9 @@ async function createUserProfile(
       : null;
 
   const profileStatements: any[] = [];
+  const verifiedCols: Record<string, unknown> = {};
+  if (signup.verified?.email && data.email) Object.assign(verifiedCols, { emailVerified: true, emailVerifiedAt: ts });
+  if (signup.verified?.phone && data.phone) Object.assign(verifiedCols, { phoneVerified: true, phoneVerifiedAt: ts });
 
   /**
    * Signup CLAIMS a handle, so any record of a past owner has to go.
@@ -190,6 +209,7 @@ async function createUserProfile(
       // for the admin's sign-ups-by-method numbers.
       authProvider: signup.provider,
       coordinates: data.coordinates ?? null,
+      ...verifiedCols,
       dpcoin: signupBonus,
       xp: 0,
       level: 1,
@@ -206,11 +226,31 @@ async function createUserProfile(
         username,
         fullName: data.fullName ?? null,
         profileImageUrl: data.avatarUrl ?? null,
+        // Completing an incomplete row must store the WHOLE onboarding form —
+        // the age gate's date of birth above all — not just the identity fields.
+        dob: data.dob ?? null,
+        phone: normalizePhone(data.phone),
+        occupation: data.occupation ?? null,
+        gender: data.gender ?? null,
+        authProvider: signup.provider,
+        ...verifiedCols,
         updatedAt: ts,
         signupCompleted: true,
       },
     }),
   );
+  // An incomplete row left by the old client auto-create never got the welcome
+  // grant. Credit it in the SAME batch, guarded on the row still being
+  // incomplete, so a concurrent or retried completion cannot pay twice (D1 runs
+  // a batch as one transaction, and the upsert below flips the flag).
+  if (existingRow && !alreadyExisted && signupBonus > 0) {
+    profileStatements.unshift(
+      db
+        .update(schema.users)
+        .set({ dpcoin: sql`COALESCE(${schema.users.dpcoin}, 0) + ${signupBonus}` })
+        .where(and(eq(schema.users.uid, uid), sql`COALESCE(${schema.users.signupCompleted}, 0) = 0`)),
+    );
+  }
   if (bonusLedger) profileStatements.push(bonusLedger);
   // Enrolment in the SAME transaction as the profile and the registration
   // credit, and only for a brand-new uid — a repeated signup never enrols (or
@@ -231,6 +271,9 @@ async function createUserProfile(
     );
   }
   await db.batch(profileStatements as any);
+  // The /api onboarding gate reads `signupCompleted` from the (possibly cached)
+  // account state; drop the cached copy so the new account is usable at once.
+  await invalidateAuthState(env, uid).catch(() => {});
 
   // Welcome the new account, best-effort. Only for email signups (phone-only
   // accounts have no address), and never fatal — a signup must not fail because
@@ -381,7 +424,9 @@ authRoute.post("/", async (c) => {
 
       try {
         const reward = await getRewardSettings(env);
-        await createUserProfile(env, newUid, { ...body, username: validatedUsername }, reward.signupBonus || 0, {
+        // No phone at signup: a number typed into the form is unproven. It is added
+        // (and verified by OTP) later from Edit Profile.
+        await createUserProfile(env, newUid, { ...body, phone: null, username: validatedUsername }, reward.signupBonus || 0, {
           method: "emailSignup",
           provider: "password",
         });
@@ -404,14 +449,36 @@ authRoute.post("/", async (c) => {
       // any user's profile (email/username/avatar) by guessing their uid — an
       // IDOR / account-takeover vector.
       if (!uid) throw httpsError("unauthenticated", "User must be authenticated.");
-      if (body.email && isDisposableEmail(body.email))
-        throw httpsError("invalid-argument", "Disposable email blocked.");
-      const reward = await getRewardSettings(env);
+      await rateLimit(env, `createprofile:${uid}`, 20, 3600);
       // The provider comes from the verified token, never from the body.
       const provider = c.get("user")?.signInProvider ?? null;
-      await createUserProfile(env, uid, body, reward.signupBonus || 0, {
+      // Email and phone come from Firebase's record of THIS sign-in, never from
+      // the body. Onboarding no longer asks for them: an identifier typed into a
+      // signup form is unproven, and storing it let anyone squat someone else's
+      // number or address (the real owner then found it "already registered").
+      // Anything else is added — and verified by OTP — later, from Edit Profile.
+      let authRecord: Awaited<ReturnType<typeof lookupAuthUser>> = null;
+      try {
+        authRecord = await lookupAuthUser(env, uid);
+      } catch (e) {
+        console.error("[auth] createProfile: auth lookup failed", uid, e);
+        throw httpsError("unavailable", "Could not finish creating your profile. Please try again.");
+      }
+      if (!authRecord) throw httpsError("unauthenticated", "User must be authenticated.");
+      const email = authRecord.email ? authRecord.email.toLowerCase() : null;
+      if (email && isDisposableEmail(email)) throw httpsError("invalid-argument", "Disposable email blocked.");
+      const phone = authRecord.phoneNumber ? normalizePhone(authRecord.phoneNumber) : null;
+      const reward = await getRewardSettings(env);
+      await createUserProfile(env, uid, { ...body, email, phone }, reward.signupBonus || 0, {
         method: signupMethodForProvider(provider),
         provider,
+        verified: {
+          // A social provider's verified address, and the number an OTP sign-in
+          // just proved. A password account verifies its email by link/OTP later.
+          email: provider !== "password" && authRecord.emailVerified,
+          // Only our phone-OTP sign-in ("custom" token) proves the number.
+          phone: provider === "custom" && !!phone,
+        },
       });
       return c.json({ status: "success", uid, message: "Profile created successfully" });
     }

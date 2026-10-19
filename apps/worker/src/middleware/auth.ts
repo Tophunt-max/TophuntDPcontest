@@ -8,8 +8,10 @@ import { getDb, schema } from "../db";
 import {
   BLOCKED_STATUS,
   DELETED_STATUS,
+  ONBOARDING_ALLOWED_ACTIONS,
   PENDING_DELETION_ALLOWED_ACTIONS,
   PENDING_DELETION_STATUS,
+  PROFILE_INCOMPLETE_CODE,
   SELF_SERVICE_ACTIONS,
 } from "../lib/accountStatus";
 import { scaleConfig } from "../lib/scale";
@@ -21,6 +23,8 @@ type MW = { Bindings: Env; Variables: Variables };
 interface AccountState {
   status: string | null;
   isBlocked: boolean | null;
+  /** Onboarding finished (createUserProfile). Gates /api — see ONBOARDING_ALLOWED_ACTIONS. */
+  signupCompleted: boolean | null;
   /** Epoch SECONDS. Sessions older than this are revoked. See lib/sessionRevocation.ts. */
   tokensValidAfter: number | null;
 }
@@ -30,6 +34,7 @@ function readAccountStateFromDb(env: Env, uid: string): Promise<AccountState | u
     .select({
       status: schema.users.status,
       isBlocked: schema.users.isBlocked,
+      signupCompleted: schema.users.signupCompleted,
       // Selected here rather than in its own lookup so enforcing revocation costs
       // ZERO extra queries — this row is already read on every authenticated request.
       tokensValidAfter: schema.users.tokensValidAfter,
@@ -200,6 +205,25 @@ export const requireApiAuth = createMiddleware<MW>(async (c, next) => {
       "failed-precondition",
       "Your account is scheduled for deletion. Cancel the deletion to use TopHunt again.",
     );
+  }
+
+  // Onboarding gate. A social/phone sign-in is a valid session before any profile
+  // exists; until `createProfile` has run (signup_completed), only the actions in
+  // ONBOARDING_ALLOWED_ACTIONS are served. No extra query: the flag is on the
+  // account-state row read above — except for a cache entry written before the
+  // field existed, which is re-read from D1 rather than trusted as "incomplete".
+  // Staff tokens (admin/moderator claim) pass, as they do the App Control gate:
+  // moderation must not depend on the moderator having a player profile.
+  const staff = !!user.role && ["admin", "superadmin", "moderator"].includes(user.role);
+  if (!staff && !ONBOARDING_ALLOWED_ACTIONS.has(action)) {
+    let completed = account?.signupCompleted;
+    if (account && completed === undefined) completed = (await readAccountStateFromDb(c.env, user.uid))?.signupCompleted;
+    if (!completed) {
+      throw httpsError(
+        "failed-precondition",
+        `${PROFILE_INCOMPLETE_CODE}: Finish creating your profile to continue.`,
+      );
+    }
   }
 
   c.set("user", user);

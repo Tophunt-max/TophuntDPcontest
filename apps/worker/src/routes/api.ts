@@ -107,9 +107,9 @@ import {
 } from "../lib/bunny";
 import { applyBunnyEncodeResult, LIVE_STATUS_RECHECK_MS } from "../lib/videoReconcile";
 import { mediaRouting } from "../lib/mediaRouting";
-import { getAppConfig, getAppControlConfig, getAuthMethods, getRewardedAdConfig, getRewardSettings } from "../lib/settings";
+import { getAppConfig, getAppControlConfig, getRewardedAdConfig, getRewardSettings } from "../lib/settings";
 import { appControlGate } from "../lib/appControl";
-import { assertSignupAllowed, normalizePlatform, signupMethodForProvider } from "../lib/authMethods";
+import { PROFILE_INCOMPLETE_CODE } from "../lib/accountStatus";
 import { getSettings } from "../lib/gamification";
 import { sendEmail, sendUserEmail } from "../lib/email";
 import { passwordChangedEmail, dataExportEmail } from "../lib/emailTemplates";
@@ -3215,14 +3215,20 @@ apiRoute.post("/", async (c) => {
     case "completeSignup": {
       // Block banned words in user-visible profile fields.
       if (action === "updateProfile") await assertClean(env, body.username, body.fullName, body.bio);
-      const fields = action === "completeSignup" ? { signupCompleted: true } : body;
+      // `completeSignup` writes no profile fields: the row and its
+      // `signupCompleted` flag are created by `createProfile` / `create`
+      // (routes/auth.ts createUserProfile). It only runs the referral step below.
+      const fields = action === "completeSignup" ? {} : body;
       const set: Record<string, any> = { updatedAt: now() };
       const extraPatch: Record<string, any> = {};
       const COLUMN_KEYS = new Set([
         "fullName", "username", "dob", "occupation", "gender", "coordinates",
         // `equippedBadge` is deliberately NOT here: it is set only through the
         // validated `equipBadge` action, never as a free-form profile field.
-        "bio", "isPrivate", "authProvider", "platform", "signupCompleted",
+        // `signupCompleted` and `authProvider` are NOT here either: they are
+        // server facts (set by createUserProfile), and a client that could set
+        // `signupCompleted` could skip onboarding — and its age check — entirely.
+        "bio", "isPrivate", "platform",
       ]);
       for (const [k, v] of Object.entries(fields)) {
         if (k === "action" || k === "uid" || v === undefined) continue;
@@ -3305,21 +3311,15 @@ apiRoute.post("/", async (c) => {
 
       const upd = await db.update(schema.users).set(set).where(eq(schema.users.uid, uid)).run();
       if (upd.meta.changes === 0) {
-        // profile row doesn't exist yet — create it. That is a NEW account, so it
-        // is held to the admin's sign-up switches like every other signup path.
-        const signInProvider = c.get("user")?.signInProvider ?? null;
-        assertSignupAllowed(
-          await getAuthMethods(env),
-          signupMethodForProvider(signInProvider),
-          normalizePlatform(body.platform),
-        );
-        await db.insert(schema.users).values({
-          uid,
-          email: c.get("user").email ?? null,
-          createdAt: now(),
-          updatedAt: now(),
-          ...set,
-        } as any).onConflictDoUpdate({ target: schema.users.uid, set });
+        // No profile row. This used to INSERT one, which made "edit profile" a
+        // second, unguarded signup path: the client's useProfile hook called it
+        // with made-up defaults whenever a signed-in user had no row, so leaving
+        // onboarding with Back produced a full account with no age check, no
+        // welcome bonus and no verification enrolment. Accounts are created ONLY
+        // by createProfile / create (routes/auth.ts createUserProfile).
+        // (Normally unreachable: the onboarding gate in requireApiAuth refuses a
+        // caller without a completed row before this handler runs.)
+        throw httpsError("failed-precondition", `${PROFILE_INCOMPLETE_CODE}: Finish creating your profile to continue.`);
       }
 
       // Ensure a referral code + apply an inbound referral (once) at signup.

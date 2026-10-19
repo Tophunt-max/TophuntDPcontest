@@ -8,7 +8,9 @@ import {
   StyleSheet,
   ActivityIndicator,
 } from "react-native";
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
+import { BackHandler, Platform } from "react-native";
+import { signOut } from "firebase/auth";
 import { router } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
 import { useReadjustablePhoto } from "@/src/components/media/useImageAdjuster";
@@ -23,12 +25,14 @@ import { Email_Icon, Pencil_Icon } from "@/assets/svgs";
 import { BackButton } from "@/src/components/ui/BackButton";
 import { Ionicons } from "@/src/lib/icons";
 import { DatePickerField } from "@/src/components/inputs/DatePickerField";
-import { CountryPicker } from "react-native-country-codes-picker";
 import { useToast } from "@/src/components/toast/ToastProvider";
 import Images from "@/assets/images";
 import Svg, { Circle } from 'react-native-svg';
 import { ReanimatedBottomSheet } from "@/src/components/modals/ReanimatedBottomSheet";
 import { callApi } from "@/src/services/api"; // Centralized API Caller
+import { auth } from "@/src/services/firebase/initFirebase";
+import { Alert } from "@/src/lib/appAlert";
+import { onboardingDraftFor, onboardingSnapshot, resetOnboarding } from "@/src/lib/profileCompletion";
 
 /**
  * Minimum age.
@@ -45,14 +49,12 @@ const fillProfileSchema = z.object({
     .min(1, "Username is required")
     .min(3, "Must be at least 3 characters")
     .regex(/^[a-zA-Z0-9_.]+$/, "Invalid format"),
-  email: z.string().min(1, "Email is required").email("Invalid email"),
-  // National subscriber number (without country code). Lengths vary by country,
-  // so accept 6–14 digits instead of hardcoding India's 10. Combined with the
-  // selected dial code this forms a valid E.164 number.
-  phone: z
-    .string()
-    .min(1, "Phone required")
-    .regex(/^\d{6,14}$/, "Enter a valid phone number"),
+  // Email and phone are NOT collected here. They are the sign-in identifier
+  // (shown read-only) or are added — and verified by OTP — later from Edit
+  // Profile. An identifier typed into a signup form is unproven, and storing it
+  // let anyone squat someone else's number. The server ignores them anyway.
+  email: z.string().optional(),
+  phone: z.string().optional(),
   occupation: z.string().min(1, "Required"),
   gender: z.string().min(1, "Required"),
   // Age gate. This app pays real money out, so a date of birth that is merely
@@ -111,28 +113,85 @@ const FillProfile: React.FC = () => {
   
   const [isGenderPickerVisible, setGenderPickerVisibility] = useState(false);
   const [isOccupationPickerVisible, setOccupationPickerVisibility] = useState(false);
-  const [showCountryPicker, setShowCountryPicker] = useState(false);
   
-  const isEmailLocked = signupData.authProvider !== 'phone' && !!signupData.email;
-  const isPhoneLocked = signupData.authProvider === 'phone';
+  // The one identifier this account signs in with, shown read-only. Nothing else.
+  const showEmail = signupData.authProvider !== 'phone' && !!signupData.email;
+  const showPhone = signupData.authProvider === 'phone' && !!signupData.phone;
+  // Social / phone users are ALREADY signed in here (email users are not until
+  // the last step), so leaving the form must cancel the signup: sign out, not
+  // drop them into the app with no profile.
+  const signedInSignup = !!auth.currentUser;
 
-  const [countryCode, setCountryCode] = useState('+91');
+  // Reached without the sign-in screen's hand-off (reload, deep link, sent here
+  // by the guard): rebuild the draft from the Firebase user and any half-created
+  // profile, so the form is pre-filled rather than empty.
+  useEffect(() => {
+    const u = auth.currentUser;
+    if (!u || signupData.authProvider) return;
+    const draft = onboardingDraftFor(u, onboardingSnapshot().uid === u.uid ? onboardingSnapshot().profile : null);
+    setMultiple(draft);
+    reset({
+      avatarUrl: draft.avatarUrl || "",
+      fullName: draft.fullName || "",
+      username: draft.username || "",
+      email: draft.email || "",
+      phone: draft.phone || "",
+      occupation: draft.occupation || "",
+      gender: draft.gender || "",
+      dateOfBirth: draft.dob ? new Date(draft.dob) : undefined,
+    });
+    if (draft.avatarUrl) setLocalAvatarUri(draft.avatarUrl);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const cancelSignup = useCallback(() => {
+    if (!signedInSignup) {
+      if (router.canGoBack()) router.back();
+      else router.replace("/auth/login");
+      return true;
+    }
+    Alert.alert(
+      "Signup cancel karein?",
+      "Aapka account abhi bana nahi hai. Cancel karne par aap sign out ho jayenge — baad mein dobara login karke profile poora kar sakte hain.",
+      [
+        { text: "Continue signup", style: "cancel" },
+        {
+          text: "Cancel signup",
+          style: "destructive",
+          onPress: async () => {
+            useSignupStore.getState().reset();
+            resetOnboarding();
+            await signOut(auth).catch(() => {});
+            router.replace("/auth/login");
+          },
+        },
+      ],
+    );
+    return true;
+  }, [signedInSignup]);
+
+  // Android hardware Back asks the same question instead of leaving the form.
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', cancelSignup);
+    return () => sub.remove();
+  }, [cancelSignup]);
+
   const [isLoading, setIsLoading] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [localAvatarUri, setLocalAvatarUri] = useState<string | null>(signupData.avatarUrl || null);
   
   const [usernameChecking, setUsernameChecking] = useState(false);
-  const [phoneChecking, setPhoneChecking] = useState(false);
 
-  const { control, handleSubmit, setValue, watch, trigger, setError, clearErrors, formState: { errors } } = useForm<FillProfileFormValues>({
+  const { control, handleSubmit, setValue, watch, trigger, setError, clearErrors, reset, formState: { errors } } = useForm<FillProfileFormValues>({
     resolver: zodResolver(fillProfileSchema),
     defaultValues: {
       avatarUrl: signupData.avatarUrl || "",
       fullName: signupData.fullName || "",
       username: signupData.username || "",
       email: signupData.email || "",
-      phone: signupData.phone?.replace(/^\+\d{2}/, '') || "",
+      phone: signupData.phone || "",
       occupation: signupData.occupation || "",
       gender: signupData.gender || "",
       dateOfBirth: signupData.dob ? new Date(signupData.dob) : undefined,
@@ -142,7 +201,6 @@ const FillProfile: React.FC = () => {
   const selectedOccupation = watch("occupation");
   const selectedGender = watch("gender");
   const username = watch("username");
-  const phone = watch("phone");
 
   // SILENT LOCATION
   useEffect(() => {
@@ -175,23 +233,6 @@ const FillProfile: React.FC = () => {
     return () => clearTimeout(timer);
   }, [username]);
 
-  // PHONE CHECK (Using New API Router)
-  useEffect(() => {
-    const checkPhone = async () => {
-        if (phone && /^\d{6,14}$/.test(phone) && !isPhoneLocked) {
-            setPhoneChecking(true);
-            try {
-                const result = await callApi('check', { type: 'phone', value: countryCode + phone });
-                if (result.exists) {
-                    setError("phone", { type: "manual", message: "This phone number is already registered!" });
-                } else { clearErrors("phone"); }
-            } catch (e) {} finally { setPhoneChecking(false); }
-        }
-    };
-    const timer = setTimeout(checkPhone, 500);
-    return () => clearTimeout(timer);
-  }, [phone, countryCode, isPhoneLocked]);
-
   const pickAvatar = async () => {
     const img = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.5 });
     if (!img.canceled && img.assets) {
@@ -222,10 +263,11 @@ const FillProfile: React.FC = () => {
   };
 
   const onSubmit = async (data: FillProfileFormValues) => {
-    if (usernameChecking || phoneChecking) return;
+    if (usernameChecking) return;
     setIsLoading(true);
     try {
-      setMultiple({ ...signupData, avatarUrl: data.avatarUrl, fullName: data.fullName, username: data.username, email: data.email, phone: countryCode + data.phone, occupation: data.occupation, gender: data.gender, dob: data.dateOfBirth instanceof Date ? data.dateOfBirth.toISOString() : data.dateOfBirth });
+      // Email/phone stay whatever the sign-in provided; the form does not edit them.
+      setMultiple({ ...signupData, avatarUrl: data.avatarUrl, fullName: data.fullName, username: data.username, occupation: data.occupation, gender: data.gender, dob: data.dateOfBirth instanceof Date ? data.dateOfBirth.toISOString() : data.dateOfBirth });
       setStep(3);
       router.push("/auth/signup/follow-someone");
     } catch (e) { addToast("Error saving", "error"); } finally { setIsLoading(false); }
@@ -235,7 +277,7 @@ const FillProfile: React.FC = () => {
     <SafeAreaView style={styles.container}>
       {adjusterHost}
       <View style={styles.header}>
-        <BackButton size={24} color="#000" style={styles.backButton} />
+        <BackButton size={24} color="#000" style={styles.backButton} onPress={cancelSignup} />
         <Text style={styles.headerTitle}>Fill Your Profile</Text>
         <View style={{ width: 24 }} />
       </View>
@@ -262,25 +304,15 @@ const FillProfile: React.FC = () => {
         
         <FormInput control={control} name="username" placeholder="Username" autoCapitalize="words" autoCorrect={false} errorMessage={errors.username?.message} rightIcon={usernameChecking ? <ActivityIndicator size="small" color="#ff4466" /> : null} />
         
-        <FormInput control={control} name="email" placeholder="Email" rightIcon={<Email_Icon width={20} height={20} color="#9E9E9E" />} editable={!isEmailLocked} style={isEmailLocked ? styles.readOnlyInput : null} errorMessage={errors.email?.message} />
-
-        <View style={styles.phoneInputRow}>
-             <TouchableOpacity style={[styles.flagButton, isPhoneLocked && styles.readOnlyInput]} onPress={() => !isPhoneLocked && setShowCountryPicker(true)} disabled={isPhoneLocked}>
-                <Text style={styles.flagText}>{countryCode}</Text>
-                {!isPhoneLocked && <Ionicons name="chevron-down" size={14} color="#9E9E9E" style={{ marginLeft: 4 }} />}
-             </TouchableOpacity>
-             <View style={styles.phoneField}>
-                 <FormInput control={control} name="phone" placeholder="Phone Number" containerStyle={{ marginBottom: 0 }} keyboardType="phone-pad" maxLength={14} editable={!isPhoneLocked} style={isPhoneLocked ? styles.readOnlyInput : null} errorMessage={errors.phone?.message} rightIcon={phoneChecking ? <ActivityIndicator size="small" color="#ff4466" /> : null} />
-             </View>
-        </View>
-
-        <CountryPicker 
-            lang="en"
-            show={showCountryPicker} 
-            pickerButtonOnPress={(item) => { setCountryCode(item.dial_code); setShowCountryPicker(false); }} 
-            onBackdropPress={() => setShowCountryPicker(false)} 
-            style={{ modal: { height: 500 } }} 
-        />
+        {showEmail ? (
+          <FormInput control={control} name="email" placeholder="Email" rightIcon={<Email_Icon width={20} height={20} color="#9E9E9E" />} editable={false} style={styles.readOnlyInput} />
+        ) : null}
+        {showPhone ? (
+          <FormInput control={control} name="phone" placeholder="Phone Number" editable={false} style={styles.readOnlyInput} />
+        ) : null}
+        <Text style={styles.verifyLaterNote}>
+          {showPhone ? "Email" : "Mobile number"} aur verification baad mein Profile → Edit Profile se kar sakte hain.
+        </Text>
 
         <TouchableOpacity style={[styles.dropdown, errors.gender && { borderColor: 'red' }]} onPress={() => setGenderPickerVisibility(true)}>
             <Text style={{ color: selectedGender ? '#000' : '#9E9E9E', fontFamily: 'Urbanist-Medium' }}>{selectedGender || "Gender"}</Text>
@@ -304,7 +336,7 @@ const FillProfile: React.FC = () => {
           style={styles.referralInput}
         />
 
-        <TouchableOpacity onPress={handleSubmit(onSubmit)} style={styles.continueButton} disabled={isLoading || isUploading || usernameChecking || phoneChecking}>
+        <TouchableOpacity onPress={handleSubmit(onSubmit)} style={styles.continueButton} disabled={isLoading || isUploading || usernameChecking}>
           {isLoading ? <ActivityIndicator color="white" /> : <Text style={styles.continueButtonText}>Continue</Text>}
         </TouchableOpacity>
       </ScrollView>
@@ -358,6 +390,7 @@ const styles = StyleSheet.create({
   modalOption: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#F5F5F5', paddingHorizontal: 10 },
   modalOptionText: { fontSize: 18, fontFamily: 'Urbanist-SemiBold', color: '#424242' },
   readOnlyInput: { opacity: 0.6, backgroundColor: '#f0f0f0' },
+  verifyLaterNote: { color: '#757575', fontSize: 13, fontFamily: 'Urbanist-Medium', marginTop: -8, marginBottom: 20 },
 });
 
 export default FillProfile;

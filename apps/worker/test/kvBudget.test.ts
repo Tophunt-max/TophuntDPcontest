@@ -87,7 +87,7 @@ async function seed(env: TestEnv) {
   for (const uid of ['alice', 'bob']) {
     await db
       .insert(schema.users)
-      .values({ uid, username: uid, fullName: uid, dpcoin: 1000, wins: 3, xp: 10, createdAt: ts, updatedAt: ts } as any);
+      .values({ signupCompleted: true, uid, username: uid, fullName: uid, dpcoin: 1000, wins: 3, xp: 10, createdAt: ts, updatedAt: ts } as any);
   }
   await db.insert(schema.contests).values({
     id: 'c1',

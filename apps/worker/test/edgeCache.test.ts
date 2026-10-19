@@ -74,7 +74,7 @@ async function seedBattle(env: TestEnv) {
   for (const uid of ['alice', 'bob', 'carol']) {
     await db
       .insert(schema.users)
-      .values({ uid, username: uid, fullName: uid, dpcoin: 1000, createdAt: ts, updatedAt: ts } as any);
+      .values({ signupCompleted: true, uid, username: uid, fullName: uid, dpcoin: 1000, createdAt: ts, updatedAt: ts } as any);
   }
   await db.insert(schema.contestMatches).values({
     id: 'm1',
@@ -258,7 +258,7 @@ describe('the user profile cache', () => {
     const ts = Date.now();
     await drizzleOf(env)
       .insert(schema.users)
-      .values({ uid: 'dave', username: 'dave', fullName: 'Dave', dpcoin: 500, createdAt: ts, updatedAt: ts } as any);
+      .values({ signupCompleted: true, uid: 'dave', username: 'dave', fullName: 'Dave', dpcoin: 500, createdAt: ts, updatedAt: ts } as any);
   }
   const getProfile = async (env: TestEnv, id = 'dave') =>
     (await (await app.request(`/read/users/${id}`, {}, env, fakeCtx())).json()) as any;
@@ -294,7 +294,7 @@ describe('the user profile cache', () => {
     const ts = Date.now();
     await drizzleOf(env)
       .insert(schema.users)
-      .values({ uid: 'gone', username: 'gone', status: 'pending_deletion', createdAt: ts, updatedAt: ts } as any);
+      .values({ signupCompleted: true, uid: 'gone', username: 'gone', status: 'pending_deletion', createdAt: ts, updatedAt: ts } as any);
 
     const owner = await app.request('/read/users/gone', { headers: { Authorization: 'Bearer gone' } }, env, fakeCtx());
     expect((await owner.json() as any)?.uid).toBe('gone');
@@ -330,7 +330,7 @@ describe('writers purge the edge tier, not just KV', () => {
     const ts = Date.now();
     await drizzleOf(env)
       .insert(schema.users)
-      .values({
+      .values({ signupCompleted: true,
         uid: 'dave',
         username: 'dave',
         fullName: 'Dave',

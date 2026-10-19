@@ -67,6 +67,40 @@ export const SELF_SERVICE_ACTIONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Marker in the message of the error returned to a signed-in user who has not
+ * finished onboarding. The client matches on it and sends the user back to the
+ * profile form (src/lib/onboarding.ts).
+ */
+export const PROFILE_INCOMPLETE_CODE = "PROFILE_INCOMPLETE";
+
+/**
+ * `/api` actions an account may call before it has finished onboarding
+ * (`users.signup_completed`). Everything else — contests, votes, wallet, follows,
+ * chat, posting — is refused with PROFILE_INCOMPLETE.
+ *
+ * A social or phone sign-in is a real Firebase session before the profile
+ * exists, so without this gate a user who left onboarding could use the whole
+ * app with no profile (and no age check). Profile CREATION itself lives on
+ * `/auth` (`createProfile`) and the avatar upload on `/upload`, neither of which
+ * goes through this list.
+ */
+export const ONBOARDING_ALLOWED_ACTIONS: ReadonlySet<string> = new Set([
+  ...SELF_SERVICE_ACTIONS,
+  // Runs right after createProfile, so the row is complete by then; listed so a
+  // stale auth-state cache entry can never fail the last signup step.
+  "completeSignup",
+  "logoutAllDevices",
+  // Device plumbing the app shell calls as soon as anyone is signed in.
+  "registerFcmToken",
+  "unregisterFcmToken",
+  "getNotificationPrefs",
+  "updateNotificationPrefs",
+  "markNotificationsRead",
+  "markAllNotificationsRead",
+  "markAllNotificationsSeen",
+]);
+
+/**
  * `/api` actions still permitted while a deletion is pending.
  *
  * Everything else is refused. Once a user has asked to be deleted, the account

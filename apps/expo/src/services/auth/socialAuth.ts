@@ -19,6 +19,7 @@ import * as WebBrowser from 'expo-web-browser';
 import app from '../firebase/initFirebase';
 import { readApi } from '../api';
 import { useSignupStore } from '../../store/signup';
+import { isProfileComplete, markOnboardingComplete, markOnboardingIncomplete, onboardingDraftFor } from '@/src/lib/profileCompletion';
 import { reportError } from '@/src/lib/reportError';
 import { postAuthDestination } from '@/src/lib/postAuthRedirect';
 import { friendlyAuthError, isAuthCancellation } from '@/src/lib/authErrors';
@@ -124,7 +125,10 @@ async function routeAfterSignIn(
 
   // Look up the user's profile in D1 (via the Worker), keyed by uid.
   const userData: any = await readApi(`/read/users/${user.uid}`).catch(() => null);
-  const returning = !!userData && (userData.signupCompleted === true || !!userData.username);
+  // The server's flag only: a username on a half-created row is not a finished account.
+  const returning = isProfileComplete(userData);
+  if (returning) markOnboardingComplete(user.uid, userData);
+  else markOnboardingIncomplete(user.uid);
 
   // A NEW account through a method the admin switched off (or with signups
   // closed): say so now, not after the whole profile form. The Worker refuses it
@@ -144,12 +148,10 @@ async function routeAfterSignIn(
       addToast('Welcome back!', 'success');
       router.replace(postAuthDestination(redirect));
     } else {
+      signupStore.reset();
       signupStore.setMultiple({
-        ...userData,
-        fullName: userData.fullName || user.displayName || '',
-        email: userData.email || user.email || '',
-        avatarUrl: userData.avatarUrl || user.photoURL || '',
-        authProvider: (userData.authProvider || providerName.toLowerCase()) as any,
+        ...onboardingDraftFor(user, userData),
+        authProvider: providerName.toLowerCase() as any,
       });
       addToast('Please complete your profile.', 'info');
       router.replace('/auth/signup/fill-profile');

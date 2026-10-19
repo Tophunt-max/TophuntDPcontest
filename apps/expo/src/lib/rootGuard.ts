@@ -10,7 +10,8 @@
  * decision to the router. `_layout.tsx` creates one guard per mount and calls
  * `run` from its effect with the current snapshot.
  */
-import { classifyRoute, guardDecision, type GuardDecision } from './routeAccess';
+import { classifyRoute, guardDecision, routeKey, type GuardDecision } from './routeAccess';
+import { onboardingRedirect, type OnboardingStatus } from './profileCompletion';
 import { loginHref, pathWithQuery } from './authGate';
 import { postAuthDestination } from './postAuthRedirect';
 
@@ -27,6 +28,11 @@ export interface GuardSnapshot {
   segments: readonly string[];
   params: Record<string, unknown>;
   pathname: string;
+  /**
+   * Whether the signed-in user finished onboarding (src/lib/onboarding.ts).
+   * Optional so callers without it keep the previous behaviour.
+   */
+  onboarding?: OnboardingStatus;
 }
 
 export function createRootGuard() {
@@ -38,8 +44,23 @@ export function createRootGuard() {
       const justSignedIn = wasSignedIn === false && snap.signedIn;
       const justSignedOut = wasSignedIn === true && !snap.signedIn;
       wasSignedIn = snap.signedIn;
+      const access = classifyRoute(snap.segments, snap.params);
+      // Onboarding first: an unfinished account is kept on the signup steps on
+      // every navigation, reload and Back. System screens (splash, maintenance,
+      // deletion) still own their own navigation.
+      if (access !== 'system') {
+        const to = onboardingRedirect({
+          signedIn: snap.signedIn,
+          status: snap.onboarding ?? 'unknown',
+          routeKey: routeKey(snap.segments),
+        });
+        if (to) {
+          router.replace(to);
+          return { type: 'redirect', to };
+        }
+      }
       const decision = guardDecision({
-        access: classifyRoute(snap.segments, snap.params),
+        access,
         signedIn: snap.signedIn,
         authLoading: snap.loading,
         justSignedIn,

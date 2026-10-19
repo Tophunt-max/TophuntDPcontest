@@ -148,6 +148,15 @@ const publiclyVisibleUser = sql`(${schema.users.status} IS NULL OR ${schema.user
   sql`, `,
 )}))`;
 
+/**
+ * Discovery lists (suggested users, search) show only accounts that FINISHED
+ * onboarding. A signed-in user who has not completed the profile form has no
+ * real profile yet — before migration 0061 such rows were auto-created with a
+ * default bio and a username derived from the provider name, and leaked into
+ * "people to follow" for everyone.
+ */
+const discoverableUser = sql`(${publiclyVisibleUser} AND COALESCE(${schema.users.signupCompleted}, 0) = 1)`;
+
 /** The live, per-user fields that a SNAPSHOT froze and must not be trusted for. */
 interface LiveUserFields {
   /** The admin verified badge. */
@@ -1670,7 +1679,7 @@ readRoute.get("/leaderboard", optionalAuth, guestReadLimit, async (c) => {
           verified: schema.users.verified,
         })
         .from(schema.users)
-        .where(publiclyVisibleUser)
+        .where(discoverableUser)
         .orderBy(desc(orderCol))
         .limit(limit)
         .all();
@@ -2174,7 +2183,7 @@ readRoute.get("/users/suggested", optionalAuth, guestReadLimit, async (c) => {
           coordinates: schema.users.coordinates,
         })
         .from(schema.users)
-        .where(publiclyVisibleUser)
+        .where(discoverableUser)
         .limit(100)
         .all();
       return rows as any[];
@@ -2218,10 +2227,10 @@ readRoute.get("/users/search", optionalAuth, guestReadLimit, async (c) => {
       excluded.length
         ? and(
             like(schema.users.username, `${q}%`),
-            publiclyVisibleUser,
+            discoverableUser,
             notInArray(schema.users.uid, excluded),
           )
-        : and(like(schema.users.username, `${q}%`), publiclyVisibleUser),
+        : and(like(schema.users.username, `${q}%`), discoverableUser),
     )
     .limit(10)
     .all();
@@ -2548,7 +2557,9 @@ async function serveUserProfile(c: any, id: string): Promise<Response> {
     kvTtlSec: READ_CACHE_TTLS.userProfile.kv,
     load: async () => {
       const full = await loadFullProfile({ followingLimit: PUBLIC_FOLLOWING_LIMIT });
-      return { profile: full ? publicProfile(full) : null };
+      // An account that never finished onboarding has no public profile yet:
+      // to everyone else it does not exist (see discoverableUser).
+      return { profile: full && full.signupCompleted ? publicProfile(full) : null };
     },
     /**
      * Two things must never enter the shared entry.

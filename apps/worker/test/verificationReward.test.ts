@@ -104,7 +104,10 @@ async function seedConfig(env: TestEnv, appConfig: Record<string, any>) {
 
 /** A brand-new account through the real signup path (createProfile). */
 async function signup(env: TestEnv, uid: string, phone: string | null = PHONE) {
-  const res = await auth(env, uid, 'createProfile', { username: uid, fullName: uid, email: `${uid}@example.com`, phone });
+  // createProfile takes email/phone from Firebase's record of the sign-in, never
+  // from the body — so the identity under test is registered there first.
+  if (!firebaseUsers.has(uid)) firebaseUsers.set(uid, { email: `${uid}@example.com`, emailVerified: false, phoneNumber: phone });
+  const res = await auth(env, uid, 'createProfile', { username: uid, fullName: uid });
   expect(res.status).toBe(200);
 }
 
@@ -313,7 +316,7 @@ describe('idempotency, concurrency and partial failure', () => {
   it('existing (pre-feature) accounts are never enrolled or paid, even fully verified', async () => {
     const { env } = makeEnv();
     const ts = Date.now();
-    await drizzleOf(env).insert(schema.users).values({
+    await drizzleOf(env).insert(schema.users).values({ signupCompleted: true,
       uid: 'veteran', username: 'veteran', fullName: 'v', email: 'veteran@example.com', phone: PHONE,
       emailVerified: true, phoneVerified: true, dpcoin: 100, createdAt: ts, updatedAt: ts,
     } as any);
@@ -483,8 +486,8 @@ describe('admin configuration', () => {
     const audit = await drizzleOf(env).select().from(schema.adminAuditLog).all();
     expect(audit.some((a: any) => a.action === 'settings.verificationReward.update')).toBe(true);
 
-    await drizzleOf(env).insert(schema.users).values({ uid: 'mod', username: 'mod', fullName: 'm', role: 'moderator', createdAt: 1, updatedAt: 1 } as any);
-    await drizzleOf(env).insert(schema.users).values({ uid: 'joe', username: 'joe', fullName: 'j', createdAt: 1, updatedAt: 1 } as any);
+    await drizzleOf(env).insert(schema.users).values({ signupCompleted: true, uid: 'mod', username: 'mod', fullName: 'm', role: 'moderator', createdAt: 1, updatedAt: 1 } as any);
+    await drizzleOf(env).insert(schema.users).values({ signupCompleted: true, uid: 'joe', username: 'joe', fullName: 'j', createdAt: 1, updatedAt: 1 } as any);
     expect(await save(env, { completionReward: 0 }, 'mod:moderator')).toBe(403);
     expect(await save(env, { completionReward: 0 }, 'joe')).toBe(403);
   });
@@ -502,7 +505,7 @@ describe('admin configuration', () => {
     expect(body.config).toMatchObject({ registrationReward: 10, completionReward: 90, maxTotalReward: 100 });
     expect(body.stats).toMatchObject({ enrolled: 2, completed: 1, pendingEmailOnly: 1, completionCoinsCredited: 90, completionCredits: 1 });
 
-    await drizzleOf(env).insert(schema.users).values({ uid: 'mod', username: 'mod', fullName: 'm', role: 'moderator', createdAt: 1, updatedAt: 1 } as any);
+    await drizzleOf(env).insert(schema.users).values({ signupCompleted: true, uid: 'mod', username: 'mod', fullName: 'm', role: 'moderator', createdAt: 1, updatedAt: 1 } as any);
     const denied = await app.request('/admin/verification-reward', { headers: { Authorization: 'Bearer mod:moderator' } }, env, fakeCtx());
     expect(denied.status).toBe(403);
   });

@@ -29,6 +29,7 @@ import {
 } from "../../../../assets/svgs";
 import { BackButton } from "@/src/components/ui/BackButton";
 import { useSignupStore } from "../../../../src/store/signup";
+import { isProfileComplete, markOnboardingComplete, markOnboardingIncomplete, onboardingDraftFor } from "@/src/lib/profileCompletion";
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { FormInput } from "@/src/components/inputs/FormInput";
 import { PrimaryButton } from "@/src/components/buttons/PrimaryButton";
@@ -117,7 +118,8 @@ export default function PasswordLoginScreen() {
       // 3. Check Profile Status (from the Worker / D1)
       const userData: any = await readApi(`/read/users/${user.uid}`).catch(() => null);
 
-      if (userData && (userData.signupCompleted === true || userData.username)) {
+      if (isProfileComplete(userData)) {
+          markOnboardingComplete(user.uid, userData);
           addToast("Login successful!", "success");
           // Sanitised rather than used as given: this used to be
           // `router.replace(decodeURIComponent(redirect))`, so an absolute url in the
@@ -125,9 +127,10 @@ export default function PasswordLoginScreen() {
           router.replace(postAuthDestination(redirect) as any);
       } else {
           // Profile Incomplete or User Record missing
+          markOnboardingIncomplete(user.uid);
           signupStore.reset();
           signupStore.setMultiple({
-              ...userData,
+              ...onboardingDraftFor(user, userData),
               email: data.email,
               authProvider: 'email'
           });
