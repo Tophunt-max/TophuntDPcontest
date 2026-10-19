@@ -1,3 +1,4 @@
+import { Link } from "wouter";
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
@@ -43,7 +44,6 @@ const hint = "text-[11px] text-muted-foreground mt-1";
 const MANAGED_KEYS = [
   "rewardSettings",
   "verificationReward",
-  "withdrawal",
   "paymentGateway",
   "ads",
   "adminAlertEmail",
@@ -69,6 +69,11 @@ const MANAGED_KEYS = [
   "announcement",
   "features",
   "authMethods",
+  // Withdrawals & payouts and coin pricing are money settings owned ONLY by App
+  // Control. Not editable here, and never re-posted from this page — a stale copy
+  // could silently undo a payout freeze or re-price the store.
+  "withdrawal",
+  "coinPricing",
   // Server-stamped.
   "_version",
 ];
@@ -77,7 +82,6 @@ const MANAGED_KEYS = [
 const FORM_KEYS = [
   "rewardSettings",
   "verificationReward",
-  "withdrawal",
   "paymentGateway",
   "ads",
   "adminAlertEmail",
@@ -102,14 +106,6 @@ interface VerificationRewardCfg {
 interface Cfg {
   rewardSettings: { signupBonus: number; referralBonus: number };
   verificationReward: VerificationRewardCfg;
-  withdrawal: {
-    enabled: boolean;
-    payoutsFrozen: boolean;
-    minAmount: number;
-    maxAmount: number;
-    maxPerDay: number;
-    conversionRate: number;
-  };
   paymentGateway: { mode: "auto" | "manual" | "both" };
   ads: { enabled: boolean; trustClient: boolean; provider: string; reward: number; dailyCap: number };
   adminAlertEmail: string;
@@ -137,14 +133,6 @@ const DEFAULTS: Cfg = {
     maxReminders: 5,
     emailResendCooldownSec: 60,
     smsResendCooldownSec: 60,
-  },
-  withdrawal: {
-    enabled: true,
-    payoutsFrozen: false,
-    minAmount: 0,
-    maxAmount: 0,
-    maxPerDay: 0,
-    conversionRate: 1,
   },
   paymentGateway: { mode: "auto" },
   ads: { enabled: false, trustClient: false, provider: "", reward: 5, dailyCap: 10 },
@@ -264,7 +252,6 @@ export default function AppSettings() {
       ...data,
       rewardSettings: { ...DEFAULTS.rewardSettings, ...(data.rewardSettings || {}) },
       verificationReward: { ...DEFAULTS.verificationReward, ...(data.verificationReward || {}) },
-      withdrawal: { ...DEFAULTS.withdrawal, ...(data.withdrawal || {}) },
       paymentGateway: { ...DEFAULTS.paymentGateway, ...(data.paymentGateway || {}) },
       ads: { ...DEFAULTS.ads, ...(data.ads || {}) },
       socialLinks: { ...DEFAULTS.socialLinks, ...(data.socialLinks || {}) },
@@ -310,7 +297,6 @@ export default function AppSettings() {
   const num = (v: string) => (v === "" ? 0 : Number(v));
   const vr = cfg.verificationReward;
   const setVr = (patch: Partial<VerificationRewardCfg>) => setCfg({ ...cfg, verificationReward: { ...vr, ...patch } });
-  const cashPreview = cfg.withdrawal.minAmount * cfg.withdrawal.conversionRate;
 
   return (
     <div>
@@ -460,71 +446,12 @@ export default function AppSettings() {
           </p>
         </Section>
 
-        {/* ---- Withdrawals ---- */}
-        <Section icon={Banknote} title="Withdrawals & payouts" blurb="Limits enforced server-side on every request.">
-          <Toggle
-            checked={cfg.withdrawal.enabled}
-            onChange={(v) => setCfg({ ...cfg, withdrawal: { ...cfg.withdrawal, enabled: v } })}
-            title="Withdrawals enabled"
-            description="Turn off to hide the payout flow entirely."
-          />
-          <Toggle
-            danger
-            checked={cfg.withdrawal.payoutsFrozen}
-            onChange={(v) => setCfg({ ...cfg, withdrawal: { ...cfg.withdrawal, payoutsFrozen: v } })}
-            title="Freeze payouts (emergency)"
-            description="Blocks all new payout requests immediately without disabling the feature. Use during a suspected-fraud incident."
-          />
-          <div className="grid grid-cols-2 gap-3 mt-3">
-            <div>
-              <label className={label}>Minimum per request</label>
-              <input
-                type="number"
-                min={0}
-                value={cfg.withdrawal.minAmount}
-                onChange={(e) => setCfg({ ...cfg, withdrawal: { ...cfg.withdrawal, minAmount: num(e.target.value) } })}
-                className={field}
-              />
-            </div>
-            <div>
-              <label className={label}>Maximum per request</label>
-              <input
-                type="number"
-                min={0}
-                value={cfg.withdrawal.maxAmount}
-                onChange={(e) => setCfg({ ...cfg, withdrawal: { ...cfg.withdrawal, maxAmount: num(e.target.value) } })}
-                className={field}
-              />
-              <p className={hint}>0 = no limit (not recommended).</p>
-            </div>
-            <div>
-              <label className={label}>Maximum per 24 hours</label>
-              <input
-                type="number"
-                min={0}
-                value={cfg.withdrawal.maxPerDay}
-                onChange={(e) => setCfg({ ...cfg, withdrawal: { ...cfg.withdrawal, maxPerDay: num(e.target.value) } })}
-                className={field}
-              />
-              <p className={hint}>Rolling window across all requests. 0 = no limit.</p>
-            </div>
-            <div>
-              <label className={label}>Coins → ₹ rate</label>
-              <input
-                type="number"
-                min={0}
-                step="0.01"
-                value={cfg.withdrawal.conversionRate}
-                onChange={(e) =>
-                  setCfg({ ...cfg, withdrawal: { ...cfg.withdrawal, conversionRate: num(e.target.value) } })
-                }
-                className={field}
-              />
-              <p className={hint}>
-                {cfg.withdrawal.minAmount} coins = ₹{cashPreview.toFixed(2)}. Ye payout rate hai; package ka daam App Control → Coin Pricing ke Buy rate se banta hai.
-              </p>
-            </div>
-          </div>
+        {/* ---- Withdrawals: owned by App Control ---- */}
+        <Section icon={Banknote} title="Withdrawals & payouts" blurb="Ab sirf App Control mein.">
+          <p className="text-sm text-muted-foreground">
+            Withdrawal on/off, emergency freeze, limits, payout rate aur coin package ka Buy rate{" "}
+            <Link href="/app-control" className="font-semibold text-foreground underline">App Control</Link> mein set hote hain.
+          </p>
         </Section>
 
         {/* ---- Rewarded ads ---- */}
