@@ -35,6 +35,8 @@ vi.mock('../src/lib/email', () => ({
   emailConfigured: async () => true,
 }));
 vi.mock('../src/lib/firebaseAdmin', () => ({
+  // createProfile reads email/phone from Firebase's record, not the body.
+  lookupAuthUser: async (_env: unknown, uid: string) => ({ email: `${uid}@example.com`, emailVerified: false, phoneNumber: null }),
   revokeRefreshTokens: async () => undefined,
   createAuthUser: async (_e: unknown, input: any) => {
     authCalls.push({ fn: 'createAuthUser', arg: input });
@@ -218,7 +220,7 @@ describe('server enforcement of sign-up switches', () => {
   it('signups closed: a known number still signs in by phone, an unknown one is refused after the code', async () => {
     const { env } = makeEnv();
     const ts = Date.now();
-    await drizzleOf(env).insert(schema.users).values({ uid: 'known', username: 'known', phone: '+919876543210', status: 'active', signupCompleted: true, createdAt: ts, updatedAt: ts } as any);
+    await drizzleOf(env).insert(schema.users).values({ signupCompleted: true, uid: 'known', username: 'known', phone: '+919876543210', status: 'active', signupCompleted: true, createdAt: ts, updatedAt: ts } as any);
     await setMethods(env, { signupsEnabled: false });
 
     await auth(env, 'sendPhoneLoginOtp', { phone: '+919876543210' });

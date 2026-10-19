@@ -65,7 +65,7 @@ async function seed(env: TestEnv, opts: { expiresAt?: number; status?: string } 
   // 'fresh' was created just now.
   for (const uid of ['alice', 'bob', 'r1', 'r2', 'r3', 'r4', 'fresh']) {
     const createdAt = uid === 'fresh' ? ts : ts - 2 * 86_400_000;
-    await db.insert(schema.users).values({ uid, username: uid, fullName: uid, dpcoin: 100, createdAt, updatedAt: ts } as any);
+    await db.insert(schema.users).values({ signupCompleted: true, uid, username: uid, fullName: uid, dpcoin: 100, createdAt, updatedAt: ts } as any);
   }
   await db.insert(schema.contestMatches).values({
     id: 'm1',

@@ -107,7 +107,7 @@ beforeEach(async () => {
   const ts = Date.now();
   await drizzleOf(env)
     .insert(schema.users)
-    .values({ uid: 'poster', username: 'poster', fullName: 'Poster', dpcoin: 0, createdAt: ts, updatedAt: ts } as any);
+    .values({ signupCompleted: true, uid: 'poster', username: 'poster', fullName: 'Poster', dpcoin: 0, createdAt: ts, updatedAt: ts } as any);
 });
 
 afterEach(() => {

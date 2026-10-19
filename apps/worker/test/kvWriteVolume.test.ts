@@ -61,7 +61,7 @@ async function seedFeed(env: TestEnv) {
   for (const uid of ['alice', 'bob']) {
     await db
       .insert(schema.users)
-      .values({ uid, username: uid, fullName: uid, dpcoin: 1000, createdAt: ts, updatedAt: ts } as any);
+      .values({ signupCompleted: true, uid, username: uid, fullName: uid, dpcoin: 1000, createdAt: ts, updatedAt: ts } as any);
   }
   for (const [id, a, b] of [
     ['m1', 'alice', 'bob'],

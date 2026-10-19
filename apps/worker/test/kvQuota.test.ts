@@ -39,7 +39,7 @@ beforeEach(() => {
 
 async function seedUser(env: TestEnv, uid: string, extra: Record<string, any> = {}) {
   const ts = Date.now();
-  await drizzleOf(env).insert(schema.users).values({ uid, username: uid, fullName: uid, createdAt: ts, updatedAt: ts, ...extra } as any);
+  await drizzleOf(env).insert(schema.users).values({ signupCompleted: true, uid, username: uid, fullName: uid, createdAt: ts, updatedAt: ts, ...extra } as any);
 }
 async function get(env: TestEnv, uid: string) {
   const res = await app.request('/read/notifications/unread-count', { headers: { Authorization: `Bearer ${uid}` } }, env, fakeCtx());

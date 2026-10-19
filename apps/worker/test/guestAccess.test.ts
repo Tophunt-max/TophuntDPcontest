@@ -53,7 +53,7 @@ async function api(env: TestEnv, action: string, data: any = {}, token?: string)
 
 async function seedUser(env: TestEnv, uid: string, extra: Record<string, any> = {}) {
   const ts = Date.now();
-  await drizzleOf(env).insert(schema.users).values({
+  await drizzleOf(env).insert(schema.users).values({ signupCompleted: true,
     uid, username: uid, fullName: `${uid} full`, email: `${uid}@mail.test`, phone: `+91${String(++phoneSeq).padStart(10, '9')}`,
     dpcoin: 500, createdAt: ts, updatedAt: ts, ...extra,
   } as any);

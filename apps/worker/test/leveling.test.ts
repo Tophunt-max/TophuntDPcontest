@@ -37,7 +37,7 @@ async function seedUser(env: TestEnv, uid: string, xp: number, storedLevel: numb
   const ts = Date.now();
   await drizzleOf(env)
     .insert(schema.users)
-    .values({
+    .values({ signupCompleted: true,
       uid,
       username: uid,
       fullName: uid,

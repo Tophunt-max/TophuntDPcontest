@@ -73,7 +73,7 @@ async function seedUsersAndBattle(env: TestEnv) {
   const ts = Date.now();
   const db = drizzleOf(env);
   for (const uid of ['alice', 'bob', 'carol']) {
-    await db.insert(schema.users).values({ uid, username: uid, fullName: uid, createdAt: ts, updatedAt: ts } as any);
+    await db.insert(schema.users).values({ signupCompleted: true, uid, username: uid, fullName: uid, createdAt: ts, updatedAt: ts } as any);
   }
   await db.insert(schema.contestMatches).values({
     id: 'm1',

@@ -57,6 +57,19 @@ Worker already rate-limits these, but App Check stops bots earlier.
   forgot-password; server-side password policy; 6-digit phone-reset OTP;
   resumable multi-step signup (password never persisted to disk).
 
+### Onboarding is the only way an account is created
+
+Social and phone sign-ins are real Firebase sessions BEFORE the profile exists. A user who left "Fill your profile" (Back, reload, deep link) used to end up with a half-made account. These rules prevent that:
+
+- **One creator.** Only `createProfile` / `create` (`createUserProfile`) insert a `users` row and set `signup_completed`. `updateProfile` no longer upserts. `signupCompleted` and `authProvider` are not client-writable.
+- **Server gate.** Until onboarding is done, `/api` refuses every action outside `ONBOARDING_ALLOWED_ACTIONS` (lib/accountStatus.ts) with `PROFILE_INCOMPLETE` (412). Staff tokens are exempt.
+- **Client guard.** `src/lib/profileCompletion.ts` and the root guard keep an unfinished user on the signup steps on every navigation. Any `PROFILE_INCOMPLETE` answer flips the guard back. Back on the form asks "Signup cancel karein?" and signs the user out.
+- **Completeness = `signup_completed` only.** Having a username no longer counts.
+  - Migration 0061 backfilled the flag for real accounts.
+  - Rows the old client auto-created (default bio, no DOB, no gender) stay incomplete. Their owners finish onboarding on next use and get the welcome grant then.
+- **Discovery.** Suggested users, search and the leaderboard list finished accounts only. To everyone else, an unfinished profile reads as "not found".
+- **Email and phone are not collected in onboarding.** `createProfile` takes them from Firebase's record of the sign-in: a provider-verified email, or the number a phone-OTP sign-in proved. Anything else is added and verified later from Edit Profile.
+
 ## 🟡 Recommended follow-ups (not yet done)
 
 - Native social login via `expo-auth-session` / Apple auth (currently guarded

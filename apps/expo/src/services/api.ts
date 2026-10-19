@@ -2,6 +2,7 @@ import { AppState } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import { signOut } from 'firebase/auth';
 import { auth } from './firebase/initFirebase';
+import { markOnboardingIncomplete, PROFILE_INCOMPLETE_CODE } from '../lib/profileCompletion';
 import { emitToast } from '@/src/lib/toastBridge';
 
 /**
@@ -361,6 +362,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<R
           }
         });
         const status = (json?.error?.status || 'INTERNAL').toLowerCase().replace(/_/g, '-');
+        // The server says this account has not finished onboarding: tell the root
+        // guard, which sends the user back to the profile form (src/lib/profileCompletion.ts).
+        if (res.status === 412 && auth.currentUser && String(json?.error?.message || '').includes(PROFILE_INCOMPLETE_CODE)) {
+          markOnboardingIncomplete(auth.currentUser.uid);
+        }
         throw new ApiCallError(
           `functions/${status}`,
           json?.error?.message || `Request failed (${res.status})`,

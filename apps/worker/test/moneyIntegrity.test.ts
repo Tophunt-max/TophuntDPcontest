@@ -23,6 +23,8 @@ vi.mock('../src/lib/firebaseAuth', () => ({
 // Firebase Admin is only reachable from a deployed worker. Account deletion calls
 // deleteAuthUser; nothing here asserts on it.
 vi.mock('../src/lib/firebaseAdmin', () => ({
+  // createProfile reads email/phone from Firebase's record, not the body.
+  lookupAuthUser: async (_env: unknown, uid: string) => ({ email: `${uid}@example.com`, emailVerified: false, phoneNumber: null }),
   // Session revocation calls this; without it the mock throws on property access.
   revokeRefreshTokens: async () => undefined,
   deleteAuthUser: async () => undefined,
@@ -74,7 +76,7 @@ async function seedUser(env: TestEnv, uid: string, dpcoin = 0, extra: Record<str
   const ts = Date.now();
   await drizzleOf(env)
     .insert(schema.users)
-    .values({ uid, username: uid, fullName: uid, dpcoin, createdAt: ts, updatedAt: ts, ...extra } as any);
+    .values({ signupCompleted: true, uid, username: uid, fullName: uid, dpcoin, createdAt: ts, updatedAt: ts, ...extra } as any);
 }
 
 async function getUser(env: TestEnv, uid: string) {

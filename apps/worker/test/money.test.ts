@@ -34,7 +34,7 @@ async function call(env: TestEnv, uid: string, action: string, data: any = {}, r
 async function seedUser(env: TestEnv, uid: string, dpcoin = 0, extra: Record<string, any> = {}) {
   const db = drizzleOf(env);
   const ts = Date.now();
-  await db.insert(schema.users).values({ uid, username: uid, fullName: uid, dpcoin, createdAt: ts, updatedAt: ts, ...extra } as any);
+  await db.insert(schema.users).values({ signupCompleted: true, uid, username: uid, fullName: uid, dpcoin, createdAt: ts, updatedAt: ts, ...extra } as any);
 }
 
 async function getUser(env: TestEnv, uid: string) {

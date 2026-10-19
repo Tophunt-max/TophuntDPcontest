@@ -64,7 +64,7 @@ async function seedUser(env: TestEnv, uid: string, extra: Record<string, any> = 
   const ts = Date.now();
   await drizzleOf(env)
     .insert(schema.users)
-    .values({ uid, username: uid, fullName: uid, status: 'active', dpcoin: 1000, createdAt: ts, updatedAt: ts, ...extra } as any);
+    .values({ signupCompleted: true, uid, username: uid, fullName: uid, status: 'active', dpcoin: 1000, createdAt: ts, updatedAt: ts, ...extra } as any);
 }
 
 async function seedMatch(env: TestEnv, id: string, uidA: string, uidB: string, extra: Record<string, any> = {}) {

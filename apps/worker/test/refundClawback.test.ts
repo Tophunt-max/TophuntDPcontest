@@ -37,7 +37,7 @@ async function seedUser(env: TestEnv, uid: string, dpcoin = 0) {
   const ts = Date.now();
   await drizzleOf(env)
     .insert(schema.users)
-    .values({ uid, username: uid, fullName: uid, dpcoin, createdAt: ts, updatedAt: ts } as any);
+    .values({ signupCompleted: true, uid, username: uid, fullName: uid, dpcoin, createdAt: ts, updatedAt: ts } as any);
 }
 
 const balanceOf = async (env: TestEnv, uid: string) =>

@@ -47,6 +47,8 @@ vi.mock('../src/lib/voteCounter', () => ({
   getViewerVote: async () => ({ hasVoted: false, votedForUid: null }),
 }));
 vi.mock('../src/lib/firebaseAdmin', () => ({
+  // createProfile reads email/phone from Firebase's record, not the body.
+  lookupAuthUser: async (_env: unknown, uid: string) => ({ email: `${uid}@example.com`, emailVerified: false, phoneNumber: null }),
   // Session revocation calls this; without it the mock throws on property access.
   revokeRefreshTokens: async () => undefined,
   deleteAuthUser: async () => undefined,
@@ -67,7 +69,7 @@ async function seedUser(env: TestEnv, uid: string, username: string, extra: Reco
   const ts = Date.now();
   await drizzleOf(env)
     .insert(schema.users)
-    .values({
+    .values({ signupCompleted: true,
       uid,
       username,
       fullName: uid,

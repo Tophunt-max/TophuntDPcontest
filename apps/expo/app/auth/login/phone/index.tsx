@@ -24,6 +24,7 @@ import { callApi, readApi } from "../../../../src/services/api";
 import { reportError } from "@/src/lib/reportError";
 import { postAuthDestination } from "@/src/lib/postAuthRedirect";
 import { useSignupStore } from "../../../../src/store/signup";
+import { isProfileComplete, markOnboardingComplete, markOnboardingIncomplete, onboardingDraftFor } from "@/src/lib/profileCompletion";
 import { CountryPicker } from "react-native-country-codes-picker";
 import { Ionicons } from "@/src/lib/icons";
 import { useAuthMethods } from "@/src/hooks/useAuthMethods";
@@ -119,7 +120,8 @@ export default function PhoneLoginScreen() {
 
       if (userData) {
         // Check if profile is actually complete (has username or flag)
-        if (userData.signupCompleted === true || userData.username) {
+        if (isProfileComplete(userData)) {
+          markOnboardingComplete(user.uid, userData);
           addToast("Welcome back!", "success");
           // Honour the link the visitor followed. Phone is the dominant sign-in method
           // here, and this branch used to hard-code `/home` — so a shared `/@handle`
@@ -127,8 +129,10 @@ export default function PhoneLoginScreen() {
           router.replace(postAuthDestination(redirect) as any);
         } else {
           // Found user but profile incomplete
+          markOnboardingIncomplete(user.uid);
+          reset();
           setMultiple({
-            ...userData,
+            ...onboardingDraftFor(user, userData),
             phone: normalizedPhone,
             authProvider: 'phone'
           });
@@ -137,7 +141,7 @@ export default function PhoneLoginScreen() {
         }
       } else {
         // NEW USER - Absolutely no record found
-        console.log("New User detected:", normalizedPhone);
+        markOnboardingIncomplete(user.uid);
         reset();
         setMultiple({
             phone: normalizedPhone,

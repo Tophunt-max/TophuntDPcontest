@@ -13,6 +13,7 @@ import {
   unmuteUserService,
 } from '../services/users';
 import { bumpSocialGraphVersion } from '../lib/socialGraphVersion';
+import { isProfileComplete, markOnboardingIncomplete, PROFILE_INCOMPLETE_CODE } from '../lib/profileCompletion';
 import { followStateFromResult, type FollowIntent, type FollowState, type ToggleFollowResult } from '../lib/followState';
 
 /**
@@ -27,6 +28,9 @@ export const useProfile = (userId: string) => {
       if (!userId) throw new Error("No User ID");
 
       const raw: any = await readApi(`/read/users/${userId}`);
+      // My own row exists but onboarding is unfinished (a half-created account):
+      // the root guard takes me back to the profile form.
+      if (raw && currentUser && currentUser.uid === userId && !isProfileComplete(raw)) markOnboardingIncomplete(userId);
       if (raw) {
         // The Worker returns a flat user row (lowercase dpcoin, top-level
         // wins/contestsJoined/totalVotesReceived). Map it into the UserProfile
@@ -45,23 +49,15 @@ export const useProfile = (userId: string) => {
         } as UserProfile;
       }
 
-      // Self with no profile row yet -> create a default one.
+      // Self with no profile row: onboarding was never finished. This used to
+      // AUTO-CREATE a profile with made-up defaults (bio "Hi there! I am new
+      // here.", a username derived from the provider name), which is how leaving
+      // the signup form with Back produced a full account with no age check.
+      // Accounts are created only by the signup steps (`createProfile`); hand the
+      // user back to them instead.
       if (currentUser && currentUser.uid === userId) {
-        const newProfile: any = {
-          username:
-            currentUser.displayName?.replace(/\s+/g, '').toLowerCase() || `user_${userId.slice(0, 5)}`,
-          fullName: currentUser.displayName || 'New User',
-          avatarUrl: currentUser.photoURL || '',
-          bio: 'Hi there! I am new here.',
-          isPrivate: false,
-        };
-        await callApi('updateProfile', newProfile);
-        return {
-          uid: userId,
-          email: currentUser.email || '',
-          ...newProfile,
-          profileImageUrl: newProfile.avatarUrl,
-        } as UserProfile;
+        markOnboardingIncomplete(userId);
+        throw new Error(`${PROFILE_INCOMPLETE_CODE}: Finish creating your profile to continue.`);
       }
 
       throw new Error("User profile not found");

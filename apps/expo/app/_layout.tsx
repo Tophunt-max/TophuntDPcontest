@@ -22,6 +22,13 @@ import customParseFormat from 'dayjs/plugin/customParseFormat';
 import calendar from 'dayjs/plugin/calendar';
 import utc from 'dayjs/plugin/utc';
 import { createRootGuard } from '@/src/lib/rootGuard';
+import {
+  onboardingSnapshot,
+  onboardingStatusFor,
+  refreshOnboarding,
+  resetOnboarding,
+  subscribeOnboarding,
+} from '@/src/lib/profileCompletion';
 import { useAppControl, useViewer } from '@/src/hooks/useAppControl';
 import { allowedDuringMaintenance, featureForRoute, featureOn } from '@/src/lib/appControl';
 import { LiveAppConfig } from '@/src/components/system/LiveAppConfig';
@@ -70,7 +77,7 @@ import { OfflineBanner } from '@/src/components/ui/OfflineBanner';
 import { PhoneFrame } from '@/src/components/layout/PhoneFrame';
 import { emitToast } from '@/src/lib/toastBridge';
 import { reportError } from '@/src/lib/reportError';
-import { readApi } from '@/src/services/api';
+import { readApi, readApiLive } from '@/src/services/api';
 import { configureVideoCache } from '@/src/lib/videoCache';
 import { hydrateThemePreference } from '@/src/lib/themePreference';
 
@@ -323,11 +330,25 @@ function RootLayoutNav() {
   // One guard per mount; it remembers the previous signed-in state (see
   // src/lib/rootGuard.ts, which is where this behaviour is tested).
   const guardRef = React.useRef(createRootGuard());
+  // Onboarding status of the signed-in user (src/lib/profileCompletion.ts): resolved
+  // from the server whenever the account changes, and flipped back to
+  // "incomplete" by any PROFILE_INCOMPLETE answer (services/api.ts).
+  const onboardingState = React.useSyncExternalStore(subscribeOnboarding, onboardingSnapshot, onboardingSnapshot);
+  const onboarding = onboardingStatusFor(user?.uid);
+  useEffect(() => {
+    if (loading) return;
+    if (!user) {
+      resetOnboarding();
+      return;
+    }
+    void refreshOnboarding(user.uid, (uid) => readApiLive(`/read/users/${encodeURIComponent(uid)}`));
+  }, [user?.uid, loading]);
   useEffect(() => {
     guardRef.current.run(
       {
         signedIn: !!user,
         loading,
+        onboarding,
         segments: segments as string[],
         params: globalParams as Record<string, unknown>,
         pathname,
@@ -338,7 +359,7 @@ function RootLayoutNav() {
         canGoBack: () => router.canGoBack(),
       },
     );
-  }, [user, loading, segments, pathname, globalParams]);
+  }, [user, loading, segments, pathname, globalParams, onboarding, onboardingState]);
 
   useEffect(() => {
     // Register for push notifications only when user is logged in

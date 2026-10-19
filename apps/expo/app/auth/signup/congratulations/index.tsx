@@ -22,6 +22,7 @@ import { uploadToR2 } from "@/src/lib/uploadToR2";
 import { optimizeImageForUpload } from '@/src/lib/imageOptimize';
 import { signInWithEmailAndPassword, sendEmailVerification } from "firebase/auth";
 import { designWidth } from "@/src/lib/layout";
+import { markOnboardingComplete } from "@/src/lib/profileCompletion";
 
 export default function CongratulationsScreen() {
   const router = useRouter();
@@ -57,10 +58,14 @@ export default function CongratulationsScreen() {
     const finalizeSignup = async () => {
       if (hasFinalized.current) return;
       hasFinalized.current = true;
+      let createdByEmail = false;
       try {
         console.log("Finalizing signup for provider:", signupData.authProvider);
 
-        if (signupData.authProvider === 'email') {
+        // Already signed in (social, phone, or an email account resuming an
+        // unfinished profile) -> complete THIS account with createProfile.
+        // Only a brand-new email signup (not signed in yet) creates one.
+        if (signupData.authProvider === 'email' && !auth.currentUser) {
             if (!signupData.email || !signupData.password || !signupData.username) {
                 throw new Error("Missing user data. Please restart the signup process.");
             }
@@ -78,6 +83,7 @@ export default function CongratulationsScreen() {
                 throw new Error(result.message || "An unknown error occurred on the server.");
             }
 
+            createdByEmail = true;
             setStatusMessage("Signing you in...");
             const cred = await signInWithEmailAndPassword(auth, signupData.email, signupData.password);
 
@@ -124,17 +130,34 @@ export default function CongratulationsScreen() {
             const avatarUrl = await resolveAvatarUrl();
 
             setStatusMessage("Saving your profile details...");
-            // Using Consolidated API for Profile Creation
-            const result: any = await callApi('createProfile', { 
-                ...signupData,
+            // Email and phone are NOT sent: the server takes them from the
+            // verified sign-in itself; anything else is added + verified later.
+            const { email: _email, phone: _phone, password: _pw, following: _f, ...profileFields } = signupData as any;
+            const result: any = await callApi('createProfile', {
+                ...profileFields,
                 avatarUrl: avatarUrl ?? null,
                 platform: Platform.OS,
-                uid: auth.currentUser?.uid
             });
 
             if (result.status !== 'success') {
                 throw new Error(result.message || "Failed to save profile.");
             }
+        }
+
+        // The account now exists: tell the root guard, so it stops holding the
+        // user on the signup steps (src/lib/profileCompletion.ts).
+        if (auth.currentUser) markOnboardingComplete(auth.currentUser.uid);
+
+        // Social/phone signups: apply the "Follow someone" picks now that the
+        // profile exists (email signups did this above, after signing in).
+        if (!(signupData.authProvider === 'email' && createdByEmail)) {
+          for (const targetUserId of signupData.following || []) {
+            try {
+              await callApi("toggleFollow", { targetUserId, intent: "follow" });
+            } catch (followErr) {
+              console.warn("follow apply failed for", targetUserId, followErr);
+            }
+          }
         }
 
         // Generate the user's referral code + apply an inbound referral bonus

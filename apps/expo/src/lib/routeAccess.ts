@@ -31,6 +31,11 @@ export type RouteAccess =
 
 const key = (segments: readonly string[]) => segments.filter((s) => s && !(s.startsWith('(') && s.endsWith(')'))).join('/');
 
+/** The TABLE key for a route (groups and a trailing `index` removed). */
+export function routeKey(segments: readonly string[]): string {
+  return key(normalise(segments));
+}
+
 /** Exact segment paths. Groups like `(tabs)` are ignored. */
 const TABLE: Record<string, RouteAccess> = {
   // System

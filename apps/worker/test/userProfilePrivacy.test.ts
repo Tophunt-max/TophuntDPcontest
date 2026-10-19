@@ -129,7 +129,7 @@ async function seedAlice(env: TestEnv, extra: Record<string, any> = {}) {
   const ts = Date.now();
   await drizzleOf(env)
     .insert(schema.users)
-    .values({
+    .values({ signupCompleted: true,
       uid: 'alice',
       username: 'alice',
       fullName: 'Alice Example',
@@ -160,7 +160,7 @@ async function seedAlice(env: TestEnv, extra: Record<string, any> = {}) {
     } as any);
   await drizzleOf(env)
     .insert(schema.users)
-    .values({ uid: 'bob', username: 'bob', fullName: 'Bob', createdAt: ts, updatedAt: ts } as any);
+    .values({ signupCompleted: true, uid: 'bob', username: 'bob', fullName: 'Bob', createdAt: ts, updatedAt: ts } as any);
 }
 
 const getProfile = async (env: TestEnv, viewer: string | null, id = 'alice') => {
@@ -385,7 +385,7 @@ describe('/read/users/suggested does not disclose a home address', () => {
     await seedAlice(env, { coordinates: null });
     await drizzleOf(env)
       .insert(schema.users)
-      .values({
+      .values({ signupCompleted: true,
         uid: 'carol',
         username: 'carol',
         coordinates: { lat: 'nonsense' },

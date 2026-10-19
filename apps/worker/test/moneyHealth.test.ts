@@ -15,7 +15,7 @@ import { schema } from '../src/db';
 
 /** Seed a user with a balance and (optionally) matching ledger rows. */
 async function user(db: ReturnType<typeof drizzleOf>, uid: string, dpcoin: number) {
-  await db.insert(schema.users).values({ uid, dpcoin, createdAt: Date.now(), updatedAt: Date.now() } as any).run();
+  await db.insert(schema.users).values({ signupCompleted: true, uid, dpcoin, createdAt: Date.now(), updatedAt: Date.now() } as any).run();
 }
 async function ledger(db: ReturnType<typeof drizzleOf>, uid: string, amount: number, type = 'admin_adjust') {
   await db.insert(schema.coinTransactions).values({
