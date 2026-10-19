@@ -169,7 +169,6 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
   const [submittingForUid, setSubmittingForUid] = useState<string | null>(null);
   const [hasVoted, setHasVoted] = useState(!!item.hasVoted);
   const [votedForUid, setVotedForUid] = useState<string | null>(item.votedForUid || null);
-  const [winnerUid, setWinnerUid] = useState<string | null>(item.winnerUid || null);
 
   // Animation values
   const heartScale = useSharedValue(0);
@@ -224,7 +223,6 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
     setMatchStatus(data.status || 'active');
     if (typeof data.hasVoted === 'boolean') setHasVoted(data.hasVoted);
     if ('votedForUid' in data) setVotedForUid(data.votedForUid || null);
-    if ('winnerUid' in data) setWinnerUid(data.winnerUid || null);
     // Keep the viewer's own like/bookmark state in sync (survives refresh).
     if (typeof data.isLiked === 'boolean') setIsLiked(data.isLiked);
     if (typeof data.isBookmarked === 'boolean') setIsBookmarked(data.isBookmarked);
@@ -260,7 +258,6 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
             case 'match_status':
               applyTally(Number(event.votesA || 0), Number(event.votesB || 0));
               if (event.type === 'match_status' && event.status) setMatchStatus(String(event.status));
-              if (event.type === 'match_status') setWinnerUid(event.winnerUid ?? null);
               break;
             case 'like':
               if (typeof event.likeCount === 'number') setLikeCount(event.likeCount);
@@ -560,17 +557,16 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
   const votedForA = votedForUid === item.userA.uid;
   const votedForB = votedForUid === item.userB?.uid;
 
-  // Completed-battle result. Winner = declared winnerUid, else the higher tally.
-  const isCompleted = matchStatus === 'completed';
-  const winnerSide: 'A' | 'B' | null =
-    winnerUid === item.userA.uid ? 'A'
-    : winnerUid === item.userB?.uid ? 'B'
-    : isCompleted ? (votesA > votesB ? 'A' : votesB > votesA ? 'B' : null) : null;
-  const isTie = isCompleted && !winnerSide;
-  const winnerName = winnerSide === 'A' ? nameA : winnerSide === 'B' ? nameB : null;
-  // Visual highlight: the winner once finished, otherwise the live leader.
-  const aWins = isCompleted ? winnerSide === 'A' : isALeading;
-  const bWins = isCompleted ? winnerSide === 'B' : isBLeading;
+  // Finished battle ('ended' is the legacy spelling of 'completed').
+  const isCompleted = matchStatus === 'completed' || matchStatus === 'ended';
+  // The live tally (meter, percentages, vote counts, leader crown) is shown ONLY
+  // while voting is open. Once the deadline passes the card reveals nothing about
+  // who is ahead or who won — the votes, the winner and the prize are revealed on
+  // the result page (app/battle/[id]/result.tsx), which "View Result" opens.
+  const showTally = !votingClosed;
+  // Visual highlight of the live leader, while voting is open only.
+  const aWins = showTally && isALeading;
+  const bWins = showTally && isBLeading;
 
   // Null when the user has no photo — <Avatar> renders local initials.
   // profilePicThumb / mediaUrlOptimized come from the Worker's enrichMatchMedia
@@ -736,7 +732,8 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
         </Animated.View>
       </Pressable>
 
-      {/* Battle meter */}
+      {/* Battle meter — live battles only (see showTally) */}
+      {showTally && (
       <View
         style={styles.pollInfoSection}
         accessible
@@ -780,7 +777,10 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
         </View>
       </View>
 
-      {/* Live vote counts, placed right above the vote buttons */}
+      )}
+
+      {/* Live vote counts, placed right above the vote buttons — live battles only */}
+      {showTally && (
       <View style={styles.voteCountRow}>
         <View style={styles.voteCountItem}>
           <Ionicons name="flame" size={13} color="#FF4D67" />
@@ -793,6 +793,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
           <Text style={[styles.voteCountLabel, { color: subTextColor }]}>votes</Text>
         </View>
       </View>
+      )}
 
       {/* Deadline passed, result being declared (normally seconds). */}
       {isPendingResult && (
@@ -804,27 +805,23 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
         </View>
       )}
 
-      {/* Finished battle → "Contest Ended", the result and the way into it. */}
+      {/* Finished battle → "Contest Ended" and the way into the result. The card
+          itself does not say who won: winner, votes and prize are revealed on the
+          result page. */}
       {isCompleted && (
         <View style={styles.resultSection}>
           <Text style={[styles.endedLabel, { color: subTextColor }]}>🏁 CONTEST ENDED</Text>
           <Pressable
             onPress={openResult}
             accessibilityRole="button"
-            accessibilityLabel={isTie ? 'It is a tie. View result' : `Winner ${winnerName}. View result`}
-            style={({ pressed }) => [styles.resultBanner, isTie ? styles.resultTie : styles.resultWin, pressed && { opacity: 0.85 }]}
+            accessibilityLabel="Result declared. View result to see the winner, votes and prize"
+            style={({ pressed }) => [styles.resultBanner, styles.resultTeaser, pressed && { opacity: 0.85 }]}
           >
-            {isTie ? (
-              <>
-                <Ionicons name="hand-left" size={16} color="#8A6D00" />
-                <Text style={styles.resultTieText}>It&apos;s a tie!</Text>
-              </>
-            ) : (
-              <>
-                <MaterialCommunityIcons name="crown" size={16} color="#FFF" />
-                <Text style={styles.resultWinText} numberOfLines={1}>Winner: {winnerName}</Text>
-              </>
-            )}
+            <MaterialCommunityIcons name="trophy" size={18} color="#8A5A00" />
+            <View style={styles.resultTeaserTextWrap}>
+              <Text style={styles.resultTeaserTitle} numberOfLines={1}>Result declare ho gaya! Kaun jeeta?</Text>
+              <Text style={styles.resultTeaserSub} numberOfLines={1}>Winner, votes aur prize — View Result mein</Text>
+            </View>
           </Pressable>
           <TouchableOpacity onPress={openResult} activeOpacity={0.85} accessibilityRole="button" accessibilityLabel="View result">
             <LinearGradient colors={['#FF4D67', '#FF8A4D']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.viewResultBtn}>
@@ -837,7 +834,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
       )}
 
       {/* Vote buttons (hidden once voting is over) */}
-      {!isCompleted && !isPendingResult && (
+      {showTally && (
       <View style={styles.voteButtonSection}>
         <AnimatedTouchable
           style={[
@@ -1018,10 +1015,10 @@ const styles = StyleSheet.create({
   voteButtonSection: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, marginTop: 8, gap: 12 },
   resultSection: { paddingHorizontal: 16, marginTop: 8 },
   resultBanner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, minHeight: 46, borderRadius: 16, paddingHorizontal: 12 },
-  resultWin: { backgroundColor: '#22A559' },
-  resultWinText: { fontFamily: 'Urbanist-Bold', fontSize: 14, color: '#FFF', flexShrink: 1 },
-  resultTie: { backgroundColor: '#FFE68A', borderWidth: 1, borderColor: '#FFD700' },
-  resultTieText: { fontFamily: 'Urbanist-Bold', fontSize: 14, color: '#8A6D00' },
+  resultTeaser: { backgroundColor: '#FFF4C2', borderWidth: 1, borderColor: '#FFD700', justifyContent: 'flex-start', paddingVertical: 8 },
+  resultTeaserTextWrap: { flex: 1, minWidth: 0 },
+  resultTeaserTitle: { fontFamily: 'Urbanist-Bold', fontSize: 14, color: '#5A3A00' },
+  resultTeaserSub: { fontFamily: 'Urbanist-Medium', fontSize: 12, color: '#8A5A00', marginTop: 1 },
   resultPending: { backgroundColor: '#5B5F6B' },
   resultPendingText: { fontFamily: 'Urbanist-Bold', fontSize: 14, color: '#FFF', flexShrink: 1 },
   endedLabel: { fontFamily: 'Urbanist-Bold', fontSize: 11, letterSpacing: 1.2, textAlign: 'center', marginBottom: 6 },

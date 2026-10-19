@@ -7,6 +7,7 @@
  * (Worker cron.ts resolveMatch / lib/settleDue.ts). This only reads them.
  */
 import { hasEnded } from './countdown';
+import { matchPrize } from './contestPrize';
 
 export type BattleOutcome =
   /** Voting still open. */
@@ -87,18 +88,15 @@ export function summarizeResult(match: any, nowMs: number = Date.now()): BattleR
   const margin = winner && loser ? Math.max(0, winner.votes - loser.votes) : 0;
   const winnerPct = winner && totalVotes > 0 ? Math.round((winner.votes / totalVotes) * 100) : 0;
 
+  // The same resolver the feed card's prize badge uses (`matchPrize`), so the
+  // result page can never show a different prize than the card advertised.
   let prize: BattleResultSummary['prize'] = null;
   if (outcome === 'winner') {
-    if (match?.prizeType === 'product' && match?.prizeProductTitle) {
-      prize = {
-        kind: 'product',
-        title: String(match.prizeProductTitle),
-        imageUrl: match.prizeProductImageUrl || null,
-        value: Number(match.prizeProductValue) || 0,
-      };
-    } else {
-      const coins = Number(match?.rewardAmount) || 0;
-      prize = coins > 0 ? { kind: 'coins', coins } : null;
+    const p = matchPrize(match);
+    if (p.type === 'product') {
+      prize = { kind: 'product', title: p.product.title, imageUrl: p.product.imageUrl || null, value: Math.max(0, Number(p.product.value) || 0) };
+    } else if (p.coins > 0) {
+      prize = { kind: 'coins', coins: p.coins };
     }
   }
 
@@ -151,10 +149,49 @@ export function resultHeadline(s: BattleResultSummary, role: ViewerRole): { titl
 /** `n votes` with the singular. */
 export const votesLabel = (n: number) => `${n} ${n === 1 ? 'vote' : 'votes'}`;
 
+/** "1,250" — coin amounts with Indian digit grouping. */
+export function coinsLabel(n: number): string {
+  const v = Math.max(0, Math.floor(Number(n) || 0));
+  return v.toLocaleString('en-IN');
+}
+
+/**
+ * The product photo the shareable card may include, or null for the gift-icon
+ * fallback.
+ *
+ * Native capture (view-shot) reads any image. Web capture (html-to-image) can
+ * only read images whose host sends CORS for this site, and one unreadable image
+ * fails the WHOLE capture (vsNativeModules.web.ts pre-check) — so on web a
+ * product image is used only when it is served from the same origin as the
+ * entry photo, which the card already depends on. Admins may paste any https
+ * product URL, and an arbitrary shop CDN must not cost the user their card.
+ */
+export function cardSafePrizeImage(prizeUrl: string | null | undefined, entryUrl: string | null | undefined, isWeb: boolean): string | null {
+  if (!prizeUrl || typeof prizeUrl !== 'string') return null;
+  let prize: URL;
+  try {
+    prize = new URL(prizeUrl);
+  } catch {
+    return null;
+  }
+  if (prize.protocol !== 'https:' && prize.protocol !== 'http:') return null;
+  if (!isWeb) return prizeUrl;
+  if (!entryUrl) return null;
+  try {
+    return new URL(entryUrl).origin === prize.origin ? prizeUrl : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Share caption for the winner card. */
 export function winnerCaption(s: BattleResultSummary, url: string): string {
   if (s.outcome === 'winner' && s.winner) {
-    return `🏆 @${s.winner.username} won "${s.title}" on TopHunt with ${votesLabel(s.winner.votes)}! Congratulations 🎉\n${url}`;
+    const prize =
+      s.prize?.kind === 'coins' ? ` and won ${coinsLabel(s.prize.coins)} Dpcoins 🪙`
+      : s.prize?.kind === 'product' ? ` and won ${s.prize.title} 🎁`
+      : '';
+    return `🏆 @${s.winner.username} won "${s.title}" on TopHunt with ${votesLabel(s.winner.votes)}${prize}! Congratulations 🎉\n${url}`;
   }
   if (s.outcome === 'tie' && s.a && s.b) {
     return `🤝 @${s.a.username} vs @${s.b.username} ended in a tie on TopHunt!\n${url}`;

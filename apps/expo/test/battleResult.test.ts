@@ -6,6 +6,8 @@ import { describe, it, expect } from 'vitest';
 import {
   battleOutcome,
   battleResultPath,
+  cardSafePrizeImage,
+  coinsLabel,
   resultHeadline,
   RESULT_REFETCH_DELAYS_MS,
   summarizeResult,
@@ -106,5 +108,52 @@ describe('routing and refetch', () => {
     expect(RESULT_REFETCH_DELAYS_MS[0]).toBeLessThanOrEqual(2000);
     expect([...RESULT_REFETCH_DELAYS_MS]).toEqual([...RESULT_REFETCH_DELAYS_MS].sort((x, y) => x - y));
     expect(RESULT_REFETCH_DELAYS_MS.length).toBeLessThanOrEqual(8);
+  });
+});
+
+describe('prize on the result page', () => {
+  it('resolves coins like the feed card does: snapshot first, whole coins only', () => {
+    expect(summarizeResult(match({ rewardAmount: 18.9 }), now).prize).toEqual({ kind: 'coins', coins: 18 });
+    expect(summarizeResult(match({ rewardAmount: null, prizeCoins: 40 }), now).prize).toEqual({ kind: 'coins', coins: 40 });
+    expect(summarizeResult(match({ rewardAmount: 0, prizeCoins: 0 }), now).prize).toBeNull();
+  });
+
+  it('a product prize carries its photo and rupee value; an untitled product falls back to coins', () => {
+    const s = summarizeResult(
+      match({ prizeType: 'product', prizeProductTitle: 'Earbuds', prizeProductImageUrl: 'https://media.tophunt.in/products/e.jpg', prizeProductValue: 1499 }),
+      now,
+    );
+    expect(s.prize).toEqual({ kind: 'product', title: 'Earbuds', imageUrl: 'https://media.tophunt.in/products/e.jpg', value: 1499 });
+    expect(summarizeResult(match({ prizeType: 'product', prizeProductTitle: '  ' }), now).prize).toEqual({ kind: 'coins', coins: 100 });
+  });
+
+  it('the share caption names the prize', () => {
+    const coins = summarizeResult(match({ rewardAmount: 1250 }), now);
+    expect(winnerCaption(coins, 'https://tophunt.in/battle/m1/result')).toContain('won 1,250 Dpcoins');
+    const product = summarizeResult(match({ prizeType: 'product', prizeProductTitle: 'Earbuds' }), now);
+    expect(winnerCaption(product, 'u')).toContain('won Earbuds');
+  });
+
+  it('coinsLabel groups digits the Indian way and never shows fractions', () => {
+    expect(coinsLabel(18)).toBe('18');
+    expect(coinsLabel(125000.7)).toBe('1,25,000');
+    expect(coinsLabel(-5)).toBe('0');
+  });
+});
+
+describe('cardSafePrizeImage', () => {
+  const entry = 'https://media.tophunt.in/contests/2026/10/a.jpg';
+  it('native capture can use any http(s) product image', () => {
+    expect(cardSafePrizeImage('https://shop.example/p.jpg', entry, false)).toBe('https://shop.example/p.jpg');
+  });
+  it('web uses it only from the entry photo origin, so one image cannot fail the capture', () => {
+    expect(cardSafePrizeImage('https://media.tophunt.in/products/p.jpg', entry, true)).toBe('https://media.tophunt.in/products/p.jpg');
+    expect(cardSafePrizeImage('https://shop.example/p.jpg', entry, true)).toBeNull();
+    expect(cardSafePrizeImage('https://media.tophunt.in/products/p.jpg', null, true)).toBeNull();
+  });
+  it('rejects junk', () => {
+    expect(cardSafePrizeImage(null, entry, false)).toBeNull();
+    expect(cardSafePrizeImage('not a url', entry, false)).toBeNull();
+    expect(cardSafePrizeImage('javascript:alert(1)', entry, false)).toBeNull();
   });
 });

@@ -36,7 +36,10 @@ import {
   type ShareImageSource,
   type ShareOutcome,
 } from '@/src/lib/share';
+import { AppImage } from '@/src/components/ui/AppImage';
+import { CoinMedallion } from '@/src/components/result/CoinMedallion';
 import {
+  coinsLabel,
   resultHeadline,
   summarizeResult,
   viewerRole,
@@ -335,15 +338,15 @@ export default function BattleResult() {
           <SmallAction icon="eye-outline" label="View battle" onPress={goBattle} color={textColor} border={isDark ? '#35383F' : '#E5E7EB'} />
         </View>
 
-        {role === 'winner' && summary.prize?.kind === 'product' ? (
-          <TouchableOpacity style={[styles.cta, styles.prizeCta]} onPress={() => router.push(`/prizes/${encodeURIComponent(id)}` as any)} accessibilityRole="button">
-            <Text style={styles.ctaText}>🎁 Claim your prize</Text>
-          </TouchableOpacity>
-        ) : role === 'winner' && summary.prize?.kind === 'coins' ? (
-          <TouchableOpacity style={[styles.cta, styles.prizeCta]} onPress={() => router.push('/wallet' as any)} accessibilityRole="button">
-            <Text style={styles.ctaText}>💰 {summary.prize.coins} Dpcoins wallet mein</Text>
-          </TouchableOpacity>
-        ) : null}
+        <PrizeSection
+          summary={summary}
+          isWinner={role === 'winner'}
+          isDark={isDark}
+          textColor={textColor}
+          sub={sub}
+          onClaim={() => router.push(`/prizes/${encodeURIComponent(id)}` as any)}
+          onWallet={() => router.push('/wallet' as any)}
+        />
 
         <TouchableOpacity style={[styles.cta, styles.newBattle]} onPress={startBattle} accessibilityRole="button">
           <Text style={styles.ctaText}>{role === 'loser' ? 'Naya battle shuru karo 💪' : 'Apna battle shuru karo'}</Text>
@@ -369,6 +372,87 @@ export default function BattleResult() {
         </View>
       ) : null}
     </SafeAreaView>
+  );
+}
+
+/**
+ * What the winner took home — revealed here, never on the feed card. Dpcoins as
+ * a minted coin, a product with its photo; a tie says the entry fees came back.
+ */
+function PrizeSection(props: {
+  summary: ReturnType<typeof summarizeResult>;
+  isWinner: boolean;
+  isDark: boolean;
+  textColor: string;
+  sub: string;
+  onClaim: () => void;
+  onWallet: () => void;
+}) {
+  const { summary, isWinner, isDark, textColor, sub } = props;
+  const prize = summary.prize;
+  const winnerName = summary.winner ? `@${summary.winner.username}` : 'Winner';
+  const box = [styles.prizeSection, { backgroundColor: isDark ? '#2A2410' : '#FFF8DB', borderColor: isDark ? '#5C4A12' : '#FFE08A' }];
+
+  if (summary.outcome === 'tie') {
+    return (
+      <View style={box} accessible accessibilityLabel="It's a tie. Both players' entry fees were refunded.">
+        <Text style={[styles.prizeKicker, { color: isDark ? '#FFD54F' : '#B07800' }]}>RESULT</Text>
+        <Text style={[styles.prizeHeading, { color: textColor }]}>🤝 It&apos;s a tie!</Text>
+        <Text style={[styles.prizeNote, { color: sub }]}>Dono players ki entry fee wallet mein wapas aa gayi.</Text>
+      </View>
+    );
+  }
+  if (!prize) return null;
+
+  if (prize.kind === 'coins') {
+    return (
+      <View style={box} accessible accessibilityLabel={`${winnerName} won ${prize.coins} Dpcoins`}>
+        <Text style={[styles.prizeKicker, { color: isDark ? '#FFD54F' : '#B07800' }]}>{isWinner ? 'AAPKA PRIZE' : 'PRIZE WON'}</Text>
+        <View style={styles.prizeRow}>
+          <CoinMedallion size={64} />
+          <View style={styles.prizeInfo}>
+            <Text style={[styles.prizeAmount, { color: textColor }]} numberOfLines={1}>
+              {coinsLabel(prize.coins)} <Text style={styles.prizeUnit}>Dpcoins</Text>
+            </Text>
+            <Text style={[styles.prizeNote, { color: sub }]}>
+              {isWinner ? 'Aapke wallet mein credit ho gaye ✅' : `${winnerName} ne jeete`}
+            </Text>
+          </View>
+        </View>
+        {isWinner ? (
+          <TouchableOpacity style={[styles.cta, styles.prizeCta]} onPress={props.onWallet} accessibilityRole="button">
+            <Text style={styles.ctaText}>Wallet dekho</Text>
+          </TouchableOpacity>
+        ) : null}
+      </View>
+    );
+  }
+
+  return (
+    <View style={box} accessible accessibilityLabel={`${winnerName} won ${prize.title}${prize.value > 0 ? `, worth ₹${prize.value}` : ''}`}>
+      <Text style={[styles.prizeKicker, { color: isDark ? '#FFD54F' : '#B07800' }]}>{isWinner ? 'AAPKA PRIZE' : 'PRIZE WON'}</Text>
+      <View style={styles.prizeRow}>
+        <View style={[styles.productThumb, { backgroundColor: isDark ? '#1F1F24' : '#FFFFFF' }]}>
+          {prize.imageUrl ? (
+            <AppImage source={{ uri: prize.imageUrl }} style={styles.productImage} contentFit="cover" accessibilityLabel={prize.title} />
+          ) : (
+            <Ionicons name="gift" size={40} color="#E6A200" />
+          )}
+        </View>
+        <View style={styles.prizeInfo}>
+          <Text style={[styles.productTitle, { color: textColor }]} numberOfLines={3}>{prize.title}</Text>
+          {prize.value > 0 ? <Text style={styles.productValue}>Worth ₹{coinsLabel(prize.value)}</Text> : null}
+          <Text style={[styles.prizeNote, { color: sub }]}>
+            {isWinner ? 'Address do — hum aap tak deliver karenge 🚚' : `${winnerName} ko milega`}
+          </Text>
+        </View>
+      </View>
+      {isWinner ? (
+        <TouchableOpacity style={[styles.cta, styles.prizeCta]} onPress={props.onClaim} accessibilityRole="button">
+          <Text style={styles.ctaText}>🎁 Claim your prize</Text>
+        </TouchableOpacity>
+      ) : null}
+    </View>
   );
 }
 
@@ -406,7 +490,19 @@ const styles = StyleSheet.create({
   smallText: { fontFamily: 'Urbanist-SemiBold', fontSize: 13 },
   cta: { backgroundColor: '#FF4D67', height: 50, borderRadius: 25, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 28, marginTop: 20 },
   ctaText: { color: '#fff', fontFamily: 'Urbanist-Bold', fontSize: 16 },
-  prizeCta: { backgroundColor: '#E6A200', minWidth: 260 },
+  prizeCta: { backgroundColor: '#E6A200', minWidth: 240, marginTop: 14 },
+  prizeSection: { width: '100%', maxWidth: 420, borderWidth: 1, borderRadius: 20, padding: 16, marginTop: 22, alignItems: 'center' },
+  prizeKicker: { fontFamily: 'Urbanist-Bold', fontSize: 11, letterSpacing: 1.6, marginBottom: 10 },
+  prizeHeading: { fontFamily: 'Urbanist-Bold', fontSize: 20, textAlign: 'center' },
+  prizeRow: { flexDirection: 'row', alignItems: 'center', gap: 14, alignSelf: 'stretch' },
+  prizeInfo: { flex: 1, minWidth: 0 },
+  prizeAmount: { fontFamily: 'Urbanist-Bold', fontSize: 28 },
+  prizeUnit: { fontFamily: 'Urbanist-SemiBold', fontSize: 16, color: '#E6A200' },
+  prizeNote: { fontFamily: 'Urbanist-Medium', fontSize: 13, marginTop: 4 },
+  productThumb: { width: 96, height: 96, borderRadius: 16, borderWidth: 2, borderColor: '#FFD700', overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
+  productImage: { width: '100%', height: '100%' },
+  productTitle: { fontFamily: 'Urbanist-Bold', fontSize: 17 },
+  productValue: { fontFamily: 'Urbanist-Bold', fontSize: 14, color: '#E6A200', marginTop: 2 },
   newBattle: { backgroundColor: '#1F2937', minWidth: 260 },
   secondary: { marginTop: 20, borderWidth: 1, borderRadius: 22, paddingHorizontal: 24, height: 44, justifyContent: 'center' },
   secondaryText: { fontFamily: 'Urbanist-SemiBold', fontSize: 14 },

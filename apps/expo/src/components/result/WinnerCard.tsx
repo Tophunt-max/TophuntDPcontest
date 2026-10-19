@@ -5,7 +5,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@/src/lib/icons';
 import images from '@/assets/images';
 import { useVideoStatus } from '@/src/hooks/useVideoStatus';
-import { votesLabel, type BattleResultSummary, type ResultSide } from '@/src/lib/battleResult';
+import { cardSafePrizeImage, coinsLabel, votesLabel, type BattleResultSummary, type ResultSide } from '@/src/lib/battleResult';
+import { CoinMedallion } from './CoinMedallion';
 
 /**
  * The shareable 9:16 winner card (story size).
@@ -89,6 +90,10 @@ export const WinnerCard = forwardRef<View, Props>(({ summary, width, onReady }, 
     () => (isTie ? [stillFor(summary.a, aPoster), stillFor(summary.b, bPoster)] : [stillFor(hero, heroPoster)]),
     [isTie, summary.a, summary.b, hero, aPoster, bPoster, heroPoster],
   );
+  const prize = summary.prize;
+  // Product photo for the prize block, only when the capture can read it.
+  const prizeImage =
+    prize?.kind === 'product' ? cardSafePrizeImage(prize.imageUrl, hero?.mediaUrl ?? photos[0], Platform.OS === 'web') : null;
 
   // Ready once the logo and every CURRENT photo have loaded or errored. Tracked
   // per slot+uri (a Set, not a counter), so a repeated onLoad cannot over-count
@@ -99,8 +104,12 @@ export const WinnerCard = forwardRef<View, Props>(({ summary, width, onReady }, 
     setLoaded((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
   }, []);
   const wanted = useMemo(
-    () => ['logo', ...photos.map((u, i) => (u ? `p${i}:${u}` : null)).filter((k): k is string => !!k)],
-    [photos],
+    () => [
+      'logo',
+      ...photos.map((u, i) => (u ? `p${i}:${u}` : null)).filter((k): k is string => !!k),
+      ...(prizeImage ? [`prize:${prizeImage}`] : []),
+    ],
+    [photos, prizeImage],
   );
   const allLoaded = wanted.every((k) => loaded.has(k));
   const readyFired = useRef(false);
@@ -189,7 +198,7 @@ export const WinnerCard = forwardRef<View, Props>(({ summary, width, onReady }, 
         />
       ))}
 
-      <View style={{ flex: 1, alignItems: 'center', paddingHorizontal: f(20), paddingTop: f(20), paddingBottom: f(26) }}>
+      <View style={{ flex: 1, alignItems: 'center', paddingHorizontal: f(20), paddingTop: f(18), paddingBottom: f(20) }}>
         {/* Brand */}
         <View style={[styles.logoPill, { paddingHorizontal: f(14), paddingVertical: f(6), borderRadius: f(18) }]}>
           <RNImage
@@ -202,7 +211,7 @@ export const WinnerCard = forwardRef<View, Props>(({ summary, width, onReady }, 
           />
         </View>
 
-        <Text style={[styles.congrats, { fontSize: f(isTie ? 30 : 27), lineHeight: f(isTie ? 36 : 33), marginTop: f(14), letterSpacing: f(1.5) }]}>
+        <Text style={[styles.congrats, { fontSize: f(isTie ? 30 : 27), lineHeight: f(isTie ? 36 : 33), marginTop: f(10), letterSpacing: f(1.5) }]}>
           {isTie ? "IT'S A TIE!" : 'CONGRATULATIONS'}
         </Text>
         <Text style={[styles.contest, { fontSize: f(13), lineHeight: f(18), marginTop: f(4) }]} numberOfLines={1}>
@@ -235,7 +244,9 @@ export const WinnerCard = forwardRef<View, Props>(({ summary, width, onReady }, 
               end={{ x: 1, y: 1 }}
               style={{ padding: f(5), borderRadius: f(27) }}
             >
-              {renderPhoto(0, photos[0] ?? null, 222, 262, `@${hero?.username} winning entry`)}
+              {prize
+                ? renderPhoto(0, photos[0] ?? null, 170, 196, `@${hero?.username} winning entry`)
+                : renderPhoto(0, photos[0] ?? null, 222, 262, `@${hero?.username} winning entry`)}
             </LinearGradient>
             <View style={[styles.winnerBadge, { marginTop: -f(16), paddingHorizontal: f(16), paddingVertical: f(6), borderRadius: f(16) }]}>
               <Ionicons name="trophy" size={f(14)} color="#5A3A00" />
@@ -247,7 +258,7 @@ export const WinnerCard = forwardRef<View, Props>(({ summary, width, onReady }, 
 
         {/* Score */}
         {!isTie && hero ? (
-          <View style={[styles.scoreBox, { marginTop: f(10), paddingVertical: f(9), paddingHorizontal: f(16), borderRadius: f(18) }]}>
+          <View style={[styles.scoreBox, { marginTop: f(prize ? 8 : 10), paddingVertical: f(prize ? 7 : 9), paddingHorizontal: f(16), borderRadius: f(18) }]}>
             <Text style={[styles.scoreBig, { fontSize: f(22) }]}>
               {votesLabel(hero.votes)}
               {summary.loser ? <Text style={[styles.sub, { fontSize: f(15) }]}>{`  vs  ${summary.loser.votes}`}</Text> : null}
@@ -263,16 +274,48 @@ export const WinnerCard = forwardRef<View, Props>(({ summary, width, onReady }, 
           </View>
         ) : null}
 
-        {summary.prize ? (
-          <View style={[styles.prizePill, { marginTop: f(12), paddingHorizontal: f(14), paddingVertical: f(7), borderRadius: f(16) }]}>
-            {summary.prize.kind === 'coins' ? (
-              <Ionicons name="trophy" size={f(14)} color="#5A3A00" />
+        {/* Prize won: a minted coin for Dpcoins, the product's photo for a product. */}
+        {prize ? (
+          <View style={[styles.prizeBox, { marginTop: f(10), padding: f(8), paddingRight: f(14), borderRadius: f(18), gap: f(10) }]}>
+            {prize.kind === 'coins' ? (
+              <CoinMedallion size={f(46)} />
             ) : (
-              <Ionicons name="gift" size={f(14)} color="#5A3A00" />
+              <View style={[styles.prizeThumb, { width: f(50), height: f(50), borderRadius: f(12), borderWidth: f(2) }]}>
+                {prizeImage ? (
+                  <ExpoImage
+                    key={`prize:${prizeImage}`}
+                    source={{ uri: prizeImage }}
+                    style={{ width: '100%', height: '100%' }}
+                    contentFit="cover"
+                    transition={0}
+                    cachePolicy="memory-disk"
+                    onLoad={() => mark(`prize:${prizeImage}`)}
+                    onError={() => mark(`prize:${prizeImage}`)}
+                    accessibilityLabel={prize.title}
+                  />
+                ) : (
+                  <Ionicons name="gift" size={f(26)} color="#E6A200" />
+                )}
+              </View>
             )}
-            <Text style={[styles.prizeText, { fontSize: f(13), marginLeft: f(6) }]} numberOfLines={1}>
-              {summary.prize.kind === 'product' ? `Won ${summary.prize.title}` : `Won ${summary.prize.coins} Dpcoins`}
-            </Text>
+            <View style={{ flexShrink: 1 }}>
+              <Text style={[styles.prizeLabel, { fontSize: f(10), letterSpacing: f(1.5) }]}>PRIZE WON</Text>
+              {prize.kind === 'coins' ? (
+                <Text style={[styles.prizeAmount, { fontSize: f(22), lineHeight: f(26) }]} numberOfLines={1}>
+                  {coinsLabel(prize.coins)}
+                  <Text style={[styles.prizeUnit, { fontSize: f(13) }]}> Dpcoins</Text>
+                </Text>
+              ) : (
+                <>
+                  <Text style={[styles.prizeTitle, { fontSize: f(14), lineHeight: f(17) }]} numberOfLines={2}>
+                    {prize.title}
+                  </Text>
+                  {prize.value > 0 ? (
+                    <Text style={[styles.prizeUnit, { fontSize: f(12), marginTop: f(1) }]}>Worth ₹{coinsLabel(prize.value)}</Text>
+                  ) : null}
+                </>
+              )}
+            </View>
           </View>
         ) : null}
 
@@ -293,8 +336,8 @@ export const WINNER_CARD_BG = CARD_BG;
 
 const styles = StyleSheet.create({
   logoPill: { backgroundColor: '#FFFFFF', shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
-  congrats: { fontFamily: 'Urbanist-Bold', color: '#FFD700', textAlign: 'center', textShadowColor: 'rgba(0,0,0,0.35)', textShadowRadius: 6, textShadowOffset: { width: 0, height: 2 } },
-  contest: { fontFamily: 'Urbanist-SemiBold', color: 'rgba(255,255,255,0.9)', textAlign: 'center' },
+  congrats: { flexShrink: 0, fontFamily: 'Urbanist-Bold', color: '#FFD700', textAlign: 'center', textShadowColor: 'rgba(0,0,0,0.35)', textShadowRadius: 6, textShadowOffset: { width: 0, height: 2 } },
+  contest: { fontFamily: 'Urbanist-SemiBold', color: 'rgba(255,255,255,0.9)', textAlign: 'center', flexShrink: 0 },
   goldFrame: { backgroundColor: '#FFD700' },
   photoFallback: { backgroundColor: 'rgba(0,0,0,0.35)', alignItems: 'center', justifyContent: 'center' },
   winnerBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFD700', borderWidth: 2, borderColor: '#FFF4B0' },
@@ -303,8 +346,12 @@ const styles = StyleSheet.create({
   sub: { fontFamily: 'Urbanist-SemiBold', color: 'rgba(255,255,255,0.88)', textAlign: 'center' },
   scoreBox: { backgroundColor: 'rgba(0,0,0,0.28)', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.18)' },
   scoreBig: { fontFamily: 'Urbanist-Bold', color: '#FFFFFF', textAlign: 'center' },
-  prizePill: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFE68A', maxWidth: '92%' },
-  prizeText: { fontFamily: 'Urbanist-Bold', color: '#5A3A00', flexShrink: 1 },
+  prizeBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.32)', borderWidth: 1.5, borderColor: '#FFD700', maxWidth: '94%' },
+  prizeThumb: { backgroundColor: '#FFFFFF', borderColor: '#FFD700', overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
+  prizeLabel: { fontFamily: 'Urbanist-Bold', color: '#FFD700' },
+  prizeAmount: { fontFamily: 'Urbanist-Bold', color: '#FFFFFF' },
+  prizeUnit: { fontFamily: 'Urbanist-SemiBold', color: '#FFE68A' },
+  prizeTitle: { fontFamily: 'Urbanist-Bold', color: '#FFFFFF' },
   footerCta: { fontFamily: 'Urbanist-Bold', color: '#FFFFFF', letterSpacing: 1 },
   footerUrl: { fontFamily: 'Urbanist-SemiBold', color: 'rgba(255,255,255,0.8)', letterSpacing: 1.5 },
 });
