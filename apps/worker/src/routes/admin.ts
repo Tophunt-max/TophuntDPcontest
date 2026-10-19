@@ -22,6 +22,8 @@ import { httpsError, ApiError } from "../lib/http";
 import { timingSafeEqualSecret } from "../lib/timingSafe";
 import { verifyIdToken, bearerToken } from "../lib/firebaseAuth";
 import { resolveAuthMethods, validateAuthMethods } from "../lib/authMethods";
+import { AUDITED_SECTIONS, appConfigChannels, publicAppConfig, validateAppControlPatch } from "../lib/appControl";
+import { publishMany } from "../lib/publish";
 import { assertSessionUsable } from "../middleware/auth";
 import { getAppConfig, getGamificationSettings, getSeoAudit, invalidateSetting } from "../lib/settings";
 import { legalDocsForAdmin, LEGAL_DOC_KEYS, LEGAL_LAST_UPDATED } from "../content/legal";
@@ -339,12 +341,21 @@ adminRoute.post("/app-settings", async (c) => {
     }
   }
   const existing = (await getAppConfig(c.env)) || {};
+  // Maintenance / force update / announcement / features / withdrawal.
+  validateAppControlPatch(body, existing);
+  if (body && typeof body === "object") {
+    // Never client-supplied; stamped below.
+    delete body._version;
+    delete body.version;
+  }
   if (body?.verificationReward !== undefined) {
     // Validated against the MERGED result, so a partial patch (one field) is
     // checked for consistency with the values already stored.
     validateVerificationRewardConfig({ ...(existing.verificationReward || {}), ...(body.verificationReward || {}) });
   }
   const merged = mergeSettings(existing, body);
+  // Monotonic: the app keeps whichever copy is newer (pushed vs polled).
+  merged._version = Math.max(Date.now(), (Number(existing._version) || 0) + 1);
   // Sign-in / sign-up switches: validated against the MERGED result, so a save
   // can never leave a platform with no way to sign in.
   const authMethodsError = validateAuthMethods(body?.authMethods, merged);
@@ -358,19 +369,25 @@ adminRoute.post("/app-settings", async (c) => {
   // admin's own check (e.g. the onboarding preview on a phone) show the change
   // at once; other colos follow within the TTL.
   edgePurgeUrl(c, "/read/app-config");
+  // Push the new public config to every connected app instance (all shards), so
+  // maintenance / flags / banner change within seconds instead of on the next poll.
+  const pushed = publicAppConfig(merged, Date.now());
+  c.executionCtx.waitUntil(publishMany(c.env, appConfigChannels(), { type: "config", config: pushed }));
   // Coin amounts credited to user balances are money settings: record who
   // changed them, from what, to what. (Only these sections — the rest of App
   // Control is cosmetic and is not audited by this handler.)
   // The intro is what every new user sees first, so its edits are audited too.
-  for (const section of ["verificationReward", "rewardSettings", "onboarding", "onboardingEnabled", "authMethods"] as const) {
-    if (body?.[section] !== undefined) {
+  // Only sections that actually CHANGED: a save that resends a section unchanged
+  // must not write a misleading audit row.
+  for (const section of AUDITED_SECTIONS) {
+    if (body?.[section] !== undefined && JSON.stringify(existing[section] ?? null) !== JSON.stringify(merged[section] ?? null)) {
       await logAudit(c, `settings.${section}.update`, "settings", "appConfig", {
         before: existing[section] ?? null,
         after: merged[section] ?? null,
       });
     }
   }
-  return c.json({ message: "Settings updated successfully" });
+  return c.json({ message: "Settings updated successfully", version: merged._version, config: pushed });
 });
 
 // ---- registration verification reward: effective config + counters ----

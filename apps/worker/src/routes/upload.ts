@@ -31,6 +31,8 @@
 import { Hono } from "hono";
 import type { Env, Variables } from "../types";
 import { requireAuth } from "../middleware/auth";
+import { appControlGate } from "../lib/appControl";
+import { getAppControlConfig } from "../lib/settings";
 import {
   uploadToR2,
   USER_UPLOAD_FOLDERS,
@@ -67,6 +69,16 @@ const UPLOADS_PER_IP_PER_HOUR = 120;
 export const uploadRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 uploadRoute.use("*", requireAuth);
+// Uploads are writes: closed during maintenance and on too-old native builds.
+uploadRoute.use("*", async (c, next) => {
+  appControlGate(await getAppControlConfig(c.env), {
+    action: "upload",
+    role: c.get("user")?.role ?? null,
+    platform: c.req.header("X-App-Platform") ?? null,
+    appVersion: c.req.header("X-App-Version") ?? null,
+  });
+  await next();
+});
 
 uploadRoute.post("/", async (c) => {
   // Lower-cased because MIME types are case-insensitive and the admin routes

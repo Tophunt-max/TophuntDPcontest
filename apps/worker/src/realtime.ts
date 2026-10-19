@@ -102,7 +102,11 @@ export class RealtimeHub {
       // Guest sockets are anonymous, so the per-IP limiter bounds how fast they
       // open but not how many stay open. Cap them per battle: every publish fans
       // out to every socket in this DO.
-      if (request.headers.get("X-Guest-Socket") === "1" && this.state.getWebSockets("guest").length >= MAX_GUEST_SOCKETS) {
+      // Set only by the Worker (stripped from client headers): the app-config
+      // shards take more anonymous sockets than one battle does.
+      const capHeader = Number(request.headers.get("X-Guest-Cap"));
+      const guestCap = Number.isFinite(capHeader) && capHeader > 0 ? capHeader : MAX_GUEST_SOCKETS;
+      if (request.headers.get("X-Guest-Socket") === "1" && this.state.getWebSockets("guest").length >= guestCap) {
         return new Response("too many viewers", { status: 429 });
       }
       const pair = new WebSocketPair();

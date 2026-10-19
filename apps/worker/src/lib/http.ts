@@ -14,6 +14,7 @@ export type ErrorCode =
   | "failed-precondition"
   | "resource-exhausted"
   | "deadline-exceeded"
+  | "unavailable"
   | "internal";
 
 const CODE_TO_STATUS: Record<ErrorCode, number> = {
@@ -26,22 +27,29 @@ const CODE_TO_STATUS: Record<ErrorCode, number> = {
   "failed-precondition": 412,
   "resource-exhausted": 429,
   "deadline-exceeded": 504,
+  unavailable: 503,
   internal: 500,
 };
 
 /** Mirror of Firebase functions HttpsError. */
 export class ApiError extends Error {
   code: ErrorCode;
-  constructor(code: ErrorCode, message: string) {
+  /**
+   * Machine-readable cause the app acts on (e.g. "maintenance",
+   * "update_required", "feature_disabled"). An expected state, not a fault.
+   */
+  reason?: string;
+  constructor(code: ErrorCode, message: string, reason?: string) {
     super(message);
     this.code = code;
+    if (reason) this.reason = reason;
   }
   get status(): ContentfulStatusCode {
     return (CODE_TO_STATUS[this.code] ?? 500) as ContentfulStatusCode;
   }
 }
 
-export const httpsError = (code: ErrorCode, message: string) => new ApiError(code, message);
+export const httpsError = (code: ErrorCode, message: string, reason?: string) => new ApiError(code, message, reason);
 
 /** Serialize an ApiError to the shape the Firebase client SDK expects. */
 export function errorBody(err: ApiError) {
@@ -49,6 +57,7 @@ export function errorBody(err: ApiError) {
     error: {
       status: err.code.toUpperCase().replace(/-/g, "_"),
       message: err.message,
+      ...(err.reason ? { reason: err.reason } : {}),
     },
   };
 }

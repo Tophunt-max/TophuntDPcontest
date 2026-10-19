@@ -107,7 +107,8 @@ import {
 } from "../lib/bunny";
 import { applyBunnyEncodeResult, LIVE_STATUS_RECHECK_MS } from "../lib/videoReconcile";
 import { mediaRouting } from "../lib/mediaRouting";
-import { getAppConfig, getAuthMethods, getRewardedAdConfig, getRewardSettings } from "../lib/settings";
+import { getAppConfig, getAppControlConfig, getAuthMethods, getRewardedAdConfig, getRewardSettings } from "../lib/settings";
+import { appControlGate } from "../lib/appControl";
 import { assertSignupAllowed, normalizePlatform, signupMethodForProvider } from "../lib/authMethods";
 import { getSettings } from "../lib/gamification";
 import { sendEmail, sendUserEmail } from "../lib/email";
@@ -305,6 +306,20 @@ export const apiRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 // it), and an account PENDING deletion must reach cancellation and nothing else.
 // See lib/accountStatus.ts for both lists.
 apiRoute.use("*", requireApiAuth);
+
+// App Control (lib/appControl.ts): maintenance, switched-off features and a
+// hard minimum native version refuse here, with a `reason` the app acts on.
+// Staff (admin/moderator tokens) pass, so they can operate during maintenance.
+apiRoute.use("*", async (c, next) => {
+  const body = await c.req.json<any>().catch(() => ({}));
+  appControlGate(await getAppControlConfig(c.env), {
+    action: typeof body?.action === "string" ? body.action : null,
+    role: c.get("user")?.role ?? null,
+    platform: c.req.header("X-App-Platform") ?? null,
+    appVersion: c.req.header("X-App-Version") ?? null,
+  });
+  await next();
+});
 
 const notPorted = (action: string, file: string): never => {
   throw httpsError(
