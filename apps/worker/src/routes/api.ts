@@ -110,6 +110,7 @@ import { mediaRouting } from "../lib/mediaRouting";
 import { getAppConfig, getAppControlConfig, getRewardedAdConfig, getRewardSettings } from "../lib/settings";
 import { appControlGate } from "../lib/appControl";
 import { PROFILE_INCOMPLETE_CODE } from "../lib/accountStatus";
+import { chargeablePackage } from "../lib/coinPricing";
 import { getSettings } from "../lib/gamification";
 import { sendEmail, sendUserEmail } from "../lib/email";
 import { passwordChangedEmail, dataExportEmail } from "../lib/emailTemplates";
@@ -1969,12 +1970,13 @@ apiRoute.post("/", async (c) => {
         .get();
       if (!pkg) throw httpsError("not-found", "Coin package not found.");
 
-      const priceInr = Number(pkg.priceInr) || 0;
-      if (priceInr <= 0) throw httpsError("failed-precondition", "This package is not purchasable.");
-      const amountPaise = Math.round(priceInr * 100);
-      const bonusCoins = Number(pkg.bonusCoins) || 0;
-      const totalCoins = (Number(pkg.coins) || 0) + bonusCoins;
-      if (totalCoins <= 0) throw httpsError("failed-precondition", "This package has no coins configured.");
+      // Price = base coins × the admin's coin value, bonus free (lib/coinPricing.ts),
+      // read NOW on the server — the same formula the store displays. The order
+      // row below locks this amount for the payment's whole life.
+      const priced = chargeablePackage(pkg, await getAppConfig(env));
+      const amountPaise = Math.round(priced.priceInr * 100);
+      const bonusCoins = priced.bonusCoins;
+      const totalCoins = priced.totalCoins;
 
       // Create the order at Razorpay (HTTP Basic auth = key_id:key_secret).
       const authHeader = btoa(`${rzp.keyId}:${rzp.keySecret}`);
@@ -2298,11 +2300,11 @@ apiRoute.post("/", async (c) => {
       const mode = gw.mode || "auto";
       if (mode === "auto") throw httpsError("failed-precondition", "Manual deposits are currently disabled.");
 
-      // Packages are the ONLY pricing authority. This used to read a
-      // `coinRate` multiplier off the gateway settings, which disagreed with
-      // coin_packages — a package selling 15 coins for Rs 10 priced the same 15
-      // coins at Rs 15 through here. Never trust a client-sent amount either:
-      // both the coins credited and the rupees expected come from the row.
+      // ONE pricing rule for every path: base coins × the admin's coin value,
+      // bonus free (lib/coinPricing.ts) — the same price the store shows and
+      // Razorpay charges. Never trust a client-sent amount: the coins credited
+      // come from the package row, the rupees expected from that rule, and both
+      // are stored on the deposit when it is submitted.
       const pkg = await db
         .select()
         .from(schema.coinPackages)
@@ -2310,12 +2312,10 @@ apiRoute.post("/", async (c) => {
         .get();
       if (!pkg) throw httpsError("not-found", "Coin package not found.");
 
-      const baseCoins = Number(pkg.coins) || 0;
-      const bonusCoins = Number(pkg.bonusCoins) || 0;
-      const amt = baseCoins + bonusCoins;
-      const payAmount = Number(pkg.priceInr) || 0;
-      if (amt <= 0 || payAmount <= 0)
-        throw httpsError("failed-precondition", "This coin package is misconfigured.");
+      const priced = chargeablePackage(pkg, cfg);
+      const bonusCoins = priced.bonusCoins;
+      const amt = priced.totalCoins;
+      const payAmount = priced.priceInr;
 
       // Hard-block reused UTRs: a bank reference can only fund one deposit. Reject
       // at submit time if a non-rejected deposit already carries this UTR (any

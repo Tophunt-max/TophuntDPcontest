@@ -46,17 +46,19 @@ const lastPush = () => pushes.at(-1)!;
 describe('live coin packages', () => {
   it('add, edit and delete each push the new catalog to every app shard', async () => {
     const { env } = makeEnv();
-    const created = await admin(env, 'POST', '/coin-packages', { name: 'Starter', coins: 100, bonusCoins: 10, priceInr: 99, sortOrder: 1 });
+    // No coin value configured -> the historical default of ₹1 per coin.
+    const created = await admin(env, 'POST', '/coin-packages', { name: 'Starter', coins: 100, bonusCoins: 10, sortOrder: 1 });
     expect(created.status).toBe(200);
     expect(lastPush().channels).toHaveLength(APP_CONFIG_SHARDS);
     expect(lastPush().payload.type).toBe('coin-packages');
     expect(lastPush().payload.packages).toEqual([
-      { id: created.body.id, name: 'Starter', coins: 100, bonusCoins: 10, priceInr: 99, totalCoins: 110 },
+      // Price = BASE coins × coin value; the 10 bonus coins are free.
+      { id: created.body.id, name: 'Starter', coins: 100, bonusCoins: 10, priceInr: 100, totalCoins: 110, purchasable: true },
     ]);
     const v1 = lastPush().payload.version;
 
-    await admin(env, 'PATCH', `/coin-packages/${created.body.id}`, { priceInr: 79 });
-    expect(lastPush().payload.packages[0].priceInr).toBe(79);
+    await admin(env, 'PATCH', `/coin-packages/${created.body.id}`, { coins: 80 });
+    expect(lastPush().payload.packages[0].priceInr).toBe(80);
     expect(lastPush().payload.version).toBeGreaterThanOrEqual(v1);
 
     // Deactivated packages leave the public catalog.
@@ -69,17 +71,43 @@ describe('live coin packages', () => {
 
   it('the public catalog reflects an edit at once and is never cached', async () => {
     const { env } = makeEnv();
-    const { body } = await admin(env, 'POST', '/coin-packages', { name: 'Pro', coins: 500, priceInr: 399 });
+    const { body } = await admin(env, 'POST', '/coin-packages', { name: 'Pro', coins: 500 });
     const before = await catalog(env);
     expect(before.cc).toMatch(/no-store/);
-    expect(before.list[0].priceInr).toBe(399);
-    await admin(env, 'PATCH', `/coin-packages/${body.id}`, { priceInr: 349 });
-    expect((await catalog(env)).list[0].priceInr).toBe(349);
+    expect(before.list[0].priceInr).toBe(500);
+    await admin(env, 'PATCH', `/coin-packages/${body.id}`, { coins: 400 });
+    expect((await catalog(env)).list[0].priceInr).toBe(400);
+  });
+
+  it('changing the coin value re-prices every package and pushes the catalog', async () => {
+    const { env } = makeEnv();
+    await admin(env, 'POST', '/coin-packages', { name: 'Small', coins: 15, bonusCoins: 5 });
+    await admin(env, 'POST', '/coin-packages', { name: 'Big', coins: 100, bonusCoins: 20, sortOrder: 1 });
+    pushes.length = 0;
+    await admin(env, 'POST', '/app-settings', { withdrawal: { conversionRate: 0.5 } });
+    const push = pushes.find((x) => x.payload.type === 'coin-packages')!;
+    expect(push.payload.packages.map((p: any) => [p.name, p.priceInr, p.totalCoins])).toEqual([
+      ['Small', 7.5, 20],
+      ['Big', 50, 120],
+    ]);
+    expect((await catalog(env)).list.map((p: any) => p.priceInr)).toEqual([7.5, 50]);
+    // An unchanged coin value does not re-push the catalog.
+    pushes.length = 0;
+    await admin(env, 'POST', '/app-settings', { withdrawal: { conversionRate: 0.5 } });
+    expect(pushes.some((x) => x.payload.type === 'coin-packages')).toBe(false);
+  });
+
+  it('a package under ₹1 is listed but not purchasable', async () => {
+    const { env } = makeEnv();
+    await admin(env, 'POST', '/app-settings', { withdrawal: { conversionRate: 0.05 } });
+    await admin(env, 'POST', '/coin-packages', { name: 'Tiny', coins: 15, bonusCoins: 5 });
+    const [p] = (await catalog(env)).list;
+    expect(p).toMatchObject({ priceInr: 0.75, purchasable: false });
   });
 
   it('a rejected edit pushes nothing', async () => {
     const { env } = makeEnv();
-    const { body } = await admin(env, 'POST', '/coin-packages', { coins: 100, priceInr: 99 });
+    const { body } = await admin(env, 'POST', '/coin-packages', { coins: 100 });
     pushes.length = 0;
     const r = await admin(env, 'PATCH', `/coin-packages/${body.id}`, { priceInr: -5 });
     expect(r.status).toBe(400);

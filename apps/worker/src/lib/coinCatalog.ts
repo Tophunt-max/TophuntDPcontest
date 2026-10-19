@@ -14,31 +14,44 @@ import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { appConfigChannels } from "./appControl";
 import { publishMany } from "./publish";
+import { getAppConfig } from "./settings";
+import { coinValueFromConfig, pricePackage } from "./coinPricing";
 
 export interface PublicCoinPackage {
   id: string;
   name: string | null;
   coins: number;
   bonusCoins: number;
+  /** Base coins × coin value (lib/coinPricing.ts). Bonus coins are free. */
   priceInr: number;
   totalCoins: number;
+  /** False when the price is under ₹1 (or the coin value is unusable): shown, not sold. */
+  purchasable: boolean;
 }
 
 export async function listPublicCoinPackages(env: Env): Promise<PublicCoinPackage[]> {
-  const rows = await getDb(env)
+  const [rows, cfg] = await Promise.all([
+    getDb(env)
     .select()
     .from(schema.coinPackages)
     .where(eq(schema.coinPackages.active, true))
     .orderBy(asc(schema.coinPackages.sortOrder))
-    .all();
-  return rows.map((p: any) => ({
-    id: p.id,
-    name: p.name ?? null,
-    coins: Number(p.coins) || 0,
-    bonusCoins: Number(p.bonusCoins) || 0,
-    priceInr: Number(p.priceInr) || 0,
-    totalCoins: (Number(p.coins) || 0) + (Number(p.bonusCoins) || 0),
-  }));
+    .all(),
+    getAppConfig(env),
+  ]);
+  const rate = coinValueFromConfig(cfg);
+  return rows.map((p: any) => {
+    const priced = pricePackage(p, rate);
+    return {
+      id: p.id,
+      name: p.name ?? null,
+      coins: priced.baseCoins,
+      bonusCoins: priced.bonusCoins,
+      priceInr: priced.priceInr,
+      totalCoins: priced.totalCoins,
+      purchasable: priced.purchasable,
+    };
+  });
 }
 
 /**

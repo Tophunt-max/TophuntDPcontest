@@ -521,7 +521,7 @@ export default function AppSettings() {
                 className={field}
               />
               <p className={hint}>
-                {cfg.withdrawal.minAmount} coins = ₹{cashPreview.toFixed(2)}
+                {cfg.withdrawal.minAmount} coins = ₹{cashPreview.toFixed(2)}. Coin package price bhi = base coins × ye rate (bonus free).
               </p>
             </div>
           </div>
