@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="500" viewBox="0 0 1200 500">
+<defs><linearGradient id="g" x1="0" y1="1" x2="1" y2="0"><stop stop-color="#f97316"/><stop offset=".55" stop-color="#ef4444"/><stop offset="1" stop-color="#be123c"/></linearGradient><filter id="s"><feDropShadow dx="0" dy="16" stdDeviation="20" flood-opacity=".3"/></filter></defs>
+<rect width="1200" height="500" rx="40" fill="url(#g)"/><circle cx="1100" cy="20" r="245" fill="#ffd54a" opacity=".13"/><path d="M0 0h440L240 500H0z" fill="#fff" opacity=".05"/>
+<g transform="translate(740 60)" filter="url(#s)"><path d="M210 0c28 92-73 105-30 180 18-44 54-65 79-113 73 75 99 146 60 220-46 87-169 119-258 63-86-54-74-163-5-227-4 53 25 72 52 85-2-80 26-151 102-208z" fill="#ffd54a"/><path d="M188 144c7 49-43 67-18 108 15-23 34-36 48-62 36 42 43 82 20 115-29 42-95 51-137 20-44-32-40-90-3-124 1 27 17 40 33 45-3-44 14-78 57-102z" fill="#ff6b2c"/></g>
+<g transform="translate(962 233)"><circle cx="0" cy="0" r="78" fill="#fff"/><path d="M-35 7l23 23 48-56" fill="none" stroke="#ef4444" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g fill="#fff"><text x="64" y="72" font-family="Arial,sans-serif" font-size="25" font-weight="700" letter-spacing="5" opacity=".9">TOPHUNT</text><text x="64" y="122" font-family="Arial,sans-serif" font-size="17" font-weight="600" opacity=".8">TRENDING NOW</text></g>
+<g transform="translate(500 82)" fill="none" stroke="#fff" stroke-width="10" opacity=".65"><path d="M0 75l44-40 38 28 57-62"/><path d="M109 0h30v30"/></g>
+</svg>

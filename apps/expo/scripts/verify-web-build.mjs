@@ -36,6 +36,14 @@ const distDir = resolve(appDir, 'dist');
 const workerSrc = resolve(appDir, 'public', '_worker.js');
 const workerOut = resolve(distDir, '_worker.js');
 const headersOut = resolve(distDir, '_headers');
+const exploreBanners = [
+  'referral.svg',
+  'photo-battle.svg',
+  'video-battle.svg',
+  'trending.svg',
+  'leaderboard.svg',
+  'coin-store.svg',
+];
 
 if (!existsSync(distDir)) {
   fail(
@@ -67,9 +75,21 @@ if (!existsSync(headersOut)) {
   );
 }
 
+for (const name of exploreBanners) {
+  const src = resolve(appDir, 'public', 'explore-banners', name);
+  const out = resolve(distDir, 'explore-banners', name);
+  if (!existsSync(src) || !existsSync(out)) {
+    fail(
+      `Explore banner was not emitted: ${name}`,
+      'Migration 0064 publishes these URLs in app config, so a missing static',
+      'asset would ship a broken production carousel.',
+    );
+  }
+}
+
 await assertCspInSync();
 
-console.log('[web] dist/_worker.js + dist/_headers present; CSP in sync');
+console.log('[web] dist/_worker.js + dist/_headers + 6 Explore banners present; CSP in sync');
 
 function fail(...lines) {
   console.error(`\n[web] ${lines[0]}`);
