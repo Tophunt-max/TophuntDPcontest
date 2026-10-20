@@ -3,6 +3,9 @@
  * "your rank", and the admin-managed Explore config (banners + sections).
  */
 import { vi, describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import { eq } from 'drizzle-orm';
 
 vi.mock('../src/lib/firebaseAuth', () => ({
   verifyIdToken: async (token: string) => {
@@ -231,6 +234,8 @@ describe('Explore config', () => {
     const pub = publicExploreConfig(cfg, now);
     expect(pub.banners.map((b: any) => b.id)).toEqual(['live']);
     expect(pub.banners[0]).not.toHaveProperty('enabled');
+    expect(pub.banners[0]).not.toHaveProperty('startsAt');
+    expect(pub.banners[0]).not.toHaveProperty('endsAt');
     expect(pub.sections[0]).toEqual({ key: 'people', enabled: false });
     expect(pub.sections).toHaveLength(EXPLORE_SECTIONS.length);
     expect(normaliseSections(undefined).every((s) => s.enabled)).toBe(true);
@@ -253,5 +258,61 @@ describe('Explore config', () => {
     expect(cfg.body.explore.sections.find((s: any) => s.key === 'grid').enabled).toBe(false);
     const audit = await drizzleOf(env).select().from(schema.adminAuditLog).all();
     expect(audit.some((a: any) => String(a.action).includes('explore'))).toBe(true);
+  });
+});
+
+
+describe('migration 0064 production banner seed', () => {
+  const migration = () =>
+    fs.readFileSync(path.join(import.meta.dirname, '..', 'migrations', '0064_seed_explore_banners.sql'), 'utf8');
+
+  it('seeds all six banners into an empty Explore config without dropping sibling settings', async () => {
+    const { env, db } = makeEnv();
+    await drizzleOf(env).insert(schema.settings).values({
+      id: 'appConfig',
+      data: { appName: 'TopHunt', referralProgram: { referrerReward: 77 }, explore: { banners: [] } } as any,
+      updatedAt: 1,
+    });
+
+    db.exec(migration());
+    const row: any = await drizzleOf(env).select().from(schema.settings).where(eq(schema.settings.id, 'appConfig')).get();
+    expect(row.data.appName).toBe('TopHunt');
+    expect(row.data.referralProgram.referrerReward).toBe(77);
+    expect(row.data.explore.banners).toHaveLength(6);
+    expect(row.data.explore.banners.map((b: any) => b.id)).toEqual([
+      'refer-and-earn',
+      'photo-battle',
+      'video-battle',
+      'trending-battles',
+      'leaderboard',
+      'dpcoin-store',
+    ]);
+    expect(row.data.explore.banners.every((b: any) => b.enabled && b.imageUrl.startsWith('https://tophunt.in/explore-banners/'))).toBe(true);
+    expect(row.data.explore.sections.map((s: any) => s.key)).toEqual([...EXPLORE_SECTIONS]);
+  });
+
+  it('preserves an admin-created non-empty banner list and section order, and is idempotent', async () => {
+    const { env, db } = makeEnv();
+    const custom = {
+      explore: {
+        banners: [{ id: 'admin-banner', imageUrl: 'https://cdn.example.com/admin.png', title: 'Admin', enabled: true }],
+        sections: [{ key: 'grid', enabled: false }, { key: 'banners', enabled: true }],
+      },
+      maintenanceMode: true,
+    };
+    await drizzleOf(env).insert(schema.settings).values({ id: 'appConfig', data: custom as any, updatedAt: 1 });
+
+    db.exec(migration());
+    db.exec(migration());
+    const row: any = await drizzleOf(env).select().from(schema.settings).where(eq(schema.settings.id, 'appConfig')).get();
+    expect(row.data.explore.banners).toEqual(custom.explore.banners);
+    expect(row.data.explore.sections).toEqual(custom.explore.sections);
+    expect(row.data.maintenanceMode).toBe(true);
+  });
+
+  it('does nothing when appConfig does not exist (never creates a partial config row)', () => {
+    const { db } = makeEnv();
+    db.exec(migration());
+    expect(db.prepare("SELECT * FROM settings WHERE id = 'appConfig'").get()).toBeUndefined();
   });
 });

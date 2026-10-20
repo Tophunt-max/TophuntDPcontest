@@ -65,6 +65,7 @@ import m_0060_match_moderation_hold_sql from "../../migrations/0060_match_modera
 import m_0061_signup_completed_backfill_sql from "../../migrations/0061_signup_completed_backfill.sql";
 import m_0062_withdrawal_platform_fee_sql from "../../migrations/0062_withdrawal_platform_fee.sql";
 import m_0063_referral_program_sql from "../../migrations/0063_referral_program.sql";
+import m_0064_seed_explore_banners_sql from "../../migrations/0064_seed_explore_banners.sql";
 
 export interface Migration {
   name: string;
@@ -136,4 +137,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0061_signup_completed_backfill.sql", sql: m_0061_signup_completed_backfill_sql },
   { name: "0062_withdrawal_platform_fee.sql", sql: m_0062_withdrawal_platform_fee_sql },
   { name: "0063_referral_program.sql", sql: m_0063_referral_program_sql },
+  { name: "0064_seed_explore_banners.sql", sql: m_0064_seed_explore_banners_sql },
 ];
