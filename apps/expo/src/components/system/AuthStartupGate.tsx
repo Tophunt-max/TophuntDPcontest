@@ -1,10 +1,15 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
-import { Image } from 'expo-image';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { Colors } from '@/constants/theme';
+import { SplashVisual } from '@/src/components/system/SplashVisual';
 
-/** Stable first paint while Firebase restores persistence; no guest controls. */
+/**
+ * First paint while Firebase restores persistence.
+ *
+ * Uses the canonical OLD splash visual — not a separate “session restore” screen —
+ * so the Instagram-style auth gate fixes guest flicker without changing the
+ * design the user already knows. Only the rare 15s recovery state adds controls.
+ */
 export function AuthStartupGate({
   failed = false,
   onRetry,
@@ -15,16 +20,16 @@ export function AuthStartupGate({
   onContinue?: () => void;
 }) {
   const dark = useColorScheme() === 'dark';
-  const bg = dark ? Colors.dark.background : Colors.light.background;
-  const text = dark ? '#FFF' : '#212121';
   const sub = dark ? '#A0A0A0' : '#666';
+
+  if (!failed) return <SplashVisual />;
+
   return (
-    <View style={[styles.root, { backgroundColor: bg }]} accessibilityState={{ busy: !failed }}>
-      <Image source={require('../../../assets/images/splesh.png')} style={styles.logo} contentFit="contain" />
-      <Text style={[styles.name, { color: text }]}>TopHunt</Text>
-      <Text style={[styles.tagline, { color: sub }]}>{failed ? 'Saved session restore nahi ho paya.' : 'Aapka session restore ho raha hai…'}</Text>
-      {failed ? (
+    <SplashVisual
+      loading={false}
+      footer={
         <View style={styles.actions}>
+          <Text style={[styles.message, { color: sub }]}>Saved session restore nahi ho paya.</Text>
           <TouchableOpacity style={styles.primary} onPress={onRetry} accessibilityRole="button">
             <Text style={styles.primaryText}>Retry</Text>
           </TouchableOpacity>
@@ -33,22 +38,17 @@ export function AuthStartupGate({
           </TouchableOpacity>
           <Text style={[styles.note, { color: sub }]}>Aapka saved login delete nahi kiya gaya.</Text>
         </View>
-      ) : (
-        <ActivityIndicator color="#FF4D67" style={{ marginTop: 24 }} />
-      )}
-    </View>
+      }
+    />
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 28 },
-  logo: { width: 112, height: 112 },
-  name: { fontFamily: 'Urbanist-Bold', fontSize: 34, marginTop: 18 },
-  tagline: { fontFamily: 'Urbanist-Medium', fontSize: 14, marginTop: 8, textAlign: 'center' },
-  actions: { width: '100%', maxWidth: 320, marginTop: 24 },
-  primary: { height: 48, borderRadius: 24, backgroundColor: '#FF4D67', alignItems: 'center', justifyContent: 'center' },
+  actions: { width: '100%', maxWidth: 320, alignItems: 'center' },
+  message: { fontFamily: 'Urbanist-Medium', fontSize: 13, textAlign: 'center', marginBottom: 12 },
+  primary: { width: '100%', height: 46, borderRadius: 23, backgroundColor: '#FF4D67', alignItems: 'center', justifyContent: 'center' },
   primaryText: { color: '#FFF', fontFamily: 'Urbanist-Bold', fontSize: 16 },
-  secondary: { height: 44, alignItems: 'center', justifyContent: 'center', marginTop: 8 },
+  secondary: { height: 42, alignItems: 'center', justifyContent: 'center', marginTop: 6, paddingHorizontal: 16 },
   secondaryText: { fontFamily: 'Urbanist-SemiBold', fontSize: 14 },
-  note: { fontFamily: 'Urbanist-Regular', fontSize: 11, textAlign: 'center', marginTop: 8 },
+  note: { fontFamily: 'Urbanist-Regular', fontSize: 11, textAlign: 'center', marginTop: 2 },
 });
