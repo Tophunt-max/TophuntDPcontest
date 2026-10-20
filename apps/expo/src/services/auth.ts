@@ -2,6 +2,7 @@ import { createUserWithEmailAndPassword, signOut as firebaseSignOut } from 'fire
 import { auth } from './firebase/initFirebase';
 import { beginDeliberateSignOut, callApi, endDeliberateSignOut } from './api';
 import { notificationService } from './notifications/notificationService';
+import { clearCachedIdentity } from '@/src/lib/cachedIdentity';
 
 // Single source of truth for auth state. Previously this module had its own
 // duplicate `useAuth` implementation (a second onAuthStateChanged listener),
@@ -53,7 +54,11 @@ export const signOut = async (options: SignOutOptions = {}) => {
   }
 
   try {
+    const uid = auth.currentUser?.uid;
     await firebaseSignOut(auth);
+    // Basic identity is cached only to stabilise cold-start UI. Explicit sign-out
+    // removes it so the next person using this device never sees the old avatar.
+    await clearCachedIdentity(uid);
     console.log("[AuthService] firebaseSignOut successful");
   } catch (error: any) {
     console.error("[AuthService] firebaseSignOut error:", error);

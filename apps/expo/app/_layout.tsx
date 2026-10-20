@@ -4,6 +4,7 @@ import '@/src/lib/onboarding';
 import { ThemeProvider } from '@react-navigation/native';
 import { Stack, useGlobalSearchParams, usePathname, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import * as NativeSplash from 'expo-splash-screen';
 import { useFonts } from 'expo-font';
 import React, { useEffect } from 'react';
 import 'react-native-reanimated';
@@ -50,7 +51,7 @@ import { lightTheme, darkTheme } from '@/constants/theme';
 import '@/src/services/firebase/initFirebase'; // Import to initialize Firebase
 import '@/src/database'; // Initialize WatermelonDB
 import { getNotificationDestination } from '@/src/services/notifications/notificationMeta';
-import { View, AppState } from 'react-native';
+import { AppState, Platform } from 'react-native';
 // Icons are now SVG-based (src/lib/icons.tsx via lucide-react-native), so there
 // are NO icon fonts to preload — icons render identically on web/Android/iOS.
 
@@ -67,7 +68,9 @@ focusManager.setEventListener((handleFocus) => {
   return () => sub.remove();
 });
 
-import { useAuth } from '@/src/hooks/useAuth'; // Import useAuth hook
+import { useAuth } from '@/src/hooks/useAuth'; // Shared app-wide auth session
+import { useProfile } from '@/src/hooks/useProfileData';
+import { useCachedIdentity } from '@/src/hooks/useCachedIdentity';
 import { savePendingInvite } from '@/src/services/referrals';
 import { notificationService } from '@/src/services/notifications/notificationService';
 import { AnnouncementBanner } from '@/src/components/ui/AnnouncementBanner';
@@ -75,12 +78,17 @@ import { VerificationRewardPopup } from '@/src/components/verification/Verificat
 import { AnnouncementPopup } from '@/src/components/ui/AnnouncementPopup';
 import { ErrorBoundary } from '@/src/components/ErrorBoundary';
 import { OfflineBanner } from '@/src/components/ui/OfflineBanner';
+import { AuthStartupGate } from '@/src/components/system/AuthStartupGate';
 import { PhoneFrame } from '@/src/components/layout/PhoneFrame';
 import { emitToast } from '@/src/lib/toastBridge';
 import { reportError } from '@/src/lib/reportError';
 import { readApi, readApiLive } from '@/src/services/api';
 import { configureVideoCache } from '@/src/lib/videoCache';
 import { hydrateThemePreference } from '@/src/lib/themePreference';
+
+// Hold the native launch screen until fonts AND Firebase's first persisted-session
+// decision are ready. Direct links bypass app/splash.tsx, so this belongs here.
+if (Platform.OS !== 'web') void NativeSplash.preventAutoHideAsync().catch(() => {});
 
 // Apply our video cache budget. Deliberately at module scope: expo-video refuses
 // to change the cache size once any VideoPlayer exists, and module evaluation of
@@ -214,7 +222,12 @@ function DeletionGuard({ children }: { children: React.ReactNode }) {
 
 // Main Root Layout Component
 function RootLayoutNav() {
-  const { user, loading } = useAuth(); // Get user auth state
+  const { user, loading } = useAuth(); // One shared, already-resolved session snapshot
+  // Warm and persist public identity once per authenticated launch. Screens share
+  // this react-query row; Explore can paint the cached avatar/name while a fresh
+  // profile is still loading, without ever caching wallet/private fields.
+  const { data: shellProfile } = useProfile(user?.uid || '');
+  useCachedIdentity(user?.uid, shellProfile);
 
   // Drop every cached query when the signed-in account changes (sign-out, or a
   // different account signing in). The client is module-scoped and lives for the
@@ -421,6 +434,7 @@ function RootLayoutNav() {
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
+  const authSession = useAuth();
 
   /**
    * Text fonts.
@@ -451,6 +465,12 @@ export default function RootLayout() {
     if (fontError) reportError(fontError, { scope: 'root-layout', asset: 'urbanist-fonts' });
   }, [fontError]);
 
+  const fontsReady = fontsLoaded || !!fontError;
+  useEffect(() => {
+    if (!fontsReady || authSession.loading) return;
+    if (Platform.OS !== 'web') void NativeSplash.hideAsync().catch(() => {});
+  }, [fontsReady, authSession.loading]);
+
   /*
    * Hold the first paint until the fonts resolve, so text never renders in the
    * fallback face and then reflows once the real one arrives.
@@ -461,7 +481,15 @@ export default function RootLayout() {
    * the edge worker in `public/_worker.js` — no indexed content depends on this
    * render. On native the OS splash is still up, so there is nothing to flash.
    */
-  if (!fontsLoaded && !fontError) return null;
+  if (!fontsReady) return null;
+
+  // The crucial visual gate: the route tree does not mount while persisted auth
+  // is unknown, so no child can paint Login / Signup, a `?` avatar, guest feed,
+  // or guest-shaped viewer queries for an account Firebase is about to restore.
+  if (authSession.status === 'restoring') return <AuthStartupGate />;
+  if (authSession.status === 'error') {
+    return <AuthStartupGate failed onRetry={authSession.retry} onContinue={authSession.continueAsGuest} />;
+  }
 
   return (
     <ErrorBoundary>

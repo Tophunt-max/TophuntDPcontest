@@ -13,6 +13,7 @@ import { Skeleton } from '@/src/components/ui/Skeleton';
 import { useAuth } from '@/src/hooks/useAuth';
 import { useAuthGate } from '@/src/hooks/useAuthGate';
 import { useProfile } from '@/src/hooks/useProfileData';
+import { useCachedIdentity } from '@/src/hooks/useCachedIdentity';
 import { useFollowToggle } from '@/src/hooks/useFollowToggle';
 import { useAppConfig, useFeature } from '@/src/services/appSettings';
 import { emitToast } from '@/src/lib/toastBridge';
@@ -77,9 +78,10 @@ export default function ExploreScreen() {
   const qc = useQueryClient();
   const p = useExplorePalette();
   const { width } = useDesignWindow();
-  const { user } = useAuth();
+  const { user, status: authStatus, ready: authReady } = useAuth();
   const { requireAuth } = useAuthGate();
   const { data: profile } = useProfile(user?.uid || '');
+  const identity = useCachedIdentity(user?.uid, profile);
   const { config } = useAppConfig();
   const contestsOn = useFeature('contests');
 
@@ -96,13 +98,13 @@ export default function ExploreScreen() {
   const has = (k: ExploreSectionKey) => !isPeople && sections.includes(k);
 
   // ---- data (each section independent) ----
-  const trending = useExploreBattles('trending', type, 10, has('trending'));
-  const ending = useExploreBattles('ending', type, 10, has('endingSoon'));
-  const open = useExploreBattles('open', type, 20, has('openBattles'));
-  const contests = useLiveContests(type, has('contests'));
-  const creators = useTopCreators(10, has('topCreators'));
-  const people = useSuggestedPeople(isPeople ? 50 : 12, user?.uid ?? null, isPeople || has('people'));
-  const grid = useBattlePages('fresh', type, 18, has('grid'));
+  const trending = useExploreBattles('trending', type, 10, authReady && has('trending'));
+  const ending = useExploreBattles('ending', type, 10, authReady && has('endingSoon'));
+  const open = useExploreBattles('open', type, 20, authReady && has('openBattles'));
+  const contests = useLiveContests(type, authReady && has('contests'));
+  const creators = useTopCreators(10, authReady && has('topCreators'));
+  const people = useSuggestedPeople(isPeople ? 50 : 12, user?.uid ?? null, authReady && (isPeople || has('people')));
+  const grid = useBattlePages('fresh', type, 18, authReady && has('grid'));
 
   const following = (profile as any)?.following as string[] | undefined;
   const follow = useFollowToggle(following);
@@ -335,11 +337,12 @@ export default function ExploreScreen() {
         return (
           <TopBar
             palette={p}
-            signedIn={!!user}
+            signedIn={authStatus === 'authenticated'}
+            identityLoading={authStatus === 'authenticated' && !identity.hasIdentity}
             coins={coins}
-            avatar={(profile as any)?.profileImageUrl || null}
-            name={(profile as any)?.fullName || (profile as any)?.username || null}
-            guestOffer={!user && config?.referral?.enabled ? offerLine(config.referral) : null}
+            avatar={identity.avatarUrl}
+            name={identity.name}
+            guestOffer={authStatus === 'guest' && config?.referral?.enabled ? offerLine(config.referral) : null}
             onSearch={() => router.push('/explore/search' as any)}
             onProfile={() => requireAuth('profile') && router.push('/profile' as any)}
             onNotifications={() => requireAuth('notifications') && router.push('/notifications' as any)}
@@ -433,6 +436,7 @@ export default function ExploreScreen() {
 function TopBar({
   palette: p,
   signedIn,
+  identityLoading,
   coins,
   avatar,
   name,
@@ -445,6 +449,7 @@ function TopBar({
 }: {
   palette: ExplorePalette;
   signedIn: boolean;
+  identityLoading: boolean;
   coins: number;
   avatar: string | null;
   name: string | null;
@@ -459,13 +464,19 @@ function TopBar({
     <View style={{ backgroundColor: p.bg }}>
       <View style={styles.topBar}>
         <TouchableOpacity onPress={onProfile} accessibilityRole="button" accessibilityLabel="My profile">
-          <Avatar uri={avatar} name={name} size={42} style={[styles.headerAvatar, { borderColor: BRAND }]} />
+          {identityLoading ? (
+            <Skeleton width={42} height={42} borderRadius={21} />
+          ) : (
+            <Avatar uri={avatar} name={name} size={42} style={[styles.headerAvatar, { borderColor: BRAND }]} />
+          )}
         </TouchableOpacity>
         <View style={{ flex: 1, marginLeft: 12 }}>
           <Text style={[styles.kicker, { color: BRAND }]}>DISCOVER</Text>
           <Text style={[styles.title, { color: p.text }]} accessibilityRole="header">Explore</Text>
         </View>
-        {signedIn && (
+        {signedIn && (identityLoading ? (
+          <Skeleton width={76} height={38} borderRadius={19} />
+        ) : (
           <TouchableOpacity style={[styles.coinChip, { backgroundColor: p.chip }]} onPress={onWallet} accessibilityRole="button" accessibilityLabel={`${coins} coins. Buy coins`}>
             <CoinIcon size={14} color="#FFB300" />
             <Text style={[styles.coinText, { color: p.text }]}>{coins.toLocaleString()}</Text>
@@ -473,7 +484,7 @@ function TopBar({
               <Ionicons name="add" size={13} color="#FFF" />
             </View>
           </TouchableOpacity>
-        )}
+        ))}
         <TouchableOpacity style={[styles.iconBtn, { backgroundColor: p.chip }]} onPress={onNotifications} accessibilityRole="button" accessibilityLabel="Notifications">
           <Ionicons name="notifications" size={20} color={BRAND} />
         </TouchableOpacity>

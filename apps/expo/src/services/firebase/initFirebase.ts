@@ -59,7 +59,13 @@ try {
         // without it Firebase throws auth/argument-error.
         ...(Platform.OS === 'web' ? { popupRedirectResolver: browserPopupRedirectResolver } : {}),
     });
-} catch {
+} catch (error: any) {
+    // Fast Refresh / duplicate module evaluation legitimately reaches an already
+    // initialized Auth instance. Any other failure is observable: silently
+    // falling back to memory persistence makes users look logged out on restart.
+    if (!/already-initialized|already exists/i.test(String(error?.code || error?.message || error))) {
+      console.error('[firebase] persistent Auth initialization failed; using existing Auth instance', error);
+    }
     auth = getAuth(app);
 }
 

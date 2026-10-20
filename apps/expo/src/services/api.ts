@@ -184,7 +184,10 @@ async function endExpiredSession(revoked = false) {
         : 'Your session expired. Please sign in again.',
       'error',
     );
+    const uid = auth.currentUser?.uid;
     await signOut(auth);
+    const { clearCachedIdentity } = await import('@/src/lib/cachedIdentity');
+    await clearCachedIdentity(uid);
   } catch (e) {
     console.error('[api] sign-out after 401 failed', e);
   } finally {

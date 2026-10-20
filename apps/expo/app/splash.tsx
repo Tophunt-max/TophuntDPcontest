@@ -8,8 +8,7 @@ import {
 } from 'react-native';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useRouter } from 'expo-router';
-import { onAuthStateChanged, User } from 'firebase/auth';
-import { auth } from '../src/services/firebase/initFirebase';
+import { useAuth } from '@/src/hooks/useAuth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Animated, { 
   useSharedValue, 
@@ -65,6 +64,7 @@ const LoadingSpinner = () => {
 
 export default function SplashScreen() {
   const router = useRouter();
+  const { user, loading: authLoading, status: authStatus } = useAuth();
   const [appIsReady, setAppIsReady] = useState(false);
   const [splashImage, setSplashImage] = useState<string | null>(null);
   // Admin switch for the first-launch intro; unknown (config failed) = on.
@@ -107,10 +107,9 @@ export default function SplashScreen() {
       } catch (e) {
         console.warn('Splash Error:', e);
       } finally {
-        // Wait a small bit so splash is not too abrupt
-        setTimeout(() => {
-            setAppIsReady(true);
-        }, 500);
+        // No cosmetic delay: the root already held a branded shell until auth
+        // restoration, so route as soon as config/assets are ready.
+        setAppIsReady(true);
       }
     }
 
@@ -118,75 +117,57 @@ export default function SplashScreen() {
   }, []);
 
   useEffect(() => {
-    if (!appIsReady) return;
-
-    let unsubscribe: (() => void) | undefined;
+    // The app-wide observer has already resolved before this route can mount
+    // (app/_layout.tsx). Never attach a second observer or repeat persistence
+    // restoration here; consume the one shared session snapshot.
+    if (!appIsReady || authLoading || authStatus === 'error') return;
+    let cancelled = false;
 
     const performNavigationCheck = async () => {
-        const hasSeenOnboarding = await AsyncStorage.getItem(ONBOARDING_SEEN_KEY).catch(() => null);
-        // Opened from a link (shared battle/profile, blog, `/?ref=…`)? Then no
-        // intro this session — see src/lib/onboarding.ts.
-        const entry = await sessionEntryKind(() => Linking.getInitialURL());
+      const [hasSeenOnboarding, entry] = await Promise.all([
+        AsyncStorage.getItem(ONBOARDING_SEEN_KEY).catch(() => null),
+        sessionEntryKind(() => Linking.getInitialURL()),
+      ]);
+      if (cancelled) return;
 
-        unsubscribe = onAuthStateChanged(auth, async (user: User | null) => {
-            console.log("Auth state:", user ? "Logged in" : "Guest");
+      if (!user) {
+        router.replace(guestStartRoute(hasSeenOnboarding, { entry, enabled: onboardingEnabledRef.current }));
+        return;
+      }
 
-            if (user) {
-                // A signed-in user never gets the intro — not now, and not after
-                // signing out later (src/lib/onboarding.ts).
-                if (hasSeenOnboarding !== 'true') {
-                    void AsyncStorage.setItem(ONBOARDING_SEEN_KEY, 'true').catch(() => {});
-                }
-                try {
-                    // Account scheduled for deletion? Route to the reactivation gate
-                    // instead of home. This MUST be checked before the profile lookup
-                    // below: `/read/users/:id` hides pending-deletion accounts, so the
-                    // profile call would look like an incomplete signup and misroute.
-                    const meStatus: any = await readApi('/read/me/status').catch(() => null);
-                    if (meStatus?.status === 'pending_deletion' && meStatus?.deletion) {
-                        console.log('Account pending deletion -> reactivation gate');
-                        router.replace('/account-scheduled-deletion');
-                        return;
-                    }
+      // A signed-in user never gets the intro — not now, and not after signing
+      // out later (src/lib/onboarding.ts).
+      if (hasSeenOnboarding !== 'true') void AsyncStorage.setItem(ONBOARDING_SEEN_KEY, 'true').catch(() => {});
 
-                    // Check if the user has a completed profile in D1 (via the Worker)
-                    const userData: any = await readApi(`/read/users/${user.uid}`).catch(() => null);
+      try {
+        // Status failure is non-authoritative and may be offline: continue to the
+        // profile read rather than treating an authenticated user as guest.
+        const meStatus: any = await readApi('/read/me/status').catch(() => null);
+        if (cancelled) return;
+        if (meStatus?.status === 'pending_deletion' && meStatus?.deletion) {
+          router.replace('/account-scheduled-deletion');
+          return;
+        }
 
-                    if (userData) {
-                        // The server's flag only (src/lib/profileCompletion.ts).
-                        if (isProfileComplete(userData)) {
-                            console.log("Profile complete -> Home");
-                            router.replace('/home');
-                        } else {
-                            console.log("Profile incomplete -> Fill Profile");
-                            router.replace('/auth/signup/fill-profile');
-                        }
-                    } else {
-                        // Authenticated but no profile row (signup interrupted)
-                        console.log("No profile record -> Fill Profile");
-                        router.replace('/auth/signup/fill-profile');
-                    }
-                } catch (error) {
-                    console.error("Navigation check failed:", error);
-                    // On error, try to go Home if logged in, better than getting stuck
-                    router.replace('/home');
-                }
-            } else {
-                // Guest-first: a brand-new guest gets the short TopHunt intro
-                // once (Skip is always there); every later launch goes straight
-                // to the public Home feed. Sign-in is asked for only when they
-                // open a personal screen or tap a protected action.
-                router.replace(guestStartRoute(hasSeenOnboarding, { entry, enabled: onboardingEnabledRef.current }));
-            }
-        });
+        // Unlike the old `.catch(() => null)`, a NETWORK error is not interpreted
+        // as "profile missing". Only a successful null response means signup was
+        // interrupted; offline/server failure keeps the authenticated user in the
+        // app and lets the normal profile query retry.
+        const userData: any = await readApi(`/read/users/${user.uid}`);
+        if (cancelled) return;
+        if (!userData || !isProfileComplete(userData)) router.replace('/auth/signup/fill-profile');
+        else router.replace('/home');
+      } catch (error) {
+        console.error('Startup profile check failed; keeping authenticated shell', error);
+        if (!cancelled) router.replace('/home');
+      }
     };
 
-    performNavigationCheck();
-
+    void performNavigationCheck();
     return () => {
-        if (unsubscribe) unsubscribe();
+      cancelled = true;
     };
-  }, [appIsReady]);
+  }, [appIsReady, authLoading, authStatus, user, router]);
 
   const animatedLogoStyle = useAnimatedStyle(() => ({
     transform: [{ scale: logoScale.value }],
