@@ -1,6 +1,5 @@
 import { useCallback } from 'react';
 import { useGlobalSearchParams, usePathname, useRouter, useSegments } from 'expo-router';
-import { auth } from '@/src/services/firebase/initFirebase';
 import { useAuth } from '@/src/hooks/useAuth';
 import { Alert } from '@/src/lib/appAlert';
 import { authPromptCopy, loginHref, pathWithQuery, type GatedAction } from '@/src/lib/authGate';
@@ -19,14 +18,11 @@ import { authPromptCopy, loginHref, pathWithQuery, type GatedAction } from '@/sr
  * This is UX only. Every protected action is enforced by the Worker regardless.
  */
 export function useAuthGate() {
-  const { user } = useAuth();
+  const { user, status, ready, signedIn, isGuest } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const params = useGlobalSearchParams();
   const segments = useSegments();
-  // `auth.currentUser` covers the first render before the hook's listener fires.
-  const signedIn = !!(user ?? auth.currentUser);
-
   const requireAuth = useCallback(
     (
       action: GatedAction,
@@ -37,7 +33,10 @@ export function useAuthGate() {
         beforeNavigate?: () => void;
       } = {},
     ): boolean => {
-      if (user ?? auth.currentUser) return true;
+      if (status === 'authenticated' && user) return true;
+      // Root normally withholds the route tree while restoring/error. Fail closed
+      // without showing a false Login prompt if an action races that boundary.
+      if (status !== 'guest') return false;
       const { title, message } = authPromptCopy(action);
       const back = opts.returnTo ?? pathWithQuery(pathname, params as Record<string, unknown>, segments as string[]);
       Alert.alert(title, message, [
@@ -52,8 +51,8 @@ export function useAuthGate() {
       ]);
       return false;
     },
-    [user, router, pathname, params, segments],
+    [status, user, router, pathname, params, segments],
   );
 
-  return { requireAuth, isGuest: !signedIn, signedIn };
+  return { requireAuth, status, authReady: ready, isGuest, signedIn };
 }

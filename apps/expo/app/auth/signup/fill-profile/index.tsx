@@ -10,7 +10,7 @@ import {
 } from "react-native";
 import React, { useState, useEffect, useCallback } from "react";
 import { BackHandler, Platform } from "react-native";
-import { signOut } from "firebase/auth";
+import { signOut } from '@/src/services/auth';
 import { router } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
 import { useReadjustablePhoto } from "@/src/components/media/useImageAdjuster";
@@ -172,7 +172,7 @@ const FillProfile: React.FC = () => {
           onPress: async () => {
             useSignupStore.getState().reset();
             resetOnboarding();
-            await signOut(auth).catch(() => {});
+            await signOut({ skipPushTokenUnregister: true }).catch(() => {});
             router.replace("/auth/login");
           },
         },

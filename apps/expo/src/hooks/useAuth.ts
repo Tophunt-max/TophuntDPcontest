@@ -1,19 +1,22 @@
-import { useState, useEffect } from 'react';
-import { getAuth, onAuthStateChanged, User } from 'firebase/auth';
+import { useSyncExternalStore } from 'react';
+import { authFlags } from '@/src/lib/authState';
+import {
+  continueAuthSessionAsGuest,
+  getAuthSessionSnapshot,
+  retryAuthSession,
+  subscribeAuthSession,
+} from '@/src/services/authSession';
 
+/**
+ * Shared, synchronous session snapshot. Every caller sees the SAME state; no
+ * per-component Firebase listeners and no transient null interpreted as guest.
+ */
 export const useAuth = () => {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const auth = getAuth();
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setUser(user);
-      setLoading(false);
-    });
-
-    return () => unsubscribe();
-  }, []);
-
-  return { user, loading };
+  const snapshot = useSyncExternalStore(subscribeAuthSession, getAuthSessionSnapshot, getAuthSessionSnapshot);
+  return {
+    ...snapshot,
+    ...authFlags(snapshot),
+    retry: retryAuthSession,
+    continueAsGuest: continueAuthSessionAsGuest,
+  };
 };
