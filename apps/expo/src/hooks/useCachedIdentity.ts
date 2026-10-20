@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { cachedValueForUid } from '@/src/lib/authState';
 import { loadCachedIdentity, saveCachedIdentity, type CachedIdentity } from '@/src/lib/cachedIdentity';
 
 /** Last-known identity first, fresh profile wins and refreshes the cache. */
@@ -27,10 +28,11 @@ export function useCachedIdentity(uid: string | null | undefined, profile: any) 
     void saveCachedIdentity(next);
   }, [uid, profile]);
 
+  const validCached = cachedValueForUid(uid, cached);
   return {
-    name: profile?.fullName || cached?.name || cached?.username || null,
-    username: profile?.username || cached?.username || null,
-    avatarUrl: profile?.profileImageUrl || profile?.avatarUrl || cached?.avatarUrl || null,
-    hasIdentity: !!profile || !!cached,
+    name: profile?.fullName || validCached?.name || validCached?.username || null,
+    username: profile?.username || validCached?.username || null,
+    avatarUrl: profile?.profileImageUrl || profile?.avatarUrl || validCached?.avatarUrl || null,
+    hasIdentity: !!profile || !!validCached,
   };
 }

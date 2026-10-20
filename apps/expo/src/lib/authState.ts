@@ -31,3 +31,20 @@ export function authFlags(snapshot: Pick<AuthSnapshot, 'status' | 'user'>): Auth
     failed: snapshot.status === 'error',
   };
 }
+
+/** Identity controls have independent readiness: cached public identity may paint
+ * an avatar, but it must never imply that fresh wallet/profile data is ready. */
+export function accountShellFlags(status: AuthStatus, hasIdentity: boolean, hasFreshProfile: boolean) {
+  const signedIn = status === 'authenticated';
+  return {
+    avatarLoading: signedIn && !hasIdentity,
+    balanceLoading: signedIn && !hasFreshProfile,
+    showGuestUi: status === 'guest',
+  };
+}
+
+/** Synchronous UID boundary for any cached account value. React effects clear
+ * old state only after a render; this prevents account A from painting for B. */
+export function cachedValueForUid<T extends { uid: string }>(uid: string | null | undefined, cached: T | null): T | null {
+  return !!uid && cached?.uid === uid ? cached : null;
+}

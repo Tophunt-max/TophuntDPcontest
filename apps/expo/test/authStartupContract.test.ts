@@ -33,7 +33,8 @@ describe('first-paint auth contract', () => {
 
   it('shows the Explore signup offer only to a confirmed guest', () => {
     const explore = read('app/explore/index.tsx');
-    expect(explore).toContain("guestOffer={authStatus === 'guest'");
+    expect(explore).toContain('guestOffer={shell.showGuestUi');
+    expect(explore).toContain('balanceLoading={shell.balanceLoading}');
     expect(explore).not.toMatch(/guestOffer=\{!user/);
   });
 
@@ -47,5 +48,15 @@ describe('first-paint auth contract', () => {
     const splash = read('app/splash.tsx');
     expect(splash).not.toContain('onAuthStateChanged');
     expect(splash).not.toMatch(/readApi\(`\/read\/users\/\$\{user\.uid\}`\)\.catch\(\(\) => null\)/);
+  });
+});
+
+
+describe('cached identity cleanup contract', () => {
+  it('signup cancellation uses the central sign-out path, not Firebase directly', () => {
+    const signup = read('app/auth/signup/fill-profile/index.tsx');
+    expect(signup).toContain("import { signOut } from '@/src/services/auth'");
+    expect(signup).not.toContain('import { signOut } from "firebase/auth"');
+    expect(signup).toContain('signOut({ skipPushTokenUnregister: true })');
   });
 });

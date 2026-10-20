@@ -31,6 +31,7 @@ import {
   type BattleType,
 } from '@/src/services/explore';
 import { offerLine } from '@/src/services/referrals';
+import { accountShellFlags } from '@/src/lib/authState';
 import { BRAND, BRAND_GRAD, PAD, useExplorePalette, type ExplorePalette } from '@/src/components/explore/theme';
 import { BattleTile } from '@/src/components/explore/BattleTile';
 import { OpenBattleCard, OPEN_CARD_W } from '@/src/components/explore/OpenBattleCard';
@@ -110,6 +111,7 @@ export default function ExploreScreen() {
   const follow = useFollowToggle(following);
 
   const coins = Number((profile as any)?.Dpcoin ?? (profile as any)?.dpcoin ?? 0);
+  const shell = accountShellFlags(authStatus, identity.hasIdentity, !!profile);
   const tileW = (width - PAD * 2 - GRID_GAP) / 2;
   const railTileW = Math.min(200, Math.round(width * 0.46));
 
@@ -338,11 +340,12 @@ export default function ExploreScreen() {
           <TopBar
             palette={p}
             signedIn={authStatus === 'authenticated'}
-            identityLoading={authStatus === 'authenticated' && !identity.hasIdentity}
+            avatarLoading={shell.avatarLoading}
+            balanceLoading={shell.balanceLoading}
             coins={coins}
             avatar={identity.avatarUrl}
             name={identity.name}
-            guestOffer={authStatus === 'guest' && config?.referral?.enabled ? offerLine(config.referral) : null}
+            guestOffer={shell.showGuestUi && config?.referral?.enabled ? offerLine(config.referral) : null}
             onSearch={() => router.push('/explore/search' as any)}
             onProfile={() => requireAuth('profile') && router.push('/profile' as any)}
             onNotifications={() => requireAuth('notifications') && router.push('/notifications' as any)}
@@ -436,7 +439,8 @@ export default function ExploreScreen() {
 function TopBar({
   palette: p,
   signedIn,
-  identityLoading,
+  avatarLoading,
+  balanceLoading,
   coins,
   avatar,
   name,
@@ -449,7 +453,8 @@ function TopBar({
 }: {
   palette: ExplorePalette;
   signedIn: boolean;
-  identityLoading: boolean;
+  avatarLoading: boolean;
+  balanceLoading: boolean;
   coins: number;
   avatar: string | null;
   name: string | null;
@@ -464,7 +469,7 @@ function TopBar({
     <View style={{ backgroundColor: p.bg }}>
       <View style={styles.topBar}>
         <TouchableOpacity onPress={onProfile} accessibilityRole="button" accessibilityLabel="My profile">
-          {identityLoading ? (
+          {avatarLoading ? (
             <Skeleton width={42} height={42} borderRadius={21} />
           ) : (
             <Avatar uri={avatar} name={name} size={42} style={[styles.headerAvatar, { borderColor: BRAND }]} />
@@ -474,7 +479,7 @@ function TopBar({
           <Text style={[styles.kicker, { color: BRAND }]}>DISCOVER</Text>
           <Text style={[styles.title, { color: p.text }]} accessibilityRole="header">Explore</Text>
         </View>
-        {signedIn && (identityLoading ? (
+        {signedIn && (balanceLoading ? (
           <Skeleton width={76} height={38} borderRadius={19} />
         ) : (
           <TouchableOpacity style={[styles.coinChip, { backgroundColor: p.chip }]} onPress={onWallet} accessibilityRole="button" accessibilityLabel={`${coins} coins. Buy coins`}>

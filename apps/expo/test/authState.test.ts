@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { authFlags, type AuthSnapshot } from '../src/lib/authState';
+import { accountShellFlags, authFlags, cachedValueForUid, type AuthSnapshot } from '../src/lib/authState';
 
 const snap = (status: AuthSnapshot['status'], user: any = null): AuthSnapshot => ({ status, user, error: null });
 
@@ -32,5 +32,34 @@ describe('auth startup state model', () => {
       isGuest: false,
       failed: true,
     });
+  });
+});
+
+
+describe('authenticated account shell transitions', () => {
+  it('never exposes account A cached identity during an A → B or A → guest commit', () => {
+    const a = { uid: 'a', name: 'Alice' };
+    expect(cachedValueForUid('a', a)).toBe(a);
+    expect(cachedValueForUid('b', a)).toBeNull();
+    expect(cachedValueForUid(null, a)).toBeNull();
+  });
+
+  it('keeps wallet balance loading independent from cached public identity', () => {
+    expect(accountShellFlags('authenticated', true, false)).toEqual({
+      avatarLoading: false,
+      balanceLoading: true,
+      showGuestUi: false,
+    });
+    expect(accountShellFlags('authenticated', true, true)).toEqual({
+      avatarLoading: false,
+      balanceLoading: false,
+      showGuestUi: false,
+    });
+  });
+
+  it('never shows guest UI while restoring/error, only after confirmed guest', () => {
+    expect(accountShellFlags('restoring', false, false).showGuestUi).toBe(false);
+    expect(accountShellFlags('error', false, false).showGuestUi).toBe(false);
+    expect(accountShellFlags('guest', false, false).showGuestUi).toBe(true);
   });
 });
