@@ -114,7 +114,7 @@ export function publicExploreConfig(cfg: any, nowMs: number = Date.now()) {
         (b.startsAt == null || b.startsAt <= nowMs) &&
         (b.endsAt == null || b.endsAt > nowMs),
     )
-    .map(({ enabled: _e, startsAt: _s, ...b }: ExploreBanner) => b);
+    .map(({ enabled: _e, startsAt: _s, endsAt: _end, ...b }: ExploreBanner) => b);
   return { banners, sections: normaliseSections(src.sections) };
 }
 
