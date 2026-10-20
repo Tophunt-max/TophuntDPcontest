@@ -26,6 +26,7 @@
 import { validateCoinPricingPatch } from "./coinPricing";
 import { feeRuleFromConfig, validateWithdrawalFeePatch } from "./withdrawalFee";
 import { parseReferralConfig, publicReferralConfig, validateReferralPatch } from "./referralProgram";
+import { publicExploreConfig, validateExplorePatch } from "./exploreConfig";
 import { httpsError } from "./http";
 import { legacyAuthSettings, methodAllowed, resolveAuthMethods } from "./authMethods";
 import { onboardingEnabled, ONBOARDING_MAX_SLIDES } from "./onboardingConfig";
@@ -200,6 +201,8 @@ export function publicAppConfig(cfg: any, nowMs: number = Date.now()) {
     paymentGateway: { mode: cfg.paymentGateway?.mode || "auto" },
     // What the signup and invite screens may show (rewards, qualifying action).
     referral: publicReferralConfig(parseReferralConfig(cfg)),
+    // Explore banners (live ones only) and section order (lib/exploreConfig.ts).
+    explore: publicExploreConfig(cfg, nowMs),
     ads: { enabled: ads.enabled === true, reward: Number(ads.reward ?? 0), dailyCap: Number(ads.dailyCap ?? 0) },
     supportEmail: cfg.supportEmail || "",
     socialLinks: cfg.socialLinks || {},
@@ -352,6 +355,8 @@ export function validateAppControlPatch(body: any, existing: any, nowMs: number 
   if (body.coinPricing !== undefined) validateCoinPricingPatch(body.coinPricing);
   // Referral program (lib/referralProgram.ts).
   if (body.referralProgram !== undefined) validateReferralPatch(body.referralProgram);
+  // Explore page banners + sections (lib/exploreConfig.ts).
+  if (body.explore !== undefined) validateExplorePatch(body.explore);
 }
 
 // ---------------------------------------------------------------- the gate
@@ -437,6 +442,7 @@ export function appControlGate(cfg: any, input: GateInput, nowMs: number = Date.
 export const AUDITED_SECTIONS = [
   "coinPricing",
   "referralProgram",
+  "explore",
   "verificationReward",
   "rewardSettings",
   "onboarding",

@@ -1351,7 +1351,7 @@ readRoute.get("/contests", optionalAuth, guestReadLimit, async (c) => {
         or(isNull(schema.contests.endsAt), gt(schema.contests.endsAt, nowMs)),
       ];
       if (type) conds.push(eq(schema.contests.type, type));
-      const rows = await db.select().from(schema.contests).where(and(...conds)).all();
+      const rows = await db.select().from(schema.contests).where(and(...conds)).orderBy(desc(schema.contests.createdAt)).all();
       return rows.map(mapContest);
     },
   });
@@ -1404,7 +1404,9 @@ readRoute.get("/matches", optionalAuth, guestReadLimit, async (c) => {
   const sort =
     sortParam === "hot"
       ? "hot"
-      : sortParam === "foryou"
+      : sortParam === "ending"
+        ? "ending"
+        : sortParam === "foryou"
         ? "foryou"
         : sortParam === "following"
           ? "following"
@@ -1443,7 +1445,7 @@ readRoute.get("/matches", optionalAuth, guestReadLimit, async (c) => {
   // one request cache an empty feed for every viewer in the colo. For `hot`, offset
   // 0 IS the first page, so the two legitimately share an entry.
   const pageSeg =
-    sort === "hot" ? `o${Math.max(Math.floor(cursorNorm ?? 0), 0)}` : cursorNorm == null ? "first" : `c${cursorNorm}`;
+    sort === "hot" || sort === "ending" ? `o${Math.max(Math.floor(cursorNorm ?? 0), 0)}` : cursorNorm == null ? "first" : `c${cursorNorm}`;
   const cacheKey = `cache:matches:${status}:${type || "all"}:${sort}:${limit}:${pageSeg}`;
   const { matches, nextCursor } = await cachedJson<{ matches: any[]; nextCursor: number | null }>(c, {
     key: cacheKey,
@@ -1457,6 +1459,26 @@ readRoute.get("/matches", optionalAuth, guestReadLimit, async (c) => {
     load: async () => {
       const conds = [eq(schema.contestMatches.status, status), isNull(schema.contestMatches.moderationHoldAt)];
       if (type) conds.push(eq(schema.contestMatches.type, type));
+
+      if (sort === "ending") {
+        // "Ending soon" (Explore): live battles whose voting closes next. Only
+        // meaningful for `active`; served by idx_matches_status_expires. Rows whose
+        // window already lapsed (awaiting settlement) are skipped. Offset paging,
+        // like `hot`, because the order is not a stable keyset.
+        const offset = Math.max(Math.floor(cursorNorm ?? 0), 0);
+        conds.push(gt(schema.contestMatches.expiresAt, Date.now()));
+        const rows = await db
+          .select(MATCH_LIST_COLUMNS)
+          .from(schema.contestMatches)
+          .where(and(...conds))
+          .orderBy(asc(schema.contestMatches.expiresAt))
+          .limit(limit)
+          .offset(offset)
+          .all();
+        const list = rows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m));
+        await enrichParticipants(c.env, list);
+        return { matches: list, nextCursor: rows.length === limit ? offset + limit : null };
+      }
 
       if (sort === "hot") {
         // Engagement-weighted ranking; paginate by numeric offset.
@@ -1698,6 +1720,30 @@ readRoute.get("/leaderboard", optionalAuth, guestReadLimit, async (c) => {
   // visibleRanks downgrades this to private only if it actually filtered.
   c.header("Cache-Control", "public, max-age=30");
   return c.json(await visibleRanks(enriched));
+});
+
+/**
+ * The signed-in user's own standing ("Your rank" bar on the leaderboard). Rank
+ * is 1 + the number of publicly visible accounts strictly ahead, so ties share
+ * a rank. Private and per-user, so never cached at the edge.
+ */
+readRoute.get("/leaderboard/me", requireAuth, async (c) => {
+  const uid = c.get("user").uid;
+  const byRaw = c.req.query("by");
+  const by = byRaw === "votes" || byRaw === "xp" ? byRaw : "wins";
+  await rateLimit(c.env, `lbme:${uid}`, 120, 3600);
+  const col = by === "votes" ? schema.users.totalVotesReceived : by === "xp" ? schema.users.xp : schema.users.wins;
+  const db = getDb(c.env);
+  const me = await db.select({ score: col }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+  c.header("Cache-Control", "private, no-store");
+  if (!me) return c.json({ by, rank: null, score: 0 });
+  const score = Number(me.score) || 0;
+  const ahead = await db
+    .select({ n: sql<number>`COUNT(*)` })
+    .from(schema.users)
+    .where(and(discoverableUser, sql`COALESCE(${col}, 0) > ${score}`))
+    .get();
+  return c.json({ by, rank: Number(ahead?.n || 0) + 1, score });
 });
 
 // ================= APP CONFIG =================
@@ -2198,9 +2244,13 @@ readRoute.get("/users/suggested", optionalAuth, guestReadLimit, async (c) => {
           profileImageUrl: schema.users.profileImageUrl,
           verified: schema.users.verified,
           coordinates: schema.users.coordinates,
+          followersCount: schema.users.followersCount,
         })
         .from(schema.users)
         .where(discoverableUser)
+        // Deterministic and useful: verified and popular creators first, instead
+        // of whatever 100 rows SQLite happened to visit first.
+        .orderBy(desc(schema.users.verified), desc(schema.users.followersCount), desc(schema.users.createdAt))
         .limit(100)
         .all();
       return rows as any[];
@@ -2213,47 +2263,199 @@ readRoute.get("/users/suggested", optionalAuth, guestReadLimit, async (c) => {
   // top 100 gets a shorter page than requested — an acceptable trade for a
   // suggestion list, and the same trade the cached feed at /matches already makes.
   const hidden = await hiddenUidsFor(c.env, uid);
-  if (hidden.size) c.header("Cache-Control", "private, no-store");
-  const filtered = hidden.size ? excludeHiddenBy(pool, hidden, (r: any) => r.id) : pool;
+  // Never suggest yourself, or someone you already follow.
+  if (uid) {
+    hidden.add(uid);
+    const following = await c.env.DB.prepare(`SELECT following_id AS id FROM follows WHERE follower_id = ? LIMIT 5000`)
+      .bind(uid)
+      .all<{ id: string }>();
+    for (const r of following.results || []) hidden.add(r.id);
+  }
+  let filtered = pool.filter((r: any) => !hidden.has(r.id));
+  if (filtered.length !== pool.length) c.header("Cache-Control", "private, no-store");
+
+  // Proximity: the CLIENT sends its own position and the server sorts, so no
+  // account's coordinates leave the server any more (see coarseCoordinates for
+  // the history). Accounts without a position keep their popularity order, after
+  // the located ones.
+  const lat = Number(c.req.query("lat"));
+  const lng = Number(c.req.query("lng"));
+  if (Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
+    c.header("Cache-Control", "private, no-store");
+    const dist = (r: any) => {
+      const p = coarseCoordinates(r.coordinates);
+      if (!p) return Infinity;
+      const dLat = p.lat - lat;
+      const dLng = (p.lng - lng) * Math.cos((lat * Math.PI) / 180);
+      return dLat * dLat + dLng * dLng;
+    };
+    filtered = filtered
+      .map((r: any, i: number) => ({ r, i, d: dist(r) }))
+      .sort((a, b) => a.d - b.d || a.i - b.i)
+      .map((x) => x.r);
+  }
   const visible = filtered.slice(0, limit);
-  return c.json(visible.map((r: any) => ({ ...r, coordinates: coarseCoordinates(r.coordinates) })));
+  return c.json(
+    visible.map(({ coordinates: _coords, ...r }: any) => ({
+      ...r,
+      followersCount: Number(r.followersCount) || 0,
+      avatarThumbUrl: avatarUrl(c.env, r.profileImageUrl),
+      coordinates: null,
+    })),
+  );
 });
 
-readRoute.get("/users/search", optionalAuth, guestReadLimit, async (c) => {
+/**
+ * Normalise a search query: trim, lowercase, drop a leading `@` (the People
+ * placeholder invites "@username", and `@al%` never matched a handle), collapse
+ * whitespace, cap the length.
+ */
+export function normaliseSearchTerm(raw: unknown): string {
+  return String(raw ?? "")
+    .trim()
+    .replace(/^@+/, "")
+    .replace(/\s+/g, " ")
+    .toLowerCase()
+    .slice(0, 48);
+}
+
+/** Escape LIKE metacharacters so a literal `%`/`_` in a query matches itself. */
+export function likePrefix(term: string): string {
+  return term.replace(/[\\%_]/g, (ch) => `\\${ch}`) + "%";
+}
+
+/**
+ * People search: username prefix, full-name prefix, or the start of any word in
+ * the full name ("sharma" finds "Rahul Sharma"). Ranked exact handle → handle
+ * prefix → name match, then verified, then followers. Blocks are excluded (mutes
+ * are not — a muted user is still someone you can look up on purpose).
+ */
+async function searchPeople(c: any, term: string, limit: number) {
   const db = getDb(c.env);
   const uid = c.get("user")?.uid;
-  const q = (c.req.query("q") || "").toLowerCase();
-  if (q.length < 2) return c.json([]);
-  // Guests can search too, but an uncached LIKE scan per keystroke from an
-  // anonymous client is the cheapest way to burn D1 reads, so signed-out
-  // searches are throttled per IP (signed-in users are bounded by their session).
-  // Generous because many guests share one carrier-NAT address.
-  if (!uid) await rateLimit(c.env, `usersearch_ip:${clientIp(c.req.raw.headers)}`, 300, 60);
-  // Blocks only: a muted user is still someone you can look up on purpose.
   const blocked = await blockedUidsFor(c.env, uid);
   const excluded = sqlExclusionList(blocked);
+  const prefix = likePrefix(term);
+  const wordPrefix = "% " + prefix;
+  const match = sql`(
+    ${schema.users.username} LIKE ${prefix} ESCAPE '\\'
+    OR lower(${schema.users.fullName}) LIKE ${prefix} ESCAPE '\\'
+    OR lower(${schema.users.fullName}) LIKE ${wordPrefix} ESCAPE '\\'
+  )`;
+  const rank = sql`CASE
+    WHEN ${schema.users.username} = ${term} THEN 0
+    WHEN ${schema.users.username} LIKE ${prefix} ESCAPE '\\' THEN 1
+    ELSE 2 END`;
+  const conds = [match, discoverableUser];
+  if (excluded.length) conds.push(notInArray(schema.users.uid, excluded));
   const rows = await db
     .select({
       id: schema.users.uid,
       username: schema.users.username,
+      fullName: schema.users.fullName,
       avatarUrl: schema.users.profileImageUrl,
       verified: schema.users.verified,
+      followersCount: schema.users.followersCount,
     })
     .from(schema.users)
-    .where(
-      excluded.length
-        ? and(
-            like(schema.users.username, `${q}%`),
-            discoverableUser,
-            notInArray(schema.users.uid, excluded),
-          )
-        : and(like(schema.users.username, `${q}%`), discoverableUser),
-    )
-    .limit(10)
+    .where(and(...conds))
+    .orderBy(rank, desc(schema.users.verified), desc(schema.users.followersCount))
+    .limit(limit)
     .all();
   if (blocked.size) c.header("Cache-Control", "private, no-store");
   const visible = exclusionTruncated(blocked) ? excludeHiddenBy(rows as any[], blocked, (r: any) => r.id) : rows;
-  return c.json(visible);
+  return (visible as any[]).map((r) => ({
+    ...r,
+    followersCount: Number(r.followersCount) || 0,
+    avatarThumbUrl: avatarUrl(c.env, r.avatarUrl),
+  }));
+}
+
+/**
+ * Guests can search too, but an uncached LIKE scan per keystroke from an
+ * anonymous client is the cheapest way to burn D1 reads, so signed-out searches
+ * are throttled per IP (signed-in users are bounded by their session). Generous
+ * because many guests share one carrier-NAT address.
+ */
+async function searchRateLimit(c: any) {
+  if (!c.get("user")?.uid) await rateLimit(c.env, `usersearch_ip:${clientIp(c.req.raw.headers)}`, 300, 60);
+}
+
+readRoute.get("/users/search", optionalAuth, guestReadLimit, async (c) => {
+  const term = normaliseSearchTerm(c.req.query("q"));
+  if (term.length < 2) return c.json([]);
+  await searchRateLimit(c);
+  return c.json(await searchPeople(c, term, pageLimit(c, 10, 20)));
+});
+
+/**
+ * Universal search (Explore): people, live contests, open/live battles and blog
+ * posts for one query, in one round trip. Every list is small and bounded; the
+ * battle and contest scans are restricted to the live statuses (indexed) so a
+ * query never walks the history.
+ */
+readRoute.get("/search", optionalAuth, guestReadLimit, async (c) => {
+  const term = normaliseSearchTerm(c.req.query("q"));
+  const empty = { q: term, people: [], contests: [], battles: [], blog: [] };
+  if (term.length < 2) return c.json(empty);
+  await searchRateLimit(c);
+  const db = getDb(c.env);
+  const uid = c.get("user")?.uid;
+  const prefix = likePrefix(term);
+  const anywhere = "%" + prefix;
+  const ts = Date.now();
+
+  const [people, contests, battleRows, blog] = await Promise.all([
+    searchPeople(c, term, 6),
+    db
+      .select()
+      .from(schema.contests)
+      .where(
+        and(
+          eq(schema.contests.status, "live"),
+          or(isNull(schema.contests.startsAt), lte(schema.contests.startsAt, ts)),
+          or(isNull(schema.contests.endsAt), gt(schema.contests.endsAt, ts)),
+          sql`lower(${schema.contests.title}) LIKE ${anywhere} ESCAPE '\\'`,
+        ),
+      )
+      .limit(6)
+      .all(),
+    db
+      .select(MATCH_LIST_COLUMNS)
+      .from(schema.contestMatches)
+      .where(
+        and(
+          inArray(schema.contestMatches.status, ["active", "waiting_for_opponent"]),
+          isNull(schema.contestMatches.moderationHoldAt),
+          sql`COALESCE(${schema.contestMatches.isPrivate}, 0) = 0`,
+          sql`lower(${schema.contestMatches.title}) LIKE ${anywhere} ESCAPE '\\'`,
+        ),
+      )
+      .orderBy(desc(schema.contestMatches.totalVotes), desc(schema.contestMatches.createdAt))
+      .limit(10)
+      .all(),
+    db
+      .select(BLOG_LIST_COLUMNS)
+      .from(schema.blogPosts)
+      .where(and(eq(schema.blogPosts.status, "published"), sql`lower(${schema.blogPosts.title}) LIKE ${anywhere} ESCAPE '\\'`))
+      .orderBy(desc(schema.blogPosts.publishedAt))
+      .limit(5)
+      .all(),
+  ]);
+
+  let battles = battleRows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m));
+  await enrichParticipants(c.env, battles);
+  if (uid) {
+    battles = excludeHiddenMatches(battles, await hiddenUidsFor(c.env, uid));
+  }
+  c.header("Cache-Control", "private, no-store");
+  return c.json({
+    q: term,
+    people,
+    contests: contests.map(mapContest),
+    battles,
+    blog: blog.map((r: any) => mapBlogPost(c.env, r)),
+  });
 });
 
 /**

@@ -1,232 +1,247 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, Image, TouchableOpacity, ActivityIndicator, SafeAreaView } from 'react-native';
+import React, { useMemo, useState } from 'react';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { MaterialCommunityIcons } from '@/src/lib/icons';
+import { useQuery } from '@tanstack/react-query';
+import { LinearGradient } from 'expo-linear-gradient';
+import { MaterialCommunityIcons, Ionicons } from '@/src/lib/icons';
 import { BackButton } from '@/src/components/ui/BackButton';
 import { LeaderboardSkeleton } from '@/src/components/skeletons/LeaderboardSkeleton';
-import { leaderboardService } from '@/src/services/contests/leaderboardService';
-import { UserProfile } from '@/src/types/user';
 import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
-import { useThemeColor } from '@/hooks/use-theme-color';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { useDesignWindow } from '@/src/lib/layout';
+import { readApi } from '@/src/services/api';
+import { useAuth } from '@/src/hooks/useAuth';
+import { useMyRank } from '@/src/services/explore';
+import { compactCount, leaderboardScore, splitPodium, type LeaderboardBy } from '@/src/lib/exploreMedia';
+import { SectionEmpty, SectionError } from '@/src/components/explore/ExploreBits';
+import { BRAND, BRAND_GRAD, PAD, useExplorePalette, type ExplorePalette } from '@/src/components/explore/theme';
+import { ScaleTouchable } from '@/src/components/explore/ScaleTouchable';
 
+const TABS: { key: LeaderboardBy; label: string; unit: string; icon: string }[] = [
+  { key: 'wins', label: 'Winners', unit: 'wins', icon: 'trophy' },
+  { key: 'votes', label: 'Most voted', unit: 'votes', icon: 'heart' },
+  { key: 'xp', label: 'Top XP', unit: 'XP', icon: 'flash' },
+];
+
+const MEDAL = ['#FFD54A', '#CBD5E1', '#F4A261'];
+
+/**
+ * Leaderboard: podium + ranked list for wins / votes received / XP, with the
+ * viewer's own rank pinned at the bottom. react-query keyed by tab, so switching
+ * quickly can never show one tab's data under another tab's label.
+ */
 export default function LeaderboardScreen() {
   const router = useRouter();
-  // Podium columns are sized from the design width (the phone column on desktop).
+  const p = useExplorePalette();
+  const insets = useSafeAreaInsets();
   const { width } = useDesignWindow();
-  const podiumW = { width: width / 3.5 };
-  const [activeTab, setActiveTab] = useState<'wins' | 'votes' | 'xp'>('wins');
-  const [users, setUsers] = useState<UserProfile[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { user } = useAuth();
+  const [by, setBy] = useState<LeaderboardBy>('wins');
+  const unit = TABS.find((t) => t.key === by)!.unit;
 
-  const bgColor = useThemeColor({}, 'background');
-  const textColor = useThemeColor({}, 'text');
+  const q = useQuery({
+    queryKey: ['leaderboard', by],
+    queryFn: async () => ((await readApi('/read/leaderboard', { by, limit: 50 })) as any[]) || [],
+    staleTime: 30_000,
+  });
+  const me = useMyRank(by, !!user);
+  const { podium, rest, restStartRank } = useMemo(() => splitPodium(q.data || []), [q.data]);
+  const meInList = !!user && (q.data || []).some((u: any) => u.uid === user.uid);
 
-  useEffect(() => {
-    fetchData();
-  }, [activeTab]);
-
-  const fetchData = async () => {
-    setLoading(true);
-    try {
-      let data: UserProfile[] = [];
-      if (activeTab === 'wins') data = await leaderboardService.getTopWinners();
-      else if (activeTab === 'votes') data = await leaderboardService.getMostVoted();
-      else data = await leaderboardService.getTopLevels();
-      
-      setUsers(data);
-    } catch (error) {
-      console.error(error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const getScore = (user: UserProfile) => {
-    if (activeTab === 'wins') return user.stats?.wins || 0;
-    if (activeTab === 'votes') return user.stats?.totalVotesReceived || 0;
-    return user.xp || 0;
-  };
-
-  const getLabel = () => {
-    if (activeTab === 'wins') return 'Wins';
-    if (activeTab === 'votes') return 'Votes';
-    return 'XP';
-  };
-
-  const renderPodium = () => {
-    if (users.length < 3) return null;
-    const [first, second, third] = users;
-
-    return (
-      <View style={styles.podiumContainer}>
-        {/* Second Place */}
-        <View style={[styles.podiumItem, podiumW, { marginTop: 40 }]}>
-            <Avatar
-                uri={second.profileImageUrlThumb || second.profileImageUrl}
-                name={second.fullName}
-                size={70}
-                style={styles.podiumAvatar}
-            />
-            <View style={styles.badgeContainer}><Text style={styles.badgeText}>2</Text></View>
-            <View style={styles.podiumNameRow}>
-              <Text style={[styles.podiumName, { color: textColor }]} numberOfLines={1}>{second.fullName}</Text>
-              <VerifiedBadge verified={second.verified} size={13} />
-            </View>
-            <Text style={styles.podiumScore}>{getScore(second)}</Text>
-        </View>
-
-        {/* First Place */}
-        <View style={[styles.podiumItem, podiumW]}>
-            <View style={{ position: 'relative' }}>
-                <MaterialCommunityIcons name="crown" size={32} color="#FFD700" style={styles.crown} />
-                <Avatar
-                    uri={first.profileImageUrlThumb || first.profileImageUrl}
-                    name={first.fullName}
-                    size={90}
-                    style={[styles.podiumAvatar, { width: 90, height: 90, borderWidth: 3, borderColor: '#FFD700' }]}
-                />
-                <View style={[styles.badgeContainer, { backgroundColor: '#FFD700' }]}><Text style={styles.badgeText}>1</Text></View>
-            </View>
-            <View style={styles.podiumNameRow}>
-              <Text style={[styles.podiumName, { color: textColor, fontWeight: 'bold', fontSize: 16 }]} numberOfLines={1}>{first.fullName}</Text>
-              <VerifiedBadge verified={first.verified} size={14} />
-            </View>
-            <Text style={[styles.podiumScore, { color: '#FFD700', fontSize: 16 }]}>{getScore(first)}</Text>
-        </View>
-
-        {/* Third Place */}
-        <View style={[styles.podiumItem, podiumW, { marginTop: 60 }]}>
-            <Avatar
-                uri={third.profileImageUrlThumb || third.profileImageUrl}
-                name={third.fullName}
-                size={70}
-                style={styles.podiumAvatar}
-            />
-            <View style={[styles.badgeContainer, { backgroundColor: '#CD7F32' }]}><Text style={styles.badgeText}>3</Text></View>
-            <View style={styles.podiumNameRow}>
-              <Text style={[styles.podiumName, { color: textColor }]} numberOfLines={1}>{third.fullName}</Text>
-              <VerifiedBadge verified={third.verified} size={13} />
-            </View>
-            <Text style={styles.podiumScore}>{getScore(third)}</Text>
-        </View>
-      </View>
-    );
-  };
-
-  const renderUserItem = ({ item, index }: { item: UserProfile; index: number }) => {
-    // Skip top 3 as they are in podium
-    if (index < 3) return null;
-
-    return (
-      <TouchableOpacity 
-        style={styles.userCard} 
-        onPress={() => router.push({ pathname: '/profile', params: { userId: item.uid } })}
-      >
-        <View style={styles.rankContainer}>
-            <Text style={[styles.rankText, { color: textColor }]}>{index + 1}</Text>
-        </View>
-
-        <Avatar
-          uri={item.profileImageUrlThumb || item.profileImageUrl}
-          name={item.fullName}
-          size={44}
-          style={styles.avatar}
-        />
-
-        <View style={styles.userInfo}>
-          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-            <Text style={[styles.userName, { color: textColor }]} numberOfLines={1}>{item.fullName}</Text>
-            <VerifiedBadge verified={item.verified} size={14} />
-          </View>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-            {item.level && <View style={styles.levelTag}><Text style={styles.levelTagText}>Lv. {item.level}</Text></View>}
-            <Text style={styles.userHandle}>@{item.username}</Text>
-          </View>
-        </View>
-
-        <View style={styles.scoreContainer}>
-          <Text style={styles.scoreValue}>{getScore(item)}</Text>
-          <Text style={styles.scoreLabel}>{getLabel()}</Text>
-        </View>
-      </TouchableOpacity>
-    );
-  };
+  const open = (uid: string) => router.push(`/profile?userId=${encodeURIComponent(uid)}` as any);
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: bgColor }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: p.bg }]} edges={['top']}>
       <View style={styles.header}>
-        <BackButton size={26} color={textColor} />
-        <Text style={[styles.title, { color: textColor }]}>Leaderboard</Text>
-        <View style={{ width: 28 }} />
+        <BackButton size={24} color={p.text} style={{ marginRight: 12 }} />
+        <Text style={[styles.headerTitle, { color: p.text }]} accessibilityRole="header">Leaderboard</Text>
       </View>
 
-      <View style={styles.tabContainer}>
-        {['wins', 'votes', 'xp'].map((tab) => (
-            <TouchableOpacity 
-                key={tab}
-                style={[styles.tab, activeTab === tab && styles.activeTab]} 
-                onPress={() => setActiveTab(tab as any)}
+      <View style={[styles.tabs, { backgroundColor: p.chip }]} accessibilityRole="tablist">
+        {TABS.map((t) => {
+          const active = t.key === by;
+          return (
+            <TouchableOpacity
+              key={t.key}
+              style={[styles.tab, active && { backgroundColor: p.card }]}
+              onPress={() => setBy(t.key)}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: active }}
             >
-            <Text style={[styles.tabText, activeTab === tab && styles.activeTabText]}>
-                {tab === 'wins' ? 'Winners' : tab === 'votes' ? 'Voted' : 'Top XP'}
-            </Text>
+              <Ionicons name={t.icon} size={14} color={active ? BRAND : p.sub} />
+              <Text style={[styles.tabText, { color: active ? BRAND : p.sub }]}>{t.label}</Text>
             </TouchableOpacity>
-        ))}
+          );
+        })}
       </View>
 
-      {loading ? (
+      {q.isLoading ? (
         <LeaderboardSkeleton />
+      ) : q.isError ? (
+        <View style={{ marginTop: 30 }}>
+          <SectionError palette={p} onRetry={() => q.refetch()} label="Leaderboard load nahi ho paya." />
+        </View>
       ) : (
         <FlatList
-          data={users}
-          keyExtractor={(item) => item.uid}
-          renderItem={renderUserItem}
-          ListHeaderComponent={renderPodium}
-          contentContainerStyle={{ paddingBottom: 40 }}
-          ListEmptyComponent={<Text style={styles.emptyText}>No rankings available yet.</Text>}
+          data={rest}
+          keyExtractor={(u: any) => u.uid}
+          contentContainerStyle={{ paddingBottom: (user && !meInList ? 90 : 30) + insets.bottom }}
+          refreshControl={<RefreshControl refreshing={q.isRefetching} onRefresh={() => { q.refetch(); me.refetch(); }} tintColor={BRAND} />}
+          ListHeaderComponent={podium.length ? <Podium users={podium} by={by} unit={unit} palette={p} width={width} onOpen={open} /> : null}
+          ListEmptyComponent={
+            podium.length ? null : (
+              <View style={{ marginTop: 30 }}>
+                <SectionEmpty palette={p} icon="trophy-outline" text="Abhi rankings ban rahi hain. Battle jeeto aur sabse upar aao!" />
+              </View>
+            )
+          }
+          renderItem={({ item, index }) => (
+            <Row user={item} rank={restStartRank + index} score={leaderboardScore(item, by)} unit={unit} palette={p} isMe={item.uid === user?.uid} onOpen={open} />
+          )}
+          initialNumToRender={12}
         />
       )}
+
+      {user && me.data?.rank && !meInList ? (
+        <View style={[styles.meBar, { bottom: insets.bottom + 12 }]} accessibilityLabel={`Your rank ${me.data.rank}, ${me.data.score} ${unit}`}>
+          <LinearGradient colors={BRAND_GRAD} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.meInner}>
+            <Text style={styles.meRank}>#{compactCount(me.data.rank)}</Text>
+            <Text style={styles.meLabel}>Aapki rank</Text>
+            <View style={{ flex: 1 }} />
+            <Text style={styles.meScore}>{compactCount(me.data.score)} {unit}</Text>
+          </LinearGradient>
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 }
 
+function Podium({
+  users,
+  by,
+  unit,
+  palette: p,
+  width,
+  onOpen,
+}: {
+  users: any[];
+  by: LeaderboardBy;
+  unit: string;
+  palette: ExplorePalette;
+  width: number;
+  onOpen: (uid: string) => void;
+}) {
+  const colW = (width - PAD * 2) / 3;
+  const order = [1, 0, 2];
+  return (
+    <View style={styles.podium}>
+      {order.map((i) => {
+        const u = users[i];
+        const first = i === 0;
+        const size = first ? 86 : 66;
+        return (
+          <ScaleTouchable
+            key={u.uid}
+            style={{ width: colW, alignItems: 'center', marginTop: first ? 0 : i === 1 ? 26 : 40 }}
+            onPress={() => onOpen(u.uid)}
+            accessibilityRole="link"
+            accessibilityLabel={`Rank ${i + 1}, ${u.username || u.fullName}, ${leaderboardScore(u, by)} ${unit}`}
+          >
+            <View style={{ alignItems: 'center' }}>
+              {first && <MaterialCommunityIcons name="crown" size={30} color={MEDAL[0]} style={{ marginBottom: -4 }} />}
+              <View style={[styles.podiumRing, { borderColor: MEDAL[i] }]}>
+                <Avatar uri={u.profileImageUrlThumb || u.profileImageUrl} name={u.fullName || u.username} size={size} />
+              </View>
+              <View style={[styles.medal, { backgroundColor: MEDAL[i], top: size - 6 + (first ? 26 : 0) }]}>
+                <Text style={styles.medalText}>{i + 1}</Text>
+              </View>
+              <View style={[styles.nameRow, { marginTop: 16 }]}>
+                <Text style={[styles.podiumName, { color: p.text }]} numberOfLines={1}>{u.fullName || u.username}</Text>
+                <VerifiedBadge verified={u.verified} size={12} />
+              </View>
+              <Text style={[styles.podiumScore, { color: first ? '#D97706' : p.sub }]}>
+                {compactCount(leaderboardScore(u, by))} {unit}
+              </Text>
+            </View>
+          </ScaleTouchable>
+        );
+      })}
+    </View>
+  );
+}
+
+const Row = React.memo(function Row({
+  user: u,
+  rank,
+  score,
+  unit,
+  palette: p,
+  isMe,
+  onOpen,
+}: {
+  user: any;
+  rank: number;
+  score: number;
+  unit: string;
+  palette: ExplorePalette;
+  isMe: boolean;
+  onOpen: (uid: string) => void;
+}) {
+  return (
+    <TouchableOpacity
+      style={[styles.row, { backgroundColor: isMe ? (p.isDark ? '#2A1A22' : '#FFF1F3') : p.card, borderColor: isMe ? BRAND : p.border }]}
+      onPress={() => onOpen(u.uid)}
+      accessibilityRole="link"
+      accessibilityLabel={`Rank ${rank}, ${u.username || u.fullName}, ${score} ${unit}`}
+    >
+      <Text style={[styles.rank, { color: p.sub }]}>{rank}</Text>
+      <Avatar uri={u.profileImageUrlThumb || u.profileImageUrl} name={u.fullName || u.username} size={44} />
+      <View style={{ flex: 1, marginLeft: 12 }}>
+        <View style={styles.nameRow}>
+          <Text style={[styles.rowName, { color: p.text }]} numberOfLines={1}>{u.fullName || u.username}</Text>
+          <VerifiedBadge verified={u.verified} size={13} />
+          {Number(u.level) > 0 ? (
+            <View style={[styles.level, { backgroundColor: p.chip }]}>
+              <Text style={[styles.levelText, { color: p.text }]}>Lv {u.level}</Text>
+            </View>
+          ) : null}
+        </View>
+        <Text style={[styles.handle, { color: p.sub }]} numberOfLines={1}>@{u.username}</Text>
+      </View>
+      <View style={{ alignItems: 'flex-end' }}>
+        <Text style={[styles.score, { color: BRAND }]}>{compactCount(score)}</Text>
+        <Text style={[styles.unit, { color: p.sub }]}>{unit}</Text>
+      </View>
+    </TouchableOpacity>
+  );
+});
+
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16 },
-  title: { fontSize: 22, fontFamily: 'Urbanist-Bold' },
-  
-  tabContainer: { flexDirection: 'row', marginHorizontal: 16, marginBottom: 10, backgroundColor: '#F5F5F5', borderRadius: 12, padding: 4 },
-  tab: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 10 },
-  activeTab: { backgroundColor: 'white', elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, shadowRadius: 2 },
-  tabText: { fontFamily: 'Urbanist-SemiBold', color: '#9E9E9E', fontSize: 13 },
-  activeTabText: { color: '#FF4D67' },
-
-  // Podium
-  podiumContainer: { flexDirection: 'row', justifyContent: 'center', alignItems: 'flex-end', marginBottom: 30, marginTop: 10, height: 200 },
-  podiumItem: { alignItems: 'center' }, // width is inline (podiumW)
-  podiumAvatar: { width: 70, height: 70, borderRadius: 35, marginBottom: 8, borderWidth: 2, borderColor: '#C0C0C0' },
-  badgeContainer: { position: 'absolute', bottom: 50, backgroundColor: '#C0C0C0', width: 20, height: 20, borderRadius: 10, justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: '#FFF' },
-  badgeText: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
-  crown: { position: 'absolute', top: -34, left: 29, transform: [{ rotate: '-10deg' }] },
-  podiumName: { fontSize: 13, fontFamily: 'Urbanist-Bold', marginBottom: 2, textAlign: 'center', flexShrink: 1 },
-  podiumNameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', maxWidth: 90 },
-  podiumScore: { fontFamily: 'Urbanist-Bold', color: '#FF4D67', fontSize: 14 },
-
-  // List Item
-  userCard: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: '#F5F5F5' },
-  rankContainer: { width: 30, alignItems: 'center', marginRight: 10 },
-  rankText: { fontSize: 16, fontFamily: 'Urbanist-Bold', color: '#9E9E9E' },
-  avatar: { width: 44, height: 44, borderRadius: 22, marginRight: 12 },
-  userInfo: { flex: 1 },
-  userName: { fontSize: 15, fontFamily: 'Urbanist-Bold', flexShrink: 1 },
-  userHandle: { fontSize: 12, color: '#9E9E9E' },
-  levelTag: { backgroundColor: '#FFF8E1', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginRight: 6 },
-  levelTagText: { fontSize: 10, color: '#FFD700', fontWeight: 'bold' },
-  scoreContainer: { alignItems: 'flex-end' },
-  scoreValue: { fontSize: 16, fontFamily: 'Urbanist-Bold', color: '#FF4D67' },
-  scoreLabel: { fontSize: 10, color: '#9E9E9E', textTransform: 'uppercase' },
-  emptyText: { textAlign: 'center', marginTop: 50, color: '#9E9E9E', fontFamily: 'Urbanist-Medium' }
+  header: { flexDirection: 'row', alignItems: 'center', height: 56, paddingHorizontal: 16 },
+  headerTitle: { fontSize: 22, fontFamily: 'Urbanist-Bold' },
+  tabs: { flexDirection: 'row', marginHorizontal: PAD, borderRadius: 14, padding: 4, marginBottom: 6 },
+  tab: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: 9, borderRadius: 11 },
+  tabText: { fontSize: 13, fontFamily: 'Urbanist-Bold' },
+  podium: { flexDirection: 'row', justifyContent: 'center', paddingHorizontal: PAD, paddingTop: 20, paddingBottom: 18 },
+  podiumRing: { padding: 3, borderRadius: 60, borderWidth: 3 },
+  medal: { position: 'absolute', width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#FFF' },
+  medalText: { fontSize: 11, fontFamily: 'Urbanist-Black', color: '#3B2A00' },
+  nameRow: { flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: '100%' },
+  podiumName: { fontSize: 13, fontFamily: 'Urbanist-Bold', flexShrink: 1 },
+  podiumScore: { fontSize: 13, fontFamily: 'Urbanist-Black', marginTop: 2 },
+  row: { flexDirection: 'row', alignItems: 'center', marginHorizontal: PAD, marginBottom: 10, padding: 12, borderRadius: 16, borderWidth: 1 },
+  rank: { width: 30, fontSize: 15, fontFamily: 'Urbanist-Black' },
+  rowName: { fontSize: 15, fontFamily: 'Urbanist-Bold', flexShrink: 1 },
+  handle: { fontSize: 12, fontFamily: 'Urbanist-Medium', marginTop: 1 },
+  level: { paddingHorizontal: 6, paddingVertical: 1, borderRadius: 6 },
+  levelText: { fontSize: 10, fontFamily: 'Urbanist-Bold' },
+  score: { fontSize: 16, fontFamily: 'Urbanist-Black' },
+  unit: { fontSize: 10, fontFamily: 'Urbanist-SemiBold' },
+  meBar: { position: 'absolute', left: PAD, right: PAD, borderRadius: 16, overflow: 'hidden' },
+  meInner: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingVertical: 14 },
+  meRank: { color: '#FFF', fontSize: 18, fontFamily: 'Urbanist-Black' },
+  meLabel: { color: 'rgba(255,255,255,0.9)', fontSize: 13, fontFamily: 'Urbanist-SemiBold' },
+  meScore: { color: '#FFF', fontSize: 15, fontFamily: 'Urbanist-Bold' },
 });
