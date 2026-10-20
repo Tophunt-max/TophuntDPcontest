@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="500" viewBox="0 0 1200 500">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#5b35d5"/><stop offset=".55" stop-color="#8b5cf6"/><stop offset="1" stop-color="#ec4899"/></linearGradient><filter id="s"><feDropShadow dx="0" dy="16" stdDeviation="18" flood-opacity=".28"/></filter></defs>
+<rect width="1200" height="500" rx="40" fill="url(#g)"/><circle cx="1070" cy="70" r="230" fill="#38bdf8" opacity=".12"/><circle cx="800" cy="470" r="190" fill="#fff" opacity=".06"/><path d="M0 0h470L270 500H0z" fill="#fff" opacity=".045"/>
+<g transform="translate(760 45)" filter="url(#s)"><rect x="0" y="0" width="260" height="390" rx="42" fill="#16172a" stroke="#fff" stroke-width="9"/><rect x="22" y="34" width="216" height="310" rx="24" fill="#332061"/><circle cx="130" cy="188" r="65" fill="#ff4d87"/><path d="M112 148l62 40-62 40z" fill="#fff"/><rect x="94" y="14" width="72" height="8" rx="4" fill="#fff" opacity=".5"/><circle cx="130" cy="366" r="11" fill="#fff" opacity=".6"/></g>
+<g transform="translate(992 132)" filter="url(#s)"><rect x="0" y="0" width="132" height="94" rx="24" fill="#fff"/><path d="M42 25h51v44H42z" fill="#8b5cf6"/><path d="M93 37l26-14v48L93 57z" fill="#ec4899"/></g>
+<g fill="#fff"><text x="64" y="72" font-family="Arial,sans-serif" font-size="25" font-weight="700" letter-spacing="5" opacity=".9">TOPHUNT</text><text x="64" y="122" font-family="Arial,sans-serif" font-size="17" font-weight="600" opacity=".8">VIDEO BATTLES</text></g>
+<g transform="translate(510 88)" fill="#fff" opacity=".55"><path d="M0 0h17v68H0zM30 18h17v50H30zM60 8h17v60H60zM90 25h17v43H90z"/></g>
+</svg>
