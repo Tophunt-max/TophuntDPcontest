@@ -47,6 +47,8 @@ const MANAGED_KEYS = [
   "rewardSettings",
   // Owned by the Referrals page.
   "referralProgram",
+  // Owned by the Explore page.
+  "explore",
   "verificationReward",
   "paymentGateway",
   "ads",

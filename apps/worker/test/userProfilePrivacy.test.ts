@@ -365,19 +365,26 @@ describe('existing profile invariants still hold', () => {
 });
 
 describe('/read/users/suggested does not disclose a home address', () => {
-  it('coarsens coordinates to roughly a kilometre', async () => {
-    // The client sorts suggestions by distance itself, and was handed each account's
-    // EXACT stored coordinate to do it — up to 50 of them, with no token required.
-    // Exact coordinates plus a username is a home address.
+  it('never returns anyone\'s coordinates — the server sorts by distance instead', async () => {
+    // The client used to sort suggestions by distance itself, and was handed each
+    // account's coordinate to do it (first exact, then coarsened). Now the client
+    // sends ITS OWN position and the server orders the list, so no coordinate of
+    // anyone else ever leaves the server.
     const { env } = makeEnv();
     await seedAlice(env);
+    await drizzleOf(env)
+      .insert(schema.users)
+      .values({ signupCompleted: true, uid: 'dave', username: 'dave', coordinates: { lat: 28.61, lng: 77.2 }, createdAt: 1, updatedAt: 1 } as any);
     const res = await app.request('/read/users/suggested', {}, env, fakeCtx());
     const rows = (await res.json()) as any[];
-    const alice = rows.find((r) => r.id === 'alice');
+    for (const r of rows) expect(r.coordinates).toBeNull();
 
-    expect(alice.coordinates).toEqual({ lat: 19.08, lng: 72.88 });
-    // Still ordered-by-distance-able, just no longer to the building.
-    expect(alice.coordinates.lat).not.toBe(19.0761234);
+    // Near Delhi: dave first. Near Mumbai (alice's city): alice first.
+    const delhi = (await (await app.request('/read/users/suggested?lat=28.6&lng=77.2', {}, env, fakeCtx())).json()) as any[];
+    expect(delhi[0].id).toBe('dave');
+    const mumbai = await app.request('/read/users/suggested?lat=19.07&lng=72.87', {}, env, fakeCtx());
+    expect(((await mumbai.json()) as any[])[0].id).toBe('alice');
+    expect(mumbai.headers.get('Cache-Control')).toContain('no-store');
   });
 
   it('returns null for a missing or malformed coordinate rather than throwing', async () => {

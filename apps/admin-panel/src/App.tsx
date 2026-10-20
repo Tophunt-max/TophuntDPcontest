@@ -71,6 +71,7 @@ const Notifications = lazyWithReload(() => import("@/pages/Notifications"));
 const Announcements = lazyWithReload(() => import("@/pages/Announcements"));
 const Rewards = lazyWithReload(() => import("@/pages/Rewards"));
 const Referrals = lazyWithReload(() => import("@/pages/Referrals"));
+const ExplorePage = lazyWithReload(() => import("@/pages/Explore"));
 const AppControl = lazyWithReload(() => import("@/pages/AppControl"));
 const AppSettings = lazyWithReload(() => import("@/pages/AppSettings"));
 const Onboarding = lazyWithReload(() => import("@/pages/Onboarding"));
@@ -136,6 +137,7 @@ function ProtectedApp() {
           <Route path="/announcements" component={Announcements} />
           <Route path="/rewards" component={Rewards} />
           <Route path="/referrals" component={Referrals} />
+          <Route path="/explore" component={ExplorePage} />
           <Route path="/app-control" component={AppControl} />
           <Route path="/app-settings" component={AppSettings} />
           <Route path="/onboarding" component={Onboarding} />

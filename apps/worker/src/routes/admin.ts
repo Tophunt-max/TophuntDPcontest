@@ -71,7 +71,7 @@ import {
   validateContestInput,
 } from "../lib/contestAdmin";
 import { normalizePrizeType, publicPrize, resolveMatchPrize } from "../lib/prizes";
-import { ONBOARDING_IMAGE_PREFIX, PRODUCT_IMAGE_PREFIX } from "../lib/mediaCategories";
+import { EXPLORE_BANNER_PREFIX, ONBOARDING_IMAGE_PREFIX, PRODUCT_IMAGE_PREFIX } from "../lib/mediaCategories";
 import { sanitizeOnboardingSlides } from "../lib/onboardingConfig";
 import { formatDeliveryAddress, summariseDeliveryAddress } from "../lib/deliveryAddress";
 import {
@@ -724,6 +724,16 @@ adminRoute.post("/media/onboarding-image", async (c) => {
   const body = await readAdminImageBody(c);
   const uploaded = await uploadToR2(c.env, fileType, ONBOARDING_IMAGE_PREFIX, body, [fileType]);
   await logAudit(c, "onboarding.image.upload", "onboarding-image", uploaded.fileKey, { publicUrl: uploaded.publicUrl });
+  return c.json(uploaded);
+});
+
+/** Image for an Explore promo banner (appConfig.explore.banners). */
+adminRoute.post("/media/explore-banner", async (c) => {
+  requireFullAdmin(c);
+  const fileType = assertAdminImageUpload(c);
+  const body = await readAdminImageBody(c);
+  const uploaded = await uploadToR2(c.env, fileType, EXPLORE_BANNER_PREFIX, body, [fileType]);
+  await logAudit(c, "explore.banner.upload", "explore-banner", uploaded.fileKey, { publicUrl: uploaded.publicUrl });
   return c.json(uploaded);
 });
 

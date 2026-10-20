@@ -1,1187 +1,683 @@
-import React, { useState, useEffect, useRef } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  SafeAreaView,
-  Image,
-  TouchableOpacity,
-  ScrollView,
-  ImageBackground,
-  TextInput,
-  Animated as RNAnimated,
-  FlatList,
-  RefreshControl,
-  Platform,
-  Pressable,
-  ActivityIndicator,
-} from 'react-native';
-import { useColorScheme } from '@/hooks/use-color-scheme';
-import { BottomNav } from '@/src/components/home/BottomNav';
-import { Ionicons, MaterialCommunityIcons } from '@/src/lib/icons';
-import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
-import { CoinIcon } from '@/src/components/ui/CoinIcon';
-import { Skeleton, SkeletonCircle } from '@/src/components/ui/Skeleton';
+import React, { useCallback, useMemo, useState } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, FlatList, RefreshControl, Platform, ActivityIndicator, ScrollView, Pressable } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
-import { contestService } from '@/src/services/contests/contestService';
-import { fetchSuggestedUsers, toggleFollowService, searchUsers } from '@/src/services/users';
-import { followButtonLabel, followStateFromResult, intentFor, stateInSets, withStateInSets, type FollowState } from '@/src/lib/followState';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useQueryClient } from '@tanstack/react-query';
+import { BottomNav } from '@/src/components/home/BottomNav';
+import { Ionicons } from '@/src/lib/icons';
+import { CoinIcon } from '@/src/components/ui/CoinIcon';
 import { Avatar } from '@/src/components/ui/Avatar';
-import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
+import { Skeleton } from '@/src/components/ui/Skeleton';
 import { useAuth } from '@/src/hooks/useAuth';
 import { useAuthGate } from '@/src/hooks/useAuthGate';
 import { useProfile } from '@/src/hooks/useProfileData';
-import { LinearGradient } from 'expo-linear-gradient';
-import { useToast } from '@/src/components/toast/ToastProvider';
-import { Colors } from '@/constants/theme';
-import { CloseIcon } from '@/src/components/ui/CloseIcon';
-import { ContestCountdownBadge, ContestEntryBadge } from '@/src/components/contests/ContestBadges';
-import { useCountdown } from '@/src/hooks/useCountdown';
-import { entryFeePerPlayer, isFreeContest } from '@/src/lib/contestPricing';
-import { contestPrize, describePrize, matchPrize } from '@/src/lib/contestPrize';
+import { useFollowToggle } from '@/src/hooks/useFollowToggle';
+import { useAppConfig, useFeature } from '@/src/services/appSettings';
+import { emitToast } from '@/src/lib/toastBridge';
+import { isFreeContest } from '@/src/lib/contestPricing';
 import { useDesignWindow } from '@/src/lib/layout';
+import { chunk, enabledSections, joinableOpenBattles, type ExploreSectionKey, type ExploreTab } from '@/src/lib/exploreMedia';
+import {
+  EXPLORE_KEY,
+  useBattlePages,
+  useExploreBattles,
+  useLiveContests,
+  useSuggestedPeople,
+  useTopCreators,
+  type BattleKind,
+  type BattleType,
+} from '@/src/services/explore';
+import { offerLine } from '@/src/services/referrals';
+import { BRAND, BRAND_GRAD, PAD, useExplorePalette, type ExplorePalette } from '@/src/components/explore/theme';
+import { BattleTile } from '@/src/components/explore/BattleTile';
+import { OpenBattleCard, OPEN_CARD_W } from '@/src/components/explore/OpenBattleCard';
+import { TemplateCard, TEMPLATE_H, TEMPLATE_W } from '@/src/components/explore/TemplateCard';
+import { BannerCarousel } from '@/src/components/explore/BannerCarousel';
+import { CreatorChip, PersonCard } from '@/src/components/explore/PeopleCards';
+import { RailSkeleton, SectionEmpty, SectionError, SectionHeader } from '@/src/components/explore/ExploreBits';
+import { ScaleTouchable } from '@/src/components/explore/ScaleTouchable';
 
-const PAD = 20;
-const GRID_GAP = 14;
 /**
- * Two people cards per row, from the design width (the phone column on desktop,
- * so the grid can't outgrow it) and reactive to window resizes.
+ * Explore — the discovery hub.
+ *
+ * One virtualised FlatList: a header, sticky type tabs, then the sections the
+ * admin enabled (appConfig.explore.sections, in their order), then an
+ * infinite-scrolling grid of fresh battles. On "People" the body is a grid of
+ * suggested accounts instead.
+ *
+ * Every section is its own react-query query, so each one loads, caches, fails
+ * and retries independently. Public: guests browse everything and are asked to
+ * sign in only for an action that needs an account (follow, join, start, wallet).
  */
-function usePeopleCardWidth(): number {
-  const { width } = useDesignWindow();
-  return (width - PAD * 2 - GRID_GAP) / 2;
-}
-const TEMPLATE_W = 176;
-/**
- * Kept next to the width, and shared with the loading skeleton, because the card
- * height used to be a literal in two places — so the skeleton was free to drift
- * out of step with the card and make the rail jump on load.
- */
-const TEMPLATE_H = 216;
 
-type TabKey = 'all' | 'photo' | 'video' | 'users';
+const TABS: { key: ExploreTab; label: string; icon: string }[] = [
+  { key: 'all', label: 'For you', icon: 'apps' },
+  { key: 'photo', label: 'Photo', icon: 'image' },
+  { key: 'video', label: 'Video', icon: 'videocam' },
+  { key: 'people', label: 'People', icon: 'people' },
+];
+
 type PriceKey = 'all' | 'free' | 'paid';
+const GRID_GAP = 12;
 
-const PRICE_FILTERS: { key: PriceKey; label: string; icon: string }[] = [
-  { key: 'all', label: 'Any entry', icon: 'infinite' },
-  { key: 'free', label: 'Free', icon: 'gift' },
-  { key: 'paid', label: 'Paid', icon: 'diamond' },
-];
+type Row =
+  | { kind: 'top' }
+  | { kind: 'tabs' }
+  | { kind: 'section'; key: ExploreSectionKey }
+  | { kind: 'gridHeader' }
+  | { kind: 'gridRow'; id: string; items: any[] }
+  | { kind: 'gridFooter' }
+  | { kind: 'peopleRow'; id: string; items: any[] }
+  | { kind: 'peopleState' };
 
-const TABS: {
-  key: TabKey;
-  label: string;
-  icon: string;
-  color: string;
-  grad: [string, string];
-}[] = [
-  { key: 'all', label: 'All', icon: 'apps', color: '#FF4D67', grad: ['#FF4D67', '#8B5CF6'] },
-  { key: 'photo', label: 'Photos', icon: 'image', color: '#FF4D67', grad: ['#FF4D67', '#FF7A45'] },
-  { key: 'video', label: 'Videos', icon: 'videocam', color: '#6A5AE0', grad: ['#6A5AE0', '#8B5CF6'] },
-  { key: 'users', label: 'People', icon: 'people', color: '#22C55E', grad: ['#22C55E', '#16A34A'] },
-];
-
-const QUICK_ACTIONS: {
-  key: string;
-  label: string;
-  icon: string;
-  grad: [string, string];
-  route: string;
-}[] = [
-  { key: 'leaderboard', label: 'Ranks', icon: 'trophy', grad: ['#FFB300', '#FF7A00'], route: '/explore/leaderboard' },
-  { key: 'contests', label: 'Contests', icon: 'flame', grad: ['#FF4D67', '#FF7A45'], route: '/contests' },
-  // Points at the profile, where the user's own photo/video battles are listed.
-  // This used to point at '/contest/joined', which is the post-entry
-  // congratulations screen — so tapping "My Battles" told people they had
-  // "successfully joined" a contest they had not entered.
-  { key: 'joined', label: 'My Battles', icon: 'game-controller', grad: ['#0EA5E9', '#2563EB'], route: '/profile' },
-  { key: 'rewards', label: 'Rewards', icon: 'gift', grad: ['#22C55E', '#16A34A'], route: '/wallet/store' },
-  { key: 'wallet', label: 'Wallet', icon: 'wallet', grad: ['#6A5AE0', '#8B5CF6'], route: '/wallet' },
-];
-
-const gradForType = (t?: string): [string, string] =>
-  t === 'video' ? ['#6A5AE0', '#8B5CF6'] : ['#FF4D67', '#FF7A45'];
-const colorForType = (t?: string): string => (t === 'video' ? '#6A5AE0' : '#FF4D67');
-
-export default function DiscoverScreen() {
-  const PEOPLE_CARD_W = usePeopleCardWidth();
+export default function ExploreScreen() {
   const router = useRouter();
-  const { user, loading: authLoading } = useAuth();
-  const { data: currentUserProfile } = useProfile(user?.uid || '');
-  const { addToast } = useToast();
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
-
-  // --- Palette ---
-  const bg = isDark ? Colors.dark.background : Colors.light.background;
-  const cardBg = isDark ? '#16171E' : '#FFFFFF';
-  const chipBg = isDark ? '#1B1D26' : '#F1F2F6';
-  const textColor = isDark ? '#FFFFFF' : '#121212';
-  const subText = isDark ? '#8B8F9A' : '#8A8A8E';
-  const borderColor = isDark ? '#23262F' : '#EEEEF2';
-
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [availableContests, setAvailableContests] = useState<any[]>([]);
-  const [waitingMatches, setWaitingMatches] = useState<any[]>([]);
-  const [suggestedUsers, setSuggestedUsers] = useState<any[]>([]);
-  const [searchResults, setSearchResults] = useState<any[]>([]);
-  const [searching, setSearching] = useState(false);
-  const [followedUsers, setFollowedUsers] = useState<Set<string>>(new Set());
-  // Pending requests to PRIVATE accounts — not follows (src/lib/followState.ts).
-  const [requestedUsers, setRequestedUsers] = useState<Set<string>>(new Set());
-
-  const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useState<TabKey>('all');
-  // Free vs paid is the first thing people decide before browsing battles, and
-  // there was previously no way to express it — nor even to tell which was
-  // which from a card.
-  const [priceFilter, setPriceFilter] = useState<PriceKey>('all');
-
-  const activeMeta = TABS.find(t => t.key === activeTab)!;
-  const activeColor = activeMeta.color;
-
-  const profileAny = currentUserProfile as any;
-  const coins = Number(profileAny?.Dpcoin ?? profileAny?.dpcoin ?? 0);
-  // Null when unset — <Avatar> renders local initials instead of fetching a
-  // name-bearing URL from a third party.
-  const avatarUri = profileAny?.profileImageUrl || null;
-  const avatarName = profileAny?.fullName || profileAny?.username || null;
-
-  useEffect(() => {
-    if (currentUserProfile && (currentUserProfile as any).following) {
-      setFollowedUsers(new Set((currentUserProfile as any).following));
-    }
-  }, [currentUserProfile]);
-
-  useEffect(() => {
-    if (!authLoading) fetchExploreData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading, user]);
-
-  /**
-   * Monotonic request ids, so a slow response can never overwrite a newer one.
-   *
-   * Both of the async flows below are reachable concurrently — the search box fires
-   * on every debounce, and `fetchExploreData` has three callers (the auth effect,
-   * pull-to-refresh, and the Live Arena refresh button) — and neither had any
-   * cancellation. The search effect in particular only cleared its TIMER, so once
-   * the 350ms had elapsed the in-flight request was completely unguarded: typing
-   * "al" then "alice" showed results for "al" whenever the first request was
-   * slower, a stale `setSearching(false)` hid the spinner while the newer request
-   * was still running, and leaving the screen mid-search set state on an unmounted
-   * component. `searchUsers` swallows its own errors and returns [], so a stale
-   * FAILED request could also blank out good results for the current query.
-   *
-   * This is the pattern `app/home.tsx` already uses for the feed.
-   */
-  const searchReqId = useRef(0);
-  const exploreReqId = useRef(0);
-  const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
-
-  // Debounced server-side people search (min 2 chars, only on the People tab).
-  useEffect(() => {
-    // Leaving the People tab must also clear the in-flight state, or `searching`
-    // stays true forever and the spinner is stuck on a tab nobody is searching.
-    if (activeTab !== 'users') { setSearching(false); return; }
-    const query = searchQuery.trim();
-    if (query.length < 2) { setSearchResults([]); setSearching(false); return; }
-    setSearching(true);
-    // Two guards, covering two different races:
-    //  - `cancelled` handles the query changing (or the screen unmounting) after
-    //    the timer has already fired, which the old `clearTimeout`-only cleanup
-    //    could not touch;
-    //  - `reqId` orders the requests still in flight against each other, so a
-    //    slow earlier response cannot land on top of a newer one.
-    let cancelled = false;
-    const reqId = ++searchReqId.current;
-    const t = setTimeout(async () => {
-      try {
-        const res = await searchUsers(query);
-        if (cancelled || !mounted.current || reqId !== searchReqId.current) return;
-        setSearchResults(res);
-      } finally {
-        if (!cancelled && mounted.current && reqId === searchReqId.current) setSearching(false);
-      }
-    }, 350);
-    return () => {
-      cancelled = true;
-      clearTimeout(t);
-    };
-  }, [searchQuery, activeTab]);
-
-  const fetchExploreData = async (isRefresh = false) => {
-    const reqId = ++exploreReqId.current;
-    if (isRefresh) setRefreshing(true); else setLoading(true);
-    try {
-      const [contests, waiting, usersData] = await Promise.all([
-        contestService.getAvailableContests(),
-        contestService.getWaitingMatches(),
-        fetchSuggestedUsers(),
-      ]);
-      // Two overlapping refreshes must not interleave their results.
-      if (!mounted.current || reqId !== exploreReqId.current) return;
-      setAvailableContests(contests);
-      setWaitingMatches(waiting);
-      setSuggestedUsers(usersData);
-    } catch (error) {
-      console.error('Explore error:', error);
-      if (mounted.current && reqId === exploreReqId.current) {
-        addToast('Failed to load explore data', 'error');
-      }
-    } finally {
-      if (mounted.current && reqId === exploreReqId.current) {
-        setLoading(false);
-        setRefreshing(false);
-      }
-    }
-  };
-
-  const switchTab = (key: TabKey) => {
-    if (Platform.OS !== 'web') Haptics.selectionAsync().catch(() => {});
-    setActiveTab(key);
-  };
-
+  const qc = useQueryClient();
+  const p = useExplorePalette();
+  const { width } = useDesignWindow();
+  const { user } = useAuth();
   const { requireAuth } = useAuthGate();
-  const handleAction = (action: () => void) => {
-    // Explore is public; following prompts sign-in at the tap and returns here.
-    if (requireAuth('follow')) action();
-  };
+  const { data: profile } = useProfile(user?.uid || '');
+  const { config } = useAppConfig();
+  const contestsOn = useFeature('contests');
 
-  const handleFollow = async (targetId: string) => {
-    handleAction(async () => {
-      if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-      const before: FollowState = stateInSets(followedUsers, requestedUsers, targetId);
-      const apply = (state: FollowState) => {
-        setFollowedUsers((f) => withStateInSets(f, requestedUsers, targetId, state).followed);
-        setRequestedUsers((r) => withStateInSets(followedUsers, r, targetId, state).requested);
-      };
-      // Optimistic: an active button turns off; an inactive one shows Following
-      // until the server says whether this was a request (private account).
-      apply(before === 'none' ? 'following' : 'none');
-      try {
-        apply(followStateFromResult(await toggleFollowService(targetId, intentFor(before))));
-      } catch {
-        apply(before);
-        addToast('Failed to update follow status.', 'error');
+  const [tab, setTab] = useState<ExploreTab>('all');
+  const [price, setPrice] = useState<PriceKey>('all');
+  const [refreshing, setRefreshing] = useState(false);
+
+  const type: BattleType = tab === 'photo' || tab === 'video' ? tab : undefined;
+  const isPeople = tab === 'people';
+  const sections = useMemo(() => {
+    const all = enabledSections(config?.explore);
+    return all.filter((k) => contestsOn || (k !== 'contests' && k !== 'openBattles'));
+  }, [config?.explore, contestsOn]);
+  const has = (k: ExploreSectionKey) => !isPeople && sections.includes(k);
+
+  // ---- data (each section independent) ----
+  const trending = useExploreBattles('trending', type, 10, has('trending'));
+  const ending = useExploreBattles('ending', type, 10, has('endingSoon'));
+  const open = useExploreBattles('open', type, 20, has('openBattles'));
+  const contests = useLiveContests(type, has('contests'));
+  const creators = useTopCreators(10, has('topCreators'));
+  const people = useSuggestedPeople(isPeople ? 50 : 12, user?.uid ?? null, isPeople || has('people'));
+  const grid = useBattlePages('fresh', type, 18, has('grid'));
+
+  const following = (profile as any)?.following as string[] | undefined;
+  const follow = useFollowToggle(following);
+
+  const coins = Number((profile as any)?.Dpcoin ?? (profile as any)?.dpcoin ?? 0);
+  const tileW = (width - PAD * 2 - GRID_GAP) / 2;
+  const railTileW = Math.min(200, Math.round(width * 0.46));
+
+  const openBattles = useMemo(() => joinableOpenBattles(open.data, user?.uid), [open.data, user?.uid]);
+  const liveContests = useMemo(
+    () => (contests.data || []).filter((c: any) => price === 'all' || (price === 'free' ? isFreeContest(c) : !isFreeContest(c))),
+    [contests.data, price],
+  );
+  const gridItems = useMemo(() => {
+    const seen = new Set<string>();
+    const out: any[] = [];
+    for (const page of grid.data?.pages || []) for (const m of page.items) if (!seen.has(m.id)) {
+        seen.add(m.id);
+        out.push(m);
       }
-    });
+    return out;
+  }, [grid.data]);
+
+  const switchTab = (k: ExploreTab) => {
+    if (Platform.OS !== 'web') Haptics.selectionAsync().catch(() => {});
+    setTab(k);
   };
 
-  // --- Filtering ---
-  const q = searchQuery.trim().toLowerCase();
-  const matchType = (t?: string) => {
-    if (activeTab === 'all') return true;
-    if (activeTab === 'photo') return t === 'photo' || !t;
-    if (activeTab === 'video') return t === 'video';
-    return false;
-  };
-  const matchPrice = (c: any) => {
-    if (priceFilter === 'all') return true;
-    return priceFilter === 'free' ? isFreeContest(c) : !isFreeContest(c);
-  };
-  const filteredContests = availableContests.filter(c =>
-    matchType(c.type) && matchPrice(c) && (!q || c.title?.toLowerCase().includes(q))
-  );
-  const filteredMatches = waitingMatches.filter(m =>
-    matchType(m.type) && (!q || m.title?.toLowerCase().includes(q) || m.userA?.username?.toLowerCase().includes(q))
-  );
-  const filteredUsers = q.length >= 2
-    ? searchResults
-    : suggestedUsers.filter(u => !q || u.name?.toLowerCase().includes(q) || u.username?.toLowerCase().includes(q));
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await qc.invalidateQueries({ queryKey: EXPLORE_KEY });
+    } finally {
+      setRefreshing(false);
+    }
+  }, [qc]);
 
-  // ================================================================
-  // HEADER (non-sticky)
-  // ================================================================
-  const renderHeader = () => (
-    <View style={{ backgroundColor: bg }}>
-      {/* Top bar: avatar + title + coin balance + notifications */}
-      <View style={styles.topBar}>
-        <TouchableOpacity
-          activeOpacity={0.85}
-          onPress={() => handleAction(() => router.push('/profile'))}
-        >
-          <Avatar
-            uri={avatarUri}
-            name={avatarName}
-            size={46}
-            style={[styles.headerAvatar, { borderColor: activeColor }]}
+  const seeAll = (kind: BattleKind) => router.push({ pathname: '/explore/battles', params: { kind, ...(type ? { type } : {}) } } as any);
+
+  const joinBattle = useCallback(
+    (item: any) => {
+      if (!requireAuth('join')) return;
+      if (user && item.userA?.uid === user.uid) {
+        emitToast('Ye aapki battle hai — rival ka intezaar karo.', 'info');
+        return;
+      }
+      router.push({
+        pathname: item.type === 'video' ? '/contest/video' : '/contest/photo/setup',
+        params: { matchId: item.id, mode: 'join' },
+      } as any);
+    },
+    [requireAuth, router, user],
+  );
+
+  const startContest = useCallback(
+    (item: any) => {
+      if (!requireAuth('create')) return;
+      router.push({ pathname: item.type === 'video' ? '/contest/video' : '/contest/photo', params: { contestId: item.id } } as any);
+    },
+    [requireAuth, router],
+  );
+
+  // ---- rows ----
+  const rows: Row[] = useMemo(() => {
+    const r: Row[] = [{ kind: 'top' }, { kind: 'tabs' }];
+    if (isPeople) {
+      const list = people.data || [];
+      if (!list.length) r.push({ kind: 'peopleState' });
+      chunk(list, 2).forEach((items, i) => r.push({ kind: 'peopleRow', id: `p${i}`, items }));
+      return r;
+    }
+    for (const key of sections) if (key !== 'grid') r.push({ kind: 'section', key });
+    if (sections.includes('grid')) {
+      r.push({ kind: 'gridHeader' });
+      chunk(gridItems, 2).forEach((items, i) => r.push({ kind: 'gridRow', id: `g${i}`, items }));
+      r.push({ kind: 'gridFooter' });
+    }
+    return r;
+  }, [isPeople, people.data, sections, gridItems]);
+
+  // ---- section renderers ----
+  const renderSection = (key: ExploreSectionKey) => {
+    switch (key) {
+      case 'banners': {
+        const banners = config?.explore?.banners || [];
+        return banners.length ? <BannerCarousel banners={banners} width={width} /> : null;
+      }
+      case 'quickActions':
+        return <QuickActions palette={p} contestsOn={contestsOn} onGated={(route, action) => requireAuth(action) && router.push(route as any)} />;
+      case 'trending':
+        return (
+          <BattleRail
+            title="Trending battles"
+            icon="flame"
+            palette={p}
+            query={trending}
+            tileW={railTileW}
+            emphasis="trending"
+            onSeeAll={() => seeAll('trending')}
+            emptyText="Abhi koi live battle nahi. Pehli battle start karo!"
           />
+        );
+      case 'endingSoon':
+        return (
+          <BattleRail
+            title="Ending soon — vote now"
+            icon="time"
+            iconColor="#DC2626"
+            palette={p}
+            query={ending}
+            tileW={railTileW}
+            emphasis="ending"
+            onSeeAll={() => seeAll('ending')}
+            hideWhenEmpty
+          />
+        );
+      case 'contests':
+        return (
+          <View>
+            <SectionHeader title="Start a battle" icon="trophy" iconColor="#F59E0B" palette={p} right={<PriceToggle value={price} onChange={setPrice} palette={p} />} />
+            {contests.isLoading ? (
+              <RailSkeleton width={TEMPLATE_W} height={TEMPLATE_H} radius={24} />
+            ) : contests.isError ? (
+              <SectionError palette={p} onRetry={() => contests.refetch()} />
+            ) : liveContests.length ? (
+              <FlatList
+                horizontal
+                data={liveContests}
+                keyExtractor={(c) => c.id}
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.rail}
+                renderItem={({ item }) => <TemplateCard item={item} onStart={() => startContest(item)} />}
+                initialNumToRender={3}
+                windowSize={3}
+              />
+            ) : (
+              <SectionEmpty
+                palette={p}
+                text={price === 'all' ? 'Abhi koi contest live nahi hai.' : `Koi ${price === 'free' ? 'free' : 'paid'} contest nahi.`}
+                actionText={price === 'all' ? undefined : 'Sab dikhao'}
+                onAction={() => setPrice('all')}
+              />
+            )}
+          </View>
+        );
+      case 'openBattles':
+        return (
+          <View>
+            <SectionHeader title="Open battles — join now" icon="flash" palette={p} onSeeAll={openBattles.length > 3 ? () => seeAll('open') : undefined} />
+            {open.isLoading ? (
+              <RailSkeleton width={OPEN_CARD_W} height={300} radius={22} count={2} />
+            ) : open.isError ? (
+              <SectionError palette={p} onRetry={() => open.refetch()} />
+            ) : openBattles.length ? (
+              <FlatList
+                horizontal
+                data={openBattles}
+                keyExtractor={(m) => m.id}
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.rail}
+                renderItem={({ item }) => <OpenBattleCard item={item} isMine={!!user && item.userA?.uid === user.uid} palette={p} onJoin={joinBattle} />}
+                initialNumToRender={2}
+                windowSize={3}
+              />
+            ) : (
+              <SectionEmpty
+                palette={p}
+                icon="flash-outline"
+                text="Koi battle rival ka intezaar nahi kar rahi."
+                actionText={contestsOn ? 'Apni battle start karo' : undefined}
+                onAction={() => requireAuth('create') && router.push('/contest/photo' as any)}
+              />
+            )}
+          </View>
+        );
+      case 'topCreators':
+        return (
+          <View>
+            <SectionHeader title="Top creators" icon="trophy" iconColor="#F59E0B" palette={p} onSeeAll={() => router.push('/explore/leaderboard' as any)} />
+            {creators.isLoading ? (
+              <RailSkeleton width={70} height={110} count={5} radius={16} />
+            ) : creators.isError ? (
+              <SectionError palette={p} onRetry={() => creators.refetch()} />
+            ) : (creators.data || []).length ? (
+              <FlatList
+                horizontal
+                data={creators.data}
+                keyExtractor={(u: any) => u.uid}
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={[styles.rail, { gap: 8 }]}
+                renderItem={({ item, index }) => <CreatorChip user={item} rank={index + 1} palette={p} />}
+              />
+            ) : (
+              <SectionEmpty palette={p} text="Abhi rankings ban rahi hain." />
+            )}
+          </View>
+        );
+      case 'people':
+        return (
+          <View>
+            <SectionHeader title="People you may know" icon="people" iconColor="#22C55E" palette={p} onSeeAll={() => switchTab('people')} />
+            {people.isLoading ? (
+              <RailSkeleton width={150} height={190} count={3} />
+            ) : people.isError ? (
+              <SectionError palette={p} onRetry={() => people.refetch()} />
+            ) : (people.data || []).length ? (
+              <FlatList
+                horizontal
+                data={people.data}
+                keyExtractor={(u) => u.id}
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.rail}
+                renderItem={({ item }) => (
+                  <PersonCard person={item} width={150} palette={p} followState={follow.stateOf(item.id)} onFollow={follow.toggle} />
+                )}
+              />
+            ) : (
+              <SectionEmpty palette={p} text="Aap sabko follow kar chuke ho! 🎉" />
+            )}
+          </View>
+        );
+      default:
+        return null;
+    }
+  };
+
+  const renderRow = ({ item: row }: { item: Row }) => {
+    switch (row.kind) {
+      case 'top':
+        return (
+          <TopBar
+            palette={p}
+            signedIn={!!user}
+            coins={coins}
+            avatar={(profile as any)?.profileImageUrl || null}
+            name={(profile as any)?.fullName || (profile as any)?.username || null}
+            guestOffer={!user && config?.referral?.enabled ? offerLine(config.referral) : null}
+            onSearch={() => router.push('/explore/search' as any)}
+            onProfile={() => requireAuth('profile') && router.push('/profile' as any)}
+            onNotifications={() => requireAuth('notifications') && router.push('/notifications' as any)}
+            onWallet={() => router.push('/wallet/store' as any)}
+            onSignUp={() => router.push('/auth/signup' as any)}
+          />
+        );
+      case 'tabs':
+        return <Tabs tab={tab} onChange={switchTab} palette={p} />;
+      case 'section':
+        return renderSection(row.key);
+      case 'gridHeader':
+        return <SectionHeader title="Fresh battles" icon="grid" palette={p} />;
+      case 'gridRow':
+        return (
+          <View style={styles.gridRow}>
+            {row.items.map((m) => (
+              <BattleTile key={m.id} item={m} width={tileW} palette={p} />
+            ))}
+          </View>
+        );
+      case 'gridFooter':
+        if (grid.isLoading) {
+          return (
+            <View style={styles.gridRow}>
+              {[0, 1].map((i) => (
+                <Skeleton key={i} width={tileW} height={tileW * 0.78 + 56} borderRadius={20} />
+              ))}
+            </View>
+          );
+        }
+        if (grid.isError && !gridItems.length) return <SectionError palette={p} onRetry={() => grid.refetch()} />;
+        if (grid.isFetchingNextPage) return <ActivityIndicator color={BRAND} style={{ marginVertical: 20 }} />;
+        if (!gridItems.length) return <SectionEmpty palette={p} text="Abhi koi live battle nahi." />;
+        if (!grid.hasNextPage) return <Text style={[styles.end, { color: p.sub }]}>Sab dekh liya! 🎉</Text>;
+        return null;
+      case 'peopleRow':
+        return (
+          <View style={styles.gridRow}>
+            {row.items.map((u) => (
+              <PersonCard key={u.id} person={u} width={tileW} palette={p} followState={follow.stateOf(u.id)} onFollow={follow.toggle} />
+            ))}
+          </View>
+        );
+      case 'peopleState':
+        if (people.isLoading) {
+          return (
+            <View style={[styles.gridRow, { marginTop: 18 }]}>
+              {[0, 1].map((i) => (
+                <Skeleton key={i} width={tileW} height={200} borderRadius={20} />
+              ))}
+            </View>
+          );
+        }
+        if (people.isError) return <View style={{ marginTop: 18 }}><SectionError palette={p} onRetry={() => people.refetch()} /></View>;
+        return (
+          <View style={{ marginTop: 18 }}>
+            <SectionEmpty palette={p} icon="people-outline" text="Abhi suggest karne ko koi nahi. Search karke dhundo!" actionText="Search" onAction={() => router.push('/explore/search' as any)} />
+          </View>
+        );
+    }
+  };
+
+  return (
+    <SafeAreaView style={[styles.container, { backgroundColor: p.bg }]} edges={['top']}>
+      <FlatList
+        data={rows}
+        keyExtractor={(r, i) => ('id' in r ? r.id : r.kind === 'section' ? `s-${r.key}` : `${r.kind}-${i}`)}
+        renderItem={renderRow}
+        stickyHeaderIndices={[1]}
+        contentContainerStyle={{ paddingBottom: 120 }}
+        keyboardShouldPersistTaps="handled"
+        onEndReachedThreshold={0.6}
+        onEndReached={() => {
+          if (!isPeople && grid.hasNextPage && !grid.isFetchingNextPage) grid.fetchNextPage();
+        }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={BRAND} colors={[BRAND]} />}
+        initialNumToRender={8}
+        windowSize={7}
+        removeClippedSubviews={Platform.OS === 'android'}
+      />
+      <BottomNav backgroundColor={p.bg} isDark={p.isDark} />
+    </SafeAreaView>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Pieces
+// ---------------------------------------------------------------------------
+
+function TopBar({
+  palette: p,
+  signedIn,
+  coins,
+  avatar,
+  name,
+  guestOffer,
+  onSearch,
+  onProfile,
+  onNotifications,
+  onWallet,
+  onSignUp,
+}: {
+  palette: ExplorePalette;
+  signedIn: boolean;
+  coins: number;
+  avatar: string | null;
+  name: string | null;
+  guestOffer: string | null;
+  onSearch: () => void;
+  onProfile: () => void;
+  onNotifications: () => void;
+  onWallet: () => void;
+  onSignUp: () => void;
+}) {
+  return (
+    <View style={{ backgroundColor: p.bg }}>
+      <View style={styles.topBar}>
+        <TouchableOpacity onPress={onProfile} accessibilityRole="button" accessibilityLabel="My profile">
+          <Avatar uri={avatar} name={name} size={42} style={[styles.headerAvatar, { borderColor: BRAND }]} />
         </TouchableOpacity>
         <View style={{ flex: 1, marginLeft: 12 }}>
-          <Text style={[styles.kicker, { color: activeColor }]}>DISCOVER</Text>
-          <Text style={[styles.title, { color: textColor }]}>Explore</Text>
+          <Text style={[styles.kicker, { color: BRAND }]}>DISCOVER</Text>
+          <Text style={[styles.title, { color: p.text }]} accessibilityRole="header">Explore</Text>
         </View>
-
-        {user && (
-          <TouchableOpacity
-            activeOpacity={0.85}
-            style={[styles.coinChip, { backgroundColor: chipBg }]}
-            onPress={() => router.push('/wallet/store' as any)}
-          >
+        {signedIn && (
+          <TouchableOpacity style={[styles.coinChip, { backgroundColor: p.chip }]} onPress={onWallet} accessibilityRole="button" accessibilityLabel={`${coins} coins. Buy coins`}>
             <CoinIcon size={14} color="#FFB300" />
-            <Text style={[styles.coinText, { color: textColor }]}>{coins.toLocaleString()}</Text>
+            <Text style={[styles.coinText, { color: p.text }]}>{coins.toLocaleString()}</Text>
             <View style={styles.coinPlus}>
               <Ionicons name="add" size={13} color="#FFF" />
             </View>
           </TouchableOpacity>
         )}
-        <TouchableOpacity
-          activeOpacity={0.85}
-          style={[styles.iconBtn, { backgroundColor: chipBg, marginLeft: 10 }]}
-          onPress={() => handleAction(() => router.push('/notifications' as any))}
-        >
-          <Ionicons name="notifications" size={20} color={activeColor} />
+        <TouchableOpacity style={[styles.iconBtn, { backgroundColor: p.chip }]} onPress={onNotifications} accessibilityRole="button" accessibilityLabel="Notifications">
+          <Ionicons name="notifications" size={20} color={BRAND} />
         </TouchableOpacity>
       </View>
 
-      {/* Search */}
-      <View style={styles.searchWrap}>
-        <View style={[styles.searchBox, { backgroundColor: cardBg, borderColor, borderWidth: 1 }]}>
-          <Ionicons name="search" size={20} color={activeColor} />
-          <TextInput
-            style={[styles.searchInput, { color: textColor }]}
-            placeholder={activeTab === 'users' ? 'Search people by @username...' : 'Search battles...'}
-            placeholderTextColor={subText}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            returnKeyType="search"
-            autoCapitalize="none"
-          />
-          {searching && activeTab === 'users' && <ActivityIndicator size="small" color={activeColor} />}
-          {searchQuery.length > 0 && !searching && (
-            <TouchableOpacity onPress={() => setSearchQuery('')}>
-              <CloseIcon variant="circle" size={18} color={subText} />
-            </TouchableOpacity>
-          )}
-        </View>
-      </View>
+      <Pressable onPress={onSearch} style={[styles.search, { backgroundColor: p.card, borderColor: p.border }]} accessibilityRole="search" accessibilityLabel="Search people, battles, contests">
+        <Ionicons name="search" size={19} color={BRAND} />
+        <Text style={[styles.searchText, { color: p.sub }]} numberOfLines={1}>Search people, battles, contests…</Text>
+      </Pressable>
 
-      {/* Quick action shortcuts */}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.quickRow}>
-        {QUICK_ACTIONS.map(a => (
-          <ScaleTouchable key={a.key} style={styles.quickItem} onPress={() => handleAction(() => router.push(a.route as any))}>
-            <LinearGradient colors={a.grad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.quickCircle}>
-              <Ionicons name={a.icon} size={22} color="#FFF" />
-            </LinearGradient>
-            <Text style={[styles.quickLabel, { color: subText }]}>{a.label}</Text>
-          </ScaleTouchable>
-        ))}
-      </ScrollView>
+      {guestOffer ? (
+        <ScaleTouchable style={styles.guest} onPress={onSignUp} accessibilityRole="button" accessibilityLabel={`Sign up. ${guestOffer}`}>
+          <LinearGradient colors={BRAND_GRAD} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.guestInner}>
+            <Ionicons name="gift" size={22} color="#FFF" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.guestTitle}>TopHunt join karo — vote karo, battle jeeto</Text>
+              <Text style={styles.guestSub} numberOfLines={2}>{guestOffer}</Text>
+            </View>
+            <Text style={styles.guestCta}>Sign up</Text>
+          </LinearGradient>
+        </ScaleTouchable>
+      ) : null}
     </View>
   );
+}
 
-  // ================================================================
-  // CATEGORY CHIPS (sticky)
-  // ================================================================
-  const renderChips = () => (
-    <View style={[styles.chipBar, { backgroundColor: bg }]}>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: PAD, gap: 10 }}>
-        {TABS.map(tab => {
-          const isActive = activeTab === tab.key;
-          const count = tab.key === 'users' ? filteredUsers.length : filteredMatches.length;
-          if (isActive) {
-            return (
-              <TouchableOpacity key={tab.key} activeOpacity={0.9} onPress={() => switchTab(tab.key)}>
-                <LinearGradient colors={tab.grad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.chipActive}>
-                  <Ionicons name={tab.icon} size={16} color="#FFF" />
-                  <Text style={styles.chipActiveText}>{tab.label}</Text>
-                  {count > 0 && (
-                    <View style={styles.chipCount}><Text style={styles.chipCountText}>{count}</Text></View>
-                  )}
-                </LinearGradient>
-              </TouchableOpacity>
-            );
-          }
+function Tabs({ tab, onChange, palette: p }: { tab: ExploreTab; onChange: (k: ExploreTab) => void; palette: ExplorePalette }) {
+  return (
+    <View style={[styles.tabsBar, { backgroundColor: p.bg }]}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: PAD, gap: 8 }} accessibilityRole="tablist">
+        {TABS.map((t) => {
+          const active = t.key === tab;
           return (
-            <TouchableOpacity key={tab.key} activeOpacity={0.85} style={[styles.chip, { backgroundColor: chipBg }]} onPress={() => switchTab(tab.key)}>
-              <Ionicons name={tab.icon} size={16} color={subText} />
-              <Text style={[styles.chipText, { color: subText }]}>{tab.label}</Text>
+            <TouchableOpacity
+              key={t.key}
+              onPress={() => onChange(t.key)}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: active }}
+              activeOpacity={0.85}
+            >
+              {active ? (
+                <LinearGradient colors={BRAND_GRAD} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.tab}>
+                  <Ionicons name={t.icon} size={15} color="#FFF" />
+                  <Text style={[styles.tabText, { color: '#FFF' }]}>{t.label}</Text>
+                </LinearGradient>
+              ) : (
+                <View style={[styles.tab, { backgroundColor: p.chip }]}>
+                  <Ionicons name={t.icon} size={15} color={p.sub} />
+                  <Text style={[styles.tabText, { color: p.sub }]}>{t.label}</Text>
+                </View>
+              )}
             </TouchableOpacity>
           );
         })}
       </ScrollView>
-
-      {/* Entry-price filter. Hidden on People, where it means nothing. */}
-      {activeTab !== 'users' && (
-        <View style={styles.priceRow}>
-          {PRICE_FILTERS.map(pf => {
-            const isActive = priceFilter === pf.key;
-            return (
-              <TouchableOpacity
-                key={pf.key}
-                activeOpacity={0.85}
-                accessibilityRole="button"
-                accessibilityState={{ selected: isActive }}
-                onPress={() => {
-                  if (Platform.OS !== 'web') Haptics.selectionAsync().catch(() => {});
-                  setPriceFilter(pf.key);
-                }}
-                style={[
-                  styles.priceChip,
-                  { backgroundColor: isActive ? activeColor : chipBg, borderColor: isActive ? activeColor : borderColor },
-                ]}
-              >
-                <Ionicons name={pf.icon} size={13} color={isActive ? '#FFF' : subText} />
-                <Text style={[styles.priceChipText, { color: isActive ? '#FFF' : subText }]}>{pf.label}</Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-      )}
     </View>
   );
+}
 
-  // ================================================================
-  // TEMPLATE CARD (start a battle)
-  // ================================================================
-  const renderTemplate = (item: any) => (
-    <TemplateCard
-      item={item}
-      onStart={() => handleAction(() => router.push({
-        pathname: item.type === 'video' ? '/contest/video' : '/contest/photo',
-        params: { contestId: item.id },
-      }))}
-    />
-  );
-
-  // ================================================================
-  // VERSUS / LIVE BATTLE CARD
-  // ================================================================
-  const renderVersus = (item: any) => {
-    const isMyMatch = user && item.userA && item.userA.uid === user.uid;
-    // Both through the shared helpers, so this card and the feed card can no
-    // longer disagree about the same battle — Explore used to show the raw pot as
-    // the prize while the feed showed the pot times 1.8.
-    const entryFee = entryFeePerPlayer(item);
-    const prize = matchPrize(item);
-    const isVideo = item.type === 'video';
-    const grad = gradForType(item.type);
-    const accent = colorForType(item.type);
-
-    const goJoin = () => handleAction(() => {
-      if (isMyMatch) { addToast('This is your own contest! Wait for someone to join.', 'info'); return; }
-      router.push({
-        // '/contest/video' — NOT '/contest/video/setup', which does not exist and
-        // silently dead-ended every video join on Expo Router's unmatched-route
-        // screen. The video screen handles both picking and setup in one file.
-        pathname: isVideo ? '/contest/video' : '/contest/photo/setup',
-        params: { matchId: item.id, mode: 'join' },
-      });
-    });
-
-    const creatorPhoto = item.userA?.mediaUrl || item.userA?.avatar;
-
-    return (
-      <ScaleTouchable key={item.id} style={[styles.arenaCard, { backgroundColor: cardBg, borderColor }]} onPress={goJoin}>
-        {/* Status strip */}
-        <View style={styles.arenaTopRow}>
-          <View style={styles.arenaStatusPill}>
-            <View style={styles.liveDot} />
-            <Text style={styles.arenaStatusText}>LIVE · WAITING</Text>
-          </View>
-          {prize.type === 'product' ? (
-            <View style={styles.arenaPrizePill}>
-              <MaterialCommunityIcons name="gift" size={12} color="#F59E0B" />
-              <Text style={styles.arenaPrizeText} numberOfLines={1}>Win {prize.product.title}</Text>
-            </View>
-          ) : (
-            <View style={styles.arenaPrizePill}>
-              <MaterialCommunityIcons name="trophy" size={12} color="#F59E0B" />
-              <Text style={styles.arenaPrizeText}>Win {prize.coins}</Text>
-              <CoinIcon size={12} color="#F59E0B" />
-            </View>
-          )}
-        </View>
-
-        {/* Versus arena: creator vs empty challenger slot */}
-        <View style={styles.arenaBody}>
-          {/* Player 1 — creator */}
-          <View style={styles.arenaSide}>
-            <View style={styles.arenaPhotoWrap}>
-              <Image source={{ uri: creatorPhoto }} style={styles.arenaPhoto} />
-              <LinearGradient colors={['transparent', 'rgba(0,0,0,0.5)']} style={StyleSheet.absoluteFill as any} />
-              <View style={[styles.arenaCorner, { backgroundColor: accent }]}>
-                <Text style={styles.arenaCornerText}>P1</Text>
-              </View>
-            </View>
-            <View style={styles.arenaNameRow}>
-              <Avatar
-                uri={item.userA?.avatar}
-                name={item.userA?.username}
-                size={22}
-                style={styles.arenaNameAvatar}
-              />
-              <Text style={[styles.arenaName, { color: textColor }]} numberOfLines={1}>@{item.userA?.username || 'user'}</Text>
-              <VerifiedBadge verified={item.userA?.verified} size={12} />
-            </View>
-          </View>
-
-          {/* Center VS */}
-          <View style={styles.arenaVsCol}>
-            <View style={[styles.arenaVsLine, { backgroundColor: borderColor }]} />
-            <LinearGradient colors={grad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.arenaVsBadge}>
-              <Text style={styles.arenaVsText}>VS</Text>
-            </LinearGradient>
-            <View style={[styles.arenaVsLine, { backgroundColor: borderColor }]} />
-          </View>
-
-          {/* Player 2 — empty challenger slot */}
-          <View style={styles.arenaSide}>
-            <View style={[styles.arenaPhotoWrap, styles.arenaEmptySlot, { borderColor: accent, backgroundColor: isDark ? '#1B1D26' : '#FFF4F5' }]}>
-              <MaterialCommunityIcons name="sword-cross" size={26} color={accent} />
-              <Text style={[styles.arenaEmptyText, { color: accent }]}>{isMyMatch ? 'Awaiting\nchallenger' : 'Your spot\nawaits'}</Text>
-            </View>
-            <View style={styles.arenaNameRow}>
-              <View style={[styles.arenaNameAvatar, styles.arenaNameAvatarEmpty, { borderColor }]}>
-                <Ionicons name="help" size={12} color={subText} />
-              </View>
-              <Text style={[styles.arenaName, { color: subText }]} numberOfLines={1}>Waiting…</Text>
-            </View>
-          </View>
-        </View>
-
-        {/* Info + CTA */}
-        <View style={styles.arenaFooterWrap}>
-          <Text style={[styles.arenaTitle, { color: textColor }]} numberOfLines={1}>{item.title || (isVideo ? 'Video Battle' : 'Photo Battle')}</Text>
-          <View style={styles.arenaMetaRow}>
-            <CoinIcon size={12} color={accent} />
-            <Text style={[styles.arenaMetaText, { color: subText }]}>Entry {entryFee}</Text>
-            <Text style={[styles.arenaMetaDot, { color: subText }]}>·</Text>
-            <MaterialCommunityIcons name="vote-outline" size={14} color={subText} />
-            <Text style={[styles.arenaMetaText, { color: subText }]}>Fans vote the winner</Text>
-          </View>
-
-          <LinearGradient colors={isMyMatch ? ['#9AA0AA', '#7E848E'] : grad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.arenaCta}>
-            <Ionicons name={isMyMatch ? 'hourglass' : 'flash'} size={16} color="#FFF" />
-            <Text style={styles.arenaCtaText}>{isMyMatch ? 'Waiting for a rival' : 'Join Battle'}</Text>
-            {!isMyMatch && <ArrowIcon size={16} color="#FFF" variant="arrow" />}
-          </LinearGradient>
-        </View>
-      </ScaleTouchable>
-    );
-  };
-
-  // ================================================================
-  // PEOPLE CARD (2-col grid)
-  // ================================================================
-  const renderPerson = (item: any) => {
-    const followState = stateInSets(followedUsers, requestedUsers, item.id);
-    const isFollowed = followState !== 'none';
-    return (
-      <View key={item.id} style={[styles.personCard, { backgroundColor: cardBg, borderColor, width: PEOPLE_CARD_W }]}>
-        <TouchableOpacity activeOpacity={0.85} onPress={() => handleAction(() => router.push(`/profile?userId=${item.id}`))} style={{ alignItems: 'center' }}>
-          <LinearGradient colors={['#22C55E', '#16A34A']} style={styles.personRing}>
-            <Image source={{ uri: item.avatar }} style={styles.personAvatar} />
-          </LinearGradient>
-          <View style={styles.personNameRow}>
-            <Text style={[styles.personName, { color: textColor }]} numberOfLines={1}>{item.name}</Text>
-            <VerifiedBadge verified={item.verified} size={14} />
-          </View>
-          <Text style={[styles.personHandle, { color: subText }]} numberOfLines={1}>@{item.username}</Text>
-        </TouchableOpacity>
+function PriceToggle({ value, onChange, palette: p }: { value: PriceKey; onChange: (v: PriceKey) => void; palette: ExplorePalette }) {
+  return (
+    <View style={[styles.price, { backgroundColor: p.chip }]}>
+      {(['all', 'free', 'paid'] as const).map((k) => (
         <TouchableOpacity
-          activeOpacity={0.85}
-          onPress={() => handleFollow(item.id)}
-          style={[styles.personFollow, isFollowed ? { backgroundColor: chipBg } : { backgroundColor: '#22C55E' }]}
+          key={k}
+          onPress={() => onChange(k)}
+          style={[styles.priceItem, value === k && { backgroundColor: p.card }]}
+          accessibilityRole="button"
+          accessibilityState={{ selected: value === k }}
         >
-          {!isFollowed && <Ionicons name="add" size={15} color="#FFF" />}
-          <Text style={[styles.personFollowText, { color: isFollowed ? textColor : '#FFF' }]}>
-            {followButtonLabel(followState)}
-          </Text>
+          <Text style={[styles.priceText, { color: value === k ? p.text : p.sub }]}>{k === 'all' ? 'All' : k === 'free' ? 'Free' : 'Paid'}</Text>
         </TouchableOpacity>
-      </View>
-    );
-  };
-
-  // ================================================================
-  // BODY
-  // ================================================================
-  const renderBody = () => {
-    if (loading) return <SkeletonBody isDark={isDark} activeTab={activeTab} cardBg={cardBg} borderColor={borderColor} />;
-
-    if (activeTab === 'users') {
-      return (
-        <View style={{ paddingHorizontal: PAD, marginTop: 18 }}>
-          <SectionHeader icon="people" color={activeColor} title={q.length >= 2 ? 'Search Results' : 'Suggested People'} textColor={textColor} />
-          {filteredUsers.length === 0 ? (
-            <EmptyState
-              icon="people-outline"
-              text={q.length >= 2 ? `No people found for "${searchQuery.trim()}".` : 'No people to show yet.'}
-              border={borderColor} sub={subText}
-            />
-          ) : (
-            <View style={styles.peopleGrid}>{filteredUsers.map(renderPerson)}</View>
-          )}
-        </View>
-      );
-    }
-
-    return (
-      <View style={{ marginTop: 18 }}>
-        <View style={{ paddingHorizontal: PAD }}>
-          <SectionHeader iconLib="mci" mci="rocket-launch" color={activeColor} title="Start a New Battle" textColor={textColor} />
-        </View>
-        {filteredContests.length === 0 ? (
-          <View style={{ paddingHorizontal: PAD }}>
-            <EmptyState
-              icon="albums-outline"
-              // Distinguish "your filter hid everything" from "there is nothing
-              // to show" — the old single message made an active Free/Paid or
-              // Photo/Video filter look like an empty product.
-              text={
-                priceFilter === 'free' ? 'No free battles open right now.'
-                : priceFilter === 'paid' ? 'No paid battles open right now.'
-                : 'No battles available right now.'
-              }
-              border={borderColor}
-              sub={subText}
-              actionText={priceFilter !== 'all' ? 'Show any entry' : undefined}
-              actionColor={activeColor}
-              onAction={() => setPriceFilter('all')}
-              compact
-            />
-          </View>
-        ) : (
-          <FlatList
-            horizontal
-            data={filteredContests}
-            keyExtractor={(i) => i.id}
-            renderItem={({ item }) => renderTemplate(item)}
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingHorizontal: PAD, paddingVertical: 4, gap: 14 }}
-          />
-        )}
-
-        <View style={[styles.liveHeader, { paddingHorizontal: PAD }]}>
-          <View style={styles.rowCenter}>
-            <View style={styles.liveBadge}>
-              <View style={styles.liveDotSm} />
-              <Text style={styles.liveBadgeText}>LIVE</Text>
-            </View>
-            <Text style={[styles.sectionTitle, { color: textColor }]}>Live Arena</Text>
-          </View>
-          <TouchableOpacity onPress={() => fetchExploreData(true)} style={styles.refreshBtn}>
-            <Ionicons name="refresh" size={18} color={activeColor} />
-          </TouchableOpacity>
-        </View>
-
-        <View style={{ paddingHorizontal: PAD, gap: 16 }}>
-          {filteredMatches.length === 0 ? (
-            <View style={[styles.emptyBattle, { backgroundColor: cardBg, borderColor }]}>
-              <View style={[styles.emptyBattleIcon, { backgroundColor: isDark ? '#20222B' : '#F4F5F8' }]}>
-                <MaterialCommunityIcons name="sword-cross" size={30} color={activeColor} />
-              </View>
-              <Text style={[styles.emptyBattleTitle, { color: textColor }]}>No active battles right now</Text>
-              <Text style={[styles.emptyBattleSub, { color: subText }]}>Be the first to step into the arena!</Text>
-              <TouchableOpacity
-                activeOpacity={0.9}
-                onPress={() => handleAction(() => router.push(activeTab === 'video' ? '/contest/video' : '/contest/photo'))}
-              >
-                <LinearGradient colors={activeMeta.grad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.emptyBattleBtn}>
-                  <Ionicons name="flash" size={16} color="#FFF" />
-                  <Text style={styles.emptyBattleBtnText}>Start a Battle</Text>
-                </LinearGradient>
-              </TouchableOpacity>
-            </View>
-          ) : (
-            filteredMatches.map(renderVersus)
-          )}
-        </View>
-      </View>
-    );
-  };
-
-  return (
-    <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: 120 }}
-        stickyHeaderIndices={[1]}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={() => fetchExploreData(true)}
-            tintColor={activeColor}
-            colors={[activeColor]}
-          />
-        }
-      >
-        {renderHeader()}
-        {renderChips()}
-        {renderBody()}
-      </ScrollView>
-      <BottomNav backgroundColor={bg} isDark={isDark} />
-    </SafeAreaView>
-  );
-}
-
-// ================================================================
-// Reusable helpers
-// ================================================================
-
-/**
- * Pressable that gently scales down on press for a tactile, premium feel.
- *
- * Extra props are forwarded to the `Pressable`, so a caller can attach
- * accessibility attributes. Without that they would land on the outer animated
- * wrapper instead of the element that is actually focusable, and a screen reader
- * would announce a card with no name.
- */
-function ScaleTouchable({ children, onPress, style, disabled, ...rest }: any) {
-  const scale = useRef(new RNAnimated.Value(1)).current;
-  return (
-    <RNAnimated.View style={[style, { transform: [{ scale }] }]}>
-      <Pressable
-        onPress={onPress}
-        disabled={disabled}
-        onPressIn={() => RNAnimated.spring(scale, { toValue: 0.95, useNativeDriver: true, speed: 50, bounciness: 0 }).start()}
-        onPressOut={() => RNAnimated.spring(scale, { toValue: 1, useNativeDriver: true, speed: 50, bounciness: 4 }).start()}
-        style={{ flex: 1 }}
-        {...rest}
-      >
-        {children}
-      </Pressable>
-    </RNAnimated.View>
-  );
-}
-
-/**
- * One "Start a New Battle" template card.
- *
- * A real component rather than the render function it used to be, because it runs
- * `useCountdown` — hooks cannot live in a helper the FlatList calls per item, since
- * the hook order would shift as the list is filtered.
- *
- * ---------------------------------------------------------------------------
- * Layout
- * ---------------------------------------------------------------------------
- *
- *   ┌────────────────────────────┐
- *   │ [type]          [⏱ 2d 4h]  │  own row, fixed — nothing here wraps
- *   │                            │
- *   │  WINNER GETS               │
- *   │  ◉ 500                     │  the reason to tap, so the biggest thing here
- *   │  Best DP Contest           │
- *   │  [FREE]                    │
- *   │  [    Start Battle  →    ] │  full-width, so the tap target is the card's
- *   └────────────────────────────┘  width rather than a 70pt pill
- *
- * Two things the previous version got wrong.
- *
- * 1. THE COUNTDOWN SHARED A WRAPPING ROW with the entry badge. `formatCountdown`
- *    emits up to "12d 23h 59m", which needs ~94pt here; beside the entry badge
- *    that row wants ~154pt inside a 136pt box, so every contest more than a day
- *    out wrapped onto a second line. The card is a fixed height with its content
- *    bottom-aligned inside `overflow: 'hidden'`, so the extra line was taken off
- *    the TOP — it pushed the title up under the icon with about 6pt of headroom
- *    before clipping it. The countdown now owns the top row, the footer is a
- *    column, and no row in the card can wrap.
- *
- * 2. THE HIERARCHY WAS INVERTED. Entry COST got a saturated green badge while the
- *    PRIZE — the actual reason to enter — was 11pt text in a translucent corner
- *    chip. The prize is now the hero line, which also makes this card agree with
- *    how the same contest already reads on the photo and video list screens
- *    ("WINNER GETS / 500 Coins").
- *
- * It also renders `bannerUrl` when the contest has one. Both list screens have
- * always done that and this card never did, so an admin who set a banner saw it
- * everywhere except here. Most contests carry no banner today, so the type
- * gradient is still the common case rather than a fallback nobody sees.
- */
-function TemplateCard({ item, onStart }: { item: any; onStart: () => void }) {
-  const isVideo = item?.type === 'video';
-  const { ended } = useCountdown(item?.endsAt);
-  const prize = contestPrize(item);
-
-  if (!item || !item.title) return null;
-
-  const banner = typeof item.bannerUrl === 'string' && item.bannerUrl ? item.bannerUrl : null;
-
-  // One sentence, so a screen reader reads a card rather than five disconnected
-  // fragments. The touchable had no label at all before.
-  const spoken = [
-    item.title,
-    isVideo ? 'video battle' : 'photo battle',
-    isFreeContest(item) ? 'free entry' : 'paid entry',
-    describePrize(prize),
-    ended ? 'closed' : null,
-  ]
-    .filter(Boolean)
-    .join(', ');
-
-  return (
-    <ScaleTouchable
-      style={styles.templateCard}
-      // The list is cached server-side, so a contest can still be here for a
-      // while after it closed. Refuse the tap rather than let a user reach a
-      // setup screen that would fail on submit.
-      disabled={ended}
-      onPress={ended ? undefined : onStart}
-      accessibilityRole="button"
-      accessibilityLabel={spoken}
-      accessibilityState={{ disabled: ended }}
-    >
-      <ImageBackground
-        // No banner -> no source, and the gradient below is the surface. Passing
-        // `undefined` rather than a placeholder url is the same thing the photo
-        // and video list cards do.
-        source={banner ? { uri: banner } : undefined}
-        style={styles.templateInner}
-        imageStyle={styles.templateImg}
-      >
-        {/* This gradient does double duty: it IS the card surface when there is
-            no banner, and the legibility scrim when there is one — which is why
-            the banner case is a top-to-bottom black ramp rather than the
-            diagonal brand gradient. */}
-        <LinearGradient
-          colors={
-            ended
-              ? ['rgba(75,85,99,0.82)', 'rgba(31,41,55,0.97)']
-              : banner
-                ? ['rgba(0,0,0,0.06)', 'rgba(0,0,0,0.34)', 'rgba(0,0,0,0.88)']
-                : gradForType(item.type)
-          }
-          locations={banner && !ended ? [0, 0.42, 1] : undefined}
-          start={{ x: 0, y: 0 }}
-          end={banner || ended ? { x: 0, y: 1 } : { x: 1, y: 1 }}
-          style={styles.templateFill}
-        >
-          {/* Only decoration, and only when there is no banner to decorate with. */}
-          {!banner && (
-            <MaterialCommunityIcons
-              name={isVideo ? 'movie-open-star' : 'image-filter-hdr'}
-              size={78}
-              color="rgba(255,255,255,0.13)"
-              style={styles.templateWm}
-            />
-          )}
-
-          <View style={styles.templateTopRow}>
-            <View style={styles.templateIcon}>
-              <MaterialCommunityIcons
-                name={isVideo ? 'movie-open-play' : 'image-multiple'}
-                size={15}
-                color="#FFF"
-              />
-            </View>
-            {/* Renders nothing when the contest has no closing time, which is
-                most of them — hence its own row rather than a reserved gap. */}
-            <ContestCountdownBadge endsAt={item.endsAt} size="sm" />
-          </View>
-
-          <View>
-            {/* A product is named rather than numbered, so it drops to the smaller
-                title-sized type — a 20-character product name at the coin figure's
-                21pt would not fit the card, and the name IS the persuasive part. */}
-            {prize.type === 'product' ? (
-              <>
-                <Text style={styles.templatePrizeLabel}>WINNER GETS</Text>
-                <View style={styles.templatePrizeRow}>
-                  <Ionicons name="cube" size={14} color="#DDD0FF" />
-                  <Text style={styles.templateProductValue} numberOfLines={1}>
-                    {prize.product.title}
-                  </Text>
-                </View>
-              </>
-            ) : prize.coins > 0 ? (
-              <>
-                <Text style={styles.templatePrizeLabel}>WINNER GETS</Text>
-                <View style={styles.templatePrizeRow}>
-                  <CoinIcon size={15} color="#FFD54A" />
-                  <Text style={styles.templatePrizeValue} numberOfLines={1}>
-                    {prize.coins}
-                  </Text>
-                </View>
-              </>
-            ) : null}
-            <Text style={styles.templateTitle} numberOfLines={2}>
-              {item.title}
-            </Text>
-            {/* A column, deliberately: the entry badge and the CTA on one line
-                fit only just, and a four-digit entry fee would have pushed the
-                CTA off the card. */}
-            <View style={styles.templateFooter}>
-              <ContestEntryBadge contest={item} size="sm" />
-              <View style={[styles.templateCta, ended && styles.templateCtaEnded]}>
-                <Text style={[styles.templateCtaText, ended && styles.templateCtaTextEnded]}>
-                  {ended ? 'Closed' : 'Start Battle'}
-                </Text>
-                {!ended && <ArrowIcon size={11} color={colorForType(item.type)} variant="arrow" />}
-              </View>
-            </View>
-          </View>
-        </LinearGradient>
-      </ImageBackground>
-    </ScaleTouchable>
-  );
-}
-
-function SectionHeader({ icon, iconLib, mci, color, title, textColor }: any) {
-  return (
-    <View style={styles.sectionHeader}>
-      {iconLib === 'mci'
-        ? <MaterialCommunityIcons name={mci} size={18} color={color} />
-        : <Ionicons name={icon} size={18} color={color} />}
-      <Text style={[styles.sectionTitle, { color: textColor }]}>{title}</Text>
+      ))}
     </View>
   );
 }
 
-function EmptyState({ icon, iconLib, mci, text, border, sub, actionText, actionColor, onAction, compact }: any) {
+const QUICK: { key: string; label: string; icon: string; grad: [string, string]; route: string; gate?: 'wallet' | 'create' }[] = [
+  { key: 'ranks', label: 'Ranks', icon: 'trophy', grad: ['#FFB300', '#FF7A00'], route: '/explore/leaderboard' },
+  { key: 'photo', label: 'Photo battle', icon: 'image', grad: ['#FF4D67', '#FF7A45'], route: '/contest/photo' },
+  { key: 'video', label: 'Video battle', icon: 'videocam', grad: ['#6A5AE0', '#8B5CF6'], route: '/contest/video' },
+  { key: 'refer', label: 'Refer & Earn', icon: 'gift', grad: ['#22C55E', '#16A34A'], route: '/referral', gate: 'wallet' },
+  { key: 'wallet', label: 'Wallet', icon: 'wallet', grad: ['#0EA5E9', '#2563EB'], route: '/wallet', gate: 'wallet' },
+];
+
+function QuickActions({
+  palette: p,
+  contestsOn,
+  onGated,
+}: {
+  palette: ExplorePalette;
+  contestsOn: boolean;
+  onGated: (route: string, action: 'wallet' | 'create') => void;
+}) {
+  const router = useRouter();
+  const items = QUICK.filter((q) => contestsOn || (q.key !== 'photo' && q.key !== 'video'));
   return (
-    <View style={[styles.emptyState, { borderColor: border, paddingVertical: compact ? 22 : 34 }]}>
-      {iconLib === 'mci'
-        ? <MaterialCommunityIcons name={mci} size={44} color={sub} style={{ opacity: 0.5 }} />
-        : <Ionicons name={icon} size={44} color={sub} style={{ opacity: 0.5 }} />}
-      <Text style={[styles.emptyText, { color: sub }]}>{text}</Text>
-      {actionText && (
-        <TouchableOpacity onPress={onAction}>
-          <Text style={{ color: actionColor, fontFamily: 'Urbanist-Bold', marginTop: 10 }}>{actionText}</Text>
-        </TouchableOpacity>
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.quickRow}>
+      {items.map((a) => (
+        <ScaleTouchable
+          key={a.key}
+          style={styles.quickItem}
+          onPress={() => (a.gate ? onGated(a.route, a.gate) : router.push(a.route as any))}
+          accessibilityRole="button"
+          accessibilityLabel={a.label}
+        >
+          <LinearGradient colors={a.grad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.quickCircle}>
+            <Ionicons name={a.icon} size={21} color="#FFF" />
+          </LinearGradient>
+          <Text style={[styles.quickLabel, { color: p.sub }]} numberOfLines={1}>{a.label}</Text>
+        </ScaleTouchable>
+      ))}
+    </ScrollView>
+  );
+}
+
+function BattleRail({
+  title,
+  icon,
+  iconColor,
+  palette: p,
+  query,
+  tileW,
+  emphasis,
+  onSeeAll,
+  emptyText,
+  hideWhenEmpty,
+}: {
+  title: string;
+  icon: string;
+  iconColor?: string;
+  palette: ExplorePalette;
+  query: { data?: any[]; isLoading: boolean; isError: boolean; refetch: () => any };
+  tileW: number;
+  emphasis: 'trending' | 'ending';
+  onSeeAll: () => void;
+  emptyText?: string;
+  hideWhenEmpty?: boolean;
+}) {
+  const list = query.data || [];
+  if (hideWhenEmpty && !query.isLoading && !query.isError && !list.length) return null;
+  return (
+    <View>
+      <SectionHeader title={title} icon={icon} iconColor={iconColor} palette={p} onSeeAll={list.length >= 4 ? onSeeAll : undefined} />
+      {query.isLoading ? (
+        <RailSkeleton width={tileW} height={tileW * 0.78 + 56} />
+      ) : query.isError ? (
+        <SectionError palette={p} onRetry={() => query.refetch()} />
+      ) : list.length ? (
+        <FlatList
+          horizontal
+          data={list}
+          keyExtractor={(m) => m.id}
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.rail}
+          renderItem={({ item }) => <BattleTile item={item} width={tileW} palette={p} emphasis={emphasis} />}
+          initialNumToRender={3}
+          windowSize={3}
+        />
+      ) : (
+        <SectionEmpty palette={p} text={emptyText || 'Kuch nahi mila.'} />
       )}
-    </View>
-  );
-}
-
-/** Pulsing skeleton placeholders shown while data loads. */
-function SkeletonBody({ activeTab, cardBg, borderColor }: any) {
-  const PEOPLE_CARD_W = usePeopleCardWidth();
-  if (activeTab === 'users') {
-    return (
-      <View style={{ paddingHorizontal: PAD, marginTop: 18 }}>
-        <Skeleton width={160} height={20} style={{ marginBottom: 16 }} />
-        <View style={styles.peopleGrid}>
-          {[0, 1, 2, 3].map(i => (
-            <View key={i} style={[styles.personCard, { backgroundColor: cardBg, borderColor, width: PEOPLE_CARD_W, alignItems: 'center' }]}>
-              <SkeletonCircle size={76} />
-              <Skeleton width="70%" height={13} style={{ marginTop: 12 }} />
-              <Skeleton width="45%" height={9} style={{ marginTop: 6 }} />
-              <Skeleton width="100%" height={34} borderRadius={100} style={{ marginTop: 14 }} />
-            </View>
-          ))}
-        </View>
-      </View>
-    );
-  }
-
-  return (
-    <View style={{ marginTop: 18 }}>
-      <View style={{ paddingHorizontal: PAD }}>
-        <Skeleton width={180} height={20} style={{ marginBottom: 16 }} />
-      </View>
-      <View style={{ flexDirection: 'row', paddingHorizontal: PAD, gap: 14 }}>
-        {[0, 1].map(i => (<Skeleton key={i} width={TEMPLATE_W} height={TEMPLATE_H} borderRadius={24} />))}
-      </View>
-      <View style={{ paddingHorizontal: PAD, marginTop: 28, gap: 16 }}>
-        {[0, 1].map(i => (
-          <View key={i} style={[styles.battleCard, { backgroundColor: cardBg, borderColor }]}>
-            <Skeleton width="100%" height={210} borderRadius={0} />
-            <View style={styles.battleFooter}>
-              <View style={{ flex: 1 }}>
-                <Skeleton width="60%" height={14} />
-                <Skeleton width="30%" height={9} style={{ marginTop: 8 }} />
-              </View>
-              <Skeleton width={110} height={40} borderRadius={14} />
-            </View>
-          </View>
-        ))}
-      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-
-  // Top bar
-  topBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: PAD, paddingTop: 10, paddingBottom: 4 },
-  headerAvatar: { width: 46, height: 46, borderRadius: 23, borderWidth: 2 },
-  kicker: { fontSize: 12, fontFamily: 'Urbanist-Bold', letterSpacing: 1.5, marginBottom: 2 },
-  title: { fontSize: 28, fontFamily: 'Urbanist-Bold', letterSpacing: -0.5 },
-  coinChip: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingLeft: 12, paddingRight: 4, height: 40, borderRadius: 20 },
+  topBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: PAD, paddingTop: 8, gap: 8 },
+  headerAvatar: { borderWidth: 2 },
+  kicker: { fontSize: 11, fontFamily: 'Urbanist-Bold', letterSpacing: 1.5 },
+  title: { fontSize: 26, fontFamily: 'Urbanist-Bold', letterSpacing: -0.5 },
+  coinChip: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingLeft: 12, paddingRight: 4, height: 38, borderRadius: 19 },
   coinText: { fontSize: 14, fontFamily: 'Urbanist-Black' },
   coinPlus: { width: 26, height: 26, borderRadius: 13, backgroundColor: '#FFB300', justifyContent: 'center', alignItems: 'center' },
-  iconBtn: { width: 44, height: 44, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
-
-  // Search
-  searchWrap: { paddingHorizontal: PAD, marginTop: 14 },
-  searchBox: {
-    flexDirection: 'row', alignItems: 'center', height: 52, borderRadius: 16, paddingHorizontal: 16, gap: 10,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 2,
+  iconBtn: { width: 42, height: 42, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
+  search: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    height: 50,
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingHorizontal: 16,
+    marginHorizontal: PAD,
+    marginTop: 14,
   },
-  searchInput: { flex: 1, fontSize: 16, fontFamily: 'Urbanist-Medium' },
-
-  // Quick actions
-  quickRow: { paddingHorizontal: PAD, gap: 18, paddingTop: 18, paddingBottom: 6 },
-  quickItem: { alignItems: 'center', width: 64 },
-  quickCircle: {
-    width: 58, height: 58, borderRadius: 20, justifyContent: 'center', alignItems: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.18, shadowRadius: 8, elevation: 4,
-  },
-  quickLabel: { fontSize: 12, fontFamily: 'Urbanist-SemiBold', marginTop: 7 },
-
-  // Chip bar (sticky)
-  chipBar: { paddingTop: 12, paddingBottom: 12, zIndex: 10 },
-  chip: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 14 },
-  chipText: { fontSize: 14, fontFamily: 'Urbanist-Bold' },
-  chipActive: {
-    flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 14,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 6, elevation: 4,
-  },
-  chipActiveText: { fontSize: 14, fontFamily: 'Urbanist-Bold', color: '#FFF' },
-  chipCount: { backgroundColor: 'rgba(255,255,255,0.28)', minWidth: 20, height: 20, borderRadius: 10, paddingHorizontal: 6, alignItems: 'center', justifyContent: 'center' },
-  chipCountText: { color: '#FFF', fontSize: 11, fontFamily: 'Urbanist-Black' },
-
-  // Section header
-  sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14 },
-  sectionTitle: { fontSize: 20, fontFamily: 'Urbanist-Bold' },
-  rowCenter: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  liveHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 26, marginBottom: 14 },
-  refreshBtn: { padding: 4 },
-  liveBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FF4D67', borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3, gap: 4 },
-  liveDotSm: { width: 5, height: 5, borderRadius: 3, backgroundColor: '#FFF' },
-  liveBadgeText: { color: '#FFF', fontSize: 9, fontFamily: 'Urbanist-Black', letterSpacing: 0.5 },
-
-  // Template card
-  priceRow: { flexDirection: 'row', gap: 8, paddingHorizontal: PAD, paddingTop: 10 },
-  priceChip: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 100, borderWidth: 1 },
-  priceChipText: { fontSize: 12, fontFamily: 'Urbanist-Bold' },
-  templateCard: {
-    width: TEMPLATE_W, height: TEMPLATE_H, borderRadius: 24, overflow: 'hidden',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.15, shadowRadius: 10, elevation: 5,
-  },
-  templateInner: { flex: 1 },
-  templateImg: { borderRadius: 24 },
-  // `space-between` is what pins the top row to the top and the copy to the
-  // bottom without a spacer view, so a card with no prize block simply has more
-  // air rather than a differently-placed title.
-  templateFill: { flex: 1, padding: 14, justifyContent: 'space-between' },
-  templateWm: { position: 'absolute', right: -12, top: -10 },
-  templateTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  templateIcon: {
-    width: 28, height: 28, borderRadius: 10,
-    backgroundColor: 'rgba(255,255,255,0.24)', justifyContent: 'center', alignItems: 'center',
-  },
-  templatePrizeLabel: {
-    color: 'rgba(255,255,255,0.72)', fontSize: 9, fontFamily: 'Urbanist-Black',
-    letterSpacing: 0.9, marginBottom: 1,
-  },
-  templatePrizeRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  templatePrizeValue: { color: '#FFF', fontSize: 21, fontFamily: 'Urbanist-Black', lineHeight: 24 },
-  /** A product NAME in the hero slot: smaller than the coin figure so it fits. */
-  templateProductValue: {
-    color: '#FFF', fontSize: 14, fontFamily: 'Urbanist-Black', lineHeight: 18, flexShrink: 1,
-  },
-  templateTitle: { color: '#FFF', fontSize: 14, fontFamily: 'Urbanist-Bold', lineHeight: 18, marginTop: 3 },
-  // Column, and `flex-start` so the badge keeps its intrinsic width instead of
-  // being stretched by the default `stretch` alignment.
-  templateFooter: { marginTop: 9, gap: 8, alignItems: 'flex-start' },
-  templateCta: {
-    alignSelf: 'stretch', flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: '#FFF', paddingVertical: 8, borderRadius: 100, gap: 6,
-  },
-  templateCtaEnded: { backgroundColor: 'rgba(255,255,255,0.16)' },
-  templateCtaText: { fontSize: 12, fontFamily: 'Urbanist-Bold', color: '#121212' },
-  templateCtaTextEnded: { color: '#FFF' },
-
-  // Battle card
-  battleCard: {
-    borderRadius: 26, overflow: 'hidden', borderWidth: 1,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.08, shadowRadius: 16, elevation: 4,
-  },
-  battleMedia: { height: 210, width: '100%', position: 'relative' },
-  battleImg: { ...StyleSheet.absoluteFillObject, width: '100%', height: '100%', resizeMode: 'cover' },
-  battleTopRow: { position: 'absolute', top: 14, left: 14, right: 14, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  statusPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(0,0,0,0.4)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 100 },
-  liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#FF4D67' },
-  statusText: { color: '#FFF', fontSize: 10, fontFamily: 'Urbanist-Black', letterSpacing: 0.5 },
-  prizePill: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(0,0,0,0.4)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 100 },
-  prizeText: { color: '#FFB300', fontSize: 12, fontFamily: 'Urbanist-Black' },
-  creatorChip: { position: 'absolute', bottom: 14, left: 14, flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: 'rgba(0,0,0,0.35)', paddingHorizontal: 8, paddingVertical: 5, borderRadius: 100, maxWidth: '60%' },
-  creatorAvatar: { width: 26, height: 26, borderRadius: 13, borderWidth: 1.5, borderColor: '#FFF' },
-  creatorName: { color: '#FFF', fontSize: 13, fontFamily: 'Urbanist-Bold', flexShrink: 1 },
-  vsWrap: { position: 'absolute', right: 16, bottom: 14 },
-  vsCircle: { width: 48, height: 48, borderRadius: 24, justifyContent: 'center', alignItems: 'center', borderWidth: 3, borderColor: '#FFF', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 5 },
-  vsText: { color: '#FFF', fontFamily: 'Urbanist-Black', fontSize: 14, fontStyle: 'italic' },
-  battleFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16 },
-  battleTitle: { fontSize: 16, fontFamily: 'Urbanist-Bold' },
-  entryRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4 },
-  entryLabel: { fontSize: 13, fontFamily: 'Urbanist-Medium' },
-  entryVal: { fontSize: 14, fontFamily: 'Urbanist-Black' },
-  joinBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 11, paddingHorizontal: 20, borderRadius: 14 },
-  joinBtnText: { color: '#FFF', fontSize: 14, fontFamily: 'Urbanist-Bold' },
-
-  // Live Arena — VS battle card (redesigned)
-  arenaCard: {
-    borderRadius: 26, borderWidth: 1, padding: 16,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.09, shadowRadius: 20, elevation: 5,
-  },
-  arenaTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
-  arenaStatusPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#FF4D67', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 100 },
-  arenaStatusText: { color: '#FFF', fontSize: 10, fontFamily: 'Urbanist-Black', letterSpacing: 0.5 },
-  arenaPrizePill: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(245,158,11,0.14)', paddingHorizontal: 11, paddingVertical: 5, borderRadius: 100 },
-  arenaPrizeText: { color: '#F59E0B', fontSize: 12, fontFamily: 'Urbanist-Black' },
-
-  arenaBody: { flexDirection: 'row', alignItems: 'center' },
-  arenaSide: { flex: 1, alignItems: 'center' },
-  arenaPhotoWrap: { width: '100%', aspectRatio: 0.82, borderRadius: 18, overflow: 'hidden', position: 'relative' },
-  arenaPhoto: { width: '100%', height: '100%', resizeMode: 'cover' },
-  arenaCorner: { position: 'absolute', top: 8, left: 8, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
-  arenaCornerText: { color: '#FFF', fontSize: 10, fontFamily: 'Urbanist-Black', letterSpacing: 0.5 },
-  arenaEmptySlot: { borderWidth: 2, borderStyle: 'dashed', justifyContent: 'center', alignItems: 'center', gap: 8, padding: 8 },
-  arenaEmptyText: { fontSize: 11, fontFamily: 'Urbanist-Bold', textAlign: 'center', lineHeight: 14 },
-  arenaNameRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10, maxWidth: '100%', paddingHorizontal: 2 },
-  arenaNameAvatar: { width: 22, height: 22, borderRadius: 11, borderWidth: 1.5, borderColor: '#FFF' },
-  arenaNameAvatarEmpty: { justifyContent: 'center', alignItems: 'center' },
-  arenaName: { fontSize: 13, fontFamily: 'Urbanist-Bold', flexShrink: 1 },
-
-  arenaVsCol: { width: 52, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'center', gap: 6 },
-  arenaVsLine: { width: 2, flex: 1, borderRadius: 1, opacity: 0.7 },
-  arenaVsBadge: {
-    width: 46, height: 46, borderRadius: 23, justifyContent: 'center', alignItems: 'center', borderWidth: 3, borderColor: '#FFF',
-    shadowColor: '#FF4D67', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.4, shadowRadius: 8, elevation: 6,
-  },
-  arenaVsText: { color: '#FFF', fontFamily: 'Urbanist-Black', fontSize: 15, fontStyle: 'italic' },
-
-  arenaFooterWrap: { marginTop: 16 },
-  arenaTitle: { fontSize: 17, fontFamily: 'Urbanist-Bold' },
-  arenaMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6, flexWrap: 'wrap' },
-  arenaMetaText: { fontSize: 12, fontFamily: 'Urbanist-SemiBold' },
-  arenaMetaDot: { fontSize: 12, fontFamily: 'Urbanist-Black' },
-  arenaCta: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, borderRadius: 16, marginTop: 16 },
-  arenaCtaText: { color: '#FFF', fontSize: 15, fontFamily: 'Urbanist-Bold' },
-
-  // Empty battle state (actionable)
-  emptyBattle: { borderRadius: 24, borderWidth: 1, alignItems: 'center', paddingVertical: 30, paddingHorizontal: 20 },
-  emptyBattleIcon: { width: 64, height: 64, borderRadius: 22, justifyContent: 'center', alignItems: 'center', marginBottom: 14 },
-  emptyBattleTitle: { fontSize: 16, fontFamily: 'Urbanist-Bold' },
-  emptyBattleSub: { fontSize: 13, fontFamily: 'Urbanist-Medium', marginTop: 4, marginBottom: 18 },
-  emptyBattleBtn: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingVertical: 12, paddingHorizontal: 26, borderRadius: 14 },
-  emptyBattleBtnText: { color: '#FFF', fontSize: 14, fontFamily: 'Urbanist-Bold' },
-
-  // People grid
-  peopleGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: GRID_GAP },
-  personCard: {
-    borderRadius: 22, borderWidth: 1, padding: 16, alignItems: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 2,
-  },
-  personRing: { width: 76, height: 76, borderRadius: 38, justifyContent: 'center', alignItems: 'center', padding: 3 },
-  personAvatar: { width: '100%', height: '100%', borderRadius: 36, borderWidth: 2, borderColor: '#FFF' },
-  personName: { fontSize: 15, fontFamily: 'Urbanist-Bold', flexShrink: 1 },
-  personNameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 12, maxWidth: '100%' },
-  personHandle: { fontSize: 13, fontFamily: 'Urbanist-Medium', marginTop: 1 },
-  personFollow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 3, paddingVertical: 9, borderRadius: 100, marginTop: 14, width: '100%' },
-  personFollowText: { fontSize: 13, fontFamily: 'Urbanist-Bold' },
-
-  // Empty state
-  emptyState: { borderWidth: 2, borderStyle: 'dashed', borderRadius: 20, padding: 20, alignItems: 'center', marginTop: 6 },
-  emptyText: { marginTop: 12, fontFamily: 'Urbanist-Medium', fontSize: 14, textAlign: 'center' },
-
-  // Skeleton
-  skLine: { height: 12, borderRadius: 6 },
-  skCircle: { width: 76, height: 76, borderRadius: 38 },
-  skBtn: { height: 34, borderRadius: 100, width: '100%', marginTop: 14 },
+  searchText: { flex: 1, fontSize: 15, fontFamily: 'Urbanist-Medium' },
+  guest: { marginHorizontal: PAD, marginTop: 14, borderRadius: 18, overflow: 'hidden' },
+  guestInner: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 },
+  guestTitle: { color: '#FFF', fontSize: 14, fontFamily: 'Urbanist-Bold' },
+  guestSub: { color: 'rgba(255,255,255,0.9)', fontSize: 12, fontFamily: 'Urbanist-Medium', marginTop: 2 },
+  guestCta: { color: BRAND, backgroundColor: '#FFF', fontFamily: 'Urbanist-Bold', fontSize: 12, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 100, overflow: 'hidden' },
+  tabsBar: { paddingVertical: 12, zIndex: 10 },
+  tab: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 16, paddingVertical: 9, borderRadius: 14 },
+  tabText: { fontSize: 14, fontFamily: 'Urbanist-Bold' },
+  rail: { paddingHorizontal: PAD, gap: 12 },
+  gridRow: { flexDirection: 'row', gap: GRID_GAP, paddingHorizontal: PAD, marginBottom: GRID_GAP },
+  end: { textAlign: 'center', fontFamily: 'Urbanist-Medium', fontSize: 13, marginVertical: 18 },
+  price: { flexDirection: 'row', borderRadius: 10, padding: 3 },
+  priceItem: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
+  priceText: { fontSize: 12, fontFamily: 'Urbanist-Bold' },
+  quickRow: { paddingHorizontal: PAD, gap: 14, paddingTop: 20 },
+  quickItem: { alignItems: 'center', width: 70 },
+  quickCircle: { width: 56, height: 56, borderRadius: 19, justifyContent: 'center', alignItems: 'center' },
+  quickLabel: { fontSize: 11, fontFamily: 'Urbanist-SemiBold', marginTop: 7, textAlign: 'center' },
 });

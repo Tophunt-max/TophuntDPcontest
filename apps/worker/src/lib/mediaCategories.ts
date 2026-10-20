@@ -131,6 +131,8 @@ export const VS_CARD_PREFIX = "vs-cards";
 export const PAYMENT_QR_PREFIX = "payment-qr";
 /** Images for the app's first-launch intro, set from the admin panel. */
 export const ONBOARDING_IMAGE_PREFIX = "onboarding";
+/** Promo banners for the Explore page carousel, set from the admin panel. */
+export const EXPLORE_BANNER_PREFIX = "explore-banners";
 export const BLOG_IMPORT_PREFIX = "blog/imported";
 
 /**
@@ -348,6 +350,18 @@ export const MEDIA_CATEGORIES: readonly MediaCategory[] = [
     legacyVideo: false,
     proxyOnly: false,
     description: "Slide images for the first-launch intro (onboarding), set from the admin panel.",
+  },
+  {
+    prefix: EXPLORE_BANNER_PREFIX,
+    writer: "admin",
+    kinds: ["image"],
+    // New key per upload; appConfig.explore.banners names the exact object.
+    cache: "immutable",
+    retentionDays: null,
+    dateSharded: true,
+    legacyVideo: false,
+    proxyOnly: false,
+    description: "Promo banners for the Explore page carousel, set from the admin panel.",
   },
 
   // --- Server-written -----------------------------------------------------

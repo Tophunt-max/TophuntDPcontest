@@ -364,6 +364,9 @@ export interface OnboardingStats {
 const uploadOnboardingImage = (file: File, onProgress?: UploadProgressHandler) =>
   uploadBinary("/admin/media/onboarding-image", file, onProgress, "Image upload failed. Check your connection and try again.");
 
+const uploadExploreBanner = (file: File, onProgress?: UploadProgressHandler) =>
+  uploadBinary("/admin/media/explore-banner", file, onProgress, "Banner upload failed. Check your connection and try again.");
+
 const uploadProductImage = (file: File, onProgress?: UploadProgressHandler) =>
   uploadBinary("/admin/media/product-image", file, onProgress, "Product image upload failed. Check your connection and try again.");
 
@@ -835,6 +838,7 @@ export const api = {
   authMethods: () => get<any>("/admin/auth-methods"),
   saveAuthMethods: (authMethods: any) => post("/admin/app-settings", { authMethods }),
   uploadOnboardingImage,
+  uploadExploreBanner,
   onboardingStats: (days = 30) => get<OnboardingStats>(`/admin/onboarding/stats?days=${days}`),
   verificationReward: () => get<any>("/admin/verification-reward"),
 
