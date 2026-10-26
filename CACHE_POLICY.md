@@ -64,6 +64,8 @@ converge when the TTL lapses, because the Cache API has no global purge.
 | Home feed snapshot (`src/lib/feedSnapshot.ts`) | Viewer (`u:<uid>` or `guest`) | `${owner}\|${tab}`, at most 2 rows | Painted if ≤ 12h old, then **always** revalidated in the background (PostCard keeps the viewer's own votes and likes in local state, which the snapshot never sees). Pull-to-refresh always hits the network | Replaced on every fresh first page. Dropped on block/mute and when a page comes back empty. A save whose fetch began before a clear is discarded (generation counter) | **No.** `_layout.tsx` wipes it on any uid change, and every write deletes other owners' rows |
 | Story cache (`stories`, `user_stories`) | Viewer (signed-in only) | server story id | Per-story `expires_at`. Network-first | Replaced on every feed fetch. Expired rows swept at launch | **No** (`clearLocalStories`) |
 | `pending_actions` | uid column | one row per (type, story, uid) | Swept after 7 days; 5 replay attempts | Replay only for the matching uid | Kept, but only that account ever replays them |
+| Social outbox `outbox_ops` (`src/sync/outbox.ts`) | `account` column | `account\|kind\|target`, newest intent wins | Sent on reconnect, foreground, launch and account change (debounced 1.5 s). Backoff 2 s → 10 min with jitter, 8 sends | Delivered → deleted. 4xx → `failed`, and the UI follows the server again. A refetch shows the pending intent instead of the server's older value (`src/sync/overlay.ts`) | Kept; only that account sends or sees it |
+| In-flight GET sharing (`src/services/api.ts#sharedGet`) | uid in the key | `uid\|live?\|url` | Only while a request is in flight; nothing is stored | Aborted when every caller has cancelled | **No** (uid-keyed) |
 | TanStack Query | Mixed. Several keys omit the viewer (`['profile', id]`, `['match', id]` and others) | — | 30s default | `queryClient.clear()` on any uid change | **No** |
 | Realtime channel sockets (`realtime.ts`) | Account that opened the socket | one per channel, ref-counted | Stays open 5s after the last listener leaves, so remounts reuse it | Retired after the linger; dropped while idle → not reconnected | **No.** A lingering socket is reused only by the same uid |
 | Notification badge (`notificationService.ts`) | uid | memory, per uid | Live socket + 180s safety poll | Dropped when the last subscriber leaves | **No** |
@@ -111,7 +113,11 @@ Worker.
   and retry state.
 - Load-more never pages from a cached cursor. It waits for the fresh first page,
   because ranking offsets move between requests.
-- The offline queue accepts only `view` and `reaction`. Both are idempotent
+- Home recovers by itself when the network returns: a failed first load or the saved-battles strip refetches, and a failed load-more retries. A failed load-more shows a tap-to-retry footer instead of stopping silently.
+- Likes, bookmarks and follows that get no answer (offline, dropped connection) keep their optimistic state and go to the social outbox (§2). Any HTTP answer, including 5xx, makes the UI follow the server instead.
+- Reads: `request()` retries transient failures (no answer, 429, 5xx) twice, but not while NetInfo says the device is offline. React Query no longer retries on top of that (`src/sync/queryPolicy.ts`): the worst case went from 9 attempts to 3. Callers can cancel (`readApi(path, params, { signal })`); identical concurrent GETs share one request.
+- No ETag / `If-None-Match`. Signed-in reads are `private, no-store` and computed per viewer, so a 304 would save bytes but no D1 reads. On web, `If-None-Match` is not a CORS-safelisted header, so it would add a preflight round trip to every guest GET that is a simple request today. Revisit only if transfer size shows up as a problem in measurements.
+- The Story queue accepts only `view` and `reaction`. Both are idempotent
   upserts on `story_views (story_id, viewer_id)`. There is one row per
   (type, story, uid); a newer reaction replaces the older one, and a replay
   never deletes a row that was rewritten while it was in flight. The queue
