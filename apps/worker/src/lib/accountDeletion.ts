@@ -1116,6 +1116,11 @@ async function phaseSocial(env: Env, uid: string): Promise<void> {
     db.delete(schema.userBlocks).where(eq(schema.userBlocks.blockedId, uid)),
     db.delete(schema.userMutes).where(eq(schema.userMutes.muterId, uid)),
     db.delete(schema.userMutes).where(eq(schema.userMutes.mutedId, uid)),
+    // Restrict / hide-story-from (migration 0067), both directions.
+    db.delete(schema.userRestricts).where(eq(schema.userRestricts.restricterId, uid)),
+    db.delete(schema.userRestricts).where(eq(schema.userRestricts.restrictedId, uid)),
+    db.delete(schema.userStoryHides).where(eq(schema.userStoryHides.ownerId, uid)),
+    db.delete(schema.userStoryHides).where(eq(schema.userStoryHides.hiddenUid, uid)),
     // Their own "Not interested" history (it names other creators).
     db.delete(schema.feedDismissals).where(eq(schema.feedDismissals.viewerUid, uid)),
     // Every notification naming them as the actor in someone else's inbox. Only

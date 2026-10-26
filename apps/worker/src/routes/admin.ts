@@ -51,7 +51,7 @@ import { assertSessionUsable } from "../middleware/auth";
 import { getAppConfig, getGamificationSettings, getSeoAudit, invalidateSetting } from "../lib/settings";
 import { legalDocsForAdmin, LEGAL_DOC_KEYS, LEGAL_LAST_UPDATED } from "../content/legal";
 import { deleteAuthUser, updateAuthUser, setCustomClaims, getUserByEmail } from "../lib/firebaseAdmin";
-import { createNotification } from "../lib/notify";
+import { createNotification, createNotificationsBulk } from "../lib/notify";
 import { sendUserEmail } from "../lib/email";
 import {
   withdrawalDecisionEmail,
@@ -1194,7 +1194,8 @@ adminRoute.get("/reports", async (c) => {
   const rows = await db
     .select()
     .from(schema.reports)
-    .where(sql`COALESCE(${schema.reports.status}, 'open') <> 'dismissed'`)
+    // 'actioned' (content removed, migration 0067) is closed too.
+    .where(sql`COALESCE(${schema.reports.status}, 'open') NOT IN ('dismissed', 'actioned')`)
     .orderBy(desc(schema.reports.createdAt))
     .limit(100)
     .all();
@@ -1231,6 +1232,34 @@ const REPORT_TYPE_GROUPS: Record<string, string[]> = {
 };
 const reportGroupOf = (t: string | null) =>
   Object.values(REPORT_TYPE_GROUPS).find((g) => g.includes(String(t))) ?? [String(t)];
+
+const COALESCE_OPEN = (status: string | null | undefined) => (status ?? "open") === "open";
+
+const REPORT_TARGET_NOUN: Record<string, string> = { match: "battle", comment: "comment", post: "post", story: "story", user: "account" };
+
+/**
+ * Tell reporters what happened to their report (it shows under Settings › My
+ * reports). Never names the reported account, and never says who else reported.
+ */
+async function notifyReporters(
+  c: any,
+  reporterIds: Array<string | null | undefined>,
+  outcome: "actioned" | "dismissed",
+  targetType: string | null,
+) {
+  const ids = [...new Set(reporterIds.filter((x): x is string => !!x))].slice(0, 500);
+  if (!ids.length) return;
+  const noun = REPORT_TARGET_NOUN[reportGroupOf(targetType)[0]] ?? "content";
+  await createNotificationsBulk(c.env, ids, {
+    title: "Update on your report",
+    body:
+      outcome === "actioned"
+        ? `Thanks for reporting. We reviewed the ${noun} and took action because it broke our community guidelines.`
+        : `Thanks for reporting. We reviewed the ${noun} and found it doesn't break our community guidelines.`,
+    type: "report_update",
+    targetId: "reports",
+  }).catch((e) => console.error("[admin] reporter notice failed (continuing)", e));
+}
 
 /** Tell the owner their content was taken down, with the appeal route the policy promises. */
 async function notifyRemoval(c: any, ownerUid: string | null | undefined, what: string) {
@@ -1381,16 +1410,25 @@ adminRoute.post("/reports/:id/resolve", async (c) => {
     // The content is gone: every report on it (from any reporter, under any alias
     // of its type) has nothing left to decide. Removing only this one left the
     // others in the queue pointing at nothing.
-    await db
-      .delete(schema.reports)
-      .where(and(eq(schema.reports.targetId, r.targetId as string), inArray(schema.reports.targetType, reportGroupOf(r.targetType))));
+    //
+    // They are marked 'actioned' rather than deleted (migration 0067), so each
+    // reporter can see the outcome under "My reports" and is told about it. The
+    // queue below excludes them, and a re-report stays a no-op duplicate.
+    const group = and(eq(schema.reports.targetId, r.targetId as string), inArray(schema.reports.targetType, reportGroupOf(r.targetType)));
+    const closed = await db
+      .update(schema.reports)
+      .set({ status: "actioned", resolvedAt: now() } as any)
+      .where(and(group, sql`COALESCE(${schema.reports.status}, 'open') = 'open'`))
+      .returning({ reporterId: schema.reports.reporterId });
+    await notifyReporters(c, closed.map((x: any) => x.reporterId), "actioned", r.targetType);
     await logAudit(c, "report.remove", r.targetType || "report", r.targetId || id, { reportId: id, removed });
     return c.json({ message: removed ? "Content removed" : "Content was already gone; reports closed", removed });
   }
   // Dismiss keeps the row as 'dismissed' so the same reporter re-reporting is
   // a duplicate (unique reporter/target) rather than a fresh vote toward the
   // auto-hold. The hold is released once no OPEN report on the battle remains.
-  await db.update(schema.reports).set({ status: "dismissed" }).where(eq(schema.reports.id, id));
+  await db.update(schema.reports).set({ status: "dismissed", resolvedAt: now() } as any).where(eq(schema.reports.id, id));
+  if (COALESCE_OPEN(r.status)) await notifyReporters(c, [r.reporterId], "dismissed", r.targetType);
   await releaseMatchHoldIfClear(db, r.targetType, r.targetId);
   await logAudit(c, "report.dismiss", r.targetType || "report", r.targetId || id, { reportId: id });
   return c.json({ message: "Report dismissed" });

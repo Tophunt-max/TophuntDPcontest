@@ -108,7 +108,14 @@ describe('resolving a report with "remove"', () => {
     expect((await admin(env, 'secret', 'POST', `/reports/${await reportId(env)}/resolve`, { action: 'remove' })).status).toBe(200);
     const m = await drizzleOf(env).select().from(schema.contestMatches).where(eq(schema.contestMatches.id, 'm1')).get();
     expect(m?.status).toBe('cancelled');
-    expect(await reportId(env)).toBeUndefined();
+    // Closed for every reporter (both aliases), kept as 'actioned' so each one
+    // sees the outcome under My reports (migration 0067), and out of the queue.
+    const rows = (await env.DB.prepare('SELECT status, resolved_at FROM reports').all<any>()).results;
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r: any) => r.status === 'actioned' && r.resolved_at > 0)).toBe(true);
+    expect((await admin(env, 'secret', 'GET', '/reports')).body).toEqual([]);
+    const notes = (await env.DB.prepare("SELECT recipient_id FROM notifications WHERE type = 'report_update' ORDER BY recipient_id").all<any>()).results;
+    expect(notes.map((n: any) => n.recipient_id)).toEqual(['rep', 'rep2']);
   });
 
   it('removes a reported battle comment (it lives in match_comments) and notifies its author', async () => {

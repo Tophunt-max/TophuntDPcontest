@@ -313,6 +313,10 @@ export async function isNotificationSuppressed(env: Env, recipientId: string, ac
          WHERE (blocker_id = ?1 AND blocked_id = ?2) OR (blocker_id = ?2 AND blocked_id = ?1)
        UNION ALL
        SELECT 1 AS hit FROM user_mutes WHERE muter_id = ?1 AND muted_id = ?2
+       UNION ALL
+       -- Restrict (migration 0067): a restricted account's activity never
+       -- notifies the person who restricted them (lib/socialSafety.ts).
+       SELECT 1 AS hit FROM user_restricts WHERE restricter_id = ?1 AND restricted_id = ?2
        LIMIT 1`,
     )
       .bind(recipientId, actorId)
@@ -338,6 +342,13 @@ export async function assertStoryInteractionAllowed(env: Env, uid: string, story
     .get();
   if (!story) return;
   await assertNotBlockedAny(env, uid, [story.userId]);
+  // "Hide my story from" (migration 0067): answered as not-found, like the read paths.
+  const hidden = await getDb(env)
+    .select({ o: schema.userStoryHides.ownerId })
+    .from(schema.userStoryHides)
+    .where(and(eq(schema.userStoryHides.ownerId, story.userId), eq(schema.userStoryHides.hiddenUid, uid)))
+    .get();
+  if (hidden) throw httpsError("not-found", "Story not found.");
 }
 
 /**

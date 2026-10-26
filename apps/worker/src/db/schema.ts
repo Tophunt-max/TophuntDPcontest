@@ -221,6 +221,37 @@ export const userMutes = sqliteTable(
   (t) => ({ pk: primaryKey({ columns: [t.muterId, t.mutedId] }) }),
 );
 
+// Restrict (migration 0067): the restricted account's comments on the
+// restricter's content are visible only to the commenter (and the restricter),
+// and none of their activity notifies the restricter. One-way and silent.
+export const userRestricts = sqliteTable(
+  "user_restricts",
+  {
+    restricterId: text("restricter_id").notNull(),
+    restrictedId: text("restricted_id").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.restricterId, t.restrictedId] }),
+    restrictedIdx: index("idx_user_restricts_restricted").on(t.restrictedId),
+  }),
+);
+
+// Hide my story from one account (migration 0067). Read by the hidden side
+// ("which owners hide from me"), hence the reverse index.
+export const userStoryHides = sqliteTable(
+  "user_story_hides",
+  {
+    ownerId: text("owner_id").notNull(),
+    hiddenUid: text("hidden_uid").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.ownerId, t.hiddenUid] }),
+    hiddenIdx: index("idx_user_story_hides_hidden").on(t.hiddenUid),
+  }),
+);
+
 // ---------------------------------------------------------------------------
 // feed_dismissals  (migration 0065) — "Not interested" on a feed card.
 // Read only by the viewer's own For You / Following ranking (routes/read.ts).
@@ -710,7 +741,11 @@ export const bookmarks = sqliteTable(
     matchId: text("match_id").notNull(),
     createdAt: integer("created_at").notNull(),
   },
-  (t) => ({ pk: primaryKey({ columns: [t.userId, t.matchId] }) }),
+  (t) => ({
+    pk: primaryKey({ columns: [t.userId, t.matchId] }),
+    // "Who saved this battle", for the ending-soon reminder (migration 0067).
+    matchIdx: index("idx_bookmarks_match").on(t.matchId),
+  }),
 );
 
 // ---------------------------------------------------------------------------
@@ -898,8 +933,11 @@ export const reports = sqliteTable("reports", {
   targetType: text("target_type"),
   targetId: text("target_id"),
   reason: text("reason"),
+  // 'open' | 'dismissed' | 'actioned' (content removed; migration 0067).
   status: text("status").default("open"),
   createdAt: integer("created_at").notNull(),
+  // When an admin dismissed or actioned it (migration 0067). Null while open.
+  resolvedAt: integer("resolved_at"),
 });
 
 export const supportTickets = sqliteTable("support_tickets", {
