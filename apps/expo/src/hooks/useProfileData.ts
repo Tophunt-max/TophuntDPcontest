@@ -264,6 +264,12 @@ const QUERY_KEYS_AFFECTED_BY_BLOCK = [
   'userPosts',
   'userBookmarks', // a saved battle involving the blocked user is now hidden
   'userWins',
+  // A block deletes the follow edges and pending requests both ways, so the
+  // Follow button and the requests inbox/badge must refetch too. They kept
+  // showing "Following"/"Requested" and the removed requester.
+  'relationship',
+  'followRequests',
+  'followRequestCount',
 ];
 
 function useBlockMutation(fn: (targetUserId: string) => Promise<any>) {

@@ -191,3 +191,14 @@ describe('commentService: the blog target contract', () => {
     }
   });
 });
+
+describe('commentService.likeComment target state', () => {
+  it('sends `liked` when the caller knows the target state, and omits it otherwise', async () => {
+    const { commentService } = await import('@/src/services/comments/commentService');
+    callApi.mockResolvedValue({ liked: true, likeCount: 3 } as any);
+    await commentService.likeComment('c1', 'matches', true);
+    expect(callApi).toHaveBeenLastCalledWith('likeComment', { commentId: 'c1', targetType: 'matches', liked: true });
+    await commentService.likeComment('c1', 'matches');
+    expect(callApi).toHaveBeenLastCalledWith('likeComment', { commentId: 'c1', targetType: 'matches' });
+  });
+});
