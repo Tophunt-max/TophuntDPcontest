@@ -17,6 +17,7 @@ import images from "@/assets/images";
 import { HeartNotificationIcon } from "../notifications/HeartNotificationIcon";
 import { useAuthGate } from '@/src/hooks/useAuthGate';
 import { loginHref } from '@/src/lib/authGate';
+import { fitArt, useDesignWindow } from '@/src/lib/layout';
 
 const HeaderComponent = () => {
   const router = useRouter();
@@ -26,6 +27,11 @@ const HeaderComponent = () => {
 
   const ChatIcon = isDark ? ChatIcon_Dark : ChatIcon_Light;
   const { requireAuth, isGuest } = useAuthGate();
+  // Tophunt.webp is a 3:1 wordmark. The old 115x32 box (3.6:1) drew it at only
+  // ~96x32. Now: up to 36% of the screen width, never taller than 44 so it stays
+  // inside the 54px bar. Small phones scale down, larger screens stop at 132x44.
+  const { width: screenWidth } = useDesignWindow();
+  const logo = fitArt({ aspect: 3, maxWidth: screenWidth * 0.36, maxHeight: 44 });
 
   return (
     <View
@@ -42,8 +48,9 @@ const HeaderComponent = () => {
       <View style={styles.left}>
         <Image 
           source={config?.headerLogoUrl ? { uri: config.headerLogoUrl } : images.tophuntLogo} 
-          style={{ width: 115, height: 32 }} 
+          style={logo} 
           resizeMode="contain" 
+          accessibilityLabel="TopHunt"
         />
       </View>
 
