@@ -629,16 +629,66 @@ export const replaceUserStoriesLocally = async (
   // The account changed (or signed out) while this fetch was in flight: the
   // response belongs to the previous viewer and must not land on disk.
   if (startedAtGeneration !== storyCacheGeneration) return;
-  await wipeStoryTables();
   try {
     await AsyncStorage.setItem(STORY_CACHE_OWNER_KEY, owner);
   } catch {
     // Without the marker reads fail closed (empty), which is safe.
   }
-  for (const group of list) {
-    if (startedAtGeneration !== storyCacheGeneration) break;
-    await saveUserStoriesLocally(group);
+  // ONE transaction: delete every cached row and insert the new answer. It used
+  // to be a wipe followed by one write per user group, so an app killed midway
+  // left a partial cache that the next offline launch served as if complete.
+  try {
+    await database.write(async () => {
+      if (startedAtGeneration !== storyCacheGeneration) return;
+      const storiesCol = database.get<StoryModel>('stories');
+      const groupsCol = database.get<UserStoryModel>('user_stories');
+      // Rows that stay are UPDATED in place, not deleted and re-created: LokiJS
+      // (web) rejects a delete and a create of the same id in one batch
+      // ("Duplicate key"), which is the normal case for a creator whose Stories
+      // survive a refresh. test/storyCacheRealDb.test.ts pins this on both
+      // adapters.
+      const oldStories = new Map((await storiesCol.query().fetch()).map((r) => [r.id, r]));
+      const oldGroups = new Map((await groupsCol.query().fetch()).map((r) => [r.id, r]));
+      const ops: Model[] = [];
+      // Ids are primary keys: a repeated id would fail the whole transaction on
+      // SQLite, so the first occurrence wins.
+      const seenStory = new Set<string>();
+      const seenGroup = new Set<string>();
+      for (const group of list) {
+        if (!group?.userId || seenGroup.has(group.userId)) continue;
+        seenGroup.add(group.userId);
+        const g = oldGroups.get(group.userId);
+        ops.push(
+          g
+            ? g.prepareUpdate((r) => applyUserStoryFields(r, group))
+            : groupsCol.prepareCreate((r) => {
+                r._raw.id = group.userId;
+                applyUserStoryFields(r, group);
+              }),
+        );
+        for (const story of group.stories) {
+          // One row per id even if the server repeats a story across groups.
+          if (!story?.id || seenStory.has(story.id)) continue;
+          seenStory.add(story.id);
+          const s = oldStories.get(story.id);
+          ops.push(
+            s
+              ? s.prepareUpdate((r) => applyStoryFields(r, story))
+              : storiesCol.prepareCreate((r) => {
+                  r._raw.id = story.id;
+                  applyStoryFields(r, story);
+                }),
+          );
+        }
+      }
+      // Whatever the server no longer returns goes.
+      for (const [id, r] of oldStories) if (!seenStory.has(id)) ops.push(r.prepareDestroyPermanently());
+      for (const [id, r] of oldGroups) if (!seenGroup.has(id)) ops.push(r.prepareDestroyPermanently());
+      if (ops.length) await database.batch(...ops);
+    });
+  } catch (e) {
+    console.error('[offlineStoryService] replaceUserStoriesLocally failed', e);
   }
-  // A clear that ran while the rows were being written wins: undo them.
+  // A clear that ran while the transaction was queued wins: undo it.
   if (startedAtGeneration !== storyCacheGeneration) await wipeStoryTables();
 };

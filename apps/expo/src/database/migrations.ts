@@ -7,9 +7,10 @@ import { schemaMigrations, addColumns, createTable } from '@nozbe/watermelondb/S
  * on-device database from its stored version up to the schema version, applying
  * each step. A column added to `schema.ts` without a matching `addColumns` step
  * here throws for every user who already has a cache, while the reverse leaves
- * the new column missing on upgraded devices — either way the stories layer then
- * falls back to the network (see `adapter.ts` onSetUpError), which is safe but
- * defeats the cache.
+ * the new column missing on upgraded devices. A failed migration is reported and
+ * the database is reset once (`health.ts`), which is safe but empties the cache.
+ * test/localDbSqlite.test.ts and test/localDbWeb.test.ts upgrade a database
+ * from every earlier version on real SQLite and LokiJS; keep steps additive.
  *
  * Note `Migration` is not an export of `@nozbe/watermelondb` — migrations must
  * be built through `schemaMigrations()`, which returns the validated shape the

@@ -13,7 +13,7 @@ Cloudflare dashboard.
 | # | Layer | Owns | Must NOT hold |
 |---|---|---|---|
 | 1 | React state / TanStack Query (memory) | Mounted-session UI state | — (cleared on account change) |
-| 2 | WatermelonDB (`src/database`) | Story cache, replay-safe action queue, Home feed first-page snapshot | Media bytes, `data:` URIs, chat, wallet or payment data |
+| 2 | WatermelonDB (`src/database`). Tables, bounds, scoping and recovery are in [`docs/LOCAL_DATA.md`](docs/LOCAL_DATA.md). | Story cache, replay-safe action queue, Home feed first-page snapshot | Media bytes, `data:` URIs, chat, wallet or payment data |
 | 3 | expo-image / `videoCache` | Media bytes | Structured data |
 | 4 | Cloudflare Cache API (`lib/edgeCache.ts`) | Viewer-independent shared read data, per colo | Personalised responses, permission decisions |
 | 5 | Isolate memo (`lib/memo.ts`, max 1000 entries) | Bounded, recomputable values (feed pool / order, feed-seen, feed weights, JWKS, Firebase token) | Anything a kill switch, block, session or money decision reads |

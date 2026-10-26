@@ -19,6 +19,8 @@ vi.mock('firebase/auth', () => ({ signOut: vi.fn(), createUserWithEmailAndPasswo
 vi.mock('@/src/services/firebase/initFirebase', () => ({ auth: { currentUser: null } }));
 vi.mock('@/src/services/api', () => ({ callApi: vi.fn(), beginDeliberateSignOut: vi.fn(), endDeliberateSignOut: vi.fn() }));
 vi.mock('@/src/services/notifications/notificationService', () => ({ notificationService: {} }));
+const flush = vi.fn(async () => true);
+vi.mock('@/src/database', () => ({ flushLocalDatabase: () => flush() }));
 vi.mock('@/src/lib/cachedIdentity', () => ({ clearCachedIdentity: vi.fn() }));
 // auth.ts re-exports the useAuth hook; it is not under test here.
 vi.mock('@/src/hooks/useAuth', () => ({ useAuth: vi.fn() }));

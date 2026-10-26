@@ -62,6 +62,11 @@ export async function clearAccountScopedCaches(): Promise<void> {
       run().catch((e) => console.warn(`[AuthService] clearing ${name} on sign-out failed`, e)),
     ),
   );
+  // Web keeps writes in memory for up to 500 ms before saving to IndexedDB; a
+  // tab closed right after sign-out would otherwise reload the wiped data.
+  await import('@/src/database')
+    .then((m) => m.flushLocalDatabase())
+    .catch(() => undefined);
 }
 
 export const signOut = async (options: SignOutOptions = {}) => {
