@@ -103,8 +103,13 @@ export class ApiCallError extends Error {
 /** True for the errors where retrying is sensible rather than futile. */
 function isRetryable(error: unknown): boolean {
   if (error instanceof ApiCallError) {
+    // No status: the request never got an answer. `request()` maps network
+    // and timeout failures to ApiCallError BEFORE asking this, so this branch
+    // used to see every network failure and call it permanent: reads were
+    // never retried after a dropped connection, despite READ_RETRIES.
+    if (error.status === undefined) return error.code !== 'functions/cancelled';
     // 5xx and 429 are transient; 4xx means the request itself is wrong.
-    return error.status === 429 || (error.status !== undefined && error.status >= 500);
+    return error.status === 429 || error.status >= 500;
   }
   // AbortError (timeout) and TypeError (network) are both worth one more try.
   return true;
@@ -251,6 +256,54 @@ interface RequestOptions {
   allowUnauthenticated?: boolean;
   /** Bypass every HTTP cache (browser, OS) — for state that must be live. */
   noStore?: boolean;
+  /**
+   * Caller cancellation (React Query passes one to every queryFn). An aborted
+   * request fails with `functions/cancelled` and is never retried.
+   */
+  signal?: AbortSignal;
+}
+
+/** Options for the GET helpers (`readApi` and friends). */
+export interface ReadOptions {
+  /** Cancel when the caller no longer needs the answer (screen left, newer search). */
+  signal?: AbortSignal;
+}
+
+/** Thrown when the CALLER aborted. Not a failure: nothing to show, nothing to retry. */
+export function isCancelledError(error: unknown): boolean {
+  return error instanceof ApiCallError && error.code === 'functions/cancelled';
+}
+
+const cancelledError = () => new ApiCallError('functions/cancelled', 'Request cancelled');
+
+/**
+ * One signal that aborts on the caller's signal OR the timeout. Says which one
+ * fired, so a timeout is not mistaken for a cancellation.
+ */
+function requestSignal(timeoutMs: number, external?: AbortSignal): { signal: AbortSignal; cancelled: () => boolean; dispose: () => void } {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new DOMExceptionLike('TimeoutError')), timeoutMs);
+  const onAbort = () => controller.abort(new DOMExceptionLike('AbortError'));
+  if (external) {
+    if (external.aborted) onAbort();
+    else external.addEventListener('abort', onAbort, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    cancelled: () => !!external?.aborted,
+    dispose: () => {
+      clearTimeout(timer);
+      external?.removeEventListener('abort', onAbort);
+    },
+  };
+}
+
+/** `DOMException` is not on every RN runtime; only `name` is ever read. */
+class DOMExceptionLike extends Error {
+  constructor(name: string) {
+    super(name);
+    this.name = name;
+  }
 }
 
 /**
@@ -293,9 +346,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<R
     retries = method === 'GET' ? READ_RETRIES : 0,
     allowUnauthenticated = false,
     noStore = false,
+    signal: external,
   } = options;
 
   let lastError: unknown;
+  if (external?.aborted) throw cancelledError();
 
   // attempt 0..retries, plus one extra attempt reserved for a token refresh.
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -308,15 +363,14 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<R
       };
       if (body !== undefined) headers['Content-Type'] = 'application/json';
 
+      const sig = requestSignal(timeoutMs, external);
       try {
         const res = await fetch(path, {
           method,
           headers,
           body: body === undefined ? undefined : JSON.stringify(body),
           ...(noStore ? { cache: 'no-store' as RequestCache } : {}),
-          // AbortSignal.timeout is available on Hermes/RN 0.74+ and every browser
-          // the web build targets.
-          signal: AbortSignal.timeout(timeoutMs),
+          signal: sig.signal,
         });
 
         const json: any = await res.json().catch(() => null);
@@ -376,6 +430,8 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<R
           res.status,
         );
       } catch (e: any) {
+        // The caller gave up: stop now, whatever the error looks like.
+        if (sig.cancelled()) throw cancelledError();
         // A refresh retry is not a failure yet — let the inner loop continue.
         if (refreshedForThisAttempt && authTry === 0) {
           lastError = e;
@@ -397,14 +453,20 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<R
           );
         }
         break; // out of the auth loop, into retry handling
+      } finally {
+        sig.dispose();
       }
     }
 
     const canRetry = attempt < retries && isRetryable(lastError);
     if (!canRetry) break;
+    // Known offline: another attempt cannot succeed. Retrying used to spend up
+    // to the full timeout per attempt while the screen showed a spinner.
+    if (lastError instanceof ApiCallError && lastError.status === undefined && (await isOffline())) break;
     // Exponential backoff with jitter, so a flaky network does not produce a
     // synchronised retry storm across every screen.
     await sleep(400 * 2 ** attempt + Math.random() * 200);
+    if (external?.aborted) throw cancelledError();
   }
 
   throw lastError instanceof Error
@@ -422,15 +484,95 @@ function buildUrl(path: string, params?: Record<string, any>): string {
   return url.toString();
 }
 
+/**
+ * Identical GETs in flight at the same time share one network request.
+ *
+ * Several screens and cards ask for the same thing at once (a profile header
+ * and its follow button, two cards for one battle, a remount during a fetch).
+ * Each used to send its own request. The key includes the signed-in uid, so
+ * two accounts never share an answer. Each caller can still cancel on its own:
+ * the shared request is aborted only when EVERY caller has.
+ *
+ * A caller other than the first gets a deep copy, so one screen mutating its
+ * result cannot change another's.
+ */
+interface InFlight {
+  promise: Promise<RawResponse<any>>;
+  controller: AbortController;
+  waiters: number;
+}
+const inFlight = new Map<string, InFlight>();
+
+function sharedGet<T>(url: string, noStore: boolean, opts: ReadOptions = {}): Promise<RawResponse<T>> {
+  if (opts.signal?.aborted) return Promise.reject(cancelledError());
+  const key = `${auth.currentUser?.uid ?? 'guest'}|${noStore ? 'live' : 'std'}|${url}`;
+  let entry = inFlight.get(key);
+  const first = !entry;
+  if (!entry) {
+    const controller = new AbortController();
+    const promise = request<T>(url, { noStore, signal: controller.signal }).finally(() => {
+      if (inFlight.get(key) === created) inFlight.delete(key);
+    });
+    const created: InFlight = { promise, controller, waiters: 0 };
+    entry = created;
+    inFlight.set(key, created);
+  }
+  const shared = entry;
+  shared.waiters++;
+  let done = false;
+  const leave = () => {
+    if (done) return;
+    done = true;
+    shared.waiters--;
+    if (shared.waiters === 0) {
+      shared.controller.abort();
+      // A new caller must not join a request that is being torn down.
+      if (inFlight.get(key) === shared) inFlight.delete(key);
+    }
+  };
+  return new Promise<RawResponse<T>>((resolve, reject) => {
+    const onAbort = () => {
+      leave();
+      reject(cancelledError());
+    };
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
+    shared.promise.then(
+      (res) => {
+        opts.signal?.removeEventListener('abort', onAbort);
+        if (done) return;
+        done = true;
+        shared.waiters--;
+        resolve(first ? res : { data: cloneJson(res.data), headers: res.headers });
+      },
+      (err) => {
+        opts.signal?.removeEventListener('abort', onAbort);
+        if (done) return;
+        done = true;
+        shared.waiters--;
+        reject(err);
+      },
+    );
+  });
+}
+
+function cloneJson<T>(v: T): T {
+  return v == null || typeof v !== 'object' ? v : (JSON.parse(JSON.stringify(v)) as T);
+}
+
+/** Test hook: how many shared GETs are in flight. */
+export function __inFlightCountForTests(): number {
+  return inFlight.size;
+}
+
 /** GET a /read endpoint on the Worker, attaching the ID token if present. */
-export const readApi = async (path: string, params?: Record<string, any>) => {
-  const { data } = await request<any>(buildUrl(path, params));
+export const readApi = async (path: string, params?: Record<string, any>, opts?: ReadOptions) => {
+  const { data } = await sharedGet<any>(buildUrl(path, params), false, opts);
   return data;
 };
 
 /** `readApi` that bypasses every HTTP cache (live state such as App Control). */
-export const readApiLive = async (path: string, params?: Record<string, any>) => {
-  const { data } = await request<any>(buildUrl(path, params), { noStore: true });
+export const readApiLive = async (path: string, params?: Record<string, any>, opts?: ReadOptions) => {
+  const { data } = await sharedGet<any>(buildUrl(path, params), true, opts);
   return data;
 };
 
@@ -442,8 +584,9 @@ export const readApiLive = async (path: string, params?: Record<string, any>) =>
 export const readApiWithCursor = async <T = any>(
   path: string,
   params?: Record<string, any>,
+  opts?: ReadOptions,
 ): Promise<{ data: T; nextCursor: string | null }> => {
-  const { data, headers } = await request<T>(buildUrl(path, params));
+  const { data, headers } = await sharedGet<T>(buildUrl(path, params), false, opts);
   return { data, nextCursor: headers.get('X-Next-Cursor') };
 };
 
@@ -456,8 +599,9 @@ export const readApiWithCursor = async <T = any>(
 export const readApiWithHeaders = async <T = any>(
   path: string,
   params?: Record<string, any>,
+  opts?: ReadOptions,
 ): Promise<{ data: T; headers: Headers }> => {
-  const { data, headers } = await request<T>(buildUrl(path, params));
+  const { data, headers } = await sharedGet<T>(buildUrl(path, params), false, opts);
   return { data, headers };
 };
 
