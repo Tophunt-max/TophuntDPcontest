@@ -70,6 +70,7 @@ import { revokeAllSessions, revokeOtherSessions } from "../lib/sessionRevocation
 import {
   adjustUserWallet,
   assertCoinAmount,
+  MAX_COIN_AMOUNT,
   assertPrizeFundedByPot,
   matchPot,
   perPlayerEntryFee,
@@ -290,6 +291,9 @@ async function assertOwnContestEntry(env: Env, uid: string, mediaUrl: unknown): 
     throw httpsError("permission-denied", "That entry was uploaded by another account. Please upload your own photo or video.");
   }
 }
+
+/** Streak days that still add to the daily bonus; longer streaks are capped here. */
+const DAILY_STREAK_BONUS_MAX_DAYS = 30;
 
 /** Devices one account keeps push tokens for (newest kept). */
 const MAX_PUSH_TOKENS = 10;
@@ -828,6 +832,12 @@ apiRoute.post("/", async (c) => {
       const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, matchId)).get();
       if (!match) throw httpsError("not-found", "Match not found.");
       if (match.status !== "waiting_for_opponent") throw httpsError("failed-precondition", "Match unavailable.");
+      // Past its waiting deadline the match is due for its automatic refund; the
+      // sweep runs every 10 minutes and joining in that gap charged the joiner for
+      // a battle the creator expected to be cancelled. Also enforced in the claim.
+      if (match.expiresAt != null && Number(match.expiresAt) <= Date.now()) {
+        throw httpsError("failed-precondition", "This battle has expired.");
+      }
       const userA = match.userA as any;
       if (userA?.uid === uid) throw httpsError("failed-precondition", "You cannot join your own match.");
       // Invite-only matches: only the invited user may join.
@@ -922,6 +932,7 @@ apiRoute.post("/", async (c) => {
                   vs_story_status = 'pending', vs_story_attempts = 0, vs_story_next_at = ?,
                   vs_story_claim = NULL, vs_story_error = NULL
             WHERE id = ? AND status = 'waiting_for_opponent' AND user_b IS NULL
+              AND (expires_at IS NULL OR expires_at > ?)
               AND json_extract(user_a, '$.uid') IS NOT NULL
               AND json_extract(user_a, '$.uid') != ?
               AND EXISTS (SELECT 1 FROM users WHERE uid = ? AND dpcoin >= ?)`,
@@ -934,6 +945,7 @@ apiRoute.post("/", async (c) => {
           JSON.stringify(userBSnapshot),
           ts,
           matchId,
+          ts,
           uid,
           uid,
           fee,
@@ -1691,7 +1703,14 @@ apiRoute.post("/", async (c) => {
       // Streak continues only if the previous claim happened during "yesterday".
       let streak = user.streak || 0;
       streak = lastMs >= startOfYesterday && lastMs < startOfToday ? streak + 1 : 1;
-      const coinReward = settings.dailyLoginReward + streak * settings.dailyStreakBonus;
+      // The streak keeps counting (it is shown to the user), but the bonus stops
+      // growing after DAILY_STREAK_BONUS_MAX_DAYS. Uncapped, the daily payout rose
+      // forever: 740 coins/day after a year at the defaults, and day N paid N
+      // million with the largest bonus the admin form accepts.
+      const coinReward = settings.dailyLoginReward + Math.min(streak, DAILY_STREAK_BONUS_MAX_DAYS) * settings.dailyStreakBonus;
+      if (!Number.isInteger(coinReward) || coinReward < 0 || coinReward > MAX_COIN_AMOUNT) {
+        throw httpsError("internal", "Daily reward is misconfigured.");
+      }
       const xpReward = 50;
       const ts = now();
       // Atomic guard: the conditional WHERE + affected-row check guarantees only
@@ -1717,11 +1736,15 @@ apiRoute.post("/", async (c) => {
           uid,
           startOfToday,
         ),
+        // Also requires THIS request's ledger row. The ledger insert is OR IGNORE on
+        // a per-day id, so if `last_daily_claim` were ever moved back within the day
+        // (an admin edit, a data repair) the balance moved with no ledger row.
         env.DB.prepare(
           `UPDATE users
               SET dpcoin = dpcoin + ?, xp = xp + ?, streak = ?, last_daily_claim = ?, updated_at = ?
-            WHERE uid = ? AND ${eligible}`,
-        ).bind(coinReward, xpReward, streak, ts, ts, uid, startOfToday),
+            WHERE uid = ? AND ${eligible}
+              AND EXISTS (SELECT 1 FROM coin_transactions WHERE id = ? AND created_at = ?)`,
+        ).bind(coinReward, xpReward, streak, ts, ts, uid, startOfToday, `daily_reward:${uid}:${startOfToday}`, ts),
       ]);
       if (Number(dailyResults[1]?.meta?.changes || 0) === 0)
         throw httpsError("already-exists", "Daily reward already claimed today.");

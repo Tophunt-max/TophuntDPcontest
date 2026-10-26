@@ -365,8 +365,11 @@ function WalletDialog({
 }) {
   const [amount, setAmount] = useState("");
   const [type, setType] = useState<"add" | "subtract">("add");
+  const [reason, setReason] = useState("");
+  // One id per dialog: a double click or a retry of this adjustment is applied once.
+  const [requestId] = useState(() => crypto.randomUUID());
   const mut = useMutation({
-    mutationFn: () => api.adjustWallet(user.id, Number(amount), type),
+    mutationFn: () => api.adjustWallet(user.id, Number(amount), type, reason.trim(), requestId),
     onSuccess: (d: any) => {
       toast.success(`Wallet updated. New balance: ${d.newBalance}`);
       onDone();
@@ -399,6 +402,14 @@ function WalletDialog({
           value={amount}
           onChange={(e) => setAmount(e.target.value)}
           placeholder="Amount of DP Coins"
+          className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-ring"
+        />
+        <input
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          maxLength={200}
+          placeholder="Reason (required, e.g. support ticket #)"
+          aria-label="Reason for the adjustment"
           className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-ring"
         />
         <div className="flex gap-2">
@@ -407,7 +418,7 @@ function WalletDialog({
           </button>
           <button
             onClick={() => mut.mutate()}
-            disabled={!amount || mut.isPending}
+            disabled={!amount || reason.trim().length < 3 || mut.isPending}
             className="flex-1 py-2.5 rounded-xl gradient-purple text-white text-sm font-semibold disabled:opacity-50"
           >
             Confirm

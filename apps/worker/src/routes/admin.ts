@@ -50,7 +50,7 @@ import {
   contestRefundEmail,
 } from "../lib/emailTemplates";
 import { enqueueBroadcast } from "../lib/broadcast";
-import { finalizeVotes } from "../lib/voteCounter";
+import { finalizeVotes, getLiveTally } from "../lib/voteCounter";
 import { settleRefund, settleWinner } from "../lib/contestSettlement";
 import { refundRejectedWithdrawal } from "../lib/payouts";
 import { closeRealtimeSessions, publish } from "../lib/publish";
@@ -1320,27 +1320,46 @@ adminRoute.post("/users/:id/logout-all", async (c) => {
 adminRoute.post("/users/:id/wallet", async (c) => {
   requireFullAdmin(c);
   const userId = c.req.param("id");
-  const { amount, type } = await c.req.json<any>();
+  const { amount, type, reason: rawReason, requestId } = await c.req.json<any>();
   if (!["add", "subtract"].includes(type)) {
     throw httpsError("invalid-argument", "type must be add or subtract.");
   }
   const amt = assertCoinAmount(amount, "amount");
+  // Every manual balance change needs a stated reason, and is idempotent. The
+  // key used to be an optional header the admin panel never sent, so a double
+  // click (or a retried request) moved the coins twice.
+  const reason = typeof rawReason === "string" ? rawReason.trim() : "";
+  if (reason.length < 3 || reason.length > 200) {
+    throw httpsError("invalid-argument", "A reason (3-200 characters) is required for a wallet adjustment.");
+  }
+  const idemKey = String(c.req.header("Idempotency-Key") ?? requestId ?? "").trim();
+  if (!/^[A-Za-z0-9_-]{8,64}$/.test(idemKey)) {
+    throw httpsError("invalid-argument", "requestId (or an Idempotency-Key header, 8-64 characters) is required.");
+  }
+  const adminUid = c.get("user")?.uid ?? "admin";
   // `adjustUserWallet` is the only supported wallet mutation: it validates the
   // amount as a positive whole number, writes balance + ledger in one D1
   // transaction, and fails loudly instead of clamping an over-subtraction.
-  // An `Idempotency-Key` header turns a double-clicked adjustment into a no-op.
-  const idemKey = c.req.header("Idempotency-Key");
   try {
     const { newBalance, applied } = await adjustUserWallet(c.env, {
       uid: userId,
       amount: amt,
       direction: type,
       type: "admin_adjustment",
-      description: `Admin ${type} ${amt} Dpcoin`,
-      claimKey: idemKey ? `admin_wallet:${userId}:${idemKey}` : undefined,
+      // Who and why travel with the ledger row itself, so they survive even if
+      // the audit write below fails.
+      description: `Admin ${type} ${amt} Dpcoin by ${adminUid}: ${reason}`.slice(0, 300),
+      claimKey: `admin_wallet:${userId}:${idemKey}`,
       ts: now(),
     });
-    await logAudit(c, "wallet.adjust", "user", userId, { amount: applied, type, newBalance });
+    await logAudit(c, "wallet.adjust", "user", userId, {
+      amount: applied,
+      type,
+      reason,
+      before: newBalance - applied,
+      newBalance,
+      requestId: idemKey,
+    });
     return c.json({ message: "Wallet updated successfully", newBalance });
   } catch (e) {
     if (e instanceof WalletReplay) {
@@ -2907,12 +2926,34 @@ adminRoute.post("/matches/:id/declare-winner", async (c) => {
     throw httpsError("invalid-argument", "winnerUid must be one of the two participants.");
   }
 
+  // Without an explicit winner, the declaration follows the automatic rules
+  // (cron.ts resolveMatch): a tie or a battle below its minimum votes has no
+  // winner and is refunded. `votesA >= votesB` used to hand a tie to player A and
+  // ignore the minimum. Checked on the LIVE tally first, so a refused request
+  // does not close voting.
+  const minVotes = Number(m.minVotesRequired) || 0;
+  const noWinner = (v: { votesA: number; votesB: number }) =>
+    v.votesA === v.votesB
+      ? "The votes are tied. Choose the winner explicitly, or cancel the battle to refund both players."
+      : v.votesA + v.votesB < minVotes
+        ? `Only ${v.votesA + v.votesB} of the required ${minVotes} votes. Choose the winner explicitly, or cancel to refund.`
+        : null;
+  if (!requestedWinnerUid) {
+    const reason = noWinner(await getLiveTally(c.env, id, userA.uid, userB.uid));
+    if (reason) throw httpsError("failed-precondition", reason);
+  }
+
   // Validate every client-supplied field before permanently closing the actor.
   const t = await finalizeVotes(c.env, id, userA.uid, userB.uid, Number(m.expiresAt || 0), true);
   const votesA = t.votesA;
   const votesB = t.votesB;
+  if (!requestedWinnerUid) {
+    // A vote landed between the check and the close and made it a tie.
+    const reason = noWinner(t);
+    if (reason) throw httpsError("failed-precondition", reason);
+  }
 
-  const winnerUid: string = requestedWinnerUid || (votesA >= votesB ? userA.uid : userB.uid);
+  const winnerUid: string = requestedWinnerUid || (votesA > votesB ? userA.uid : userB.uid);
   const loserUid = winnerUid === userA.uid ? userB.uid : userA.uid;
 
   // Pay the prize snapshotted on the match, clamped to the pot the two players
@@ -3625,6 +3666,32 @@ adminRoute.patch("/withdrawals/:id", async (c) => {
     }
   }
 
+  // Money must not leave while the account owes coins. A refund or chargeback
+  // that lands after the request was escrowed claws the purchase back by driving
+  // the balance NEGATIVE (lib/coinOrders.ts); nothing re-checked that here, so a
+  // payout bought with since-reversed money could still be approved and paid.
+  // Rejecting stays allowed: it returns the held coins and settles the debt.
+  if (action === "approve" || action === "paid") {
+    const owing = await db
+      .select({ dpcoin: schema.users.dpcoin })
+      .from(schema.users)
+      .where(eq(schema.users.uid, w.userId))
+      .get();
+    const openDispute = await db
+      .select({ orderId: schema.paymentOrders.orderId })
+      .from(schema.paymentOrders)
+      .where(and(eq(schema.paymentOrders.userId, w.userId), eq(schema.paymentOrders.status, "disputed")))
+      .get();
+    if (!owing || Number(owing.dpcoin) < 0 || openDispute) {
+      throw httpsError(
+        "failed-precondition",
+        openDispute
+          ? `This user has a disputed payment (order ${openDispute.orderId}). Resolve it before paying out.`
+          : "This user's balance is negative (a purchase was refunded or charged back). Reject or wait until it is settled.",
+      );
+    }
+  }
+
   // Atomic claim: flip the status only if it is STILL the value we just read.
   // The loser of this compare-and-swap does no accounting at all. Same pattern
   // as the exactly-once coin credit in lib/coinOrders.ts.
@@ -3764,23 +3831,27 @@ adminRoute.patch("/withdrawals/:id", async (c) => {
     throw err;
   }
 
-  await createNotification(c.env, w.userId, {
-    title: action === "reject" ? "Withdrawal Rejected" : action === "paid" ? "Payout Sent 💸" : "Withdrawal Approved",
-    body: action === "reject" ? `Your payout request was rejected. ${adminNote ? "Reason: " + adminNote : ""}` : action === "paid" ? `Your payout of ${w.amount} Dpcoins has been sent.` : "Your payout request was approved and is being processed.",
-    type: "withdrawal",
-    targetId: "wallet",
-  });
-  // Real money moved (or was denied) — the user is owed a durable receipt, not
-  // just an in-app toast. `status` is "approved" | "paid" | "rejected".
-  c.executionCtx.waitUntil(
-    sendUserEmail(c.env, w.userId, withdrawalDecisionEmail(status as "approved" | "paid" | "rejected", w.amount, adminNote || "")),
-  );
+  // The money action has committed: audit it FIRST. The notification below used
+  // to run before the audit and could throw, leaving a committed payout with no
+  // audit row and a 500 for the admin (whose retry then said "already actioned").
   await logAudit(c, `withdrawal.${action}`, "withdrawal", id, {
     amount: w.amount,
     from: fromStatus,
     to: status,
     reserved: w.reserved,
+    ...(payoutReference ? { payoutRef: payoutReference } : {}),
   });
+  await createNotification(c.env, w.userId, {
+    title: action === "reject" ? "Withdrawal Rejected" : action === "paid" ? "Payout Sent 💸" : "Withdrawal Approved",
+    body: action === "reject" ? `Your payout request was rejected. ${adminNote ? "Reason: " + adminNote : ""}` : action === "paid" ? `Your payout of ${w.amount} Dpcoins has been sent.` : "Your payout request was approved and is being processed.",
+    type: "withdrawal",
+    targetId: "wallet",
+  }).catch((e) => console.error("[withdrawal] notification failed (action already applied)", id, e));
+  // Real money moved (or was denied) — the user is owed a durable receipt, not
+  // just an in-app toast. `status` is "approved" | "paid" | "rejected".
+  c.executionCtx.waitUntil(
+    sendUserEmail(c.env, w.userId, withdrawalDecisionEmail(status as "approved" | "paid" | "rejected", w.amount, adminNote || "")),
+  );
   return c.json({ message: `Withdrawal ${status}` });
 });
 
