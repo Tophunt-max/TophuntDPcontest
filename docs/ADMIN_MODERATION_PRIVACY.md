@@ -56,9 +56,9 @@ gate and routes), `apps/worker/src/routes/api.ts` (`createReport`),
 
 - **Account deletion** (after the grace period): profile anonymised; content,
   likes, bookmarks, follows, requests, blocks, mutes, visits, shares, chat messages,
-  media, push tokens, "Not interested", **reports they filed and notifications naming
-  them as actor** are removed. Votes, contest records, money ledger and referrals are
-  kept (results and accounting).
+  media, push tokens, "Not interested" and **notifications naming them as actor** are
+  removed. Votes, contest records, money ledger, referrals and reports they filed are
+  kept (results, accounting and moderation evidence).
 - **Data export** (3 per day, emailed to the address on file): profile (no push
   tokens), content, comments, likes, bookmarks, connections and requests, wallet and
   ledger, payments, deposits, withdrawals, referrals, support tickets, votes, battle
@@ -81,30 +81,93 @@ gate and routes), `apps/worker/src/routes/api.ts` (`createReport`),
 | Client errors | Sentry over fetch, scrubbed context, no native crash capture |
 | Request log | Cloudflare Workers Logs: method, path, status, duration, edge-cache outcome |
 | Admin dashboards | `/admin/overview`, `/admin/analytics` (counts; revenue for full admins only) |
-| Feed impressions, Story completion, video buffering, search success, sync results, cache hit rate | **Not collected** |
+| Usage counters | Workers Analytics Engine (`tophunt_events`), anonymous, see below |
 
-There is no analytics consent toggle because nothing identifying is collected for
-analytics. Adding impression or playback telemetry would need: an event schema
-without user ids (or with a rotating pseudonymous id), a consent setting, a retention
-limit, and a sink that does not spend the D1 or Durable Object write budgets
-(Cloudflare Analytics Engine is the natural fit).
+### Usage counters
 
-Feature flags (`appControl.features`) are global on/off switches; there is no
-per-user rollout or experiment assignment.
+`apps/worker/src/lib/usageEvents.ts` (server), `apps/expo/src/lib/usageStats.ts` and
+`src/services/usageStats.ts` (app).
+
+| Event | Dimensions | Where counted |
+|---|---|---|
+| `feed_impression` | `home` | Home feed: each battle the first time it is 50% visible on that screen |
+| `story` | `complete`, `skip`, `close` | Story viewer: timer finished, tap right, close button or swipe down |
+| `video` | `first_frame` (with ms), `stall`, `error` | Story viewer video status |
+| `search` | `results`, `empty` | Explore search, once per settled query (no query text) |
+| `sync` | `sent`, `retry`, `failed` | Offline outbox drain totals |
+| `upload` | `ok` (with ms), `failed`, `cancelled` | R2 and Bunny transfers |
+
+- **No identifiers.** A batch has the platform (`ios`/`android`/`web`/`other`), the
+  app version (`1.2.3` shape, else `unknown`) and the counters. No uid, device id,
+  IP, content id or text. The Worker drops any event or dimension outside the list.
+- **Batched.** The app adds counts in memory and sends one request when it goes to
+  the background, or 5 minutes after the first count. The Worker writes one data
+  point per (event, dimension): at most 15 per request.
+- **Off switch.** Settings › Privacy › "Share anonymous usage statistics", stored
+  on the device, offered signed in or out. Off clears the buffer and stops counting.
+- **Bounds.** `POST /telemetry/events`: 4 KB body, 50 events, count ≤ 1000, duration
+  ≤ 10 min per occurrence; per-IP `USAGE_LIMITER` 30/min (Workers Rate Limiting,
+  not a Durable Object). Over the limit or without the binding: 204, nothing written.
+- **Retention.** Analytics Engine keeps data for 3 months.
+- **Reading.** `GET /admin/usage-events?days=1..90` (full admins), shown on the
+  Analytics page. It uses the Analytics Engine SQL API with the existing
+  `CF_ANALYTICS_TOKEN` (needs Account Analytics: Read) and is memoised 5 minutes
+  per isolate. Without the token the page says "Not configured".
+- **Free plan budget.** 100,000 data points written and 10,000 read queries a day.
+  Every batch is also one Worker request (100,000 a day on Free). At one batch
+  per session, 10,000 sessions a day would use about 10% of the request budget.
+- **Privacy policy** (`apps/worker/src/content/legal.ts`) names these counts and
+  the switch; `LEGAL_LAST_UPDATED` is 26 October 2026.
+
+Not counted: cache hit rate, feed card video start (the feed player has no status
+listener), explore list impressions.
+
+### Feature rollout
+
+`appControl.featureRollout{feature: 0-100}` (absent = 100). The bucket is FNV-1a of
+`feature:uid` mod 100, so an account stays in as the percentage grows. Guests are in
+only at 100. The server gate (`appControlGate`) refuses the feature's actions for
+accounts outside the rollout; the app (`src/lib/rollout.ts`) computes the same
+bucket (pinned by tests on both sides). Set per feature on the App Control page.
+
+## Admin sessions
+
+- **Recent sign-in for dangerous actions.** Deleting or blocking a user, ending their
+  sessions, wallet adjustments, `set-role`, withdrawal and deposit decisions,
+  deletion purge, broadcast, app settings, rewards, coin packages and integrations
+  need a sign-in within 15 minutes (`auth_time`, which token refresh does not move).
+  Otherwise the Worker answers 412 `reauth_required`; the panel asks for the password
+  (`reauthenticateWithCredential`) and retries once. Reads are not gated. The
+  `X-Admin-Secret` server-to-server path is exempt. Moderators get the route's 403.
+- **Role-aware panel.** `/admin/overview` returns `viewerRole`; moderators see only
+  Dashboard, Analytics, Users, Matches, Posts, Stories, Comments, Blog, Reports,
+  Support and Moderation.
+- **Support tickets for moderators.** Subject, message and reply are returned with
+  emails/UPI ids, IFSC codes and digit runs of 10+ masked (`lib/redact.ts`). Full
+  admins see the original.
+
+## Realtime sockets
+
+The app asks `/api` (`createWsTicket`, Authorization header) for a 120-second HMAC
+ticket naming the uid and sign-in time, and opens `/ws?ticket=`. The ID token no
+longer appears in request URLs (Workers Logs). Key: `WS_TICKET_SECRET`, else derived
+from `ADMIN_PROXY_SECRET` with a domain prefix. `?token=` still works for older
+builds; the app falls back to it when no ticket is issued.
+
+## Other decisions
+
+- **Inline data export** (no email on file, too large to attach, or the send failed)
+  needs a recent sign-in or a passed OTP challenge. The app shows the same
+  re-verify step as account deletion and retries.
+- **Word filter** also checks a folded reading: accents removed, common look-alikes
+  (`5c4m` → `scam`) and letters separated by dots or spaces joined. Still a word
+  list, still fails open when the list cannot be read.
+- **Reports filed by a deleted account are kept** (moderation evidence, like votes).
 
 ## Open
 
-- **Re-authentication for dangerous admin actions** (delete user, set role, wallet,
-  payouts) is not required; any valid admin token up to an hour old works. Needs a
-  re-auth step in the admin panel first.
-- **WebSocket token in the URL**: `/ws?token=` puts the ID token in Workers Logs
-  request URLs. Moving it to a header or a short-lived ticket is a client and server
-  change.
-- **Admin panel navigation** is not role-aware: moderators see pages that answer 403.
-- **Support tickets** are readable by moderators; tickets can contain payment details.
-  Decide whether support is a moderator duty.
-- **Banned-word filter** is a simple word list and fails open.
-- **Inline export fallback**: when email is unavailable the export is returned in the
-  response to any valid session, without re-authentication.
 - The CORS allow-list falls back to `*` when `ALLOWED_ORIGINS` is unset (logged);
   production and staging both set it, and staging includes localhost origins.
+- Deploy notes: `WS_TICKET_SECRET` is optional (`wrangler secret put`). The
+  `tophunt_events` dataset is created on first write. Staging has no
+  `CF_ACCOUNT_ID` var, so its usage page reads "Not configured".
