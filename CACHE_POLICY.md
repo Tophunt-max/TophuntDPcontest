@@ -51,7 +51,7 @@ converge when the TTL lapses, because the Cache API has no global purge.
 
 | Key | Tier | TTL | Invalidation | Notes |
 |---|---|---|---|---|
-| `memo:feedWeights` | memo | 30 | `invalidateSetting('appConfig')` drops it in the writer isolate | **New.** Only the 12 ranking numbers are memoised, never `appConfig` itself |
+| `memo:feedWeights` | memo | 30 | `invalidateSetting('appConfig')` drops it in the writer isolate | **New.** Only the ranking numbers are memoised, never `appConfig` itself |
 | `settings:<id>` | KV | 1800 | `invalidateSetting` (KV delete, global) | Not memoised **by design**: `payoutsFrozen` |
 | `cache:blocks:<uid>` | KV | 3600 | `invalidateBlockCache` | Fails open to an *empty* set (unfiltered) on KV error |
 | `authstate:<uid>` | KV | 60 | `invalidateAuthState` / `setCutoff` | Only when `SCALE_TIER` is `paid` or `auto`. **Deployed value: `auto`**; see §6 |

@@ -222,6 +222,25 @@ export const userMutes = sqliteTable(
 );
 
 // ---------------------------------------------------------------------------
+// feed_dismissals  (migration 0065) — "Not interested" on a feed card.
+// Read only by the viewer's own For You / Following ranking (routes/read.ts).
+// ---------------------------------------------------------------------------
+export const feedDismissals = sqliteTable(
+  "feed_dismissals",
+  {
+    viewerUid: text("viewer_uid").notNull(),
+    matchId: text("match_id").notNull(),
+    creatorA: text("creator_a"),
+    creatorB: text("creator_b"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.viewerUid, t.matchId] }),
+    viewerCreatedIdx: index("idx_feed_dismissals_viewer_created").on(t.viewerUid, t.createdAt),
+  }),
+);
+
+// ---------------------------------------------------------------------------
 // contests  (was: contests/{contestId} — admin templates)
 // ---------------------------------------------------------------------------
 export const contests = sqliteTable("contests", {

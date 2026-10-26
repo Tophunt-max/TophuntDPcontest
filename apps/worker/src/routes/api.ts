@@ -23,6 +23,7 @@ import { publish, publishMany } from "../lib/publish";
 import { castVote, bumpEngagement } from "../lib/voteCounter";
 import { appendMessage, markChatMessagesRead, purgeChatMessages } from "../lib/chatArchive";
 import { clientIp, consumeRateLimit, rateLimit } from "../lib/rateLimit";
+import { recordFeedDismissal, removeFeedDismissal } from "../lib/feedDismissals";
 import {
   assertIdentifiersAvailable,
   normalizePhone,
@@ -2959,6 +2960,30 @@ apiRoute.post("/", async (c) => {
       await assertMatchInteractionAllowed(env, uid, matchId);
       await db.insert(schema.bookmarks).values({ userId: uid, matchId, createdAt: now() }).onConflictDoNothing();
       return c.json({ success: true, bookmarked: true });
+    }
+
+    // "Not interested" on a feed card (lib/feedDismissals.ts). Explicit target
+    // state (`dismissed`), so a retry or a replay never flips it back.
+    case "setFeedDismissal": {
+      await rateLimit(env, `dismiss:${uid}`, 120, 3600);
+      const matchId = requiredId(body.matchId, "matchId", 128);
+      if (typeof body.dismissed !== "boolean") throw httpsError("invalid-argument", "dismissed must be true or false.");
+      if (!body.dismissed) {
+        await removeFeedDismissal(env, uid, matchId);
+        return c.json({ success: true, dismissed: false });
+      }
+      const m = await db
+        .select({ id: schema.contestMatches.id, userA: schema.contestMatches.userA, userB: schema.contestMatches.userB })
+        .from(schema.contestMatches)
+        .where(eq(schema.contestMatches.id, matchId))
+        .get();
+      if (!m) throw httpsError("not-found", "Battle not found.");
+      const a = (m.userA as any)?.uid ?? null;
+      const b = (m.userB as any)?.uid ?? null;
+      // Your own battle is never demoted for you (and there is nothing to learn).
+      if (a === uid || b === uid) throw httpsError("invalid-argument", "This is your own battle.");
+      await recordFeedDismissal(env, uid, { id: m.id, creatorA: a, creatorB: b }, now());
+      return c.json({ success: true, dismissed: true });
     }
 
     // ============ GENERIC COMMENTS (posts, matches or blog articles) ============

@@ -1116,6 +1116,8 @@ async function phaseSocial(env: Env, uid: string): Promise<void> {
     db.delete(schema.userBlocks).where(eq(schema.userBlocks.blockedId, uid)),
     db.delete(schema.userMutes).where(eq(schema.userMutes.muterId, uid)),
     db.delete(schema.userMutes).where(eq(schema.userMutes.mutedId, uid)),
+    // Their own "Not interested" history (it names other creators).
+    db.delete(schema.feedDismissals).where(eq(schema.feedDismissals.viewerUid, uid)),
   ]);
 
   // Denormalised counters on the people who followed (or were followed by) this

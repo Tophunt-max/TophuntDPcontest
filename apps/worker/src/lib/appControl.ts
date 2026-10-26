@@ -460,4 +460,6 @@ export const AUDITED_SECTIONS = [
   "announcement",
   "features",
   "withdrawal",
+  // Ranking weights decide what every viewer is shown first.
+  "feedWeights",
 ] as const;
