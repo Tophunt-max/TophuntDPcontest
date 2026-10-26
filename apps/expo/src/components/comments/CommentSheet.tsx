@@ -39,6 +39,7 @@ import { useRouter } from 'expo-router';
 import { Colors } from '@/constants/theme';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
+import { COMMENT_REPORT_REASONS, useReportReason } from '@/src/components/modals/ReportReasonDialog';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SHEET_HEIGHT = SCREEN_HEIGHT * 0.75;
@@ -248,7 +249,9 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
     inputRef.current?.focus();
   }, [user, requireAuth]);
 
-  // Long-press: delete your own comment, or report someone else's.
+  const { askReason, dialog: reportDialog } = useReportReason();
+
+  // Long-press: delete your own comment, or report someone else's (with a reason).
   const handleLongPress = useCallback((comment: Comment) => {
     if (!user || comment.pending) return;
     if (comment.userId === user.uid) {
@@ -270,23 +273,25 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
         },
       ]);
     } else {
-      Alert.alert('Report comment?', 'Our team will review it.', [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Report',
-          style: 'destructive',
-          onPress: async () => {
+      void (async () => {
+        let failed = false;
+        const sent = await askReason({
+          title: 'Report comment?',
+          reasons: COMMENT_REPORT_REASONS,
+          onSubmit: async (reason) => {
             try {
-              await commentService.reportComment(comment.id, collectionName);
-              Alert.alert('Thanks', 'Report submitted.');
-            } catch {
-              Alert.alert('Error', 'Could not submit the report.');
+              await commentService.reportComment(comment.id, collectionName, reason);
+            } catch (e) {
+              failed = true;
+              throw e;
             }
           },
-        },
-      ]);
+        });
+        if (sent) Alert.alert('Thanks', 'Report submitted. Our team will review it.');
+        else if (failed) Alert.alert('Error', 'Could not submit the report.');
+      })();
     }
-  }, [user, comments, postId, collectionName]);
+  }, [user, comments, postId, collectionName, askReason]);
 
   const gesture = Gesture.Pan()
     .onUpdate((event) => {
@@ -488,6 +493,7 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
           </Animated.View>
         </GestureDetector>
       </GestureHandlerRootView>
+      {reportDialog}
     </Portal>
   );
 };

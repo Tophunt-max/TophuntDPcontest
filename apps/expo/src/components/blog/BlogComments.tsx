@@ -14,6 +14,7 @@ import { Avatar } from '@/src/components/ui/Avatar';
 import { useAuth } from '@/src/hooks/useAuth';
 import { loginHref } from '@/src/lib/authGate';
 import { commentService, Comment } from '@/src/services/comments/commentService';
+import { COMMENT_REPORT_REASONS, useReportReason } from '@/src/components/modals/ReportReasonDialog';
 import {
   mergeComments,
   relativeTime,
@@ -228,27 +229,30 @@ export default function BlogComments({ postId, isDark }: Props) {
     [comments, total, postId],
   );
 
+  const { askReason, dialog: reportDialog } = useReportReason();
   const onReport = useCallback((comment: Comment) => {
     // Public UGC on an indexed page needs a reporting path, not just an admin
     // queue nobody is told about. This files a moderation report; it deliberately
     // does not hide the comment locally, because "reported" must not read as
     // "removed".
-    Alert.alert('Report comment?', 'Our team will review it.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Report',
-        style: 'destructive',
-        onPress: async () => {
+    void (async () => {
+      let failed: any = null;
+      const sent = await askReason({
+        title: 'Report comment?',
+        reasons: COMMENT_REPORT_REASONS,
+        onSubmit: async (reason) => {
           try {
-            await commentService.reportComment(comment.id, 'blog');
-            Alert.alert('Thanks', 'Report submitted.');
-          } catch (e: any) {
-            Alert.alert('Could not report', e?.message || 'Please try again.');
+            await commentService.reportComment(comment.id, 'blog', reason);
+          } catch (e) {
+            failed = e;
+            throw e;
           }
         },
-      },
-    ]);
-  }, []);
+      });
+      if (sent) Alert.alert('Thanks', 'Report submitted. Our team will review it.');
+      else if (failed) Alert.alert('Could not report', failed?.message || 'Please try again.');
+    })();
+  }, [askReason]);
 
   const headingCount = total ?? comments.length;
   const canSend = draft.trim().length > 0 && !posting;
@@ -402,6 +406,7 @@ export default function BlogComments({ postId, isDark }: Props) {
           ) : null}
         </View>
       )}
+      {reportDialog}
     </View>
   );
 }
