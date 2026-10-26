@@ -37,7 +37,7 @@ converge when the TTL lapses, because the Cache API has no global purge.
 | Route | Key (normalised) | Edge TTL | Invalidation | Per-viewer pass applied after the cache |
 |---|---|---|---|---|
 | `/read/matches` sort=recent/hot | `cache:matches:<status>:<type\|all>:<sort>:<limit>:<page>`. `<page>` is `first`, `c<cursor>` (parsed with `pageCursor`) or `o<offset>` (floored). Status and type are allow-listed, otherwise not cached | 30 | TTL only (new battles appear on lapse) | `hiddenUidsFor` and `hydrateViewerState` → `private, no-store` |
-| `/read/matches` foryou/following | Memo `cache:matches:cand:<status>:<type>` (45s), memo `cache:feedorder:<uid>:…:<exclusionVersion>` (60s) | — | TTL | Blocks/mutes, then viewer flags. Response has `Vary: Authorization` |
+| `/read/matches` foryou/following | Memo `cache:matches:cand:<status>:<type>` (45s), memo `cache:feedorder:<uid>:…:<exclusionVersion>:d<dismissalVersion>:<rankingVersion>` (60s) | — | TTL; a block, mute, "Not interested" or weight change makes a new key | Blocks/mutes and dismissals filter the pool, then viewer flags. See [`docs/RANKING.md`](docs/RANKING.md). Response has `Vary: Authorization` |
 | `/read/contests`, `/read/contests/:id` | `cache:contest:list:<type>`, `cache:contest:detail:<id>`. A not-found result is **not** cached | 60 / 30 | `invalidateContestCaches` (admin CRUD, create, cron end) | none (public) |
 | `/read/comments` page 1 | `cache:comments:<kind>:<targetId>`. Only `limit=20` is cached, which is what both app clients request | 30 | Writer purge on add/delete, using the **deleted row's** thread | Blocks, `likedByMe` |
 | `/read/leaderboard` | `cache:leaderboard:<wins\|votes\|xp>:<limit>`, with `by` normalised | 60 | TTL | Blocked accounts dropped |
@@ -51,7 +51,7 @@ converge when the TTL lapses, because the Cache API has no global purge.
 
 | Key | Tier | TTL | Invalidation | Notes |
 |---|---|---|---|---|
-| `memo:feedWeights` | memo | 30 | `invalidateSetting('appConfig')` drops it in the writer isolate | **New.** Only the 12 ranking numbers are memoised, never `appConfig` itself |
+| `memo:feedWeights` | memo | 30 | `invalidateSetting('appConfig')` drops it in the writer isolate | **New.** Only the ranking numbers are memoised, never `appConfig` itself |
 | `settings:<id>` | KV | 1800 | `invalidateSetting` (KV delete, global) | Not memoised **by design**: `payoutsFrozen` |
 | `cache:blocks:<uid>` | KV | 3600 | `invalidateBlockCache` | Fails open to an *empty* set (unfiltered) on KV error |
 | `authstate:<uid>` | KV | 60 | `invalidateAuthState` / `setCutoff` | Only when `SCALE_TIER` is `paid` or `auto`. **Deployed value: `auto`**; see §6 |

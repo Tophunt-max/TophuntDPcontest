@@ -14,7 +14,7 @@ import { useAuthGate } from '@/src/hooks/useAuthGate';
 import { useProfile } from '@/src/hooks/useProfileData';
 import { useFollowToggle } from '@/src/hooks/useFollowToggle';
 import { followButtonLabel } from '@/src/lib/followState';
-import { compactCount } from '@/src/lib/exploreMedia';
+import { compactCount, searchView } from '@/src/lib/exploreMedia';
 import { contestPrize, describePrize } from '@/src/lib/contestPrize';
 import { isFreeContest } from '@/src/lib/contestPricing';
 import { clearRecentSearches, loadRecentSearches, saveRecentSearch, useLiveContests, useUniversalSearch } from '@/src/services/explore';
@@ -58,6 +58,7 @@ export default function ExploreSearchScreen() {
   const active = term.replace(/^@+/, '').length >= 2;
   const r = search.data;
   const total = r ? r.people.length + r.contests.length + r.battles.length + r.blog.length : 0;
+  const view = searchView({ isError: search.isError, isLoading: search.isLoading, placeholder: search.isPlaceholderData, total: r ? total : null });
 
   const remember = () => {
     if (active) saveRecentSearch(text).then(setRecent);
@@ -139,7 +140,7 @@ export default function ExploreSearchScreen() {
             )}
             <Text style={[styles.hint, { color: p.sub }]}>Kisi ka @username ya naam, battle ya contest ka title likho.</Text>
           </>
-        ) : search.isError && !r ? (
+        ) : view === 'error' ? (
           <View style={styles.center}>
             <Ionicons name="cloud-offline-outline" size={30} color={p.sub} />
             <Text style={[styles.hint, { color: p.sub }]}>Search nahi ho paya.</Text>
@@ -147,15 +148,16 @@ export default function ExploreSearchScreen() {
               <Text style={styles.retryText}>Retry</Text>
             </TouchableOpacity>
           </View>
-        ) : search.isLoading ? (
+        ) : view === 'loading' ? (
           <ActivityIndicator color={BRAND} style={{ marginTop: 40 }} />
-        ) : r && total === 0 ? (
+        ) : r && view === 'empty' ? (
           <View style={styles.center}>
             <Ionicons name="search-outline" size={34} color={p.sub} />
             <Text style={[styles.hint, { color: p.sub }]}>“{term}” ke liye kuch nahi mila.</Text>
           </View>
         ) : r ? (
-          <>
+          // 'stale': the previous term's results, dimmed until the new ones arrive.
+          <View style={view === 'stale' ? styles.stale : null} accessibilityState={{ busy: view === 'stale' }}>
             {r.people.length > 0 && (
               <Group title="People" palette={p}>
                 {r.people.map((u) => {
@@ -255,7 +257,7 @@ export default function ExploreSearchScreen() {
                 ))}
               </Group>
             )}
-          </>
+          </View>
         ) : null}
       </ScrollView>
     </SafeAreaView>
@@ -304,4 +306,5 @@ const styles = StyleSheet.create({
   contestIcon: { width: 48, height: 48, borderRadius: 12, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
   cta: { color: BRAND, fontFamily: 'Urbanist-Bold', fontSize: 13 },
   battleRow: { flexDirection: 'row', gap: 12, paddingHorizontal: PAD, marginBottom: 12 },
+  stale: { opacity: 0.5 },
 });

@@ -31,7 +31,7 @@ export const BATTLE_KIND_TITLE: Record<BattleKind, string> = {
 export function useExploreBattles(kind: BattleKind, type: BattleType, limit = 10, enabled = true) {
   return useQuery({
     queryKey: [...EXPLORE_KEY, 'battles', kind, type ?? 'all', limit],
-    queryFn: async () => ((await readApi('/read/matches', { ...KIND_PARAMS[kind], type, limit })) as any[]) || [],
+    queryFn: async ({ signal }) => ((await readApi('/read/matches', { ...KIND_PARAMS[kind], type, limit }, { signal })) as any[]) || [],
     enabled,
     staleTime: 30_000,
   });
@@ -42,13 +42,12 @@ export function useBattlePages(kind: BattleKind, type: BattleType, pageSize = 18
   return useInfiniteQuery({
     queryKey: [...EXPLORE_KEY, 'pages', kind, type ?? 'all', pageSize],
     initialPageParam: null as string | null,
-    queryFn: async ({ pageParam }) => {
-      const { data, nextCursor } = await readApiWithCursor<any[]>('/read/matches', {
-        ...KIND_PARAMS[kind],
-        type,
-        limit: pageSize,
-        cursor: pageParam ?? undefined,
-      });
+    queryFn: async ({ pageParam, signal }) => {
+      const { data, nextCursor } = await readApiWithCursor<any[]>(
+        '/read/matches',
+        { ...KIND_PARAMS[kind], type, limit: pageSize, cursor: pageParam ?? undefined },
+        { signal },
+      );
       return { items: Array.isArray(data) ? data : [], nextCursor };
     },
     getNextPageParam: (last) => last.nextCursor ?? undefined,
@@ -60,7 +59,7 @@ export function useBattlePages(kind: BattleKind, type: BattleType, pageSize = 18
 export function useLiveContests(type: BattleType, enabled = true) {
   return useQuery({
     queryKey: [...EXPLORE_KEY, 'contests', type ?? 'all'],
-    queryFn: async () => ((await readApi('/read/contests', { type })) as any[]) || [],
+    queryFn: async ({ signal }) => ((await readApi('/read/contests', { type }, { signal })) as any[]) || [],
     enabled,
     staleTime: 60_000,
   });
@@ -69,7 +68,7 @@ export function useLiveContests(type: BattleType, enabled = true) {
 export function useTopCreators(limit = 10, enabled = true) {
   return useQuery({
     queryKey: [...EXPLORE_KEY, 'creators', limit],
-    queryFn: async () => ((await readApi('/read/leaderboard', { by: 'wins', limit })) as any[]) || [],
+    queryFn: async ({ signal }) => ((await readApi('/read/leaderboard', { by: 'wins', limit }, { signal })) as any[]) || [],
     enabled,
     staleTime: 60_000,
   });
@@ -97,7 +96,7 @@ const toPerson = (d: any): SuggestedPerson => ({
 export function useSuggestedPeople(limit = 30, viewerKey: string | null = null, enabled = true) {
   return useQuery({
     queryKey: [...EXPLORE_KEY, 'people', limit, viewerKey ?? 'guest'],
-    queryFn: async () => (((await readApi('/read/users/suggested', { limit })) as any[]) || []).map(toPerson),
+    queryFn: async ({ signal }) => (((await readApi('/read/users/suggested', { limit }, { signal })) as any[]) || []).map(toPerson),
     enabled,
     staleTime: 60_000,
   });
@@ -115,8 +114,11 @@ export function useUniversalSearch(term: string) {
   const q = term.trim().replace(/^@+/, '');
   return useQuery({
     queryKey: [...EXPLORE_KEY, 'search', q.toLowerCase()],
-    queryFn: async (): Promise<UniversalSearchResult> => {
-      const r: any = (await readApi('/read/search', { q })) || {};
+    // The signal lets react-query abort a search the user has typed past: with
+    // `placeholderData` the observer moves to the new key, the old query loses its
+    // last observer, and react-query cancels it instead of letting it finish.
+    queryFn: async ({ signal }): Promise<UniversalSearchResult> => {
+      const r: any = (await readApi('/read/search', { q }, { signal })) || {};
       return {
         q: r.q ?? q,
         people: (r.people || []).map(toPerson),
@@ -134,7 +136,7 @@ export function useUniversalSearch(term: string) {
 export function useMyRank(by: 'wins' | 'votes' | 'xp', signedIn: boolean) {
   return useQuery({
     queryKey: ['leaderboard', 'me', by],
-    queryFn: async () => (await readApi('/read/leaderboard/me', { by })) as { by: string; rank: number | null; score: number },
+    queryFn: async ({ signal }) => (await readApi('/read/leaderboard/me', { by }, { signal })) as { by: string; rank: number | null; score: number },
     enabled: signedIn,
     staleTime: 30_000,
   });

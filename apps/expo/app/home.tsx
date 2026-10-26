@@ -322,6 +322,7 @@ export default function HomeScreen() {
       item={item}
       isDark={isDark}
       onMatchEnded={handleMatchEnded}
+      onNotInterested={handleMatchEnded}
       liveActive={liveIds.has(item.id)}
       playActive={shouldAutoplay({ visible: visibleIds.has(item.id), screenFocused, appActive, reduceMotion })}
     />

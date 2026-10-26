@@ -22,6 +22,7 @@ import { httpsError, ApiError } from "../lib/http";
 import { timingSafeEqualSecret } from "../lib/timingSafe";
 import { verifyIdToken, bearerToken } from "../lib/firebaseAuth";
 import { resolveAuthMethods, validateAuthMethods } from "../lib/authMethods";
+import { validateFeedWeightsPatch } from "../lib/feedWeights";
 import { AUDITED_SECTIONS, appConfigChannels, publicAppConfig, validateAppControlPatch } from "../lib/appControl";
 import { publishMany } from "../lib/publish";
 import { publishCoinCatalog } from "../lib/coinCatalog";
@@ -358,6 +359,8 @@ adminRoute.post("/app-settings", async (c) => {
       throw httpsError("invalid-argument", "onboardingEnabled must be true or false.");
     }
   }
+  // For You ranking weights: each key within its range (lib/feedWeights.ts).
+  validateFeedWeightsPatch(body?.feedWeights);
   const existing = (await getAppConfig(c.env)) || {};
   // Maintenance / force update / announcement / features / withdrawal.
   validateAppControlPatch(body, existing);

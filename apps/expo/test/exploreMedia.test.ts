@@ -11,6 +11,7 @@ import {
   leaderboardScore,
   participantThumb,
   pushRecentSearch,
+  searchView,
   RECENT_SEARCH_MAX,
   splitPodium,
 } from '../src/lib/exploreMedia';
@@ -94,5 +95,23 @@ describe('small helpers', () => {
     expect(list).toHaveLength(RECENT_SEARCH_MAX);
     expect(pushRecentSearch(['Dance', 'x'], 'dance')).toEqual(['dance', 'x']);
     expect(pushRecentSearch(['x'], 'a')).toEqual(['x']);
+  });
+  it('search view: the previous term\'s results are never shown as the answer', () => {
+    const base = { isError: false, isLoading: false, placeholder: false };
+    // Previous term had no results and the new one is still loading: spinner, not "nothing found".
+    expect(searchView({ ...base, placeholder: true, total: 0 })).toBe('loading');
+    expect(searchView({ ...base, placeholder: true, total: 4 })).toBe('stale');
+    expect(searchView({ ...base, total: 0 })).toBe('empty');
+    expect(searchView({ ...base, total: 3 })).toBe('results');
+    expect(searchView({ ...base, isLoading: true, total: null })).toBe('loading');
+    expect(searchView({ ...base, isError: true, total: null })).toBe('error');
+    // A failed refetch keeps this term's real results.
+    expect(searchView({ ...base, isError: true, total: 2 })).toBe('results');
+  });
+  it('recent searches: an @handle and the bare name are one search', () => {
+    expect(pushRecentSearch(['rahul', 'x'], '@Rahul')).toEqual(['@Rahul', 'x']);
+    expect(pushRecentSearch(['@rahul'], 'rahul')).toEqual(['rahul']);
+    expect(pushRecentSearch(['x'], '@a')).toEqual(['x']);
+    expect(pushRecentSearch(['x'], '@@')).toEqual(['x']);
   });
 });

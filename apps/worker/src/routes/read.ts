@@ -13,6 +13,8 @@ import { perPlayerEntryFee } from "../lib/money";
 import { httpsError } from "../lib/http";
 import { requireAuth, optionalAuth, guestReadLimit } from "../middleware/auth";
 import { FEED_WEIGHTS_MEMO_KEY, getAppConfig } from "../lib/settings";
+import { loadFeedDismissals, NO_DISMISSALS } from "../lib/feedDismissals";
+import { FEED_DEFAULT_WEIGHTS, rankingVersion, sanitizeFeedWeights, type FeedWeights } from "../lib/feedWeights";
 import { getSettings as getGamificationSettings, levelForXp } from "../lib/gamification";
 import { resolveLegalContent } from "../content/legal";
 import { enrichMatchMedia, avatarUrl, thumbUrl, optimizedUrl, cdnUrl, canonicalizeMediaHtml } from "../lib/media";
@@ -168,6 +170,15 @@ interface LiveUserFields {
   username: string | null;
   /** Fallback display name when the username is empty. */
   fullName: string | null;
+  /**
+   * Out of distribution: pending deletion, deleted, or blocked by an admin.
+   * Same rule as the Stories bar (lib/storyAudience.ts#storyOwnerMeta).
+   */
+  hidden: boolean;
+  /** Account creation, epoch ms (0 when unknown). Feeds the new-creator signal. */
+  createdAt: number;
+  /** Follower count, for the new-creator signal. */
+  followersCount: number;
   /** Epoch ms of last realtime connect/disconnect; null if never seen. */
   lastSeenAt: number | null;
 }
@@ -202,6 +213,10 @@ async function liveUserFields(
         username: schema.users.username,
         fullName: schema.users.fullName,
         lastSeenAt: schema.users.lastSeenAt,
+        status: schema.users.status,
+        isBlocked: schema.users.isBlocked,
+        createdAt: schema.users.createdAt,
+        followersCount: schema.users.followersCount,
       })
       .from(schema.users)
       .where(inArray(schema.users.uid, unique))
@@ -209,7 +224,16 @@ async function liveUserFields(
     return new Map(
       rows.map((r) => [
         r.uid,
-        { verified: !!r.verified, avatar: r.avatar ?? null, username: r.username ?? null, fullName: r.fullName ?? null, lastSeenAt: r.lastSeenAt ?? null },
+        {
+          verified: !!r.verified,
+          avatar: r.avatar ?? null,
+          username: r.username ?? null,
+          fullName: r.fullName ?? null,
+          lastSeenAt: r.lastSeenAt ?? null,
+          hidden: isHiddenAccountStatus(r.status) || !!r.isBlocked,
+          createdAt: Number(r.createdAt) || 0,
+          followersCount: Number(r.followersCount) || 0,
+        },
       ]),
     );
   } catch (e) {
@@ -237,12 +261,12 @@ async function liveUserFields(
  * from mapMatch, not the cached row), so it is safe to run before the page is
  * cached — the fresh fields then travel with the cached copy.
  */
-async function enrichParticipants(env: Env, matches: any[]): Promise<void> {
+async function enrichParticipants(env: Env, matches: any[]): Promise<Map<string, LiveUserFields>> {
   const live = await liveUserFields(
     env,
     matches.flatMap((m) => [m?.userA?.uid, m?.userB?.uid]),
   );
-  if (!live.size) return;
+  if (!live.size) return live;
   const apply = (p: any) => {
     if (!p?.uid) return p;
     const u = live.get(p.uid);
@@ -259,7 +283,59 @@ async function enrichParticipants(env: Env, matches: any[]): Promise<void> {
     m.userA = apply(m.userA);
     m.userB = apply(m.userB);
   }
+  return live;
 }
+
+/**
+ * Enrich, then drop battles that must not be DISTRIBUTED: one with a
+ * participant who is pending deletion, deleted, or blocked by an admin. The
+ * Stories bar already applied this rule to their Stories; their battles kept
+ * being ranked into For You, Explore and search. Used for lists only: a direct
+ * link to a battle still opens it. A participant the lookup did not return
+ * (lookup failure) is kept, so a D1 blip cannot empty the feed.
+ */
+async function distributableMatches(env: Env, matches: any[]): Promise<any[]> {
+  return filterDistributable(matches, await enrichParticipants(env, matches));
+}
+
+function filterDistributable(matches: any[], live: Map<string, LiveUserFields>): any[] {
+  const hidden = (p: any) => !!p?.uid && live.get(p.uid)?.hidden === true;
+  return matches.filter((m) => !hidden(m?.userA) && !hidden(m?.userB));
+}
+
+/** "New creator" for cold-start exploration: account under 30 days, under 50 followers. */
+export const NEW_CREATOR_MAX_AGE_MS = 30 * 86_400_000;
+export const NEW_CREATOR_MAX_FOLLOWERS = 50;
+
+function isNewCreator(u: LiveUserFields | undefined, now: number): boolean {
+  return !!u && u.createdAt > 0 && now - u.createdAt < NEW_CREATOR_MAX_AGE_MS && u.followersCount < NEW_CREATOR_MAX_FOLLOWERS;
+}
+
+/**
+ * Cold-start exploration: a live battle with a new, small creator gets
+ * `w.newCreator` on its base score. Without it, ranking is driven by engagement
+ * and follows, which a new account has none of, so its first battles sank below
+ * established creators and never collected the engagement that would lift them.
+ * Live battles only: a finished result is not where discovery happens.
+ * Mutates `_base`; the caller re-sorts.
+ */
+function applyExplorationBoost(matches: any[], live: Map<string, LiveUserFields>, now: number, w: FeedWeights): void {
+  if (!w.newCreator) return;
+  for (const m of matches) {
+    if (m.status === "completed") continue;
+    if (isNewCreator(live.get(m?.userA?.uid), now) || isNewCreator(live.get(m?.userB?.uid), now)) {
+      m._base += w.newCreator;
+    }
+  }
+}
+
+/**
+ * Invite-only battles (`is_private`, created with an `invited_uid`) are for the
+ * invited player, not public lists. Search already excluded them; the feed pool
+ * and the Explore lists did not, so they were ranked to everyone and showed
+ * who was invited.
+ */
+const publicMatch = sql`COALESCE(${schema.contestMatches.isPrivate}, 0) = 0`;
 
 /** One read cache's lifetimes and the staleness bound it must respect. */
 export interface ReadCacheTtl {
@@ -644,47 +720,15 @@ async function loadSeen(env: Env, uid: string): Promise<SeenState> {
   return state;
 }
 
-/**
- * Tunable ranking weights. Defaults live here but can be overridden at runtime
- * from the `appConfig.feedWeights` setting (admin panel) — so the feed can be
- * A/B-tuned without a redeploy. Missing keys fall back to these.
- */
-interface FeedWeights {
-  freshness: number;
-  velocity: number;
-  urgency: number;
-  prize: number;
-  follow: number;
-  votedAffinity: number;
-  visitAffinity: number;
-  votedPenalty: number;
-  seenPenalty: number;
-  seenCap: number;
-  result: number; // prominence bump for a freshly-finished battle's result
-  resultVotedBoost: number; // extra bump when you voted on that finished battle
-}
-const FEED_DEFAULT_WEIGHTS: FeedWeights = {
-  freshness: 2.2,
-  velocity: 1.6,
-  urgency: 1.2,
-  prize: 0.3,
-  follow: 3.0,
-  votedAffinity: 1.5,
-  visitAffinity: 1.0,
-  votedPenalty: 1.5,
-  seenPenalty: 0.6,
-  seenCap: 5,
-  result: 2.6,
-  resultVotedBoost: 2.0,
-};
+// Ranking weights, their bounds and the ranking version: lib/feedWeights.ts.
 
 /**
  * Isolate-memo lifetime for the DERIVED ranking weights.
  *
  * Every For You / Following request needs these, and reading them meant one KV read
  * of `settings:appConfig` per feed request — KV reads are metered (100k/day on the
- * free plan) and the feed is the hottest route. The memo holds only the twelve
- * numbers below, never the appConfig blob itself: appConfig also carries
+ * free plan) and the feed is the hottest route. The memo holds only the ranking
+ * numbers, never the appConfig blob itself: appConfig also carries
  * `payoutsFrozen`, which must stay on KV's globally-visible invalidation (see
  * lib/settings.ts). A stale weight only nudges ranking for at most this long after
  * an admin edit, which is the kind of value lib/memo.ts exists for.
@@ -694,21 +738,14 @@ const FEED_WEIGHTS_TTL_SEC = 30;
 async function getFeedWeights(env: Env): Promise<FeedWeights> {
   const memo = memoGet<FeedWeights>(FEED_WEIGHTS_MEMO_KEY);
   if (memo) return memo;
-  let weights: FeedWeights = FEED_DEFAULT_WEIGHTS;
+  let weights: FeedWeights;
   try {
-    const cfg = await getAppConfig(env);
-    const w = cfg?.feedWeights;
-    if (w && typeof w === "object") {
-      const merged = { ...FEED_DEFAULT_WEIGHTS } as Record<string, number>;
-      for (const k of Object.keys(FEED_DEFAULT_WEIGHTS)) {
-        if (typeof w[k] === "number" && Number.isFinite(w[k])) merged[k] = w[k];
-      }
-      weights = merged as unknown as FeedWeights;
-    }
+    // Clamped to FEED_WEIGHT_BOUNDS: a stored value can never invert a signal.
+    weights = sanitizeFeedWeights((await getAppConfig(env))?.feedWeights);
   } catch {
     // Fall through to defaults, and do NOT memoise them: a transient KV/D1 failure
     // must not pin default weights for the whole window.
-    return FEED_DEFAULT_WEIGHTS;
+    return { ...FEED_DEFAULT_WEIGHTS };
   }
   // Frozen so a caller can never mutate the shared memoised object.
   memoPut(FEED_WEIGHTS_MEMO_KEY, Object.freeze({ ...weights }), FEED_WEIGHTS_TTL_SEC);
@@ -869,6 +906,9 @@ async function servePersonalizedFeed(
   const { status, type, limit, cursorRaw, uid, following } = opts;
   const now = Date.now();
   const w = await getFeedWeights(c.env);
+  const ranking = rankingVersion(w);
+  // Which algorithm + weights ranked this page (lib/feedWeights.ts).
+  c.header("X-Feed-Ranking", ranking);
 
   // The "Following" tab is inherently personal — signed-out users get nothing.
   if (following && !uid) {
@@ -905,6 +945,7 @@ async function servePersonalizedFeed(
     const typeConds = [
       ...(type ? [eq(schema.contestMatches.type, type)] : []),
       isNull(schema.contestMatches.moderationHoldAt),
+      publicMatch,
     ];
     const activeRows = await db
       .select(MATCH_LIST_COLUMNS)
@@ -928,10 +969,10 @@ async function servePersonalizedFeed(
         .all();
       rows = [...activeRows, ...(completedRows as any[])];
     }
-    candidates = rows
-      .map((r) => ({ ...enrichMatchMedia(c.env, mapMatch(r)), _base: rankBaseScore(r, now, w) }))
-      .sort((a, b) => b._base - a._base);
-    await enrichParticipants(c.env, candidates);
+    const scoredPool = rows.map((r) => ({ ...enrichMatchMedia(c.env, mapMatch(r)), _base: rankBaseScore(r, now, w) }));
+    const live = await enrichParticipants(c.env, scoredPool);
+    applyExplorationBoost(scoredPool, live, now, w);
+    candidates = filterDistributable(scoredPool, live).sort((a, b) => b._base - a._base);
     // Store a clone for the same reason it is cloned on read: this request goes on
     // to filter and rank `candidates`, and must not be able to reach the cached copy.
     memoPut(candKey, structuredClone(candidates), FEED_POOL_TTL);
@@ -954,9 +995,14 @@ async function servePersonalizedFeed(
   // version of it with the muted side omitted, and showing it would defeat the
   // mute. Accepted deliberately — the alternative is showing muted content.
   let hidden = new Set<string>();
+  let dismissals = NO_DISMISSALS;
   if (uid) {
-    hidden = await hiddenUidsFor(c.env, uid);
+    [hidden, dismissals] = await Promise.all([hiddenUidsFor(c.env, uid), loadFeedDismissals(c.env, uid)]);
     candidates = excludeHiddenMatches(candidates, hidden);
+    // "Not interested": the battle itself leaves this viewer's feed. Filtered here
+    // for the same reason as blocks: the cached-order branch below resolves ids
+    // through this list, so it drops a fresh dismissal without waiting for the TTL.
+    if (dismissals.matchIds.size) candidates = candidates.filter((m) => !dismissals.matchIds.has(m.id));
   }
 
   // Per-user ranked order is cached briefly. On load-more / repeat requests
@@ -966,7 +1012,7 @@ async function servePersonalizedFeed(
   // immediately — see exclusionVersion() in lib/blocks.ts for why filtering the
   // pool alone only fixes the block direction.
   const orderKey = uid
-    ? `cache:feedorder:${uid}:${following ? "following" : "foryou"}:${status}:${type || "all"}:${exclusionVersion(hidden)}`
+    ? `cache:feedorder:${uid}:${following ? "following" : "foryou"}:${status}:${type || "all"}:${exclusionVersion(hidden)}:d${dismissals.version}:${ranking}`
     : "";
   // Isolate memory, not KV — see the note on the candidate pool above. A plain
   // string[], and the reader below only maps over it, but it is copied anyway so
@@ -996,12 +1042,18 @@ async function servePersonalizedFeed(
         .select({ matchId: schema.votes.matchId, votedForUid: schema.votes.votedForUid })
         .from(schema.votes)
         .where(eq(schema.votes.voterUid, uid))
+        // Most recent first: without an order the lookback was whichever rows
+        // SQLite met first, i.e. the viewer's OLDEST history.
+        .orderBy(desc(schema.votes.createdAt))
         .limit(FEED_AFFINITY_LOOKBACK)
         .all(),
       db
         .select({ userId: schema.profileVisits.userId })
         .from(schema.profileVisits)
         .where(eq(schema.profileVisits.visitorId, uid))
+        // Most recent first: without an order the lookback was whichever rows
+        // SQLite met first, i.e. the viewer's OLDEST history.
+        .orderBy(desc(schema.profileVisits.createdAt))
         .limit(FEED_AFFINITY_LOOKBACK)
         .all(),
       loadSeen(c.env, uid),
@@ -1022,6 +1074,8 @@ async function servePersonalizedFeed(
       if (followed) s += w.follow;
       if (votedForSet.has(a) || votedForSet.has(b)) s += w.votedAffinity;
       if (visitedSet.has(a) || visitedSet.has(b)) s += w.visitAffinity;
+      // Negative feedback: the viewer said "Not interested" to a battle by this creator.
+      if (dismissals.creators.has(a) || dismissals.creators.has(b)) s -= w.notInterested;
       if (m.status === "completed") {
         // Finished battle: you voted on it → you want to see who won, so boost
         // its result to you (the opposite of the active-feed novelty penalty).
@@ -1421,6 +1475,14 @@ readRoute.get("/matches", optionalAuth, guestReadLimit, async (c) => {
   // candidate pool + per-viewer re-rank), so they return before the per-page
   // cache below and respond as { items, nextCursor }.
   if (sort === "foryou" || sort === "following") {
+    // Unknown status/type matches nothing. Answered here, before the isolate memo:
+    // each distinct value used to mint its own candidate-pool and order-cache
+    // entries (and a D1 query), so arbitrary values could grow memory per isolate.
+    if (!MATCH_STATUSES.has(status) || (type && !MATCH_TYPES.has(type))) {
+      c.header("Cache-Control", "public, max-age=15");
+      c.header("Vary", "Authorization");
+      return c.json({ items: [], nextCursor: null });
+    }
     return servePersonalizedFeed(c, db, { status, type, limit, cursorRaw, uid, following: sort === "following" });
   }
 
@@ -1457,7 +1519,7 @@ readRoute.get("/matches", optionalAuth, guestReadLimit, async (c) => {
     edgeTtlSec: READ_CACHE_TTLS.matchesPage.edge,
     kvTtlSec: READ_CACHE_TTLS.matchesPage.kv,
     load: async () => {
-      const conds = [eq(schema.contestMatches.status, status), isNull(schema.contestMatches.moderationHoldAt)];
+      const conds = [eq(schema.contestMatches.status, status), isNull(schema.contestMatches.moderationHoldAt), publicMatch];
       if (type) conds.push(eq(schema.contestMatches.type, type));
 
       if (sort === "ending") {
@@ -1475,8 +1537,8 @@ readRoute.get("/matches", optionalAuth, guestReadLimit, async (c) => {
           .limit(limit)
           .offset(offset)
           .all();
-        const list = rows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m));
-        await enrichParticipants(c.env, list);
+        // Cursor from the raw rows, so dropping hidden ones never shifts paging.
+        const list = await distributableMatches(c.env, rows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m)));
         return { matches: list, nextCursor: rows.length === limit ? offset + limit : null };
       }
 
@@ -1497,8 +1559,8 @@ readRoute.get("/matches", optionalAuth, guestReadLimit, async (c) => {
           .limit(limit)
           .offset(offset)
           .all();
-        const list = rows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m));
-        await enrichParticipants(c.env, list);
+        // Cursor from the raw rows, so dropping hidden ones never shifts paging.
+        const list = await distributableMatches(c.env, rows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m)));
         return { matches: list, nextCursor: rows.length === limit ? offset + limit : null };
       }
 
@@ -1512,8 +1574,7 @@ readRoute.get("/matches", optionalAuth, guestReadLimit, async (c) => {
         .orderBy(desc(schema.contestMatches.createdAt))
         .limit(limit)
         .all();
-      const list = rows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m));
-      await enrichParticipants(c.env, list);
+      const list = await distributableMatches(c.env, rows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m)));
       return {
         matches: list,
         nextCursor: rows.length === limit ? rows[rows.length - 1].createdAt : null,
@@ -2377,8 +2438,17 @@ async function searchPeople(c: any, term: string, limit: number) {
  * are throttled per IP (signed-in users are bounded by their session). Generous
  * because many guests share one carrier-NAT address.
  */
+/**
+ * Search runs several LIKE scans per call. Guests are limited per IP; signed-in
+ * users used to have no limit at all, so one token could drive unbounded D1
+ * scans. 120/min is well above typing speed through the client's 300 ms debounce.
+ * Costs one rate-limiter Durable Object request per search (see lib/rateLimit.ts).
+ */
+export const SEARCH_LIMIT_PER_UID = 120;
 async function searchRateLimit(c: any) {
-  if (!c.get("user")?.uid) await rateLimit(c.env, `usersearch_ip:${clientIp(c.req.raw.headers)}`, 300, 60);
+  const uid = c.get("user")?.uid;
+  if (uid) await rateLimit(c.env, `usersearch:${uid}`, SEARCH_LIMIT_PER_UID, 60);
+  else await rateLimit(c.env, `usersearch_ip:${clientIp(c.req.raw.headers)}`, 300, 60);
 }
 
 readRoute.get("/users/search", optionalAuth, guestReadLimit, async (c) => {
@@ -2443,8 +2513,7 @@ readRoute.get("/search", optionalAuth, guestReadLimit, async (c) => {
       .all(),
   ]);
 
-  let battles = battleRows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m));
-  await enrichParticipants(c.env, battles);
+  let battles = await distributableMatches(c.env, battleRows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m)));
   if (uid) {
     battles = excludeHiddenMatches(battles, await hiddenUidsFor(c.env, uid));
   }
