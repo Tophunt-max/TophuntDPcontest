@@ -51,7 +51,7 @@ import {
   type MusicTrack,
 } from "../lib/music";
 import { assertChatMember } from "../lib/chatAuth";
-import { chatHistory, searchChatMessages } from "../lib/chatArchive";
+import { chatHistory, latestChatMessages, searchChatMessages } from "../lib/chatArchive";
 import {
   blockedUidsFor,
   describeUsers,
@@ -3458,6 +3458,8 @@ readRoute.get("/chats", requireAuth, async (c) => {
     `SELECT c.*, m.unread_count FROM chat_members m
         JOIN chats c ON c.id = m.chat_id
        WHERE m.user_id = ?
+         -- "Delete chat" is per member (migration 0066): hidden until a newer message.
+         AND (m.cleared_at IS NULL OR c.updated_at > m.cleared_at)
        ORDER BY c.updated_at DESC
        LIMIT 50`,
   )
@@ -3518,22 +3520,34 @@ readRoute.get("/chats", requireAuth, async (c) => {
 readRoute.get("/chats/:id/messages", requireAuth, async (c) => {
   const db = getDb(c.env);
   const chatId = c.req.param("id");
+  const uid = c.get("user").uid;
   // requireAuth only proves *someone* is signed in. Without this, any
   // authenticated caller holding a chat id could read the whole conversation.
-  await assertChatMember(c.env, chatId, c.get("user").uid);
+  await assertChatMember(c.env, chatId, uid);
   // Deliberately NOT filtered by block, unlike GET /read/chats, which hides the
   // thread from the inbox. The thread becomes unreachable in the UI, but the
   // history stays readable to a member who still has the id: these are the
   // viewer's own past conversations, and `sendMessage` refuses new messages in
   // both directions, so nothing can be added to what is already there.
-  // A non-numeric `since` used to reach the ChatArchive DO as NaN.
+  c.header("Cache-Control", "private, no-store");
+  // This member's "Delete chat" point (migration 0066): nothing at or before it.
+  const member = await c.env.DB.prepare(`SELECT cleared_at FROM chat_members WHERE chat_id = ? AND user_id = ?`)
+    .bind(chatId, uid)
+    .first<{ cleared_at: number | null }>();
+  const clearedAt = Number(member?.cleared_at) || 0;
+
+  // Two shapes, both oldest-first arrays without `read`:
+  //   ?since=<ms>   messages after `since` (unchanged contract; capped at 200).
+  //   otherwise     the NEWEST page, plus ?before=<createdAt>_<id> for "load
+  //                 earlier". X-Next-Cursor names the next older page.
+  // Opening a thread used to send no parameters and get the OLDEST 200 messages,
+  // so a conversation past 200 messages never showed a new one again.
   const sinceRaw = parseInt(c.req.query("since") || "0", 10);
   const since = Number.isFinite(sinceRaw) && sinceRaw > 0 ? sinceRaw : 0;
-  // Message bodies are served from the chat's ChatArchive Durable Object, not
-  // D1 (see src/chatArchive.ts). The DO seeds itself from any pre-migration D1
-  // rows on first touch, so history stays complete across the cutover. Same
-  // shape as before — oldest-first, capped at 200, `read` deliberately omitted.
-  //
+  const limit = pageLimit(c, CHAT_PAGE_SIZE, CHAT_PAGE_SIZE);
+  const before = parseChatCursor(c.req.query("before"));
+  const mapRow = (m: any) => ({ id: m.id, chatId: m.chatId, senderId: m.senderId, text: m.text, type: m.type || "text", mediaUrl: m.mediaUrl ?? null, createdAt: m.createdAt });
+
   // DEFENSE IN DEPTH: opening a conversation is the single most-used chat action,
   // and the client renders a full-screen spinner until this resolves — a 500 here
   // is an infinite spinner, not a graceful error. So if the DO read fails for any
@@ -3541,23 +3555,50 @@ readRoute.get("/chats/:id/messages", requireAuth, async (c) => {
   // D1 `messages` rows directly. Those rows are the DO's own seed source and are
   // still present, so an established conversation degrades to "reads work, the
   // newest DO-only messages may lag" instead of breaking outright.
+  let rows: any[];
   try {
-    const rows = await chatHistory(c.env, chatId, since, 200);
-    return c.json(rows);
+    rows = since
+      ? await chatHistory(c.env, chatId, Math.max(since, clearedAt), 200)
+      : await latestChatMessages(c.env, chatId, { beforeTs: before?.ts ?? null, beforeId: before?.id ?? null, after: clearedAt, limit });
   } catch (e) {
     console.error("[read/messages] ChatArchive read failed, falling back to D1", chatId, e);
-    const rows = await db
+    const conds = [eq(schema.messages.chatId, chatId), gt(schema.messages.createdAt, Math.max(since, clearedAt))];
+    if (!since && before) {
+      conds.push(
+        or(
+          lt(schema.messages.createdAt, before.ts),
+          and(eq(schema.messages.createdAt, before.ts), lt(schema.messages.id, before.id)),
+        )!,
+      );
+    }
+    const fallback = await db
       .select()
       .from(schema.messages)
-      .where(and(eq(schema.messages.chatId, chatId), gt(schema.messages.createdAt, since)))
-      .orderBy(asc(schema.messages.createdAt))
-      .limit(200)
+      .where(and(...conds))
+      .orderBy(since ? asc(schema.messages.createdAt) : desc(schema.messages.createdAt), since ? asc(schema.messages.id) : desc(schema.messages.id))
+      .limit(since ? 200 : limit)
       .all();
-    return c.json(
-      rows.map((m) => ({ id: m.id, chatId: m.chatId, senderId: m.senderId, text: m.text, type: (m as any).type || "text", mediaUrl: (m as any).mediaUrl ?? null, createdAt: m.createdAt })),
-    );
+    rows = (since ? fallback : fallback.reverse()).map(mapRow);
   }
+  if (!since && rows.length === limit) {
+    c.header("X-Next-Cursor", `${rows[0].createdAt}_${rows[0].id}`);
+  }
+  return c.json(rows);
 });
+
+/** Messages per page when opening a thread or loading earlier ones. */
+const CHAT_PAGE_SIZE = 50;
+
+/** `<createdAt>_<id>` keyset for older chat pages. Ids may contain `_`. */
+function parseChatCursor(raw: string | undefined): { ts: number; id: string } | null {
+  if (!raw) return null;
+  const i = raw.indexOf("_");
+  if (i <= 0) return null;
+  const ts = Number(raw.slice(0, i));
+  const id = raw.slice(i + 1);
+  if (!Number.isFinite(ts) || ts <= 0 || !id || id.length > 200) return null;
+  return { ts, id };
+}
 
 /**
  * Search the message bodies of ONE conversation.
@@ -3571,12 +3612,19 @@ readRoute.get("/chats/:id/messages", requireAuth, async (c) => {
  */
 readRoute.get("/chats/:id/messages/search", requireAuth, async (c) => {
   const chatId = c.req.param("id");
-  await assertChatMember(c.env, chatId, c.get("user").uid);
+  const uid = c.get("user").uid;
+  await assertChatMember(c.env, chatId, uid);
+  c.header("Cache-Control", "private, no-store");
   const q = (c.req.query("q") || "").trim();
   if (!q) return c.json([]);
   const limit = pageLimit(c, 50, 100);
   try {
-    const rows = await searchChatMessages(c.env, chatId, q, limit);
+    const member = await c.env.DB.prepare(`SELECT cleared_at FROM chat_members WHERE chat_id = ? AND user_id = ?`)
+      .bind(chatId, uid)
+      .first<{ cleared_at: number | null }>();
+    const clearedAt = Number(member?.cleared_at) || 0;
+    // A deleted-for-me chat must not be searchable either.
+    const rows = (await searchChatMessages(c.env, chatId, q, limit)).filter((m) => m.createdAt > clearedAt);
     return c.json(rows);
   } catch (e) {
     // Search is an enhancement, not the thread itself — degrade to an empty

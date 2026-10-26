@@ -191,7 +191,7 @@ export function fakeRateLimiter() {
  * lazy-migration path is actually exercised rather than stubbed away.
  */
 export function fakeChatArchive(sqlite: SqliteDb) {
-  interface Msg { id: string; senderId: string; text: string | null; read: number; createdAt: number }
+  interface Msg { id: string; senderId: string; text: string | null; read: number; createdAt: number; type?: string; mediaUrl?: string | null }
   const stores = new Map<string, { seeded: boolean; msgs: Map<string, Msg> }>();
   const store = (chatId: string) => {
     let s = stores.get(chatId);
@@ -221,12 +221,30 @@ export function fakeChatArchive(sqlite: SqliteDb) {
     s.seeded = true;
   };
   const out = (m: Msg, chatId: string) => ({ id: m.id, senderId: m.senderId, text: m.text, createdAt: m.createdAt, chatId });
+  const pub = (m: Msg) => ({ id: m.id, senderId: m.senderId, text: m.text, type: m.type || 'text', mediaUrl: m.mediaUrl ?? null, createdAt: m.createdAt });
+  // Same order as the DO's (created_at, id) index.
+  const byTimeId = (a: Msg, b: Msg) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   const makeStub = (chatId: string) => ({
-    async append(cid: string, m: { id: string; senderId: string; text: string | null; createdAt: number }) {
+    async append(cid: string, m: { id: string; senderId: string; text: string | null; createdAt: number; type?: string; mediaUrl?: string | null }) {
       seed(cid);
       const s = store(cid);
-      if (!s.msgs.has(m.id)) s.msgs.set(m.id, { ...m, read: 0 });
-      return { id: m.id, senderId: m.senderId, text: m.text, createdAt: m.createdAt };
+      const existing = s.msgs.get(m.id);
+      if (existing) return { message: pub(existing), inserted: false };
+      const row = { ...m, read: 0 };
+      s.msgs.set(m.id, row);
+      return { message: pub(row), inserted: true };
+    },
+    async latest(cid: string, opts: { beforeTs?: number | null; beforeId?: string | null; after?: number; limit?: number } = {}) {
+      seed(cid);
+      const after = Number(opts.after) || 0;
+      const cap = Math.min(Math.max(Number(opts.limit) || 200, 1), 200);
+      const older = (m: Msg) =>
+        opts.beforeTs == null || m.createdAt < opts.beforeTs || (m.createdAt === opts.beforeTs && m.id < (opts.beforeId ?? ''));
+      return [...store(cid).msgs.values()]
+        .filter((m) => m.createdAt > after && older(m))
+        .sort(byTimeId)
+        .slice(-cap)
+        .map(pub);
     },
     async history(cid: string, since = 0, limit = 200) {
       seed(cid);

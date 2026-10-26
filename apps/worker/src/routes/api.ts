@@ -7,7 +7,7 @@
  * count to prevent double-spend / races.
  */
 import { Hono } from "hono";
-import { eq, and, or, desc, sql, count, like, gte, lt, ne, isNull, inArray, getTableColumns } from "drizzle-orm";
+import { eq, and, or, desc, sql, count, like, gte, lt, lte, ne, isNull, inArray, getTableColumns } from "drizzle-orm";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
@@ -290,6 +290,9 @@ async function assertOwnContestEntry(env: Env, uid: string, mediaUrl: unknown): 
     throw httpsError("permission-denied", "That entry was uploaded by another account. Please upload your own photo or video.");
   }
 }
+
+/** Client-chosen message id (sendMessage `clientId`): stable across retries of one message. */
+const CHAT_CLIENT_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
 function requiredId(value: unknown, name: string, maxLength = 256): string {
   if (typeof value !== "string") {
@@ -2735,6 +2738,13 @@ apiRoute.post("/", async (c) => {
       // rejected so a tap of the send button with nothing to say is a no-op.
       const trimmedText = text && text.trim() ? text.trim() : null;
       if (!chatId) throw httpsError("invalid-argument", "chatId is required.");
+      // Optional client id, kept across retries of the same message. The message id
+      // is derived from it, so a send whose response was lost (timeout, 5xx after
+      // the write) and is retried does not create a second message.
+      const clientId = body.clientId == null ? null : String(body.clientId);
+      if (clientId != null && !CHAT_CLIENT_ID_RE.test(clientId)) {
+        throw httpsError("invalid-argument", "clientId must be 8-64 letters, digits, '-' or '_'.");
+      }
       if (!trimmedText && !mediaUrl) {
         throw httpsError("invalid-argument", "A message needs text or an image.");
       }
@@ -2759,43 +2769,67 @@ apiRoute.post("/", async (c) => {
       const members = ((chat?.users as string[]) || []).filter((u) => u !== uid);
       await assertNotBlockedAny(env, uid, members);
       const ts = now();
-      const messageId = newId();
+      const messageId = clientId ? `${uid}_${clientId}` : newId();
       // The message BODY lives in the chat's ChatArchive Durable Object, not the
       // D1 `messages` table — that keeps the unbounded, highest-volume write path
       // off D1's single writer (see src/chatArchive.ts). The `chats` row below is
       // the ONE bounded D1 write that stays: it is the inbox preview + sort key,
       // and /read/chats orders across ALL of a user's chats, which a per-chat DO
       // cannot answer.
-      await appendMessage(env, chatId, { id: messageId, senderId: uid, text: trimmedText, type, mediaUrl: mediaUrl || null, createdAt: ts });
+      const { message: stored, inserted } = await appendMessage(env, chatId, {
+        id: messageId,
+        senderId: uid,
+        text: trimmedText,
+        type,
+        mediaUrl: mediaUrl || null,
+        createdAt: ts,
+      });
+      if (stored.senderId !== uid) throw httpsError("invalid-argument", "clientId already used.");
       // Inbox preview text: the caption if any, else a "📷 Photo" placeholder for
       // an image so the conversation list never shows a blank last message.
-      const previewText = trimmedText || (type === "image" ? "📷 Photo" : "");
-      await db.update(schema.chats).set({ lastMessage: { text: previewText, createdAt: ts, senderId: uid } as any, updatedAt: ts }).where(eq(schema.chats.id, chatId));
+      // Guarded on time so a retry of an older message cannot replace a newer
+      // preview; re-applied on a retry in case the first attempt failed after the
+      // append and before this write.
+      const previewText = stored.text || (stored.type === "image" ? "📷 Photo" : "");
+      await db
+        .update(schema.chats)
+        .set({ lastMessage: { text: previewText, createdAt: stored.createdAt, senderId: uid } as any, updatedAt: stored.createdAt })
+        .where(and(eq(schema.chats.id, chatId), lte(schema.chats.updatedAt, stored.createdAt)));
       // Bump every recipient's unread counter (never the sender's). One bounded
       // UPDATE — a chat has a fixed, tiny membership — that drives the inbox badge
       // in /read/chats without a per-chat DO round-trip on the list. Reset in
-      // markChatRead below.
-      await env.DB.prepare(
-        `UPDATE chat_members SET unread_count = unread_count + 1 WHERE chat_id = ? AND user_id != ?`,
-      ).bind(chatId, uid).run();
-      // Instant push: to the chat room + each participant's user channel (chat-list bump).
-      const msg = { id: messageId, chatId, senderId: uid, text: trimmedText, type, mediaUrl: mediaUrl || null, createdAt: ts };
+      // markChatRead below. Not repeated for a retry: that would count twice.
+      if (inserted) {
+        await env.DB.prepare(
+          `UPDATE chat_members SET unread_count = unread_count + 1 WHERE chat_id = ? AND user_id != ?`,
+        ).bind(chatId, uid).run();
+      }
+      // Instant push: to the chat room + each participant's user channel (chat-list
+      // bump). Re-published on a retry; clients key messages by id, so a repeat
+      // event is a no-op for anyone who already has it.
+      const msg = { ...stored, chatId };
       await publish(env, `chat:${chatId}`, { type: "message", message: msg });
       await publishMany(env, members.map((u) => `user:${u}`), { type: "chat_update", chatId, message: msg });
-      return c.json({ success: true });
+      return c.json({ success: true, message: msg, duplicate: !inserted });
     }
 
     case "markChatRead": {
       const { chatId } = body;
       if (!chatId) throw httpsError("invalid-argument", "chatId is required.");
       await assertChatMember(env, chatId, uid);
-      // Read flags live with the message bodies in the chat's Durable Object.
-      await markChatMessagesRead(env, chatId, uid);
+      await rateLimit(env, `chatread:${uid}`, 120, 60);
       // Clear the inbox badge counter for this member (mirror of the increment in
       // sendMessage). Own row only — the other member's unread is theirs.
+      //
+      // Counter FIRST, then the read flags. In the old order (flags, then counter)
+      // a message landing between the two had its increment wiped while it was
+      // still unread: an undercount the inbox never recovered from. This order can
+      // only overcount by that one message, which the next markChatRead clears.
       await env.DB.prepare(
         `UPDATE chat_members SET unread_count = 0 WHERE chat_id = ? AND user_id = ?`,
       ).bind(chatId, uid).run();
+      // Read flags live with the message bodies in the chat's Durable Object.
+      await markChatMessagesRead(env, chatId, uid);
       return c.json({ success: true });
     }
 
@@ -2809,6 +2843,9 @@ apiRoute.post("/", async (c) => {
       if (!chatId) throw httpsError("invalid-argument", "chatId is required.");
       await assertChatMember(env, chatId, uid);
       await rateLimit(env, `typing:${uid}`, 20, 10);
+      // Same consent rule as sendMessage: after a block, no live signal either way.
+      const typingChat = await db.select({ users: schema.chats.users }).from(schema.chats).where(eq(schema.chats.id, chatId)).get();
+      await assertNotBlockedAny(env, uid, ((typingChat?.users as string[]) || []).filter((u) => u !== uid));
       await publish(env, `chat:${chatId}`, { type: "typing", chatId, uid });
       return c.json({ success: true });
     }
@@ -2816,19 +2853,31 @@ apiRoute.post("/", async (c) => {
     case "deleteChat": {
       const { chatId } = body;
       if (!chatId) throw httpsError("invalid-argument", "chatId is required.");
-      // Destructive and irreversible — it drops the chat and every message in
-      // it — so membership must be proven before anything is deleted.
       await assertChatMember(env, chatId, uid);
-      // Message bodies live in the chat's Durable Object; drop them there.
-      await purgeChatMessages(env, chatId);
-      // Also clear any legacy D1 seed rows for this chat so nothing is orphaned
-      // (harmless no-op once a chat has only ever written to the DO).
-      await db.delete(schema.messages).where(eq(schema.messages.chatId, chatId));
-      await db.delete(schema.chats).where(eq(schema.chats.id, chatId));
-      // Drop the membership edges too, or they would dangle and keep pointing at a
-      // chat that no longer exists (idx_chat_members_chat makes this a seek).
-      await db.delete(schema.chatMembers).where(eq(schema.chatMembers.chatId, chatId));
-      return c.json({ success: true });
+      await rateLimit(env, `chatdelete:${uid}`, 60, 3600);
+      // Delete FOR ME (migration 0066). This used to purge the chat for both
+      // members, so either person deleting a DM erased the other's history without
+      // a word. Now the caller's membership is stamped: their inbox hides the chat
+      // until a newer message, and their history starts after this point.
+      const ts = now();
+      await env.DB.prepare(
+        `UPDATE chat_members SET cleared_at = ?, unread_count = 0 WHERE chat_id = ? AND user_id = ?`,
+      ).bind(ts, chatId, uid).run();
+      // Once EVERY member has cleared past the latest message, nobody can see any
+      // of it, so the old full purge applies: bodies, preview row, memberships.
+      const keptBySomeone = await env.DB.prepare(
+        `SELECT 1 AS k FROM chat_members m JOIN chats c ON c.id = m.chat_id
+          WHERE m.chat_id = ? AND (m.cleared_at IS NULL OR m.cleared_at < c.updated_at) LIMIT 1`,
+      ).bind(chatId).first();
+      if (!keptBySomeone) {
+        await purgeChatMessages(env, chatId);
+        await db.batch([
+          db.delete(schema.messages).where(eq(schema.messages.chatId, chatId)),
+          db.delete(schema.chats).where(eq(schema.chats.id, chatId)),
+          db.delete(schema.chatMembers).where(eq(schema.chatMembers.chatId, chatId)),
+        ] as any);
+      }
+      return c.json({ success: true, purged: !keptBySomeone });
     }
 
     // ================= CONTEST-MATCH ENGAGEMENT =================

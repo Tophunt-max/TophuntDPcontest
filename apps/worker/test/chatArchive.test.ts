@@ -146,11 +146,14 @@ describe('markChatRead', () => {
 });
 
 describe('deleteChat purges the archive', () => {
-  it('removes the messages from the DO', async () => {
+  it('removes the messages from the DO once every member has deleted', async () => {
     const { env } = makeEnv();
     const chatId = await startChat(env);
     await api(env, 'alice', 'sendMessage', { chatId, text: 'x' });
     expect((await api(env, 'alice', 'deleteChat', { chatId })).status).toBe(200);
+    // Bob still has it.
+    expect(env.CHAT_ARCHIVE._stores.get(chatId)?.msgs.size).toBe(1);
+    expect((await api(env, 'bob', 'deleteChat', { chatId })).status).toBe(200);
 
     // Chat is gone (404 on the member gate) and the archive holds nothing.
     expect((await history(env, 'alice', chatId)).status).toBe(404);

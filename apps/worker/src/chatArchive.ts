@@ -103,6 +103,8 @@ export class ChatArchive extends DurableObject<Env> {
     this.addColumnIfMissing("media_url", "TEXT");
     // Serves the ORDER BY created_at of both history() (asc) and recent() (desc).
     this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_msg_created ON messages (created_at);`);
+    // Serves latest(): newest-first keyset on (created_at, id), stable for equal times.
+    this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_msg_created_id ON messages (created_at, id);`);
   }
 
   /** Add a column only if it does not already exist (per-DO self-migration). */
@@ -116,10 +118,17 @@ export class ChatArchive extends DurableObject<Env> {
 
   // ============================ RPC methods ================================
 
-  /** Append a message and return it. Seeds first so history stays complete. */
-  async append(chatId: string, m: ArchivedMessage): Promise<ArchivedMessage> {
+  /**
+   * Append a message. Seeds first so history stays complete.
+   *
+   * Idempotent on `id`: the Worker derives the id from the sender's client id, so
+   * a retried send hits the existing row. `inserted: false` then tells the caller
+   * not to repeat side effects, and `message` is the STORED copy (its original
+   * time), not the retry's.
+   */
+  async append(chatId: string, m: ArchivedMessage): Promise<{ message: ArchivedMessage; inserted: boolean }> {
     await this.ensureSeeded(chatId);
-    this.sql.exec(
+    const cursor = this.sql.exec(
       "INSERT OR IGNORE INTO messages (id, sender_id, text, read, type, media_url, created_at) VALUES (?, ?, ?, 0, ?, ?, ?)",
       m.id,
       m.senderId,
@@ -128,7 +137,48 @@ export class ChatArchive extends DurableObject<Env> {
       m.mediaUrl ?? null,
       m.createdAt,
     );
-    return m;
+    if (cursor.rowsWritten > 0) return { message: m, inserted: true };
+    const row = this.sql
+      .exec("SELECT id, sender_id, text, type, media_url, created_at FROM messages WHERE id = ?", m.id)
+      .toArray()[0] as unknown as MessageRow | undefined;
+    return { message: row ? toMessage(row) : m, inserted: false };
+  }
+
+  /**
+   * The NEWEST page, returned oldest-first for display: messages with
+   * `created_at > after`, older than the `before` keyset when given.
+   *
+   * history() is oldest-first from `since`, so a client that opened a thread
+   * with more than 200 messages always got messages 1-200 and never saw a new
+   * one. This is what opening a thread and "load earlier" use.
+   */
+  async latest(
+    chatId: string,
+    opts: { beforeTs?: number | null; beforeId?: string | null; after?: number; limit?: number } = {},
+  ): Promise<ArchivedMessage[]> {
+    await this.ensureSeeded(chatId);
+    const cap = Math.min(Math.max(Number(opts.limit) || HISTORY_LIMIT, 1), HISTORY_LIMIT);
+    const after = Number(opts.after) || 0;
+    const rows = (
+      opts.beforeTs != null
+        ? this.sql.exec(
+            `SELECT id, sender_id, text, type, media_url, created_at FROM messages
+              WHERE created_at > ? AND (created_at < ? OR (created_at = ? AND id < ?))
+              ORDER BY created_at DESC, id DESC LIMIT ?`,
+            after,
+            opts.beforeTs,
+            opts.beforeTs,
+            opts.beforeId ?? "",
+            cap,
+          )
+        : this.sql.exec(
+            `SELECT id, sender_id, text, type, media_url, created_at FROM messages
+              WHERE created_at > ? ORDER BY created_at DESC, id DESC LIMIT ?`,
+            after,
+            cap,
+          )
+    ).toArray() as unknown as MessageRow[];
+    return rows.reverse().map(toMessage);
   }
 
   /**

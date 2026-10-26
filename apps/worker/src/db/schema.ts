@@ -832,6 +832,9 @@ export const chatMembers = sqliteTable(
     // derived from the per-chat message DO) so the inbox badge costs no extra
     // round-trip — it rides the existing chat_members join.
     unreadCount: integer("unread_count").notNull().default(0),
+    // "Delete chat" for this member only (migration 0066): history and the inbox
+    // entry start after this time. Null = never cleared.
+    clearedAt: integer("cleared_at"),
   },
   (t) => ({
     pk: primaryKey({ columns: [t.userId, t.chatId] }),
