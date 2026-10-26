@@ -14,6 +14,7 @@ import { useRouter } from 'expo-router';
 import { Colors } from '@/constants/theme';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useToast } from '../toast/ToastProvider';
+import { BATTLE_REPORT_REASONS, useReportReason } from '../modals/ReportReasonDialog';
 import { engagementService } from '@/src/services/contests/engagementService';
 import { Avatar } from '../ui/Avatar';
 import { VerifiedBadge } from '../ui/VerifiedBadge';
@@ -625,29 +626,30 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, onNotInterested, liv
     }
   }, [matchStatus]);
 
-  /** Report spam / QR-payment scams / fake entries. Server dedupes per user. */
-  const handleReport = useCallback(() => {
+  /**
+   * Report spam / QR-payment scams / fake entries with a reason, in the same
+   * dialog as the profile report. Server dedupes per user.
+   */
+  const { askReason, dialog: reportDialog } = useReportReason();
+  const handleReport = useCallback(async () => {
     if (!user) return void requireAuth('report');
-    Alert.alert(
-      'Report this battle?',
-      'QR code / payment scam, spam, fake ya galat photo? Hamari team review karegi.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Report',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await contestService.reportMatch(item.id, 'Reported from battle card: spam / QR / fake entry');
-              addToast('Thanks — report submit ho gaya. Team review karegi.', 'success');
-            } catch {
-              addToast('Report submit nahi ho paya. Dobara try karein.', 'error');
-            }
-          },
-        },
-      ],
-    );
-  }, [user, requireAuth, item.id, addToast]);
+    let failed = false;
+    const sent = await askReason({
+      title: 'Report this battle?',
+      message: 'Kya galat hai? Hamari team review karegi. Report anonymous hai.',
+      reasons: BATTLE_REPORT_REASONS,
+      onSubmit: async (reason) => {
+        try {
+          await contestService.reportMatch(item.id, reason);
+        } catch (e) {
+          failed = true;
+          throw e;
+        }
+      },
+    });
+    if (sent) addToast('Thanks — report submit ho gaya. Team review karegi.', 'success');
+    else if (failed) addToast('Report submit nahi ho paya. Dobara try karein.', 'error');
+  }, [user, requireAuth, askReason, item.id, addToast]);
 
   const isOwnBattle = !!user && (item.userA?.uid === user.uid || item.userB?.uid === user.uid);
   // Signed-in viewers on a ranked feed, and never on their own battle (the server refuses that).
@@ -666,7 +668,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, onNotInterested, liv
   const openMoreMenu = useCallback(() => {
     Alert.alert('More options', undefined, [
       { text: 'Not interested', onPress: () => void handleNotInterested() },
-      { text: 'Report', style: 'destructive', onPress: handleReport },
+      { text: 'Report', style: 'destructive', onPress: () => void handleReport() },
       { text: 'Cancel', style: 'cancel' },
     ]);
   }, [handleNotInterested, handleReport]);
@@ -1070,6 +1072,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, onNotInterested, liv
       </View>
       
       <CommentSheet postId={item.id} visible={showComments} onDismiss={() => setShowComments(false)} isDark={isDark} isContestMatch={true} />
+      {reportDialog}
       <ShareSheet visible={showShare} onDismiss={() => setShowShare(false)} isDark={isDark} matchId={item.id} match={item} />
     </View>
   );

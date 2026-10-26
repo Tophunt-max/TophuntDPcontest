@@ -4,7 +4,10 @@ import { Ionicons } from '@/src/lib/icons';
 import { ReanimatedBottomSheet } from '@/src/components/modals/ReanimatedBottomSheet';
 import { useConfirm, type ConfirmOptions } from '@/src/components/modals/ConfirmDialog';
 import { useBlockUser, useMuteUser, useUnblockUser, useUnmuteUser } from '@/src/hooks/useProfileData';
-import { reportUserService } from '@/src/services/users';
+import { useReportReason, USER_REPORT_REASONS } from '@/src/components/modals/ReportReasonDialog';
+import { profilePath, reportUserService } from '@/src/services/users';
+import { shareBattleLink, shareOrigin } from '@/src/lib/share';
+import * as Clipboard from 'expo-clipboard';
 import { emitToast } from '@/src/lib/toastBridge';
 import { reportError } from '@/src/lib/reportError';
 
@@ -47,6 +50,7 @@ export const UserActionsSheet: React.FC<Props> = ({
 }) => {
   const [busy, setBusy] = useState<ActionKey | null>(null);
   const { confirm, dialog } = useConfirm();
+  const { askReason, dialog: reasonDialog } = useReportReason();
 
   const { mutateAsync: block } = useBlockUser();
   const { mutateAsync: unblock } = useUnblockUser();
@@ -145,18 +149,83 @@ export const UserActionsSheet: React.FC<Props> = ({
           `Blocked ${name}.`,
         );
 
-  const handleReport = () =>
-    ask(
-      'report',
-      {
+  /**
+   * Report with a reason, then (Instagram-style) offer to block as well. The
+   * block offer is skipped when they are already blocked.
+   */
+  const handleReport = async () => {
+    if (busy) return;
+    setBusy('report');
+    let failed: any = null;
+    try {
+      const sent = await askReason({
         title: `Report ${name}?`,
-        message: 'Our moderation team will review this account. Reporting is anonymous: they will not know it was you.',
-        confirmLabel: 'Report',
+        reasons: USER_REPORT_REASONS,
+        onSubmit: async (reason) => {
+          try {
+            await reportUserService(targetUserId, reason);
+          } catch (e) {
+            failed = e;
+            throw e;
+          }
+        },
+      });
+      if (!sent) {
+        if (failed) {
+          reportError(failed, { screen: 'user-actions', action: 'report', targetUserId });
+          emitToast(failed?.message || 'Something went wrong. Please try again.', 'error');
+        }
+        return;
+      }
+      emitToast('Thanks — our team will review this account.', 'success');
+    } finally {
+      setBusy(null);
+    }
+    if (isBlocked) {
+      onClose();
+      return;
+    }
+    await ask(
+      'block',
+      {
+        title: `Also block ${name}?`,
+        message:
+          "Your report has been sent. Blocking means you won't see each other's battles, stories or messages, and you'll both stop following each other.",
+        confirmLabel: 'Block',
+        cancelLabel: 'Not now',
         destructive: true,
       },
-      () => reportUserService(targetUserId, 'Reported from profile'),
-      'Thanks — our team will review this account.',
+      () => block(targetUserId),
+      `Blocked ${name}.`,
     );
+  };
+
+  const profileUrl = () => {
+    const path = profilePath(username);
+    return path ? `${shareOrigin()}${path}` : null;
+  };
+
+  const handleCopyLink = async () => {
+    const url = profileUrl();
+    if (!url) return;
+    try {
+      await Clipboard.setStringAsync(url);
+      emitToast('Profile link copied.', 'success');
+      onClose();
+    } catch (e) {
+      reportError(e, { screen: 'user-actions', action: 'copy-link', targetUserId });
+      emitToast('Could not copy the link.', 'error');
+    }
+  };
+
+  const handleShare = async () => {
+    const url = profileUrl();
+    if (!url) return;
+    const outcome = await shareBattleLink({ caption: `Check out ${name} on TopHunt\n${url}`, url });
+    if (outcome === 'copied_link') emitToast('Profile link copied.', 'success');
+    else if (outcome === 'failed') emitToast('Could not share the profile.', 'error');
+    if (outcome !== 'dismissed' && outcome !== 'failed') onClose();
+  };
 
   const Row = ({
     icon,
@@ -198,8 +267,15 @@ export const UserActionsSheet: React.FC<Props> = ({
 
   return (
     <>
-      <ReanimatedBottomSheet visible={visible} onClose={onClose} maxHeight={360}>
+      <ReanimatedBottomSheet visible={visible} onClose={onClose} maxHeight={560}>
         <View style={styles.container}>
+          {!!username && (
+            <>
+              <Row icon="share-social-outline" label="Share profile" onPress={handleShare} />
+              <Row icon="link-outline" label="Copy profile link" onPress={handleCopyLink} />
+              <View style={[styles.divider, { backgroundColor: isDark ? '#35383F' : '#EEEEEE' }]} />
+            </>
+          )}
           <Row
             icon={isMuted ? 'volume-high-outline' : 'volume-mute-outline'}
             label={isMuted ? 'Unmute' : 'Mute'}
@@ -232,7 +308,8 @@ export const UserActionsSheet: React.FC<Props> = ({
           />
         </View>
       </ReanimatedBottomSheet>
-      {/* A Modal, so it draws above the sheet's Portal on native and web. */}
+      {/* Modals, so they draw above the sheet's Portal on native and web. */}
+      {reasonDialog}
       {dialog}
     </>
   );
@@ -240,6 +317,7 @@ export const UserActionsSheet: React.FC<Props> = ({
 
 const styles = StyleSheet.create({
   container: { paddingBottom: 8 },
+  divider: { height: StyleSheet.hairlineWidth, marginVertical: 4 },
   row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16 },
   rowIcon: { width: 34, alignItems: 'center' },
   rowText: { flex: 1, marginLeft: 8 },

@@ -19,6 +19,7 @@ import { useBlockedAccounts, useUnblockUser, useUnmuteUser } from '@/src/hooks/u
 import type { BlockedAccount } from '@/src/services/users';
 import { emitToast } from '@/src/lib/toastBridge';
 import { reportError } from '@/src/lib/reportError';
+import { useConfirm } from '@/src/components/modals/ConfirmDialog';
 
 /**
  * Blocked and muted accounts.
@@ -44,16 +45,36 @@ export default function BlockedAccountsScreen() {
   const { mutateAsync: unblock } = useUnblockUser();
   const { mutateAsync: unmute } = useUnmuteUser();
   const [busyUid, setBusyUid] = useState<string | null>(null);
+  const { confirm, dialog } = useConfirm();
 
+  /** Ask first in the Logout-style dialog, the same as the profile ⋮ sheet. */
   const act = async (uid: string, kind: 'block' | 'mute', username: string | null) => {
     if (busyUid) return;
+    const name = `@${username || 'user'}`;
     setBusyUid(uid);
+    let failed: any = null;
     try {
-      await (kind === 'block' ? unblock(uid) : unmute(uid));
-      emitToast(`${kind === 'block' ? 'Unblocked' : 'Unmuted'} @${username || 'user'}.`, 'success');
-    } catch (e: any) {
-      reportError(e, { screen: 'blocked-accounts', action: `un${kind}`, targetUserId: uid });
-      emitToast(e?.message || 'Something went wrong. Please try again.', 'error');
+      const ok = await confirm({
+        title: kind === 'block' ? `Unblock ${name}?` : `Unmute ${name}?`,
+        message:
+          kind === 'block'
+            ? "You'll be able to see each other's battles and stories and message each other again. Follows removed by the block are not restored."
+            : 'Their battles and stories will show in your feed again.',
+        confirmLabel: kind === 'block' ? 'Unblock' : 'Unmute',
+        onConfirm: async () => {
+          try {
+            await (kind === 'block' ? unblock(uid) : unmute(uid));
+          } catch (e) {
+            failed = e;
+            throw e;
+          }
+        },
+      });
+      if (ok) emitToast(`${kind === 'block' ? 'Unblocked' : 'Unmuted'} ${name}.`, 'success');
+      else if (failed) {
+        reportError(failed, { screen: 'blocked-accounts', action: `un${kind}`, targetUserId: uid });
+        emitToast(failed?.message || 'Something went wrong. Please try again.', 'error');
+      }
     } finally {
       setBusyUid(null);
     }
@@ -169,6 +190,7 @@ export default function BlockedAccountsScreen() {
           </View>
         </ScrollView>
       )}
+      {dialog}
     </SafeAreaView>
   );
 }

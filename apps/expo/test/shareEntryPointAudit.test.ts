@@ -30,6 +30,7 @@ const REGISTRY: Record<string, 'primitive' | 'battle' | 'non-battle'> = {
   'app/wallet/index.tsx': 'non-battle', // referral invite
   'app/referral/index.tsx': 'non-battle', // Refer & Earn invite link
   'src/screens/BlogDetailScreen.tsx': 'non-battle', // blog post link
+  'src/components/profile/UserActionsSheet.tsx': 'non-battle', // another user's profile link
 };
 
 function walk(dir: string, out: string[] = []): string[] {
