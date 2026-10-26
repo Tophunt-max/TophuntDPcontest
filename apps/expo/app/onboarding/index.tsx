@@ -30,19 +30,19 @@ const DEFAULT_ONBOARDING = [
     id: '1',
     title: 'Photo & video battles',
     description: 'Two entries go head to head. Watch live battles from creators all over India.',
-    image: require('../../assets/images/onBordingLight1.png'),
+    image: require('../../assets/images/onBordingLight1.webp'),
   },
   {
     id: '2',
     title: 'You decide the winner',
     description: 'Vote for your favourite, like, comment and follow the creators you love.',
-    image: require('../../assets/images/onBordingLight2.png'),
+    image: require('../../assets/images/onBordingLight2.webp'),
   },
   {
     id: '3',
     title: 'Enter and win',
     description: 'Join a contest with your best photo or video and win coins and prizes.',
-    image: require('../../assets/images/onBordingLight3.png'),
+    image: require('../../assets/images/onBordingLight3.webp'),
   },
   // Art for 4 and 5 is drawn to match 1-3 (sources: design/onboarding/*.svg).
   // An admin can upload a picture for any slide from the panel's Onboarding page.
@@ -50,14 +50,14 @@ const DEFAULT_ONBOARDING = [
     id: '4',
     title: 'Follow creators & Stories',
     description: 'Follow the people you like and catch their Stories and new battles first.',
-    image: require('../../assets/images/onBordingLight4.png'),
+    image: require('../../assets/images/onBordingLight4.webp'),
     icon: 'people',
   },
   {
     id: '5',
     title: 'Rewards every day',
     description: 'Claim daily rewards, invite friends and grow your coin wallet.',
-    image: require('../../assets/images/onBordingLight5.png'),
+    image: require('../../assets/images/onBordingLight5.webp'),
     icon: 'gift',
   },
 ];

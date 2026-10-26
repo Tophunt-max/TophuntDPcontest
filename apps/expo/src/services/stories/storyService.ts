@@ -5,6 +5,7 @@ import { callApi, readApi } from '../api';
 import {
   getUserStoriesLocally,
   replaceUserStoriesLocally,
+  storyCacheGenerationNow,
   markStoryAsSeenLocally,
   reactToStoryLocally,
   queuePendingAction,
@@ -61,6 +62,10 @@ export const fetchStories = async (
   // list on screen while this resolves, so the bar does not blank. `forceRefresh`
   // is kept for callers; both paths now go to the network.
   void forceRefresh;
+  // Captured BEFORE the request: if the account changes while it is in flight,
+  // the clear bumps the generation and this response is not written to disk.
+  const owner = auth.currentUser.uid;
+  const generation = storyCacheGenerationNow();
   try {
     const response = await readApi('/read/stories/feed', { limit });
     if (!Array.isArray(response)) {
@@ -68,7 +73,7 @@ export const fetchStories = async (
       return await getUserStoriesLocally();
     }
     const stories = response as UserStories[];
-    await replaceUserStoriesLocally(stories);
+    await replaceUserStoriesLocally(stories, owner, generation);
     return stories;
   } catch (error) {
     console.error('[fetchStories] error:', error);

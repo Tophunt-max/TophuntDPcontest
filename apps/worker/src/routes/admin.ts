@@ -982,22 +982,32 @@ adminRoute.patch("/contests/:id", async (c) => {
 });
 
 // ---- posts ----
+// Moderators can reach these, and a hard delete leaves nothing behind, so each
+// takedown records who did it and whose content it was.
 adminRoute.delete("/posts/:id", async (c) => {
   const db = getDb(c.env);
-  await db.delete(schema.posts).where(eq(schema.posts.id, c.req.param("id")));
+  const id = c.req.param("id");
+  const post = await db.select({ userId: schema.posts.userId }).from(schema.posts).where(eq(schema.posts.id, id)).get();
+  await db.delete(schema.posts).where(eq(schema.posts.id, id));
+  if (post) await logAudit(c, "post.delete", "post", id, { ownerUid: post.userId });
   return c.json({ message: "Post deleted" });
 });
 adminRoute.patch("/posts/:id", async (c) => {
   const db = getDb(c.env);
+  const id = c.req.param("id");
   const { isHidden } = await c.req.json<any>();
-  await db.update(schema.posts).set({ isHidden: !!isHidden }).where(eq(schema.posts.id, c.req.param("id")));
+  await db.update(schema.posts).set({ isHidden: !!isHidden }).where(eq(schema.posts.id, id));
+  await logAudit(c, isHidden ? "post.hide" : "post.show", "post", id);
   return c.json({ message: `Post ${isHidden ? "hidden" : "shown"}` });
 });
 
 // ---- stories ----
 adminRoute.delete("/stories/:id", async (c) => {
   const db = getDb(c.env);
-  await db.delete(schema.stories).where(eq(schema.stories.id, c.req.param("id")));
+  const id = c.req.param("id");
+  const story = await db.select({ userId: schema.stories.userId }).from(schema.stories).where(eq(schema.stories.id, id)).get();
+  await db.delete(schema.stories).where(eq(schema.stories.id, id));
+  if (story) await logAudit(c, "story.delete", "story", id, { ownerUid: story.userId });
   return c.json({ message: "Story deleted" });
 });
 adminRoute.patch("/stories/:id", async (c) => {
@@ -1100,7 +1110,10 @@ adminRoute.delete("/reports", async (c) => {
   if (id) {
     const r = await db.select().from(schema.reports).where(eq(schema.reports.id, id)).get();
     await db.delete(schema.reports).where(eq(schema.reports.id, id));
-    if (r) await releaseMatchHoldIfClear(db, r.targetType, r.targetId);
+    if (r) {
+      await releaseMatchHoldIfClear(db, r.targetType, r.targetId);
+      await logAudit(c, "report.delete", "report", id, { targetType: r.targetType, targetId: r.targetId });
+    }
   }
   return c.json({ message: "Report deleted" });
 });
@@ -1176,12 +1189,16 @@ adminRoute.patch("/support", async (c) => {
   const { id, status, adminReply } = await c.req.json<any>();
   if (!id) throw httpsError("invalid-argument", "ID required");
   await db.update(schema.supportTickets).set({ status: status || "resolved", adminReply: adminReply || "", updatedAt: now() }).where(eq(schema.supportTickets.id, id));
+  await logAudit(c, "support.update", "support_ticket", String(id), { status: status || "resolved" });
   return c.json({ message: "Ticket updated" });
 });
 adminRoute.delete("/support", async (c) => {
   const db = getDb(c.env);
   const id = c.req.query("id");
-  if (id) await db.delete(schema.supportTickets).where(eq(schema.supportTickets.id, id));
+  if (id) {
+    await db.delete(schema.supportTickets).where(eq(schema.supportTickets.id, id));
+    await logAudit(c, "support.delete", "support_ticket", id);
+  }
   return c.json({ message: "Ticket deleted" });
 });
 
@@ -2110,7 +2127,26 @@ adminRoute.get("/recent-tickets", async (c) => {
 });
 
 // ======================= TABLES =======================
-function adminUser(u: any) {
+/**
+ * Columns no panel screen needs. Push tokens can target a user's device with
+ * arbitrary notifications, and `tokensValidAfter` is session-revocation state.
+ */
+const ADMIN_USER_NEVER = ["fcmTokens", "tokensValidAfter"] as const;
+/**
+ * Contact and identity PII. A moderator's job is content; the support and money
+ * flows that need a user's email or phone are full-admin only.
+ */
+const ADMIN_USER_FULL_ONLY = ["email", "phone", "dob", "coordinates", "deviceId"] as const;
+
+/**
+ * Project a `users` row for the panel. It used to spread the whole row, so the
+ * content-only moderator role could page through every user's email, phone,
+ * date of birth, location and FCM push tokens.
+ */
+export function adminUser(row: any, fullAdmin: boolean) {
+  const u: Record<string, any> = { ...row };
+  for (const k of ADMIN_USER_NEVER) delete u[k];
+  if (!fullAdmin) for (const k of ADMIN_USER_FULL_ONLY) delete u[k];
   return {
     id: u.uid,
     ...u,
@@ -2134,14 +2170,17 @@ adminRoute.get("/users", async (c) => {
   const q = (c.req.query("q") || "").trim().toLowerCase();
   const limit = boundedQueryInt(c.req.query("limit"), 50, 1, 100);
   const offset = boundedQueryInt(c.req.query("offset"), 0, 0, 1_000_000);
+  const full = isFullAdmin(c);
   const conds: any[] = [];
   if (q.length >= 2) {
     const term = `%${q}%`;
+    // Searching by email is itself an email lookup, so it follows the same
+    // full-admin rule as returning the column.
     conds.push(
       or(
         like(sql`lower(${schema.users.username})`, term),
         like(sql`lower(${schema.users.fullName})`, term),
-        like(sql`lower(${schema.users.email})`, term),
+        ...(full ? [like(sql`lower(${schema.users.email})`, term)] : []),
       ),
     );
   }
@@ -2154,7 +2193,7 @@ adminRoute.get("/users", async (c) => {
     .offset(offset)
     .all();
   if (rows.length === limit) c.header("X-Next-Offset", String(offset + limit));
-  return c.json(rows.map(adminUser));
+  return c.json(rows.map((r) => adminUser(r, full)));
 });
 
 adminRoute.get("/users/:id/posts", async (c) => {
@@ -2172,7 +2211,7 @@ adminRoute.get("/users/:id/stories", async (c) => {
 adminRoute.get("/users/:id", async (c) => {
   const db = getDb(c.env);
   const u = await db.select().from(schema.users).where(eq(schema.users.uid, c.req.param("id"))).get();
-  return c.json(u ? adminUser(u) : null);
+  return c.json(u ? adminUser(u, isFullAdmin(c)) : null);
 });
 
 adminRoute.get("/posts", async (c) => {
@@ -4005,14 +4044,25 @@ adminRoute.patch("/deposits/:id", async (c) => {
      * account would flip to `approved` while the credit silently matched no
      * row, which is ledger drift in the other direction.
      */
+    //
+    // The UTR arm is inside the gate for the same reason. The pre-check above
+    // is a read before the batch, so two DIFFERENT pending deposits carrying
+    // the same bank reference, approved at the same time, both passed it and
+    // both credited: one transfer paid out twice. D1 runs a batch as one
+    // serialized transaction, so here the second approval sees the first one's
+    // `approved` row and no-ops.
+    const utrKey = d.utr ? d.utr.toLowerCase() : null;
     const pendingGate = `EXISTS (SELECT 1 FROM deposits WHERE id = ? AND status = 'pending')
-        AND EXISTS (SELECT 1 FROM users WHERE uid = ?)`;
+        AND EXISTS (SELECT 1 FROM users WHERE uid = ?)
+        AND (? IS NULL OR NOT EXISTS (
+          SELECT 1 FROM deposits WHERE lower(utr) = ? AND status = 'approved' AND id <> ?))`;
+    const gateArgs = [id, d.userId, utrKey, utrKey, id];
     const ledgerId = `manual_deposit:${id}`;
     const results = await c.env.DB.batch([
       c.env.DB.prepare(
         `UPDATE users SET dpcoin = dpcoin + ?, updated_at = ?
           WHERE uid = ? AND ${pendingGate}`,
-      ).bind(coins, ts, d.userId, id, d.userId),
+      ).bind(coins, ts, d.userId, ...gateArgs),
       c.env.DB.prepare(
         `INSERT OR IGNORE INTO payments
            (id, user_id, amount, coins, amount_paise, source, status, created_at)
@@ -4021,7 +4071,7 @@ adminRoute.patch("/deposits/:id", async (c) => {
         // `amount` is the legacy coin column; the split fields record the coins
         // credited and the rupees actually transferred, so revenue reporting can
         // read real money instead of a coin count.
-      ).bind(`dep_${id}`, d.userId, coins, coins, toPaise(Number(d.payAmount) || 0), ts, id, d.userId),
+      ).bind(`dep_${id}`, d.userId, coins, coins, toPaise(Number(d.payAmount) || 0), ts, ...gateArgs),
       c.env.DB.prepare(
         `INSERT OR IGNORE INTO coin_transactions
            (id, uid, amount, type, description, created_at)
@@ -4033,18 +4083,29 @@ adminRoute.patch("/deposits/:id", async (c) => {
         coins,
         `Manual deposit approved${bonusSuffix} (UTR ${d.utr || "-"})`,
         ts,
-        id,
-        d.userId,
+        ...gateArgs,
       ),
       c.env.DB.prepare(
         `UPDATE deposits
             SET status = 'approved', admin_note = ?, processed_by = ?, credited_at = ?, updated_at = ?
-          WHERE id = ? AND status = 'pending' AND EXISTS (SELECT 1 FROM users WHERE uid = ?)`,
-      ).bind(adminNote || null, admin?.uid ?? null, ts, ts, id, d.userId),
+          WHERE id = ? AND status = 'pending'
+            AND EXISTS (SELECT 1 FROM users WHERE uid = ?)
+            AND (? IS NULL OR NOT EXISTS (
+              SELECT 1 FROM deposits WHERE lower(utr) = ? AND status = 'approved' AND id <> ?))`,
+      ).bind(adminNote || null, admin?.uid ?? null, ts, ts, ...gateArgs),
     ]);
     if (Number(results[3]?.meta?.changes || 0) === 0) {
-      // Nothing moved: another approval won the race, or the recipient account
-      // no longer exists. Either way no coins were credited.
+      // Nothing moved: another approval won the race, the same UTR was credited
+      // on another deposit in the meantime, or the recipient account no longer
+      // exists. In every case no coins were credited.
+      if (utrKey) {
+        const dup = await db
+          .select({ id: schema.deposits.id })
+          .from(schema.deposits)
+          .where(and(sql`lower(${schema.deposits.utr}) = ${utrKey}`, eq(schema.deposits.status, "approved"), ne(schema.deposits.id, id)))
+          .get();
+        if (dup) throw httpsError("failed-precondition", "This UTR was already credited on another deposit.");
+      }
       const stillThere = await db
         .select({ uid: schema.users.uid })
         .from(schema.users)
@@ -4527,6 +4588,7 @@ adminRoute.delete("/banned-words/:word", async (c) => {
   const db = getDb(c.env);
   const w = decodeURIComponent(c.req.param("word")).toLowerCase();
   await db.delete(schema.bannedWords).where(eq(schema.bannedWords.word, w));
+  await logAudit(c, "banned-word.remove", "banned_word", w);
   return c.json({ message: "Removed" });
 });
 

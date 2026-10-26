@@ -26,6 +26,7 @@ vi.mock('@/src/services/stories/offlineStoryService', () => ({
   getUserStoriesLocally: h.getLocal,
   saveUserStoriesLocally: h.saveLocal,
   replaceUserStoriesLocally: h.replaceLocal,
+  storyCacheGenerationNow: () => 0,
   markStoryAsSeenLocally: vi.fn(),
   reactToStoryLocally: vi.fn(),
   queuePendingAction: vi.fn(),
@@ -73,7 +74,9 @@ describe('fetchStories for a guest', () => {
     const out = await fetchStories();
     expect(out).toEqual(PUBLIC_FEED);
     expect(h.getLocal).not.toHaveBeenCalled();
-    expect(h.replaceLocal).toHaveBeenCalledWith(PUBLIC_FEED);
+    // Owner + the generation captured before the request, so a response that
+    // lands after an account switch is dropped instead of cached.
+    expect(h.replaceLocal).toHaveBeenCalledWith(PUBLIC_FEED, 'me', 0);
   });
 
   it('signed in and offline: falls back to this account\'s cached answer', async () => {

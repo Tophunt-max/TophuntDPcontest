@@ -38,6 +38,32 @@ export interface SignOutOptions {
   skipPushTokenUnregister?: boolean;
 }
 
+/**
+ * Wipe on-device data that belongs to the account that just signed out.
+ *
+ * app/_layout.tsx also clears the Story cache and Home snapshot when the uid
+ * changes, but that is a post-render effect: if the app is killed between the
+ * sign-out and the effect, or the effect's clear fails, the previous account's
+ * followers-only Stories and personalised feed stay on disk for the next person.
+ * Doing it here, before sign-out resolves, closes that window. Recent searches
+ * are device-wide and were never cleared at all.
+ *
+ * Every step is best-effort and isolated: a failed wipe must never block
+ * logout. Dynamic imports keep WatermelonDB out of this module's import graph.
+ */
+export async function clearAccountScopedCaches(): Promise<void> {
+  const steps: [string, () => Promise<unknown>][] = [
+    ['stories', () => import('@/src/services/stories/offlineStoryService').then((m) => m.clearLocalStories())],
+    ['feed', () => import('@/src/lib/feedSnapshot').then((m) => m.clearFeedSnapshots())],
+    ['recent-searches', () => import('@/src/services/explore').then((m) => m.clearRecentSearches())],
+  ];
+  await Promise.all(
+    steps.map(([name, run]) =>
+      run().catch((e) => console.warn(`[AuthService] clearing ${name} on sign-out failed`, e)),
+    ),
+  );
+}
+
 export const signOut = async (options: SignOutOptions = {}) => {
   console.log("[AuthService] signOut called");
 
@@ -59,6 +85,7 @@ export const signOut = async (options: SignOutOptions = {}) => {
     // Basic identity is cached only to stabilise cold-start UI. Explicit sign-out
     // removes it so the next person using this device never sees the old avatar.
     await clearCachedIdentity(uid);
+    await clearAccountScopedCaches();
     console.log("[AuthService] firebaseSignOut successful");
   } catch (error: any) {
     console.error("[AuthService] firebaseSignOut error:", error);

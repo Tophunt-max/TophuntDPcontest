@@ -521,6 +521,56 @@ describe('manual deposit approval', () => {
     expect(payments).toHaveLength(0);
   });
 
+  /**
+   * Two DIFFERENT pending deposits carrying one bank reference. The duplicate-
+   * UTR check used to be a read before the crediting batch, so if the first
+   * approval committed between the second one's check and its batch, both
+   * credited and one transfer paid out twice. The interleaving is injected at
+   * that exact point: dep1 is approved from inside dep2's batch call, after
+   * dep2's pre-check has already passed.
+   */
+  it('two deposits sharing a UTR approved concurrently credit exactly once', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', 0);
+    await seedDeposit(env, 'dep1', 'alice', 120, { utr: 'UTR-555' });
+    await seedDeposit(env, 'dep2', 'alice', 120, { utr: 'utr-555' }); // case differs
+
+    const realBatch = env.DB.batch.bind(env.DB);
+    let injected = false;
+    (env.DB as any).batch = async (stmts: any[]) => {
+      if (!injected) {
+        injected = true;
+        const first = await action(env, 'dep1', 'approve');
+        expect(first.status).toBe(200);
+      }
+      return realBatch(stmts);
+    };
+
+    const second = await action(env, 'dep2', 'approve');
+    expect(injected).toBe(true);
+
+    expect(second.status).toBeGreaterThanOrEqual(400);
+    expect(((await second.json()) as any)?.error?.message ?? '').toMatch(/UTR was already credited/);
+    expect(await balanceOf(env, 'alice')).toBe(120);
+    await expectNoDrift(env, 'alice');
+    const dep2 = await drizzleOf(env).select().from(schema.deposits).where(eq(schema.deposits.id, 'dep2')).get();
+    expect(dep2?.status).toBe('pending'); // left for an admin to reject, not silently consumed
+    const payments = await drizzleOf(env).select().from(schema.payments).all();
+    expect(payments.map((p) => p.id)).toEqual(['dep_dep1']);
+  });
+
+  it('a deposit without a UTR is not blocked by the UTR gate', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', 0);
+    await seedDeposit(env, 'dep1', 'alice', 50, { utr: null });
+    await seedDeposit(env, 'dep2', 'alice', 70, { utr: null });
+
+    expect((await action(env, 'dep1', 'approve')).status).toBe(200);
+    expect((await action(env, 'dep2', 'approve')).status).toBe(200);
+    expect(await balanceOf(env, 'alice')).toBe(120);
+    await expectNoDrift(env, 'alice');
+  });
+
   /** The health probe that keeps the atomicity claim honest. */
   it('money health flags an approved deposit that was never credited', async () => {
     const { env } = makeEnv();
