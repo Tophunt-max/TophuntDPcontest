@@ -426,7 +426,7 @@ apiRoute.post("/", async (c) => {
       // hour — and this message was the only thing they'd see. 30/hour is still
       // far below abuse and now sits above the 60/hour image cap in spirit
       // (a story is one video, not thirty).
-      if (!(await consumeRateLimit(env, `vidup:${uid}`, 30, 3600))) {
+      if (!(await consumeRateLimit(env, `vidup:${uid}`, 30, 3600, { failClosed: true }))) {
         throw httpsError(
           "resource-exhausted",
           "You've started too many video uploads in the last hour. Please try again later.",
@@ -1732,7 +1732,7 @@ apiRoute.post("/", async (c) => {
     }
 
     case "claimAdReward": {
-      await rateLimit(env, `ad:${uid}`, 20, 60);
+      await rateLimit(env, `ad:${uid}`, 20, 60, { failClosed: true });
       const ads = await getRewardedAdConfig(env);
 
       // Rewarded ads mint real, withdrawable currency on nothing but the
@@ -2262,7 +2262,7 @@ apiRoute.post("/", async (c) => {
       if (!utr || String(utr).trim().length < 4)
         throw httpsError("invalid-argument", "A valid UTR / transaction reference is required.");
       // Anti-spam: max 5 deposit submissions per hour per user.
-      await rateLimit(env, `deposit:${uid}`, 5, 3600);
+      await rateLimit(env, `deposit:${uid}`, 5, 3600, { failClosed: true });
 
       const cfg = await getAppConfig(env);
       const gw = (cfg?.paymentGateway as any) || {};
@@ -3594,7 +3594,7 @@ apiRoute.post("/", async (c) => {
      */
     case "exportMyData": {
       // One export is a lot of reads across a dozen tables.
-      await rateLimit(env, `exportdata:${uid}`, 3, 86400);
+      await rateLimit(env, `exportdata:${uid}`, 3, 86400, { failClosed: true });
       const bundle = await exportUserData(env, uid);
       const json = JSON.stringify(bundle, null, 2);
 

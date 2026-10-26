@@ -61,11 +61,14 @@ export async function consumeRateLimit(
   // counters are not in KV at all. That flag once skipped every counter without
   // `failClosed: true`, on the reasoning that those are "just" engagement
   // throttles. It was wrong — `failClosed` means "refuse if the counter is
-  // unreadable", NOT "this guard protects money", and several throttles that do
-  // guard money or real spend are fail-open by omission: `deposit:{uid}`,
-  // `ad:{uid}` (mints withdrawable coins), `vidup:{uid}` (Bunny transcode spend),
-  // `create:{ip}` (the only per-IP signup limit, and signup grants a bonus
-  // balance) and `exportdata:{uid}` (PII export).
+  // unreadable", NOT "this guard protects money". `deposit:{uid}`, `ad:{uid}`
+  // (mints withdrawable coins), `vidup:{uid}` (Bunny transcode spend) and
+  // `exportdata:{uid}` (PII export) were fail-open by omission and are now
+  // fail-closed. `create:{ip}` (the only per-IP signup limit) is still
+  // fail-open: making it fail-closed would refuse EVERY signup during a limiter
+  // outage. Signup can credit the verification-reward registration grant
+  // (lib/verificationReward.ts), so this is an open availability-vs-abuse
+  // decision, not an oversight.
   return consumeMany(env, [{ key, max, windowSec }], options);
 }
 

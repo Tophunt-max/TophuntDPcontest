@@ -624,3 +624,104 @@ describe('runtime migrations are atomic and single-applier', () => {
     expect(await runMigrations(env as any, shipped)).toEqual([]);
   });
 });
+
+// ===========================================================================
+/**
+ * The admin user list spread the whole `users` row, so the content-only
+ * moderator role could page through every user's email, phone, date of birth,
+ * location and FCM push tokens (and search users by email).
+ */
+describe('admin user projection by role', () => {
+  const pii = {
+    email: 'alice@example.com',
+    phone: '+919999999999',
+    dob: '2000-01-01',
+    deviceId: 'dev-alice',
+    fcmTokens: ['fcm-secret-token'],
+    tokensValidAfter: 123,
+  };
+
+  it('a moderator gets no contact PII and no push tokens, list or detail', async () => {
+    const { env } = env0();
+    await seedUser(env, 'mod', 0, { role: 'moderator' });
+    await seedUser(env, 'alice', 10, pii);
+
+    const list = await adminCall(env, 'GET', '/users', undefined, 'mod:moderator');
+    expect(list.status).toBe(200);
+    const one = await adminCall(env, 'GET', '/users/alice', undefined, 'mod:moderator');
+    expect(one.status).toBe(200);
+    for (const u of [list.body.find((x: any) => x.uid === 'alice'), one.body]) {
+      expect(u.username).toBe('alice'); // still usable for moderation
+      for (const k of ['email', 'phone', 'dob', 'deviceId', 'coordinates', 'fcmTokens', 'tokensValidAfter']) {
+        expect(u).not.toHaveProperty(k);
+      }
+    }
+  });
+
+  it('a moderator cannot find a user by searching their email', async () => {
+    const { env } = env0();
+    await seedUser(env, 'mod', 0, { role: 'moderator' });
+    await seedUser(env, 'alice', 0, pii);
+    const r = await adminCall(env, 'GET', '/users?q=alice%40example', undefined, 'mod:moderator');
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual([]);
+  });
+
+  it('a full admin still sees contact PII and can search by email, never push tokens', async () => {
+    const { env } = env0();
+    await seedUser(env, 'adm', 0, { role: 'admin' });
+    await seedUser(env, 'alice', 0, pii);
+
+    const r = await adminCall(env, 'GET', '/users?q=alice%40example', undefined, 'adm:admin');
+    expect(r.status).toBe(200);
+    expect(r.body).toHaveLength(1);
+    expect(r.body[0].email).toBe('alice@example.com');
+    expect(r.body[0].phone).toBe('+919999999999');
+    expect(r.body[0]).not.toHaveProperty('fcmTokens');
+    expect(r.body[0]).not.toHaveProperty('tokensValidAfter');
+  });
+});
+
+/** Moderator takedowns hard-delete content, so each must leave an audit row. */
+describe('moderation takedowns are audit-logged', () => {
+  const auditRows = (env: TestEnv) => drizzleOf(env).select().from(schema.adminAuditLog).all();
+
+  it('post delete/hide and story delete record the acting moderator and owner', async () => {
+    const { env } = env0();
+    await seedUser(env, 'mod', 0, { role: 'moderator' });
+    await seedUser(env, 'alice', 0);
+    const ts = Date.now();
+    await drizzleOf(env).insert(schema.posts).values([
+      { id: 'p1', userId: 'alice', createdAt: ts },
+      { id: 'p2', userId: 'alice', createdAt: ts },
+    ] as any);
+    await drizzleOf(env).insert(schema.stories).values({ id: 's1', userId: 'alice', createdAt: ts, expiresAt: ts + 86_400_000 } as any);
+
+    expect((await adminCall(env, 'PATCH', '/posts/p2', { isHidden: true }, 'mod:moderator')).status).toBe(200);
+    expect((await adminCall(env, 'DELETE', '/posts/p1', undefined, 'mod:moderator')).status).toBe(200);
+    expect((await adminCall(env, 'DELETE', '/stories/s1', undefined, 'mod:moderator')).status).toBe(200);
+
+    const rows = await auditRows(env);
+    const byAction = Object.fromEntries(rows.map((r) => [r.action, r]));
+    expect(byAction['post.hide']?.targetId).toBe('p2');
+    expect(byAction['post.delete']?.targetId).toBe('p1');
+    expect((byAction['post.delete']?.detail as any)?.ownerUid).toBe('alice');
+    expect(byAction['story.delete']?.targetId).toBe('s1');
+    expect((byAction['story.delete']?.detail as any)?.ownerUid).toBe('alice');
+    for (const r of rows) expect(r.adminUid).toBe('mod');
+  });
+
+  it('removing a banned word is audited like adding one', async () => {
+    const { env } = env0();
+    await adminCall(env, 'POST', '/banned-words', { word: 'spamword' });
+    await adminCall(env, 'DELETE', '/banned-words/spamword');
+    const actions = (await auditRows(env)).map((r) => r.action).sort();
+    expect(actions).toEqual(['banned-word.add', 'banned-word.remove']);
+  });
+
+  it('deleting a missing post writes no audit row', async () => {
+    const { env } = env0();
+    expect((await adminCall(env, 'DELETE', '/posts/nope')).status).toBe(200);
+    expect(await auditRows(env)).toHaveLength(0);
+  });
+});
