@@ -7,5 +7,5 @@ export default {
   onBoardingLight2: require('./onBordingLight2.webp'),
   onBoardingLight3: require('./onBordingLight3.webp'),
   userLight: require('./userLight.png'),
-  tophuntLogo: require('./Tophunt.png'),
+  tophuntLogo: require('./Tophunt.webp'),
 };
