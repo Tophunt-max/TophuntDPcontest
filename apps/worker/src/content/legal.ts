@@ -83,7 +83,7 @@ export const LEGAL_DOC_META: Record<LegalDocKey, { label: string; note: string }
  * worse than showing no date, because it invites the reader to assume nothing has
  * changed.
  */
-export const LEGAL_LAST_UPDATED = "31 August 2026";
+export const LEGAL_LAST_UPDATED = "26 October 2026";
 
 import { parseGraceDays } from "../lib/accountStatus";
 
@@ -235,7 +235,7 @@ We do not collect your contacts, your calendar, or your messages in other apps.
 - **To take payment and pay you** — coin purchases, prize credits, withdrawals, and the tax records that follow.
 - **To keep the service safe** — moderating content, acting on reports, blocking abuse.
 - **To support you** — answering what you write to us.
-- **To improve TopHunt** — aggregate usage and crash data. We do not need to know who you are to fix a crash, and we do not look.
+- **To improve TopHunt** — aggregate usage and crash data. We do not need to know who you are to fix a crash, and we do not look. The app also sends anonymous counts (for example how many stories are watched to the end, how often a video buffers, whether a search found anything) with no account, device or content identifier attached; you can turn this off in Settings › Privacy.
 - **To meet legal obligations** — accounting, tax, and lawful requests from authorities.
 
 We rely on performing our contract with you for most of this, on our legitimate interest in a fair and safe platform for anti-fraud and moderation, on your consent for location and push notifications, and on legal obligation for financial records.

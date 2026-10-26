@@ -62,6 +62,7 @@ import { closeRealtimeSessions, publish } from "../lib/publish";
 import { resolveContests, monthlyHallOfFame, seoAuditJob } from "../cron";
 import { newId, now } from "../lib/ids";
 import { memoGet, memoPut } from "../lib/memo";
+import { fetchUsageSummary, type UsageSummaryRow } from "../lib/usageEvents";
 import { computeCapacity } from "../lib/capacity";
 import { discoverUrls, processBatch, readImportProgress, writeImportProgress } from "../lib/importerTask";
 import { runVideoBackfillBatch } from "../lib/videoBackfill";
@@ -2324,6 +2325,26 @@ adminRoute.get("/overview", async (c) => {
 // CF_ANALYTICS_TOKEN is configured — today's live D1 rows_read / rows_written.
 // See lib/capacity.ts and CAPACITY_MONITORING.md.
 adminRoute.get("/capacity", async (c) => c.json(await computeCapacity(c.env)));
+
+/**
+ * Anonymous usage counters (lib/usageEvents.ts) for the Analytics page. Full
+ * admins only, like revenue. Each SQL API call is one of 10,000 free read queries
+ * a day, so the answer is memoised per isolate for 5 minutes.
+ */
+adminRoute.get("/usage-events", async (c) => {
+  requireFullAdmin(c);
+  const days = boundedQueryInt(c.req.query("days"), 7, 1, 90);
+  const key = `memo:usageEvents:${days}`;
+  const cached = memoGet<{ configured: boolean; rows: UsageSummaryRow[] }>(key);
+  if (cached) return c.json(cached);
+  const rows = await fetchUsageSummary(c.env, days).catch((e) => {
+    console.error("[usage] summary failed", e);
+    return null;
+  });
+  const out = { configured: rows !== null, days, rows: rows ?? [] };
+  if (rows !== null) memoPut(key, out, 300);
+  return c.json(out);
+});
 
 adminRoute.get("/device-stats", async (c) => {
   const db = getDb(c.env);

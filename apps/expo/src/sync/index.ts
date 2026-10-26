@@ -3,6 +3,7 @@ import NetInfo from '@react-native-community/netinfo';
 
 import { drainOutbox, loadOutboxMirror, pruneOutbox } from './outbox';
 import { startSyncTriggers, type SyncTriggers } from './syncTriggers';
+import { trackUsage } from '@/src/lib/usageStats';
 
 /**
  * Everything that sends queued offline work, run together. Each step is
@@ -10,7 +11,14 @@ import { startSyncTriggers, type SyncTriggers } from './syncTriggers';
  */
 export async function runOfflineSync(): Promise<void> {
   await Promise.all([
-    drainOutbox().catch(() => undefined),
+    drainOutbox()
+      .then((r) => {
+        // Usage statistics: how much queued offline work goes through.
+        if (r.sent) trackUsage('sync', 'sent', { count: r.sent });
+        if (r.deferred) trackUsage('sync', 'retry', { count: r.deferred });
+        if (r.failed) trackUsage('sync', 'failed', { count: r.failed });
+      })
+      .catch(() => undefined),
     import('@/src/services/stories/storyService')
       .then(({ syncStories }) => syncStories())
       .catch(() => undefined),

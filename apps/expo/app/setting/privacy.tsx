@@ -23,6 +23,7 @@ import { useAppConfig } from '@/src/services/appSettings';
 import { callApi } from '@/src/services/api';
 import { emitToast } from '@/src/lib/toastBridge';
 import { reportError } from '@/src/lib/reportError';
+import { setUsageEnabled, useUsageEnabled } from '@/src/services/usageStats';
 
 /**
  * Privacy.
@@ -59,6 +60,7 @@ export default function PrivacySettingsScreen() {
   const borderColor = isDark ? '#35383F' : '#EEEEEE';
 
   const { user } = useAuth();
+  const usageEnabled = useUsageEnabled();
   const { config } = useAppConfig();
   const queryClient = useQueryClient();
   const { data: profile, isLoading } = useProfile(user?.uid || '');
@@ -169,6 +171,29 @@ export default function PrivacySettingsScreen() {
     </TouchableOpacity>
   );
 
+  // Device-level, so it is offered signed in or not (src/services/usageStats.ts).
+  const usageCard = (
+    <View style={[styles.card, { backgroundColor: cardColor }]}>
+      <View style={styles.row}>
+        <Ionicons name="trending-up" size={22} color={textColor} style={styles.rowIcon} />
+        <View style={styles.rowText}>
+          <Text style={[styles.rowTitle, { color: textColor }]}>Share anonymous usage statistics</Text>
+          <Text style={[styles.rowDesc, { color: subTextColor }]}>
+            Counts such as how many stories finish and how often videos buffer, with no
+            account, device or content identifiers. Helps us find what is slow or broken.
+          </Text>
+        </View>
+        <Switch
+          value={usageEnabled}
+          onValueChange={(v) => void setUsageEnabled(v)}
+          trackColor={{ false: '#767577', true: '#FF4D67' }}
+          thumbColor="#FFFFFF"
+          accessibilityLabel="Share anonymous usage statistics"
+        />
+      </View>
+    </View>
+  );
+
   // Not signed in: the private-account switch has nothing to act on. Say so
   // rather than rendering a switch that would fail on its first tap.
   if (!user) {
@@ -187,6 +212,7 @@ export default function PrivacySettingsScreen() {
             <Text style={styles.primaryButtonText}>Sign in</Text>
           </TouchableOpacity>
         </View>
+        <View style={styles.content}>{usageCard}</View>
       </SafeAreaView>
     );
   }
@@ -274,6 +300,7 @@ export default function PrivacySettingsScreen() {
             last
           />
         </View>
+        {usageCard}
       </ScrollView>
     </SafeAreaView>
   );

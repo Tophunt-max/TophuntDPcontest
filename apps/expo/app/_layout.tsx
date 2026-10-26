@@ -10,6 +10,7 @@ import React, { useEffect } from 'react';
 import 'react-native-reanimated';
 import { QueryClient, QueryClientProvider, QueryCache, MutationCache, onlineManager, focusManager, useQuery } from '@tanstack/react-query';
 import { Provider as PaperProvider } from 'react-native-paper';
+import { startUsageStats } from '@/src/services/usageStats';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as Notifications from 'expo-notifications';
@@ -100,6 +101,9 @@ configureVideoCache();
 // Load the saved Dark Mode preference before the first paint where possible, so
 // an overridden theme doesn't flash the system theme on launch.
 void hydrateThemePreference();
+
+// Anonymous usage counters: read the opt-out and send on background.
+startUsageStats();
 
 // Drive React Query's online state from the device's real connectivity so
 // queries pause offline and auto-refetch when the network returns.

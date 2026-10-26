@@ -28,6 +28,13 @@ export interface Env {
   // `guestReadLimit`). Optional: absent locally and in tests, where the check
   // fails open.
   GUEST_READ_LIMITER?: { limit(opts: { key: string }): Promise<{ success: boolean }> };
+  // Workers Analytics Engine dataset for anonymous usage counters
+  // (lib/usageEvents.ts). Optional: absent locally and in tests, where batches
+  // are accepted and discarded. ANALYTICS_DATASET names it for the SQL read
+  // (default "tophunt_events").
+  ANALYTICS?: { writeDataPoint(p: { indexes?: string[]; blobs?: string[]; doubles?: number[] }): void };
+  ANALYTICS_DATASET?: string;
+  USAGE_LIMITER?: { limit(opts: { key: string }): Promise<{ success: boolean }> };
   // Per-chat message store (SQLite-backed DO). Owns chat message BODIES, keeping
   // the fastest-growing write path off D1's single writer. The `chats` preview
   // row + `chat_members` index stay in D1 (cross-chat inbox queries). Typed for

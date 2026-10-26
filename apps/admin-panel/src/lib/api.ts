@@ -1072,6 +1072,12 @@ export const api = {
   deleteMessage: (chatId: string, id: string) =>
     del(`/admin/messages/${encodeURIComponent(chatId)}/${encodeURIComponent(id)}`),
 
+  // Anonymous usage counters from Analytics Engine (full admins). `configured` is
+  // false until CF_ANALYTICS_TOKEN is set on the Worker.
+  usageEvents: (days = 7) =>
+    get<{ configured: boolean; days: number; rows: { name: string; dim: string; platform: string; count: number; avgMs: number | null }[] }>(
+      `/admin/usage-events?days=${days}`,
+    ),
   // analytics
   analytics: () =>
     get<{
