@@ -13,6 +13,7 @@ import { BottomNav } from '@/src/components/home/BottomNav';
 import { BackButton } from '@/src/components/ui/BackButton';
 import { useAuth } from '@/src/hooks/useAuth';
 import { useWebSeo } from '@/src/lib/webSeo';
+import { useScreenPlayback } from '@/src/hooks/useListPlayback';
 
 /**
  * A shared battle: `https://tophunt.in/battle/<id>` — the post-detail page.
@@ -38,6 +39,8 @@ export default function BattleDetail() {
   const textColor = isDark ? Colors.dark.text : Colors.light.text;
   const sub = isDark ? '#A0A0A0' : '#666';
   const [refreshing, setRefreshing] = useState(false);
+  // Pauses under a pushed screen or in the background (was always playing).
+  const playActive = useScreenPlayback();
 
   // Per-viewer: the answer carries the viewer's like/vote/save state, and a
   // battle with someone the viewer blocked reads as missing.
@@ -110,7 +113,7 @@ export default function BattleDetail() {
             it is re-keyed on every fresh answer: pull-to-refresh, and the
             return trip after a sign-in that the vote/like prompt started.
           */}
-          <PostCard key={`${user?.uid ?? 'guest'}:${dataUpdatedAt}`} item={match} isDark={isDark} />
+          <PostCard key={`${user?.uid ?? 'guest'}:${dataUpdatedAt}`} item={match} isDark={isDark} playActive={playActive} />
           <TouchableOpacity style={[styles.cta, styles.more]} onPress={goHome} accessibilityRole="button" accessibilityLabel="See more battles">
             <Text style={styles.ctaText}>See more battles</Text>
           </TouchableOpacity>

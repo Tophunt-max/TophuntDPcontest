@@ -29,6 +29,7 @@ import { useAuthGate } from '@/src/hooks/useAuthGate';
 import { PrivateAccountNotice } from '@/src/components/profile/PrivateAccountNotice';
 import { intentFor, type FollowState } from '@/src/lib/followState';
 import { Alert } from '@/src/lib/appAlert';
+import { useListPlayback } from '@/src/hooks/useListPlayback';
 
 interface ProfileScreenProps {
   /**
@@ -230,6 +231,8 @@ const ProfileContent = ({
   /** True when this was reached via `?userId=<uid>` and the url should be canonicalised. */
   addressedByUid?: boolean;
 }) => {
+  // Only the on-screen card plays, as on Home (src/hooks/useListPlayback.ts).
+  const { listProps, isPlaying } = useListPlayback();
   const router = useRouter();
   const { user: currentUser } = useAuth();
   const isOwnProfile = currentUser?.uid === targetUserId;
@@ -394,7 +397,8 @@ const ProfileContent = ({
       <FlatList
         data={isBlockedByMe || locked ? [] : currentData}
         keyExtractor={(item: any) => item.id}
-        renderItem={({ item }) => <PostCard item={item} isDark={isDark} />}
+        renderItem={({ item }) => <PostCard item={item} isDark={isDark} playActive={isPlaying(item.id)} />}
+        {...listProps}
         refreshControl={
           <RefreshControl
             refreshing={photoRefetching || videoRefetching}
