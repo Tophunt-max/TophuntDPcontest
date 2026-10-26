@@ -25,7 +25,15 @@ import { REAUTH_REQUIRED_CODE } from "../lib/reauth";
 import { redactPaymentDetails } from "../lib/redact";
 import type { AuthUser } from "../types";
 import { resolveAuthMethods, validateAuthMethods } from "../lib/authMethods";
-import { validateFeedWeightsPatch } from "../lib/feedWeights";
+import {
+  FEED_DEFAULT_WEIGHTS,
+  FEED_RANKING_ALGORITHM,
+  FEED_WEIGHT_BOUNDS,
+  INTEGER_WEIGHTS,
+  rankingVersion,
+  sanitizeFeedWeights,
+  validateFeedWeightsPatch,
+} from "../lib/feedWeights";
 import { AUDITED_SECTIONS, appConfigChannels, publicAppConfig, validateAppControlPatch } from "../lib/appControl";
 import { publishMany } from "../lib/publish";
 import { publishCoinCatalog } from "../lib/coinCatalog";
@@ -338,6 +346,29 @@ function mergeSettings(existing: any, patch: any): any {
 const REWARD_SETTINGS_COIN_KEYS = ["referralBonus"] as const;
 
 adminRoute.get("/app-settings", async (c) => c.json((await getAppConfig(c.env)) || {}));
+
+/**
+ * For You ranking weights for the Feed Ranking page: defaults, ranges, what is
+ * stored, what the feed actually uses (stored values clamped, defaults filled in)
+ * and the version the feed sends as `X-Feed-Ranking`. Saving goes through
+ * `POST /app-settings` with `feedWeights` (validated and audited there); `null`
+ * restores the defaults.
+ */
+adminRoute.get("/feed-weights", async (c) => {
+  requireFullAdmin(c);
+  const stored = ((await getAppConfig(c.env)) as any)?.feedWeights ?? null;
+  const effective = sanitizeFeedWeights(stored);
+  return c.json({
+    algorithm: FEED_RANKING_ALGORITHM,
+    defaults: FEED_DEFAULT_WEIGHTS,
+    bounds: FEED_WEIGHT_BOUNDS,
+    integerKeys: [...INTEGER_WEIGHTS],
+    stored,
+    effective,
+    version: rankingVersion(effective),
+    defaultVersion: rankingVersion(FEED_DEFAULT_WEIGHTS),
+  });
+});
 
 /**
  * Sign-in / sign-up switches, resolved (legacy flags applied), plus how many

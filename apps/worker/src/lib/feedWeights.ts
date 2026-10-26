@@ -82,7 +82,7 @@ export const FEED_WEIGHT_BOUNDS: Readonly<Record<keyof FeedWeights, readonly [nu
 });
 
 /** Integer-valued weights (a count, not a multiplier). */
-const INTEGER_WEIGHTS = new Set<keyof FeedWeights>(["seenCap"]);
+export const INTEGER_WEIGHTS: ReadonlySet<keyof FeedWeights> = new Set<keyof FeedWeights>(["seenCap"]);
 
 /** Bump this when the scoring code changes, not when weights change. */
 export const FEED_RANKING_ALGORITHM = "foryou-2";
