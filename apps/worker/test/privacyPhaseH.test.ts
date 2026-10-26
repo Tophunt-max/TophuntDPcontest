@@ -59,14 +59,14 @@ describe('data export', () => {
 });
 
 describe('account deletion', () => {
-  it('removes the reports they filed and the notifications naming them in other inboxes', async () => {
+  it('removes notifications naming them in other inboxes, and keeps their reports as evidence', async () => {
     const { env } = makeEnv();
     await seedActivity(env);
     await drizzleOf(env).update(schema.users).set({ status: 'pending_deletion' } as any);
     await executeAccountDeletion(env as any, 'me').catch(() => {});
     const reports = await env.DB.prepare("SELECT COUNT(*) n FROM reports WHERE reporter_id = 'me'").first<any>();
     const notes = await env.DB.prepare("SELECT COUNT(*) n FROM notifications WHERE actor_id = 'me'").first<any>();
-    expect(reports.n).toBe(0);
+    expect(reports.n).toBe(1);
     expect(notes.n).toBe(0);
   });
 });

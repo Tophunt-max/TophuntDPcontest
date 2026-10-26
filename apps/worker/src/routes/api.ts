@@ -24,6 +24,7 @@ import { castVote, bumpEngagement } from "../lib/voteCounter";
 import { appendMessage, markChatMessagesRead, purgeChatMessages } from "../lib/chatArchive";
 import { clientIp, consumeRateLimit, rateLimit } from "../lib/rateLimit";
 import { recordFeedDismissal, removeFeedDismissal } from "../lib/feedDismissals";
+import { mintWsTicket } from "../lib/wsTicket";
 import {
   assertIdentifiersAvailable,
   normalizePhone,
@@ -61,6 +62,7 @@ import {
 } from "../lib/accountDeletion";
 import { exportUserData } from "../lib/accountExport";
 import {
+  assertRecentAuth,
   assertRecentAuthForDeletion,
   hasFreshSession,
   confirmReauthChallenge,
@@ -298,6 +300,7 @@ apiRoute.use("*", async (c, next) => {
   appControlGate(await getAppControlConfig(c.env), {
     action: typeof body?.action === "string" ? body.action : null,
     role: c.get("user")?.role ?? null,
+    uid: c.get("user")?.uid ?? null,
     platform: c.req.header("X-App-Platform") ?? null,
     appVersion: c.req.header("X-App-Version") ?? null,
   });
@@ -3099,6 +3102,13 @@ apiRoute.post("/", async (c) => {
 
     // "Not interested" on a feed card (lib/feedDismissals.ts). Explicit target
     // state (`dismissed`), so a retry or a replay never flips it back.
+    // A short-lived ticket for opening WebSockets without putting the ID token in
+    // the URL (lib/wsTicket.ts). null = tickets are not configured; use the token.
+    case "createWsTicket": {
+      const minted = await mintWsTicket(env, uid, c.get("user")?.authTime);
+      return c.json(minted ?? { ticket: null });
+    }
+
     case "setFeedDismissal": {
       await rateLimit(env, `dismiss:${uid}`, 120, 3600);
       const matchId = requiredId(body.matchId, "matchId", 128);
@@ -3833,6 +3843,14 @@ apiRoute.post("/", async (c) => {
      * delete screen links straight to this.
      */
     case "exportMyData": {
+      // An export returned in the RESPONSE (no email on file) hands the whole
+      // account (address, payout details, UTRs) to whoever holds this session, so it
+      // needs a recent sign-in or a passed challenge. Checked before the quota, so a
+      // re-verify and retry does not spend one of the three daily exports.
+      const emailOnFile = (
+        (await db.select({ email: schema.users.email }).from(schema.users).where(eq(schema.users.uid, uid)).get())?.email || ""
+      ).trim();
+      if (!emailOnFile) await assertRecentAuth(env, c.get("user"));
       // One export is a lot of reads across a dozen tables.
       await rateLimit(env, `exportdata:${uid}`, 3, 86400, { failClosed: true });
       const bundle = await exportUserData(env, uid);
@@ -3885,6 +3903,8 @@ apiRoute.post("/", async (c) => {
         }
         // Send failed — do not strand the user; fall through to returning the data.
       }
+      // Too large to email, or the send failed: same rule as a phone-only account.
+      await assertRecentAuth(env, c.get("user"));
       return c.json({ emailed: false, data: bundle });
     }
 

@@ -24,7 +24,8 @@ import {
   isWildcardPolicy,
 } from "./lib/apiCors";
 import type { Env, Variables } from "./types";
-import { ApiError, errorBody } from "./lib/http";
+import { ApiError, errorBody, httpsError } from "./lib/http";
+import { verifyWsTicket } from "./lib/wsTicket";
 import { authRoute } from "./routes/auth";
 import { apiRoute } from "./routes/api";
 import { readRoute } from "./routes/read";
@@ -357,7 +358,10 @@ app.get("/ws", async (c) => {
     return c.text("Expected a WebSocket upgrade.", 426);
   }
   const channel = c.req.query("channel");
-  const token = c.req.query("token");
+  // `ticket` (lib/wsTicket.ts) keeps the ID token out of request URLs, which
+  // Workers Logs records. `token` is still accepted from older app builds.
+  const ticket = c.req.query("ticket");
+  const token = c.req.query("token") || (ticket ? "" : undefined);
   if (!channel) return c.text("Missing channel or token.", 400);
 
   // Signed-out viewers may follow a live PUBLIC battle's tallies, and nothing else
@@ -380,7 +384,7 @@ app.get("/ws", async (c) => {
     return appStub.fetch(new Request(c.req.raw, { headers: appHeaders }));
   }
 
-  if (!token) {
+  if (!token && !ticket) {
     if (parsed.kind !== "match") return c.text("Missing channel or token.", 400);
     const guestRef = parsed.ref;
     const ip = c.req.header("CF-Connecting-IP") || c.req.header("X-Forwarded-For")?.split(",")[0]?.trim() || "unknown";
@@ -403,7 +407,13 @@ app.get("/ws", async (c) => {
     await ensureMigrated(c.env).catch((e) =>
       console.error("[migrate] auto-migration failed on /ws (continuing)", e),
     );
-    user = await verifyIdToken(token, c.env);
+    if (ticket) {
+      const t = await verifyWsTicket(c.env, ticket);
+      if (!t) throw httpsError("unauthenticated", "Invalid or expired socket ticket.");
+      user = { uid: t.uid, authTime: t.authTime } as any;
+    } else {
+      user = await verifyIdToken(token as string, c.env);
+    }
     await assertSessionUsable(c.env, user);
   } catch (e) {
     // Only a rejected token or session is 401/403. A D1 or key-fetch failure used to

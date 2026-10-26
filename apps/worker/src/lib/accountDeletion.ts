@@ -1118,11 +1118,10 @@ async function phaseSocial(env: Env, uid: string): Promise<void> {
     db.delete(schema.userMutes).where(eq(schema.userMutes.mutedId, uid)),
     // Their own "Not interested" history (it names other creators).
     db.delete(schema.feedDismissals).where(eq(schema.feedDismissals.viewerUid, uid)),
-    // Reports they filed (their reasons are their words), and every notification
-    // naming them as the actor in someone else's inbox. Only follow-request
-    // notifications were removed, so likes, comments and follows by a deleted
-    // account stayed in other people's notification lists.
-    db.delete(schema.reports).where(eq(schema.reports.reporterId, uid)),
+    // Every notification naming them as the actor in someone else's inbox. Only
+    // follow-request notifications were removed, so likes, comments and follows by
+    // a deleted account stayed in other people's lists. (Reports they filed are
+    // kept: they are moderation evidence about someone else's behaviour.)
     db.delete(schema.notifications).where(eq(schema.notifications.actorId, uid)),
   ]);
 

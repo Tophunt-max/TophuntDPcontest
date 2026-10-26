@@ -15,6 +15,7 @@ const h = vi.hoisted(() => ({
   appListeners: [] as ((s: string) => void)[],
   appState: 'active',
   probes: 0,
+  ticket: null as string | null,
 }));
 
 vi.mock('react-native', () => ({
@@ -33,6 +34,7 @@ vi.mock('../src/services/api', () => ({
   probeSession: async () => {
     h.probes++;
   },
+  callApi: async () => (h.ticket ? { ticket: h.ticket, expiresAt: Date.now() + 120_000 } : { ticket: null }),
 }));
 vi.mock('../src/services/firebase/initFirebase', () => ({
   auth: {
@@ -64,7 +66,7 @@ class FakeWebSocket {
 import { live, subscribeChannel, RESYNC_EVENT, __resetRealtimeForTests } from '@/src/services/realtime';
 
 const flush = async () => {
-  for (let i = 0; i < 8; i++) await Promise.resolve();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
 };
 const last = () => h.sockets[h.sockets.length - 1];
 
@@ -77,6 +79,7 @@ beforeEach(() => {
   h.appState = 'active';
   h.uid = 'alice';
   h.probes = 0;
+  h.ticket = null;
 });
 afterEach(() => {
   __resetRealtimeForTests();
@@ -149,6 +152,24 @@ describe('refused upgrades', () => {
     expect(h.probes).toBe(1);
     // And it keeps trying to reconnect rather than giving up.
     expect(h.sockets.length).toBeGreaterThanOrEqual(4);
+    off();
+  });
+});
+
+describe('socket tickets', () => {
+  it('opens with ?ticket= when the server issues one, never with the ID token', async () => {
+    h.ticket = 'tkt-123';
+    const off = subscribeChannel('user:alice', () => {});
+    await flush();
+    expect(last().url).toContain('ticket=tkt-123');
+    expect(last().url).not.toContain('token=');
+    off();
+  });
+
+  it('falls back to the token when tickets are off', async () => {
+    const off = subscribeChannel('user:alice', () => {});
+    await flush();
+    expect(last().url).toContain('token=token-alice');
     off();
   });
 });
