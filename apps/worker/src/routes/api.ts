@@ -291,6 +291,9 @@ async function assertOwnContestEntry(env: Env, uid: string, mediaUrl: unknown): 
   }
 }
 
+/** Devices one account keeps push tokens for (newest kept). */
+const MAX_PUSH_TOKENS = 10;
+
 /** Client-chosen message id (sendMessage `clientId`): stable across retries of one message. */
 const CHAT_CLIENT_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
@@ -2500,7 +2503,13 @@ apiRoute.post("/", async (c) => {
 
     // ================= NOTIFICATIONS / TOKENS / BADGE =================
     case "markNotificationsRead": {
-      const ids: string[] = body.notificationIds || [];
+      // Bounded and typed: an oversized array exceeded D1's bound-parameter limit
+      // and answered 500. The app sends one id at a time.
+      const raw = body.notificationIds ?? [];
+      if (!Array.isArray(raw) || raw.length > 100 || raw.some((x: unknown) => typeof x !== "string" || !x || x.length > 128)) {
+        throw httpsError("invalid-argument", "notificationIds must be up to 100 ids.");
+      }
+      const ids: string[] = raw;
       if (!ids.length) return c.json({ success: true });
       await db
         .update(schema.notifications)
@@ -2578,17 +2587,22 @@ apiRoute.post("/", async (c) => {
     }
 
     case "registerFcmToken": {
-      const { token } = body;
-      if (!token) throw httpsError("invalid-argument", "token is required.");
+      const token = typeof body.token === "string" ? body.token.trim() : "";
+      // FCM/APNs tokens are a few hundred URL-safe characters. Anything else was
+      // stored as-is, and the list grew without bound (each push fans out to all).
+      if (!token || token.length > 4096 || /\s/.test(token)) throw httpsError("invalid-argument", "A valid token is required.");
+      await rateLimit(env, `fcmreg:${uid}`, 30, 3600);
       // A device token can previously have belonged to a DIFFERENT account on
       // this same phone (shared, resold, or just a second login). Detach it from
       // every other user first, otherwise the previous owner keeps receiving
       // pushes on a device they no longer control.
       await detachTokenFromOtherUsers(env, token, uid);
       const user = await db.select({ fcmTokens: schema.users.fcmTokens }).from(schema.users).where(eq(schema.users.uid, uid)).get();
-      const tokens = new Set<string>(((user?.fcmTokens as string[]) || []));
-      tokens.add(token);
-      await db.update(schema.users).set({ fcmTokens: [...tokens], updatedAt: now() }).where(eq(schema.users.uid, uid));
+      // Most recent last, capped: a phone that reinstalls keeps minting tokens and
+      // the dead ones are only pruned after a failed send.
+      const kept = ((user?.fcmTokens as string[]) || []).filter((t) => t !== token);
+      const tokens = [...kept, token].slice(-MAX_PUSH_TOKENS);
+      await db.update(schema.users).set({ fcmTokens: tokens, updatedAt: now() }).where(eq(schema.users.uid, uid));
       return c.json({ success: true });
     }
 

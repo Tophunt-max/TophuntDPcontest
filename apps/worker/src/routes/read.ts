@@ -52,6 +52,7 @@ import {
 } from "../lib/music";
 import { assertChatMember } from "../lib/chatAuth";
 import { chatHistory, latestChatMessages, searchChatMessages } from "../lib/chatArchive";
+import { unseenNotificationCount } from "../lib/notify";
 import {
   blockedUidsFor,
   describeUsers,
@@ -2020,12 +2021,23 @@ readRoute.get("/notifications", requireAuth, async (c) => {
   const db = getDb(c.env);
   const uid = c.get("user").uid;
   const limit = pageLimit(c, 50, 100);
-  const cursor = pageCursor(c.req.query("cursor")); // createdAt of the last row seen
+  // `<createdAt>_<id>` of the last row seen. A bare `<createdAt>` (older apps) still
+  // works. The time alone skipped every row sharing the boundary millisecond.
+  const keyset = parseKeysetCursor(c.req.query("cursor"));
+  const cursor = keyset?.ts ?? null;
 
   const where =
-    cursor != null
-      ? and(eq(schema.notifications.recipientId, uid), lt(schema.notifications.createdAt, cursor))
-      : eq(schema.notifications.recipientId, uid);
+    keyset == null
+      ? eq(schema.notifications.recipientId, uid)
+      : keyset.id == null
+        ? and(eq(schema.notifications.recipientId, uid), lt(schema.notifications.createdAt, keyset.ts))
+        : and(
+            eq(schema.notifications.recipientId, uid),
+            or(
+              lt(schema.notifications.createdAt, keyset.ts),
+              and(eq(schema.notifications.createdAt, keyset.ts), lt(schema.notifications.id, keyset.id)),
+            ),
+          );
 
   const rows = await db
     .select({
@@ -2044,7 +2056,7 @@ readRoute.get("/notifications", requireAuth, async (c) => {
     })
     .from(schema.notifications)
     .where(where)
-    .orderBy(desc(schema.notifications.createdAt))
+    .orderBy(desc(schema.notifications.createdAt), desc(schema.notifications.id))
     .limit(limit + 1)
     .all();
 
@@ -2054,7 +2066,8 @@ readRoute.get("/notifications", requireAuth, async (c) => {
   // after the filter below would (a) crash on a page whose rows were all
   // filtered away, and (b) make the next page re-scan rows already discarded.
   // Same shape as connectionsHandler's `rows[limit - 1]?.since`.
-  const nextCursor = hasMore ? scanned[scanned.length - 1]?.createdAt ?? null : null;
+  const lastScanned = scanned[scanned.length - 1];
+  const nextCursor = hasMore && lastScanned ? `${lastScanned.createdAt}_${lastScanned.id}` : null;
   let page: any[] = scanned;
 
   // createNotification suppresses new notifications from blocked/muted users,
@@ -2153,36 +2166,6 @@ readRoute.get("/notifications/unread-count", requireAuth, async (c) => {
   res.headers.set("Cache-Control", "private, no-store");
   return res;
 });
-
-/**
- * The badge count, shared by `/notifications/unread-count` and the `withUnread=1`
- * option on the list. Excludes hidden actors so the badge agrees with the list it
- * opens — counting rows the list then filters away leaves a badge that cannot be
- * cleared by reading. Capped for the same bound-parameter reason as the other SQL
- * filters. Index-only via idx_notif_unseen (see test/queryPlans.test.ts).
- */
-async function unseenNotificationCount(db: ReturnType<typeof getDb>, uid: string, hidden: Set<string>): Promise<number> {
-  const hiddenActors = sqlExclusionList(hidden);
-  const row = await db
-    .select({ v: sql<number>`count(*)` })
-    .from(schema.notifications)
-    .where(
-      and(
-        eq(schema.notifications.recipientId, uid),
-        eq(schema.notifications.seen, false),
-        ...(hiddenActors.length
-          ? [
-              or(
-                isNull(schema.notifications.actorId),
-                notInArray(schema.notifications.actorId, hiddenActors),
-              ),
-            ]
-          : []),
-      ),
-    )
-    .get();
-  return Number(row?.v ?? 0);
-}
 
 // ================= WALLET / COIN LEDGER =================
 // The signed coin transaction history for the authenticated user. Amounts are
@@ -3588,6 +3571,20 @@ readRoute.get("/chats/:id/messages", requireAuth, async (c) => {
 
 /** Messages per page when opening a thread or loading earlier ones. */
 const CHAT_PAGE_SIZE = 50;
+
+/**
+ * `<createdAt>_<id>` keyset, or a bare `<createdAt>` from an older client (id null).
+ * Ordering is (createdAt DESC, id DESC), so equal timestamps page without gaps.
+ */
+function parseKeysetCursor(raw: string | undefined): { ts: number; id: string | null } | null {
+  if (!raw) return null;
+  const i = raw.indexOf("_");
+  const ts = Number(i < 0 ? raw : raw.slice(0, i));
+  if (!Number.isFinite(ts) || ts <= 0) return null;
+  const id = i < 0 ? null : raw.slice(i + 1);
+  if (id != null && (!id || id.length > 200)) return null;
+  return { ts, id };
+}
 
 /** `<createdAt>_<id>` keyset for older chat pages. Ids may contain `_`. */
 function parseChatCursor(raw: string | undefined): { ts: number; id: string } | null {
