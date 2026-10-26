@@ -3105,8 +3105,9 @@ apiRoute.post("/", async (c) => {
       // Idempotency: the client may pass a stable clientId so a retried submit
       // (flaky network) never posts the same comment twice.
       const clientId = typeof body.clientId === "string" && body.clientId.trim() ? body.clientId.trim().slice(0, 64) : null;
-      if (clientId != null && !CHAT_CLIENT_ID_RE.test(clientId)) {
-        throw httpsError("invalid-argument", "clientId must be 8-64 letters, digits, '-' or '_'.");
+      // Becomes the row id, so only id-safe characters (length is capped above).
+      if (clientId != null && !/^[A-Za-z0-9_-]+$/.test(clientId)) {
+        throw httpsError("invalid-argument", "clientId may only use letters, digits, '-' or '_'.");
       }
       const commentId = clientId || newId();
       const ts = now();
