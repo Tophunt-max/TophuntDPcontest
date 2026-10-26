@@ -3125,7 +3125,7 @@ async function listConnections(
   c: any,
   targetId: string,
   direction: "followers" | "following",
-  cursor: number | null,
+  cursor: { ts: number; id: string | null } | null,
   limit: number,
 ) {
   const db = getDb(c.env);
@@ -3136,9 +3136,17 @@ async function listConnections(
   const otherUid =
     direction === "followers" ? schema.follows.followerId : schema.follows.followingId;
 
-  const where = cursor
-    ? and(edgeMatch, lt(schema.follows.createdAt, cursor))
-    : edgeMatch;
+  // Keyset on (created_at, other uid). The time alone dropped every edge sharing
+  // the boundary millisecond, and going public approves all pending requests
+  // with ONE timestamp (approveAllFollowRequests), so that is a real case.
+  const where = !cursor
+    ? edgeMatch
+    : cursor.id == null
+      ? and(edgeMatch, lt(schema.follows.createdAt, cursor.ts))
+      : and(
+          edgeMatch,
+          or(lt(schema.follows.createdAt, cursor.ts), and(eq(schema.follows.createdAt, cursor.ts), lt(otherUid, cursor.id))),
+        );
 
   const rows = await db
     .select({
@@ -3149,11 +3157,12 @@ async function listConnections(
       verified: schema.users.verified,
       status: schema.users.status,
       since: schema.follows.createdAt,
+      other: otherUid,
     })
     .from(schema.follows)
     .leftJoin(schema.users, eq(schema.users.uid, otherUid))
     .where(where)
-    .orderBy(desc(schema.follows.createdAt))
+    .orderBy(desc(schema.follows.createdAt), desc(otherUid))
     .limit(limit + 1) // fetch one extra to detect whether a next page exists
     .all();
 
@@ -3180,7 +3189,8 @@ async function listConnections(
       profileImageUrlThumb: avatarUrl(c.env, r.profileImageUrl),
       verified: !!r.verified,
     }));
-  const nextCursor = hasMore ? rows[limit - 1]?.since ?? null : null;
+  const last = hasMore ? rows[limit - 1] : null;
+  const nextCursor = last ? `${last.since}_${last.other}` : null;
   return { items: page, nextCursor };
 }
 
@@ -3189,7 +3199,7 @@ async function connectionsHandler(c: any, direction: "followers" | "following") 
   const targetId = c.req.param("id");
   const limit = pageLimit(c, CONNECTIONS_PAGE_SIZE, CONNECTIONS_MAX_PAGE_SIZE);
   const cursorRaw = c.req.query("cursor");
-  const cursor = pageCursor(cursorRaw);
+  const cursor = parseKeysetCursor(cursorRaw);
 
   // Only the default first page (no cursor, default size) is cacheable — that's
   // what the connections screen loads on open, i.e. the hot path.
@@ -3242,7 +3252,7 @@ async function connectionsHandler(c: any, direction: "followers" | "following") 
    * strictly fresher than what it replaces, while costing no KV write.
    */
   const { items, nextCursor } = isFirstPage
-    ? await cachedJson<{ items: any[]; nextCursor: number | null }>(c, {
+    ? await cachedJson<{ items: any[]; nextCursor: string | null }>(c, {
         key: cacheKey,
         edgeTtlSec: READ_CACHE_TTLS.connections.edge,
         kvTtlSec: READ_CACHE_TTLS.connections.kv,
@@ -3739,6 +3749,17 @@ readRoute.get("/comments", optionalAuth, guestReadLimit, async (c) => {
   // counter on blog_posts — see migrations/0034_blog_comments.sql).
   const isBlog = targetType === "blog";
   const limit = pageLimit(c, COMMENTS_PAGE_SIZE, 50);
+
+  // A post's thread follows its owner's privacy, like /users/:id/posts: a
+  // non-follower holding a private account's post id could read the comments.
+  // Checked BEFORE the shared cache, which stays safe because a locked viewer
+  // never reaches it.
+  if (!isMatch && !isBlog) {
+    const post = await db.select({ userId: schema.posts.userId }).from(schema.posts).where(eq(schema.posts.id, targetId)).get();
+    if (!post) return c.json({ items: [], nextCursor: null });
+    if (await profileHiddenFrom(c, post.userId)) return c.json({ items: [], nextCursor: null });
+    if (await profileLockedFor(c, post.userId)) return c.json({ items: [], nextCursor: null, locked: true });
+  }
 
   // Keyset (cursor) pagination — Instagram-style "load older on scroll". The
   // cursor is an opaque `${createdAt}_${id}` string; the id tie-break keeps

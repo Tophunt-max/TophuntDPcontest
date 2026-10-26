@@ -42,7 +42,7 @@ import {
 } from "../lib/cache";
 import { purgeShared } from "../lib/edgeCache";
 import { STORIES_FEED_CACHE_KEY } from "../lib/storyAudience";
-import { isPrivateAccount } from "../lib/privateAccount";
+import { isPrivateAccount, privateContentLocked } from "../lib/privateAccount";
 import {
   approveAllFollowRequests,
   approveFollowRequest,
@@ -1360,11 +1360,15 @@ apiRoute.post("/", async (c) => {
 
       if (existing && intent === "follow") return c.json({ success: true, isFollowing: true, requested: false });
       if (existing) {
-        // Unfollow: one atomic round-trip instead of three sequential ones.
+        // Unfollow: one atomic batch. The decrements are gated on the edge still
+        // existing and run BEFORE the delete, as in removeFollower. `existing` is a
+        // plain read, so two concurrent unfollows (a double tap, or an offline
+        // replay racing the original) both reached here and both decremented.
+        const edge = sql`EXISTS (SELECT 1 FROM follows WHERE follower_id = ${uid} AND following_id = ${targetUserId})`;
         await db.batch([
+          db.update(schema.users).set({ followingCount: sql`MAX(${schema.users.followingCount} - 1, 0)` }).where(and(eq(schema.users.uid, uid), edge)),
+          db.update(schema.users).set({ followersCount: sql`MAX(${schema.users.followersCount} - 1, 0)` }).where(and(eq(schema.users.uid, targetUserId), edge)),
           db.delete(schema.follows).where(and(eq(schema.follows.followerId, uid), eq(schema.follows.followingId, targetUserId))),
-          db.update(schema.users).set({ followingCount: sql`MAX(${schema.users.followingCount} - 1, 0)` }).where(eq(schema.users.uid, uid)),
-          db.update(schema.users).set({ followersCount: sql`MAX(${schema.users.followersCount} - 1, 0)` }).where(eq(schema.users.uid, targetUserId)),
         ]);
         c.executionCtx.waitUntil(invalidateFollowCaches());
         return c.json({ success: true, isFollowing: false, requested: false });
@@ -3065,6 +3069,11 @@ apiRoute.post("/", async (c) => {
       // guard as a DM. Both social branches resolve the owner(s) of the thing
       // being commented on and refuse if a block exists in either direction.
       if (isMatch) {
+        // The block helper lets a missing match through (it has no owners to
+        // check), so a comment could be stored, counted and published for any
+        // string. Comments need a real battle.
+        const exists = await db.select({ id: schema.contestMatches.id }).from(schema.contestMatches).where(eq(schema.contestMatches.id, targetId)).get();
+        if (!exists) throw httpsError("not-found", "Battle not found.");
         await assertMatchInteractionAllowed(env, uid, targetId);
       } else if (isBlog) {
         // A blog article has no owner uid to block (`blog_posts.author` is free
@@ -3085,11 +3094,20 @@ apiRoute.post("/", async (c) => {
           .from(schema.posts)
           .where(eq(schema.posts.id, targetId))
           .get();
-        await assertNotBlockedAny(env, uid, [postOwner?.userId]);
+        if (!postOwner) throw httpsError("not-found", "Post not found.");
+        await assertNotBlockedAny(env, uid, [postOwner.userId]);
+        // A private account's posts are behind the profile header (lib/privateAccount.ts);
+        // so is their comment thread. A non-follower holding a post id could post here.
+        if (await privateContentLocked(env, uid, postOwner.userId)) {
+          throw httpsError("permission-denied", "This account is private.");
+        }
       }
       // Idempotency: the client may pass a stable clientId so a retried submit
       // (flaky network) never posts the same comment twice.
       const clientId = typeof body.clientId === "string" && body.clientId.trim() ? body.clientId.trim().slice(0, 64) : null;
+      if (clientId != null && !CHAT_CLIENT_ID_RE.test(clientId)) {
+        throw httpsError("invalid-argument", "clientId must be 8-64 letters, digits, '-' or '_'.");
+      }
       const commentId = clientId || newId();
       const ts = now();
       if (clientId) {
@@ -3107,7 +3125,10 @@ apiRoute.post("/", async (c) => {
         // is what makes the new comment visible.
         await db.insert(schema.blogComments).values({ id: commentId, postId: targetId, userId: uid, text: raw, createdAt: ts }).onConflictDoNothing();
       } else if (isMatch) {
-        await db.insert(schema.matchComments).values({ id: commentId, matchId: targetId, userId: uid, text: raw, createdAt: ts }).onConflictDoNothing();
+        const ins = await db.insert(schema.matchComments).values({ id: commentId, matchId: targetId, userId: uid, text: raw, createdAt: ts }).onConflictDoNothing().run();
+        // Two in-flight requests with the same clientId both passed the duplicate
+        // check above; only the one whose insert landed counts and notifies.
+        if (!ins.meta.changes) return c.json({ success: true, commentId, duplicate: true });
         const cCounters = await bumpEngagement(env, targetId, "comment", 1);
         // Push so both the open comment sheet and the feed card update instantly.
         await publish(env, `match:${targetId}`, { type: "comment", commentId, commentCount: cCounters.comment ?? 0 });
@@ -3123,7 +3144,8 @@ apiRoute.post("/", async (c) => {
           })(),
         );
       } else {
-        await db.insert(schema.postComments).values({ id: commentId, postId: targetId, userId: uid, text: raw, createdAt: ts }).onConflictDoNothing();
+        const ins = await db.insert(schema.postComments).values({ id: commentId, postId: targetId, userId: uid, text: raw, createdAt: ts }).onConflictDoNothing().run();
+        if (!ins.meta.changes) return c.json({ success: true, commentId, duplicate: true });
         await db.update(schema.posts).set({ commentCount: sql`${schema.posts.commentCount} + 1` }).where(eq(schema.posts.id, targetId));
         c.executionCtx.waitUntil(
           (async () => {
@@ -3152,21 +3174,32 @@ apiRoute.post("/", async (c) => {
         const row = await db.select().from(schema.blogComments).where(eq(schema.blogComments.id, commentId)).get();
         if (!row) throw httpsError("not-found", "Comment not found.");
         if (row.userId !== uid && !(await isAdmin(c as any))) throw httpsError("permission-denied", "Not allowed.");
-        await db.delete(schema.blogComments).where(eq(schema.blogComments.id, commentId));
+        const del = await db.delete(schema.blogComments).where(eq(schema.blogComments.id, commentId)).run();
+        if (del.meta.changes) await db.delete(schema.commentLikes).where(eq(schema.commentLikes.commentId, commentId));
         threadId = row.postId;
       } else if (targetType === "matches" || targetType === "contestMatches") {
         const row = await db.select().from(schema.matchComments).where(eq(schema.matchComments.id, commentId)).get();
         if (!row) throw httpsError("not-found", "Comment not found.");
         if (row.userId !== uid && !(await isAdmin(c as any))) throw httpsError("permission-denied", "Not allowed.");
-        await db.delete(schema.matchComments).where(eq(schema.matchComments.id, commentId));
-        await bumpEngagement(env, row.matchId, "comment", -1);
+        const del = await db.delete(schema.matchComments).where(eq(schema.matchComments.id, commentId)).run();
+        // Only the request that actually deleted the row decrements (double tap,
+        // owner and admin at once). And tell open sheets and cards the new count,
+        // as addComment does.
+        if (del.meta.changes) {
+          const counters = await bumpEngagement(env, row.matchId, "comment", -1);
+          await publish(env, `match:${row.matchId}`, { type: "comment", commentId, removed: true, commentCount: counters.comment ?? 0 });
+          await db.delete(schema.commentLikes).where(eq(schema.commentLikes.commentId, commentId));
+        }
         threadId = row.matchId;
       } else {
         const row = await db.select().from(schema.postComments).where(eq(schema.postComments.id, commentId)).get();
         if (!row) throw httpsError("not-found", "Comment not found.");
         if (row.userId !== uid && !(await isAdmin(c as any))) throw httpsError("permission-denied", "Not allowed.");
-        await db.delete(schema.postComments).where(eq(schema.postComments.id, commentId));
-        await db.update(schema.posts).set({ commentCount: sql`MAX(${schema.posts.commentCount} - 1, 0)` }).where(eq(schema.posts.id, row.postId));
+        const del = await db.delete(schema.postComments).where(eq(schema.postComments.id, commentId)).run();
+        if (del.meta.changes) {
+          await db.update(schema.posts).set({ commentCount: sql`MAX(${schema.posts.commentCount} - 1, 0)` }).where(eq(schema.posts.id, row.postId));
+          await db.delete(schema.commentLikes).where(eq(schema.commentLikes.commentId, commentId));
+        }
         threadId = row.postId;
       }
       // Bust the cached comment list so the removal is reflected immediately.
@@ -3193,23 +3226,32 @@ apiRoute.post("/", async (c) => {
         .from(schema.commentLikes)
         .where(and(eq(schema.commentLikes.commentId, commentId), eq(schema.commentLikes.userId, uid)))
         .get();
-      const liked = !existing;
+      // Optional explicit target state (`liked`), like toggleFollow's intent: a
+      // retried or replayed request then cannot flip the like back. Absent, it is
+      // the original toggle.
+      const liked = typeof body.liked === "boolean" ? body.liked : !existing;
       // The last engagement write without a block guard. Only the LIKE direction
       // is checked, so an existing like can always be withdrawn.
-      if (liked) {
+      if (liked && !existing) {
         const author = isMatch
           ? await db.select({ userId: schema.matchComments.userId }).from(schema.matchComments).where(eq(schema.matchComments.id, commentId)).get()
           : isBlogComment
             ? await db.select({ userId: schema.blogComments.userId }).from(schema.blogComments).where(eq(schema.blogComments.id, commentId)).get()
             : await db.select({ userId: schema.postComments.userId }).from(schema.postComments).where(eq(schema.postComments.id, commentId)).get();
-        await assertNotBlockedAny(env, uid, [author?.userId]);
+        // A like on a comment that does not exist was stored and never cleaned up.
+        if (!author) throw httpsError("not-found", "Comment not found.");
+        await assertNotBlockedAny(env, uid, [author.userId]);
       }
-      if (existing) {
-        await db.delete(schema.commentLikes).where(and(eq(schema.commentLikes.commentId, commentId), eq(schema.commentLikes.userId, uid)));
-      } else {
-        await db.insert(schema.commentLikes).values({ commentId, userId: uid, createdAt: now() }).onConflictDoNothing().run();
+      // The counter moves only when THIS request changed the like row. Two
+      // concurrent likes both read "not liked"; one insert lands, and the count
+      // used to go up by two.
+      let changed = 0;
+      if (!liked && existing) {
+        changed = (await db.delete(schema.commentLikes).where(and(eq(schema.commentLikes.commentId, commentId), eq(schema.commentLikes.userId, uid))).run()).meta.changes;
+      } else if (liked && !existing) {
+        changed = (await db.insert(schema.commentLikes).values({ commentId, userId: uid, createdAt: now() }).onConflictDoNothing().run()).meta.changes;
       }
-      const delta = liked ? 1 : -1;
+      const delta = changed ? (liked ? 1 : -1) : 0;
       let likeCount = 0;
       if (isBlogComment) {
         await db.update(schema.blogComments)
