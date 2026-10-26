@@ -1,4 +1,4 @@
-import React, { memo } from "react";
+import React, { memo, useEffect, useState } from "react";
 import {
   View,
   StyleSheet,
@@ -19,6 +19,29 @@ import { useAuthGate } from '@/src/hooks/useAuthGate';
 import { loginHref } from '@/src/lib/authGate';
 import { fitArt, useDesignWindow } from '@/src/lib/layout';
 
+/**
+ * Width / height of a remote image, or null until known (or when it fails).
+ * Clamped to 1:1 .. 6:1 so a broken or extreme upload cannot squash the bar.
+ */
+function useImageAspect(uri: string | null): number | null {
+  const [aspect, setAspect] = useState<{ uri: string; value: number } | null>(null);
+  useEffect(() => {
+    if (!uri) return;
+    let alive = true;
+    Image.getSize(
+      uri,
+      (w, h) => {
+        if (alive && w > 0 && h > 0) setAspect({ uri, value: Math.min(Math.max(w / h, 1), 6) });
+      },
+      () => undefined,
+    );
+    return () => {
+      alive = false;
+    };
+  }, [uri]);
+  return uri && aspect?.uri === uri ? aspect.value : null;
+}
+
 const HeaderComponent = () => {
   const router = useRouter();
   const colorScheme = useColorScheme();
@@ -30,8 +53,12 @@ const HeaderComponent = () => {
   // Tophunt.webp is a 3:1 wordmark. The old 115x32 box (3.6:1) drew it at only
   // ~96x32. Now: up to 36% of the screen width, never taller than 44 so it stays
   // inside the 54px bar. Small phones scale down, larger screens stop at 132x44.
+  // An admin `headerLogoUrl` may have any shape, so its real aspect ratio is read
+  // first; a wider logo then gets a wider box instead of empty space around it.
   const { width: screenWidth } = useDesignWindow();
-  const logo = fitArt({ aspect: 3, maxWidth: screenWidth * 0.36, maxHeight: 44 });
+  const customUrl = config?.headerLogoUrl || null;
+  const aspect = useImageAspect(customUrl) ?? 3;
+  const logo = fitArt({ aspect, maxWidth: screenWidth * 0.36, maxHeight: 44 });
 
   return (
     <View

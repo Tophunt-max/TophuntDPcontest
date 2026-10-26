@@ -212,10 +212,17 @@ export const WinnerCard = forwardRef<View, Props>(({ summary, width, onReady }, 
 
       <View style={{ flex: 1, alignItems: 'center', paddingHorizontal: f(20), paddingTop: f(18), paddingBottom: f(20) }}>
         {/* Brand */}
-        <View style={[styles.logoPill, { paddingHorizontal: f(14), paddingVertical: f(6), borderRadius: f(18) }]}>
+        {/*
+          The logo is a 3:1 wordmark. The old 104x25 box (4.2:1) drew it at only
+          ~75x25. A 3:1 box with less pill padding draws it at 93x31, and the pill
+          stays 37 tall (31 + 2x3), so nothing below moves. The winner-with-prize
+          layout already uses nearly all of the 640-tall card, so a taller pill
+          could push the footer off the bottom.
+        */}
+        <View style={[styles.logoPill, { paddingHorizontal: f(12), paddingVertical: f(3), borderRadius: f(18) }]}>
           <RNImage
             source={images.tophuntLogo}
-            style={{ width: f(104), height: f(25) }}
+            style={{ width: f(93), height: f(31) }}
             resizeMode="contain"
             onLoad={() => mark('logo')}
             onError={() => mark('logo')}
