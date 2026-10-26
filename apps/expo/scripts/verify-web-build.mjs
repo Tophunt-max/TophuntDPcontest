@@ -89,7 +89,20 @@ for (const name of exploreBanners) {
 
 await assertCspInSync();
 
-console.log('[web] dist/_worker.js + dist/_headers + 6 Explore banners present; CSP in sync');
+// Installable web app + offline shell (public/sw.js, scripts/stamp-sw.mjs).
+for (const name of ['manifest.json', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/apple-touch-icon.png']) {
+  if (!existsSync(resolve(distDir, name))) fail(`dist/${name} was not produced by the export.`, 'The web app manifest references it.');
+}
+const swOut = resolve(distDir, 'sw.js');
+if (!existsSync(swOut)) fail('dist/sw.js was not produced by the export.');
+if (/const BUILD_ID = 'dev';/.test(readFileSync(swOut, 'utf8'))) {
+  fail(
+    'dist/sw.js is not stamped (BUILD_ID is still "dev").',
+    'Run `node scripts/stamp-sw.mjs` after `expo export` (npm run build does both).',
+  );
+}
+
+console.log('[web] dist/_worker.js + dist/_headers + 6 Explore banners + manifest + stamped sw.js present; CSP in sync');
 
 function fail(...lines) {
   console.error(`\n[web] ${lines[0]}`);

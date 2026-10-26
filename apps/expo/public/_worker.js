@@ -138,6 +138,38 @@ function withSecurityHeaders(res, { document = false } = {}) {
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
+/**
+ * Cache rules for static files, set here because Pages does not reliably apply
+ * `_headers` to responses that pass through this worker.
+ *
+ *  - Content-hashed build output (`/_expo/static/...-<hash>.js`,
+ *    `/assets/.../name.<hash>.png`) never changes under its name, so browsers may
+ *    keep it for a year without asking again. Pages' default (`max-age=0,
+ *    must-revalidate`) made every visit revalidate the 2 MB (gzip) entry bundle.
+ *  - The service worker script must always be fresh, or an update (or the
+ *    emergency off switch) would be held back by the HTTP cache.
+ *  - The manifest is served with its registered type. (It is `manifest.json`,
+ *    not `.webmanifest`: `hasFileExtension` stops at 8 characters, so the longer
+ *    name would be routed as a page and answered with the HTML shell.)
+ */
+export const HASHED_ASSET = /^\/(?:_expo\/static|assets)\/.+[.-][0-9a-f]{16,}(?:@\dx)?\.[a-z0-9]+$/i;
+export function withAssetCaching(res, path) {
+  if (res.status !== 200) return res;
+  const headers = new Headers(res.headers);
+  if (HASHED_ASSET.test(path)) {
+    headers.set('cache-control', 'public, max-age=31536000, immutable');
+  } else if (path === '/sw.js') {
+    headers.set('cache-control', 'no-cache');
+    headers.set('service-worker-allowed', '/');
+  } else if (path === '/manifest.json') {
+    headers.set('content-type', 'application/manifest+json');
+    headers.set('cache-control', 'public, max-age=3600');
+  } else {
+    return res;
+  }
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
 // ---------------------------------------------------------------------------
 // Route classification.
 //
@@ -838,7 +870,7 @@ export default {
       // Google reports and re-crawls. A missing asset is a 404.
       const servedHtml = (asset.headers.get('content-type') || '').includes('text/html');
       if (servedHtml && hasFileExtension(path)) return notFoundAsset();
-      return withSecurityHeaders(asset);
+      return withAssetCaching(withSecurityHeaders(asset), path);
     }
 
     // A document url carrying a file extension is not a route this app has. The
