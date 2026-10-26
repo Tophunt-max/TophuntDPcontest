@@ -154,18 +154,31 @@ export const WinnerCard = forwardRef<View, Props>(({ summary, width, onReady }, 
   // change — re-firing onLoad and never letting the card settle.
   const renderPhoto = (slot: number, uri: string | null, w: number, h: number, label: string) =>
     uri ? (
-      <ExpoImage
-        key={`p${slot}:${uri}`}
-        source={{ uri }}
-        style={photoStyle(w, h)}
-        contentFit="cover"
-        // No crossfade: a capture mid-fade would bake a half-transparent photo.
-        transition={0}
-        cachePolicy="memory-disk"
-        onLoad={() => mark(`p${slot}:${uri}`)}
-        onError={() => mark(`p${slot}:${uri}`)}
-        accessibilityLabel={label}
-      />
+      // Whole entry, never cropped (same as the feed card): the photo is drawn
+      // with `contain` over a blurred copy of itself. Same URI, so the backdrop
+      // comes from the memory cache; readiness still tracks the sharp photo.
+      <View key={`p${slot}:${uri}`} style={[photoStyle(w, h), styles.photoFit]}>
+        <ExpoImage
+          source={{ uri }}
+          style={StyleSheet.absoluteFill}
+          contentFit="cover"
+          blurRadius={f(20)}
+          transition={0}
+          cachePolicy="memory-disk"
+          accessible={false}
+        />
+        <ExpoImage
+          source={{ uri }}
+          style={StyleSheet.absoluteFill}
+          contentFit="contain"
+          // No crossfade: a capture mid-fade would bake a half-transparent photo.
+          transition={0}
+          cachePolicy="memory-disk"
+          onLoad={() => mark(`p${slot}:${uri}`)}
+          onError={() => mark(`p${slot}:${uri}`)}
+          accessibilityLabel={label}
+        />
+      </View>
     ) : (
       <View style={[photoStyle(w, h), styles.photoFallback]}>
         <MaterialCommunityIcons name="trophy" size={f(64)} color="#FFD700" />
@@ -351,6 +364,7 @@ const styles = StyleSheet.create({
   congrats: { flexShrink: 0, fontFamily: 'Urbanist-Bold', color: '#FFD700', textAlign: 'center', textShadowColor: 'rgba(0,0,0,0.35)', textShadowRadius: 6, textShadowOffset: { width: 0, height: 2 } },
   contest: { fontFamily: 'Urbanist-SemiBold', color: 'rgba(255,255,255,0.9)', textAlign: 'center', flexShrink: 0 },
   goldFrame: { backgroundColor: '#FFD700' },
+  photoFit: { overflow: 'hidden', backgroundColor: 'rgba(0,0,0,0.35)' },
   photoFallback: { backgroundColor: 'rgba(0,0,0,0.35)', alignItems: 'center', justifyContent: 'center' },
   winnerBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFD700', borderWidth: 2, borderColor: '#FFF4B0' },
   winnerBadgeText: { fontFamily: 'Urbanist-Bold', color: '#5A3A00' },
