@@ -10,6 +10,7 @@
     "insights:snapshot": "node scripts/d1-insights-compare.mjs snapshot",
     "insights:compare": "node scripts/d1-insights-compare.mjs compare",
     "cache:report": "node scripts/cache-hit-report.mjs",
+    "feed:eval": "vite-node scripts/feed-eval.ts --",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "pretypecheck": "node scripts/gen-migrations.mjs",
