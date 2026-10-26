@@ -44,7 +44,6 @@ const DEFAULT_ONBOARDING = [
     description: 'Join a contest with your best photo or video and win coins and prizes.',
     image: require('../../assets/images/onBordingLight3.webp'),
   },
-  // Art for 4 and 5 is drawn to match 1-3 (sources: design/onboarding/*.svg).
   // An admin can upload a picture for any slide from the panel's Onboarding page.
   {
     id: '4',
