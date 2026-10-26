@@ -91,6 +91,14 @@ export const contestService = {
   reportMatch: async (matchId: string, reason: string) =>
     callApi('createReport', { targetType: 'match', targetId: matchId, reason }),
 
+  /**
+   * "Not interested" on a feed card. Explicit target state, so a retry is safe.
+   * The Worker drops the battle from this viewer's For You / Following and ranks
+   * the same creators lower (lib/feedDismissals.ts).
+   */
+  setFeedDismissal: async (matchId: string, dismissed: boolean) =>
+    callApi('setFeedDismissal', { matchId, dismissed }),
+
   getContestById: async (id: string) => readApi(`/read/contests/${id}`),
 
   getMatchById: async (id: string) => readApi(`/read/matches/${id}`),

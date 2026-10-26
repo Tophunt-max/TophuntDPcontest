@@ -53,6 +53,12 @@ interface PostCardProps {
     isDark: boolean;
     onMatchEnded?: (matchId: string) => void;
     /**
+     * Ranked feeds only (Home). When set, the flag button becomes a "More options"
+     * menu with "Not interested" and "Report"; the callback removes the card once
+     * the server has recorded the dismissal.
+     */
+    onNotInterested?: (matchId: string) => void;
+    /**
      * Whether this card should hold a live `match:<id>` subscription. Defaults to
      * true. The Home feed passes false for cards that are mounted but off screen,
      * so a long feed holds only a few sockets (see src/lib/liveWindow.ts).
@@ -169,7 +175,7 @@ const formatVotes = (n: number): string => {
   return String(value);
 };
 
-export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true, playActive = true }: PostCardProps) => {
+export const PostCard = memo(({ item, isDark, onMatchEnded, onNotInterested, liveActive = true, playActive = true }: PostCardProps) => {
   const { user } = useAuth();
   const { requireAuth } = useAuthGate();
   const router = useRouter();
@@ -612,6 +618,28 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true, p
     );
   }, [user, requireAuth, item.id, addToast]);
 
+  const isOwnBattle = !!user && (item.userA?.uid === user.uid || item.userB?.uid === user.uid);
+  // Signed-in viewers on a ranked feed, and never on their own battle (the server refuses that).
+  const showMoreMenu = !!onNotInterested && !!user && !isOwnBattle;
+
+  const handleNotInterested = useCallback(async () => {
+    try {
+      await contestService.setFeedDismissal(item.id, true);
+      onNotInterested?.(item.id);
+      addToast('Theek hai, aisi battles kam dikhayenge.', 'success');
+    } catch {
+      addToast('Save nahi ho paya. Dobara try karein.', 'error');
+    }
+  }, [item.id, onNotInterested, addToast]);
+
+  const openMoreMenu = useCallback(() => {
+    Alert.alert('More options', undefined, [
+      { text: 'Not interested', onPress: () => void handleNotInterested() },
+      { text: 'Report', style: 'destructive', onPress: handleReport },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  }, [handleNotInterested, handleReport]);
+
   const openResult = useCallback(() => {
     if (item.id) router.push(battleResultPath(item.id) as any);
   }, [item.id, router]);
@@ -982,15 +1010,28 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true, p
         </View>
         
         <View style={styles.rightActions}>
-          <TouchableOpacity
-            onPress={handleReport}
-            hitSlop={10}
-            accessibilityRole="button"
-            accessibilityLabel="Report this battle"
-            style={styles.reportBtn}
-          >
-            <Ionicons name="flag-outline" size={20} color={subTextColor} />
-          </TouchableOpacity>
+          {showMoreMenu ? (
+            <TouchableOpacity
+              onPress={openMoreMenu}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel="More options"
+              accessibilityHint="Not interested, or report this battle"
+              style={styles.reportBtn}
+            >
+              <Ionicons name="ellipsis-horizontal" size={20} color={subTextColor} />
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              onPress={handleReport}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel="Report this battle"
+              style={styles.reportBtn}
+            >
+              <Ionicons name="flag-outline" size={20} color={subTextColor} />
+            </TouchableOpacity>
+          )}
           <TouchableOpacity onPress={handleBookmark}>
               {isBookmarked ? <Bookmark_Filled width={26} height={26} color="#FF4D67" /> : <Bookmark_Outline width={26} height={26} color={textColor} />}
           </TouchableOpacity>
