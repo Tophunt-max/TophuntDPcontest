@@ -66,6 +66,9 @@ import { videoSourceFor } from '@/src/lib/videoSource';
 import { useHlsVideo } from '@/src/hooks/useHlsVideo';
 import { useVideoStatus } from '@/src/hooks/useVideoStatus';
 import { prefetchImages } from '@/src/lib/mediaPrefetch';
+import { StoryClock } from '@/src/lib/storyClock';
+import { useAppActive } from '@/src/hooks/usePlaybackEnvironment';
+import { useIsFocused } from '@react-navigation/native';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { isVideoStory, isVsStory, storyMediaKind, type StoryViewer } from '@/src/types/stories';
 import { StoryVsFrame } from '@/src/components/stories/StoryVsFrame';
@@ -90,6 +93,11 @@ const { height } = Dimensions.get('window');
 // this screen plays, or a trimmed soundtrack ends early or runs past what the
 // author auditioned.
 const DEFAULT_STORY_DURATION = DEFAULT_STORY_WINDOW_MS;
+/**
+ * If a story's media reports neither ready nor error within this long, the bar
+ * starts anyway, so the viewer is never stuck on a spinner.
+ */
+const MEDIA_START_GRACE_MS = 12_000;
 // Vertical space the top (progress + author row) and bottom (reply bar) chrome
 // occupy, so the photo can be inset clear of them. Approximate on purpose — the
 // goal is only that no image content sits hidden behind the chrome.
@@ -121,6 +129,8 @@ export default function StoryView() {
    * missing on the web.
    */
   const [videoError, setVideoError] = useState(false);
+  // The image of a photo story failed to load.
+  const [imageError, setImageError] = useState(false);
   const [duration, setDuration] = useState(DEFAULT_STORY_DURATION);
   const [showViewers, setShowViewers] = useState(false);
   const [viewers, setViewers] = useState<StoryViewer[]>([]);
@@ -139,8 +149,18 @@ export default function StoryView() {
   // Repost State
   const [isReposting, setIsReposting] = useState(false);
 
+  // Everything that pauses the story. `uiHeld` is the viewer's own UI; the
+  // environment is the app going to the background or another screen covering
+  // this one. Neither used to pause the bar or the music.
+  const appActive = useAppActive();
+  const screenFocused = useIsFocused();
+  const uiHeld = isPaused || showHighlightModal || isKeyboardVisible || showViewers;
+  const environmentHeld = !appActive || !screenFocused;
+  const anyHeld = uiHeld || environmentHeld;
+  const anyHeldRef = useRef(anyHeld);
+  anyHeldRef.current = anyHeld;
+
   const animationRef = useRef<Animated.CompositeAnimation | null>(null);
-  const progressValue = useRef(0);
   const { width } = useDesignWindow();
   const viewersTranslateY = useRef(new Animated.Value(height)).current;
   const highlightTranslateY = useRef(new Animated.Value(height)).current;
@@ -359,7 +379,7 @@ export default function StoryView() {
    * no dependency on Bunny's MP4 Fallback being enabled or on a specific
    * rendition existing. `hostRef` goes on the View wrapping <VideoView>.
    */
-  const { hostRef: videoHostRef, playerSource } = useHlsVideo(
+  const { hostRef: videoHostRef, playerSource, failed: storyStreamFailed } = useHlsVideo(
     currentStory?.mediaType === 'video' ? currentStory.mediaUrl : null,
   );
   const player = useVideoPlayer(playerSource, (player) => {
@@ -410,9 +430,9 @@ export default function StoryView() {
     if (!musicUrl) return;
     musicPlayer.loop = true;
     musicPlayer.muted = isMuted;
-    if (isPaused || showHighlightModal || isKeyboardVisible || showViewers) musicPlayer.pause();
+    if (anyHeld) musicPlayer.pause();
     else musicPlayer.play();
-  }, [musicUrl, musicPlayer, player, isMuted, isPaused, showHighlightModal, isKeyboardVisible, showViewers]);
+  }, [musicUrl, musicPlayer, player, isMuted, anyHeld]);
 
   /**
    * Did the sound actually start?
@@ -425,7 +445,7 @@ export default function StoryView() {
    * Without this the story would sit silent behind a live-speaker pill: strictly
    * worse than starting muted, because nothing suggests there is anything to tap.
    */
-  const musicIntendedToPlay = !(isPaused || showHighlightModal || isKeyboardVisible || showViewers);
+  const musicIntendedToPlay = !anyHeld;
   useEffect(() => {
     if (!shouldProbeAutoplay({
       hasMusic: !!musicUrl,
@@ -553,37 +573,77 @@ export default function StoryView() {
     }
   }, [currentStoryIndex, currentUserStories, currentUserIndex, users, router]);
 
-  const startAnimation = (storyDuration: number) => {
-    progress.setValue(0);
-    progressValue.current = 0;
-    if (animationRef.current) animationRef.current.stop();
-    animationRef.current = Animated.timing(progress, {
-      toValue: 1,
-      duration: storyDuration,
-      useNativeDriver: false,
-    });
-    animationRef.current.start(({ finished }) => {
-      if (finished) nextStory();
-    });
-  };
+  // Progress bar + auto-advance (src/lib/storyClock.ts). The clock owns WHEN
+  // the bar runs; this driver only moves the Animated.Value.
+  const nextStoryRef = useRef(nextStory);
+  nextStoryRef.current = nextStory;
+  const clockRef = useRef<StoryClock | null>(null);
+  if (!clockRef.current) {
+    clockRef.current = new StoryClock(
+      {
+        set: (v) => {
+          animationRef.current?.stop();
+          progress.setValue(v);
+        },
+        run: (ms, done) => {
+          animationRef.current?.stop();
+          animationRef.current = Animated.timing(progress, { toValue: 1, duration: ms, useNativeDriver: false });
+          animationRef.current.start(({ finished }) => {
+            if (finished) done();
+          });
+        },
+        stop: () => {
+          animationRef.current?.stop();
+          let at = 0;
+          // Synchronous for the JS driver (useNativeDriver: false), which this uses.
+          progress.stopAnimation((v) => {
+            at = v;
+          });
+          return at;
+        },
+      },
+      () => nextStoryRef.current(),
+    );
+  }
+  const clock = clockRef.current;
+  useEffect(() => () => clock.dispose(), [clock]);
 
   useEffect(() => {
     if (currentStory) {
       markStoryAsSeen(currentStory.id);
+      clock.reset(currentStory.id);
       setIsLoading(true);
       setVideoError(false);
+      setImageError(false);
       // Everything that is not a video advances on a fixed timer. This used to
       // test `=== 'image'`, which excluded the `"photo"` the contest flows wrote —
       // so contest stories never started their progress bar and never advanced.
+      // The timer now starts when the image has LOADED (see the <Image> below):
+      // a slow image used to spend its whole window on a blank screen.
       if (!isVideoStory(currentStory)) {
         setDuration(DEFAULT_STORY_DURATION);
-        setIsLoading(false);
-        startAnimation(DEFAULT_STORY_DURATION);
+        // The battle frame has no single image whose load could start the
+        // timer, so it starts at once, as before.
+        if (isVsStory(currentStory)) {
+          setIsLoading(false);
+          clock.start(DEFAULT_STORY_DURATION);
+        }
       }
       if (isMyStory) {
           loadViewers(currentStory.id);
           loadHighlights();
       }
+      // Never a dead end: if the media reports neither ready nor error (a
+      // load event that never arrives, an hls.js failure that is swallowed),
+      // start the bar anyway so the viewer can always move on.
+      const key = currentStory.id;
+      const fallback = setTimeout(() => {
+        if (clock.key === key && !clock.hasStarted) {
+          setIsLoading(false);
+          clock.start(DEFAULT_STORY_DURATION);
+        }
+      }, MEDIA_START_GRACE_MS);
+      return () => clearTimeout(fallback);
     }
   }, [currentStoryIndex, userId]);
 
@@ -755,10 +815,15 @@ export default function StoryView() {
                 setDuration(videoDuration);
                 setIsLoading(false);
                 setVideoError(false);
-                if (!isPaused && !showHighlightModal) {
-                    player.play();
-                    startAnimation(videoDuration);
-                }
+                // Starts the bar the first time; after a stall it only resumes
+                // it. It used to restart from 0 on every readyToPlay.
+                clock.start(videoDuration);
+                if (!anyHeldRef.current) player.play();
+            } else if (status.status === 'loading' && clock.hasStarted) {
+                // Mid-clip stall: freeze the bar until playback resumes, so a slow
+                // connection does not skip the video before it is watched.
+                clock.hold('buffering');
+                setIsLoading(true);
             } else if (status.status === 'error') {
                 // Fall back to the behaviour of a non-video story: drop the
                 // spinner, explain briefly, and RUN THE TIMER so the story still
@@ -768,30 +833,38 @@ export default function StoryView() {
                 setIsLoading(false);
                 setVideoError(true);
                 setDuration(DEFAULT_STORY_DURATION);
-                if (!isPaused && !showHighlightModal) startAnimation(DEFAULT_STORY_DURATION);
+                clock.start(DEFAULT_STORY_DURATION);
             }
         });
         return () => subscription.remove();
     }
-  }, [currentStory, player, isPaused, showHighlightModal]);
+  }, [currentStory, player, clock]);
 
+  // Web: hls.js gave up on this stream after its bounded recovery. Same
+  // outcome as a player error: say so, and let the story advance.
   useEffect(() => {
-    if (isPaused || showHighlightModal || isKeyboardVisible) {
-      if (animationRef.current) animationRef.current.stop();
-      if (currentStory?.mediaType === 'video') player.pause();
-    } else if (!showViewers) {
-      if (currentStory?.mediaType === 'video') player.play();
-      const remainingDuration = (1 - progressValue.current) * duration;
-      animationRef.current = Animated.timing(progress, {
-        toValue: 1,
-        duration: remainingDuration,
-        useNativeDriver: false,
-      });
-      animationRef.current.start(({ finished }) => {
-        if (finished) nextStory();
-      });
+    if (!storyStreamFailed) return;
+    setIsLoading(false);
+    setVideoError(true);
+    setDuration(DEFAULT_STORY_DURATION);
+    clock.start(DEFAULT_STORY_DURATION);
+  }, [storyStreamFailed, clock]);
+
+  // Pause and resume the bar and the video together. The clock resumes from the
+  // exact progress reached; this used to restart the full duration on every
+  // resume, because the "progress so far" ref was never updated.
+  useEffect(() => {
+    clock.setHeld('user', uiHeld);
+    clock.setHeld('background', !appActive);
+    clock.setHeld('blur', !screenFocused);
+    if (!isVideoStory(currentStory)) return;
+    try {
+      if (anyHeld) player.pause();
+      else if (clock.hasStarted) player.play();
+    } catch {
+      /* no source loaded yet */
     }
-  }, [isPaused, showViewers, showHighlightModal, isKeyboardVisible]);
+  }, [uiHeld, appActive, screenFocused, anyHeld, clock, player, currentStory]);
 
   const mainPanResponder = useRef(
     PanResponder.create({
@@ -913,7 +986,29 @@ export default function StoryView() {
                 // parent (rather than a fixed Dimensions height) means the web
                 // build respects the real viewport instead of overflowing it.
                 <View style={[styles.mediaSafe, { paddingTop: insets.top + CHROME_TOP, paddingBottom: insets.bottom + CHROME_BOTTOM }]}>
-                    <Image source={{ uri: currentStory.mediaUrl }} style={styles.mediaFill} contentFit="contain" />
+                    <Image
+                        source={{ uri: currentStory.mediaUrl }}
+                        style={styles.mediaFill}
+                        contentFit="contain"
+                        accessibilityLabel={`Story by ${currentUserStories?.username || 'user'}`}
+                        // The timer starts when the picture is on screen, not before.
+                        onLoad={() => {
+                            setIsLoading(false);
+                            clock.start(DEFAULT_STORY_DURATION);
+                        }}
+                        // A broken image says so and still advances, like a
+                        // failed video, instead of a blank screen.
+                        onError={() => {
+                            setIsLoading(false);
+                            setImageError(true);
+                            clock.start(DEFAULT_STORY_DURATION);
+                        }}
+                    />
+                    {imageError && (
+                        <View style={styles.loader} pointerEvents="none">
+                            <Text style={{ color: 'white', fontSize: 14 }}>This photo could not be loaded.</Text>
+                        </View>
+                    )}
                 </View>
             ) : (
                 // Video is FULL-BLEED, like Instagram: no chrome padding, so a

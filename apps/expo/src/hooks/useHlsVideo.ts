@@ -20,8 +20,23 @@ export interface HlsVideoBinding {
   hostRef?: any;
   /** The source to give `useVideoPlayer`. */
   playerSource: VideoSource;
+  /**
+   * Web only: hls.js gave up after its bounded recovery
+   * (src/lib/hlsRecovery.ts). The caller should show its "could not be played"
+   * state. Always false on native, where the player's own `error` status says so.
+   */
+  failed: boolean;
 }
 
-export function useHlsVideo(url?: string | null): HlsVideoBinding {
-  return { hostRef: undefined, playerSource: videoSourceFor(url) };
+export interface HlsVideoOptions {
+  /**
+   * Web only: whether to download segments now. A feed card that is mounted
+   * but off screen passes false, so it does not buffer a video nobody sees.
+   * Default true.
+   */
+  load?: boolean;
+}
+
+export function useHlsVideo(url?: string | null, _options: HlsVideoOptions = {}): HlsVideoBinding {
+  return { hostRef: undefined, playerSource: videoSourceFor(url), failed: false };
 }
