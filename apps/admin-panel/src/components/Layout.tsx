@@ -5,6 +5,7 @@ import { isFullAdminRole, useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { fmtDateTime } from "@/lib/format";
 import {
+  ListOrdered,
   Plug,
   Activity,
   LayoutDashboard,
@@ -96,6 +97,7 @@ const nav = [
   { href: "/announcements", label: "Announcements", icon: Megaphone, section: "engagement" },
   { href: "/referrals", label: "Referral Program", icon: UserPlus, section: "engagement" },
   { href: "/explore", label: "Explore Page", icon: Compass, section: "engagement" },
+  { href: "/feed-ranking", label: "Feed Ranking", icon: ListOrdered, section: "engagement" },
   { href: "/system-health", label: "System Health", icon: Activity, section: "system" },
   { href: "/rewards", label: "Rewards & Gamification", icon: Gift, section: "system" },
   { href: "/app-control", label: "App Control", icon: SlidersHorizontal, section: "system" },

@@ -54,8 +54,8 @@ Two stages.
    account's first battles have no engagement and no followers, and sank below
    established creators.
 
-2. **Per-viewer re-rank** (signed-in only; the id order is memoised for 60 s for
-   stable paging):
+2. **Per-viewer re-rank** (signed-in only; the id order is memoised for 60 s, and
+   each scroll session's first order for 10 min, see Paging):
 
    ```
    + w.follow          the viewer follows a participant
@@ -87,6 +87,10 @@ Defaults and bounds are in `lib/feedWeights.ts`:
 | votedAffinity | 1.5 | 0–10 | newCreator | 0.8 | 0–5 |
 | visitAffinity | 1.0 | 0–10 | notInterested | 2.0 | 0–10 |
 
+- **Admin panel:** **Feed Ranking** page (full admins). It lists every weight with
+  its default, range and current value, and the ranking version; Save and Restore
+  defaults go through `POST /admin/app-settings`. Read: `GET /admin/feed-weights`.
+  App Settings no longer shows or re-posts `feedWeights`.
 - **Override:** `appConfig.feedWeights` through `POST /admin/app-settings`. A
   partial object merges over the stored one; `null` restores the defaults.
 - **Validation:** an unknown key or an out-of-range value is refused with a
@@ -117,16 +121,63 @@ cached order, and the creators are demoted by `w.notInterested`. Rows older than
 90 days are pruned on the viewer's next dismissal and all rows are deleted with
 the account. Explore lists and search are shared caches and do not apply it;
 block or mute is the tool for "never show me this person". Not offered on your
-own battles or to guests. The app has no undo screen yet; the action accepts
-`dismissed: false`.
+own battles or to guests (there is nothing to dismiss without an account).
+
+**Undo:** Home shows "Battle hidden · Undo" for 6 s; Undo sends `dismissed: false`
+and puts the card back in its place. Afterwards, Settings › Privacy › Not
+interested lists every dismissal (`GET /read/me/feed-dismissals`, newest first,
+keyset paged) with **Show again**, which also lifts the creators' demotion.
+
+### Paging
+
+`lib/feedCursor.ts`. The cursor is `f2.<session start>.<fingerprints>`: when the
+scroll session began, and a 24-bit fingerprint of every battle already served.
+The next page is the top of the current order minus those. So when the order is
+recomputed (another server, the 60 s order cache expired, a block, mute,
+dismissal or weight change, or impression fatigue moving the battles just shown),
+nothing repeats and nothing is skipped. Battles created after the session began
+are held back until the next refresh, so they cannot push the list down under the
+reader. On the same server the session's first order is reused for 10 minutes.
+At most 250 ids per session (the pool is 190). A bare number is still accepted as
+an offset from older app builds.
 
 ### Offline evaluation
 
-Not built. The ranking functions are pure given rows, weights and the viewer's
-signals, so a replay harness could score a recorded pool against two weight sets.
-It needs logged impressions and outcomes (votes, likes, dwell), which are not
-recorded today. The unit tests in `apps/worker/test/feedRanking.test.ts` pin the
-behaviour of each control.
+`lib/feedEval.ts` + `scripts/feed-eval.ts`. The scoring functions live in
+`lib/feedRanking.ts` and are used by both the live feed and the harness.
+
+```bash
+cd apps/worker
+# Dataset from D1 (SELECT only). --local, or --remote off-peak; a restored backup is safest.
+npm run feed:eval -- build --remote --days 14 --viewers 200 --horizon 24 --out feed-eval.json
+# Compare the defaults (or a weights file / JSON) with a candidate.
+npm run feed:eval -- compare --data feed-eval.json --a defaults --b '{"follow":4,"newCreator":1.2}'
+```
+
+A snapshot is one sampled viewer one minute before one of their votes: the pool
+live at that moment (counts rebuilt from vote/like/comment timestamps, so the
+outcome does not leak into the score), their history at that moment, and what
+they voted on, liked (gain 1) or commented on (gain 2) in the next `horizon`
+hours. Both weight sets rank every snapshot; the report gives NDCG@8/16,
+Recall@8/16, MRR, creator diversity and the age of the top 8, the difference, and
+per-snapshot wins/losses.
+
+Limits (printed with the report): impression fatigue is not replayed (no
+impression log); shares and reactions have no history; follower counts and
+holds are current values; the outcomes come from the feed people actually saw,
+which favours weights near the live ones. Use it to compare weight sets, not as
+an absolute score. The dataset holds uids: keep it private and delete it.
+
+## Home screen behaviour
+
+- **Scroll position:** switching For You ↔ Following, a Home pushed again from the
+  bottom bar, or Back to Home within 5 minutes returns to the same battles,
+  cursor and position, without reloading (`src/lib/feedSession.ts`, memory only,
+  per account, cleared on sign-out). After a cold start Home opens at the top.
+- **Video playback:** Home, Profile, Wins and battle detail all use the same rule
+  (`src/hooks/useListPlayback.ts`): a video plays only while its card is at least
+  half on screen, the screen is focused, the app is in the foreground and reduce
+  motion is off.
 
 ## Explore rails (`GET /read/matches`, not personalised)
 

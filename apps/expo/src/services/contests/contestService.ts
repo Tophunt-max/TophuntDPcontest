@@ -99,6 +99,14 @@ export const contestService = {
   setFeedDismissal: async (matchId: string, dismissed: boolean) =>
     callApi('setFeedDismissal', { matchId, dismissed }),
 
+  /** The viewer's "Not interested" list, newest first (Settings › Privacy › Not interested). */
+  listFeedDismissals: async (
+    cursor?: number | null,
+  ): Promise<{ items: { matchId: string; dismissedAt: number; match: any | null }[]; nextCursor: number | null }> => {
+    const res: any = await readApi('/read/me/feed-dismissals', { cursor: cursor ?? undefined, limit: 30 });
+    return { items: res?.items || [], nextCursor: res?.nextCursor ?? null };
+  },
+
   getContestById: async (id: string) => readApi(`/read/contests/${id}`),
 
   getMatchById: async (id: string) => readApi(`/read/matches/${id}`),

@@ -14,6 +14,7 @@ import { BackButton } from '@/src/components/ui/BackButton';
 import { useAuth } from '@/src/hooks/useAuth';
 import { useUserWins } from '@/src/hooks/useProfileData';
 import { PostCard } from '@/src/components/home/PostCard';
+import { useListPlayback } from '@/src/hooks/useListPlayback';
 import { Colors } from '@/constants/theme';
 
 export default function WinsScreen() {
@@ -29,6 +30,8 @@ export default function WinsScreen() {
   const subTextColor = isDark ? '#9BA1A6' : '#616161';
 
   const { data: wins, isLoading, refetch, isRefetching } = useUserWins(userId);
+  // Only the on-screen card plays, as on Home.
+  const { listProps, isPlaying } = useListPlayback();
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]}>
@@ -47,7 +50,8 @@ export default function WinsScreen() {
         <FlatList
           data={wins ?? []}
           keyExtractor={(item: any) => item.id}
-          renderItem={({ item }) => <PostCard item={item} isDark={isDark} />}
+          renderItem={({ item }) => <PostCard item={item} isDark={isDark} playActive={isPlaying(item.id)} />}
+          {...listProps}
           refreshing={isRefetching}
           onRefresh={refetch}
           contentContainerStyle={{ paddingVertical: 8, paddingBottom: 40 }}

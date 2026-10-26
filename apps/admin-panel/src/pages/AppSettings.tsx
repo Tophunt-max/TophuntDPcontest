@@ -49,6 +49,8 @@ const MANAGED_KEYS = [
   "referralProgram",
   // Owned by the Explore page.
   "explore",
+  // Owned by the Feed Ranking page (validated + audited there).
+  "feedWeights",
   "verificationReward",
   "paymentGateway",
   "ads",

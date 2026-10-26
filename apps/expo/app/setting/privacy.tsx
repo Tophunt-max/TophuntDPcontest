@@ -267,6 +267,12 @@ export default function PrivacySettingsScreen() {
             title="Blocked & Muted"
             description="Review and undo accounts you have blocked or muted"
             onPress={() => router.push('/setting/blocked')}
+          />
+          <Row
+            icon="eye-off-outline"
+            title="Not interested"
+            description="Battles you hid from your feed. Show them again here"
+            onPress={() => router.push('/setting/not-interested')}
             last
           />
         </View>

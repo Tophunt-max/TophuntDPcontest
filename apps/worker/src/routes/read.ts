@@ -14,6 +14,15 @@ import { httpsError } from "../lib/http";
 import { requireAuth, optionalAuth, guestReadLimit } from "../middleware/auth";
 import { FEED_WEIGHTS_MEMO_KEY, getAppConfig } from "../lib/settings";
 import { loadFeedDismissals, NO_DISMISSALS } from "../lib/feedDismissals";
+import { decodeFeedCursor, feedPage, SESSION_ORDER_TTL, sessionStartOf } from "../lib/feedCursor";
+import {
+  diversifyFeed,
+  FEED_DIVERSITY_WINDOW,
+  isNewCreatorAt,
+  personalScore,
+  rankBaseScore,
+  type ViewerSignals,
+} from "../lib/feedRanking";
 import { FEED_DEFAULT_WEIGHTS, rankingVersion, sanitizeFeedWeights, type FeedWeights } from "../lib/feedWeights";
 import { getSettings as getGamificationSettings, levelForXp } from "../lib/gamification";
 import { resolveLegalContent } from "../content/legal";
@@ -304,12 +313,10 @@ function filterDistributable(matches: any[], live: Map<string, LiveUserFields>):
   return matches.filter((m) => !hidden(m?.userA) && !hidden(m?.userB));
 }
 
-/** "New creator" for cold-start exploration: account under 30 days, under 50 followers. */
-export const NEW_CREATOR_MAX_AGE_MS = 30 * 86_400_000;
-export const NEW_CREATOR_MAX_FOLLOWERS = 50;
+export { NEW_CREATOR_MAX_AGE_MS, NEW_CREATOR_MAX_FOLLOWERS } from "../lib/feedRanking";
 
 function isNewCreator(u: LiveUserFields | undefined, now: number): boolean {
-  return !!u && u.createdAt > 0 && now - u.createdAt < NEW_CREATOR_MAX_AGE_MS && u.followersCount < NEW_CREATOR_MAX_FOLLOWERS;
+  return !!u && isNewCreatorAt(u.createdAt, u.followersCount, now);
 }
 
 /**
@@ -568,8 +575,6 @@ async function hydrateViewerState(db: any, matches: any[], uid: string): Promise
 const FEED_CANDIDATE_POOL = 150;
 const FEED_RESULT_WINDOW_MS = 24 * 60 * 60 * 1000; // keep finished battles visible ~1 day
 const FEED_RESULT_POOL = 40; // recently-finished battles pulled into the pool
-const FEED_RESULT_TAU_H = 10; // result-freshness decay (hours) for finished battles
-const FEED_DIVERSITY_WINDOW = 2; // don't repeat a participant within N neighbouring slots
 const FEED_AFFINITY_LOOKBACK = 500; // cap on how many past votes/visits we scan
 const FEED_SEEN_MAX_KEYS = 300; // bound the per-user seen map size in KV
 const FEED_SEEN_TTL = 3 * 86_400; // fatigue persists ~3 days
@@ -821,83 +826,9 @@ async function bumpSeen(env: Env, uid: string, ids: string[]): Promise<void> {
 }
 
 /**
- * Spread out battles that share a participant so one creator can't dominate
- * several consecutive slots (Instagram-style diversity pass). Greedy: keep the
- * score order, but skip a candidate whose participant appeared in the last
- * `window` picks and take the next distinct one instead.
- */
-function diversifyFeed(items: any[], window: number): any[] {
-  if (items.length <= 2) return items;
-  const pool = items.slice();
-  const out: any[] = [];
-  const recent: string[] = [];
-  while (pool.length > 0) {
-    let idx = pool.findIndex((m) => {
-      const a = m.userA?.uid;
-      const b = m.userB?.uid;
-      return !(a && recent.includes(a)) && !(b && recent.includes(b));
-    });
-    if (idx === -1) idx = 0; // everything conflicts → take the best remaining
-    const [chosen] = pool.splice(idx, 1);
-    out.push(chosen);
-    if (chosen.userA?.uid) recent.push(chosen.userA.uid);
-    if (chosen.userB?.uid) recent.push(chosen.userB.uid);
-    while (recent.length > window * 2) recent.shift();
-  }
-  return out;
-}
-
-/** User-agnostic content score for one match (higher = show sooner). */
-function rankBaseScore(r: any, now: number, w: FeedWeights): number {
-  const isCompleted = r.status === "completed";
-  const startedAt = Number(r.activatedAt || r.createdAt || now);
-  const finishedAt = Number(r.expiresAt || startedAt);
-  const startAgeH = Math.max(0, (now - startedAt) / 3_600_000);
-  const lifetimeH = Math.max(0.5, (finishedAt - startedAt) / 3_600_000);
-
-  let reactions = 0;
-  if (r.reactions && typeof r.reactions === "object") {
-    for (const v of Object.values(r.reactions)) reactions += Number(v) || 0;
-  }
-  // Weighted engagement: shares > comments > likes/votes (harder actions count more).
-  const engagement =
-    (Number(r.totalVotes) || 0) +
-    (Number(r.likeCount) || 0) +
-    (Number(r.commentCount) || 0) * 2 +
-    (Number(r.shareCount) || 0) * 3 +
-    reactions;
-
-  // Active: engagement rate since it started (a new hot battle out-ranks an old
-  // slow one). Completed: average rate over its whole life (how hot it was).
-  const velocity = engagement / ((isCompleted ? lifetimeH : startAgeH) + 2);
-
-  // Active freshness decays from when it started. Completed "result freshness"
-  // decays from when it FINISHED — a just-declared winner is fresh content, so
-  // it surfaces near the top and only sinks as the result ages.
-  const finishAgeH = Math.max(0, (now - finishedAt) / 3_600_000);
-  const freshness = isCompleted
-    ? Math.exp(-finishAgeH / FEED_RESULT_TAU_H)
-    : Math.exp(-startAgeH / 24);
-
-  // Closing-soon urgency only applies while voting is open.
-  let urgency = 0;
-  if (!isCompleted && Number.isFinite(finishedAt)) {
-    const hoursLeft = (finishedAt - now) / 3_600_000;
-    if (hoursLeft > 0 && hoursLeft <= 6) urgency = 1 - hoursLeft / 6;
-  }
-  const prize = Math.log1p(Number(r.entryFee) || 0);
-
-  let score = w.freshness * freshness + w.velocity * Math.log1p(velocity) + w.urgency * urgency + w.prize * prize;
-  // Prominence bump for a fresh result so winners surface instead of sinking to
-  // the bottom; scaled by result-freshness so it fades as the result ages.
-  if (isCompleted) score += w.result * freshness;
-  return score;
-}
-
-/**
  * Serve the personalized "For You" feed. Candidate pool is cached user-agnostic;
  * the per-viewer re-rank + engagement hydration run per request (never cached).
- * Pagination is offset-based over the ranked pool (stable within a cache window).
+ * Paging: lib/feedCursor.ts (session start + last id served, then offset).
  */
 async function servePersonalizedFeed(
   c: any,
@@ -906,6 +837,10 @@ async function servePersonalizedFeed(
 ) {
   const { status, type, limit, cursorRaw, uid, following } = opts;
   const now = Date.now();
+  // Paging (lib/feedCursor.ts): when this scroll session began and what it already served.
+  const cursor = decodeFeedCursor(cursorRaw);
+  const laterPage = cursor?.kind === "served";
+  const sessionStart = sessionStartOf(cursor, now);
   const w = await getFeedWeights(c.env);
   const ranking = rankingVersion(w);
   // Which algorithm + weights ranked this page (lib/feedWeights.ts).
@@ -1005,6 +940,9 @@ async function servePersonalizedFeed(
     // through this list, so it drops a fresh dismissal without waiting for the TTL.
     if (dismissals.matchIds.size) candidates = candidates.filter((m) => !dismissals.matchIds.has(m.id));
   }
+  // Later pages leave out battles created after the session began, so new ones
+  // cannot push the list down under the reader (they arrive on the next refresh).
+  if (laterPage) candidates = candidates.filter((m) => !(Number(m.createdAt) > sessionStart));
 
   // Per-user ranked order is cached briefly. On load-more / repeat requests
   // within the TTL we reuse it: this skips the affinity re-queries AND keeps
@@ -1018,7 +956,12 @@ async function servePersonalizedFeed(
   // Isolate memory, not KV — see the note on the candidate pool above. A plain
   // string[], and the reader below only maps over it, but it is copied anyway so
   // that this cache cannot be reached through the value it handed out.
-  const storedOrder = uid && candidates.length > 0 ? memoGet<string[]>(orderKey) : undefined;
+  // A later page first follows the order its session started with, if this isolate
+  // still has it: exact continuation, whatever changed in between. Ids that have
+  // since been blocked, muted or dismissed fall out in the `byId` lookup below.
+  const sessionKey = uid ? `cache:feedsession:${uid}:${following ? "following" : "foryou"}:${status}:${type || "all"}:${sessionStart}` : "";
+  const sessionOrder = uid && laterPage && candidates.length > 0 ? memoGet<string[]>(sessionKey) : undefined;
+  const storedOrder = uid && candidates.length > 0 ? sessionOrder ?? memoGet<string[]>(orderKey) : undefined;
   const cachedOrder = storedOrder ? storedOrder.slice() : null;
 
   let ranked: any[];
@@ -1067,38 +1010,24 @@ async function servePersonalizedFeed(
     const visitedSet = new Set((visitRows as Array<{ userId: string }>).map((r) => r.userId));
     const seen = seenState.map;
 
-    let scored = candidates.map((m) => {
-      const a = m.userA?.uid;
-      const b = m.userB?.uid;
-      let s = m._base as number;
-      const followed = followSet.has(a) || followSet.has(b);
-      if (followed) s += w.follow;
-      if (votedForSet.has(a) || votedForSet.has(b)) s += w.votedAffinity;
-      if (visitedSet.has(a) || visitedSet.has(b)) s += w.visitAffinity;
-      // Negative feedback: the viewer said "Not interested" to a battle by this creator.
-      if (dismissals.creators.has(a) || dismissals.creators.has(b)) s -= w.notInterested;
-      if (m.status === "completed") {
-        // Finished battle: you voted on it → you want to see who won, so boost
-        // its result to you (the opposite of the active-feed novelty penalty).
-        // No impression fatigue either — results only live for the short window.
-        if (votedMatchSet.has(m.id)) s += w.resultVotedBoost;
-      } else {
-        if (votedMatchSet.has(m.id)) s -= w.votedPenalty;
-        // Impression fatigue: shown before but not voted on → demote, scaled by
-        // how many times it was shown (capped).
-        const seenCount = seen[m.id] || 0;
-        if (seenCount > 0 && !votedMatchSet.has(m.id)) {
-          s -= w.seenPenalty * Math.min(seenCount, w.seenCap);
-        }
-      }
-      return { m, s, followed };
-    });
+    const sig: ViewerSignals = {
+      follows: followSet,
+      votedFor: votedForSet,
+      votedMatches: votedMatchSet,
+      visited: visitedSet,
+      dismissedCreators: dismissals.creators,
+      seen,
+    };
+    let scored = candidates.map((m) => ({ m, ...personalScore(m, sig, w) }));
     // "Following" tab: keep only battles featuring someone the viewer follows.
     if (following) scored = scored.filter((x) => x.followed);
     // Diversity pass so one creator doesn't stack several battles in a row.
     ranked = diversifyFeed(scored.sort((a, b) => b.s - a.s).map((x) => x.m), FEED_DIVERSITY_WINDOW);
     // Cache the id order for stable, cheap pagination within the window.
-    memoPut(orderKey, ranked.map((m) => m.id), FEED_ORDER_TTL);
+    // Only a first page writes the shared order: a later page ranked a pool cut to
+    // its session (no battles newer than `sessionStart`), and a refresh must not
+    // reuse that and miss the new ones.
+    if (!laterPage) memoPut(orderKey, ranked.map((m) => m.id), FEED_ORDER_TTL);
   } else if (following) {
     ranked = []; // signed-in but no candidates, or the empty-pool case
   } else {
@@ -1106,13 +1035,16 @@ async function servePersonalizedFeed(
     ranked = diversifyFeed(candidates, FEED_DIVERSITY_WINDOW);
   }
 
-  const offset = Math.max(pageCursor(cursorRaw) ?? 0, 0);
-  const pageItems = ranked.slice(offset, offset + limit).map((m) => {
-    const { _base, ...rest } = m; // strip the internal score from the response
+  // The first page of a session pins its order for the pages after it.
+  if (uid && !laterPage && ranked.length > 0) memoPut(sessionKey, ranked.map((m) => m.id), SESSION_ORDER_TTL);
+  const byRankedId = new Map<string, any>(ranked.map((m) => [m.id, m]));
+  const page = feedPage(ranked.map((m) => m.id), cursor, limit, sessionStart);
+  const pageItems = page.ids.map((id) => {
+    const { _base, ...rest } = byRankedId.get(id); // strip the internal score from the response
     return rest;
   });
-  const nextCursor = offset + limit < ranked.length ? offset + limit : null;
-  if (nextCursor != null) c.header("X-Next-Cursor", String(nextCursor));
+  const nextCursor = page.next;
+  if (nextCursor != null) c.header("X-Next-Cursor", nextCursor);
 
   // Record what we just showed this viewer (write-behind, KV) so repeatedly
   // shown-but-ignored battles fatigue on the next load.
@@ -3380,6 +3312,42 @@ readRoute.get("/follow-requests/count", requireAuth, async (c) => {
  * Contact details are masked; never cached (it changes the moment a code is
  * verified, and it is per-user).
  */
+/**
+ * The viewer's "Not interested" list, newest first, for the app's manage screen
+ * (Settings › Privacy › Not interested) where each one can be shown again
+ * (`setFeedDismissal` with `dismissed: false`). Keyset paging on the dismissal
+ * time; a battle that no longer exists is listed without a preview so it can
+ * still be removed.
+ */
+readRoute.get("/me/feed-dismissals", requireAuth, async (c) => {
+  const uid = c.get("user").uid;
+  const db = getDb(c.env);
+  const limit = Math.min(Math.max(Number(c.req.query("limit")) || 30, 1), 50);
+  const before = pageCursor(c.req.query("cursor"));
+  const rows = await db
+    .select({ matchId: schema.feedDismissals.matchId, createdAt: schema.feedDismissals.createdAt })
+    .from(schema.feedDismissals)
+    .where(
+      before != null
+        ? and(eq(schema.feedDismissals.viewerUid, uid), lt(schema.feedDismissals.createdAt, before))
+        : eq(schema.feedDismissals.viewerUid, uid),
+    )
+    .orderBy(desc(schema.feedDismissals.createdAt))
+    .limit(limit + 1)
+    .all();
+  const page = rows.slice(0, limit);
+  const ids = page.map((r) => r.matchId);
+  const matches = ids.length
+    ? await db.select(MATCH_LIST_COLUMNS).from(schema.contestMatches).where(inArray(schema.contestMatches.id, ids)).all()
+    : [];
+  const byId = new Map(matches.map((m: any) => [m.id, enrichMatchMedia(c.env, mapMatch(m))]));
+  c.header("Cache-Control", "private, no-store");
+  return c.json({
+    items: page.map((r) => ({ matchId: r.matchId, dismissedAt: Number(r.createdAt), match: byId.get(r.matchId) ?? null })),
+    nextCursor: rows.length > limit ? Number(page[page.length - 1].createdAt) : null,
+  });
+});
+
 readRoute.get("/me/verification", requireAuth, async (c) => {
   const status = await getVerificationStatus(c.env, c.get("user").uid);
   return c.json(status, 200, { "Cache-Control": "private, no-store" });

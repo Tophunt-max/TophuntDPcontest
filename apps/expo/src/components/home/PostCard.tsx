@@ -625,8 +625,8 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, onNotInterested, liv
   const handleNotInterested = useCallback(async () => {
     try {
       await contestService.setFeedDismissal(item.id, true);
+      // The list removes the card and offers Undo (app/home.tsx).
       onNotInterested?.(item.id);
-      addToast('Theek hai, aisi battles kam dikhayenge.', 'success');
     } catch {
       addToast('Save nahi ho paya. Dobara try karein.', 'error');
     }

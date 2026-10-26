@@ -853,6 +853,8 @@ export const api = {
   rewards: () => get<any>("/admin/rewards"),
   saveRewards: (payload: any) => post("/admin/rewards", payload),
   appSettings: () => get<any>("/admin/app-settings"),
+  // For You ranking weights: defaults, ranges, stored and effective values (full admins).
+  feedWeights: () => get<any>("/admin/feed-weights"),
   saveAppSettings: (payload: any) => post("/admin/app-settings", payload),
   // Sign-in / sign-up switches (resolved) + sign-ups per method over 30 days.
   authMethods: () => get<any>("/admin/auth-methods"),
