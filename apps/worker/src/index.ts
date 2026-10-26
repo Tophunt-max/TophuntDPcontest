@@ -55,7 +55,7 @@ import {
 import { applyPublicMediaCors, preflightMediaCorsHeaders } from "./lib/mediaCors";
 import { cachePolicyForKey } from "./lib/mediaCategories";
 import { clientIp, rateLimit } from "./lib/rateLimit";
-import { authorizeGuestMatchSocket, GUEST_SOCKET_UID, parseWsChannel, trustedHubHeaders, authorizeAppConfigSocket, MAX_APP_CONFIG_SOCKETS } from "./lib/wsGuest";
+import { authorizeGuestMatchSocket, authorizeSignedInMatchSocket, GUEST_SOCKET_UID, parseWsChannel, trustedHubHeaders, authorizeAppConfigSocket, MAX_APP_CONFIG_SOCKETS } from "./lib/wsGuest";
 
 // Durable Object for real-time WebSocket push.
 export { RealtimeHub } from "./realtime";
@@ -404,8 +404,14 @@ app.get("/ws", async (c) => {
     );
     user = await verifyIdToken(token, c.env);
     await assertSessionUsable(c.env, user);
-  } catch {
-    return c.text("Unauthorized.", 401);
+  } catch (e) {
+    // Only a rejected token or session is 401/403. A D1 or key-fetch failure used to
+    // be 401 too, and the app counts refused upgrades towards a forced sign-out.
+    const code = e instanceof ApiError ? e.code : null;
+    if (code === "unauthenticated") return c.text("Unauthorized.", 401);
+    if (code === "permission-denied") return c.text("Forbidden.", 403);
+    console.error("[ws] auth check failed (not an auth refusal)", e);
+    return c.text("Temporarily unavailable.", 503);
   }
 
   const { kind, ref } = parsed;
@@ -415,7 +421,13 @@ app.get("/ws", async (c) => {
     // Single source of truth with the REST handlers — an indexed chat_members
     // seek, not a json_each scan of `chats`.
     if (!(await isChatMember(c.env, ref, user.uid))) return c.text("Forbidden.", 403);
-  } else if (kind !== "match") {
+  } else if (kind === "match") {
+    // Signed-in match sockets had no check at all: any account could follow an
+    // invite-only battle's live tallies, and any 128-char string minted a Durable
+    // Object. Same id shape as the guest path; invite-only needs a participant.
+    const decision = await authorizeSignedInMatchSocket(c.env, ref, user.uid);
+    if (!decision.ok) return c.text(decision.reason, decision.status);
+  } else {
     return c.text("Unknown channel.", 400);
   }
 

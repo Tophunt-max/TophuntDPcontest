@@ -112,12 +112,23 @@ async function fetchJwks(env: Env): Promise<JSONWebKeySet> {
 
 /**
  * Verify a Firebase ID token and return the authenticated user.
- * Throws ApiError('unauthenticated') on any failure.
+ * Throws ApiError('unauthenticated') for a bad token, ApiError('unavailable') when
+ * the public keys cannot be fetched.
  */
 export async function verifyIdToken(token: string, env: Env): Promise<AuthUser> {
   const projectId = env.FIREBASE_PROJECT_ID;
+  // Fetching Google's public keys is OUR dependency failing, not the caller's token.
+  // It used to be folded into the catch below and answered 401, which the app
+  // treats as "session rejected" — so a JWKS outage could sign people out.
+  let keySet: JSONWebKeySet;
   try {
-    const jwks = createLocalJWKSet(await getJwks(env));
+    keySet = await getJwks(env);
+  } catch (e) {
+    console.error("[auth] Firebase public keys unavailable", e);
+    throw httpsError("unavailable", "Sign-in check is temporarily unavailable. Try again.");
+  }
+  try {
+    const jwks = createLocalJWKSet(keySet);
     const { payload } = await jwtVerify(token, jwks, {
       issuer: `https://securetoken.google.com/${projectId}`,
       audience: projectId,

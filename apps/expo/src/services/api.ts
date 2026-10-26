@@ -169,6 +169,25 @@ export async function endRejectedSession() {
   await endExpiredSession(true);
 }
 
+/**
+ * Ask the API whether this session is still accepted, after the WebSocket layer
+ * saw several refused upgrades in a row.
+ *
+ * A refused upgrade carries no status in React Native, so it cannot tell a revoked
+ * session (401) from a chat it is no longer a member of (403), a server outage
+ * (503) or a dead network. Signing out on the refusals alone signed people out for
+ * all of those. One authenticated read can tell: the request core already ends the
+ * session on a real 401, and anything else leaves the user signed in.
+ */
+export async function probeSession(): Promise<void> {
+  if (!auth.currentUser) return;
+  try {
+    await readApiLive('/read/me/status');
+  } catch {
+    /* a 401 has already been handled by the request core; anything else is not a sign-out */
+  }
+}
+
 let endingSession = false;
 async function endExpiredSession(revoked = false) {
   if (endingSession || deliberateSignOut || !auth.currentUser) return;
