@@ -78,8 +78,34 @@ const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
 // --- Media (cached images + autoplay video) --------------------------------
 // expo-image gives disk caching + a smooth fade, so re-scrolling a feed doesn't
 // re-download every image (less R2 bandwidth, faster paint).
+//
+// Whole picture, never cropped: the slot is a fixed 260 tall and ~0.65 wide-to-
+// tall, but entries are 4:5 (photos), 9:16 (videos) or anything (older uploads).
+// `cover` cut ~19% off a 4:5 photo's sides. Now the media is drawn with
+// `contain`, and the space it leaves is filled with a blurred copy of the same
+// image (same URI, so it comes from the memory cache, not a second download).
+
+/** Blurred, dimmed fill behind contained media. Decorative only. */
+const FitBackdrop = ({ uri }: { uri?: string | null }) =>
+  uri ? (
+    <>
+      <ExpoImage
+        source={uri}
+        style={StyleSheet.absoluteFill}
+        contentFit="cover"
+        blurRadius={24}
+        accessible={false}
+        pointerEvents="none"
+      />
+      <View style={[StyleSheet.absoluteFill, styles.fitDim]} pointerEvents="none" />
+    </>
+  ) : null;
+
 const PhotoMedia = ({ uri, style }: { uri?: string; style: any }) => (
-  <ExpoImage source={uri} style={style} contentFit="cover" />
+  <View style={[style, styles.fitFrame]}>
+    <FitBackdrop uri={uri} />
+    <ExpoImage source={uri} style={StyleSheet.absoluteFill} contentFit="contain" />
+  </View>
 );
 
 // Photo/Video are SEPARATE components so a photo battle never instantiates a
@@ -124,7 +150,10 @@ const VideoMedia = ({ uri, style, active }: { uri: string; style: any; active: b
     return (
       <View style={[style, styles.videoPlaceholder]}>
         {!!thumbnailUrl && (
-          <ExpoImage source={{ uri: thumbnailUrl }} style={StyleSheet.absoluteFill} contentFit="cover" />
+          <>
+            <FitBackdrop uri={thumbnailUrl} />
+            <ExpoImage source={{ uri: thumbnailUrl }} style={StyleSheet.absoluteFill} contentFit="contain" />
+          </>
         )}
         <View style={styles.videoPlaceholderOverlay}>
           {isFailed || streamFailed ? (
@@ -143,11 +172,13 @@ const VideoMedia = ({ uri, style, active }: { uri: string; style: any; active: b
   // The wrapper carries `hostRef` so hls.js can find the <video> on web; on
   // native the ref is undefined and this is an inert View.
   return (
-    <View ref={hostRef} style={style}>
+    <View ref={hostRef} style={[style, styles.fitFrame]}>
+      {/* The poster, blurred, fills the bars around the contained video. */}
+      <FitBackdrop uri={thumbnailUrl} />
       <VideoView
         player={player}
-        style={StyleSheet.absoluteFill}
-        contentFit="cover"
+        style={[StyleSheet.absoluteFill, styles.videoClear]}
+        contentFit="contain"
         nativeControls={false}
         onFirstFrameRender={() => setFirstFrame(true)}
       />
@@ -155,7 +186,7 @@ const VideoMedia = ({ uri, style, active }: { uri: string; style: any; active: b
         <ExpoImage
           source={{ uri: thumbnailUrl }}
           style={StyleSheet.absoluteFill}
-          contentFit="cover"
+          contentFit="contain"
           pointerEvents="none"
           accessibilityIgnoresInvertColors
         />
@@ -1086,6 +1117,10 @@ const styles = StyleSheet.create({
   mediaSection: { flexDirection: 'row', justifyContent: 'space-between', marginHorizontal: 16, gap: 12, position: 'relative' },
   imageWrapper: { flex: 1, position: 'relative', borderRadius: 20, overflow: 'hidden', borderWidth: 2, borderColor: 'transparent' },
   postImage: { width: '100%', height: 260, backgroundColor: '#EEE' },
+  fitFrame: { overflow: 'hidden', backgroundColor: '#15171C' },
+  fitDim: { backgroundColor: 'rgba(0,0,0,0.18)' },
+  // Lets the blurred poster show through the letterbox bars around the video.
+  videoClear: { backgroundColor: 'transparent' },
   // Shown in place of the B entry when a battle has no opponent yet.
   waitingSlot: { alignItems: 'center', justifyContent: 'center', gap: 6 },
   waitingSlotText: { fontFamily: 'Urbanist-SemiBold', fontSize: 12, color: '#9BA1A6' },
