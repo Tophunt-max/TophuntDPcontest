@@ -43,6 +43,7 @@ import ChevronRight from 'lucide-react-native/icons/chevron-right';
 import ChevronUp from 'lucide-react-native/icons/chevron-up';
 import CircleCheck from 'lucide-react-native/icons/circle-check';
 import CircleUser from 'lucide-react-native/icons/circle-user';
+import CircleDot from 'lucide-react-native/icons/circle-dot';
 import Clapperboard from 'lucide-react-native/icons/clapperboard';
 import Clock from 'lucide-react-native/icons/clock';
 import Cloud from 'lucide-react-native/icons/cloud';
@@ -178,7 +179,7 @@ export interface IconProps {
 type LucideIcon = React.ComponentType<any>;
 
 // name -> component lookup (built from the per-icon imports above).
-const I: Record<string, LucideIcon> = { AlarmClock, AlertCircle, ArrowDown, ArrowLeft, ArrowLeftRight, ArrowRight, ArrowUp, AtSign, AudioLines, Award, Ban, Banknote, Bell, Bookmark, Calendar, Camera, ChartColumn, ChartLine, Check, CheckCheck, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleCheck, CircleHelp, CircleUser, Clapperboard, Clock, Cloud, CloudOff, Coins, Compass, Copy, CreditCard, Crop, Crown, Dices, Download, Expand, Eye, EyeOff, FerrisWheel, File, FileText, Filter, Flag, Flame, Frown, Gamepad2, Gem, Gift, Globe, Hand, Heart, HeartCrack, HeartHandshake, Home, Hourglass, Image, Images, IndianRupee, Info, Landmark, LayoutGrid, Link, List, Lock, LockOpen, LogIn, LogOut, Mail, MapPin, Medal, Megaphone, Menu, MessageCircle, MessagesSquare, Mic, Moon, MoreHorizontal, MoreVertical, Music, Newspaper, Package, Palette, PartyPopper, Pause, Pencil, Phone, Play, PlayCircle, Plus, PlusCircle, QrCode, Receipt, RefreshCw, Rocket, RotateCw, ScanLine, Search, Send, Settings, Share2, Shield, ShieldCheck, SlidersHorizontal, Smartphone, Smile, Sparkles, Sprout, SquarePen, Star, Sticker, Sun, SwitchCamera, Swords, Tag, Tags, Target, Ticket, Timer, TrafficCone, Trash2, TrendingDown, TrendingUp, TriangleAlert, Trophy, Truck, Tv, Type, Upload, UploadCloud, User, UserPlus, Users, Video, VideoOff, Volume2, VolumeX, Vote, Wallet, Wand2, Wifi, WifiOff, Wrench, X, XCircle, Zap };
+const I: Record<string, LucideIcon> = { AlarmClock, AlertCircle, ArrowDown, ArrowLeft, ArrowLeftRight, ArrowRight, ArrowUp, AtSign, AudioLines, Award, Ban, Banknote, Bell, Bookmark, Calendar, Camera, ChartColumn, ChartLine, Check, CheckCheck, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleCheck, CircleDot, CircleHelp, CircleUser, Circle, Clapperboard, Clock, Cloud, CloudOff, Coins, Compass, Copy, CreditCard, Crop, Crown, Dices, Download, Expand, Eye, EyeOff, FerrisWheel, File, FileText, Filter, Flag, Flame, Frown, Gamepad2, Gem, Gift, Globe, Hand, Heart, HeartCrack, HeartHandshake, Home, Hourglass, Image, Images, IndianRupee, Info, Landmark, LayoutGrid, Link, List, Lock, LockOpen, LogIn, LogOut, Mail, MapPin, Medal, Megaphone, Menu, MessageCircle, MessagesSquare, Mic, Moon, MoreHorizontal, MoreVertical, Music, Newspaper, Package, Palette, PartyPopper, Pause, Pencil, Phone, Play, PlayCircle, Plus, PlusCircle, QrCode, Receipt, RefreshCw, Rocket, RotateCw, ScanLine, Search, Send, Settings, Share2, Shield, ShieldCheck, SlidersHorizontal, Smartphone, Smile, Sparkles, Sprout, SquarePen, Star, Sticker, Sun, SwitchCamera, Swords, Tag, Tags, Target, Ticket, Timer, TrafficCone, Trash2, TrendingDown, TrendingUp, TriangleAlert, Trophy, Truck, Tv, Type, Upload, UploadCloud, User, UserPlus, Users, Video, VideoOff, Volume2, VolumeX, Vote, Wallet, Wand2, Wifi, WifiOff, Wrench, X, XCircle, Zap };
 
 // Resolve an icon by its lucide PascalCase name, falling back safely.
 const ic = (n: string): LucideIcon => I[n] || Circle;
@@ -207,6 +208,8 @@ const ionicons: Record<string, LucideIcon> = {
   'help': ic('CircleHelp'), 'help-outline': ic('CircleHelp'), 'help-circle-outline': ic('CircleHelp'),
   'hand-left': ic('Hand'), 'hand-left-outline': ic('Hand'), 'hand-right': ic('Hand'),
   'ban-outline': ic('Ban'), 'ban': ic('Ban'),
+  // Radio list (ReportReasonDialog). The "off" ring is an explicit Circle, not the unmapped-name fallback.
+  'radio-button-on': ic('CircleDot'), 'radio-button-off': ic('Circle'),
   // Story editor toolbar.
   'musical-notes': ic('Music'), 'musical-notes-outline': ic('Music'),
   'at-outline': ic('AtSign'), 'at': ic('AtSign'),
