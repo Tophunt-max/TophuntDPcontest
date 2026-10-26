@@ -1,5 +1,6 @@
 import { Q, type Model } from '@nozbe/watermelondb';
 import NetInfo from '@react-native-community/netinfo';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {
   database,
@@ -210,6 +211,10 @@ export const saveStoryLocally = async (story: Story): Promise<void> => {
 
 export const getUserStoriesLocally = async (): Promise<UserStories[]> => {
   try {
+    // Only the account that filled the cache may read it. Clearing on an account
+    // change is an async effect, so a cache can outlive its owner (app killed
+    // mid-clear, clear failed); this makes that a miss instead of a leak.
+    if (!(await storyCacheOwnedBy(auth.currentUser?.uid ?? null))) return [];
     const userStoriesModels = await database
       .get<UserStoryModel>('user_stories')
       .query()
@@ -252,6 +257,7 @@ export const getUserStoriesByUserIdLocally = async (
   userId: string,
 ): Promise<UserStories | null> => {
   try {
+    if (!(await storyCacheOwnedBy(auth.currentUser?.uid ?? null))) return null;
     const userStory = await findOrNull<UserStoryModel>('user_stories', userId);
     if (!userStory) return null;
 
@@ -552,6 +558,44 @@ export const checkAndSync = async (): Promise<void> => {
  * sign-out/sign-in round trip.
  */
 export const clearLocalStories = async (): Promise<void> => {
+  // Bump first: a fetch that started before this clear must not write its
+  // (previous account's) answer back afterwards. See replaceUserStoriesLocally.
+  storyCacheGeneration++;
+  try {
+    await AsyncStorage.removeItem(STORY_CACHE_OWNER_KEY);
+  } catch {
+    /* the owner check fails closed without the key anyway */
+  }
+  await wipeStoryTables();
+};
+
+// ============================================
+// Account ownership of the Story cache
+// ============================================
+
+/** uid of the account whose server answer the Story tables currently hold. */
+export const STORY_CACHE_OWNER_KEY = 'tophunt.storyCache.owner';
+
+/**
+ * Bumped by every clearLocalStories. A caller captures it when a fetch STARTS
+ * and passes it to replaceUserStoriesLocally, which drops the write if a clear
+ * ran in between. Same contract as `snapshotGeneration` in lib/feedSnapshot.ts.
+ */
+let storyCacheGeneration = 0;
+export function storyCacheGenerationNow(): number {
+  return storyCacheGeneration;
+}
+
+async function storyCacheOwnedBy(uid: string | null): Promise<boolean> {
+  if (!uid) return false;
+  try {
+    return (await AsyncStorage.getItem(STORY_CACHE_OWNER_KEY)) === uid;
+  } catch {
+    return false;
+  }
+}
+
+async function wipeStoryTables(): Promise<void> {
   try {
     await database.write(async () => {
       const doomed: Model[] = [];
@@ -577,7 +621,24 @@ export const clearLocalStories = async (): Promise<void> => {
  * the audience rule existed — and kept serving them. Replacing the set on every
  * successful fetch makes the server's audience decision the only one.
  */
-export const replaceUserStoriesLocally = async (list: UserStories[]): Promise<void> => {
-  await clearLocalStories();
-  for (const group of list) await saveUserStoriesLocally(group);
+export const replaceUserStoriesLocally = async (
+  list: UserStories[],
+  owner: string,
+  startedAtGeneration: number = storyCacheGeneration,
+): Promise<void> => {
+  // The account changed (or signed out) while this fetch was in flight: the
+  // response belongs to the previous viewer and must not land on disk.
+  if (startedAtGeneration !== storyCacheGeneration) return;
+  await wipeStoryTables();
+  try {
+    await AsyncStorage.setItem(STORY_CACHE_OWNER_KEY, owner);
+  } catch {
+    // Without the marker reads fail closed (empty), which is safe.
+  }
+  for (const group of list) {
+    if (startedAtGeneration !== storyCacheGeneration) break;
+    await saveUserStoriesLocally(group);
+  }
+  // A clear that ran while the rows were being written wins: undo them.
+  if (startedAtGeneration !== storyCacheGeneration) await wipeStoryTables();
 };
