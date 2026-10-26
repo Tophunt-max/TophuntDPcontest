@@ -67,6 +67,7 @@ import m_0062_withdrawal_platform_fee_sql from "../../migrations/0062_withdrawal
 import m_0063_referral_program_sql from "../../migrations/0063_referral_program.sql";
 import m_0064_seed_explore_banners_sql from "../../migrations/0064_seed_explore_banners.sql";
 import m_0065_feed_dismissals_sql from "../../migrations/0065_feed_dismissals.sql";
+import m_0066_chat_member_cleared_at_sql from "../../migrations/0066_chat_member_cleared_at.sql";
 
 export interface Migration {
   name: string;
@@ -140,4 +141,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0063_referral_program.sql", sql: m_0063_referral_program_sql },
   { name: "0064_seed_explore_banners.sql", sql: m_0064_seed_explore_banners_sql },
   { name: "0065_feed_dismissals.sql", sql: m_0065_feed_dismissals_sql },
+  { name: "0066_chat_member_cleared_at.sql", sql: m_0066_chat_member_cleared_at_sql },
 ];

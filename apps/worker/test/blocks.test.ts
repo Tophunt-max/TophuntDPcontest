@@ -635,7 +635,7 @@ describe('notification pagination', () => {
     expect(res.body).toHaveLength(0);
     // The cursor must still describe the last SCANNED row so the next page makes
     // progress instead of re-scanning what was just discarded.
-    expect(res.headers.get('X-Next-Cursor')).toBe(String(ts + 3));
+    expect(res.headers.get('X-Next-Cursor')).toBe(`${ts + 3}_n3`);
   });
 
   it('keeps the unread badge consistent with the list it opens', async () => {

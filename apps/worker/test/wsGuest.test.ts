@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { makeEnv, drizzleOf, type TestEnv } from './helpers/harness';
 import * as schema from '../src/db/schema';
 import { memoReset } from '../src/lib/memo';
-import { authorizeGuestMatchSocket } from '../src/lib/wsGuest';
+import { authorizeGuestMatchSocket, authorizeSignedInMatchSocket } from '../src/lib/wsGuest';
 
 beforeEach(() => memoReset());
 
@@ -89,5 +89,42 @@ describe('/ws channel and header hygiene', () => {
     // The handshake itself is untouched.
     expect(h.get('Upgrade')).toBe('websocket');
     expect(h.get('Sec-WebSocket-Key')).toBe('k');
+  });
+});
+
+describe('signed-in match sockets', () => {
+  it('allow any existing public battle, including a finished one', async () => {
+    const { env } = makeEnv();
+    await seedMatch(env, 'match-open');
+    await seedMatch(env, 'match-done', { status: 'completed' });
+    expect(await authorizeSignedInMatchSocket(env as any, 'match-open', 'viewer')).toEqual({ ok: true });
+    expect(await authorizeSignedInMatchSocket(env as any, 'match-done', 'viewer')).toEqual({ ok: true });
+  });
+
+  it('allow an invite-only battle only to its participants and the invited player', async () => {
+    const { env } = makeEnv();
+    await seedMatch(env, 'match-invite', { isPrivate: true, invitedUid: 'invitee', userB: null });
+    expect(await authorizeSignedInMatchSocket(env as any, 'match-invite', 'a')).toEqual({ ok: true });
+    expect(await authorizeSignedInMatchSocket(env as any, 'match-invite', 'invitee')).toEqual({ ok: true });
+    expect(await authorizeSignedInMatchSocket(env as any, 'match-invite', 'stranger')).toMatchObject({ ok: false, status: 403 });
+  });
+
+  it('refuse a missing or malformed id (no arbitrary Durable Object names)', async () => {
+    const { env } = makeEnv();
+    expect(await authorizeSignedInMatchSocket(env as any, 'match-missing', 'viewer')).toMatchObject({ ok: false, status: 404 });
+    expect(await authorizeSignedInMatchSocket(env as any, 'x'.repeat(100), 'viewer')).toMatchObject({ ok: false, status: 400 });
+    expect(await authorizeSignedInMatchSocket(env as any, 'a b', 'viewer')).toMatchObject({ ok: false, status: 400 });
+  });
+
+  it('answer 503 on a D1 failure and do not remember it', async () => {
+    const { env } = makeEnv();
+    await seedMatch(env, 'match-open');
+    const prepare = env.DB.prepare.bind(env.DB);
+    (env.DB as any).prepare = () => {
+      throw new Error('D1 down');
+    };
+    expect(await authorizeSignedInMatchSocket(env as any, 'match-open', 'viewer')).toMatchObject({ ok: false, status: 503 });
+    (env.DB as any).prepare = prepare;
+    expect(await authorizeSignedInMatchSocket(env as any, 'match-open', 'viewer')).toEqual({ ok: true });
   });
 });

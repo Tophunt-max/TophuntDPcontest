@@ -158,6 +158,9 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
   closeSheetRef.current = closeSheet;
 
   // --- actions -------------------------------------------------------------
+  // The client id of a post that failed, with its text (see handlePostComment).
+  const retryClientRef = useRef<{ text: string; clientId: string } | null>(null);
+  const likesInFlight = useRef(new Set<string>());
   const openProfile = useCallback((userId?: string) => {
     if (!userId) return;
     closeSheet();
@@ -172,7 +175,10 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
       return;
     }
 
-    const clientId = commentService.clientToken();
+    // Re-posting the draft a failed attempt put back reuses that attempt's client
+    // id. If the failure was a lost RESPONSE (the server did store it), the server
+    // answers "duplicate" instead of creating a second copy.
+    const clientId = retryClientRef.current?.text === text ? retryClientRef.current.clientId : commentService.clientToken();
     // Optimistic insert at the top; reconciled when the server echo arrives.
     const optimistic: Comment = {
       id: clientId,
@@ -192,12 +198,14 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
     setIsPosting(true);
     try {
       await commentService.addComment(postId, text, collectionName, clientId);
+      retryClientRef.current = null;
       // The realtime bump (refreshFirstPage) reconciles the confirmed row.
       refreshFirstPage();
     } catch (e: any) {
       // Roll back the optimistic comment and restore the draft.
       setComments((prev) => prev.filter((c) => c.id !== clientId));
       setCommentText(text);
+      retryClientRef.current = { text, clientId };
       Alert.alert('Could not post', e?.message || 'Please try again.');
     } finally {
       setIsPosting(false);
@@ -207,6 +215,9 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
   const handleLikeComment = useCallback(async (comment: Comment) => {
     if (!user) return void requireAuth('like', { beforeNavigate: () => closeSheetRef.current?.() });
     if (comment.pending) return;
+    // One request per comment at a time: a fast double tap sent two toggles.
+    if (likesInFlight.current.has(comment.id)) return;
+    likesInFlight.current.add(comment.id);
     const next = !comment.likedByMe;
     setComments((prev) => prev.map((c) => (
       c.id === comment.id
@@ -214,7 +225,8 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
         : c
     )));
     try {
-      const res = await commentService.likeComment(comment.id, collectionName);
+      // Explicit target state, so a retried request cannot undo itself.
+      const res = await commentService.likeComment(comment.id, collectionName, next);
       setComments((prev) => prev.map((c) => (
         c.id === comment.id ? { ...c, likedByMe: res.liked, likes: res.likeCount } : c
       )));
@@ -222,6 +234,8 @@ export const CommentSheet = ({ postId, visible, onDismiss, isDark, isContestMatc
       setComments((prev) => prev.map((c) => (
         c.id === comment.id ? { ...c, likedByMe: comment.likedByMe, likes: comment.likes } : c
       )));
+    } finally {
+      likesInFlight.current.delete(comment.id);
     }
   }, [user, collectionName, requireAuth]);
 

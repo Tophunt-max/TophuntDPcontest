@@ -93,14 +93,20 @@ export const commentService = {
   },
 
   /**
-   * Toggle a like on a single comment. Returns the new liked state and the
+   * Like or unlike a single comment (`liked`; a toggle when omitted). Returns the new liked state and the
    * authoritative like count so the UI can reconcile its optimistic update.
    */
   likeComment: async (
     commentId: string,
     collectionName: string = 'posts',
+    liked?: boolean,
   ): Promise<{ liked: boolean; likeCount: number }> => {
-    const res: any = await callApi('likeComment', { commentId, targetType: collectionName });
+    const res: any = await callApi('likeComment', {
+      commentId,
+      targetType: collectionName,
+      // Explicit target state when known: replay-safe on the server.
+      ...(typeof liked === 'boolean' ? { liked } : {}),
+    });
     return { liked: !!res.liked, likeCount: Number(res.likeCount ?? 0) };
   },
 

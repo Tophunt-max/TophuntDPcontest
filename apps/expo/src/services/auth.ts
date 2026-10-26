@@ -56,6 +56,10 @@ export async function clearAccountScopedCaches(): Promise<void> {
     ['stories', () => import('@/src/services/stories/offlineStoryService').then((m) => m.clearLocalStories())],
     ['feed', () => import('@/src/lib/feedSnapshot').then((m) => m.clearFeedSnapshots())],
     ['recent-searches', () => import('@/src/services/explore').then((m) => m.clearRecentSearches())],
+    // The previous account's unread count stayed on the app icon, and its
+    // delivered alerts in the notification shade, after sign-out.
+    ['badge', () => import('@/src/services/notifications/notificationService').then((m) => m.notificationService.syncBadgeCount(0))],
+    ['delivered-notifications', () => import('@/src/services/notifications/notificationService').then((m) => m.notificationService.clearDeliveredNotifications())],
   ];
   await Promise.all(
     steps.map(([name, run]) =>

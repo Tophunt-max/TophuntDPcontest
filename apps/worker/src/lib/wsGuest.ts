@@ -31,7 +31,7 @@ const MEMO_SEC = 60;
 /** The identity a guest socket is tagged with in the RealtimeHub. */
 export const GUEST_SOCKET_UID = "guest";
 
-export type GuestWsDecision = { ok: true } | { ok: false; status: 400 | 403 | 404 | 429; reason: string };
+export type GuestWsDecision = { ok: true } | { ok: false; status: 400 | 403 | 404 | 429 | 503; reason: string };
 
 export async function authorizeGuestMatchSocket(env: Env, ref: string, ip: string): Promise<GuestWsDecision> {
   if (!MATCH_ID.test(ref)) return { ok: false, status: 400, reason: "Bad match id." };
@@ -58,6 +58,39 @@ export async function authorizeGuestMatchSocket(env: Env, ref: string, ip: strin
     memoPut(key, { v: allowed }, MEMO_SEC);
   }
   return allowed ? { ok: true } : { ok: false, status: 404, reason: "No live public battle." };
+}
+
+/**
+ * `match:<id>` for a signed-in viewer: the match must exist (any status, so a
+ * finished battle's card still gets its final update). An invite-only battle is
+ * only for its two participants and the invited player. Memoised like the guest
+ * check; the memo holds who may watch, never the tallies.
+ */
+export async function authorizeSignedInMatchSocket(env: Env, ref: string, uid: string): Promise<GuestWsDecision> {
+  if (!MATCH_ID.test(ref)) return { ok: false, status: 400, reason: "Bad match id." };
+  const key = `memo:wsMatchAudience:${ref}`;
+  let audience = memoGet<{ exists: boolean; open: boolean; uids: string[] }>(key);
+  if (!audience) {
+    let row: { is_private: number | null; invited_uid: string | null; a: string | null; b: string | null } | null;
+    try {
+      row = await env.DB.prepare(
+        "SELECT is_private, invited_uid, json_extract(user_a, '$.uid') AS a, json_extract(user_b, '$.uid') AS b FROM contest_matches WHERE id = ?",
+      )
+        .bind(ref)
+        .first();
+    } catch (e) {
+      // Not memoised: a D1 blip must not refuse this battle for a minute.
+      console.error("[ws] match audience lookup failed", e);
+      return { ok: false, status: 503, reason: "Temporarily unavailable." };
+    }
+    audience = row
+      ? { exists: true, open: !row.is_private, uids: [row.a, row.b, row.invited_uid].filter((u): u is string => !!u) }
+      : { exists: false, open: false, uids: [] };
+    memoPut(key, audience, MEMO_SEC);
+  }
+  if (!audience.exists) return { ok: false, status: 404, reason: "No such battle." };
+  if (!audience.open && !audience.uids.includes(uid)) return { ok: false, status: 403, reason: "Forbidden." };
+  return { ok: true };
 }
 
 /**

@@ -7,7 +7,7 @@
  * count to prevent double-spend / races.
  */
 import { Hono } from "hono";
-import { eq, and, or, desc, sql, count, like, gte, lt, ne, isNull, inArray, getTableColumns } from "drizzle-orm";
+import { eq, and, or, desc, sql, count, like, gte, lt, lte, ne, isNull, inArray, getTableColumns } from "drizzle-orm";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
@@ -42,7 +42,7 @@ import {
 } from "../lib/cache";
 import { purgeShared } from "../lib/edgeCache";
 import { STORIES_FEED_CACHE_KEY } from "../lib/storyAudience";
-import { isPrivateAccount } from "../lib/privateAccount";
+import { isPrivateAccount, privateContentLocked } from "../lib/privateAccount";
 import {
   approveAllFollowRequests,
   approveFollowRequest,
@@ -290,6 +290,12 @@ async function assertOwnContestEntry(env: Env, uid: string, mediaUrl: unknown): 
     throw httpsError("permission-denied", "That entry was uploaded by another account. Please upload your own photo or video.");
   }
 }
+
+/** Devices one account keeps push tokens for (newest kept). */
+const MAX_PUSH_TOKENS = 10;
+
+/** Client-chosen message id (sendMessage `clientId`): stable across retries of one message. */
+const CHAT_CLIENT_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
 function requiredId(value: unknown, name: string, maxLength = 256): string {
   if (typeof value !== "string") {
@@ -1354,11 +1360,15 @@ apiRoute.post("/", async (c) => {
 
       if (existing && intent === "follow") return c.json({ success: true, isFollowing: true, requested: false });
       if (existing) {
-        // Unfollow: one atomic round-trip instead of three sequential ones.
+        // Unfollow: one atomic batch. The decrements are gated on the edge still
+        // existing and run BEFORE the delete, as in removeFollower. `existing` is a
+        // plain read, so two concurrent unfollows (a double tap, or an offline
+        // replay racing the original) both reached here and both decremented.
+        const edge = sql`EXISTS (SELECT 1 FROM follows WHERE follower_id = ${uid} AND following_id = ${targetUserId})`;
         await db.batch([
+          db.update(schema.users).set({ followingCount: sql`MAX(${schema.users.followingCount} - 1, 0)` }).where(and(eq(schema.users.uid, uid), edge)),
+          db.update(schema.users).set({ followersCount: sql`MAX(${schema.users.followersCount} - 1, 0)` }).where(and(eq(schema.users.uid, targetUserId), edge)),
           db.delete(schema.follows).where(and(eq(schema.follows.followerId, uid), eq(schema.follows.followingId, targetUserId))),
-          db.update(schema.users).set({ followingCount: sql`MAX(${schema.users.followingCount} - 1, 0)` }).where(eq(schema.users.uid, uid)),
-          db.update(schema.users).set({ followersCount: sql`MAX(${schema.users.followersCount} - 1, 0)` }).where(eq(schema.users.uid, targetUserId)),
         ]);
         c.executionCtx.waitUntil(invalidateFollowCaches());
         return c.json({ success: true, isFollowing: false, requested: false });
@@ -2497,7 +2507,13 @@ apiRoute.post("/", async (c) => {
 
     // ================= NOTIFICATIONS / TOKENS / BADGE =================
     case "markNotificationsRead": {
-      const ids: string[] = body.notificationIds || [];
+      // Bounded and typed: an oversized array exceeded D1's bound-parameter limit
+      // and answered 500. The app sends one id at a time.
+      const raw = body.notificationIds ?? [];
+      if (!Array.isArray(raw) || raw.length > 100 || raw.some((x: unknown) => typeof x !== "string" || !x || x.length > 128)) {
+        throw httpsError("invalid-argument", "notificationIds must be up to 100 ids.");
+      }
+      const ids: string[] = raw;
       if (!ids.length) return c.json({ success: true });
       await db
         .update(schema.notifications)
@@ -2575,17 +2591,22 @@ apiRoute.post("/", async (c) => {
     }
 
     case "registerFcmToken": {
-      const { token } = body;
-      if (!token) throw httpsError("invalid-argument", "token is required.");
+      const token = typeof body.token === "string" ? body.token.trim() : "";
+      // FCM/APNs tokens are a few hundred URL-safe characters. Anything else was
+      // stored as-is, and the list grew without bound (each push fans out to all).
+      if (!token || token.length > 4096 || /\s/.test(token)) throw httpsError("invalid-argument", "A valid token is required.");
+      await rateLimit(env, `fcmreg:${uid}`, 30, 3600);
       // A device token can previously have belonged to a DIFFERENT account on
       // this same phone (shared, resold, or just a second login). Detach it from
       // every other user first, otherwise the previous owner keeps receiving
       // pushes on a device they no longer control.
       await detachTokenFromOtherUsers(env, token, uid);
       const user = await db.select({ fcmTokens: schema.users.fcmTokens }).from(schema.users).where(eq(schema.users.uid, uid)).get();
-      const tokens = new Set<string>(((user?.fcmTokens as string[]) || []));
-      tokens.add(token);
-      await db.update(schema.users).set({ fcmTokens: [...tokens], updatedAt: now() }).where(eq(schema.users.uid, uid));
+      // Most recent last, capped: a phone that reinstalls keeps minting tokens and
+      // the dead ones are only pruned after a failed send.
+      const kept = ((user?.fcmTokens as string[]) || []).filter((t) => t !== token);
+      const tokens = [...kept, token].slice(-MAX_PUSH_TOKENS);
+      await db.update(schema.users).set({ fcmTokens: tokens, updatedAt: now() }).where(eq(schema.users.uid, uid));
       return c.json({ success: true });
     }
 
@@ -2735,6 +2756,13 @@ apiRoute.post("/", async (c) => {
       // rejected so a tap of the send button with nothing to say is a no-op.
       const trimmedText = text && text.trim() ? text.trim() : null;
       if (!chatId) throw httpsError("invalid-argument", "chatId is required.");
+      // Optional client id, kept across retries of the same message. The message id
+      // is derived from it, so a send whose response was lost (timeout, 5xx after
+      // the write) and is retried does not create a second message.
+      const clientId = body.clientId == null ? null : String(body.clientId);
+      if (clientId != null && !CHAT_CLIENT_ID_RE.test(clientId)) {
+        throw httpsError("invalid-argument", "clientId must be 8-64 letters, digits, '-' or '_'.");
+      }
       if (!trimmedText && !mediaUrl) {
         throw httpsError("invalid-argument", "A message needs text or an image.");
       }
@@ -2759,43 +2787,67 @@ apiRoute.post("/", async (c) => {
       const members = ((chat?.users as string[]) || []).filter((u) => u !== uid);
       await assertNotBlockedAny(env, uid, members);
       const ts = now();
-      const messageId = newId();
+      const messageId = clientId ? `${uid}_${clientId}` : newId();
       // The message BODY lives in the chat's ChatArchive Durable Object, not the
       // D1 `messages` table — that keeps the unbounded, highest-volume write path
       // off D1's single writer (see src/chatArchive.ts). The `chats` row below is
       // the ONE bounded D1 write that stays: it is the inbox preview + sort key,
       // and /read/chats orders across ALL of a user's chats, which a per-chat DO
       // cannot answer.
-      await appendMessage(env, chatId, { id: messageId, senderId: uid, text: trimmedText, type, mediaUrl: mediaUrl || null, createdAt: ts });
+      const { message: stored, inserted } = await appendMessage(env, chatId, {
+        id: messageId,
+        senderId: uid,
+        text: trimmedText,
+        type,
+        mediaUrl: mediaUrl || null,
+        createdAt: ts,
+      });
+      if (stored.senderId !== uid) throw httpsError("invalid-argument", "clientId already used.");
       // Inbox preview text: the caption if any, else a "📷 Photo" placeholder for
       // an image so the conversation list never shows a blank last message.
-      const previewText = trimmedText || (type === "image" ? "📷 Photo" : "");
-      await db.update(schema.chats).set({ lastMessage: { text: previewText, createdAt: ts, senderId: uid } as any, updatedAt: ts }).where(eq(schema.chats.id, chatId));
+      // Guarded on time so a retry of an older message cannot replace a newer
+      // preview; re-applied on a retry in case the first attempt failed after the
+      // append and before this write.
+      const previewText = stored.text || (stored.type === "image" ? "📷 Photo" : "");
+      await db
+        .update(schema.chats)
+        .set({ lastMessage: { text: previewText, createdAt: stored.createdAt, senderId: uid } as any, updatedAt: stored.createdAt })
+        .where(and(eq(schema.chats.id, chatId), lte(schema.chats.updatedAt, stored.createdAt)));
       // Bump every recipient's unread counter (never the sender's). One bounded
       // UPDATE — a chat has a fixed, tiny membership — that drives the inbox badge
       // in /read/chats without a per-chat DO round-trip on the list. Reset in
-      // markChatRead below.
-      await env.DB.prepare(
-        `UPDATE chat_members SET unread_count = unread_count + 1 WHERE chat_id = ? AND user_id != ?`,
-      ).bind(chatId, uid).run();
-      // Instant push: to the chat room + each participant's user channel (chat-list bump).
-      const msg = { id: messageId, chatId, senderId: uid, text: trimmedText, type, mediaUrl: mediaUrl || null, createdAt: ts };
+      // markChatRead below. Not repeated for a retry: that would count twice.
+      if (inserted) {
+        await env.DB.prepare(
+          `UPDATE chat_members SET unread_count = unread_count + 1 WHERE chat_id = ? AND user_id != ?`,
+        ).bind(chatId, uid).run();
+      }
+      // Instant push: to the chat room + each participant's user channel (chat-list
+      // bump). Re-published on a retry; clients key messages by id, so a repeat
+      // event is a no-op for anyone who already has it.
+      const msg = { ...stored, chatId };
       await publish(env, `chat:${chatId}`, { type: "message", message: msg });
       await publishMany(env, members.map((u) => `user:${u}`), { type: "chat_update", chatId, message: msg });
-      return c.json({ success: true });
+      return c.json({ success: true, message: msg, duplicate: !inserted });
     }
 
     case "markChatRead": {
       const { chatId } = body;
       if (!chatId) throw httpsError("invalid-argument", "chatId is required.");
       await assertChatMember(env, chatId, uid);
-      // Read flags live with the message bodies in the chat's Durable Object.
-      await markChatMessagesRead(env, chatId, uid);
+      await rateLimit(env, `chatread:${uid}`, 120, 60);
       // Clear the inbox badge counter for this member (mirror of the increment in
       // sendMessage). Own row only — the other member's unread is theirs.
+      //
+      // Counter FIRST, then the read flags. In the old order (flags, then counter)
+      // a message landing between the two had its increment wiped while it was
+      // still unread: an undercount the inbox never recovered from. This order can
+      // only overcount by that one message, which the next markChatRead clears.
       await env.DB.prepare(
         `UPDATE chat_members SET unread_count = 0 WHERE chat_id = ? AND user_id = ?`,
       ).bind(chatId, uid).run();
+      // Read flags live with the message bodies in the chat's Durable Object.
+      await markChatMessagesRead(env, chatId, uid);
       return c.json({ success: true });
     }
 
@@ -2809,6 +2861,9 @@ apiRoute.post("/", async (c) => {
       if (!chatId) throw httpsError("invalid-argument", "chatId is required.");
       await assertChatMember(env, chatId, uid);
       await rateLimit(env, `typing:${uid}`, 20, 10);
+      // Same consent rule as sendMessage: after a block, no live signal either way.
+      const typingChat = await db.select({ users: schema.chats.users }).from(schema.chats).where(eq(schema.chats.id, chatId)).get();
+      await assertNotBlockedAny(env, uid, ((typingChat?.users as string[]) || []).filter((u) => u !== uid));
       await publish(env, `chat:${chatId}`, { type: "typing", chatId, uid });
       return c.json({ success: true });
     }
@@ -2816,19 +2871,31 @@ apiRoute.post("/", async (c) => {
     case "deleteChat": {
       const { chatId } = body;
       if (!chatId) throw httpsError("invalid-argument", "chatId is required.");
-      // Destructive and irreversible — it drops the chat and every message in
-      // it — so membership must be proven before anything is deleted.
       await assertChatMember(env, chatId, uid);
-      // Message bodies live in the chat's Durable Object; drop them there.
-      await purgeChatMessages(env, chatId);
-      // Also clear any legacy D1 seed rows for this chat so nothing is orphaned
-      // (harmless no-op once a chat has only ever written to the DO).
-      await db.delete(schema.messages).where(eq(schema.messages.chatId, chatId));
-      await db.delete(schema.chats).where(eq(schema.chats.id, chatId));
-      // Drop the membership edges too, or they would dangle and keep pointing at a
-      // chat that no longer exists (idx_chat_members_chat makes this a seek).
-      await db.delete(schema.chatMembers).where(eq(schema.chatMembers.chatId, chatId));
-      return c.json({ success: true });
+      await rateLimit(env, `chatdelete:${uid}`, 60, 3600);
+      // Delete FOR ME (migration 0066). This used to purge the chat for both
+      // members, so either person deleting a DM erased the other's history without
+      // a word. Now the caller's membership is stamped: their inbox hides the chat
+      // until a newer message, and their history starts after this point.
+      const ts = now();
+      await env.DB.prepare(
+        `UPDATE chat_members SET cleared_at = ?, unread_count = 0 WHERE chat_id = ? AND user_id = ?`,
+      ).bind(ts, chatId, uid).run();
+      // Once EVERY member has cleared past the latest message, nobody can see any
+      // of it, so the old full purge applies: bodies, preview row, memberships.
+      const keptBySomeone = await env.DB.prepare(
+        `SELECT 1 AS k FROM chat_members m JOIN chats c ON c.id = m.chat_id
+          WHERE m.chat_id = ? AND (m.cleared_at IS NULL OR m.cleared_at < c.updated_at) LIMIT 1`,
+      ).bind(chatId).first();
+      if (!keptBySomeone) {
+        await purgeChatMessages(env, chatId);
+        await db.batch([
+          db.delete(schema.messages).where(eq(schema.messages.chatId, chatId)),
+          db.delete(schema.chats).where(eq(schema.chats.id, chatId)),
+          db.delete(schema.chatMembers).where(eq(schema.chatMembers.chatId, chatId)),
+        ] as any);
+      }
+      return c.json({ success: true, purged: !keptBySomeone });
     }
 
     // ================= CONTEST-MATCH ENGAGEMENT =================
@@ -3002,6 +3069,11 @@ apiRoute.post("/", async (c) => {
       // guard as a DM. Both social branches resolve the owner(s) of the thing
       // being commented on and refuse if a block exists in either direction.
       if (isMatch) {
+        // The block helper lets a missing match through (it has no owners to
+        // check), so a comment could be stored, counted and published for any
+        // string. Comments need a real battle.
+        const exists = await db.select({ id: schema.contestMatches.id }).from(schema.contestMatches).where(eq(schema.contestMatches.id, targetId)).get();
+        if (!exists) throw httpsError("not-found", "Battle not found.");
         await assertMatchInteractionAllowed(env, uid, targetId);
       } else if (isBlog) {
         // A blog article has no owner uid to block (`blog_posts.author` is free
@@ -3022,11 +3094,21 @@ apiRoute.post("/", async (c) => {
           .from(schema.posts)
           .where(eq(schema.posts.id, targetId))
           .get();
-        await assertNotBlockedAny(env, uid, [postOwner?.userId]);
+        if (!postOwner) throw httpsError("not-found", "Post not found.");
+        await assertNotBlockedAny(env, uid, [postOwner.userId]);
+        // A private account's posts are behind the profile header (lib/privateAccount.ts);
+        // so is their comment thread. A non-follower holding a post id could post here.
+        if (await privateContentLocked(env, uid, postOwner.userId)) {
+          throw httpsError("permission-denied", "This account is private.");
+        }
       }
       // Idempotency: the client may pass a stable clientId so a retried submit
       // (flaky network) never posts the same comment twice.
       const clientId = typeof body.clientId === "string" && body.clientId.trim() ? body.clientId.trim().slice(0, 64) : null;
+      // Becomes the row id, so only id-safe characters (length is capped above).
+      if (clientId != null && !/^[A-Za-z0-9_-]+$/.test(clientId)) {
+        throw httpsError("invalid-argument", "clientId may only use letters, digits, '-' or '_'.");
+      }
       const commentId = clientId || newId();
       const ts = now();
       if (clientId) {
@@ -3044,7 +3126,10 @@ apiRoute.post("/", async (c) => {
         // is what makes the new comment visible.
         await db.insert(schema.blogComments).values({ id: commentId, postId: targetId, userId: uid, text: raw, createdAt: ts }).onConflictDoNothing();
       } else if (isMatch) {
-        await db.insert(schema.matchComments).values({ id: commentId, matchId: targetId, userId: uid, text: raw, createdAt: ts }).onConflictDoNothing();
+        const ins = await db.insert(schema.matchComments).values({ id: commentId, matchId: targetId, userId: uid, text: raw, createdAt: ts }).onConflictDoNothing().run();
+        // Two in-flight requests with the same clientId both passed the duplicate
+        // check above; only the one whose insert landed counts and notifies.
+        if (!ins.meta.changes) return c.json({ success: true, commentId, duplicate: true });
         const cCounters = await bumpEngagement(env, targetId, "comment", 1);
         // Push so both the open comment sheet and the feed card update instantly.
         await publish(env, `match:${targetId}`, { type: "comment", commentId, commentCount: cCounters.comment ?? 0 });
@@ -3060,7 +3145,8 @@ apiRoute.post("/", async (c) => {
           })(),
         );
       } else {
-        await db.insert(schema.postComments).values({ id: commentId, postId: targetId, userId: uid, text: raw, createdAt: ts }).onConflictDoNothing();
+        const ins = await db.insert(schema.postComments).values({ id: commentId, postId: targetId, userId: uid, text: raw, createdAt: ts }).onConflictDoNothing().run();
+        if (!ins.meta.changes) return c.json({ success: true, commentId, duplicate: true });
         await db.update(schema.posts).set({ commentCount: sql`${schema.posts.commentCount} + 1` }).where(eq(schema.posts.id, targetId));
         c.executionCtx.waitUntil(
           (async () => {
@@ -3089,21 +3175,32 @@ apiRoute.post("/", async (c) => {
         const row = await db.select().from(schema.blogComments).where(eq(schema.blogComments.id, commentId)).get();
         if (!row) throw httpsError("not-found", "Comment not found.");
         if (row.userId !== uid && !(await isAdmin(c as any))) throw httpsError("permission-denied", "Not allowed.");
-        await db.delete(schema.blogComments).where(eq(schema.blogComments.id, commentId));
+        const del = await db.delete(schema.blogComments).where(eq(schema.blogComments.id, commentId)).run();
+        if (del.meta.changes) await db.delete(schema.commentLikes).where(eq(schema.commentLikes.commentId, commentId));
         threadId = row.postId;
       } else if (targetType === "matches" || targetType === "contestMatches") {
         const row = await db.select().from(schema.matchComments).where(eq(schema.matchComments.id, commentId)).get();
         if (!row) throw httpsError("not-found", "Comment not found.");
         if (row.userId !== uid && !(await isAdmin(c as any))) throw httpsError("permission-denied", "Not allowed.");
-        await db.delete(schema.matchComments).where(eq(schema.matchComments.id, commentId));
-        await bumpEngagement(env, row.matchId, "comment", -1);
+        const del = await db.delete(schema.matchComments).where(eq(schema.matchComments.id, commentId)).run();
+        // Only the request that actually deleted the row decrements (double tap,
+        // owner and admin at once). And tell open sheets and cards the new count,
+        // as addComment does.
+        if (del.meta.changes) {
+          const counters = await bumpEngagement(env, row.matchId, "comment", -1);
+          await publish(env, `match:${row.matchId}`, { type: "comment", commentId, removed: true, commentCount: counters.comment ?? 0 });
+          await db.delete(schema.commentLikes).where(eq(schema.commentLikes.commentId, commentId));
+        }
         threadId = row.matchId;
       } else {
         const row = await db.select().from(schema.postComments).where(eq(schema.postComments.id, commentId)).get();
         if (!row) throw httpsError("not-found", "Comment not found.");
         if (row.userId !== uid && !(await isAdmin(c as any))) throw httpsError("permission-denied", "Not allowed.");
-        await db.delete(schema.postComments).where(eq(schema.postComments.id, commentId));
-        await db.update(schema.posts).set({ commentCount: sql`MAX(${schema.posts.commentCount} - 1, 0)` }).where(eq(schema.posts.id, row.postId));
+        const del = await db.delete(schema.postComments).where(eq(schema.postComments.id, commentId)).run();
+        if (del.meta.changes) {
+          await db.update(schema.posts).set({ commentCount: sql`MAX(${schema.posts.commentCount} - 1, 0)` }).where(eq(schema.posts.id, row.postId));
+          await db.delete(schema.commentLikes).where(eq(schema.commentLikes.commentId, commentId));
+        }
         threadId = row.postId;
       }
       // Bust the cached comment list so the removal is reflected immediately.
@@ -3130,23 +3227,32 @@ apiRoute.post("/", async (c) => {
         .from(schema.commentLikes)
         .where(and(eq(schema.commentLikes.commentId, commentId), eq(schema.commentLikes.userId, uid)))
         .get();
-      const liked = !existing;
+      // Optional explicit target state (`liked`), like toggleFollow's intent: a
+      // retried or replayed request then cannot flip the like back. Absent, it is
+      // the original toggle.
+      const liked = typeof body.liked === "boolean" ? body.liked : !existing;
       // The last engagement write without a block guard. Only the LIKE direction
       // is checked, so an existing like can always be withdrawn.
-      if (liked) {
+      if (liked && !existing) {
         const author = isMatch
           ? await db.select({ userId: schema.matchComments.userId }).from(schema.matchComments).where(eq(schema.matchComments.id, commentId)).get()
           : isBlogComment
             ? await db.select({ userId: schema.blogComments.userId }).from(schema.blogComments).where(eq(schema.blogComments.id, commentId)).get()
             : await db.select({ userId: schema.postComments.userId }).from(schema.postComments).where(eq(schema.postComments.id, commentId)).get();
-        await assertNotBlockedAny(env, uid, [author?.userId]);
+        // A like on a comment that does not exist was stored and never cleaned up.
+        if (!author) throw httpsError("not-found", "Comment not found.");
+        await assertNotBlockedAny(env, uid, [author.userId]);
       }
-      if (existing) {
-        await db.delete(schema.commentLikes).where(and(eq(schema.commentLikes.commentId, commentId), eq(schema.commentLikes.userId, uid)));
-      } else {
-        await db.insert(schema.commentLikes).values({ commentId, userId: uid, createdAt: now() }).onConflictDoNothing().run();
+      // The counter moves only when THIS request changed the like row. Two
+      // concurrent likes both read "not liked"; one insert lands, and the count
+      // used to go up by two.
+      let changed = 0;
+      if (!liked && existing) {
+        changed = (await db.delete(schema.commentLikes).where(and(eq(schema.commentLikes.commentId, commentId), eq(schema.commentLikes.userId, uid))).run()).meta.changes;
+      } else if (liked && !existing) {
+        changed = (await db.insert(schema.commentLikes).values({ commentId, userId: uid, createdAt: now() }).onConflictDoNothing().run()).meta.changes;
       }
-      const delta = liked ? 1 : -1;
+      const delta = changed ? (liked ? 1 : -1) : 0;
       let likeCount = 0;
       if (isBlogComment) {
         await db.update(schema.blogComments)

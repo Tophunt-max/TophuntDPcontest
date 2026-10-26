@@ -1,6 +1,6 @@
 import { AppState } from 'react-native';
 import { auth } from './firebase/initFirebase';
-import { API_BASE_URL, endRejectedSession } from './api';
+import { API_BASE_URL, probeSession } from './api';
 
 /**
  * Instant push over WebSockets, backed by the Worker's RealtimeHub Durable
@@ -41,7 +41,16 @@ interface Conn {
    * showing a signed-in UI on a dead session.
    */
   preOpenFailures: number;
+  /** True once any socket for this channel has opened; later opens are reconnects. */
+  everOpened: boolean;
 }
+
+/**
+ * Sent to a channel's listeners when its socket REconnects. Events published while
+ * it was down are gone (the hub does not replay), so a subscriber must refetch.
+ * `live()` always refreshes on it.
+ */
+export const RESYNC_EVENT = 'resync';
 
 /**
  * How many failed handshakes in a row before concluding the session is gone.
@@ -109,6 +118,8 @@ async function openSocket(channel: string, conn: Conn) {
     // The handshake succeeded, so whatever the previous failures were, they were not a
     // refusal.
     conn.preOpenFailures = 0;
+    if (conn.everOpened) dispatch(conn, { type: RESYNC_EVENT });
+    conn.everOpened = true;
     conn.heartbeat = setInterval(() => {
       try {
         ws.send('ping');
@@ -128,13 +139,7 @@ async function openSocket(channel: string, conn: Conn) {
       return;
     }
     if (event.type === 'connected') return;
-    conn.listeners.forEach((l) => {
-      try {
-        l(event);
-      } catch {
-        /* listener error ignored */
-      }
-    });
+    dispatch(conn, event);
   };
 
   ws.onerror = () => {
@@ -168,13 +173,25 @@ async function openSocket(channel: string, conn: Conn) {
       conn.preOpenFailures += 1;
       if (conn.preOpenFailures >= PRE_OPEN_FAILURES_BEFORE_SIGNOUT && auth.currentUser && token) {
         conn.preOpenFailures = 0;
-        void endRejectedSession();
-        return;
+        // Confirm over HTTP before acting: the same refusals come from a 403 (no
+        // longer a chat member), a 503 or a dead network, none of which is a reason
+        // to sign anybody out. A truly rejected session is signed out by the API.
+        void probeSession();
       }
     }
 
     scheduleReconnect(channel, conn);
   };
+}
+
+function dispatch(conn: Conn, event: RealtimeEvent) {
+  conn.listeners.forEach((l) => {
+    try {
+      l(event);
+    } catch {
+      /* listener error ignored */
+    }
+  });
 }
 
 function scheduleReconnect(channel: string, conn: Conn) {
@@ -232,7 +249,7 @@ export function subscribeChannel(channel: string, onEvent: Listener): () => void
   if (!conn) {
     conn = {
       ws: null, listeners: new Set(), heartbeat: null, reconnectTimer: null, lingerTimer: null,
-      authUid: null, attempts: 0, closedByUs: false, preOpenFailures: 0,
+      authUid: null, attempts: 0, closedByUs: false, preOpenFailures: 0, everOpened: false,
     };
     conns.set(channel, conn);
     openSocket(channel, conn);
@@ -313,8 +330,8 @@ export function live<T>(
       refreshPending = true;
       return;
     }
-    // Skip the safety-net fetch while backgrounded (the socket reconnects and
-    // refreshes on foreground anyway).
+    // Skip the safety-net fetch while backgrounded; the AppState listener below
+    // refreshes on return to the foreground.
     //
     // This also skips the INITIAL fetch, which is why it is reported: on iOS a
     // cold start from a push-notification tap can run this while AppState is
@@ -343,15 +360,27 @@ export function live<T>(
 
   if (opts.immediate !== false) void refresh(); // initial load (skippable)
   const unsub = subscribeChannel(channel, (event) => {
+    // A reconnect means events were missed while the socket was down: refetch,
+    // whatever this subscriber's filter is.
+    if (event.type === RESYNC_EVENT) return void refresh();
     if (opts.filter && !opts.filter(event)) return;
     opts.onEvent?.(event);
     if (!opts.shouldRefresh || opts.shouldRefresh(event)) void refresh();
   });
   const safety = setInterval(refresh, fallbackMs);
+  // Back in the foreground: refetch now. Fetches are skipped while backgrounded,
+  // and nothing used to trigger one on return, so a screen stayed stale until the
+  // next event or safety poll (up to 60 s, 180 s for notifications).
+  let lastState = AppState.currentState;
+  const appSub = AppState.addEventListener?.('change', (next) => {
+    if (next === 'active' && lastState !== 'active') void refresh();
+    lastState = next;
+  });
 
   return () => {
     active = false;
     clearInterval(safety);
+    appSub?.remove?.();
     unsub();
   };
 }

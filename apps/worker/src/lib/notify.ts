@@ -22,7 +22,7 @@
  *  - **Failures never propagate.** A notification is a side effect of some other
  *    action (a like, a payout); it must not fail that action.
  */
-import { and, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Env } from "../types";
 import { getDb, schema, type NotificationActor } from "../db";
 import { newId, now } from "./ids";
@@ -30,7 +30,7 @@ import { sendFcmToToken } from "./firebaseAdmin";
 import { publish } from "./publish";
 import { consumeRateLimitAll, type LimitSpec } from "./rateLimit";
 import { logErrorToDb } from "./observability";
-import { isNotificationSuppressed } from "./blocks";
+import { hiddenUidsFor, isNotificationSuppressed, sqlExclusionList } from "./blocks";
 import {
   categoryForType,
   isCollapsibleType,
@@ -202,15 +202,39 @@ export interface NotificationInput {
   noCollapse?: boolean;
 }
 
-/** The recipient's unread total, for the iOS app-icon badge. */
+/**
+ * The badge count: notifications the user has NOT yet looked at (`seen = 0`),
+ * excluding rows whose actor is now blocked or muted, so it matches the list it
+ * opens. Shared by `/read/notifications/unread-count` and the push badge.
+ *
+ * The push badge used to count `read = 0` with no actor filter. Opening the list
+ * marks rows seen, not read, so every later push set the app-icon badge to the
+ * number of notifications never TAPPED, often far above what the bell showed.
+ *
+ * Index-only via idx_notif_unseen (see test/queryPlans.test.ts).
+ */
+export async function unseenNotificationCount(db: ReturnType<typeof getDb>, uid: string, hidden: Set<string>): Promise<number> {
+  const hiddenActors = sqlExclusionList(hidden);
+  const row = await db
+    .select({ v: sql<number>`count(*)` })
+    .from(schema.notifications)
+    .where(
+      and(
+        eq(schema.notifications.recipientId, uid),
+        eq(schema.notifications.seen, false),
+        ...(hiddenActors.length
+          ? [or(isNull(schema.notifications.actorId), notInArray(schema.notifications.actorId, hiddenActors))]
+          : []),
+      ),
+    )
+    .get();
+  return Number(row?.v ?? 0);
+}
+
+/** The recipient's badge count for a push, or undefined to leave the badge alone. */
 async function unreadCount(env: Env, uid: string): Promise<number | undefined> {
   try {
-    const row = await getDb(env)
-      .select({ v: sql<number>`count(*)` })
-      .from(schema.notifications)
-      .where(and(eq(schema.notifications.recipientId, uid), eq(schema.notifications.read, false)))
-      .get();
-    return row?.v ?? 0;
+    return await unseenNotificationCount(getDb(env), uid, await hiddenUidsFor(env, uid));
   } catch {
     // Omitting the badge leaves the existing one untouched, which is safer than
     // sending a wrong number.
@@ -270,6 +294,26 @@ export async function sendPushNotification(
   }
 }
 
+/**
+ * Remove only the dead tokens, in SQL, against the row as it is NOW.
+ *
+ * This used to write back `tokens minus dead` from the snapshot read before the
+ * (slow) FCM sends. A login, logout or account switch that changed the list in
+ * the meantime was overwritten, which could re-attach a token that had just been
+ * detached from this account, so that device kept getting its pushes.
+ */
+async function removeTokens(env: Env, userId: string, dead: string[]): Promise<void> {
+  const placeholders = dead.map(() => "?").join(", ");
+  await env.DB.prepare(
+    `UPDATE users SET fcm_tokens = (
+       SELECT COALESCE(json_group_array(value), '[]') FROM json_each(COALESCE(users.fcm_tokens, '[]'))
+        WHERE value NOT IN (${placeholders})
+     ) WHERE uid = ?`,
+  )
+    .bind(...dead, userId)
+    .run();
+}
+
 /** Shared delivery core, so createNotification does not re-read the token list. */
 async function deliverToTokens(
   env: Env,
@@ -301,14 +345,8 @@ async function deliverToTokens(
     }),
   );
 
-  const validTokens = tokens.filter((_, i) => !results[i].invalid);
-  if (validTokens.length !== tokens.length) {
-    await getDb(env)
-      .update(schema.users)
-      .set({ fcmTokens: validTokens })
-      .where(eq(schema.users.uid, userId))
-      .run();
-  }
+  const deadTokens = tokens.filter((_, i) => results[i].invalid);
+  if (deadTokens.length) await removeTokens(env, userId, deadTokens);
 
   // Surface deliveries that failed for a reason OTHER than a dead token, so a
   // systemic FCM/credentials problem is visible instead of silent.

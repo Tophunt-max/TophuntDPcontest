@@ -23,14 +23,27 @@ function stub(env: Env, chatId: string) {
 
 const withChatId = (chatId: string) => (m: ArchivedMessage): ChatMessage => ({ ...m, chatId });
 
-/** Persist a message in the chat's DO and return it (with chatId). */
+/**
+ * Persist a message in the chat's DO. `inserted: false` means a message with this
+ * id already existed (a retried send); `message` is then the stored copy.
+ */
 export async function appendMessage(
   env: Env,
   chatId: string,
   m: ArchivedMessage,
-): Promise<ChatMessage> {
-  const saved = await stub(env, chatId).append(chatId, m);
-  return { ...saved, chatId };
+): Promise<{ message: ChatMessage; inserted: boolean }> {
+  const { message, inserted } = await stub(env, chatId).append(chatId, m);
+  return { message: { ...message, chatId }, inserted };
+}
+
+/** Newest page (displayed oldest-first), optionally before a (createdAt, id) keyset. */
+export async function latestChatMessages(
+  env: Env,
+  chatId: string,
+  opts: { beforeTs?: number | null; beforeId?: string | null; after?: number; limit?: number },
+): Promise<ChatMessage[]> {
+  const rows = await stub(env, chatId).latest(chatId, opts);
+  return rows.map(withChatId(chatId));
 }
 
 /** Oldest-first history page after `since` (epoch ms), capped at `limit`. */

@@ -1,7 +1,8 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { GiftedChat, IMessage, BubbleProps, TimeProps, InputToolbarProps, Bubble, InputToolbar } from 'react-native-gifted-chat';
 import * as ImagePicker from 'expo-image-picker';
-import { readApi, callApi } from '@/src/services/api';
+import { readApi, readApiWithCursor, callApi } from '@/src/services/api';
+import { appendOlder, hasNewIncoming, mergeThread, newClientId, outgoingMessageId, type ServerMessage } from '@/src/lib/chatThread';
 import { uploadToR2 } from '@/src/lib/uploadToR2';
 import { optimizeImageForUpload } from '@/src/lib/imageOptimize';
 import { live, subscribeChannel } from '@/src/services/realtime';
@@ -33,29 +34,18 @@ const WRAP_LONG: any =
 
 type LoadState = 'loading' | 'ready' | 'error';
 
-/** Map the server rows (oldest-first) to GiftedChat messages (newest-first). */
-function toGiftedMessages(rows: any[]): IMessage[] {
-  return (rows || [])
-    .map(
-      (m) =>
-        ({
-          _id: m.id,
-          // An image message may carry only a caption (or nothing); GiftedChat
-          // renders `image` above `text`, so both flow through the same bubble.
-          text: m.text || '',
-          image: m.type === 'image' && m.mediaUrl ? m.mediaUrl : undefined,
-          createdAt: new Date(m.createdAt),
-          user: { _id: m.senderId },
-          sent: true,
-          received: !!m.read,
-        } as IMessage),
-    )
-    .reverse();
-}
+/** Merge a server page into the GiftedChat list (see src/lib/chatThread.ts). */
+const merge = (prev: IMessage[], rows: any): IMessage[] =>
+  mergeThread(prev as any, (Array.isArray(rows) ? rows : []) as ServerMessage[]) as unknown as IMessage[];
 
 export default function ChatScreen() {
   const { user: firebaseUser, loading: authLoading } = useAuth();
   const [messages, setMessages] = useState<IMessage[]>([]);
+  // Cursor to the next OLDER page (X-Next-Cursor), null when the start is reached.
+  const [olderCursor, setOlderCursor] = useState<string | null>(null);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  // Newest incoming message already marked read, so a refresh only re-marks for new ones.
+  const markedReadAt = useRef(0);
   const params = useLocalSearchParams<{ id?: string; name?: string; avatar?: string; lastSeen?: string }>();
   const chatId = params.id;
 
@@ -114,11 +104,14 @@ export default function ChatScreen() {
     // 1) INITIAL LOAD — explicit, with real error handling. This is what fixes
     //    the infinite spinner: a failed first fetch flips us to the error state
     //    (retryable) rather than leaving `loading` stuck true.
+    //    The server answers with the NEWEST page; older pages load on demand.
     (async () => {
       try {
-        const rows = await readApi(`/read/chats/${chatId}/messages`);
+        const { data: rows, nextCursor } = await readApiWithCursor<any[]>(`/read/chats/${chatId}/messages`);
         if (cancelled) return;
-        setMessages(toGiftedMessages(rows));
+        setMessages((prev) => merge(prev, rows));
+        setOlderCursor(nextCursor);
+        markRead(rows);
         setState('ready');
       } catch {
         if (!cancelled) setState('error');
@@ -134,7 +127,12 @@ export default function ChatScreen() {
       () => readApi(`/read/chats/${chatId}/messages`),
       (rows) => {
         if (cancelled) return;
-        setMessages(toGiftedMessages(rows));
+        // Merged by id, never replaced: replacing dropped loaded older pages and
+        // any bubble still being sent.
+        setMessages((prev) => merge(prev, rows));
+        // The screen is open, so new incoming messages are read now. Marking only
+        // on mount left the inbox badge counting messages already on screen.
+        markRead(rows);
         setState('ready');
       },
       { filter: (e) => e.type === 'message', immediate: false },
@@ -158,8 +156,13 @@ export default function ChatScreen() {
       }
     });
 
-    // Mark incoming messages as read (best-effort).
-    callApi('markChatRead', { chatId }).catch(() => {});
+    // Mark incoming messages as read (best-effort), once per newer incoming message.
+    function markRead(rows: any) {
+      const list = (Array.isArray(rows) ? rows : []) as ServerMessage[];
+      if (!currentUser || !hasNewIncoming(list, currentUser.uid, markedReadAt.current)) return;
+      markedReadAt.current = Math.max(markedReadAt.current, ...list.map((m) => m.createdAt));
+      callApi('markChatRead', { chatId }).catch(() => {});
+    }
 
     return () => {
       cancelled = true;
@@ -201,23 +204,31 @@ export default function ChatScreen() {
       if (!currentUser || !chatId) return;
       const outgoing = newMessages[0];
       if (!outgoing) return;
+      // One client id per message, reused by every retry of it: the server stores
+      // the message under `${uid}_${clientId}`, so a retry after a lost response
+      // cannot create a second copy, and the bubble shares the server's id.
+      const clientId = newClientId();
+      const id = outgoingMessageId(currentUser.uid, clientId);
       const attempt = async (msg: IMessage): Promise<void> => {
-        // Optimistic append so the bubble appears instantly.
-        setMessages((previous) => GiftedChat.append(previous, [msg]));
+        // Optimistic append so the bubble appears instantly. Not marked sent.
+        setMessages((previous) => GiftedChat.append(previous.filter((m) => m._id !== id), [{ ...msg, _id: id, pending: true }]));
         try {
-          await callApi('sendMessage', { chatId, text: msg.text });
+          const res: any = await callApi('sendMessage', { chatId, text: msg.text, clientId });
+          if (res?.message) setMessages((previous) => merge(previous, [res.message]));
         } catch (error) {
           console.error('[ChatScreen] Error sending message:', error);
           // Take the bubble back so the conversation reflects what was actually
           // delivered. The composer is uncontrolled, so the typed text used to be
           // simply lost; offer a one-tap retry with the same text instead.
-          setMessages((previous) => previous.filter((m) => m._id !== msg._id));
+          setMessages((previous) => previous.filter((m) => m._id !== id));
           Alert.alert(
             'Message not sent',
             'We could not send that message. Check your connection and try again.',
             [
               { text: 'Discard', style: 'cancel' },
-              { text: 'Retry', onPress: () => void attempt({ ...msg, _id: `${msg._id}-r${Date.now()}`, createdAt: new Date() }) },
+              // Same client id: if the first attempt did reach the server, this
+              // returns that message instead of sending it twice.
+              { text: 'Retry', onPress: () => void attempt(msg) },
             ],
           );
         }
@@ -244,8 +255,9 @@ export default function ChatScreen() {
       const localUri = result.assets[0].uri;
 
       setUploadingImage(true);
-      // Optimistic bubble from the local file.
-      tempId = `local-${Date.now()}`;
+      // Optimistic bubble from the local file, under the id the server will use.
+      const clientId = newClientId();
+      tempId = outgoingMessageId(currentUser.uid, clientId);
       setMessages((prev) =>
         GiftedChat.append(prev, [
           {
@@ -261,9 +273,9 @@ export default function ChatScreen() {
 
       const optimized = await optimizeImageForUpload(localUri, 'contest');
       const mediaUrl = await uploadToR2(optimized, 'image/jpeg', 'chat');
-      await callApi('sendMessage', { chatId, mediaUrl });
-      // The live `message` refresh will bring back the server copy; the optimistic
-      // bubble is harmless until then (same image, from the local uri).
+      const res: any = await callApi('sendMessage', { chatId, mediaUrl, clientId });
+      // The server copy replaces the local-uri bubble (same id).
+      if (res?.message) setMessages((prev) => merge(prev, [res.message]));
     } catch (error) {
       console.error('[ChatScreen] Error sending image:', error);
       // The optimistic bubble used to stay in the thread as if it had been sent.
@@ -276,6 +288,21 @@ export default function ChatScreen() {
       setUploadingImage(false);
     }
   }, [chatId, currentUser, uploadingImage]);
+
+  /** "Load earlier messages": the next older page, below what is shown. */
+  const onLoadEarlier = useCallback(async () => {
+    if (!chatId || !olderCursor || loadingEarlier) return;
+    setLoadingEarlier(true);
+    try {
+      const { data: rows, nextCursor } = await readApiWithCursor<any[]>(`/read/chats/${chatId}/messages`, { before: olderCursor });
+      setMessages((prev) => appendOlder(prev as any, (rows || []) as ServerMessage[]) as unknown as IMessage[]);
+      setOlderCursor(nextCursor);
+    } catch {
+      Alert.alert('Could not load', 'Older messages could not be loaded. Try again.');
+    } finally {
+      setLoadingEarlier(false);
+    }
+  }, [chatId, olderCursor, loadingEarlier]);
 
   // Run an in-conversation message search against the per-chat endpoint.
   const runSearch = useCallback(
@@ -442,6 +469,12 @@ export default function ChatScreen() {
       <GiftedChat
         messages={messages}
         onSend={(m) => onSend(m)}
+        loadEarlierMessagesProps={{
+          isAvailable: !!olderCursor,
+          isLoading: loadingEarlier,
+          onPress: onLoadEarlier,
+          label: 'Load earlier messages',
+        }}
         user={{ _id: currentUser.uid }}
         renderBubble={renderBubble}
         renderTime={renderTime}

@@ -490,8 +490,9 @@ class NotificationService {
     }
 
     /**
-     * Fetch ONE older page for infinite scroll. Cursor is the `createdAt` of the
-     * oldest row already shown; omit for the first page. Returns the items plus
+     * Fetch ONE older page for infinite scroll. Cursor is the previous page's
+     * `nextCursor` (`<createdAt>_<id>`), or that pair for the oldest row shown;
+     * omit for the first page. Returns the items plus
      * the next cursor (null = no more). This is a plain paginated GET — the live
      * socket keeps the HEAD of the list fresh; this only loads the TAIL.
      */

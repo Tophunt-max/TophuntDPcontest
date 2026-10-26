@@ -5,6 +5,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { toggleFollowService } from '@/src/services/users';
 import { followStateFromResult, intentFor, stateInSets, withStateInSets, type FollowState } from '@/src/lib/followState';
 import { useAuthGate } from '@/src/hooks/useAuthGate';
+import { useAuth } from '@/src/hooks/useAuth';
 import { emitToast } from '@/src/lib/toastBridge';
 import { enqueueOutbox, isNetworkFailure } from '@/src/sync';
 
@@ -19,6 +20,15 @@ export function useFollowToggle(initialFollowing: string[] | null | undefined) {
   const [followed, setFollowed] = useState<Set<string>>(new Set());
   const [requested, setRequested] = useState<Set<string>>(new Set());
   const busy = useRef(new Set<string>());
+  const { user } = useAuth();
+  const viewer = user?.uid ?? null;
+
+  // A different account (or none): nothing the previous one followed or
+  // requested may stay on a mounted list.
+  useEffect(() => {
+    setFollowed(new Set());
+    setRequested(new Set());
+  }, [viewer]);
 
   useEffect(() => {
     if (initialFollowing) setFollowed(new Set(initialFollowing));

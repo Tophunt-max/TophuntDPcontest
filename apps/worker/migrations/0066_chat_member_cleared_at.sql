@@ -1,0 +1,12 @@
+-- "Delete chat" becomes delete-for-me.
+--
+-- deleteChat used to purge the conversation for EVERY member: either person
+-- deleting a DM erased the other person's history without telling them. Now it
+-- stamps the caller's membership with `cleared_at`:
+--   - /read/chats hides the chat from that member until a newer message arrives;
+--   - history for that member starts after `cleared_at`.
+-- The messages themselves are purged only once every member has cleared past
+-- the latest message, which is the old behaviour for a chat nobody keeps.
+--
+-- Nullable and additive: existing rows mean "never cleared".
+ALTER TABLE chat_members ADD COLUMN cleared_at INTEGER;

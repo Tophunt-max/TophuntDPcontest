@@ -115,7 +115,7 @@ describe('chat_members — indexed membership (audit §4)', () => {
     expect((await call(env, 'alice', 'sendMessage', { chatId, text: 'hi' })).status).toBe(200);
   });
 
-  it('deleteChat removes the membership edges and the chat leaves the inbox', async () => {
+  it('deleteChat is per member; the edges go only when both have deleted', async () => {
     const { env } = makeEnv();
     await seedUser(env, 'alice');
     await seedUser(env, 'bob');
@@ -123,10 +123,15 @@ describe('chat_members — indexed membership (audit §4)', () => {
     const chatId = (await call(env, 'alice', 'startChat', { otherUserId: 'bob' })).body.chatId;
     expect(await members(env, chatId)).toEqual(['alice', 'bob']);
 
-    expect((await call(env, 'alice', 'deleteChat', { chatId })).status).toBe(200);
-
-    expect(await members(env, chatId)).toEqual([]);
+    // Alice deletes: gone from HER inbox only. Bob keeps the conversation.
+    expect((await call(env, 'alice', 'deleteChat', { chatId })).body).toMatchObject({ success: true, purged: false });
+    expect(await members(env, chatId)).toEqual(['alice', 'bob']);
     expect((await readChats(env, 'alice')).body.length).toBe(0);
+    expect((await readChats(env, 'bob')).body.length).toBe(1);
+
+    // Bob deletes too: nobody keeps it, so the chat and its edges are removed.
+    expect((await call(env, 'bob', 'deleteChat', { chatId })).body).toMatchObject({ success: true, purged: true });
+    expect(await members(env, chatId)).toEqual([]);
     expect((await readChats(env, 'bob')).body.length).toBe(0);
   });
 

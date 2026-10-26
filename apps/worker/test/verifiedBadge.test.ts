@@ -205,6 +205,8 @@ describe('the flag is present wherever a name is rendered', () => {
     await seedUser(env, 'alice', { verified: true });
     await seedUser(env, 'bob');
     const ts = Date.now();
+    // The thread follows its post's privacy now, so the post has to exist.
+    await drizzleOf(env).insert(schema.posts).values({ id: 'p1', userId: 'bob', createdAt: ts } as any);
     await drizzleOf(env)
       .insert(schema.postComments)
       .values({ id: 'c1', postId: 'p1', userId: 'alice', text: 'hi', likeCount: 0, createdAt: ts } as any);

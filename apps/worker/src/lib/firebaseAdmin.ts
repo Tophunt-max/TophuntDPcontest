@@ -437,7 +437,7 @@ export async function sendFcmToToken(
 
   const json = await res.json<any>().catch(() => ({}));
   const status = json?.error?.details?.[0]?.errorCode || json?.error?.status || "";
-  const invalid = status === "UNREGISTERED" || status === "INVALID_ARGUMENT";
+  const invalid = isDeadTokenError(status, String(json?.error?.message || ""));
   // 429/5xx and FCM's UNAVAILABLE/INTERNAL are transient — worth one retry.
   // A permanently invalid token is not.
   const retryable =
@@ -498,4 +498,17 @@ export async function createCustomToken(
     new TextEncoder().encode(unsigned),
   );
   return `${unsigned}.${base64url(sig)}`;
+}
+
+/**
+ * Whether an FCM v1 error means THIS TOKEN is permanently unusable.
+ *
+ * `INVALID_ARGUMENT` used to count, but FCM also returns it for a malformed
+ * MESSAGE (a bad data value, a bad APNs field). One payload bug would then have
+ * deleted every recipient's tokens. It counts only when FCM says the token
+ * itself is invalid. `SENDER_ID_MISMATCH` is a token from another project.
+ */
+export function isDeadTokenError(status: string, message: string): boolean {
+  if (status === "UNREGISTERED" || status === "SENDER_ID_MISMATCH") return true;
+  return status === "INVALID_ARGUMENT" && /registration token/i.test(message);
 }

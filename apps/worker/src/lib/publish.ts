@@ -8,6 +8,7 @@
  *   match:<id>     live vote/like/comment/reaction counts
  */
 import type { Env } from "../types";
+import { blockedUidsFor } from "./blocks";
 
 export async function publish(
   env: Env,
@@ -72,16 +73,21 @@ export async function publishPresence(
       .bind(uid, PRESENCE_FANOUT_LIMIT)
       .all<{ chat_id: string; users: string }>();
 
+    // A block (either direction) ends presence too: the blocked person kept
+    // seeing this user's online dot and last-seen time through their old chat.
+    const blocked = await blockedUidsFor(env, uid);
     const channels = new Set<string>();
     for (const r of rows.results ?? []) {
-      channels.add(`chat:${r.chat_id}`);
       let members: string[] = [];
       try {
         members = JSON.parse(r.users || "[]");
       } catch {
         members = [];
       }
-      for (const m of members) if (m && m !== uid) channels.add(`user:${m}`);
+      const peers = members.filter((m) => m && m !== uid);
+      if (peers.some((m) => blocked.has(m))) continue;
+      channels.add(`chat:${r.chat_id}`);
+      for (const m of peers) channels.add(`user:${m}`);
     }
     if (channels.size === 0) return;
     await publishMany(env, [...channels], { type: "presence", uid, online, lastSeen });

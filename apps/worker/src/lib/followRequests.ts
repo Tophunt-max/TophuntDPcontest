@@ -112,8 +112,16 @@ export async function approveAllFollowRequests(env: Env, target: string, ts: num
 /** Statements removing requests in BOTH directions between two accounts (block path). */
 export function deleteRequestsBetweenStmts(db: ReturnType<typeof getDb>, a: string, b: string) {
   const fr = schema.followRequests;
+  const n = schema.notifications;
+  const requestNote = (target: string, requester: string) =>
+    db.delete(n).where(and(eq(n.recipientId, target), eq(n.type, "follow_request"), eq(n.actorId, requester)));
   return [
     db.delete(fr).where(and(eq(fr.requesterId, a), eq(fr.targetId, b))),
     db.delete(fr).where(and(eq(fr.requesterId, b), eq(fr.targetId, a))),
+    // And their "wants to follow you" rows, as every other request-removal path
+    // does. After a block the row stayed in the inbox with a Confirm that the
+    // block then refused, so it could never be answered or cleared.
+    requestNote(b, a),
+    requestNote(a, b),
   ];
 }
