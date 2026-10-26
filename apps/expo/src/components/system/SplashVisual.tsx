@@ -51,7 +51,7 @@ export function SplashVisual({
     >
       <Animated.View style={[styles.logoContainer, animatedLogoStyle]}>
         <Image
-          source={imageSource || require('../../../assets/images/splesh.png')}
+          source={imageSource || require('../../../assets/images/splash.webp')}
           style={styles.logo}
           resizeMode="contain"
         />
