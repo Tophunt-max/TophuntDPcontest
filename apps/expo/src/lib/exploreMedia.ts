@@ -92,10 +92,37 @@ export function chunk<T>(list: T[], cols: number): T[][] {
 // ---------------------------------------------------------------------------
 export const RECENT_SEARCH_MAX = 10;
 
+/** What the server searches for: leading `@`s dropped, case-folded (routes/read.ts#normaliseSearchTerm). */
+const searchKey = (t: string) => t.trim().replace(/^@+/, '').replace(/\s+/g, ' ').toLowerCase();
+
+/**
+ * Most recent first, at most RECENT_SEARCH_MAX. Two entries are the same search
+ * when the server would run the same query, so `@rahul` replaces `rahul` instead
+ * of sitting beside it, and `@a` (a one-letter search) is not saved.
+ */
 export function pushRecentSearch(list: string[], term: string): string[] {
   const t = term.trim().replace(/\s+/g, ' ');
-  if (t.length < 2) return list;
-  return [t, ...list.filter((x) => x.toLowerCase() !== t.toLowerCase())].slice(0, RECENT_SEARCH_MAX);
+  const key = searchKey(t);
+  if (key.length < 2) return list;
+  return [t, ...list.filter((x) => searchKey(x) !== key)].slice(0, RECENT_SEARCH_MAX);
+}
+
+/**
+ * What the search screen shows for the current query.
+ *
+ * `placeholder` is react-query's `isPlaceholderData`: the results on screen are
+ * the PREVIOUS term's, kept while the new term loads. They are shown dimmed
+ * ('stale'), never as the answer. Without this the screen said "nothing found
+ * for <new term>" whenever the previous term had no results, before the new
+ * request had even returned.
+ */
+export type SearchView = 'error' | 'loading' | 'empty' | 'results' | 'stale';
+
+export function searchView(s: { isError: boolean; isLoading: boolean; placeholder: boolean; total: number | null }): SearchView {
+  if (s.total == null) return s.isError ? 'error' : 'loading';
+  if (s.placeholder) return s.total === 0 ? 'loading' : 'stale';
+  if (s.isLoading) return 'loading';
+  return s.total === 0 ? 'empty' : 'results';
 }
 
 // ---------------------------------------------------------------------------
