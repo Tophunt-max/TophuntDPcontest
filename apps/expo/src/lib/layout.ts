@@ -99,3 +99,28 @@ export const webPhoneColumn: ViewStyle =
         marginHorizontal: 'auto',
       }
     : {};
+
+/**
+ * Size a picture of a known aspect ratio (width / height) so it fits ANY screen:
+ * small and large phones, tablets, landscape, and desktop web.
+ *
+ * The result is the largest box of that aspect ratio that stays within all three
+ * limits: `maxWidth` (usually the usable column width), `maxHeight` (usually a
+ * share of the window height, so the copy below the art stays on screen), and
+ * the optional absolute `cap`. Whichever limit is tightest wins, so a short
+ * landscape window shrinks the art by height and a narrow phone by width.
+ */
+export function fitArt({
+  aspect,
+  maxWidth,
+  maxHeight,
+  cap = Infinity,
+}: {
+  aspect: number;
+  maxWidth: number;
+  maxHeight: number;
+  cap?: number;
+}): { width: number; height: number } {
+  const width = Math.max(0, Math.min(maxWidth, maxHeight * aspect, cap));
+  return { width: Math.round(width), height: Math.round(width / aspect) };
+}
