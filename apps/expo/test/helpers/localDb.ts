@@ -27,6 +27,7 @@ import { StoryModel } from '@/src/database/models/StoryModel';
 import { UserStoryModel } from '@/src/database/models/UserStoryModel';
 import { PendingActionModel } from '@/src/database/models/PendingActionModel';
 import { FeedSnapshotModel } from '@/src/database/models/FeedSnapshotModel';
+import { OutboxOpModel } from '@/src/database/models/OutboxOpModel';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SHIM = path.join(here, 'betterSqlite3Shim.cjs');
@@ -44,7 +45,7 @@ export function installSqliteShim(): void {
   };
 }
 
-export const modelClasses = [StoryModel, UserStoryModel, PendingActionModel, FeedSnapshotModel];
+export const modelClasses = [StoryModel, UserStoryModel, PendingActionModel, FeedSnapshotModel, OutboxOpModel];
 
 /** A fresh on-disk SQLite path (file-backed, so "restart" means reopening it). */
 export function tempSqlitePath(label: string): string {
