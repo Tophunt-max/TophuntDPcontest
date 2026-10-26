@@ -41,6 +41,9 @@ import { seenAfterViewable, shouldShowGuestWall } from '@/src/lib/guestWall';
 import { liveIdsFor, sameIds } from '@/src/lib/liveWindow';
 import { shouldAutoplay, visibleIdsFor } from '@/src/lib/playbackPolicy';
 import { trackUsage } from '@/src/services/usageStats';
+import { removeCard, restoreCard, type RemovedCard } from '@/src/lib/feedUndo';
+import { restoreRenderCount, saveFeedSession, takeFeedSession, type FeedSessionState } from '@/src/lib/feedSession';
+import { emitToast } from '@/src/lib/toastBridge';
 import { useAppActive, useReduceMotion } from '@/src/hooks/usePlaybackEnvironment';
 import { useIsFocused } from '@react-navigation/native';
 
@@ -98,6 +101,14 @@ export default function HomeScreen() {
   // Read by the (stable) viewability callback to find the card after the visible ones.
   const matchesRef = useRef<any[]>([]);
   matchesRef.current = matches;
+  // Scroll restore (src/lib/feedSession.ts): where the reader is, and a position to go back to.
+  const listRef = useRef<FlatList<any>>(null);
+  const scrollOffsetRef = useRef(0);
+  const firstIndexRef = useRef(0);
+  const nextCursorRef = useRef<number | string | null>(null);
+  const pendingRestoreRef = useRef<FeedSessionState | null>(null);
+  const [renderCount, setRenderCount] = useState(4);
+  nextCursorRef.current = nextCursor;
   const mountedAtRef = useRef(Date.now());
 
   const queryClient = useQueryClient();
@@ -138,6 +149,8 @@ export default function HomeScreen() {
     if (fresh) trackUsage('feed_impression', 'home', { count: fresh });
     // Skeleton rows (numbers) are not battles.
     const indices = viewableItems.filter((v) => typeof v.item === 'object').map((v) => v.index);
+    const firstShown = indices.filter((i): i is number => typeof i === 'number');
+    if (firstShown.length) firstIndexRef.current = Math.min(...firstShown);
     seenRef.current = seenAfterViewable(seenRef.current, indices);
     if (shouldShowGuestWall({ isGuest: isGuestRef.current, seen: seenRef.current, dismissals: wallDismissalsRef.current })) {
       setShowWall(true);
@@ -254,6 +267,27 @@ export default function HomeScreen() {
     sourceRef.current = 'none';
     graphVersionRef.current = getSocialGraphVersion();
 
+    // Coming back to this tab (or a Home pushed again) within a few minutes: the
+    // same battles, cursor and scroll position, without a reload.
+    const resumed = takeFeedSession(`${owner}|${feedTab}`);
+    if (resumed) {
+      setMatches(resumed.items);
+      setNextCursor(resumed.nextCursor);
+      setSource('network');
+      sourceRef.current = 'network';
+      hasContentRef.current = true;
+      setIsLoading(false);
+      pendingRestoreRef.current = resumed;
+      setRenderCount(restoreRenderCount(resumed, 4));
+      return () => {
+        cancelled = true;
+      };
+    }
+    pendingRestoreRef.current = null;
+    setRenderCount(4);
+    scrollOffsetRef.current = 0;
+    firstIndexRef.current = 0;
+
     (async () => {
       const snap = await loadFeedSnapshot(owner, feedTab);
       if (cancelled) return;
@@ -275,6 +309,47 @@ export default function HomeScreen() {
       cancelled = true;
     };
   }, [owner, feedTab, authLoading, fetchFirstPage]);
+
+  /**
+   * Remember this list and position for the next time this tab is shown (tab
+   * switch, unmount, or another screen pushed on top). Only a list that came from
+   * the network: a snapshot's cursor cannot be paged from.
+   */
+  const persistSession = useCallback((key: string) => {
+    if (sourceRef.current !== 'network' || !matchesRef.current.length) return;
+    saveFeedSession(key, {
+      items: matchesRef.current,
+      nextCursor: nextCursorRef.current,
+      offset: scrollOffsetRef.current,
+      firstIndex: firstIndexRef.current,
+    });
+  }, []);
+  useEffect(() => {
+    const key = feedKey;
+    return () => persistSession(key);
+  }, [feedKey, persistSession]);
+  useFocusEffect(
+    useCallback(() => {
+      const key = feedKey;
+      return () => persistSession(key);
+    }, [feedKey, persistSession]),
+  );
+  /** Scroll back to the saved offset once the restored cards are laid out. */
+  const applyRestore = useCallback((contentHeight?: number) => {
+    const p = pendingRestoreRef.current;
+    if (!p) return;
+    if (contentHeight !== undefined && contentHeight < p.offset) return;
+    pendingRestoreRef.current = null;
+    listRef.current?.scrollToOffset({ offset: p.offset, animated: false });
+    scrollOffsetRef.current = p.offset;
+    firstIndexRef.current = p.firstIndex;
+  }, []);
+  useEffect(() => {
+    if (!pendingRestoreRef.current) return;
+    // Fallback if the content never reaches the offset (cards changed height).
+    const t = setTimeout(() => applyRestore(), 600);
+    return () => clearTimeout(t);
+  }, [matches, applyRestore]);
 
   // Home time-to-first-content, once per session (src/lib/feedSnapshot.ts stats).
   useEffect(() => {
@@ -318,6 +393,44 @@ export default function HomeScreen() {
     setMatches((current) => current.filter((match) => match.id !== matchId));
   }, []);
 
+  /**
+   * "Not interested": the card leaves at once, and an Undo bar stays for a few
+   * seconds. Undo tells the server (`dismissed: false`) and puts the card back
+   * where it was. The full list is in Settings › Privacy › Not interested.
+   */
+  const [undo, setUndo] = useState<RemovedCard | null>(null);
+  const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearUndo = useCallback(() => {
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    undoTimerRef.current = null;
+    setUndo(null);
+  }, []);
+  useEffect(() => () => {
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+  }, []);
+  const handleNotInterested = useCallback((matchId: string) => {
+    // Position from the list as rendered now (a state updater runs later).
+    const { removed } = removeCard(matchesRef.current, matchId);
+    setMatches((current) => removeCard(current, matchId).list);
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    setUndo(removed);
+    undoTimerRef.current = setTimeout(() => setUndo(null), 6000);
+  }, []);
+  const undoNotInterested = useCallback(async () => {
+    const r = undo;
+    clearUndo();
+    if (!r) return;
+    const key = feedKeyRef.current;
+    try {
+      await contestService.setFeedDismissal(r.item.id, false);
+      if (key === feedKeyRef.current) setMatches((current) => restoreCard(current, r));
+    } catch {
+      emitToast('Undo nahi ho paya. Settings › Privacy › Not interested se try karein.', 'error');
+    }
+  }, [undo, clearUndo]);
+  // A tab or account switch makes the pending undo meaningless for this list.
+  useEffect(() => clearUndo(), [feedKey, clearUndo]);
+
   // The viewer/tab effect above resets the list and paints that tab's snapshot.
   const switchTab = useCallback((tab: FeedTab) => {
     if (tab === feedTab) return;
@@ -333,11 +446,11 @@ export default function HomeScreen() {
       item={item}
       isDark={isDark}
       onMatchEnded={handleMatchEnded}
-      onNotInterested={handleMatchEnded}
+      onNotInterested={handleNotInterested}
       liveActive={liveIds.has(item.id)}
       playActive={shouldAutoplay({ visible: visibleIds.has(item.id), screenFocused, appActive, reduceMotion })}
     />
-  ), [handleMatchEnded, isDark, liveIds, visibleIds, screenFocused, appActive, reduceMotion]);
+  ), [handleMatchEnded, handleNotInterested, isDark, liveIds, visibleIds, screenFocused, appActive, reduceMotion]);
 
   const TabBar = (
     <View style={[styles.tabBar, { borderBottomColor: isDark ? '#23262D' : '#EEF0F4' }]}>
@@ -447,6 +560,12 @@ export default function HomeScreen() {
       {TabBar}
       {SavedNotice}
       <FlatList
+        ref={listRef}
+        onScroll={(e) => {
+          scrollOffsetRef.current = e.nativeEvent.contentOffset.y;
+        }}
+        scrollEventThrottle={100}
+        onContentSizeChange={(_w, h) => applyRestore(h)}
         data={isLoading ? [1, 2, 3] : matches}
         renderItem={({ item }) => isLoading ? <PostSkeleton isDark={isDark} /> : renderItem({ item })}
         // The live window lives outside `data`; FlatList re-renders rows only on a data
@@ -473,7 +592,7 @@ export default function HomeScreen() {
         onViewableItemsChanged={onViewableItemsChanged}
         viewabilityConfig={viewabilityConfig}
         removeClippedSubviews
-        initialNumToRender={4}
+        initialNumToRender={renderCount}
         maxToRenderPerBatch={5}
         windowSize={7}
         updateCellsBatchingPeriod={50}
@@ -498,6 +617,14 @@ export default function HomeScreen() {
         contentContainerStyle={{ paddingBottom: isGuest ? 160 : 100 }}
         showsVerticalScrollIndicator={false}
       />
+      {undo && (
+        <View style={[styles.undoBar, { bottom: isGuest ? 150 : 90 }]} accessibilityLiveRegion="polite">
+          <Text style={styles.undoText}>Battle hidden. You&apos;ll see fewer like it.</Text>
+          <TouchableOpacity onPress={() => void undoNotInterested()} accessibilityRole="button" accessibilityLabel="Undo not interested" hitSlop={8}>
+            <Text style={styles.undoAction}>Undo</Text>
+          </TouchableOpacity>
+        </View>
+      )}
       <View style={styles.navContainer}>
         <BottomNav backgroundColor={backgroundColor} isDark={isDark} />
       </View>
@@ -519,6 +646,25 @@ const styles = StyleSheet.create({
   emptyContainer: { padding: 40, alignItems: 'center' },
   retryButton: { marginTop: 16, minHeight: 44, paddingHorizontal: 24, justifyContent: 'center', borderRadius: 22, backgroundColor: '#FF4D67' },
   retryText: { color: '#FFF', fontFamily: 'Urbanist-Bold' },
+  undoBar: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#212121',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    elevation: 6,
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+  },
+  undoText: { color: '#fff', fontFamily: 'Urbanist-Medium', fontSize: 14, flex: 1, marginRight: 12 },
+  undoAction: { color: '#FF4D67', fontFamily: 'Urbanist-Bold', fontSize: 15 },
   navContainer: {
     position: 'absolute',
     bottom: 0,
