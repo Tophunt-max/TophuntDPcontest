@@ -1,7 +1,7 @@
 export default {
-  onBoardingLight1: require('./onBordingLight1.png'),
-  onBoardingLight2: require('./onBordingLight2.png'),
-  onBoardingLight3: require('./onBordingLight3.png'),
+  onBoardingLight1: require('./onBordingLight1.webp'),
+  onBoardingLight2: require('./onBordingLight2.webp'),
+  onBoardingLight3: require('./onBordingLight3.webp'),
   userDark: require('./userDark.png'),
   userLight: require('./userLight.png'),
   post: require('./post.png'),
