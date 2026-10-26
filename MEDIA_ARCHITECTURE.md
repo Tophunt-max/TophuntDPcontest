@@ -176,8 +176,40 @@ moves existing R2 videos across. Bunny pulls from R2 itself, so nothing is
 downloaded and re-uploaded. Do **not** delete the R2 originals until the D1 rows
 have flipped to the Bunny URLs.
 
+## Deleting media: only the owner's
+
+Every delete path (`deleteStory`, `deletePost`, the expired-story cron, account
+deletion) goes through `deleteMediaByUrl(env, url, ownerUid)` in
+`apps/worker/src/lib/mediaDelete.ts`.
+
+A story or post holds a URL, not ownership: `createStory` accepts any URL, and
+the app's Repost puts the original author's URL on a new story. Deleting by URL
+alone deleted the author's photo or video when the repost was deleted or
+expired. So the delete first checks who uploaded the object: R2
+`customMetadata.uploader` (written by `POST /upload` since 2026-10-18) or Bunny
+`videos.owner_uid`. An object recorded as another account's is kept. An object
+with no record (older uploads) is deleted as before. The same lookup
+(`mediaOwnership`) makes `startMatch`/`joinMatch` refuse another user's Bunny
+video, not only R2 photos. Tests: `apps/worker/test/mediaOwnership.test.ts`.
+
+When the original story expires its media goes, and a repost of it then shows
+nothing: the author's lifecycle wins.
+
 ## Known gaps
 
+- **Unattached uploads are never swept.** `videos.target_id` is never written,
+  so a Bunny video that finished uploading but whose story or entry was never
+  created stays in the library, billed. R2 keeps no upload record at all. Fix:
+  write `target_id` when the story or entry row is created, then add a sweep of
+  ready/processing rows with no target older than 24 h, starting in report-only
+  mode (a wrong delete loses user content).
+- **Uploads do not survive an app restart.** No draft or upload state is
+  persisted; a killed app restarts the upload from scratch.
+- **R2 objects carry no stored Cache-Control.** `MEDIA.put` stores only the
+  content type, so the custom domain serves whatever a zone rule sets. Check the
+  dashboard.
+- **Whole-video buffering.** The client reads the file into a Blob and the
+  Worker buffers the body; on native, tus could stream from the file URI.
 - **Bunny has never run against a real account.** MEDIA_MIGRATION_PLAN.md is
   explicit that the whole Phase 2/3 path is type-checked and bundled but never
   executed. Unverified: TUS signature acceptance, the `VideoGuid`/`Status` webhook
