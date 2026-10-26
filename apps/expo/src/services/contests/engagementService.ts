@@ -5,9 +5,14 @@ export const engagementService = {
    * Bookmark / unbookmark a battle. Returns the new bookmarked state.
    * (Was users/{uid}/bookmarks/{battleId} in Firestore; now a Worker action.)
    */
-  toggleBookmark: async (battleId: string, _userId?: string) => {
+  toggleBookmark: async (battleId: string, _userId?: string, bookmarked?: boolean) => {
     try {
-      const res: any = await callApi('toggleBookmark', { matchId: battleId });
+      // With `bookmarked` the server sets that state instead of toggling, so a
+      // repeat (double tap, lost response, offline replay) is a no-op.
+      const res: any = await callApi(
+        'toggleBookmark',
+        typeof bookmarked === 'boolean' ? { matchId: battleId, bookmarked } : { matchId: battleId },
+      );
       return res.bookmarked;
     } catch (error) {
       console.error("Error toggling bookmark:", error);

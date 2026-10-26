@@ -33,6 +33,15 @@ vi.mock('@/src/services/firebase/initFirebase', () => ({
   },
 }));
 vi.mock('@react-native-community/netinfo', () => ({ default: { fetch: async () => ({ isConnected: false }) } }));
+// syncPendingActions replays through storyService; `seen` decides each outcome.
+const replay = vi.hoisted(() => ({ seen: async (_id: string) => undefined as unknown, calls: [] as string[] }));
+vi.mock('@/src/services/stories/storyService', () => ({
+  markStoryAsSeen: async (id: string) => {
+    replay.calls.push(id);
+    return replay.seen(id);
+  },
+  reactToStory: async () => undefined,
+}));
 vi.mock('@/src/database', async () => {
   const models = await import('./helpers/localDb');
   return {
@@ -134,6 +143,38 @@ for (const [label, make] of Object.entries(backends)) {
         await svc.queuePendingAction({ type: 'view', storyId: `x${i}`, userId: 'alice', data: {} });
       }
       expect(await h.db.get('pending_actions').query().fetchCount()).toBe(svc.MAX_PENDING_ACTIONS);
+    });
+
+    it('replay: delivered rows go, refused rows go, a network failure stops without spending attempts', async () => {
+      const apiErr = (status?: number) => Object.assign(new Error(`HTTP ${status}`), { code: 'functions/x', status });
+      for (const s of ['ok', 'gone', 'net1', 'net2']) {
+        await svc.queuePendingAction({ type: 'view', storyId: s, userId: 'alice', data: {} });
+        await new Promise((r) => setTimeout(r, 2)); // distinct timestamps: replay is oldest first
+      }
+      replay.calls.length = 0;
+      replay.seen = async (id) => {
+        if (id === 'gone') throw apiErr(404); // Story deleted: permanent
+        if (id.startsWith('net')) throw apiErr(undefined); // offline again
+        return undefined;
+      };
+      await svc.syncPendingActions();
+      expect(replay.calls).toEqual(['ok', 'gone', 'net1']); // stopped at the first network failure
+      const left: any[] = await h.db.get('pending_actions').query().fetch();
+      expect(left.map((r) => [r.storyId, r.retries]).sort()).toEqual([
+        ['net1', 0],
+        ['net2', 0],
+      ]);
+    });
+
+    it('replay: 5xx counts an attempt and the row is dropped after the limit', async () => {
+      await svc.queuePendingAction({ type: 'view', storyId: 's5', userId: 'alice', data: {} });
+      replay.seen = async () => {
+        throw Object.assign(new Error('HTTP 503'), { code: 'functions/unavailable', status: 503 });
+      };
+      for (let i = 0; i < 4; i++) await svc.syncPendingActions();
+      expect(((await h.db.get('pending_actions').query().fetch()) as any[])[0].retries).toBe(4);
+      await svc.syncPendingActions();
+      expect(await h.db.get('pending_actions').query().fetchCount()).toBe(0);
     });
 
     it('refuses to queue anything but replay-safe Story actions', async () => {

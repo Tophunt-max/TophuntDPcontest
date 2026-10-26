@@ -50,6 +50,8 @@ import { useFirebaseActionLink } from '@/src/hooks/useFirebaseActionLink';
 import { lightTheme, darkTheme } from '@/constants/theme';
 import '@/src/services/firebase/initFirebase'; // Import to initialize Firebase
 import '@/src/database'; // Initialize WatermelonDB
+import { startOfflineSync, onAccountChangedForSync } from '@/src/sync';
+import { shouldReportQueryError, shouldRetryQuery } from '@/src/sync/queryPolicy';
 import { getNotificationDestination } from '@/src/services/notifications/notificationMeta';
 import { AppState, Platform } from 'react-native';
 // Icons are now SVG-based (src/lib/icons.tsx via lucide-react-native), so there
@@ -111,7 +113,9 @@ const queryClient = new QueryClient({
   // Report every query error; toast only on user-triggered mutation failures to
   // avoid spamming toasts for background refetches.
   queryCache: new QueryCache({
-    onError: (error) => reportError(error),
+    onError: (error) => {
+      if (shouldReportQueryError(error)) reportError(error);
+    },
   }),
   mutationCache: new MutationCache({
     onError: (error: any) => {
@@ -121,7 +125,9 @@ const queryClient = new QueryClient({
   }),
   defaultOptions: {
     queries: {
-      retry: 2,
+      // The request core already retries transient read failures; see
+      // src/sync/queryPolicy.ts for why this no longer stacks on top of it.
+      retry: shouldRetryQuery,
       retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 8000),
       staleTime: 30_000,
       refetchOnReconnect: true,
@@ -253,6 +259,9 @@ function RootLayoutNav() {
         .then(({ clearFeedSnapshots }) => clearFeedSnapshots())
         .catch((e) => console.error('Feed snapshot clear failed', e));
     }
+    // Resolved identity (launch or a change): load this account's pending
+    // offline intents for the UI, then send them.
+    if (lastUidRef.current !== uid) onAccountChangedForSync();
     lastUidRef.current = uid;
   }, [user?.uid, loading]);
 
@@ -312,13 +321,10 @@ function RootLayoutNav() {
     // the notification-response callback above, which meant offline sync only
     // armed once the user tapped a notification, leaked an extra NetInfo
     // listener on every tap, and the cleanup referenced an undefined `sub`.
-    const unsubscribeNetInfo = NetInfo.addEventListener(state => {
-      if (state.isConnected) {
-        import('@/src/services/stories/storyService').then(({ syncStories }) => {
-          syncStories();
-        }).catch((e) => console.error('Story sync import failed', e));
-      }
-    });
+    // Queued offline work (social outbox + Story views/reactions) is sent on
+    // reconnect, foreground and launch, debounced (src/sync/index.ts). This
+    // replaces a listener that re-ran the Story sync on every NetInfo event.
+    const unsubscribeNetInfo = startOfflineSync();
 
     return () => {
         subscription.remove();

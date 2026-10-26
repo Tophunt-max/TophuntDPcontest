@@ -6,6 +6,7 @@ import { toggleFollowService } from '@/src/services/users';
 import { followStateFromResult, intentFor, stateInSets, withStateInSets, type FollowState } from '@/src/lib/followState';
 import { useAuthGate } from '@/src/hooks/useAuthGate';
 import { emitToast } from '@/src/lib/toastBridge';
+import { enqueueOutbox, isNetworkFailure } from '@/src/sync';
 
 /**
  * Optimistic follow / unfollow / request for lists of people (Explore, search).
@@ -36,10 +37,17 @@ export function useFollowToggle(initialFollowing: string[] | null | undefined) {
         setRequested((r) => withStateInSets(new Set(), r, id, state).requested);
       };
       apply(before === 'none' ? 'following' : 'none');
+      const intent = intentFor(before);
       try {
-        apply(followStateFromResult(await toggleFollowService(id, intentFor(before))));
+        apply(followStateFromResult(await toggleFollowService(id, intent)));
         qc.invalidateQueries({ queryKey: ['profile'] });
-      } catch {
+      } catch (error) {
+        // No answer (offline): keep the change and send the same explicit
+        // intent later. A private account will show "Requested" after it syncs.
+        if (isNetworkFailure(error) && (await enqueueOutbox('user.follow', id, { intent }))) {
+          emitToast('Offline: this will sync when you are back online.', 'info');
+          return;
+        }
         apply(before);
         emitToast('Follow update nahi ho paya. Dobara try karo.', 'error');
       } finally {
