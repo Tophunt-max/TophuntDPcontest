@@ -72,13 +72,29 @@ const VsSide: React.FC<{
   return (
     <View style={styles.side}>
       <View style={styles.mediaWrap}>
+        {/*
+          Whole entry, never cropped (same as the feed card): `contain`, with a
+          blurred copy of the photo filling the space around it. A video has no
+          still to blur here, so its bars stay the frame's dark background.
+        */}
+        {!isVideo && !!uri && (
+          <Image
+            source={{ uri }}
+            style={StyleSheet.absoluteFill}
+            contentFit="cover"
+            blurRadius={24}
+            transition={0}
+            accessible={false}
+            pointerEvents="none"
+          />
+        )}
         {isVideo && uri ? (
-          <VideoView player={player} style={styles.media} contentFit="cover" nativeControls={false} />
+          <VideoView player={player} style={[styles.media, styles.videoClear]} contentFit="contain" nativeControls={false} />
         ) : (
           <Image
             source={uri ? { uri } : undefined}
             style={styles.media}
-            contentFit="cover"
+            contentFit="contain"
             transition={150}
             onLoad={uri ? onPhotoLoad : undefined}
           />
@@ -304,6 +320,7 @@ const styles = StyleSheet.create({
     borderWidth: 2, borderColor: 'rgba(255,255,255,0.18)',
   },
   media: { width: '100%', height: '100%' },
+  videoClear: { backgroundColor: 'transparent' },
   videoPip: {
     position: 'absolute', top: 8, right: 8,
     backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 100, padding: 5,
