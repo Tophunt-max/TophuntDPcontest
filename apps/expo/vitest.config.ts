@@ -11,6 +11,17 @@ export default defineConfig({
   resolve: {
     alias: { '@': dir },
   },
+  // Class fields must compile the way the app's Babel pipeline compiles them
+  // (babel.config.js). The WatermelonDB models declare decorated fields with no
+  // initializer (`@field('type') type!: string`); [[Define]] semantics give each
+  // instance an own `type = undefined` that shadows the decorator's accessor, so
+  // every column is stored empty. Vite reads `useDefineForClassFields: false`
+  // from tsconfig.json for this. Legacy decorators are set explicitly to match
+  // `experimentalDecorators` there. Without both, the real-database tests
+  // (test/localDb*.test.ts) would exercise something the app never runs.
+  oxc: {
+    decorator: { legacy: true },
+  },
   test: {
     environment: 'node',
     include: ['test/**/*.test.ts'],

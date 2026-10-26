@@ -8,6 +8,13 @@
     // @babel/plugin-proposal-decorators with { legacy: true } at build time;
     // this only tells tsc to accept the same syntax. See babel.config.js.
     "experimentalDecorators": true,
+    // Same reason, other half: the app's Babel pipeline (legacy decorators +
+    // LOOSE class properties) never emits an own property for a decorated
+    // field without an initializer. TypeScript's default for an ESNext target
+    // does, which shadows the decorator and stores every column empty. tsc
+    // only typechecks here (Metro builds with Babel), but Vitest's transform
+    // reads this flag, and the real-database tests depend on it.
+    "useDefineForClassFields": false,
     "paths": {
       "@/*": [
         "./*"
