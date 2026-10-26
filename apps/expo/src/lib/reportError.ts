@@ -80,6 +80,26 @@ function isDuplicate(key: string): boolean {
   return false;
 }
 
+/**
+ * Keys that identify a person, dropped before an event leaves the device. Sentry
+ * is a third-party processor; error context named other users (`targetUserId`)
+ * and could carry contact details. Matched case-insensitively on the key name.
+ */
+const IDENTIFYING_KEY = /(uid|userid|email|phone|token|password|otp|address|upi|account|utr)/i;
+const MAX_EXTRA_VALUE = 1000;
+
+/** Only short primitive values under non-identifying keys survive. */
+export function scrubExtra(extra?: Extra): Record<string, string | number | boolean> | undefined {
+  if (!extra) return undefined;
+  const out: Record<string, string | number | boolean> = {};
+  for (const [k, v] of Object.entries(extra as Record<string, unknown>)) {
+    if (IDENTIFYING_KEY.test(k)) continue;
+    if (typeof v === 'number' || typeof v === 'boolean') out[k] = v;
+    else if (typeof v === 'string') out[k] = v.slice(0, MAX_EXTRA_VALUE);
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 function deliver(error: Error, extra?: Extra) {
   if (!parsed) return;
   const eventId = (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}${Math.random()}`)
@@ -100,7 +120,7 @@ function deliver(error: Error, extra?: Extra) {
       // user is running rather than just the store version.
       updateId: (Constants as any)?.expoConfig?.updateId ?? undefined,
     },
-    extra,
+    extra: scrubExtra(extra),
     exception: {
       values: [
         {

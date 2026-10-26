@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Linking } from 'react-native';
+import { safeExternalUrl } from '@/src/lib/safeLink';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSegments } from 'expo-router';
 import { Ionicons } from '@/src/lib/icons';
@@ -43,7 +44,10 @@ export function AnnouncementBanner() {
     <View style={[styles.wrap, { paddingTop: insets.top + 8 }]} pointerEvents="box-none">
       <TouchableOpacity
         activeOpacity={a.link ? 0.85 : 1}
-        onPress={() => a.link && Linking.openURL(a.link).catch(() => {})}
+        onPress={() => {
+          const url = safeExternalUrl(a.link);
+          if (url) Linking.openURL(url).catch(() => {});
+        }}
         style={[styles.banner, { backgroundColor: tone.bg }]}
         accessibilityRole={a.link ? 'link' : undefined}
       >
