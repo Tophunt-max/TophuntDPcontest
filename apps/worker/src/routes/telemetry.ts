@@ -29,8 +29,21 @@ export function utcDay(ts: number): string {
   return new Date(ts).toISOString().slice(0, 10);
 }
 
+/** The real payload is three short fields; anything bigger is not ours. */
+export const TELEMETRY_MAX_BYTES = 512;
+
 telemetryRoute.post("/onboarding", async (c) => {
-  const body = await c.req.json<any>().catch(() => null);
+  // Unauthenticated, so bounded before parsing: `c.req.json()` read any size.
+  const declared = Number(c.req.header("Content-Length") || 0);
+  if (declared > TELEMETRY_MAX_BYTES) throw httpsError("invalid-argument", "Payload too large.");
+  const raw = await c.req.text();
+  if (raw.length > TELEMETRY_MAX_BYTES) throw httpsError("invalid-argument", "Payload too large.");
+  let body: any = null;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    body = null;
+  }
   const event = body?.event as OnboardingEvent;
   if (!ONBOARDING_EVENTS.includes(event)) throw httpsError("invalid-argument", "Unknown event.");
   let slide = -1;
