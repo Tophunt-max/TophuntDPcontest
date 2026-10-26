@@ -3,6 +3,7 @@ import * as tus from 'tus-js-client';
 
 import { callApi } from '../api';
 import { tusUrlStorage } from './tusUrlStorage';
+import { UploadCancelledError } from '@/src/lib/uploadToR2';
 
 /**
  * Resumable video upload direct to Bunny Stream (MEDIA_MIGRATION_PLAN.md 2e).
@@ -75,6 +76,8 @@ export interface BunnyUploadOptions {
   title?: string;
   targetType?: 'story' | 'contest_entry';
   onProgress?: (progress: number) => void;
+  /** Abort the upload (screen left, user cancelled). Rejects with UploadCancelledError. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -87,7 +90,8 @@ export async function uploadVideoToBunny(
   uri: string,
   options: BunnyUploadOptions = {},
 ): Promise<BunnyUploadOutcome> {
-  const { title, targetType, onProgress } = options;
+  const { title, targetType, onProgress, signal } = options;
+  if (signal?.aborted) throw new UploadCancelledError();
 
   // Wrapped, because a failure HERE is the one Bunny failure that carries no
   // information about whether R2 is still an option — nothing has been created
@@ -100,8 +104,11 @@ export async function uploadVideoToBunny(
       targetType,
     })) as CreateUploadResponse;
   } catch (error) {
+    // Cancelled while asking: report the cancellation, not a reason to try R2.
+    if (signal?.aborted) throw new UploadCancelledError();
     return { status: 'unavailable', error };
   }
+  if (signal?.aborted) throw new UploadCancelledError();
 
   // Server says Bunny isn't set up. It also says whether R2 will still take the
   // bytes; default TRUE so an app talking to a Worker that predates `r2Fallback`
@@ -150,20 +157,50 @@ export async function uploadVideoToBunny(
           onProgress(bytesSent / bytesTotal);
         }
       },
-      onSuccess: () => resolve(),
-      onError: (error) => reject(error),
+      /**
+       * Resume key = THIS Bunny video, not the file.
+       *
+       * Every attempt creates a new Bunny video (new guid, new signature). The
+       * default fingerprint is built from the file (name, size, endpoint), so a
+       * retry of the same file, or another file of the same size, found the
+       * PREVIOUS attempt's tus URL and resumed into the old video, or reported
+       * success with nothing sent. This attempt then returned its own
+       * playbackUrl, a video that never received a byte, and the story or entry
+       * pointed at it until the 2 h sweep deleted it.
+       */
+      fingerprint: async () => `bunny-${videoId}`,
+      // A finished upload's entry is useless, and with a per-video key it would
+      // never be read again: drop it rather than accumulate one per upload.
+      removeFingerprintOnSuccess: true,
+      onSuccess: () => finish(() => resolve()),
+      onError: (error) => finish(() => reject(error)),
     });
+
+    let settled = false;
+    const onAbort = () => {
+      // `true` also asks the server to drop the partial upload.
+      void upload.abort(true).catch(() => undefined);
+      finish(() => reject(new UploadCancelledError()));
+    };
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      fn();
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
 
     // Resume rather than restart if this exact file was interrupted before.
     upload
       .findPreviousUploads()
       .then((previous) => {
+        if (settled) return;
         if (previous.length > 0) upload.resumeFromPreviousUpload(previous[0]);
         upload.start();
       })
       .catch(() => {
         // A URL-storage failure must not prevent a fresh upload.
-        upload.start();
+        if (!settled) upload.start();
       });
   });
 

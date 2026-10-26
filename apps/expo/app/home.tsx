@@ -39,6 +39,9 @@ import {
 import { GuestLoginWall } from '@/src/components/auth/GuestLoginWall';
 import { seenAfterViewable, shouldShowGuestWall } from '@/src/lib/guestWall';
 import { liveIdsFor, sameIds } from '@/src/lib/liveWindow';
+import { shouldAutoplay, visibleIdsFor } from '@/src/lib/playbackPolicy';
+import { useAppActive, useReduceMotion } from '@/src/hooks/usePlaybackEnvironment';
+import { useIsFocused } from '@react-navigation/native';
 
 type FeedTab = 'foryou' | 'following';
 const PAGE_SIZE = 8;
@@ -114,10 +117,14 @@ export default function HomeScreen() {
   const [showWall, setShowWall] = useState(false);
   // Cards that hold a live socket: the visible ones plus the next (src/lib/liveWindow.ts).
   const [liveIds, setLiveIds] = useState<Set<string>>(() => new Set());
+  // Cards whose videos may play: on screen only (src/lib/playbackPolicy.ts).
+  const [visibleIds, setVisibleIds] = useState<Set<string>>(() => new Set());
   // Stable identity is required: FlatList throws if onViewableItemsChanged changes.
   const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: { index: number | null; item: any }[] }) => {
     const next = liveIdsFor(viewableItems, matchesRef.current);
     setLiveIds((prev) => (sameIds(prev, next) ? prev : next));
+    const visible = visibleIdsFor(viewableItems);
+    setVisibleIds((prev) => (sameIds(prev, visible) ? prev : visible));
     // Skeleton rows (numbers) are not battles.
     const indices = viewableItems.filter((v) => typeof v.item === 'object').map((v) => v.index);
     seenRef.current = seenAfterViewable(seenRef.current, indices);
@@ -306,9 +313,19 @@ export default function HomeScreen() {
     setFeedTab(tab);
   }, [feedTab]);
 
+  // Home stays mounted under pushed screens, and video kept playing there.
+  const screenFocused = useIsFocused();
+  const appActive = useAppActive();
+  const reduceMotion = useReduceMotion();
   const renderItem = useCallback(({ item }: { item: any }) => (
-    <PostCard item={item} isDark={isDark} onMatchEnded={handleMatchEnded} liveActive={liveIds.has(item.id)} />
-  ), [handleMatchEnded, isDark, liveIds]);
+    <PostCard
+      item={item}
+      isDark={isDark}
+      onMatchEnded={handleMatchEnded}
+      liveActive={liveIds.has(item.id)}
+      playActive={shouldAutoplay({ visible: visibleIds.has(item.id), screenFocused, appActive, reduceMotion })}
+    />
+  ), [handleMatchEnded, isDark, liveIds, visibleIds, screenFocused, appActive, reduceMotion]);
 
   const TabBar = (
     <View style={[styles.tabBar, { borderBottomColor: isDark ? '#23262D' : '#EEF0F4' }]}>
@@ -423,7 +440,7 @@ export default function HomeScreen() {
         // The live window lives outside `data`; FlatList re-renders rows only on a data
         // change unless told. PostCard is memoised, so only cards whose liveActive
         // flipped do any work.
-        extraData={liveIds}
+        extraData={renderItem}
         // Cached cards get their own key so they REMOUNT when the fresh page lands:
         // PostCard seeds votes / counts / isLiked from `item` into useState once, so
         // reusing a card across the swap would keep the snapshot's stale numbers.

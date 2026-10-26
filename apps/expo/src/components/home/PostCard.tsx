@@ -58,6 +58,12 @@ interface PostCardProps {
      * so a long feed holds only a few sockets (see src/lib/liveWindow.ts).
      */
     liveActive?: boolean;
+    /**
+     * Whether this card's videos may play now (on screen, screen focused, app
+     * in the foreground, no reduce-motion). Defaults to true for screens that
+     * do not track visibility. See src/lib/playbackPolicy.ts.
+     */
+    playActive?: boolean;
 }
 
 const AnimatedLinearGradient = Animated.createAnimatedComponent(LinearGradient);
@@ -74,7 +80,7 @@ const PhotoMedia = ({ uri, style }: { uri?: string; style: any }) => (
 // video player (the useVideoPlayer hook only runs inside VideoMedia). Video
 // battles autoplay muted + looping; FlatList virtualization unmounts off-screen
 // cards, which releases their players.
-const VideoMedia = ({ uri, style }: { uri: string; style: any }) => {
+const VideoMedia = ({ uri, style, active }: { uri: string; style: any; active: boolean }) => {
   // Bunny videos need ~10-60s of encoding after upload. Until then there is no
   // playlist to play, so show the poster frame instead of mounting a player that
   // would just error. R2 videos report status null and skip all of this.
@@ -83,22 +89,39 @@ const VideoMedia = ({ uri, style }: { uri: string; style: any }) => {
   // cache) on native, and on web hls.js attached to the player's own <video>, so
   // the browser plays that same playlist instead of a guessed `play_720p.mp4`
   // that 404s whenever Bunny never encoded that rendition.
-  const { hostRef, playerSource } = useHlsVideo(uri);
+  // Web: only download segments while this card may play.
+  const { hostRef, playerSource, failed: streamFailed } = useHlsVideo(uri, { load: active });
 
   const player = useVideoPlayer(isProcessing || isFailed ? null : playerSource, (p) => {
     p.loop = true;
     p.muted = true;
-    p.play();
+    // No play() here: whether this card may play is `active`'s decision
+    // (src/lib/playbackPolicy.ts). It also could not work on web, where the
+    // <video> element does not exist yet when this setup callback runs.
   });
 
-  if (isProcessing || isFailed) {
+  useEffect(() => {
+    try {
+      if (active) player.play();
+      else player.pause();
+    } catch {
+      /* the player was released while unmounting */
+    }
+  }, [active, player]);
+
+  // The poster stays up until the first frame is drawn, instead of a black box
+  // while the stream starts.
+  const [firstFrame, setFirstFrame] = useState(false);
+  useEffect(() => setFirstFrame(false), [playerSource]);
+
+  if (isProcessing || isFailed || streamFailed) {
     return (
       <View style={[style, styles.videoPlaceholder]}>
         {!!thumbnailUrl && (
           <ExpoImage source={{ uri: thumbnailUrl }} style={StyleSheet.absoluteFill} contentFit="cover" />
         )}
         <View style={styles.videoPlaceholderOverlay}>
-          {isFailed ? (
+          {isFailed || streamFailed ? (
             <Text style={styles.videoPlaceholderText}>Video unavailable</Text>
           ) : (
             <>
@@ -115,13 +138,28 @@ const VideoMedia = ({ uri, style }: { uri: string; style: any }) => {
   // native the ref is undefined and this is an inert View.
   return (
     <View ref={hostRef} style={style}>
-      <VideoView player={player} style={StyleSheet.absoluteFill} contentFit="cover" nativeControls={false} />
+      <VideoView
+        player={player}
+        style={StyleSheet.absoluteFill}
+        contentFit="cover"
+        nativeControls={false}
+        onFirstFrameRender={() => setFirstFrame(true)}
+      />
+      {!firstFrame && !!thumbnailUrl && (
+        <ExpoImage
+          source={{ uri: thumbnailUrl }}
+          style={StyleSheet.absoluteFill}
+          contentFit="cover"
+          pointerEvents="none"
+          accessibilityIgnoresInvertColors
+        />
+      )}
     </View>
   );
 };
 
-const BattleMedia = ({ isVideo, uri, style }: { isVideo: boolean; uri?: string; style: any }) =>
-  isVideo && uri ? <VideoMedia uri={uri} style={style} /> : <PhotoMedia uri={uri} style={style} />;
+const BattleMedia = ({ isVideo, uri, style, active }: { isVideo: boolean; uri?: string; style: any; active: boolean }) =>
+  isVideo && uri ? <VideoMedia uri={uri} style={style} active={active} /> : <PhotoMedia uri={uri} style={style} />;
 
 /** Compact vote count formatting (1.2k / 3.4M) for the on-image chips. */
 const formatVotes = (n: number): string => {
@@ -131,7 +169,7 @@ const formatVotes = (n: number): string => {
   return String(value);
 };
 
-export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }: PostCardProps) => {
+export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true, playActive = true }: PostCardProps) => {
   const { user } = useAuth();
   const { requireAuth } = useAuthGate();
   const router = useRouter();
@@ -723,6 +761,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
             isVideo={isVideo}
             uri={item.userA.mediaUrlOptimized || item.userA.mediaUrl}
             style={styles.postImage}
+            active={playActive}
           />
           {aWins && <View style={styles.crownContainer}><MaterialCommunityIcons name="crown" size={20} color="#FFD700" /></View>}
         </View>
@@ -733,6 +772,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
               isVideo={isVideo}
               uri={userB.mediaUrlOptimized || userB.mediaUrl}
               style={styles.postImage}
+              active={playActive}
             />
           ) : (
             // Waiting for an opponent: the slot stays, empty, rather than throwing.

@@ -1,9 +1,10 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { VideoSource } from 'expo-video';
 import Hls from 'hls.js';
 
 import { isHlsUrl, videoSourceFor } from '@/src/lib/videoSource';
-import type { HlsVideoBinding } from './useHlsVideo';
+import type { HlsVideoBinding, HlsVideoOptions } from './useHlsVideo';
+import { hlsErrorKind, initialHlsRecovery, nextHlsRecovery } from '@/src/lib/hlsRecovery';
 
 /**
  * Play a Bunny HLS stream on the WEB, where nothing plays it natively.
@@ -42,16 +43,23 @@ import type { HlsVideoBinding } from './useHlsVideo';
  * the `.m3u8` would set `video.src` to something the browser cannot decode, and
  * its `onerror` would flip the player to `error` before hls.js ever attached.
  */
-export function useHlsVideo(url?: string | null): HlsVideoBinding {
+export function useHlsVideo(url?: string | null, options: HlsVideoOptions = {}): HlsVideoBinding {
+  const { load = true } = options;
   const hostRef = useRef<any>(null);
+  const hlsRef = useRef<Hls | null>(null);
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  const [failed, setFailed] = useState(false);
   const isHls = !!url && isHlsUrl(url);
   // Safari (notably iOS) reports MSE unsupported but plays HLS natively, so it
   // takes the plain-URL path below rather than hls.js.
   const useHlsJs = isHls && Hls.isSupported();
 
   useEffect(() => {
+    setFailed(false);
     if (!useHlsJs || !url) return;
     let hls: Hls | null = null;
+    const recovery = initialHlsRecovery();
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -72,14 +80,36 @@ export function useHlsVideo(url?: string | null): HlsVideoBinding {
         timer = setTimeout(attach, 50);
         return;
       }
-      hls = new Hls({ enableWorker: true });
-      hls.on(Hls.Events.ERROR, (_evt, data) => {
-        // Only fatal errors are worth surfacing; hls.js recovers from the rest on
-        // its own, and logging them all buries the real one.
-        if (data?.fatal) console.error('[useHlsVideo] fatal hls.js error', data.type, data.details);
+      // `autoStartLoad: false`: segments are fetched only while `load` is true
+      // (see the effect below), so an off-screen feed card does not buffer.
+      // A 15 s forward buffer instead of the 30 s default bounds what one
+      // playing card downloads ahead.
+      const instance = new Hls({ enableWorker: true, autoStartLoad: false, maxBufferLength: 15 });
+      hls = instance;
+      hlsRef.current = instance;
+      instance.on(Hls.Events.ERROR, (_evt, data) => {
+        // hls.js recovers from non-fatal errors on its own.
+        if (!data?.fatal) return;
+        const action = nextHlsRecovery(recovery, hlsErrorKind(data.type));
+        console.error('[useHlsVideo] fatal hls.js error', data.type, data.details, '->', action);
+        try {
+          if (action === 'startLoad') instance.startLoad();
+          else if (action === 'recoverMedia') instance.recoverMediaError();
+          else if (action === 'swapAudioAndRecover') {
+            instance.swapAudioCodec();
+            instance.recoverMediaError();
+          } else {
+            instance.destroy();
+            if (hlsRef.current === instance) hlsRef.current = null;
+            if (!cancelled) setFailed(true);
+          }
+        } catch {
+          if (!cancelled) setFailed(true);
+        }
       });
-      hls.loadSource(url);
-      hls.attachMedia(video);
+      instance.loadSource(url);
+      instance.attachMedia(video);
+      if (loadRef.current) instance.startLoad();
     };
     attach();
 
@@ -87,8 +117,21 @@ export function useHlsVideo(url?: string | null): HlsVideoBinding {
       cancelled = true;
       if (timer) clearTimeout(timer);
       hls?.destroy();
+      if (hlsRef.current === hls) hlsRef.current = null;
     };
   }, [url, useHlsJs]);
+
+  // Start / stop segment loading with `load` (feed visibility).
+  useEffect(() => {
+    const hls = hlsRef.current;
+    if (!hls) return;
+    try {
+      if (load) hls.startLoad();
+      else hls.stopLoad();
+    } catch {
+      /* destroyed */
+    }
+  }, [load]);
 
   return {
     hostRef,
@@ -96,5 +139,6 @@ export function useHlsVideo(url?: string | null): HlsVideoBinding {
     // A bare HLS url => Safari's native HLS.
     // Anything else (a legacy R2 mp4) => the normal source path.
     playerSource: useHlsJs ? null : isHls ? (url as string) : videoSourceFor(url),
+    failed,
   };
 }

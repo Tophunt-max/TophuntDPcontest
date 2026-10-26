@@ -13,8 +13,8 @@ import { getDb, schema } from "../db";
 import { httpsError } from "../lib/http";
 import { requireApiAuth, isAdmin } from "../middleware/auth";
 import { requireFullAdmin as requireFullAdminAction, writeAdminAudit } from "../lib/adminAuthz";
-import { vsImageKeyFromPublicUrl, canonicalMediaUrl, isOwnChatMediaUrl, mediaKeyFromPublicUrl } from "../lib/r2";
-import { deleteMediaByUrl } from "../lib/mediaDelete";
+import { vsImageKeyFromPublicUrl, canonicalMediaUrl, isOwnChatMediaUrl } from "../lib/r2";
+import { deleteMediaByUrl, mediaOwnership } from "../lib/mediaDelete";
 
 import { createNotification, sendPushNotification } from "../lib/notify";
 import { enqueueBroadcast } from "../lib/broadcast";
@@ -273,19 +273,20 @@ const notPorted = (action: string, file: string): never => {
  */
 async function assertOwnContestEntry(env: Env, uid: string, mediaUrl: unknown): Promise<void> {
   if (typeof mediaUrl !== "string" || !mediaUrl) return;
-  const key = mediaKeyFromPublicUrl(env, mediaUrl);
-  if (!key) return;
-  let head: R2Object | null = null;
+  // R2 objects carry `customMetadata.uploader`, Bunny videos `videos.owner_uid`.
+  // This used to check R2 only, so any Bunny playback url (someone else's video
+  // entry, readable from the public feed) passed and was charged for and
+  // entered. VS publication refused it later, after the entry fee had moved.
+  let ownership: Awaited<ReturnType<typeof mediaOwnership>>;
   try {
-    head = await env.MEDIA.head(key);
+    ownership = await mediaOwnership(env, mediaUrl, uid);
   } catch (e) {
     // Fail open on a storage blip: publication re-checks with the bytes in hand.
-    console.error("[contest] entry provenance check failed (continuing)", key, e);
+    console.error("[contest] entry provenance check failed (continuing)", mediaUrl, e);
     return;
   }
-  const uploader = (head as any)?.customMetadata?.uploader;
-  if (uploader && uploader !== uid) {
-    throw httpsError("permission-denied", "That entry was uploaded by another account. Please upload your own photo.");
+  if (ownership === "foreign") {
+    throw httpsError("permission-denied", "That entry was uploaded by another account. Please upload your own photo or video.");
   }
 }
 
@@ -1241,7 +1242,7 @@ apiRoute.post("/", async (c) => {
       await db.delete(schema.posts).where(eq(schema.posts.id, postId));
       await db.update(schema.users).set({ postsCount: sql`MAX(${schema.users.postsCount} - 1, 0)` }).where(eq(schema.users.uid, post.userId));
       // Free the R2 object so storage doesn't leak (DELETE is free in R2).
-      if (post.mediaUrl) await deleteMediaByUrl(env, post.mediaUrl).catch(() => {});
+      if (post.mediaUrl) await deleteMediaByUrl(env, post.mediaUrl, post.userId).catch(() => {});
       return c.json({ success: true, message: "Post deleted successfully" });
     }
 
@@ -1309,7 +1310,7 @@ apiRoute.post("/", async (c) => {
       // reference-aware sweep once no live story uses it (lib/matchStories.ts).
       // The vs-card check covers a personal story that merely NAMES a composite.
       if (story.mediaUrl && !isContestStoryType(story.type) && !vsImageKeyFromPublicUrl(env, story.mediaUrl)) {
-        await deleteMediaByUrl(env, story.mediaUrl);
+        await deleteMediaByUrl(env, story.mediaUrl, story.userId);
       }
       await db.delete(schema.stories).where(eq(schema.stories.id, storyId));
       return c.json({ success: true });

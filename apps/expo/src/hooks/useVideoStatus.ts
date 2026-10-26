@@ -43,6 +43,25 @@ export interface UseVideoStatusResult {
   mp4Url: string | null;
 }
 
+const isTerminal = (status: string | null | undefined) => status === 'ready' || status === 'failed';
+
+/**
+ * How long until the next encode-status check, or false to stop.
+ *
+ * It polled every 5 s forever while the status was not terminal, per mounted
+ * card, and forever when the server had no row at all (`null`), which is
+ * never going to change. Now: 5 s for the first minute (a normal Bunny
+ * encode), then backing off to a minute, and stopping after about 30 minutes.
+ * No row: stop after three answers. A remount (or the next screen) asks again.
+ */
+export function videoStatusPollMs(status: string | null, answers: number): number | false {
+  if (isTerminal(status)) return false;
+  if (status === null && answers >= 3) return false;
+  if (answers < 12) return 5_000;
+  if (answers > 50) return false;
+  return Math.min(60_000, 5_000 * 2 ** Math.floor((answers - 12) / 4));
+}
+
 export function useVideoStatus(mediaUrl?: string | null): UseVideoStatusResult {
   const guid = bunnyGuidFromUrl(mediaUrl);
 
@@ -55,14 +74,10 @@ export function useVideoStatus(mediaUrl?: string | null): UseVideoStatusResult {
       return res?.videos?.[0] ?? null;
     },
     enabled: !!guid,
-    // Keep polling only while the encode is outstanding. Once ready or failed the
-    // answer is terminal, so stop.
-    refetchInterval: (query) => {
-      const status = (query.state.data as VideoStatusRow | null)?.status;
-      if (!status) return 5000;
-      return status === 'ready' || status === 'failed' ? false : 5000;
-    },
-    staleTime: 5000,
+    refetchInterval: (query) =>
+      videoStatusPollMs((query.state.data as VideoStatusRow | null | undefined)?.status ?? null, query.state.dataUpdateCount),
+    // A terminal answer never changes: no refetch on every remount of a card.
+    staleTime: (query) => (isTerminal((query.state.data as VideoStatusRow | null | undefined)?.status) ? Infinity : 5000),
   });
 
   // No guid => an R2 video (or a photo). Report "not processing" so existing

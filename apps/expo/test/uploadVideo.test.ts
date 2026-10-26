@@ -32,6 +32,7 @@ vi.mock('@/src/services/video/bunnyUpload', () => ({
 }));
 vi.mock('@/src/lib/uploadToR2', () => ({
   uploadToR2: (...args: unknown[]) => r2Mock.impl(...args),
+  isUploadCancelled: (e: any) => e?.name === 'UploadCancelledError',
 }));
 
 import { uploadVideo } from '@/src/services/media/uploadVideo';
@@ -67,7 +68,7 @@ describe('uploadVideo', () => {
     await expect(uploadVideo('file://v.mp4', opts)).resolves.toContain('/stories/');
     // 'video/mp4' means "a video is expected", not "this file is an mp4" — the real
     // container is read from the file header server-side.
-    expect(r2Mock.impl).toHaveBeenCalledWith('file://v.mp4', 'video/mp4', 'stories', undefined);
+    expect(r2Mock.impl).toHaveBeenCalledWith('file://v.mp4', 'video/mp4', 'stories', undefined, { signal: undefined });
   });
 
   it('does NOT retry on R2 once Bunny is live and the upload fails', async () => {

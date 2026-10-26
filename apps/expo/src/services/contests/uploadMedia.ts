@@ -1,4 +1,4 @@
-import { uploadToR2 } from "@/src/lib/uploadToR2";
+import { UploadCancelledError, uploadToR2 } from "@/src/lib/uploadToR2";
 import { optimizeImageForUpload } from "@/src/lib/imageOptimize";
 import { uploadVideo } from "@/src/services/media/uploadVideo";
 
@@ -24,6 +24,7 @@ export const contestMediaService = {
     _userId: string,
     mediaType: 'photo' | 'video',
     onProgress?: (progress: number) => void,
+    signal?: AbortSignal,
   ): Promise<string> => {
     if (mediaType === 'video') {
       return await uploadVideo(uri, {
@@ -31,12 +32,14 @@ export const contestMediaService = {
         targetType: 'contest_entry',
         r2Folder: 'contests',
         onProgress,
+        signal,
       });
     }
 
     // Downscale the photo first — contest entries were uploading full-resolution
     // camera images, which is the main reason grids and feeds felt slow.
     const optimized = await optimizeImageForUpload(uri, 'contest');
-    return (await uploadToR2(optimized, 'image/jpeg', 'contests', onProgress)) as string;
+    if (signal?.aborted) throw new UploadCancelledError();
+    return (await uploadToR2(optimized, 'image/jpeg', 'contests', onProgress, { signal })) as string;
   },
 };

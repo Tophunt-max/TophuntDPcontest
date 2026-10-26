@@ -407,7 +407,7 @@ export async function resolveContests(env: Env): Promise<void> {
   // pin the head of the batch: past STORY_MEDIA_GIVE_UP_MS it is dropped anyway and
   // logged as a leak.
   const expiredUserStories = await db
-    .select({ id: schema.stories.id, mediaUrl: schema.stories.mediaUrl, expiresAt: schema.stories.expiresAt })
+    .select({ id: schema.stories.id, userId: schema.stories.userId, mediaUrl: schema.stories.mediaUrl, expiresAt: schema.stories.expiresAt })
     .from(schema.stories)
     .where(and(lte(schema.stories.expiresAt, nowMs), eq(schema.stories.type, "user")))
     .orderBy(asc(schema.stories.expiresAt))
@@ -424,7 +424,9 @@ export async function resolveContests(env: Env): Promise<void> {
       continue;
     }
     try {
-      await deleteMediaByUrl(env, s.mediaUrl);
+      // On behalf of the story's author only: a repost names someone else's
+      // media, and expiring the repost must not delete the original.
+      await deleteMediaByUrl(env, s.mediaUrl, s.userId);
       handledIds.push(s.id);
     } catch (e) {
       if (Number(s.expiresAt) < nowMs - STORY_MEDIA_GIVE_UP_MS) {
