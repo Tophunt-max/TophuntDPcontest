@@ -193,3 +193,54 @@ npm run cache:report -- tail.jsonl              # hit% / p50 / p95 / 5xx per rou
 | Endpoint latency and status | Worker log line `ms`, `status` |
 | Client feed-cache hits, stale renders, offline serves, time to first content | `getFeedCacheStats()` (in-memory). **Not shipped anywhere**; there is no client metrics pipeline, so wiring it to one is a separate decision |
 | R2 / CDN origin misses | Dashboard only |
+
+## 9. Web shell, service worker and installable app (2026-10-26)
+
+A browser layer that §1 did not have. Files: `apps/expo/public/sw.js`,
+`public/manifest.json`, `public/icons/*`, `src/lib/serviceWorker.web.ts`,
+`scripts/stamp-sw.mjs`, `withAssetCaching` in `public/_worker.js`.
+
+**HTTP cache (edge worker).**
+
+| Path | Cache-Control |
+|---|---|
+| `/_expo/static/**` and `/assets/**` with a content hash in the name | `public, max-age=31536000, immutable` |
+| `/sw.js` | `no-cache`, plus `Service-Worker-Allowed: /` |
+| `/manifest.json` | `public, max-age=3600`, `application/manifest+json` |
+| HTML documents | unchanged: `public, max-age=0, must-revalidate` |
+
+Before this, hashed bundles had Pages' default (revalidate every visit).
+
+**Service worker (`/sw.js`, scope `/`, production web builds only).**
+
+| Request | Handling |
+|---|---|
+| Same-origin hashed build file | Cache-first in `tophunt-static-<build>` (≤ 150 entries) |
+| Page navigation | Network first. A 200 HTML response is saved as the shell; offline, the saved shell is served (the app then starts from IndexedDB), else a built-in offline page (503) |
+| Everything else: non-GET, cross-origin (API, Firebase, Razorpay, media), `/__/*`, `/api`, `/read`, `/upload`, `/ws`, `/telemetry`, the two worker scripts, requests with `Authorization`/`Range`, query strings on static files | Not handled; straight to the network |
+
+- Responses with `no-store` or `private` are never stored, so signed-in data,
+  wallet and payment responses never reach Cache Storage. §4 still holds: sign-out
+  clears the same stores as before; the only thing the worker keeps is public HTML
+  and hashed build files.
+- `scripts/stamp-sw.mjs` (part of `npm run build`) writes the build id and the
+  precache list (JS bundles, Urbanist fonts, manifest and icons: 10 files).
+  `verify-web-build.mjs` fails the build if the worker is unstamped. A bare
+  `expo export` leaves it unstamped: it still works, with no precache and a cache
+  name that never rotates. **The Pages build command should be `npm run build`.**
+- New deploy: the new worker installs, precaches, takes over at once
+  (`skipWaiting` + `clients.claim`) and deletes older `tophunt-static-*` caches.
+  That is safe because cached files are hashed and pages are network-first.
+- Off switch: build with `EXPO_PUBLIC_SW=off` (the app unregisters `/sw.js`), or
+  deploy a `sw.js` that calls `self.registration.unregister()`. Browsers re-check
+  `/sw.js` on navigation, and it is served `no-cache`.
+- `firebase-messaging-sw.js` (web push) keeps its own scope and is not affected.
+
+**Manifest.** `name`/`short_name` TopHunt, `display: standalone`, theme `#FF4D67`,
+icons 192/512 plus a 512 maskable (Android adaptive foreground on `#E6F4FE`), and an
+`apple-touch-icon` link in `public/index.html`. The file is `manifest.json`
+because the edge worker treats only extensions of up to 8 characters as files, so
+`.webmanifest` would be routed as a page.
+
+Not verified in a browser here: install prompt, offline reload and the update path
+on a real device (unit tests drive the real `sw.js` with fake `caches`/`fetch`).
