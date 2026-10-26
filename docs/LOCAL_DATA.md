@@ -13,6 +13,7 @@ server and CDN caching see [`CACHE_POLICY.md`](../CACHE_POLICY.md).
 | Stories bar (other people's Stories) | Server | The last server answer for the signed-in account (`stories`, `user_stories`). |
 | Home feed first page | Server | One snapshot per (account, tab): at most 16 items, 200 KB, served only if under 12 h old (`feed_snapshots`). |
 | Story views and reactions made offline | Server, once replayed | A queue of at most 200 rows, dropped after 7 days (`pending_actions`). |
+| Likes, bookmarks, follows made offline | Server, once sent | The user's target state per (account, kind, target): at most 300 rows per account, dropped after 7 days or 8 failed sends (`outbox_ops`). |
 | Media bytes | R2 / CDN | expo-image cache (no app-set size limit) and expo-video cache (256 MB, native only). |
 | Session | Firebase Auth | Firebase's own persistence: AsyncStorage on native, IndexedDB on web. |
 
@@ -35,13 +36,16 @@ Screens never import the database. Only `src/services/stories/offlineStoryServic
 it. Metro picks the adapter per platform: `src/database/adapter.ts` on native,
 `adapter.web.ts` on web, and the same for `flush.ts` and `flush.web.ts`.
 
-## 3. Tables (schema v5)
+## 3. Tables (schema v6)
 
 | Table | Rows | Bound | Scope |
 |---|---|---|---|
 | `stories`, `user_stories` | The last Stories-bar answer | Replaced in one transaction on every successful fetch. Expired rows are deleted 5 s after launch. | One account. The owner uid is in AsyncStorage `tophunt.storyCache.owner`. Reads return nothing for any other account, a guest, or a missing marker. |
 | `feed_snapshots` | Home first page | 2 rows (one per tab). Other owners' rows are deleted on every write. | Row id `u:<uid>\|tab` or `guest\|tab`. |
-| `pending_actions` | Offline Story `view` / `reaction` | 200 rows, oldest evicted first, dropped after 7 days, given up after 5 failed replays | Each row carries its `user_id`, and only that account replays it. Kept across sign-out on purpose. |
+| `pending_actions` | Offline Story `view` / `reaction` | 200 rows, oldest evicted first, dropped after 7 days, given up after 5 failed replays. A 4xx refusal drops the row at once; a network failure stops the replay without spending attempts. | Each row carries its `user_id`, and only that account replays it. Kept across sign-out on purpose. |
+| `outbox_ops` (v6) | Offline like / bookmark / follow, as an explicit target state | 300 rows per account; one row per (account, kind, target), newest intent wins; 7 days; 8 sends with backoff, then `failed` | `account` column. Only that account sends or sees it. Kept across sign-out on purpose. |
+
+**Never queued offline:** votes, coin spends, payments, contest entry, withdrawals, comments. The outbox accepts only the kinds listed in `src/sync/outbox.ts#HANDLERS`, and each sends a target state the server applies idempotently (`apps/worker/test/socialReplay.test.ts`).
 
 **Never stored locally:** passwords, OTPs, ID or refresh tokens (other than
 Firebase's own persistence), payment details, coin balances, chat messages,

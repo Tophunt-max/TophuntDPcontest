@@ -17,7 +17,7 @@ import { appSchema, tableSchema } from '@nozbe/watermelondb';
  *   are safe to own ourselves.
  */
 export const schema = appSchema({
-  version: 5,
+  version: 6,
   tables: [
     tableSchema({
       name: 'stories',
@@ -103,6 +103,26 @@ export const schema = appSchema({
         { name: 'next_cursor', type: 'string', isOptional: true },
         { name: 'fetched_at', type: 'number' }, // epoch ms of the network read
         { name: 'format', type: 'number' }, // snapshot payload format version
+        { name: 'updated_at', type: 'number' },
+      ],
+    }),
+    // Offline social outbox (schema v6) — see src/sync/outbox.ts and
+    // docs/LOCAL_DATA.md. One row per (account, kind, target); only the
+    // replay-safe kinds listed in outbox.ts are ever written.
+    tableSchema({
+      name: 'outbox_ops',
+      columns: [
+        { name: 'account', type: 'string', isIndexed: true }, // uid that made the change
+        { name: 'kind', type: 'string' }, // 'match.like' | 'match.bookmark' | 'user.follow'
+        { name: 'target', type: 'string' }, // match id or user id
+        { name: 'op_key', type: 'string', isIndexed: true }, // `${account}|${kind}|${target}`
+        { name: 'payload', type: 'string' }, // JSON target state
+        { name: 'status', type: 'string' }, // 'pending' | 'failed'
+        { name: 'attempts', type: 'number' },
+        { name: 'revision', type: 'number' },
+        { name: 'next_attempt_at', type: 'number', isIndexed: true },
+        { name: 'last_error', type: 'string', isOptional: true },
+        { name: 'created_at', type: 'number' },
         { name: 'updated_at', type: 'number' },
       ],
     }),

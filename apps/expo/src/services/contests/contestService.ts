@@ -63,8 +63,13 @@ export const contestService = {
     } catch (error) { console.error("Error submitting vote:", error); throw error; }
   },
 
-  likeMatch: async (matchId: string) => {
-    try { return await callApi('likeContest', { matchId }); }
+  /**
+   * Like or unlike. With `liked` the server SETS that state (a repeat is a
+   * no-op), so a double tap or a lost response cannot flip it back. Without it
+   * the server toggles, as before.
+   */
+  likeMatch: async (matchId: string, liked?: boolean) => {
+    try { return await callApi('likeContest', typeof liked === 'boolean' ? { matchId, liked } : { matchId }); }
     catch (error) { console.error("Error liking match:", error); throw error; }
   },
 

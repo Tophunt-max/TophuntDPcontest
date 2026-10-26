@@ -91,5 +91,29 @@ export const migrations = schemaMigrations({
         }),
       ],
     },
+    {
+      // v6: the offline social outbox (src/sync/outbox.ts). A new, empty table;
+      // nothing existing changes. Column-for-column with schema.ts.
+      toVersion: 6,
+      steps: [
+        createTable({
+          name: 'outbox_ops',
+          columns: [
+            { name: 'account', type: 'string', isIndexed: true },
+            { name: 'kind', type: 'string' },
+            { name: 'target', type: 'string' },
+            { name: 'op_key', type: 'string', isIndexed: true },
+            { name: 'payload', type: 'string' },
+            { name: 'status', type: 'string' },
+            { name: 'attempts', type: 'number' },
+            { name: 'revision', type: 'number' },
+            { name: 'next_attempt_at', type: 'number', isIndexed: true },
+            { name: 'last_error', type: 'string', isOptional: true },
+            { name: 'created_at', type: 'number' },
+            { name: 'updated_at', type: 'number' },
+          ],
+        }),
+      ],
+    },
   ],
 });

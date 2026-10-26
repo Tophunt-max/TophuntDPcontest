@@ -16,6 +16,7 @@ import { fetchStories } from '@/src/services/stories/storyService';
 import { PostCard } from '@/src/components/home/PostCard';
 import { BottomNav } from '@/src/components/home/BottomNav';
 import { useQueryClient } from '@tanstack/react-query';
+import NetInfo from '@react-native-community/netinfo';
 import { PostSkeleton } from '@/src/components/home/PostSkeleton';
 import { StoriesSkeleton } from '@/src/components/stories/StoriesSkeleton';
 import { contestService } from '@/src/services/contests/contestService';
@@ -71,6 +72,9 @@ export default function HomeScreen() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isRevalidating, setIsRevalidating] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  // The last load-more failed. Shown as a tap-to-retry footer; it used to fail
+  // silently and the list just stopped.
+  const [loadMoreFailed, setLoadMoreFailed] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   // A refresh failed while cached battles stayed on screen.
   const [showingSaved, setShowingSaved] = useState(false);
@@ -187,6 +191,7 @@ export default function HomeScreen() {
     if (loadingMoreRef.current || nextCursor == null || source !== 'network') return;
     loadingMoreRef.current = true;
     setIsLoadingMore(true);
+    setLoadMoreFailed(false);
     const key = feedKeyRef.current;
     try {
       const { items, nextCursor: cursor } = await contestService.getActiveMatches({ sort: feedTab, cursor: nextCursor, limit: PAGE_SIZE });
@@ -194,7 +199,8 @@ export default function HomeScreen() {
       setMatches((prev) => appendPage(prev, items));
       setNextCursor(cursor);
     } catch {
-      /* keep current cursor; user can scroll again to retry */
+      // Keep the cursor; the footer offers a retry (and reconnect retries it).
+      if (key === feedKeyRef.current) setLoadMoreFailed(true);
     } finally {
       // Only release the guard this call owns. After a tab/viewer switch the reset
       // effect already released it, and a newer load-more may hold it now.
@@ -222,6 +228,7 @@ export default function HomeScreen() {
     setShowingSaved(false);
     setLoadError(null);
     setIsLoadingMore(false);
+    setLoadMoreFailed(false);
     setIsRefreshing(false);
     setIsRevalidating(false);
     setIsLoading(true);
@@ -354,11 +361,52 @@ export default function HomeScreen() {
     </View>
   ), [isLoading, isDark]);
 
-  const ListFooter = useMemo(() => (
-    isLoadingMore
-      ? <ActivityIndicator size="small" color="#FF4D67" style={{ marginVertical: 20 }} />
-      : <View style={{ height: 20 }} />
-  ), [isLoadingMore]);
+  const ListFooter = useMemo(() => {
+    if (isLoadingMore) return <ActivityIndicator size="small" color="#FF4D67" style={{ marginVertical: 20 }} />;
+    if (loadMoreFailed) {
+      return (
+        <TouchableOpacity
+          style={[styles.savedNotice, { backgroundColor: isDark ? '#23262D' : '#F3F4F6', marginVertical: 16 }]}
+          onPress={() => void loadMore()}
+          accessibilityRole="button"
+          accessibilityLabel="More battles could not load. Tap to retry."
+        >
+          <Text style={[styles.savedNoticeText, { color: subTextColor }]}>
+            Aur battles load nahi hue · Tap to retry
+          </Text>
+        </TouchableOpacity>
+      );
+    }
+    return <View style={{ height: 20 }} />;
+  }, [isLoadingMore, loadMoreFailed, loadMore, isDark, subTextColor]);
+
+  /**
+   * Back online: recover by itself. Home is not a React Query screen, so
+   * `refetchOnReconnect` never reached it. An offline cold start stayed on its
+   * error until the user tapped Retry, and the "saved battles" strip stayed up
+   * after the network returned.
+   */
+  // Read through a ref so the listener is not re-subscribed (losing its
+  // offline/online memory) every time one of these changes.
+  const recoveryRef = useRef({ loadError, showingSaved, loadMoreFailed, feedTab, owner });
+  useEffect(() => {
+    recoveryRef.current = { loadError, showingSaved, loadMoreFailed, feedTab, owner };
+  }, [loadError, showingSaved, loadMoreFailed, feedTab, owner]);
+  useEffect(() => {
+    let wasOnline: boolean | null = null;
+    return NetInfo.addEventListener((state) => {
+      const online = state.isConnected !== false && state.isInternetReachable !== false;
+      const cameBack = online && wasOnline === false;
+      wasOnline = online;
+      if (!cameBack) return;
+      const r = recoveryRef.current;
+      if (r.loadError || r.showingSaved) {
+        void fetchFirstPage(r.feedTab, r.owner, hasContentRef.current ? 'background' : 'initial');
+      } else if (r.loadMoreFailed) {
+        void loadMore();
+      }
+    });
+  }, [fetchFirstPage, loadMore]);
 
   const emptyText = feedTab === 'following'
     ? 'Aap jinhe follow karte hain unke koi active battles nahi. Naye creators follow karein!'

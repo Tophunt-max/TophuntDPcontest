@@ -11,6 +11,7 @@ import {
 } from '@/src/database';
 import { Story, UserStories, storyMediaKind } from '@/src/types/stories';
 import { auth } from '../firebase/initFirebase';
+import { classifyFailure, isNetworkFailure } from '@/src/sync/failure';
 
 /**
  * Offline Story Service — local caching and sync for stories.
@@ -512,7 +513,15 @@ export const syncPendingActions = async (): Promise<void> => {
         await removePendingAction(action.id, replayedTimestamp);
       } catch (error) {
         console.error(`[syncPendingActions] Failed to sync action ${action.id}:`, error);
-        if (action.retries + 1 >= MAX_SYNC_RETRIES) {
+        const cls = classifyFailure(error);
+        // The network went away again: stop, and do not spend this row's (or
+        // the rest of the queue's) attempts on a failure a retry cannot fix now.
+        if (cls === 'retry' && isNetworkFailure(error)) return;
+        // Session problem: leave everything for after sign-in.
+        if (cls === 'auth') return;
+        // Delivered before (idempotency duplicate) or refused for good (Story
+        // deleted, expired, now blocked): retrying cannot change the answer.
+        if (cls === 'duplicate' || cls === 'permanent' || action.retries + 1 >= MAX_SYNC_RETRIES) {
           await removePendingAction(action.id);
           continue;
         }

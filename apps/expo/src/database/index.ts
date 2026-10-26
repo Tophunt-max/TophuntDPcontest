@@ -10,12 +10,13 @@ import { StoryModel } from './models/StoryModel';
 import { UserStoryModel } from './models/UserStoryModel';
 import { PendingActionModel } from './models/PendingActionModel';
 import { FeedSnapshotModel } from './models/FeedSnapshotModel';
+import { OutboxOpModel } from './models/OutboxOpModel';
 
 const adapter = createAdapter();
 
 export const database = new Database({
   adapter,
-  modelClasses: [StoryModel, UserStoryModel, PendingActionModel, FeedSnapshotModel],
+  modelClasses: [StoryModel, UserStoryModel, PendingActionModel, FeedSnapshotModel, OutboxOpModel],
 });
 
 // A setup failure (corrupt file, failed migration) gets one guarded reset.
@@ -34,5 +35,5 @@ export function flushLocalDatabase(): Promise<boolean> {
 }
 
 export { getDatabaseHealth } from './health';
-export { StoryModel, UserStoryModel, PendingActionModel, FeedSnapshotModel };
+export { StoryModel, UserStoryModel, PendingActionModel, FeedSnapshotModel, OutboxOpModel };
 export type { PendingActionType, PendingActionData } from './models/PendingActionModel';

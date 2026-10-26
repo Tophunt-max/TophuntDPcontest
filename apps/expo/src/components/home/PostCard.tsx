@@ -45,6 +45,8 @@ import { needsCatchUp, shouldListen } from '@/src/lib/liveWindow';
 import { battleResultPath, RESULT_REFETCH_DELAYS_MS } from '@/src/lib/battleResult';
 import { ArrowIcon } from '../ui/ArrowIcon';
 import { Alert } from '@/src/lib/appAlert';
+import { enqueueOutbox, isNetworkFailure, pendingIntent } from '@/src/sync';
+import { overlayFlag, overlayLike } from '@/src/sync/overlay';
 
 interface PostCardProps {
     item: any;
@@ -144,8 +146,13 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
   const [showShare, setShowShare] = useState(false);
   // Seed from the server-provided per-viewer state so a like/bookmark survives
   // a refresh (the feed list + /matches/:id now both return these flags).
-  const [isLiked, setIsLiked] = useState(!!item.isLiked);
-  const [isBookmarked, setIsBookmarked] = useState(!!item.isBookmarked);
+  // A like/bookmark made offline and still queued wins over the server's
+  // older answer (src/sync/overlay.ts), so a refetch does not undo it.
+  const initialLike = overlayLike(!!item.isLiked, item.likeCount || 0, pendingIntent('match.like', item.id));
+  const [isLiked, setIsLiked] = useState(initialLike.liked);
+  const [isBookmarked, setIsBookmarked] = useState(
+    overlayFlag(!!item.isBookmarked, pendingIntent('match.bookmark', item.id)?.bookmarked),
+  );
   const [showConfetti, setShowConfetti] = useState(false);
   
   const cardColor = isDark ? '#181B21' : '#FFFFFF';
@@ -160,7 +167,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
   const initialProgressA = initialTotal > 0 ? initialVotesA / initialTotal : 0.5;
   const [votesA, setVotesA] = useState(initialVotesA);
   const [votesB, setVotesB] = useState(initialVotesB);
-  const [likeCount, setLikeCount] = useState(item.likeCount || 0);
+  const [likeCount, setLikeCount] = useState(initialLike.count);
   const [commentCount, setCommentCount] = useState(item.commentCount || 0);
   const [shareCount, setShareCount] = useState(item.shareCount || 0);
   const [progressA, setProgressA] = useState(initialProgressA);
@@ -217,16 +224,23 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
   const applyDetail = useCallback((data: any) => {
     if (!data) return;
     applyTally(Number(data.userA?.votes || 0), Number(data.userB?.votes || 0));
-    setLikeCount(data.likeCount || 0);
+    const like = overlayLike(
+      typeof data.isLiked === 'boolean' ? data.isLiked : false,
+      data.likeCount || 0,
+      typeof data.isLiked === 'boolean' ? pendingIntent('match.like', item.id) : undefined,
+    );
+    setLikeCount(like.count);
     setCommentCount(data.commentCount || 0);
     setShareCount(data.shareCount || 0);
     setMatchStatus(data.status || 'active');
     if (typeof data.hasVoted === 'boolean') setHasVoted(data.hasVoted);
     if ('votedForUid' in data) setVotedForUid(data.votedForUid || null);
     // Keep the viewer's own like/bookmark state in sync (survives refresh).
-    if (typeof data.isLiked === 'boolean') setIsLiked(data.isLiked);
-    if (typeof data.isBookmarked === 'boolean') setIsBookmarked(data.isBookmarked);
-  }, [applyTally]);
+    if (typeof data.isLiked === 'boolean') setIsLiked(like.liked);
+    if (typeof data.isBookmarked === 'boolean') {
+      setIsBookmarked(overlayFlag(data.isBookmarked, pendingIntent('match.bookmark', item.id)?.bookmarked));
+    }
+  }, [applyTally, item.id]);
 
   useEffect(() => {
     if (!item.id || !canListen) return;
@@ -415,13 +429,19 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
     setIsLiked(next);
     setLikeCount((c: number) => Math.max(0, c + (next ? 1 : -1)));
     try {
-      const res: any = await contestService.likeMatch(item.id);
+      const res: any = await contestService.likeMatch(item.id, next);
       // Trust the server's final liked state; the broadcast 'like' event
       // carries the authoritative count and reconciles it for everyone.
       if (res && typeof res.liked === 'boolean') setIsLiked(res.liked);
       if (next) addToast("Zabardast Like!", 'success');
-    } catch {
-      // Roll back the optimistic update on failure.
+    } catch (error) {
+      // No answer at all (offline, dropped connection): keep the heart and
+      // send it later. It used to roll back without a word.
+      if (isNetworkFailure(error) && (await enqueueOutbox('match.like', item.id, { liked: next }))) {
+        addToast(next ? 'Like saved. It will sync when you are back online.' : 'Will sync when you are back online.', 'info');
+        return;
+      }
+      // The server answered with a refusal: follow it.
       setIsLiked(!next);
       setLikeCount((c: number) => Math.max(0, c + (next ? -1 : 1)));
     } finally {
@@ -438,16 +458,23 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, liveActive = true }:
   const handleBookmark = async () => {
     if (!user) return void requireAuth('bookmark');
     triggerHaptic();
+    const prevStatus = isBookmarked;
+    const next = !prevStatus;
+    // Optimistic.
+    setIsBookmarked(next);
     try {
-      // Toggle local state immediately for better UX
-      const prevStatus = isBookmarked;
-      setIsBookmarked(!prevStatus);
-      
-      const status = await engagementService.toggleBookmark(item.id, user.uid);
+      const status = await engagementService.toggleBookmark(item.id, user.uid, next);
       setIsBookmarked(status);
       addToast(status ? "Saved to your profile!" : "Removed from bookmarks!", 'info');
-    } catch {
-        setIsBookmarked(!isBookmarked);
+    } catch (error) {
+      if (isNetworkFailure(error) && (await enqueueOutbox('match.bookmark', item.id, { bookmarked: next }))) {
+        addToast('Saved offline. It will sync when you are back online.', 'info');
+        return;
+      }
+      // Roll back to the value BEFORE the tap. This used `!isBookmarked`, which
+      // read the stale pre-tap value and re-applied the optimistic state, so a
+      // failed bookmark stayed shown as saved.
+      setIsBookmarked(prevStatus);
     }
   };
 

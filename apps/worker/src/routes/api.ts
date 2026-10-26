@@ -1412,11 +1412,30 @@ apiRoute.post("/", async (c) => {
         return c.json({ success: true, isFollowing: false, requested: true });
       }
       // Follow: insert edge + bump both counters atomically in a single batch.
-      await db.batch([
-        db.insert(schema.follows).values({ followerId: uid, followingId: targetUserId, createdAt: now() }),
-        db.update(schema.users).set({ followingCount: sql`${schema.users.followingCount} + 1` }).where(eq(schema.users.uid, uid)),
-        db.update(schema.users).set({ followersCount: sql`${schema.users.followersCount} + 1` }).where(eq(schema.users.uid, targetUserId)),
+      //
+      // Each counter moves only if the statement before it changed a row, so
+      // the bumps follow the INSERT. The edge check above is a read, so two
+      // concurrent follows (a double tap, or an offline replay racing the
+      // original) both reached this point: the plain insert then failed on the
+      // primary key for the second one. With INSERT OR IGNORE alone, both would
+      // have bumped the counters. `changes()` is the row count of the previous
+      // statement on the same connection, and a D1 batch is one transaction
+      // run in order. test/socialReplay.test.ts injects the race.
+      const followRes = await env.DB.batch([
+        env.DB.prepare(
+          `INSERT OR IGNORE INTO follows (follower_id, following_id, created_at) VALUES (?, ?, ?)`,
+        ).bind(uid, targetUserId, now()),
+        env.DB.prepare(
+          `UPDATE users SET following_count = COALESCE(following_count, 0) + 1 WHERE uid = ? AND changes() > 0`,
+        ).bind(uid),
+        env.DB.prepare(
+          `UPDATE users SET followers_count = COALESCE(followers_count, 0) + 1 WHERE uid = ? AND changes() > 0`,
+        ).bind(targetUserId),
       ]);
+      if (Number(followRes[0]?.meta?.changes ?? 0) === 0) {
+        // Someone else's request created the edge first; it already notified.
+        return c.json({ success: true, isFollowing: true, requested: false });
+      }
       c.executionCtx.waitUntil(
         Promise.all([
           invalidateFollowCaches(),
@@ -2816,19 +2835,35 @@ apiRoute.post("/", async (c) => {
       if (!matchId) throw httpsError("invalid-argument", "matchId is required.");
       await rateLimit(env, `like:${uid}`, 120, 60);
       await assertMatchInteractionAllowed(env, uid, matchId);
-      const existing = await db
-        .select()
-        .from(schema.matchLikes)
-        .where(and(eq(schema.matchLikes.matchId, matchId), eq(schema.matchLikes.userId, uid)))
-        .get();
-      if (existing) {
-        await db.delete(schema.matchLikes).where(and(eq(schema.matchLikes.matchId, matchId), eq(schema.matchLikes.userId, uid)));
+      // Optional explicit target state. Without it this stays a toggle (shipped
+      // clients). With it, a replay is a no-op instead of an undo: the offline
+      // outbox (apps/expo/src/sync/outbox.ts) re-sends the SAME `liked` value
+      // until it gets an answer, and a toggle would flip the like back on the
+      // second delivery.
+      const desired = typeof body.liked === "boolean" ? body.liked : null;
+      const likeWhere = and(eq(schema.matchLikes.matchId, matchId), eq(schema.matchLikes.userId, uid));
+      const existing = await db.select().from(schema.matchLikes).where(likeWhere).get();
+      const wantLiked = desired ?? !existing;
+      if (!wantLiked) {
+        if (!existing) return c.json({ success: true, liked: false });
+        // The counter moves only for the row THIS request removed, so two
+        // concurrent unlikes cannot take the count down twice.
+        const del = await db.delete(schema.matchLikes).where(likeWhere).run();
+        if (Number(del.meta?.changes ?? 0) === 0) return c.json({ success: true, liked: false });
         // Counter update goes through the per-match DO (batched to D1).
         const counters = await bumpEngagement(env, matchId, "like", -1);
         await publish(env, `match:${matchId}`, { type: "like", liked: false, likeCount: counters.like ?? 0 });
         return c.json({ success: true, liked: false });
       }
-      await db.insert(schema.matchLikes).values({ matchId, userId: uid, createdAt: now() });
+      if (existing) return c.json({ success: true, liked: true });
+      // Same for the insert: a concurrent like that won the race leaves this one
+      // a no-op, where the plain insert used to fail on the primary key (500).
+      const ins = await db
+        .insert(schema.matchLikes)
+        .values({ matchId, userId: uid, createdAt: now() })
+        .onConflictDoNothing()
+        .run();
+      if (Number(ins.meta?.changes ?? 0) === 0) return c.json({ success: true, liked: true });
       const counters = await bumpEngagement(env, matchId, "like", 1);
       await publish(env, `match:${matchId}`, { type: "like", liked: true, likeCount: counters.like ?? 0 });
       // Notify participants off the request path (fire-and-forget).
@@ -2907,19 +2942,21 @@ apiRoute.post("/", async (c) => {
     case "toggleBookmark": {
       const { matchId } = body;
       if (!matchId) throw httpsError("invalid-argument", "matchId is required.");
-      const existing = await db
-        .select()
-        .from(schema.bookmarks)
-        .where(and(eq(schema.bookmarks.userId, uid), eq(schema.bookmarks.matchId, matchId)))
-        .get();
-      if (existing) {
-        await db.delete(schema.bookmarks).where(and(eq(schema.bookmarks.userId, uid), eq(schema.bookmarks.matchId, matchId)));
+      // Optional explicit target state, as in likeContest: replay-safe for the
+      // offline outbox. Absent → the original toggle.
+      const desired = typeof body.bookmarked === "boolean" ? body.bookmarked : null;
+      const where = and(eq(schema.bookmarks.userId, uid), eq(schema.bookmarks.matchId, matchId));
+      const existing = await db.select().from(schema.bookmarks).where(where).get();
+      const wantSaved = desired ?? !existing;
+      if (!wantSaved) {
+        if (existing) await db.delete(schema.bookmarks).where(where);
         return c.json({ success: true, bookmarked: false });
       }
+      if (existing) return c.json({ success: true, bookmarked: true });
       // Guarded on the ADD branch only, so a bookmark saved before a block can
       // always be removed afterwards.
       await assertMatchInteractionAllowed(env, uid, matchId);
-      await db.insert(schema.bookmarks).values({ userId: uid, matchId, createdAt: now() });
+      await db.insert(schema.bookmarks).values({ userId: uid, matchId, createdAt: now() }).onConflictDoNothing();
       return c.json({ success: true, bookmarked: true });
     }
 
