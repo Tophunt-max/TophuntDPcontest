@@ -197,10 +197,54 @@ const USER_COLUMN_KEYS = new Set<string>(
  *    longer counts — and its reporter cannot report the battle again);
  *  - never the battle's own participants (the leader could otherwise freeze
  *    their lead with two friends);
- *  - only accounts older than MATCH_REPORTER_MIN_AGE_MS (no fresh throwaways).
+ *  - only accounts older than MATCH_REPORTER_MIN_AGE_MS (no fresh throwaways);
+ *  - only VERIFIED accounts (email or phone), in good standing. Age alone let
+ *    three day-old throwaway accounts hide any live battle and starve it of votes.
  */
 export const MATCH_REPORT_HOLD_THRESHOLD = 3;
 export const MATCH_REPORTER_MIN_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** Accepted report types, mapped to the one stored. */
+const REPORT_TYPE_ALIASES: Record<string, string> = {
+  match: "match",
+  contestMatch: "match",
+  contestMatches: "match",
+  comment: "comment",
+  user: "user",
+  post: "post",
+  story: "story",
+};
+
+/**
+ * The target must exist and must not be the reporter's own. Reports were stored
+ * for any id string, including your own content and your own account.
+ */
+async function assertReportableTarget(db: any, uid: string, type: string, id: string): Promise<void> {
+  const notFound = () => httpsError("not-found", "That content no longer exists.");
+  const own = () => httpsError("invalid-argument", "You cannot report your own content.");
+  if (type === "user") {
+    if (id === uid) throw own();
+    const u = await db.select({ uid: schema.users.uid }).from(schema.users).where(eq(schema.users.uid, id)).get();
+    if (!u) throw notFound();
+    return;
+  }
+  if (type === "match") {
+    const m = await db.select({ a: schema.contestMatches.userA, b: schema.contestMatches.userB }).from(schema.contestMatches).where(eq(schema.contestMatches.id, id)).get();
+    if (!m) throw notFound();
+    if ((m.a as any)?.uid === uid || (m.b as any)?.uid === uid) throw own();
+    return;
+  }
+  const owner =
+    type === "post"
+      ? (await db.select({ u: schema.posts.userId }).from(schema.posts).where(eq(schema.posts.id, id)).get())?.u
+      : type === "story"
+        ? (await db.select({ u: schema.stories.userId }).from(schema.stories).where(eq(schema.stories.id, id)).get())?.u
+        : ((await db.select({ u: schema.matchComments.userId }).from(schema.matchComments).where(eq(schema.matchComments.id, id)).get()) ??
+            (await db.select({ u: schema.postComments.userId }).from(schema.postComments).where(eq(schema.postComments.id, id)).get()) ??
+            (await db.select({ u: schema.blogComments.userId }).from(schema.blogComments).where(eq(schema.blogComments.id, id)).get()))?.u;
+  if (!owner) throw notFound();
+  if (owner === uid) throw own();
+}
 
 /** Stamp the hold if the threshold is reached. Returns true when THIS call stamped it. */
 async function maybeHoldReportedMatch(env: Env, matchId: string, ts: number): Promise<boolean> {
@@ -214,6 +258,9 @@ async function maybeHoldReportedMatch(env: Env, matchId: string, ts: number): Pr
           AND r.target_type IN ('match','contestMatch','contestMatches')
           AND r.status = 'open'
           AND u.created_at <= ?
+          AND (COALESCE(u.email_verified, 0) = 1 OR COALESCE(u.phone_verified, 0) = 1)
+          AND COALESCE(u.is_blocked, 0) = 0
+          AND COALESCE(u.status, 'active') = 'active'
           AND r.reporter_id <> COALESCE(json_extract(m.user_a, '$.uid'), '')
           AND r.reporter_id <> COALESCE(json_extract(m.user_b, '$.uid'), '')`,
     )
@@ -3643,10 +3690,13 @@ apiRoute.post("/", async (c) => {
       // Reports raise admin notifications; unbounded reporting is a way to bury
       // the moderation queue.
       await rateLimit(env, `report:${uid}`, 20, 3600);
-      const { targetId } = body;
-      // Never NULL: the per-reporter unique index treats NULLs as distinct, so a
-      // typeless report would stack without limit.
-      const targetType = typeof body.targetType === "string" && body.targetType ? body.targetType.slice(0, 40) : "unknown";
+      // One canonical type per kind. Free text (40 chars) let one reporter report
+      // the same thing once per alias ("match", "contestMatch", ...) or invented
+      // type, each a new queue row and admin notification.
+      const targetType = REPORT_TYPE_ALIASES[String(body.targetType ?? "")];
+      if (!targetType) throw httpsError("invalid-argument", "Unknown report type.");
+      const targetId = requiredId(body.targetId, "targetId", 128);
+      await assertReportableTarget(db, uid, targetType, targetId);
       // Bounded free text: this lands in the admin queue verbatim.
       const reason = typeof body.reason === "string" ? body.reason.slice(0, 300) : null;
       const id = newId();
@@ -3660,7 +3710,7 @@ apiRoute.post("/", async (c) => {
         .run();
       if (!(inserted.meta?.changes ?? 0)) return c.json({ success: true, duplicate: true });
 
-      const isMatch = targetType === "match" || targetType === "contestMatch" || targetType === "contestMatches";
+      const isMatch = targetType === "match";
       let held = false;
       if (isMatch && targetId) held = await maybeHoldReportedMatch(env, String(targetId), ts);
       // The held battle's VS stories leave the shared stories feed now in this

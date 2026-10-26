@@ -61,11 +61,12 @@ function recordingCtx() {
 async function seed(env: TestEnv, opts: { expiresAt?: number; status?: string } = {}) {
   const ts = Date.now();
   const db = drizzleOf(env);
-  // Reporter accounts must be older than a day to count toward the hold;
-  // 'fresh' was created just now.
-  for (const uid of ['alice', 'bob', 'r1', 'r2', 'r3', 'r4', 'fresh']) {
+  // Reporter accounts must be older than a day AND verified to count toward the
+  // hold; 'fresh' was created just now, 'unverified' never verified.
+  for (const uid of ['alice', 'bob', 'r1', 'r2', 'r3', 'r4', 'fresh', 'unverified']) {
     const createdAt = uid === 'fresh' ? ts : ts - 2 * 86_400_000;
-    await db.insert(schema.users).values({ signupCompleted: true, uid, username: uid, fullName: uid, dpcoin: 100, createdAt, updatedAt: ts } as any);
+    const emailVerified = uid !== 'unverified';
+    await db.insert(schema.users).values({ signupCompleted: true, uid, username: uid, fullName: uid, dpcoin: 100, createdAt, updatedAt: ts, emailVerified } as any);
   }
   await db.insert(schema.contestMatches).values({
     id: 'm1',
@@ -171,7 +172,7 @@ describe('early settlement on read', () => {
 });
 
 describe('community moderation hold', () => {
-  async function report(env: TestEnv, uid: string, extra: Record<string, unknown> = {}) {
+  async function report(env: TestEnv, uid: string, extra: Record<string, unknown> = {}, expected = 200) {
     const res = await app.request(
       '/api',
       {
@@ -182,7 +183,7 @@ describe('community moderation hold', () => {
       env,
       recordingCtx().ctx,
     );
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(expected);
     return (await res.json()) as any;
   }
   const feedIds = async (env: TestEnv) => {
@@ -238,13 +239,15 @@ describe('community moderation hold', () => {
   const coins = async (env: TestEnv, uid: string) =>
     Number((await env.DB.prepare('SELECT dpcoin FROM users WHERE uid = ?').bind(uid).first<any>()).dpcoin);
 
-  it('participants and brand-new accounts do not count toward the hold', async () => {
+  it('participants cannot report, and brand-new or unverified accounts do not count toward the hold', async () => {
     const { env } = makeEnv();
     await seed(env, { expiresAt: Date.now() + 3_600_000 });
-    // A player mass-reporting their own opponent's battle, plus a throwaway account.
-    await report(env, 'alice');
-    await report(env, 'bob');
+    // The players cannot report their own battle at all.
+    await report(env, 'alice', {}, 400);
+    await report(env, 'bob', {}, 400);
+    // A throwaway account and an unverified one are recorded but do not count.
     await report(env, 'fresh');
+    await report(env, 'unverified');
     await report(env, 'r1');
     expect((await matchRow(env)).moderationHoldAt).toBeNull();
     await report(env, 'r2');
