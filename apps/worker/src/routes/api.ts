@@ -1751,13 +1751,11 @@ apiRoute.post("/", async (c) => {
       return c.json({ success: true, coinsEarned: coinReward, xpEarned: xpReward, streak });
     }
 
-    // Credit a rewarded-ad view. Guarded by a per-minute rate limit AND a
-    // per-UTC-day cap so a client can't mint unlimited coins by replaying this.
+    // (Rewarded ads: see claimAdReward below. It is FAIL-CLOSED: with no AdMob
+    // Server-Side Verification endpoint, it refuses unless ads are enabled AND
+    // `ads.trustClient` is set AND ALLOW_UNVERIFIED_AD_REWARDS is "true", and no
+    // config sets those. Wire SSV before turning it on.)
     //
-    // ⚠️ SECURITY: this trusts the client that an ad was actually watched. For
-    // real money value it MUST be gated by the ad network's Server-Side
-    // Verification (SSV) callback (e.g. AdMob SSV) before crediting. The cap +
-    // rate limit bound the abuse until SSV is wired in. See PRODUCTION_TODO.md.
     // ===== Registration verification reward (lib/verificationReward.ts) =====
     //
     // None of these accept a uid, an amount or a verification flag: the uid is
