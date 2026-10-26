@@ -941,7 +941,7 @@ async function anonymiseChatSnapshots(env: Env, uid: string): Promise<void> {
 
 /** Phase 2 — destroy the storage objects. Best-effort per object, never fatal. */
 async function phaseMedia(env: Env, uid: string, urls: string[]): Promise<void> {
-  await purgeDeletedAccountMedia(env, urls);
+  await purgeDeletedAccountMedia(env, uid, urls);
 
   // Rows that never produced a URL (upload abandoned before Bunny finished)
   // are only reachable by guid.
@@ -1222,10 +1222,12 @@ async function phaseAuth(env: Env, uid: string, reason: string | undefined): Pro
 }
 
 /** Delete the R2/Bunny objects collected during the purge. Best-effort. */
-export async function purgeDeletedAccountMedia(env: Env, urls: string[]): Promise<void> {
+export async function purgeDeletedAccountMedia(env: Env, uid: string, urls: string[]): Promise<void> {
   for (const url of urls) {
     try {
-      await deleteMediaByUrl(env, url);
+      // The collected urls come from this user's rows, which can name other
+      // people's media (a reposted story). Only this user's uploads go.
+      await deleteMediaByUrl(env, url, uid);
     } catch (e) {
       console.error("[accountDeletion] media delete failed", url, e);
     }
