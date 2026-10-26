@@ -15,7 +15,13 @@ import { useRouter } from 'expo-router';
 import { BackButton } from '@/src/components/ui/BackButton';
 import { Ionicons } from '@/src/lib/icons';
 import { Colors } from '@/constants/theme';
-import { useBlockedAccounts, useUnblockUser, useUnmuteUser } from '@/src/hooks/useProfileData';
+import {
+  useBlockedAccounts,
+  useUnblockUser,
+  useUnhideStoryFrom,
+  useUnmuteUser,
+  useUnrestrictUser,
+} from '@/src/hooks/useProfileData';
 import type { BlockedAccount } from '@/src/services/users';
 import { emitToast } from '@/src/lib/toastBridge';
 import { reportError } from '@/src/lib/reportError';
@@ -32,6 +38,37 @@ import { useConfirm } from '@/src/components/modals/ConfirmDialog';
  * It shows only OUTGOING relations. Who has blocked *you* is deliberately not
  * knowable anywhere in the app — the API does not return it.
  */
+type Kind = 'block' | 'mute' | 'restrict' | 'storyHide';
+
+/** The undo popup for each list, in the same Logout-style dialog as the profile sheet. */
+const UNDO_COPY: Record<Kind, { title: (name: string) => string; message: string; button: string; done: (name: string) => string }> = {
+  block: {
+    title: (n) => `Unblock ${n}?`,
+    message:
+      "You'll be able to see each other's battles and stories and message each other again. Follows removed by the block are not restored.",
+    button: 'Unblock',
+    done: (n) => `Unblocked ${n}.`,
+  },
+  mute: {
+    title: (n) => `Unmute ${n}?`,
+    message: 'Their battles and stories will show in your feed again.',
+    button: 'Unmute',
+    done: (n) => `Unmuted ${n}.`,
+  },
+  restrict: {
+    title: (n) => `Unrestrict ${n}?`,
+    message: 'Their new comments on your battles will be visible to everyone again, and you will get notifications from them.',
+    button: 'Unrestrict',
+    done: (n) => `Unrestricted ${n}.`,
+  },
+  storyHide: {
+    title: (n) => `Show your story to ${n}?`,
+    message: 'They will be able to see your stories again.',
+    button: 'Show story',
+    done: (n) => `${n} can see your stories again.`,
+  },
+};
+
 export default function BlockedAccountsScreen() {
   const router = useRouter();
   const colorScheme = useColorScheme();
@@ -44,35 +81,42 @@ export default function BlockedAccountsScreen() {
   const { data, isLoading, refetch, isRefetching } = useBlockedAccounts();
   const { mutateAsync: unblock } = useUnblockUser();
   const { mutateAsync: unmute } = useUnmuteUser();
+  const { mutateAsync: unrestrict } = useUnrestrictUser();
+  const { mutateAsync: unhideStory } = useUnhideStoryFrom();
   const [busyUid, setBusyUid] = useState<string | null>(null);
   const { confirm, dialog } = useConfirm();
 
   /** Ask first in the Logout-style dialog, the same as the profile ⋮ sheet. */
-  const act = async (uid: string, kind: 'block' | 'mute', username: string | null) => {
+  const undoFor: Record<Kind, (uid: string) => Promise<unknown>> = {
+    block: unblock,
+    mute: unmute,
+    restrict: unrestrict,
+    storyHide: unhideStory,
+  };
+
+  const act = async (uid: string, kind: Kind, username: string | null) => {
     if (busyUid) return;
     const name = `@${username || 'user'}`;
+    const copy = UNDO_COPY[kind];
     setBusyUid(uid);
     let failed: any = null;
     try {
       const ok = await confirm({
-        title: kind === 'block' ? `Unblock ${name}?` : `Unmute ${name}?`,
-        message:
-          kind === 'block'
-            ? "You'll be able to see each other's battles and stories and message each other again. Follows removed by the block are not restored."
-            : 'Their battles and stories will show in your feed again.',
-        confirmLabel: kind === 'block' ? 'Unblock' : 'Unmute',
+        title: copy.title(name),
+        message: copy.message,
+        confirmLabel: copy.button,
         onConfirm: async () => {
           try {
-            await (kind === 'block' ? unblock(uid) : unmute(uid));
+            await undoFor[kind](uid);
           } catch (e) {
             failed = e;
             throw e;
           }
         },
       });
-      if (ok) emitToast(`${kind === 'block' ? 'Unblocked' : 'Unmuted'} ${name}.`, 'success');
+      if (ok) emitToast(copy.done(name), 'success');
       else if (failed) {
-        reportError(failed, { screen: 'blocked-accounts', action: `un${kind}`, targetUserId: uid });
+        reportError(failed, { screen: 'blocked-accounts', action: `undo-${kind}`, targetUserId: uid });
         emitToast(failed?.message || 'Something went wrong. Please try again.', 'error');
       }
     } finally {
@@ -80,7 +124,7 @@ export default function BlockedAccountsScreen() {
     }
   };
 
-  const Row = ({ user, kind }: { user: BlockedAccount; kind: 'block' | 'mute' }) => {
+  const Row = ({ user, kind }: { user: BlockedAccount; kind: Kind }) => {
     const avatar = user.profileImageUrlThumb || user.profileImageUrl;
     const busy = busyUid === user.uid;
     return (
@@ -107,14 +151,12 @@ export default function BlockedAccountsScreen() {
           onPress={() => act(user.uid, kind, user.username)}
           disabled={busy}
           accessibilityRole="button"
-          accessibilityLabel={`${kind === 'block' ? 'Unblock' : 'Unmute'} ${user.username || 'user'}`}
+          accessibilityLabel={`${UNDO_COPY[kind].button} ${user.username || 'user'}`}
         >
           {busy ? (
             <ActivityIndicator size="small" color={textColor} />
           ) : (
-            <Text style={[styles.actionText, { color: textColor }]}>
-              {kind === 'block' ? 'Unblock' : 'Unmute'}
-            </Text>
+            <Text style={[styles.actionText, { color: textColor }]}>{UNDO_COPY[kind].button}</Text>
           )}
         </TouchableOpacity>
       </View>
@@ -131,7 +173,7 @@ export default function BlockedAccountsScreen() {
     title: string;
     hint: string;
     users: BlockedAccount[];
-    kind: 'block' | 'mute';
+    kind: Kind;
     emptyText: string;
   }) => (
     <View style={styles.section}>
@@ -147,6 +189,8 @@ export default function BlockedAccountsScreen() {
 
   const blocked = data?.blocked || [];
   const muted = data?.muted || [];
+  const restricted = data?.restricted || [];
+  const storyHidden = data?.storyHidden || [];
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]}>
@@ -180,6 +224,20 @@ export default function BlockedAccountsScreen() {
             users={muted}
             kind="mute"
             emptyText="You haven't muted anyone."
+          />
+          <Section
+            title="RESTRICTED"
+            hint="Their comments on your battles are visible only to them, and they don't notify you. They don't know."
+            users={restricted}
+            kind="restrict"
+            emptyText="You haven't restricted anyone."
+          />
+          <Section
+            title="STORY HIDDEN FROM"
+            hint="These accounts can't see your stories or highlights. They don't know."
+            users={storyHidden}
+            kind="storyHide"
+            emptyText="Your stories are visible to everyone who can normally see them."
           />
 
           <View style={styles.footerNote}>

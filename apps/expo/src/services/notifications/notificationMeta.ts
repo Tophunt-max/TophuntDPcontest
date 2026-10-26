@@ -26,6 +26,8 @@ export type NotificationType =
   | "prize-claim"
   | "purchase"
   | "admin"
+  | "contest-ending"
+  | "report_update"
   // legacy / loose aliases still accepted for safety
   | "like"
   | "comment"
@@ -79,7 +81,13 @@ export function getNotificationDestination(
     case "match_like":
     case "match_comment":
     case "match":
+    // "Battle ending soon" / "Last chance to vote" (cron): open the battle to vote.
+    case "contest-ending":
       return targetId ? `/battle/${encodeURIComponent(targetId)}` : "/home";
+
+    // "Update on your report": the reporter's own list of reports and outcomes.
+    case "report_update":
+      return "/setting/reports";
     // The result itself: straight to the winner page (app/battle/[id]/result.tsx).
     case "contest-win":
     case "contest-loss":
@@ -171,6 +179,10 @@ export function getNotificationTag(type: NotificationType | undefined): Notifica
       return { label: "Purchase", color: "#10B981", icon: "wallet" };
     case "admin":
       return { label: "News", color: "#EC4899", icon: "megaphone" };
+    case "report_update":
+      return { label: "Safety", color: "#0EA5E9", icon: "shield-checkmark-outline" };
+    case "contest-ending":
+      return { label: "Ending", color: "#F97316", icon: "time-outline" };
     case "contest":
     case "match":
       return { label: "Battle", color: "#F97316", icon: "trophy" };
@@ -248,6 +260,7 @@ export const CATEGORY_BY_TYPE: Record<string, NotificationCategory> = {
   ad_reward: "wallet",
   // admin
   admin: "admin",
+  report_update: "admin",
   event: "admin",
   ad: "admin",
 };

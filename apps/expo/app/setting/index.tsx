@@ -463,6 +463,14 @@ export default function SettingScreen() {
           onPress: () => router.push('/setting/report'),
         })}
 
+        {/* Moderation reports the user filed (accounts, battles, comments) and their outcome. */}
+        {renderItem({
+          icon: <Ionicons name="flag-outline" size={24} color={textColor} />,
+          label: 'My Reports',
+          onPress: () => router.push('/setting/reports' as any),
+          accessibilityHint: 'See the status of accounts, battles and comments you reported',
+        })}
+
         {/*
           Only when an address is configured. `supportEmail` comes from the
           admin-controlled app config and defaults to an empty string, so the row
