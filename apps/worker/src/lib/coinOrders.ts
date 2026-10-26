@@ -334,26 +334,58 @@ export async function clawbackPaymentOrder(
      * already-written claim and ledger row — still behaves exactly as before.
      */
     refundId?: string | null;
+    /**
+     * The gateway order id from the event (`payload.payment.entity.order_id`).
+     *
+     * `payment_orders.payment_id` is only written when the order is CREDITED. A
+     * refund that arrived first (the capture webhook failed and support refunded
+     * the "stuck" payment) found no row by payment id, was acknowledged, and the
+     * order stayed creditable: a later capture retry or the reconcile sweep then
+     * credited coins for money that had already gone back.
+     */
+    orderId?: string | null;
   },
+  attempt = 0,
 ): Promise<ClawbackResult> {
   const { paymentId, kind } = input;
-  const order = await db
+  let order = await db
     .select()
     .from(schema.paymentOrders)
     .where(eq(schema.paymentOrders.paymentId, paymentId))
     .get();
+  if (!order && input.orderId) {
+    const byOrder = await db
+      .select()
+      .from(schema.paymentOrders)
+      .where(eq(schema.paymentOrders.orderId, input.orderId))
+      .get();
+    // Only an order this payment could belong to: not yet bound to a payment, or
+    // bound to this one. An order credited under a DIFFERENT payment is untouched.
+    if (byOrder && (!byOrder.paymentId || byOrder.paymentId === paymentId)) order = byOrder;
+  }
   if (!order) return { clawedBack: false, reason: "order_not_found" };
   if ((TERMINAL_ORDER_STATUSES as readonly string[]).includes(order.status)) {
     return { clawedBack: false, reason: "already", uid: order.userId, fullyRefunded: true };
   }
   if (!(CLAWBACKABLE_ORDER_STATUSES as readonly string[]).includes(order.status)) {
     // Never credited, so there is nothing to reverse. Still mark it terminal so
-    // it cannot later be credited by a stale retry.
-    await db
+    // it cannot later be credited by a stale retry. Any refund or dispute, even a
+    // partial one, closes an uncredited order: crediting the full coins against a
+    // partly returned payment is the wrong answer, and support can settle it.
+    const marked = await db
       .update(schema.paymentOrders)
-      .set({ status: kind === "dispute" ? "disputed" : "refunded", refundedAt: now(), updatedAt: now() })
+      .set({
+        status: kind === "dispute" ? "disputed" : "refunded",
+        refundedAt: now(),
+        updatedAt: now(),
+        ...(order.paymentId ? {} : { paymentId }),
+      })
       .where(and(eq(schema.paymentOrders.orderId, order.orderId), eq(schema.paymentOrders.status, order.status)))
       .run();
+    // The order changed between the read and this write: most likely a capture
+    // credited it just now. Saying "not credited" would drop the refund and leave
+    // the coins, so read it again and take the credited path.
+    if (!marked.meta.changes && attempt < 2) return clawbackPaymentOrder(env, db, input, attempt + 1);
     return { clawedBack: false, reason: "not_credited", uid: order.userId };
   }
 
