@@ -583,6 +583,8 @@ export interface MoneyHealth {
   strandedPaidOrders: number;
   stuckCreatedOrders: number;
   clawbackShortfalls: { count: number; coins: number };
+  /** Escrowed withdrawals missing their hold/refund ledger row (optional on older Workers). */
+  withdrawalLedgerGaps?: { count: number; samples: { id: string; status: string; missing: string }[] };
   pendingDeposits: { count: number; oldestAgeMs: number | null };
   pendingWithdrawals: { count: number; oldestAgeMs: number | null };
 }
@@ -708,8 +710,9 @@ export const api = {
    * nothing wrong and still needs to reach their balance.
    */
   logoutAllUserSessions: (id: string) => post(`/admin/users/${id}/logout-all`, {}),
-  adjustWallet: (id: string, amount: number, type: "add" | "subtract") =>
-    post<{ newBalance: number }>(`/admin/users/${id}/wallet`, { amount, type }),
+  /** `requestId` makes a retry or double click a no-op on the server; `reason` is audited. */
+  adjustWallet: (id: string, amount: number, type: "add" | "subtract", reason: string, requestId: string) =>
+    post<{ newBalance: number; replayed?: boolean }>(`/admin/users/${id}/wallet`, { amount, type, reason, requestId }),
   setRole: (payload: { email?: string; userId?: string; makeAdmin?: boolean; role?: string }) =>
     post("/admin/set-role", payload),
   updateUserProfile: (id: string, payload: any) => patch(`/admin/users/${id}/profile`, payload),

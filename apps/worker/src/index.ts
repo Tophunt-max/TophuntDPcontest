@@ -43,6 +43,7 @@ import { processBroadcastJob } from "./lib/broadcast";
 import { captureError, logErrorToDb, pruneErrorLogs } from "./lib/observability";
 import { pruneOpsTables, runCronJob } from "./lib/ops";
 import { reconcilePaymentOrders } from "./lib/coinOrders";
+import { moneyHealthAlert } from "./lib/moneyHealth";
 import { reconcileVideos } from "./lib/videoReconcile";
 import { computeDeepHealth } from "./lib/health";
 import { pruneNotifications } from "./lib/notify";
@@ -584,7 +585,14 @@ export default {
       // time and could not even record the failure (writing that row needs a
       // subrequest too), so it showed as "never ran". See wrangler.toml [triggers].
       case "0 */6 * * *":
-        ctx.waitUntil(runCronJob(env, "seoAudit", () => seoAuditJob(env)).then(() => undefined));
+        ctx.waitUntil(
+          (async () => {
+            await runCronJob(env, "seoAudit", () => seoAuditJob(env));
+            // Ledger/balance invariants, alerted instead of waiting for an admin
+            // to open the Money Health page (lib/moneyHealth.ts).
+            await runCronJob(env, "moneyHealthCheck", () => moneyHealthAlert(env));
+          })(),
+        );
         break;
       case "0 0 1 * *":
         ctx.waitUntil(runCronJob(env, "monthlyHallOfFame", () => monthlyHallOfFame(env)).then(() => undefined));

@@ -221,6 +221,13 @@ export default function SystemHealth() {
           bad={!!m && m.clawbackShortfalls.count !== 0}
         />
         <Metric
+          icon={AlertTriangle}
+          label="Withdrawal ledger gaps"
+          value={m?.withdrawalLedgerGaps ? fmtNumber(m.withdrawalLedgerGaps.count) : "—"}
+          sub="held or rejected with no ledger row"
+          bad={!!m?.withdrawalLedgerGaps && m.withdrawalLedgerGaps.count !== 0}
+        />
+        <Metric
           icon={Clock}
           label="Stuck orders"
           value={m ? fmtNumber(m.stuckCreatedOrders) : "—"}

@@ -304,3 +304,89 @@ describe('clawback bookkeeping', () => {
     expect(await balanceOf(env, 'alice')).toBe(0);
   });
 });
+
+// ===========================================================================
+describe('a refund that arrives before the credit', () => {
+  async function seedCreatedOrder(env: TestEnv, uid: string) {
+    const ts = Date.now();
+    await drizzleOf(env).insert(schema.paymentOrders).values({
+      orderId: 'order_early', userId: uid, packageId: 'p1', coins: 100, bonusCoins: 0, amountPaise: 10000,
+      currency: 'INR', status: 'created', createdAt: ts, updatedAt: ts,
+    } as any);
+  }
+
+  it('closes the order by its order id, so a later capture cannot credit it', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', 0);
+    await seedCreatedOrder(env, 'alice');
+
+    // The order has no payment id yet: only the event's order id can find it.
+    const res = await clawbackPaymentOrder(env as any, drizzleOf(env), {
+      paymentId: 'pay_early', kind: 'refund', refundedAmountPaise: 5000, refundId: 'rfnd_x', orderId: 'order_early',
+    });
+    expect(res.reason).toBe('not_credited');
+    const order = await orderOf(env, 'order_early');
+    expect(order?.status).toBe('refunded');
+    expect(order?.paymentId).toBe('pay_early');
+
+    // A redelivered capture (or the reconcile sweep) for the same payment.
+    const credit = await creditPaymentOrder(env as any, drizzleOf(env), {
+      orderId: 'order_early', paymentId: 'pay_early', source: 'webhook', capturedAmountPaise: 10000, currency: 'INR',
+    });
+    expect(credit.credited).toBe(false);
+    expect(await balanceOf(env, 'alice')).toBe(0);
+  });
+
+  it('leaves an order credited under a different payment alone', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', 100);
+    await seedCreditedOrder(env, 'alice', { orderId: 'order_2', paymentId: 'pay_real' });
+    const res = await clawbackPaymentOrder(env as any, drizzleOf(env), {
+      paymentId: 'pay_other', kind: 'refund', orderId: 'order_2',
+    });
+    expect(res.reason).toBe('order_not_found');
+    expect(await balanceOf(env, 'alice')).toBe(100);
+  });
+
+  it('if a capture credits the order between the read and the write, the refund still claws back', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'alice', 0);
+    await seedCreatedOrder(env, 'alice');
+    // Credit lands right after clawback reads the order as `created`.
+    const db = drizzleOf(env);
+    const realSelect = db.select.bind(db);
+    let raced = false;
+    (db as any).select = (...a: any[]) => {
+      const q = realSelect(...a);
+      const from = q.from.bind(q);
+      q.from = (t: any) => {
+        const r = from(t);
+        if (t === schema.paymentOrders && !raced) {
+          const get = r.where.bind(r);
+          r.where = (w: any) => {
+            const x = get(w);
+            const g = x.get.bind(x);
+            x.get = async () => {
+              const row = await g();
+              if (row && !raced) {
+                raced = true;
+                await creditPaymentOrder(env as any, drizzleOf(env), {
+                  orderId: 'order_early', paymentId: 'pay_early', source: 'webhook', capturedAmountPaise: 10000, currency: 'INR',
+                });
+              }
+              return row;
+            };
+            return x;
+          };
+        }
+        return r;
+      };
+      return q;
+    };
+    const res = await clawbackPaymentOrder(env as any, db, {
+      paymentId: 'pay_early', kind: 'refund', refundId: 'rfnd_y', orderId: 'order_early',
+    });
+    expect(res.clawedBack).toBe(true);
+    expect(await balanceOf(env, 'alice')).toBe(0);
+  });
+});

@@ -115,6 +115,7 @@ webhookRoute.post("/razorpay", async (c) => {
           // delivery of the first — without it, a payment refunded as 2x50%
           // clawed back only the first half and the user kept the rest.
           refundId: refund?.id ? String(refund.id) : null,
+          orderId: payment?.order_id ? String(payment.order_id) : null,
         });
         if (res.clawedBack) {
           console.warn(
@@ -158,6 +159,7 @@ webhookRoute.post("/razorpay", async (c) => {
           kind: "dispute",
           refundedAmountPaise: Number(dispute?.amount) || null,
           refundId: dispute?.id ? String(dispute.id) : null,
+          orderId: payment?.order_id ? String(payment.order_id) : null,
         });
         if (res.clawedBack) {
           console.warn(`[webhook/razorpay] chargeback clawed back ${res.coins} coins from ${res.uid}`);
@@ -212,6 +214,23 @@ webhookRoute.post("/razorpay", async (c) => {
           c.executionCtx.waitUntil(sendUserEmail(c.env, creditedUid, coinsAddedEmail(creditedCoins)));
         } else if (!res.credited && res.reason !== "already") {
           console.warn(`[webhook/razorpay] order ${orderId} not credited: ${res.reason}`);
+          // The customer paid and got nothing: tell finance instead of leaving it
+          // in the logs (the order stays `created` and only shows as "stuck").
+          if (res.reason === "amount_mismatch") {
+            c.executionCtx.waitUntil(
+              getDb(c.env)
+                .insert(schema.adminNotifications)
+                .values({
+                  id: newId(),
+                  title: "Payment amount mismatch",
+                  message: `Order ${orderId} / payment ${paymentId}: captured ${amount} paise does not match the order. No coins were credited; refund or credit it manually.`,
+                  link: res.uid ? `/users/${res.uid}` : null,
+                  createdAt: now(),
+                })
+                .run()
+                .catch((e) => console.error("[webhook/razorpay] mismatch alert failed", e)),
+            );
+          }
         }
       } catch (e) {
         // Razorpay only redelivers a webhook that did NOT get a 2xx, so the old

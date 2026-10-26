@@ -510,14 +510,14 @@ describe('no unledgered coin printer remains', () => {
     const { env } = makeEnv();
     await seedUser(env, 'alice', 0);
 
-    const first = await admin(env, 'POST', '/users/alice/wallet', { amount: 50, type: 'add' });
+    const first = await admin(env, 'POST', '/users/alice/wallet', { amount: 50, type: 'add', reason: 'support ticket 1', requestId: 'req-00000001' });
     expect(first.status).toBe(200);
     expect(Number((await getUser(env, 'alice'))?.dpcoin)).toBe(50);
     expect(await ledgerSum(env, 'alice')).toBe(50);
 
     // Subtracting more than the balance must fail loudly rather than clamp,
     // which is what used to desynchronise the ledger from the balance.
-    const overdraw = await admin(env, 'POST', '/users/alice/wallet', { amount: 500, type: 'subtract' });
+    const overdraw = await admin(env, 'POST', '/users/alice/wallet', { amount: 500, type: 'subtract', reason: 'support ticket 2', requestId: 'req-00000002' });
     expect(overdraw.status).toBe(412);
     expect(Number((await getUser(env, 'alice'))?.dpcoin)).toBe(50);
     expect(await ledgerSum(env, 'alice')).toBe(50);
