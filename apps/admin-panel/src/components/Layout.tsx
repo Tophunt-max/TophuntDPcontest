@@ -1,7 +1,7 @@
 import { ReactNode, useState, useEffect, useRef } from "react";
 import { Link, useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useAuth } from "@/lib/auth";
+import { isFullAdminRole, useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { fmtDateTime } from "@/lib/format";
 import {
@@ -105,6 +105,18 @@ const nav = [
   { href: "/integrations", label: "Integrations", icon: Plug, section: "system" },
 ];
 
+/**
+ * Pages a moderator can use. Everything else answers 403 for them on the server,
+ * so it is hidden from the menu and replaced by a notice if opened by URL. The
+ * server stays the only enforcement; this only stops showing broken pages.
+ */
+export const MODERATOR_PAGES = new Set([
+  "/dashboard", "/analytics", "/users", "/matches", "/posts", "/stories", "/comments",
+  "/blog", "/reports", "/support", "/moderation",
+]);
+const canSee = (role: string | null | undefined, href: string) =>
+  !role || isFullAdminRole(role as any) || MODERATOR_PAGES.has(href);
+
 const sections: Record<string, string> = {
   main: "OVERVIEW",
   contests: "CONTESTS",
@@ -182,7 +194,7 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
 
       {/* Nav */}
       <nav className="flex-1 p-3 overflow-y-auto space-y-0.5">
-        {nav.map((item) => {
+        {nav.filter((item) => canSee(user?.role, item.href)).map((item) => {
           const showLabel = item.section !== lastSection;
           lastSection = item.section;
           const active = loc.startsWith(item.href);
@@ -340,6 +352,7 @@ function NotificationBell() {
 
 export function Layout({ children }: { children: ReactNode }) {
   const [loc] = useLocation();
+  const { user } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
   const currentPage = nav.find((n) => loc.startsWith(n.href));
 
@@ -389,7 +402,16 @@ export function Layout({ children }: { children: ReactNode }) {
           </div>
         </header>
 
-        <main className="flex-1 overflow-auto p-5 lg:p-6">{children}</main>
+        <main className="flex-1 overflow-auto p-5 lg:p-6">
+          {currentPage && !canSee(user?.role, currentPage.href) ? (
+            <div className="max-w-md mx-auto mt-16 text-center" role="alert">
+              <p className="font-semibold text-foreground mb-1">Not available for moderators</p>
+              <p className="text-sm text-muted-foreground">This page needs a full admin account.</p>
+            </div>
+          ) : (
+            children
+          )}
+        </main>
       </div>
     </div>
   );

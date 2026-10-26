@@ -10,11 +10,13 @@ import { vi, describe, it, expect } from 'vitest';
 import crypto from 'node:crypto';
 
 // Bearer token is "uid" or "uid:role". authTime is fixed in the past so a
-// session cutoff written "now" revokes it.
+// session cutoff written "now" revokes it. A "#fresh" suffix is a session signed in
+// just now, which sensitive admin actions require (sudo mode).
 vi.mock('../src/lib/firebaseAuth', () => ({
   verifyIdToken: async (token: string) => {
-    const [uid, role] = token.split(':');
-    return { uid, role: role || 'user', authTime: 1_000 };
+    const fresh = token.endsWith('#fresh');
+    const [uid, role] = token.replace(/#fresh$/, '').split(':');
+    return { uid, role: role || 'user', authTime: fresh ? Math.floor(Date.now() / 1000) : 1_000 };
   },
   bearerToken: (h?: string | null) => (h && h.startsWith('Bearer ') ? h.slice(7) : null),
 }));
@@ -429,11 +431,11 @@ describe('admin role boundaries', () => {
     await seedUser(env, 'boss', 0, { role: 'superadmin' });
     await seedUser(env, 'adm', 0, { role: 'admin' });
 
-    const demote = await adminCall(env, 'POST', '/set-role', { userId: 'boss', role: 'user' }, 'adm:admin');
+    const demote = await adminCall(env, 'POST', '/set-role', { userId: 'boss', role: 'user' }, 'adm:admin#fresh');
     expect(demote.status).toBe(403);
     expect((await getUser(env, 'boss'))?.role).toBe('superadmin');
 
-    const self = await adminCall(env, 'POST', '/set-role', { userId: 'adm', role: 'moderator' }, 'adm:admin');
+    const self = await adminCall(env, 'POST', '/set-role', { userId: 'adm', role: 'moderator' }, 'adm:admin#fresh');
     expect(self.status).toBe(403);
     expect((await getUser(env, 'adm'))?.role).toBe('admin');
   });
@@ -443,7 +445,7 @@ describe('admin role boundaries', () => {
     await seedUser(env, 'boss', 0, { role: 'superadmin' });
     await seedUser(env, 'adm', 0, { role: 'admin' });
 
-    const res = await adminCall(env, 'POST', '/set-role', { userId: 'adm', role: 'user' }, 'boss:superadmin');
+    const res = await adminCall(env, 'POST', '/set-role', { userId: 'adm', role: 'user' }, 'boss:superadmin#fresh');
     expect(res.status).toBe(200);
     expect((await getUser(env, 'adm'))?.role).toBe('user');
     expect(Number((await getUser(env, 'adm'))?.tokensValidAfter)).toBeGreaterThan(1_000);

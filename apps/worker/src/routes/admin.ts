@@ -21,6 +21,9 @@ import { STORIES_FEED_CACHE_KEY } from "../lib/storyAudience";
 import { httpsError, ApiError } from "../lib/http";
 import { timingSafeEqualSecret } from "../lib/timingSafe";
 import { verifyIdToken, bearerToken } from "../lib/firebaseAuth";
+import { REAUTH_REQUIRED_CODE } from "../lib/reauth";
+import { redactPaymentDetails } from "../lib/redact";
+import type { AuthUser } from "../types";
 import { resolveAuthMethods, validateAuthMethods } from "../lib/authMethods";
 import { validateFeedWeightsPatch } from "../lib/feedWeights";
 import { AUDITED_SECTIONS, appConfigChannels, publicAppConfig, validateAppControlPatch } from "../lib/appControl";
@@ -196,6 +199,54 @@ adminRoute.use("*", async (c, next) => {
     }
   }
   throw httpsError("permission-denied", "Admin access required.");
+});
+
+/**
+ * Sensitive admin actions need a RECENT sign-in ("sudo mode").
+ *
+ * Any admin ID token up to an hour old could delete users, change roles, move
+ * coins, approve payouts or change integration secrets, so a stolen or left-open
+ * panel session was full power. These routes now need `auth_time` within
+ * ADMIN_REAUTH_WINDOW_SEC; the panel then asks for the password again
+ * (reauthenticateWithCredential) and retries. Token refreshes keep the original
+ * sign-in time, so they do not count. Server-to-server calls with the shared
+ * secret carry no user and are exempt.
+ */
+export const ADMIN_REAUTH_WINDOW_SEC = 15 * 60;
+const SENSITIVE_ADMIN_ROUTES: Array<[method: string, path: RegExp]> = [
+  ["DELETE", /^\/users\/[^/]+$/],
+  ["PATCH", /^\/users\/[^/]+$/], // block / unblock
+  ["POST", /^\/users\/[^/]+\/logout-all$/],
+  ["POST", /^\/users\/[^/]+\/wallet$/],
+  ["POST", /^\/set-role$/],
+  ["PATCH", /^\/withdrawals\/[^/]+$/],
+  ["PATCH", /^\/deposits\/[^/]+$/],
+  ["POST", /^\/account-deletions\/[^/]+\/purge$/],
+  ["POST", /^\/broadcast$/],
+  ["POST", /^\/app-settings$/],
+  ["POST", /^\/rewards$/],
+  ["*", /^\/coin-packages(\/.*)?$/],
+  ["*", /^\/integrations(\/.*)?$/],
+];
+export function isSensitiveAdminRoute(method: string, path: string): boolean {
+  if (method === "GET" || method === "HEAD" || method === "OPTIONS") return false;
+  return SENSITIVE_ADMIN_ROUTES.some(([m, re]) => (m === "*" || m === method) && re.test(path));
+}
+adminRoute.use("*", async (c, next) => {
+  const path = new URL(c.req.url).pathname.replace(/^\/admin/, "") || "/";
+  if (!isSensitiveAdminRoute(c.req.method, path)) return next();
+  const user = c.get("user") as AuthUser | undefined;
+  if (!user) return next(); // X-Admin-Secret (server-to-server)
+  // A moderator is refused by the route itself (403); asking them for their
+  // password first would only hide that.
+  if (c.get("adminRole") === "moderator") return next();
+  const age = Date.now() / 1000 - Number(user.authTime ?? 0);
+  if (typeof user.authTime === "number" && age >= -60 && age <= ADMIN_REAUTH_WINDOW_SEC) return next();
+  throw httpsError(
+    "failed-precondition",
+    `${REAUTH_REQUIRED_CODE}: Enter your password again to confirm this action.`,
+    REAUTH_REQUIRED_CODE,
+  );
 });
 
 /**
@@ -1032,6 +1083,9 @@ function withoutRevenueForModerators<T extends Record<string, any>>(c: any, o: T
   return Object.fromEntries(Object.entries(o).filter(([k]) => !/^revenue/i.test(k))) as T;
 }
 
+/** The dashboard also tells the panel which role it is talking to (role-aware menu). */
+const withViewerRole = (c: any, o: Record<string, any>) => ({ ...withoutRevenueForModerators(c, o), viewerRole: c.get("adminRole") ?? null });
+
 // ---- reports ----
 /** Fetch a light preview (media/text) of a reported target for moderation. */
 async function reportPreview(db: any, targetType: string | null, targetId: string | null): Promise<any> {
@@ -1314,7 +1368,16 @@ adminRoute.post("/reports/:id/resolve", async (c) => {
 adminRoute.get("/support", async (c) => {
   const db = getDb(c.env);
   const rows = await db.select().from(schema.supportTickets).orderBy(desc(schema.supportTickets.createdAt)).limit(100).all();
-  return c.json(rows.map((r) => ({ ...r, createdAt: new Date(r.createdAt).toISOString(), updatedAt: new Date(r.updatedAt).toISOString() })));
+  // Moderators answer tickets but must not read payment or contact details in them.
+  const full = isFullAdmin(c);
+  return c.json(
+    rows.map((r) => ({
+      ...r,
+      ...(full ? {} : { subject: redactPaymentDetails(r.subject), message: redactPaymentDetails(r.message), adminReply: redactPaymentDetails(r.adminReply) }),
+      createdAt: new Date(r.createdAt).toISOString(),
+      updatedAt: new Date(r.updatedAt).toISOString(),
+    })),
+  );
 });
 adminRoute.patch("/support", async (c) => {
   const db = getDb(c.env);
@@ -2207,7 +2270,7 @@ adminRoute.get("/overview", async (c) => {
   // isolate serving an admin answers repeat polls with zero D1. Per-isolate and
   // no KV, so it stays free-tier-safe (no KV writes) and needs no invalidation.
   const cachedOverview = memoGet<Record<string, number>>(OVERVIEW_MEMO_KEY);
-  if (cachedOverview) return c.json(withoutRevenueForModerators(c, cachedOverview));
+  if (cachedOverview) return c.json(withViewerRole(c, cachedOverview));
   const db = getDb(c.env);
   const users = (await db.select({ v: count() }).from(schema.users).get())?.v ?? 0;
   const posts = (await db.select({ v: count() }).from(schema.posts).get())?.v ?? 0;
@@ -2253,7 +2316,7 @@ adminRoute.get("/overview", async (c) => {
     )?.v ?? 0;
   const overview = { users, posts, reports, support, revenue, revenueInr, activeMatches, liveContests, pendingWithdrawals, pendingDeposits, pendingPrizeClaims };
   memoPut(OVERVIEW_MEMO_KEY, overview, 30);
-  return c.json(withoutRevenueForModerators(c, overview));
+  return c.json(withViewerRole(c, overview));
 });
 
 // Cloudflare free-tier capacity snapshot for the dashboard widget: growth-table
@@ -2298,7 +2361,14 @@ adminRoute.get("/user-growth", async (c) => {
 adminRoute.get("/recent-tickets", async (c) => {
   const db = getDb(c.env);
   const rows = await db.select().from(schema.supportTickets).orderBy(desc(schema.supportTickets.createdAt)).limit(5).all();
-  return c.json(rows.map((t) => ({ ...t, createdAt: new Date(t.createdAt).toISOString() })));
+  const full = isFullAdmin(c);
+  return c.json(
+    rows.map((t) => ({
+      ...t,
+      ...(full ? {} : { subject: redactPaymentDetails(t.subject), message: redactPaymentDetails(t.message), adminReply: redactPaymentDetails(t.adminReply) }),
+      createdAt: new Date(t.createdAt).toISOString(),
+    })),
+  );
 });
 
 // ======================= TABLES =======================
