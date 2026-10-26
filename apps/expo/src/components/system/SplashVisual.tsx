@@ -4,6 +4,7 @@ import Animated, { useAnimatedStyle, useFrameCallback, useSharedValue } from 're
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useReduceMotion } from '@/src/hooks/usePlaybackEnvironment';
 import { Colors } from '@/constants/theme';
+import { designWidth, fitArt } from '@/src/lib/layout';
 
 /**
  * The canonical TopHunt splash visual.
@@ -40,8 +41,16 @@ export function SplashVisual({
 }) {
   const dark = useColorScheme() === 'dark';
   const reduceMotion = useReduceMotion();
-  const { width } = useWindowDimensions();
-  const logoWidth = Math.min(width * 0.78, 340);
+  // Fits every screen: 88% of the usable width on phones, at most 520 wide on
+  // tablets, and at most 18% of the height so a landscape phone or a short
+  // desktop window still has room for the tagline and the bottom loader.
+  const { width, height } = useWindowDimensions();
+  const logo = fitArt({
+    aspect: LOGO_ASPECT,
+    maxWidth: (Platform.OS === 'web' ? designWidth(width) : width) * 0.88,
+    maxHeight: height * 0.18,
+    cap: 520,
+  });
 
   if (sessionStart === null) sessionStart = Date.now();
   const start = sessionStart;
@@ -87,7 +96,7 @@ export function SplashVisual({
         ) : (
           <Image
             source={LOGO}
-            style={{ width: logoWidth, height: logoWidth / LOGO_ASPECT }}
+            style={logo}
             resizeMode="contain"
             accessibilityRole="image"
             accessibilityLabel="TopHunt"

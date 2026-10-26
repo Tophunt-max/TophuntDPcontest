@@ -18,7 +18,10 @@ import { loginHref } from '../../src/lib/authGate';
 import { Ionicons } from '@/src/lib/icons';
 import { trackOnboarding } from '../../src/services/onboardingTelemetry';
 import { Colors } from '@/constants/theme';
-import { designWidth, PHONE_MAX_WIDTH, useDesignWindow } from '@/src/lib/layout';
+import { fitArt, PHONE_MAX_WIDTH, useDesignWindow } from '@/src/lib/layout';
+
+/** The bundled slides are 1312x1199 to 1448x1086; 5:4 fits them all with `contain`. */
+const ART_ASPECT = 1.25;
 
 /**
  * The first-launch intro: what TopHunt is, in three slides. Shown once to a new
@@ -64,10 +67,11 @@ const DEFAULT_ONBOARDING = [
 type Slide = { id: string; title: string; description: string; image: any; icon?: string };
 
 /** Slide picture: an uploaded/bundled image, else an icon badge in the brand colour. */
-function SlideArt({ slide, size, isDark }: { slide: Slide; size: number; isDark: boolean }) {
+function SlideArt({ slide, box, isDark }: { slide: Slide; box: { width: number; height: number }; isDark: boolean }) {
   if (slide.image) {
-    return <Image source={slide.image} style={[styles.image, { width: size, height: size }]} resizeMode="contain" />;
+    return <Image source={slide.image} style={[styles.image, box]} resizeMode="contain" />;
   }
+  const size = box.height;
   return (
     <View
       style={[
@@ -106,7 +110,7 @@ export default function OnboardingScreen() {
 
   // Reactive, so a desktop resize re-lays out the pages instead of leaving them
   // sized for the window the user first loaded.
-  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const { height: windowHeight } = useWindowDimensions();
   // Bounded by HEIGHT as well as width. Width alone is not enough: a wide but
   // short desktop window (1280x577 is typical) gave a 336px-tall image that, with
   // its 40px margin, left no room for the title and description — the whole point
@@ -114,10 +118,19 @@ export default function OnboardingScreen() {
   // never think to scroll. 32% of the window keeps the copy visible.
   // Short windows (a laptop browser ~577px tall) get a smaller share, or the
   // description slid under the pagination dots (seen in a headless check).
-  const artSize = Math.min(designWidth(windowWidth) * 0.8, windowHeight * (windowHeight < 700 ? 0.24 : 0.32));
+  //
+  // The art is landscape (~5:4), so it gets a landscape box: a square box wasted
+  // a quarter of its height and made the picture look small. Width is the page
+  // minus the 20px side padding; on tablets and landscape the height share wins.
   // The width the pager is actually drawn at: the phone column on desktop web
   // (PhoneFrame), the full window everywhere else.
   const { width: pageWidth } = useDesignWindow();
+  const artBox = fitArt({
+    aspect: ART_ASPECT,
+    maxWidth: pageWidth - 40,
+    // <620: laptop browsers (~577px) need the most room for the copy above the dots.
+    maxHeight: windowHeight * (windowHeight < 620 ? 0.22 : windowHeight < 700 ? 0.28 : 0.34),
+  });
 
   const [currentIndex, setCurrentIndex] = useState(0);
   const [onboardingData, setOnboardingData] = useState<Slide[]>(DEFAULT_ONBOARDING);
@@ -209,7 +222,7 @@ export default function OnboardingScreen() {
         showsVerticalScrollIndicator={false}
       >
         {/* Clamped: at 1280px wide the art was 1024x1024, taller than most desktop viewports. */}
-        <SlideArt slide={item} size={artSize} isDark={isDark} />
+        <SlideArt slide={item} box={artBox} isDark={isDark} />
         <View style={styles.textContainer}>
           <Text style={[styles.title, isDark && styles.textDark]}>{item.title}</Text>
           <Text style={[styles.description, { color: isDark ? '#E0E0E0' : '#616161' }]}>{item.description}</Text>
