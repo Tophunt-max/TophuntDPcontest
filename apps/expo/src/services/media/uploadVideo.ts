@@ -1,4 +1,4 @@
-import { uploadToR2 } from '@/src/lib/uploadToR2';
+import { isUploadCancelled, uploadToR2 } from '@/src/lib/uploadToR2';
 import { uploadVideoToBunny } from '@/src/services/video/bunnyUpload';
 
 /**
@@ -45,12 +45,14 @@ export interface UploadVideoOptions {
   /** R2 prefix used only on the pre-cutover fallback path. */
   r2Folder: string;
   onProgress?: (progress: number) => void;
+  /** Abort the upload. Rejects with UploadCancelledError, never falls back to R2. */
+  signal?: AbortSignal;
 }
 
 export async function uploadVideo(uri: string, options: UploadVideoOptions): Promise<string> {
-  const { title, targetType, r2Folder, onProgress } = options;
+  const { title, targetType, r2Folder, onProgress, signal } = options;
 
-  const outcome = await uploadVideoToBunny(uri, { title, targetType, onProgress });
+  const outcome = await uploadVideoToBunny(uri, { title, targetType, onProgress, signal });
 
   if (outcome.status === 'uploaded') return outcome.playbackUrl;
 
@@ -73,8 +75,9 @@ export async function uploadVideo(uri: string, options: UploadVideoOptions): Pro
     // belongs — so still try it.
     console.warn('[uploadVideo] createVideoUpload failed; attempting R2:', cause);
     try {
-      return (await uploadToR2(uri, 'video/mp4', r2Folder, onProgress)) as string;
+      return (await uploadToR2(uri, 'video/mp4', r2Folder, onProgress, { signal })) as string;
     } catch (fallbackError) {
+      if (isUploadCancelled(fallbackError)) throw fallbackError;
       // Once Bunny is live, R2 replies "Videos are no longer uploaded to this
       // endpoint... Please update the app." That sentence describes OUR routing,
       // aimed at a stale build — and this build is not stale, it asked Bunny
@@ -98,5 +101,5 @@ export async function uploadVideo(uri: string, options: UploadVideoOptions): Pro
   // Pre-cutover path. `'video/mp4'` means "a video is expected", not "this file
   // is an mp4" — `uploadToR2` reads the real container from the file header, so an
   // iOS `.mov` is stored as `video/quicktime` rather than being mislabelled.
-  return (await uploadToR2(uri, 'video/mp4', r2Folder, onProgress)) as string;
+  return (await uploadToR2(uri, 'video/mp4', r2Folder, onProgress, { signal })) as string;
 }

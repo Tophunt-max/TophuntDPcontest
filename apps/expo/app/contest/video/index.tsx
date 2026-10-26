@@ -23,10 +23,13 @@ import { ContestCountdownBadge, ContestEntryBadge, ContestPrizeLine } from '@/sr
 import { useCountdown } from '@/src/hooks/useCountdown';
 import { entryFeePerPlayer } from '@/src/lib/contestPricing';
 import { hasEnded } from '@/src/lib/countdown';
+import { useAbortOnUnmount } from '@/src/hooks/useAbortOnUnmount';
+import { isUploadCancelled } from '@/src/lib/uploadToR2';
 
 const BRAND_PRIMARY = '#FF4D67';
 
 export default function VideoContestScreen() {
+  const beginUpload = useAbortOnUnmount();
   const router = useRouter();
   const { contestId, matchId, mode } = useLocalSearchParams();
   const { user } = useAuth();
@@ -177,8 +180,11 @@ export default function VideoContestScreen() {
 
     setUploading(true);
     const isJoining = !!(selectedContest.isJoinMode || mode === 'join' || matchId);
+    const signal = beginUpload();
     try {
-      const downloadUrl = await contestMediaService.uploadMedia(media, selectedContest.id || selectedContest.contestId, user.uid, 'video');
+      const downloadUrl = await contestMediaService.uploadMedia(media, selectedContest.id || selectedContest.contestId, user.uid, 'video', undefined, signal);
+      // Left the screen during the upload: do NOT enter (and pay for) the battle.
+      if (signal.aborted) return;
       const deviceId = await getDeviceId();
 
       let resultMatchId: string | undefined;
@@ -208,9 +214,10 @@ export default function VideoContestScreen() {
         matchId: resultMatchId,
       });
     } catch (error: any) {
+      if (isUploadCancelled(error) || signal.aborted) return;
       Alert.alert("Oops!", error.message || "Failed to submit.");
     } finally {
-      setUploading(false);
+      if (!signal.aborted) setUploading(false);
     }
   };
 

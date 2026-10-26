@@ -24,7 +24,7 @@ import { AppImage as Image } from '@/src/components/ui/AppImage';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useAudioPlayer } from 'expo-audio';
 import { Ionicons } from '@/src/lib/icons';
-import { uploadToR2 } from '@/src/lib/uploadToR2';
+import { uploadToR2, isUploadCancelled } from '@/src/lib/uploadToR2';
 import { optimizeImageForUpload } from '@/src/lib/imageOptimize';
 import { createStoryRecord, fetchStories, searchUsers } from '@/src/services/stories/storyService';
 import {
@@ -60,6 +60,7 @@ import { useReadjustablePhoto } from '@/src/components/media/useImageAdjuster';
 import { validateVideo, STORY_MAX_VIDEO_SEC } from '@/src/lib/videoValidation';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
 import { useDesignWindow, webPhoneColumn } from '@/src/lib/layout';
+import { useAbortOnUnmount } from '@/src/hooks/useAbortOnUnmount';
 
 /** Story frame aspect (width / height) — matches the 9:16 story viewer. */
 const STORY_ASPECT = 9 / 16;
@@ -91,6 +92,7 @@ const CircularProgress = ({ progress }: { progress: number }) => {
 };
 
 export default function AddStoryScreen() {
+  const beginUpload = useAbortOnUnmount();
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const { adjustPicked, readjust, canReadjust, forget, host: adjusterHost } = useReadjustablePhoto(STORY_ASPECT);
   const [media, setMedia] = useState<{ uri: string, type: 'image' | 'video' } | null>(null);
@@ -521,6 +523,7 @@ export default function AddStoryScreen() {
     if (!media) return;
     setIsUploading(true);
     setUploadProgress(0);
+    const signal = beginUpload();
     try {
       // Video goes to Bunny Stream, photos to R2. `uploadVideo` owns the
       // pre-cutover R2 fallback and, importantly, does NOT retry on R2 when Bunny
@@ -533,6 +536,7 @@ export default function AddStoryScreen() {
           targetType: 'story',
           r2Folder: 'stories',
           onProgress: setUploadProgress,
+          signal,
         });
       } else {
         // Downscaled to the 1080x1920 story spec first. Video bytes are never
@@ -540,8 +544,10 @@ export default function AddStoryScreen() {
         const source = await optimizeImageForUpload(media.uri, 'story');
         mediaUrl = (await uploadToR2(source, 'image/jpeg', 'stories', (p: number) => {
           setUploadProgress(p);
-        })) as string;
+        }, { signal })) as string;
       }
+      // Left the screen during the upload: do not publish a story they abandoned.
+      if (signal.aborted) return;
 
       const textPos = { x: textX.value / width, y: textY.value / height };
 
@@ -586,10 +592,12 @@ export default function AddStoryScreen() {
         );
       }
     } catch (error: any) {
+      // The user left (or cancelled): nothing to report.
+      if (isUploadCancelled(error) || signal.aborted) return;
       console.error("Story Creation Error:", error);
       Alert.alert("Upload Failed", error.message);
     } finally {
-      setIsUploading(false);
+      if (!signal.aborted) setIsUploading(false);
     }
   };
 

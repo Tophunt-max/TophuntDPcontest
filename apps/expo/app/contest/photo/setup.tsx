@@ -48,6 +48,8 @@ import { entryFeePerPlayer } from '@/src/lib/contestPricing';
 import { contestPrize } from '@/src/lib/contestPrize';
 import { hasEnded } from '@/src/lib/countdown';
 import { screenEntryImage } from '@/src/lib/entryScreening';
+import { useAbortOnUnmount } from '@/src/hooks/useAbortOnUnmount';
+import { isUploadCancelled } from '@/src/lib/uploadToR2';
 
 const PINK_ACCENT = '#FFB1BD';
 const PRIMARY_COLOR = '#FF4D67';
@@ -56,6 +58,7 @@ const SECONDARY_COLOR = '#FF758C';
 const ENTRY_ASPECT = 0.8;
 
 export default function BattleSetupScreen() {
+  const beginUpload = useAbortOnUnmount();
   const router = useRouter();
   const { contestId, matchId, mode } = useLocalSearchParams(); 
   const { user } = useAuth();
@@ -309,8 +312,11 @@ export default function BattleSetupScreen() {
     playCoinAnimation();
     setUploading(true);
     const isJoining = !!(selectedContest.isJoinMode || mode === 'join');
+    const signal = beginUpload();
     try {
-        const downloadUrl = await contestMediaService.uploadMedia(media, selectedContest.id || selectedContest.contestId, user.uid, 'photo');
+        const downloadUrl = await contestMediaService.uploadMedia(media, selectedContest.id || selectedContest.contestId, user.uid, 'photo', undefined, signal);
+        // Left the screen during the upload: do NOT enter (and pay for) the battle.
+        if (signal.aborted) return;
         const deviceId = await getDeviceId();
 
         const matchData = {
@@ -344,13 +350,16 @@ export default function BattleSetupScreen() {
           matchId: resultMatchId,
         });
       } catch (error: any) {
+        if (isUploadCancelled(error) || signal.aborted) return;
         console.error("[BattleSetup] Action Error:", error);
         const msg = error.details || error.message || "Something went wrong on the server.";
         addToast(msg, 'error');
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       } finally {
-        setUploading(false);
-        setShowCoinAnimation(false);
+        if (!signal.aborted) {
+          setUploading(false);
+          setShowCoinAnimation(false);
+        }
       }
   };
 
