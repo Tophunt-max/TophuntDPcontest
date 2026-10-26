@@ -8,6 +8,7 @@ import { Ionicons } from '@/src/lib/icons';
 import { useAppConfig } from '@/src/services/appSettings';
 import { featureOn, type FeatureKey } from '@/src/lib/appControl';
 import { PHONE_MAX_WIDTH } from '@/src/lib/layout';
+import { useAuth } from '@/src/hooks/useAuth';
 
 const LABEL: Record<FeatureKey, string> = {
   contests: 'Contests',
@@ -31,7 +32,8 @@ export default function FeatureOffScreen() {
   const textColor = isDark ? Colors.dark.text : Colors.light.text;
   const sub = isDark ? '#BDBDBD' : '#616161';
   // Only once the config is known: "no config yet" must not read as "back on".
-  const enabled = !!config && featureOn(config, key);
+  const { user } = useAuth();
+  const enabled = !!config && featureOn(config, key, user?.uid ?? null);
 
   useEffect(() => {
     if (enabled) {

@@ -3,6 +3,8 @@ import { useQuery, type QueryClient } from "@tanstack/react-query";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { readApi, readApiLive } from "./api";
 import { compareVersions as compareVersionsStrict, newerConfig } from "@/src/lib/appControl";
+import { inRollout } from "@/src/lib/rollout";
+import { useAuth } from "@/src/hooks/useAuth";
 
 export interface AppConfig {
   appName: string;
@@ -47,8 +49,8 @@ export interface AppConfig {
 }
 
 /** A feature is enabled unless the admin explicitly turned it off. */
-export function isFeatureEnabled(config: AppConfig | null | undefined, key: string): boolean {
-  return config?.features?.[key] !== false;
+export function isFeatureEnabled(config: AppConfig | null | undefined, key: string, uid?: string | null): boolean {
+  return config?.features?.[key] !== false && inRollout(config, key, uid);
 }
 
 /**
@@ -73,7 +75,8 @@ export function isUpdateRequired(config: AppConfig | null | undefined): boolean 
 /** Hook: is a given feature flag enabled right now? (defaults ON while loading) */
 export function useFeature(key: string): boolean {
   const { config } = useAppConfig();
-  return isFeatureEnabled(config, key);
+  const { user } = useAuth();
+  return isFeatureEnabled(config, key, user?.uid ?? null);
 }
 
 export const APP_CONFIG_QUERY_KEY = ["app-config"] as const;

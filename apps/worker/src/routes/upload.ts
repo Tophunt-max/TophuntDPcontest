@@ -74,6 +74,7 @@ uploadRoute.use("*", async (c, next) => {
   appControlGate(await getAppControlConfig(c.env), {
     action: "upload",
     role: c.get("user")?.role ?? null,
+    uid: c.get("user")?.uid ?? null,
     platform: c.req.header("X-App-Platform") ?? null,
     appVersion: c.req.header("X-App-Version") ?? null,
   });

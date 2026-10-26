@@ -159,7 +159,7 @@ function MaintenanceGuard({ children }: { children: React.ReactNode }) {
   const routeFeature = featureForRoute(segments);
   // Signed-in only: every feature route is private, so a guest is sent to sign
   // in by the root guard — two guards redirecting at once would race.
-  const featureBlocked = viewer.signedIn && !!routeFeature && !featureOn(config, routeFeature);
+  const featureBlocked = viewer.signedIn && !!routeFeature && !featureOn(config, routeFeature, viewer.uid);
 
   useEffect(() => {
     if (loading) return;

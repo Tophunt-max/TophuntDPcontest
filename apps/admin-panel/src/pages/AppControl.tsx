@@ -342,6 +342,13 @@ function FeaturesCard({ data, pending, onSave, confirm }: CardProps) {
   );
   const [features, setFeatures] = useState(initial);
   useEffect(() => setFeatures(initial), [initial]);
+  // Percent of signed-in accounts that get each feature (100 = everyone).
+  const initialRollout = useMemo(
+    () => Object.fromEntries(FEATURES.map((f) => [f.key, String(data.featureRollout?.[f.key] ?? 100)])) as Record<string, string>,
+    [data],
+  );
+  const [rollout, setRollout] = useState(initialRollout);
+  useEffect(() => setRollout(initialRollout), [initialRollout]);
 
   const submit = async () => {
     const turningOff = FEATURES.filter((f) => initial[f.key] && !features[f.key]).map((f) => f.label);
@@ -353,7 +360,16 @@ function FeaturesCard({ data, pending, onSave, confirm }: CardProps) {
       });
       if (!ok) return;
     }
-    onSave({ features });
+    const featureRollout: Record<string, number> = {};
+    for (const f of FEATURES) {
+      const n = Number(rollout[f.key]);
+      if (!Number.isInteger(n) || n < 0 || n > 100) {
+        toast.error(`${f.label}: rollout must be a whole percent from 0 to 100.`);
+        return;
+      }
+      featureRollout[f.key] = n;
+    }
+    onSave({ features, featureRollout });
   };
 
   return (
@@ -372,7 +388,24 @@ function FeaturesCard({ data, pending, onSave, confirm }: CardProps) {
       </div>
       <div className="space-y-1">
         {FEATURES.map((f) => (
-          <Toggle key={f.key} label={f.label} checked={features[f.key] !== false} onChange={(v) => setFeatures({ ...features, [f.key]: v })} />
+          <div key={f.key} className="flex items-center gap-3">
+            <div className="flex-1">
+              <Toggle label={f.label} checked={features[f.key] !== false} onChange={(v) => setFeatures({ ...features, [f.key]: v })} />
+            </div>
+            <label className="flex items-center gap-1 text-xs text-muted-foreground" title="Percent of signed-in accounts that get this feature">
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={rollout[f.key]}
+                onChange={(e) => setRollout({ ...rollout, [f.key]: e.target.value })}
+                aria-label={`${f.label} rollout percent`}
+                className="w-16 px-2 py-1 rounded-lg border border-border bg-background text-sm"
+                disabled={features[f.key] === false}
+              />
+              %
+            </label>
+          </div>
         ))}
       </div>
       <p className="text-[11px] text-muted-foreground mt-2">Preset sirf switches set karta hai — Save dabane par lagta hai.</p>
