@@ -16,6 +16,7 @@ import type { Env, Variables } from "../types";
 import { httpsError } from "../lib/http";
 import { clientIp, consumeRateLimit } from "../lib/rateLimit";
 import { ONBOARDING_MAX_SLIDES } from "../lib/onboardingConfig";
+import { USAGE_MAX_BYTES, parseUsageBatch, writeUsagePoints } from "../lib/usageEvents";
 
 export const telemetryRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -29,8 +30,21 @@ export function utcDay(ts: number): string {
   return new Date(ts).toISOString().slice(0, 10);
 }
 
+/** The real payload is three short fields; anything bigger is not ours. */
+export const TELEMETRY_MAX_BYTES = 512;
+
 telemetryRoute.post("/onboarding", async (c) => {
-  const body = await c.req.json<any>().catch(() => null);
+  // Unauthenticated, so bounded before parsing: `c.req.json()` read any size.
+  const declared = Number(c.req.header("Content-Length") || 0);
+  if (declared > TELEMETRY_MAX_BYTES) throw httpsError("invalid-argument", "Payload too large.");
+  const raw = await c.req.text();
+  if (raw.length > TELEMETRY_MAX_BYTES) throw httpsError("invalid-argument", "Payload too large.");
+  let body: any = null;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    body = null;
+  }
   const event = body?.event as OnboardingEvent;
   if (!ONBOARDING_EVENTS.includes(event)) throw httpsError("invalid-argument", "Unknown event.");
   let slide = -1;
@@ -52,5 +66,37 @@ telemetryRoute.post("/onboarding", async (c) => {
       .bind(utcDay(Date.now()), event, slide, platform)
       .run();
   }
+  return c.body(null, 204);
+});
+
+/**
+ * Anonymous usage counters (lib/usageEvents.ts), batched by the app.
+ *
+ * Unauthenticated so nothing ties a batch to an account. Per-IP budget on the
+ * Workers Rate Limiting binding (no Durable Object or KV cost); over budget, or
+ * without the ANALYTICS binding, it still answers 204 and writes nothing.
+ */
+telemetryRoute.post("/events", async (c) => {
+  const declared = Number(c.req.header("Content-Length") || 0);
+  if (declared > USAGE_MAX_BYTES) throw httpsError("invalid-argument", "Payload too large.");
+  const raw = await c.req.text();
+  if (raw.length > USAGE_MAX_BYTES) throw httpsError("invalid-argument", "Payload too large.");
+  let body: any = null;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    throw httpsError("invalid-argument", "Body must be JSON.");
+  }
+  const batch = parseUsageBatch(body);
+  if (!batch.points.length) return c.body(null, 204);
+  const limiter = c.env.USAGE_LIMITER;
+  if (limiter) {
+    try {
+      if (!(await limiter.limit({ key: `${clientIp(c.req.raw.headers)}` })).success) return c.body(null, 204);
+    } catch (e) {
+      console.error("[usage] limiter unavailable (failing open)", e);
+    }
+  }
+  writeUsagePoints(c.env, batch);
   return c.body(null, 204);
 });

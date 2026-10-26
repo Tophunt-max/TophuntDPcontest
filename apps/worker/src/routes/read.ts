@@ -4254,7 +4254,9 @@ readRoute.get("/blog", async (c) => {
   const conds = [eq(schema.blogPosts.status, "published")];
   if (cursor) conds.push(lt(schema.blogPosts.publishedAt, cursor));
   if (category) conds.push(eq(schema.blogPosts.category, category));
-  if (q.length >= 2) conds.push(like(sql`lower(${schema.blogPosts.title})`, `%${q}%`));
+  // `%` and `_` match literally (as in /read/search); unescaped, a `%` query forced
+  // a full scan of the published posts on every call.
+  if (q.length >= 2) conds.push(sql`lower(${schema.blogPosts.title}) LIKE ${"%" + likePrefix(q.slice(0, 100))} ESCAPE '\\'`);
 
   // Cache only the canonical default first page. This keeps write-side
   // invalidation bounded to one known key instead of up to 50 limit variants.

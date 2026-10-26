@@ -29,17 +29,39 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** Common look-alike substitutions ("5c4m" → "scam"). */
+const LEET: Record<string, string> = { "0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "8": "b", "@": "a", "$": "s", "!": "i" };
+
+/**
+ * The text as it is read, not as it is typed: Unicode-folded (full-width and
+ * accented letters to plain ones), look-alike digits and symbols mapped to
+ * letters, and separators BETWEEN single letters removed ("s.c.a.m", "s c a m").
+ * The plain list match was beaten by any of these.
+ */
+export function normaliseForModeration(text: string): string {
+  const folded = text
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[0134578@$!]/g, (ch) => LEET[ch] ?? ch);
+  // "s.c.a.m" / "s c a m" / "s-c-a-m": join runs of single letters split by one
+  // separator, so spaced-out words read as one word.
+  return folded.replace(/\b(?:[a-z][\s._*-]){2,}[a-z]\b/g, (run) => run.replace(/[\s._*-]/g, ""));
+}
+
 /** The first banned word found in any of the given texts, or null. */
 export async function findBannedWord(env: Env, ...texts: (string | null | undefined)[]): Promise<string | null> {
   const words = await getBannedWords(env);
   if (!words.length) return null;
-  const hay = texts.filter(Boolean).join(" \n ").toLowerCase();
-  if (!hay.trim()) return null;
+  const raw = texts.filter(Boolean).join(" \n ");
+  if (!raw.trim()) return null;
+  // Checked against both the typed text and its normalised reading.
+  const hays = [raw.toLowerCase(), normaliseForModeration(raw)];
   for (const w of words) {
     if (!w) continue;
     // Word-boundary match so "class" doesn't trip on "ass".
     const re = new RegExp(`\\b${escapeRegex(w)}\\b`, "i");
-    if (re.test(hay)) return w;
+    if (hays.some((h) => re.test(h))) return w;
   }
   return null;
 }

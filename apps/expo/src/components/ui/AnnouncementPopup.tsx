@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Modal, Image, ScrollView, Linking } from 'react-native';
+import { safeExternalUrl } from '@/src/lib/safeLink';
 import { useQuery } from '@tanstack/react-query';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { useAuth } from '@/src/hooks/useAuth';
@@ -99,7 +100,8 @@ export function AnnouncementPopup() {
   }, [announcement, refetch]);
 
   const openLink = useCallback(() => {
-    if (announcement?.link) Linking.openURL(announcement.link).catch(() => {});
+    const url = safeExternalUrl(announcement?.link);
+    if (url) Linking.openURL(url).catch(() => {});
   }, [announcement]);
 
   if (!visible || !announcement) return null;

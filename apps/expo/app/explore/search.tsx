@@ -15,6 +15,7 @@ import { useProfile } from '@/src/hooks/useProfileData';
 import { useFollowToggle } from '@/src/hooks/useFollowToggle';
 import { followButtonLabel } from '@/src/lib/followState';
 import { compactCount, searchView } from '@/src/lib/exploreMedia';
+import { trackUsage } from '@/src/services/usageStats';
 import { contestPrize, describePrize } from '@/src/lib/contestPrize';
 import { isFreeContest } from '@/src/lib/contestPricing';
 import { clearRecentSearches, loadRecentSearches, saveRecentSearch, useLiveContests, useUniversalSearch } from '@/src/services/explore';
@@ -59,6 +60,13 @@ export default function ExploreSearchScreen() {
   const r = search.data;
   const total = r ? r.people.length + r.contests.length + r.battles.length + r.blog.length : 0;
   const view = searchView({ isError: search.isError, isLoading: search.isLoading, placeholder: search.isPlaceholderData, total: r ? total : null });
+  // One count per settled query, not per render (usage statistics; no query text).
+  const countedRef = useRef('');
+  useEffect(() => {
+    if ((view !== 'empty' && view !== 'results') || countedRef.current === term) return;
+    countedRef.current = term;
+    trackUsage('search', view === 'empty' ? 'empty' : 'results');
+  }, [view, term]);
 
   const remember = () => {
     if (active) saveRecentSearch(text).then(setRecent);

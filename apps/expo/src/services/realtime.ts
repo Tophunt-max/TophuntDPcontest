@@ -1,6 +1,6 @@
 import { AppState } from 'react-native';
 import { auth } from './firebase/initFirebase';
-import { API_BASE_URL, probeSession } from './api';
+import { API_BASE_URL, callApi, probeSession } from './api';
 
 /**
  * Instant push over WebSockets, backed by the Worker's RealtimeHub Durable
@@ -77,6 +77,35 @@ export const SOCKET_LINGER_MS = 5000;
 
 const conns = new Map<string, Conn>();
 
+/**
+ * A short-lived socket ticket (Worker lib/wsTicket.ts), shared by every channel
+ * of the same account while it is valid. The URL used to carry the ID token, and
+ * request URLs end up in server logs. Null when the server has tickets off or the
+ * call failed; the socket then falls back to `?token=`.
+ */
+let ticketCache: { uid: string; ticket: string; expiresAt: number } | null = null;
+let ticketInFlight: Promise<string | null> | null = null;
+async function socketTicket(uid: string): Promise<string | null> {
+  if (ticketCache && ticketCache.uid === uid && ticketCache.expiresAt - Date.now() > 15_000) return ticketCache.ticket;
+  if (!ticketInFlight) {
+    ticketInFlight = (async () => {
+      try {
+        const res: any = await callApi('createWsTicket', {});
+        if (typeof res?.ticket === 'string' && res.ticket) {
+          ticketCache = { uid, ticket: res.ticket, expiresAt: Number(res.expiresAt) || Date.now() + 60_000 };
+          return res.ticket as string;
+        }
+      } catch {
+        /* fall back to the token */
+      }
+      return null;
+    })().finally(() => {
+      ticketInFlight = null;
+    });
+  }
+  return ticketInFlight;
+}
+
 async function openSocket(channel: string, conn: Conn) {
   if (conn.closedByUs) return;
   // App Control is public: never send a token (no verify / account read per connect,
@@ -98,9 +127,13 @@ async function openSocket(channel: string, conn: Conn) {
   }
 
   conn.authUid = token ? auth.currentUser?.uid ?? null : null;
-  const url = token
-    ? `${WS_BASE}/ws?channel=${encodeURIComponent(channel)}&token=${encodeURIComponent(token)}`
-    : `${WS_BASE}/ws?channel=${encodeURIComponent(channel)}`;
+  const ticket = token && conn.authUid ? await socketTicket(conn.authUid) : null;
+  if (conn.closedByUs) return;
+  const url = ticket
+    ? `${WS_BASE}/ws?channel=${encodeURIComponent(channel)}&ticket=${encodeURIComponent(ticket)}`
+    : token
+      ? `${WS_BASE}/ws?channel=${encodeURIComponent(channel)}&token=${encodeURIComponent(token)}`
+      : `${WS_BASE}/ws?channel=${encodeURIComponent(channel)}`;
   let ws: WebSocket;
   try {
     ws = new WebSocket(url);
@@ -274,6 +307,7 @@ export function subscribeChannel(channel: string, onEvent: Listener): () => void
 
 /** Test hook: drop every channel immediately. */
 export function __resetRealtimeForTests(): void {
+  ticketCache = null;
   for (const [channel, c] of [...conns]) retire(channel, c);
 }
 

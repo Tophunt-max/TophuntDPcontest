@@ -131,6 +131,35 @@ export function resolveUpdatePolicy(cfg: any): UpdatePolicy {
   };
 }
 
+/**
+ * Per-feature rollout, 0-100 (percent of signed-in accounts). Absent = 100.
+ *
+ * Flags were global on/off only, so a change could not be tried on a slice of
+ * users first. The bucket is a stable hash of (feature, uid): the same account
+ * stays in or out as the percentage moves up, and the app computes the same
+ * answer (apps/expo/src/lib/rollout.ts mirrors this function). Guests are in only
+ * at 100%.
+ */
+export function rolloutPercent(cfg: any, key: FeatureKey): number {
+  const v = cfg?.featureRollout?.[key];
+  return typeof v === "number" && Number.isFinite(v) ? Math.min(100, Math.max(0, Math.floor(v))) : 100;
+}
+export function rolloutBucket(key: string, uid: string): number {
+  let h = 0x811c9dc5;
+  const s = `${key}:${uid}`;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0) % 100;
+}
+export function inRollout(cfg: any, key: FeatureKey, uid: string | null | undefined): boolean {
+  const pct = rolloutPercent(cfg, key);
+  if (pct >= 100) return true;
+  if (!uid || pct <= 0) return false;
+  return rolloutBucket(key, uid) < pct;
+}
+
 export function resolveFeatures(cfg: any): Record<FeatureKey, boolean> {
   const f = (cfg && typeof cfg.features === "object" && cfg.features) || {};
   return Object.fromEntries(FEATURE_KEYS.map((k) => [k, f[k] !== false])) as Record<FeatureKey, boolean>;
@@ -183,6 +212,10 @@ export function publicAppConfig(cfg: any, nowMs: number = Date.now()) {
       endAt: num(a.endAt),
     },
     features: resolveFeatures(cfg),
+    // Only partial rollouts are sent; the app applies them per account.
+    featureRollout: Object.fromEntries(
+      FEATURE_KEYS.filter((k) => rolloutPercent(cfg, k) < 100).map((k) => [k, rolloutPercent(cfg, k)]),
+    ),
     authMethods,
     authSettings: legacyAuthSettings(authMethods),
     googleLogin: methodAllowed(authMethods, "google"),
@@ -317,6 +350,22 @@ export function validateAppControlPatch(body: any, existing: any, nowMs: number 
     delete a.republish;
   }
 
+  if (body.featureRollout !== undefined) {
+    const r = body.featureRollout;
+    if (!r || typeof r !== "object" || Array.isArray(r)) bad("featureRollout must be an object.");
+    for (const [k, v] of Object.entries(r)) {
+      if (!(FEATURE_KEYS as readonly string[]).includes(k)) bad(`Unknown feature: ${k}.`);
+      if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > 100) bad(`featureRollout.${k} must be a whole percent from 0 to 100.`);
+    }
+  }
+  if (body.featureRollout !== undefined) {
+    const r = body.featureRollout;
+    if (!r || typeof r !== "object" || Array.isArray(r)) bad("featureRollout must be an object.");
+    for (const [k, v] of Object.entries(r)) {
+      if (!(FEATURE_KEYS as readonly string[]).includes(k)) bad(`Unknown feature: ${k}.`);
+      if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > 100) bad(`featureRollout.${k} must be a whole percent from 0 to 100.`);
+    }
+  }
   if (body.features !== undefined) {
     const f = body.features;
     if (!f || typeof f !== "object" || Array.isArray(f)) bad("features must be an object.");
@@ -405,6 +454,8 @@ const FEATURE_LABEL: Record<FeatureKey, string> = {
 
 export interface GateInput {
   action: string | null;
+  /** Signed-in account, for per-user feature rollout. */
+  uid?: string | null;
   role?: string | null;
   platform?: string | null;
   appVersion?: string | null;
@@ -433,7 +484,7 @@ export function appControlGate(cfg: any, input: GateInput, nowMs: number = Date.
     }
   }
   const feature = input.action ? featureForAction(input.action) : null;
-  if (feature && !resolveFeatures(cfg)[feature]) {
+  if (feature && (!resolveFeatures(cfg)[feature] || !inRollout(cfg, feature, input.uid))) {
     throw httpsError("failed-precondition", `${FEATURE_LABEL[feature]} abhi band hai. Thodi der baad try karo.`, "feature_disabled");
   }
 }
@@ -459,6 +510,7 @@ export const AUDITED_SECTIONS = [
   "updateMessage",
   "announcement",
   "features",
+  "featureRollout",
   "withdrawal",
   // Ranking weights decide what every viewer is shown first.
   "feedWeights",

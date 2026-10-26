@@ -236,6 +236,32 @@ export async function exportUserData(env: Env, uid: string): Promise<UserDataExp
     .limit(CAP)
     .all();
 
+  // Activity and safety settings the user created. These were missing from the
+  // export: who they blocked or muted, what they reported, which Stories they
+  // viewed, whose profiles they visited, what they shared, the comments they
+  // liked and the battles they marked "Not interested".
+  const [blocked, muted, reportsMade, storiesViewed, profilesVisited, sharesMade, commentLikes, notInterested] =
+    await Promise.all([
+      db.select({ uid: schema.userBlocks.blockedId, since: schema.userBlocks.createdAt }).from(schema.userBlocks).where(eq(schema.userBlocks.blockerId, uid)).limit(CAP).all(),
+      db.select({ uid: schema.userMutes.mutedId, since: schema.userMutes.createdAt }).from(schema.userMutes).where(eq(schema.userMutes.muterId, uid)).limit(CAP).all(),
+      db
+        .select({ id: schema.reports.id, targetType: schema.reports.targetType, targetId: schema.reports.targetId, reason: schema.reports.reason, status: schema.reports.status, createdAt: schema.reports.createdAt })
+        .from(schema.reports)
+        .where(eq(schema.reports.reporterId, uid))
+        .limit(CAP)
+        .all(),
+      db.select().from(schema.storyViews).where(eq(schema.storyViews.viewerId, uid)).limit(CAP).all(),
+      db.select().from(schema.profileVisits).where(eq(schema.profileVisits.visitorId, uid)).limit(CAP).all(),
+      db.select().from(schema.shares).where(eq(schema.shares.userId, uid)).limit(CAP).all(),
+      db.select().from(schema.commentLikes).where(eq(schema.commentLikes.userId, uid)).limit(CAP).all(),
+      db
+        .select({ matchId: schema.feedDismissals.matchId, createdAt: schema.feedDismissals.createdAt })
+        .from(schema.feedDismissals)
+        .where(eq(schema.feedDismissals.viewerUid, uid))
+        .limit(CAP)
+        .all(),
+    ]);
+
   return {
     meta: {
       uid,
@@ -279,6 +305,18 @@ export async function exportUserData(env: Env, uid: string): Promise<UserDataExp
     prizeClaims: capped(prizeClaims),
     messagesSent: capped(messagesSent),
     notifications: capped(notifications),
+    safety: {
+      blocked: capped(blocked),
+      muted: capped(muted),
+      reportsMade: capped(reportsMade),
+    },
+    activity: {
+      storiesViewed: capped(storiesViewed),
+      profilesVisited: capped(profilesVisited),
+      shares: capped(sharesMade),
+      commentLikes: capped(commentLikes),
+      notInterested: capped(notInterested),
+    },
     deletionRequest: deletionRequest ?? null,
   };
 }

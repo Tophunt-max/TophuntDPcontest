@@ -155,6 +155,20 @@ name = "GUEST_READ_LIMITER"
 namespace_id = "7301"
 simple = { limit = 1000, period = 60 }
 
+# Anonymous usage counters (src/routes/telemetry.ts `/events`): per-IP budget for
+# batches. The app sends one every few minutes, so 30/min only stops scripts.
+[[ratelimits]]
+name = "USAGE_LIMITER"
+namespace_id = "7303"
+simple = { limit = 30, period = 60 }
+
+# Workers Analytics Engine: anonymous usage counters (src/lib/usageEvents.ts).
+# Read back through the SQL API with CF_ANALYTICS_TOKEN (Account Analytics: Read).
+# Free plan: 100,000 data points written and 10,000 read queries per day.
+[[analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "tophunt_events"
+
 # Per-chat message store (SQLite-backed). Owns chat message bodies, one instance
 # per chatId, so the unbounded message write path stays off D1's single writer.
 [[durable_objects.bindings]]
@@ -332,6 +346,15 @@ name = "GUEST_READ_LIMITER"
 namespace_id = "7302"
 simple = { limit = 1000, period = 60 }
 
+[[env.staging.ratelimits]]
+name = "USAGE_LIMITER"
+namespace_id = "7304"
+simple = { limit = 30, period = 60 }
+
+[[env.staging.analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "tophunt_events_staging"
+
 [[env.staging.durable_objects.bindings]]
 name = "CHAT_ARCHIVE"
 class_name = "ChatArchive"
@@ -375,6 +398,7 @@ BUNNY_CDN_HOSTNAME = ""
 # "true" for a heavy session. See the production block for the full scope.
 KV_WRITES_DISABLED = "false"
 SENTRY_ENVIRONMENT = "staging"
+ANALYTICS_DATASET = "tophunt_events_staging"
 # Pages preview deployments get a per-commit subdomain, so they cannot be pinned
 # to an exact origin list. Staging is the environment where that is acceptable —
 # production keeps its explicit allow-list.

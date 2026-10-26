@@ -1,8 +1,10 @@
+import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from "recharts";
 import { api } from "@/lib/api";
 import { StatCard } from "@/components/ui/StatCard";
 import { PageHeader, fmtNumber } from "@/lib/format";
+import { useAuth, isFullAdminRole } from "@/lib/auth";
 import { toast } from "@/lib/toast";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { Users, UserPlus, Activity, IndianRupee, Swords, Vote, Image, PlayCircle, Trophy } from "lucide-react";
@@ -12,6 +14,10 @@ export default function Analytics() {
   const { data, isLoading } = useQuery({ queryKey: ["analytics"], queryFn: api.analytics });
 
   const trends = useQuery({ queryKey: ["finance-trends"], queryFn: api.financeTrends });
+  const { user } = useAuth();
+  const isFullAdmin = isFullAdminRole(user?.role);
+  const [usageDays, setUsageDays] = useState(7);
+  const usage = useQuery({ queryKey: ["usage-events", usageDays], queryFn: () => api.usageEvents(usageDays), enabled: isFullAdmin });
 
   const resolveMut = useMutation({ mutationFn: api.opsResolveContests, onSuccess: () => toast.success("Contest resolver ran"), onError: (e: any) => toast.error(e.message) });
   const hofMut = useMutation({ mutationFn: api.opsHallOfFame, onSuccess: () => toast.success("Hall of Fame ran"), onError: (e: any) => toast.error(e.message) });
@@ -69,6 +75,8 @@ export default function Analytics() {
             </div>
           </div>
 
+          {isFullAdmin && <UsageCard days={usageDays} setDays={setUsageDays} q={usage} />}
+
           <div className="bg-card border border-border rounded-2xl p-5">
             <h3 className="font-bold text-foreground mb-1 flex items-center gap-2"><PlayCircle size={16} className="text-violet-600" /> Manual Operations</h3>
             <p className="text-xs text-muted-foreground mb-4">Trigger scheduled jobs on demand (normally run by cron).</p>
@@ -90,6 +98,84 @@ export default function Analytics() {
             </div>
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+const USAGE_LABEL: Record<string, string> = {
+  "feed_impression/home": "Home feed battles seen",
+  "story/complete": "Stories watched to the end",
+  "story/skip": "Stories skipped",
+  "story/close": "Story viewer closed early",
+  "video/first_frame": "Story videos started",
+  "video/stall": "Story video stalls",
+  "video/error": "Story video errors",
+  "search/results": "Searches with results",
+  "search/empty": "Searches with no results",
+  "sync/sent": "Offline actions sent",
+  "sync/retry": "Offline actions retried",
+  "sync/failed": "Offline actions dropped",
+  "upload/ok": "Uploads finished",
+  "upload/failed": "Uploads failed",
+  "upload/cancelled": "Uploads cancelled",
+};
+
+/** Anonymous usage counters (no user identifiers), summed across platforms. */
+function UsageCard({ days, setDays, q }: { days: number; setDays: (d: number) => void; q: any }) {
+  const rows: { name: string; dim: string; platform: string; count: number; avgMs: number | null }[] = q.data?.rows ?? [];
+  const byKey = new Map<string, { count: number; ms: number; platforms: Record<string, number> }>();
+  for (const r of rows) {
+    const k = `${r.name}/${r.dim}`;
+    const cur = byKey.get(k) ?? { count: 0, ms: 0, platforms: {} };
+    cur.count += r.count;
+    cur.ms += (r.avgMs ?? 0) * r.count;
+    cur.platforms[r.platform] = (cur.platforms[r.platform] ?? 0) + r.count;
+    byKey.set(k, cur);
+  }
+  return (
+    <div className="bg-card border border-border rounded-2xl p-5 mb-6">
+      <div className="flex items-center justify-between mb-1">
+        <h3 className="font-bold text-foreground">App usage (anonymous)</h3>
+        <select value={days} onChange={(e) => setDays(Number(e.target.value))} className="text-sm border border-border rounded-lg px-2 py-1 bg-background">
+          {[1, 7, 30, 90].map((d) => <option key={d} value={d}>Last {d} {d === 1 ? "day" : "days"}</option>)}
+        </select>
+      </div>
+      <p className="text-xs text-muted-foreground mb-4">Counts sent by the app without any account or device id. Users can turn this off in Settings › Privacy, so treat these as a sample.</p>
+      {q.isLoading ? (
+        <div className="text-sm text-muted-foreground">Loading…</div>
+      ) : q.isError ? (
+        <div className="text-sm text-red-600">Could not load usage counters.</div>
+      ) : !q.data?.configured ? (
+        <div className="text-sm text-muted-foreground">Not configured: set the CF_ANALYTICS_TOKEN secret on the Worker (Account Analytics: Read).</div>
+      ) : byKey.size === 0 ? (
+        <div className="text-sm text-muted-foreground">No data yet for this period.</div>
+      ) : (
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-muted-foreground border-b border-border">
+              <th className="py-2 font-medium">Event</th>
+              <th className="py-2 font-medium text-right">Count</th>
+              <th className="py-2 font-medium text-right">Avg time</th>
+              <th className="py-2 font-medium text-right">Android / iOS / Web</th>
+            </tr>
+          </thead>
+          <tbody>
+            {Object.keys(USAGE_LABEL).filter((k) => byKey.has(k)).map((k) => {
+              const v = byKey.get(k)!;
+              return (
+                <tr key={k} className="border-b border-border/50">
+                  <td className="py-2">{USAGE_LABEL[k]}</td>
+                  <td className="py-2 text-right tabular-nums">{fmtNumber(v.count)}</td>
+                  <td className="py-2 text-right tabular-nums">{v.ms > 0 ? `${(v.ms / v.count / 1000).toFixed(1)} s` : "—"}</td>
+                  <td className="py-2 text-right tabular-nums text-muted-foreground">
+                    {fmtNumber(v.platforms.android ?? 0)} / {fmtNumber(v.platforms.ios ?? 0)} / {fmtNumber(v.platforms.web ?? 0)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       )}
     </div>
   );

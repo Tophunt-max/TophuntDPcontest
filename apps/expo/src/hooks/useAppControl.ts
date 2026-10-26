@@ -10,17 +10,21 @@ const STAFF_ROLES = new Set(['superadmin', 'admin', 'moderator']);
 const platform: ClientPlatform = Platform.OS === 'ios' ? 'ios' : Platform.OS === 'android' ? 'android' : 'web';
 
 /** Signed-in user and whether their token carries a staff role claim. */
-export function useViewer(): { signedIn: boolean; isStaff: boolean } {
-  const [v, setV] = useState({ signedIn: !!auth.currentUser, isStaff: false });
+export function useViewer(): { signedIn: boolean; isStaff: boolean; uid: string | null } {
+  const [v, setV] = useState<{ signedIn: boolean; isStaff: boolean; uid: string | null }>({
+    signedIn: !!auth.currentUser,
+    isStaff: false,
+    uid: auth.currentUser?.uid ?? null,
+  });
   useEffect(
     () =>
       onIdTokenChanged(auth, async (user) => {
-        if (!user) return setV({ signedIn: false, isStaff: false });
+        if (!user) return setV({ signedIn: false, isStaff: false, uid: null });
         try {
           const t = await user.getIdTokenResult();
-          setV({ signedIn: true, isStaff: STAFF_ROLES.has(String(t.claims.role || '')) });
+          setV({ signedIn: true, isStaff: STAFF_ROLES.has(String(t.claims.role || '')), uid: user.uid });
         } catch {
-          setV({ signedIn: true, isStaff: false });
+          setV({ signedIn: true, isStaff: false, uid: user.uid });
         }
       }),
     [],

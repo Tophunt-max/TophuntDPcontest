@@ -4,6 +4,7 @@ import * as tus from 'tus-js-client';
 import { callApi } from '../api';
 import { tusUrlStorage } from './tusUrlStorage';
 import { UploadCancelledError } from '@/src/lib/uploadToR2';
+import { trackUsage } from '@/src/lib/usageStats';
 
 /**
  * Resumable video upload direct to Bunny Stream (MEDIA_MIGRATION_PLAN.md 2e).
@@ -131,6 +132,7 @@ export async function uploadVideoToBunny(
   if (!fileRes.ok) throw new Error(`Failed to read the selected video (${fileRes.status}).`);
   const blob = await fileRes.blob();
 
+  const startedAt = Date.now();
   await new Promise<void>((resolve, reject) => {
     const upload = new tus.Upload(blob, {
       endpoint: tusEndpoint || 'https://video.bunnycdn.com/tusupload',
@@ -172,15 +174,26 @@ export async function uploadVideoToBunny(
       // A finished upload's entry is useless, and with a per-video key it would
       // never be read again: drop it rather than accumulate one per upload.
       removeFingerprintOnSuccess: true,
-      onSuccess: () => finish(() => resolve()),
-      onError: (error) => finish(() => reject(error)),
+      onSuccess: () =>
+        finish(() => {
+          trackUsage('upload', 'ok', { ms: Date.now() - startedAt });
+          resolve();
+        }),
+      onError: (error) =>
+        finish(() => {
+          trackUsage('upload', 'failed');
+          reject(error);
+        }),
     });
 
     let settled = false;
     const onAbort = () => {
       // `true` also asks the server to drop the partial upload.
       void upload.abort(true).catch(() => undefined);
-      finish(() => reject(new UploadCancelledError()));
+      finish(() => {
+        trackUsage('upload', 'cancelled');
+        reject(new UploadCancelledError());
+      });
     };
     const finish = (fn: () => void) => {
       if (settled) return;

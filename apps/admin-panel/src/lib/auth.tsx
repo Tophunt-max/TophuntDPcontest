@@ -2,23 +2,33 @@ import {
   createContext,
   useContext,
   useEffect,
+  useRef,
   useState,
   ReactNode,
 } from "react";
 import {
+  EmailAuthProvider,
+  reauthenticateWithCredential,
   signInWithEmailAndPassword,
   signOut,
   onIdTokenChanged,
   type User as FirebaseUser,
 } from "firebase/auth";
 import { auth } from "./firebase";
-import { api } from "./api";
+import { api, setReauthHandler } from "./api";
+import { ReauthDialog } from "@/components/ReauthDialog";
+
+/** Server-side role. Moderators see the moderation pages only. */
+export type AdminRole = "superadmin" | "admin" | "moderator";
+export const isFullAdminRole = (r: AdminRole | null | undefined) => r === "superadmin" || r === "admin";
 
 export interface AdminUser {
   uid: string;
   name: string;
   email: string | null;
   photoURL: string | null;
+  /** From /admin/overview; null when the server is older and does not say. */
+  role: AdminRole | null;
 }
 
 interface AuthCtx {
@@ -32,12 +42,13 @@ interface AuthCtx {
 const Ctx = createContext<AuthCtx>(null!);
 export const useAuth = () => useContext(Ctx);
 
-function toAdminUser(u: FirebaseUser): AdminUser {
+function toAdminUser(u: FirebaseUser, role: AdminRole | null = null): AdminUser {
   return {
     uid: u.uid,
     name: u.displayName || (u.email ? u.email.split("@")[0] : "Admin"),
     email: u.email,
     photoURL: u.photoURL,
+    role,
   };
 }
 
@@ -56,8 +67,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
       try {
-        await api.overview(); // 403 if not an admin
-        setUser(toAdminUser(fbUser));
+        const ov: any = await api.overview(); // 403 if not an admin
+        const role = ["superadmin", "admin", "moderator"].includes(ov?.viewerRole) ? (ov.viewerRole as AdminRole) : null;
+        setUser(toAdminUser(fbUser, role));
         setError(null);
       } catch (e: any) {
         if (e?.status === 403) {
@@ -82,6 +94,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Role verification happens in onIdTokenChanged above.
   };
 
+  // "Sudo mode": the API asks for the password again before sensitive actions.
+  const [reauth, setReauth] = useState<{ resolve: (ok: boolean) => void } | null>(null);
+  const reauthRef = useRef(reauth);
+  reauthRef.current = reauth;
+  useEffect(() => {
+    setReauthHandler(
+      () =>
+        new Promise<boolean>((resolve) => {
+          if (reauthRef.current) reauthRef.current.resolve(false);
+          setReauth({ resolve });
+        }),
+    );
+    return () => setReauthHandler(null);
+  }, []);
+  const confirmPassword = async (password: string) => {
+    const u = auth.currentUser;
+    if (!u?.email) throw new Error("no-email");
+    await reauthenticateWithCredential(u, EmailAuthProvider.credential(u.email, password));
+    await u.getIdToken(true);
+    reauth?.resolve(true);
+    setReauth(null);
+  };
+  const cancelReauth = () => {
+    reauth?.resolve(false);
+    setReauth(null);
+  };
+
   const logout = () => {
     signOut(auth).catch(() => {});
     setUser(null);
@@ -90,6 +129,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return (
     <Ctx.Provider value={{ user, login, logout, loading, error }}>
       {children}
+      {reauth && <ReauthDialog email={auth.currentUser?.email ?? null} onSubmit={confirmPassword} onCancel={cancelReauth} />}
     </Ctx.Provider>
   );
 }

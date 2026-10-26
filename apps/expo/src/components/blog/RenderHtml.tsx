@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, Linking, Platform, Pressable, useWindowDimensions } from 'react-native';
+import { safeExternalUrl } from '@/src/lib/safeLink';
 import { AppImage as Image } from '@/src/components/ui/AppImage';
 
 /**
@@ -336,7 +337,10 @@ export default function RenderHtml({ html, isDark }: Props) {
           <Text
             key={i}
             style={{ color: linkColor, fontWeight: '600', fontFamily: baseFont, textDecorationLine: 'underline' }}
-            onPress={() => Linking.openURL(s.href!).catch(() => {})}
+            onPress={() => {
+              const url = safeExternalUrl(s.href);
+              if (url) Linking.openURL(url).catch(() => {});
+            }}
           >
             {s.text}
           </Text>

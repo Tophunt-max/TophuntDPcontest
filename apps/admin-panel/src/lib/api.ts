@@ -375,10 +375,21 @@ const uploadProductImage = (file: File, onProgress?: UploadProgressHandler) =>
  * Worker's /admin gate verifies it and checks the admin role. On a 401 it
  * force-refreshes the token once and retries.
  */
+/**
+ * Sensitive actions need a recent sign-in (the Worker's "sudo mode"). When the
+ * server answers `reauth_required`, the auth provider asks for the password again
+ * and the request is retried once with the refreshed token.
+ */
+let reauthHandler: (() => Promise<boolean>) | null = null;
+export function setReauthHandler(fn: (() => Promise<boolean>) | null) {
+  reauthHandler = fn;
+}
+
 export async function req<T>(
   method: string,
   path: string,
   body?: unknown,
+  retried = false,
 ): Promise<T> {
   const doFetch = async (force: boolean) => {
     const token = await idToken(force);
@@ -398,12 +409,18 @@ export async function req<T>(
   if (!res.ok) {
     let msg = res.statusText;
     let code: string | undefined;
+    let reason: string | undefined;
     try {
       const j = (await res.json()) as any;
       msg = j?.error?.message || j?.message || msg;
       code = j?.error?.status;
+      reason = j?.error?.reason;
     } catch {
       /* non-JSON error */
+    }
+    if (res.status === 412 && reason === "reauth_required" && !retried && reauthHandler) {
+      if (await reauthHandler()) return req<T>(method, path, body, true);
+      throw new ApiError("Cancelled: this action needs your password.", res.status, code);
     }
     throw new ApiError(msg, res.status, code);
   }
@@ -1055,6 +1072,12 @@ export const api = {
   deleteMessage: (chatId: string, id: string) =>
     del(`/admin/messages/${encodeURIComponent(chatId)}/${encodeURIComponent(id)}`),
 
+  // Anonymous usage counters from Analytics Engine (full admins). `configured` is
+  // false until CF_ANALYTICS_TOKEN is set on the Worker.
+  usageEvents: (days = 7) =>
+    get<{ configured: boolean; days: number; rows: { name: string; dim: string; platform: string; count: number; avgMs: number | null }[] }>(
+      `/admin/usage-events?days=${days}`,
+    ),
   // analytics
   analytics: () =>
     get<{

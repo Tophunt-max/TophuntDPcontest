@@ -40,6 +40,7 @@ import { GuestLoginWall } from '@/src/components/auth/GuestLoginWall';
 import { seenAfterViewable, shouldShowGuestWall } from '@/src/lib/guestWall';
 import { liveIdsFor, sameIds } from '@/src/lib/liveWindow';
 import { shouldAutoplay, visibleIdsFor } from '@/src/lib/playbackPolicy';
+import { trackUsage } from '@/src/services/usageStats';
 import { useAppActive, useReduceMotion } from '@/src/hooks/usePlaybackEnvironment';
 import { useIsFocused } from '@react-navigation/native';
 
@@ -113,6 +114,8 @@ export default function HomeScreen() {
   const isGuestRef = useRef(isGuest);
   isGuestRef.current = isGuest;
   const seenRef = useRef(0);
+  // Battles already counted as an impression on this screen (usage statistics).
+  const impressedRef = useRef<Set<string>>(new Set());
   const wallDismissalsRef = useRef(0);
   const [showWall, setShowWall] = useState(false);
   // Cards that hold a live socket: the visible ones plus the next (src/lib/liveWindow.ts).
@@ -125,6 +128,14 @@ export default function HomeScreen() {
     setLiveIds((prev) => (sameIds(prev, next) ? prev : next));
     const visible = visibleIdsFor(viewableItems);
     setVisibleIds((prev) => (sameIds(prev, visible) ? prev : visible));
+    let fresh = 0;
+    for (const id of visible) {
+      if (!impressedRef.current.has(id)) {
+        impressedRef.current.add(id);
+        fresh++;
+      }
+    }
+    if (fresh) trackUsage('feed_impression', 'home', { count: fresh });
     // Skeleton rows (numbers) are not battles.
     const indices = viewableItems.filter((v) => typeof v.item === 'object').map((v) => v.index);
     seenRef.current = seenAfterViewable(seenRef.current, indices);

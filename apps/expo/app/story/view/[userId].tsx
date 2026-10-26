@@ -84,6 +84,7 @@ import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useDesignWindow, webPhoneColumn } from '@/src/lib/layout';
+import { trackUsage } from '@/src/services/usageStats';
 
 // Height only: the viewer is always the full window height, on desktop too.
 // Width comes from useDesignWindow() in the component (the phone column on web);
@@ -602,7 +603,10 @@ export default function StoryView() {
           return at;
         },
       },
-      () => nextStoryRef.current(),
+      () => {
+        trackUsage('story', 'complete');
+        nextStoryRef.current();
+      },
     );
   }
   const clock = clockRef.current;
@@ -807,10 +811,14 @@ export default function StoryView() {
       }
   };
 
+  // When the current video was asked for (time-to-first-frame, usage statistics).
+  const videoAskedAtRef = useRef(Date.now());
   useEffect(() => {
     if (currentStory?.mediaType === 'video') {
+        videoAskedAtRef.current = Date.now();
         const subscription = player.addListener('statusChange', (status) => {
             if (status.status === 'readyToPlay') {
+                if (!clock.hasStarted) trackUsage('video', 'first_frame', { ms: Date.now() - videoAskedAtRef.current });
                 const videoDuration = (player.duration || 5) * 1000;
                 setDuration(videoDuration);
                 setIsLoading(false);
@@ -823,8 +831,10 @@ export default function StoryView() {
                 // Mid-clip stall: freeze the bar until playback resumes, so a slow
                 // connection does not skip the video before it is watched.
                 clock.hold('buffering');
+                trackUsage('video', 'stall');
                 setIsLoading(true);
             } else if (status.status === 'error') {
+                trackUsage('video', 'error');
                 // Fall back to the behaviour of a non-video story: drop the
                 // spinner, explain briefly, and RUN THE TIMER so the story still
                 // advances. Without this branch the viewer was a dead end — the
@@ -879,10 +889,12 @@ export default function StoryView() {
         if (showViewers || showHighlightModal || isKeyboardVisible) return;
         setIsPaused(false);
         if (gestureState.dy > 100) {
+          trackUsage('story', 'close');
           router.back();
         } else if (evt.nativeEvent.locationX < width / 3) {
           prevStory();
         } else if (evt.nativeEvent.locationX > (2 * width) / 3) {
+          trackUsage('story', 'skip');
           nextStory();
         }
       },
@@ -1167,7 +1179,7 @@ export default function StoryView() {
                     </View>
                     <Text style={styles.timeAgo}>{formatClockTime(currentStory.createdAt)}</Text>
                 </View>
-                <Pressable pointerEvents="auto" onPress={() => router.back()} style={styles.closeButton} accessibilityRole="button" accessibilityLabel="Close story"><CloseIcon size={28} color="white" /></Pressable>
+                <Pressable pointerEvents="auto" onPress={() => { trackUsage('story', 'close'); router.back(); }} style={styles.closeButton} accessibilityRole="button" accessibilityLabel="Close story"><CloseIcon size={28} color="white" /></Pressable>
             </View>
             </View>
 

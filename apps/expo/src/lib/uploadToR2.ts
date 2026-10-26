@@ -1,5 +1,6 @@
 import { API_BASE_URL } from "../services/api";
 import { auth } from "../services/firebase/initFirebase";
+import { trackUsage } from "./usageStats";
 import {
   MAX_IMAGE_BYTES,
   MAX_VIDEO_BYTES,
@@ -207,8 +208,12 @@ export async function uploadToR2(
   // response that was lost at the very end can store the file twice; the spare
   // object is unreferenced, which costs storage, not correctness.
   let lastError: unknown;
+  const startedAt = Date.now();
   for (let attempt = 0; attempt <= retries; attempt++) {
-    if (signal?.aborted) throw new UploadCancelledError();
+    if (signal?.aborted) {
+      trackUsage("upload", "cancelled");
+      throw new UploadCancelledError();
+    }
     // A fresh token per attempt: a long retry can outlive the old one.
     let token = "";
     try {
@@ -219,14 +224,19 @@ export async function uploadToR2(
     try {
       const publicUrl = await postOnce(url, blob, detected, token, onProgress, signal, stallTimeoutMs);
       console.log("[Upload] Success:", publicUrl);
+      trackUsage("upload", "ok", { ms: Date.now() - startedAt });
       return publicUrl;
     } catch (e) {
-      if (isUploadCancelled(e)) throw e;
+      if (isUploadCancelled(e)) {
+        trackUsage("upload", "cancelled");
+        throw e;
+      }
       lastError = e;
       const retryable = e instanceof UploadAttemptError && e.retryable;
       if (!retryable || attempt === retries) break;
       await sleep(1_000 * 2 ** attempt + Math.random() * 500);
     }
   }
+  trackUsage("upload", "failed");
   throw lastError instanceof Error ? new Error(lastError.message) : new Error("Upload failed. Please try again.");
 }

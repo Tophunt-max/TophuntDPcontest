@@ -16,11 +16,14 @@ import { alias } from "drizzle-orm/sqlite-core";
 import type { Env, Variables } from "../types";
 import { getDb, schema } from "../db";
 import { requeueVsPublication, runVsPublication } from "../lib/vsPublication";
-import { teardownVsStories } from "../lib/matchStories";
+import { isContestStoryType, teardownVsStories } from "../lib/matchStories";
 import { STORIES_FEED_CACHE_KEY } from "../lib/storyAudience";
 import { httpsError, ApiError } from "../lib/http";
 import { timingSafeEqualSecret } from "../lib/timingSafe";
 import { verifyIdToken, bearerToken } from "../lib/firebaseAuth";
+import { REAUTH_REQUIRED_CODE } from "../lib/reauth";
+import { redactPaymentDetails } from "../lib/redact";
+import type { AuthUser } from "../types";
 import { resolveAuthMethods, validateAuthMethods } from "../lib/authMethods";
 import { validateFeedWeightsPatch } from "../lib/feedWeights";
 import { AUDITED_SECTIONS, appConfigChannels, publicAppConfig, validateAppControlPatch } from "../lib/appControl";
@@ -50,17 +53,20 @@ import {
   contestRefundEmail,
 } from "../lib/emailTemplates";
 import { enqueueBroadcast } from "../lib/broadcast";
-import { finalizeVotes, getLiveTally } from "../lib/voteCounter";
+import { bumpEngagement, finalizeVotes, getLiveTally } from "../lib/voteCounter";
+import { deleteMediaByUrl } from "../lib/mediaDelete";
+import { vsImageKeyFromPublicUrl } from "../lib/r2";
 import { settleRefund, settleWinner } from "../lib/contestSettlement";
 import { refundRejectedWithdrawal } from "../lib/payouts";
 import { closeRealtimeSessions, publish } from "../lib/publish";
 import { resolveContests, monthlyHallOfFame, seoAuditJob } from "../cron";
 import { newId, now } from "../lib/ids";
 import { memoGet, memoPut } from "../lib/memo";
+import { fetchUsageSummary, type UsageSummaryRow } from "../lib/usageEvents";
 import { computeCapacity } from "../lib/capacity";
 import { discoverUrls, processBatch, readImportProgress, writeImportProgress } from "../lib/importerTask";
 import { runVideoBackfillBatch } from "../lib/videoBackfill";
-import { blogListCacheKey, blogPostCacheKey, commentsCacheKey, invalidateAuthState } from "../lib/cache";
+import { blogListCacheKey, blogPostCacheKey, commentsCacheKey, invalidateAuthState, userCacheKey } from "../lib/cache";
 import { edgePurgeUrl, invalidateContestCaches, purgeShared } from "../lib/edgeCache";
 import {
   assertContestWindow,
@@ -194,6 +200,54 @@ adminRoute.use("*", async (c, next) => {
     }
   }
   throw httpsError("permission-denied", "Admin access required.");
+});
+
+/**
+ * Sensitive admin actions need a RECENT sign-in ("sudo mode").
+ *
+ * Any admin ID token up to an hour old could delete users, change roles, move
+ * coins, approve payouts or change integration secrets, so a stolen or left-open
+ * panel session was full power. These routes now need `auth_time` within
+ * ADMIN_REAUTH_WINDOW_SEC; the panel then asks for the password again
+ * (reauthenticateWithCredential) and retries. Token refreshes keep the original
+ * sign-in time, so they do not count. Server-to-server calls with the shared
+ * secret carry no user and are exempt.
+ */
+export const ADMIN_REAUTH_WINDOW_SEC = 15 * 60;
+const SENSITIVE_ADMIN_ROUTES: Array<[method: string, path: RegExp]> = [
+  ["DELETE", /^\/users\/[^/]+$/],
+  ["PATCH", /^\/users\/[^/]+$/], // block / unblock
+  ["POST", /^\/users\/[^/]+\/logout-all$/],
+  ["POST", /^\/users\/[^/]+\/wallet$/],
+  ["POST", /^\/set-role$/],
+  ["PATCH", /^\/withdrawals\/[^/]+$/],
+  ["PATCH", /^\/deposits\/[^/]+$/],
+  ["POST", /^\/account-deletions\/[^/]+\/purge$/],
+  ["POST", /^\/broadcast$/],
+  ["POST", /^\/app-settings$/],
+  ["POST", /^\/rewards$/],
+  ["*", /^\/coin-packages(\/.*)?$/],
+  ["*", /^\/integrations(\/.*)?$/],
+];
+export function isSensitiveAdminRoute(method: string, path: string): boolean {
+  if (method === "GET" || method === "HEAD" || method === "OPTIONS") return false;
+  return SENSITIVE_ADMIN_ROUTES.some(([m, re]) => (m === "*" || m === method) && re.test(path));
+}
+adminRoute.use("*", async (c, next) => {
+  const path = new URL(c.req.url).pathname.replace(/^\/admin/, "") || "/";
+  if (!isSensitiveAdminRoute(c.req.method, path)) return next();
+  const user = c.get("user") as AuthUser | undefined;
+  if (!user) return next(); // X-Admin-Secret (server-to-server)
+  // A moderator is refused by the route itself (403); asking them for their
+  // password first would only hide that.
+  if (c.get("adminRole") === "moderator") return next();
+  const age = Date.now() / 1000 - Number(user.authTime ?? 0);
+  if (typeof user.authTime === "number" && age >= -60 && age <= ADMIN_REAUTH_WINDOW_SEC) return next();
+  throw httpsError(
+    "failed-precondition",
+    `${REAUTH_REQUIRED_CODE}: Enter your password again to confirm this action.`,
+    REAUTH_REQUIRED_CODE,
+  );
 });
 
 /**
@@ -531,6 +585,8 @@ adminRoute.post("/rewards", async (c) => {
     .values({ id: "gamification", data: merged, updatedAt: now() })
     .onConflictDoUpdate({ target: schema.settings.id, set: { data: merged, updatedAt: now() } });
   await invalidateSetting(c.env, "gamification");
+  // These amounts are credited to user balances: record who changed what.
+  await logAudit(c, "settings.rewards.update", "settings", "gamification", { before: existing, after: merged });
   return c.json({ success: true });
 });
 
@@ -1018,6 +1074,19 @@ adminRoute.patch("/stories/:id", async (c) => {
   return c.json({ message: "Stories support delete only" });
 });
 
+/**
+ * Moderators see counts, not money. `/revenue` and `/finance-trends` are full-admin
+ * only, but the dashboard (`/overview`) and `/analytics` returned the same coin and
+ * rupee totals to every role. Every key starting with `revenue` is dropped.
+ */
+function withoutRevenueForModerators<T extends Record<string, any>>(c: any, o: T): T {
+  if (isFullAdmin(c)) return o;
+  return Object.fromEntries(Object.entries(o).filter(([k]) => !/^revenue/i.test(k))) as T;
+}
+
+/** The dashboard also tells the panel which role it is talking to (role-aware menu). */
+const withViewerRole = (c: any, o: Record<string, any>) => ({ ...withoutRevenueForModerators(c, o), viewerRole: c.get("adminRole") ?? null });
+
 // ---- reports ----
 /** Fetch a light preview (media/text) of a reported target for moderation. */
 async function reportPreview(db: any, targetType: string | null, targetId: string | null): Promise<any> {
@@ -1121,71 +1190,195 @@ adminRoute.delete("/reports", async (c) => {
   return c.json({ message: "Report deleted" });
 });
 
+/** Report target types that name the same thing (the app sends the first of each). */
+const REPORT_TYPE_GROUPS: Record<string, string[]> = {
+  match: MATCH_REPORT_TARGETS,
+  comment: ["comment"],
+  post: ["post"],
+  story: ["story"],
+  user: ["user"],
+};
+const reportGroupOf = (t: string | null) =>
+  Object.values(REPORT_TYPE_GROUPS).find((g) => g.includes(String(t))) ?? [String(t)];
+
+/** Tell the owner their content was taken down, with the appeal route the policy promises. */
+async function notifyRemoval(c: any, ownerUid: string | null | undefined, what: string) {
+  if (!ownerUid) return;
+  await createNotification(c.env, ownerUid, {
+    title: "Content removed",
+    body: `Your ${what} was removed for breaking the community guidelines. To appeal, use Settings › Report a Problem.`,
+    type: "moderation",
+    targetId: "support",
+  }).catch((e) => console.error("[admin] removal notice failed (continuing)", e));
+}
+
+/**
+ * Take reported content down. Returns false when the target was already gone.
+ *
+ * This used to be a bare row delete for posts, stories and `post_comments` only.
+ * The app reports battle comments as `comment`, and those live in
+ * `match_comments`, so removing one deleted nothing and still answered "Content
+ * removed". Media stayed public at its URL and the feed caches kept serving it.
+ */
+async function removeReportedContent(
+  c: any,
+  r: { targetType: string | null; targetId: string | null },
+): Promise<boolean | "held"> {
+  const db = getDb(c.env);
+  const id = String(r.targetId || "");
+  const group = reportGroupOf(r.targetType);
+  if (group === MATCH_REPORT_TARGETS) {
+    const m = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, id)).get();
+    if (!m) return false;
+    if (m.status === "active" || m.status === "waiting_for_opponent") {
+      // Cancelling a live battle refunds both entry fees, which is a money action:
+      // full admins only, like the cancel button. A moderator's report keeps the
+      // battle held (out of every feed) and stays open for an admin.
+      if (!isFullAdmin(c)) {
+        await db.update(schema.contestMatches).set({ moderationHoldAt: now() } as any).where(eq(schema.contestMatches.id, m.id));
+        return "held";
+      }
+      // A battle still holding entry fees is cancelled WITH a refund — the
+      // same path as the admin cancel button — never a bare status flip that
+      // would swallow both players' coins.
+      const settled = await cancelMatchWithRefund(c, m, { reason: "Removed by moderation:", audit: "match.cancel.report" });
+      if (!settled) throw httpsError("failed-precondition", "The battle settled meanwhile — reload and try again.");
+    } else if (m.status !== "cancelled") {
+      // Already settled: payouts stand; the content is just taken down.
+      await db.update(schema.contestMatches).set({ status: "cancelled" }).where(eq(schema.contestMatches.id, m.id));
+      // Removed content must not stay on either participant's story ring.
+      await teardownVsStories(c.env, m.id).catch((e) =>
+        console.error("[admin] report removal: VS story teardown failed (continuing)", m.id, e),
+      );
+    }
+    return true;
+  }
+  switch (group[0]) {
+    case "post": {
+      const post = await db.select({ userId: schema.posts.userId, mediaUrl: schema.posts.mediaUrl }).from(schema.posts).where(eq(schema.posts.id, id)).get();
+      if (!post) return false;
+      await db.batch([
+        db.delete(schema.postComments).where(eq(schema.postComments.postId, id)),
+        db.delete(schema.postLikes).where(eq(schema.postLikes.postId, id)),
+        db.delete(schema.posts).where(eq(schema.posts.id, id)),
+      ] as any);
+      if (post.mediaUrl) await deleteMediaByUrl(c.env, post.mediaUrl, post.userId).catch(() => {});
+      c.executionCtx.waitUntil(purgeShared(c, userCacheKey(post.userId), commentsCacheKey("posts", id)).catch(() => {}));
+      await notifyRemoval(c, post.userId, "post");
+      return true;
+    }
+    case "story": {
+      const story = await db.select().from(schema.stories).where(eq(schema.stories.id, id)).get();
+      if (!story) return false;
+      // Same ownership rule as the user's own delete: contest media is shared.
+      if (story.mediaUrl && !isContestStoryType(story.type) && !vsImageKeyFromPublicUrl(c.env, story.mediaUrl)) {
+        await deleteMediaByUrl(c.env, story.mediaUrl, story.userId).catch(() => {});
+      }
+      await db.delete(schema.stories).where(eq(schema.stories.id, id));
+      c.executionCtx.waitUntil(purgeShared(c, STORIES_FEED_CACHE_KEY).catch(() => {}));
+      await notifyRemoval(c, story.userId, "story");
+      return true;
+    }
+    case "comment": {
+      const mc = await db.select().from(schema.matchComments).where(eq(schema.matchComments.id, id)).get();
+      if (mc) {
+        const del = await db.delete(schema.matchComments).where(eq(schema.matchComments.id, id)).run();
+        if (del.meta.changes) {
+          const counters = await bumpEngagement(c.env, mc.matchId, "comment", -1);
+          await publish(c.env, `match:${mc.matchId}`, { type: "comment", commentId: id, removed: true, commentCount: counters.comment ?? 0 });
+          await db.delete(schema.commentLikes).where(eq(schema.commentLikes.commentId, id));
+        }
+        c.executionCtx.waitUntil(purgeShared(c, commentsCacheKey("matches", mc.matchId)).catch(() => {}));
+        await notifyRemoval(c, mc.userId, "comment");
+        return true;
+      }
+      const pc = await db.select().from(schema.postComments).where(eq(schema.postComments.id, id)).get();
+      if (pc) {
+        const del = await db.delete(schema.postComments).where(eq(schema.postComments.id, id)).run();
+        if (del.meta.changes) {
+          await db.update(schema.posts).set({ commentCount: sql`MAX(${schema.posts.commentCount} - 1, 0)` }).where(eq(schema.posts.id, pc.postId));
+          await db.delete(schema.commentLikes).where(eq(schema.commentLikes.commentId, id));
+        }
+        c.executionCtx.waitUntil(purgeShared(c, commentsCacheKey("posts", pc.postId)).catch(() => {}));
+        await notifyRemoval(c, pc.userId, "comment");
+        return true;
+      }
+      const bc = await db.select().from(schema.blogComments).where(eq(schema.blogComments.id, id)).get();
+      if (bc) {
+        await db.delete(schema.blogComments).where(eq(schema.blogComments.id, id));
+        await db.delete(schema.commentLikes).where(eq(schema.commentLikes.commentId, id));
+        c.executionCtx.waitUntil(purgeShared(c, commentsCacheKey("blog", bc.postId)).catch(() => {}));
+        await notifyRemoval(c, bc.userId, "comment");
+        return true;
+      }
+      return false;
+    }
+    case "user":
+      throw httpsError(
+        "failed-precondition",
+        "An account cannot be 'removed' from a report. Block it from Users, then dismiss the report.",
+      );
+    default:
+      throw httpsError("failed-precondition", `Reports of type "${r.targetType}" cannot be removed from here.`);
+  }
+}
+
 /**
  * Resolve a report. action: "dismiss" (just close it) or "remove" (delete the
- * reported content, then close it).
+ * reported content, then close every open report on it).
  */
 adminRoute.post("/reports/:id/resolve", async (c) => {
   const db = getDb(c.env);
   const id = c.req.param("id");
   const { action } = await c.req.json<any>();
+  if (action !== "remove" && action !== "dismiss") throw httpsError("invalid-argument", 'action must be "remove" or "dismiss".');
   const r = await db.select().from(schema.reports).where(eq(schema.reports.id, id)).get();
   if (!r) throw httpsError("not-found", "Report not found.");
 
   if (action === "remove") {
-    switch (r.targetType) {
-      case "post":
-        await db.delete(schema.posts).where(eq(schema.posts.id, r.targetId as string));
-        break;
-      case "story":
-        await db.delete(schema.stories).where(eq(schema.stories.id, r.targetId as string));
-        break;
-      case "comment":
-        await db.delete(schema.postComments).where(eq(schema.postComments.id, r.targetId as string));
-        break;
-      case "match":
-      case "contestMatch":
-      case "contestMatches": {
-        const m = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, r.targetId as string)).get();
-        if (m && (m.status === "active" || m.status === "waiting_for_opponent")) {
-          // A battle still holding entry fees is cancelled WITH a refund — the
-          // same path as the admin cancel button — never a bare status flip that
-          // would swallow both players' coins.
-          const settled = await cancelMatchWithRefund(c, m, { reason: "Removed by moderation:", audit: "match.cancel.report" });
-          if (!settled) throw httpsError("failed-precondition", "The battle settled meanwhile — reload and try again.");
-        } else if (m && m.status !== "cancelled") {
-          // Already settled: payouts stand; the content is just taken down.
-          await db.update(schema.contestMatches).set({ status: "cancelled" }).where(eq(schema.contestMatches.id, m.id));
-          // Removed content must not stay on either participant's story ring.
-          await teardownVsStories(c.env, m.id).catch((e) =>
-            console.error("[admin] report removal: VS story teardown failed (continuing)", m.id, e),
-          );
-        }
-        break;
-      }
-      default:
-        break;
+    const removed = await removeReportedContent(c, r);
+    if (removed === "held") {
+      await logAudit(c, "report.hold", r.targetType || "report", r.targetId || id, { reportId: id });
+      return c.json(
+        {
+          message: "Removing a live battle refunds both players, so a full admin must do it. It is held out of the feeds meanwhile.",
+          held: true,
+        },
+        202,
+      );
     }
+    // The content is gone: every report on it (from any reporter, under any alias
+    // of its type) has nothing left to decide. Removing only this one left the
+    // others in the queue pointing at nothing.
+    await db
+      .delete(schema.reports)
+      .where(and(eq(schema.reports.targetId, r.targetId as string), inArray(schema.reports.targetType, reportGroupOf(r.targetType))));
+    await logAudit(c, "report.remove", r.targetType || "report", r.targetId || id, { reportId: id, removed });
+    return c.json({ message: removed ? "Content removed" : "Content was already gone; reports closed", removed });
   }
-  if (action === "remove") {
-    // The content is gone; its reports have nothing left to decide.
-    await db.delete(schema.reports).where(eq(schema.reports.id, id));
-  } else {
-    // Dismiss keeps the row as 'dismissed' so the same reporter re-reporting is
-    // a duplicate (unique reporter/target) rather than a fresh vote toward the
-    // auto-hold. The hold is released once no OPEN report on the battle remains.
-    await db.update(schema.reports).set({ status: "dismissed" }).where(eq(schema.reports.id, id));
-    await releaseMatchHoldIfClear(db, r.targetType, r.targetId);
-  }
-  await logAudit(c, `report.${action === "remove" ? "remove" : "dismiss"}`, r.targetType || "report", r.targetId || id);
-  return c.json({ message: action === "remove" ? "Content removed" : "Report dismissed" });
+  // Dismiss keeps the row as 'dismissed' so the same reporter re-reporting is
+  // a duplicate (unique reporter/target) rather than a fresh vote toward the
+  // auto-hold. The hold is released once no OPEN report on the battle remains.
+  await db.update(schema.reports).set({ status: "dismissed" }).where(eq(schema.reports.id, id));
+  await releaseMatchHoldIfClear(db, r.targetType, r.targetId);
+  await logAudit(c, "report.dismiss", r.targetType || "report", r.targetId || id, { reportId: id });
+  return c.json({ message: "Report dismissed" });
 });
 
 // ---- support tickets ----
 adminRoute.get("/support", async (c) => {
   const db = getDb(c.env);
   const rows = await db.select().from(schema.supportTickets).orderBy(desc(schema.supportTickets.createdAt)).limit(100).all();
-  return c.json(rows.map((r) => ({ ...r, createdAt: new Date(r.createdAt).toISOString(), updatedAt: new Date(r.updatedAt).toISOString() })));
+  // Moderators answer tickets but must not read payment or contact details in them.
+  const full = isFullAdmin(c);
+  return c.json(
+    rows.map((r) => ({
+      ...r,
+      ...(full ? {} : { subject: redactPaymentDetails(r.subject), message: redactPaymentDetails(r.message), adminReply: redactPaymentDetails(r.adminReply) }),
+      createdAt: new Date(r.createdAt).toISOString(),
+      updatedAt: new Date(r.updatedAt).toISOString(),
+    })),
+  );
 });
 adminRoute.patch("/support", async (c) => {
   const db = getDb(c.env);
@@ -1628,6 +1821,7 @@ adminRoute.post("/media/fetch-to-r2", async (c) => {
       `That URL returned ${ct || "unknown"} data that is not a JPEG, PNG, WebP or GIF image.`,
     );
   }
+  await logAudit(c, "media.fetchToR2", "media", stored.key, { url: stored.publicUrl, bytes: buf.byteLength });
   return c.json({
     url: stored.publicUrl,
     hash,
@@ -1646,6 +1840,8 @@ adminRoute.post("/media/fetch-to-r2", async (c) => {
  * publishedAt is stored ONLY when the importer determined it confidently.
  */
 adminRoute.post("/blog/import", async (c) => {
+  // The importer fetches from the web and bulk-publishes public, indexed pages.
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const body = await c.req.json<any>();
   const posts: any[] = Array.isArray(body) ? body : body.posts || [];
@@ -1761,22 +1957,29 @@ adminRoute.post("/blog/import", async (c) => {
       created++;
     }
   }
+  await logAudit(c, "blog.import", "blog", "bulk", { created, updated, skipped, duplicates, received: posts.length });
   return c.json({ success: true, created, updated, skipped, duplicates, received: posts.length });
 });
 
 // ---- Import job progress (fed by the importer, read by the dashboard) ----
 adminRoute.post("/blog/import/progress", async (c) => {
+  // The importer fetches from the web and bulk-publishes public, indexed pages.
+  requireFullAdmin(c);
   const body = await c.req.json<any>();
   await writeImportProgress(c.env, body);
   return c.json({ ok: true });
 });
 
 adminRoute.get("/blog/import/progress", async (c) => {
+  // The importer fetches from the web and bulk-publishes public, indexed pages.
+  requireFullAdmin(c);
   return c.json((await readImportProgress(c.env)) || null);
 });
 
 // URLs already handled (so the importer can resume and skip them).
 adminRoute.get("/blog/import/done-urls", async (c) => {
+  // The importer fetches from the web and bulk-publishes public, indexed pages.
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const rows = await db
     .select({ url: schema.blogImportLog.url })
@@ -1788,6 +1991,8 @@ adminRoute.get("/blog/import/done-urls", async (c) => {
 
 // Import log rows (optionally filtered by ?status=).
 adminRoute.get("/blog/import/log", async (c) => {
+  // The importer fetches from the web and bulk-publishes public, indexed pages.
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const status = c.req.query("status");
   const limit = boundedQueryInt(c.req.query("limit"), 200, 1, 1000);
@@ -1805,6 +2010,8 @@ adminRoute.get("/blog/import/log", async (c) => {
 
 // Import-log breakdown by status (dashboard counters).
 adminRoute.get("/blog/import/summary", async (c) => {
+  // The importer fetches from the web and bulk-publishes public, indexed pages.
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const rows = await db
     .select({ status: schema.blogImportLog.status, n: count() })
@@ -1821,6 +2028,8 @@ adminRoute.get("/blog/import/summary", async (c) => {
 
 // Mark rows of a certain status as pending so the next importer run retries them.
 adminRoute.post("/blog/import/retry", async (c) => {
+  // The importer fetches from the web and bulk-publishes public, indexed pages.
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const { status } = await c.req.json<{status: string}>();
   if (!status) {
@@ -1835,6 +2044,8 @@ adminRoute.post("/blog/import/retry", async (c) => {
 });
 
 adminRoute.post("/blog/import/discover", async (c) => {
+  // The importer fetches from the web and bulk-publishes public, indexed pages.
+  requireFullAdmin(c);
   const { type } = await c.req.json<any>();
   if (type !== "fresh" && type !== "resume" && !["failed", "skipped", "duplicate", "updated"].includes(type)) {
     throw httpsError("invalid-argument", "Invalid mode");
@@ -1844,6 +2055,8 @@ adminRoute.post("/blog/import/discover", async (c) => {
 });
 
 adminRoute.post("/blog/import/process-batch", async (c) => {
+  // The importer fetches from the web and bulk-publishes public, indexed pages.
+  requireFullAdmin(c);
   const { urls, state } = await c.req.json<any>();
   if (!Array.isArray(urls)) throw httpsError("invalid-argument", "urls must be an array");
   const newState = await processBatch(c.env, urls, state);
@@ -1851,6 +2064,8 @@ adminRoute.post("/blog/import/process-batch", async (c) => {
 });
 
 adminRoute.post("/blog/import/finish", async (c) => {
+  // The importer fetches from the web and bulk-publishes public, indexed pages.
+  requireFullAdmin(c);
   const { state } = await c.req.json<any>();
   if (state) {
     state.done = true;
@@ -1861,6 +2076,8 @@ adminRoute.post("/blog/import/finish", async (c) => {
 
 // Record a failed URL (importer reports parse/network failures here).
 adminRoute.post("/blog/import/fail", async (c) => {
+  // The importer fetches from the web and bulk-publishes public, indexed pages.
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const { url, error } = await c.req.json<any>();
   if (!url) throw httpsError("invalid-argument", "url is required.");
@@ -2054,7 +2271,7 @@ adminRoute.get("/overview", async (c) => {
   // isolate serving an admin answers repeat polls with zero D1. Per-isolate and
   // no KV, so it stays free-tier-safe (no KV writes) and needs no invalidation.
   const cachedOverview = memoGet<Record<string, number>>(OVERVIEW_MEMO_KEY);
-  if (cachedOverview) return c.json(cachedOverview);
+  if (cachedOverview) return c.json(withViewerRole(c, cachedOverview));
   const db = getDb(c.env);
   const users = (await db.select({ v: count() }).from(schema.users).get())?.v ?? 0;
   const posts = (await db.select({ v: count() }).from(schema.posts).get())?.v ?? 0;
@@ -2100,7 +2317,7 @@ adminRoute.get("/overview", async (c) => {
     )?.v ?? 0;
   const overview = { users, posts, reports, support, revenue, revenueInr, activeMatches, liveContests, pendingWithdrawals, pendingDeposits, pendingPrizeClaims };
   memoPut(OVERVIEW_MEMO_KEY, overview, 30);
-  return c.json(overview);
+  return c.json(withViewerRole(c, overview));
 });
 
 // Cloudflare free-tier capacity snapshot for the dashboard widget: growth-table
@@ -2108,6 +2325,26 @@ adminRoute.get("/overview", async (c) => {
 // CF_ANALYTICS_TOKEN is configured — today's live D1 rows_read / rows_written.
 // See lib/capacity.ts and CAPACITY_MONITORING.md.
 adminRoute.get("/capacity", async (c) => c.json(await computeCapacity(c.env)));
+
+/**
+ * Anonymous usage counters (lib/usageEvents.ts) for the Analytics page. Full
+ * admins only, like revenue. Each SQL API call is one of 10,000 free read queries
+ * a day, so the answer is memoised per isolate for 5 minutes.
+ */
+adminRoute.get("/usage-events", async (c) => {
+  requireFullAdmin(c);
+  const days = boundedQueryInt(c.req.query("days"), 7, 1, 90);
+  const key = `memo:usageEvents:${days}`;
+  const cached = memoGet<{ configured: boolean; rows: UsageSummaryRow[] }>(key);
+  if (cached) return c.json(cached);
+  const rows = await fetchUsageSummary(c.env, days).catch((e) => {
+    console.error("[usage] summary failed", e);
+    return null;
+  });
+  const out = { configured: rows !== null, days, rows: rows ?? [] };
+  if (rows !== null) memoPut(key, out, 300);
+  return c.json(out);
+});
 
 adminRoute.get("/device-stats", async (c) => {
   const db = getDb(c.env);
@@ -2145,7 +2382,14 @@ adminRoute.get("/user-growth", async (c) => {
 adminRoute.get("/recent-tickets", async (c) => {
   const db = getDb(c.env);
   const rows = await db.select().from(schema.supportTickets).orderBy(desc(schema.supportTickets.createdAt)).limit(5).all();
-  return c.json(rows.map((t) => ({ ...t, createdAt: new Date(t.createdAt).toISOString() })));
+  const full = isFullAdmin(c);
+  return c.json(
+    rows.map((t) => ({
+      ...t,
+      ...(full ? {} : { subject: redactPaymentDetails(t.subject), message: redactPaymentDetails(t.message), adminReply: redactPaymentDetails(t.adminReply) }),
+      createdAt: new Date(t.createdAt).toISOString(),
+    })),
+  );
 });
 
 // ======================= TABLES =======================
@@ -2390,7 +2634,12 @@ adminRoute.post("/set-role", async (c) => {
   if (!uid) throw httpsError("not-found", "User not found (provide a valid email or userId).");
   // Prefer an explicit role ("admin" | "moderator" | "user"); fall back to the
   // legacy makeAdmin boolean.
-  const role = ["admin", "moderator", "user"].includes(roleArg) ? roleArg : makeAdmin === false ? "user" : "admin";
+  // An unknown role used to fall through to "admin": `{ role: "superadmin" }` (or a
+  // typo) granted full admin. Only the legacy `makeAdmin` flag may omit it.
+  if (roleArg != null && !["admin", "moderator", "user"].includes(roleArg)) {
+    throw httpsError("invalid-argument", 'role must be "admin", "moderator" or "user".');
+  }
+  const role = roleArg != null ? roleArg : makeAdmin === false ? "user" : "admin";
 
   // Role hierarchy. `requireFullAdmin` admits admin AND superadmin, and nothing
   // here looked at the TARGET, so any plain admin could demote a superadmin (or
@@ -2773,7 +3022,16 @@ adminRoute.get("/matches/:id/votes", async (c) => {
     .orderBy(desc(schema.votes.createdAt))
     .limit(500)
     .all();
-  return c.json(rows.map((r) => ({ ...r, createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null })));
+  // Device ids are full-admin data (ADMIN_USER_FULL_ONLY strips them from user
+  // rows); this list returned them to moderators anyway.
+  const full = isFullAdmin(c);
+  return c.json(
+    rows.map(({ deviceId, ...r }) => ({
+      ...r,
+      ...(full ? { deviceId } : {}),
+      createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null,
+    })),
+  );
 });
 
 /**
@@ -3158,6 +3416,8 @@ adminRoute.post("/matches/:id/vs-story/retry", async (c) => {
  * of distinct accounts and total votes it produced.
  */
 adminRoute.get("/fraud/votes", async (c) => {
+  // Groups voters by device id, so full admins only, like /fraud/vote-networks.
+  requireFullAdmin(c);
   const db = getDb(c.env);
   const rows = await db
     .select({
@@ -4422,7 +4682,10 @@ adminRoute.post("/account-deletions/:uid/cancel", async (c) => {
 adminRoute.delete("/logs", async (c) => {
   // Full admins only: destroys the error trail.
   requireFullAdmin(c);
+  const n = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM error_logs").first<{ n: number }>();
   await c.env.DB.prepare("DELETE FROM error_logs").run();
+  // Wiping the error trail is itself recorded.
+  await logAudit(c, "logs.clear", "error_logs", "all", { rows: Number(n?.n ?? 0) });
   return c.json({ success: true });
 });
 
@@ -4638,6 +4901,7 @@ adminRoute.delete("/scheduled-notifications/:id", async (c) => {
   const db = getDb(c.env);
   const id = c.req.param("id");
   await db.update(schema.scheduledNotifications).set({ status: "cancelled" }).where(and(eq(schema.scheduledNotifications.id, id), eq(schema.scheduledNotifications.status, "pending")));
+  await logAudit(c, "notification.schedule.cancel", "scheduled_notification", id);
   return c.json({ message: "Scheduled notification cancelled" });
 });
 
@@ -4940,7 +5204,7 @@ adminRoute.get("/analytics", async (c) => {
   const newUsersPrev7d = await cntRange(schema.users, schema.users.createdAt, nowMs - 14 * day, nowMs - 7 * day);
   const revenuePrev7d = await sumRange(schema.payments.amount, schema.payments, nowMs - 14 * day, nowMs - 7 * day, eq(schema.payments.status, "success"));
 
-  return c.json({
+  return c.json(withoutRevenueForModerators(c, {
     totalUsers, newUsersToday, newUsers7d, newUsers30d,
     dau, mau,
     revenueToday, revenue7d, revenue30d,
@@ -4950,7 +5214,7 @@ adminRoute.get("/analytics", async (c) => {
     // deltas
     newUsersYesterday, votesYesterday, dauYesterday, revenueYesterday,
     newUsersPrev7d, revenuePrev7d,
-  });
+  }));
 });
 
 // ======================= OPS (manual cron triggers) =======================

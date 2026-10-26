@@ -1,3 +1,4 @@
+import { inRollout } from './rollout';
 /**
  * What App Control (admin panel) means for THIS app instance, right now.
  *
@@ -33,8 +34,8 @@ export function compareVersions(a: unknown, b: unknown): number {
 }
 
 /** A feature is ON unless the admin explicitly switched it off. */
-export function featureOn(config: any, key: FeatureKey): boolean {
-  return config?.features?.[key] !== false;
+export function featureOn(config: any, key: FeatureKey, uid?: string | null): boolean {
+  return config?.features?.[key] !== false && inRollout(config, key, uid);
 }
 
 /** Which feature a route belongs to (expo-router segments), if any. */

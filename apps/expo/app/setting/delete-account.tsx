@@ -111,6 +111,8 @@ export default function DeleteAccountScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [showReauth, setShowReauth] = useState(false);
+  // Which action the re-verification is for: the deletion request or the data export.
+  const [reauthFor, setReauthFor] = useState<'delete' | 'export'>('delete');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -192,6 +194,12 @@ export default function DeleteAccountScreen() {
         }
       }
     } catch (e: any) {
+      // A copy returned to the device (no email on file) needs a recent sign-in.
+      if (isReauthRequired(e)) {
+        setReauthFor('export');
+        setShowReauth(true);
+        return;
+      }
       reportError(e, { screen: 'delete-account', step: 'export' });
       emitToast(e?.message || 'Could not export your data. Please try again.', 'error');
     } finally {
@@ -228,6 +236,7 @@ export default function DeleteAccountScreen() {
        * a failure they did not cause. `ReauthPrompt` re-runs this on success.
        */
       if (isReauthRequired(e)) {
+        setReauthFor('delete');
         setShowReauth(true);
         throw e;
       }
@@ -514,11 +523,12 @@ export default function DeleteAccountScreen() {
       <ReauthPrompt
         visible={showReauth}
         onClose={() => setShowReauth(false)}
-        reason="delete your account"
+        reason={reauthFor === 'export' ? 'download your data' : 'delete your account'}
         onVerified={() => {
           setShowReauth(false);
           // The grant is now held server-side, so the same request goes through.
-          void submitRequest().catch(() => {});
+          if (reauthFor === 'export') void exportData();
+          else void submitRequest().catch(() => {});
         }}
       />
       <View style={styles.header}>

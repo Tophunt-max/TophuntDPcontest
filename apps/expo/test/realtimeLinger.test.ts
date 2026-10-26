@@ -9,7 +9,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const h = vi.hoisted(() => ({ uid: 'alice' as string | null, sockets: [] as any[] }));
 
 vi.mock('react-native', () => ({ AppState: { currentState: 'active' } }));
-vi.mock('../src/services/api', () => ({ API_BASE_URL: 'https://api.example', probeSession: async () => {} }));
+vi.mock('../src/services/api', () => ({
+  API_BASE_URL: 'https://api.example',
+  probeSession: async () => {},
+  callApi: async () => ({ ticket: null }),
+}));
 vi.mock('../src/services/firebase/initFirebase', () => ({
   auth: {
     get currentUser() {
@@ -41,7 +45,7 @@ import { subscribeChannel, SOCKET_LINGER_MS, __resetRealtimeForTests } from '@/s
 
 /** Let openSocket's token await settle. */
 const flush = async () => {
-  for (let i = 0; i < 5; i++) await Promise.resolve();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
 };
 
 beforeEach(() => {
