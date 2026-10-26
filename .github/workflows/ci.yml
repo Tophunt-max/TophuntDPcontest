@@ -52,6 +52,11 @@ jobs:
       # Catches bundling/config errors (wrangler.toml, migration text rules)
       # without touching the deployed Worker.
       - run: npx wrangler deploy --dry-run --outdir=/tmp/worker-build
+      # Export a migrated local D1 and restore it into an empty one (local only,
+      # no Cloudflare account): a schema change that breaks the restore path in
+      # docs/RUNBOOK.md §5 fails here, not during an incident.
+      - name: Backup/restore drill (local D1)
+        run: bash scripts/restore-drill.sh
 
   expo:
     name: Expo (lint + typecheck + tests + web build)

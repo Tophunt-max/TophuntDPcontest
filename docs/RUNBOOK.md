@@ -25,6 +25,23 @@ uptime monitor only needs to watch the status code.
 | `checks.integrations` | An SMS/email/payment provider is unconfigured. Check the admin panel → Integrations. |
 | `checks.cron` | Settlement, refunds and payment reconciliation have stopped. See §4. |
 
+**Monitoring in place:**
+- `.github/workflows/uptime.yml` GETs `/health/deep` and `https://tophunt.in/` every
+  30 minutes and opens (or comments on) one `ops-alert` issue on failure. GitHub can
+  delay scheduled runs, so point a dedicated monitor (Cloudflare Health Checks or
+  UptimeRobot) at `/health/deep` for faster alerts.
+- Cron failures are recorded in `cron_runs`, sent to Sentry and raised once per 6 h
+  as an admin notification (`lib/ops.ts`). Money invariants are checked every 6 h
+  (`lib/moneyHealth.ts`).
+- Free-tier capacity: `/admin/capacity` (D1 rows read/written today, table growth).
+- Anonymous app counters (stalls, failed uploads, dropped offline actions): Analytics
+  page, `GET /admin/usage-events`.
+
+> **2026-10-26:** production `/health/deep` answered **503**: `secrets` (missing
+> `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`), `integrations`
+> (razorpay not configured) and `cron` (`seoAudit` stale). The uptime workflow will
+> open an issue until these are resolved, or until Razorpay is declared optional.
+
 ---
 
 ## 2. Payments are failing
@@ -101,6 +118,28 @@ trigger. If `checks.cron` reports stale or failing:
 
 ## 5. Restoring the database
 
+### What can be recovered, and how fast
+
+| Data | Copy | RPO (data lost) | RTO (time to restore) |
+|---|---|---|---|
+| D1 (accounts, wallet ledger, contests, votes, posts) | Time Travel, 30 days, in the same account | minutes (any point in time) | minutes; restores in place |
+| D1 | Weekly export (`backup-d1.yml`), artifact 90 days, plus R2 if `BACKUP_R2_BUCKET` is set | up to 7 days. **Currently no export exists** (see below) | about 1 h: create database, load file, repoint `database_id`, deploy |
+| Chat message bodies (`CHAT_ARCHIVE` Durable Objects) | **None** | all chat history if Durable Object storage is lost | not restorable |
+| In-flight vote tallies (`VoteCounter`) | None (rebuilt from D1 votes where possible) | live matches | cancel and refund affected matches |
+| Media (R2 `tophunt-media`) | **None** configured here (no second bucket or replication job; check the bucket for lifecycle rules) | anything deleted or lost | not restorable |
+| KV (`OTP_KV`, `CACHE_KV`) | Not needed: OTPs expire, caches rebuild | n/a | n/a |
+
+Targets until the gaps are closed: RPO 7 days and RTO 4 hours for D1 through the
+export path, and minutes through Time Travel while the account is intact.
+
+**Restore drill.** `apps/worker/scripts/restore-drill.sh` runs in CI (`ci.yml`). It
+applies every migration to a throwaway local D1, exports it with `wrangler d1
+export`, restores the file into an empty local D1 with `wrangler d1 execute
+--file`, and compares row, migration and schema-object counts and
+`PRAGMA integrity_check`. It never contacts Cloudflare. On 2026-10-26: 67
+migrations, 242 schema objects, 70 KB export, restored in 2-3 s. The weekly
+production backup additionally restore-tests real data into SQLite.
+
 **Read this before touching anything.** Restoring is destructive and R2 media
 deleted after the restore point does **not** come back, so a restored database can
 reference media that no longer exists.
@@ -154,7 +193,9 @@ npx wrangler d1 execute tophunt-db-restore --remote --file=tophunt-db-<stamp>.sq
    ```
    The signup bonus is ledgered, so for accounts created after the ledger was
    introduced these should match exactly.
-2. **Durable Object state is NOT covered by any of this.** `VoteCounter` holds
+2. **Durable Object state is NOT covered by any of this.** Chat message bodies
+   live in `CHAT_ARCHIVE` (the D1 `chats` row keeps only the preview), so a D1
+   restore does not bring back or remove messages. `VoteCounter` holds
    in-flight vote tallies in its own storage, so after a restore a match may have
    D1 rows that disagree with its actor. Cancel and refund affected in-flight
    matches rather than settling them.

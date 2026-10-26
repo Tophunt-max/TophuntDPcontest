@@ -1,0 +1,64 @@
+name: Uptime check
+
+# Outside-in check of production, read-only (GET only, no secrets).
+#
+# /health/deep exercises D1, both KV namespaces, R2 and the RateLimiter, reports
+# missing secrets and whether the cron still fires, and answers 503 when anything
+# required is broken (docs/RUNBOOK.md §1). The web root proves Pages is serving.
+# A failure opens (or comments on) one "ops-alert" issue, because a failed
+# scheduled run only emails whoever last edited this file, which is how the D1
+# backup failed unnoticed for two months.
+#
+# GitHub may delay scheduled runs by several minutes; this is a backstop, not a
+# pager. A dedicated monitor (Cloudflare Health Checks, UptimeRobot) on the same
+# URL alerts faster.
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: uptime
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: API deep health
+        run: |
+          code=$(curl -sS -o health.json -w '%{http_code}' --max-time 20 --retry 2 --retry-delay 10 https://api.tophunt.in/health/deep || echo 000)
+          echo "HTTP $code"
+          if [ "$code" != "200" ]; then
+            # Names of failing checks only; the endpoint never returns secret values.
+            jq -c '{ok, failing: [(.checks // {}) | to_entries[] | select(.value.ok == false) | .key]}' health.json 2>/dev/null || head -c 300 health.json
+            echo "::error::api.tophunt.in/health/deep answered $code"
+            exit 1
+          fi
+      - name: Web app
+        run: |
+          code=$(curl -sS -o index.html -w '%{http_code}' --max-time 20 --retry 2 --retry-delay 10 https://tophunt.in/ || echo 000)
+          echo "HTTP $code"
+          if [ "$code" != "200" ] || ! grep -q '<div id="root"' index.html; then
+            echo "::error::tophunt.in did not serve the app shell (HTTP $code)"
+            exit 1
+          fi
+
+      - name: Open or update the ops-alert issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Ops alert: production uptime check failing"
+          n=$(gh api "repos/${GITHUB_REPOSITORY}/issues?state=open&labels=ops-alert&per_page=50" --jq ".[] | select(.title == \"$title\") | .number" | head -1)
+          if [ -n "$n" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/issues/$n/comments" -f body="Still failing: $RUN_URL"
+          else
+            gh api "repos/${GITHUB_REPOSITORY}/issues" -f title="$title" -f body="The scheduled uptime check failed: $RUN_URL. See docs/RUNBOOK.md §1. Close this issue once production is healthy again." -f "labels[]=ops-alert"
+          fi

@@ -11,6 +11,7 @@ import 'react-native-reanimated';
 import { QueryClient, QueryClientProvider, QueryCache, MutationCache, onlineManager, focusManager, useQuery } from '@tanstack/react-query';
 import { Provider as PaperProvider } from 'react-native-paper';
 import { startUsageStats } from '@/src/services/usageStats';
+import { registerServiceWorker } from '@/src/lib/serviceWorker';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as Notifications from 'expo-notifications';
@@ -104,6 +105,9 @@ void hydrateThemePreference();
 
 // Anonymous usage counters: read the opt-out and send on background.
 startUsageStats();
+
+// Web: offline start and cached build files (public/sw.js). No-op on native.
+registerServiceWorker();
 
 // Drive React Query's online state from the device's real connectivity so
 // queries pause offline and auto-refetch when the network returns.
