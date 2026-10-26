@@ -1151,7 +1151,7 @@ async function notifyRemoval(c: any, ownerUid: string | null | undefined, what: 
   if (!ownerUid) return;
   await createNotification(c.env, ownerUid, {
     title: "Content removed",
-    body: `Your ${what} was removed for breaking the community guidelines. To appeal, reply to support from Settings › Help.`,
+    body: `Your ${what} was removed for breaking the community guidelines. To appeal, use Settings › Report a Problem.`,
     type: "moderation",
     targetId: "support",
   }).catch((e) => console.error("[admin] removal notice failed (continuing)", e));
