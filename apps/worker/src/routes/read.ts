@@ -168,6 +168,11 @@ interface LiveUserFields {
   username: string | null;
   /** Fallback display name when the username is empty. */
   fullName: string | null;
+  /**
+   * Out of distribution: pending deletion, deleted, or blocked by an admin.
+   * Same rule as the Stories bar (lib/storyAudience.ts#storyOwnerMeta).
+   */
+  hidden: boolean;
   /** Epoch ms of last realtime connect/disconnect; null if never seen. */
   lastSeenAt: number | null;
 }
@@ -202,6 +207,8 @@ async function liveUserFields(
         username: schema.users.username,
         fullName: schema.users.fullName,
         lastSeenAt: schema.users.lastSeenAt,
+        status: schema.users.status,
+        isBlocked: schema.users.isBlocked,
       })
       .from(schema.users)
       .where(inArray(schema.users.uid, unique))
@@ -209,7 +216,14 @@ async function liveUserFields(
     return new Map(
       rows.map((r) => [
         r.uid,
-        { verified: !!r.verified, avatar: r.avatar ?? null, username: r.username ?? null, fullName: r.fullName ?? null, lastSeenAt: r.lastSeenAt ?? null },
+        {
+          verified: !!r.verified,
+          avatar: r.avatar ?? null,
+          username: r.username ?? null,
+          fullName: r.fullName ?? null,
+          lastSeenAt: r.lastSeenAt ?? null,
+          hidden: isHiddenAccountStatus(r.status) || !!r.isBlocked,
+        },
       ]),
     );
   } catch (e) {
@@ -237,12 +251,12 @@ async function liveUserFields(
  * from mapMatch, not the cached row), so it is safe to run before the page is
  * cached — the fresh fields then travel with the cached copy.
  */
-async function enrichParticipants(env: Env, matches: any[]): Promise<void> {
+async function enrichParticipants(env: Env, matches: any[]): Promise<Map<string, LiveUserFields>> {
   const live = await liveUserFields(
     env,
     matches.flatMap((m) => [m?.userA?.uid, m?.userB?.uid]),
   );
-  if (!live.size) return;
+  if (!live.size) return live;
   const apply = (p: any) => {
     if (!p?.uid) return p;
     const u = live.get(p.uid);
@@ -259,7 +273,30 @@ async function enrichParticipants(env: Env, matches: any[]): Promise<void> {
     m.userA = apply(m.userA);
     m.userB = apply(m.userB);
   }
+  return live;
 }
+
+/**
+ * Enrich, then drop battles that must not be DISTRIBUTED: one with a
+ * participant who is pending deletion, deleted, or blocked by an admin. The
+ * Stories bar already applied this rule to their Stories; their battles kept
+ * being ranked into For You, Explore and search. Used for lists only: a direct
+ * link to a battle still opens it. A participant the lookup did not return
+ * (lookup failure) is kept, so a D1 blip cannot empty the feed.
+ */
+async function distributableMatches(env: Env, matches: any[]): Promise<any[]> {
+  const live = await enrichParticipants(env, matches);
+  const hidden = (p: any) => !!p?.uid && live.get(p.uid)?.hidden === true;
+  return matches.filter((m) => !hidden(m?.userA) && !hidden(m?.userB));
+}
+
+/**
+ * Invite-only battles (`is_private`, created with an `invited_uid`) are for the
+ * invited player, not public lists. Search already excluded them; the feed pool
+ * and the Explore lists did not, so they were ranked to everyone and showed
+ * who was invited.
+ */
+const publicMatch = sql`COALESCE(${schema.contestMatches.isPrivate}, 0) = 0`;
 
 /** One read cache's lifetimes and the staleness bound it must respect. */
 export interface ReadCacheTtl {
@@ -905,6 +942,7 @@ async function servePersonalizedFeed(
     const typeConds = [
       ...(type ? [eq(schema.contestMatches.type, type)] : []),
       isNull(schema.contestMatches.moderationHoldAt),
+      publicMatch,
     ];
     const activeRows = await db
       .select(MATCH_LIST_COLUMNS)
@@ -931,7 +969,7 @@ async function servePersonalizedFeed(
     candidates = rows
       .map((r) => ({ ...enrichMatchMedia(c.env, mapMatch(r)), _base: rankBaseScore(r, now, w) }))
       .sort((a, b) => b._base - a._base);
-    await enrichParticipants(c.env, candidates);
+    candidates = await distributableMatches(c.env, candidates);
     // Store a clone for the same reason it is cloned on read: this request goes on
     // to filter and rank `candidates`, and must not be able to reach the cached copy.
     memoPut(candKey, structuredClone(candidates), FEED_POOL_TTL);
@@ -1457,7 +1495,7 @@ readRoute.get("/matches", optionalAuth, guestReadLimit, async (c) => {
     edgeTtlSec: READ_CACHE_TTLS.matchesPage.edge,
     kvTtlSec: READ_CACHE_TTLS.matchesPage.kv,
     load: async () => {
-      const conds = [eq(schema.contestMatches.status, status), isNull(schema.contestMatches.moderationHoldAt)];
+      const conds = [eq(schema.contestMatches.status, status), isNull(schema.contestMatches.moderationHoldAt), publicMatch];
       if (type) conds.push(eq(schema.contestMatches.type, type));
 
       if (sort === "ending") {
@@ -1475,8 +1513,8 @@ readRoute.get("/matches", optionalAuth, guestReadLimit, async (c) => {
           .limit(limit)
           .offset(offset)
           .all();
-        const list = rows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m));
-        await enrichParticipants(c.env, list);
+        // Cursor from the raw rows, so dropping hidden ones never shifts paging.
+        const list = await distributableMatches(c.env, rows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m)));
         return { matches: list, nextCursor: rows.length === limit ? offset + limit : null };
       }
 
@@ -1497,8 +1535,8 @@ readRoute.get("/matches", optionalAuth, guestReadLimit, async (c) => {
           .limit(limit)
           .offset(offset)
           .all();
-        const list = rows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m));
-        await enrichParticipants(c.env, list);
+        // Cursor from the raw rows, so dropping hidden ones never shifts paging.
+        const list = await distributableMatches(c.env, rows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m)));
         return { matches: list, nextCursor: rows.length === limit ? offset + limit : null };
       }
 
@@ -1512,8 +1550,7 @@ readRoute.get("/matches", optionalAuth, guestReadLimit, async (c) => {
         .orderBy(desc(schema.contestMatches.createdAt))
         .limit(limit)
         .all();
-      const list = rows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m));
-      await enrichParticipants(c.env, list);
+      const list = await distributableMatches(c.env, rows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m)));
       return {
         matches: list,
         nextCursor: rows.length === limit ? rows[rows.length - 1].createdAt : null,
@@ -2443,8 +2480,7 @@ readRoute.get("/search", optionalAuth, guestReadLimit, async (c) => {
       .all(),
   ]);
 
-  let battles = battleRows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m));
-  await enrichParticipants(c.env, battles);
+  let battles = await distributableMatches(c.env, battleRows.map(mapMatch).map((m) => enrichMatchMedia(c.env, m)));
   if (uid) {
     battles = excludeHiddenMatches(battles, await hiddenUidsFor(c.env, uid));
   }
