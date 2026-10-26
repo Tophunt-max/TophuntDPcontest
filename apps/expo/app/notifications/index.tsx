@@ -160,6 +160,10 @@ export default function NotificationsScreen() {
 
     // Refs to read latest values inside callbacks without re-subscribing.
     const loadingMoreRef = useRef(false);
+    // The server's own cursor for the next older page. Paging by the oldest row's
+    // time alone skipped rows sharing that millisecond, and a page whose rows were
+    // all filtered out (blocked actors) came back empty and stopped the scroll.
+    const tailCursorRef = useRef<string | null>(null);
     const reachedEndRef = useRef(false);
     const markedRef = useRef(false);
 
@@ -229,6 +233,7 @@ export default function NotificationsScreen() {
             setTail([]);
             setReachedEnd(false);
             reachedEndRef.current = false;
+            tailCursorRef.current = null;
         } catch (e) {
             reportError(e, { screen: 'notifications', action: 'refresh' });
             emitToast('Could not refresh notifications.', 'error');
@@ -246,11 +251,13 @@ export default function NotificationsScreen() {
         loadingMoreRef.current = true;
         setLoadingMore(true);
         try {
-            const { items, nextCursor } = await notificationService.fetchNotificationsPage(oldest.createdAt, PAGE_SIZE);
+            const cursor = tailCursorRef.current ?? `${oldest.createdAt}_${oldest.id}`;
+            const { items, nextCursor } = await notificationService.fetchNotificationsPage(cursor, PAGE_SIZE);
             if (items.length > 0) {
                 setTail((prev) => mergeNotifications([], [...prev, ...items]));
             }
-            if (!nextCursor || items.length === 0) {
+            tailCursorRef.current = nextCursor;
+            if (!nextCursor) {
                 reachedEndRef.current = true;
                 setReachedEnd(true);
             }

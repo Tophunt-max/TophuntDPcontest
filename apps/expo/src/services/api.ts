@@ -212,6 +212,17 @@ async function endExpiredSession(revoked = false) {
     await signOut(auth);
     const { clearCachedIdentity } = await import('@/src/lib/cachedIdentity');
     await clearCachedIdentity(uid);
+    // Same local cleanup as a deliberate sign-out. This path skipped it, so the
+    // next person on the device saw the old account's feed snapshot, Stories,
+    // searches and app-icon badge. The server-side token detach cannot run here
+    // (the session is already refused); the server drops tokens on revocation,
+    // and the local copy is forgotten so the next login registers afresh.
+    await import('@/src/services/notifications/notificationService')
+      .then((m) => m.notificationService.forgetLocalPushToken())
+      .catch(() => undefined);
+    await import('@/src/services/auth')
+      .then((m) => m.clearAccountScopedCaches())
+      .catch(() => undefined);
   } catch (e) {
     console.error('[api] sign-out after 401 failed', e);
   } finally {

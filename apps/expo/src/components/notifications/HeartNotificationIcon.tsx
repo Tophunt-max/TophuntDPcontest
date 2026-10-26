@@ -22,6 +22,8 @@ export const HeartNotificationIcon = () => {
   const HeartIcon = isDark ? HeartIcon_Dark : HeartIcon_Light;
 
   useEffect(() => {
+    // Signed out (or switching): the previous account's dot must not stay on.
+    setUnreadCount(0);
     if (!user?.uid) return;
 
     const unsubscribe = notificationService.subscribeToUnreadCount(user.uid, (count) => {

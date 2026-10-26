@@ -290,7 +290,12 @@ function RootLayoutNav() {
   
   // Hook to handle notification listeners
   useEffect(() => {
-    const subscription = Notifications.addNotificationResponseReceivedListener(response => {
+    const open = (response: Notifications.NotificationResponse) => {
+      // The launch tap can arrive both from getLastNotificationResponse and the
+      // listener; route it once.
+      const key = response.notification.request.identifier;
+      if (key && handledNotificationTaps.has(key)) return;
+      if (key) handledNotificationTaps.add(key);
       const data = response.notification.request.content.data;
 
       // Resolve the destination with the SAME shared helper the in-app list
@@ -308,7 +313,21 @@ function RootLayoutNav() {
           console.error('Notification navigation failed', e);
           router.push('/notifications');
       }
-    });
+    };
+    const subscription = Notifications.addNotificationResponseReceivedListener(open);
+    // A tap that LAUNCHED the app (from killed) can happen before this listener
+    // exists, so it never routed and the user landed on Home.
+    if (Platform.OS !== 'web') {
+      try {
+        const last = Notifications.getLastNotificationResponse();
+        if (last) {
+          open(last);
+          Notifications.clearLastNotificationResponse();
+        }
+      } catch (e) {
+        console.warn('[notifications] launch response unavailable', e);
+      }
+    }
 
     // Also handle foreground notifications if needed
     const foregroundSubscription = Notifications.addNotificationReceivedListener(() => {
@@ -437,6 +456,9 @@ function RootLayoutNav() {
   );
 }
 
+
+/** Notification taps already routed (by request identifier), across remounts. */
+const handledNotificationTaps = new Set<string>();
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
