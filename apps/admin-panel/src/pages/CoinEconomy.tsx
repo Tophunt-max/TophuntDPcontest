@@ -413,6 +413,11 @@ function OverviewBody({ data }: { data: CoinEconomyData }) {
         <StatCard icon={Lock} label="Locked (promo, sirf khelne ke liye)" value={fmtNumber(data.supply.locked)} gradient="gradient-orange" />
         <StatCard icon={Scale} label={`Liability (₹${fmtNumber(data.payoutRate)}/coin)`} value={inr(data.supply.liabilityInr)} gradient="gradient-red" />
       </div>
+      {data.house && data.house.total ? (
+        <p className="text-xs text-muted-foreground">
+          Superadmin ke {fmtNumber(data.house.total)} coin (platform ke apne) is hisab me nahi gine gaye. Unka withdrawal nahi hota.
+        </p>
+      ) : null}
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card title="Paisa (₹)">

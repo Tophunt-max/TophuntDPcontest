@@ -49,6 +49,7 @@ export function VerificationRewardCard({ data }: { data: any }) {
   const stored = data?.verificationReward || {};
   const read = () => ({
     enabled: stored.enabled !== false,
+    registrationReward: Number(stored.registrationReward ?? 0),
     completionReward: Number(stored.completionReward ?? 90),
     maxTotalReward: Number(stored.maxTotalReward ?? 100),
     requireEmail: stored.requireEmail !== false,
@@ -62,10 +63,10 @@ export function VerificationRewardCard({ data }: { data: any }) {
   const { data: info } = useQuery({ queryKey: ["verification-reward"], queryFn: api.verificationReward });
   const save = useAppSettingsSave("Verification reward saved");
   const error = useMemo(() => {
-    for (const [name, n] of [["On completion", v.completionReward], ["Maximum", v.maxTotalReward]] as const) {
+    for (const [name, n] of [["On signup", v.registrationReward], ["On completion", v.completionReward], ["Maximum", v.maxTotalReward]] as const) {
       if (!Number.isInteger(n) || n < 0 || n > 1_000_000) return `${name}: 0 se 1,000,000 ke beech poora number.`;
     }
-    if (v.completionReward > v.maxTotalReward) return "On completion, Maximum se zyada nahi ho sakta.";
+    if (v.registrationReward + v.completionReward > v.maxTotalReward) return "Signup + completion, Maximum se zyada nahi ho sakta.";
     if (!v.requireEmail && !v.requirePhone && v.completionReward > 0) return "Email ya mobile me se kam se kam ek verify karna zaroori rakho.";
     return null;
   }, [v]);
@@ -76,10 +77,14 @@ export function VerificationRewardCard({ data }: { data: any }) {
       title="Email + mobile verification bonus"
       tint="text-emerald-500"
       pending={save.isPending}
-      onSave={() => (error ? toast.error(error) : save.mutate({ verificationReward: { ...v, registrationReward: 0 } }))}
+      onSave={() => (error ? toast.error(error) : save.mutate({ verificationReward: v }))}
     >
       <Toggle label="Enabled" checked={v.enabled} onChange={(x) => setV({ ...v, enabled: x })} />
-      <div className="grid grid-cols-2 gap-3 mt-2">
+      <div className="grid grid-cols-3 gap-3 mt-2">
+        <div>
+          <label className={label}>On signup (coins)</label>
+          <input type="number" min={0} className={field} value={v.registrationReward} onChange={(e) => setV({ ...v, registrationReward: num(e.target.value) })} />
+        </div>
         <div>
           <label className={label}>On completion (coins)</label>
           <input type="number" min={0} className={field} value={v.completionReward} onChange={(e) => setV({ ...v, completionReward: num(e.target.value) })} />
@@ -91,7 +96,10 @@ export function VerificationRewardCard({ data }: { data: any }) {
       </div>
       <Toggle label="Email verify zaroori" checked={v.requireEmail} onChange={(x) => setV({ ...v, requireEmail: x })} />
       <Toggle label="Mobile verify zaroori" checked={v.requirePhone} onChange={(x) => setV({ ...v, requirePhone: x })} />
-      <p className={hint}>Signup par koi bonus nahi. Amount har user ke signup par lock hota hai; badlav naye signup par lagega.</p>
+      <p className={hint}>
+        Signup wale coin turant milte hain, completion wale email + mobile verify hone par. Dono "Free rewards: sirf khelne ke liye" me
+        Verification switch se locked hote hain. Amount har user ke signup par tay hota hai; badlav naye signup par lagega.
+      </p>
       {error && (
         <p className="text-xs text-red-600 mt-2 flex items-center gap-1.5"><AlertTriangle size={13} /> {error}</p>
       )}

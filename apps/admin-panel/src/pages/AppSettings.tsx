@@ -224,7 +224,7 @@ export default function AppSettings() {
     setCfg({
       ...DEFAULTS,
       ...data,
-      verificationReward: { ...DEFAULTS.verificationReward, ...(data.verificationReward || {}), registrationReward: 0 },
+      verificationReward: { ...DEFAULTS.verificationReward, ...(data.verificationReward || {}) },
       paymentGateway: { ...DEFAULTS.paymentGateway, ...(data.paymentGateway || {}) },
       ads: { ...DEFAULTS.ads, ...(data.ads || {}) },
       socialLinks: { ...DEFAULTS.socialLinks, ...(data.socialLinks || {}) },

@@ -1230,6 +1230,8 @@ export interface CoinEconomy {
   range: { from: number | null; to: number | null };
   payoutRate: number;
   supply: { total: number; withdrawable: number; locked: number; holders: number; liabilityInr: number };
+  /** Superadmin coins: platform money, left out of supply, liability and flows. */
+  house?: { total: number; locked: number; accounts: number };
   cash: { paidInInr: number; refundedInr: number; paidOutInr: number; pendingOutInr: number };
   categories: Record<string, { label: string; credits: number; debits: number; net: number; locked: number }>;
   types: { type: string; category: string; credits: number; debits: number; net: number; locked: number; count: number }[];

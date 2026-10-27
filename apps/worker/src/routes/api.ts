@@ -2441,6 +2441,11 @@ apiRoute.post("/", async (c) => {
       const policy = readWithdrawalPolicy(cfg);
       if (!policy.enabled || policy.payoutsFrozen)
         throw httpsError("failed-precondition", "Withdrawals are currently disabled.");
+      // The superadmin's coins are the platform's own (house account, left out
+      // of the coin economy reports in lib/coinEconomy.ts), so they never pay out.
+      const requester = await env.DB.prepare(`SELECT role FROM users WHERE uid = ?`).bind(uid).first<{ role: string | null }>();
+      if (requester?.role === "superadmin")
+        throw httpsError("permission-denied", "Superadmin ke coin platform ke hain, inka withdrawal nahi hota.");
       if (amt < policy.minAmount)
         throw httpsError("failed-precondition", `Minimum withdrawal is ${policy.minAmount} coins.`);
       if (policy.maxAmount > 0 && amt > policy.maxAmount)
