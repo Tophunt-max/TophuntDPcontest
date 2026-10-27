@@ -235,7 +235,7 @@ export function publicAppConfig(cfg: any, nowMs: number = Date.now()) {
     },
     paymentGateway: { mode: cfg.paymentGateway?.mode || "auto" },
     // What the signup and invite screens may show (rewards, qualifying action).
-    referral: publicReferralConfig(parseReferralConfig(cfg)),
+    referral: publicReferralConfig(parseReferralConfig(cfg), cfg),
     // Explore banners (live ones only) and section order (lib/exploreConfig.ts).
     explore: publicExploreConfig(cfg, nowMs),
     ads: { enabled: ads.enabled === true, reward: Number(ads.reward ?? 0), dailyCap: Number(ads.dailyCap ?? 0) },

@@ -42,9 +42,10 @@ export const walletService = {
   /**
    * Claim daily bonus — handled by the Worker /api `claimDailyReward`.
    */
-  claimDailyBonus: async (_userId: string, dayIndex: number) => {
+  claimDailyBonus: async () => {
     try {
-      return await callApi('claimDailyReward', { dayIndex });
+      // The server decides the day and the amount; nothing is sent.
+      return await callApi('claimDailyReward', {});
     } catch (error) {
       console.error("Error claiming daily bonus:", error);
       throw error;
@@ -90,6 +91,14 @@ export const walletService = {
    */
   requestDeposit: async (packageId: string, utr: string, method = 'qr', screenshotUrl?: string) => {
     return await callApi('requestDeposit', { packageId, utr, method, screenshotUrl });
+  },
+
+  /**
+   * The daily check-in track (amounts, streak, today's state) exactly as
+   * `claimDailyReward` pays it.
+   */
+  getDailyReward: async () => {
+    return await callApi('getDailyReward', {});
   },
 
   /** Daily tasks with live progress + claim state. */

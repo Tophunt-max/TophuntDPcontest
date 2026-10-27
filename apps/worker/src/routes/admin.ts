@@ -49,7 +49,7 @@ import {
 } from "../lib/coinPricing";
 import { assertSessionUsable } from "../middleware/auth";
 import { getAppConfig, getGamificationSettings, getSeoAudit, invalidateSetting } from "../lib/settings";
-import { validateGamificationCoinLists } from "../lib/gamification";
+import { getDailyTaskDefs, getSettings as getGamification, rewardDayNumber, rewardDayStart, validateGamificationCoinLists } from "../lib/gamification";
 import { legalDocsForAdmin, LEGAL_DOC_KEYS, LEGAL_LAST_UPDATED } from "../content/legal";
 import { deleteAuthUser, updateAuthUser, setCustomClaims, getUserByEmail } from "../lib/firebaseAdmin";
 import { createNotification, createNotificationsBulk } from "../lib/notify";
@@ -148,7 +148,7 @@ import { budgetActivity, coinEconomyOverview, contestPnl, packagePnl, userStatem
 import { buildCoinReport, runCoinAlerts } from "../lib/coinAlerts";
 import { sendEmail } from "../lib/email";
 import { cronHealth } from "../lib/ops";
-import { decideReferral, parseReferralConfig, qualifyReferral, reconcileReferrals } from "../lib/referralProgram";
+import { decideReferral, parseReferralConfig, qualifyReferral, reconcileReferrals, referralLinks, referralMonthStart, reverseReferral } from "../lib/referralProgram";
 
 /**
  * Record a sensitive admin action in the audit trail. Best-effort — never
@@ -679,6 +679,147 @@ adminRoute.post("/rewards", async (c) => {
   // These amounts are credited to user balances: record who changed what.
   await logAudit(c, "settings.rewards.update", "settings", "gamification", { before: existing, after: merged });
   return c.json({ success: true });
+});
+
+/**
+ * Daily check-in and daily task activity per reward day (the admin's reset
+ * time), newest first. Check-ins come from the `daily_reward` ledger rows, task
+ * claims from `daily_task_claims`.
+ */
+adminRoute.get("/rewards/stats", async (c) => {
+  requireFullAdmin(c);
+  const days = boundedQueryInt(c.req.query("days"), 14, 1, 90);
+  const settings = await getGamification(c.env);
+  const ts = now();
+  const offsetMs = settings.dayResetOffsetMinutes * 60_000;
+  const today = rewardDayNumber(ts, settings.dayResetOffsetMinutes);
+  const firstDay = today - days + 1;
+  const since = rewardDayStart(ts, settings.dayResetOffsetMinutes) - (days - 1) * 86_400_000;
+  const checkins = await c.env.DB.prepare(
+    `SELECT CAST((created_at + ?) / 86400000 AS INTEGER) AS day, COUNT(*) AS n, COALESCE(SUM(amount), 0) AS coins
+       FROM coin_transactions WHERE type = 'daily_reward' AND created_at >= ?
+      GROUP BY day`,
+  )
+    .bind(offsetMs, since)
+    .all<{ day: number; n: number; coins: number }>();
+  // Task claims are stored on the reward day they were made, so no offset here.
+  const claims = await c.env.DB.prepare(
+    `SELECT day, task_id AS taskId, COUNT(*) AS n, COALESCE(SUM(reward), 0) AS coins
+       FROM daily_task_claims WHERE day >= ? GROUP BY day, task_id`,
+  )
+    .bind(firstDay)
+    .all<{ day: number; taskId: string; n: number; coins: number }>();
+  const streaks = await c.env.DB.prepare(
+    `SELECT SUM(CASE WHEN streak >= 7 THEN 1 ELSE 0 END) AS week, SUM(CASE WHEN streak >= 30 THEN 1 ELSE 0 END) AS month
+       FROM users WHERE last_daily_claim >= ?`,
+  )
+    .bind(rewardDayStart(ts, settings.dayResetOffsetMinutes) - 86_400_000)
+    .first<{ week: number; month: number }>();
+  const byDay = new Map<number, any>();
+  for (let d = today; d >= firstDay; d--) {
+    byDay.set(d, { day: d, date: new Date(d * 86_400_000).toISOString().slice(0, 10), checkins: 0, checkinCoins: 0, taskClaims: 0, taskCoins: 0, tasks: {} as Record<string, { claims: number; coins: number }> });
+  }
+  for (const r of checkins.results ?? []) {
+    const row = byDay.get(Number(r.day));
+    if (row) {
+      row.checkins = Number(r.n) || 0;
+      row.checkinCoins = Number(r.coins) || 0;
+    }
+  }
+  for (const r of claims.results ?? []) {
+    const row = byDay.get(Number(r.day));
+    if (!row) continue;
+    row.taskClaims += Number(r.n) || 0;
+    row.taskCoins += Number(r.coins) || 0;
+    row.tasks[r.taskId] = { claims: Number(r.n) || 0, coins: Number(r.coins) || 0 };
+  }
+  return c.json({
+    dayResetOffsetMinutes: settings.dayResetOffsetMinutes,
+    tasks: getDailyTaskDefs(settings).map((t) => ({ id: t.id, title: t.title, type: t.type, enabled: t.enabled })),
+    days: [...byDay.values()],
+    activeStreaks: { atLeast7: Number(streaks?.week || 0), atLeast30: Number(streaks?.month || 0) },
+  });
+});
+
+/** One user's check-in streak, recent check-ins, task claims and referral rows. */
+adminRoute.get("/users/:id/rewards", async (c) => {
+  requireFullAdmin(c);
+  const uid = c.req.param("id");
+  const db = getDb(c.env);
+  const u = await db
+    .select({ uid: schema.users.uid, streak: schema.users.streak, lastDailyClaim: schema.users.lastDailyClaim, referralCode: schema.users.referralCode, referredBy: schema.users.referredBy, deviceId: schema.users.deviceId })
+    .from(schema.users)
+    .where(eq(schema.users.uid, uid))
+    .get();
+  if (!u) throw httpsError("not-found", "User not found.");
+  const settings = await getGamification(c.env);
+  const ts = now();
+  const startOfToday = rewardDayStart(ts, settings.dayResetOffsetMinutes);
+  const last = u.lastDailyClaim ? Number(u.lastDailyClaim) : 0;
+  const checkins = await c.env.DB.prepare(
+    `SELECT id, amount, locked_delta AS lockedDelta, description, created_at AS createdAt
+       FROM coin_transactions WHERE uid = ? AND type = 'daily_reward' ORDER BY created_at DESC LIMIT 30`,
+  )
+    .bind(uid)
+    .all();
+  const tasks = await c.env.DB.prepare(
+    `SELECT task_id AS taskId, day, reward, created_at AS createdAt FROM daily_task_claims WHERE uid = ? ORDER BY created_at DESC LIMIT 50`,
+  )
+    .bind(uid)
+    .all();
+  const referredBy = await c.env.DB.prepare(
+    `SELECT r.id, r.status, r.referrer_uid AS referrerUid, ru.username AS referrerUsername, r.referee_reward AS refereeReward, r.created_at AS createdAt
+       FROM referrals r LEFT JOIN users ru ON ru.uid = r.referrer_uid WHERE r.referred_uid = ?`,
+  )
+    .bind(uid)
+    .first();
+  const invited = await c.env.DB.prepare(
+    `SELECT status, COUNT(*) AS n, COALESCE(SUM(referrer_reward), 0) AS earned FROM referrals WHERE referrer_uid = ? GROUP BY status`,
+  )
+    .bind(uid)
+    .all();
+  return c.json({
+    streak: Number(u.streak) || 0,
+    lastDailyClaim: last || null,
+    claimedToday: last >= startOfToday,
+    streakAlive: last >= startOfToday - 86_400_000,
+    checkins: checkins.results ?? [],
+    taskClaims: tasks.results ?? [],
+    referralCode: u.referralCode,
+    deviceId: u.deviceId,
+    referredBy: referredBy ?? null,
+    invited: invited.results ?? [],
+  });
+});
+
+/**
+ * Support fix for a user's check-in streak. `continueStreak` also marks
+ * yesterday as claimed, so the user's next claim continues the streak instead
+ * of starting again at day 1 (e.g. the app was down). It never marks TODAY as
+ * claimed or moves money: today's claim is still guarded by its per-day ledger
+ * id in claimDailyReward. Audited.
+ */
+adminRoute.patch("/users/:id/streak", async (c) => {
+  requireFullAdmin(c);
+  const uid = c.req.param("id");
+  const body = await c.req.json<any>();
+  const streak = Number(body?.streak);
+  if (!Number.isInteger(streak) || streak < 0 || streak > 100_000) throw httpsError("invalid-argument", "streak must be a whole number from 0 to 100000.");
+  const reason = String(body?.reason ?? "").trim();
+  if (reason.length < 3) throw httpsError("invalid-argument", "A reason is required.");
+  const db = getDb(c.env);
+  const u = await db.select({ streak: schema.users.streak, lastDailyClaim: schema.users.lastDailyClaim }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+  if (!u) throw httpsError("not-found", "User not found.");
+  const settings = await getGamification(c.env);
+  const ts = now();
+  const startOfYesterday = rewardDayStart(ts, settings.dayResetOffsetMinutes) - 86_400_000;
+  const last = u.lastDailyClaim ? Number(u.lastDailyClaim) : 0;
+  const patch: Record<string, unknown> = { streak, updatedAt: ts };
+  if (body?.continueStreak === true && last < startOfYesterday) patch.lastDailyClaim = startOfYesterday;
+  await db.update(schema.users).set(patch as any).where(eq(schema.users.uid, uid));
+  await invalidateUserCaches(c.env, [uid], c).catch(() => undefined);
+  await logAudit(c, "user.streak.update", "user", uid, { before: { streak: u.streak, lastDailyClaim: u.lastDailyClaim }, after: patch, reason });
+  return c.json({ success: true, streak, lastDailyClaim: (patch.lastDailyClaim as number | undefined) ?? (last || null) });
 });
 
 // ---- contests ----
@@ -4394,27 +4535,76 @@ adminRoute.get("/referrals", async (c) => {
   ).all();
   const byStatus = Object.fromEntries((stats.results || []).map((r) => [r.status, Number(r.n) || 0]));
   const coinsPaid = (stats.results || []).filter((r) => r.status === "rewarded").reduce((t, r) => t + (Number(r.paid) || 0), 0);
+  const month = await c.env.DB.prepare(
+    `SELECT COALESCE(SUM(referrer_reward + referee_reward), 0) AS s FROM referrals WHERE status = 'rewarded' AND rewarded_at >= ?`,
+  )
+    .bind(referralMonthStart(now()))
+    .first<{ s: number }>();
   return c.json({
     rows: (rows.results || []).map((r: any) => ({
       ...r,
       referredEmailVerified: !!r.referredEmailVerified,
       referredPhoneVerified: !!r.referredPhoneVerified,
     })),
-    stats: { byStatus, coinsPaid: coinsPaid + Number(milestones?.s || 0), milestonePaid: Number(milestones?.s || 0) },
+    stats: { byStatus, coinsPaid: coinsPaid + Number(milestones?.s || 0), milestonePaid: Number(milestones?.s || 0), paidThisMonth: Number(month?.s || 0) },
     topReferrers: top.results || [],
     program: parseReferralConfig(await getAppConfig(c.env)),
   });
 });
 
-/** Approve (pay) or reject a pending / in-review referral. Audited. */
+/**
+ * Approve (pay) or reject a pending / in-review referral, or reverse (claw
+ * back) a rewarded one. Audited.
+ */
 adminRoute.patch("/referrals/:id", async (c) => {
   requireFullAdmin(c);
   const id = c.req.param("id");
   const { action, reason } = await c.req.json<any>();
-  if (action !== "approve" && action !== "reject") throw httpsError("invalid-argument", "action must be approve or reject.");
+  if (action !== "approve" && action !== "reject" && action !== "reverse") {
+    throw httpsError("invalid-argument", "action must be approve, reject or reverse.");
+  }
+  if (action === "reverse") {
+    const why = String(reason ?? "").trim();
+    if (why.length < 3) throw httpsError("invalid-argument", "A reason is required to reverse a referral.");
+    const result = await reverseReferral(c.env, id, c.get("user")?.uid ?? null, why);
+    await logAudit(c, "referral.reverse", "referral", id, { reason: why, sides: result.sides });
+    return c.json({ success: true, ...result });
+  }
   const result = await decideReferral(c.env, id, action, c.get("user")?.uid ?? null, reason);
   await logAudit(c, `referral.${action}`, "referral", id, { reason: reason ?? null });
   return c.json({ success: true, ...result });
+});
+
+/** Approve or reject many pending / in-review referrals at once (max 100). */
+adminRoute.post("/referrals/bulk", async (c) => {
+  requireFullAdmin(c);
+  const { ids, action, reason } = await c.req.json<any>();
+  if (action !== "approve" && action !== "reject") throw httpsError("invalid-argument", "action must be approve or reject.");
+  if (!Array.isArray(ids) || ids.length === 0 || ids.length > 100 || !ids.every((x) => typeof x === "string" && x.length <= 64)) {
+    throw httpsError("invalid-argument", "ids must be a list of 1 to 100 referral ids.");
+  }
+  const adminUid = c.get("user")?.uid ?? null;
+  const results: { id: string; ok: boolean; status?: string; error?: string }[] = [];
+  for (const id of [...new Set(ids as string[])]) {
+    try {
+      const r = await decideReferral(c.env, id, action, adminUid, reason);
+      results.push({ id, ok: true, status: r.status });
+    } catch (e: any) {
+      results.push({ id, ok: false, error: String(e?.message || e).slice(0, 200) });
+    }
+  }
+  await logAudit(c, `referral.bulk_${action}`, "referral", null, {
+    reason: reason ?? null,
+    ok: results.filter((r) => r.ok).map((r) => r.id),
+    failed: results.filter((r) => !r.ok).map((r) => r.id),
+  });
+  return c.json({ success: true, results });
+});
+
+/** Accounts linked to a referral by device or IP (fraud review). */
+adminRoute.get("/referrals/:id/links", async (c) => {
+  requireFullAdmin(c);
+  return c.json(await referralLinks(c.env, c.req.param("id")));
 });
 
 
@@ -4676,7 +4866,7 @@ adminRoute.patch("/deposits/:id", async (c) => {
   }
   // Referral: an approved first deposit may qualify the user's pending referral
   // (lib/referralProgram.ts — never throws).
-  if (action === "approve") c.executionCtx.waitUntil(qualifyReferral(c.env, d.userId, "purchase"));
+  if (action === "approve") c.executionCtx.waitUntil(qualifyReferral(c.env, d.userId, "purchase", { amountInr: Number(d.payAmount) || 0 }));
   await logAudit(c, `deposit.${action}`, "deposit", id, { amount: d.amount, utr: d.utr });
   return c.json({ message: `Deposit ${status}` });
 });

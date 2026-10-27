@@ -31,7 +31,7 @@ import { toast } from "@/lib/toast";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { CoinPricingCard, RewardLockingCard, WithdrawalCard } from "@/components/coin/CoinCards";
 import { CoinAlertsCard, FreeRewardsBudgetCard } from "@/components/coin/AlertCards";
-import { AdsRewardCard, DailyLoginCard, DailyTasksCard, HallOfFameCard, VerificationRewardCard } from "@/components/coin/EarnCards";
+import { AdsRewardCard, DailyLoginCard, DailyTasksCard, HallOfFameCard, RewardStatsCard, VerificationRewardCard } from "@/components/coin/EarnCards";
 import { ProgramSettings } from "@/pages/Referrals";
 import { GatewayConfig } from "@/pages/Deposits";
 import CoinPackages from "@/pages/CoinPackages";
@@ -218,6 +218,7 @@ function EarnTab() {
         <VerificationRewardCard data={data} />
         <DailyLoginCard rewards={rewards.data} />
         <DailyTasksCard rewards={rewards.data} />
+        <RewardStatsCard />
         <AdsRewardCard data={data} />
         <HallOfFameCard rewards={rewards.data} />
       </div>

@@ -176,7 +176,7 @@ export default function CongratulationsScreen() {
             emitToast(
               outcome.referralStatus === 'rewarded'
                 ? 'Referral reward aapke wallet mein aa gaya! 🎉'
-                : `Referral code lag gaya! ${QUALIFY_COPY[outcome.qualifyAction as keyof typeof QUALIFY_COPY]?.short ?? 'qualify'} karte hi Diamond milenge.`,
+                : `Referral code lag gaya! ${QUALIFY_COPY[outcome.qualifyAction as keyof typeof QUALIFY_COPY]?.short ?? 'qualify'} karte hi reward milega.`,
               'success',
             );
           } else if (outcome?.status === 'refused' && outcome.message) {

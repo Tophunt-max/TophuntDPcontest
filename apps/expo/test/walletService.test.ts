@@ -23,10 +23,16 @@ describe('walletService', () => {
     expect(callApi).toHaveBeenCalledWith('topup', proof);
   });
 
-  it('claimDailyBonus calls claimDailyReward with the day index', async () => {
+  it('claimDailyBonus calls claimDailyReward and sends nothing (the server decides the day)', async () => {
     const { walletService } = await import('@/src/services/wallet/walletService');
-    await walletService.claimDailyBonus('uid-1', 3);
-    expect(callApi).toHaveBeenCalledWith('claimDailyReward', { dayIndex: 3 });
+    await walletService.claimDailyBonus();
+    expect(callApi).toHaveBeenCalledWith('claimDailyReward', {});
+  });
+
+  it('getDailyReward reads the server check-in track', async () => {
+    const { walletService } = await import('@/src/services/wallet/walletService');
+    await walletService.getDailyReward();
+    expect(callApi).toHaveBeenCalledWith('getDailyReward', {});
   });
 
   it('claimAdReward calls the claimAdReward action', async () => {

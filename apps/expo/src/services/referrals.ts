@@ -11,7 +11,7 @@ import { callApi, readApiLive } from '@/src/services/api';
 import { getDeviceId } from '@/src/lib/deviceId';
 
 export type QualifyAction = 'signup' | 'verified' | 'first_contest' | 'first_purchase';
-export type ReferralStatus = 'pending' | 'review' | 'rewarded' | 'rejected' | 'expired';
+export type ReferralStatus = 'pending' | 'review' | 'rewarded' | 'rejected' | 'expired' | 'reversed';
 
 export interface ReferralProgramPublic {
   enabled: boolean;
@@ -21,6 +21,10 @@ export interface ReferralProgramPublic {
   applyWindowDays: number;
   qualifyWindowDays: number;
   milestones: { count: number; bonus: number }[];
+  /** first_purchase only: smallest purchase that qualifies (₹, 0 = any). */
+  minPurchaseInr?: number;
+  /** How rewards are credited (App Control → reward locking). */
+  rewardUnit?: 'Diamond' | 'DP coin';
 }
 
 export interface ReferralSummary {
@@ -122,9 +126,12 @@ export async function clearPendingInvite(): Promise<void> {
 }
 
 /** One-line description of the offer, for signup / invite screens. */
-export function offerLine(p: Pick<ReferralProgramPublic, 'refereeReward' | 'qualifyAction'> | null | undefined): string | null {
+export function offerLine(
+  p: Pick<ReferralProgramPublic, 'refereeReward' | 'qualifyAction' | 'rewardUnit'> | null | undefined,
+): string | null {
   if (!p || !(p.refereeReward > 0)) return null;
+  const unit = p.rewardUnit ?? 'Diamond';
   return p.qualifyAction === 'signup'
-    ? `Friend ka code lagao aur ${p.refereeReward} Diamond pao!`
-    : `Friend ka code lagao — ${QUALIFY_COPY[p.qualifyAction].short} karte hi ${p.refereeReward} Diamond milenge!`;
+    ? `Friend ka code lagao aur ${p.refereeReward} ${unit} pao!`
+    : `Friend ka code lagao — ${QUALIFY_COPY[p.qualifyAction].short} karte hi ${p.refereeReward} ${unit} milenge!`;
 }

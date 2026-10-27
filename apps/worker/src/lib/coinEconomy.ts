@@ -48,6 +48,7 @@ export const LEDGER_CATEGORIES: Record<string, string> = {
   withdrawal_hold_release: "cash_out",
   withdrawal: "cash_out",
   refund_clawback: "reversals",
+  referral_clawback: "reversals",
   chargeback_clawback: "reversals",
   account_deletion_forfeit: "reversals",
   balance_rounding: "reversals",
