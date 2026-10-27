@@ -79,7 +79,19 @@ export default function UsersPage() {
               />
             </div>
             <button
-              onClick={() => exportCsv(`users-${Date.now()}.csv`, data, ["id", "username", "fullName", "email", "Dpcoin", "lockedCoins", "level", "role", "isBlocked", "createdAt"])}
+              onClick={() =>
+                exportCsv(
+                  `users-${Date.now()}.csv`,
+                  // Dpcoin is the total; split it so the export cannot be misread.
+                  data.map((u: any) => ({
+                    ...u,
+                    totalCoins: Number(u.Dpcoin || 0),
+                    dpCoin: Math.max(0, Number(u.Dpcoin || 0) - Number(u.lockedCoins || 0)),
+                    diamond: Math.min(Number(u.Dpcoin || 0), Number(u.lockedCoins || 0)),
+                  })),
+                  ["id", "username", "fullName", "email", "dpCoin", "diamond", "totalCoins", "level", "role", "isBlocked", "createdAt"],
+                )
+              }
               className="flex items-center gap-2 px-3 py-2 rounded-xl bg-secondary text-sm font-medium hover:bg-secondary/70"
             >
               <Download size={15} /> CSV
@@ -292,7 +304,7 @@ function UserDetail({ id, onClose, onDone }: { id: string; onClose: () => void; 
               </div>
               <div className="min-w-0">
                 <p className="font-bold text-foreground truncate flex items-center gap-1">{u.fullName || u.username} {u.verified && <BadgeCheck size={15} className="text-blue-500" />}</p>
-                <p className="text-xs text-muted-foreground truncate">Lv {u.level ?? 0} · {u.Dpcoin ?? 0} coins · {u.stats?.followersCount ?? 0} followers</p>
+                <p className="text-xs text-muted-foreground truncate">Lv {u.level ?? 0} · 🪙 {fmtNumber(Math.max(0, Number(u.Dpcoin || 0) - Number(u.lockedCoins || 0)))} DP coin · 💎 {fmtNumber(Math.min(Number(u.Dpcoin || 0), Number(u.lockedCoins || 0)))} Diamond · {u.stats?.followersCount ?? 0} followers</p>
               </div>
               <div className="ml-auto flex gap-2">
                 <button onClick={() => flagMut.mutate({ verified: !u.verified })} className={`px-3 py-1.5 rounded-lg text-xs font-medium ${u.verified ? "bg-blue-100 text-blue-700" : "bg-secondary text-foreground"}`}>{u.verified ? "Verified ✓" : "Verify"}</button>
@@ -339,7 +351,22 @@ function UserDetail({ id, onClose, onDone }: { id: string; onClose: () => void; 
                 {(txns.data ?? []).length === 0 ? <p className="text-sm text-muted-foreground py-6 text-center">No transactions</p> : txns.data!.map((t: any) => (
                   <div key={t.id} className="flex items-center justify-between gap-2 p-2 rounded-lg hover:bg-secondary/40 text-sm">
                     <span className="text-muted-foreground truncate">{t.type} · {fmtDateTime(t.createdAt)}</span>
-                    <span className={`font-bold ${t.amount >= 0 ? "text-green-600" : "text-red-600"}`}>{t.amount >= 0 ? "+" : ""}{t.amount}</span>
+                    <span className="font-bold whitespace-nowrap">
+                      {/* Split into DP coin and Diamond (lockedDelta is the Diamond part). */}
+                      {(() => {
+                        const d = Number(t.lockedDelta || 0);
+                        const c = Number(t.amount || 0) - d;
+                        const f = (n: number) => `${n >= 0 ? "+" : ""}${fmtNumber(n)}`;
+                        return (
+                          <>
+                            {c ? <span className={c >= 0 ? "text-green-600" : "text-red-600"}>{f(c)} 🪙</span> : null}
+                            {c && d ? " " : null}
+                            {d ? <span className={d >= 0 ? "text-cyan-700" : "text-red-600"}>{f(d)} 💎</span> : null}
+                            {!c && !d ? "0" : null}
+                          </>
+                        );
+                      })()}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -386,7 +413,11 @@ function WalletDialog({
   const mut = useMutation({
     mutationFn: () => api.adjustWallet(user.id, Number(amount), type, reason.trim(), requestId, locked),
     onSuccess: (d: any) => {
-      toast.success(`Wallet updated. New balance: ${d.newBalance}`);
+      toast.success(
+        d.newDiamonds !== undefined
+          ? `Wallet updated. Ab: ${d.newDpcoin} DP coin · ${d.newDiamonds} Diamond`
+          : `Wallet updated. Naya total (DP coin + Diamond): ${d.newBalance}`,
+      );
       onDone();
       onClose();
     },

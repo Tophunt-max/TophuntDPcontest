@@ -62,7 +62,7 @@ export default function AccountDeletions() {
     onSuccess: (r) => {
       toast.success(
         r.forfeitedCoins != null
-          ? `Purge run — ${fmtNumber(r.forfeitedCoins)} coins forfeited.`
+          ? `Purge run — ${fmtNumber(r.forfeitedCoins)} (DP coin + Diamond) forfeited.`
           : "Purge run.",
       );
       invalidate();
@@ -160,7 +160,7 @@ export default function AccountDeletions() {
         />
         <StatTile
           icon={<span className="text-xs font-bold text-muted-foreground">🪙</span>}
-          label="Coins forfeited"
+          label="Forfeited (DP coin + Diamond)"
           value={fmtNumber(stats?.forfeitedCoinsTotal)}
         />
       </div>
@@ -256,7 +256,7 @@ export default function AccountDeletions() {
           },
           {
             key: "coins",
-            header: "Coins",
+            header: "Balance (🪙 + 💎)",
             render: (r) => <span className="text-muted-foreground">{fmtNumber(r.balanceAtRequest)}</span>,
           },
           {

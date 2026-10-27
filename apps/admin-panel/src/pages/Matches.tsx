@@ -31,7 +31,7 @@ export default function Matches() {
       toast.success(
         result?.prizeType === "product"
           ? "Winner declared — prize claim created. Fulfil it in Prize Claims."
-          : "Winner declared & reward paid",
+          : "Winner declared, DP coin prize paid",
       );
       invalidate();
     },
@@ -88,10 +88,10 @@ export default function Matches() {
             ),
           },
           { key: "status", header: "Status", render: (m: any) => <Badge variant={m.status === "active" ? "active" : m.status === "completed" ? "ended" : m.status === "cancelled" ? "cancelled" : "pending"}>{m.status?.replace(/_/g, " ")}</Badge> },
-          { key: "entry", header: "Entry", render: (m: any) => <span>{fmtNumber(m.entryFee)}</span> },
+          { key: "entry", header: "Entry (💎)", render: (m: any) => <span>{fmtNumber(m.entryFee)}</span> },
           {
             key: "reward",
-            header: "Prize",
+            header: "Prize (🪙)",
             // A product battle's rewardAmount is 0 by construction, so rendering the
             // coin figure alone showed `0` and read as a broken contest.
             render: (m: any) =>
@@ -129,7 +129,7 @@ export default function Matches() {
                     <IconBtn
                       title="Cancel & refund"
                       onClick={async () => {
-                        if (await confirm({ title: "Cancel match?", description: "Both entry fees will be refunded.", variant: "destructive" }))
+                        if (await confirm({ title: "Cancel match?", description: "Both Diamond entry fees will be refunded.", variant: "destructive" }))
                           cancelMut.mutate(m.id);
                       }}
                     >

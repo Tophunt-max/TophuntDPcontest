@@ -16,9 +16,9 @@ import { SegTabs, UserCell, MethodBadge, ActionBtn } from "@/components/finance/
 const RISK_FLAG_LABELS: Record<string, string> = {
   new_account: "Naya account (7 din se kam)",
   shared_device: "Same device par doosra account",
-  mostly_free_coins: "Zyada tar coin free rewards se",
+  mostly_free_coins: "Zyada tar balance free rewards se",
   frequent: "7 din me 3+ withdrawal request",
-  never_played: "Na kabhi coin khareeda, na contest jeeta",
+  never_played: "Na kabhi Diamond khareeda, na contest jeeta",
 };
 
 function RiskCell({ level, flags }: { level?: string | null; flags?: unknown }) {
@@ -98,7 +98,7 @@ export default function Withdrawals() {
       {/* Summary */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
         <StatCard icon={Banknote} label={`Requests (${tab || "all"})`} value={fmtNumber(stats.count)} gradient="gradient-blue" />
-        <StatCard icon={Coins} label="DP to pay out" value={fmtNumber(stats.dp)} gradient="gradient-purple" />
+        <StatCard icon={Coins} label="🪙 DP coin to pay out" value={fmtNumber(stats.dp)} gradient="gradient-purple" />
         <StatCard icon={IndianRupee} label="Cash payout (net)" value={`₹${fmtNumber(stats.cash)}`} gradient="gradient-green" />
         <StatCard icon={Percent} label="Platform fees" value={`₹${fmtNumber(Math.round(stats.fees * 100) / 100)}`} gradient="gradient-cyan" />
         <StatCard icon={Hourglass} label="Pending" value={fmtNumber(stats.pending)} gradient="gradient-orange" />
@@ -115,7 +115,7 @@ export default function Withdrawals() {
           {
             key: "user",
             header: "User",
-            render: (w: any) => <UserCell name={w.fullName || w.username || w.userId} sub={`Balance: ${fmtNumber(w.balance)} DP`} />,
+            render: (w: any) => <UserCell name={w.fullName || w.username || w.userId} sub={`🪙 ${fmtNumber(Math.max(0, Number(w.balance || 0) - Number(w.lockedCoins || 0)))} DP coin · 💎 ${fmtNumber(Math.min(Number(w.balance || 0), Number(w.lockedCoins || 0)))}`} />,
           },
           {
             key: "amount",

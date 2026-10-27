@@ -89,7 +89,7 @@ export default function Analytics() {
                 Resolve Contests Now
               </button>
               <button
-                onClick={async () => { if (await confirm({ title: "Run Hall of Fame?", description: "Rewards top-3 by monthly wins and resets monthly counters.", variant: "destructive" })) hofMut.mutate(); }}
+                onClick={async () => { if (await confirm({ title: "Run Hall of Fame?", description: "Top-3 (monthly wins) ko Hall of Fame Diamond deta hai aur monthly counters reset karta hai.", variant: "destructive" })) hofMut.mutate(); }}
                 disabled={hofMut.isPending}
                 className="px-4 py-2 rounded-xl bg-secondary text-sm font-medium hover:bg-secondary/70 disabled:opacity-50"
               >

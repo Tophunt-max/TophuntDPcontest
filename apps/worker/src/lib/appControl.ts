@@ -457,7 +457,7 @@ const FEATURE_LABEL: Record<FeatureKey, string> = {
   contests: "Contests",
   chat: "Chat",
   stories: "Stories",
-  topups: "Coin top-up",
+  topups: "Diamond top-up",
   withdrawals: "Withdrawals",
   posts: "Posts",
 };

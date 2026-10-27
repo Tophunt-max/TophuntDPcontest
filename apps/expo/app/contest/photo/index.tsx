@@ -72,7 +72,7 @@ export default function PhotoContestsScreen() {
     <View style={styles.heroWrap}>
       <Text style={[styles.heroTitle, { color: textColor }]}>Pick your battle</Text>
       <Text style={[styles.heroSubtitle, { color: subTextColor }]}>
-        Enter a photo contest, submit your best shot, and win coins.
+        Enter a photo contest, submit your best shot, and win DP coins.
       </Text>
       {contests.length > 0 && (
         <View style={[styles.countPill, { backgroundColor: chipBg }]}>

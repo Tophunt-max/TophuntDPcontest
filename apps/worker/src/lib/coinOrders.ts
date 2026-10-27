@@ -589,8 +589,8 @@ export async function clawbackPaymentOrder(
         -coinsToClaw,
         kind === "dispute" ? "chargeback_clawback" : "refund_clawback",
         kind === "dispute"
-          ? `Chargeback on payment ${paymentId} — ${coinsToClaw} coins reversed`
-          : `Refund of payment ${paymentId} — ${coinsToClaw} coins reversed`,
+          ? `Chargeback on payment ${paymentId} — ${coinsToClaw} reversed (Diamond first, then DP coin)`
+          : `Refund of payment ${paymentId} — ${coinsToClaw} reversed (Diamond first, then DP coin)`,
         ts,
         coinsToClaw,
         coinsToClaw,

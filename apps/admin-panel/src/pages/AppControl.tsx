@@ -28,7 +28,7 @@ const FEATURES: { key: string; label: string }[] = [
   { key: "chat", label: "Chat" },
   { key: "stories", label: "Stories" },
   { key: "posts", label: "Posts" },
-  { key: "topups", label: "Coin top-up / store" },
+  { key: "topups", label: "💎 Diamond store / top-up" },
   { key: "withdrawals", label: "Withdrawals" },
 ];
 
@@ -101,11 +101,11 @@ export default function AppControl() {
         <ForceUpdateCard data={data} pending={save.isPending} onSave={(p) => save.mutate(p)} confirm={confirm} />
         <AnnouncementCard data={data} pending={save.isPending} onSave={(p) => save.mutate(p)} />
         <FeaturesCard data={data} pending={save.isPending} onSave={(p) => save.mutate(p)} confirm={confirm} />
-        <Card icon={Coins} title="Coin settings" tint="text-pink-500">
+        <Card icon={Coins} title="DP coin aur Diamond settings" tint="text-pink-500">
           <p className="text-sm text-muted-foreground">
-            Withdrawal rules, emergency payout freeze, coin Buy rate aur free rewards ka "sirf khelne ke liye" switch ab{" "}
+            Withdrawal rules (DP coin), emergency payout freeze, Diamond ka Buy rate aur free rewards ka "Diamond ya DP coin" switch ab{" "}
             <Link href="/coin-economy" className="font-semibold text-foreground underline">Coin Economy</Link> mein hain
-            (Cash out, Buy aur Earn tabs). Har coin setting ki ek hi jagah.
+            (Cash out, Buy aur Earn tabs). Har DP coin aur Diamond setting ki ek hi jagah.
           </p>
         </Card>
       </div>

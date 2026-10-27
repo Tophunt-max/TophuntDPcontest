@@ -33,9 +33,9 @@ export interface UserProfile {
 
   // Contest Platform Fields
   Dpcoin: number;
-  /** Play-only promo coins inside Dpcoin: spendable on contests, never withdrawable. */
+  /** The Diamond part of `Dpcoin` (users.locked_coins): entry fees only, never withdrawable. Use balancesOf(). */
   lockedCoins?: number;
-  /** Alias for the spendable coin balance used by some screens. */
+  /** Unused legacy field; not a balance. Use balancesOf() from src/lib/balances.ts. */
   coins?: number;
   isAdmin: boolean;
   /**

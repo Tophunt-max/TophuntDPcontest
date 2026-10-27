@@ -462,7 +462,7 @@ export default function Contests() {
                       <span className="truncate text-xs font-medium">{contest.prizeProductTitle || "Product"}</span>
                     </span>
                   ) : (
-                    <span>{fmtNumber(contest.rewardCoins)}</span>
+                    <span title="Prize, DP coin me">🪙 {fmtNumber(contest.rewardCoins)}</span>
                   )}
                 </div>
               ),
@@ -922,13 +922,13 @@ function ContestDialog({
     // A product contest pays no coins, so the coin field is not validated and not
     // read — the Worker forces it to 0 regardless, and validating a disabled field
     // would block a save on a number that is about to be discarded.
-    const rewardCoins = isProduct ? 0 : integer("rewardCoins", "Reward coins", 0, 10_000_000);
+    const rewardCoins = isProduct ? 0 : integer("rewardCoins", "Prize (DP coin)", 0, 10_000_000);
     if (!isProduct && !next.rewardCoins && !next.totalEntryFee && rewardCoins > pot && !effectiveBudgetId) {
-      next.rewardCoins = `Reward pot (${fmtNumber(pot)}) se zyada hai. Neeche "Promo prize budget" chuno, ya reward ${fmtNumber(pot)} ya kam rakho.`;
+      next.rewardCoins = `Prize (DP coin) pot (${fmtNumber(pot)} Diamond) se zyada hai. Neeche "Promo prize budget" chuno, ya prize ${fmtNumber(pot)} ya kam rakho.`;
     }
-    const prizeCostCoins = isProduct ? integer("prizeCostCoins", "Product coin value", 0, 10_000_000) : 0;
+    const prizeCostCoins = isProduct ? integer("prizeCostCoins", "Product value (DP coin, sirf admin)", 0, 10_000_000) : 0;
     if (isProduct && !next.prizeCostCoins && !next.totalEntryFee && prizeCostCoins > pot && !effectiveBudgetId) {
-      next.prizeCostCoins = `Coin value pot (${fmtNumber(pot)}) se zyada hai. Neeche "Product prize budget" chuno.`;
+      next.prizeCostCoins = `Product value (DP coin) pot (${fmtNumber(pot)} Diamond) se zyada hai. Neeche "Product prize budget" chuno.`;
     }
     const voteDurationDays = integer("voteDurationDays", "Vote duration", 1, 30);
     const autoCancelHours = integer("autoCancelHours", "Waiting auto-cancel", 1, 168);
@@ -1346,15 +1346,15 @@ function ContestDialog({
             <section className="space-y-4 border-t border-border pt-5">
               <FormSectionTitle
                 title="Prize"
-                description="A contest awards either coins or one physical product — never both."
+                description="A contest awards either DP coins or one physical product — never both."
               />
               <div className="grid gap-3 sm:grid-cols-2">
                 <PrizeTypeOption
                   selected={!isProduct}
                   disabled={saving}
                   icon={Coins}
-                  title="Coins"
-                  description="Credited to the winner's wallet on settlement. Capped by the entry-fee pot."
+                  title="DP coin"
+                  description="Winner ko DP coin milte hain (withdraw ho sakte). Entry-fee pot (Diamond) tak, upar ka budget se."
                   onSelect={() => set("prizeType", "coins")}
                 />
                 <PrizeTypeOption
@@ -1417,7 +1417,7 @@ function ContestDialog({
                       onChange={(value) => set("prizeProductValue", value)}
                     />
                     <NumberField
-                      label="Coin value (sirf admin ko dikhega)"
+                      label="DP coin value (sirf admin ko dikhega)"
                       value={form.prizeCostCoins}
                       min={0}
                       max={10_000_000}
@@ -1442,7 +1442,7 @@ function ContestDialog({
                   </div>
                   <InlineNote>
                     The declared value is shown to users as what the prize is worth. It is never credited and never
-                    spendable — a product contest pays 0 coins, and the entry fees it collects are what pay for the item.
+                    spendable — a product contest pays 0 DP coin, and the Diamond entry fees it collects are what pay for the item.
                   </InlineNote>
                 </div>
               )}
@@ -1477,14 +1477,14 @@ function ContestDialog({
               </div>
               {isProduct && (
                 <InlineNote>
-                  Reward coins are fixed at 0 because this contest awards a product. Switch the prize back to Coins to set
-                  a coin reward.
+                  Prize (DP coin) is fixed at 0 because this contest awards a product. Switch the prize back to DP coin to set
+                  a DP coin prize.
                 </InlineNote>
               )}
               {(
                 <div className="sm:col-span-2 space-y-1.5">
                   <label className="text-sm font-medium text-foreground" htmlFor="contest-subsidy-budget">
-                    {isProduct ? "Product prize budget (coin value isse katega)" : "Promo prize budget"}
+                    {isProduct ? "Product prize budget (DP coin value isse katega)" : "Promo prize budget (DP coin, asli ₹)"}
                   </label>
                   <select
                     id="contest-subsidy-budget"
@@ -1494,7 +1494,7 @@ function ContestDialog({
                     onChange={(e) => set("subsidyBudgetId", e.target.value)}
                   >
                     <option value="">
-                      {isProduct ? `Koi nahi — coin value pot (${fmtNumber(pot)}) tak hi` : `Koi nahi — prize pot (${fmtNumber(pot)}) tak hi`}
+                      {isProduct ? `Koi nahi — value pot (${fmtNumber(pot)} Diamond) tak hi` : `Koi nahi — prize pot (${fmtNumber(pot)} Diamond) tak hi`}
                     </option>
                     {prizeBudgets.map((b) => (
                       <option key={b.id} value={b.id}>
@@ -1503,14 +1503,14 @@ function ContestDialog({
                     ))}
                   </select>
                   <p className="text-xs text-muted-foreground">
-                    Pot = dono players ki entry fee ({fmtNumber(pot)} coins).
+                    Pot = dono players ki entry fee ({fmtNumber(pot)} Diamond).
                     {subsidyPerMatch > 0
                       ? isProduct
-                        ? ` Har product par budget se ${fmtNumber(subsidyPerMatch)} coin katenge (coin value ${fmtNumber(productCost)} − pot ${fmtNumber(pot)}). Ye app me kisi ko nahi dikhega.`
-                        : ` Har match par platform ${fmtNumber(subsidyPerMatch)} coin apni taraf se dega.`
+                        ? ` Har product par budget se ${fmtNumber(subsidyPerMatch)} katenge (value ${fmtNumber(productCost)} − pot ${fmtNumber(pot)}). Ye app me kisi ko nahi dikhega.`
+                        : ` Har match par platform ${fmtNumber(subsidyPerMatch)} DP coin apni taraf se dega (asli ₹).`
                       : isProduct
-                        ? " Coin value pot se zyada ho tabhi budget lagta hai."
-                        : " Reward pot se zyada ho tabhi budget lagta hai."}
+                        ? " Value pot se zyada ho tabhi budget lagta hai."
+                        : " Prize pot se zyada ho tabhi budget lagta hai."}
                     {subsidyPerMatch > 0 && chosenBudget
                       ? isProduct
                         ? ` Ye budget abhi ~${fmtNumber(Math.floor(chosenBudget.remainingCoins / subsidyPerMatch))} aur product de sakta hai. Khatam hone par naye match ruk jayenge — budget badha kar phir chalu karo.`
@@ -1526,7 +1526,7 @@ function ContestDialog({
                 </div>
               )}
               {isEdit && contest && contest.activeMatches > 0 && effectiveRewardCoins !== contest.rewardCoins && (
-                <InlineWarning>Reward coins cannot change while {contest.activeMatches} matches are active.</InlineWarning>
+                <InlineWarning>Prize (DP coin) cannot change while {contest.activeMatches} matches are active.</InlineWarning>
               )}
               {isEdit && contest && contest.waitingMatches > 0 && Number(form.voteDurationDays) !== contest.voteDurationDays && (
                 <InlineWarning>Vote duration cannot change while {contest.waitingMatches} matches are waiting.</InlineWarning>

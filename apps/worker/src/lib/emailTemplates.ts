@@ -281,7 +281,7 @@ export function welcomeEmail(
       preview: `Your ${BRAND.name} account is ready. Jump into your first battle.`,
       heading: `Welcome, ${who}!`,
       paragraphs: [
-        `Your ${BRAND.name} account is ready. Enter photo and video battles, win coins, and climb the leaderboard.`,
+        `Your ${BRAND.name} account is ready. Enter photo and video battles, win DP coins, and climb the leaderboard.`,
         "Tap below to open the app and start your first battle.",
       ],
       cta: opts.appUrl ? { label: "Open TopHunt", url: opts.appUrl } : undefined,
@@ -290,7 +290,7 @@ export function welcomeEmail(
     text: plain(
       [
         `Welcome to ${BRAND.name}, ${name || "there"}!`,
-        "Your account is ready. Enter photo and video battles, win coins, and climb the leaderboard.",
+        "Your account is ready. Enter photo and video battles, win DP coins, and climb the leaderboard.",
         ...(opts.appUrl ? [`Open the app: ${opts.appUrl}`] : []),
       ],
       supportEmail,
@@ -426,12 +426,12 @@ export function coinsReversedEmail(
   const n = Math.round(Number(coins) || 0);
   const why = reason ? ` because a payment was ${reason}` : "";
   return {
-    subject: `${n} Diamond were reversed on your ${BRAND.name} wallet`,
+    subject: `${n} reversed on your ${BRAND.name} wallet (Diamond first, then DP coin)`,
     html: layout({
-      preview: `${n} Diamond were removed from your wallet (Diamond first, then DP coin).`,
+      preview: `${n} were removed from your wallet (Diamond first, then DP coin).`,
       heading: "Coins reversed",
       paragraphs: [
-        `<b>${esc(n)} Diamond</b> have been removed from your ${BRAND.name} wallet${esc(why)}.`,
+        `<b>${esc(n)}</b> (Diamond first, then DP coin) have been removed from your ${BRAND.name} wallet${esc(why)}.`,
         "If this pushed your balance below zero, top up to bring it back to positive before you can withdraw again.",
       ],
       note: "Think this is a mistake? Reply to your bank about the original charge, then contact us so we can help.",
@@ -439,7 +439,7 @@ export function coinsReversedEmail(
     }),
     text: plain(
       [
-        `${n} Diamond have been removed from your ${BRAND.name} wallet${why}.`,
+        `${n} (Diamond first, then DP coin) have been removed from your ${BRAND.name} wallet${why}.`,
         "If this pushed your balance below zero, top up to bring it back to positive before you can withdraw again.",
         "Think this is a mistake? Contact us so we can help.",
       ],
@@ -605,14 +605,14 @@ export function contestRefundEmail(
       heading: "Entry fee refunded",
       paragraphs: [
         `The battle <b>"${esc(title)}"</b> did not complete — ${esc(why)}.`,
-        "Your entry fee has been refunded to your wallet in full. This email is your receipt.",
+        "Your entry fee has been returned to your wallet as Diamond, in full. This email is your receipt.",
       ],
       supportEmail,
     }),
     text: plain(
       [
         `The battle "${title}" did not complete — ${why}.`,
-        "Your entry fee has been refunded to your wallet in full. This email is your receipt.",
+        "Your entry fee has been returned to your wallet as Diamond, in full. This email is your receipt.",
       ],
       supportEmail,
     ),

@@ -306,7 +306,7 @@ export function freeRewardBudgetStatements(
         budgetId: p.budgetId,
         uid: p.uid,
         refId: p.refId,
-        description: `${p.label}: ${p.coins} coins`,
+        description: `${p.label}: ${p.coins} Diamond`,
         ts: p.ts,
       }, held, [id]),
       env.DB.prepare(`UPDATE promo_reservations SET status = 'used', updated_at = ? WHERE id = ? AND status = 'held'`).bind(p.ts, id),

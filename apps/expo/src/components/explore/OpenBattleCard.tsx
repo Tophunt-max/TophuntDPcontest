@@ -12,6 +12,7 @@ import { participantAvatar, participantThumb } from '@/src/lib/exploreMedia';
 import { ScaleTouchable } from './ScaleTouchable';
 import { GOLD, colorForType, gradForType, type ExplorePalette } from './theme';
 
+import { CoinIcon } from '@/src/components/ui/CoinIcon';
 export const OPEN_CARD_W = 248;
 
 /**
@@ -82,7 +83,10 @@ export const OpenBattleCard = React.memo(function OpenBattleCard({
         {prize.type === 'product' ? (
           <Text style={styles.prize} numberOfLines={1}>🎁 {prize.product.title}</Text>
         ) : prize.coins > 0 ? (
-          <Text style={styles.prize}>Win {prize.coins}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
+            <Text style={styles.prize}>Win {prize.coins}</Text>
+            <CoinIcon size={11} color={GOLD} />
+          </View>
         ) : null}
       </View>
       <LinearGradient colors={isMine ? ['#9AA0AA', '#7E848E'] : grad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.cta}>

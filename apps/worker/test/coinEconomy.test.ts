@@ -413,3 +413,45 @@ describe('admin wallet: DP coin or Diamond', () => {
     await expectBalanced(env);
   });
 });
+
+describe('Diamond / DP coin money rules', () => {
+  it('a legacy (unreserved) payout approval takes DP coins only, never Diamonds', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'boss');
+    await seedUser(env, 'lee');
+    await adjustUserWallet(env as any, { uid: 'lee', amount: 40, direction: 'add', type: 'contest_win_reward', description: 'won' });
+    await adjustUserWallet(env as any, { uid: 'lee', amount: 100, direction: 'add', type: 'purchase', description: 'bought', locked: true });
+    const ts = Date.now();
+    const add = (id: string, amount: number) => env.DB.prepare(
+      `INSERT INTO withdrawals (id, user_id, amount, cash_amount, method, account_details, status, reserved, created_at, updated_at)
+       VALUES (?, 'lee', ?, ?, 'upi', 'lee@okhdfc', 'pending', 0, ?, ?)`,
+    ).bind(id, amount, amount / 10, ts, ts).run();
+    await add('w_big', 100);
+    // 140 total but only 40 DP coins: refused, nothing moves.
+    let r = await admin(env, 'PATCH', '/withdrawals/w_big', { action: 'approve' });
+    expect(r.status).toBe(412);
+    expect(r.body.error.message).toMatch(/DP coin/);
+    expect(await user(env, 'lee')).toMatchObject({ dpcoin: 140, lockedCoins: 100 });
+    await add('w_ok', 40);
+    r = await admin(env, 'PATCH', '/withdrawals/w_ok', { action: 'approve' });
+    expect(r.status).toBe(200);
+    expect(await user(env, 'lee')).toMatchObject({ dpcoin: 100, lockedCoins: 100 });
+    await expectBalanced(env);
+  });
+
+  it('a match refund is always Diamonds, even for an entry row without a Diamond part', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'old', 0);
+    const ts = Date.now();
+    // A pre-Diamond entry: 10 coins paid with locked_delta 0.
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO coin_transactions (id, uid, amount, type, created_at) VALUES ('open:old2', 'old', 10, 'contest_win_reward', ?)`).bind(ts),
+      env.DB.prepare(`INSERT INTO coin_transactions (id, uid, amount, type, match_id, created_at) VALUES ('contest_entry:m_old:old', 'old', -10, 'contest_entry_fee', 'm_old', ?)`).bind(ts),
+      env.DB.prepare(`INSERT INTO contest_matches (id, status, type, title, entry_fee, user_a, created_at) VALUES ('m_old', 'waiting_for_opponent', 'photo', 'Old', 20, '{"uid":"old"}', ?)`).bind(ts),
+    ]);
+    await settleRefund(env as any, { matchId: 'm_old', contestId: null as any, expectedStatus: 'waiting_for_opponent', finalStatus: 'cancelled', participantUids: ['old'], refundPerUser: 10, description: 'r', completedAt: ts });
+    expect(await user(env, 'old')).toMatchObject({ dpcoin: 10, lockedCoins: 10 });
+    const row = await env.DB.prepare(`SELECT locked_delta, description FROM coin_transactions WHERE id = 'contest_refund:m_old:old'`).first<any>();
+    expect(row).toMatchObject({ locked_delta: 10, description: 'r (Diamond)' });
+  });
+});

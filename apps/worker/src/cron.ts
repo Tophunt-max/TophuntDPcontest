@@ -196,7 +196,7 @@ export async function resolveMatch(env: Env, match: Match): Promise<void> {
     });
     if (!settled) return;
     await publishMatchStatus(env, match.id, "cancelled", votesA, votesB);
-    const message = `The battle ended with ${totalVotes} of ${minVotes} required votes. Entry fees were refunded.`;
+    const message = `The battle ended with ${totalVotes} of ${minVotes} required votes. Entry fee Diamond were refunded.`;
     // Same actor-less message to both sides: one batched write (lib/notify.ts).
     await createNotificationsBulk(env, [userA.uid, userB.uid], { title: "Battle Voided", body: message, type: "contest-refund", targetId: "wallet" });
     // Entry fees moved back — receipt to both. Awaited (no request to outlive in

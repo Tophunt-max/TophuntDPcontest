@@ -70,8 +70,8 @@ const TABS = [
 
 const KIND_LABEL: Record<PromoBudgetKind, string> = {
   package_bonus: "Package bonus",
-  contest_prize: "Contest prize (coins)",
-  product_prize: "Product prize (coin value)",
+  contest_prize: "Contest prize (DP coin)",
+  product_prize: "Product prize (DP coin value)",
   free_rewards: "Free rewards (daily, ads, tasks)",
 };
 
@@ -79,14 +79,14 @@ const KIND_LABEL: Record<PromoBudgetKind, string> = {
 const KIND_UNIT: Record<PromoBudgetKind, string> = {
   package_bonus: "💎 Diamond",
   contest_prize: "🪙 DP coin (asli ₹)",
-  product_prize: "coin value (product)",
+  product_prize: "DP coin value (product)",
   free_rewards: "💎 Diamond",
 };
 
 const PLATFORM_LABEL: Record<string, string> = {
   promo_bonus: "💎 Package bonus Diamond diye (budget se)",
   prize_subsidy: "🪙 Contest prize me DP coin upar se diye (budget se, asli ₹)",
-  product_prize: "Product prize ki coin value (budget se)",
+  product_prize: "Product prize ki DP coin value (budget se)",
   product_prize_reversal: "Cancel hue prize claim — budget me wapas",
   platform_fee: "💎 Entry ke Diamond jo prize nahi bane (platform fee)",
   product_prize_fund: "💎 Product prize ke liye entry Diamond rakhe",
@@ -104,7 +104,7 @@ export default function CoinEconomy() {
     <div>
       <PageHeader
         title="Coin Economy"
-        subtitle="Har coin ka hisab: kahan se aaya, kahan gaya, aur platform ne apni taraf se kitna diya."
+        subtitle="Har DP coin aur Diamond ka hisab: kahan se aaya, kahan gaya, aur platform ne apni taraf se kitna diya."
       />
       <div className="overflow-x-auto">
         <SegTabs tab={tab} setTab={setTab} tabs={TABS} />
@@ -398,7 +398,7 @@ function Overview() {
       </div>
       {range !== "all" && (
         <p className="text-xs text-muted-foreground">
-          "Coin kahan se aaye" aur "Platform ka hisab" is time ke hain. Balance, liability, paisa (₹) aur checks hamesha shuru se abhi tak ke hain.
+          Diamond / DP coin flows aur "Platform ka hisab" is time ke hain. Balance, liability, paisa (₹) aur checks hamesha shuru se abhi tak ke hain.
         </p>
       )}
       {isLoading ? (
@@ -736,9 +736,9 @@ function BudgetDialog({ budget, onClose, onDone }: { budget?: PromoBudget; onClo
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">Kis ke liye</label>
             <select className={field} value={form.kind} onChange={(e) => set("kind", e.target.value)}>
-              <option value="package_bonus">Coin package ka bonus Diamond</option>
+              <option value="package_bonus">Diamond package ka bonus Diamond</option>
               <option value="contest_prize">Contest prize jo pot se zyada ho (DP coin, asli ₹)</option>
-              <option value="product_prize">Product prize ki coin value (sirf admin ko dikhegi)</option>
+              <option value="product_prize">Product prize ki DP coin value (sirf admin ko dikhegi)</option>
               <option value="free_rewards">Free rewards ki limit (daily login, ads, tasks)</option>
             </select>
           </div>
@@ -756,7 +756,7 @@ function BudgetDialog({ budget, onClose, onDone }: { budget?: PromoBudget; onClo
           </div>
           {form.kind === "package_bonus" || form.kind === "free_rewards" ? (
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">Per user max coins</label>
+              <label className="text-xs text-muted-foreground mb-1 block">Per user max ({KIND_UNIT[form.kind]})</label>
               <input type="number" className={field} placeholder="Koi limit nahi" value={form.perUserLimit} onChange={(e) => set("perUserLimit", e.target.value)} />
             </div>
           ) : <div />}
@@ -774,7 +774,7 @@ function BudgetDialog({ budget, onClose, onDone }: { budget?: PromoBudget; onClo
             <label className="text-xs text-muted-foreground mb-1 block">Status</label>
             <select className={field} value={form.status} onChange={(e) => set("status", e.target.value)}>
               <option value="active">Active</option>
-              <option value="paused">Paused (offer rukega, reserved coins safe)</option>
+              <option value="paused">Paused (offer rukega, reserved budget safe)</option>
               <option value="closed">Closed (hamesha ke liye band)</option>
             </select>
           </div>
@@ -819,10 +819,10 @@ function BudgetDetail({ id, onClose }: { id: string; onClose: () => void }) {
           <div>
             <p className="text-sm font-semibold mb-1">Linked</p>
             {data.packages.map((p) => (
-              <p key={p.id} className="text-sm">Package: {p.name ?? p.id} · {fmtNumber(p.coins)} + {fmtNumber(p.bonusCoins)} bonus {p.active ? "" : "(hidden)"}</p>
+              <p key={p.id} className="text-sm">Package: {p.name ?? p.id} · 💎 {fmtNumber(p.coins)} + {fmtNumber(p.bonusCoins)} bonus Diamond {p.active ? "" : "(hidden)"}</p>
             ))}
             {data.contests.map((c) => (
-              <p key={c.id} className="text-sm">Contest: {c.title ?? c.id} · fee {fmtNumber(c.totalEntryFee)} · prize {fmtNumber(c.rewardCoins)} ({c.status})</p>
+              <p key={c.id} className="text-sm">Contest: {c.title ?? c.id} · fee 💎 {fmtNumber(c.totalEntryFee)} · prize 🪙 {fmtNumber(c.rewardCoins)} ({c.status})</p>
             ))}
             {!data.packages.length && !data.contests.length ? <p className="text-sm text-muted-foreground">Kuch linked nahi.</p> : null}
           </div>
@@ -843,7 +843,7 @@ function BudgetDetail({ id, onClose }: { id: string; onClose: () => void }) {
               columns={[
                 { key: "t", header: "Kab", render: (p) => <span className="text-xs">{fmtDateTime(p.createdAt)}</span> },
                 { key: "u", header: "User", render: (p) => <span className="font-mono text-xs">{p.uid ?? "—"}</span> },
-                { key: "c", header: "Coins", className: "text-right", render: (p) => <span className="text-red-600">{fmtNumber(-p.coins)}</span> },
+                { key: "c", header: KIND_UNIT[data.budget.kind], className: "text-right", render: (p) => <span className="text-red-600">{fmtNumber(-p.coins)}</span> },
                 { key: "d", header: "Detail", render: (p) => <span className="text-xs text-muted-foreground">{p.description}</span> },
               ]}
             />
@@ -857,7 +857,7 @@ function BudgetDetail({ id, onClose }: { id: string; onClose: () => void }) {
               columns={[
                 { key: "t", header: "Kab", render: (r) => <span className="text-xs">{fmtDateTime(r.createdAt)}</span> },
                 { key: "ref", header: "Kis ke liye", render: (r) => <span className="font-mono text-xs">{r.refType}:{r.refId.slice(0, 12)}</span> },
-                { key: "c", header: "Coins", className: "text-right", render: (r) => fmtNumber(r.coins) },
+                { key: "c", header: KIND_UNIT[data.budget.kind], className: "text-right", render: (r) => fmtNumber(r.coins) },
                 {
                   key: "s",
                   header: "Status",
@@ -1034,7 +1034,7 @@ function ContestsPnl() {
               <span>
                 <span className="font-medium text-foreground">{c.title ?? c.id}</span>
                 <span className="block text-xs text-muted-foreground">
-                  fee {fmtNumber(c.totalEntryFee)} · prize {c.prizeType === "product" ? `product${c.prizeCostCoins ? ` (${fmtNumber(c.prizeCostCoins)} coin value)` : ""}` : fmtNumber(c.rewardCoins)}
+                  fee 💎 {fmtNumber(c.totalEntryFee)} · prize {c.prizeType === "product" ? `product${c.prizeCostCoins ? ` (${fmtNumber(c.prizeCostCoins)} DP coin value)` : ""}` : `🪙 ${fmtNumber(c.rewardCoins)}`}
                   {c.subsidyBudgetId ? " · promo" : ""} · {c.status}
                 </span>
               </span>

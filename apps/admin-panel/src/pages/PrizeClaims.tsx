@@ -447,7 +447,7 @@ export default function PrizeClaims() {
             rows={3}
             value={cancelReason}
             onChange={(e) => setCancelReason(e.target.value)}
-            placeholder="e.g. Out of stock — winner agreed to a coin refund instead"
+            placeholder="e.g. Out of stock — winner agreed to a DP coin refund instead"
             className="w-full px-3 py-2 rounded-xl bg-secondary border border-border text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
           />
           <p className="text-xs text-muted-foreground mt-2">

@@ -247,7 +247,7 @@ export default function ExplorePage() {
                     <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-2">
                       <div>
                         <label className={label}>Title</label>
-                        <input className={field} maxLength={80} value={b.title} onChange={(e) => update(i, { title: e.target.value })} placeholder="Refer & earn 50 coins" />
+                        <input className={field} maxLength={80} value={b.title} onChange={(e) => update(i, { title: e.target.value })} placeholder="Refer & earn 50 Diamond" />
                       </div>
                       <div>
                         <label className={label}>Subtitle</label>

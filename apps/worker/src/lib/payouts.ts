@@ -206,7 +206,7 @@ export async function refundRejectedWithdrawal(
          (id, uid, amount, type, description, created_at)
        SELECT ?, ?, ?, 'withdrawal_refund', ?, ?
         WHERE EXISTS (SELECT 1 FROM users WHERE uid = ?)`,
-    ).bind(ledgerId, uid, amount, "Payout rejected — coins refunded", ts, uid),
+    ).bind(ledgerId, uid, amount, "Payout rejected — DP coin refunded", ts, uid),
   ]);
   return Number(results[0]?.meta?.changes || 0) > 0;
 }

@@ -884,8 +884,8 @@ apiRoute.post("/", async (c) => {
             `EXISTS (SELECT 1 FROM contest_matches WHERE id = ? AND status = 'waiting_for_opponent')
              AND NOT EXISTS (SELECT 1 FROM coin_transactions WHERE id = ?)`;
           const refundBindings = [matchId, refundTransactionId];
-          // Locked coins spent on the entry go back to being locked.
-          const relock = `COALESCE((SELECT -locked_delta FROM coin_transactions WHERE id = ?), 0)`;
+          // The entry above was paid in Diamonds, so they go back as Diamonds.
+          const relock = "?";
           const rollback = await env.DB.batch([
             // The promo subsidy (if any) goes back to its budget. First, because
             // every later statement changes what `refundGate` sees.
@@ -898,7 +898,7 @@ apiRoute.post("/", async (c) => {
                   SET dpcoin = dpcoin + ?, locked_coins = locked_coins + ${relock},
                       xp = MAX(0, xp - 10), updated_at = ?
                 WHERE uid = ? AND ${refundGate}`,
-            ).bind(fee, entryTransactionId, rollbackTs, uid, ...refundBindings),
+            ).bind(fee, fee, rollbackTs, uid, ...refundBindings),
             env.DB.prepare(
               `INSERT OR IGNORE INTO coin_transactions
                  (id, uid, amount, type, contest_id, match_id, description, created_at, locked_delta)
@@ -910,9 +910,9 @@ apiRoute.post("/", async (c) => {
               fee,
               contestId ?? null,
               matchId,
-              "Entry fee refunded — contest stopped accepting new matches",
+              "Entry fee refunded (Diamond) — contest stopped accepting new matches",
               rollbackTs,
-              entryTransactionId,
+              fee,
               ...refundBindings,
             ),
             env.DB.prepare(
@@ -1916,7 +1916,7 @@ apiRoute.post("/", async (c) => {
           dailyLedgerId,
           uid,
           coinReward,
-          `Daily login reward (${streak} day streak)`,
+          `Daily login reward (${streak} day streak)${dailyLocked > 0 ? " · Diamond" : ""}`,
           ts,
           dailyLocked,
           uid,
@@ -2042,7 +2042,7 @@ apiRoute.post("/", async (c) => {
              (id, uid, amount, type, description, created_at, locked_delta)
            SELECT ?, ?, ?, 'ad_reward', ?, ?, ?
             WHERE ${claimGate} AND ${adBudget.heldGate}`,
-        ).bind(newId(), uid, ads.reward, "Rewarded ad view", ts, adLocked, claimId, ...adBudget.heldArgs),
+        ).bind(newId(), uid, ads.reward, adLocked > 0 ? "Rewarded ad view · Diamond" : "Rewarded ad view", ts, adLocked, claimId, ...adBudget.heldArgs),
         env.DB.prepare(
           `UPDATE users SET dpcoin = dpcoin + ?, locked_coins = locked_coins + ?, updated_at = ? WHERE uid = ? AND ${claimGate} AND ${adBudget.heldGate}`,
         ).bind(ads.reward, adLocked, ts, uid, claimId, ...adBudget.heldArgs),
@@ -2175,7 +2175,7 @@ apiRoute.post("/", async (c) => {
              (id, uid, amount, type, description, created_at, locked_delta)
            SELECT ?, ?, ?, 'daily_task', ?, ?, ?
             WHERE ${taskGate} AND ${taskBudget.heldGate}`,
-        ).bind(ledgerId, uid, reward, `Task reward: ${task.title}`, ts, taskLocked, ...taskBindings, ...taskBudget.heldArgs),
+        ).bind(ledgerId, uid, reward, `Task reward: ${task.title}${taskLocked > 0 ? " · Diamond" : ""}`, ts, taskLocked, ...taskBindings, ...taskBudget.heldArgs),
         ...taskBudget.finalize,
       ]);
       if (Number(taskResults[taskBudget.reserve.length + 1]?.meta?.changes || 0) === 0) {
@@ -2557,7 +2557,7 @@ apiRoute.post("/", async (c) => {
           `withdrawal_hold:${id}`,
           uid,
           -amt,
-          `Payout requested (${destination.method}) — coins reserved`,
+          `Payout requested (${destination.method}) — DP coin reserved`,
           ts,
           id,
         ),
@@ -2581,16 +2581,16 @@ apiRoute.post("/", async (c) => {
             `Daily payout limit is ${policy.maxPerDay} DP coin. Try a smaller amount or wait 24 hours.`,
           );
         }
-        throw httpsError("failed-precondition", "Insufficient balance.");
+        throw httpsError("failed-precondition", "DP coin balance kam hai.");
       }
 
       await db.insert(schema.adminNotifications).values({
         id: newId(), title: risk.level === "high" ? "⚠️ HIGH RISK Withdrawal Request" : "New Withdrawal Request",
-        message: `${risk.level !== "low" ? `[Risk: ${risk.level} — ${risk.flags.map((f) => RISK_FLAG_LABELS[f] ?? f).join(", ")}] ` : ""}A user requested a payout of ${amt} coins to ${destination.masked} — pay ₹${quote.netInr.toFixed(2)} (gross ₹${quote.grossInr.toFixed(2)} − platform fee ₹${quote.feeInr.toFixed(2)}).`,
+        message: `${risk.level !== "low" ? `[Risk: ${risk.level} — ${risk.flags.map((f) => RISK_FLAG_LABELS[f] ?? f).join(", ")}] ` : ""}A user requested a payout of ${amt} DP coin to ${destination.masked} — pay ₹${quote.netInr.toFixed(2)} (gross ₹${quote.grossInr.toFixed(2)} − platform fee ₹${quote.feeInr.toFixed(2)}).`,
         link: "/withdrawals", isRead: false, createdAt: ts,
       });
       alertAdminEmail(c, cfg, "New Withdrawal Request",
-        `<p>A user requested a payout of <b>${amt} coins</b> via ${destination.method}: pay <b>₹${cashAmount.toFixed(2)}</b> (gross ₹${quote.grossInr.toFixed(2)} − platform fee ₹${quote.feeInr.toFixed(2)}).</p><p>Review it in the admin panel → Withdrawals.</p>`);
+        `<p>A user requested a payout of <b>${amt} DP coin</b> via ${destination.method}: pay <b>₹${cashAmount.toFixed(2)}</b> (gross ₹${quote.grossInr.toFixed(2)} − platform fee ₹${quote.feeInr.toFixed(2)}).</p><p>Review it in the admin panel → Withdrawals.</p>`);
       return c.json({ success: true, withdrawalId: id, cashAmount, grossAmount: quote.grossInr, feeAmount: quote.feeInr });
     }
 
@@ -2684,7 +2684,7 @@ apiRoute.post("/", async (c) => {
       }
       await db.insert(schema.adminNotifications).values({
         id: newId(), title: "New Deposit Request",
-        message: `A user submitted a ${amt}-coin deposit (UTR ${String(utr).trim()}).`, link: "/deposits", isRead: false, createdAt: ts,
+        message: `A user submitted a ${amt}-Diamond deposit (UTR ${String(utr).trim()}).`, link: "/deposits", isRead: false, createdAt: ts,
       });
       alertAdminEmail(c, cfg, "New Deposit Request",
         `<p>A user submitted a <b>${amt}-coin</b> deposit (₹${payAmount.toFixed(2)}${pkg.name ? ` — ${pkg.name}` : ""}).</p><p>UTR: <b>${String(utr).trim()}</b></p><p>Verify & approve in the admin panel → Deposits.</p>`);
@@ -4277,6 +4277,8 @@ apiRoute.post("/", async (c) => {
       // audited.
       await requireFullAdminAction(env, uid);
       const { userId, amount, type } = body;
+      // Same choice as the /admin route: Diamond (locked_coins) or DP coin.
+      const locked = body?.locked === true;
       if (!userId || typeof userId !== "string" || !["add", "subtract"].includes(type))
         throw httpsError("invalid-argument", "userId and a type of add or subtract are required.");
       const amt = assertCoinAmount(amount, "amount");
@@ -4289,13 +4291,15 @@ apiRoute.post("/", async (c) => {
           amount: amt,
           direction: type,
           type: "admin_adjustment",
-          description: `Admin ${type} ${amt} DP coin`,
+          description: `Admin ${type} ${amt} ${locked ? "Diamond" : "DP coin"}`,
           claimKey: body.idempotencyKey ? `admin_wallet:${userId}:${body.idempotencyKey}` : undefined,
+          locked,
           ts: now(),
         });
         await writeAdminAudit(env, c.get("user"), "wallet.adjust", "user", userId, {
           amount: amt,
           type,
+          locked,
           newBalance,
           via: "/api",
         });

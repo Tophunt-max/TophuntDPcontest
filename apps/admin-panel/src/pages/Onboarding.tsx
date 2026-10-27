@@ -32,18 +32,18 @@ interface Slide {
 const BUILT_IN: Slide[] = [
   { title: "Photo & video battles", description: "Two entries go head to head. Watch live battles from creators all over India.", imageUrl: "" },
   { title: "You decide the winner", description: "Vote for your favourite, like, comment and follow the creators you love.", imageUrl: "" },
-  { title: "Enter and win", description: "Join a contest with your best photo or video and win coins and prizes.", imageUrl: "" },
+  { title: "Enter and win", description: "Join a contest with your best photo or video and win DP coins and prizes.", imageUrl: "" },
   { title: "Follow creators & Stories", description: "Follow the people you like and catch their Stories and new battles first.", imageUrl: "" },
-  { title: "Rewards every day", description: "Claim daily rewards, invite friends and grow your coin wallet.", imageUrl: "" },
+  { title: "Rewards every day", description: "Claim daily rewards, invite friends and collect Diamonds to play.", imageUrl: "" },
 ];
 
 /** The same five slides in Hinglish — a preset an admin can load and edit. */
 const HINGLISH: Slide[] = [
   { title: "Photo & video battles", description: "Do entries aamne-saamne. Poore India ke creators ki live battles dekho.", imageUrl: "" },
   { title: "Winner aap chuniye", description: "Apne favourite ko vote karo, like, comment aur creators ko follow karo.", imageUrl: "" },
-  { title: "Contest join karo, jeeto", description: "Apni best photo ya video ke saath contest mein utro aur coins aur prizes jeeto.", imageUrl: "" },
+  { title: "Contest join karo, jeeto", description: "Apni best photo ya video ke saath contest mein utro aur DP coin aur prizes jeeto.", imageUrl: "" },
   { title: "Creators ko follow karo", description: "Pasand ke logon ko follow karo aur unki Stories aur nayi battles sabse pehle dekho.", imageUrl: "" },
-  { title: "Roz milenge rewards", description: "Daily reward claim karo, dosto ko invite karo aur apna coin wallet badhao.", imageUrl: "" },
+  { title: "Roz milenge rewards", description: "Daily reward claim karo, dosto ko invite karo aur Diamond jama karo.", imageUrl: "" },
 ];
 
 const field =

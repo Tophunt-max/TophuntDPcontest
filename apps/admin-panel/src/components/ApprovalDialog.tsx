@@ -27,7 +27,7 @@ export function ApprovalDialog({
       <form onSubmit={submit} className="bg-card border border-border rounded-2xl p-6 w-full max-w-sm">
         <h3 id="approval-title" className="font-bold text-foreground mb-1">Approval password</h3>
         <p className="text-sm text-muted-foreground mb-4">
-          Is action se platform apni taraf se coin dega. Confirm karne ke liye approval password dalo.
+          Is action se platform apni taraf se Diamond ya DP coin dega. Confirm karne ke liye approval password dalo.
         </p>
         <input
           type="password"

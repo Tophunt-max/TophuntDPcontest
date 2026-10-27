@@ -26,6 +26,7 @@ import { useAppConfig } from '@/src/services/appSettings';
 import { readApi } from '@/src/services/api';
 import { describeFeeRule, feeRuleFromWithdrawalConfig, MIN_NET_PAYOUT_INR, quoteWithdrawal } from '@/src/lib/withdrawalFee';
 
+import { balancesOf } from '@/src/lib/balances';
 const METHODS = [
   { key: 'upi', label: 'UPI', placeholder: 'yourname@upi' },
   { key: 'bank', label: 'Bank', placeholder: 'Account no. / IFSC' },
@@ -70,9 +71,7 @@ export default function WithdrawScreen() {
   // Only DP coins (contest prizes) are withdrawn; Diamonds (packages, free
   // rewards) only pay entry fees (src/lib/balances.ts). The server enforces
   // this; the screen only offers what can actually leave.
-  const total = Number(profile?.Dpcoin || 0);
-  const locked = Math.min(total, Math.max(0, Number(profile?.lockedCoins || 0)));
-  const balance = Math.max(0, total - locked);
+  const { dpcoin: balance, diamonds: locked } = balancesOf(profile);
   const amt = Number(amount) || 0;
   // Platform fee, deducted from the payout (src/lib/withdrawalFee.ts — same
   // formula the server charges with; it refuses if this quote is stale).

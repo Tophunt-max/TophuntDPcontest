@@ -592,7 +592,7 @@ export default function WalletScreen() {
             <View style={[styles.adModalContent, { backgroundColor: isDark ? '#1F222A' : '#FFF' }]}>
                 <Text style={[styles.adTitle, { color: textColor }]}>Rewarded ads coming soon</Text>
                 <Text style={[styles.adSubtitle, { color: subTextColor }]}>
-                  We&apos;re finishing the ad integration. You&apos;ll be able to earn coins here shortly —
+                  We&apos;re finishing the ad integration. You&apos;ll be able to earn Diamonds here shortly —
                   meanwhile the daily tasks above still pay out.
                 </Text>
                 <TouchableOpacity

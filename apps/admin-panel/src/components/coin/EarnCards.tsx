@@ -85,19 +85,19 @@ export function VerificationRewardCard({ data }: { data: any }) {
       <Toggle label="Enabled" checked={v.enabled} onChange={(x) => setV({ ...v, enabled: x })} />
       <div className="grid grid-cols-2 gap-3 mt-2">
         <div>
-          <label className={label}>Signup par turant (coins)</label>
+          <label className={label}>Signup par turant (Diamond)</label>
           <input type="number" min={0} className={field} value={v.registrationReward} onChange={(e) => setV({ ...v, registrationReward: num(e.target.value) })} />
         </div>
         <div>
-          <label className={label}>Email + mobile verify par (coins)</label>
+          <label className={label}>Email + mobile verify par (Diamond)</label>
           <input type="number" min={0} className={field} value={v.completionReward} onChange={(e) => setV({ ...v, completionReward: num(e.target.value) })} />
         </div>
       </div>
-      <p className={hint}>Naye user ko kul: {(v.registrationReward + v.completionReward).toLocaleString()} coin.</p>
+      <p className={hint}>Naye user ko kul: {(v.registrationReward + v.completionReward).toLocaleString()} Diamond.</p>
       <Toggle label="Email verify zaroori" checked={v.requireEmail} onChange={(x) => setV({ ...v, requireEmail: x })} />
       <Toggle label="Mobile verify zaroori" checked={v.requirePhone} onChange={(x) => setV({ ...v, requirePhone: x })} />
       <p className={hint}>
-        Signup wale coin account bante hi milte hain, baaki email + mobile dono verify hone par. Dono "Free rewards: sirf khelne ke liye" me
+        Signup wale Diamond account bante hi milte hain, baaki email + mobile dono verify hone par. Dono "Free rewards: sirf khelne ke liye" me
         "Signup bonus" switch se locked hote hain. Badlav sirf naye signup par lagta hai.
       </p>
       {error && (
@@ -108,7 +108,7 @@ export function VerificationRewardCard({ data }: { data: any }) {
           {([
             ["Enrolled", stats.enrolled],
             ["Completed", stats.completed],
-            ["Coins paid", stats.completionCoinsCredited],
+            ["Diamond diye", stats.completionCoinsCredited],
           ] as const).map(([n, val]) => (
             <div key={n} className="rounded-xl bg-secondary py-2">
               <div className="text-sm font-bold text-foreground">{Number(val ?? 0).toLocaleString()}</div>
@@ -139,7 +139,7 @@ export function AdsRewardCard({ data }: { data: any }) {
   }, [data]);
   const save = useAppSettingsSave("Rewarded ads saved");
   const submit = () => {
-    if (!Number.isInteger(a.reward) || a.reward < 1) return toast.error("Coins per ad: 1 ya zyada poora number.");
+    if (!Number.isInteger(a.reward) || a.reward < 1) return toast.error("Diamond per ad: 1 ya zyada poora number.");
     if (!Number.isInteger(a.dailyCap) || a.dailyCap < 1) return toast.error("Daily cap: 1 ya zyada poora number.");
     save.mutate({ ads: a });
   };
@@ -147,7 +147,7 @@ export function AdsRewardCard({ data }: { data: any }) {
     <Card icon={Tv} title="Rewarded ads" tint="text-cyan-500" pending={save.isPending} onSave={submit}>
       <Toggle label="Enabled" checked={a.enabled} onChange={(x) => setA({ ...a, enabled: x })} />
       {a.enabled && (
-        <Toggle label="Bina server verification ke coin do (risky)" checked={a.trustClient} onChange={(x) => setA({ ...a, trustClient: x })} />
+        <Toggle label="Bina server verification ke Diamond do (risky)" checked={a.trustClient} onChange={(x) => setA({ ...a, trustClient: x })} />
       )}
       <div className="grid grid-cols-3 gap-3 mt-2">
         <div>
@@ -155,7 +155,7 @@ export function AdsRewardCard({ data }: { data: any }) {
           <input className={field} value={a.provider} placeholder="admob" onChange={(e) => setA({ ...a, provider: e.target.value })} />
         </div>
         <div>
-          <label className={label}>Coins per ad</label>
+          <label className={label}>Diamond per ad</label>
           <input type="number" min={1} className={field} value={a.reward} onChange={(e) => setA({ ...a, reward: num(e.target.value) })} />
         </div>
         <div>
@@ -196,11 +196,11 @@ export function DailyLoginCard({ rewards }: { rewards: any }) {
     <Card icon={CalendarCheck} title="Daily login reward" tint="text-violet-500" pending={save.isPending} onSave={submit}>
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className={label}>Har din (coins)</label>
+          <label className={label}>Har din (Diamond)</label>
           <input type="number" min={0} className={field} value={d.dailyLoginReward} onChange={(e) => setD({ ...d, dailyLoginReward: num(e.target.value) })} />
         </div>
         <div>
-          <label className={label}>Streak bonus × din (coins)</label>
+          <label className={label}>Streak bonus × din (Diamond)</label>
           <input type="number" min={0} className={field} value={d.dailyStreakBonus} onChange={(e) => setD({ ...d, dailyStreakBonus: num(e.target.value) })} />
         </div>
       </div>
@@ -268,7 +268,7 @@ export function DailyTasksCard({ rewards }: { rewards: any }) {
               <input type="number" min={1} className={field} value={t.target} onChange={(e) => setTask(i, { target: num(e.target.value) })} />
             </div>
             <div className="col-span-3">
-              {i === 0 && <label className={label}>Coins</label>}
+              {i === 0 && <label className={label}>Diamond</label>}
               <input type="number" min={0} className={field} value={t.reward} onChange={(e) => setTask(i, { reward: num(e.target.value) })} />
             </div>
             <button
@@ -289,7 +289,7 @@ export function DailyTasksCard({ rewards }: { rewards: any }) {
       >
         <Plus size={14} /> Task jodo
       </button>
-      <p className={hint}>Sab task poore karne par ek user ko roz {total.toLocaleString()} coin. "ad" task watch-ad se claim hota hai.</p>
+      <p className={hint}>Sab task poore karne par ek user ko roz {total.toLocaleString()} Diamond. "ad" task watch-ad se claim hota hai.</p>
     </Card>
   );
 }

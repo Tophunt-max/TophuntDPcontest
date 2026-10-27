@@ -50,6 +50,7 @@ import { Alert } from '@/src/lib/appAlert';
 import { enqueueOutbox, isNetworkFailure, pendingIntent } from '@/src/sync';
 import { overlayFlag, overlayLike } from '@/src/sync/overlay';
 
+import { CoinIcon } from '@/src/components/ui/CoinIcon';
 interface PostCardProps {
     item: any;
     isDark: boolean;
@@ -831,8 +832,9 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, onNotInterested, liv
             start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
             style={styles.prizeBadge}
           >
-            <Ionicons name="trophy" size={12} color="#E6A200" />
-            <Text style={styles.prizeText}>{prize.coins}</Text>
+            {/* Prize in DP coins (withdrawable), the coin symbol used app-wide. */}
+            <CoinIcon size={12} color="#E6A200" />
+            <Text style={styles.prizeText} accessibilityLabel={`Prize ${prize.coins} DP coin`}>{prize.coins}</Text>
           </LinearGradient>
         ) : null}
       </View>

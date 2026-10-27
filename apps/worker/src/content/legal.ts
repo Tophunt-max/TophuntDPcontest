@@ -28,9 +28,10 @@
  *   - 18+ only, because `MINIMUM_AGE` in signup/fill-profile enforces it and
  *     withdrawals pay real money.
  *   - Razorpay is the only gateway (`lib/payments.ts`), so it is named.
- *   - Coins are bought in packages priced server-side (`api.ts createOrder`),
- *     spent on entry fees, and withdrawn at an admin-set `conversionRate` with
- *     min/max/daily limits — the refund policy has to describe that shape.
+ *   - Diamonds are bought in packages priced server-side (`api.ts createOrder`)
+ *     and are the only way to pay entry fees; prizes are DP coins, withdrawn at
+ *     an admin-set `conversionRate` with min/max/daily limits (lib/diamonds.ts)
+ *     — the terms and refund policy have to describe that shape.
  *   - The retention list in the privacy policy is copied from the one in
  *     `lib/accountDeletion.ts`, which is the code that actually decides what
  *     survives a deletion. If that list changes, this one must change with it.
@@ -83,7 +84,7 @@ export const LEGAL_DOC_META: Record<LegalDocKey, { label: string; note: string }
  * worse than showing no date, because it invites the reader to assume nothing has
  * changed.
  */
-export const LEGAL_LAST_UPDATED = "26 October 2026";
+export const LEGAL_LAST_UPDATED = "27 October 2026";
 
 import { parseGraceDays } from "../lib/accountStatus";
 
@@ -111,7 +112,7 @@ We may suspend or close an account that breaks these terms, the Community Guidel
 
 ## 3. Contests
 
-**How contests work.** A contest is a head-to-head or multi-entrant comparison of user-submitted photos or videos, decided by votes from other users, within a fixed window. Some contests are free; some require an entry fee in coins. Every contest states its fee, prize and closing time before you join.
+**How contests work.** A contest is a head-to-head or multi-entrant comparison of user-submitted photos or videos, decided by votes from other users, within a fixed window. Some contests are free; some require an entry fee in Diamonds. Every contest states its fee, prize and closing time before you join.
 
 **Outcomes are decided by votes and by skill.** Prizes reflect how your entry performs against other entries — its subject, composition, effort and appeal. TopHunt is not a game of chance and there is no wagering on an outside event.
 
@@ -130,17 +131,20 @@ We detect these through device signals, voting patterns and account relationship
 
 **Results.** A result is final once the contest closes and the prize is credited. If you believe a result is wrong, write to {{SUPPORT_EMAIL}} within 7 days of the close and we will re-examine the entries and the vote log.
 
-## 4. Coins, payments and prizes
+## 4. Diamonds, DP coins, payments and prizes
 
-**Coins are a prepaid in-app credit.** They are not currency, not a stored-value instrument, not a security, and they earn no interest. They exist only inside TopHunt.
+**Two in-app balances.** Your wallet holds **Diamonds** and **DP coins**. Neither is currency, a stored-value instrument or a security, and neither earns interest. They exist only inside TopHunt.
 
-**Buying coins.** Coin packages are priced in Indian rupees and processed by Razorpay. We do not see or store your card, UPI or bank credentials. Price and coin quantity are set on our servers at the moment you order, so what you are charged is always the amount shown on the package you tapped.
+- **Diamonds** are a prepaid, play-only credit. They pay contest entry fees and nothing else, and they can never be withdrawn or converted to money.
+- **DP coins** are what you win. They come from contest prizes, and they are the only balance that can be withdrawn.
 
-**Earning coins.** Coins can also arrive without payment — referral rewards (paid to both you and the friend you invite once they complete the qualifying action shown in the app), account-verification rewards, daily rewards, contest prizes and, where enabled, rewarded ads. We may adjust the rate of any reward at any time. Rewards are promotional, and we may reverse them if they were obtained by abusing the mechanism.
+**Buying Diamonds.** Diamond packages are priced in Indian rupees and processed by Razorpay. We do not see or store your card, UPI or bank credentials. Price and quantity are set on our servers at the moment you order, so what you are charged is always the amount shown on the package you tapped.
 
-**Spending coins.** Coins pay contest entry fees and anything else the app offers them for. Spending is deducted from your balance immediately.
+**Free Diamonds.** Diamonds can also arrive without payment: a signup reward, account-verification rewards, daily rewards and tasks, referral rewards (paid to both you and the friend you invite once they complete the qualifying action shown in the app), the monthly Hall of Fame and, where enabled, rewarded ads. We may adjust the rate of any reward at any time, and we may pay a reward as DP coins instead where the app says so. Rewards are promotional, and we may reverse them if they were obtained by abusing the mechanism.
 
-**Withdrawing.** Coins won or held can be converted to money and paid to your verified account, subject to the conversion rate, minimum, maximum and per-day limits shown on the withdrawal screen. We may require identity verification before a first payout, and we may hold a payout while we investigate a specific fair-play concern. Withdrawals are processed in batches and are not instant.
+**Entry fees and prizes.** Contest entry fees are paid in Diamonds only and are deducted immediately. A refunded entry fee comes back as Diamonds. A contest prize is paid in DP coins.
+
+**Withdrawing.** DP coins can be converted to money and paid to your verified account, subject to the conversion rate, minimum, maximum and per-day limits shown on the withdrawal screen. We may require identity verification before a first payout, and we may hold a payout while we investigate a specific fair-play concern. Withdrawals are processed in batches and are not instant.
 
 **We may freeze payouts.** During a suspected-fraud incident or a payment-provider outage we may suspend all withdrawals. We will restore them as soon as it is safe, and a freeze does not affect the balance itself.
 
@@ -173,7 +177,7 @@ We do not promise uninterrupted service. TopHunt depends on networks, app stores
 
 ## 8. Ending the agreement
 
-You can stop using TopHunt at any time and delete your account from Settings. Deletion is permanent, it is blocked while you have a contest in progress, and any remaining coin balance is forfeited — so withdraw what you can first. What survives deletion is set out in the Privacy Policy.
+You can stop using TopHunt at any time and delete your account from Settings. Deletion is permanent, it is blocked while you have a contest in progress, and any remaining DP coin and Diamond balance is forfeited — so withdraw your DP coins first (Diamonds cannot be withdrawn). What survives deletion is set out in the Privacy Policy.
 
 We may end your access if you break these terms. Sections that should outlive the agreement — content licences already granted, liability, financial records, and dispute resolution — do.
 
@@ -215,7 +219,7 @@ The short version: we collect what is needed to run an account, judge contests f
 
 **What you create.** The photos and videos you enter into contests, your posts, stories, comments, likes, votes, and who you follow.
 
-**Contest and wallet activity.** Contests you joined, entry fees, results, coin credits and debits, coin purchases, and withdrawal requests including the payout details you give us for them.
+**Contest and wallet activity.** Contests you joined, entry fees, results, DP coin and Diamond credits and debits, Diamond purchases, and withdrawal requests including the payout details you give us for them.
 
 **Payment data — via Razorpay, not us.** Card, UPI and bank credentials are collected and held by Razorpay. We receive only an order reference, an amount, a status, and the last few digits or handle needed to identify a transaction in support. We never see your full card number or your banking password.
 
@@ -232,7 +236,7 @@ We do not collect your contacts, your calendar, or your messages in other apps.
 - **To run your account** — sign-in, profile, followers, notifications.
 - **To run contests** — matching entries, counting votes, deciding results, showing leaderboards.
 - **To keep contests fair** — detecting duplicate accounts, vote manipulation, bots and collusion. This is the purpose most likely to result in an account being restricted, so it is worth naming plainly.
-- **To take payment and pay you** — coin purchases, prize credits, withdrawals, and the tax records that follow.
+- **To take payment and pay you** — Diamond purchases, prize credits, withdrawals, and the tax records that follow.
 - **To keep the service safe** — moderating content, acting on reports, blocking abuse.
 - **To support you** — answering what you write to us.
 - **To improve TopHunt** — aggregate usage and crash data. We do not need to know who you are to fix a crash, and we do not look. The app also sends anonymous counts (for example how many stories are watched to the end, how often a video buffers, whether a search found anything) with no account, device or content identifier attached; you can turn this off in Settings › Privacy.
@@ -244,7 +248,7 @@ We rely on performing our contract with you for most of this, on our legitimate 
 
 **Public:** your username, name, profile photo, bio, social links, contest entries, posts, stories, wins, follower and following counts, and your position on public leaderboards.
 
-**Not public:** your email address, phone number, date of birth, exact coin balance, transactions, withdrawal details, location, device data, and anything you send to support.
+**Not public:** your email address, phone number, date of birth, exact DP coin and Diamond balances, transactions, withdrawal details, location, device data, and anything you send to support.
 
 **A private account** limits your entries and stories to people you approve, and takes you out of public discovery surfaces. It does not retroactively hide a contest you already entered — the other entrant's result depends on it being visible.
 
@@ -276,7 +280,7 @@ Erasure deletes your own content: profile, photo, bio, contact details, posts, s
 
 **What survives erasure, and why:**
 
-- **Coin transactions (including promo bonus and prize-subsidy records), payments, payment orders, deposits and withdrawals** — accounting and tax records we are legally required to retain. They stay keyed to an identifier that is no longer linked to your name, email or phone.
+- **Coin transactions (DP coin and Diamond, including promo bonus and prize-subsidy records), payments, payment orders, deposits and withdrawals** — accounting and tax records we are legally required to retain. They stay keyed to an identifier that is no longer linked to your name, email or phone.
 - **Votes and contests you took part in** — other entrants' results are computed from them. Removing your votes would silently change someone else's outcome. The contest record survives, but your name, photo and contest entry image are removed from it.
 - **Referral records** — the person who referred you, or whom you referred, earned a bonus that has to stay explainable.
 - **Reports you filed** — these are evidence about someone else's conduct, and are kept for moderation.
@@ -329,37 +333,37 @@ Registered entity name and address: available on request from the address above,
 
 const REFUND_POLICY = `**Last updated: ${LEGAL_LAST_UPDATED}**
 
-This policy covers coin purchases, contest entry fees and withdrawals. It applies to every payment made through the TopHunt app or tophunt.in.
+This policy covers Diamond purchases, contest entry fees and withdrawals. It applies to every payment made through the TopHunt app or tophunt.in.
 
 ## 1. What you are buying
 
-TopHunt sells **coins**: a prepaid credit, delivered to your account immediately, spendable on contest entry fees and other in-app items. Coins are a digital good, consumed on use, and delivery is instant and irreversible.
+TopHunt sells **Diamonds**: a prepaid, play-only credit, delivered to your account immediately and spendable on contest entry fees. Diamonds are a digital good, consumed on use, delivery is instant and irreversible, and they are never withdrawn as money.
 
-Because of that, a completed coin purchase is **not refundable once the coins have been spent**. Unspent coins can be refunded in the cases below.
+Because of that, a completed Diamond purchase is **not refundable once the Diamonds have been spent**. Unspent Diamonds can be refunded in the cases below.
 
 ## 2. Failed and duplicated payments — always refunded
 
-If money left your account and coins did not arrive, that is our problem to fix, not yours to claim.
+If money left your account and Diamonds did not arrive, that is our problem to fix, not yours to claim.
 
-- **Payment taken, coins not credited.** Our server reconciles every Razorpay order automatically, so this usually corrects itself within a few minutes. If it does not, write to us and we will credit the coins or return the money, whichever you prefer.
+- **Payment taken, Diamonds not credited.** Our server reconciles every Razorpay order automatically, so this usually corrects itself within a few minutes. If it does not, write to us and we will credit the Diamonds or return the money, whichever you prefer.
 - **Charged twice for one purchase.** The duplicate is refunded in full.
 - **Payment failed at the gateway.** Razorpay releases the authorisation and your bank returns the amount, normally within 5–7 working days. No action is needed from us or from you.
 
 Refunds in this section carry no deduction. Contact us at {{SUPPORT_EMAIL}} with the date, the amount and the payment reference from your bank or UPI app.
 
-## 3. Unspent coins — refundable within 7 days
+## 3. Unspent Diamonds — refundable within 7 days
 
-If you bought coins and have not spent them, you can ask for the purchase to be reversed within **7 days** of payment.
+If you bought Diamonds and have not spent them, you can ask for the purchase to be reversed within **7 days** of payment.
 
 Conditions:
 
-- The coins from that purchase are still in your balance, in full.
+- The Diamonds from that purchase are still in your balance, in full.
 - You have not entered a paid contest using them.
 - The purchase was not made with a promotional or bonus credit.
 
-We reverse the coins and return the money to the original payment method. It reaches you in 5–10 working days depending on your bank.
+We reverse the Diamonds and return the money to the original payment method. It reaches you in 5–10 working days depending on your bank.
 
-Partly spent purchases are not reversed. Once coins have paid an entry fee, that fee is in a contest.
+Partly spent purchases are not reversed. Once Diamonds have paid an entry fee, that fee is in a contest.
 
 ## 4. Contest entry fees — not refundable
 
@@ -374,7 +378,7 @@ The reason is that your entry becomes part of someone else's contest. Refunding 
 - A contest closes with no valid opponent and no result.
 - Your entry is removed by us in error.
 
-In each case the fee returns to your coin balance automatically, usually within 24 hours. Coins refunded this way go back as coins, not money, because coins is what was spent.
+In each case the fee returns to your Diamond balance automatically, usually within 24 hours. It goes back as Diamonds, not money, because Diamonds are what was spent.
 
 ## 5. Voided entries — not refunded
 
@@ -384,19 +388,19 @@ We tell you in writing when we void an entry, and you can dispute it at {{SUPPOR
 
 ## 6. Withdrawals are not refunds
 
-Converting coins to money is a **withdrawal**, not a refund, and it follows the rules on the withdrawal screen: a minimum and maximum per request, a daily cap, and the current conversion rate. Withdrawals are processed in batches and are not instant.
+Converting DP coins (contest prizes) to money is a **withdrawal**, not a refund. Diamonds cannot be withdrawn. A withdrawal follows the rules on the withdrawal screen: a minimum and maximum per request, a daily cap, and the current conversion rate. Withdrawals are processed in batches and are not instant.
 
-A withdrawal cannot be cancelled once it is submitted for payout. If it fails at the bank, the coins return to your balance and you can request it again with corrected details.
+A withdrawal cannot be cancelled once it is submitted for payout. If it fails at the bank, the DP coins return to your balance and you can request it again with corrected details.
 
 We may hold a withdrawal while we verify your identity or investigate a fair-play concern, and we may suspend all payouts during a fraud incident or a payment-provider outage. A hold is not a forfeiture: the balance stays yours.
 
 ## 7. Purchases made through an app store
 
-If you bought coins through Apple's App Store or Google Play rather than through Razorpay, that platform's own refund process applies and we cannot process the refund ourselves. Ask Apple or Google. Tell us afterwards, because a store refund removes the coins from your balance and we would rather explain that than have you discover it.
+If you bought Diamonds through Apple's App Store or Google Play rather than through Razorpay, that platform's own refund process applies and we cannot process the refund ourselves. Ask Apple or Google. Tell us afterwards, because a store refund removes the Diamonds from your balance and we would rather explain that than have you discover it.
 
 ## 8. Account closure
 
-Deleting your account forfeits any remaining coin balance. Withdraw what you can before you delete. We cannot restore a deleted account or its balance.
+Deleting your account forfeits any remaining DP coin and Diamond balance. Withdraw your DP coins before you delete; Diamonds cannot be withdrawn. We cannot restore a deleted account or its balance.
 
 If **we** close your account for a reason other than fraud, we will let you withdraw an eligible balance subject to the normal limits.
 

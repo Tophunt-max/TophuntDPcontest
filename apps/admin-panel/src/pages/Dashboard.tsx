@@ -7,7 +7,6 @@ import {
   Smartphone,
   Monitor,
   HelpCircle,
-  IndianRupee,
   Swords,
   Trophy,
   Banknote,
@@ -86,7 +85,7 @@ export default function Dashboard() {
           <StatCard icon={UsersIcon} label="Total Users" value={fmtNumber(o?.users)} gradient="gradient-purple" change={pct(an?.newUsers7d, an?.newUsersPrev7d)} />
         </LinkCard>
         <LinkCard href="/transactions">
-          <StatCard icon={IndianRupee} label="Coins Sold (all-time)" value={fmtNumber(o?.revenue)} gradient="gradient-green" change={pct(an?.revenue7d, an?.revenuePrev7d)} />
+          <StatCard icon={Coins} label="💎 Diamond bike (all-time)" value={fmtNumber(o?.revenue)} gradient="gradient-green" change={pct(an?.revenue7d, an?.revenuePrev7d)} />
         </LinkCard>
         <LinkCard href="/matches">
           <StatCard icon={Swords} label="Active Battles" value={fmtNumber(o?.activeMatches)} gradient="gradient-blue" />
@@ -100,7 +99,7 @@ export default function Dashboard() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <StatCard icon={UserPlus} label="New Users (today)" value={fmtNumber(an?.newUsersToday)} gradient="gradient-purple" change={pct(an?.newUsersToday, an?.newUsersYesterday)} />
         <StatCard icon={Activity} label="Active Users (24h)" value={fmtNumber(an?.dau)} gradient="gradient-blue" change={pct(an?.dau, an?.dauYesterday)} />
-        <StatCard icon={Coins} label="Coins Sold (today)" value={fmtNumber(an?.revenueToday)} gradient="gradient-green" change={pct(an?.revenueToday, an?.revenueYesterday)} />
+        <StatCard icon={Coins} label="💎 Diamond bike (aaj)" value={fmtNumber(an?.revenueToday)} gradient="gradient-green" change={pct(an?.revenueToday, an?.revenueYesterday)} />
         <StatCard icon={Vote} label="Votes (today)" value={fmtNumber(an?.votesToday)} gradient="gradient-orange" change={pct(an?.votesToday, an?.votesYesterday)} />
       </div>
 
@@ -170,7 +169,7 @@ export default function Dashboard() {
           </div>
           <div className="mt-5 pt-4 border-t border-border">
             <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">Coins in circulation</span>
+              <span className="text-muted-foreground">Users ke paas (DP coin + Diamond)</span>
               <span className="font-bold text-foreground">{fmtNumber(revenue.data?.coinsInCirculation)}</span>
             </div>
             <div className="flex items-center justify-between text-sm mt-2">
@@ -207,7 +206,7 @@ export default function Dashboard() {
                     <p className="text-sm font-medium text-foreground truncate">{s.fullName || s.username || "Unknown"}</p>
                     {s.username && <p className="text-xs text-muted-foreground truncate">@{s.username}</p>}
                   </div>
-                  <span className="text-sm font-bold text-foreground flex-shrink-0">{fmtNumber(s.total)}</span>
+                  <span className="text-sm font-bold text-green-600 flex-shrink-0">₹{fmtNumber(s.totalInr ?? s.total)}<span className="block text-[11px] font-normal text-muted-foreground text-right">💎 {fmtNumber(s.totalCoins)}</span></span>
                 </Link>
               ))}
             </div>

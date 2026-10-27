@@ -29,10 +29,12 @@ export default function Transactions() {
   });
 
   const exportCsv = () => {
-    const header = ["id", "uid", "username", "amount", "type", "description", "createdAt"];
-    const rows = data.map((t: any) =>
-      [t.id, t.uid, t.username || "", t.amount, t.type, (t.description || "").replace(/,/g, " "), t.createdAt].join(","),
-    );
+    // amount = total change; lockedDelta = its Diamond part; the rest is DP coin.
+    const header = ["id", "uid", "username", "amount", "dpCoin", "diamond", "type", "description", "createdAt"];
+    const rows = data.map((t: any) => {
+      const d = Number(t.lockedDelta || 0);
+      return [t.id, t.uid, t.username || "", t.amount, Number(t.amount || 0) - d, d, t.type, (t.description || "").replace(/,/g, " "), t.createdAt].join(",");
+    });
     const blob = new Blob([[header.join(","), ...rows].join("\n")], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -46,7 +48,7 @@ export default function Transactions() {
 
   return (
     <div>
-      <PageHeader title="Transactions & Revenue" subtitle="Coin ledger, top-ups and money flow" />
+      <PageHeader title="Transactions & Revenue" subtitle="DP coin aur Diamond ledger, Diamond purchases aur paisa" />
 
       {/* Revenue stat cards */}
       {/* Money and coins are different units and are labelled as such: "revenue"

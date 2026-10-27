@@ -75,7 +75,7 @@ export function WithdrawalCard({ data, pending, onSave, confirm }: CardProps) {
       if (v.trim() === "" || !/^\d+$/.test(v.trim())) return toast.error(`${n}: poora number likho (0 = no limit).`);
     }
     const r = Number(rate);
-    if (!rate.trim() || !Number.isFinite(r) || r <= 0) return toast.error("Coin → ₹ rate 0 se zyada hona chahiye.");
+    if (!rate.trim() || !Number.isFinite(r) || r <= 0) return toast.error("DP coin → ₹ rate 0 se zyada hona chahiye.");
     const min = Number(minAmount);
     const max = Number(maxAmount);
     if (max > 0 && min > max) return toast.error("Min payout, max se zyada nahi ho sakta.");
@@ -98,11 +98,11 @@ export function WithdrawalCard({ data, pending, onSave, confirm }: CardProps) {
       <Toggle label="🚨 Emergency freeze (saare naye payout requests band)" checked={frozen} onChange={setFrozen} />
       <div className="grid grid-cols-2 gap-3 mt-3">
         <div>
-          <label className={label}>Min payout (coins)</label>
+          <label className={label}>Min payout (DP coin)</label>
           <input type="number" min={0} className={field} value={minAmount} onChange={(e) => setMinAmount(e.target.value)} />
         </div>
         <div>
-          <label className={label}>Max per request (0 = no limit)</label>
+          <label className={label}>Max per request (DP coin, 0 = no limit)</label>
           <input type="number" min={0} className={field} value={maxAmount} onChange={(e) => setMaxAmount(e.target.value)} />
         </div>
         <div>
@@ -110,10 +110,10 @@ export function WithdrawalCard({ data, pending, onSave, confirm }: CardProps) {
           <input type="number" min={0} className={field} value={maxPerDay} onChange={(e) => setMaxPerDay(e.target.value)} />
         </div>
         <div>
-          <label className={label}>Coin → ₹ rate</label>
+          <label className={label}>DP coin → ₹ rate (payout)</label>
           <input type="number" step="0.01" min={0} className={field} value={rate} onChange={(e) => setRate(e.target.value)} />
           <p className="mt-1 text-xs text-muted-foreground">
-            Payout rate: withdrawal par user ko 1 coin ke kitne ₹ milenge. Package ka daam "Coin Pricing" ke Buy rate se banta hai.
+            Payout rate: withdrawal par user ko 1 DP coin ke kitne ₹ milenge. Diamond ka daam Buy rate se banta hai (Buy tab).
           </p>
         </div>
       </div>
@@ -121,7 +121,7 @@ export function WithdrawalCard({ data, pending, onSave, confirm }: CardProps) {
       <div className="mt-5 border-t border-border pt-4">
         <p className="text-sm font-semibold text-foreground">Platform fee (payout se katega)</p>
         <p className="text-xs text-muted-foreground mb-3">
-          Fee = payout ka % + flat ₹, min/max ke beech. Request ke waqt lock hoti hai; reject par saare coins wapas, koi fee nahi. Sab 0 = no fee.
+          Fee = payout ka % + flat ₹, min/max ke beech. Request ke waqt lock hoti hai; reject par saare DP coin wapas, koi fee nahi. Sab 0 = no fee.
         </p>
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -145,7 +145,7 @@ export function WithdrawalCard({ data, pending, onSave, confirm }: CardProps) {
           <div className="flex items-center gap-2">
             <span className="text-muted-foreground">Preview:</span>
             <input type="number" min={0} className="w-24 px-2 py-1 rounded-lg border border-border bg-background text-sm" value={sampleCoins} onChange={(e) => setSampleCoins(e.target.value)} />
-            <span className="text-muted-foreground">coins</span>
+            <span className="text-muted-foreground">DP coin</span>
           </div>
           <div className="mt-1.5 text-foreground">
             Value ₹{preview.gross.toFixed(2)} − fee ₹{preview.fee.toFixed(2)} = <b>user ko ₹{preview.net.toFixed(2)}</b>
@@ -174,8 +174,8 @@ export function CoinPricingCard({ data, pending, onSave }: CardProps) {
   const r = Number(buyRate);
   const margin = buyRate.trim() && Number.isFinite(r) && r > 0 ? r / payout : null;
   const submit = () => {
-    if (!buyRate.trim() || !Number.isFinite(r) || r <= 0) return toast.error("Buy rate 0 se zyada hona chahiye (₹ per coin).");
-    if (r < payout) return toast.error(`Buy rate payout rate (₹${payout}/coin) se kam nahi ho sakta — warna har coin par nuksaan.`);
+    if (!buyRate.trim() || !Number.isFinite(r) || r <= 0) return toast.error("Buy rate 0 se zyada hona chahiye (₹ per Diamond).");
+    if (r < payout) return toast.error(`Buy rate DP coin payout rate (₹${payout}) se kam nahi ho sakta — warna har Diamond par nuksaan.`);
     onSave({ coinPricing: { buyRate: r } });
   };
   return (

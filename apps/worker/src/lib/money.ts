@@ -237,7 +237,7 @@ async function releaseWalletClaim(
 export async function adjustUserWallet(
   env: Env,
   input: WalletAdjustment,
-): Promise<{ newBalance: number; applied: number }> {
+): Promise<{ newBalance: number; applied: number; newDiamonds: number }> {
   const amount = assertCoinAmount(input.amount, "amount");
   if (!input.uid || typeof input.uid !== "string") {
     throw httpsError("invalid-argument", "uid is required.");
@@ -361,15 +361,16 @@ export async function adjustUserWallet(
     }
     throw httpsError(
       "failed-precondition",
-      `Insufficient balance: cannot subtract ${amount} coins from a balance of ${Number(existing.dpcoin || 0)}.`,
+      `Insufficient balance: cannot subtract ${amount} coins from a total (DP coin + Diamond) of ${Number(existing.dpcoin || 0)}.`,
     );
   }
 
-  const updated = await env.DB.prepare(`SELECT dpcoin FROM users WHERE uid = ?`)
+  const updated = await env.DB.prepare(`SELECT dpcoin, locked_coins FROM users WHERE uid = ?`)
     .bind(input.uid)
-    .first<{ dpcoin: number | null }>();
+    .first<{ dpcoin: number | null; locked_coins: number | null }>();
 
-  return { newBalance: Number(updated?.dpcoin || 0), applied: delta };
+  // newBalance is the TOTAL (DP coin + Diamond); newDiamonds its Diamond part.
+  return { newBalance: Number(updated?.dpcoin || 0), applied: delta, newDiamonds: Number(updated?.locked_coins || 0) };
 }
 
 

@@ -10,7 +10,7 @@ const METRICS = [
   { key: "monthlyWins", label: "Monthly Wins" },
   { key: "wins", label: "Total Wins" },
   { key: "xp", label: "XP" },
-  { key: "dpcoin", label: "Coins" },
+  { key: "dpcoin", label: "Total (DP coin + Diamond)" },
   { key: "totalVotesReceived", label: "Votes Received" },
   { key: "followersCount", label: "Followers" },
 ];
@@ -57,7 +57,7 @@ export default function Leaderboard() {
           { key: "monthlyWins", header: "Monthly Wins", render: (u: any) => <span>{fmtNumber(u.monthlyWins)}</span> },
           { key: "wins", header: "Wins", render: (u: any) => <span>{fmtNumber(u.wins)}</span> },
           { key: "xp", header: "XP", render: (u: any) => <span>{fmtNumber(u.xp)}</span> },
-          { key: "coins", header: "Coins", render: (u: any) => <span>{fmtNumber(u.dpcoin)}</span> },
+          { key: "coins", header: "Total (🪙 + 💎)", render: (u: any) => <span>{fmtNumber(u.dpcoin)}</span> },
           { key: "votes", header: "Votes", render: (u: any) => <span>{fmtNumber(u.totalVotesReceived)}</span> },
           { key: "followers", header: "Followers", render: (u: any) => <span>{fmtNumber(u.followersCount)}</span> },
         ]}

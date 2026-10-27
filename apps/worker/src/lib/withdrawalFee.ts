@@ -87,7 +87,7 @@ export function chargeableWithdrawal(coins: number, rate: number, rule: Withdraw
   if (q.netInr < MIN_NET_PAYOUT_INR) {
     throw httpsError(
       "failed-precondition",
-      `Platform fee ₹${q.feeInr.toFixed(2)} ke baad aapko ₹${q.netInr.toFixed(2)} milte — kam se kam ₹${MIN_NET_PAYOUT_INR} hona chahiye. Zyada coins withdraw karo.`,
+      `Platform fee ₹${q.feeInr.toFixed(2)} ke baad aapko ₹${q.netInr.toFixed(2)} milte — kam se kam ₹${MIN_NET_PAYOUT_INR} hona chahiye. Zyada DP coin withdraw karo.`,
     );
   }
   return q;
