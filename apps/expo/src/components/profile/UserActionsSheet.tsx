@@ -1,5 +1,14 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView, useWindowDimensions } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  ActivityIndicator,
+  ScrollView,
+  useWindowDimensions,
+  Platform,
+} from 'react-native';
 import { Ionicons } from '@/src/lib/icons';
 import { ReanimatedBottomSheet } from '@/src/components/modals/ReanimatedBottomSheet';
 import { useConfirm, type ConfirmOptions } from '@/src/components/modals/ConfirmDialog';
@@ -15,7 +24,7 @@ import {
 } from '@/src/hooks/useProfileData';
 import { useReportReason, USER_REPORT_REASONS } from '@/src/components/modals/ReportReasonDialog';
 import { profilePath, reportUserService } from '@/src/services/users';
-import { shareBattleLink, shareOrigin } from '@/src/lib/share';
+import { prepareShareFile, shareOrigin, shareProfile } from '@/src/lib/share';
 import * as Clipboard from 'expo-clipboard';
 import { emitToast } from '@/src/lib/toastBridge';
 import { reportError } from '@/src/lib/reportError';
@@ -42,6 +51,8 @@ type Props = {
   onClose: () => void;
   targetUserId: string;
   username?: string | null;
+  /** Their profile photo, used as the image when sharing the profile. */
+  photoUrl?: string | null;
   isBlocked?: boolean;
   isMuted?: boolean;
   isRestricted?: boolean;
@@ -56,6 +67,7 @@ export const UserActionsSheet: React.FC<Props> = ({
   onClose,
   targetUserId,
   username,
+  photoUrl = null,
   isBlocked = false,
   isMuted = false,
   isRestricted = false,
@@ -284,11 +296,28 @@ export const UserActionsSheet: React.FC<Props> = ({
     }
   };
 
+  // Web: fetch the profile photo as a File while the sheet is open, so the
+  // Share tap can attach it without a network wait (which would spend the tap's
+  // user activation). Android then previews the photo instead of the site icon.
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !visible || !photoUrl) return;
+    let alive = true;
+    void prepareShareFile({ kind: 'remote', url: photoUrl }, `${username || 'profile'}.jpg`).then((f) => {
+      if (alive) setPhotoFile(f);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [visible, photoUrl, username]);
+
   const handleShare = async () => {
     const url = profileUrl();
     if (!url) return;
-    const outcome = await shareBattleLink({ caption: `Check out ${name} on TopHunt\n${url}`, url });
+    // The link once, inside the caption (passing it separately printed it twice).
+    const outcome = await shareProfile({ caption: `Check out ${name} on TopHunt\n${url}`, photo: photoUrl, file: photoFile });
     if (outcome === 'copied_link') emitToast('Profile link copied.', 'success');
+    else if (outcome === 'handed_off_caption_copied') emitToast('Link copied — paste it with the photo.', 'success');
     else if (outcome === 'failed') emitToast('Could not share the profile.', 'error');
     if (outcome !== 'dismissed' && outcome !== 'failed') onClose();
   };

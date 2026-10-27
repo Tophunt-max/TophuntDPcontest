@@ -16,10 +16,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const ROOT = path.resolve(__dirname, '..');
-const SINK = /\b(Share\.share|RNShare\.share|shareAsync|navigator\.share|nav\.share|shareImageFile|shareBattleLink|downloadBattleImage|openShareUrl)\s*\(/g;
+const SINK = /\b(Share\.share|RNShare\.share|shareAsync|navigator\.share|nav\.share|shareImageFile|shareBattleLink|downloadBattleImage|openShareUrl|shareProfile)\s*\(/g;
 
 /** Every file allowed to call a share sink, and what it shares. */
-const REGISTRY: Record<string, 'primitive' | 'battle' | 'non-battle'> = {
+/**
+ * 'profile': sharing another user's PROFILE. Its image is that user's profile
+ * photo by design, so it is the one kind exempt from the participant-media rule
+ * below (which exists so a BATTLE never goes out as one participant's photo).
+ */
+const REGISTRY: Record<string, 'primitive' | 'battle' | 'non-battle' | 'profile'> = {
   'src/lib/share.ts': 'primitive',
   'src/lib/vsNativeModules.web.ts': 'primitive',
   'src/components/share/ShareSheet.tsx': 'battle',
@@ -30,7 +35,7 @@ const REGISTRY: Record<string, 'primitive' | 'battle' | 'non-battle'> = {
   'app/wallet/index.tsx': 'non-battle', // referral invite
   'app/referral/index.tsx': 'non-battle', // Refer & Earn invite link
   'src/screens/BlogDetailScreen.tsx': 'non-battle', // blog post link
-  'src/components/profile/UserActionsSheet.tsx': 'non-battle', // another user's profile link
+  'src/components/profile/UserActionsSheet.tsx': 'profile', // another user's profile: photo + link
 };
 
 function walk(dir: string, out: string[] = []): string[] {
@@ -82,9 +87,17 @@ describe('share entry point audit', () => {
   });
 
   it('no share sink is ever handed a participant\'s media or a profile photo', () => {
-    for (const f of withSinks) {
+    for (const f of withSinks.filter((x) => REGISTRY[x.rel] !== 'profile')) {
       for (const args of sinkCalls(f.src)) {
         expect(/mediaUrl|profilePic|profileImageUrl|avatar|userA|userB|params\./.test(args), `${f.rel}: ${args.slice(0, 80)}`).toBe(false);
+      }
+    }
+  });
+
+  it('a profile share sends only that profile\'s own photo, never battle media', () => {
+    for (const f of withSinks.filter((x) => REGISTRY[x.rel] === 'profile')) {
+      for (const args of sinkCalls(f.src)) {
+        expect(/mediaUrl|userA|userB|vsImage/.test(args), `${f.rel}: ${args.slice(0, 80)}`).toBe(false);
       }
     }
   });

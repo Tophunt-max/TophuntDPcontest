@@ -327,6 +327,79 @@ export async function shareBattleLink(opts: { caption: string; url: string }): P
 }
 
 /**
+ * Share someone's PROFILE: their profile photo as the share preview, plus one
+ * caption that already contains the link.
+ *
+ * Link-only shares made Android draw the site icon as the preview, and passing
+ * `url` next to a caption that already holds it printed the link twice.
+ *
+ *  - Web: the photo `File` (prefetch it with `prepareShareFile`, so the tap keeps
+ *    its user activation) + the caption. Falls back to the caption alone when the
+ *    browser cannot attach files or the photo could not be read.
+ *  - iOS: the local photo file + the caption together.
+ *  - Android: React Native `Share` cannot attach a file, so the photo goes
+ *    through `expo-sharing` and the caption (with the link) is copied for the
+ *    user to paste — the same trade-off the battle share makes.
+ *  - No photo (or it fails to load): the caption alone.
+ *
+ * This is a profile share, not a battle share: the battle rules (canonical VS
+ * image, never a participant's photo) do not apply. Never throws.
+ */
+export async function shareProfile(opts: {
+  caption: string;
+  photo?: string | null;
+  /** Web only: the photo pre-fetched with `prepareShareFile`. */
+  file?: File | null;
+}): Promise<ShareOutcome> {
+  const { caption } = opts;
+  if (Platform.OS === 'web') {
+    const nav: any = typeof navigator !== 'undefined' ? navigator : null;
+    const file = opts.file ?? null;
+    if (file && canShareFilesOnWeb() && nav.canShare({ files: [file] })) {
+      try {
+        await nav.share({ files: [file], text: caption, title: 'Share profile' });
+        return 'shared_image';
+      } catch (e: any) {
+        if (isAbort(e)) return 'dismissed';
+        // NotAllowedError etc.: fall through to the caption alone.
+      }
+    }
+    if (typeof nav?.share === 'function') {
+      try {
+        await nav.share({ text: caption });
+        return 'shared_link';
+      } catch (e) {
+        if (isAbort(e)) return 'dismissed';
+      }
+    }
+    try {
+      await Clipboard.setStringAsync(caption);
+      return 'copied_link';
+    } catch {
+      return 'failed';
+    }
+  }
+
+  const fileUri = opts.photo ? await localImageFile(opts.photo).catch(() => null) : null;
+  try {
+    if (fileUri && Platform.OS === 'ios') {
+      const result: any = await RNShare.share({ url: fileUri, message: caption });
+      return result.action === RNShare.dismissedAction ? 'dismissed' : 'shared_image';
+    }
+    const sharing = fileUri ? getSharing() : null;
+    if (fileUri && typeof sharing?.shareAsync === 'function') {
+      await Clipboard.setStringAsync(caption).catch(() => undefined);
+      await sharing.shareAsync(fileUri, { mimeType: 'image/jpeg', dialogTitle: 'Share profile', UTI: 'public.jpeg' });
+      return 'handed_off_caption_copied';
+    }
+    const result = await RNShare.share({ message: caption });
+    return result.action === RNShare.dismissedAction ? 'dismissed' : 'shared_link';
+  } catch (e) {
+    return isAbort(e) ? 'dismissed' : 'failed';
+  }
+}
+
+/**
  * Save the VS image: a real file download on web; on native, hand it to the OS
  * share sheet where "Save image" lives (no expo-media-library dependency, so no
  * native rebuild needed). Returns false when there is no image to save.
