@@ -1,12 +1,13 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { Ionicons } from '@/src/lib/icons';
-import { CoinIcon } from '@/src/components/ui/CoinIcon';
+import { DiamondIcon } from '@/src/components/ui/DiamondIcon';
 import { useCountdown } from '@/src/hooks/useCountdown';
 import { entryFeePerPlayer, isFreeContest, type ContestPricingInput } from '@/src/lib/contestPricing';
 import { contestPrize, prizeTag, type ContestPrizeInput } from '@/src/lib/contestPrize';
 import type { Deadline } from '@/src/lib/countdown';
 
+import { CoinIcon } from '@/src/components/ui/CoinIcon';
 /**
  * The two badges every contest card needs, in one place so Explore, the photo
  * list and the video list cannot drift apart again.
@@ -116,9 +117,10 @@ export function ContestEntryBadge({
   return (
     <View
       style={[styles.badge, styles.paidBadge, small && styles.badgeSm]}
-      accessibilityLabel={`Entry costs ${fee} coins`}
+      accessibilityLabel={`Entry costs ${fee} Diamonds`}
     >
-      <CoinIcon size={iconSize} color={PAID_FG} />
+      {/* Entry fees are paid in Diamonds only (src/lib/balances.ts). */}
+      <DiamondIcon size={iconSize} color={PAID_FG} />
       <Text
         style={[styles.badgeText, styles.numeric, { color: PAID_FG }, small && styles.badgeTextSm]}
         numberOfLines={1}
@@ -241,10 +243,11 @@ export function ContestPrizeLine({
       <Text style={[styles.prizeLabel, { color: labelColor }]} maxFontSizeMultiplier={MAX_SCALE}>
         WINNER GETS
       </Text>
-      <View style={styles.prizeValueRow}>
-        <Ionicons name="trophy" size={16} color={COIN_FG} />
+      {/* A coin prize is DP coins: the withdrawable balance (src/lib/balances.ts). */}
+      <View style={styles.prizeValueRow} accessible accessibilityLabel={`Winner gets ${prize.coins} DP coins`}>
+        <CoinIcon size={16} color={COIN_FG} />
         <Text style={[styles.prizeValue, { color: COIN_FG }]} numberOfLines={1} maxFontSizeMultiplier={MAX_SCALE}>
-          {prize.coins} Coins
+          {prize.coins} DP coin
         </Text>
       </View>
       {tag === 'promo' && <PrizeTagLine tag={tag} />}

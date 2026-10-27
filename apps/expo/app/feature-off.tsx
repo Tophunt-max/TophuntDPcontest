@@ -14,7 +14,7 @@ const LABEL: Record<FeatureKey, string> = {
   contests: 'Contests',
   chat: 'Chat',
   stories: 'Stories',
-  topups: 'Coin top-up',
+  topups: 'Diamond store',
   withdrawals: 'Withdrawals',
   posts: 'Posts',
 };

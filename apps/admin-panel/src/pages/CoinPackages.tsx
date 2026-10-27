@@ -45,8 +45,8 @@ export default function CoinPackages() {
   return (
     <div>
       <PageHeader
-        title="Coin Packages"
-        subtitle={`${data.length} top-up packages · Price = base coins × buy rate (₹${fmtNumber(rate)}/coin), bonus free · payout ₹${fmtNumber(payout)}/coin — rates App Control mein badlo`}
+        title="Diamond Packages"
+        subtitle={`${data.length} packages, sab Diamond dete hain · Daam = Diamond × buy rate (₹${fmtNumber(rate)}/Diamond), bonus free · DP coin payout ₹${fmtNumber(payout)} — rates Coin Economy → Buy me badlo`}
         action={
           <button onClick={() => setDialog("new")} className="flex items-center gap-2 gradient-purple text-white text-sm font-semibold px-4 py-2 rounded-xl">
             <Plus size={16} /> New Package
@@ -63,7 +63,7 @@ export default function CoinPackages() {
           { key: "name", header: "Name", render: (p: any) => <span className="font-medium text-foreground">{p.name || "Untitled"}</span> },
           {
             key: "coins",
-            header: "Coins",
+            header: "💎 Diamond",
             render: (p: any) => {
               const b = p.budgetId ? budgetById.get(p.budgetId) : undefined;
               return (
@@ -88,7 +88,7 @@ export default function CoinPackages() {
                 {p.reason === "below_minimum" ? <span className="ml-2 text-xs font-medium text-red-600">₹1 se kam — app mein buy nahi hoga</span> : null}
                 {p.reason === "pays_out_more" ? (
                   <span className="ml-2 text-xs font-medium text-red-600">
-                    Nuksaan: payout ₹{fmtNumber(p.payoutInr)} &gt; daam — bik nahi raha. Buy rate ≥ ₹{fmtNumber(p.minSafeBuyRate)} rakho
+                    Nuksaan: DP coin payout ₹{fmtNumber(p.payoutInr)} &gt; daam — bik nahi raha. Buy rate ≥ ₹{fmtNumber(p.minSafeBuyRate)} rakho
                   </span>
                 ) : null}
               </span>
@@ -163,8 +163,8 @@ function PackageDialog({ pkg, rate, payout, budgets, onClose, onDone }: { pkg?: 
         <div className="space-y-3">
           <input className={field} placeholder="Package name e.g. Starter Pack" value={form.name} onChange={(e) => set("name", e.target.value)} />
           <div className="grid grid-cols-2 gap-3">
-            <Num label="Coins" v={form.coins} on={(v: string) => set("coins", v)} cls={field} />
-            <Num label="Bonus coins" v={form.bonusCoins} on={(v: string) => set("bonusCoins", v)} cls={field} />
+            <Num label="Diamond" v={form.coins} on={(v: string) => set("coins", v)} cls={field} />
+            <Num label="Bonus Diamond" v={form.bonusCoins} on={(v: string) => set("bonusCoins", v)} cls={field} />
             <Num label="Sort order" v={form.sortOrder} on={(v: string) => set("sortOrder", v)} cls={field} />
           </div>
           <div className="rounded-xl bg-secondary px-3 py-2.5 text-sm">
@@ -173,19 +173,21 @@ function PackageDialog({ pkg, rate, payout, budgets, onClose, onDone }: { pkg?: 
               <span className="font-bold text-foreground">₹{fmtNumber(Math.round((Number(form.coins) || 0) * rate * 100) / 100)}</span>
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
-              {fmtNumber(Number(form.coins) || 0)} coins × ₹{fmtNumber(rate)} buy rate. Bonus coins free hain. Daam badalne ke liye App Control → Coin Pricing.
+              {fmtNumber(Number(form.coins) || 0)} Diamond × ₹{fmtNumber(rate)} buy rate. Bonus Diamond free hain. Daam badalne ke liye Coin Economy → Buy.
             </p>
             {(() => {
               const coins = Number(form.coins) || 0;
               const bonus = Number(form.bonusCoins) || 0;
               const price = Math.round(coins * rate * 100) / 100;
-              // A budget-funded bonus is locked (play-only), so only the base coins can be cashed out.
+              // Diamonds are not withdrawn, but two players can turn them into
+              // prize DP coins, so they are worth up to the payout rate. A
+              // budget-funded bonus is the platform's cost, shown below instead.
               const withdrawable = form.budgetId ? coins : coins + bonus;
               const out = Math.round(withdrawable * payout * 100) / 100;
               if (out > price + 0.005) {
                 return (
                   <p className="mt-1 text-xs font-medium text-red-600">
-                    Nuksaan: user ₹{fmtNumber(price)} dekar ₹{fmtNumber(out)} nikal sakta hai — server ye package save nahi karega.
+                    Nuksaan: user ₹{fmtNumber(price)} dekar ~₹{fmtNumber(out)} ke DP coin bana sakta hai (Diamond se khel kar) — server ye package save nahi karega.
                     {form.budgetId ? " Buy rate payout rate se kam hai." : " Bonus kam karo, ya neeche promo budget chuno."}
                   </p>
                 );
@@ -193,8 +195,8 @@ function PackageDialog({ pkg, rate, payout, budgets, onClose, onDone }: { pkg?: 
               if (form.budgetId && bonus > 0) {
                 return (
                   <p className="mt-1 text-xs font-medium text-purple-700">
-                    Har purchase par platform {fmtNumber(bonus)} bonus coin dega (≈ ₹{fmtNumber(Math.round(bonus * payout * 100) / 100)}), budget se katega.
-                    Bonus coin sirf khelne ke liye honge, withdraw nahi.
+                    Har purchase par platform {fmtNumber(bonus)} bonus Diamond dega (≈ ₹{fmtNumber(Math.round(bonus * payout * 100) / 100)}), budget se katega.
+                    Bonus Diamond sirf khelne ke liye honge, withdraw nahi.
                   </p>
                 );
               }

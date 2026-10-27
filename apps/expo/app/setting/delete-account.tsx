@@ -72,7 +72,10 @@ interface Eligibility {
   blockers?: Deferral[];
   deferrals?: Deferral[];
   warnings?: DeletionWarning[];
+  /** Total (DP coin + Diamond). */
   balance?: number;
+  /** The Diamond part of `balance`; missing from older servers. */
+  diamonds?: number;
   gracePeriodDays?: number;
   wouldPurgeAt?: number;
   request?: ExistingRequest | null;
@@ -139,6 +142,9 @@ export default function DeleteAccountScreen() {
   const pending = eligibility?.request ?? null;
   const graceDays = eligibility?.gracePeriodDays ?? 30;
   const balance = eligibility?.balance ?? 0;
+  // DP coins can still be withdrawn before deleting; Diamonds never can.
+  const balanceDiamonds = Math.min(Math.max(0, balance), Math.max(0, eligibility?.diamonds ?? 0));
+  const balanceDp = Math.max(0, balance - balanceDiamonds);
   const confirmed = confirmText.trim().toUpperCase() === CONFIRM_WORD;
   const canSubmit = confirmed && !submitting;
 
@@ -254,8 +260,8 @@ export default function DeleteAccountScreen() {
       title: 'Delete your account?',
       message:
         graceDays > 0
-          ? `Your account will be closed now and permanently erased on ${when}. You can sign in before then to cancel. Your remaining coins are forfeited.`
-          : 'This is permanent. Your profile, entries, stories and remaining coin balance are removed and cannot be restored.',
+          ? `Your account will be closed now and permanently erased on ${when}. You can sign in before then to cancel. Your remaining DP coins and Diamonds are forfeited.`
+          : 'This is permanent. Your profile, entries, stories and remaining DP coins and Diamonds are removed and cannot be restored.',
       confirmLabel: 'Delete my account',
       cancelLabel: 'Keep my account',
       destructive: true,
@@ -399,11 +405,11 @@ export default function DeleteAccountScreen() {
         {balance > 0 && (
           <View style={[styles.blockerBox, { backgroundColor: inputBg, borderColor: border }]}>
             <Text style={[styles.sectionTitle, { color: textColor }]}>
-              You still have {balance} coins
+              You still have {balanceDp} DP coin and {balanceDiamonds} Diamond
             </Text>
             <Text style={[styles.body, { color: secondary }]}>
-              These will be forfeited and cannot be recovered. If you want to cash them out,
-              withdraw them first and delete your account once the payout is complete.
+              Both will be forfeited and cannot be recovered. Diamonds cannot be withdrawn. If you want to cash out your DP
+              coins, withdraw them first and delete your account once the payout is complete.
             </Text>
           </View>
         )}

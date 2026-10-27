@@ -122,6 +122,7 @@ import { sendEmail, sendUserEmail } from "../lib/email";
 import { passwordChangedEmail, dataExportEmail } from "../lib/emailTemplates";
 import { newId, now, generateJoinId } from "../lib/ids";
 import { lockedPart } from "../lib/rewardLocking";
+import { DIAMONDS_COVER, notEnoughDiamonds } from "../lib/diamonds";
 import { assessWithdrawalRisk, RISK_FLAG_LABELS } from "../lib/withdrawalRisk";
 import {
   FREE_REWARDS_EXHAUSTED,
@@ -736,26 +737,26 @@ apiRoute.post("/", async (c) => {
       // was meant to cover — the batch not applying — left the user charged with
       // no match; and if the refund also failed, the coins were simply gone with
       // no trace. Same pattern as joinMatch and lib/money.ts#adjustUserWallet.
-      const solvent = `EXISTS (SELECT 1 FROM users WHERE uid = ? AND dpcoin >= ?)`;
-      // Locked (play-only promo) coins are spent FIRST on an entry fee. The
-      // ledger row records how many, so a refund can lock them again.
+      // Entry fees are paid in Diamonds only (users.locked_coins, see
+      // lib/diamonds.ts). DP coins (dpcoin - locked_coins) are for withdrawal
+      // and never pay an entry. The ledger row records the Diamonds spent, so a
+      // refund gives them back as Diamonds.
+      const solvent = `EXISTS (SELECT 1 FROM users WHERE uid = ? AND ${DIAMONDS_COVER})`;
       const reserved = `COALESCE((SELECT coins FROM promo_reservations WHERE id = ? AND status = 'held'), 0)`;
       const createStatements: D1PreparedStatement[] = [
         env.DB.prepare(
           `INSERT OR IGNORE INTO coin_transactions
              (id, uid, amount, type, contest_id, description, created_at, locked_delta)
-           SELECT ?, ?, ?, 'contest_entry_fee', ?, ?, ?,
-                  -(SELECT MIN(locked_coins, ?) FROM users WHERE uid = ?)
+           SELECT ?, ?, ?, 'contest_entry_fee', ?, ?, ?, ?
             WHERE ${solvent}`,
         ).bind(
           entryTransactionId,
           uid,
           -fee,
           contestId ?? null,
-          `Entry fee (50% split) for ${contest.title || "contest"}`,
+          `Entry fee (50% split) for ${contest.title || "contest"} (Diamond)`,
           ts,
-          fee,
-          uid,
+          -fee,
           uid,
           fee,
         ),
@@ -820,8 +821,8 @@ apiRoute.post("/", async (c) => {
         ),
         env.DB.prepare(
           `UPDATE users
-              SET dpcoin = dpcoin - ?, locked_coins = MAX(0, locked_coins - ?), xp = xp + 10, updated_at = ?
-            WHERE uid = ? AND dpcoin >= ?`,
+              SET dpcoin = dpcoin - ?, locked_coins = locked_coins - ?, xp = xp + 10, updated_at = ?
+            WHERE uid = ? AND ${DIAMONDS_COVER}`,
         ).bind(fee, fee, ts, uid, fee),
       );
       const createResults = await env.DB.batch(createStatements);
@@ -830,7 +831,7 @@ apiRoute.post("/", async (c) => {
         if (productSubsidy > 0) await releaseStatement(env, reservationId, now()).run().catch(() => {});
         // Nothing was charged and no match was created — the two INSERTs share
         // this statement's gate.
-        throw httpsError("failed-precondition", `Insufficient Dpcoin. Required: ${fee}, Current: ${user.dpcoin}`);
+        throw await notEnoughDiamonds(env, uid, fee);
       }
 
       // Close the create-vs-pause race: the admin pause update refuses to run
@@ -883,8 +884,8 @@ apiRoute.post("/", async (c) => {
             `EXISTS (SELECT 1 FROM contest_matches WHERE id = ? AND status = 'waiting_for_opponent')
              AND NOT EXISTS (SELECT 1 FROM coin_transactions WHERE id = ?)`;
           const refundBindings = [matchId, refundTransactionId];
-          // Locked coins spent on the entry go back to being locked.
-          const relock = `COALESCE((SELECT -locked_delta FROM coin_transactions WHERE id = ?), 0)`;
+          // The entry above was paid in Diamonds, so they go back as Diamonds.
+          const relock = "?";
           const rollback = await env.DB.batch([
             // The promo subsidy (if any) goes back to its budget. First, because
             // every later statement changes what `refundGate` sees.
@@ -897,7 +898,7 @@ apiRoute.post("/", async (c) => {
                   SET dpcoin = dpcoin + ?, locked_coins = locked_coins + ${relock},
                       xp = MAX(0, xp - 10), updated_at = ?
                 WHERE uid = ? AND ${refundGate}`,
-            ).bind(fee, entryTransactionId, rollbackTs, uid, ...refundBindings),
+            ).bind(fee, fee, rollbackTs, uid, ...refundBindings),
             env.DB.prepare(
               `INSERT OR IGNORE INTO coin_transactions
                  (id, uid, amount, type, contest_id, match_id, description, created_at, locked_delta)
@@ -909,9 +910,9 @@ apiRoute.post("/", async (c) => {
               fee,
               contestId ?? null,
               matchId,
-              "Entry fee refunded — contest stopped accepting new matches",
+              "Entry fee refunded (Diamond) — contest stopped accepting new matches",
               rollbackTs,
-              entryTransactionId,
+              fee,
               ...refundBindings,
             ),
             env.DB.prepare(
@@ -1058,7 +1059,7 @@ apiRoute.post("/", async (c) => {
               AND (expires_at IS NULL OR expires_at > ?)
               AND json_extract(user_a, '$.uid') IS NOT NULL
               AND json_extract(user_a, '$.uid') != ?
-              AND EXISTS (SELECT 1 FROM users WHERE uid = ? AND dpcoin >= ?)`,
+              AND EXISTS (SELECT 1 FROM users WHERE uid = ? AND ${DIAMONDS_COVER})`,
         ).bind(
           joinIdB,
           ts,
@@ -1073,12 +1074,11 @@ apiRoute.post("/", async (c) => {
           uid,
           fee,
         ),
-        // Locked (play-only) coins are spent first; the row records how many.
+        // Paid in Diamonds only; the claim above already checked the user has them.
         env.DB.prepare(
           `INSERT OR IGNORE INTO coin_transactions
              (id, uid, amount, type, contest_id, match_id, description, created_at, locked_delta)
-           SELECT ?, ?, ?, 'contest_entry_fee', ?, ?, ?, ?,
-                  -(SELECT MIN(locked_coins, ?) FROM users WHERE uid = ?)
+           SELECT ?, ?, ?, 'contest_entry_fee', ?, ?, ?, ?, ?
             WHERE ${claimGate}`,
         ).bind(
           entryLedgerId,
@@ -1086,16 +1086,15 @@ apiRoute.post("/", async (c) => {
           -fee,
           match.contestId ?? null,
           matchId,
-          `Entry fee (50% split) for ${match.title || "contest"}`,
+          `Entry fee (50% split) for ${match.title || "contest"} (Diamond)`,
           ts,
-          fee,
-          uid,
+          -fee,
           matchId,
           joinIdB,
         ),
         env.DB.prepare(
           `UPDATE users
-              SET dpcoin = dpcoin - ?, locked_coins = MAX(0, locked_coins - ?), xp = xp + 10, updated_at = ?
+              SET dpcoin = dpcoin - ?, locked_coins = locked_coins - ?, xp = xp + 10, updated_at = ?
             WHERE uid = ? AND ${claimGate}`,
         ).bind(fee, fee, ts, uid, matchId, joinIdB),
       ]);
@@ -1116,7 +1115,7 @@ apiRoute.post("/", async (c) => {
         if ((stillWaiting.userA as any).uid === uid) {
           throw httpsError("failed-precondition", "You cannot join your own match.");
         }
-        throw httpsError("failed-precondition", `Insufficient Dpcoin. Required: ${fee}, Current: ${user.dpcoin}`);
+        throw await notEnoughDiamonds(env, uid, fee);
       }
 
       // The battle now has two sides. Kick the server-owned VS publication
@@ -1917,7 +1916,7 @@ apiRoute.post("/", async (c) => {
           dailyLedgerId,
           uid,
           coinReward,
-          `Daily login reward (${streak} day streak)`,
+          `Daily login reward (${streak} day streak)${dailyLocked > 0 ? " · Diamond" : ""}`,
           ts,
           dailyLocked,
           uid,
@@ -2043,7 +2042,7 @@ apiRoute.post("/", async (c) => {
              (id, uid, amount, type, description, created_at, locked_delta)
            SELECT ?, ?, ?, 'ad_reward', ?, ?, ?
             WHERE ${claimGate} AND ${adBudget.heldGate}`,
-        ).bind(newId(), uid, ads.reward, "Rewarded ad view", ts, adLocked, claimId, ...adBudget.heldArgs),
+        ).bind(newId(), uid, ads.reward, adLocked > 0 ? "Rewarded ad view · Diamond" : "Rewarded ad view", ts, adLocked, claimId, ...adBudget.heldArgs),
         env.DB.prepare(
           `UPDATE users SET dpcoin = dpcoin + ?, locked_coins = locked_coins + ?, updated_at = ? WHERE uid = ? AND ${claimGate} AND ${adBudget.heldGate}`,
         ).bind(ads.reward, adLocked, ts, uid, claimId, ...adBudget.heldArgs),
@@ -2176,7 +2175,7 @@ apiRoute.post("/", async (c) => {
              (id, uid, amount, type, description, created_at, locked_delta)
            SELECT ?, ?, ?, 'daily_task', ?, ?, ?
             WHERE ${taskGate} AND ${taskBudget.heldGate}`,
-        ).bind(ledgerId, uid, reward, `Task reward: ${task.title}`, ts, taskLocked, ...taskBindings, ...taskBudget.heldArgs),
+        ).bind(ledgerId, uid, reward, `Task reward: ${task.title}${taskLocked > 0 ? " · Diamond" : ""}`, ts, taskLocked, ...taskBindings, ...taskBudget.heldArgs),
         ...taskBudget.finalize,
       ]);
       if (Number(taskResults[taskBudget.reserve.length + 1]?.meta?.changes || 0) === 0) {
@@ -2212,7 +2211,7 @@ apiRoute.post("/", async (c) => {
         .from(schema.coinPackages)
         .where(and(eq(schema.coinPackages.id, String(packageId)), eq(schema.coinPackages.active, true)))
         .get();
-      if (!pkg) throw httpsError("not-found", "Coin package not found.");
+      if (!pkg) throw httpsError("not-found", "Diamond package not found.");
 
       // Price = base coins × the admin's coin value, bonus free (lib/coinPricing.ts),
       // read NOW on the server — the same formula the store displays. The order
@@ -2317,7 +2316,7 @@ apiRoute.post("/", async (c) => {
         // Budget-funded bonus coins are play-only (cannot be withdrawn).
         bonusLocked: !!orderBudgetId,
         bonusApplied: !priced.bonusLocked || !!orderBudgetId,
-        name: pkg.name || `${totalCoins} Dpcoins`,
+        name: pkg.name || `${totalCoins} Diamond`,
       });
     }
 
@@ -2368,7 +2367,7 @@ apiRoute.post("/", async (c) => {
           success: true,
           pending: true,
           coins: 0,
-          message: "Payment received. Your coins will be added as soon as the bank confirms it.",
+          message: "Payment received. Your Diamonds will be added as soon as the bank confirms it.",
         });
       }
 
@@ -2400,7 +2399,7 @@ apiRoute.post("/", async (c) => {
         throw httpsError("failed-precondition", "This payment was refunded or cancelled.");
       }
       if (res.credited) {
-        return c.json({ success: true, message: "Coins added successfully!", coins: res.coins });
+        return c.json({ success: true, message: "Diamond added successfully!", coins: res.coins });
       }
 
       /**
@@ -2447,9 +2446,9 @@ apiRoute.post("/", async (c) => {
       if (requester?.role === "superadmin")
         throw httpsError("permission-denied", "Superadmin ke coin platform ke hain, inka withdrawal nahi hota.");
       if (amt < policy.minAmount)
-        throw httpsError("failed-precondition", `Minimum withdrawal is ${policy.minAmount} coins.`);
+        throw httpsError("failed-precondition", `Minimum withdrawal is ${policy.minAmount} DP coin.`);
       if (policy.maxAmount > 0 && amt > policy.maxAmount)
-        throw httpsError("failed-precondition", `Maximum withdrawal is ${policy.maxAmount} coins per request.`);
+        throw httpsError("failed-precondition", `Maximum withdrawal is ${policy.maxAmount} DP coin per request.`);
 
       // Validate the destination BEFORE reserving coins: a typo'd UPI id or a
       // malformed IFSC used to reach the admin panel — and a real bank transfer
@@ -2474,7 +2473,7 @@ apiRoute.post("/", async (c) => {
         if (already + amt > policy.maxPerDay) {
           throw httpsError(
             "failed-precondition",
-            `Daily payout limit is ${policy.maxPerDay} coins. You have already requested ${already} in the last 24 hours.`,
+            `Daily payout limit is ${policy.maxPerDay} DP coin. You have already requested ${already} in the last 24 hours.`,
           );
         }
       }
@@ -2558,7 +2557,7 @@ apiRoute.post("/", async (c) => {
           `withdrawal_hold:${id}`,
           uid,
           -amt,
-          `Payout requested (${destination.method}) — coins reserved`,
+          `Payout requested (${destination.method}) — DP coin reserved`,
           ts,
           id,
         ),
@@ -2573,25 +2572,25 @@ apiRoute.post("/", async (c) => {
         if (withdrawable < amt && Number(me?.dpcoin ?? 0) >= amt) {
           throw httpsError(
             "failed-precondition",
-            `Aapke ${Number(me?.locked_coins ?? 0)} bonus coins sirf khelne ke liye hain, withdraw nahi ho sakte. Abhi withdraw kar sakte ho: ${withdrawable} coins.`,
+            `Diamond withdraw nahi hote, sirf DP coin withdraw hote hain. Abhi withdraw kar sakte ho: ${withdrawable} DP coin.`,
           );
         }
         if (policy.maxPerDay > 0 && withdrawable >= amt) {
           throw httpsError(
             "failed-precondition",
-            `Daily payout limit is ${policy.maxPerDay} coins. Try a smaller amount or wait 24 hours.`,
+            `Daily payout limit is ${policy.maxPerDay} DP coin. Try a smaller amount or wait 24 hours.`,
           );
         }
-        throw httpsError("failed-precondition", "Insufficient balance.");
+        throw httpsError("failed-precondition", "DP coin balance kam hai.");
       }
 
       await db.insert(schema.adminNotifications).values({
         id: newId(), title: risk.level === "high" ? "⚠️ HIGH RISK Withdrawal Request" : "New Withdrawal Request",
-        message: `${risk.level !== "low" ? `[Risk: ${risk.level} — ${risk.flags.map((f) => RISK_FLAG_LABELS[f] ?? f).join(", ")}] ` : ""}A user requested a payout of ${amt} coins to ${destination.masked} — pay ₹${quote.netInr.toFixed(2)} (gross ₹${quote.grossInr.toFixed(2)} − platform fee ₹${quote.feeInr.toFixed(2)}).`,
+        message: `${risk.level !== "low" ? `[Risk: ${risk.level} — ${risk.flags.map((f) => RISK_FLAG_LABELS[f] ?? f).join(", ")}] ` : ""}A user requested a payout of ${amt} DP coin to ${destination.masked} — pay ₹${quote.netInr.toFixed(2)} (gross ₹${quote.grossInr.toFixed(2)} − platform fee ₹${quote.feeInr.toFixed(2)}).`,
         link: "/withdrawals", isRead: false, createdAt: ts,
       });
       alertAdminEmail(c, cfg, "New Withdrawal Request",
-        `<p>A user requested a payout of <b>${amt} coins</b> via ${destination.method}: pay <b>₹${cashAmount.toFixed(2)}</b> (gross ₹${quote.grossInr.toFixed(2)} − platform fee ₹${quote.feeInr.toFixed(2)}).</p><p>Review it in the admin panel → Withdrawals.</p>`);
+        `<p>A user requested a payout of <b>${amt} DP coin</b> via ${destination.method}: pay <b>₹${cashAmount.toFixed(2)}</b> (gross ₹${quote.grossInr.toFixed(2)} − platform fee ₹${quote.feeInr.toFixed(2)}).</p><p>Review it in the admin panel → Withdrawals.</p>`);
       return c.json({ success: true, withdrawalId: id, cashAmount, grossAmount: quote.grossInr, feeAmount: quote.feeInr });
     }
 
@@ -2620,7 +2619,7 @@ apiRoute.post("/", async (c) => {
         .from(schema.coinPackages)
         .where(and(eq(schema.coinPackages.id, String(packageId)), eq(schema.coinPackages.active, true)))
         .get();
-      if (!pkg) throw httpsError("not-found", "Coin package not found.");
+      if (!pkg) throw httpsError("not-found", "Diamond package not found.");
 
       const priced = chargeablePackage(pkg, cfg);
       let bonusCoins = priced.bonusCoins;
@@ -2685,7 +2684,7 @@ apiRoute.post("/", async (c) => {
       }
       await db.insert(schema.adminNotifications).values({
         id: newId(), title: "New Deposit Request",
-        message: `A user submitted a ${amt}-coin deposit (UTR ${String(utr).trim()}).`, link: "/deposits", isRead: false, createdAt: ts,
+        message: `A user submitted a ${amt}-Diamond deposit (UTR ${String(utr).trim()}).`, link: "/deposits", isRead: false, createdAt: ts,
       });
       alertAdminEmail(c, cfg, "New Deposit Request",
         `<p>A user submitted a <b>${amt}-coin</b> deposit (₹${payAmount.toFixed(2)}${pkg.name ? ` — ${pkg.name}` : ""}).</p><p>UTR: <b>${String(utr).trim()}</b></p><p>Verify & approve in the admin panel → Deposits.</p>`);
@@ -4278,6 +4277,8 @@ apiRoute.post("/", async (c) => {
       // audited.
       await requireFullAdminAction(env, uid);
       const { userId, amount, type } = body;
+      // Same choice as the /admin route: Diamond (locked_coins) or DP coin.
+      const locked = body?.locked === true;
       if (!userId || typeof userId !== "string" || !["add", "subtract"].includes(type))
         throw httpsError("invalid-argument", "userId and a type of add or subtract are required.");
       const amt = assertCoinAmount(amount, "amount");
@@ -4290,13 +4291,15 @@ apiRoute.post("/", async (c) => {
           amount: amt,
           direction: type,
           type: "admin_adjustment",
-          description: `Admin ${type} ${amt} Dpcoin`,
+          description: `Admin ${type} ${amt} ${locked ? "Diamond" : "DP coin"}`,
           claimKey: body.idempotencyKey ? `admin_wallet:${userId}:${body.idempotencyKey}` : undefined,
+          locked,
           ts: now(),
         });
         await writeAdminAudit(env, c.get("user"), "wallet.adjust", "user", userId, {
           amount: amt,
           type,
+          locked,
           newBalance,
           via: "/api",
         });

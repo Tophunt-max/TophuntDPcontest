@@ -29,7 +29,7 @@ import { reportError } from '@/src/lib/reportError';
 
 const CATEGORIES = [
   { key: 'bug', label: 'Something is broken' },
-  { key: 'payment', label: 'Payment or coins' },
+  { key: 'payment', label: 'Payment, Diamond ya DP coin' },
   { key: 'contest', label: 'Contest or voting' },
   { key: 'account', label: 'Account or login' },
   { key: 'content', label: 'Abusive content or user' },

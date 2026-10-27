@@ -172,7 +172,7 @@ export function getNotificationTag(type: NotificationType | undefined): Notifica
     case "contest-loss":
       return { label: "Result", color: "#F59E0B", icon: "sad-outline" };
     case "contest-refund":
-      return { label: "Refund", color: "#14B8A6", icon: "cash-outline" };
+      return { label: "Refund", color: "#14B8A6", icon: "diamond" };
     case "contest-tie":
       return { label: "Tie", color: "#64748B", icon: "information-circle-outline" };
     case "purchase":
@@ -307,7 +307,7 @@ export const NOTIFICATION_CATEGORIES: CategoryMeta[] = [
   },
   {
     key: "wallet",
-    title: "Coins & payouts",
+    title: "Diamond, DP coin & payouts",
     description: "Top-ups, withdrawals, rewards and refunds",
     icon: "wallet-outline",
   },

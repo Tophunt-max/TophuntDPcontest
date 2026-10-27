@@ -413,7 +413,7 @@ async function creditOnce(env: Env, uid: string, amount: number, description: st
       amount,
       direction: "add",
       type: "referral_bonus",
-      description: locked ? `${description} (sirf khelne ke liye)` : description,
+      description: locked ? `${description} (Diamond)` : description,
       claimKey,
       ledgerId: claimKey,
       locked,
@@ -485,10 +485,17 @@ export async function payReferral(
     .run();
   if (Number(flip.meta?.changes || 0) === 0) return { referrerReward, refereeReward, capped };
 
-  if (refereeReward > 0) await notifySafe(env, row.referredUid, "Referral reward mil gaya! 🎉", `${refereeReward} coins aapke wallet mein aa gaye.`);
-  if (referrerReward > 0) await notifySafe(env, row.referrerUid, "Referral bonus! 🎉", `Aapke dost ne qualify kiya — ${referrerReward} coins aapke wallet mein.`);
+  // Referral rewards are Diamonds unless App Control pays them as DP coins.
+  const unit = await referralUnit(env);
+  if (refereeReward > 0) await notifySafe(env, row.referredUid, "Referral reward mil gaya! 🎉", `${refereeReward} ${unit} aapke wallet mein aa gaye.`);
+  if (referrerReward > 0) await notifySafe(env, row.referrerUid, "Referral bonus! 🎉", `Aapke dost ne qualify kiya — ${referrerReward} ${unit} aapke wallet mein.`);
   if (!capped) await payMilestones(env, row.referrerUid, cfg);
   return { referrerReward, refereeReward, capped };
+}
+
+/** "Diamond" or "DP coin": how referral rewards are credited (lib/rewardLocking.ts). */
+async function referralUnit(env: Env): Promise<string> {
+  return rewardLocked(await getAppConfig(env), "referral") ? "Diamond" : "DP coin";
 }
 
 /** Milestone bonuses: one claim-keyed credit per tier reached. */
@@ -501,7 +508,7 @@ async function payMilestones(env: Env, referrerUid: string, cfg: ReferralProgram
   for (const m of cfg.milestones) {
     if (n < m.count) break;
     const paid = await creditOnce(env, referrerUid, m.bonus, `Referral milestone — ${m.count} friends joined`, `referral_milestone:${referrerUid}:${m.count}`);
-    if (paid) await notifySafe(env, referrerUid, `Milestone unlocked: ${m.count} referrals 🏆`, `${m.bonus} bonus coins aapke wallet mein.`);
+    if (paid) await notifySafe(env, referrerUid, `Milestone unlocked: ${m.count} referrals 🏆`, `${m.bonus} bonus ${await referralUnit(env)} aapke wallet mein.`);
   }
 }
 

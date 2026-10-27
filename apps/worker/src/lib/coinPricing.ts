@@ -177,9 +177,12 @@ export function assertPackagesSafe(
   if (worst) {
     throw httpsError(
       "invalid-argument",
-      `Nuksaan wala daam: package "${worst.name}" ki bonus coins milake payout (₹${rates.payoutRate}/coin) uske daam se zyada ho jayega. ` +
-        `Buy rate kam se kam ₹${worst.need}/coin rakho, ya bonus kam karo, ` +
-        `ya package ko ek "package_bonus" promo budget se jodo (bonus coins tab sirf khelne ke liye honge, withdraw nahi).`,
+      // Diamonds are not withdrawn, but two players can turn them into prize
+      // DP coins between themselves, so a Diamond sold below the DP coin
+      // payout rate is a cash-out at a loss.
+      `Nuksaan wala daam: package "${worst.name}" ke Diamond (bonus milake) contest jeet kar DP coin ban sakte hain, aur unka payout (₹${rates.payoutRate}/DP coin) package ke daam se zyada ho jayega. ` +
+        `Buy rate kam se kam ₹${worst.need}/Diamond rakho, ya bonus kam karo, ` +
+        `ya bonus ko ek "package_bonus" promo budget se jodo (platform ka kharcha budget me dikhega).`,
     );
   }
 }

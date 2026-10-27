@@ -7,7 +7,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useQueryClient } from '@tanstack/react-query';
 import { BottomNav } from '@/src/components/home/BottomNav';
 import { Ionicons } from '@/src/lib/icons';
-import { CoinIcon } from '@/src/components/ui/CoinIcon';
+import { DiamondIcon } from '@/src/components/ui/DiamondIcon';
+import { balancesOf } from '@/src/lib/balances';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { Skeleton } from '@/src/components/ui/Skeleton';
 import { useAuth } from '@/src/hooks/useAuth';
@@ -111,7 +112,8 @@ export default function ExploreScreen() {
   const following = (profile as any)?.following as string[] | undefined;
   const follow = useFollowToggle(following);
 
-  const coins = Number((profile as any)?.Dpcoin ?? (profile as any)?.dpcoin ?? 0);
+  // The header chip shows Diamonds: what entry fees are paid with.
+  const coins = balancesOf(profile as any).diamonds;
   const shell = accountShellFlags(authStatus, identity.hasIdentity, !!profile);
   const tileW = (width - PAD * 2 - GRID_GAP) / 2;
   const railTileW = Math.min(200, Math.round(width * 0.46));
@@ -483,8 +485,8 @@ function TopBar({
         {signedIn && (balanceLoading ? (
           <Skeleton width={76} height={38} borderRadius={19} />
         ) : (
-          <TouchableOpacity style={[styles.coinChip, { backgroundColor: p.chip }]} onPress={onWallet} accessibilityRole="button" accessibilityLabel={`${coins} coins. Buy coins`}>
-            <CoinIcon size={14} color="#FFB300" />
+          <TouchableOpacity style={[styles.coinChip, { backgroundColor: p.chip }]} onPress={onWallet} accessibilityRole="button" accessibilityLabel={`${coins} Diamonds. Buy Diamonds`}>
+            <DiamondIcon size={14} />
             <Text style={[styles.coinText, { color: p.text }]}>{coins.toLocaleString()}</Text>
             <View style={styles.coinPlus}>
               <Ionicons name="add" size={13} color="#FFF" />

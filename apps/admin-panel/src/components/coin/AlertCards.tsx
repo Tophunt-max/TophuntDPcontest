@@ -43,10 +43,10 @@ export function FreeRewardsBudgetCard({ data, pending, onSave }: CardProps) {
       {current ? (
         <p className={`mt-2 text-xs ${current.remainingCoins <= 0 || !current.live ? "text-red-600" : "text-muted-foreground"}`}>
           {current.remainingCoins <= 0
-            ? "Ye budget khatam ho gaya. Users ko free coin abhi nahi mil rahe."
+            ? "Ye budget khatam ho gaya. Users ko free Diamond abhi nahi mil rahe."
             : !current.live
-              ? "Ye budget abhi active nahi (paused ya time window ke bahar). Free coin nahi milenge."
-              : `${fmtNumber(current.spentCoins)} coin diye ja chuke.${current.perUserLimit ? ` Per user max ${fmtNumber(current.perUserLimit)}.` : ""}`}
+              ? "Ye budget abhi active nahi (paused ya time window ke bahar). Free Diamond nahi milenge."
+              : `${fmtNumber(current.spentCoins)} Diamond diye ja chuke.${current.perUserLimit ? ` Per user max ${fmtNumber(current.perUserLimit)}.` : ""}`}
         </p>
       ) : null}
       {options.length === 0 ? (
@@ -94,7 +94,7 @@ export function CoinAlertsCard({ data, pending, onSave }: CardProps) {
   };
 
   return (
-    <Card icon={BellRing} title="Coin alerts aur report email" tint="text-red-500" onSave={save} pending={pending}>
+    <Card icon={BellRing} title="Diamond / DP coin alerts aur report email" tint="text-red-500" onSave={save} pending={pending}>
       <p className="mb-3 text-xs text-muted-foreground">
         Har 6 ghante check: koi budget 80% se zyada use hua, liability net cash se zyada, ya kisi user ne 24 ghante me threshold se zyada free coin
         liye. Alert notification me aata hai aur email par bhi.
@@ -108,7 +108,7 @@ export function CoinAlertsCard({ data, pending, onSave }: CardProps) {
         )}{" "}
         <Link href="/app-settings" className="text-xs text-primary underline">badlo</Link>
       </p>
-      <label className={label}>Ek user, 24 ghante me free coin (isse zyada par alert)</label>
+      <label className={label}>Ek user, 24 ghante me free reward (Diamond + DP coin, isse zyada par alert)</label>
       <input type="number" min={1} className={field} value={threshold} onChange={(e) => setThreshold(e.target.value)} />
       <div className="mt-3">
         <Toggle label="Report email bhejo" checked={report.enabled} onChange={(v) => setReport({ ...report, enabled: v })} />

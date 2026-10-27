@@ -1234,13 +1234,29 @@ export interface CoinEconomy {
   house?: { total: number; locked: number; accounts: number };
   cash: { paidInInr: number; refundedInr: number; paidOutInr: number; pendingOutInr: number };
   categories: Record<string, { label: string; credits: number; debits: number; net: number; locked: number }>;
-  types: { type: string; category: string; credits: number; debits: number; net: number; locked: number; count: number }[];
+  types: {
+    type: string; category: string; credits: number; debits: number; net: number; locked: number; count: number;
+    /** Split by balance: Diamond = locked_delta, DP coin = amount − locked_delta. */
+    diamondIn: number; diamondOut: number; dpIn: number; dpOut: number;
+  }[];
+  /** Each balance's flow in the range, by source category. */
+  diamondFlow?: BalanceFlow;
+  dpFlow?: BalanceFlow;
+  /** Diamonds paid in entry fees (net of refunds) vs DP coins paid as prizes. */
+  conversion?: { entryDiamonds: number; prizeDp: number; subsidyDp: number; burnedDiamonds: number };
   platform: { kinds: Record<string, { coins: number; count: number }>; net: number };
   budgets: { total: number; spent: number; active: number; count: number };
   checks: { key: string; label: string; ok: boolean; detail: string }[];
   ok: boolean;
   budgetList: PromoBudget[];
   approvalPassword: { configured: boolean; updatedAt: number | null };
+}
+
+export interface BalanceFlow {
+  in: Record<string, number>;
+  out: Record<string, number>;
+  totalIn: number;
+  totalOut: number;
 }
 
 export interface ContestPnl {

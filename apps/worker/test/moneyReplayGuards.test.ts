@@ -46,7 +46,7 @@ async function seedUser(env: TestEnv, uid: string, dpcoin = 0, extra: Record<str
   const ts = Date.now();
   await drizzleOf(env)
     .insert(schema.users)
-    .values({ signupCompleted: true, uid, username: uid, fullName: uid, dpcoin, createdAt: ts, updatedAt: ts, ...extra } as any);
+    .values({ signupCompleted: true, uid, username: uid, fullName: uid, dpcoin, lockedCoins: dpcoin, createdAt: ts, updatedAt: ts, ...extra } as any);
   if (dpcoin !== 0) {
     await drizzleOf(env)
       .insert(schema.coinTransactions)
@@ -54,6 +54,7 @@ async function seedUser(env: TestEnv, uid: string, dpcoin = 0, extra: Record<str
         id: `opening_balance:${uid}`,
         uid,
         amount: dpcoin,
+        lockedDelta: (extra.lockedCoins ?? dpcoin),
         type: 'purchase',
         description: 'Opening balance (test fixture)',
         createdAt: ts,

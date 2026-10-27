@@ -217,7 +217,7 @@ export default function SystemHealth() {
           icon={AlertTriangle}
           label="Clawback shortfall"
           value={m ? fmtNumber(m.clawbackShortfalls.count) : "—"}
-          sub={m && m.clawbackShortfalls.count ? `${fmtNumber(m.clawbackShortfalls.coins)} coins unrecovered` : "refund-farming"}
+          sub={m && m.clawbackShortfalls.count ? `${fmtNumber(m.clawbackShortfalls.coins)} (DP coin + Diamond) unrecovered` : "refund-farming"}
           bad={!!m && m.clawbackShortfalls.count !== 0}
         />
         <Metric
@@ -229,9 +229,9 @@ export default function SystemHealth() {
         />
         <Metric
           icon={Scale}
-          label="Locked coin drift"
+          label="Diamond drift"
           value={m ? fmtNumber((m.lockedDrift?.count ?? 0) + (m.lockedDrift?.overBalance ?? 0)) : "—"}
-          sub="promo coins vs ledger"
+          sub="Diamond (locked_coins) vs ledger"
           bad={!!m && ((m.lockedDrift?.count ?? 0) !== 0 || (m.lockedDrift?.overBalance ?? 0) !== 0)}
         />
         <Metric

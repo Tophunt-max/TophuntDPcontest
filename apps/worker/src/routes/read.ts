@@ -2194,8 +2194,8 @@ readRoute.get("/transactions", requireAuth, async (c) => {
       description: r.description || r.type,
       contestId: r.contestId ?? null,
       matchId: r.matchId ?? null,
-      // How this row moved the play-only (locked) balance, so the app can label
-      // bonus coins "sirf khelne ke liye".
+      // How this row moved the Diamond balance (users.locked_coins), so the app
+      // can split each row into DP coin and Diamond (lib/diamonds.ts).
       lockedDelta: Number(r.lockedDelta || 0),
       createdAt: r.createdAt,
     })),

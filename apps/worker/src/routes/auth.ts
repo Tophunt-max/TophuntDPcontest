@@ -166,7 +166,7 @@ async function createUserProfile(
             amount: signupBonus,
             lockedDelta: signupLocked,
             type: "signup_bonus",
-            description: signupLocked > 0 ? "Welcome bonus for joining TopHunt! (sirf khelne ke liye)" : "Welcome bonus for joining TopHunt!",
+            description: signupLocked > 0 ? "Welcome bonus for joining TopHunt! (Diamond)" : "Welcome bonus for joining TopHunt!",
             createdAt: ts,
           })
           .onConflictDoNothing()

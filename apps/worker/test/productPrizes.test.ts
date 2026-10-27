@@ -60,7 +60,7 @@ async function seedUsers(env: TestEnv, uids: string[]) {
   for (const uid of uids) {
     await drizzleOf(env)
       .insert(schema.users)
-      .values({ signupCompleted: true, uid, username: uid, fullName: uid, dpcoin: 1000, createdAt: ts, updatedAt: ts } as any);
+      .values({ signupCompleted: true, uid, username: uid, fullName: uid, dpcoin: 1000, lockedCoins: 1000, createdAt: ts, updatedAt: ts } as any);
   }
 }
 

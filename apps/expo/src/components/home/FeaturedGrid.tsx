@@ -29,7 +29,7 @@ export default function FeaturedGrid() {
       >
         <View style={styles.textWrapper}>
             <Text style={styles.bigTitle}>Mega Contest</Text>
-            <Text style={styles.subTitle}>Win 10,000 Coins!</Text>
+            <Text style={styles.subTitle}>Win 10,000 DP coin!</Text>
             <View style={styles.btn}>
                 <Text style={styles.btnText}>Join Now</Text>
             </View>

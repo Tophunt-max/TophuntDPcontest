@@ -829,6 +829,17 @@ describe('ledger and compliance records', () => {
     expect(user?.dpcoin).toBe(0);
   });
 
+  it('writes off a negative balance and the Diamond part with the forfeit row too', async () => {
+    const { env } = makeEnv();
+    // -30 total (a clawback shortfall) of which 20 are Diamonds.
+    await seedUser(env, 'neg', { dpcoin: -30, lockedCoins: 20 });
+    await executeAccountDeletion(env as any, 'neg');
+    const db = drizzleOf(env);
+    const ledger = await db.select().from(schema.coinTransactions).where(eq(schema.coinTransactions.id, 'account_deletion:neg')).get();
+    expect(ledger).toMatchObject({ amount: 30, lockedDelta: -20, type: 'account_deletion_forfeit' });
+    expect(await db.select().from(schema.users).where(eq(schema.users.uid, 'neg')).get()).toMatchObject({ dpcoin: 0, lockedCoins: 0 });
+  });
+
   it('writes the compliance record with the amount actually forfeited', async () => {
     const { env } = makeEnv();
     await seedUser(env, 'alice', { dpcoin: 75 });

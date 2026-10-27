@@ -30,8 +30,8 @@ export const webhookRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 /** Tell the user their coins were reversed, so a negative balance isn't a mystery. */
 async function notifyClawback(env: Env, uid: string, coins: number, what: string): Promise<void> {
   await createNotification(env, uid, {
-    title: "Coins Reversed",
-    body: `A payment was ${what}, so ${coins} Dpcoins have been removed from your wallet.`,
+    title: "Purchase Reversed",
+    body: `A payment was ${what}, so ${coins} (Diamond first, then DP coin) have been removed from your wallet.`,
     type: "purchase",
     targetId: "wallet",
   });
@@ -204,8 +204,8 @@ webhookRoute.post("/razorpay", async (c) => {
           const creditedCoins = res.coins;
           c.executionCtx.waitUntil(
             createNotification(c.env, creditedUid, {
-              title: "Coins Added 🎉",
-              body: `${creditedCoins} Dpcoins have been added to your wallet.`,
+              title: "Diamond Added 💎",
+              body: `${creditedCoins} Diamond have been added to your wallet.`,
               type: "purchase",
               targetId: "wallet",
             }).catch(() => {}),
@@ -223,7 +223,7 @@ webhookRoute.post("/razorpay", async (c) => {
                 .values({
                   id: newId(),
                   title: "Payment amount mismatch",
-                  message: `Order ${orderId} / payment ${paymentId}: captured ${amount} paise does not match the order. No coins were credited; refund or credit it manually.`,
+                  message: `Order ${orderId} / payment ${paymentId}: captured ${amount} paise does not match the order. No Diamonds were credited; refund or credit it manually.`,
                   link: res.uid ? `/users/${res.uid}` : null,
                   createdAt: now(),
                 })

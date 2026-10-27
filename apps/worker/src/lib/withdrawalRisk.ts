@@ -30,9 +30,9 @@ const FREE_TYPES = ["verification_bonus", "referral_bonus", "daily_reward", "ad_
 export const RISK_FLAG_LABELS: Record<string, string> = {
   new_account: "Naya account (7 din se kam)",
   shared_device: "Same device par doosra account",
-  mostly_free_coins: "Zyada tar coin free rewards se",
+  mostly_free_coins: "Zyada tar balance free rewards se",
   frequent: "7 din me 3+ withdrawal request",
-  never_played: "Na kabhi coin khareeda, na contest jeeta",
+  never_played: "Na kabhi Diamond khareeda, na contest jeeta",
 };
 
 export async function assessWithdrawalRisk(env: Env, uid: string, ts = Date.now()): Promise<WithdrawalRisk> {

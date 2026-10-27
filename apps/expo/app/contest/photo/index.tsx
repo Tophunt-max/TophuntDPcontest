@@ -19,7 +19,8 @@ import { useThemeColor } from '@/hooks/use-theme-color';
 import { PhotoContestSkeleton } from '@/src/components/contests/PhotoContestSkeleton';
 import { BackButton } from '@/src/components/ui/BackButton';
 import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
-import { CoinIcon } from '@/src/components/ui/CoinIcon'; 
+import { DiamondIcon } from '@/src/components/ui/DiamondIcon';
+import { balancesOf } from '@/src/lib/balances';
 import { LinearGradient } from 'expo-linear-gradient';
 import { ContestCountdownBadge, ContestEntryBadge, ContestPrizeLine } from '@/src/components/contests/ContestBadges';
 import { useCountdown } from '@/src/hooks/useCountdown';
@@ -71,7 +72,7 @@ export default function PhotoContestsScreen() {
     <View style={styles.heroWrap}>
       <Text style={[styles.heroTitle, { color: textColor }]}>Pick your battle</Text>
       <Text style={[styles.heroSubtitle, { color: subTextColor }]}>
-        Enter a photo contest, submit your best shot, and win coins.
+        Enter a photo contest, submit your best shot, and win DP coins.
       </Text>
       {contests.length > 0 && (
         <View style={[styles.countPill, { backgroundColor: chipBg }]}>
@@ -91,8 +92,9 @@ export default function PhotoContestsScreen() {
         <Text style={[styles.title, { color: textColor }]}>Photo Contests</Text>
         
         <View style={[styles.walletBadge, { backgroundColor: cardBg }]}>
-           <CoinIcon size={18} />
-           <Text style={[styles.walletText, { color: textColor }]}>{profile?.Dpcoin || profile?.coins || 0}</Text>
+           {/* Contest screens show Diamonds: the balance entry fees are paid from. */}
+           <DiamondIcon size={18} />
+           <Text style={[styles.walletText, { color: textColor }]}>{balancesOf(profile).diamonds}</Text>
         </View>
       </View>
 

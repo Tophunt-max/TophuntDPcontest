@@ -444,13 +444,13 @@ function PrizeSection(props: {
 
   if (prize.kind === 'coins') {
     return (
-      <View style={box} accessible accessibilityLabel={`${winnerName} won ${prize.coins} Dpcoins`}>
+      <View style={box} accessible accessibilityLabel={`${winnerName} won ${prize.coins} DP coins`}>
         <Text style={[styles.prizeKicker, { color: isDark ? '#FFD54F' : '#B07800' }]}>{isWinner ? 'AAPKA PRIZE' : 'PRIZE WON'}</Text>
         <View style={styles.prizeRow}>
           <CoinMedallion size={64} />
           <View style={styles.prizeInfo}>
             <Text style={[styles.prizeAmount, { color: textColor }]} numberOfLines={1}>
-              {coinsLabel(prize.coins)} <Text style={styles.prizeUnit}>Dpcoins</Text>
+              {coinsLabel(prize.coins)} <Text style={styles.prizeUnit}>DP coin</Text>
             </Text>
             {coinValue ? <Text style={[styles.prizeNote, { color: sub, marginTop: 2 }]}>Value {coinValue}</Text> : null}
             <Text style={[styles.prizeNote, { color: sub }]}>

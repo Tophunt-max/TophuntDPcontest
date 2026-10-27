@@ -61,10 +61,11 @@ export async function settleRefund(
   if (input.refundPerUser > 0) {
     for (const uid of participantUids) {
       const transactionId = `contest_refund:${input.matchId}:${uid}`;
-      // Locked (play-only) coins that paid this entry are locked again, so a
-      // refund can never turn promo coins into withdrawable ones.
-      const relock = `MIN(?, COALESCE((SELECT -locked_delta FROM coin_transactions WHERE id = ?), 0))`;
-      const entryId = `contest_entry:${input.matchId}:${uid}`;
+      // Entry fees are paid in Diamonds only (lib/diamonds.ts), so the refund
+      // is Diamonds too, always. It used to read the Diamond part back from the
+      // entry row, which turned a pre-Diamond entry (or a missing row) into a
+      // withdrawable DP coin refund.
+      const relock = "?";
       statements.push(
         env.DB.prepare(
           `UPDATE users
@@ -80,7 +81,6 @@ export async function settleRefund(
         ).bind(
           input.refundPerUser,
           input.refundPerUser,
-          entryId,
           input.completedAt,
           uid,
           input.matchId,
@@ -103,10 +103,9 @@ export async function settleRefund(
           input.refundPerUser,
           input.contestId ?? null,
           input.matchId,
-          input.description,
+          `${input.description} (Diamond)`,
           input.completedAt,
           input.refundPerUser,
-          entryId,
           input.matchId,
           settlementId,
         ),
@@ -292,7 +291,7 @@ export async function settleWinner(
       coins: platformFee,
       contestId: input.contestId ?? null,
       matchId: input.matchId,
-      description: `Entry fees kept: ${platformFee} of the ${pot}-coin pot`,
+      description: `Entry Diamond kept: ${platformFee} of the ${pot}-Diamond pot`,
       ts: input.completedAt,
     }, gate, gateArgs));
   }

@@ -106,7 +106,6 @@ import {
   matchPot,
   matchPrizeCeiling,
   assertProductCostFunded,
-  LOCKED_AFTER_DEBIT,
   perPlayerEntryFee,
   roundFiat,
   toPaise,
@@ -1670,9 +1669,9 @@ adminRoute.post("/users/:id/wallet", async (c) => {
   if (!["add", "subtract"].includes(type)) {
     throw httpsError("invalid-argument", "type must be add or subtract.");
   }
-  // An added amount can be given as locked (play-only) coins: spendable on
-  // contests, never withdrawable (users.locked_coins).
-  const locked = type === "add" && rawLocked === true;
+  // Diamond (users.locked_coins) or DP coin. Adding Diamonds credits play-only
+  // coins; subtracting Diamonds takes only Diamonds (lib/money.ts).
+  const locked = rawLocked === true;
   const amt = assertCoinAmount(amount, "amount");
   // Every manual balance change needs a stated reason, and is idempotent. The
   // key used to be an optional header the admin panel never sent, so a double
@@ -1690,14 +1689,14 @@ adminRoute.post("/users/:id/wallet", async (c) => {
   // amount as a positive whole number, writes balance + ledger in one D1
   // transaction, and fails loudly instead of clamping an over-subtraction.
   try {
-    const { newBalance, applied } = await adjustUserWallet(c.env, {
+    const { newBalance, applied, newDiamonds } = await adjustUserWallet(c.env, {
       uid: userId,
       amount: amt,
       direction: type,
       type: "admin_adjustment",
       // Who and why travel with the ledger row itself, so they survive even if
       // the audit write below fails.
-      description: `Admin ${type} ${amt} Dpcoin${locked ? " (locked, sirf khelne ke liye)" : ""} by ${adminUid}: ${reason}`.slice(0, 300),
+      description: `Admin ${type} ${amt} ${locked ? "Diamond" : "DP coin"} by ${adminUid}: ${reason}`.slice(0, 300),
       claimKey: `admin_wallet:${userId}:${idemKey}`,
       locked,
       ts: now(),
@@ -1711,7 +1710,7 @@ adminRoute.post("/users/:id/wallet", async (c) => {
       newBalance,
       requestId: idemKey,
     });
-    return c.json({ message: "Wallet updated successfully", newBalance });
+    return c.json({ message: "Wallet updated successfully", newBalance, newDpcoin: Math.max(0, newBalance - newDiamonds), newDiamonds });
   } catch (e) {
     if (e instanceof WalletReplay) {
       // Same key, already applied. Report the current balance rather than
@@ -2925,6 +2924,8 @@ adminRoute.get("/transactions", async (c) => {
       id: schema.coinTransactions.id,
       uid: schema.coinTransactions.uid,
       amount: schema.coinTransactions.amount,
+      // Diamond part of the row (lib/diamonds.ts); DP coin part = amount − lockedDelta.
+      lockedDelta: schema.coinTransactions.lockedDelta,
       type: schema.coinTransactions.type,
       contestId: schema.coinTransactions.contestId,
       matchId: schema.coinTransactions.matchId,
@@ -3453,7 +3454,7 @@ adminRoute.post("/matches/:id/declare-winner", async (c) => {
       targetId: `prize:${id}`,
     });
   } else {
-    await createNotification(c.env, winnerUid, { title: "You Won! 🏆", body: `You won the battle "${m.title}" and earned ${prize.coins} Dpcoins!`, type: "contest-win", targetId: id });
+    await createNotification(c.env, winnerUid, { title: "You Won! 🏆", body: `You won the battle "${m.title}" and earned ${prize.coins} DP coin!`, type: "contest-win", targetId: id });
   }
   await createNotification(c.env, loserUid, { title: "Battle Ended", body: `The battle "${m.title}" has concluded.`, type: "contest-loss", targetId: id });
   // The winner just received a prize — send a receipt (coins) or a call to action
@@ -3519,7 +3520,7 @@ async function cancelMatchWithRefund(
   if (!settled) return false;
   for (const u of [userA, userB]) {
     if (u?.uid) {
-      await createNotification(c.env, u.uid, { title: "Battle Cancelled", body: `The battle "${m.title}" was cancelled by an admin and your entry fee was refunded.`, type: "contest-refund", targetId: "wallet" });
+      await createNotification(c.env, u.uid, { title: "Battle Cancelled", body: `The battle "${m.title}" was cancelled by an admin and your entry fee Diamond were refunded.`, type: "contest-refund", targetId: "wallet" });
       // Entry fee moved back — send the refund receipt.
       c.executionCtx.waitUntil(sendUserEmail(c.env, u.uid, contestRefundEmail(m.title, "it was cancelled by an admin")));
     }
@@ -4014,7 +4015,9 @@ adminRoute.get("/withdrawals", async (c) => {
       updatedAt: schema.withdrawals.updatedAt,
       username: schema.users.username,
       fullName: schema.users.fullName,
+      // Total (DP coin + Diamond); the Diamond part is lockedCoins.
       balance: schema.users.dpcoin,
+      lockedCoins: schema.users.lockedCoins,
     })
     .from(schema.withdrawals)
     .leftJoin(schema.users, eq(schema.users.uid, schema.withdrawals.userId))
@@ -4229,20 +4232,21 @@ adminRoute.patch("/withdrawals/:id", async (c) => {
           c.env.DB.prepare(
             `INSERT OR IGNORE INTO idempotency_keys (key, nonce, scope, created_at)
              SELECT ?, ?, 'withdrawal', ?
-              WHERE EXISTS (SELECT 1 FROM users WHERE uid = ? AND dpcoin >= ?)
+              WHERE EXISTS (SELECT 1 FROM users WHERE uid = ? AND dpcoin - locked_coins >= ?)
                 AND NOT EXISTS (SELECT 1 FROM coin_transactions WHERE id = ?)`,
           ).bind(ledgerId, nonce, ts, w.userId, w.amount, ledgerId),
+          // A payout takes DP coins only (dpcoin - locked_coins); Diamonds are
+          // never withdrawn (lib/diamonds.ts), so locked_coins does not move.
           c.env.DB.prepare(
             `INSERT OR IGNORE INTO coin_transactions
                (id, uid, amount, type, description, created_at, locked_delta)
-             SELECT ?, ?, ?, 'withdrawal', ?, ?,
-                    COALESCE((SELECT ${LOCKED_AFTER_DEBIT} - locked_coins FROM users WHERE uid = ?), 0)
+             SELECT ?, ?, ?, 'withdrawal', ?, ?, 0
               WHERE ${claimGate}`,
-          ).bind(ledgerId, w.userId, -w.amount, `Payout ${status} (${w.method})`, ts, w.amount, w.userId, ledgerId, nonce),
+          ).bind(ledgerId, w.userId, -w.amount, `Payout ${status} (${w.method}) · DP coin`, ts, ledgerId, nonce),
           c.env.DB.prepare(
-            `UPDATE users SET dpcoin = dpcoin - ?, locked_coins = ${LOCKED_AFTER_DEBIT}, updated_at = ?
-              WHERE uid = ? AND dpcoin >= ? AND ${claimGate}`,
-          ).bind(w.amount, w.amount, ts, w.userId, w.amount, ledgerId, nonce),
+            `UPDATE users SET dpcoin = dpcoin - ?, updated_at = ?
+              WHERE uid = ? AND dpcoin - locked_coins >= ? AND ${claimGate}`,
+          ).bind(w.amount, ts, w.userId, w.amount, ledgerId, nonce),
         ]);
         if (Number(legacyResults[2]?.meta?.changes || 0) === 0) {
           const alreadyDebited = await c.env.DB.prepare(`SELECT 1 AS x FROM coin_transactions WHERE id = ?`)
@@ -4252,7 +4256,7 @@ adminRoute.patch("/withdrawals/:id", async (c) => {
           // this retry just completes the approval without moving money again.
           if (!alreadyDebited) {
             await revertClaim();
-            throw httpsError("failed-precondition", "User has insufficient balance for this payout.");
+            throw httpsError("failed-precondition", "User ke paas itne DP coin nahi hain (Diamond withdraw nahi hote).");
           }
         }
       }
@@ -4280,7 +4284,7 @@ adminRoute.patch("/withdrawals/:id", async (c) => {
   });
   await createNotification(c.env, w.userId, {
     title: action === "reject" ? "Withdrawal Rejected" : action === "paid" ? "Payout Sent 💸" : "Withdrawal Approved",
-    body: action === "reject" ? `Your payout request was rejected. ${adminNote ? "Reason: " + adminNote : ""}` : action === "paid" ? `Your payout of ${w.amount} Dpcoins has been sent.` : "Your payout request was approved and is being processed.",
+    body: action === "reject" ? `Your payout request was rejected. ${adminNote ? "Reason: " + adminNote : ""}` : action === "paid" ? `Your payout of ${w.amount} DP coin has been sent.` : "Your payout request was approved and is being processed.",
     type: "withdrawal",
     targetId: "wallet",
   }).catch((e) => console.error("[withdrawal] notification failed (action already applied)", id, e));
@@ -4573,11 +4577,12 @@ adminRoute.patch("/deposits/:id", async (c) => {
     // play-only `promo_bonus` row; the deposit row carries the paid coins only.
     const promoBonus = d.budgetId && depBonus > 0 ? depBonus : 0;
     const paidCoins = coins - promoBonus;
+    // A deposit buys Diamonds (lib/diamonds.ts): play-only, never withdrawable.
     const results = await c.env.DB.batch([
       c.env.DB.prepare(
-        `UPDATE users SET dpcoin = dpcoin + ?, updated_at = ?
+        `UPDATE users SET dpcoin = dpcoin + ?, locked_coins = locked_coins + ?, updated_at = ?
           WHERE uid = ? AND ${pendingGate}`,
-      ).bind(paidCoins, ts, d.userId, ...gateArgs),
+      ).bind(paidCoins, paidCoins, ts, d.userId, ...gateArgs),
       c.env.DB.prepare(
         `INSERT OR IGNORE INTO payments
            (id, user_id, amount, coins, amount_paise, source, status, created_at)
@@ -4589,15 +4594,16 @@ adminRoute.patch("/deposits/:id", async (c) => {
       ).bind(`dep_${id}`, d.userId, coins, coins, toPaise(Number(d.payAmount) || 0), ts, ...gateArgs),
       c.env.DB.prepare(
         `INSERT OR IGNORE INTO coin_transactions
-           (id, uid, amount, type, description, created_at)
-         SELECT ?, ?, ?, 'manual_deposit', ?, ?
+           (id, uid, amount, type, description, created_at, locked_delta)
+         SELECT ?, ?, ?, 'manual_deposit', ?, ?, ?
           WHERE ${pendingGate}`,
       ).bind(
         ledgerId,
         d.userId,
         paidCoins,
-        `Manual deposit approved${bonusSuffix} (UTR ${d.utr || "-"})`,
+        `Diamond deposit approved${bonusSuffix} (UTR ${d.utr || "-"})`,
         ts,
+        paidCoins,
         ...gateArgs,
       ),
       ...(promoBonus > 0
@@ -4610,7 +4616,7 @@ adminRoute.patch("/deposits/:id", async (c) => {
               reservationId: depositReservationId(id),
               ledgerId: `promo_bonus:deposit:${id}`,
               refId: id,
-              description: `Bonus ${promoBonus} coins (sirf khelne ke liye) — deposit ${id}`,
+              description: `Bonus ${promoBonus} Diamond — deposit ${id}`,
               ts,
             },
             pendingGate,
@@ -4660,7 +4666,7 @@ adminRoute.patch("/deposits/:id", async (c) => {
 
   await createNotification(c.env, d.userId, {
     title: action === "approve" ? "Deposit Approved 🎉" : "Deposit Rejected",
-    body: action === "approve" ? `${d.amount} coins have been added to your wallet${bonusSuffix}.` : `Your deposit request was rejected. ${adminNote ? "Reason: " + adminNote : ""}`,
+    body: action === "approve" ? `${d.amount} Diamond have been added to your wallet${bonusSuffix}.` : `Your deposit request was rejected. ${adminNote ? "Reason: " + adminNote : ""}`,
     type: "deposit",
     targetId: "wallet",
   });

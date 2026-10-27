@@ -130,8 +130,10 @@ export interface DeletionEligibility {
   blockers: DeletionDeferral[];
   deferrals: DeletionDeferral[];
   warnings: DeletionWarning[];
-  /** Coins that will be forfeited if the user proceeds. */
+  /** Coins that will be forfeited if the user proceeds: the total (DP coin + Diamond). */
   balance: number;
+  /** The Diamond part of `balance` (users.locked_coins): never withdrawable. */
+  diamonds: number;
   gracePeriodDays: number;
   /** When the purge would run if the user requested deletion right now. */
   wouldPurgeAt: number;
@@ -161,7 +163,7 @@ export async function checkDeletionEligibility(env: Env, uid: string): Promise<D
   const db = getDb(env);
 
   const user = await db
-    .select({ balance: schema.users.dpcoin, status: schema.users.status })
+    .select({ balance: schema.users.dpcoin, locked: schema.users.lockedCoins, status: schema.users.status })
     .from(schema.users)
     .where(eq(schema.users.uid, uid))
     .get();
@@ -177,12 +179,13 @@ export async function checkDeletionEligibility(env: Env, uid: string): Promise<D
   ]);
 
   const balance = Number(user.balance || 0);
+  const diamonds = Math.min(Math.max(0, balance), Math.max(0, Number(user.locked || 0)));
   const warnings: DeletionWarning[] = [];
   if (balance > 0) {
     warnings.push({
       code: "positive_balance",
-      message: `Your remaining ${balance} coins will be forfeited and cannot be recovered.`,
-      detail: { balance },
+      message: `Your remaining ${balance - diamonds} DP coin and ${diamonds} Diamond will be forfeited and cannot be recovered.`,
+      detail: { balance, diamonds },
     });
   }
 
@@ -199,6 +202,7 @@ export async function checkDeletionEligibility(env: Env, uid: string): Promise<D
     deferrals,
     warnings,
     balance,
+    diamonds,
     gracePeriodDays: graceDays,
     wouldPurgeAt: Math.max(graceEnd, deferredTo),
     request: active
@@ -739,18 +743,22 @@ async function phaseSnapshots(env: Env, uid: string): Promise<string[]> {
   // not sum to the stored balance, and that reconciliation is what the
   // platform-liability figure depends on. Deterministic id, so a resumed or
   // retried purge cannot record the forfeiture twice.
+  // Any non-zero balance or Diamond part is written off with a ledger row,
+  // including a negative balance left by a clawback shortfall: the purge zeroes
+  // both columns, and the two ledger invariants must still hold afterwards.
+  const forfeitLocked = Number(user?.locked || 0);
   const forfeitLedger =
-    balance > 0
+    balance !== 0 || forfeitLocked !== 0
       ? db
           .insert(schema.coinTransactions)
           .values({
             id: `account_deletion:${uid}`,
             uid,
             amount: -balance,
-            // The play-only promo coins go with the rest of the balance.
-            lockedDelta: -Math.max(0, Number(user?.locked || 0)),
+            // The Diamonds (locked_coins) go with the rest of the balance.
+            lockedDelta: -forfeitLocked,
             type: "account_deletion_forfeit",
-            description: "Coins forfeited on account deletion",
+            description: "DP coin and Diamond forfeited on account deletion",
             createdAt: ts,
           })
           .onConflictDoNothing()

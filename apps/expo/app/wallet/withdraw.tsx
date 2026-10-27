@@ -26,6 +26,7 @@ import { useAppConfig } from '@/src/services/appSettings';
 import { readApi } from '@/src/services/api';
 import { describeFeeRule, feeRuleFromWithdrawalConfig, MIN_NET_PAYOUT_INR, quoteWithdrawal } from '@/src/lib/withdrawalFee';
 
+import { balancesOf } from '@/src/lib/balances';
 const METHODS = [
   { key: 'upi', label: 'UPI', placeholder: 'yourname@upi' },
   { key: 'bank', label: 'Bank', placeholder: 'Account no. / IFSC' },
@@ -58,7 +59,7 @@ export default function WithdrawScreen() {
   const rateValid = Number.isFinite(rate) && rate > 0;
   const enabled = wcfg.enabled !== false && !frozen && !featureOff && rateValid;
   const closedReason = frozen
-    ? 'Withdrawals abhi kuch der ke liye rok diye gaye hain. Aapke coins safe hain.'
+    ? 'Withdrawals abhi kuch der ke liye rok diye gaye hain. Aapke DP coin safe hain.'
     : 'Withdrawals are currently disabled. Please check back later.';
 
   const [amount, setAmount] = useState('');
@@ -67,12 +68,10 @@ export default function WithdrawScreen() {
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState<any[]>([]);
 
-  // Promo bonus coins (bought with a budget-funded package bonus) are locked:
-  // they can be spent on contests but never withdrawn. The server enforces this;
-  // the screen only offers what can actually leave.
-  const total = Number(profile?.Dpcoin || 0);
-  const locked = Math.min(total, Math.max(0, Number(profile?.lockedCoins || 0)));
-  const balance = Math.max(0, total - locked);
+  // Only DP coins (contest prizes) are withdrawn; Diamonds (packages, free
+  // rewards) only pay entry fees (src/lib/balances.ts). The server enforces
+  // this; the screen only offers what can actually leave.
+  const { dpcoin: balance, diamonds: locked } = balancesOf(profile);
   const amt = Number(amount) || 0;
   // Platform fee, deducted from the payout (src/lib/withdrawalFee.ts — same
   // formula the server charges with; it refuses if this quote is stale).
@@ -92,20 +91,20 @@ export default function WithdrawScreen() {
 
   const submit = async () => {
     if (!enabled) return;
-    if (!Number.isInteger(amt) || amt <= 0) return Alert.alert('Invalid amount', 'Enter a valid whole number of coins.');
-    if (amt < minAmount) return Alert.alert('Below minimum', `Minimum withdrawal is ${minAmount} coins.`);
-    if (maxAmount > 0 && amt > maxAmount) return Alert.alert('Above maximum', `Ek baar mein zyada se zyada ${maxAmount} coins nikal sakte ho.`);
+    if (!Number.isInteger(amt) || amt <= 0) return Alert.alert('Invalid amount', 'DP coin ka poora number daalo.');
+    if (amt < minAmount) return Alert.alert('Below minimum', `Minimum withdrawal is ${minAmount} DP coin.`);
+    if (maxAmount > 0 && amt > maxAmount) return Alert.alert('Above maximum', `Ek baar mein zyada se zyada ${maxAmount} DP coin nikal sakte ho.`);
     if (amt > balance) {
       return Alert.alert(
         'Insufficient balance',
         locked > 0
-          ? `Aap ${balance} coins tak withdraw kar sakte ho. ${locked} bonus coins sirf khelne ke liye hain.`
-          : 'You do not have enough coins.',
+          ? `Aap ${balance} DP coin tak withdraw kar sakte ho. Diamond (${locked}) withdraw nahi hote.`
+          : `Aapke paas sirf ${balance} DP coin hain.`,
       );
     }
     if (!account.trim()) return Alert.alert('Account required', 'Enter your payout account details.');
     if (quote.netInr < MIN_NET_PAYOUT_INR) {
-      return Alert.alert('Amount too small', `Platform fee ₹${quote.feeInr.toFixed(2)} ke baad kam se kam ₹${MIN_NET_PAYOUT_INR} milna chahiye. Zyada coins withdraw karo.`);
+      return Alert.alert('Amount too small', `Platform fee ₹${quote.feeInr.toFixed(2)} ke baad kam se kam ₹${MIN_NET_PAYOUT_INR} milna chahiye. Zyada DP coin withdraw karo.`);
     }
 
     setLoading(true);
@@ -145,18 +144,16 @@ export default function WithdrawScreen() {
         ) : (
           <>
             <View style={[styles.card, { backgroundColor: cardBg }]}>
-              <Text style={[styles.label, { color: subTextColor }]}>{locked > 0 ? 'Withdraw ho sakte hain' : 'Available balance'}</Text>
+              <Text style={[styles.label, { color: subTextColor }]}>Withdraw ho sakte hain</Text>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <CoinIcon size={26} />
-                <Text style={[styles.balance, { color: textColor }]}>{balance} <Text style={{ fontSize: 16, color: subTextColor }}>coins</Text></Text>
+                <Text style={[styles.balance, { color: textColor }]}>{balance} <Text style={{ fontSize: 16, color: subTextColor }}>DP coin</Text></Text>
               </View>
-              {locked > 0 ? (
-                <Text style={[styles.hint, { color: subTextColor }]}>
-                  + {locked} bonus coins (sirf contest khelne ke liye, withdraw nahi). Total {total}.
-                </Text>
-              ) : null}
               <Text style={[styles.hint, { color: subTextColor }]}>
-                Min {minAmount} coins{maxAmount > 0 ? ` • Max ${maxAmount}` : ''}{maxPerDay > 0 ? ` • Roz ${maxPerDay} request` : ''} • Rate ₹{rate}/coin
+                Sirf contest jeet kar mile DP coin withdraw hote hain.{locked > 0 ? ` Aapke ${locked} Diamond sirf contest entry ke liye hain.` : ''}
+              </Text>
+              <Text style={[styles.hint, { color: subTextColor }]}>
+                Min {minAmount} DP coin{maxAmount > 0 ? ` • Max ${maxAmount}` : ''}{maxPerDay > 0 ? ` • Roz ${maxPerDay} request` : ''} • Rate ₹{rate}/DP coin
               </Text>
               {feeText ? (
                 <Text style={[styles.hint, { color: subTextColor }]}>Platform fee: {feeText} — payout se kategi</Text>
@@ -164,7 +161,7 @@ export default function WithdrawScreen() {
             </View>
 
             <View style={[styles.card, { backgroundColor: cardBg }]}>
-              <Text style={[styles.label, { color: subTextColor }]}>Amount (coins)</Text>
+              <Text style={[styles.label, { color: subTextColor }]}>Amount (DP coin)</Text>
               <TextInput
                 value={amount}
                 onChangeText={setAmount}
@@ -177,7 +174,7 @@ export default function WithdrawScreen() {
                 quote.feeInr > 0 ? (
                   <View style={[styles.breakdown, { borderColor: isDark ? '#35383F' : '#EEE' }]}>
                     <View style={styles.breakRow}>
-                      <Text style={[styles.breakLabel, { color: subTextColor }]}>Coins ki value</Text>
+                      <Text style={[styles.breakLabel, { color: subTextColor }]}>DP coin ki value</Text>
                       <Text style={[styles.breakValue, { color: textColor }]}>₹{quote.grossInr.toFixed(2)}</Text>
                     </View>
                     <View style={styles.breakRow}>
@@ -232,7 +229,7 @@ export default function WithdrawScreen() {
             <View key={w.id} style={[styles.historyItem, { backgroundColor: cardBg }]}>
               <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                  <Text style={[styles.histAmount, { color: textColor }]}>{w.amount} coins</Text>
+                  <Text style={[styles.histAmount, { color: textColor }]}>{w.amount} DP coin</Text>
                   <ArrowIcon size={13} color={subTextColor} variant="arrow" />
                   <Text style={[styles.histAmount, { color: textColor }]}>₹{Number(w.cashAmount || 0).toFixed(2)}</Text>
                 </View>

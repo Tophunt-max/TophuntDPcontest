@@ -148,5 +148,5 @@ export function describePrize(prize: ContestPrize): string | null {
       ? `winner gets ${prize.product.title}, worth ₹${prize.product.value}`
       : `winner gets ${prize.product.title}`;
   }
-  return prize.coins > 0 ? `winner gets ${prize.coins} coins` : null;
+  return prize.coins > 0 ? `winner gets ${prize.coins} DP coin` : null;
 }

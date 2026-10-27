@@ -50,7 +50,7 @@ const DEFAULTS: Program = {
 
 const ACTIONS: { k: QualifyAction; l: string; d: string }[] = [
   { k: "first_contest", l: "First contest entry", d: "Recommended. Paid when the friend joins their first contest." },
-  { k: "first_purchase", l: "First coin purchase", d: "Strongest anti-fraud: paid after the friend's first paid top-up." },
+  { k: "first_purchase", l: "First Diamond purchase", d: "Strongest anti-fraud: paid after the friend's first paid Diamond purchase." },
   { k: "verified", l: "Email + mobile verified", d: "Paid once the friend verifies BOTH email and mobile." },
   { k: "signup", l: "Signup (instant)", d: "Paid as soon as the friend signs up. Easiest to farm — not recommended." },
 ];
@@ -110,7 +110,7 @@ function validate(p: Program): string | null {
   const seen = new Set<number>();
   for (const [i, m] of p.milestones.entries()) {
     if (!Number.isInteger(m.count) || m.count < 1) return `Milestone ${i + 1}: referrals must be at least 1.`;
-    if (!Number.isInteger(m.bonus) || m.bonus < 1 || m.bonus > 100_000) return `Milestone ${i + 1}: bonus must be 1–100000 coins.`;
+    if (!Number.isInteger(m.bonus) || m.bonus < 1 || m.bonus > 100_000) return `Milestone ${i + 1}: bonus must be 1–100000 Diamond.`;
     if (seen.has(m.count)) return `Milestone ${i + 1}: two tiers at ${m.count} referrals.`;
     seen.add(m.count);
   }
@@ -188,7 +188,7 @@ export default function Referrals() {
         <StatCard icon={Hourglass} label="Pending" value={fmtNumber(Number(by.pending || 0))} gradient="gradient-orange" />
         <StatCard icon={AlertTriangle} label="Needs review" value={fmtNumber(Number(by.review || 0))} gradient="gradient-blue" />
         <StatCard icon={ShieldAlert} label="Rejected / expired" value={fmtNumber(Number(by.rejected || 0) + Number(by.expired || 0))} gradient="gradient-red" />
-        <StatCard icon={Coins} label="Coins paid (incl. milestones)" value={fmtNumber(data?.stats?.coinsPaid ?? 0)} gradient="gradient-green" />
+        <StatCard icon={Coins} label="💎 Diamond paid (incl. milestones)" value={fmtNumber(data?.stats?.coinsPaid ?? 0)} gradient="gradient-green" />
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-5 mb-6">
@@ -216,7 +216,7 @@ export default function Referrals() {
                     {t.username || t.uid}
                   </span>
                   <span className="font-semibold whitespace-nowrap">
-                    {fmtNumber(t.rewarded)} · <span className="text-amber-600">{fmtNumber(t.earned)} coins</span>
+                    {fmtNumber(t.rewarded)} · <span className="text-cyan-700">{fmtNumber(t.earned)} 💎</span>
                   </span>
                 </li>
               ))}
@@ -396,8 +396,8 @@ export function ProgramSettings({ program }: { program?: Partial<Program> }) {
       <Toggle checked={p.enabled} onChange={(v) => set({ enabled: v })} title="Referral program enabled" description="Off: no new codes can be applied. Pending referrals still pay when they qualify." />
 
       <div className="grid grid-cols-2 gap-3 mt-2">
-        {numInput("referrerReward", "Inviter reward (coins)", "Paid to the person who shared the code.")}
-        {numInput("refereeReward", "Friend reward (coins)", "Paid to the new user who joined with the code.")}
+        {numInput("referrerReward", "Inviter reward (Diamond)", "Paid to the person who shared the code.")}
+        {numInput("refereeReward", "Friend reward (Diamond)", "Paid to the new user who joined with the code.")}
       </div>
 
       <div className="mt-4">
@@ -448,7 +448,7 @@ export function ProgramSettings({ program }: { program?: Partial<Program> }) {
           </button>
         </div>
         {p.milestones.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No milestones. Example: 5 friends → 100 extra coins, 10 friends → 300.</p>
+          <p className="text-xs text-muted-foreground">No milestones. Example: 5 friends → 100 extra Diamond, 10 friends → 300.</p>
         ) : (
           <div className="space-y-2">
             {p.milestones.map((m, i) => (
@@ -468,7 +468,7 @@ export function ProgramSettings({ program }: { program?: Partial<Program> }) {
                   onChange={(e) => set({ milestones: p.milestones.map((x, j) => (j === i ? { ...x, bonus: num(e.target.value) } : x)) })}
                   className={field + " w-28"}
                 />
-                <span className="text-xs text-muted-foreground">coins</span>
+                <span className="text-xs text-muted-foreground">Diamond</span>
                 <button
                   type="button"
                   title="Remove tier"

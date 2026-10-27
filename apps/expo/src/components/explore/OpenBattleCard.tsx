@@ -3,7 +3,7 @@ import { View, Text, StyleSheet } from 'react-native';
 import { AppImage } from '@/src/components/ui/AppImage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@/src/lib/icons';
-import { CoinIcon } from '@/src/components/ui/CoinIcon';
+import { DiamondIcon } from '@/src/components/ui/DiamondIcon';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
 import { entryFeePerPlayer } from '@/src/lib/contestPricing';
@@ -12,6 +12,7 @@ import { participantAvatar, participantThumb } from '@/src/lib/exploreMedia';
 import { ScaleTouchable } from './ScaleTouchable';
 import { GOLD, colorForType, gradForType, type ExplorePalette } from './theme';
 
+import { CoinIcon } from '@/src/components/ui/CoinIcon';
 export const OPEN_CARD_W = 248;
 
 /**
@@ -45,7 +46,7 @@ export const OpenBattleCard = React.memo(function OpenBattleCard({
       style={[styles.card, { width, backgroundColor: palette.card, borderColor: palette.border }]}
       onPress={() => onJoin(item)}
       accessibilityRole="button"
-      accessibilityLabel={`${title} by ${item.userA?.username || 'a player'}, entry ${fee} coins. ${isMine ? 'Your battle, waiting for a rival' : 'Join battle'}`}
+      accessibilityLabel={`${title} by ${item.userA?.username || 'a player'}, entry ${fee} Diamonds. ${isMine ? 'Your battle, waiting for a rival' : 'Join battle'}`}
     >
       <View style={styles.body}>
         <View style={styles.photo}>
@@ -76,13 +77,16 @@ export const OpenBattleCard = React.memo(function OpenBattleCard({
       </View>
       <Text style={[styles.title, { color: palette.text }]} numberOfLines={1}>{title}</Text>
       <View style={styles.metaRow}>
-        <CoinIcon size={11} color={palette.sub} />
+        {fee > 0 ? <DiamondIcon size={11} color={palette.sub} /> : null}
         <Text style={[styles.meta, { color: palette.sub }]}>{fee > 0 ? `Entry ${fee}` : 'Free entry'}</Text>
         <View style={{ flex: 1 }} />
         {prize.type === 'product' ? (
           <Text style={styles.prize} numberOfLines={1}>🎁 {prize.product.title}</Text>
         ) : prize.coins > 0 ? (
-          <Text style={styles.prize}>Win {prize.coins}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
+            <Text style={styles.prize}>Win {prize.coins}</Text>
+            <CoinIcon size={11} color={GOLD} />
+          </View>
         ) : null}
       </View>
       <LinearGradient colors={isMine ? ['#9AA0AA', '#7E848E'] : grad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.cta}>

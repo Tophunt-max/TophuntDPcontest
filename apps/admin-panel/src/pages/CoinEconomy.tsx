@@ -6,9 +6,7 @@ import {
   CheckCircle2,
   Coins,
   Download,
-  Gift,
   KeyRound,
-  Lock,
   Plus,
   Scale,
   Search,
@@ -17,12 +15,14 @@ import {
 import {
   api,
   describeError,
+  type BalanceFlow,
   type CoinEconomy as CoinEconomyData,
   type PromoBudget,
   type PromoBudgetKind,
   type PromoBudgetStatus,
 } from "@/lib/api";
 import { Table } from "@/components/ui/Table";
+import { DiamondIcon } from "@/components/ui/DiamondIcon";
 import { Badge } from "@/components/ui/Badge";
 import { StatCard } from "@/components/ui/StatCard";
 import { SegTabs } from "@/components/finance/bits";
@@ -70,19 +70,27 @@ const TABS = [
 
 const KIND_LABEL: Record<PromoBudgetKind, string> = {
   package_bonus: "Package bonus",
-  contest_prize: "Contest prize (coins)",
-  product_prize: "Product prize (coin value)",
+  contest_prize: "Contest prize (DP coin)",
+  product_prize: "Product prize (DP coin value)",
   free_rewards: "Free rewards (daily, ads, tasks)",
 };
 
+/** What a budget of each kind pays out. Only contest_prize mints withdrawable DP coins. */
+const KIND_UNIT: Record<PromoBudgetKind, string> = {
+  package_bonus: "💎 Diamond",
+  contest_prize: "🪙 DP coin (asli ₹)",
+  product_prize: "DP coin value (product)",
+  free_rewards: "💎 Diamond",
+};
+
 const PLATFORM_LABEL: Record<string, string> = {
-  promo_bonus: "Package bonus diya (budget se)",
-  prize_subsidy: "Contest prize subsidy (budget se)",
-  product_prize: "Product prize ki coin value (budget se)",
+  promo_bonus: "💎 Package bonus Diamond diye (budget se)",
+  prize_subsidy: "🪙 Contest prize me DP coin upar se diye (budget se, asli ₹)",
+  product_prize: "Product prize ki DP coin value (budget se)",
   product_prize_reversal: "Cancel hue prize claim — budget me wapas",
-  platform_fee: "Entry fee platform ne rakhi",
-  product_prize_fund: "Product prize ke liye entry fee rakhi",
-  free_reward: "Free rewards diye (budget se)",
+  platform_fee: "💎 Entry ke Diamond jo prize nahi bane (platform fee)",
+  product_prize_fund: "💎 Product prize ke liye entry Diamond rakhe",
+  free_reward: "💎 Free reward Diamond diye (budget se)",
 };
 
 const inr = (n: number) => `₹${fmtNumber(Math.round((n || 0) * 100) / 100)}`;
@@ -96,7 +104,7 @@ export default function CoinEconomy() {
     <div>
       <PageHeader
         title="Coin Economy"
-        subtitle="Har coin ka hisab: kahan se aaya, kahan gaya, aur platform ne apni taraf se kitna diya."
+        subtitle="Har DP coin aur Diamond ka hisab: kahan se aaya, kahan gaya, aur platform ne apni taraf se kitna diya."
       />
       <div className="overflow-x-auto">
         <SegTabs tab={tab} setTab={setTab} tabs={TABS} />
@@ -189,16 +197,17 @@ function EarnTab() {
   const byType = new Map((month.data?.types ?? []).map((t) => [t.type, t]));
   return (
     <div className="space-y-6">
-      <Card title="Free coin: pichhle 30 din me kitna diya">
+      <Card title="Free rewards: pichhle 30 din me kitna diya">
         <Table
           data={EARN_TYPES}
           keyFn={(t) => t.type}
           columns={[
             { key: "s", header: "Source", render: (t) => <span className="font-medium text-foreground">{t.label}</span> },
-            { key: "c", header: "Coins diye", className: "text-right", render: (t) => fmtNumber(byType.get(t.type)?.credits ?? 0) },
-            { key: "l", header: "Locked", className: "text-right", render: (t) => fmtNumber(Math.max(0, byType.get(t.type)?.locked ?? 0)) },
+            { key: "l", header: "💎 Diamond", className: "text-right", render: (t) => fmtNumber(byType.get(t.type)?.diamondIn ?? 0) },
+            { key: "c", header: "🪙 DP coin", className: "text-right", render: (t) => fmtNumber(byType.get(t.type)?.dpIn ?? 0) },
             { key: "n", header: "Entries", className: "text-right", render: (t) => fmtNumber(byType.get(t.type)?.count ?? 0) },
-            { key: "r", header: "≈ ₹", className: "text-right", render: (t) => inr((byType.get(t.type)?.credits ?? 0) * (month.data?.payoutRate ?? 0)) },
+            // Only DP coins are cashed out, so only they carry a ₹ cost.
+            { key: "r", header: "DP coin ≈ ₹", className: "text-right", render: (t) => inr((byType.get(t.type)?.dpIn ?? 0) * (month.data?.payoutRate ?? 0)) },
           ]}
         />
       </Card>
@@ -255,7 +264,7 @@ function CashOutTab() {
       <Card title="Payout ka hisab">
         {eco.data ? (
           <>
-            <Row label="Withdraw ho sakne wale coin" value={fmtNumber(eco.data.supply.withdrawable)} />
+            <Row label="DP coin (withdraw ho sakte)" value={fmtNumber(eco.data.supply.withdrawable)} />
             <Row label="Liability (agar sab nikal lein)" value={inr(eco.data.supply.liabilityInr)} />
             <Row label="Payout bheja" value={inr(eco.data.cash.paidOutInr)} />
             <Row label="Payout baaki (pending/approved)" value={inr(eco.data.cash.pendingOutInr)} strong />
@@ -285,7 +294,7 @@ function HealthTab() {
         { label: "Approved deposits not credited", n: m.strandedApprovedDeposits },
         { label: "Clawback shortfalls", n: m.clawbackShortfalls.count },
         { label: "Withdrawal ledger gaps", n: m.withdrawalLedgerGaps?.count },
-        { label: "Locked coin drift", n: (m.lockedDrift?.count ?? 0) + (m.lockedDrift?.overBalance ?? 0) },
+        { label: "Diamond drift", n: (m.lockedDrift?.count ?? 0) + (m.lockedDrift?.overBalance ?? 0) },
         { label: "Stuck promo reservations", n: m.staleReservations },
       ]
     : [];
@@ -389,7 +398,7 @@ function Overview() {
       </div>
       {range !== "all" && (
         <p className="text-xs text-muted-foreground">
-          "Coin kahan se aaye" aur "Platform ka hisab" is time ke hain. Balance, liability, paisa (₹) aur checks hamesha shuru se abhi tak ke hain.
+          Diamond / DP coin flows aur "Platform ka hisab" is time ke hain. Balance, liability, paisa (₹) aur checks hamesha shuru se abhi tak ke hain.
         </p>
       )}
       {isLoading ? (
@@ -409,15 +418,34 @@ function OverviewBody({ data }: { data: CoinEconomyData }) {
   return (
     <div className="space-y-6">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard icon={Coins} label="Users ke paas total coin" value={fmtNumber(data.supply.total)} gradient="gradient-purple" />
-        <StatCard icon={Wallet} label="Withdraw ho sakte hain" value={fmtNumber(data.supply.withdrawable)} gradient="gradient-green" />
-        <StatCard icon={Lock} label="Locked (promo, sirf khelne ke liye)" value={fmtNumber(data.supply.locked)} gradient="gradient-orange" />
-        <StatCard icon={Scale} label={`Liability (₹${fmtNumber(data.payoutRate)}/coin)`} value={inr(data.supply.liabilityInr)} gradient="gradient-red" />
+        <StatCard icon={Coins} label="Total (DP coin + Diamond)" value={fmtNumber(data.supply.total)} gradient="gradient-purple" />
+        <StatCard icon={Wallet} label="DP coin (withdraw ho sakte)" value={fmtNumber(data.supply.withdrawable)} gradient="gradient-green" />
+        <StatCard icon={DiamondIcon as any} label="Diamond (sirf contest entry)" value={fmtNumber(data.supply.locked)} gradient="gradient-cyan" />
+        <StatCard icon={Scale} label={`Liability: DP coin × ₹${fmtNumber(data.payoutRate)}`} value={inr(data.supply.liabilityInr)} gradient="gradient-red" />
       </div>
       {data.house && data.house.total ? (
         <p className="text-xs text-muted-foreground">
-          Superadmin ke {fmtNumber(data.house.total)} coin (platform ke apne) is hisab me nahi gine gaye. Unka withdrawal nahi hota.
+          Superadmin ke {fmtNumber(data.house.total - data.house.locked)} DP coin aur {fmtNumber(data.house.locked)} Diamond (platform ke apne) is hisab me nahi gine gaye. Unka withdrawal nahi hota.
         </p>
+      ) : null}
+
+      {data.conversion ? <ConversionCard c={data.conversion} payoutRate={data.payoutRate} /> : null}
+
+      {data.diamondFlow && data.dpFlow ? (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <FlowCard
+            title="💎 Diamond: kahan se aaye, kahan gaye"
+            flow={data.diamondFlow}
+            labels={data.categories}
+            note="Diamond sirf contest entry me lagte hain. Kabhi withdraw nahi hote."
+          />
+          <FlowCard
+            title="🪙 DP coin: kahan se aaye, kahan gaye"
+            flow={data.dpFlow}
+            labels={data.categories}
+            note="DP coin hi asli ₹ liability hain: contest prize se bante hain, withdrawal me jaate hain."
+          />
+        </div>
       ) : null}
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -432,7 +460,7 @@ function OverviewBody({ data }: { data: CoinEconomyData }) {
             strong
           />
         </Card>
-        <Card title="Platform ka hisab (coins)">
+        <Card title="Platform ka hisab (budget se diya / entry se rakha)">
           {platformRows.length === 0 ? (
             <p className="text-sm text-muted-foreground">Abhi koi entry nahi.</p>
           ) : (
@@ -446,7 +474,7 @@ function OverviewBody({ data }: { data: CoinEconomyData }) {
           )}
           <Row label="Net (rakha − diya)" value={<span className={data.platform.net < 0 ? "text-red-600" : "text-green-600"}>{signed(data.platform.net)}</span>} strong />
           <p className="mt-2 text-xs text-muted-foreground">
-            Budgets: {fmtNumber(data.budgets.spent)} / {fmtNumber(data.budgets.total)} coin kharch · {data.budgets.active} active
+            Budgets: {fmtNumber(data.budgets.spent)} / {fmtNumber(data.budgets.total)} kharch · {data.budgets.active} active. Unit har budget ki kind par hai (Budgets tab).
           </p>
         </Card>
       </div>
@@ -465,7 +493,7 @@ function OverviewBody({ data }: { data: CoinEconomyData }) {
         </ul>
       </Card>
 
-      <Card title="Coin kahan se aaye, kahan gaye (by source)">
+      <Card title="Source ke hisab se (DP coin aur Diamond dono)">
         <Table
           data={categories}
           keyFn={([k]) => k}
@@ -474,7 +502,8 @@ function OverviewBody({ data }: { data: CoinEconomyData }) {
             { key: "in", header: "Users ko mile", className: "text-right", render: ([, c]) => <span className="text-green-600">{fmtNumber(c.credits)}</span> },
             { key: "out", header: "Users se gaye", className: "text-right", render: ([, c]) => <span className="text-red-600">{fmtNumber(c.debits)}</span> },
             { key: "net", header: "Net", className: "text-right", render: ([, c]) => <span className="font-semibold">{signed(c.net)}</span> },
-            { key: "locked", header: "Locked (net)", className: "text-right", render: ([, c]) => (c.locked ? <span className="text-amber-600">{signed(c.locked)}</span> : <span className="text-muted-foreground">—</span>) },
+            { key: "dp", header: "🪙 DP coin (net)", className: "text-right", render: ([, c]) => (c.net - c.locked ? <span className="text-green-700">{signed(c.net - c.locked)}</span> : <span className="text-muted-foreground">—</span>) },
+            { key: "locked", header: "💎 Diamond (net)", className: "text-right", render: ([, c]) => (c.locked ? <span className="text-cyan-700">{signed(c.locked)}</span> : <span className="text-muted-foreground">—</span>) },
           ]}
         />
         <details className="mt-3">
@@ -488,12 +517,59 @@ function OverviewBody({ data }: { data: CoinEconomyData }) {
               { key: "in", header: "+", className: "text-right", render: (t) => fmtNumber(t.credits) },
               { key: "out", header: "−", className: "text-right", render: (t) => fmtNumber(t.debits) },
               { key: "net", header: "Net", className: "text-right", render: (t) => signed(t.net) },
-              { key: "locked", header: "Locked", className: "text-right", render: (t) => (t.locked ? signed(t.locked) : "—") },
+              { key: "dp", header: "🪙 +/−", className: "text-right", render: (t) => (t.dpIn || t.dpOut ? `+${fmtNumber(t.dpIn ?? 0)} / −${fmtNumber(t.dpOut ?? 0)}` : "—") },
+              { key: "locked", header: "💎 +/−", className: "text-right", render: (t) => (t.diamondIn || t.diamondOut ? `+${fmtNumber(t.diamondIn ?? 0)} / −${fmtNumber(t.diamondOut ?? 0)}` : "—") },
             ]}
           />
         </details>
       </Card>
     </div>
+  );
+}
+
+/**
+ * The one path from Diamonds to withdrawable DP coins: entry fees paid in
+ * Diamonds (net of refunds) against prizes paid in DP coins. A prize above the
+ * Diamonds spent is platform subsidy (a contest_prize budget) and real ₹.
+ */
+function ConversionCard({ c, payoutRate }: { c: NonNullable<CoinEconomyData["conversion"]>; payoutRate: number }) {
+  return (
+    <Card title="💎 → 🪙 Diamond se DP coin (contests)">
+      <div className="grid gap-3 sm:grid-cols-4">
+        <Mini label="Entry me gaye Diamond (refund ke baad)" value={fmtNumber(c.entryDiamonds)} />
+        <Mini label="Prize me bane DP coin" value={fmtNumber(c.prizeDp)} sub={payoutRate ? `≈ ${inr(c.prizeDp * payoutRate)}` : undefined} />
+        <Mini label="Platform ne upar se diya (DP coin)" value={fmtNumber(c.subsidyDp)} tone={c.subsidyDp > 0 ? "text-red-600" : undefined} sub={c.subsidyDp && payoutRate ? `≈ ${inr(c.subsidyDp * payoutRate)} asli ₹` : undefined} />
+        <Mini label="Diamond jo prize nahi bane" value={fmtNumber(c.burnedDiamonds)} sub="platform fee, product prize, tie" />
+      </div>
+      <p className="mt-3 text-xs text-muted-foreground">
+        Har battle me dono players ke Diamond lagte hain aur jeetne wale ko DP coin milte hain. Isi raaste se Diamond withdraw hone wala paisa banta hai.
+      </p>
+    </Card>
+  );
+}
+
+function Mini({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: string }) {
+  return (
+    <div className="rounded-xl bg-secondary/60 p-3">
+      <p className={`text-lg font-bold ${tone ?? "text-foreground"}`}>{value}</p>
+      <p className="text-xs text-muted-foreground">{label}</p>
+      {sub ? <p className="text-[11px] text-muted-foreground">{sub}</p> : null}
+    </div>
+  );
+}
+
+function FlowCard({ title, flow, labels, note }: { title: string; flow: BalanceFlow; labels: CoinEconomyData["categories"]; note: string }) {
+  const rows = (side: Record<string, number>) => Object.entries(side).filter(([, v]) => v).sort((a, b) => b[1] - a[1]);
+  const name = (k: string) => labels[k]?.label ?? k;
+  return (
+    <Card title={title}>
+      <p className="text-xs font-semibold text-muted-foreground mb-1">Aaye</p>
+      {rows(flow.in).length ? rows(flow.in).map(([k, v]) => <Row key={`in-${k}`} label={name(k)} value={<span className="text-green-600">+{fmtNumber(v)}</span>} />) : <p className="text-sm text-muted-foreground">—</p>}
+      <p className="text-xs font-semibold text-muted-foreground mt-3 mb-1">Gaye</p>
+      {rows(flow.out).length ? rows(flow.out).map(([k, v]) => <Row key={`out-${k}`} label={name(k)} value={<span className="text-red-600">−{fmtNumber(v)}</span>} />) : <p className="text-sm text-muted-foreground">—</p>}
+      <Row label="Net" value={signed(flow.totalIn - flow.totalOut)} strong />
+      <p className="mt-2 text-xs text-muted-foreground">{note}</p>
+    </Card>
   );
 }
 
@@ -536,7 +612,7 @@ function Budgets() {
             render: (b) => (
               <button className="text-left" onClick={() => setDetail(b.id)}>
                 <span className="font-medium text-foreground underline-offset-2 hover:underline">{b.name}</span>
-                <span className="block text-xs text-muted-foreground">{KIND_LABEL[b.kind]}</span>
+                <span className="block text-xs text-muted-foreground">{KIND_LABEL[b.kind]} · {KIND_UNIT[b.kind]}</span>
               </button>
             ),
           },
@@ -660,22 +736,27 @@ function BudgetDialog({ budget, onClose, onDone }: { budget?: PromoBudget; onClo
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">Kis ke liye</label>
             <select className={field} value={form.kind} onChange={(e) => set("kind", e.target.value)}>
-              <option value="package_bonus">Coin package ka bonus (locked, sirf khelne ke liye)</option>
-              <option value="contest_prize">Contest coin prize jo pot se zyada ho</option>
-              <option value="product_prize">Product prize ki coin value (sirf admin ko dikhegi)</option>
+              <option value="package_bonus">Diamond package ka bonus Diamond</option>
+              <option value="contest_prize">Contest prize jo pot se zyada ho (DP coin, asli ₹)</option>
+              <option value="product_prize">Product prize ki DP coin value (sirf admin ko dikhegi)</option>
               <option value="free_rewards">Free rewards ki limit (daily login, ads, tasks)</option>
             </select>
           </div>
         )}
+        {form.kind === "contest_prize" ? (
+          <p className="rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            Is budget se jeetne wale ko DP coin milte hain, jo withdraw hote hain. Yaani har coin asli ₹ ki liability hai.
+          </p>
+        ) : null}
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="text-xs text-muted-foreground mb-1 block">Total coins (limit)</label>
+            <label className="text-xs text-muted-foreground mb-1 block">Total ({KIND_UNIT[form.kind]}, limit)</label>
             <input type="number" className={field} value={form.totalCoins} onChange={(e) => set("totalCoins", e.target.value)} />
             {isEdit && committed > 0 ? <p className="mt-1 text-xs text-muted-foreground">Kam se kam {fmtNumber(committed)}</p> : null}
           </div>
           {form.kind === "package_bonus" || form.kind === "free_rewards" ? (
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">Per user max coins</label>
+              <label className="text-xs text-muted-foreground mb-1 block">Per user max ({KIND_UNIT[form.kind]})</label>
               <input type="number" className={field} placeholder="Koi limit nahi" value={form.perUserLimit} onChange={(e) => set("perUserLimit", e.target.value)} />
             </div>
           ) : <div />}
@@ -693,7 +774,7 @@ function BudgetDialog({ budget, onClose, onDone }: { budget?: PromoBudget; onClo
             <label className="text-xs text-muted-foreground mb-1 block">Status</label>
             <select className={field} value={form.status} onChange={(e) => set("status", e.target.value)}>
               <option value="active">Active</option>
-              <option value="paused">Paused (offer rukega, reserved coins safe)</option>
+              <option value="paused">Paused (offer rukega, reserved budget safe)</option>
               <option value="closed">Closed (hamesha ke liye band)</option>
             </select>
           </div>
@@ -738,10 +819,10 @@ function BudgetDetail({ id, onClose }: { id: string; onClose: () => void }) {
           <div>
             <p className="text-sm font-semibold mb-1">Linked</p>
             {data.packages.map((p) => (
-              <p key={p.id} className="text-sm">Package: {p.name ?? p.id} · {fmtNumber(p.coins)} + {fmtNumber(p.bonusCoins)} bonus {p.active ? "" : "(hidden)"}</p>
+              <p key={p.id} className="text-sm">Package: {p.name ?? p.id} · 💎 {fmtNumber(p.coins)} + {fmtNumber(p.bonusCoins)} bonus Diamond {p.active ? "" : "(hidden)"}</p>
             ))}
             {data.contests.map((c) => (
-              <p key={c.id} className="text-sm">Contest: {c.title ?? c.id} · fee {fmtNumber(c.totalEntryFee)} · prize {fmtNumber(c.rewardCoins)} ({c.status})</p>
+              <p key={c.id} className="text-sm">Contest: {c.title ?? c.id} · fee 💎 {fmtNumber(c.totalEntryFee)} · prize 🪙 {fmtNumber(c.rewardCoins)} ({c.status})</p>
             ))}
             {!data.packages.length && !data.contests.length ? <p className="text-sm text-muted-foreground">Kuch linked nahi.</p> : null}
           </div>
@@ -762,7 +843,7 @@ function BudgetDetail({ id, onClose }: { id: string; onClose: () => void }) {
               columns={[
                 { key: "t", header: "Kab", render: (p) => <span className="text-xs">{fmtDateTime(p.createdAt)}</span> },
                 { key: "u", header: "User", render: (p) => <span className="font-mono text-xs">{p.uid ?? "—"}</span> },
-                { key: "c", header: "Coins", className: "text-right", render: (p) => <span className="text-red-600">{fmtNumber(-p.coins)}</span> },
+                { key: "c", header: KIND_UNIT[data.budget.kind], className: "text-right", render: (p) => <span className="text-red-600">{fmtNumber(-p.coins)}</span> },
                 { key: "d", header: "Detail", render: (p) => <span className="text-xs text-muted-foreground">{p.description}</span> },
               ]}
             />
@@ -776,7 +857,7 @@ function BudgetDetail({ id, onClose }: { id: string; onClose: () => void }) {
               columns={[
                 { key: "t", header: "Kab", render: (r) => <span className="text-xs">{fmtDateTime(r.createdAt)}</span> },
                 { key: "ref", header: "Kis ke liye", render: (r) => <span className="font-mono text-xs">{r.refType}:{r.refId.slice(0, 12)}</span> },
-                { key: "c", header: "Coins", className: "text-right", render: (r) => fmtNumber(r.coins) },
+                { key: "c", header: KIND_UNIT[data.budget.kind], className: "text-right", render: (r) => fmtNumber(r.coins) },
                 {
                   key: "s",
                   header: "Status",
@@ -953,18 +1034,18 @@ function ContestsPnl() {
               <span>
                 <span className="font-medium text-foreground">{c.title ?? c.id}</span>
                 <span className="block text-xs text-muted-foreground">
-                  fee {fmtNumber(c.totalEntryFee)} · prize {c.prizeType === "product" ? `product${c.prizeCostCoins ? ` (${fmtNumber(c.prizeCostCoins)} coin value)` : ""}` : fmtNumber(c.rewardCoins)}
+                  fee 💎 {fmtNumber(c.totalEntryFee)} · prize {c.prizeType === "product" ? `product${c.prizeCostCoins ? ` (${fmtNumber(c.prizeCostCoins)} DP coin value)` : ""}` : `🪙 ${fmtNumber(c.rewardCoins)}`}
                   {c.subsidyBudgetId ? " · promo" : ""} · {c.status}
                 </span>
               </span>
             ),
           },
           { key: "m", header: "Matches", className: "text-right", render: (c) => <span>{fmtNumber(c.matches)}<span className="block text-xs text-muted-foreground">{c.won} won · {c.live} live</span></span> },
-          { key: "f", header: "Entry fee aayi", className: "text-right", render: (c) => fmtNumber(c.feesIn) },
-          { key: "r", header: "Refund", className: "text-right", render: (c) => fmtNumber(c.refunds) },
-          { key: "p", header: "Prize diya", className: "text-right", render: (c) => fmtNumber(c.prizes) },
-          { key: "s", header: "Budget se diya", className: "text-right", render: (c) => <span className="text-red-600">{fmtNumber(c.subsidy)}{c.subsidyHeld ? <span className="block text-xs text-amber-600">{fmtNumber(c.subsidyHeld)} reserved</span> : null}</span> },
-          { key: "k", header: "Platform ne rakha", className: "text-right", render: (c) => <span className="text-green-600">{fmtNumber(c.platformKept)}</span> },
+          { key: "f", header: "💎 Entry aayi", className: "text-right", render: (c) => fmtNumber(c.feesIn) },
+          { key: "r", header: "💎 Refund", className: "text-right", render: (c) => fmtNumber(c.refunds) },
+          { key: "p", header: "🪙 Prize diya", className: "text-right", render: (c) => fmtNumber(c.prizes) },
+          { key: "s", header: "🪙 Budget se diya", className: "text-right", render: (c) => <span className="text-red-600">{fmtNumber(c.subsidy)}{c.subsidyHeld ? <span className="block text-xs text-amber-600">{fmtNumber(c.subsidyHeld)} reserved</span> : null}</span> },
+          { key: "k", header: "💎 Platform ne rakha", className: "text-right", render: (c) => <span className="text-green-600">{fmtNumber(c.platformKept)}</span> },
         ]}
       />
     </div>
@@ -999,8 +1080,8 @@ function PackagesPnl() {
           },
           { key: "c", header: "Purchases", className: "text-right", render: (p) => fmtNumber(p.purchases) },
           { key: "i", header: "₹ aaya", className: "text-right", render: (p) => <span>{inr(p.inr)}{p.refundedInr ? <span className="block text-xs text-red-600">−{inr(p.refundedInr)} refund</span> : null}</span> },
-          { key: "b", header: "Paid coins", className: "text-right", render: (p) => fmtNumber(p.baseCoins) },
-          { key: "x", header: "Bonus coins", className: "text-right", render: (p) => <span>{fmtNumber(p.bonusCoinsGiven)}{p.promoBonusGiven ? <span className="block text-xs text-purple-600">{fmtNumber(p.promoBonusGiven)} budget se (locked)</span> : null}</span> },
+          { key: "b", header: "💎 Diamond (paid)", className: "text-right", render: (p) => fmtNumber(p.baseCoins) },
+          { key: "x", header: "💎 Bonus Diamond", className: "text-right", render: (p) => <span>{fmtNumber(p.bonusCoinsGiven)}{p.promoBonusGiven ? <span className="block text-xs text-purple-600">{fmtNumber(p.promoBonusGiven)} budget se</span> : null}</span> },
         ]}
       />
     </div>
@@ -1034,9 +1115,9 @@ function UserStatementView() {
       {data && (
         <>
           <div className="grid gap-4 sm:grid-cols-3">
-            <StatCard icon={Coins} label={`${data.user.username ?? data.user.uid} ka balance`} value={fmtNumber(data.user.balance)} gradient="gradient-purple" />
-            <StatCard icon={Wallet} label="Withdraw ho sakte hain" value={fmtNumber(data.user.withdrawable)} gradient="gradient-green" />
-            <StatCard icon={Gift} label="Locked (promo)" value={fmtNumber(data.user.locked)} gradient="gradient-orange" />
+            <StatCard icon={Coins} label={`${data.user.username ?? data.user.uid}: total (DP coin + Diamond)`} value={fmtNumber(data.user.balance)} gradient="gradient-purple" />
+            <StatCard icon={Wallet} label="DP coin (withdraw ho sakte)" value={fmtNumber(data.user.withdrawable)} gradient="gradient-green" />
+            <StatCard icon={DiamondIcon as any} label="Diamond" value={fmtNumber(data.user.locked)} gradient="gradient-cyan" />
           </div>
           <div className={`rounded-xl px-4 py-2 text-sm ${data.ledger.balanced ? "bg-green-50 text-green-800" : "bg-red-50 text-red-800"}`}>
             {data.ledger.balanced
@@ -1054,9 +1135,9 @@ function UserStatementView() {
             columns={[
               { key: "t", header: "Kab", render: (e) => <span className="text-xs whitespace-nowrap">{fmtDateTime(e.createdAt)}</span> },
               { key: "ty", header: "Type", render: (e) => <span><span className="font-mono text-xs">{e.type}</span>{e.budgetId ? <span className="block text-xs text-purple-600">budget</span> : null}</span> },
-              { key: "a", header: "Coins", className: "text-right", render: (e) => <span className={e.amount < 0 ? "text-red-600" : "text-green-600"}>{signed(e.amount)}</span> },
-              { key: "l", header: "Locked", className: "text-right", render: (e) => (e.lockedDelta ? <span className="text-amber-600">{signed(e.lockedDelta)}</span> : <span className="text-muted-foreground">—</span>) },
-              { key: "b", header: "Balance baad me", className: "text-right", render: (e) => <span>{fmtNumber(e.balanceAfter)}{e.lockedAfter ? <span className="block text-xs text-amber-600">{fmtNumber(e.lockedAfter)} locked</span> : null}</span> },
+              { key: "a", header: "🪙 DP coin", className: "text-right", render: (e) => (e.amount - e.lockedDelta ? <span className={e.amount - e.lockedDelta < 0 ? "text-red-600" : "text-green-600"}>{signed(e.amount - e.lockedDelta)}</span> : <span className="text-muted-foreground">—</span>) },
+              { key: "l", header: "💎 Diamond", className: "text-right", render: (e) => (e.lockedDelta ? <span className="text-cyan-700">{signed(e.lockedDelta)}</span> : <span className="text-muted-foreground">—</span>) },
+              { key: "b", header: "Baad me (🪙 / 💎)", className: "text-right", render: (e) => <span>{fmtNumber(e.balanceAfter - e.lockedAfter)} / {fmtNumber(e.lockedAfter)}</span> },
               { key: "d", header: "Detail", render: (e) => <span className="text-xs text-muted-foreground">{e.description}</span> },
             ]}
           />

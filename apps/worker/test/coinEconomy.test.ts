@@ -62,6 +62,11 @@ async function seedUser(env: TestEnv, uid: string, dpcoin = 0, extra: Record<str
   await drizzleOf(env).insert(schema.users).values({ signupCompleted: true, uid, username: uid, fullName: uid, dpcoin, createdAt: ts, updatedAt: ts, ...extra } as any);
   if (dpcoin) await env.DB.prepare(`INSERT INTO coin_transactions (id, uid, amount, type, created_at) VALUES (?, ?, ?, 'opening', ?)`).bind(`open:${uid}`, uid, dpcoin, ts).run();
 }
+/** A player with `diamonds` play-only coins (ledgered), the only way to pay an entry fee. */
+async function seedPlayer(env: TestEnv, uid: string, diamonds: number) {
+  await seedUser(env, uid);
+  await adjustUserWallet(env as any, { uid, amount: diamonds, direction: 'add', type: 'purchase', description: 'test diamonds', locked: true });
+}
 const user = (env: TestEnv, uid: string) => drizzleOf(env).select().from(schema.users).where(eq(schema.users.uid, uid)).get();
 async function settings(env: TestEnv, data: any) {
   await drizzleOf(env).insert(schema.settings).values({ id: 'appConfig', data, updatedAt: Date.now() } as any).onConflictDoUpdate({ target: schema.settings.id, set: { data } });
@@ -112,7 +117,7 @@ describe('approval password', () => {
 });
 
 describe('package bonus budget + locked coins', () => {
-  it('sells a loss-making bonus as locked coins, honours the per-user limit, and keeps withdrawals to paid coins', async () => {
+  it('sells a package (with its loss-making bonus) as Diamonds, honours the per-user limit, and never pays Diamonds out', async () => {
     const { env } = makeEnv();
     await seedUser(env, 'boss');
     await seedUser(env, 'alice');
@@ -130,23 +135,22 @@ describe('package bonus budget + locked coins', () => {
 
     r = await call(env, 'alice', 'requestDeposit', { packageId: pkg, utr: 'UTR-0001' });
     expect((await admin(env, 'PATCH', `/deposits/${r.body.depositId}`, { action: 'approve' })).status).toBe(200);
-    expect(await user(env, 'alice')).toMatchObject({ dpcoin: 120, lockedCoins: 20 });
+    expect(await user(env, 'alice')).toMatchObject({ dpcoin: 120, lockedCoins: 120 });
 
     // Per-user limit reached → no bonus; room left (10) < bonus → catalog hides it.
     r = await call(env, 'alice', 'requestDeposit', { packageId: pkg, utr: 'UTR-0002' });
     expect(await drizzleOf(env).select().from(schema.deposits).where(eq(schema.deposits.id, r.body.depositId)).get()).toMatchObject({ bonusCoins: 0, amount: 100, budgetId: null });
     expect((await listPublicCoinPackages(env as any))[0]).toMatchObject({ bonusCoins: 0, bonusLocked: false });
 
-    // Withdrawals stop at the locked coins.
-    r = await call(env, 'alice', 'requestWithdrawal', { amount: 110, method: 'upi', accountDetails: 'alice@okhdfc' });
+    // Bought coins are Diamonds: none of them can be withdrawn.
+    r = await call(env, 'alice', 'requestWithdrawal', { amount: 100, method: 'upi', accountDetails: 'alice@okhdfc' });
     expect(r.status).toBe(412);
-    expect(r.body.error.message).toMatch(/bonus coins/);
-    expect((await call(env, 'alice', 'requestWithdrawal', { amount: 100, method: 'upi', accountDetails: 'alice@okhdfc' })).status).toBe(200);
-    expect(await user(env, 'alice')).toMatchObject({ dpcoin: 20, lockedCoins: 20 });
+    expect(r.body.error.message).toMatch(/Diamond withdraw nahi/);
+    expect(await user(env, 'alice')).toMatchObject({ dpcoin: 120, lockedCoins: 120 });
     await expectBalanced(env);
   });
 
-  it('razorpay: reserves at order, credits locked bonus, clawback clamps locked coins', async () => {
+  it('razorpay: reserves at order, credits the whole package as Diamonds, a refund takes the Diamonds back', async () => {
     const { env } = makeEnv();
     await seedUser(env, 'boss');
     await seedUser(env, 'carol');
@@ -159,10 +163,14 @@ describe('package bonus budget + locked coins', () => {
     expect(r.body).toMatchObject({ coins: 150, bonusCoins: 50, bonusLocked: true, amount: 1000 });
     expect((await admin(env, 'GET', `/promo-budgets/${b}`)).body.budget).toMatchObject({ heldCoins: 50, remainingCoins: 50 });
     expect((await creditPaymentOrder(env as any, drizzleOf(env) as any, { orderId: 'order_1', paymentId: 'pay_1', source: 'webhook', capturedAmountPaise: 1000 })).credited).toBe(true);
-    expect(await user(env, 'carol')).toMatchObject({ dpcoin: 150, lockedCoins: 50 });
-    await call(env, 'carol', 'requestWithdrawal', { amount: 100, method: 'upi', accountDetails: 'carol@okhdfc' });
+    expect(await user(env, 'carol')).toMatchObject({ dpcoin: 150, lockedCoins: 150 });
+    expect((await call(env, 'carol', 'requestWithdrawal', { amount: 100, method: 'upi', accountDetails: 'carol@okhdfc' })).status).toBe(412);
+    // carol then wins 30 DP coins and loses 20 to a debit (taken from DP coins):
+    // 160 total, 150 Diamonds. The refund takes all 150 back from the Diamonds.
+    await adjustUserWallet(env as any, { uid: 'carol', amount: 30, direction: 'add', type: 'contest_win_reward', description: 'won' });
+    await adjustUserWallet(env as any, { uid: 'carol', amount: 20, direction: 'subtract', type: 'contest_entry_fee', description: 'spent' });
     await clawbackPaymentOrder(env as any, drizzleOf(env) as any, { paymentId: 'pay_1', kind: 'refund' });
-    expect(await user(env, 'carol')).toMatchObject({ dpcoin: -100, lockedCoins: 0 });
+    expect(await user(env, 'carol')).toMatchObject({ dpcoin: 10, lockedCoins: 0 });
     const h = await computeMoneyHealth(env as any);
     expect(h.ledgerDrift.count).toBe(0);
     expect(h.lockedDrift.count).toBe(0);
@@ -174,7 +182,7 @@ describe('contest prize subsidy', () => {
     const { env } = makeEnv();
     await seedUser(env, 'boss');
     await seedUser(env, 'alice');
-    await seedUser(env, 'bob', 100);
+    await seedPlayer(env, 'bob', 100);
     await admin(env, 'POST', '/approval-password', { next: PW });
     // alice: 20 locked coins.
     await adjustUserWallet(env as any, { uid: 'alice', amount: 20, direction: 'add', type: 'referral_bonus', description: 'x', locked: true });
@@ -211,6 +219,11 @@ describe('contest prize subsidy', () => {
 
     const eco = await coinEconomyOverview(env as any);
     expect(eco.checks.filter((c: any) => !c.ok)).toEqual([]);
+    // Diamonds → DP coins: m1's two 10-Diamond entries (the refunded ones net to
+    // zero) became a 50 DP coin prize, 30 of it from the budget.
+    expect(eco.conversion).toEqual({ entryDiamonds: 20, prizeDp: 50, subsidyDp: 30, burnedDiamonds: 0 });
+    expect(eco.dpFlow.in.contests).toBe(50);
+    expect(eco.diamondFlow.out.contests).toBe(50); // 5 entries × 10, before refunds
     expect((await admin(env, 'GET', '/coin-economy/contests')).body[0]).toMatchObject({ subsidy: 30, prizes: 50 });
     expect((await admin(env, 'GET', '/coin-economy/users/alice')).body.ledger.balanced).toBe(true);
     await expectBalanced(env);
@@ -221,8 +234,8 @@ describe('product prize budget', () => {
   it('hides the coin value, reserves per match, stops when out, and returns coins on a cancelled claim', async () => {
     const { env } = makeEnv();
     await seedUser(env, 'boss');
-    await seedUser(env, 'al', 100);
-    await seedUser(env, 'bo', 100);
+    await seedPlayer(env, 'al', 100);
+    await seedPlayer(env, 'bo', 100);
     await admin(env, 'POST', '/approval-password', { next: PW });
     const pb = await budget(env, 'product_prize', 1500);
     const base = {
@@ -307,6 +320,9 @@ describe('free rewards', () => {
     expect((await call(env, 'w1', 'getDailyTasks')).body.tasks.map((t: any) => [t.id, t.reward])).toEqual([['share1', 7]]);
     expect((await monthlyHallOfFame(env as any, '2026-09')).paid).toBe(3);
     expect([(await user(env, 'w1'))?.dpcoin, (await user(env, 'w3'))?.dpcoin]).toEqual([300, 100]);
+    // Hall of Fame pays Diamonds: play-only, never withdrawn.
+    expect([(await user(env, 'w1'))?.lockedCoins, (await user(env, 'w3'))?.lockedCoins]).toEqual([300, 100]);
+    await expectBalanced(env);
   });
 });
 
@@ -374,5 +390,68 @@ describe('coin alerts and report', () => {
     expect(await maybeSendCoinReport(env as any, at3 + 60_000)).toEqual({ daily: false, weekly: false });
     expect(await maybeSendCoinReport(env as any, Date.UTC(2026, 9, 27, 9))).toEqual({ daily: false, weekly: false });
     expect(sentEmails.filter((e) => /coin report/.test(e.subject)).length).toBe(2);
+  });
+});
+
+describe('admin wallet: DP coin or Diamond', () => {
+  it('adds and subtracts Diamonds without touching DP coins, and refuses more than the Diamonds held', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'boss');
+    await seedUser(env, 'eve', 50); // 50 DP coins
+    const adjust = (body: any) => admin(env, 'POST', '/users/eve/wallet', { reason: 'support test', requestId: crypto.randomUUID(), ...body });
+    expect((await adjust({ amount: 30, type: 'add', locked: true })).status).toBe(200);
+    expect(await user(env, 'eve')).toMatchObject({ dpcoin: 80, lockedCoins: 30 });
+    expect((await adjust({ amount: 20, type: 'subtract', locked: true })).status).toBe(200);
+    expect(await user(env, 'eve')).toMatchObject({ dpcoin: 60, lockedCoins: 10 });
+    const r = await adjust({ amount: 11, type: 'subtract', locked: true });
+    expect(r.status).toBe(412);
+    expect(r.body.error.message).toMatch(/Insufficient Diamonds/);
+    expect(await user(env, 'eve')).toMatchObject({ dpcoin: 60, lockedCoins: 10 });
+    // A DP coin subtraction still takes DP coins first.
+    expect((await adjust({ amount: 50, type: 'subtract' })).status).toBe(200);
+    expect(await user(env, 'eve')).toMatchObject({ dpcoin: 10, lockedCoins: 10 });
+    await expectBalanced(env);
+  });
+});
+
+describe('Diamond / DP coin money rules', () => {
+  it('a legacy (unreserved) payout approval takes DP coins only, never Diamonds', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'boss');
+    await seedUser(env, 'lee');
+    await adjustUserWallet(env as any, { uid: 'lee', amount: 40, direction: 'add', type: 'contest_win_reward', description: 'won' });
+    await adjustUserWallet(env as any, { uid: 'lee', amount: 100, direction: 'add', type: 'purchase', description: 'bought', locked: true });
+    const ts = Date.now();
+    const add = (id: string, amount: number) => env.DB.prepare(
+      `INSERT INTO withdrawals (id, user_id, amount, cash_amount, method, account_details, status, reserved, created_at, updated_at)
+       VALUES (?, 'lee', ?, ?, 'upi', 'lee@okhdfc', 'pending', 0, ?, ?)`,
+    ).bind(id, amount, amount / 10, ts, ts).run();
+    await add('w_big', 100);
+    // 140 total but only 40 DP coins: refused, nothing moves.
+    let r = await admin(env, 'PATCH', '/withdrawals/w_big', { action: 'approve' });
+    expect(r.status).toBe(412);
+    expect(r.body.error.message).toMatch(/DP coin/);
+    expect(await user(env, 'lee')).toMatchObject({ dpcoin: 140, lockedCoins: 100 });
+    await add('w_ok', 40);
+    r = await admin(env, 'PATCH', '/withdrawals/w_ok', { action: 'approve' });
+    expect(r.status).toBe(200);
+    expect(await user(env, 'lee')).toMatchObject({ dpcoin: 100, lockedCoins: 100 });
+    await expectBalanced(env);
+  });
+
+  it('a match refund is always Diamonds, even for an entry row without a Diamond part', async () => {
+    const { env } = makeEnv();
+    await seedUser(env, 'old', 0);
+    const ts = Date.now();
+    // A pre-Diamond entry: 10 coins paid with locked_delta 0.
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO coin_transactions (id, uid, amount, type, created_at) VALUES ('open:old2', 'old', 10, 'contest_win_reward', ?)`).bind(ts),
+      env.DB.prepare(`INSERT INTO coin_transactions (id, uid, amount, type, match_id, created_at) VALUES ('contest_entry:m_old:old', 'old', -10, 'contest_entry_fee', 'm_old', ?)`).bind(ts),
+      env.DB.prepare(`INSERT INTO contest_matches (id, status, type, title, entry_fee, user_a, created_at) VALUES ('m_old', 'waiting_for_opponent', 'photo', 'Old', 20, '{"uid":"old"}', ?)`).bind(ts),
+    ]);
+    await settleRefund(env as any, { matchId: 'm_old', contestId: null as any, expectedStatus: 'waiting_for_opponent', finalStatus: 'cancelled', participantUids: ['old'], refundPerUser: 10, description: 'r', completedAt: ts });
+    expect(await user(env, 'old')).toMatchObject({ dpcoin: 10, lockedCoins: 10 });
+    const row = await env.DB.prepare(`SELECT locked_delta, description FROM coin_transactions WHERE id = 'contest_refund:m_old:old'`).first<any>();
+    expect(row).toMatchObject({ locked_delta: 10, description: 'r (Diamond)' });
   });
 });

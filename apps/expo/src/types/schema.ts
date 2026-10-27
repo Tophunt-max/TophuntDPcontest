@@ -32,8 +32,8 @@ export interface UserProfile {
   };
 
   // Gamification & Wallet
-  Dpcoin: number; // Virtual Currency
-  /** Play-only promo coins inside Dpcoin: spendable on contests, never withdrawable. */
+  Dpcoin: number; // TOTAL of DP coin + Diamond; split with balancesOf()
+  /** The Diamond part of `Dpcoin` (users.locked_coins): entry fees only, never withdrawable. */
   lockedCoins?: number;
   xp: number;
   level: number;

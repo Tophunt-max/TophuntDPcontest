@@ -183,7 +183,7 @@ class NotificationService {
         }[] = [
             { id: ANDROID_CHANNEL_ID.social, name: 'Likes, comments & follows', importance: AndroidImportance.DEFAULT, vibrate: true },
             { id: ANDROID_CHANNEL_ID.contest, name: 'Contests & battles', importance: AndroidImportance.HIGH, vibrate: true },
-            { id: ANDROID_CHANNEL_ID.wallet, name: 'Coins & payouts', importance: AndroidImportance.HIGH, vibrate: true },
+            { id: ANDROID_CHANNEL_ID.wallet, name: 'Diamond, DP coin & payouts', importance: AndroidImportance.HIGH, vibrate: true },
             { id: ANDROID_CHANNEL_ID.admin, name: 'Announcements', importance: AndroidImportance.DEFAULT, vibrate: false },
         ];
 
