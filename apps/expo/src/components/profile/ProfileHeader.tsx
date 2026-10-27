@@ -4,11 +4,11 @@ import {
   View,
   Text,
   StyleSheet,
-  Image,
   TouchableOpacity,
   Modal,
   ActivityIndicator,
 } from "react-native";
+import { AppImage } from '@/src/components/ui/AppImage';
 import { Alert } from '@/src/lib/appAlert';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { UserProfile, Badge } from '@/src/types/user';
@@ -352,7 +352,7 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({
 
       <View style={styles.avatarWrapper}>
         <View style={[styles.avatarBorder, { backgroundColor, borderColor: isDark ? '#35383F' : '#eee' }, equippedBadge && { borderColor: '#FFD700', borderWidth: 3 }]}>
-          <Image source={profileImage} style={styles.avatarImage} resizeMode="cover" />
+          <AppImage source={profileImage} displayWidth={100} style={styles.avatarImage} contentFit="cover" />
         </View>
         {equippedBadge && (
             <View style={[styles.equippedBadgeIcon, { backgroundColor }]}>

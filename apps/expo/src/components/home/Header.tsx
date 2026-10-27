@@ -6,6 +6,7 @@ import {
   Image,
   Text,
 } from 'react-native';
+import { AppImage } from '@/src/components/ui/AppImage';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { 
     ChatIcon_Light, ChatIcon_Dark 
@@ -73,10 +74,12 @@ const HeaderComponent = () => {
     >
       {/* LEFT */}
       <View style={styles.left}>
-        <Image 
+        <AppImage 
           source={config?.headerLogoUrl ? { uri: config.headerLogoUrl } : images.tophuntLogo} 
+          displayWidth={logo.width}
           style={logo} 
-          resizeMode="contain" 
+          contentFit="contain" 
+          transition={0}
           accessibilityLabel="TopHunt"
         />
       </View>

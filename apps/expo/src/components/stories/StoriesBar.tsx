@@ -5,6 +5,8 @@ import { useRouter } from 'expo-router';
 import { StoryItem } from './StoryItem';
 import { fetchStories } from '@/src/services/stories/storyService';
 import { prefetchImages } from '@/src/lib/mediaPrefetch';
+import { displayImageUrl } from '@/src/components/ui/AppImage';
+import { STORY_IMAGE_WIDTH } from '@/src/lib/imageVariants';
 import { auth } from '@/src/services/firebase/initFirebase';
 import { StoriesSkeleton } from './StoriesSkeleton';
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -80,7 +82,8 @@ export const StoriesBar: React.FC = () => {
     const firstFrames = userStories
       .map((us) => us.stories?.[0])
       .filter((s) => s?.mediaType === 'image')
-      .map((s) => s!.mediaUrl);
+      // The same variant the viewer loads (STORY_IMAGE_WIDTH), or this warms a copy nobody shows.
+      .map((s) => displayImageUrl(s!.mediaUrl, STORY_IMAGE_WIDTH));
     if (firstFrames.length) void prefetchImages(firstFrames);
   }, [userStories]);
 

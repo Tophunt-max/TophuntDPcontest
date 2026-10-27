@@ -3,7 +3,14 @@ import { AppState, Platform } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
 import { subscribeChannel } from '@/src/services/realtime';
 import { onControlSignal, setClientVersionHeaders } from '@/src/services/api';
-import { APP_CONFIG_QUERY_KEY, applyAppConfig, currentAppVersion, hydrateAppConfig } from '@/src/services/appSettings';
+import {
+  APP_CONFIG_QUERY_KEY,
+  applyAppConfig,
+  currentAppVersion,
+  hydrateAppConfig,
+  useAppConfig,
+} from '@/src/services/appSettings';
+import { setImageTransformsEnabled } from '@/src/lib/imageVariants';
 import { hydrateControlChoices } from '@/src/lib/controlStore';
 import { applyCoinPackages, COIN_PACKAGES_QUERY_KEY } from '@/src/hooks/useCoinPackages';
 
@@ -24,6 +31,15 @@ const SHARD = Math.floor(Math.random() * APP_CONFIG_SHARDS);
  */
 export function LiveAppConfig() {
   const queryClient = useQueryClient();
+
+  // Cloudflare image variants kill switch (src/lib/imageVariants.ts). Only the
+  // polled /read/app-config carries `media`; a realtime push without it must not
+  // flip the switch back on, so only an explicit boolean is applied.
+  const { config } = useAppConfig();
+  const transforms = config?.media?.transforms;
+  useEffect(() => {
+    if (typeof transforms === 'boolean') setImageTransformsEnabled(transforms);
+  }, [transforms]);
 
   useEffect(() => {
     setClientVersionHeaders(Platform.OS, currentAppVersion());

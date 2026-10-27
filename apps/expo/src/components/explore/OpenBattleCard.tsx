@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { Image } from 'expo-image';
+import { AppImage } from '@/src/components/ui/AppImage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@/src/lib/icons';
 import { CoinIcon } from '@/src/components/ui/CoinIcon';
@@ -50,7 +50,7 @@ export const OpenBattleCard = React.memo(function OpenBattleCard({
       <View style={styles.body}>
         <View style={styles.photo}>
           {thumb ? (
-            <Image source={{ uri: thumb }} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} cachePolicy="memory-disk" />
+            <AppImage source={{ uri: thumb }} displayWidth={width} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} />
           ) : (
             <LinearGradient colors={grad} style={[StyleSheet.absoluteFill, styles.center]}>
               <Ionicons name={isVideo ? 'play' : 'image'} size={22} color="#FFF" />

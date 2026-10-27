@@ -76,6 +76,7 @@ const NotificationRow = React.memo(({ item, isDark, onPress }: RowProps) => {
             <View style={styles.avatarContainer}>
                 <Image
                     source={avatarUri ? { uri: avatarUri } : FALLBACK_AVATAR}
+                    displayWidth={48}
                     style={styles.avatar}
                     contentFit="cover"
                     transition={150}
@@ -112,6 +113,7 @@ const NotificationRow = React.memo(({ item, isDark, onPress }: RowProps) => {
             {showThumb && (
                 <Image
                     source={{ uri: item.imageThumb || item.image }}
+                    displayWidth={48}
                     style={styles.postThumb}
                     contentFit="cover"
                     transition={150}

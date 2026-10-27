@@ -26,7 +26,15 @@ import {
 import { FEED_DEFAULT_WEIGHTS, rankingVersion, sanitizeFeedWeights, type FeedWeights } from "../lib/feedWeights";
 import { getSettings as getGamificationSettings, levelForXp } from "../lib/gamification";
 import { resolveLegalContent } from "../content/legal";
-import { enrichMatchMedia, avatarUrl, thumbUrl, optimizedUrl, cdnUrl, canonicalizeMediaHtml } from "../lib/media";
+import {
+  enrichMatchMedia,
+  avatarUrl,
+  thumbUrl,
+  optimizedUrl,
+  cdnUrl,
+  canonicalizeMediaHtml,
+  transformationsAvailable,
+} from "../lib/media";
 import {
   userCacheKey,
   blogPostCacheKey,
@@ -1770,7 +1778,14 @@ readRoute.get("/app-config", async (c) => {
   return cachedResponse(
     c,
     APP_CONFIG_EDGE_TTL_SEC,
-    async () => publicAppConfig((await getAppConfig(c.env)) || {}, Date.now()),
+    async () => ({
+      ...publicAppConfig((await getAppConfig(c.env)) || {}, Date.now()),
+      // The client builds responsive Cloudflare variants itself
+      // (apps/expo/src/lib/imageVariants.ts). This is its kill switch: false makes
+      // every image load the original, without an app release. Env-derived, so
+      // safe in the shared 30s edge entry.
+      media: { transforms: transformationsAvailable(c.env), base: String(c.env.R2_PUBLIC_BASE_URL || "") },
+    }),
     { clientCacheControl: "no-store, max-age=0" },
   );
 });

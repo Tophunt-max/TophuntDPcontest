@@ -1,15 +1,6 @@
 import React, { useState } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  SafeAreaView,
-  ScrollView,
-  TouchableOpacity,
-  Image,
-  ActivityIndicator,
-  RefreshControl,
-} from 'react-native';
+import { View, Text, StyleSheet, SafeAreaView, ScrollView, TouchableOpacity, ActivityIndicator, RefreshControl } from 'react-native';
+import { AppImage } from '@/src/components/ui/AppImage';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useRouter } from 'expo-router';
 import { BackButton } from '@/src/components/ui/BackButton';
@@ -130,7 +121,7 @@ export default function BlockedAccountsScreen() {
     return (
       <View style={[styles.row, { borderBottomColor: border }]}>
         {avatar ? (
-          <Image source={{ uri: avatar }} style={styles.avatar} />
+          <AppImage source={{ uri: avatar }} displayWidth={44} style={styles.avatar} contentFit="cover" />
         ) : (
           <View style={[styles.avatar, styles.avatarFallback, { backgroundColor: isDark ? '#1F222A' : '#F0F0F0' }]}>
             <Text style={[styles.avatarInitial, { color: secondary }]}>

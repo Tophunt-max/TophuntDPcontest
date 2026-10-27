@@ -4,11 +4,11 @@ import {
   Text,
   StyleSheet,
   FlatList,
-  Image,
   ScrollView,
   useWindowDimensions,
   TouchableOpacity,
 } from 'react-native';
+import { AppImage } from '@/src/components/ui/AppImage';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -69,7 +69,7 @@ type Slide = { id: string; title: string; description: string; image: any; icon?
 /** Slide picture: an uploaded/bundled image, else an icon badge in the brand colour. */
 function SlideArt({ slide, box, isDark }: { slide: Slide; box: { width: number; height: number }; isDark: boolean }) {
   if (slide.image) {
-    return <Image source={slide.image} style={[styles.image, box]} resizeMode="contain" />;
+    return <AppImage source={slide.image} displayWidth={box.width} style={[styles.image, box]} contentFit="contain" />;
   }
   const size = box.height;
   return (

@@ -236,6 +236,8 @@ function BlogImage({ src, width, isDark }: { src: string; width: number; isDark?
   return (
     <Image
       source={{ uri: src }}
+      // Our own media is resized to the column; third-party images pass through.
+      displayWidth={width}
       style={{
         width,
         aspectRatio: ratio,

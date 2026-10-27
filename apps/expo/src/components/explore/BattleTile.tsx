@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { Image } from 'expo-image';
+import { AppImage } from '@/src/components/ui/AppImage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { Ionicons, MaterialCommunityIcons } from '@/src/lib/icons';
@@ -52,9 +52,9 @@ export const BattleTile = React.memo(function BattleTile({
       accessibilityLabel={`${title}: ${nameA} versus ${nameB}, ${item.totalVotes || 0} votes${left ? `, ${left} left` : ''}`}
     >
       <View style={[styles.media, { height: mediaH }]}>
-        <Side uri={a} grad={grad} isVideo={isVideo} />
+        <Side w={width / 2} uri={a} grad={grad} isVideo={isVideo} />
         <View style={[styles.divider, { backgroundColor: palette.card }]} />
-        <Side uri={b} grad={grad} isVideo={isVideo} />
+        <Side w={width / 2} uri={b} grad={grad} isVideo={isVideo} />
         <LinearGradient colors={['rgba(0,0,0,0.35)', 'transparent', 'rgba(0,0,0,0.55)']} style={StyleSheet.absoluteFill} pointerEvents="none" />
 
         <View style={styles.topRow} pointerEvents="none">
@@ -110,11 +110,11 @@ export const BattleTile = React.memo(function BattleTile({
   );
 });
 
-function Side({ uri, grad, isVideo }: { uri: string | null; grad: [string, string]; isVideo: boolean }) {
+function Side({ uri, grad, isVideo, w }: { uri: string | null; grad: [string, string]; isVideo: boolean; w: number }) {
   return (
     <View style={styles.side}>
       {uri ? (
-        <Image source={{ uri }} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} cachePolicy="memory-disk" recyclingKey={uri} />
+        <AppImage source={{ uri }} displayWidth={w} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} recyclingKey={uri} />
       ) : (
         <LinearGradient colors={grad} style={[StyleSheet.absoluteFill, styles.center]}>
           <Ionicons name={isVideo ? 'play' : 'image'} size={22} color="rgba(255,255,255,0.85)" />

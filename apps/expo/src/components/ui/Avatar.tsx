@@ -90,6 +90,10 @@ export const Avatar: React.FC<AvatarProps> = ({
         source={{ uri: uri as string }}
         style={[box, style as any]}
         contentFit="cover"
+        // Loaded at the drawn size (a 28pt avatar on a 3x phone is the 128 variant).
+        // With `fill`, `size` is the caller's statement of how big the box is.
+        displayWidth={size}
+        noPreview
         onError={() => setFailed(true)}
       />
     );

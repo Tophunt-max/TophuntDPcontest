@@ -31,6 +31,8 @@ export interface AppConfig {
   /** Bumped on every admin save; the newer copy wins. */
   version?: number;
   splashImageUrl?: string;
+  /** Cloudflare image variants (src/lib/imageVariants.ts). `transforms: false` = load originals. */
+  media?: { transforms?: boolean; base?: string };
   headerLogoUrl?: string;
   /** First-launch intro slides, managed from the admin panel's Onboarding page. Empty = built-in. */
   onboarding?: {
