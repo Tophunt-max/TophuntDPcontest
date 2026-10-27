@@ -146,6 +146,11 @@ export interface WalletAdjustment {
    * key moves nothing — neither balance nor ledger.
    */
   claimKey?: string;
+  /**
+   * Credit as LOCKED (play-only) coins: spendable on entry fees, never
+   * withdrawable (users.locked_coins). Only meaningful with direction "add".
+   */
+  locked?: boolean;
   contestId?: string | null;
   matchId?: string | null;
   ts?: number;
@@ -211,6 +216,8 @@ export async function adjustUserWallet(
     throw httpsError("invalid-argument", "uid is required.");
   }
   const delta = input.direction === "add" ? amount : -amount;
+  // Added locked coins (a play-only reward), bound into both statements below.
+  const lockedAdd = input.direction === "add" && input.locked ? amount : 0;
   const ts = input.ts ?? Date.now();
   const ledgerId = input.ledgerId ?? crypto.randomUUID();
 
@@ -248,7 +255,7 @@ export async function adjustUserWallet(
       `INSERT OR IGNORE INTO coin_transactions
          (id, uid, amount, type, contest_id, match_id, description, created_at, locked_delta)
        SELECT ?, ?, ?, ?, ?, ?, ?, ?,
-              (SELECT CASE WHEN ? < 0 THEN MIN(locked_coins, MAX(0, dpcoin + ?)) - locked_coins ELSE 0 END
+              (SELECT CASE WHEN ? < 0 THEN MIN(locked_coins, MAX(0, dpcoin + ?)) - locked_coins ELSE ? END
                  FROM users WHERE uid = ?)
         WHERE EXISTS (
           SELECT 1 FROM users WHERE uid = ? AND dpcoin + ? >= 0
@@ -265,6 +272,7 @@ export async function adjustUserWallet(
       ts,
       delta,
       delta,
+      lockedAdd,
       input.uid,
       input.uid,
       delta,
@@ -273,11 +281,11 @@ export async function adjustUserWallet(
     env.DB.prepare(
       `UPDATE users
           SET dpcoin = dpcoin + ?,
-              locked_coins = CASE WHEN ? < 0 THEN MIN(locked_coins, MAX(0, dpcoin + ?)) ELSE locked_coins END,
+              locked_coins = CASE WHEN ? < 0 THEN MIN(locked_coins, MAX(0, dpcoin + ?)) ELSE locked_coins + ? END,
               updated_at = ?
         WHERE uid = ? AND dpcoin + ? >= 0
           ${claimGate}`,
-    ).bind(delta, delta, delta, ts, input.uid, delta, ...claimBindings),
+    ).bind(delta, delta, delta, lockedAdd, ts, input.uid, delta, ...claimBindings),
   );
 
   const results = await env.DB.batch(statements);

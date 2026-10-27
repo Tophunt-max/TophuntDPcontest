@@ -29,6 +29,7 @@ import { getDb, schema } from "../db";
 import { eq } from "drizzle-orm";
 import { httpsError } from "./http";
 import { getAppConfig } from "./settings";
+import { lockedPart } from "./rewardLocking";
 import { lookupAuthUser } from "./firebaseAdmin";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -249,6 +250,8 @@ export async function tryCreditVerificationReward(env: Env, uid: string): Promis
   const amount = Math.max(0, Math.floor(Number(enrolment.completionReward) || 0));
   const ts = Date.now();
   const ledgerId = completionLedgerId(uid);
+  // Free reward: play-only unless App Control says otherwise (lib/rewardLocking.ts).
+  const lockedAmount = lockedPart(await getAppConfig(env), "verification", amount);
 
   // Identifier hashes for the one-bonus-per-identifier rule, computed from the
   // values just read; the batch re-checks that the row still holds exactly these.
@@ -282,14 +285,24 @@ export async function tryCreditVerificationReward(env: Env, uid: string): Promis
       // Balance first, gated on the ledger row being absent; the ledger insert
       // shares the gate, so both apply or neither does.
       env.DB.prepare(
-        `UPDATE users SET dpcoin = dpcoin + ?, updated_at = ?
+        `UPDATE users SET dpcoin = dpcoin + ?, locked_coins = locked_coins + ?, updated_at = ?
           WHERE uid = ? AND ${gate} AND NOT ${credited}`,
-      ).bind(amount, ts, uid, ...gateBinds, ledgerId),
+      ).bind(amount, lockedAmount, ts, uid, ...gateBinds, ledgerId),
       env.DB.prepare(
-        `INSERT OR IGNORE INTO coin_transactions (id, uid, amount, type, description, created_at)
-         SELECT ?, ?, ?, '${COMPLETION_LEDGER_TYPE}', ?, ?
+        `INSERT OR IGNORE INTO coin_transactions (id, uid, amount, type, description, created_at, locked_delta)
+         SELECT ?, ?, ?, '${COMPLETION_LEDGER_TYPE}', ?, ?, ?
           WHERE ${gate}`,
-      ).bind(ledgerId, uid, amount, "Bonus for verifying your email and mobile number", ts, ...gateBinds),
+      ).bind(
+        ledgerId,
+        uid,
+        amount,
+        lockedAmount > 0
+          ? "Bonus for verifying your email and mobile number (sirf khelne ke liye)"
+          : "Bonus for verifying your email and mobile number",
+        ts,
+        lockedAmount,
+        ...gateBinds,
+      ),
     );
   }
   // From here on, "done" is: ledger row present (or nothing to pay) AND still open.

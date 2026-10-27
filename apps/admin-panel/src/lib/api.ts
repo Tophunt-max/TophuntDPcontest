@@ -766,8 +766,8 @@ export const api = {
    */
   logoutAllUserSessions: (id: string) => post(`/admin/users/${id}/logout-all`, {}),
   /** `requestId` makes a retry or double click a no-op on the server; `reason` is audited. */
-  adjustWallet: (id: string, amount: number, type: "add" | "subtract", reason: string, requestId: string) =>
-    post<{ newBalance: number; replayed?: boolean }>(`/admin/users/${id}/wallet`, { amount, type, reason, requestId }),
+  adjustWallet: (id: string, amount: number, type: "add" | "subtract", reason: string, requestId: string, locked = false) =>
+    post<{ newBalance: number; replayed?: boolean }>(`/admin/users/${id}/wallet`, { amount, type, reason, requestId, locked }),
   setRole: (payload: { email?: string; userId?: string; makeAdmin?: boolean; role?: string }) =>
     post("/admin/set-role", payload),
   updateUserProfile: (id: string, payload: any) => patch(`/admin/users/${id}/profile`, payload),
@@ -1222,8 +1222,8 @@ export interface CoinEconomy {
   payoutRate: number;
   supply: { total: number; withdrawable: number; locked: number; holders: number; liabilityInr: number };
   cash: { paidInInr: number; refundedInr: number; paidOutInr: number; pendingOutInr: number };
-  categories: Record<string, { label: string; credits: number; debits: number; net: number }>;
-  types: { type: string; category: string; credits: number; debits: number; net: number; count: number }[];
+  categories: Record<string, { label: string; credits: number; debits: number; net: number; locked: number }>;
+  types: { type: string; category: string; credits: number; debits: number; net: number; locked: number; count: number }[];
   platform: { kinds: Record<string, { coins: number; count: number }>; net: number };
   budgets: { total: number; spent: number; active: number; count: number };
   checks: { key: string; label: string; ok: boolean; detail: string }[];

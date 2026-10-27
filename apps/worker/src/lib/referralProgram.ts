@@ -33,6 +33,8 @@ import { httpsError } from "./http";
 import { adjustUserWallet, WalletReplay } from "./money";
 import { createNotification } from "./notify";
 import { newId, now } from "./ids";
+import { getAppConfig } from "./settings";
+import { rewardLocked } from "./rewardLocking";
 
 export const QUALIFY_ACTIONS = ["signup", "verified", "first_contest", "first_purchase"] as const;
 export type QualifyAction = (typeof QUALIFY_ACTIONS)[number];
@@ -375,7 +377,18 @@ async function creditOnce(env: Env, uid: string, amount: number, description: st
   const done = await env.DB.prepare(`SELECT 1 AS x FROM coin_transactions WHERE id = ?`).bind(claimKey).first();
   if (done) return false;
   try {
-    await adjustUserWallet(env, { uid, amount, direction: "add", type: "referral_bonus", description, claimKey, ledgerId: claimKey });
+    // Free reward: play-only unless App Control says otherwise (lib/rewardLocking.ts).
+    const locked = rewardLocked(await getAppConfig(env), "referral");
+    await adjustUserWallet(env, {
+      uid,
+      amount,
+      direction: "add",
+      type: "referral_bonus",
+      description: locked ? `${description} (sirf khelne ke liye)` : description,
+      claimKey,
+      ledgerId: claimKey,
+      locked,
+    });
     return true;
   } catch (err) {
     if (err instanceof WalletReplay) return false;

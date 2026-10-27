@@ -4,7 +4,7 @@ import { api } from "@/lib/api";
 import { PageHeader } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import { useConfirm } from "@/components/ConfirmDialog";
-import { Power, Megaphone, ArrowUpCircle, ToggleLeft, Banknote, Coins, Save, Radio, CalendarClock } from "lucide-react";
+import { Power, Megaphone, ArrowUpCircle, ToggleLeft, Banknote, Coins, Save, Radio, CalendarClock, Lock } from "lucide-react";
 import { AuthMethodsCard } from "@/components/AuthMethodsCard";
 
 /**
@@ -104,6 +104,7 @@ export default function AppControl() {
         <FeaturesCard data={data} pending={save.isPending} onSave={(p) => save.mutate(p)} confirm={confirm} />
         <WithdrawalCard data={data} pending={save.isPending} onSave={(p) => save.mutate(p)} confirm={confirm} />
         <CoinPricingCard data={data} pending={save.isPending} onSave={(p) => save.mutate(p)} />
+        <RewardLockingCard data={data} pending={save.isPending} onSave={(p) => save.mutate(p)} />
       </div>
 
       <p className="text-xs text-muted-foreground mt-6 flex items-center gap-1.5">
@@ -584,6 +585,42 @@ function CoinPricingCard({ data, pending, onSave }: CardProps) {
         Package daam = base coins × buy rate (bonus free). Payout rate ₹{payout}/coin.
         {margin ? ` Har base coin par ${(Math.max(0, (margin - 1) * 100)).toFixed(0)}% margin.` : ""} Jo package bonus milake daam se zyada payout de, use server bechne nahi deta — save karne par minimum safe rate bata dega.
       </p>
+    </Card>
+  );
+}
+
+/**
+ * Free rewards as LOCKED (play-only) coins (worker lib/rewardLocking.ts).
+ *
+ * Locked coins can pay contest entry fees but never be withdrawn; a prize won
+ * with them is withdrawable. Default for every reward: locked. A change applies
+ * to coins credited from now on — balances already earned keep their status.
+ */
+const REWARD_LOCK_ROWS: { key: string; label: string }[] = [
+  { key: "verification", label: "Email + mobile verification bonus" },
+  { key: "referral", label: "Referral bonus (dono ko)" },
+  { key: "daily", label: "Daily login reward" },
+  { key: "ads", label: "Rewarded ads" },
+  { key: "tasks", label: "Daily tasks" },
+];
+
+function RewardLockingCard({ data, pending, onSave }: CardProps) {
+  const stored = (data.rewardLocking || {}) as Record<string, boolean>;
+  const initial = () => Object.fromEntries(REWARD_LOCK_ROWS.map((r) => [r.key, stored[r.key] !== false]));
+  const [locked, setLocked] = useState<Record<string, boolean>>(initial);
+  useEffect(() => {
+    setLocked(initial());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
+  return (
+    <Card icon={Lock} title="Free rewards: sirf khelne ke liye?" tint="text-orange-500" onSave={() => onSave({ rewardLocking: locked })} pending={pending}>
+      <p className="mb-3 text-xs text-muted-foreground">
+        ON = ye coin locked milenge: contest entry fee me lagenge, withdraw nahi honge (contest jeet kar mila prize withdraw hoga).
+        OFF = seedha withdraw ho sakte hain. Badlav sirf naye coin par lagta hai, purana balance waisa hi rehta hai.
+      </p>
+      {REWARD_LOCK_ROWS.map((r) => (
+        <Toggle key={r.key} label={r.label} checked={locked[r.key]} onChange={(v: boolean) => setLocked({ ...locked, [r.key]: v })} />
+      ))}
     </Card>
   );
 }

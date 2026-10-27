@@ -158,6 +158,7 @@ function OverviewBody({ data }: { data: CoinEconomyData }) {
             { key: "in", header: "Users ko mile", className: "text-right", render: ([, c]) => <span className="text-green-600">{fmtNumber(c.credits)}</span> },
             { key: "out", header: "Users se gaye", className: "text-right", render: ([, c]) => <span className="text-red-600">{fmtNumber(c.debits)}</span> },
             { key: "net", header: "Net", className: "text-right", render: ([, c]) => <span className="font-semibold">{signed(c.net)}</span> },
+            { key: "locked", header: "Locked (net)", className: "text-right", render: ([, c]) => (c.locked ? <span className="text-amber-600">{signed(c.locked)}</span> : <span className="text-muted-foreground">—</span>) },
           ]}
         />
         <details className="mt-3">
@@ -171,6 +172,7 @@ function OverviewBody({ data }: { data: CoinEconomyData }) {
               { key: "in", header: "+", className: "text-right", render: (t) => fmtNumber(t.credits) },
               { key: "out", header: "−", className: "text-right", render: (t) => fmtNumber(t.debits) },
               { key: "net", header: "Net", className: "text-right", render: (t) => signed(t.net) },
+              { key: "locked", header: "Locked", className: "text-right", render: (t) => (t.locked ? signed(t.locked) : "—") },
             ]}
           />
         </details>

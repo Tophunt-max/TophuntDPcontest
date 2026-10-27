@@ -121,6 +121,7 @@ import { getSettings } from "../lib/gamification";
 import { sendEmail, sendUserEmail } from "../lib/email";
 import { passwordChangedEmail, dataExportEmail } from "../lib/emailTemplates";
 import { newId, now, generateJoinId } from "../lib/ids";
+import { lockedPart } from "../lib/rewardLocking";
 import {
   ORDER_RESERVATION_TTL_MS,
   depositReservationId,
@@ -1869,6 +1870,8 @@ apiRoute.post("/", async (c) => {
       }
       const xpReward = 50;
       const ts = now();
+      // Free reward: play-only unless App Control says otherwise (lib/rewardLocking.ts).
+      const dailyLocked = lockedPart(await getAppConfig(env), "daily", coinReward);
       // Atomic guard: the conditional WHERE + affected-row check guarantees only
       // ONE claim per UTC day even if two requests race.
       //
@@ -1880,8 +1883,8 @@ apiRoute.post("/", async (c) => {
       const dailyResults = await env.DB.batch([
         env.DB.prepare(
           `INSERT OR IGNORE INTO coin_transactions
-             (id, uid, amount, type, description, created_at)
-           SELECT ?, ?, ?, 'daily_reward', ?, ?
+             (id, uid, amount, type, description, created_at, locked_delta)
+           SELECT ?, ?, ?, 'daily_reward', ?, ?, ?
             WHERE EXISTS (SELECT 1 FROM users WHERE uid = ? AND ${eligible})`,
         ).bind(
           `daily_reward:${uid}:${startOfToday}`,
@@ -1889,6 +1892,7 @@ apiRoute.post("/", async (c) => {
           coinReward,
           `Daily login reward (${streak} day streak)`,
           ts,
+          dailyLocked,
           uid,
           startOfToday,
         ),
@@ -1897,14 +1901,14 @@ apiRoute.post("/", async (c) => {
         // (an admin edit, a data repair) the balance moved with no ledger row.
         env.DB.prepare(
           `UPDATE users
-              SET dpcoin = dpcoin + ?, xp = xp + ?, streak = ?, last_daily_claim = ?, updated_at = ?
+              SET dpcoin = dpcoin + ?, locked_coins = locked_coins + ?, xp = xp + ?, streak = ?, last_daily_claim = ?, updated_at = ?
             WHERE uid = ? AND ${eligible}
               AND EXISTS (SELECT 1 FROM coin_transactions WHERE id = ? AND created_at = ?)`,
-        ).bind(coinReward, xpReward, streak, ts, ts, uid, startOfToday, `daily_reward:${uid}:${startOfToday}`, ts),
+        ).bind(coinReward, dailyLocked, xpReward, streak, ts, ts, uid, startOfToday, `daily_reward:${uid}:${startOfToday}`, ts),
       ]);
       if (Number(dailyResults[1]?.meta?.changes || 0) === 0)
         throw httpsError("already-exists", "Daily reward already claimed today.");
-      return c.json({ success: true, coinsEarned: coinReward, xpEarned: xpReward, streak });
+      return c.json({ success: true, coinsEarned: coinReward, xpEarned: xpReward, streak, lockedCoins: dailyLocked });
     }
 
     // (Rewarded ads: see claimAdReward below. It is FAIL-CLOSED: with no AdMob
@@ -1973,6 +1977,7 @@ apiRoute.post("/", async (c) => {
       const day = Math.floor(Date.now() / 86_400_000); // UTC day bucket
       const ts = now();
       const claimId = newId();
+      const adLocked = lockedPart(await getAppConfig(env), "ads", Number(ads.reward) || 0);
       // The cap is enforced by a COUNT(*) guard evaluated INSIDE the crediting
       // transaction, and the credit + ledger are gated on that claim row
       // existing. Concurrent requests are serialised by the transaction, so the
@@ -1986,13 +1991,13 @@ apiRoute.post("/", async (c) => {
         ).bind(claimId, uid, day, ads.provider, ads.reward, ts, uid, day, ads.dailyCap),
         env.DB.prepare(
           `INSERT OR IGNORE INTO coin_transactions
-             (id, uid, amount, type, description, created_at)
-           SELECT ?, ?, ?, 'ad_reward', ?, ?
+             (id, uid, amount, type, description, created_at, locked_delta)
+           SELECT ?, ?, ?, 'ad_reward', ?, ?, ?
             WHERE ${claimGate}`,
-        ).bind(newId(), uid, ads.reward, "Rewarded ad view", ts, claimId),
+        ).bind(newId(), uid, ads.reward, "Rewarded ad view", ts, adLocked, claimId),
         env.DB.prepare(
-          `UPDATE users SET dpcoin = dpcoin + ?, updated_at = ? WHERE uid = ? AND ${claimGate}`,
-        ).bind(ads.reward, ts, uid, claimId),
+          `UPDATE users SET dpcoin = dpcoin + ?, locked_coins = locked_coins + ?, updated_at = ? WHERE uid = ? AND ${claimGate}`,
+        ).bind(ads.reward, adLocked, ts, uid, claimId),
       ]);
 
       if (Number(adResults[0]?.meta?.changes || 0) === 0) {
@@ -2006,6 +2011,7 @@ apiRoute.post("/", async (c) => {
       return c.json({
         success: true,
         coinsEarned: ads.reward,
+        lockedCoins: adLocked,
         remaining: Math.max(0, ads.dailyCap - Number(usedToday?.n ?? 0)),
       });
     }
@@ -2058,6 +2064,7 @@ apiRoute.post("/", async (c) => {
 
       const ts = now();
       const reward = assertCoinAmount(task.reward, "task reward");
+      const taskLocked = lockedPart(await getAppConfig(env), "tasks", reward);
       /**
        * Claim + credit + ledger in ONE batch, the same shape as `claimAdReward`
        * above.
@@ -2092,19 +2099,19 @@ apiRoute.post("/", async (c) => {
            VALUES (?, ?, ?, ?, ?)`,
         ).bind(uid, taskId, day, reward, ts),
         env.DB.prepare(
-          `UPDATE users SET dpcoin = dpcoin + ?, updated_at = ? WHERE uid = ? AND ${taskGate}`,
-        ).bind(reward, ts, uid, ...taskBindings),
+          `UPDATE users SET dpcoin = dpcoin + ?, locked_coins = locked_coins + ?, updated_at = ? WHERE uid = ? AND ${taskGate}`,
+        ).bind(reward, taskLocked, ts, uid, ...taskBindings),
         env.DB.prepare(
           `INSERT OR IGNORE INTO coin_transactions
-             (id, uid, amount, type, description, created_at)
-           SELECT ?, ?, ?, 'daily_task', ?, ?
+             (id, uid, amount, type, description, created_at, locked_delta)
+           SELECT ?, ?, ?, 'daily_task', ?, ?, ?
             WHERE ${taskGate}`,
-        ).bind(ledgerId, uid, reward, `Task reward: ${task.title}`, ts, ...taskBindings),
+        ).bind(ledgerId, uid, reward, `Task reward: ${task.title}`, ts, taskLocked, ...taskBindings),
       ]);
       if (Number(taskResults[1]?.meta?.changes || 0) === 0) {
         throw httpsError("already-exists", "Task already claimed today.");
       }
-      return c.json({ success: true, reward });
+      return c.json({ success: true, reward, lockedCoins: taskLocked });
     }
 
     // ================= WALLET =================

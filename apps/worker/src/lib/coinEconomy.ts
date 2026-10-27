@@ -84,6 +84,8 @@ export interface LedgerTypeRow {
   credits: number;
   debits: number;
   net: number;
+  /** Locked (play-only) coins this type added (+) or removed (−). */
+  locked: number;
   count: number;
 }
 
@@ -113,7 +115,7 @@ export async function coinEconomyOverview(env: Env, range: Range = {}) {
       all<any>(env, `SELECT type,
                             COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END),0) AS credits,
                             COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END),0) AS debits,
-                            COALESCE(SUM(amount),0) AS net, COUNT(*) AS n
+                            COALESCE(SUM(amount),0) AS net, COALESCE(SUM(locked_delta),0) AS locked, COUNT(*) AS n
                        FROM coin_transactions ${txRange.sql} GROUP BY type`, ...txRange.binds),
       all<any>(env, `SELECT kind, COALESCE(SUM(coins),0) AS coins, COUNT(*) AS n
                        FROM platform_ledger ${txRange.sql} GROUP BY kind`, ...txRange.binds),
@@ -145,16 +147,18 @@ export async function coinEconomyOverview(env: Env, range: Range = {}) {
       credits: num(r.credits),
       debits: num(r.debits),
       net: num(r.net),
+      locked: num(r.locked),
       count: num(r.n),
     }))
     .sort((a, b) => Math.abs(b.net) - Math.abs(a.net));
 
-  const categories: Record<string, { label: string; credits: number; debits: number; net: number }> = {};
+  const categories: Record<string, { label: string; credits: number; debits: number; net: number; locked: number }> = {};
   for (const t of types) {
-    const c = (categories[t.category] ??= { label: CATEGORY_LABELS[t.category] ?? t.category, credits: 0, debits: 0, net: 0 });
+    const c = (categories[t.category] ??= { label: CATEGORY_LABELS[t.category] ?? t.category, credits: 0, debits: 0, net: 0, locked: 0 });
     c.credits += t.credits;
     c.debits += t.debits;
     c.net += t.net;
+    c.locked += t.locked;
   }
 
   const platformKinds: Record<string, { coins: number; count: number }> = {};

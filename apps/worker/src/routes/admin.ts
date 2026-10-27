@@ -1621,10 +1621,13 @@ adminRoute.post("/users/:id/logout-all", async (c) => {
 adminRoute.post("/users/:id/wallet", async (c) => {
   requireFullAdmin(c);
   const userId = c.req.param("id");
-  const { amount, type, reason: rawReason, requestId } = await c.req.json<any>();
+  const { amount, type, reason: rawReason, requestId, locked: rawLocked } = await c.req.json<any>();
   if (!["add", "subtract"].includes(type)) {
     throw httpsError("invalid-argument", "type must be add or subtract.");
   }
+  // An added amount can be given as locked (play-only) coins: spendable on
+  // contests, never withdrawable (users.locked_coins).
+  const locked = type === "add" && rawLocked === true;
   const amt = assertCoinAmount(amount, "amount");
   // Every manual balance change needs a stated reason, and is idempotent. The
   // key used to be an optional header the admin panel never sent, so a double
@@ -1649,13 +1652,15 @@ adminRoute.post("/users/:id/wallet", async (c) => {
       type: "admin_adjustment",
       // Who and why travel with the ledger row itself, so they survive even if
       // the audit write below fails.
-      description: `Admin ${type} ${amt} Dpcoin by ${adminUid}: ${reason}`.slice(0, 300),
+      description: `Admin ${type} ${amt} Dpcoin${locked ? " (locked, sirf khelne ke liye)" : ""} by ${adminUid}: ${reason}`.slice(0, 300),
       claimKey: `admin_wallet:${userId}:${idemKey}`,
+      locked,
       ts: now(),
     });
     await logAudit(c, "wallet.adjust", "user", userId, {
       amount: applied,
       type,
+      locked,
       reason,
       before: newBalance - applied,
       newBalance,
