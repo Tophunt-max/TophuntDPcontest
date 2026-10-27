@@ -223,7 +223,7 @@ export async function resolveMatch(env: Env, match: Match): Promise<void> {
     });
     if (!settled) return;
     await publishMatchStatus(env, match.id, "completed", votesA, votesB);
-    await createNotificationsBulk(env, [userA.uid, userB.uid], { title: "It's a Tie!", body: "The match ended in a tie. Entry fees refunded.", type: "contest-tie", targetId: "wallet" });
+    await createNotificationsBulk(env, [userA.uid, userB.uid], { title: "It's a Tie!", body: "The match ended in a tie. Entry fee Diamond refunded.", type: "contest-tie", targetId: "wallet" });
     await sendUserEmail(env, userA.uid, contestRefundEmail(match.title, "it ended in a tie"));
     await sendUserEmail(env, userB.uid, contestRefundEmail(match.title, "it ended in a tie"));
     return;
@@ -264,7 +264,7 @@ export async function resolveMatch(env: Env, match: Match): Promise<void> {
       targetId: `prize:${match.id}`,
     });
   } else {
-    await createNotification(env, winnerUid, { title: "You Won! 🏆", body: `Victory! You won the battle "${match.title}" and earned ${prize.coins} Dpcoins!`, type: "contest-win", targetId: match.id });
+    await createNotification(env, winnerUid, { title: "You Won! 🏆", body: `Victory! You won the battle "${match.title}" and earned ${prize.coins} DP coin!`, type: "contest-win", targetId: match.id });
   }
   await createNotification(env, loserUid, { title: "Battle Ended", body: `The battle "${match.title}" has concluded. You played well!`, type: "contest-loss", targetId: match.id });
   // Prize awarded to the winner — send a receipt. No "you lost" email.
@@ -293,7 +293,7 @@ async function refundWaitingMatch(env: Env, match: Match): Promise<void> {
   });
   if (!settled) return;
   if (refund > 0 && userA?.uid) {
-    await createNotification(env, userA.uid, { title: "Contest Refunded", body: `No opponent joined your "${match.title}" contest. ${refund} Dpcoins have been returned.`, type: "contest-refund", targetId: "wallet" });
+    await createNotification(env, userA.uid, { title: "Contest Refunded", body: `No opponent joined your "${match.title}" contest. ${refund} Diamond have been returned.`, type: "contest-refund", targetId: "wallet" });
   }
 }
 
@@ -734,26 +734,31 @@ export async function monthlyHallOfFame(env: Env, period = previousMonthPeriod()
       // matched no row — drift in the other direction.
       const payeeGate = `EXISTS (SELECT 1 FROM users WHERE uid = ?)`;
       const gates = `${claimGate} AND ${notPaidGate} AND ${payeeGate}`;
+      // The reward is Diamonds (users.locked_coins, lib/diamonds.ts): a free
+      // platform reward, so it pays entry fees and is never withdrawn. As DP
+      // coins it was a monthly cash-out for anyone farming wins between their
+      // own accounts.
       const results = await env.DB.batch([
         env.DB.prepare(
           `INSERT OR IGNORE INTO idempotency_keys (key, nonce, scope, created_at) VALUES (?, ?, ?, ?)`,
         ).bind(claimKey, nonce, "hall_of_fame", ts),
         env.DB.prepare(
           `UPDATE users
-              SET dpcoin = dpcoin + ?, xp = xp + 500, badges = ?, monthly_wins = 0, updated_at = ?
+              SET dpcoin = dpcoin + ?, locked_coins = locked_coins + ?, xp = xp + 500, badges = ?, monthly_wins = 0, updated_at = ?
             WHERE uid = ? AND ${gates}`,
-        ).bind(reward, JSON.stringify(currentBadges), ts, uid, claimKey, nonce, ledgerId, uid),
+        ).bind(reward, reward, JSON.stringify(currentBadges), ts, uid, claimKey, nonce, ledgerId, uid),
         env.DB.prepare(
           `INSERT OR IGNORE INTO coin_transactions
-             (id, uid, amount, type, description, created_at)
-           SELECT ?, ?, ?, 'monthly_hall_of_fame_reward', ?, ?
+             (id, uid, amount, type, description, created_at, locked_delta)
+           SELECT ?, ?, ?, 'monthly_hall_of_fame_reward', ?, ?, ?
             WHERE ${gates}`,
         ).bind(
           ledgerId,
           uid,
           reward,
-          `Hall of Fame rank #${rank} (${period})`,
+          `Hall of Fame rank #${rank} (${period}) · Diamond`,
           ts,
+          reward,
           claimKey,
           nonce,
           ledgerId,
@@ -765,7 +770,7 @@ export async function monthlyHallOfFame(env: Env, period = previousMonthPeriod()
         paid++;
         await createNotification(env, uid, {
           title: "Monthly Hall of Fame! 🏆",
-          body: `Congratulations! You ranked #${rank} this month. You've earned ${reward} Dpcoins and the ${badge}!`,
+          body: `Congratulations! You ranked #${rank} this month. You've earned ${reward} Diamond and the ${badge}!`,
           type: "hall-of-fame",
           targetId: "profile",
         });

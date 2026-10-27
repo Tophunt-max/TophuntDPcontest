@@ -45,7 +45,7 @@ export const OpenBattleCard = React.memo(function OpenBattleCard({
       style={[styles.card, { width, backgroundColor: palette.card, borderColor: palette.border }]}
       onPress={() => onJoin(item)}
       accessibilityRole="button"
-      accessibilityLabel={`${title} by ${item.userA?.username || 'a player'}, entry ${fee} coins. ${isMine ? 'Your battle, waiting for a rival' : 'Join battle'}`}
+      accessibilityLabel={`${title} by ${item.userA?.username || 'a player'}, entry ${fee} Diamonds. ${isMine ? 'Your battle, waiting for a rival' : 'Join battle'}`}
     >
       <View style={styles.body}>
         <View style={styles.photo}>

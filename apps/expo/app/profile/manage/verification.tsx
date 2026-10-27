@@ -253,7 +253,7 @@ export default function VerificationScreen() {
                 <View style={[styles.rewardCard, { borderColor: border }]}>
                   <Text style={styles.rewardProgress}>{progressLabel(status)}</Text>
                   <Text style={[styles.help, { color: text, textAlign: 'center' }]}>
-                    {status.completed ? `You've unlocked the full ${status.totalReward}-coin reward. Thank you for verifying!` : rewardExplainer(status)}
+                    {status.completed ? `You've unlocked the full ${status.totalReward} Diamond reward. Thank you for verifying!` : rewardExplainer(status)}
                   </Text>
                   {!status.completed ? <Text style={[styles.help, { color: sub, textAlign: 'center', marginBottom: 0 }]}>{remainingMessage(status)}</Text> : null}
                 </View>

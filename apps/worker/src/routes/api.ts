@@ -2211,7 +2211,7 @@ apiRoute.post("/", async (c) => {
         .from(schema.coinPackages)
         .where(and(eq(schema.coinPackages.id, String(packageId)), eq(schema.coinPackages.active, true)))
         .get();
-      if (!pkg) throw httpsError("not-found", "Coin package not found.");
+      if (!pkg) throw httpsError("not-found", "Diamond package not found.");
 
       // Price = base coins × the admin's coin value, bonus free (lib/coinPricing.ts),
       // read NOW on the server — the same formula the store displays. The order
@@ -2316,7 +2316,7 @@ apiRoute.post("/", async (c) => {
         // Budget-funded bonus coins are play-only (cannot be withdrawn).
         bonusLocked: !!orderBudgetId,
         bonusApplied: !priced.bonusLocked || !!orderBudgetId,
-        name: pkg.name || `${totalCoins} Dpcoins`,
+        name: pkg.name || `${totalCoins} Diamond`,
       });
     }
 
@@ -2367,7 +2367,7 @@ apiRoute.post("/", async (c) => {
           success: true,
           pending: true,
           coins: 0,
-          message: "Payment received. Your coins will be added as soon as the bank confirms it.",
+          message: "Payment received. Your Diamonds will be added as soon as the bank confirms it.",
         });
       }
 
@@ -2399,7 +2399,7 @@ apiRoute.post("/", async (c) => {
         throw httpsError("failed-precondition", "This payment was refunded or cancelled.");
       }
       if (res.credited) {
-        return c.json({ success: true, message: "Coins added successfully!", coins: res.coins });
+        return c.json({ success: true, message: "Diamond added successfully!", coins: res.coins });
       }
 
       /**
@@ -2446,9 +2446,9 @@ apiRoute.post("/", async (c) => {
       if (requester?.role === "superadmin")
         throw httpsError("permission-denied", "Superadmin ke coin platform ke hain, inka withdrawal nahi hota.");
       if (amt < policy.minAmount)
-        throw httpsError("failed-precondition", `Minimum withdrawal is ${policy.minAmount} coins.`);
+        throw httpsError("failed-precondition", `Minimum withdrawal is ${policy.minAmount} DP coin.`);
       if (policy.maxAmount > 0 && amt > policy.maxAmount)
-        throw httpsError("failed-precondition", `Maximum withdrawal is ${policy.maxAmount} coins per request.`);
+        throw httpsError("failed-precondition", `Maximum withdrawal is ${policy.maxAmount} DP coin per request.`);
 
       // Validate the destination BEFORE reserving coins: a typo'd UPI id or a
       // malformed IFSC used to reach the admin panel — and a real bank transfer
@@ -2473,7 +2473,7 @@ apiRoute.post("/", async (c) => {
         if (already + amt > policy.maxPerDay) {
           throw httpsError(
             "failed-precondition",
-            `Daily payout limit is ${policy.maxPerDay} coins. You have already requested ${already} in the last 24 hours.`,
+            `Daily payout limit is ${policy.maxPerDay} DP coin. You have already requested ${already} in the last 24 hours.`,
           );
         }
       }
@@ -2578,7 +2578,7 @@ apiRoute.post("/", async (c) => {
         if (policy.maxPerDay > 0 && withdrawable >= amt) {
           throw httpsError(
             "failed-precondition",
-            `Daily payout limit is ${policy.maxPerDay} coins. Try a smaller amount or wait 24 hours.`,
+            `Daily payout limit is ${policy.maxPerDay} DP coin. Try a smaller amount or wait 24 hours.`,
           );
         }
         throw httpsError("failed-precondition", "Insufficient balance.");
@@ -2619,7 +2619,7 @@ apiRoute.post("/", async (c) => {
         .from(schema.coinPackages)
         .where(and(eq(schema.coinPackages.id, String(packageId)), eq(schema.coinPackages.active, true)))
         .get();
-      if (!pkg) throw httpsError("not-found", "Coin package not found.");
+      if (!pkg) throw httpsError("not-found", "Diamond package not found.");
 
       const priced = chargeablePackage(pkg, cfg);
       let bonusCoins = priced.bonusCoins;
@@ -4289,7 +4289,7 @@ apiRoute.post("/", async (c) => {
           amount: amt,
           direction: type,
           type: "admin_adjustment",
-          description: `Admin ${type} ${amt} Dpcoin`,
+          description: `Admin ${type} ${amt} DP coin`,
           claimKey: body.idempotencyKey ? `admin_wallet:${userId}:${body.idempotencyKey}` : undefined,
           ts: now(),
         });

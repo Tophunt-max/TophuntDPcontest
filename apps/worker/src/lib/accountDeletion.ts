@@ -181,7 +181,7 @@ export async function checkDeletionEligibility(env: Env, uid: string): Promise<D
   if (balance > 0) {
     warnings.push({
       code: "positive_balance",
-      message: `Your remaining ${balance} coins will be forfeited and cannot be recovered.`,
+      message: `Your remaining ${balance} coins (DP coin and Diamond) will be forfeited and cannot be recovered.`,
       detail: { balance },
     });
   }

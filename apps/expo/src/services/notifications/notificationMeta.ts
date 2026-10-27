@@ -307,7 +307,7 @@ export const NOTIFICATION_CATEGORIES: CategoryMeta[] = [
   },
   {
     key: "wallet",
-    title: "Coins & payouts",
+    title: "Diamond, DP coin & payouts",
     description: "Top-ups, withdrawals, rewards and refunds",
     icon: "wallet-outline",
   },

@@ -48,7 +48,7 @@ export const QUALIFY_COPY: Record<QualifyAction, { short: string; step: string }
   signup: { short: 'sign up', step: 'Dost TopHunt par signup kare' },
   verified: { short: 'email aur mobile verify', step: 'Dost apna email aur mobile dono verify kare' },
   first_contest: { short: 'pehla contest join', step: 'Dost apna pehla contest join kare' },
-  first_purchase: { short: 'pehli coin purchase', step: 'Dost apni pehli coin purchase kare' },
+  first_purchase: { short: 'pehli Diamond purchase', step: 'Dost apni pehli Diamond purchase kare' },
 };
 
 export const REFERRALS_QUERY_KEY = ['me', 'referrals'] as const;
@@ -125,6 +125,6 @@ export async function clearPendingInvite(): Promise<void> {
 export function offerLine(p: Pick<ReferralProgramPublic, 'refereeReward' | 'qualifyAction'> | null | undefined): string | null {
   if (!p || !(p.refereeReward > 0)) return null;
   return p.qualifyAction === 'signup'
-    ? `Friend ka code lagao aur ${p.refereeReward} coins pao!`
-    : `Friend ka code lagao — ${QUALIFY_COPY[p.qualifyAction].short} karte hi ${p.refereeReward} coins milenge!`;
+    ? `Friend ka code lagao aur ${p.refereeReward} Diamond pao!`
+    : `Friend ka code lagao — ${QUALIFY_COPY[p.qualifyAction].short} karte hi ${p.refereeReward} Diamond milenge!`;
 }

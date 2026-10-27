@@ -122,13 +122,13 @@ export default function DepositScreen() {
   };
 
   const submit = async () => {
-    if (!selected) return Alert.alert('Select a package', 'Choose a coin package to continue.');
+    if (!selected) return Alert.alert('Select a package', 'Aage badhne ke liye Diamond package chuno.');
     if (!utr.trim() || utr.trim().length < 4) return Alert.alert('UTR required', 'Enter the bank UTR / transaction reference from your payment.');
     setLoading(true);
     try {
       await walletService.requestDeposit(selected.id, utr.trim(), 'qr', shot || undefined);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert('Submitted', 'Your deposit is pending admin approval. Coins will be added once verified.');
+      Alert.alert('Submitted', 'Aapka deposit admin approval ke liye pending hai. Verify hote hi Diamond aa jayenge.');
       setUtr(''); setShot('');
       loadHistory();
     } catch (e: any) {
@@ -156,7 +156,7 @@ export default function DepositScreen() {
             <Ionicons name="card-outline" size={40} color={subTextColor} />
             <Text style={[styles.disabledText, { color: subTextColor }]}>Manual QR deposits are not enabled. Please use the in-app store to buy Diamonds.</Text>
             <TouchableOpacity style={[styles.submitBtn, { backgroundColor: primaryColor, marginTop: 16 }]} onPress={() => router.replace('/wallet/store')}>
-              <Text style={styles.submitText}>Open Coin Store</Text>
+              <Text style={styles.submitText}>Diamond Store kholo</Text>
             </TouchableOpacity>
           </View>
         ) : (

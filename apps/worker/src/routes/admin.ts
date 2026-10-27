@@ -3453,7 +3453,7 @@ adminRoute.post("/matches/:id/declare-winner", async (c) => {
       targetId: `prize:${id}`,
     });
   } else {
-    await createNotification(c.env, winnerUid, { title: "You Won! 🏆", body: `You won the battle "${m.title}" and earned ${prize.coins} Dpcoins!`, type: "contest-win", targetId: id });
+    await createNotification(c.env, winnerUid, { title: "You Won! 🏆", body: `You won the battle "${m.title}" and earned ${prize.coins} DP coin!`, type: "contest-win", targetId: id });
   }
   await createNotification(c.env, loserUid, { title: "Battle Ended", body: `The battle "${m.title}" has concluded.`, type: "contest-loss", targetId: id });
   // The winner just received a prize — send a receipt (coins) or a call to action
@@ -4280,7 +4280,7 @@ adminRoute.patch("/withdrawals/:id", async (c) => {
   });
   await createNotification(c.env, w.userId, {
     title: action === "reject" ? "Withdrawal Rejected" : action === "paid" ? "Payout Sent 💸" : "Withdrawal Approved",
-    body: action === "reject" ? `Your payout request was rejected. ${adminNote ? "Reason: " + adminNote : ""}` : action === "paid" ? `Your payout of ${w.amount} Dpcoins has been sent.` : "Your payout request was approved and is being processed.",
+    body: action === "reject" ? `Your payout request was rejected. ${adminNote ? "Reason: " + adminNote : ""}` : action === "paid" ? `Your payout of ${w.amount} DP coin has been sent.` : "Your payout request was approved and is being processed.",
     type: "withdrawal",
     targetId: "wallet",
   }).catch((e) => console.error("[withdrawal] notification failed (action already applied)", id, e));

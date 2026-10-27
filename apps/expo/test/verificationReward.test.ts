@@ -56,7 +56,7 @@ describe('copy', () => {
   });
 
   it('only claims success when the server credited coins', () => {
-    expect(rewardOutcomeMessage({ credited: true, coins: 90, reason: 'credited' })).toBe('90 bonus coins added to your wallet!');
+    expect(rewardOutcomeMessage({ credited: true, coins: 90, reason: 'credited' })).toBe('90 bonus Diamond added to your wallet!');
     expect(rewardOutcomeMessage({ credited: false, coins: 0, reason: 'phone_unverified' })).toBeNull();
     expect(rewardOutcomeMessage(undefined)).toBeNull();
   });

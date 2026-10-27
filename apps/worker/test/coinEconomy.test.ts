@@ -315,6 +315,9 @@ describe('free rewards', () => {
     expect((await call(env, 'w1', 'getDailyTasks')).body.tasks.map((t: any) => [t.id, t.reward])).toEqual([['share1', 7]]);
     expect((await monthlyHallOfFame(env as any, '2026-09')).paid).toBe(3);
     expect([(await user(env, 'w1'))?.dpcoin, (await user(env, 'w3'))?.dpcoin]).toEqual([300, 100]);
+    // Hall of Fame pays Diamonds: play-only, never withdrawn.
+    expect([(await user(env, 'w1'))?.lockedCoins, (await user(env, 'w3'))?.lockedCoins]).toEqual([300, 100]);
+    await expectBalanced(env);
   });
 });
 

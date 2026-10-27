@@ -77,7 +77,7 @@ export function resultCaption(s: BattleResultSummary, url: string): string {
       `🏆 ${w} ne "${title}" jeet liya on TopHunt! 🎉`,
       `🗳️ ${plural(s.winner.votes, 'vote', 'votes')} ke saath jeet${margin}`,
       prize,
-      `Congratulations ${w}! 👏 Ab tumhari baari — photo daalo, battle jeeto, coins kamao 💪`,
+      `Congratulations ${w}! 👏 Ab tumhari baari — photo daalo, battle jeeto, DP coin kamao 💪`,
       `👉 ${url}`,
       '',
       `${SHARE_HASHTAGS} #Winner`,
@@ -109,7 +109,7 @@ export function joinedBattleCaption(opts: { contestName: string; joining: boolea
       : `🔥 Maine "${name}" battle shuru ki hai on TopHunt!`,
     opts.joining
       ? 'Mujhe jitane ke liye ek vote do 🙏 — har vote count karta hai 🗳️'
-      : 'Hai himmat? Mujhe challenge karo aur coins jeeto 💰',
+      : 'Hai himmat? Mujhe challenge karo aur DP coin jeeto 💰',
     opts.url ? `👉 ${opts.url}` : null,
     '',
     SHARE_HASHTAGS,
@@ -148,7 +148,7 @@ export function blogCaption(title: string, url: string): string {
 /** Settings → Share TopHunt. */
 export function appCaption(url: string): string {
   return join([
-    '📸 TopHunt pe aao — photo & video battles, live voting aur daily coins! 🏆💰',
+    '📸 TopHunt pe aao — photo & video battles, live voting aur daily Diamond! 🏆💎',
     'Mere saath join karo aur pehli battle aaj hi jeeto 👇',
     url,
     '',

@@ -86,16 +86,16 @@ export default function CoinStoreScreen() {
       );
       await refetchProfile();
       if (pending) {
-        addToast({ text: 'Payment received — your coins will appear as soon as the bank confirms it.', type: 'info' });
+        addToast({ text: 'Payment received — aapke Diamond bank confirm hote hi aa jayenge.', type: 'info' });
       } else {
-        addToast({ text: `${coins} Diamond aapke wallet me aa gaye!`, type: 'success', icon: 'coins' });
+        addToast({ text: `${coins} Diamond aapke wallet me aa gaye!`, type: 'success', icon: 'reward' });
       }
       router.back();
     } catch (error: any) {
       const msg = error?.message || error?.details || 'Transaction could not be completed. Please try again.';
       // "Payment cancelled." is a normal user action — keep it low-key (info).
       if (/cancel/i.test(msg)) {
-        addToast({ text: 'Payment cancelled — no coins were charged.', type: 'info' });
+        addToast({ text: 'Payment cancelled — kuch nahi kata.', type: 'info' });
       } else if (error?.code === 'functions/failed-precondition' && /not configured/i.test(msg)) {
         // The gateway keys aren't set server-side. Surfacing the raw server
         // string ("Payments are not configured on the server.") dead-ends the

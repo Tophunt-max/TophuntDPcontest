@@ -317,13 +317,13 @@ export function HallOfFameCard({ rewards }: { rewards: any }) {
       <div className="grid grid-cols-3 gap-3">
         {["Rank 1", "Rank 2", "Rank 3"].map((n, i) => (
           <div key={n}>
-            <label className={label}>{n} (coins)</label>
+            <label className={label}>{n} (Diamond)</label>
             <input type="number" min={0} className={field} value={r[i]} onChange={(e) => setR(r.map((x, j) => (j === i ? e.target.value : x)))} />
           </div>
         ))}
       </div>
       <p className={hint}>
-        Mahine ke sabse zyada jeetne wale 3 users ko, mahina khatam hone par. Ye contest jeet ka inaam hai, isliye withdraw ho sakta hai.
+        Mahine ke sabse zyada jeetne wale 3 users ko, mahina khatam hone par, Diamond me. Ye platform ka free inaam hai, isliye withdraw nahi hota (fake accounts se jeet farm karke paisa nikalna band).
         Badlav agle mahine ke settlement par lagega.
       </p>
     </Card>

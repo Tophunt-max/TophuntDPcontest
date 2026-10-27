@@ -58,7 +58,7 @@ export default function WithdrawScreen() {
   const rateValid = Number.isFinite(rate) && rate > 0;
   const enabled = wcfg.enabled !== false && !frozen && !featureOff && rateValid;
   const closedReason = frozen
-    ? 'Withdrawals abhi kuch der ke liye rok diye gaye hain. Aapke coins safe hain.'
+    ? 'Withdrawals abhi kuch der ke liye rok diye gaye hain. Aapke DP coin safe hain.'
     : 'Withdrawals are currently disabled. Please check back later.';
 
   const [amount, setAmount] = useState('');
@@ -92,9 +92,9 @@ export default function WithdrawScreen() {
 
   const submit = async () => {
     if (!enabled) return;
-    if (!Number.isInteger(amt) || amt <= 0) return Alert.alert('Invalid amount', 'Enter a valid whole number of coins.');
-    if (amt < minAmount) return Alert.alert('Below minimum', `Minimum withdrawal is ${minAmount} coins.`);
-    if (maxAmount > 0 && amt > maxAmount) return Alert.alert('Above maximum', `Ek baar mein zyada se zyada ${maxAmount} coins nikal sakte ho.`);
+    if (!Number.isInteger(amt) || amt <= 0) return Alert.alert('Invalid amount', 'DP coin ka poora number daalo.');
+    if (amt < minAmount) return Alert.alert('Below minimum', `Minimum withdrawal is ${minAmount} DP coin.`);
+    if (maxAmount > 0 && amt > maxAmount) return Alert.alert('Above maximum', `Ek baar mein zyada se zyada ${maxAmount} DP coin nikal sakte ho.`);
     if (amt > balance) {
       return Alert.alert(
         'Insufficient balance',
@@ -105,7 +105,7 @@ export default function WithdrawScreen() {
     }
     if (!account.trim()) return Alert.alert('Account required', 'Enter your payout account details.');
     if (quote.netInr < MIN_NET_PAYOUT_INR) {
-      return Alert.alert('Amount too small', `Platform fee ₹${quote.feeInr.toFixed(2)} ke baad kam se kam ₹${MIN_NET_PAYOUT_INR} milna chahiye. Zyada coins withdraw karo.`);
+      return Alert.alert('Amount too small', `Platform fee ₹${quote.feeInr.toFixed(2)} ke baad kam se kam ₹${MIN_NET_PAYOUT_INR} milna chahiye. Zyada DP coin withdraw karo.`);
     }
 
     setLoading(true);
@@ -154,7 +154,7 @@ export default function WithdrawScreen() {
                 Sirf contest jeet kar mile DP coin withdraw hote hain.{locked > 0 ? ` Aapke ${locked} Diamond sirf contest entry ke liye hain.` : ''}
               </Text>
               <Text style={[styles.hint, { color: subTextColor }]}>
-                Min {minAmount} DP coin{maxAmount > 0 ? ` • Max ${maxAmount}` : ''}{maxPerDay > 0 ? ` • Roz ${maxPerDay} request` : ''} • Rate ₹{rate}/coin
+                Min {minAmount} DP coin{maxAmount > 0 ? ` • Max ${maxAmount}` : ''}{maxPerDay > 0 ? ` • Roz ${maxPerDay} request` : ''} • Rate ₹{rate}/DP coin
               </Text>
               {feeText ? (
                 <Text style={[styles.hint, { color: subTextColor }]}>Platform fee: {feeText} — payout se kategi</Text>
@@ -162,7 +162,7 @@ export default function WithdrawScreen() {
             </View>
 
             <View style={[styles.card, { backgroundColor: cardBg }]}>
-              <Text style={[styles.label, { color: subTextColor }]}>Amount (coins)</Text>
+              <Text style={[styles.label, { color: subTextColor }]}>Amount (DP coin)</Text>
               <TextInput
                 value={amount}
                 onChangeText={setAmount}
@@ -175,7 +175,7 @@ export default function WithdrawScreen() {
                 quote.feeInr > 0 ? (
                   <View style={[styles.breakdown, { borderColor: isDark ? '#35383F' : '#EEE' }]}>
                     <View style={styles.breakRow}>
-                      <Text style={[styles.breakLabel, { color: subTextColor }]}>Coins ki value</Text>
+                      <Text style={[styles.breakLabel, { color: subTextColor }]}>DP coin ki value</Text>
                       <Text style={[styles.breakValue, { color: textColor }]}>₹{quote.grossInr.toFixed(2)}</Text>
                     </View>
                     <View style={styles.breakRow}>
@@ -230,7 +230,7 @@ export default function WithdrawScreen() {
             <View key={w.id} style={[styles.historyItem, { backgroundColor: cardBg }]}>
               <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                  <Text style={[styles.histAmount, { color: textColor }]}>{w.amount} coins</Text>
+                  <Text style={[styles.histAmount, { color: textColor }]}>{w.amount} DP coin</Text>
                   <ArrowIcon size={13} color={subTextColor} variant="arrow" />
                   <Text style={[styles.histAmount, { color: textColor }]}>₹{Number(w.cashAmount || 0).toFixed(2)}</Text>
                 </View>

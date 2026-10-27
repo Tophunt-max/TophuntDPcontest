@@ -393,12 +393,12 @@ export function testEmail(supportEmail = DEFAULT_SUPPORT_EMAIL): RenderedEmail {
 export function coinsAddedEmail(coins: number | null | undefined, supportEmail = DEFAULT_SUPPORT_EMAIL): RenderedEmail {
   const n = Math.round(Number(coins) || 0);
   return {
-    subject: `${n} Dpcoins added to your ${BRAND.name} wallet`,
+    subject: `${n} Diamond added to your ${BRAND.name} wallet`,
     html: layout({
-      preview: `${n} Dpcoins are now in your wallet.`,
+      preview: `${n} Diamond are now in your wallet.`,
       heading: "Coins added 🎉",
       paragraphs: [
-        `<b>${esc(n)} Dpcoins</b> have been added to your ${BRAND.name} wallet.`,
+        `<b>${esc(n)} Diamond</b> have been added to your ${BRAND.name} wallet.`,
         "You can use them to enter battles right away. This email is your receipt for the top-up.",
       ],
       note: "If you did NOT make this purchase, contact support immediately.",
@@ -406,7 +406,7 @@ export function coinsAddedEmail(coins: number | null | undefined, supportEmail =
     }),
     text: plain(
       [
-        `${n} Dpcoins have been added to your ${BRAND.name} wallet.`,
+        `${n} Diamond have been added to your ${BRAND.name} wallet.`,
         "You can use them to enter battles right away. This email is your receipt for the top-up.",
         "If you did NOT make this purchase, contact support immediately.",
       ],
@@ -426,12 +426,12 @@ export function coinsReversedEmail(
   const n = Math.round(Number(coins) || 0);
   const why = reason ? ` because a payment was ${reason}` : "";
   return {
-    subject: `${n} Dpcoins were reversed on your ${BRAND.name} wallet`,
+    subject: `${n} Diamond were reversed on your ${BRAND.name} wallet`,
     html: layout({
-      preview: `${n} Dpcoins were removed from your wallet.`,
+      preview: `${n} Diamond were removed from your wallet (Diamond first, then DP coin).`,
       heading: "Coins reversed",
       paragraphs: [
-        `<b>${esc(n)} Dpcoins</b> have been removed from your ${BRAND.name} wallet${esc(why)}.`,
+        `<b>${esc(n)} Diamond</b> have been removed from your ${BRAND.name} wallet${esc(why)}.`,
         "If this pushed your balance below zero, top up to bring it back to positive before you can withdraw again.",
       ],
       note: "Think this is a mistake? Reply to your bank about the original charge, then contact us so we can help.",
@@ -439,7 +439,7 @@ export function coinsReversedEmail(
     }),
     text: plain(
       [
-        `${n} Dpcoins have been removed from your ${BRAND.name} wallet${why}.`,
+        `${n} Diamond have been removed from your ${BRAND.name} wallet${why}.`,
         "If this pushed your balance below zero, top up to bring it back to positive before you can withdraw again.",
         "Think this is a mistake? Contact us so we can help.",
       ],
@@ -462,10 +462,10 @@ export function withdrawalDecisionEmail(
     return {
       subject: `Your ${BRAND.name} payout request was rejected`,
       html: layout({
-        preview: `Your payout of ${n} Dpcoins was not approved.`,
+        preview: `Your payout of ${n} DP coins was not approved.`,
         heading: "Payout request rejected",
         paragraphs: [
-          `Your request to withdraw <b>${esc(n)} Dpcoins</b> was not approved, and the coins have been returned to your wallet.`,
+          `Your request to withdraw <b>${esc(n)} DP coins</b> was not approved, and the DP coins have been returned to your wallet.`,
           ...(note ? [`Reason: ${esc(note)}`] : []),
           "You can raise a new request from the wallet screen once any issue is resolved.",
         ],
@@ -473,7 +473,7 @@ export function withdrawalDecisionEmail(
       }),
       text: plain(
         [
-          `Your request to withdraw ${n} Dpcoins was not approved, and the coins have been returned to your wallet.`,
+          `Your request to withdraw ${n} DP coins was not approved, and the DP coins have been returned to your wallet.`,
           ...(note ? [`Reason: ${note}`] : []),
           "You can raise a new request from the wallet screen once any issue is resolved.",
         ],
@@ -486,16 +486,16 @@ export function withdrawalDecisionEmail(
     subject: paid ? `Your ${BRAND.name} payout has been sent 💸` : `Your ${BRAND.name} payout was approved`,
     html: layout({
       preview: paid
-        ? `Your payout of ${n} Dpcoins has been sent.`
-        : `Your payout of ${n} Dpcoins was approved and is being processed.`,
+        ? `Your payout of ${n} DP coins has been sent.`
+        : `Your payout of ${n} DP coins was approved and is being processed.`,
       heading: paid ? "Payout sent 💸" : "Payout approved",
       paragraphs: paid
         ? [
-            `Your payout of <b>${esc(n)} Dpcoins</b> has been sent to your registered account.`,
+            `Your payout of <b>${esc(n)} DP coins</b> has been sent to your registered account.`,
             "Depending on your bank or UPI provider it can take a little while to appear. This email is your receipt.",
           ]
         : [
-            `Your request to withdraw <b>${esc(n)} Dpcoins</b> was approved and is now being processed.`,
+            `Your request to withdraw <b>${esc(n)} DP coins</b> was approved and is now being processed.`,
             "We'll let you know once the money is on its way.",
           ],
       supportEmail,
@@ -503,11 +503,11 @@ export function withdrawalDecisionEmail(
     text: plain(
       paid
         ? [
-            `Your payout of ${n} Dpcoins has been sent to your registered account.`,
+            `Your payout of ${n} DP coins has been sent to your registered account.`,
             "Depending on your bank or UPI provider it can take a little while to appear. This email is your receipt.",
           ]
         : [
-            `Your request to withdraw ${n} Dpcoins was approved and is now being processed.`,
+            `Your request to withdraw ${n} DP coins was approved and is now being processed.`,
             "We'll let you know once the money is on its way.",
           ],
       supportEmail,
@@ -526,13 +526,13 @@ export function contestWinEmail(
   const n = Math.round(Number(coins) || 0);
   const title = battleTitle || "your battle";
   return {
-    subject: `You won! ${n} Dpcoins added on ${BRAND.name} 🏆`,
+    subject: `You won! ${n} DP coins added on ${BRAND.name} 🏆`,
     html: layout({
-      preview: `You won "${title}" and earned ${n} Dpcoins.`,
+      preview: `You won "${title}" and earned ${n} DP coins.`,
       heading: "You won! 🏆",
       paragraphs: [
         `Congratulations — you won the battle <b>"${esc(title)}"</b>.`,
-        `<b>${esc(n)} Dpcoins</b> have been added to your wallet as your prize. This email is your receipt.`,
+        `<b>${esc(n)} DP coins</b> have been added to your wallet as your prize. This email is your receipt.`,
         "Keep the streak going — enter your next battle from the app.",
       ],
       supportEmail,
@@ -540,7 +540,7 @@ export function contestWinEmail(
     text: plain(
       [
         `Congratulations — you won the battle "${title}".`,
-        `${n} Dpcoins have been added to your wallet as your prize. This email is your receipt.`,
+        `${n} DP coins have been added to your wallet as your prize. This email is your receipt.`,
         "Keep the streak going — enter your next battle from the app.",
       ],
       supportEmail,

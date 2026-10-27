@@ -30,8 +30,8 @@ export const webhookRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 /** Tell the user their coins were reversed, so a negative balance isn't a mystery. */
 async function notifyClawback(env: Env, uid: string, coins: number, what: string): Promise<void> {
   await createNotification(env, uid, {
-    title: "Coins Reversed",
-    body: `A payment was ${what}, so ${coins} Dpcoins have been removed from your wallet.`,
+    title: "Diamond Reversed",
+    body: `A payment was ${what}, so ${coins} coins (Diamond first, then DP coin) have been removed from your wallet.`,
     type: "purchase",
     targetId: "wallet",
   });
@@ -204,8 +204,8 @@ webhookRoute.post("/razorpay", async (c) => {
           const creditedCoins = res.coins;
           c.executionCtx.waitUntil(
             createNotification(c.env, creditedUid, {
-              title: "Coins Added 🎉",
-              body: `${creditedCoins} Dpcoins have been added to your wallet.`,
+              title: "Diamond Added 💎",
+              body: `${creditedCoins} Diamond have been added to your wallet.`,
               type: "purchase",
               targetId: "wallet",
             }).catch(() => {}),

@@ -254,8 +254,8 @@ export default function DeleteAccountScreen() {
       title: 'Delete your account?',
       message:
         graceDays > 0
-          ? `Your account will be closed now and permanently erased on ${when}. You can sign in before then to cancel. Your remaining coins are forfeited.`
-          : 'This is permanent. Your profile, entries, stories and remaining coin balance are removed and cannot be restored.',
+          ? `Your account will be closed now and permanently erased on ${when}. You can sign in before then to cancel. Your remaining DP coins and Diamonds are forfeited.`
+          : 'This is permanent. Your profile, entries, stories and remaining DP coins and Diamonds are removed and cannot be restored.',
       confirmLabel: 'Delete my account',
       cancelLabel: 'Keep my account',
       destructive: true,
@@ -399,7 +399,7 @@ export default function DeleteAccountScreen() {
         {balance > 0 && (
           <View style={[styles.blockerBox, { backgroundColor: inputBg, borderColor: border }]}>
             <Text style={[styles.sectionTitle, { color: textColor }]}>
-              You still have {balance} coins
+              You still have {balance} coins (DP coin + Diamond)
             </Text>
             <Text style={[styles.body, { color: secondary }]}>
               These will be forfeited and cannot be recovered. If you want to cash them out,

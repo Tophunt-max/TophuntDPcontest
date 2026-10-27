@@ -44,7 +44,7 @@ const DEFAULT_ONBOARDING = [
   {
     id: '3',
     title: 'Enter and win',
-    description: 'Join a contest with your best photo or video and win coins and prizes.',
+    description: 'Join a contest with your best photo or video and win DP coins and prizes.',
     image: require('../../assets/images/onBordingLight3.webp'),
   },
   // An admin can upload a picture for any slide from the panel's Onboarding page.
@@ -58,7 +58,7 @@ const DEFAULT_ONBOARDING = [
   {
     id: '5',
     title: 'Rewards every day',
-    description: 'Claim daily rewards, invite friends and grow your coin wallet.',
+    description: 'Claim daily rewards, invite friends and collect Diamonds to play.',
     image: require('../../assets/images/onBordingLight5.webp'),
     icon: 'gift',
   },

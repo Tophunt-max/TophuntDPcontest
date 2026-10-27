@@ -62,9 +62,9 @@ export function progressLabel(s: Pick<VerificationStatus, 'earnedReward' | 'tota
 export function remainingMessage(s: Pick<VerificationStatus, 'remaining' | 'completed' | 'completionReward'>): string {
   if (s.completed) return '';
   const need = s.remaining;
-  if (need.length === 2) return `Verify your email and mobile number to unlock ${s.completionReward} more coins.`;
-  if (need[0] === 'phone') return `Email verified. Verify your mobile number too to unlock ${s.completionReward} more coins.`;
-  if (need[0] === 'email') return `Mobile verified. Verify your email too to unlock ${s.completionReward} more coins.`;
+  if (need.length === 2) return `Verify your email and mobile number to unlock ${s.completionReward} more Diamond.`;
+  if (need[0] === 'phone') return `Email verified. Verify your mobile number too to unlock ${s.completionReward} more Diamond.`;
+  if (need[0] === 'email') return `Mobile verified. Verify your email too to unlock ${s.completionReward} more Diamond.`;
   // Both verified but not yet completed: the credit is pending on the server.
   return 'Both verified — confirming your reward…';
 }
@@ -95,7 +95,7 @@ export function shouldShowVerificationPopup(input: {
 /** User-facing message for a reward outcome returned by a verify/claim call. */
 export function rewardOutcomeMessage(outcome: RewardOutcome | null | undefined): string | null {
   if (!outcome) return null;
-  if (outcome.credited && outcome.coins > 0) return `${outcome.coins} bonus coins added to your wallet!`;
+  if (outcome.credited && outcome.coins > 0) return `${outcome.coins} bonus Diamond added to your wallet!`;
   if (outcome.reason === 'identifier_already_rewarded') {
     return 'This email or mobile number has already earned the verification bonus on another account.';
   }

@@ -206,7 +206,7 @@ export default function ReferralScreen() {
                 ['Invited', data.stats.invited],
                 ['Successful', data.stats.successful],
                 ['Pending', data.stats.pending],
-                ['Coins earned', data.stats.earned],
+                ['Diamond earned', data.stats.earned],
               ] as const
             ).map(([k, v]) => (
               <View key={k} style={[styles.stat, { backgroundColor: card, borderColor: border }]}>
