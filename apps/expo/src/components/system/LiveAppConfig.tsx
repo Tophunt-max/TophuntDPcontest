@@ -11,6 +11,7 @@ import {
   useAppConfig,
 } from '@/src/services/appSettings';
 import { setImageTransformsEnabled } from '@/src/lib/imageVariants';
+import { startNetworkQuality } from '@/src/lib/networkQuality';
 import { hydrateControlChoices } from '@/src/lib/controlStore';
 import { applyCoinPackages, COIN_PACKAGES_QUERY_KEY } from '@/src/hooks/useCoinPackages';
 
@@ -40,6 +41,9 @@ export function LiveAppConfig() {
   useEffect(() => {
     if (typeof transforms === 'boolean') setImageTransformsEnabled(transforms);
   }, [transforms]);
+
+  // Network-aware image quality + the Data saver setting (src/lib/networkQuality.ts).
+  useEffect(() => startNetworkQuality(), []);
 
   useEffect(() => {
     setClientVersionHeaders(Platform.OS, currentAppVersion());

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { PixelRatio } from 'react-native';
 import { Image, type ImageProps } from 'expo-image';
-import { originalImageUrl, responsiveImageUrl } from '@/src/lib/imageVariants';
+import { originalImageUrl, previewImageUrl, responsiveImageUrl } from '@/src/lib/imageVariants';
 
 /**
  * The app's standard image component — a thin wrapper over `expo-image` that
@@ -66,7 +66,20 @@ export const AppImage: React.FC<Props> = ({
   // and refs pass through untouched.
   const resizable = !!rawUri && !Array.isArray(source) && (typeof source === 'string' || typeof source === 'object');
   const dpr = PixelRatio.get();
-  const variant = resizable && displayWidth ? responsiveImageUrl(rawUri, displayWidth, dpr, maxVariantWidth) : rawUri;
+  // Chosen ONCE per image (memo deps exclude the network policy): if the
+  // connection or Data saver changes while this image is on screen, it keeps the
+  // variant it has instead of flashing and downloading another copy. Images that
+  // mount afterwards get the new policy.
+  const variant = useMemo(
+    () => (resizable && displayWidth ? responsiveImageUrl(rawUri, displayWidth, dpr, maxVariantWidth) : rawUri),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rawUri, displayWidth, maxVariantWidth, resizable],
+  );
+  const preview = useMemo(
+    () => (placeholder ? null : previewImageUrl(rawUri, variant as string)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rawUri, variant],
+  );
 
   // Fall back to the original once if the variant fails.
   const [useOriginal, setUseOriginal] = useState(false);
@@ -91,7 +104,8 @@ export const AppImage: React.FC<Props> = ({
       // variant, so a density change does not count as a different row.
       recyclingKey={recyclingKey ?? rawUri}
       transition={transition ?? 180}
-      placeholder={placeholder}
+      placeholder={placeholder ?? preview ?? undefined}
+      placeholderContentFit={rest.placeholderContentFit ?? rest.contentFit}
       onError={(e) => {
         if (isVariant && !useOriginal) {
           setUseOriginal(true);

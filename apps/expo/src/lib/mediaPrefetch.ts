@@ -1,5 +1,6 @@
 import { Image } from 'expo-image';
 import NetInfo from '@react-native-community/netinfo';
+import { getImagePolicy } from './networkQuality';
 
 /**
  * Warm the image cache ahead of time so opening a story feels instant.
@@ -64,6 +65,9 @@ export async function prefetchImages(
     (u): u is string => typeof u === 'string' && !!u && !requested.has(u),
   );
   if (!fresh.length) return;
+  // Data saver (or the OS Lite mode) turns preloading off, like Instagram's
+  // "Use less mobile data": nothing is downloaded that the user did not open.
+  if (!getImagePolicy().prefetch) return;
 
   const budget = options.budget ?? (await meteredBudget());
   if (budget <= 0) return;

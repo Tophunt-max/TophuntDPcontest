@@ -74,6 +74,19 @@ const MAX_DPR = 3;
 
 let transformsEnabled = true;
 
+/**
+ * Network / Data-saver policy (src/lib/imageQuality.ts), set by
+ * src/lib/networkQuality.ts. Caps every variant (320 on a slow or data-saving
+ * connection) and says whether a preview is worth its bytes.
+ */
+let qualityCap: number = MAX_VARIANT_WIDTH;
+let previewsOn = false;
+
+export function setImageQualityPolicy(policy: { maxWidth: number; preview: boolean } | null | undefined): void {
+  qualityCap = policy?.maxWidth ?? MAX_VARIANT_WIDTH;
+  previewsOn = !!policy?.preview;
+}
+
 /** Set from app-config (`media.transforms`). Unknown / missing leaves it on. */
 export function setImageTransformsEnabled(enabled: boolean | null | undefined): void {
   transformsEnabled = enabled !== false;
@@ -159,6 +172,19 @@ export function responsiveImageUrl<T extends string | null | undefined>(
   const key = mediaKeyOf(url) as string;
   const density = Math.min(Math.max(dpr || 1, 1), MAX_DPR);
   const bucket = bucketFor(displayWidth * density);
-  const capped = [...WIDTH_BUCKETS].reverse().find((w) => w <= Math.min(bucket, maxWidth)) ?? WIDTH_BUCKETS[0];
+  const limit = Math.min(bucket, maxWidth, qualityCap);
+  const capped = [...WIDTH_BUCKETS].reverse().find((w) => w <= limit) ?? WIDTH_BUCKETS[0];
   return variantAt(key, capped);
+}
+
+/**
+ * A tiny preview (the 128 variant, ~2-8 KB) to show under a full-size image while
+ * it loads: the Instagram "blurry, then sharp" feel. Only when the policy allows
+ * it (fast, unmetered Wi-Fi) and only under a 1080 image; 128 is one of the three
+ * budgeted sizes, so it adds no Cloudflare transformations.
+ */
+export function previewImageUrl(url: string | null | undefined, chosenUrl: string | null | undefined): string | null {
+  if (!previewsOn || !url || !chosenUrl || !transformsEnabled || !isTransformable(url)) return null;
+  if (!chosenUrl.includes(`${CDN_CGI}width=${MAX_VARIANT_WIDTH},`)) return null;
+  return variantAt(mediaKeyOf(url) as string, WIDTH_BUCKETS[0]);
 }
