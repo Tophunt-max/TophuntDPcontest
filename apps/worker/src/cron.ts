@@ -25,6 +25,7 @@ import { sweepVsComposites } from "./lib/matchStories";
 import { reconcileVsPublications } from "./lib/vsPublication";
 import { reconcileReferrals } from "./lib/referralProgram";
 import { newId, now } from "./lib/ids";
+import { getSettings as getGamification } from "./lib/gamification";
 import { runSeoAudit } from "./lib/seoAudit";
 import { getSeoAudit, invalidateSetting } from "./lib/settings";
 import { publish } from "./lib/publish";
@@ -626,8 +627,10 @@ export function previousMonthPeriod(at: number = Date.now()): string {
   return `${prev.getUTCFullYear()}-${String(prev.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
-/** Coins awarded for ranks 1..3. Indexed by rank - 1. */
-const HALL_OF_FAME_REWARDS = [1000, 500, 250];
+// Coins for ranks 1..3 come from the gamification settings (`hallOfFameRewards`,
+// default [1000, 500, 250]), editable in the admin Coin Economy → Earn tab. The
+// amount is persisted per winner in `hall_of_fame_awards` when a period is first
+// settled, so changing it never alters a payout already owed.
 /** Badge granted for ranks 1..3. Indexed by rank - 1. */
 const HALL_OF_FAME_BADGES = ["Gold Hall of Fame", "Silver Hall of Fame", "Bronze Hall of Fame"];
 
@@ -856,10 +859,11 @@ async function resolveHallOfFameWinners(
   if (top.length === 0) return { winners: [], derived: true };
 
   const ts = now();
+  const hallRewards = (await getGamification(env)).hallOfFameRewards;
   const derivedWinners: HallOfFameWinner[] = top.map((u, i) => ({
     uid: u.uid,
     rank: i + 1,
-    reward: HALL_OF_FAME_REWARDS[i],
+    reward: hallRewards[i] ?? 0,
     wins: Number(u.monthlyWins) || 0,
   }));
 

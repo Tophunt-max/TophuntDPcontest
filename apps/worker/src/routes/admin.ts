@@ -49,6 +49,7 @@ import {
 } from "../lib/coinPricing";
 import { assertSessionUsable } from "../middleware/auth";
 import { getAppConfig, getGamificationSettings, getSeoAudit, invalidateSetting } from "../lib/settings";
+import { validateGamificationCoinLists } from "../lib/gamification";
 import { legalDocsForAdmin, LEGAL_DOC_KEYS, LEGAL_LAST_UPDATED } from "../content/legal";
 import { deleteAuthUser, updateAuthUser, setCustomClaims, getUserByEmail } from "../lib/firebaseAdmin";
 import { createNotification, createNotificationsBulk } from "../lib/notify";
@@ -634,6 +635,12 @@ adminRoute.post("/rewards", async (c) => {
         `${key} must be a whole number of coins between 0 and 1000000 — it is credited straight to user balances.`,
       );
     }
+  }
+  // Daily task rewards and Hall of Fame prizes are coins too (lib/gamification.ts).
+  try {
+    validateGamificationCoinLists(body);
+  } catch (e: any) {
+    throw httpsError("invalid-argument", e?.message || "Invalid reward settings.");
   }
   const existing = (await getGamificationSettings(c.env)) || {};
   const merged = { ...existing, ...body };

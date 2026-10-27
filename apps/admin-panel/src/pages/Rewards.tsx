@@ -5,7 +5,7 @@ export default function Rewards() {
   return (
     <SettingsEditor
       title="Rewards & Gamification"
-      subtitle="XP, levels, streaks, badges and daily-reward configuration"
+      subtitle="XP, levels aur badges (raw JSON). Coin wale rewards — daily login, streak bonus, daily tasks, Hall of Fame — Coin Economy → Earn me form ke saath edit karo."
       queryKey="rewards"
       load={api.rewards}
       save={api.saveRewards}

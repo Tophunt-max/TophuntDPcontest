@@ -117,7 +117,7 @@ import { PROFILE_INCOMPLETE_CODE } from "../lib/accountStatus";
 import { chargeablePackage } from "../lib/coinPricing";
 import { applyReferralCode, ensureReferralCode, qualifyReferral } from "../lib/referralProgram";
 import { chargeableWithdrawal, feeRuleFromConfig } from "../lib/withdrawalFee";
-import { getSettings } from "../lib/gamification";
+import { getDailyTaskDefs, getSettings } from "../lib/gamification";
 import { sendEmail, sendUserEmail } from "../lib/email";
 import { passwordChangedEmail, dataExportEmail } from "../lib/emailTemplates";
 import { newId, now, generateJoinId } from "../lib/ids";
@@ -143,33 +143,6 @@ function alertAdminEmail(c: any, cfg: any, subject: string, html: string): void 
 /** Days since epoch in UTC (stable daily bucket key). */
 function utcDay(ts: number = Date.now()): number {
   return Math.floor(ts / 86400000);
-}
-
-interface DailyTaskDef {
-  id: string;
-  title: string;
-  reward: number;
-  target: number;
-  type: "vote" | "share" | "ad";
-}
-const DEFAULT_DAILY_TASKS: DailyTaskDef[] = [
-  { id: "vote5", title: "Vote in 5 battles", reward: 15, target: 5, type: "vote" },
-  { id: "share", title: "Share your profile", reward: 10, target: 1, type: "share" },
-  { id: "watch_ad", title: "Watch a video ad", reward: 5, target: 1, type: "ad" },
-];
-/** Daily tasks from gamification settings (admin override) or defaults. */
-function getDailyTaskDefs(settings: any): DailyTaskDef[] {
-  const custom = settings?.dailyTasks;
-  if (Array.isArray(custom) && custom.length) {
-    return custom.map((t: any) => ({
-      id: String(t.id),
-      title: String(t.title || t.id),
-      reward: Number(t.reward || 0),
-      target: Number(t.target || 1),
-      type: (["vote", "share", "ad"].includes(t.type) ? t.type : "ad") as DailyTaskDef["type"],
-    }));
-  }
-  return DEFAULT_DAILY_TASKS;
 }
 
 /** Max length of a single comment (server-enforced; UI mirrors this). */

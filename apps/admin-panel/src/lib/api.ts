@@ -634,6 +634,8 @@ export interface MoneyHealth {
   ledgerDrift: { count: number; samples: LedgerDriftSample[] };
   negativeBalances: { count: number; samples: { uid: string; balance: number }[] };
   strandedPaidOrders: number;
+  /** Approved manual deposits whose coins never landed (optional on older Workers). */
+  strandedApprovedDeposits?: number;
   stuckCreatedOrders: number;
   clawbackShortfalls: { count: number; coins: number };
   /** Locked (play-only promo) coins out of step with the ledger or above the balance. */

@@ -15,10 +15,8 @@ import {
   Trophy,
   Swords,
   Crown,
-  Receipt,
   Banknote,
   ArrowDownToLine,
-  Coins,
   Scale,
   Package,
   Image,
@@ -79,10 +77,10 @@ const nav = [
   { href: "/matches", label: "Matches", icon: Swords, section: "contests" },
   { href: "/prize-claims", label: "Prize Claims", icon: Package, section: "contests", badgeKey: "pendingPrizeClaims" },
   { href: "/leaderboard", label: "Leaderboard", icon: Crown, section: "contests" },
-  { href: "/transactions", label: "Transactions", icon: Receipt, section: "finance" },
   { href: "/deposits", label: "Deposits", icon: ArrowDownToLine, section: "finance", badgeKey: "pendingDeposits" },
   { href: "/withdrawals", label: "Withdrawals", icon: Banknote, section: "finance", badgeKey: "pendingWithdrawals" },
-  { href: "/coin-packages", label: "Coin Packages", icon: Coins, section: "finance" },
+  // Coin hub: settings, packages, ledger, budgets and reports in one place.
+  // (/coin-packages and /transactions still open directly; they live inside it.)
   { href: "/coin-economy", label: "Coin Economy", icon: Scale, section: "finance" },
   { href: "/posts", label: "Posts", icon: Image, section: "content" },
   { href: "/stories", label: "Stories", icon: Clapperboard, section: "content" },

@@ -7,15 +7,11 @@ import { toast } from "@/lib/toast";
 import {
   Save,
   Coins,
-  Banknote,
-  CreditCard,
   Megaphone,
   Mail,
   Code2,
   AlertTriangle,
   ChevronDown,
-  Tv,
-  ShieldCheck,
 } from "lucide-react";
 
 /**
@@ -77,8 +73,10 @@ const MANAGED_KEYS = [
   "announcement",
   "features",
   "authMethods",
-  // Withdrawals & payouts and coin pricing are money settings owned ONLY by App
-  // Control. Not editable here, and never re-posted from this page — a stale copy
+  // Free-reward locking: owned by Coin Economy → Earn.
+  "rewardLocking",
+  // Withdrawals & payouts and coin pricing are money settings owned ONLY by the
+  // Coin Economy hub. Not editable here, and never re-posted from this page — a stale copy
   // could silently undo a payout freeze or re-price the store.
   "withdrawal",
   "coinPricing",
@@ -88,9 +86,6 @@ const MANAGED_KEYS = [
 
 /** The keys THIS form edits and sends. Everything else is left untouched server-side. */
 const FORM_KEYS = [
-  "verificationReward",
-  "paymentGateway",
-  "ads",
   "adminAlertEmail",
   "supportEmail",
   "socialLinks",
@@ -224,32 +219,6 @@ export default function AppSettings() {
     return Object.fromEntries(Object.entries(data).filter(([k]) => !MANAGED_KEYS.includes(k)));
   }, [data]);
 
-  const { data: vrInfo } = useQuery({ queryKey: ["verification-reward"], queryFn: api.verificationReward });
-
-  // Same rules the Worker enforces (lib/verificationReward.ts), shown before save.
-  const verificationError = useMemo(() => {
-    const v = cfg.verificationReward;
-    const ints: [string, number, number, number][] = [
-      ["Completion reward", v.completionReward, 0, 1_000_000],
-      ["Maximum combined reward", v.maxTotalReward, 0, 1_000_000],
-      ["Initial reminder delay", v.initialReminderDays, 1, 365],
-      ["Repeat reminder interval", v.repeatReminderDays, 1, 365],
-      ["Maximum reminders", v.maxReminders, 0, 50],
-      ["Email resend cooldown", v.emailResendCooldownSec, 60, 3600],
-      ["SMS resend cooldown", v.smsResendCooldownSec, 60, 3600],
-    ];
-    for (const [name, n, min, max] of ints) {
-      if (!Number.isInteger(n) || n < min || n > max) return `${name} must be a whole number between ${min} and ${max}.`;
-    }
-    if (v.completionReward > v.maxTotalReward) {
-      return `Completion reward (${v.completionReward}) exceeds the maximum reward (${v.maxTotalReward}).`;
-    }
-    if (!v.requireEmail && !v.requirePhone && v.completionReward > 0) {
-      return "Require at least one of email or mobile verification for a completion reward.";
-    }
-    return null;
-  }, [cfg.verificationReward]);
-
   useEffect(() => {
     if (!data) return;
     setCfg({
@@ -284,10 +253,6 @@ export default function AppSettings() {
       }
     }
     setAdvancedErr(null);
-    if (verificationError) {
-      toast.error(verificationError);
-      return;
-    }
     // Only this form's keys (plus Advanced extras): the Worker merges, so
     // nothing owned by another page — legal text, onboarding, App Control's live
     // switches — is re-posted from a stale copy. Structured fields win.
@@ -298,15 +263,12 @@ export default function AppSettings() {
 
   if (isLoading) return <div className="text-sm text-muted-foreground py-10 text-center">Loading…</div>;
 
-  const num = (v: string) => (v === "" ? 0 : Number(v));
-  const vr = cfg.verificationReward;
-  const setVr = (patch: Partial<VerificationRewardCfg>) => setCfg({ ...cfg, verificationReward: { ...vr, ...patch } });
 
   return (
     <div>
       <PageHeader
         title="App Settings"
-        subtitle="Wallet rules, payment mode, rewarded ads and contact details"
+        subtitle="Contact details, social links aur advanced settings (coin settings: Coin Economy)"
         action={
           <button
             onClick={onSave}
@@ -319,180 +281,14 @@ export default function AppSettings() {
       />
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
-        {/* ---- Rewards ---- */}
-        <Section icon={Coins} title="Referral rewards" blurb="There is no signup bonus — new users earn coins only through a referral.">
+        {/* ---- Coins: owned by Coin Economy ---- */}
+        <Section icon={Coins} title="Coins & rewards" blurb="Ab sab ek jagah: Coin Economy.">
           <p className="text-sm text-muted-foreground">
-            Rewards for the inviter and the invited friend, the qualifying action, fraud limits and milestones are managed on
-            the Referrals page.
+            Verification bonus, referral, daily login, daily tasks, rewarded ads, Hall of Fame, withdrawals, buy rate aur payment
+            gateway{" "}
+            <Link href="/coin-economy" className="font-semibold text-foreground underline">Coin Economy</Link> (Earn, Buy aur Cash out
+            tabs) mein set hote hain.
           </p>
-          <Link href="/referrals" className="inline-flex mt-3 text-sm font-semibold text-primary hover:underline">
-            Open Referral program →
-          </Link>
-        </Section>
-
-        {/* ---- Registration verification reward ---- */}
-        <Section
-          icon={ShieldCheck}
-          title="Registration verification reward"
-          blurb="A one-time bonus once BOTH email and mobile are verified. (Nothing is paid at signup.)"
-        >
-          <Toggle
-            checked={vr.enabled}
-            onChange={(v) => setVr({ enabled: v })}
-            title="Enabled"
-            description="Turning it off PAUSES completion bonuses for already-enrolled users; their promised amount is kept."
-          />
-          <div className="grid grid-cols-2 gap-3 mt-2">
-            {(
-              [
-                ["completionReward", "On completion"],
-                ["maxTotalReward", "Maximum"],
-              ] as const
-            ).map(([key, text]) => (
-              <div key={key}>
-                <label className={label}>{text} (coins)</label>
-                <input type="number" min={0} step={1} value={vr[key]} onChange={(e) => setVr({ [key]: num(e.target.value) } as any)} className={field} />
-              </div>
-            ))}
-          </div>
-          <p className={hint}>
-            Users see: “Email aur mobile number dono verify karne par {vr.completionReward} coins milenge.” The amount is locked in per
-            user at signup; changes apply to new signups only.
-          </p>
-          <Toggle checked={vr.requireEmail} onChange={(v) => setVr({ requireEmail: v })} title="Require email verification" />
-          <Toggle checked={vr.requirePhone} onChange={(v) => setVr({ requirePhone: v })} title="Require mobile verification" />
-          <div className="grid grid-cols-3 gap-3 mt-2">
-            {(
-              [
-                ["initialReminderDays", "First reminder after (days)"],
-                ["repeatReminderDays", "Then every (days)"],
-                ["maxReminders", "Max prompts"],
-                ["emailResendCooldownSec", "Email resend (sec)"],
-                ["smsResendCooldownSec", "SMS resend (sec)"],
-              ] as const
-            ).map(([key, text]) => (
-              <div key={key}>
-                <label className={label}>{text}</label>
-                <input type="number" min={0} step={1} value={vr[key]} onChange={(e) => setVr({ [key]: num(e.target.value) } as any)} className={field} />
-              </div>
-            ))}
-          </div>
-          <p className={hint}>In-app prompts only — no SMS or email reminders are sent. Resend cooldowns can be raised, never below 60s.</p>
-          {verificationError && (
-            <p className="text-xs text-red-600 mt-2 flex items-center gap-1.5">
-              <AlertTriangle size={13} /> {verificationError}
-            </p>
-          )}
-          {vrInfo?.stats && (
-            <div className="grid grid-cols-3 gap-2 mt-4 text-center">
-              {(
-                [
-                  ["Enrolled", vrInfo.stats.enrolled],
-                  ["Completed", vrInfo.stats.completed],
-                  ["Email only", vrInfo.stats.pendingEmailOnly],
-                  ["Mobile only", vrInfo.stats.pendingPhoneOnly],
-                  ["Neither yet", vrInfo.stats.pendingNeither],
-                  ["Bonus coins paid", vrInfo.stats.completionCoinsCredited],
-                ] as const
-              ).map(([name, n]) => (
-                <div key={name} className="rounded-xl bg-secondary py-2">
-                  <div className="text-base font-bold text-foreground">{Number(n ?? 0).toLocaleString()}</div>
-                  <div className="text-[11px] text-muted-foreground">{name}</div>
-                </div>
-              ))}
-            </div>
-          )}
-        </Section>
-
-        {/* ---- Payment mode ---- */}
-        <Section
-          icon={CreditCard}
-          title="Deposit method"
-          blurb="How users buy coins. Manual mode accepts a UPI reference for admin approval."
-        >
-          <label className={label}>Mode</label>
-          <select
-            value={cfg.paymentGateway.mode}
-            onChange={(e) => setCfg({ ...cfg, paymentGateway: { mode: e.target.value as any } })}
-            className={field}
-          >
-            <option value="auto">Automatic only (Razorpay checkout)</option>
-            <option value="manual">Manual only (UPI/QR + admin approval)</option>
-            <option value="both">Both</option>
-          </select>
-          <p className={hint}>
-            Automatic mode requires the Razorpay credentials on the Integrations page. Manual deposits are
-            priced from the coin packages, never from a client-supplied amount.
-          </p>
-        </Section>
-
-        {/* ---- Withdrawals: owned by App Control ---- */}
-        <Section icon={Banknote} title="Withdrawals & payouts" blurb="Ab sirf App Control mein.">
-          <p className="text-sm text-muted-foreground">
-            Withdrawal on/off, emergency freeze, limits, payout rate aur coin package ka Buy rate{" "}
-            <Link href="/app-control" className="font-semibold text-foreground underline">App Control</Link> mein set hote hain.
-          </p>
-        </Section>
-
-        {/* ---- Rewarded ads ---- */}
-        <Section icon={Tv} title="Rewarded ads" blurb="Coins for watching an ad. Off by default, for good reason.">
-          <Toggle
-            checked={cfg.ads.enabled}
-            onChange={(v) => setCfg({ ...cfg, ads: { ...cfg.ads, enabled: v } })}
-            title="Rewarded ads enabled"
-          />
-          {cfg.ads.enabled && (
-            <div className="flex items-start gap-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 my-2">
-              <AlertTriangle size={14} className="mt-px shrink-0" />
-              <span>
-                A rewarded ad mints withdrawable currency. Unless the ad network's server-side verification
-                (SSV) callback is what credits the coins, the app is trusting the client's word that an ad
-                was watched. Only enable "trust client" knowingly.
-              </span>
-            </div>
-          )}
-          {cfg.ads.enabled && (
-            <>
-              <Toggle
-                danger
-                checked={cfg.ads.trustClient}
-                onChange={(v) => setCfg({ ...cfg, ads: { ...cfg.ads, trustClient: v } })}
-                title="Credit without server-side verification"
-                description="Required for providers with no SSV. Has NO effect unless the Worker is also deployed with ALLOW_UNVERIFIED_AD_REWARDS=true. Keep the daily cap low if you enable this."
-              />
-              <div className="grid grid-cols-3 gap-3 mt-3">
-                <div>
-                  <label className={label}>Provider</label>
-                  <input
-                    value={cfg.ads.provider}
-                    onChange={(e) => setCfg({ ...cfg, ads: { ...cfg.ads, provider: e.target.value } })}
-                    placeholder="admob"
-                    className={field}
-                  />
-                </div>
-                <div>
-                  <label className={label}>Coins per ad</label>
-                  <input
-                    type="number"
-                    min={1}
-                    value={cfg.ads.reward}
-                    onChange={(e) => setCfg({ ...cfg, ads: { ...cfg.ads, reward: num(e.target.value) } })}
-                    className={field}
-                  />
-                </div>
-                <div>
-                  <label className={label}>Daily cap</label>
-                  <input
-                    type="number"
-                    min={1}
-                    value={cfg.ads.dailyCap}
-                    onChange={(e) => setCfg({ ...cfg, ads: { ...cfg.ads, dailyCap: num(e.target.value) } })}
-                    className={field}
-                  />
-                </div>
-              </div>
-            </>
-          )}
         </Section>
 
         {/* ---- Contact ---- */}

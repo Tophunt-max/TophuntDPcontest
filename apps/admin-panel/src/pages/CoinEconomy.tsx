@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -27,25 +28,43 @@ import { StatCard } from "@/components/ui/StatCard";
 import { SegTabs } from "@/components/finance/bits";
 import { PageHeader, exportCsv, fmtDateTime, fmtNumber } from "@/lib/format";
 import { toast } from "@/lib/toast";
+import { useConfirm } from "@/components/ConfirmDialog";
+import { CoinPricingCard, RewardLockingCard, WithdrawalCard } from "@/components/coin/CoinCards";
+import { AdsRewardCard, DailyLoginCard, DailyTasksCard, HallOfFameCard, VerificationRewardCard } from "@/components/coin/EarnCards";
+import { ProgramSettings } from "@/pages/Referrals";
+import { GatewayConfig } from "@/pages/Deposits";
+import CoinPackages from "@/pages/CoinPackages";
+import Transactions from "@/pages/Transactions";
 
 /**
- * Coin Economy — where every coin came from and where it went.
+ * Coin Economy — the one place for everything coins: where every coin came from,
+ * where it went, and every setting that creates, sells or pays out coins.
  *
- *   Overview   supply (withdrawable vs locked promo coins), ₹ liability, flows by
- *              source, the platform's own side, and the reconciliation checks
- *   Budgets    one promo budget per offer (package bonus / contest prize)
+ *   Overview   supply (withdrawable vs locked), ₹ liability, flows by source, the
+ *              platform's own side, reconciliation checks, pending queues
+ *   Earn       every free-coin source (verification, referral, daily login,
+ *              daily tasks, rewarded ads, Hall of Fame) + the play-only switch
+ *   Buy        buy rate, payment gateway, coin packages and their P&L
  *   Contests   per-contest P&L: entry fees, prizes, refunds, subsidy, fees kept
- *   Packages   per-package P&L: purchases, ₹, paid vs bonus coins
- *   User       one user's full coin statement, exportable
+ *   Cash out   withdrawal rules, fee, emergency freeze
+ *   Budgets    one promo budget per offer, approval password
+ *   Ledger     every coin transaction, and one user's full statement
+ *   Health     money-integrity checks
+ *
+ * Each settings card saves only its own keys, through the same Worker routes
+ * (validation, audit log) the old pages used; those pages now link here.
  *
  * Worker: lib/coinEconomy.ts, lib/promoBudget.ts, lib/approvalPassword.ts.
  */
 const TABS = [
   { key: "overview", label: "Overview" },
-  { key: "budgets", label: "Budgets" },
+  { key: "earn", label: "Earn" },
+  { key: "buy", label: "Buy" },
   { key: "contests", label: "Contests" },
-  { key: "packages", label: "Packages" },
-  { key: "user", label: "User statement" },
+  { key: "cashout", label: "Cash out" },
+  { key: "budgets", label: "Budgets" },
+  { key: "ledger", label: "Ledger" },
+  { key: "health", label: "Health" },
 ];
 
 const KIND_LABEL: Record<PromoBudgetKind, string> = {
@@ -76,12 +95,223 @@ export default function CoinEconomy() {
         title="Coin Economy"
         subtitle="Har coin ka hisab: kahan se aaya, kahan gaya, aur platform ne apni taraf se kitna diya."
       />
-      <SegTabs tab={tab} setTab={setTab} tabs={TABS} />
-      {tab === "overview" && <Overview />}
-      {tab === "budgets" && <Budgets />}
+      <div className="overflow-x-auto">
+        <SegTabs tab={tab} setTab={setTab} tabs={TABS} />
+      </div>
+      {tab === "overview" && (
+        <div className="space-y-6">
+          <PendingQueues />
+          <Overview />
+        </div>
+      )}
+      {tab === "earn" && <EarnTab />}
+      {tab === "buy" && <BuyTab />}
       {tab === "contests" && <ContestsPnl />}
-      {tab === "packages" && <PackagesPnl />}
-      {tab === "user" && <UserStatementView />}
+      {tab === "cashout" && <CashOutTab />}
+      {tab === "budgets" && <Budgets />}
+      {tab === "ledger" && (
+        <div className="space-y-8">
+          <Transactions />
+          <div>
+            <p className="font-bold text-foreground mb-3">User statement</p>
+            <UserStatementView />
+          </div>
+        </div>
+      )}
+      {tab === "health" && <HealthTab />}
+    </div>
+  );
+}
+
+// ─── Shared settings plumbing ────────────────────────────────────────────────
+
+/** appConfig for the settings cards, plus the same per-card save App Control used. */
+function useAppConfig() {
+  const qc = useQueryClient();
+  const query = useQuery({ queryKey: ["app-settings"], queryFn: api.appSettings });
+  const save = useMutation({
+    mutationFn: (patch: Record<string, unknown>) => api.saveAppSettings(patch),
+    onSuccess: () => {
+      toast.success("Saved — users ke app me turant live");
+      qc.invalidateQueries({ queryKey: ["app-settings"] });
+      qc.invalidateQueries({ queryKey: ["coin-packages"] });
+    },
+    onError: (e) => toast.error(describeError(e)),
+  });
+  return { data: query.data, isLoading: query.isLoading, save };
+}
+
+function PendingQueues() {
+  const { data } = useQuery({ queryKey: ["overview"], queryFn: api.overview });
+  const items = [
+    { label: "Deposits approve karne hain", n: Number((data as any)?.pendingDeposits ?? 0), href: "/deposits" },
+    { label: "Withdrawals pending", n: Number((data as any)?.pendingWithdrawals ?? 0), href: "/withdrawals" },
+    { label: "Prize claims pending", n: Number((data as any)?.pendingPrizeClaims ?? 0), href: "/prize-claims" },
+  ];
+  return (
+    <div className="grid gap-3 sm:grid-cols-3">
+      {items.map((i) => (
+        <Link key={i.href} href={i.href}>
+          <div className={`rounded-2xl border p-4 cursor-pointer hover:shadow-sm ${i.n > 0 ? "border-amber-300 bg-amber-50" : "border-border bg-card"}`}>
+            <p className="text-2xl font-bold text-foreground">{fmtNumber(i.n)}</p>
+            <p className="text-sm text-muted-foreground">{i.label} →</p>
+          </div>
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+// ─── Earn ────────────────────────────────────────────────────────────────────
+
+const EARN_TYPES: { type: string; label: string }[] = [
+  { type: "verification_bonus", label: "Verification bonus" },
+  { type: "referral_bonus", label: "Referral" },
+  { type: "daily_reward", label: "Daily login" },
+  { type: "daily_task", label: "Daily tasks" },
+  { type: "ad_reward", label: "Rewarded ads" },
+  { type: "monthly_hall_of_fame_reward", label: "Hall of Fame" },
+  { type: "promo_bonus", label: "Package promo bonus" },
+  { type: "admin_adjustment", label: "Admin adjustment" },
+];
+
+function EarnTab() {
+  const { data, isLoading, save } = useAppConfig();
+  const rewards = useQuery({ queryKey: ["rewards"], queryFn: api.rewards });
+  const referrals = useQuery({ queryKey: ["referrals", "", ""], queryFn: () => api.referrals({}) });
+  const since = useState(() => Date.now() - 30 * 24 * 60 * 60 * 1000)[0];
+  const month = useQuery({ queryKey: ["coin-economy", "30d"], queryFn: () => api.coinEconomy({ from: since }) });
+  if (isLoading || !data) return <p className="text-sm text-muted-foreground py-10 text-center">Loading…</p>;
+  const byType = new Map((month.data?.types ?? []).map((t) => [t.type, t]));
+  return (
+    <div className="space-y-6">
+      <Card title="Free coin: pichhle 30 din me kitna diya">
+        <Table
+          data={EARN_TYPES}
+          keyFn={(t) => t.type}
+          columns={[
+            { key: "s", header: "Source", render: (t) => <span className="font-medium text-foreground">{t.label}</span> },
+            { key: "c", header: "Coins diye", className: "text-right", render: (t) => fmtNumber(byType.get(t.type)?.credits ?? 0) },
+            { key: "l", header: "Locked", className: "text-right", render: (t) => fmtNumber(Math.max(0, byType.get(t.type)?.locked ?? 0)) },
+            { key: "n", header: "Entries", className: "text-right", render: (t) => fmtNumber(byType.get(t.type)?.count ?? 0) },
+            { key: "r", header: "≈ ₹", className: "text-right", render: (t) => inr((byType.get(t.type)?.credits ?? 0) * (month.data?.payoutRate ?? 0)) },
+          ]}
+        />
+      </Card>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <RewardLockingCard data={data} pending={save.isPending} onSave={(p) => save.mutate(p)} />
+        <VerificationRewardCard data={data} />
+        <DailyLoginCard rewards={rewards.data} />
+        <DailyTasksCard rewards={rewards.data} />
+        <AdsRewardCard data={data} />
+        <HallOfFameCard rewards={rewards.data} />
+      </div>
+      <div>
+        <ProgramSettings program={referrals.data?.program} />
+        <p className="mt-2 text-xs text-muted-foreground">
+          Referral ki queue aur approvals: <Link href="/referrals" className="underline">Referral Program</Link>.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ─── Buy ─────────────────────────────────────────────────────────────────────
+
+function BuyTab() {
+  const { data, isLoading, save } = useAppConfig();
+  if (isLoading || !data) return <p className="text-sm text-muted-foreground py-10 text-center">Loading…</p>;
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+        <CoinPricingCard data={data} pending={save.isPending} onSave={(p) => save.mutate(p)} />
+        <GatewayConfig />
+      </div>
+      <CoinPackages />
+      <div>
+        <p className="font-bold text-foreground mb-3">Package P&amp;L</p>
+        <PackagesPnl />
+      </div>
+    </div>
+  );
+}
+
+// ─── Cash out ────────────────────────────────────────────────────────────────
+
+function CashOutTab() {
+  const { data, isLoading, save } = useAppConfig();
+  const { confirm } = useConfirm();
+  const eco = useQuery({ queryKey: ["coin-economy"], queryFn: () => api.coinEconomy() });
+  if (isLoading || !data) return <p className="text-sm text-muted-foreground py-10 text-center">Loading…</p>;
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+      <WithdrawalCard data={data} pending={save.isPending} onSave={(p) => save.mutate(p)} confirm={confirm} />
+      <Card title="Payout ka hisab">
+        {eco.data ? (
+          <>
+            <Row label="Withdraw ho sakne wale coin" value={fmtNumber(eco.data.supply.withdrawable)} />
+            <Row label="Liability (agar sab nikal lein)" value={inr(eco.data.supply.liabilityInr)} />
+            <Row label="Payout bheja" value={inr(eco.data.cash.paidOutInr)} />
+            <Row label="Payout baaki (pending/approved)" value={inr(eco.data.cash.pendingOutInr)} strong />
+          </>
+        ) : (
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        )}
+        <p className="mt-3 text-sm">
+          <Link href="/withdrawals" className="font-semibold text-primary">Withdrawal requests approve / pay karo →</Link>
+        </p>
+      </Card>
+    </div>
+  );
+}
+
+// ─── Health ──────────────────────────────────────────────────────────────────
+
+function HealthTab() {
+  const money = useQuery({ queryKey: ["money-health"], queryFn: api.moneyHealth });
+  const eco = useQuery({ queryKey: ["coin-economy"], queryFn: () => api.coinEconomy() });
+  const m = money.data;
+  const rows: { label: string; n: number | undefined }[] = m
+    ? [
+        { label: "Ledger drift (balance ≠ ledger)", n: m.ledgerDrift.count },
+        { label: "Negative balances", n: m.negativeBalances.count },
+        { label: "Paid but not credited orders", n: m.strandedPaidOrders },
+        { label: "Approved deposits not credited", n: m.strandedApprovedDeposits },
+        { label: "Clawback shortfalls", n: m.clawbackShortfalls.count },
+        { label: "Withdrawal ledger gaps", n: m.withdrawalLedgerGaps?.count },
+        { label: "Locked coin drift", n: (m.lockedDrift?.count ?? 0) + (m.lockedDrift?.overBalance ?? 0) },
+        { label: "Stuck promo reservations", n: m.staleReservations },
+      ]
+    : [];
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+      <Card title="Money integrity">
+        {money.error ? <ErrorBox error={money.error} /> : null}
+        {rows.map((r) => (
+          <Row
+            key={r.label}
+            label={r.label}
+            value={<span className={(r.n ?? 0) === 0 ? "text-green-600" : "text-red-600 font-semibold"}>{(r.n ?? 0) === 0 ? "OK" : fmtNumber(r.n ?? 0)}</span>}
+          />
+        ))}
+        <p className="mt-3 text-xs text-muted-foreground">
+          Poori detail: <Link href="/system-health" className="underline">System Health</Link>. Ye check har 6 ghante bhi chalta hai aur fail hone par
+          notification aata hai.
+        </p>
+      </Card>
+      <Card title="Reconciliation checks">
+        <ul className="space-y-2">
+          {(eco.data?.checks ?? []).map((c) => (
+            <li key={c.key} className="flex items-start gap-2 text-sm">
+              {c.ok ? <CheckCircle2 size={16} className="mt-0.5 text-green-600 shrink-0" /> : <AlertTriangle size={16} className="mt-0.5 text-red-600 shrink-0" />}
+              <span>
+                <span className="font-medium text-foreground">{c.label}</span>
+                <span className="block text-xs text-muted-foreground">{c.detail}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      </Card>
     </div>
   );
 }

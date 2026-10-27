@@ -1,3 +1,4 @@
+import { Link } from "wouter";
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
@@ -185,7 +186,12 @@ export default function Referrals() {
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-5 mb-6">
         <div className="xl:col-span-2">
-          <ProgramSettings program={data?.program} />
+          <div className="bg-card border border-border rounded-2xl p-5 h-full text-sm text-muted-foreground">
+            <p className="font-bold text-foreground mb-1">Program settings</p>
+            Referral reward (dono taraf), qualify action, limits aur milestones ab{" "}
+            <Link href="/coin-economy" className="font-semibold text-foreground underline">Coin Economy → Earn</Link> mein set hote hain.
+            Yahan sirf referrals ki queue aur approvals hain.
+          </div>
         </div>
         <div className="bg-card border border-border rounded-2xl p-5">
           <div className="flex items-center gap-2 mb-3">
@@ -324,7 +330,7 @@ export default function Referrals() {
 
 /* ---------------- program settings ---------------- */
 
-function ProgramSettings({ program }: { program?: Partial<Program> }) {
+export function ProgramSettings({ program }: { program?: Partial<Program> }) {
   const qc = useQueryClient();
   const [p, setP] = useState<Program>(DEFAULTS);
   const [dirty, setDirty] = useState(false);
