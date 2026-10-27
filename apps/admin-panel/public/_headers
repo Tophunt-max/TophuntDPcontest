@@ -50,3 +50,8 @@
 # Immutable, content-hashed build assets.
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
+
+# Read by src/lib/updateCheck.ts to notice a newer deploy. Must never be cached,
+# or an open tab would keep comparing against the old build id.
+/version.json
+  Cache-Control: no-store
