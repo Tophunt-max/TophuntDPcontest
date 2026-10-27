@@ -23,6 +23,28 @@ import { isProfileComplete, markOnboardingIncomplete, PROFILE_INCOMPLETE_CODE } 
 import { followStateFromResult, type FollowIntent, type FollowState, type ToggleFollowResult } from '../lib/followState';
 
 /**
+ * The Worker's authoritative "no such profile" (a `null` body, or a 404).
+ *
+ * Kept apart from every other failure on purpose: a dropped connection or a
+ * timeout must not be shown as "this account doesn't exist", which tells the
+ * person that a real profile is gone and offers no retry.
+ */
+export class ProfileNotFoundError extends Error {
+  constructor() {
+    super("User profile not found");
+    this.name = "ProfileNotFoundError";
+  }
+}
+
+/** True when a profile load failed because the profile does not exist, not because the request failed. */
+export function isProfileMissing(error: unknown): boolean {
+  if (error instanceof ProfileNotFoundError) return true;
+  // My own half-created account: the root guard sends me to the profile form.
+  if (String((error as any)?.message || '').startsWith(PROFILE_INCOMPLETE_CODE)) return true;
+  return Number((error as any)?.status) === 404;
+}
+
+/**
  * Profile data now comes from the Cloudflare Worker (D1) via /read endpoints.
  */
 export const useProfile = (userId: string) => {
@@ -66,9 +88,11 @@ export const useProfile = (userId: string) => {
         throw new Error(`${PROFILE_INCOMPLETE_CODE}: Finish creating your profile to continue.`);
       }
 
-      throw new Error("User profile not found");
+      throw new ProfileNotFoundError();
     },
     enabled: !!userId,
+    // A missing profile will not appear on a retry; a failed request might.
+    retry: (count, error) => !isProfileMissing(error) && count < 2,
   });
 };
 

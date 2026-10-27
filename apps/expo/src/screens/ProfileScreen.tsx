@@ -13,7 +13,7 @@ import {
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useAuth } from '@/src/services/auth';
-import { useProfile, useRelationship, useToggleFollow, useUserBookmarks, useUserMatches } from '@/src/hooks/useProfileData';
+import { isProfileMissing, useProfile, useRelationship, useToggleFollow, useUserBookmarks, useUserMatches } from '@/src/hooks/useProfileData';
 import ProfileHeader from '@/src/components/profile/ProfileHeader';
 import Highlights from '@/src/components/profile/Highlights';
 import ProfileTabs, { ProfileTab } from '@/src/components/profile/ProfileTabs';
@@ -242,6 +242,8 @@ const ProfileContent = ({
   const { 
     data: profile, 
     isLoading: profileLoading, 
+    error: profileError,
+    isFetching: profileFetching,
     refetch: refetchProfile 
   } = useProfile(targetUserId);
 
@@ -359,13 +361,32 @@ const ProfileContent = ({
   // would replace a perfectly good loaded profile with "User not available" after
   // a single flaky pull-to-refresh. A genuinely absent profile throws rather than
   // resolving undefined, so `!profile` already covers both real cases.
+  //
+  // Only an authoritative "no such profile" says the account is gone. Any other
+  // failure (timeout, offline, a 5xx) is temporary: say so and offer a retry, the
+  // same split the /@handle path makes above.
   if (!profile) {
+    const loadFailed = !!profileError && !isProfileMissing(profileError);
     return (
       <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
         <View style={styles.center}>
-          <Text style={[styles.errorText, { color: isDark ? '#fff' : '#000' }]}>User not available</Text>
-          <Text style={styles.errorSubText}>This account doesn&apos;t exist or is no longer available.</Text>
-          <Button title="Go Home" onPress={() => router.replace('/home')} />
+          {loadFailed ? (
+            <>
+              <Text style={[styles.errorText, { color: isDark ? '#fff' : '#000' }]}>Load nahi hua</Text>
+              <Text style={styles.errorSubText}>Internet check karo aur dobara try karo.</Text>
+              <Button
+                title={profileFetching ? 'Loading…' : 'Dobara try karo'}
+                disabled={profileFetching}
+                onPress={() => { refetchProfile(); }}
+              />
+            </>
+          ) : (
+            <>
+              <Text style={[styles.errorText, { color: isDark ? '#fff' : '#000' }]}>User not available</Text>
+              <Text style={styles.errorSubText}>This account doesn&apos;t exist or is no longer available.</Text>
+              <Button title="Go Home" onPress={() => router.replace('/home')} />
+            </>
+          )}
         </View>
         <BottomNav backgroundColor={bg} isDark={isDark} />
       </SafeAreaView>
