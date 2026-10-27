@@ -13,11 +13,17 @@
  * in the bucket). Removing that path before Qencode is provisioned would leave
  * no video path at all, and the only way back would be a redeploy.
  *
- * So the split is a setting. When Qencode is live, `POST /upload` REFUSES video
- * — every new video goes through `createVideoUpload` + `POST /upload/video` and
- * is encoded — and a stray client cannot put a raw MP4 back into a story. Until
- * then the legacy path keeps working and the deployment reports itself as
- * running it.
+ * So the split is a setting. When Qencode is live, current builds send every
+ * video through `createVideoUpload` + `POST /upload/video` and it is encoded.
+ *
+ * The legacy raw path STAYS OPEN while Qencode is live, deliberately. Installed
+ * Android/iOS builds from before Qencode do not speak the new protocol; with the
+ * legacy path closed, every one of them failed every video post with "Video
+ * uploads are temporarily unavailable" the moment the provider was switched —
+ * which is what happened in production. Open, they keep uploading a raw MP4 to
+ * R2 exactly as they always did (it plays, just without adaptive bitrate), and
+ * current builds still get Qencode. Close it (`r2AcceptsVideo: false` below)
+ * only once no pre-Qencode build is still in use.
  *
  * Both directions are an admin-panel change (`Integrations -> Video`), with no
  * deploy and no client release: rollback has to be faster than a deploy.
@@ -39,11 +45,11 @@ import { allowedMimesForCategory, categoryEverAcceptedVideo } from "./mediaCateg
 export interface MediaRouting {
   /** Where new video goes. */
   videoProvider: "qencode" | "r2";
-  /** Whether `POST /upload` still accepts raw video. False once Qencode is live. */
+  /** Whether `POST /upload` still accepts raw video (for builds that predate Qencode). */
   r2AcceptsVideo: boolean;
   /**
-   * - `qencode-live`    — Qencode is configured and selected. `POST /upload`
-   *                       is closed to video.
+   * - `qencode-live`    — Qencode is configured and selected. Current builds
+   *                       encode; older builds keep the raw R2 path.
    * - `provider-setting`— an operator has explicitly selected R2 for video.
    * - `not-configured`  — Qencode is SELECTED but its config is incomplete
    *                       (API key, or the R2 credentials it writes with), so
@@ -81,7 +87,8 @@ export async function mediaRouting(env: Env): Promise<MediaRouting> {
   if (!config) {
     return { videoProvider: "r2", r2AcceptsVideo: true, reason: "not-configured" };
   }
-  return { videoProvider: "qencode", r2AcceptsVideo: false, reason: "qencode-live" };
+  // See the file header: open for pre-Qencode builds until none are left.
+  return { videoProvider: "qencode", r2AcceptsVideo: true, reason: "qencode-live" };
 }
 
 /**

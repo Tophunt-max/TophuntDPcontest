@@ -138,7 +138,7 @@ export async function computeDeepHealth(env: Env): Promise<DeepHealth> {
       ok,
       detail:
         routing.reason === "qencode-live"
-          ? "video: qencode (POST /upload refuses raw video)"
+          ? "video: qencode (old app builds still use the raw R2 path)"
           : routing.reason === "provider-setting"
             ? "video: r2 (legacy path, selected in the admin panel)"
             : "video provider is set to qencode but its config is incomplete (QENCODE_API_KEY, R2_ACCOUNT_ID, R2_BUCKET, " +

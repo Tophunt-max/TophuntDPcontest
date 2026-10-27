@@ -2,15 +2,15 @@
  * The Qencode upload flow end to end: createVideoUpload -> POST /upload/video.
  *
  * What is pinned here:
- *  - a client that does not say `upload: "worker"` (a Bunny-era build) is told
- *    video is not configured instead of a response it would misread;
+ *  - a client that does not say `upload: "worker"` (a pre-Qencode build) is told
+ *    video is not configured, with the raw R2 path OPEN, so it keeps working;
  *  - the bytes are verified as video before anything is paid for, stored under
  *    `video-src/`, and the encode is started with the source presigned and the
  *    output pointed at `videos/<id>/` in OUR bucket;
  *  - a retry after a lost response does not start a second (billed) encode;
  *  - nobody can upload into someone else's video id;
  *  - Qencode being down does not fail the upload — the cron starts it later;
- *  - once Qencode is live, POST /upload refuses raw video.
+ *  - old builds can still POST a raw video to /upload while Qencode is live.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { eq } from 'drizzle-orm';
@@ -85,11 +85,13 @@ const rowOf = (env: TestEnv, id: string) =>
   drizzleOf(env).select().from(schema.videos).where(eq(schema.videos.id, id)).get();
 
 describe('createVideoUpload', () => {
-  it('answers a Bunny-era client (no upload flag) as not configured', async () => {
+  it('sends a pre-Qencode client (no upload flag) to the raw R2 path, which stays open', async () => {
+    // The production regression: with `r2Fallback: false` every installed old
+    // build showed "Video uploads are temporarily unavailable" on every post.
     const env = await liveEnv();
     const res = await api(env, 'alice', 'createVideoUpload', { targetType: 'story' });
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ configured: false, r2Fallback: false });
+    expect(res.body).toEqual({ configured: false, r2Fallback: true });
     expect(await drizzleOf(env).select().from(schema.videos).all()).toHaveLength(0);
   });
 
@@ -225,10 +227,17 @@ describe('POST /upload/video', () => {
 });
 
 describe('POST /upload once Qencode is live', () => {
-  it('refuses a raw video, naming the flow to use instead', async () => {
+  it('still stores a raw story video from an old build (it plays, just unencoded)', async () => {
     const env = await liveEnv();
     const res = await sendBytes(env, 'alice', '/upload?folder=stories', MP4);
-    expect(res.status).toBe(412); // failed-precondition
-    expect(res.body?.error?.message ?? '').toMatch(/createVideoUpload/);
+    expect(res.status).toBe(200);
+    expect(res.body.publicUrl).toMatch(/^https:\/\/cdn\.test\/stories\/.*\.mp4$/);
+    expect(q.started).toHaveLength(0);
+  });
+
+  it('still refuses video where the app never offered it', async () => {
+    const env = await liveEnv();
+    const res = await sendBytes(env, 'alice', '/upload?folder=avatars', MP4);
+    expect(res.status).toBe(400);
   });
 });

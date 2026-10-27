@@ -472,7 +472,8 @@ apiRoute.post("/", async (c) => {
      * `upload: "worker"` is how a current client says it speaks this protocol.
      * Builds from the Bunny era do not send it; they would read
      * `configured: true` as "tus to Bunny" and fail with a missing signature,
-     * so they are answered as if video were not configured.
+     * so they are answered "not configured" with `r2Fallback: true` and keep
+     * uploading a raw MP4 the way they always did (see lib/mediaRouting.ts).
      */
     case "createVideoUpload": {
       if (body?.upload !== "worker" || !(await qencodeConfigured(env))) {

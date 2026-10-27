@@ -55,7 +55,7 @@ enforced by `integrations.video.provider`:
 
 | `provider` | Qencode config | Video goes to | `POST /upload` accepts raw video? | `media_routing` health |
 |---|---|---|---|---|
-| `qencode` | complete | **Qencode → R2 `videos/`** | **No — rejected** | ok |
+| `qencode` | complete | **Qencode → R2 `videos/`** (current builds) | Yes, for pre-Qencode builds only | ok |
 | `r2` | any | R2 (legacy raw MP4) | Yes | ok, reported as legacy |
 | `qencode` | incomplete | R2 (silent fallback) | Yes | **fails** |
 
@@ -208,16 +208,18 @@ not against a real account.
 
 **Verify:**
 8. `GET /health/deep` → `checks.media_routing.ok === true` with
-   `"video: qencode (POST /upload refuses raw video)"`. If it reads *"config is
+   `"video: qencode (old app builds still use the raw R2 path)"`. If it reads *"config is
    incomplete"*, one of steps 5–6 is missing.
 9. Post one story video from a current build. It should show "Processing…", then
    play. In R2 you should see `videos/<id>/playlist.m3u8` and `thumbnail.jpg`, and
    the row's `video-src/…` source should be gone. Check it plays on the website too (step 3).
 
-**Old app builds:** a build from before this change does not send
-`upload: "worker"`, so it is answered "video not configured", and `POST /upload`
-refuses its raw video while Qencode is live. Those users cannot post video until
-they update. Flip the provider once enough users are on the new build.
+**Old app builds:** a build from before Qencode does not send
+`upload: "worker"`. It is answered "not configured" with `r2Fallback: true` and
+keeps uploading a raw MP4 to R2 as it always did — it plays, without adaptive
+bitrate. (Closing that path broke every old build's video posts in production
+the moment the provider was switched.) Once no pre-Qencode build is in use, set
+`r2AcceptsVideo: false` for `qencode-live` in `lib/mediaRouting.ts`.
 
 **Rollback:** set provider back to **r2**. New uploads go to R2 on the next
 request. Videos already encoded keep playing, because the app detects them by
