@@ -12,6 +12,12 @@
  * and checked against each other (`checks`), so a drift shows up here before it
  * shows up in a payout.
  *
+ * House account: the superadmin's own coins (e.g. a test float credited as
+ * `house_coins`) are platform money, not a user's. They are left out of supply,
+ * liability and the flows, and reported on their own (`house`). The ledger
+ * checks still cover every account, so a house balance must still match its
+ * ledger rows.
+ *
  * Read-only. Every query is independent and degrades to an empty/zero value on
  * failure instead of failing the whole report.
  */
@@ -32,6 +38,7 @@ export const LEDGER_CATEGORIES: Record<string, string> = {
   daily_task: "rewards",
   monthly_hall_of_fame_reward: "rewards",
   admin_adjustment: "admin",
+  house_coins: "admin",
   contest_entry_fee: "contests",
   contest_win_reward: "contests",
   contest_refund: "contests",
@@ -95,8 +102,13 @@ export interface Range {
   to?: number | null;
 }
 
-function rangeSql(col: string, r: Range): { sql: string; binds: number[] } {
-  const parts: string[] = [];
+/** Accounts whose coins are the platform's own (see header). */
+export const HOUSE_ROLE = "superadmin";
+export const NOT_HOUSE_USER = `COALESCE(role, '') <> '${HOUSE_ROLE}'`;
+export const NOT_HOUSE_UID = (col = "uid") => `${col} NOT IN (SELECT uid FROM users WHERE role = '${HOUSE_ROLE}')`;
+
+function rangeSql(col: string, r: Range, extra: string[] = []): { sql: string; binds: number[] } {
+  const parts: string[] = [...extra];
   const binds: number[] = [];
   if (r.from) { parts.push(`${col} >= ?`); binds.push(r.from); }
   if (r.to) { parts.push(`${col} < ?`); binds.push(r.to); }
@@ -107,16 +119,17 @@ export async function coinEconomyOverview(env: Env, range: Range = {}) {
   const cfg = await getAppConfig(env);
   const payoutRate = coinValueFromConfig(cfg) ?? 0;
   const txRange = rangeSql("created_at", range);
+  const userTxRange = rangeSql("created_at", range, [NOT_HOUSE_UID()]);
 
-  const [supply, byType, platform, cash, ledgerAll, lockedLedger, lockedOver, lockedNeg, staleRes, overspent, budgets] =
+  const [supply, byType, platform, cash, ledgerAll, lockedLedger, lockedOver, lockedNeg, staleRes, overspent, budgets, house] =
     await Promise.all([
       one<any>(env, `SELECT COALESCE(SUM(dpcoin),0) AS total, COALESCE(SUM(locked_coins),0) AS locked,
-                            SUM(CASE WHEN dpcoin > 0 THEN 1 ELSE 0 END) AS holders FROM users`),
+                            SUM(CASE WHEN dpcoin > 0 THEN 1 ELSE 0 END) AS holders FROM users WHERE ${NOT_HOUSE_USER}`),
       all<any>(env, `SELECT type,
                             COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END),0) AS credits,
                             COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END),0) AS debits,
                             COALESCE(SUM(amount),0) AS net, COALESCE(SUM(locked_delta),0) AS locked, COUNT(*) AS n
-                       FROM coin_transactions ${txRange.sql} GROUP BY type`, ...txRange.binds),
+                       FROM coin_transactions ${userTxRange.sql} GROUP BY type`, ...userTxRange.binds),
       all<any>(env, `SELECT kind, COALESCE(SUM(coins),0) AS coins, COUNT(*) AS n
                        FROM platform_ledger ${txRange.sql} GROUP BY kind`, ...txRange.binds),
       one<any>(env, `SELECT
@@ -138,6 +151,8 @@ export async function coinEconomyOverview(env: Env, range: Range = {}) {
       one<any>(env, `SELECT COALESCE(SUM(total_coins),0) AS total, COALESCE(SUM(spent_coins),0) AS spent,
                             SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active, COUNT(*) AS n
                        FROM promo_budgets`),
+      one<any>(env, `SELECT COALESCE(SUM(dpcoin),0) AS total, COALESCE(SUM(locked_coins),0) AS locked, COUNT(*) AS n
+                       FROM users WHERE role = '${HOUSE_ROLE}'`),
     ]);
 
   const types: LedgerTypeRow[] = byType
@@ -170,19 +185,21 @@ export async function coinEconomyOverview(env: Env, range: Range = {}) {
   const withdrawable = Math.max(0, total - locked);
   const ledgerTotal = num(ledgerAll?.n);
   const lockedLedgerTotal = num(lockedLedger?.n);
+  const houseTotal = num(house?.total);
+  const houseLocked = num(house?.locked);
 
   const checks = [
     {
       key: "supply_vs_ledger",
       label: "Users ke coin = ledger ka total",
-      ok: Math.abs(total - ledgerTotal) < 0.5,
-      detail: `Users: ${total}, ledger: ${ledgerTotal}`,
+      ok: Math.abs(total + houseTotal - ledgerTotal) < 0.5,
+      detail: `Users: ${total}${houseTotal ? ` + superadmin ${houseTotal}` : ""}, ledger: ${ledgerTotal}`,
     },
     {
       key: "locked_vs_ledger",
       label: "Locked coin = ledger ka locked total",
-      ok: Math.abs(locked - lockedLedgerTotal) < 0.5,
-      detail: `Users: ${locked}, ledger: ${lockedLedgerTotal}`,
+      ok: Math.abs(locked + houseLocked - lockedLedgerTotal) < 0.5,
+      detail: `Users: ${locked}${houseLocked ? ` + superadmin ${houseLocked}` : ""}, ledger: ${lockedLedgerTotal}`,
     },
     {
       key: "locked_le_balance",
@@ -222,6 +239,8 @@ export async function coinEconomyOverview(env: Env, range: Range = {}) {
       paidOutInr: num(cash?.paid_out_inr),
       pendingOutInr: num(cash?.pending_out_inr),
     },
+    /** Superadmin coins: not in supply, liability or flows. */
+    house: { total: houseTotal, locked: houseLocked, accounts: num(house?.n) },
     categories,
     types,
     platform: { kinds: platformKinds, net: platformNet },

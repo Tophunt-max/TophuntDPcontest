@@ -164,11 +164,16 @@ describe('registration reward', () => {
     expect(await ledger(env, 'alice')).toHaveLength(0);
   });
 
-  it('uses the admin-configured completion amount, snapshotting the promise at signup (a configured registration reward is ignored)', async () => {
+  it('pays the registration reward at signup as locked coins, and snapshots the completion promise', async () => {
     const { env } = makeEnv();
     await seedConfig(env, { verificationReward: { registrationReward: 20, completionReward: 80 } });
     await signup(env, 'alice');
-    expect(await balance(env, 'alice')).toBe(0);
+    expect(await balance(env, 'alice')).toBe(20);
+    const row = await env.DB.prepare(`SELECT locked_coins FROM users WHERE uid = 'alice'`).first<any>();
+    expect(row.locked_coins).toBe(20);
+    const tx = await env.DB.prepare(`SELECT amount, locked_delta, type FROM coin_transactions WHERE uid = 'alice'`).all<any>();
+    expect(tx.results).toEqual([{ amount: 20, locked_delta: 20, type: 'signup_bonus' }]);
+    expect(await enrolment(env, 'alice')).toMatchObject({ registrationReward: 20, registrationLedgerId: 'signup_bonus:alice' });
     // A later change does not re-price alice's promise.
     await seedConfig(env, { verificationReward: { registrationReward: 5, completionReward: 10, maxTotalReward: 15 } });
     expect((await enrolment(env, 'alice'))?.completionReward).toBe(80);
@@ -511,11 +516,11 @@ describe('admin configuration', () => {
 
   it('parsing a stored config never exceeds the cap', () => {
     expect(parseVerificationRewardConfig({ registrationReward: 60, completionReward: 90, maxTotalReward: 100 })).toMatchObject({
-      // There is no signup bonus any more: a stored registration reward is ignored.
-      registrationReward: 0, completionReward: 90,
+      // Over the cap: the completion part is clamped so signup + completion = max.
+      registrationReward: 60, completionReward: 40,
     });
     expect(parseVerificationRewardConfig({ registrationReward: 30, completionReward: 90, maxTotalReward: 50 })).toMatchObject({
-      registrationReward: 0, completionReward: 50,
+      registrationReward: 30, completionReward: 20,
     });
     expect(parseVerificationRewardConfig({ registrationReward: -5, completionReward: 'x' })).toMatchObject({
       registrationReward: 0, completionReward: 90,

@@ -18,7 +18,8 @@ import {
   deleteAuthUser,
 } from "../lib/firebaseAdmin";
 import { invalidateAuthState } from "../lib/cache";
-import { getAppControlConfig, getAuthMethods, getRewardSettings } from "../lib/settings";
+import { getAppConfig, getAppControlConfig, getAuthMethods, getRewardSettings } from "../lib/settings";
+import { lockedPart } from "../lib/rewardLocking";
 import { appControlGate } from "../lib/appControl";
 import { assertLoginAllowed, assertSignupAllowed, normalizePlatform, signupMethodForProvider, type AuthMethodKey } from "../lib/authMethods";
 import { setOtp, generateOtp, verifyOtp, deleteOtp } from "../lib/otp";
@@ -111,6 +112,9 @@ async function createUserProfile(
   // `rewardSettings.signupBonus` behaviour, unchanged.
   const grant = signupGrant(await getVerificationRewardConfig(env), legacySignupBonus);
   const signupBonus = grant.amount;
+  // A free reward like the verification bonus: play-only unless App Control
+  // turns `rewardLocking.verification` off (lib/rewardLocking.ts).
+  const signupLocked = lockedPart(await getAppConfig(env), "verification", signupBonus);
   // Validate + PRESERVE the typed case for display. Uniqueness stays
   // case-insensitive (assertIdentifiersAvailable + the COLLATE NOCASE index),
   // but the row stores "Alice", not "alice". Idempotent for the `create` path,
@@ -160,8 +164,9 @@ async function createUserProfile(
             id: registrationLedgerId(uid),
             uid,
             amount: signupBonus,
+            lockedDelta: signupLocked,
             type: "signup_bonus",
-            description: "Welcome bonus for joining TopHunt!",
+            description: signupLocked > 0 ? "Welcome bonus for joining TopHunt! (sirf khelne ke liye)" : "Welcome bonus for joining TopHunt!",
             createdAt: ts,
           })
           .onConflictDoNothing()
@@ -214,6 +219,7 @@ async function createUserProfile(
       coordinates: data.coordinates ?? null,
       ...verifiedCols,
       dpcoin: signupBonus,
+      lockedCoins: signupLocked,
       xp: 0,
       level: 1,
       signupCompleted: true,
@@ -250,7 +256,10 @@ async function createUserProfile(
     profileStatements.unshift(
       db
         .update(schema.users)
-        .set({ dpcoin: sql`COALESCE(${schema.users.dpcoin}, 0) + ${signupBonus}` })
+        .set({
+          dpcoin: sql`COALESCE(${schema.users.dpcoin}, 0) + ${signupBonus}`,
+          lockedCoins: sql`COALESCE(${schema.users.lockedCoins}, 0) + ${signupLocked}`,
+        })
         .where(and(eq(schema.users.uid, uid), sql`COALESCE(${schema.users.signupCompleted}, 0) = 0`)),
     );
   }

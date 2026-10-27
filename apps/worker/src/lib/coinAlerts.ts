@@ -97,6 +97,7 @@ export async function runCoinAlerts(env: Env, ts = Date.now()): Promise<CoinAler
     `SELECT t.uid AS uid, u.username AS username, SUM(t.amount) AS coins
        FROM coin_transactions t LEFT JOIN users u ON u.uid = t.uid
       WHERE t.created_at >= ? AND t.amount > 0 AND t.type IN (${placeholders})
+        AND COALESCE(u.role, '') <> 'superadmin'
       GROUP BY t.uid HAVING SUM(t.amount) > ?
       ORDER BY coins DESC LIMIT 10`,
   )

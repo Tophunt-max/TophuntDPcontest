@@ -1,10 +1,9 @@
 /**
  * Registration verification reward.
  *
- *   signup                         → nothing. The signup bonus was removed; new users
- *                                    are rewarded only through the referral program
- *                                    (lib/referralProgram.ts). `registrationReward` is
- *                                    kept in the schema for history and is always 0.
+ *   signup                         → `registrationReward` coins at once (set in
+ *                                    App Control; 0 = nothing). Locked (play-only)
+ *                                    unless `rewardLocking.verification` is off.
  *   email AND mobile both verified → `completionReward`   (default 90) coins, once
  *
  * Everything here is server-authoritative:
@@ -95,8 +94,6 @@ export function parseVerificationRewardConfig(raw: unknown): VerificationRewardC
     const n = Number(src[key]);
     if (src[key] !== undefined && src[key] !== null && Number.isInteger(n) && n >= min && n <= max) out[key] = n;
   }
-  // No signup bonus: the registration part of the reward is always 0.
-  out.registrationReward = 0;
   if (out.registrationReward + out.completionReward > out.maxTotalReward) {
     out.completionReward = out.maxTotalReward - out.registrationReward;
   }
@@ -186,12 +183,12 @@ export function signupGrant(
   cfg: VerificationRewardConfig,
   legacySignupBonus: number,
 ): { amount: number; enrol: boolean; completionReward: number } {
-  // There is NO signup bonus any more: joining earns coins only through a referral
-  // (lib/referralProgram.ts). The verification reward pays only on completing
-  // email + mobile verification. `legacySignupBonus` is ignored.
+  // The registration reward (App Control, e.g. 10) is paid at signup; the
+  // completion reward when email + mobile are verified. The old
+  // `rewardSettings.signupBonus` is ignored, so turning the feature off pays nothing.
   void legacySignupBonus;
   if (!cfg.enabled) return { amount: 0, enrol: false, completionReward: 0 };
-  return { amount: 0, enrol: true, completionReward: cfg.completionReward };
+  return { amount: cfg.registrationReward, enrol: true, completionReward: cfg.completionReward };
 }
 
 // ---------------------------------------------------------------------------
