@@ -45,6 +45,13 @@ const CONTEST_CANONICAL_EXTRA_KEYS = [
   "prizeProductImageUrl",
   "prizeProductValue",
   "prizeProductDescription",
+  // Promo budget that pays the part of the prize above the pot (migration 0068).
+  "subsidyBudgetId",
+  // Admin-only coin cost of a product prize. A physical column, and never public.
+  "prizeCostCoins",
+  // Never stored: the approval password and the audit reason travel in the body.
+  "approvalPassword",
+  "reason",
 ] as const;
 
 export const hasOwn = (value: object, key: string) => Object.prototype.hasOwnProperty.call(value, key);
@@ -324,6 +331,29 @@ export function validateContestInput(
       "Include prizeType when changing product prize fields.",
     );
   }
+
+  // Promo prize budget (lib/promoBudget.ts). The admin route checks the budget
+  // itself (exists, right kind, not closed) and asks for the approval password.
+  const subsidy = firstAlias(body, ["subsidyBudgetId"]);
+  if (subsidy.present) {
+    recognized = true;
+    const v = subsidy.value;
+    if (v === null || v === "") values.subsidyBudgetId = null;
+    else if (typeof v === "string" && v.length <= 64) values.subsidyBudgetId = v;
+    else throw httpsError("invalid-argument", "subsidyBudgetId must be a budget id or null.");
+  } else if (creating) {
+    values.subsidyBudgetId = null;
+  }
+  // Admin-only coin cost of a product prize (what one product costs the
+  // platform, in coins). Never sent to the app. Only meaningful for a product.
+  const cost = firstAlias(body, ["prizeCostCoins"]);
+  if (cost.present) {
+    recognized = true;
+    values.prizeCostCoins = contestInteger(cost.value ?? 0, "prizeCostCoins", 0, 10_000_000);
+  } else if (creating) {
+    values.prizeCostCoins = 0;
+  }
+  if (values.prizeType === "coins") values.prizeCostCoins = 0;
 
   const durationDays = firstAlias(body, ["voteDurationDays"]);
   const durationHours = firstAlias(body, ["durationHours"]);

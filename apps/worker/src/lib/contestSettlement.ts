@@ -1,5 +1,7 @@
 import type { Env } from "../types";
 import type { ProductPrize } from "./prizes";
+import { matchPot } from "./money";
+import { matchReservationId, platformLedgerStatement, releaseStatement } from "./promoBudget";
 
 export type MatchStatus = "waiting_for_opponent" | "active";
 export type FinalMatchStatus = "completed" | "cancelled";
@@ -52,13 +54,21 @@ export async function settleRefund(
     ).bind(...claimBindings),
   ];
 
+  const claimed = `EXISTS (SELECT 1 FROM contest_matches WHERE id = ? AND settlement_id = ?)`;
+  // A promo subsidy reserved for this match goes back to its budget: nobody won it.
+  statements.push(releaseStatement(env, matchReservationId(input.matchId), input.completedAt, claimed, [input.matchId, settlementId]));
+
   if (input.refundPerUser > 0) {
     for (const uid of participantUids) {
       const transactionId = `contest_refund:${input.matchId}:${uid}`;
+      // Locked (play-only) coins that paid this entry are locked again, so a
+      // refund can never turn promo coins into withdrawable ones.
+      const relock = `MIN(?, COALESCE((SELECT -locked_delta FROM coin_transactions WHERE id = ?), 0))`;
+      const entryId = `contest_entry:${input.matchId}:${uid}`;
       statements.push(
         env.DB.prepare(
           `UPDATE users
-              SET dpcoin = dpcoin + ?, updated_at = ?
+              SET dpcoin = dpcoin + ?, locked_coins = locked_coins + ${relock}, updated_at = ?
             WHERE uid = ?
               AND EXISTS (
                 SELECT 1 FROM contest_matches
@@ -69,6 +79,8 @@ export async function settleRefund(
               )`,
         ).bind(
           input.refundPerUser,
+          input.refundPerUser,
+          entryId,
           input.completedAt,
           uid,
           input.matchId,
@@ -79,8 +91,8 @@ export async function settleRefund(
       statements.push(
         env.DB.prepare(
           `INSERT OR IGNORE INTO coin_transactions
-             (id, uid, amount, type, contest_id, match_id, description, created_at)
-           SELECT ?, ?, ?, 'contest_refund', ?, ?, ?, ?
+             (id, uid, amount, type, contest_id, match_id, description, created_at, locked_delta)
+           SELECT ?, ?, ?, 'contest_refund', ?, ?, ?, ?, ${relock}
             WHERE EXISTS (
               SELECT 1 FROM contest_matches
                WHERE id = ? AND settlement_id = ?
@@ -93,6 +105,8 @@ export async function settleRefund(
           input.matchId,
           input.description,
           input.completedAt,
+          input.refundPerUser,
+          entryId,
           input.matchId,
           settlementId,
         ),
@@ -159,6 +173,22 @@ export async function settleWinner(
   // amount is used and the cheapest place to be certain.
   const rewardAmount = product ? 0 : input.rewardAmount;
 
+  // The platform's side of this match (platform_ledger, lib/promoBudget.ts).
+  // Read before the batch: entry_fee and the subsidy are written once, when the
+  // match is created, and never change afterwards.
+  const funding = await env.DB.prepare(
+    `SELECT entry_fee, subsidy_coins, subsidy_budget_id FROM contest_matches WHERE id = ?`,
+  ).bind(input.matchId).first<{ entry_fee: number | null; subsidy_coins: number | null; subsidy_budget_id: string | null }>();
+  const pot = matchPot(funding?.entry_fee ?? 0);
+  const reservedSubsidy = Math.max(0, Number(funding?.subsidy_coins || 0));
+  const budgetId = funding?.subsidy_budget_id ?? null;
+  // Coin prize: only the part above the pot is paid by the budget; the rest of a
+  // reservation (a prize clamped lower) goes back to it. Product prize: the whole
+  // reservation (its admin-set coin cost above the pot) is spent on the product.
+  const subsidyUsed = product ? reservedSubsidy : Math.min(reservedSubsidy, Math.max(0, rewardAmount - pot));
+  // Entry fees the platform keeps: the pot minus the part of it paid out.
+  const platformFee = product ? 0 : Math.max(0, pot - (rewardAmount - subsidyUsed));
+
   const statements = [
     env.DB.prepare(
       `UPDATE contest_matches
@@ -206,8 +236,8 @@ export async function settleWinner(
     ),
     env.DB.prepare(
       `INSERT OR IGNORE INTO coin_transactions
-         (id, uid, amount, type, contest_id, match_id, description, created_at)
-       SELECT ?, ?, ?, 'contest_win_reward', ?, ?, ?, ?
+         (id, uid, amount, type, contest_id, match_id, description, created_at, budget_id)
+       SELECT ?, ?, ?, 'contest_win_reward', ?, ?, ?, ?, ?
         WHERE ${gate}`,
     ).bind(
       transactionId,
@@ -217,10 +247,67 @@ export async function settleWinner(
       input.matchId,
       input.description,
       input.completedAt,
+      subsidyUsed > 0 ? budgetId : null,
       input.matchId,
       settlementId,
     ),
   ];
+
+  const gateArgs = [input.matchId, settlementId];
+  const reservationId = matchReservationId(input.matchId);
+  if (reservedSubsidy > 0 && budgetId) {
+    if (subsidyUsed > 0) {
+      const held = `EXISTS (SELECT 1 FROM promo_reservations WHERE id = ? AND status = 'held')`;
+      statements.push(
+        env.DB.prepare(
+          `UPDATE promo_budgets SET spent_coins = spent_coins + ?, updated_at = ?
+            WHERE id = ? AND ${gate} AND ${held}`,
+        ).bind(subsidyUsed, input.completedAt, budgetId, ...gateArgs, reservationId),
+        env.DB.prepare(
+          `UPDATE promo_reservations SET status = 'used', coins = ?, uid = ?, updated_at = ?
+            WHERE id = ? AND status = 'held' AND ${gate}`,
+        ).bind(subsidyUsed, input.winnerUid, input.completedAt, reservationId, ...gateArgs),
+        platformLedgerStatement(env, {
+          id: `pl:${product ? "product_prize" : "prize_subsidy"}:${input.matchId}`,
+          kind: product ? "product_prize" : "prize_subsidy",
+          coins: -subsidyUsed,
+          budgetId,
+          contestId: input.contestId ?? null,
+          matchId: input.matchId,
+          uid: input.winnerUid,
+          description: product
+            ? `Product prize "${product.title}": ${subsidyUsed} coins from the budget on top of the ${pot}-coin pot`
+            : `Prize subsidy: ${subsidyUsed} coins on top of the ${pot}-coin pot`,
+          ts: input.completedAt,
+        }, gate, gateArgs),
+      );
+    } else {
+      statements.push(releaseStatement(env, reservationId, input.completedAt, gate, gateArgs));
+    }
+  }
+  if (platformFee > 0) {
+    statements.push(platformLedgerStatement(env, {
+      id: `pl:platform_fee:${input.matchId}`,
+      kind: "platform_fee",
+      coins: platformFee,
+      contestId: input.contestId ?? null,
+      matchId: input.matchId,
+      description: `Entry fees kept: ${platformFee} of the ${pot}-coin pot`,
+      ts: input.completedAt,
+    }, gate, gateArgs));
+  }
+  if (product && pot > 0) {
+    statements.push(platformLedgerStatement(env, {
+      id: `pl:product_prize_fund:${input.matchId}`,
+      kind: "product_prize_fund",
+      coins: pot,
+      contestId: input.contestId ?? null,
+      matchId: input.matchId,
+      uid: input.winnerUid,
+      description: `Entry fees kept to fund the product prize "${product.title}"`,
+      ts: input.completedAt,
+    }, gate, gateArgs));
+  }
 
   if (product) {
     statements.push(

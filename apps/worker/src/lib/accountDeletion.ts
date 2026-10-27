@@ -54,7 +54,8 @@ import { isContestStoryType, purgeVsCompositesForUser } from "./matchStories";
  * What is NOT deleted, and why. This list is load-bearing: it is mirrored in the
  * privacy policy (content/legal.ts) and asserted by test/accountDeletion.test.ts.
  *
- *  - `coin_transactions`, `payments`, `payment_orders`, `deposits`, `withdrawals`
+ *  - `coin_transactions`, `payments`, `payment_orders`, `deposits`, `withdrawals`,
+ *    `promo_reservations`, `platform_ledger`
  *    — financial records, retained for the period Indian tax and accounting law
  *    requires, keyed by a uid that no longer resolves to a person.
  *  - `votes`, `vote_xp_awards`, `contest_matches` — other people entered those
@@ -703,7 +704,7 @@ async function phaseSnapshots(env: Env, uid: string): Promise<string[]> {
 
   const media = new Set<string>();
   const user = await db
-    .select({ avatar: schema.users.profileImageUrl, balance: schema.users.dpcoin })
+    .select({ avatar: schema.users.profileImageUrl, balance: schema.users.dpcoin, locked: schema.users.lockedCoins })
     .from(schema.users)
     .where(eq(schema.users.uid, uid))
     .get();
@@ -746,6 +747,8 @@ async function phaseSnapshots(env: Env, uid: string): Promise<string[]> {
             id: `account_deletion:${uid}`,
             uid,
             amount: -balance,
+            // The play-only promo coins go with the rest of the balance.
+            lockedDelta: -Math.max(0, Number(user?.locked || 0)),
             type: "account_deletion_forfeit",
             description: "Coins forfeited on account deletion",
             createdAt: ts,
@@ -781,6 +784,7 @@ async function phaseSnapshots(env: Env, uid: string): Promise<string[]> {
         status: DELETED_STATUS,
         isPrivate: true,
         dpcoin: 0,
+        lockedCoins: 0,
         updatedAt: ts,
       })
       .where(eq(schema.users.uid, uid)),

@@ -8,13 +8,17 @@ import { coinsInInr } from '@/src/lib/coinValue';
 
 interface WalletCardProps {
   Dpcoin: number;
+  /** Play-only coins inside Dpcoin (promo bonus / free rewards): never withdrawable. */
+  lockedCoins?: number;
   stats: UserProfile['stats'];
   onPress?: () => void;
   /** Tapping the Wins stat opens the list of battles this user has won. */
   onPressWins?: () => void;
 }
 
-export const WalletCard = ({ Dpcoin, stats, onPress, onPressWins }: WalletCardProps) => {
+export const WalletCard = ({ Dpcoin, lockedCoins, stats, onPress, onPressWins }: WalletCardProps) => {
+  const locked = Math.min(Math.max(0, Number(lockedCoins) || 0), Math.max(0, Dpcoin || 0));
+  const withdrawable = Math.max(0, (Dpcoin || 0) - locked);
   // Live ₹ value at the admin's coin rate.
   const value = coinsInInr(Dpcoin || 0, useCoinRate());
   return (
@@ -34,6 +38,11 @@ export const WalletCard = ({ Dpcoin, stats, onPress, onPressWins }: WalletCardPr
             <Text style={styles.coinUnit}> Dpcoins</Text>
           </View>
           {value ? <Text style={styles.label}>Value {value}</Text> : null}
+          {locked > 0 ? (
+            <Text style={styles.split}>
+              Withdraw ho sakte: {withdrawable} · Sirf khelne ke liye: {locked}
+            </Text>
+          ) : null}
         </View>
         <View style={styles.badge}>
           <Text style={styles.badgeText}>Active</Text>
@@ -82,6 +91,12 @@ const styles = StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.8)',
     marginBottom: 4,
     fontFamily: 'Urbanist-Medium',
+  },
+  split: {
+    fontSize: 12,
+    color: '#FFFFFF',
+    fontFamily: 'Urbanist-SemiBold',
+    marginTop: 2,
   },
   coinRow: {
     flexDirection: 'row',

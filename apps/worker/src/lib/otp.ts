@@ -37,7 +37,7 @@ function key(scope: string, id: string): string {
  * deletion, and vice versa. Reusing one scope for two meanings is how a
  * confirmation code becomes an authorisation token.
  */
-export type OtpScope = "pwreset" | "email" | "phone" | "reauth";
+export type OtpScope = "pwreset" | "email" | "phone" | "reauth" | "approval_reset";
 
 export async function setOtp(
   env: Env,

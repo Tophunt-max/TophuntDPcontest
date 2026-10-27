@@ -53,6 +53,19 @@ export interface ContestPrizeInput extends ContestPricingInput {
   prizeProductImageUrl?: string | null;
   prizeProductValue?: number | null;
   prizeProductDescription?: string | null;
+  /** Product prize whose promo budget ran out: new matches are refused until the admin tops it up. */
+  prizesSoldOut?: boolean | null;
+  /** Coin prize above the pot, paid by the platform's promo budget. */
+  promoPrize?: boolean | null;
+}
+
+export type PrizeTag = 'sold_out' | 'promo' | null;
+
+/** The small note under a prize (worker read.ts withPromoPrizeAvailability). */
+export function prizeTag(contest: ContestPrizeInput | null | undefined): PrizeTag {
+  if (contest?.prizesSoldOut === true) return 'sold_out';
+  if (contest?.promoPrize === true) return 'promo';
+  return null;
 }
 
 const text = (value: unknown): string | null => {

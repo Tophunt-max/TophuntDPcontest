@@ -1,3 +1,4 @@
+import { Link } from "wouter";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
@@ -68,7 +69,10 @@ export default function Deposits() {
         <StatCard icon={ShieldAlert} label="Duplicate UTRs" value={fmtNumber(stats.dups)} gradient="gradient-red" />
       </div>
 
-      <GatewayConfig />
+      <div className="bg-card border border-border rounded-2xl p-4 mb-5 text-sm text-muted-foreground">
+        Payment gateway (Razorpay / manual UPI-QR mode, UPI id, QR) ab{" "}
+        <Link href="/coin-economy" className="font-semibold text-foreground underline">Coin Economy → Buy</Link> mein set hota hai.
+      </div>
 
       <SegTabs tab={tab} setTab={setTab} tabs={TABS} />
 
@@ -162,7 +166,7 @@ const MODES = [
   { k: "both", l: "Both", d: "Auto + Manual", icon: Layers },
 ];
 
-function GatewayConfig() {
+export function GatewayConfig() {
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ["app-settings"], queryFn: api.appSettings });
   const [gw, setGw] = useState<Gateway>(GW_DEFAULT);

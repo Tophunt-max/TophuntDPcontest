@@ -4,7 +4,7 @@ import { Ionicons } from '@/src/lib/icons';
 import { CoinIcon } from '@/src/components/ui/CoinIcon';
 import { useCountdown } from '@/src/hooks/useCountdown';
 import { entryFeePerPlayer, isFreeContest, type ContestPricingInput } from '@/src/lib/contestPricing';
-import { contestPrize, type ContestPrizeInput } from '@/src/lib/contestPrize';
+import { contestPrize, prizeTag, type ContestPrizeInput } from '@/src/lib/contestPrize';
 import type { Deadline } from '@/src/lib/countdown';
 
 /**
@@ -59,6 +59,8 @@ const PAID_FG = '#422006';
  */
 const COIN_FG = '#FFB800';
 const PRODUCT_FG = '#A78BFA';
+const SOLD_OUT_FG = '#EF4444';
+const PROMO_FG = '#22C55E';
 /** Time pill: solid dark, light type. */
 const TIME_BG = '#111827';
 const TIME_URGENT_BG = '#DC2626';
@@ -200,6 +202,7 @@ export function ContestPrizeLine({
   labelColor: string;
 }) {
   const prize = contestPrize(contest);
+  const tag = prizeTag(contest);
 
   if (prize.type === 'product') {
     return (
@@ -222,6 +225,7 @@ export function ContestPrizeLine({
             Worth ₹{prize.product.value}
           </Text>
         )}
+        {tag === 'sold_out' && <PrizeTagLine tag={tag} />}
       </View>
     );
   }
@@ -243,6 +247,25 @@ export function ContestPrizeLine({
           {prize.coins} Coins
         </Text>
       </View>
+      {tag === 'promo' && <PrizeTagLine tag={tag} />}
+    </View>
+  );
+}
+
+/**
+ * "Prize khatam": the product prize budget ran out, so the server refuses new
+ * matches until the admin raises it. "Platform bonus prize": the coin prize is
+ * bigger than the entry fees, topped up by the platform.
+ */
+export function PrizeTagLine({ tag, color }: { tag: 'sold_out' | 'promo'; color?: string }) {
+  const soldOut = tag === 'sold_out';
+  const fg = color ?? (soldOut ? SOLD_OUT_FG : PROMO_FG);
+  return (
+    <View style={styles.prizeTagRow} accessibilityLabel={soldOut ? 'Prize abhi khatam hai' : 'Platform bonus prize'}>
+      <Ionicons name={soldOut ? 'hourglass' : 'gift'} size={12} color={fg} />
+      <Text style={[styles.prizeTagText, { color: fg }]} numberOfLines={1} maxFontSizeMultiplier={MAX_SCALE}>
+        {soldOut ? 'Prize khatam, jald wapas aayega' : 'Platform bonus prize'}
+      </Text>
     </View>
   );
 }
@@ -279,6 +302,8 @@ const styles = StyleSheet.create({
   prizeValueRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 3 },
   prizeValue: { fontSize: 17, fontFamily: 'Urbanist-Bold', flexShrink: 1 },
   prizeSub: { fontSize: 11, fontFamily: 'Urbanist-SemiBold', marginTop: 1 },
+  prizeTagRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 },
+  prizeTagText: { fontSize: 11, fontFamily: 'Urbanist-Bold', flexShrink: 1 },
 
   freeBadge: { backgroundColor: FREE_BG, borderColor: 'rgba(5,46,22,0.22)' },
   paidBadge: { backgroundColor: PAID_BG, borderColor: 'rgba(66,32,6,0.22)' },

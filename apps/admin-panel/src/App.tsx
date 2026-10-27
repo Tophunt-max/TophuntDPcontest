@@ -57,6 +57,7 @@ const Transactions = lazyWithReload(() => import("@/pages/Transactions"));
 const Withdrawals = lazyWithReload(() => import("@/pages/Withdrawals"));
 const Deposits = lazyWithReload(() => import("@/pages/Deposits"));
 const CoinPackages = lazyWithReload(() => import("@/pages/CoinPackages"));
+const CoinEconomy = lazyWithReload(() => import("@/pages/CoinEconomy"));
 const Posts = lazyWithReload(() => import("@/pages/Posts"));
 const Stories = lazyWithReload(() => import("@/pages/Stories"));
 const Comments = lazyWithReload(() => import("@/pages/Comments"));
@@ -123,6 +124,7 @@ function ProtectedApp() {
           <Route path="/withdrawals" component={Withdrawals} />
           <Route path="/deposits" component={Deposits} />
           <Route path="/coin-packages" component={CoinPackages} />
+          <Route path="/coin-economy" component={CoinEconomy} />
           <Route path="/posts" component={Posts} />
           <Route path="/stories" component={Stories} />
           <Route path="/comments" component={Comments} />

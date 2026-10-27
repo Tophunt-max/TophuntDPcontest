@@ -1,3 +1,4 @@
+import { Link } from "wouter";
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
@@ -64,6 +65,13 @@ const TABS = [
   { key: "rejected", label: "Rejected" },
   { key: "expired", label: "Expired" },
 ];
+
+/** Why a referral was held for review (worker applyReferralCode fraud signals). */
+const HOLD_REASONS: Record<string, string> = {
+  same_ip_burst: "Isi referrer ke kai referral ek hi IP se (24 ghante)",
+  ip_shared: "Is IP se bahut saare referral (24 ghante)",
+  referrer_velocity: "Referrer ko 1 ghante me bahut referral",
+};
 
 const REASONS: Record<string, string> = {
   same_device_as_referrer: "Same device as the inviter",
@@ -165,7 +173,7 @@ export default function Referrals() {
             onClick={() =>
               exportCsv(`referrals-${Date.now()}.csv`, rows, [
                 "id", "referrerUsername", "referrerUid", "referredUsername", "referredUid", "code", "status",
-                "qualifyAction", "referrerReward", "refereeReward", "rejectReason", "deviceId", "createdAt", "qualifiedAt", "rewardedAt", "expiresAt",
+                "qualifyAction", "referrerReward", "refereeReward", "rejectReason", "holdReason", "ip", "deviceId", "createdAt", "qualifiedAt", "rewardedAt", "expiresAt",
               ])
             }
             className="flex items-center gap-2 px-4 py-2 rounded-xl bg-secondary text-sm font-medium hover:bg-secondary/70 transition-colors"
@@ -185,7 +193,12 @@ export default function Referrals() {
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-5 mb-6">
         <div className="xl:col-span-2">
-          <ProgramSettings program={data?.program} />
+          <div className="bg-card border border-border rounded-2xl p-5 h-full text-sm text-muted-foreground">
+            <p className="font-bold text-foreground mb-1">Program settings</p>
+            Referral reward (dono taraf), qualify action, limits aur milestones ab{" "}
+            <Link href="/coin-economy" className="font-semibold text-foreground underline">Coin Economy → Earn</Link> mein set hote hain.
+            Yahan sirf referrals ki queue aur approvals hain.
+          </div>
         </div>
         <div className="bg-card border border-border rounded-2xl p-5">
           <div className="flex items-center gap-2 mb-3">
@@ -237,6 +250,11 @@ export default function Referrals() {
               <div>
                 <Badge variant={STATUS_VARIANT[r.status] || "default"}>{r.status}</Badge>
                 {r.rejectReason && <p className="text-[11px] text-muted-foreground mt-1 max-w-[220px]">{REASONS[r.rejectReason] || r.rejectReason}</p>}
+                {r.holdReason && (
+                  <p className="text-[11px] font-medium text-amber-700 mt-1 max-w-[220px]">
+                    ⚠️ {HOLD_REASONS[r.holdReason] || r.holdReason}
+                  </p>
+                )}
               </div>
             ),
           },
@@ -324,7 +342,7 @@ export default function Referrals() {
 
 /* ---------------- program settings ---------------- */
 
-function ProgramSettings({ program }: { program?: Partial<Program> }) {
+export function ProgramSettings({ program }: { program?: Partial<Program> }) {
   const qc = useQueryClient();
   const [p, setP] = useState<Program>(DEFAULTS);
   const [dirty, setDirty] = useState(false);

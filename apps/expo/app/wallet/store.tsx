@@ -145,7 +145,7 @@ export default function CoinStoreScreen() {
           ) : null}
           {item.bonusCoins > 0 ? (
             <View style={styles.bonusPill}>
-              <Text style={styles.bonusLabel}>+{item.bonusCoins} bonus</Text>
+              <Text style={styles.bonusLabel}>+{item.bonusCoins} bonus{item.bonusLocked ? ' · sirf khelne ke liye' : ''}</Text>
             </View>
           ) : (
             <View style={styles.bonusPillPlaceholder} />

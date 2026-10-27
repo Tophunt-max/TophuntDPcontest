@@ -18,10 +18,13 @@ async function idToken(force = false): Promise<string | null> {
 export class ApiError extends Error {
   status: number;
   code?: string;
-  constructor(message: string, status: number, code?: string) {
+  /** Machine-readable reason, e.g. `reauth_required`, `approval_not_set`. */
+  reason?: string;
+  constructor(message: string, status: number, code?: string, reason?: string) {
     super(message);
     this.status = status;
     this.code = code;
+    this.reason = reason;
   }
 }
 
@@ -132,6 +135,13 @@ export interface ContestPrizeFields {
   /** Declared retail value in rupees. Display only — never credited, never spendable. */
   prizeProductValue: number;
   prizeProductDescription: string | null;
+  /**
+   * Promo budget (kind contest_prize) that pays the part of `rewardCoins` above
+   * the pot, reserved per match. Null = the prize is capped at the pot.
+   */
+  subsidyBudgetId?: string | null;
+  /** Admin-only coin cost of a product prize; paid above the pot by a product_prize budget. Never shown in the app. */
+  prizeCostCoins?: number;
 }
 
 export interface AdminContest extends ContestPrizeFields {
@@ -385,11 +395,26 @@ export function setReauthHandler(fn: (() => Promise<boolean>) | null) {
   reauthHandler = fn;
 }
 
+/**
+ * Promo actions (budgets, budget-funded packages and contest prizes) also need
+ * the separate APPROVAL password (worker lib/approvalPassword.ts). When the
+ * server answers `approval_required` / `approval_invalid`, the handler prompts
+ * for it and the request is re-sent with `approvalPassword` in the body. The
+ * password is never stored by the panel.
+ */
+type ApprovalHandler = (opts: { invalid: boolean; message: string }) => Promise<string | null>;
+let approvalHandler: ApprovalHandler | null = null;
+export function setApprovalHandler(fn: ApprovalHandler | null) {
+  approvalHandler = fn;
+}
+const MAX_APPROVAL_TRIES = 3;
+
 export async function req<T>(
   method: string,
   path: string,
   body?: unknown,
   retried = false,
+  approvalTries = 0,
 ): Promise<T> {
   const doFetch = async (force: boolean) => {
     const token = await idToken(force);
@@ -419,10 +444,21 @@ export async function req<T>(
       /* non-JSON error */
     }
     if (res.status === 412 && reason === "reauth_required" && !retried && reauthHandler) {
-      if (await reauthHandler()) return req<T>(method, path, body, true);
-      throw new ApiError("Cancelled: this action needs your password.", res.status, code);
+      if (await reauthHandler()) return req<T>(method, path, body, true, approvalTries);
+      throw new ApiError("Cancelled: this action needs your password.", res.status, code, reason);
     }
-    throw new ApiError(msg, res.status, code);
+    if (
+      res.status === 412 &&
+      (reason === "approval_required" || reason === "approval_invalid") &&
+      approvalTries < MAX_APPROVAL_TRIES &&
+      approvalHandler
+    ) {
+      const password = await approvalHandler({ invalid: reason === "approval_invalid", message: msg });
+      if (!password) throw new ApiError("Cancelled: approval password chahiye.", res.status, code, reason);
+      const base = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+      return req<T>(method, path, { ...base, approvalPassword: password }, retried, approvalTries + 1);
+    }
+    throw new ApiError(msg, res.status, code, reason);
   }
 
   if (res.status === 204) return undefined as T;
@@ -598,8 +634,14 @@ export interface MoneyHealth {
   ledgerDrift: { count: number; samples: LedgerDriftSample[] };
   negativeBalances: { count: number; samples: { uid: string; balance: number }[] };
   strandedPaidOrders: number;
+  /** Approved manual deposits whose coins never landed (optional on older Workers). */
+  strandedApprovedDeposits?: number;
   stuckCreatedOrders: number;
   clawbackShortfalls: { count: number; coins: number };
+  /** Locked (play-only promo) coins out of step with the ledger or above the balance. */
+  lockedDrift?: { count: number; overBalance: number; samples: { uid: string; locked: number; ledger: number; balance: number }[] };
+  /** Promo-budget holds left on a finished match / processed deposit. */
+  staleReservations?: number;
   /** Escrowed withdrawals missing their hold/refund ledger row (optional on older Workers). */
   withdrawalLedgerGaps?: { count: number; samples: { id: string; status: string; missing: string }[] };
   pendingDeposits: { count: number; oldestAgeMs: number | null };
@@ -728,8 +770,8 @@ export const api = {
    */
   logoutAllUserSessions: (id: string) => post(`/admin/users/${id}/logout-all`, {}),
   /** `requestId` makes a retry or double click a no-op on the server; `reason` is audited. */
-  adjustWallet: (id: string, amount: number, type: "add" | "subtract", reason: string, requestId: string) =>
-    post<{ newBalance: number; replayed?: boolean }>(`/admin/users/${id}/wallet`, { amount, type, reason, requestId }),
+  adjustWallet: (id: string, amount: number, type: "add" | "subtract", reason: string, requestId: string, locked = false) =>
+    post<{ newBalance: number; replayed?: boolean }>(`/admin/users/${id}/wallet`, { amount, type, reason, requestId, locked }),
   setRole: (payload: { email?: string; userId?: string; makeAdmin?: boolean; role?: string }) =>
     post("/admin/set-role", payload),
   updateUserProfile: (id: string, payload: any) => patch(`/admin/users/${id}/profile`, payload),
@@ -1104,9 +1146,153 @@ export const api = {
   systemHealth: () => get<DeepHealth>("/admin/health"),
 
   moneyHealth: () => get<MoneyHealth>("/admin/money-health"),
+
+  // coin economy (promo budgets, ledger reports)
+  coinEconomy: (range?: { from?: number; to?: number }) => {
+    const s = new URLSearchParams();
+    if (range?.from) s.set("from", String(range.from));
+    if (range?.to) s.set("to", String(range.to));
+    const qs = s.toString();
+    return get<CoinEconomy>(`/admin/coin-economy${qs ? `?${qs}` : ""}`);
+  },
+  coinEconomyContests: () => get<ContestPnl[]>("/admin/coin-economy/contests"),
+  coinEconomyPackages: () => get<PackagePnl[]>("/admin/coin-economy/packages"),
+  coinEconomyUser: (uid: string, limit = 300) =>
+    get<UserStatement>(`/admin/coin-economy/users/${encodeURIComponent(uid)}?limit=${limit}`),
+  promoBudgets: () => get<PromoBudget[]>("/admin/promo-budgets"),
+  promoBudget: (id: string) => get<PromoBudgetDetail>(`/admin/promo-budgets/${encodeURIComponent(id)}`),
+  createPromoBudget: (payload: PromoBudgetWrite & { kind: PromoBudgetKind; reason: string }) =>
+    post<{ success: boolean; id: string; budget: PromoBudget }>("/admin/promo-budgets", payload),
+  updatePromoBudget: (id: string, payload: Partial<PromoBudgetWrite> & { status?: PromoBudgetStatus; reason: string }) =>
+    patch<{ success: boolean; budget: PromoBudget }>(`/admin/promo-budgets/${encodeURIComponent(id)}`, payload),
+  approvalPasswordStatus: () => get<{ configured: boolean; updatedAt: number | null }>("/admin/approval-password"),
+  setApprovalPassword: (payload: { current?: string; next: string }) =>
+    post<{ success: boolean }>("/admin/approval-password", payload),
+  requestApprovalReset: () => post<{ success: boolean; sentTo: string }>("/admin/approval-password/reset/request", {}),
+  confirmApprovalReset: (payload: { code: string; next: string }) =>
+    post<{ success: boolean }>("/admin/approval-password/reset/confirm", payload),
+  sendCoinReport: (period: "daily" | "weekly") => post<{ success: boolean; to: string }>("/admin/coin-economy/report", { period }),
+  runCoinAlerts: () => post<{ budgets: number; liability: boolean; heavyEarners: number }>("/admin/coin-economy/alerts/run", {}),
   cronHealth: () => get<CronJobHealth[]>("/admin/ops/cron-health"),
 
   // SEO
   seoAudit: () => get<SeoAudit>("/admin/seo"),
   seoScan: () => post<{ message: string }>("/admin/seo/scan"),
 };
+
+// ─── Coin economy (worker: lib/promoBudget.ts, lib/coinEconomy.ts) ───────────
+
+export type PromoBudgetKind = "package_bonus" | "contest_prize" | "product_prize" | "free_rewards";
+export type PromoBudgetStatus = "active" | "paused" | "closed";
+
+export interface PromoBudget {
+  id: string;
+  name: string;
+  kind: PromoBudgetKind;
+  status: PromoBudgetStatus;
+  totalCoins: number;
+  spentCoins: number;
+  heldCoins: number;
+  remainingCoins: number;
+  startsAt: number | null;
+  endsAt: number | null;
+  perUserLimit: number | null;
+  note: string | null;
+  createdBy: string | null;
+  createdAt: number;
+  updatedAt: number;
+  live: boolean;
+  usedCount: number;
+  heldCount: number;
+  linkedPackages: number;
+  linkedContests: number;
+}
+
+export interface PromoBudgetWrite {
+  name: string;
+  totalCoins: number;
+  startsAt: number | null;
+  endsAt: number | null;
+  perUserLimit: number | null;
+  note: string | null;
+}
+
+export interface PromoBudgetDetail {
+  budget: PromoBudget;
+  packages: { id: string; name: string | null; coins: number; bonusCoins: number; active: boolean }[];
+  contests: { id: string; title: string | null; status: string | null; totalEntryFee: number | null; rewardCoins: number | null }[];
+  reservations: { id: string; uid: string | null; coins: number; status: string; refType: string; refId: string; expiresAt: number | null; createdAt: number; updatedAt: number }[];
+  payouts: { id: string; kind: string; coins: number; contestId: string | null; matchId: string | null; uid: string | null; refId: string | null; description: string | null; createdAt: number }[];
+}
+
+export interface CoinEconomy {
+  ts: number;
+  range: { from: number | null; to: number | null };
+  payoutRate: number;
+  supply: { total: number; withdrawable: number; locked: number; holders: number; liabilityInr: number };
+  cash: { paidInInr: number; refundedInr: number; paidOutInr: number; pendingOutInr: number };
+  categories: Record<string, { label: string; credits: number; debits: number; net: number; locked: number }>;
+  types: { type: string; category: string; credits: number; debits: number; net: number; locked: number; count: number }[];
+  platform: { kinds: Record<string, { coins: number; count: number }>; net: number };
+  budgets: { total: number; spent: number; active: number; count: number };
+  checks: { key: string; label: string; ok: boolean; detail: string }[];
+  ok: boolean;
+  budgetList: PromoBudget[];
+  approvalPassword: { configured: boolean; updatedAt: number | null };
+}
+
+export interface ContestPnl {
+  id: string;
+  title: string | null;
+  status: string | null;
+  totalEntryFee: number;
+  rewardCoins: number;
+  prizeType: string;
+  subsidyBudgetId: string | null;
+  prizeCostCoins: number;
+  matches: number;
+  won: number;
+  live: number;
+  feesIn: number;
+  refunds: number;
+  prizes: number;
+  subsidy: number;
+  subsidyHeld: number;
+  platformKept: number;
+  net: number;
+}
+
+export interface PackagePnl {
+  id: string;
+  name: string | null;
+  active: boolean;
+  coins: number;
+  bonusCoins: number;
+  budgetId: string | null;
+  purchases: number;
+  inr: number;
+  refundedInr: number;
+  baseCoins: number;
+  bonusCoinsGiven: number;
+  promoBonusGiven: number;
+}
+
+export interface UserStatement {
+  user: { uid: string; username: string | null; fullName: string | null; email: string | null; balance: number; locked: number; withdrawable: number };
+  ledger: { count: number; sum: number; lockedSum: number; balanced: boolean };
+  entries: {
+    id: string;
+    type: string;
+    category: string;
+    amount: number;
+    lockedDelta: number;
+    contestId: string | null;
+    matchId: string | null;
+    budgetId: string | null;
+    description: string | null;
+    createdAt: number;
+    balanceAfter: number;
+    lockedAfter: number;
+  }[];
+  truncated: boolean;
+}

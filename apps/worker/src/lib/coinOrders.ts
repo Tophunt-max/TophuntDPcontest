@@ -18,6 +18,8 @@ import { getDb, schema } from "../db";
 import { newId, now } from "./ids";
 import { getRazorpayCredentials } from "./integrations";
 import { qualifyReferral } from "./referralProgram";
+import { LOCKED_AFTER_DEBIT } from "./money";
+import { orderReservationId, promoBonusCreditStatements } from "./promoBudget";
 
 type Db = ReturnType<typeof getDb>;
 
@@ -180,6 +182,8 @@ export async function creditPaymentOrder(
     paymentId,
     uid: order.userId,
     coins,
+    bonusCoins: bonus,
+    budgetId: order.budgetId ?? null,
     amountPaise: Number(order.amountPaise) || 0,
     description,
     ts,
@@ -219,7 +223,11 @@ async function applyOrderCredit(
     orderId: string;
     paymentId: string;
     uid: string;
+    /** Everything credited: base + bonus. */
     coins: number;
+    bonusCoins?: number;
+    /** Set when the bonus is budget-funded (lib/promoBudget.ts): credited as locked coins. */
+    budgetId?: string | null;
     amountPaise: number;
     description: string;
     ts: number;
@@ -227,6 +235,12 @@ async function applyOrderCredit(
 ): Promise<boolean> {
   const stillPaid = `EXISTS (SELECT 1 FROM payment_orders WHERE order_id = ? AND status = 'paid' AND payment_id = ?)`;
   const notCredited = `NOT EXISTS (SELECT 1 FROM payments WHERE id = ?)`;
+  // A budget-funded bonus is its own `promo_bonus` row (locked, play-only), so
+  // the `purchase` row carries only the coins that were actually paid for.
+  const promoBonus = p.budgetId && (p.bonusCoins ?? 0) > 0 ? Number(p.bonusCoins) : 0;
+  const paidCoins = p.coins - promoBonus;
+  const gate = `${stillPaid} AND ${notCredited} AND EXISTS (SELECT 1 FROM users WHERE uid = ?)`;
+  const gateArgs = [p.orderId, p.paymentId, p.paymentId, p.uid];
   const results = await env.DB.batch([
     env.DB.prepare(
       `INSERT OR IGNORE INTO coin_transactions
@@ -234,12 +248,29 @@ async function applyOrderCredit(
        SELECT ?, ?, ?, 'purchase', ?, ?
         WHERE ${stillPaid} AND ${notCredited}
           AND EXISTS (SELECT 1 FROM users WHERE uid = ?)`,
-    ).bind(`purchase:${p.paymentId}`, p.uid, p.coins, p.description, p.ts, p.orderId, p.paymentId, p.paymentId, p.uid),
+    ).bind(`purchase:${p.paymentId}`, p.uid, paidCoins, p.description, p.ts, p.orderId, p.paymentId, p.paymentId, p.uid),
     env.DB.prepare(
       `UPDATE users
           SET dpcoin = dpcoin + ?, updated_at = ?
         WHERE uid = ? AND ${stillPaid} AND ${notCredited}`,
-    ).bind(p.coins, p.ts, p.uid, p.orderId, p.paymentId, p.paymentId),
+    ).bind(paidCoins, p.ts, p.uid, p.orderId, p.paymentId, p.paymentId),
+    ...(promoBonus > 0
+      ? promoBonusCreditStatements(
+          env,
+          {
+            uid: p.uid,
+            coins: promoBonus,
+            budgetId: String(p.budgetId),
+            reservationId: orderReservationId(p.orderId),
+            ledgerId: `promo_bonus:${p.paymentId}`,
+            refId: p.orderId,
+            description: `Bonus ${promoBonus} coins (sirf khelne ke liye) — order ${p.orderId}`,
+            ts: p.ts,
+          },
+          gate,
+          gateArgs,
+        )
+      : []),
     // `amount` is the legacy coin column; `coins` and `amount_paise` split the
     // two so revenue reporting can stop treating coins as rupees.
     env.DB.prepare(
@@ -540,9 +571,13 @@ export async function clawbackPaymentOrder(
   if (coinsToClaw > 0) {
     statements.push(
       env.DB.prepare(
+        // Locked (play-only) coins can never exceed what is left of the balance,
+        // so a clawback that takes the balance below them reduces them too. The
+        // row records by how much, from the same snapshot as the UPDATE.
         `INSERT OR IGNORE INTO coin_transactions
-           (id, uid, amount, type, description, created_at)
-         SELECT ?, ?, ?, ?, ?, ?
+           (id, uid, amount, type, description, created_at, locked_delta)
+         SELECT ?, ?, ?, ?, ?, ?,
+                COALESCE((SELECT ${LOCKED_AFTER_DEBIT} - locked_coins FROM users WHERE uid = ?), 0)
           WHERE ${appliedGate}`,
       ).bind(
         // Suffixed only when a refund id is present, so ids already written for
@@ -555,11 +590,13 @@ export async function clawbackPaymentOrder(
           ? `Chargeback on payment ${paymentId} — ${coinsToClaw} coins reversed`
           : `Refund of payment ${paymentId} — ${coinsToClaw} coins reversed`,
         ts,
+        coinsToClaw,
+        order.userId,
         ...appliedBindings,
       ),
       env.DB.prepare(
-        `UPDATE users SET dpcoin = dpcoin - ?, updated_at = ? WHERE uid = ? AND ${appliedGate}`,
-      ).bind(coinsToClaw, ts, order.userId, ...appliedBindings),
+        `UPDATE users SET dpcoin = dpcoin - ?, locked_coins = ${LOCKED_AFTER_DEBIT}, updated_at = ? WHERE uid = ? AND ${appliedGate}`,
+      ).bind(coinsToClaw, coinsToClaw, ts, order.userId, ...appliedBindings),
     );
   }
   statements.push(
@@ -816,6 +853,8 @@ async function recoverStrandedPaidOrders(
         paymentId,
         uid: order.userId,
         coins,
+        bonusCoins: bonus,
+        budgetId: order.budgetId ?? null,
         amountPaise: Number(order.amountPaise) || 0,
         description,
         ts,

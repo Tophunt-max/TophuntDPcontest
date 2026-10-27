@@ -9,7 +9,8 @@ import { getVerificationStatus } from "../lib/verificationReward";
 import { and, or, eq, desc, asc, gt, gte, lt, lte, sql, inArray, notInArray, isNull, isNotNull, like, exists } from "drizzle-orm";
 import type { Env, Variables } from "../types";
 import { getDb, schema, type NotificationActor } from "../db";
-import { perPlayerEntryFee } from "../lib/money";
+import { matchPot, perPlayerEntryFee } from "../lib/money";
+import { budgetsWithRoom } from "../lib/promoBudget";
 import { httpsError } from "../lib/http";
 import { requireAuth, optionalAuth, guestReadLimit } from "../middleware/auth";
 import { FEED_WEIGHTS_MEMO_KEY, getAppConfig } from "../lib/settings";
@@ -1081,6 +1082,39 @@ async function servePersonalizedFeed(
 }
 
 // --- mappers ---------------------------------------------------------------
+/**
+ * Show a promo prize only while its budget can still fund one more match.
+ *
+ * A contest linked to a contest_prize budget (lib/promoBudget.ts) advertises a
+ * reward above the pot. When the budget runs out, pauses or ends, `startMatch`
+ * snapshots the pot prize instead — so the listing must say the same, or the card
+ * promises a prize the new match will not carry. Applied before `mapContest`, so
+ * `rewardCoins`, `winningCoins` and `publicPrize` all agree.
+ */
+async function withPromoPrizeAvailability<T extends Record<string, any>>(env: Env, rows: T[]): Promise<T[]> {
+  // What one more match would need from its budget: the coin prize above the
+  // pot, or a product's (admin-only) coin cost above the pot.
+  const need = (r: T) => {
+    const pot = matchPot(r.totalEntryFee);
+    const isProduct = r.prizeType === "product";
+    const target = isProduct ? Number(r.prizeCostCoins || 0) : Number(r.rewardCoins || 0);
+    return { pot, isProduct, extra: Math.max(0, target - pot) };
+  };
+  const linked = rows.filter((r) => r.subsidyBudgetId && need(r).extra > 0);
+  if (!linked.length) return rows;
+  const room = await budgetsWithRoom(env, linked.map((r) => String(r.subsidyBudgetId)));
+  return rows.map((r) => {
+    if (!r.subsidyBudgetId) return r;
+    const { pot, isProduct, extra } = need(r);
+    if (extra <= 0) return r;
+    // Coin prize above the pot, funded right now: the card can say so.
+    if ((room.get(String(r.subsidyBudgetId)) ?? 0) >= extra) return isProduct ? r : { ...r, promoPrize: true };
+    // A product has no smaller fallback: new matches are refused until the admin
+    // raises the budget, and the card can say so.
+    return isProduct ? { ...r, prizesSoldOut: true } : { ...r, rewardCoins: pot };
+  });
+}
+
 const mapContest = (r: any) => ({
   id: r.id,
   ...(r.extra || {}),
@@ -1120,6 +1154,10 @@ const mapContest = (r: any) => ({
   // anything, and testing the pot instead would label that contest "paid" and
   // then quote it at 0 coins.
   isFree: perPlayerEntryFee(r.totalEntryFee) <= 0,
+  // A product contest whose prize budget is used up: new matches are refused.
+  prizesSoldOut: r.prizesSoldOut === true,
+  // The winner gets more than the entry fees: the platform adds the rest.
+  promoPrize: r.promoPrize === true,
   createdBy: r.createdBy,
   createdAt: r.createdAt,
 });
@@ -1354,7 +1392,7 @@ readRoute.get("/contests", optionalAuth, guestReadLimit, async (c) => {
       ];
       if (type) conds.push(eq(schema.contests.type, type));
       const rows = await db.select().from(schema.contests).where(and(...conds)).orderBy(desc(schema.contests.createdAt)).all();
-      return rows.map(mapContest);
+      return (await withPromoPrizeAvailability(c.env, rows)).map(mapContest);
     },
   });
   c.header("Cache-Control", "public, max-age=60");
@@ -1380,7 +1418,7 @@ readRoute.get("/contests/:id", optionalAuth, guestReadLimit, async (c) => {
     kvTtlSec: READ_CACHE_TTLS.contestDetail.kv,
     load: async () => {
       const row = await db.select().from(schema.contests).where(eq(schema.contests.id, id)).get();
-      return { contest: row ? mapContest(row) : null };
+      return { contest: row ? mapContest((await withPromoPrizeAvailability(c.env, [row]))[0]) : null };
     },
     // `id` comes straight off the URL, so caching a not-found mints one entry per
     // invented id — the same reasoning as /users/:id and /comments. A miss is a
@@ -2156,6 +2194,9 @@ readRoute.get("/transactions", requireAuth, async (c) => {
       description: r.description || r.type,
       contestId: r.contestId ?? null,
       matchId: r.matchId ?? null,
+      // How this row moved the play-only (locked) balance, so the app can label
+      // bonus coins "sirf khelne ke liye".
+      lockedDelta: Number(r.lockedDelta || 0),
       createdAt: r.createdAt,
     })),
     nextCursor,
@@ -2458,7 +2499,7 @@ readRoute.get("/search", optionalAuth, guestReadLimit, async (c) => {
   return c.json({
     q: term,
     people,
-    contests: contests.map(mapContest),
+    contests: (await withPromoPrizeAvailability(c.env, contests as any[])).map(mapContest),
     battles,
     blog: blog.map((r: any) => mapBlogPost(c.env, r)),
   });

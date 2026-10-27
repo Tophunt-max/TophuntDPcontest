@@ -613,6 +613,10 @@ type ContestFormState = {
   prizeProductImageUrl: string;
   prizeProductValue: string;
   prizeProductDescription: string;
+  /** Promo budget that pays the prize above the pot (contest_prize for coins, product_prize for a product); "" = none. */
+  subsidyBudgetId: string;
+  /** Admin-only coin cost of one product. Never shown in the app. */
+  prizeCostCoins: string;
 };
 
 type ContestFormErrors = Partial<Record<keyof ContestFormState | "banner" | "productImage", string>>;
@@ -647,6 +651,8 @@ function formFromContest(contest: AdminContest | undefined, mode: DialogMode): C
     prizeProductImageUrl: contest?.prizeProductImageUrl || "",
     prizeProductValue: String(contest?.prizeProductValue ?? 0),
     prizeProductDescription: contest?.prizeProductDescription || "",
+    subsidyBudgetId: contest?.subsidyBudgetId || "",
+    prizeCostCoins: String(contest?.prizeCostCoins ?? 0),
   };
 }
 
@@ -707,6 +713,21 @@ function ContestDialog({
   const isProduct = form.prizeType === "product";
   /** What the payload will actually carry — a product contest always pays 0 coins. */
   const effectiveRewardCoins = isProduct ? 0 : Number(form.rewardCoins);
+  // Promo prize: the two players fund the pot; a contest_prize budget can pay
+  // the rest, set aside per match (worker lib/promoBudget.ts).
+  const { data: allBudgets = [] } = useQuery({ queryKey: ["promo-budgets"], queryFn: api.promoBudgets });
+  // A coin prize uses a contest_prize budget; a product's coin value a product_prize one.
+  const neededKind = isProduct ? "product_prize" : "contest_prize";
+  const prizeBudgets = allBudgets.filter(
+    (b) => b.kind === neededKind && (b.status !== "closed" || b.id === form.subsidyBudgetId),
+  );
+  const pot = Math.floor((Number(form.totalEntryFee) || 0) / 2) * 2;
+  const productCost = isProduct ? Number(form.prizeCostCoins) || 0 : 0;
+  const subsidyPerMatch = isProduct ? Math.max(0, productCost - pot) : Math.max(0, (Number(form.rewardCoins) || 0) - pot);
+  const selectedBudget = allBudgets.find((b) => b.id === form.subsidyBudgetId);
+  // A budget of the other kind (left over from switching the prize type) is not sent.
+  const chosenBudget = selectedBudget && selectedBudget.kind === neededKind ? selectedBudget : undefined;
+  const effectiveBudgetId = chosenBudget?.id ?? "";
   /**
    * The same three fields the Worker's PATCH guard treats as "the prize changed".
    * Value and description alone do not count there, so they do not count here — a
@@ -898,6 +919,13 @@ function ContestDialog({
     // read — the Worker forces it to 0 regardless, and validating a disabled field
     // would block a save on a number that is about to be discarded.
     const rewardCoins = isProduct ? 0 : integer("rewardCoins", "Reward coins", 0, 10_000_000);
+    if (!isProduct && !next.rewardCoins && !next.totalEntryFee && rewardCoins > pot && !effectiveBudgetId) {
+      next.rewardCoins = `Reward pot (${fmtNumber(pot)}) se zyada hai. Neeche "Promo prize budget" chuno, ya reward ${fmtNumber(pot)} ya kam rakho.`;
+    }
+    const prizeCostCoins = isProduct ? integer("prizeCostCoins", "Product coin value", 0, 10_000_000) : 0;
+    if (isProduct && !next.prizeCostCoins && !next.totalEntryFee && prizeCostCoins > pot && !effectiveBudgetId) {
+      next.prizeCostCoins = `Coin value pot (${fmtNumber(pot)}) se zyada hai. Neeche "Product prize budget" chuno.`;
+    }
     const voteDurationDays = integer("voteDurationDays", "Vote duration", 1, 30);
     const autoCancelHours = integer("autoCancelHours", "Waiting auto-cancel", 1, 168);
     const minVotes = integer("minVotes", "Minimum votes", 0, 1_000_000);
@@ -996,6 +1024,8 @@ function ContestDialog({
         prizeProductImageUrl: isProduct ? form.prizeProductImageUrl || null : null,
         prizeProductValue: isProduct ? productValue : 0,
         prizeProductDescription: isProduct ? productDescription || null : null,
+        subsidyBudgetId: effectiveBudgetId || null,
+        prizeCostCoins,
       },
     };
   };
@@ -1041,6 +1071,8 @@ function ContestDialog({
           prizeProductImageUrl: initial.prizeProductImageUrl || null,
           prizeProductValue: Number(initial.prizeProductValue),
           prizeProductDescription: initial.prizeProductDescription.trim() || null,
+          subsidyBudgetId: initial.subsidyBudgetId || null,
+          prizeCostCoins: initial.prizeType === "product" ? Number(initial.prizeCostCoins) || 0 : 0,
         };
         const patch: Partial<ContestWritePayload> = {};
         for (const key of Object.keys(payload) as Array<keyof ContestWritePayload>) {
@@ -1380,6 +1412,15 @@ function ContestDialog({
                       disabled={saving}
                       onChange={(value) => set("prizeProductValue", value)}
                     />
+                    <NumberField
+                      label="Coin value (sirf admin ko dikhega)"
+                      value={form.prizeCostCoins}
+                      min={0}
+                      max={10_000_000}
+                      error={errors.prizeCostCoins}
+                      disabled={saving}
+                      onChange={(value) => set("prizeCostCoins", value)}
+                    />
                     <Field
                       label="Product description"
                       error={errors.prizeProductDescription}
@@ -1435,6 +1476,50 @@ function ContestDialog({
                   Reward coins are fixed at 0 because this contest awards a product. Switch the prize back to Coins to set
                   a coin reward.
                 </InlineNote>
+              )}
+              {(
+                <div className="sm:col-span-2 space-y-1.5">
+                  <label className="text-sm font-medium text-foreground" htmlFor="contest-subsidy-budget">
+                    {isProduct ? "Product prize budget (coin value isse katega)" : "Promo prize budget"}
+                  </label>
+                  <select
+                    id="contest-subsidy-budget"
+                    className="w-full rounded-xl border border-border bg-background px-3 py-2.5 text-sm"
+                    value={effectiveBudgetId}
+                    disabled={saving}
+                    onChange={(e) => set("subsidyBudgetId", e.target.value)}
+                  >
+                    <option value="">
+                      {isProduct ? `Koi nahi — coin value pot (${fmtNumber(pot)}) tak hi` : `Koi nahi — prize pot (${fmtNumber(pot)}) tak hi`}
+                    </option>
+                    {prizeBudgets.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name} · {fmtNumber(b.remainingCoins)} / {fmtNumber(b.totalCoins)} bache{b.live ? "" : " (band)"}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    Pot = dono players ki entry fee ({fmtNumber(pot)} coins).
+                    {subsidyPerMatch > 0
+                      ? isProduct
+                        ? ` Har product par budget se ${fmtNumber(subsidyPerMatch)} coin katenge (coin value ${fmtNumber(productCost)} − pot ${fmtNumber(pot)}). Ye app me kisi ko nahi dikhega.`
+                        : ` Har match par platform ${fmtNumber(subsidyPerMatch)} coin apni taraf se dega.`
+                      : isProduct
+                        ? " Coin value pot se zyada ho tabhi budget lagta hai."
+                        : " Reward pot se zyada ho tabhi budget lagta hai."}
+                    {subsidyPerMatch > 0 && chosenBudget
+                      ? isProduct
+                        ? ` Ye budget abhi ~${fmtNumber(Math.floor(chosenBudget.remainingCoins / subsidyPerMatch))} aur product de sakta hai. Khatam hone par naye match ruk jayenge — budget badha kar phir chalu karo.`
+                        : ` Ye budget abhi ~${fmtNumber(Math.floor(chosenBudget.remainingCoins / subsidyPerMatch))} aur matches chala sakta hai. Budget khatam hone par naye match ka prize pot jitna hoga.`
+                      : ""}
+                  </p>
+                  {chosenBudget && !chosenBudget.live && (
+                    <InlineWarning>Ye budget abhi chalu nahi hai (paused/khatam/time ke bahar). Naye match pot prize ke saath banenge.</InlineWarning>
+                  )}
+                  {!allBudgets.some((b) => b.kind === neededKind) && (
+                    <p className="text-xs text-muted-foreground">Budget banane ke liye Coin Economy → Budgets.</p>
+                  )}
+                </div>
               )}
               {isEdit && contest && contest.activeMatches > 0 && effectiveRewardCoins !== contest.rewardCoins && (
                 <InlineWarning>Reward coins cannot change while {contest.activeMatches} matches are active.</InlineWarning>

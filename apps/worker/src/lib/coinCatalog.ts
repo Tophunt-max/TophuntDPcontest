@@ -16,6 +16,7 @@ import { appConfigChannels } from "./appControl";
 import { publishMany } from "./publish";
 import { getAppConfig } from "./settings";
 import { pricePackage, ratesFromConfig } from "./coinPricing";
+import { budgetsWithRoom } from "./promoBudget";
 
 export interface PublicCoinPackage {
   id: string;
@@ -27,6 +28,8 @@ export interface PublicCoinPackage {
   totalCoins: number;
   /** False when under ₹1, or when it would pay out more than it costs: shown, not sold. */
   purchasable: boolean;
+  /** The bonus is a platform promo (lib/promoBudget.ts): play-only coins, not withdrawable. */
+  bonusLocked: boolean;
 }
 
 export async function listPublicCoinPackages(env: Env): Promise<PublicCoinPackage[]> {
@@ -40,16 +43,24 @@ export async function listPublicCoinPackages(env: Env): Promise<PublicCoinPackag
     getAppConfig(env),
   ]);
   const rates = ratesFromConfig(cfg);
+  // A promo bonus is only shown while its budget can still pay it: once the
+  // budget runs out, pauses or ends, the package sells without the bonus — the
+  // same thing `createOrder` does — so the store never advertises coins the
+  // purchase will not credit.
+  const room = await budgetsWithRoom(env, rows.map((p: any) => p.budgetId).filter(Boolean));
   return rows.map((p: any) => {
     const priced = pricePackage(p, rates);
+    const promoOff = priced.bonusLocked && (room.get(p.budgetId) ?? 0) < priced.bonusCoins;
+    const bonusCoins = promoOff ? 0 : priced.bonusCoins;
     return {
       id: p.id,
       name: p.name ?? null,
       coins: priced.baseCoins,
-      bonusCoins: priced.bonusCoins,
+      bonusCoins,
       priceInr: priced.priceInr,
-      totalCoins: priced.totalCoins,
+      totalCoins: priced.baseCoins + bonusCoins,
       purchasable: priced.purchasable,
+      bonusLocked: priced.bonusLocked && !promoOff,
     };
   });
 }

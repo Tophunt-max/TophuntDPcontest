@@ -33,11 +33,20 @@ import { httpsError } from "./http";
 import { adjustUserWallet, WalletReplay } from "./money";
 import { createNotification } from "./notify";
 import { newId, now } from "./ids";
+import { getAppConfig } from "./settings";
+import { rewardLocked } from "./rewardLocking";
 
 export const QUALIFY_ACTIONS = ["signup", "verified", "first_contest", "first_purchase"] as const;
 export type QualifyAction = (typeof QUALIFY_ACTIONS)[number];
 export type ReferralEvent = "signup" | "verified" | "contest" | "purchase";
 export const REFERRAL_STATUSES = ["pending", "review", "rewarded", "rejected", "expired"] as const;
+
+/** Hold for review: this many referrals of ONE referrer from one IP in 24h. */
+export const REFERRAL_HOLD_SAME_IP = 2;
+/** Hold for review: this many referrals (any referrer) from one IP in 24h. */
+export const REFERRAL_HOLD_IP_SHARED = 4;
+/** Hold for review: this many codes applied for one referrer within an hour. */
+export const REFERRAL_HOLD_VELOCITY = 5;
 export type ReferralStatus = (typeof REFERRAL_STATUSES)[number];
 
 export interface ReferralMilestone {
@@ -237,7 +246,7 @@ export async function applyReferralCode(
   env: Env,
   uid: string,
   rawCode: unknown,
-  opts: { deviceId?: string | null; nowMs?: number } = {},
+  opts: { deviceId?: string | null; ip?: string | null; nowMs?: number } = {},
 ): Promise<ApplyResult> {
   const ts = opts.nowMs ?? now();
   const db = getDb(env);
@@ -290,14 +299,34 @@ export async function applyReferralCode(
     if (reused) rejectReason = "device_already_used";
   }
 
+  // Softer signals than the hard rejects above: the referral is accepted but
+  // HELD for admin review when it is paid (see qualifyReferral), even if the
+  // program does not require review. A real friend is unaffected; a farm of
+  // accounts behind one connection, or a sudden burst on one code, waits for
+  // a person.
+  const ip = opts.ip ? String(opts.ip).slice(0, 64) : null;
+  let holdReason: string | null = null;
+  if (!rejectReason) {
+    const day = ts - 24 * 60 * 60 * 1000;
+    const hour = ts - 60 * 60 * 1000;
+    const signals = await env.DB.prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM referrals WHERE ip = ? AND referrer_uid = ? AND created_at >= ?) AS same_ip_same_referrer,
+         (SELECT COUNT(*) FROM referrals WHERE ip = ? AND created_at >= ?) AS same_ip_any,
+         (SELECT COUNT(*) FROM referrals WHERE referrer_uid = ? AND created_at >= ?) AS referrer_last_hour`,
+    ).bind(ip, referrer.uid, day, ip, day, referrer.uid, hour).first<any>().catch(() => null);
+    if (ip && Number(signals?.same_ip_same_referrer) >= REFERRAL_HOLD_SAME_IP) holdReason = "same_ip_burst";
+    else if (ip && Number(signals?.same_ip_any) >= REFERRAL_HOLD_IP_SHARED) holdReason = "ip_shared";
+    else if (Number(signals?.referrer_last_hour) >= REFERRAL_HOLD_VELOCITY) holdReason = "referrer_velocity";
+  }
   const id = newId();
   const status: ReferralStatus = rejectReason ? "rejected" : "pending";
   const res = await env.DB.batch([
     env.DB.prepare(
       `INSERT OR IGNORE INTO referrals
-         (id, referrer_uid, referred_uid, bonus, created_at, status, code, qualify_action, expires_at, reject_reason, device_id, updated_at)
-       VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(id, referrer.uid, uid, ts, status, code, cfg.qualifyAction, ts + cfg.qualifyWindowDays * DAY, rejectReason, deviceId, ts),
+         (id, referrer_uid, referred_uid, bonus, created_at, status, code, qualify_action, expires_at, reject_reason, device_id, updated_at, ip, hold_reason)
+       VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(id, referrer.uid, uid, ts, status, code, cfg.qualifyAction, ts + cfg.qualifyWindowDays * DAY, rejectReason, deviceId, ts, ip, holdReason),
     // Attribution is permanent and first-come: referredBy is set once.
     env.DB.prepare(`UPDATE users SET referred_by = ?, updated_at = ? WHERE uid = ? AND referred_by IS NULL AND EXISTS (SELECT 1 FROM referrals WHERE id = ?)`).bind(
       referrer.uid,
@@ -342,7 +371,9 @@ export async function qualifyReferral(env: Env, uid: string, event: ReferralEven
     }
     const cfgRow = await db.select({ data: schema.settings.data }).from(schema.settings).where(eq(schema.settings.id, "appConfig")).get();
     const cfg = parseReferralConfig(cfgRow?.data);
-    const next: ReferralStatus = cfg.requireReview ? "review" : "rewarded";
+    // A fraud signal recorded when the code was applied (applyReferralCode)
+    // holds this referral for an admin even when the program pays automatically.
+    const next: ReferralStatus = cfg.requireReview || row.holdReason ? "review" : "rewarded";
     // Claim the transition first: only one caller can move it out of `pending`.
     const claim = await db
       .update(schema.referrals)
@@ -375,7 +406,18 @@ async function creditOnce(env: Env, uid: string, amount: number, description: st
   const done = await env.DB.prepare(`SELECT 1 AS x FROM coin_transactions WHERE id = ?`).bind(claimKey).first();
   if (done) return false;
   try {
-    await adjustUserWallet(env, { uid, amount, direction: "add", type: "referral_bonus", description, claimKey, ledgerId: claimKey });
+    // Free reward: play-only unless App Control says otherwise (lib/rewardLocking.ts).
+    const locked = rewardLocked(await getAppConfig(env), "referral");
+    await adjustUserWallet(env, {
+      uid,
+      amount,
+      direction: "add",
+      type: "referral_bonus",
+      description: locked ? `${description} (sirf khelne ke liye)` : description,
+      claimKey,
+      ledgerId: claimKey,
+      locked,
+    });
     return true;
   } catch (err) {
     if (err instanceof WalletReplay) return false;

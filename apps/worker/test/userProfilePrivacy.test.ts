@@ -74,6 +74,7 @@ const PRIVATE_USER_FIELDS = [
   'coordinates',
   // Money and engagement state.
   'dpcoin',
+  'lockedCoins',
   'streak',
   'lastDailyClaim',
   // Internal / operational.

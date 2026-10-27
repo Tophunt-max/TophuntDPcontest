@@ -15,8 +15,9 @@ import {
   type User as FirebaseUser,
 } from "firebase/auth";
 import { auth } from "./firebase";
-import { api, setReauthHandler } from "./api";
+import { api, setApprovalHandler, setReauthHandler } from "./api";
 import { ReauthDialog } from "@/components/ReauthDialog";
+import { ApprovalDialog } from "@/components/ApprovalDialog";
 
 /** Server-side role. Moderators see the moderation pages only. */
 export type AdminRole = "superadmin" | "admin" | "moderator";
@@ -121,6 +122,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setReauth(null);
   };
 
+  // Approval password for promo actions (worker lib/approvalPassword.ts).
+  const [approval, setApproval] = useState<{ invalid: boolean; resolve: (pw: string | null) => void } | null>(null);
+  const approvalRef = useRef(approval);
+  approvalRef.current = approval;
+  useEffect(() => {
+    setApprovalHandler(
+      ({ invalid }) =>
+        new Promise<string | null>((resolve) => {
+          if (approvalRef.current) approvalRef.current.resolve(null);
+          setApproval({ invalid, resolve });
+        }),
+    );
+    return () => setApprovalHandler(null);
+  }, []);
+  const submitApproval = (pw: string) => {
+    approval?.resolve(pw);
+    setApproval(null);
+  };
+  const cancelApproval = () => {
+    approval?.resolve(null);
+    setApproval(null);
+  };
+
   const logout = () => {
     signOut(auth).catch(() => {});
     setUser(null);
@@ -130,6 +154,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     <Ctx.Provider value={{ user, login, logout, loading, error }}>
       {children}
       {reauth && <ReauthDialog email={auth.currentUser?.email ?? null} onSubmit={confirmPassword} onCancel={cancelReauth} />}
+      {approval && <ApprovalDialog invalid={approval.invalid} onSubmit={submitApproval} onCancel={cancelApproval} />}
     </Ctx.Provider>
   );
 }

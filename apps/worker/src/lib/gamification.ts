@@ -24,6 +24,8 @@ export interface GamificationSettings {
   // row the admin's App Settings page writes. Keeping duplicates here was a dead
   // knob: the App Settings field wrote appConfig while crediting read this row.
   badges: Badge[];
+  /** Coins for Hall of Fame ranks 1..3 at the monthly settlement (cron.ts). */
+  hallOfFameRewards: number[];
 }
 
 const DEFAULT_SETTINGS: GamificationSettings = {
@@ -32,7 +34,73 @@ const DEFAULT_SETTINGS: GamificationSettings = {
   dailyLoginReward: 10,
   dailyStreakBonus: 2,
   badges: [],
+  hallOfFameRewards: [1000, 500, 250],
 };
+
+export interface DailyTaskDef {
+  id: string;
+  title: string;
+  reward: number;
+  target: number;
+  type: "vote" | "share" | "ad";
+}
+export const DAILY_TASK_TYPES = ["vote", "share", "ad"] as const;
+export const DEFAULT_DAILY_TASKS: DailyTaskDef[] = [
+  { id: "vote5", title: "Vote in 5 battles", reward: 15, target: 5, type: "vote" },
+  { id: "share", title: "Share your profile", reward: 10, target: 1, type: "share" },
+  { id: "watch_ad", title: "Watch a video ad", reward: 5, target: 1, type: "ad" },
+];
+/** Daily tasks from gamification settings (admin override) or defaults. */
+export function getDailyTaskDefs(settings: any): DailyTaskDef[] {
+  const custom = settings?.dailyTasks;
+  if (Array.isArray(custom) && custom.length) {
+    return custom.map((t: any) => ({
+      id: String(t.id),
+      title: String(t.title || t.id),
+      reward: Number(t.reward || 0),
+      target: Number(t.target || 1),
+      type: ((DAILY_TASK_TYPES as readonly string[]).includes(t.type) ? t.type : "ad") as DailyTaskDef["type"],
+    }));
+  }
+  return DEFAULT_DAILY_TASKS;
+}
+
+const MAX_REWARD = 1_000_000;
+const wholeCoins = (v: unknown) => {
+  const n = Number(v);
+  return typeof v !== "boolean" && v !== null && v !== "" && Number.isInteger(n) && n >= 0 && n <= MAX_REWARD;
+};
+
+/**
+ * Validate the coin-valued lists an admin can save on the gamification row:
+ * `dailyTasks` (each credited straight to a balance) and `hallOfFameRewards`
+ * (ranks 1..3). Throws a message naming the bad entry.
+ */
+export function validateGamificationCoinLists(body: any): void {
+  if (body?.dailyTasks !== undefined) {
+    if (!Array.isArray(body.dailyTasks) || body.dailyTasks.length > 20) {
+      throw new Error("dailyTasks must be a list of at most 20 tasks.");
+    }
+    const ids = new Set<string>();
+    for (const t of body.dailyTasks) {
+      const id = String(t?.id ?? "").trim();
+      if (!/^[a-z0-9_-]{2,40}$/i.test(id)) throw new Error("Every daily task needs an id (2-40 letters, digits, _ or -).");
+      if (ids.has(id)) throw new Error(`Daily task id "${id}" is used twice.`);
+      ids.add(id);
+      if (!String(t?.title ?? "").trim() || String(t.title).length > 80) throw new Error(`Task "${id}": title is required (max 80 characters).`);
+      if (!(DAILY_TASK_TYPES as readonly string[]).includes(t?.type)) throw new Error(`Task "${id}": type must be vote, share or ad.`);
+      if (!wholeCoins(t?.reward)) throw new Error(`Task "${id}": reward must be a whole number of coins between 0 and ${MAX_REWARD}.`);
+      const target = Number(t?.target);
+      if (!Number.isInteger(target) || target < 1 || target > 1000) throw new Error(`Task "${id}": target must be a whole number from 1 to 1000.`);
+    }
+  }
+  if (body?.hallOfFameRewards !== undefined) {
+    const r = body.hallOfFameRewards;
+    if (!Array.isArray(r) || r.length !== 3 || !r.every(wholeCoins)) {
+      throw new Error(`hallOfFameRewards must be three whole coin amounts (rank 1, 2, 3) between 0 and ${MAX_REWARD}.`);
+    }
+  }
+}
 
 // REMOVED from this interface: contestJoinReward, matchWinReward, voteReward,
 // voteRewardXP, contestJoinXP.
@@ -82,6 +150,10 @@ export async function getSettings(env: Env): Promise<GamificationSettings> {
     // `dailyBaseReward` is the legacy key name for the same value.
     dailyLoginReward: data.dailyLoginReward ?? data.dailyBaseReward ?? DEFAULT_SETTINGS.dailyLoginReward,
     badges: Array.isArray(data.badges) ? data.badges : [],
+    hallOfFameRewards:
+      Array.isArray(data.hallOfFameRewards) && data.hallOfFameRewards.length === 3
+        ? data.hallOfFameRewards.map((v: unknown, i: number) => sanitizeAmount(v, DEFAULT_SETTINGS.hallOfFameRewards[i]))
+        : DEFAULT_SETTINGS.hallOfFameRewards,
   };
   for (const key of COIN_KEYS) merged[key] = sanitizeAmount(merged[key], DEFAULT_SETTINGS[key]);
   for (const key of XP_KEYS) {

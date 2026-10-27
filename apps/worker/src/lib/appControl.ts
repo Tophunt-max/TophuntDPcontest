@@ -24,6 +24,8 @@
  *   _version (ms; bumped on every save).
  */
 import { validateCoinPricingPatch } from "./coinPricing";
+import { validateRewardLockingPatch } from "./rewardLocking";
+import { validateCoinAlertPatch } from "./coinAlerts";
 import { feeRuleFromConfig, validateWithdrawalFeePatch } from "./withdrawalFee";
 import { parseReferralConfig, publicReferralConfig, validateReferralPatch } from "./referralProgram";
 import { publicExploreConfig, validateExplorePatch } from "./exploreConfig";
@@ -402,6 +404,14 @@ export function validateAppControlPatch(body: any, existing: any, nowMs: number 
   // Coin package buy rate (lib/coinPricing.ts). Checked against the packages by
   // the save handler, which has them.
   if (body.coinPricing !== undefined) validateCoinPricingPatch(body.coinPricing);
+  // Which free rewards are play-only (lib/rewardLocking.ts).
+  if (body.rewardLocking !== undefined) validateRewardLockingPatch(body.rewardLocking);
+  // Coin alert threshold + report email switches (lib/coinAlerts.ts).
+  try {
+    validateCoinAlertPatch(body);
+  } catch (e: any) {
+    bad(e?.message || "Invalid coin alert settings.");
+  }
   // Referral program (lib/referralProgram.ts).
   if (body.referralProgram !== undefined) validateReferralPatch(body.referralProgram);
   // Explore page banners + sections (lib/exploreConfig.ts).
@@ -492,6 +502,10 @@ export function appControlGate(cfg: any, input: GateInput, nowMs: number = Date.
 /** Sections whose edits are audited (who changed what, from what, to what). */
 export const AUDITED_SECTIONS = [
   "coinPricing",
+  "rewardLocking",
+  "freeRewardsBudgetId",
+  "coinAlerts",
+  "coinReport",
   "referralProgram",
   "explore",
   "verificationReward",

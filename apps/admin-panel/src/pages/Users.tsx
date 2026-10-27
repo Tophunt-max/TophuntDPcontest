@@ -366,10 +366,12 @@ function WalletDialog({
   const [amount, setAmount] = useState("");
   const [type, setType] = useState<"add" | "subtract">("add");
   const [reason, setReason] = useState("");
+  // Added coins can be play-only (locked): spendable on contests, never withdrawable.
+  const [locked, setLocked] = useState(false);
   // One id per dialog: a double click or a retry of this adjustment is applied once.
   const [requestId] = useState(() => crypto.randomUUID());
   const mut = useMutation({
-    mutationFn: () => api.adjustWallet(user.id, Number(amount), type, reason.trim(), requestId),
+    mutationFn: () => api.adjustWallet(user.id, Number(amount), type, reason.trim(), requestId, type === "add" && locked),
     onSuccess: (d: any) => {
       toast.success(`Wallet updated. New balance: ${d.newBalance}`);
       onDone();
@@ -412,6 +414,12 @@ function WalletDialog({
           aria-label="Reason for the adjustment"
           className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-ring"
         />
+        {type === "add" && (
+          <label className="flex items-center gap-2 text-sm mb-4">
+            <input type="checkbox" checked={locked} onChange={(e) => setLocked(e.target.checked)} />
+            Sirf khelne ke liye (locked, withdraw nahi hoga)
+          </label>
+        )}
         <div className="flex gap-2">
           <button onClick={onClose} className="flex-1 py-2.5 rounded-xl bg-secondary text-foreground text-sm font-medium">
             Cancel

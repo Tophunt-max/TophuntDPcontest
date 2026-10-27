@@ -39,7 +39,16 @@ import { referralCaption } from '@/src/lib/shareCaptions';
 const DAILY_REWARDS = [10, 15, 20, 25, 30, 50, 100];
 const FILTERS = ['All', 'Income', 'Expense'];
 
+// The server refuses daily/ads/tasks coins once the admin's free rewards
+// budget runs out (worker FREE_REWARDS_EXHAUSTED); its message says so.
+const freeRewardsOut = (e: any) => typeof e?.message === 'string' && e.message.toLowerCase().includes('free rewards khatam');
+const FREE_REWARDS_OUT_MSG = 'Aaj ke free rewards khatam ho gaye hain. Thodi der baad try karo.';
+
 const taskIcon = (type: string) => (type === 'vote' ? 'stats-chart' : type === 'share' ? 'share-social' : 'videocam');
+
+/** Free rewards may be play-only (locked): spendable on contests, never withdrawable. */
+const playOnly = (res: any) =>
+  Number(res?.lockedCoins || 0) > 0 ? '\nYe coins sirf contest khelne ke liye hain (withdraw nahi). Contest jeet kar mile coins withdraw honge.' : '';
 
 export default function WalletScreen() {
   // Seven day slots across the design width (the phone column on desktop).
@@ -100,6 +109,8 @@ export default function WalletScreen() {
         id: t.id,
         type: t.type,
         amount: t.amount,
+        // > 0 = these coins arrived play-only (promo bonus / free reward).
+        lockedDelta: Number(t.lockedDelta || 0),
         description: t.description || t.type,
         date: t.createdAt ? new Date(Number(t.createdAt)).toLocaleDateString() : '',
       }));
@@ -127,7 +138,7 @@ export default function WalletScreen() {
     try {
       const r: any = await walletService.claimDailyTask(taskId);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert('Reward earned!', `You got ${r.reward} Dpcoins!`);
+      Alert.alert('Reward earned!', `You got ${r.reward} Dpcoins!${playOnly(r)}`);
       refetchProfile();
       refetchTasks();
     } catch (e: any) {
@@ -158,14 +169,21 @@ export default function WalletScreen() {
         const res: any = await walletService.claimDailyBonus(user.uid, currentDay);
         const earned = res?.coinsEarned ?? 0;
         setClaimedToday(true);
-        Alert.alert("Bonus Claimed!", `You received ${earned} Dpcoins.`);
+        Alert.alert("Bonus Claimed!", `You received ${earned} Dpcoins.${playOnly(res)}`);
         // refetch re-runs the derivation effect above with the new streak/lastClaim.
         refetchProfile();
     } catch (error: any) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         const alreadyClaimed = typeof error?.message === 'string' && error.message.toLowerCase().includes('already');
         setClaimedToday(alreadyClaimed ? true : claimedToday);
-        Alert.alert("Error", alreadyClaimed ? "You have already claimed your daily reward today." : "Could not claim bonus.");
+        Alert.alert(
+          "Error",
+          alreadyClaimed
+            ? "You have already claimed your daily reward today."
+            : freeRewardsOut(error)
+              ? FREE_REWARDS_OUT_MSG
+              : "Could not claim bonus.",
+        );
     }
   };
 
@@ -211,7 +229,7 @@ export default function WalletScreen() {
       // Server credits the reward (with a daily cap) and returns the amount.
       const res: any = await walletService.claimAdReward();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert("Reward Earned!", `You earned ${res?.coinsEarned ?? 0} Dpcoins for watching the ad!`);
+      Alert.alert("Reward Earned!", `You earned ${res?.coinsEarned ?? 0} Dpcoins for watching the ad!${playOnly(res)}`);
       refetchProfile();
       refetchTasks();
     } catch (error: any) {
@@ -219,9 +237,11 @@ export default function WalletScreen() {
       const limitHit = typeof error?.message === 'string' && error.message.toLowerCase().includes('limit');
       Alert.alert(
         'Reward',
-        limitHit
-          ? "You've reached today's ad reward limit. Come back tomorrow!"
-          : "Couldn't credit your reward right now. Please try again.",
+        freeRewardsOut(error)
+          ? FREE_REWARDS_OUT_MSG
+          : limitHit
+            ? "You've reached today's ad reward limit. Come back tomorrow!"
+            : "Couldn't credit your reward right now. Please try again.",
       );
     }
   };
@@ -354,6 +374,11 @@ export default function WalletScreen() {
         <View style={{ flex: 1, marginLeft: 14 }}>
             <Text style={[styles.transTitle, { color: textColor }]}>{item.description}</Text>
             <Text style={[styles.transDate, { color: subTextColor }]}>{item.date} • {item.type.replace('_', ' ').toUpperCase()}</Text>
+            {item.amount > 0 && item.lockedDelta > 0 ? (
+                <Text style={styles.lockedTag}>
+                    {item.lockedDelta >= item.amount ? 'Sirf khelne ke liye' : `${item.lockedDelta} sirf khelne ke liye`}
+                </Text>
+            ) : null}
         </View>
         <Text style={[styles.transAmount, { color: item.amount > 0 ? "#4CAF50" : "#FF4D67" }]}>
             {item.amount > 0 ? '+' : ''}{item.amount}
@@ -420,6 +445,12 @@ export default function WalletScreen() {
                         {/* Live ₹ value at the admin's coin rate (App Control). */}
                         {coinsInInr(profile?.Dpcoin || 0, coinRate(appConfig)) ? (
                             <Text style={styles.balanceLabel}>Value {coinsInInr(profile?.Dpcoin || 0, coinRate(appConfig))}</Text>
+                        ) : null}
+                        {/* Promo bonus coins are play-only: spendable on contests, never withdrawable. */}
+                        {Number(profile?.lockedCoins || 0) > 0 ? (
+                            <Text style={[styles.balanceLabel, { fontSize: 13, marginTop: 4 }]}>
+                                Isme {Math.min(Number(profile?.Dpcoin || 0), Number(profile?.lockedCoins || 0))} bonus coins sirf khelne ke liye hain (withdraw nahi)
+                            </Text>
                         ) : null}
                         
                         {topupsEnabled && (
@@ -626,6 +657,18 @@ const styles = StyleSheet.create({
   iconBox: { width: 48, height: 48, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
   transTitle: { fontSize: 16, fontFamily: 'Urbanist-Bold', marginBottom: 4 },
   transDate: { fontSize: 12, fontFamily: 'Urbanist-Medium' },
+  lockedTag: {
+    alignSelf: 'flex-start',
+    marginTop: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(255, 152, 0, 0.15)',
+    color: '#E65100',
+    fontSize: 11,
+    fontFamily: 'Urbanist-SemiBold',
+  },
   transAmount: { fontSize: 16, fontFamily: 'Urbanist-Bold' },
 
   // Empty State
