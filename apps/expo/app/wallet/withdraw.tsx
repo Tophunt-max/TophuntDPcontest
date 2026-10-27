@@ -67,7 +67,12 @@ export default function WithdrawScreen() {
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState<any[]>([]);
 
-  const balance = Number(profile?.Dpcoin || 0);
+  // Promo bonus coins (bought with a budget-funded package bonus) are locked:
+  // they can be spent on contests but never withdrawn. The server enforces this;
+  // the screen only offers what can actually leave.
+  const total = Number(profile?.Dpcoin || 0);
+  const locked = Math.min(total, Math.max(0, Number(profile?.lockedCoins || 0)));
+  const balance = Math.max(0, total - locked);
   const amt = Number(amount) || 0;
   // Platform fee, deducted from the payout (src/lib/withdrawalFee.ts — same
   // formula the server charges with; it refuses if this quote is stale).
@@ -90,7 +95,14 @@ export default function WithdrawScreen() {
     if (!Number.isInteger(amt) || amt <= 0) return Alert.alert('Invalid amount', 'Enter a valid whole number of coins.');
     if (amt < minAmount) return Alert.alert('Below minimum', `Minimum withdrawal is ${minAmount} coins.`);
     if (maxAmount > 0 && amt > maxAmount) return Alert.alert('Above maximum', `Ek baar mein zyada se zyada ${maxAmount} coins nikal sakte ho.`);
-    if (amt > balance) return Alert.alert('Insufficient balance', 'You do not have enough coins.');
+    if (amt > balance) {
+      return Alert.alert(
+        'Insufficient balance',
+        locked > 0
+          ? `Aap ${balance} coins tak withdraw kar sakte ho. ${locked} bonus coins sirf khelne ke liye hain.`
+          : 'You do not have enough coins.',
+      );
+    }
     if (!account.trim()) return Alert.alert('Account required', 'Enter your payout account details.');
     if (quote.netInr < MIN_NET_PAYOUT_INR) {
       return Alert.alert('Amount too small', `Platform fee ₹${quote.feeInr.toFixed(2)} ke baad kam se kam ₹${MIN_NET_PAYOUT_INR} milna chahiye. Zyada coins withdraw karo.`);
@@ -133,11 +145,16 @@ export default function WithdrawScreen() {
         ) : (
           <>
             <View style={[styles.card, { backgroundColor: cardBg }]}>
-              <Text style={[styles.label, { color: subTextColor }]}>Available balance</Text>
+              <Text style={[styles.label, { color: subTextColor }]}>{locked > 0 ? 'Withdraw ho sakte hain' : 'Available balance'}</Text>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <CoinIcon size={26} />
                 <Text style={[styles.balance, { color: textColor }]}>{balance} <Text style={{ fontSize: 16, color: subTextColor }}>coins</Text></Text>
               </View>
+              {locked > 0 ? (
+                <Text style={[styles.hint, { color: subTextColor }]}>
+                  + {locked} bonus coins (sirf contest khelne ke liye, withdraw nahi). Total {total}.
+                </Text>
+              ) : null}
               <Text style={[styles.hint, { color: subTextColor }]}>
                 Min {minAmount} coins{maxAmount > 0 ? ` • Max ${maxAmount}` : ''}{maxPerDay > 0 ? ` • Roz ${maxPerDay} request` : ''} • Rate ₹{rate}/coin
               </Text>

@@ -228,6 +228,20 @@ export default function SystemHealth() {
           bad={!!m?.withdrawalLedgerGaps && m.withdrawalLedgerGaps.count !== 0}
         />
         <Metric
+          icon={Scale}
+          label="Locked coin drift"
+          value={m ? fmtNumber((m.lockedDrift?.count ?? 0) + (m.lockedDrift?.overBalance ?? 0)) : "—"}
+          sub="promo coins vs ledger"
+          bad={!!m && ((m.lockedDrift?.count ?? 0) !== 0 || (m.lockedDrift?.overBalance ?? 0) !== 0)}
+        />
+        <Metric
+          icon={AlertTriangle}
+          label="Stuck promo holds"
+          value={m ? fmtNumber(m.staleReservations ?? 0) : "—"}
+          sub="budget held for a finished match"
+          bad={!!m && (m.staleReservations ?? 0) !== 0}
+        />
+        <Metric
           icon={Clock}
           label="Stuck orders"
           value={m ? fmtNumber(m.stuckCreatedOrders) : "—"}

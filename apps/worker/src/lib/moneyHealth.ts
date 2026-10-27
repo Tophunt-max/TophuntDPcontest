@@ -65,6 +65,14 @@ export interface MoneyHealth {
   withdrawalLedgerGaps: { count: number; samples: { id: string; status: string; missing: string }[] };
   /** Refunds where coins were already spent and could not be recovered. */
   clawbackShortfalls: { count: number; coins: number };
+  /**
+   * Locked (play-only promo) coins out of step with their ledger, or above the
+   * balance they are part of (migration 0068). Same seriousness as ledger drift:
+   * a locked coin that silently became withdrawable is promo money cashed out.
+   */
+  lockedDrift: { count: number; overBalance: number; samples: { uid: string; locked: number; ledger: number; balance: number }[] };
+  /** Promo-budget holds left behind by a finished match or a processed deposit. */
+  staleReservations: number;
   /** Operational queues — informational, not a health failure on their own. */
   pendingDeposits: { count: number; oldestAgeMs: number | null };
   pendingWithdrawals: { count: number; oldestAgeMs: number | null };
@@ -86,6 +94,14 @@ const WITHDRAWAL_GAPS = `
 
 /** COALESCE(SUM(amount)) of a user's ledger, as a correlated subquery. */
 const LEDGER_SUM = "COALESCE((SELECT SUM(amount) FROM coin_transactions t WHERE t.uid = u.uid), 0)";
+const LOCKED_SUM = "COALESCE((SELECT SUM(locked_delta) FROM coin_transactions t WHERE t.uid = u.uid), 0)";
+const STALE_RESERVATIONS = `
+  SELECT COUNT(*) AS n FROM promo_reservations r
+   WHERE r.status = 'held' AND (
+     (r.ref_type = 'match' AND NOT EXISTS (SELECT 1 FROM contest_matches m
+         WHERE m.id = r.ref_id AND m.status IN ('waiting_for_opponent', 'active')))
+     OR (r.ref_type = 'deposit' AND NOT EXISTS (SELECT 1 FROM deposits d
+         WHERE d.id = r.ref_id AND d.status = 'pending')))`;
 
 async function firstNumber(env: Env, sql: string, ...binds: unknown[]): Promise<number> {
   try {
@@ -128,6 +144,10 @@ export async function computeMoneyHealth(env: Env): Promise<MoneyHealth> {
     pendWdOldest,
     wdGapCount,
     wdGapSamples,
+    lockedDriftCount,
+    lockedOver,
+    lockedSamples,
+    staleRes,
   ] = await Promise.all([
     firstNumber(
       env,
@@ -172,6 +192,18 @@ export async function computeMoneyHealth(env: Env): Promise<MoneyHealth> {
     firstNumber(env, `SELECT COALESCE(MIN(created_at), 0) AS n FROM withdrawals WHERE status = 'pending'`),
     firstNumber(env, `SELECT COUNT(*) AS n FROM (${WITHDRAWAL_GAPS})`),
     rows<{ id: string; status: string; missing: string }>(env, `SELECT id, status, missing FROM (${WITHDRAWAL_GAPS}) LIMIT 20`),
+    firstNumber(env, `SELECT COUNT(*) AS n FROM users u WHERE ABS(u.locked_coins - ${LOCKED_SUM}) > ?`, DRIFT_EPSILON),
+    firstNumber(env, `SELECT COUNT(*) AS n FROM users WHERE locked_coins < 0 OR locked_coins > MAX(dpcoin, 0) + ?`, DRIFT_EPSILON),
+    rows<{ uid: string; locked: number; ledger: number; balance: number }>(
+      env,
+      `SELECT u.uid AS uid, u.locked_coins AS locked, ${LOCKED_SUM} AS ledger, u.dpcoin AS balance
+         FROM users u
+        WHERE ABS(u.locked_coins - ${LOCKED_SUM}) > ? OR u.locked_coins < 0 OR u.locked_coins > MAX(u.dpcoin, 0) + ?
+        LIMIT 20`,
+      DRIFT_EPSILON,
+      DRIFT_EPSILON,
+    ),
+    firstNumber(env, STALE_RESERVATIONS),
   ]);
 
   const ageOf = (oldest: number): number | null => (oldest > 0 ? Math.max(0, ts - oldest) : null);
@@ -186,7 +218,10 @@ export async function computeMoneyHealth(env: Env): Promise<MoneyHealth> {
     !bad(stranded) &&
     !bad(strandedDeposits) &&
     !bad(clawbackCount) &&
-    !bad(wdGapCount);
+    !bad(wdGapCount) &&
+    !bad(lockedDriftCount) &&
+    !bad(lockedOver) &&
+    !bad(staleRes);
 
   return {
     ok,
@@ -198,6 +233,8 @@ export async function computeMoneyHealth(env: Env): Promise<MoneyHealth> {
     stuckCreatedOrders: stuckCreated,
     clawbackShortfalls: { count: clawbackCount, coins: clawbackCoins },
     withdrawalLedgerGaps: { count: wdGapCount, samples: wdGapSamples },
+    lockedDrift: { count: lockedDriftCount, overBalance: lockedOver, samples: lockedSamples },
+    staleReservations: staleRes,
     pendingDeposits: { count: pendDepCount, oldestAgeMs: ageOf(pendDepOldest) },
     pendingWithdrawals: { count: pendWdCount, oldestAgeMs: ageOf(pendWdOldest) },
   };
@@ -225,6 +262,9 @@ export async function moneyHealthAlert(env: Env): Promise<MoneyHealth> {
     h.strandedApprovedDeposits !== 0 && `${h.strandedApprovedDeposits} approved deposit(s) not credited`,
     h.clawbackShortfalls.count !== 0 && `${h.clawbackShortfalls.count} clawback shortfall(s)`,
     h.withdrawalLedgerGaps.count !== 0 && `${h.withdrawalLedgerGaps.count} withdrawal(s) missing a ledger row`,
+    h.lockedDrift.count !== 0 && `locked-coin drift on ${h.lockedDrift.count} account(s)`,
+    h.lockedDrift.overBalance !== 0 && `${h.lockedDrift.overBalance} account(s) with locked coins above the balance`,
+    h.staleReservations !== 0 && `${h.staleReservations} promo reservation(s) stuck on a finished match/deposit`,
   ].filter(Boolean);
   // -1 means a probe failed; say so rather than listing nothing.
   const message = failed.length ? failed.join("; ") + "." : "One or more money checks could not run.";

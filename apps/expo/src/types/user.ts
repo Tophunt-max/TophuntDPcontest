@@ -33,6 +33,8 @@ export interface UserProfile {
 
   // Contest Platform Fields
   Dpcoin: number;
+  /** Play-only promo coins inside Dpcoin: spendable on contests, never withdrawable. */
+  lockedCoins?: number;
   /** Alias for the spendable coin balance used by some screens. */
   coins?: number;
   isAdmin: boolean;

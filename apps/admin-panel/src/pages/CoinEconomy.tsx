@@ -1,0 +1,717 @@
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Coins,
+  Download,
+  Gift,
+  KeyRound,
+  Lock,
+  Plus,
+  Scale,
+  Search,
+  Wallet,
+} from "lucide-react";
+import {
+  api,
+  describeError,
+  type CoinEconomy as CoinEconomyData,
+  type PromoBudget,
+  type PromoBudgetKind,
+  type PromoBudgetStatus,
+} from "@/lib/api";
+import { Table } from "@/components/ui/Table";
+import { Badge } from "@/components/ui/Badge";
+import { StatCard } from "@/components/ui/StatCard";
+import { SegTabs } from "@/components/finance/bits";
+import { PageHeader, exportCsv, fmtDateTime, fmtNumber } from "@/lib/format";
+import { toast } from "@/lib/toast";
+
+/**
+ * Coin Economy — where every coin came from and where it went.
+ *
+ *   Overview   supply (withdrawable vs locked promo coins), ₹ liability, flows by
+ *              source, the platform's own side, and the reconciliation checks
+ *   Budgets    one promo budget per offer (package bonus / contest prize)
+ *   Contests   per-contest P&L: entry fees, prizes, refunds, subsidy, fees kept
+ *   Packages   per-package P&L: purchases, ₹, paid vs bonus coins
+ *   User       one user's full coin statement, exportable
+ *
+ * Worker: lib/coinEconomy.ts, lib/promoBudget.ts, lib/approvalPassword.ts.
+ */
+const TABS = [
+  { key: "overview", label: "Overview" },
+  { key: "budgets", label: "Budgets" },
+  { key: "contests", label: "Contests" },
+  { key: "packages", label: "Packages" },
+  { key: "user", label: "User statement" },
+];
+
+const KIND_LABEL: Record<PromoBudgetKind, string> = {
+  package_bonus: "Package bonus",
+  contest_prize: "Contest prize",
+};
+
+const PLATFORM_LABEL: Record<string, string> = {
+  promo_bonus: "Package bonus diya (budget se)",
+  prize_subsidy: "Contest prize subsidy (budget se)",
+  platform_fee: "Entry fee platform ne rakhi",
+  product_prize_fund: "Product prize ke liye entry fee rakhi",
+};
+
+const inr = (n: number) => `₹${fmtNumber(Math.round((n || 0) * 100) / 100)}`;
+const signed = (n: number) => `${n > 0 ? "+" : ""}${fmtNumber(n)}`;
+const field =
+  "w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring";
+
+export default function CoinEconomy() {
+  const [tab, setTab] = useState("overview");
+  return (
+    <div>
+      <PageHeader
+        title="Coin Economy"
+        subtitle="Har coin ka hisab: kahan se aaya, kahan gaya, aur platform ne apni taraf se kitna diya."
+      />
+      <SegTabs tab={tab} setTab={setTab} tabs={TABS} />
+      {tab === "overview" && <Overview />}
+      {tab === "budgets" && <Budgets />}
+      {tab === "contests" && <ContestsPnl />}
+      {tab === "packages" && <PackagesPnl />}
+      {tab === "user" && <UserStatementView />}
+    </div>
+  );
+}
+
+// ─── Overview ────────────────────────────────────────────────────────────────
+
+function Overview() {
+  const { data, isLoading, error } = useQuery({ queryKey: ["coin-economy"], queryFn: () => api.coinEconomy() });
+  if (isLoading) return <p className="text-sm text-muted-foreground py-10 text-center">Loading…</p>;
+  if (error || !data) return <ErrorBox error={error} />;
+  return <OverviewBody data={data} />;
+}
+
+function OverviewBody({ data }: { data: CoinEconomyData }) {
+  const categories = Object.entries(data.categories).sort((a, b) => Math.abs(b[1].net) - Math.abs(a[1].net));
+  const platformRows = Object.entries(data.platform.kinds);
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <StatCard icon={Coins} label="Users ke paas total coin" value={fmtNumber(data.supply.total)} gradient="gradient-purple" />
+        <StatCard icon={Wallet} label="Withdraw ho sakte hain" value={fmtNumber(data.supply.withdrawable)} gradient="gradient-green" />
+        <StatCard icon={Lock} label="Locked (promo, sirf khelne ke liye)" value={fmtNumber(data.supply.locked)} gradient="gradient-orange" />
+        <StatCard icon={Scale} label={`Liability (₹${fmtNumber(data.payoutRate)}/coin)`} value={inr(data.supply.liabilityInr)} gradient="gradient-red" />
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card title="Paisa (₹)">
+          <Row label="Users ne diya (payments)" value={inr(data.cash.paidInInr)} />
+          <Row label="Refund kiya" value={inr(data.cash.refundedInr)} />
+          <Row label="Payout bheja (withdrawals paid)" value={inr(data.cash.paidOutInr)} />
+          <Row label="Payout baaki (pending/approved)" value={inr(data.cash.pendingOutInr)} />
+          <Row
+            label="Net (aaya − refund − bheja − baaki − liability)"
+            value={inr(data.cash.paidInInr - data.cash.refundedInr - data.cash.paidOutInr - data.cash.pendingOutInr - data.supply.liabilityInr)}
+            strong
+          />
+        </Card>
+        <Card title="Platform ka hisab (coins)">
+          {platformRows.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Abhi koi entry nahi.</p>
+          ) : (
+            platformRows.map(([kind, v]) => (
+              <Row
+                key={kind}
+                label={`${PLATFORM_LABEL[kind] ?? kind} (${fmtNumber(v.count)})`}
+                value={<span className={v.coins < 0 ? "text-red-600" : "text-green-600"}>{signed(v.coins)}</span>}
+              />
+            ))
+          )}
+          <Row label="Net (rakha − diya)" value={<span className={data.platform.net < 0 ? "text-red-600" : "text-green-600"}>{signed(data.platform.net)}</span>} strong />
+          <p className="mt-2 text-xs text-muted-foreground">
+            Budgets: {fmtNumber(data.budgets.spent)} / {fmtNumber(data.budgets.total)} coin kharch · {data.budgets.active} active
+          </p>
+        </Card>
+      </div>
+
+      <Card title="Reconciliation checks">
+        <ul className="space-y-2">
+          {data.checks.map((c) => (
+            <li key={c.key} className="flex items-start gap-2 text-sm">
+              {c.ok ? <CheckCircle2 size={16} className="mt-0.5 text-green-600 shrink-0" /> : <AlertTriangle size={16} className="mt-0.5 text-red-600 shrink-0" />}
+              <span>
+                <span className="font-medium text-foreground">{c.label}</span>
+                <span className="block text-xs text-muted-foreground">{c.detail}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      </Card>
+
+      <Card title="Coin kahan se aaye, kahan gaye (by source)">
+        <Table
+          data={categories}
+          keyFn={([k]) => k}
+          columns={[
+            { key: "label", header: "Source", render: ([, c]) => <span className="font-medium text-foreground">{c.label}</span> },
+            { key: "in", header: "Users ko mile", className: "text-right", render: ([, c]) => <span className="text-green-600">{fmtNumber(c.credits)}</span> },
+            { key: "out", header: "Users se gaye", className: "text-right", render: ([, c]) => <span className="text-red-600">{fmtNumber(c.debits)}</span> },
+            { key: "net", header: "Net", className: "text-right", render: ([, c]) => <span className="font-semibold">{signed(c.net)}</span> },
+          ]}
+        />
+        <details className="mt-3">
+          <summary className="cursor-pointer text-xs text-muted-foreground">Har ledger type alag se dekho ({data.types.length})</summary>
+          <Table
+            data={data.types}
+            keyFn={(t) => t.type}
+            columns={[
+              { key: "type", header: "Type", render: (t) => <span className="font-mono text-xs">{t.type}</span> },
+              { key: "count", header: "Rows", className: "text-right", render: (t) => fmtNumber(t.count) },
+              { key: "in", header: "+", className: "text-right", render: (t) => fmtNumber(t.credits) },
+              { key: "out", header: "−", className: "text-right", render: (t) => fmtNumber(t.debits) },
+              { key: "net", header: "Net", className: "text-right", render: (t) => signed(t.net) },
+            ]}
+          />
+        </details>
+      </Card>
+    </div>
+  );
+}
+
+// ─── Budgets ─────────────────────────────────────────────────────────────────
+
+function Budgets() {
+  const qc = useQueryClient();
+  const { data: budgets = [], isLoading, error } = useQuery({ queryKey: ["promo-budgets"], queryFn: api.promoBudgets });
+  const { data: approval } = useQuery({ queryKey: ["approval-password"], queryFn: api.approvalPasswordStatus });
+  const [dialog, setDialog] = useState<PromoBudget | "new" | null>(null);
+  const [detail, setDetail] = useState<string | null>(null);
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ["promo-budgets"] });
+    qc.invalidateQueries({ queryKey: ["coin-economy"] });
+  };
+
+  return (
+    <div className="space-y-4">
+      <ApprovalPasswordCard configured={!!approval?.configured} updatedAt={approval?.updatedAt ?? null} />
+      <div className="flex justify-end">
+        <button
+          onClick={() => setDialog("new")}
+          disabled={!approval?.configured}
+          title={approval?.configured ? undefined : "Pehle approval password set karo"}
+          className="flex items-center gap-2 gradient-purple text-white text-sm font-semibold px-4 py-2 rounded-xl disabled:opacity-50"
+        >
+          <Plus size={16} /> New budget
+        </button>
+      </div>
+      {error ? <ErrorBox error={error} /> : null}
+      <Table
+        loading={isLoading}
+        data={budgets}
+        keyFn={(b) => b.id}
+        empty="Abhi koi budget nahi. Har offer ke liye ek budget banao."
+        columns={[
+          {
+            key: "name",
+            header: "Budget",
+            render: (b) => (
+              <button className="text-left" onClick={() => setDetail(b.id)}>
+                <span className="font-medium text-foreground underline-offset-2 hover:underline">{b.name}</span>
+                <span className="block text-xs text-muted-foreground">{KIND_LABEL[b.kind]}</span>
+              </button>
+            ),
+          },
+          {
+            key: "use",
+            header: "Kharch",
+            render: (b) => <BudgetBar b={b} />,
+          },
+          {
+            key: "window",
+            header: "Time",
+            render: (b) => (
+              <span className="text-xs text-muted-foreground">
+                {b.startsAt ? fmtDateTime(b.startsAt) : "abhi se"} → {b.endsAt ? fmtDateTime(b.endsAt) : "koi end nahi"}
+                {b.perUserLimit ? <span className="block">Per user max {fmtNumber(b.perUserLimit)}</span> : null}
+              </span>
+            ),
+          },
+          {
+            key: "links",
+            header: "Linked",
+            render: (b) => (
+              <span className="text-xs text-muted-foreground">
+                {b.kind === "package_bonus" ? `${b.linkedPackages} package` : `${b.linkedContests} contest`} · {b.usedCount} use
+              </span>
+            ),
+          },
+          {
+            key: "status",
+            header: "Status",
+            render: (b) => (
+              <Badge variant={b.status === "closed" ? "ended" : b.live ? "active" : "warning"}>
+                {b.status === "active" && !b.live ? "active (band)" : b.status}
+              </Badge>
+            ),
+          },
+          {
+            key: "actions",
+            header: "",
+            className: "text-right",
+            render: (b) =>
+              b.status === "closed" ? null : (
+                <button onClick={() => setDialog(b)} className="text-sm text-primary font-medium">Edit</button>
+              ),
+          },
+        ]}
+      />
+      {dialog && <BudgetDialog budget={dialog === "new" ? undefined : dialog} onClose={() => setDialog(null)} onDone={refresh} />}
+      {detail && <BudgetDetail id={detail} onClose={() => setDetail(null)} />}
+    </div>
+  );
+}
+
+function BudgetBar({ b }: { b: PromoBudget }) {
+  const pct = (n: number) => (b.totalCoins > 0 ? Math.min(100, (n / b.totalCoins) * 100) : 0);
+  return (
+    <div className="min-w-[180px]">
+      <div className="h-2 w-full rounded-full bg-secondary overflow-hidden flex">
+        <div className="h-full bg-purple-600" style={{ width: `${pct(b.spentCoins)}%` }} />
+        <div className="h-full bg-amber-400" style={{ width: `${pct(b.heldCoins)}%` }} />
+      </div>
+      <p className="mt-1 text-xs text-muted-foreground">
+        {fmtNumber(b.spentCoins)} kharch · {fmtNumber(b.heldCoins)} reserved · <b className="text-foreground">{fmtNumber(b.remainingCoins)}</b> bache / {fmtNumber(b.totalCoins)}
+      </p>
+    </div>
+  );
+}
+
+const toLocal = (ms: number | null) => {
+  if (!ms) return "";
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+const fromLocal = (v: string) => (v ? new Date(v).getTime() : null);
+
+function BudgetDialog({ budget, onClose, onDone }: { budget?: PromoBudget; onClose: () => void; onDone: () => void }) {
+  const isEdit = !!budget;
+  const [form, setForm] = useState({
+    name: budget?.name ?? "",
+    kind: (budget?.kind ?? "package_bonus") as PromoBudgetKind,
+    totalCoins: String(budget?.totalCoins ?? ""),
+    startsAt: toLocal(budget?.startsAt ?? null),
+    endsAt: toLocal(budget?.endsAt ?? null),
+    perUserLimit: budget?.perUserLimit ? String(budget.perUserLimit) : "",
+    note: budget?.note ?? "",
+    status: (budget?.status ?? "active") as PromoBudgetStatus,
+    reason: "",
+  });
+  const set = (k: keyof typeof form, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const mut = useMutation({
+    mutationFn: async () => {
+      const common = {
+        name: form.name.trim(),
+        totalCoins: Number(form.totalCoins),
+        startsAt: fromLocal(form.startsAt),
+        endsAt: fromLocal(form.endsAt),
+        perUserLimit: form.kind === "package_bonus" && form.perUserLimit ? Number(form.perUserLimit) : null,
+        note: form.note.trim() || null,
+        reason: form.reason.trim(),
+      };
+      if (isEdit) return api.updatePromoBudget(budget!.id, { ...common, status: form.status });
+      return api.createPromoBudget({ ...common, kind: form.kind });
+    },
+    onSuccess: () => {
+      toast.success(isEdit ? "Budget updated" : "Budget ban gaya");
+      onDone();
+      onClose();
+    },
+    onError: (e) => toast.error(describeError(e)),
+  });
+  const committed = budget ? budget.spentCoins + budget.heldCoins : 0;
+
+  return (
+    <Overlay onClose={onClose}>
+      <h3 className="font-bold text-foreground mb-4">{isEdit ? `Edit budget: ${budget!.name}` : "New promo budget"}</h3>
+      <div className="space-y-3">
+        <input className={field} placeholder="Naam, e.g. Diwali bonus" value={form.name} onChange={(e) => set("name", e.target.value)} />
+        {!isEdit && (
+          <div>
+            <label className="text-xs text-muted-foreground mb-1 block">Kis ke liye</label>
+            <select className={field} value={form.kind} onChange={(e) => set("kind", e.target.value)}>
+              <option value="package_bonus">Coin package ka bonus (locked, sirf khelne ke liye)</option>
+              <option value="contest_prize">Contest prize jo pot se zyada ho</option>
+            </select>
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs text-muted-foreground mb-1 block">Total coins (limit)</label>
+            <input type="number" className={field} value={form.totalCoins} onChange={(e) => set("totalCoins", e.target.value)} />
+            {isEdit && committed > 0 ? <p className="mt-1 text-xs text-muted-foreground">Kam se kam {fmtNumber(committed)}</p> : null}
+          </div>
+          {form.kind === "package_bonus" ? (
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Per user max coins</label>
+              <input type="number" className={field} placeholder="Koi limit nahi" value={form.perUserLimit} onChange={(e) => set("perUserLimit", e.target.value)} />
+            </div>
+          ) : <div />}
+          <div>
+            <label className="text-xs text-muted-foreground mb-1 block">Shuru</label>
+            <input type="datetime-local" className={field} value={form.startsAt} onChange={(e) => set("startsAt", e.target.value)} />
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground mb-1 block">Khatam</label>
+            <input type="datetime-local" className={field} value={form.endsAt} onChange={(e) => set("endsAt", e.target.value)} />
+          </div>
+        </div>
+        {isEdit && (
+          <div>
+            <label className="text-xs text-muted-foreground mb-1 block">Status</label>
+            <select className={field} value={form.status} onChange={(e) => set("status", e.target.value)}>
+              <option value="active">Active</option>
+              <option value="paused">Paused (offer rukega, reserved coins safe)</option>
+              <option value="closed">Closed (hamesha ke liye band)</option>
+            </select>
+          </div>
+        )}
+        <textarea className={field} rows={2} placeholder="Note (optional)" value={form.note} onChange={(e) => set("note", e.target.value)} />
+        <div>
+          <label className="text-xs text-muted-foreground mb-1 block">Reason (audit log me jayega) *</label>
+          <input className={field} placeholder="Kyun ye budget / badlav?" value={form.reason} onChange={(e) => set("reason", e.target.value)} />
+        </div>
+        <p className="text-xs text-muted-foreground">Save karne par approval password maanga jayega.</p>
+      </div>
+      <div className="flex gap-2 mt-5">
+        <button onClick={onClose} className="flex-1 py-2.5 rounded-xl bg-secondary text-sm font-medium">Cancel</button>
+        <button
+          onClick={() => mut.mutate()}
+          disabled={mut.isPending || !form.name.trim() || !form.totalCoins || form.reason.trim().length < 3}
+          className="flex-1 py-2.5 rounded-xl gradient-purple text-white text-sm font-semibold disabled:opacity-50"
+        >
+          {isEdit ? "Save" : "Create"}
+        </button>
+      </div>
+    </Overlay>
+  );
+}
+
+function BudgetDetail({ id, onClose }: { id: string; onClose: () => void }) {
+  const { data, isLoading, error } = useQuery({ queryKey: ["promo-budget", id], queryFn: () => api.promoBudget(id) });
+  return (
+    <Overlay onClose={onClose} wide>
+      {isLoading ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : error || !data ? (
+        <ErrorBox error={error} />
+      ) : (
+        <div className="space-y-4">
+          <div>
+            <h3 className="font-bold text-foreground">{data.budget.name}</h3>
+            <p className="text-xs text-muted-foreground">{KIND_LABEL[data.budget.kind]} · banaya {fmtDateTime(data.budget.createdAt)} · {data.budget.createdBy ?? "—"}</p>
+            <div className="mt-2"><BudgetBar b={data.budget} /></div>
+            {data.budget.note ? <p className="mt-2 text-sm text-muted-foreground">{data.budget.note}</p> : null}
+          </div>
+          <div>
+            <p className="text-sm font-semibold mb-1">Linked</p>
+            {data.packages.map((p) => (
+              <p key={p.id} className="text-sm">Package: {p.name ?? p.id} · {fmtNumber(p.coins)} + {fmtNumber(p.bonusCoins)} bonus {p.active ? "" : "(hidden)"}</p>
+            ))}
+            {data.contests.map((c) => (
+              <p key={c.id} className="text-sm">Contest: {c.title ?? c.id} · fee {fmtNumber(c.totalEntryFee)} · prize {fmtNumber(c.rewardCoins)} ({c.status})</p>
+            ))}
+            {!data.packages.length && !data.contests.length ? <p className="text-sm text-muted-foreground">Kuch linked nahi.</p> : null}
+          </div>
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-sm font-semibold">Payouts ({data.payouts.length})</p>
+              <button
+                className="text-xs text-primary flex items-center gap-1"
+                onClick={() => exportCsv(`budget-${data.budget.id}.csv`, data.payouts, ["createdAt", "kind", "coins", "uid", "contestId", "matchId", "refId", "description"])}
+              >
+                <Download size={12} /> CSV
+              </button>
+            </div>
+            <Table
+              data={data.payouts}
+              keyFn={(p) => p.id}
+              empty="Abhi kuch nahi diya gaya"
+              columns={[
+                { key: "t", header: "Kab", render: (p) => <span className="text-xs">{fmtDateTime(p.createdAt)}</span> },
+                { key: "u", header: "User", render: (p) => <span className="font-mono text-xs">{p.uid ?? "—"}</span> },
+                { key: "c", header: "Coins", className: "text-right", render: (p) => <span className="text-red-600">{fmtNumber(-p.coins)}</span> },
+                { key: "d", header: "Detail", render: (p) => <span className="text-xs text-muted-foreground">{p.description}</span> },
+              ]}
+            />
+          </div>
+          <div>
+            <p className="text-sm font-semibold mb-1">Reservations ({data.reservations.length})</p>
+            <Table
+              data={data.reservations}
+              keyFn={(r) => r.id}
+              empty="Koi reservation nahi"
+              columns={[
+                { key: "t", header: "Kab", render: (r) => <span className="text-xs">{fmtDateTime(r.createdAt)}</span> },
+                { key: "ref", header: "Kis ke liye", render: (r) => <span className="font-mono text-xs">{r.refType}:{r.refId.slice(0, 12)}</span> },
+                { key: "c", header: "Coins", className: "text-right", render: (r) => fmtNumber(r.coins) },
+                {
+                  key: "s",
+                  header: "Status",
+                  render: (r) => {
+                    const expired = r.status === "held" && r.expiresAt != null && r.expiresAt <= Date.now();
+                    return <Badge variant={r.status === "used" ? "success" : r.status === "released" || expired ? "ended" : "pending"}>{expired ? "expired" : r.status}</Badge>;
+                  },
+                },
+              ]}
+            />
+          </div>
+        </div>
+      )}
+      <div className="flex justify-end mt-4">
+        <button onClick={onClose} className="px-4 py-2 rounded-xl bg-secondary text-sm font-medium">Close</button>
+      </div>
+    </Overlay>
+  );
+}
+
+function ApprovalPasswordCard({ configured, updatedAt }: { configured: boolean; updatedAt: number | null }) {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirmNext, setConfirmNext] = useState("");
+  const mut = useMutation({
+    mutationFn: () => api.setApprovalPassword({ current: configured ? current : undefined, next }),
+    onSuccess: () => {
+      toast.success(configured ? "Approval password badal gaya" : "Approval password set ho gaya");
+      setOpen(false);
+      setCurrent(""); setNext(""); setConfirmNext("");
+      qc.invalidateQueries({ queryKey: ["approval-password"] });
+      qc.invalidateQueries({ queryKey: ["coin-economy"] });
+    },
+    onError: (e) => toast.error(describeError(e)),
+  });
+  const mismatch = confirmNext.length > 0 && next !== confirmNext;
+  return (
+    <div className={`rounded-2xl border p-4 ${configured ? "border-border bg-card" : "border-amber-300 bg-amber-50"}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex gap-3">
+          <KeyRound size={20} className={configured ? "text-purple-600" : "text-amber-700"} />
+          <div>
+            <p className="font-semibold text-foreground">Approval password</p>
+            <p className="text-sm text-muted-foreground">
+              {configured
+                ? `Set hai${updatedAt ? ` (last change ${fmtDateTime(updatedAt)})` : ""}. Har budget, budget wale package aur promo contest prize par maanga jayega.`
+                : "Set nahi hai. Iske bina koi promo budget nahi ban sakta. Login password se alag rakho."}
+            </p>
+          </div>
+        </div>
+        <button onClick={() => setOpen((o) => !o)} className="text-sm font-medium text-primary whitespace-nowrap">
+          {configured ? "Change" : "Set password"}
+        </button>
+      </div>
+      {open && (
+        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+          {configured && (
+            <input type="password" className={field} placeholder="Purana approval password" value={current} onChange={(e) => setCurrent(e.target.value)} autoComplete="off" />
+          )}
+          <input type="password" className={field} placeholder="Naya (kam se kam 6)" value={next} onChange={(e) => setNext(e.target.value)} autoComplete="new-password" />
+          <input type="password" className={field} placeholder="Naya dobara" value={confirmNext} onChange={(e) => setConfirmNext(e.target.value)} autoComplete="new-password" />
+          {mismatch ? <p className="text-xs text-red-600 sm:col-span-3">Dono naye password match nahi kar rahe.</p> : null}
+          <div className="sm:col-span-3 flex justify-end">
+            <button
+              onClick={() => mut.mutate()}
+              disabled={mut.isPending || next.length < 6 || next !== confirmNext || (configured && !current)}
+              className="px-4 py-2 rounded-xl gradient-purple text-white text-sm font-semibold disabled:opacity-50"
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Contests / Packages ─────────────────────────────────────────────────────
+
+function ContestsPnl() {
+  const { data = [], isLoading, error } = useQuery({ queryKey: ["coin-economy-contests"], queryFn: api.coinEconomyContests });
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-end">
+        <CsvButton onClick={() => exportCsv("contest-pnl.csv", data, ["id", "title", "status", "totalEntryFee", "rewardCoins", "matches", "won", "feesIn", "refunds", "prizes", "subsidy", "subsidyHeld", "platformKept", "net"])} />
+      </div>
+      {error ? <ErrorBox error={error} /> : null}
+      <Table
+        loading={isLoading}
+        data={data}
+        keyFn={(c) => c.id}
+        empty="Koi contest nahi"
+        columns={[
+          {
+            key: "t",
+            header: "Contest",
+            render: (c) => (
+              <span>
+                <span className="font-medium text-foreground">{c.title ?? c.id}</span>
+                <span className="block text-xs text-muted-foreground">
+                  fee {fmtNumber(c.totalEntryFee)} · prize {c.prizeType === "product" ? "product" : fmtNumber(c.rewardCoins)}
+                  {c.subsidyBudgetId ? " · promo" : ""} · {c.status}
+                </span>
+              </span>
+            ),
+          },
+          { key: "m", header: "Matches", className: "text-right", render: (c) => <span>{fmtNumber(c.matches)}<span className="block text-xs text-muted-foreground">{c.won} won · {c.live} live</span></span> },
+          { key: "f", header: "Entry fee aayi", className: "text-right", render: (c) => fmtNumber(c.feesIn) },
+          { key: "r", header: "Refund", className: "text-right", render: (c) => fmtNumber(c.refunds) },
+          { key: "p", header: "Prize diya", className: "text-right", render: (c) => fmtNumber(c.prizes) },
+          { key: "s", header: "Subsidy (budget)", className: "text-right", render: (c) => <span className="text-red-600">{fmtNumber(c.subsidy)}{c.subsidyHeld ? <span className="block text-xs text-amber-600">{fmtNumber(c.subsidyHeld)} reserved</span> : null}</span> },
+          { key: "k", header: "Platform ne rakha", className: "text-right", render: (c) => <span className="text-green-600">{fmtNumber(c.platformKept)}</span> },
+        ]}
+      />
+    </div>
+  );
+}
+
+function PackagesPnl() {
+  const { data = [], isLoading, error } = useQuery({ queryKey: ["coin-economy-packages"], queryFn: api.coinEconomyPackages });
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-end">
+        <CsvButton onClick={() => exportCsv("package-pnl.csv", data, ["id", "name", "purchases", "inr", "refundedInr", "baseCoins", "bonusCoinsGiven", "promoBonusGiven"])} />
+      </div>
+      {error ? <ErrorBox error={error} /> : null}
+      <Table
+        loading={isLoading}
+        data={data}
+        keyFn={(p) => p.id}
+        empty="Abhi koi purchase nahi"
+        columns={[
+          {
+            key: "n",
+            header: "Package",
+            render: (p) => (
+              <span>
+                <span className="font-medium text-foreground">{p.name ?? p.id}</span>
+                <span className="block text-xs text-muted-foreground">
+                  {fmtNumber(p.coins)} + {fmtNumber(p.bonusCoins)} bonus{p.budgetId ? " · promo budget" : ""}{p.active ? "" : " · hidden"}
+                </span>
+              </span>
+            ),
+          },
+          { key: "c", header: "Purchases", className: "text-right", render: (p) => fmtNumber(p.purchases) },
+          { key: "i", header: "₹ aaya", className: "text-right", render: (p) => <span>{inr(p.inr)}{p.refundedInr ? <span className="block text-xs text-red-600">−{inr(p.refundedInr)} refund</span> : null}</span> },
+          { key: "b", header: "Paid coins", className: "text-right", render: (p) => fmtNumber(p.baseCoins) },
+          { key: "x", header: "Bonus coins", className: "text-right", render: (p) => <span>{fmtNumber(p.bonusCoinsGiven)}{p.promoBonusGiven ? <span className="block text-xs text-purple-600">{fmtNumber(p.promoBonusGiven)} budget se (locked)</span> : null}</span> },
+        ]}
+      />
+    </div>
+  );
+}
+
+// ─── User statement ──────────────────────────────────────────────────────────
+
+function UserStatementView() {
+  const [q, setQ] = useState("");
+  const [uid, setUid] = useState<string | null>(null);
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["coin-economy-user", uid],
+    queryFn: () => api.coinEconomyUser(uid!, 2000),
+    enabled: !!uid,
+  });
+  return (
+    <div className="space-y-4">
+      <form
+        className="flex gap-2 max-w-lg"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (q.trim()) setUid(q.trim());
+        }}
+      >
+        <input className={field} placeholder="User uid ya username" value={q} onChange={(e) => setQ(e.target.value)} />
+        <button className="px-4 rounded-xl gradient-purple text-white text-sm font-semibold flex items-center gap-1"><Search size={14} /> Dekho</button>
+      </form>
+      {isLoading && uid ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
+      {error ? <ErrorBox error={error} /> : null}
+      {data && (
+        <>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <StatCard icon={Coins} label={`${data.user.username ?? data.user.uid} ka balance`} value={fmtNumber(data.user.balance)} gradient="gradient-purple" />
+            <StatCard icon={Wallet} label="Withdraw ho sakte hain" value={fmtNumber(data.user.withdrawable)} gradient="gradient-green" />
+            <StatCard icon={Gift} label="Locked (promo)" value={fmtNumber(data.user.locked)} gradient="gradient-orange" />
+          </div>
+          <div className={`rounded-xl px-4 py-2 text-sm ${data.ledger.balanced ? "bg-green-50 text-green-800" : "bg-red-50 text-red-800"}`}>
+            {data.ledger.balanced
+              ? `Hisab barabar: ${fmtNumber(data.ledger.count)} ledger rows ka total = balance.`
+              : `Mismatch: ledger total ${fmtNumber(data.ledger.sum)} (locked ${fmtNumber(data.ledger.lockedSum)}) vs balance ${fmtNumber(data.user.balance)} (locked ${fmtNumber(data.user.locked)}).`}
+            {data.truncated ? " Sirf latest 2000 rows dikhaye hain." : ""}
+          </div>
+          <div className="flex justify-end">
+            <CsvButton onClick={() => exportCsv(`coins-${data.user.uid}.csv`, data.entries, ["createdAt", "type", "amount", "lockedDelta", "balanceAfter", "lockedAfter", "contestId", "matchId", "budgetId", "description", "id"])} />
+          </div>
+          <Table
+            data={data.entries}
+            keyFn={(e) => e.id}
+            empty="Koi transaction nahi"
+            columns={[
+              { key: "t", header: "Kab", render: (e) => <span className="text-xs whitespace-nowrap">{fmtDateTime(e.createdAt)}</span> },
+              { key: "ty", header: "Type", render: (e) => <span><span className="font-mono text-xs">{e.type}</span>{e.budgetId ? <span className="block text-xs text-purple-600">budget</span> : null}</span> },
+              { key: "a", header: "Coins", className: "text-right", render: (e) => <span className={e.amount < 0 ? "text-red-600" : "text-green-600"}>{signed(e.amount)}</span> },
+              { key: "l", header: "Locked", className: "text-right", render: (e) => (e.lockedDelta ? <span className="text-amber-600">{signed(e.lockedDelta)}</span> : <span className="text-muted-foreground">—</span>) },
+              { key: "b", header: "Balance baad me", className: "text-right", render: (e) => <span>{fmtNumber(e.balanceAfter)}{e.lockedAfter ? <span className="block text-xs text-amber-600">{fmtNumber(e.lockedAfter)} locked</span> : null}</span> },
+              { key: "d", header: "Detail", render: (e) => <span className="text-xs text-muted-foreground">{e.description}</span> },
+            ]}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── bits ────────────────────────────────────────────────────────────────────
+
+function Card({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="bg-card border border-border rounded-2xl p-5">
+      <p className="font-semibold text-foreground mb-3">{title}</p>
+      {children}
+    </div>
+  );
+}
+
+function Row({ label, value, strong }: { label: string; value: React.ReactNode; strong?: boolean }) {
+  return (
+    <div className={`flex items-center justify-between gap-3 py-1.5 text-sm ${strong ? "border-t border-border mt-1 pt-2 font-semibold" : ""}`}>
+      <span className={strong ? "text-foreground" : "text-muted-foreground"}>{label}</span>
+      <span className="text-foreground">{value}</span>
+    </div>
+  );
+}
+
+function CsvButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button onClick={onClick} className="flex items-center gap-1 text-sm font-medium text-primary">
+      <Download size={14} /> CSV export
+    </button>
+  );
+}
+
+function ErrorBox({ error }: { error: unknown }) {
+  return <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{describeError(error)}</div>;
+}
+
+function Overlay({ children, onClose, wide }: { children: React.ReactNode; onClose: () => void; wide?: boolean }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={onClose}>
+      <div
+        className={`bg-card border border-border rounded-2xl p-6 w-full ${wide ? "max-w-3xl" : "max-w-md"} max-h-[90vh] overflow-y-auto`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}

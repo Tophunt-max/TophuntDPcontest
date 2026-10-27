@@ -121,6 +121,15 @@ import { getSettings } from "../lib/gamification";
 import { sendEmail, sendUserEmail } from "../lib/email";
 import { passwordChangedEmail, dataExportEmail } from "../lib/emailTemplates";
 import { newId, now, generateJoinId } from "../lib/ids";
+import {
+  ORDER_RESERVATION_TTL_MS,
+  depositReservationId,
+  matchReservationId,
+  orderReservationId,
+  releaseStatement,
+  reserveStatement,
+  tryReserve,
+} from "../lib/promoBudget";
 
 /** Fire-and-forget admin email alert (only if an alert address is configured). */
 function alertAdminEmail(c: any, cfg: any, subject: string, html: string): void {
@@ -684,6 +693,17 @@ apiRoute.post("/", async (c) => {
       const entryTransactionId = `contest_entry:${matchId}:${uid}`;
       const joinIdA = generateJoinId();
       const expiresAt = ts + (contest.autoCancelHours || 24) * 60 * 60 * 1000;
+      // Promo prize (lib/promoBudget.ts): a contest linked to a contest_prize
+      // budget may promise more than the pot. The difference is RESERVED from the
+      // budget inside the same transaction as the entry fee, and the prize this
+      // match snapshots includes it only if the reservation succeeded — so a
+      // budget that has run out simply falls back to the pot prize, and nothing is
+      // ever promised that is not set aside.
+      const wantSubsidy =
+        !isProductPrize && contest.subsidyBudgetId && Number(contest.rewardCoins || 0) > prizeCoins
+          ? Number(contest.rewardCoins || 0) - prizeCoins
+          : 0;
+      const reservationId = matchReservationId(matchId);
       // Media urls are canonicalised onto the current media base BEFORE being
       // frozen into the snapshot. These two columns are the feed's media and they
       // are permanent, so a legacy-host url written here is one the manual D1
@@ -710,11 +730,15 @@ apiRoute.post("/", async (c) => {
       // no match; and if the refund also failed, the coins were simply gone with
       // no trace. Same pattern as joinMatch and lib/money.ts#adjustUserWallet.
       const solvent = `EXISTS (SELECT 1 FROM users WHERE uid = ? AND dpcoin >= ?)`;
-      const createResults = await env.DB.batch([
+      // Locked (play-only promo) coins are spent FIRST on an entry fee. The
+      // ledger row records how many, so a refund can lock them again.
+      const reserved = `COALESCE((SELECT coins FROM promo_reservations WHERE id = ? AND status = 'held'), 0)`;
+      const createStatements: D1PreparedStatement[] = [
         env.DB.prepare(
           `INSERT OR IGNORE INTO coin_transactions
-             (id, uid, amount, type, contest_id, description, created_at)
-           SELECT ?, ?, ?, 'contest_entry_fee', ?, ?, ?
+             (id, uid, amount, type, contest_id, description, created_at, locked_delta)
+           SELECT ?, ?, ?, 'contest_entry_fee', ?, ?, ?,
+                  -(SELECT MIN(locked_coins, ?) FROM users WHERE uid = ?)
             WHERE ${solvent}`,
         ).bind(
           entryTransactionId,
@@ -723,16 +747,39 @@ apiRoute.post("/", async (c) => {
           contestId ?? null,
           `Entry fee (50% split) for ${contest.title || "contest"}`,
           ts,
+          fee,
+          uid,
           uid,
           fee,
         ),
+      ];
+      if (wantSubsidy > 0) {
+        createStatements.push(
+          reserveStatement(env, {
+            id: reservationId,
+            budgetId: String(contest.subsidyBudgetId),
+            kind: "contest_prize",
+            uid: null,
+            coins: wantSubsidy,
+            refType: "match",
+            refId: matchId,
+            expiresAt: null,
+            ts,
+            gate: solvent,
+            gateArgs: [uid, fee],
+          }),
+        );
+      }
+      createStatements.push(
         env.DB.prepare(
           `INSERT INTO contest_matches
              (id, contest_id, status, type, title, entry_fee, is_private, invited_uid,
               join_id_a, user_a, total_votes, min_votes_required, prize_coins,
               prize_type, prize_product_title, prize_product_image_url, prize_product_value,
-              created_at, expires_at)
-           SELECT ?, ?, 'waiting_for_opponent', ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?
+              created_at, expires_at, subsidy_coins, subsidy_budget_id)
+           SELECT ?, ?, 'waiting_for_opponent', ?, ?, ?, ?, ?, ?, ?, 0, ?, ? + ${reserved}, ?, ?, ?, ?, ?, ?,
+                  ${reserved},
+                  CASE WHEN ${reserved} > 0 THEN ? ELSE NULL END
             WHERE ${solvent}`,
         ).bind(
           matchId,
@@ -746,22 +793,27 @@ apiRoute.post("/", async (c) => {
           JSON.stringify(userASnapshot),
           Math.max(0, Number(contest.minVotes || 0)),
           prizeCoins,
+          reservationId,
           prizeType,
           isProductPrize ? contest.prizeProductTitle ?? null : null,
           isProductPrize ? contest.prizeProductImageUrl ?? null : null,
           isProductPrize ? contest.prizeProductValue ?? null : null,
           ts,
           expiresAt,
+          reservationId,
+          reservationId,
+          contest.subsidyBudgetId ?? null,
           uid,
           fee,
         ),
         env.DB.prepare(
           `UPDATE users
-              SET dpcoin = dpcoin - ?, xp = xp + 10, updated_at = ?
+              SET dpcoin = dpcoin - ?, locked_coins = MAX(0, locked_coins - ?), xp = xp + 10, updated_at = ?
             WHERE uid = ? AND dpcoin >= ?`,
-        ).bind(fee, ts, uid, fee),
-      ]);
-      if (Number(createResults[2]?.meta?.changes || 0) === 0) {
+        ).bind(fee, fee, ts, uid, fee),
+      );
+      const createResults = await env.DB.batch(createStatements);
+      if (Number(createResults[createResults.length - 1]?.meta?.changes || 0) === 0) {
         // Nothing was charged and no match was created — the two INSERTs share
         // this statement's gate.
         throw httpsError("failed-precondition", `Insufficient Dpcoin. Required: ${fee}, Current: ${user.dpcoin}`);
@@ -817,19 +869,25 @@ apiRoute.post("/", async (c) => {
             `EXISTS (SELECT 1 FROM contest_matches WHERE id = ? AND status = 'waiting_for_opponent')
              AND NOT EXISTS (SELECT 1 FROM coin_transactions WHERE id = ?)`;
           const refundBindings = [matchId, refundTransactionId];
+          // Locked coins spent on the entry go back to being locked.
+          const relock = `COALESCE((SELECT -locked_delta FROM coin_transactions WHERE id = ?), 0)`;
           const rollback = await env.DB.batch([
+            // The promo subsidy (if any) goes back to its budget. First, because
+            // every later statement changes what `refundGate` sees.
+            releaseStatement(env, reservationId, rollbackTs, refundGate, refundBindings),
             env.DB.prepare(
               // `MAX(0, xp - 10)` — reversing the +10 granted above must not be
               // able to drive lifetime XP negative, which a plain `xp - 10` could
               // for an account whose only XP was this entry.
               `UPDATE users
-                  SET dpcoin = dpcoin + ?, xp = MAX(0, xp - 10), updated_at = ?
+                  SET dpcoin = dpcoin + ?, locked_coins = locked_coins + ${relock},
+                      xp = MAX(0, xp - 10), updated_at = ?
                 WHERE uid = ? AND ${refundGate}`,
-            ).bind(fee, rollbackTs, uid, ...refundBindings),
+            ).bind(fee, entryTransactionId, rollbackTs, uid, ...refundBindings),
             env.DB.prepare(
               `INSERT OR IGNORE INTO coin_transactions
-                 (id, uid, amount, type, contest_id, match_id, description, created_at)
-               SELECT ?, ?, ?, 'contest_entry_refund', ?, ?, ?, ?
+                 (id, uid, amount, type, contest_id, match_id, description, created_at, locked_delta)
+               SELECT ?, ?, ?, 'contest_entry_refund', ?, ?, ?, ?, ${relock}
                 WHERE ${refundGate}`,
             ).bind(
               refundTransactionId,
@@ -839,13 +897,14 @@ apiRoute.post("/", async (c) => {
               matchId,
               "Entry fee refunded — contest stopped accepting new matches",
               rollbackTs,
+              entryTransactionId,
               ...refundBindings,
             ),
             env.DB.prepare(
               `DELETE FROM contest_matches WHERE id = ? AND status = 'waiting_for_opponent'`,
             ).bind(matchId),
           ]);
-          if (Number(rollback[2]?.meta?.changes || 0) > 0) {
+          if (Number(rollback[3]?.meta?.changes || 0) > 0) {
             throw httpsError("failed-precondition", "This contest stopped accepting new matches. Your entry fee was refunded.");
           }
         } catch (e: any) {
@@ -1000,10 +1059,12 @@ apiRoute.post("/", async (c) => {
           uid,
           fee,
         ),
+        // Locked (play-only) coins are spent first; the row records how many.
         env.DB.prepare(
           `INSERT OR IGNORE INTO coin_transactions
-             (id, uid, amount, type, contest_id, match_id, description, created_at)
-           SELECT ?, ?, ?, 'contest_entry_fee', ?, ?, ?, ?
+             (id, uid, amount, type, contest_id, match_id, description, created_at, locked_delta)
+           SELECT ?, ?, ?, 'contest_entry_fee', ?, ?, ?, ?,
+                  -(SELECT MIN(locked_coins, ?) FROM users WHERE uid = ?)
             WHERE ${claimGate}`,
         ).bind(
           entryLedgerId,
@@ -1013,14 +1074,16 @@ apiRoute.post("/", async (c) => {
           matchId,
           `Entry fee (50% split) for ${match.title || "contest"}`,
           ts,
+          fee,
+          uid,
           matchId,
           joinIdB,
         ),
         env.DB.prepare(
           `UPDATE users
-              SET dpcoin = dpcoin - ?, xp = xp + 10, updated_at = ?
+              SET dpcoin = dpcoin - ?, locked_coins = MAX(0, locked_coins - ?), xp = xp + 10, updated_at = ?
             WHERE uid = ? AND ${claimGate}`,
-        ).bind(fee, ts, uid, matchId, joinIdB),
+        ).bind(fee, fee, ts, uid, matchId, joinIdB),
       ]);
 
       if (Number(joinResults[0]?.meta?.changes || 0) === 0) {
@@ -2071,8 +2134,8 @@ apiRoute.post("/", async (c) => {
       // row below locks this amount for the payment's whole life.
       const priced = chargeablePackage(pkg, await getAppConfig(env));
       const amountPaise = Math.round(priced.priceInr * 100);
-      const bonusCoins = priced.bonusCoins;
-      const totalCoins = priced.totalCoins;
+      let bonusCoins = priced.bonusCoins;
+      let totalCoins = priced.totalCoins;
 
       // Create the order at Razorpay (HTTP Basic auth = key_id:key_secret).
       const authHeader = btoa(`${rzp.keyId}:${rzp.keySecret}`);
@@ -2093,6 +2156,32 @@ apiRoute.post("/", async (c) => {
       }
       const order = (await rzpRes.json()) as any;
 
+      // A budget-funded bonus (lib/promoBudget.ts) is RESERVED for this order now,
+      // so a budget can never promise more than it holds. If the budget is out of
+      // room, paused, outside its window, or this user hit its per-user limit,
+      // the order still goes through at the same price — just without the bonus.
+      // The price never depended on the bonus (base coins × buy rate).
+      let orderBudgetId: string | null = null;
+      if (priced.bonusLocked && pkg.budgetId) {
+        const got = await tryReserve(env, {
+          id: orderReservationId(String(order.id)),
+          budgetId: pkg.budgetId,
+          kind: "package_bonus",
+          uid,
+          coins: bonusCoins,
+          refType: "order",
+          refId: String(order.id),
+          expiresAt: now() + ORDER_RESERVATION_TTL_MS,
+          ts: now(),
+        });
+        if (got) {
+          orderBudgetId = pkg.budgetId;
+        } else {
+          bonusCoins = 0;
+          totalCoins = priced.baseCoins;
+        }
+      }
+
       // Persist the server-authoritative intent DURABLY in D1 so a webhook (or a
       // late client callback) can reconcile and credit the order even if the
       // client never returns. This is the authoritative record going forward.
@@ -2106,6 +2195,7 @@ apiRoute.post("/", async (c) => {
             packageId: String(packageId),
             coins: totalCoins,
             bonusCoins,
+            budgetId: orderBudgetId,
             amountPaise,
             currency: "INR",
             status: "created",
@@ -2138,6 +2228,10 @@ apiRoute.post("/", async (c) => {
         currency: "INR",
         keyId: rzp.keyId,
         coins: totalCoins,
+        bonusCoins,
+        // Budget-funded bonus coins are play-only (cannot be withdrawn).
+        bonusLocked: !!orderBudgetId,
+        bonusApplied: !priced.bonusLocked || !!orderBudgetId,
         name: pkg.name || `${totalCoins} Dpcoins`,
       });
     }
@@ -2329,7 +2423,8 @@ apiRoute.post("/", async (c) => {
       // exceeded `maxPerDay`. Only the withdrawal INSERT evaluates solvency and
       // the cap; the ledger row and the deduct are gated on that row existing, so
       // the cap sees the same snapshot and all three still apply or none do.
-      const solvent = `EXISTS (SELECT 1 FROM users WHERE uid = ? AND dpcoin >= ?)`;
+      // Only WITHDRAWABLE coins can leave: locked (play-only) promo coins stay.
+      const solvent = `EXISTS (SELECT 1 FROM users WHERE uid = ? AND dpcoin - locked_coins >= ?)`;
       const capGate =
         policy.maxPerDay > 0
           ? `AND (SELECT COALESCE(SUM(amount), 0) FROM withdrawals
@@ -2375,12 +2470,19 @@ apiRoute.post("/", async (c) => {
         ),
         env.DB.prepare(
           `UPDATE users SET dpcoin = dpcoin - ?, updated_at = ?
-            WHERE uid = ? AND dpcoin >= ? AND ${created}`,
+            WHERE uid = ? AND dpcoin - locked_coins >= ? AND ${created}`,
         ).bind(amt, ts, uid, amt, id),
       ]);
       if (Number(withdrawalResults[2]?.meta?.changes || 0) === 0) {
-        const me = await env.DB.prepare(`SELECT dpcoin FROM users WHERE uid = ?`).bind(uid).first<{ dpcoin: number }>();
-        if (policy.maxPerDay > 0 && Number(me?.dpcoin ?? 0) >= amt) {
+        const me = await env.DB.prepare(`SELECT dpcoin, locked_coins FROM users WHERE uid = ?`).bind(uid).first<{ dpcoin: number; locked_coins: number }>();
+        const withdrawable = Math.max(0, Number(me?.dpcoin ?? 0) - Number(me?.locked_coins ?? 0));
+        if (withdrawable < amt && Number(me?.dpcoin ?? 0) >= amt) {
+          throw httpsError(
+            "failed-precondition",
+            `Aapke ${Number(me?.locked_coins ?? 0)} bonus coins sirf khelne ke liye hain, withdraw nahi ho sakte. Abhi withdraw kar sakte ho: ${withdrawable} coins.`,
+          );
+        }
+        if (policy.maxPerDay > 0 && withdrawable >= amt) {
           throw httpsError(
             "failed-precondition",
             `Daily payout limit is ${policy.maxPerDay} coins. Try a smaller amount or wait 24 hours.`,
@@ -2427,8 +2529,8 @@ apiRoute.post("/", async (c) => {
       if (!pkg) throw httpsError("not-found", "Coin package not found.");
 
       const priced = chargeablePackage(pkg, cfg);
-      const bonusCoins = priced.bonusCoins;
-      const amt = priced.totalCoins;
+      let bonusCoins = priced.bonusCoins;
+      let amt = priced.totalCoins;
       const payAmount = priced.priceInr;
 
       // Hard-block reused UTRs: a bank reference can only fund one deposit. Reject
@@ -2444,20 +2546,49 @@ apiRoute.post("/", async (c) => {
 
       const ts = now();
       const id = newId();
-      await db.insert(schema.deposits).values({
-        id,
-        userId: uid,
-        amount: amt,
-        payAmount,
-        packageId: String(packageId),
-        bonusCoins,
-        method: method || "qr",
-        utr: String(utr).trim(),
-        screenshotUrl: screenshotUrl ? String(screenshotUrl) : null,
-        status: "pending",
-        createdAt: ts,
-        updatedAt: ts,
-      });
+      // Budget-funded bonus: held (no expiry) until the deposit is approved or
+      // rejected. Out of room → the deposit is still accepted, without the bonus.
+      let depositBudgetId: string | null = null;
+      if (priced.bonusLocked && pkg.budgetId) {
+        const got = await tryReserve(env, {
+          id: depositReservationId(id),
+          budgetId: pkg.budgetId,
+          kind: "package_bonus",
+          uid,
+          coins: bonusCoins,
+          refType: "deposit",
+          refId: id,
+          expiresAt: null,
+          ts,
+        });
+        if (got) {
+          depositBudgetId = pkg.budgetId;
+        } else {
+          bonusCoins = 0;
+          amt = priced.baseCoins;
+        }
+      }
+      try {
+        await db.insert(schema.deposits).values({
+          id,
+          userId: uid,
+          amount: amt,
+          payAmount,
+          packageId: String(packageId),
+          bonusCoins,
+          budgetId: depositBudgetId,
+          method: method || "qr",
+          utr: String(utr).trim(),
+          screenshotUrl: screenshotUrl ? String(screenshotUrl) : null,
+          status: "pending",
+          createdAt: ts,
+          updatedAt: ts,
+        });
+      } catch (e) {
+        // No deposit row → nothing will ever use or release the hold.
+        if (depositBudgetId) await releaseStatement(env, depositReservationId(id), now()).run().catch(() => {});
+        throw e;
+      }
       await db.insert(schema.adminNotifications).values({
         id: newId(), title: "New Deposit Request",
         message: `A user submitted a ${amt}-coin deposit (UTR ${String(utr).trim()}).`, link: "/deposits", isRead: false, createdAt: ts,

@@ -421,6 +421,12 @@ export default function WalletScreen() {
                         {coinsInInr(profile?.Dpcoin || 0, coinRate(appConfig)) ? (
                             <Text style={styles.balanceLabel}>Value {coinsInInr(profile?.Dpcoin || 0, coinRate(appConfig))}</Text>
                         ) : null}
+                        {/* Promo bonus coins are play-only: spendable on contests, never withdrawable. */}
+                        {Number(profile?.lockedCoins || 0) > 0 ? (
+                            <Text style={[styles.balanceLabel, { fontSize: 13, marginTop: 4 }]}>
+                                Isme {Math.min(Number(profile?.Dpcoin || 0), Number(profile?.lockedCoins || 0))} bonus coins sirf khelne ke liye hain (withdraw nahi)
+                            </Text>
+                        ) : null}
                         
                         {topupsEnabled && (
                         <TouchableOpacity 

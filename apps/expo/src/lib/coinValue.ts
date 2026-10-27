@@ -34,6 +34,8 @@ export interface CoinPackage {
   priceInr: number;
   /** False when under ₹1, or when it would pay out more than it costs: shown, not sold. */
   purchasable?: boolean;
+  /** The bonus is a platform promo: play-only coins, spendable on contests, never withdrawable. */
+  bonusLocked?: boolean;
   totalCoins: number;
   popular?: boolean;
 }

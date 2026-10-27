@@ -17,7 +17,7 @@ import { contestWinEmail, contestRefundEmail, prizeClaimEmail } from "./lib/emai
 import { drainBroadcastJobs, enqueueBroadcast } from "./lib/broadcast";
 import { finalizeVotes } from "./lib/voteCounter";
 import { settleRefund, settleWinner } from "./lib/contestSettlement";
-import { matchPot, perPlayerEntryFee } from "./lib/money";
+import { matchPot, matchPrizeCeiling, perPlayerEntryFee } from "./lib/money";
 import { normalizePrizeType, resolveMatchPrize, type PrizeFields } from "./lib/prizes";
 import { deleteMediaByUrl } from "./lib/mediaDelete";
 import { vsImageKeyFromPublicUrl } from "./lib/r2";
@@ -64,7 +64,9 @@ export async function resolveMatch(env: Env, match: Match): Promise<void> {
   // the coins the two players actually funded, so settlement cannot mint coins
   // even if a legacy template row still holds an over-funded reward.
   const pot = matchPot(match.entryFee);
-  let rewardAmount = match.prizeCoins == null ? null : Math.min(Number(match.prizeCoins), pot);
+  // A promo subsidy reserved at creation (lib/promoBudget.ts) raises the
+  // ceiling by exactly what was set aside for this match, never more.
+  let rewardAmount = match.prizeCoins == null ? null : Math.min(Number(match.prizeCoins), matchPrizeCeiling(match.entryFee, match.subsidyCoins));
   let minVotes = match.minVotesRequired == null
     ? null
     : Math.max(0, Number(match.minVotesRequired));

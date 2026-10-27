@@ -1043,6 +1043,8 @@ describe('deletion completeness across the whole schema', () => {
     payment_orders: 'financial record',
     deposits: 'financial record',
     withdrawals: 'financial record',
+    promo_reservations: 'financial record (promo budget hold)',
+    platform_ledger: 'financial record (platform side of promo coins and fees)',
     // Other people's contests depend on these. The participant SNAPSHOT inside
     // contest_matches is anonymised and its media destroyed (tested above).
     votes: "other users' contest integrity",

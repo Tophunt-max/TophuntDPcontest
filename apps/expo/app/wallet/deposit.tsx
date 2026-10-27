@@ -209,7 +209,7 @@ export default function DepositScreen() {
                         <Text style={[styles.pkgCoins, { color: textColor }]}>{p.totalCoins}</Text>
                         <Text style={[styles.pkgLabel, { color: subTextColor }]}>Dpcoins</Text>
                         {p.bonusCoins > 0 && (
-                          <Text style={styles.pkgBonus}>+{p.bonusCoins} bonus</Text>
+                          <Text style={styles.pkgBonus}>+{p.bonusCoins} bonus{p.bonusLocked ? ' (sirf khelne ke liye)' : ''}</Text>
                         )}
                         <Text style={[styles.pkgPrice, { color: active ? primaryColor : textColor }]}>₹{Number(p.priceInr).toLocaleString('en-IN')}</Text>
                       </TouchableOpacity>

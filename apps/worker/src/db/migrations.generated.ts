@@ -69,6 +69,7 @@ import m_0064_seed_explore_banners_sql from "../../migrations/0064_seed_explore_
 import m_0065_feed_dismissals_sql from "../../migrations/0065_feed_dismissals.sql";
 import m_0066_chat_member_cleared_at_sql from "../../migrations/0066_chat_member_cleared_at.sql";
 import m_0067_social_safety_sql from "../../migrations/0067_social_safety.sql";
+import m_0068_coin_economy_sql from "../../migrations/0068_coin_economy.sql";
 
 export interface Migration {
   name: string;
@@ -144,4 +145,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0065_feed_dismissals.sql", sql: m_0065_feed_dismissals_sql },
   { name: "0066_chat_member_cleared_at.sql", sql: m_0066_chat_member_cleared_at_sql },
   { name: "0067_social_safety.sql", sql: m_0067_social_safety_sql },
+  { name: "0068_coin_economy.sql", sql: m_0068_coin_economy_sql },
 ];

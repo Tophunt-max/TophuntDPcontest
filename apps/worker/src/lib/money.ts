@@ -89,21 +89,46 @@ export function matchPot(totalEntryFee: unknown): number {
  * Promotional prizes larger than the pot need an explicitly funded pool and a
  * ledger entry for the subsidy; they are deliberately not silently allowed.
  */
-export function assertPrizeFundedByPot(totalEntryFee: unknown, rewardCoins: unknown): void {
+export function assertPrizeFundedByPot(
+  totalEntryFee: unknown,
+  rewardCoins: unknown,
+  opts: { subsidyBudgetId?: string | null } = {},
+): void {
   const pot = matchPot(totalEntryFee);
   const reward = Number(rewardCoins || 0);
   if (!Number.isFinite(reward) || reward < 0) {
     throw httpsError("invalid-argument", "rewardCoins must be a non-negative whole number.");
   }
+  // The funded pool: a promo budget (lib/promoBudget.ts) pays the difference
+  // per match, reserved when the match is created and ledgered at settlement.
+  if (reward > pot && opts.subsidyBudgetId) return;
   if (reward > pot) {
     throw httpsError(
       "invalid-argument",
       `rewardCoins (${reward}) cannot exceed the entry-fee pot (${pot}). ` +
         `Two players fund ${pot} coins in total for a ${Number(totalEntryFee || 0)}-coin contest, ` +
-        `so a larger prize would mint coins on every match.`,
+        `so a larger prize would mint coins on every match. ` +
+        `Zyada prize dena hai to contest ko ek "contest_prize" promo budget se jodo (Coin Economy → Budgets).`,
     );
   }
 }
+
+/**
+ * The most a match may ever pay: the pot the two players funded, plus the
+ * subsidy reserved for it from a promo budget when it was created. Every
+ * settlement path clamps to this, so nothing can pay more than was funded.
+ */
+export function matchPrizeCeiling(totalEntryFee: unknown, subsidyCoins: unknown): number {
+  const subsidy = Number(subsidyCoins || 0);
+  return matchPot(totalEntryFee) + (Number.isFinite(subsidy) && subsidy > 0 ? Math.floor(subsidy) : 0);
+}
+
+/**
+ * SQL for `users.locked_coins` after a debit of `?` coins that is NOT an entry
+ * fee (a clawback, an admin subtraction, a legacy payout): locked coins can
+ * never exceed what is left of the balance. Bind the debit amount once.
+ */
+export const LOCKED_AFTER_DEBIT = "MIN(locked_coins, MAX(0, dpcoin - ?))";
 
 export interface WalletAdjustment {
   uid: string;
@@ -217,9 +242,14 @@ export async function adjustUserWallet(
   // without its ledger row, and vice versa.
   statements.push(
     env.DB.prepare(
+      // `locked_delta`: a subtraction can take the balance below the locked
+      // (play-only) coins, which are then reduced with it so they never exceed
+      // the balance. Read from the same pre-update snapshot as the UPDATE below.
       `INSERT OR IGNORE INTO coin_transactions
-         (id, uid, amount, type, contest_id, match_id, description, created_at)
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?
+         (id, uid, amount, type, contest_id, match_id, description, created_at, locked_delta)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?,
+              (SELECT CASE WHEN ? < 0 THEN MIN(locked_coins, MAX(0, dpcoin + ?)) - locked_coins ELSE 0 END
+                 FROM users WHERE uid = ?)
         WHERE EXISTS (
           SELECT 1 FROM users WHERE uid = ? AND dpcoin + ? >= 0
         )
@@ -233,16 +263,21 @@ export async function adjustUserWallet(
       input.matchId ?? null,
       input.description,
       ts,
+      delta,
+      delta,
+      input.uid,
       input.uid,
       delta,
       ...claimBindings,
     ),
     env.DB.prepare(
       `UPDATE users
-          SET dpcoin = dpcoin + ?, updated_at = ?
+          SET dpcoin = dpcoin + ?,
+              locked_coins = CASE WHEN ? < 0 THEN MIN(locked_coins, MAX(0, dpcoin + ?)) ELSE locked_coins END,
+              updated_at = ?
         WHERE uid = ? AND dpcoin + ? >= 0
           ${claimGate}`,
-    ).bind(delta, ts, input.uid, delta, ...claimBindings),
+    ).bind(delta, delta, delta, ts, input.uid, delta, ...claimBindings),
   );
 
   const results = await env.DB.batch(statements);
@@ -310,6 +345,7 @@ export interface CoinPackageInput {
 export function validateCoinPackage(
   body: Record<string, any>,
   existing?: Partial<CoinPackageInput>,
+  opts: { promoFunded?: boolean } = {},
 ): Partial<CoinPackageInput> {
   const out: Partial<CoinPackageInput> = {};
   const has = (key: string) => Object.prototype.hasOwnProperty.call(body, key) && body[key] !== undefined;
@@ -352,7 +388,10 @@ export function validateCoinPackage(
   // zero), and it silently doubles the coins sold for a fixed price.
   const coins = out.coins ?? existing?.coins;
   const bonus = out.bonusCoins ?? existing?.bonusCoins;
-  if (coins != null && bonus != null && bonus > coins) {
+  // A budget-funded bonus is a deliberate promotion capped by its budget, and it
+  // is credited as locked (play-only) coins, so "bigger than the paid coins" is
+  // allowed there.
+  if (coins != null && bonus != null && bonus > coins && !opts.promoFunded) {
     throw httpsError(
       "invalid-argument",
       `bonusCoins (${bonus}) cannot exceed the paid coins (${coins}).`,

@@ -17,6 +17,12 @@
  * rate or a package (the save is refused, naming the minimum safe buy rate), and
  * again at charge time, so a package that breaks it is never sold.
  *
+ * PROMO PACKAGES. A package linked to a promo budget (`budget_id`,
+ * lib/promoBudget.ts) credits its bonus as LOCKED coins: playable, never
+ * withdrawable. Only the base coins can be cashed out, so for those packages the
+ * rule becomes `base × buyRate >= base × payoutRate` — the bonus is a budgeted
+ * platform expense, not a payout risk.
+ *
  * Until a buy rate is set, the buy rate falls back to the payout rate (the
  * previous single-rate behaviour) — which the rule then blocks for any package
  * with bonus coins, telling the admin exactly what to set.
@@ -73,10 +79,23 @@ export function packagePriceInr(baseCoins: number, buyRate: number | null): numb
   return paise(coins * buyRate);
 }
 
-/** The lowest buy rate at which this package does not pay out more than it costs. */
-export function minSafeBuyRate(pkg: { coins?: unknown; bonusCoins?: unknown }, payoutRate: number | null): number {
+type PackageLike = { coins?: unknown; bonusCoins?: unknown; budgetId?: unknown };
+
+/** True when the bonus is budget-funded and credited as locked (play-only) coins. */
+export function hasLockedBonus(pkg: PackageLike): boolean {
+  return typeof pkg.budgetId === "string" && pkg.budgetId.length > 0;
+}
+
+/** Coins of this package that can be WITHDRAWN once credited. */
+function withdrawableCoins(pkg: PackageLike): number {
   const base = Number(pkg.coins) || 0;
-  const total = base + (Number(pkg.bonusCoins) || 0);
+  return hasLockedBonus(pkg) ? base : base + (Number(pkg.bonusCoins) || 0);
+}
+
+/** The lowest buy rate at which this package does not pay out more than it costs. */
+export function minSafeBuyRate(pkg: PackageLike, payoutRate: number | null): number {
+  const base = Number(pkg.coins) || 0;
+  const total = withdrawableCoins(pkg);
   if (!payoutRate || base <= 0) return 0;
   // Rounded UP to the paisa, so the suggested rate always passes the rule.
   return Math.ceil(((payoutRate * total) / base) * 100 - 1e-9) / 100;
@@ -89,8 +108,10 @@ export interface PricedPackage {
   bonusCoins: number;
   totalCoins: number;
   priceInr: number;
-  /** What the credited coins are worth at the payout rate. */
+  /** What the WITHDRAWABLE credited coins are worth at the payout rate. */
   payoutInr: number;
+  /** The bonus is budget-funded and credited as locked (play-only) coins. */
+  bonusLocked: boolean;
   purchasable: boolean;
   reason?: NotPurchasableReason;
 }
@@ -104,21 +125,22 @@ export function ratesFromConfig(cfg: any): Rates {
   return { buyRate: buyRateFromConfig(cfg), payoutRate: coinValueFromConfig(cfg) };
 }
 
-export function pricePackage(pkg: { coins?: unknown; bonusCoins?: unknown }, rates: Rates): PricedPackage {
+export function pricePackage(pkg: PackageLike, rates: Rates): PricedPackage {
   const baseCoins = Number(pkg.coins) || 0;
   const bonusCoins = Number(pkg.bonusCoins) || 0;
   const totalCoins = baseCoins + bonusCoins;
+  const bonusLocked = hasLockedBonus(pkg) && bonusCoins > 0;
   const priceInr = packagePriceInr(baseCoins, rates.buyRate);
-  const payoutInr = rates.payoutRate ? paise(totalCoins * rates.payoutRate) : 0;
+  const payoutInr = rates.payoutRate ? paise(withdrawableCoins(pkg) * rates.payoutRate) : 0;
   let reason: NotPurchasableReason | undefined;
   if (!rates.buyRate) reason = "no_rate";
   else if (priceInr < MIN_PACKAGE_PRICE_INR) reason = "below_minimum";
   else if (rates.payoutRate && priceInr + EPS < payoutInr) reason = "pays_out_more";
-  return { baseCoins, bonusCoins, totalCoins, priceInr, payoutInr, purchasable: !reason, ...(reason ? { reason } : {}) };
+  return { baseCoins, bonusCoins, totalCoins, priceInr, payoutInr, bonusLocked, purchasable: !reason, ...(reason ? { reason } : {}) };
 }
 
 /** Price a package for a real charge, or refuse with a message the user can act on. */
-export function chargeablePackage(pkg: { coins?: unknown; bonusCoins?: unknown }, cfg: any): PricedPackage {
+export function chargeablePackage(pkg: PackageLike, cfg: any): PricedPackage {
   const priced = pricePackage(pkg, ratesFromConfig(cfg));
   if (priced.baseCoins <= 0 || priced.totalCoins <= 0) {
     throw httpsError("failed-precondition", "This coin package is misconfigured.");
@@ -140,7 +162,7 @@ export function chargeablePackage(pkg: { coins?: unknown; bonusCoins?: unknown }
  * they cannot be bought, and are checked again when re-activated.
  */
 export function assertPackagesSafe(
-  packages: { name?: string | null; coins?: unknown; bonusCoins?: unknown; active?: unknown }[],
+  packages: { name?: string | null; coins?: unknown; bonusCoins?: unknown; active?: unknown; budgetId?: unknown }[],
   rates: Rates,
 ): void {
   if (!rates.payoutRate || !rates.buyRate) return;
@@ -156,7 +178,8 @@ export function assertPackagesSafe(
     throw httpsError(
       "invalid-argument",
       `Nuksaan wala daam: package "${worst.name}" ki bonus coins milake payout (₹${rates.payoutRate}/coin) uske daam se zyada ho jayega. ` +
-        `Buy rate kam se kam ₹${worst.need}/coin rakho, ya bonus kam karo.`,
+        `Buy rate kam se kam ₹${worst.need}/coin rakho, ya bonus kam karo, ` +
+        `ya package ko ek "package_bonus" promo budget se jodo (bonus coins tab sirf khelne ke liye honge, withdraw nahi).`,
     );
   }
 }

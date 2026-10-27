@@ -103,6 +103,8 @@ import {
   assertCoinAmount,
   assertPrizeFundedByPot,
   matchPot,
+  matchPrizeCeiling,
+  LOCKED_AFTER_DEBIT,
   perPlayerEntryFee,
   roundFiat,
   toPaise,
@@ -121,6 +123,23 @@ import {
 } from "../lib/verificationReward";
 import { computeDeepHealth } from "../lib/health";
 import { computeMoneyHealth } from "../lib/moneyHealth";
+import {
+  approvalPasswordStatus,
+  assertApproval,
+  setApprovalPassword,
+  withoutApproval,
+} from "../lib/approvalPassword";
+import {
+  assertLinkableBudget,
+  depositReservationId,
+  getBudget,
+  listBudgets,
+  promoBonusCreditStatements,
+  releaseStatement,
+  requireReason,
+  validateBudgetInput,
+} from "../lib/promoBudget";
+import { budgetActivity, coinEconomyOverview, contestPnl, packagePnl, userStatement } from "../lib/coinEconomy";
 import { cronHealth } from "../lib/ops";
 import { decideReferral, parseReferralConfig, qualifyReferral, reconcileReferrals } from "../lib/referralProgram";
 
@@ -235,6 +254,10 @@ const SENSITIVE_ADMIN_ROUTES: Array<[method: string, path: RegExp]> = [
   ["POST", /^\/app-settings$/],
   ["POST", /^\/rewards$/],
   ["*", /^\/coin-packages(\/.*)?$/],
+  // Promo budgets make the platform pay coins nobody paid for; they also need
+  // the separate approval password (lib/approvalPassword.ts).
+  ["*", /^\/promo-budgets(\/.*)?$/],
+  ["*", /^\/approval-password$/],
   ["*", /^\/integrations(\/.*)?$/],
 ];
 export function isSensitiveAdminRoute(method: string, path: string): boolean {
@@ -468,7 +491,7 @@ adminRoute.post("/app-settings", async (c) => {
   const ratesChanged = oldRates.buyRate !== newRates.buyRate || oldRates.payoutRate !== newRates.payoutRate;
   const allPkgs = ratesChanged
     ? await db
-        .select({ id: schema.coinPackages.id, name: schema.coinPackages.name, coins: schema.coinPackages.coins, bonusCoins: schema.coinPackages.bonusCoins, active: schema.coinPackages.active })
+        .select({ id: schema.coinPackages.id, name: schema.coinPackages.name, coins: schema.coinPackages.coins, bonusCoins: schema.coinPackages.bonusCoins, active: schema.coinPackages.active, budgetId: schema.coinPackages.budgetId })
         .from(schema.coinPackages)
         .all()
     : [];
@@ -948,11 +971,26 @@ adminRoute.patch("/contests/:id", async (c) => {
   const current = await db.select().from(schema.contests).where(eq(schema.contests.id, id)).get();
   if (!current) throw httpsError("not-found", "Contest not found.");
 
+  // Promo prize budget, on the MERGED result. Linking/unlinking it, or changing
+  // the reward of a contest it funds, changes what the platform pays per match:
+  // that needs the approval password (lib/approvalPassword.ts).
+  const mergedBudget = hasOwn(values, "subsidyBudgetId") ? values.subsidyBudgetId : current.subsidyBudgetId ?? null;
+  const mergedPrizeType = hasOwn(values, "prizeType") ? values.prizeType : normalizePrizeType(current.prizeType);
+  const budgetChanged = hasOwn(values, "subsidyBudgetId") && values.subsidyBudgetId !== (current.subsidyBudgetId ?? null);
+  if (mergedBudget && mergedPrizeType === "product") {
+    throw httpsError("invalid-argument", "Product prize wale contest ko coin prize budget se nahi joda ja sakta.");
+  }
+  if (budgetChanged && mergedBudget) await assertLinkableBudget(c.env, mergedBudget, "contest_prize");
+  const rewardChanged = hasOwn(values, "rewardCoins") && values.rewardCoins !== Number(current.rewardCoins ?? 0);
+  const feeChanged = hasOwn(values, "totalEntryFee") && values.totalEntryFee !== Number(current.totalEntryFee ?? 0);
+  if (budgetChanged || (mergedBudget && (rewardChanged || feeChanged))) await assertApproval(c, body as any);
+
   // Validate the invariant on the MERGED result: a PATCH that only raises
   // rewardCoins, or only lowers totalEntryFee, must be rejected just the same.
   assertPrizeFundedByPot(
     hasOwn(values, "totalEntryFee") ? values.totalEntryFee : Number(current.totalEntryFee ?? 0),
     hasOwn(values, "rewardCoins") ? values.rewardCoins : Number(current.rewardCoins ?? 0),
+    { subsidyBudgetId: mergedBudget },
   );
 
   // Same reason as above: a PATCH that only moves one edge of the window has to
@@ -987,6 +1025,7 @@ adminRoute.patch("/contests/:id", async (c) => {
     // back to "coins" nulls the product columns — so they are safe to copy through
     // individually here.
     "prizeType", "prizeProductTitle", "prizeProductImageUrl", "prizeProductValue", "prizeProductDescription",
+    "subsidyBudgetId",
   ]) {
     if (hasOwn(values, field)) set[field] = values[field];
   }
@@ -2577,6 +2616,7 @@ adminRoute.get("/contests", async (c) => {
       prizeProductImageUrl: schema.contests.prizeProductImageUrl,
       prizeProductValue: schema.contests.prizeProductValue,
       prizeProductDescription: schema.contests.prizeProductDescription,
+      subsidyBudgetId: schema.contests.subsidyBudgetId,
       voteDurationDays: schema.contests.voteDurationDays,
       autoCancelHours: schema.contests.autoCancelHours,
       minVotes: schema.contests.minVotes,
@@ -2617,6 +2657,7 @@ adminRoute.get("/contests", async (c) => {
       rewardCoins: row.rewardCoins,
       prizePool: row.rewardCoins,
       ...publicPrize(row),
+      subsidyBudgetId: row.subsidyBudgetId ?? null,
       voteDurationDays: row.voteDurationDays,
       autoCancelHours: row.autoCancelHours,
       minVotes: row.minVotes,
@@ -2746,8 +2787,13 @@ adminRoute.post("/contests", async (c) => {
   const { values } = validateContestInput(body, true);
   if (!values.bannerUrl) throw httpsError("failed-precondition", "A banner is required for a new contest.");
   // A prize larger than the pot the two players fund would mint coins on every
-  // settled match. Enforced here and on PATCH against the MERGED values.
-  assertPrizeFundedByPot(values.totalEntryFee, values.rewardCoins);
+  // settled match — unless a promo budget pays the difference, reserved per
+  // match (lib/promoBudget.ts). Enforced here and on PATCH against the MERGED values.
+  if (values.subsidyBudgetId) {
+    await assertLinkableBudget(c.env, values.subsidyBudgetId, "contest_prize");
+    await assertApproval(c, body as any);
+  }
+  assertPrizeFundedByPot(values.totalEntryFee, values.rewardCoins, { subsidyBudgetId: values.subsidyBudgetId });
   assertContestWindow(values.startsAt, values.endsAt, { requireFuture: true });
 
   const id = newId();
@@ -2771,6 +2817,7 @@ adminRoute.post("/contests", async (c) => {
     prizeProductImageUrl: values.prizeProductImageUrl,
     prizeProductValue: values.prizeProductValue,
     prizeProductDescription: values.prizeProductDescription,
+    subsidyBudgetId: values.subsidyBudgetId ?? null,
     startsAt: values.startsAt,
     endsAt: values.endsAt,
     extra,
@@ -3287,7 +3334,9 @@ adminRoute.post("/matches/:id/declare-winner", async (c) => {
   // funded — identical rule to the cron resolver, so a manual declaration can
   // never pay more than an automatic one.
   const pot = matchPot(m.entryFee);
-  let rewardAmount = m.prizeCoins == null ? null : Math.min(Number(m.prizeCoins), pot);
+  // A promo subsidy reserved at creation (lib/promoBudget.ts) raises the
+  // ceiling by exactly what was set aside for this match, never more.
+  let rewardAmount = m.prizeCoins == null ? null : Math.min(Number(m.prizeCoins), matchPrizeCeiling(m.entryFee, m.subsidyCoins));
   // The prize TEMPLATE is only consulted for a row written before the snapshot
   // columns existed — same rule as the cron resolver, so a manual declaration and
   // an automatic one can never disagree about what was promised.
@@ -4127,14 +4176,15 @@ adminRoute.patch("/withdrawals/:id", async (c) => {
           ).bind(ledgerId, nonce, ts, w.userId, w.amount, ledgerId),
           c.env.DB.prepare(
             `INSERT OR IGNORE INTO coin_transactions
-               (id, uid, amount, type, description, created_at)
-             SELECT ?, ?, ?, 'withdrawal', ?, ?
+               (id, uid, amount, type, description, created_at, locked_delta)
+             SELECT ?, ?, ?, 'withdrawal', ?, ?,
+                    COALESCE((SELECT ${LOCKED_AFTER_DEBIT} - locked_coins FROM users WHERE uid = ?), 0)
               WHERE ${claimGate}`,
-          ).bind(ledgerId, w.userId, -w.amount, `Payout ${status} (${w.method})`, ts, ledgerId, nonce),
+          ).bind(ledgerId, w.userId, -w.amount, `Payout ${status} (${w.method})`, ts, w.amount, w.userId, ledgerId, nonce),
           c.env.DB.prepare(
-            `UPDATE users SET dpcoin = dpcoin - ?, updated_at = ?
+            `UPDATE users SET dpcoin = dpcoin - ?, locked_coins = ${LOCKED_AFTER_DEBIT}, updated_at = ?
               WHERE uid = ? AND dpcoin >= ? AND ${claimGate}`,
-          ).bind(w.amount, ts, w.userId, w.amount, ledgerId, nonce),
+          ).bind(w.amount, w.amount, ts, w.userId, w.amount, ledgerId, nonce),
         ]);
         if (Number(legacyResults[2]?.meta?.changes || 0) === 0) {
           const alreadyDebited = await c.env.DB.prepare(`SELECT 1 AS x FROM coin_transactions WHERE id = ?`)
@@ -4461,11 +4511,15 @@ adminRoute.patch("/deposits/:id", async (c) => {
           SELECT 1 FROM deposits WHERE lower(utr) = ? AND status = 'approved' AND id <> ?))`;
     const gateArgs = [id, d.userId, utrKey, utrKey, id];
     const ledgerId = `manual_deposit:${id}`;
+    // A budget-funded bonus (lib/promoBudget.ts) is credited as its own locked,
+    // play-only `promo_bonus` row; the deposit row carries the paid coins only.
+    const promoBonus = d.budgetId && depBonus > 0 ? depBonus : 0;
+    const paidCoins = coins - promoBonus;
     const results = await c.env.DB.batch([
       c.env.DB.prepare(
         `UPDATE users SET dpcoin = dpcoin + ?, updated_at = ?
           WHERE uid = ? AND ${pendingGate}`,
-      ).bind(coins, ts, d.userId, ...gateArgs),
+      ).bind(paidCoins, ts, d.userId, ...gateArgs),
       c.env.DB.prepare(
         `INSERT OR IGNORE INTO payments
            (id, user_id, amount, coins, amount_paise, source, status, created_at)
@@ -4483,11 +4537,28 @@ adminRoute.patch("/deposits/:id", async (c) => {
       ).bind(
         ledgerId,
         d.userId,
-        coins,
+        paidCoins,
         `Manual deposit approved${bonusSuffix} (UTR ${d.utr || "-"})`,
         ts,
         ...gateArgs,
       ),
+      ...(promoBonus > 0
+        ? promoBonusCreditStatements(
+            c.env,
+            {
+              uid: d.userId,
+              coins: promoBonus,
+              budgetId: String(d.budgetId),
+              reservationId: depositReservationId(id),
+              ledgerId: `promo_bonus:deposit:${id}`,
+              refId: id,
+              description: `Bonus ${promoBonus} coins (sirf khelne ke liye) — deposit ${id}`,
+              ts,
+            },
+            pendingGate,
+            gateArgs,
+          )
+        : []),
       c.env.DB.prepare(
         `UPDATE deposits
             SET status = 'approved', admin_note = ?, processed_by = ?, credited_at = ?, updated_at = ?
@@ -4497,7 +4568,7 @@ adminRoute.patch("/deposits/:id", async (c) => {
               SELECT 1 FROM deposits WHERE lower(utr) = ? AND status = 'approved' AND id <> ?))`,
       ).bind(adminNote || null, admin?.uid ?? null, ts, ts, ...gateArgs),
     ]);
-    if (Number(results[3]?.meta?.changes || 0) === 0) {
+    if (Number(results[results.length - 1]?.meta?.changes || 0) === 0) {
       // Nothing moved: another approval won the race, the same UTR was credited
       // on another deposit in the meantime, or the recipient account no longer
       // exists. In every case no coins were credited.
@@ -4525,6 +4596,8 @@ adminRoute.patch("/deposits/:id", async (c) => {
       .where(and(eq(schema.deposits.id, id), eq(schema.deposits.status, "pending")))
       .run();
     if (claim.meta.changes === 0) throw httpsError("failed-precondition", "Deposit was already processed.");
+    // The bonus held for this deposit goes back to its budget.
+    if (d.budgetId) await releaseStatement(c.env, depositReservationId(id), ts).run();
   }
 
   await createNotification(c.env, d.userId, {
@@ -4851,20 +4924,39 @@ adminRoute.get("/coin-packages", async (c) => {
   );
 });
 
+/**
+ * `budgetId` on a coin package: a package_bonus promo budget pays its bonus,
+ * credited as locked (play-only) coins (lib/promoBudget.ts). `undefined` = not
+ * sent, `null` = unlink.
+ */
+function packageBudgetInput(b: any): string | null | undefined {
+  if (!b || !Object.prototype.hasOwnProperty.call(b, "budgetId") || b.budgetId === undefined) return undefined;
+  if (b.budgetId === null || b.budgetId === "") return null;
+  if (typeof b.budgetId !== "string" || b.budgetId.length > 64) throw httpsError("invalid-argument", "budgetId must be a budget id.");
+  return b.budgetId;
+}
+
 adminRoute.post("/coin-packages", async (c) => {
   requireFullAdmin(c);
   const db = getDb(c.env);
   const b = await c.req.json<any>();
+  const budgetId = packageBudgetInput(b) ?? null;
   // Packages price every real purchase, so they are validated on the way IN.
-  const values = validateCoinPackage(b);
+  const values = validateCoinPackage(b, undefined, { promoFunded: !!budgetId });
   if (values.coins == null) {
     throw httpsError("invalid-argument", "coins is required.");
+  }
+  if (budgetId) {
+    await assertLinkableBudget(c.env, budgetId, "package_bonus");
+    if (!(Number(values.bonusCoins) > 0)) throw httpsError("invalid-argument", "Budget wale package me bonus coins 0 se zyada hone chahiye.");
+    // A platform-funded bonus needs the approval password.
+    await assertApproval(c, b);
   }
   // The price is not entered: it is base coins × buy rate (lib/coinPricing.ts).
   // The column keeps a snapshot of it, for reference only. A package that would
   // pay out more than it costs is refused.
   const rates = ratesFromConfig(await getAppConfig(c.env));
-  assertPackagesSafe([{ name: values.name, coins: values.coins, bonusCoins: values.bonusCoins ?? 0, active: values.active ?? true }], rates);
+  assertPackagesSafe([{ name: values.name, coins: values.coins, bonusCoins: values.bonusCoins ?? 0, active: values.active ?? true, budgetId }], rates);
   values.priceInr = packagePriceInr(values.coins, rates.buyRate);
   const id = newId();
   const ts = now();
@@ -4876,10 +4968,11 @@ adminRoute.post("/coin-packages", async (c) => {
     priceInr: values.priceInr,
     active: values.active ?? true,
     sortOrder: values.sortOrder ?? 0,
+    budgetId,
     createdAt: ts,
     updatedAt: ts,
   });
-  await logAudit(c, "coin-package.create", "coin_package", id, values);
+  await logAudit(c, "coin-package.create", "coin_package", id, { ...values, budgetId });
   c.executionCtx.waitUntil(publishCoinCatalog(c.env));
   return c.json({ success: true, id });
 });
@@ -4891,13 +4984,27 @@ adminRoute.patch("/coin-packages/:id", async (c) => {
   const b = await c.req.json<any>();
   const current = await db.select().from(schema.coinPackages).where(eq(schema.coinPackages.id, id)).get();
   if (!current) throw httpsError("not-found", "Package not found.");
+  const budgetInput = packageBudgetInput(b);
+  const budgetId = budgetInput === undefined ? current.budgetId ?? null : budgetInput;
   // Validate against the MERGED result so raising the bonus alone, or lowering
   // the coins alone, is still checked against the other value.
   const values = validateCoinPackage(b, {
     coins: Number(current.coins),
     bonusCoins: Number(current.bonusCoins),
-  });
+  }, { promoFunded: !!budgetId });
   const set: any = { ...values, updatedAt: now() };
+  const budgetChanged = budgetInput !== undefined && budgetInput !== (current.budgetId ?? null);
+  if (budgetChanged) set.budgetId = budgetId;
+  if (budgetId) {
+    if (budgetChanged) await assertLinkableBudget(c.env, budgetId, "package_bonus");
+    if (!(Number(values.bonusCoins ?? current.bonusCoins) > 0)) {
+      throw httpsError("invalid-argument", "Budget wale package me bonus coins 0 se zyada hone chahiye.");
+    }
+  }
+  // Linking or unlinking a budget, or changing a platform-funded bonus, changes
+  // what the platform pays per purchase: approval password.
+  const bonusChanged = values.bonusCoins !== undefined && Number(values.bonusCoins) !== Number(current.bonusCoins);
+  if (budgetChanged || (budgetId && bonusChanged)) await assertApproval(c, b);
   // Price follows the buy rate; keep the reference snapshot in step, and refuse
   // an edit that would make the package pay out more than it costs.
   const rates = ratesFromConfig(await getAppConfig(c.env));
@@ -4907,6 +5014,7 @@ adminRoute.patch("/coin-packages/:id", async (c) => {
       coins: values.coins ?? current.coins,
       bonusCoins: values.bonusCoins ?? current.bonusCoins,
       active: values.active ?? current.active,
+      budgetId,
     }],
     rates,
   );
@@ -4925,6 +5033,155 @@ adminRoute.delete("/coin-packages/:id", async (c) => {
   await logAudit(c, "coin-package.delete", "coin_package", id);
   c.executionCtx.waitUntil(publishCoinCatalog(c.env));
   return c.json({ message: "Package deleted" });
+});
+
+// ======================= COIN ECONOMY (promo budgets, ledger reports) =======
+// Approval password: a second secret for anything that makes the platform pay
+// coins nobody paid for (lib/approvalPassword.ts).
+adminRoute.get("/approval-password", async (c) => {
+  requireFullAdmin(c);
+  return c.json(await approvalPasswordStatus(c.env));
+});
+
+adminRoute.post("/approval-password", async (c) => {
+  requireFullAdmin(c);
+  const body = await c.req.json<any>().catch(() => ({}));
+  const before = await approvalPasswordStatus(c.env);
+  await setApprovalPassword(c, { current: body?.current, next: body?.next });
+  await logAudit(c, before.configured ? "approval-password.change" : "approval-password.set", "settings", "approvalSecret");
+  return c.json({ success: true });
+});
+
+adminRoute.get("/promo-budgets", async (c) => {
+  requireFullAdmin(c);
+  return c.json(await listBudgets(c.env));
+});
+
+adminRoute.get("/promo-budgets/:id", async (c) => {
+  requireFullAdmin(c);
+  const id = c.req.param("id");
+  const budget = await getBudget(c.env, id);
+  if (!budget) throw httpsError("not-found", "Promo budget not found.");
+  const db = getDb(c.env);
+  const [packages, contests, activity] = await Promise.all([
+    db.select({ id: schema.coinPackages.id, name: schema.coinPackages.name, coins: schema.coinPackages.coins, bonusCoins: schema.coinPackages.bonusCoins, active: schema.coinPackages.active })
+      .from(schema.coinPackages).where(eq(schema.coinPackages.budgetId, id)).all(),
+    db.select({ id: schema.contests.id, title: schema.contests.title, status: schema.contests.status, totalEntryFee: schema.contests.totalEntryFee, rewardCoins: schema.contests.rewardCoins })
+      .from(schema.contests).where(eq(schema.contests.subsidyBudgetId, id)).all(),
+    budgetActivity(c.env, id),
+  ]);
+  return c.json({ budget, packages, contests, ...activity });
+});
+
+adminRoute.post("/promo-budgets", async (c) => {
+  requireFullAdmin(c);
+  const body = await c.req.json<any>();
+  const values = validateBudgetInput(body, true);
+  const reason = requireReason(body);
+  await assertApproval(c, body);
+  if (values.startsAt && values.endsAt && values.endsAt <= values.startsAt) {
+    throw httpsError("invalid-argument", "End date must be after the start date.");
+  }
+  const id = newId();
+  const ts = now();
+  const user = c.get("user");
+  await getDb(c.env).insert(schema.promoBudgets).values({
+    id,
+    name: values.name!,
+    kind: values.kind!,
+    totalCoins: values.totalCoins!,
+    spentCoins: 0,
+    status: values.status ?? "active",
+    startsAt: values.startsAt ?? null,
+    endsAt: values.endsAt ?? null,
+    perUserLimit: values.kind === "package_bonus" ? values.perUserLimit ?? null : null,
+    note: values.note ?? null,
+    createdBy: user?.email || user?.uid || "server",
+    createdAt: ts,
+    updatedAt: ts,
+  });
+  await logAudit(c, "promo-budget.create", "promo_budget", id, { ...values, reason });
+  return c.json({ success: true, id, budget: await getBudget(c.env, id) });
+});
+
+adminRoute.patch("/promo-budgets/:id", async (c) => {
+  requireFullAdmin(c);
+  const id = c.req.param("id");
+  const body = await c.req.json<any>();
+  const values = validateBudgetInput(body, false);
+  const reason = requireReason(body);
+  const current = await getBudget(c.env, id);
+  if (!current) throw httpsError("not-found", "Promo budget not found.");
+  if (!Object.keys(values).length) throw httpsError("invalid-argument", "Nothing to change.");
+  if (current.status === "closed") {
+    throw httpsError("failed-precondition", "Closed budget badla nahi ja sakta. Naya budget banao.");
+  }
+  await assertApproval(c, body);
+  const committed = current.spentCoins + current.heldCoins;
+  if (values.totalCoins !== undefined && values.totalCoins < committed) {
+    throw httpsError(
+      "failed-precondition",
+      `Total kam se kam ${committed} rakhna hoga: ${current.spentCoins} coins kharch ho chuke hain aur ${current.heldCoins} reserved hain.`,
+    );
+  }
+  const startsAt = values.startsAt !== undefined ? values.startsAt : current.startsAt;
+  const endsAt = values.endsAt !== undefined ? values.endsAt : current.endsAt;
+  if (startsAt && endsAt && endsAt <= startsAt) {
+    throw httpsError("invalid-argument", "End date must be after the start date.");
+  }
+  const set: Record<string, any> = { ...values, updatedAt: now() };
+  if (current.kind !== "package_bonus") delete set.perUserLimit;
+  // Raising/lowering the total is re-checked in SQL against what is committed
+  // NOW, so a purchase landing between the read above and this write cannot
+  // leave the budget below what it has already paid.
+  const conds: any[] = [eq(schema.promoBudgets.id, id), ne(schema.promoBudgets.status, "closed")];
+  if (values.totalCoins !== undefined) {
+    conds.push(sql`${schema.promoBudgets.spentCoins} <= ${values.totalCoins}`);
+  }
+  const res = await getDb(c.env).update(schema.promoBudgets).set(set).where(and(...conds)).run();
+  if (res.meta.changes === 0) throw httpsError("failed-precondition", "Budget badal gaya hai. Refresh karke dobara try karo.");
+  await logAudit(c, "promo-budget.update", "promo_budget", id, {
+    before: { totalCoins: current.totalCoins, status: current.status, startsAt: current.startsAt, endsAt: current.endsAt, perUserLimit: current.perUserLimit, name: current.name },
+    after: values,
+    reason,
+  });
+  return c.json({ success: true, budget: await getBudget(c.env, id) });
+});
+
+function rangeFromQuery(c: any): { from: number | null; to: number | null } {
+  const parse = (v?: string) => {
+    if (!v) return null;
+    const n = /^\d+$/.test(v) ? Number(v) : Date.parse(v);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+  return { from: parse(c.req.query("from")), to: parse(c.req.query("to")) };
+}
+
+adminRoute.get("/coin-economy", async (c) => {
+  requireFullAdmin(c);
+  const [overview, budgets, approval] = await Promise.all([
+    coinEconomyOverview(c.env, rangeFromQuery(c)),
+    listBudgets(c.env),
+    approvalPasswordStatus(c.env),
+  ]);
+  return c.json({ ...overview, budgetList: budgets, approvalPassword: approval });
+});
+
+adminRoute.get("/coin-economy/contests", async (c) => {
+  requireFullAdmin(c);
+  return c.json(await contestPnl(c.env, boundedQueryInt(c.req.query("limit"), 200, 1, 500)));
+});
+
+adminRoute.get("/coin-economy/packages", async (c) => {
+  requireFullAdmin(c);
+  return c.json(await packagePnl(c.env));
+});
+
+adminRoute.get("/coin-economy/users/:uid", async (c) => {
+  requireFullAdmin(c);
+  const statement = await userStatement(c.env, c.req.param("uid"), boundedQueryInt(c.req.query("limit"), 300, 1, 2000));
+  if (!statement) throw httpsError("not-found", "User not found (uid ya username dalo).");
+  return c.json(statement);
 });
 
 // ======================= SCHEDULED / SEGMENTED NOTIFICATIONS ==============

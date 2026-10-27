@@ -70,6 +70,8 @@ export const users = sqliteTable(
 
     // currency + gamification
     dpcoin: real("dpcoin").default(0), // primary currency (was Dpcoin)
+    /** Play-only promo coins inside `dpcoin` (migration 0068): spendable on entry fees, never withdrawable. */
+    lockedCoins: real("locked_coins").notNull().default(0),
     xp: integer("xp").default(0),
     level: integer("level").default(1),
     badges: text("badges", { mode: "json" }).$type<string[]>().default([]),
@@ -305,6 +307,8 @@ export const contests = sqliteTable("contests", {
   /** Declared retail value, for display only. Never credited, never spendable. */
   prizeProductValue: real("prize_product_value").default(0),
   prizeProductDescription: text("prize_product_description"),
+  /** Promo budget (kind contest_prize) that pays the part of rewardCoins above the pot (migration 0068). */
+  subsidyBudgetId: text("subsidy_budget_id"),
   // Validity window, epoch ms, both nullable (NULL = unbounded). These are the
   // TEMPLATE's own lifetime — when it becomes joinable and when it stops being
   // offered — and are not to be confused with voteDurationDays/autoCancelHours,
@@ -362,6 +366,9 @@ export const contestMatches = sqliteTable(
     prizeProductValue: real("prize_product_value"),
     // Unique token used to make status + financial settlement one atomic D1 batch.
     settlementId: text("settlement_id"),
+    /** Coins reserved from a promo budget on top of the pot (migration 0068). */
+    subsidyCoins: real("subsidy_coins").notNull().default(0),
+    subsidyBudgetId: text("subsidy_budget_id"),
     // { fire: n, heart: n, laugh: n } quick-reaction counters
     reactions: text("reactions", { mode: "json" }),
     endingSoonNotified: integer("ending_soon_notified", { mode: "boolean" }).default(false),
@@ -482,6 +489,10 @@ export const coinTransactions = sqliteTable(
     contestId: text("contest_id"),
     matchId: text("match_id"),
     description: text("description"),
+    /** How this row moved users.locked_coins (migration 0068). */
+    lockedDelta: real("locked_delta").notNull().default(0),
+    /** Promo budget that funded this row, if any. */
+    budgetId: text("budget_id"),
     createdAt: integer("created_at").notNull(),
   },
   (t) => ({
@@ -536,6 +547,8 @@ export const paymentOrders = sqliteTable(
     packageId: text("package_id"),
     coins: real("coins").notNull(), // server-authoritative coins to credit (bonus INCLUDED)
     bonusCoins: real("bonus_coins").default(0), // how much of `coins` was bonus — display/reporting only
+    /** Set when the bonus is platform-funded (promo budget) and credited as locked coins. */
+    budgetId: text("budget_id"),
     amountPaise: integer("amount_paise").notNull(), // expected amount (paise)
     currency: text("currency").notNull().default("INR"),
     // created | paid | refunded | disputed | expired | failed
@@ -1282,6 +1295,8 @@ export const deposits = sqliteTable(
     payAmount: real("pay_amount").default(0), // INR paid
     packageId: text("package_id"), // coin_packages.id this deposit was priced from
     bonusCoins: real("bonus_coins").default(0), // how much of `amount` was bonus — display/reporting only
+    /** Set when the bonus is platform-funded (promo budget) and credited as locked coins. */
+    budgetId: text("budget_id"),
     method: text("method").default("qr"), // qr | upi | bank
     utr: text("utr"), // user-entered bank transaction reference
     screenshotUrl: text("screenshot_url"),
@@ -1600,6 +1615,8 @@ export const coinPackages = sqliteTable(
     priceInr: real("price_inr").notNull().default(0),
     active: integer("active", { mode: "boolean" }).notNull().default(true),
     sortOrder: integer("sort_order").notNull().default(0),
+    /** Promo budget (kind package_bonus) that pays this package's bonus coins (migration 0068). */
+    budgetId: text("budget_id"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
@@ -1842,5 +1859,69 @@ export const usernameHistory = sqliteTable(
   (t) => ({
     // Read by `purgeUsernameHistory` on account deletion.
     uidIdx: index("idx_username_history_uid").on(t.uid),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Coin economy (migration 0068): promo budgets, reservations, platform ledger.
+// ---------------------------------------------------------------------------
+export const promoBudgets = sqliteTable(
+  "promo_budgets",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    kind: text("kind").notNull(), // package_bonus | contest_prize
+    totalCoins: real("total_coins").notNull(),
+    spentCoins: real("spent_coins").notNull().default(0),
+    status: text("status").notNull().default("active"), // active | paused | closed
+    startsAt: integer("starts_at"),
+    endsAt: integer("ends_at"),
+    perUserLimit: real("per_user_limit"),
+    note: text("note"),
+    createdBy: text("created_by"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => ({ kindIdx: index("idx_promo_budgets_kind").on(t.kind, t.status) }),
+);
+
+export const promoReservations = sqliteTable(
+  "promo_reservations",
+  {
+    id: text("id").primaryKey(),
+    budgetId: text("budget_id").notNull(),
+    uid: text("uid"),
+    coins: real("coins").notNull(),
+    status: text("status").notNull().default("held"), // held | used | released
+    refType: text("ref_type").notNull(), // order | deposit | match
+    refId: text("ref_id").notNull(),
+    expiresAt: integer("expires_at"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => ({
+    budgetIdx: index("idx_promo_res_budget").on(t.budgetId, t.status),
+    userIdx: index("idx_promo_res_user").on(t.budgetId, t.uid, t.status),
+  }),
+);
+
+export const platformLedger = sqliteTable(
+  "platform_ledger",
+  {
+    id: text("id").primaryKey(),
+    kind: text("kind").notNull(), // promo_bonus | prize_subsidy | platform_fee | product_prize_fund
+    coins: real("coins").notNull(), // + platform income, - platform expense
+    budgetId: text("budget_id"),
+    contestId: text("contest_id"),
+    matchId: text("match_id"),
+    uid: text("uid"),
+    refId: text("ref_id"),
+    description: text("description"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    kindIdx: index("idx_platform_ledger_kind").on(t.kind, t.createdAt),
+    budgetIdx: index("idx_platform_ledger_budget").on(t.budgetId),
+    contestIdx: index("idx_platform_ledger_contest").on(t.contestId),
   }),
 );

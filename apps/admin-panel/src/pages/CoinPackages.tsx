@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { api, type PromoBudget } from "@/lib/api";
 import { Table } from "@/components/ui/Table";
 import { Badge } from "@/components/ui/Badge";
 import { PageHeader, fmtNumber } from "@/lib/format";
@@ -22,7 +22,14 @@ export default function CoinPackages() {
   const buyRaw = (settings as any)?.coinPricing?.buyRate;
   const buyRateSet = !(buyRaw === undefined || buyRaw === null || buyRaw === "");
   const rate = buyRateSet ? Number(buyRaw) : payout;
-  const invalidate = () => qc.invalidateQueries({ queryKey: ["coin-packages"] });
+  // Promo budgets (Coin Economy page) that can pay a package's bonus.
+  const { data: budgets = [] } = useQuery({ queryKey: ["promo-budgets"], queryFn: api.promoBudgets });
+  const bonusBudgets = budgets.filter((b) => b.kind === "package_bonus");
+  const budgetById = new Map(budgets.map((b) => [b.id, b]));
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["coin-packages"] });
+    qc.invalidateQueries({ queryKey: ["promo-budgets"] });
+  };
 
   const delMut = useMutation({
     mutationFn: (id: string) => api.deleteCoinPackage(id),
@@ -54,7 +61,24 @@ export default function CoinPackages() {
         empty="No packages yet"
         columns={[
           { key: "name", header: "Name", render: (p: any) => <span className="font-medium text-foreground">{p.name || "Untitled"}</span> },
-          { key: "coins", header: "Coins", render: (p: any) => <span>{fmtNumber(p.coins)}{p.bonusCoins ? <span className="text-green-600"> +{fmtNumber(p.bonusCoins)}</span> : null}</span> },
+          {
+            key: "coins",
+            header: "Coins",
+            render: (p: any) => {
+              const b = p.budgetId ? budgetById.get(p.budgetId) : undefined;
+              return (
+                <span>
+                  {fmtNumber(p.coins)}
+                  {p.bonusCoins ? <span className="text-green-600"> +{fmtNumber(p.bonusCoins)}</span> : null}
+                  {b ? (
+                    <span className={`ml-2 text-xs font-medium ${b.live ? "text-purple-600" : "text-amber-600"}`}>
+                      Promo: {b.name} · {b.live ? `${fmtNumber(b.remainingCoins)} bache` : "budget band — bonus nahi milega"}
+                    </span>
+                  ) : null}
+                </span>
+              );
+            },
+          },
           {
             key: "price",
             header: "Price (auto)",
@@ -99,12 +123,12 @@ export default function CoinPackages() {
           Buy rate set nahi hai — daam payout rate se ban rahe hain, isliye bonus wale packages nahi bik rahe. App Control → Coin Pricing mein Buy rate set karo.
         </div>
       ) : null}
-      {dialog && <PackageDialog pkg={dialog === "new" ? undefined : dialog} rate={rate} payout={payout} onClose={() => setDialog(null)} onDone={invalidate} />}
+      {dialog && <PackageDialog pkg={dialog === "new" ? undefined : dialog} rate={rate} payout={payout} budgets={bonusBudgets} onClose={() => setDialog(null)} onDone={invalidate} />}
     </div>
   );
 }
 
-function PackageDialog({ pkg, rate, payout, onClose, onDone }: { pkg?: any; rate: number; payout: number; onClose: () => void; onDone: () => void }) {
+function PackageDialog({ pkg, rate, payout, budgets, onClose, onDone }: { pkg?: any; rate: number; payout: number; budgets: PromoBudget[]; onClose: () => void; onDone: () => void }) {
   const isEdit = !!pkg;
   const [form, setForm] = useState({
     name: pkg?.name || "",
@@ -112,6 +136,7 @@ function PackageDialog({ pkg, rate, payout, onClose, onDone }: { pkg?: any; rate
     bonusCoins: String(pkg?.bonusCoins ?? 0),
     sortOrder: String(pkg?.sortOrder ?? 0),
     active: pkg?.active !== false,
+    budgetId: (pkg?.budgetId as string | null) ?? "",
   });
   const set = (k: string, v: any) => setForm((f) => ({ ...f, [k]: v }));
   const payload = () => ({
@@ -120,7 +145,10 @@ function PackageDialog({ pkg, rate, payout, onClose, onDone }: { pkg?: any; rate
     bonusCoins: Number(form.bonusCoins),
     sortOrder: Number(form.sortOrder),
     active: form.active,
+    budgetId: form.budgetId || null,
   });
+  const selectable = budgets.filter((b) => b.status !== "closed" || b.id === form.budgetId);
+  const chosen = budgets.find((b) => b.id === form.budgetId);
   const mut = useMutation({
     mutationFn: () => (isEdit ? api.updateCoinPackage(pkg.id, payload()) : api.createCoinPackage(payload())),
     onSuccess: () => { toast.success(isEdit ? "Package updated — users ke app mein turant live" : "Package created — users ke app mein turant live"); onDone(); onClose(); },
@@ -148,14 +176,47 @@ function PackageDialog({ pkg, rate, payout, onClose, onDone }: { pkg?: any; rate
               {fmtNumber(Number(form.coins) || 0)} coins × ₹{fmtNumber(rate)} buy rate. Bonus coins free hain. Daam badalne ke liye App Control → Coin Pricing.
             </p>
             {(() => {
-              const price = Math.round((Number(form.coins) || 0) * rate * 100) / 100;
-              const out = Math.round(((Number(form.coins) || 0) + (Number(form.bonusCoins) || 0)) * payout * 100) / 100;
-              return out > price + 0.005 ? (
-                <p className="mt-1 text-xs font-medium text-red-600">
-                  Nuksaan: user ₹{fmtNumber(price)} dekar ₹{fmtNumber(out)} nikal sakta hai — server ye package save nahi karega. Bonus kam karo.
-                </p>
-              ) : null;
+              const coins = Number(form.coins) || 0;
+              const bonus = Number(form.bonusCoins) || 0;
+              const price = Math.round(coins * rate * 100) / 100;
+              // A budget-funded bonus is locked (play-only), so only the base coins can be cashed out.
+              const withdrawable = form.budgetId ? coins : coins + bonus;
+              const out = Math.round(withdrawable * payout * 100) / 100;
+              if (out > price + 0.005) {
+                return (
+                  <p className="mt-1 text-xs font-medium text-red-600">
+                    Nuksaan: user ₹{fmtNumber(price)} dekar ₹{fmtNumber(out)} nikal sakta hai — server ye package save nahi karega.
+                    {form.budgetId ? " Buy rate payout rate se kam hai." : " Bonus kam karo, ya neeche promo budget chuno."}
+                  </p>
+                );
+              }
+              if (form.budgetId && bonus > 0) {
+                return (
+                  <p className="mt-1 text-xs font-medium text-purple-700">
+                    Har purchase par platform {fmtNumber(bonus)} bonus coin dega (≈ ₹{fmtNumber(Math.round(bonus * payout * 100) / 100)}), budget se katega.
+                    Bonus coin sirf khelne ke liye honge, withdraw nahi.
+                  </p>
+                );
+              }
+              return null;
             })()}
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground mb-1 block">Promo budget (bonus kaun dega)</label>
+            <select className={field} value={form.budgetId} onChange={(e) => set("budgetId", e.target.value)}>
+              <option value="">Koi nahi — bonus daam me shamil hona chahiye</option>
+              {selectable.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name} · {fmtNumber(b.remainingCoins)} / {fmtNumber(b.totalCoins)} bache{b.live ? "" : " (band)"}
+                </option>
+              ))}
+            </select>
+            {chosen && !chosen.live ? (
+              <p className="mt-1 text-xs text-amber-700">Ye budget abhi chalu nahi hai (paused/khatam/time ke bahar). Package bina bonus ke bikega.</p>
+            ) : null}
+            {!budgets.length ? (
+              <p className="mt-1 text-xs text-muted-foreground">Budget banane ke liye Coin Economy → Budgets.</p>
+            ) : null}
           </div>
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.active} onChange={(e) => set("active", e.target.checked)} /> Active (visible in app)</label>
         </div>

@@ -33,6 +33,8 @@ export interface UserProfile {
 
   // Gamification & Wallet
   Dpcoin: number; // Virtual Currency
+  /** Play-only promo coins inside Dpcoin: spendable on contests, never withdrawable. */
+  lockedCoins?: number;
   xp: number;
   level: number;
   badges: string[]; // Array of badge IDs

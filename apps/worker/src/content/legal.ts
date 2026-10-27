@@ -276,7 +276,7 @@ Erasure deletes your own content: profile, photo, bio, contact details, posts, s
 
 **What survives erasure, and why:**
 
-- **Coin transactions, payments, payment orders, deposits and withdrawals** — accounting and tax records we are legally required to retain. They stay keyed to an identifier that is no longer linked to your name, email or phone.
+- **Coin transactions (including promo bonus and prize-subsidy records), payments, payment orders, deposits and withdrawals** — accounting and tax records we are legally required to retain. They stay keyed to an identifier that is no longer linked to your name, email or phone.
 - **Votes and contests you took part in** — other entrants' results are computed from them. Removing your votes would silently change someone else's outcome. The contest record survives, but your name, photo and contest entry image are removed from it.
 - **Referral records** — the person who referred you, or whom you referred, earned a bonus that has to stay explainable.
 - **Reports you filed** — these are evidence about someone else's conduct, and are kept for moderation.

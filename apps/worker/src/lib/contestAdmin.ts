@@ -45,6 +45,11 @@ const CONTEST_CANONICAL_EXTRA_KEYS = [
   "prizeProductImageUrl",
   "prizeProductValue",
   "prizeProductDescription",
+  // Promo budget that pays the part of the prize above the pot (migration 0068).
+  "subsidyBudgetId",
+  // Never stored: the approval password and the audit reason travel in the body.
+  "approvalPassword",
+  "reason",
 ] as const;
 
 export const hasOwn = (value: object, key: string) => Object.prototype.hasOwnProperty.call(value, key);
@@ -323,6 +328,22 @@ export function validateContestInput(
       "invalid-argument",
       "Include prizeType when changing product prize fields.",
     );
+  }
+
+  // Promo prize budget (lib/promoBudget.ts). The admin route checks the budget
+  // itself (exists, right kind, not closed) and asks for the approval password.
+  const subsidy = firstAlias(body, ["subsidyBudgetId"]);
+  if (subsidy.present) {
+    recognized = true;
+    const v = subsidy.value;
+    if (v === null || v === "") values.subsidyBudgetId = null;
+    else if (typeof v === "string" && v.length <= 64) values.subsidyBudgetId = v;
+    else throw httpsError("invalid-argument", "subsidyBudgetId must be a budget id or null.");
+  } else if (creating) {
+    values.subsidyBudgetId = null;
+  }
+  if (values.prizeType === "product" && values.subsidyBudgetId) {
+    throw httpsError("invalid-argument", "Product prize wale contest ko coin prize budget se nahi joda ja sakta.");
   }
 
   const durationDays = firstAlias(body, ["voteDurationDays"]);
