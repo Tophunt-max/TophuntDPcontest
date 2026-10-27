@@ -341,6 +341,7 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({
           onClose={() => setActionsVisible(false)}
           targetUserId={user.uid}
           username={user.username}
+          photoUrl={user.profileImageUrl || null}
           isBlocked={isBlockedByMe}
           isMuted={isMutedByMe}
           isRestricted={isRestricted}
