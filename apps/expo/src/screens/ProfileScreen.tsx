@@ -17,7 +17,7 @@ import { useProfile, useRelationship, useToggleFollow, useUserBookmarks, useUser
 import ProfileHeader from '@/src/components/profile/ProfileHeader';
 import Highlights from '@/src/components/profile/Highlights';
 import ProfileTabs, { ProfileTab } from '@/src/components/profile/ProfileTabs';
-import { ProfileHeaderSkeleton, PostGridSkeleton } from '@/src/components/profile/ProfileSkeleton';
+import { ProfileScreenSkeleton, PostGridSkeleton } from '@/src/components/profile/ProfileSkeleton';
 import { WalletCard } from '@/src/components/profile/WalletCard';
 import { PrizeEntryCard } from '@/src/components/prizes/PrizeEntryCard';
 import { BottomNav } from '@/src/components/home/BottomNav';
@@ -200,8 +200,7 @@ const ProfilePage = ({ handle }: ProfileScreenProps) => {
     return (
         <SafeAreaView style={[styles.container, { backgroundColor }]}>
             <ScrollView showsVerticalScrollIndicator={false}>
-                <ProfileHeaderSkeleton />
-                <PostGridSkeleton />
+                <ProfileScreenSkeleton />
             </ScrollView>
             <BottomNav backgroundColor={backgroundColor} isDark={isDark} />
         </SafeAreaView>
@@ -340,8 +339,7 @@ const ProfileContent = ({
     return (
         <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
             <ScrollView showsVerticalScrollIndicator={false}>
-                <ProfileHeaderSkeleton />
-                <PostGridSkeleton />
+                <ProfileScreenSkeleton isOwnProfile={isOwnProfile} />
             </ScrollView>
             <BottomNav backgroundColor={bg} isDark={isDark} />
         </SafeAreaView>

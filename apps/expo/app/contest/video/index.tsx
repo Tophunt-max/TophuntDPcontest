@@ -221,7 +221,21 @@ export default function VideoContestScreen() {
     }
   };
 
-  if (loading) return <View style={{ flex: 1, backgroundColor: bgColor, paddingTop: 56 }}><ContestListSkeleton /></View>;
+  if (loading) {
+    // Same header as the loaded screen, so only the list area changes.
+    return (
+      <SafeAreaView style={[styles.container, { backgroundColor: bgColor }]}>
+        <View style={styles.header}>
+          <BackButton size={26} color={textColor} />
+          <Text style={[styles.title, { color: textColor }]}>Video Contests</Text>
+          <View style={{ width: 28 }} />
+        </View>
+        <View style={{ padding: 16 }}>
+          <ContestListSkeleton count={3} />
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={[styles.container, {backgroundColor: bgColor}]}>

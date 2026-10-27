@@ -34,7 +34,8 @@ import { offerLine } from '@/src/services/referrals';
 import { accountShellFlags } from '@/src/lib/authState';
 import { BRAND, BRAND_GRAD, PAD, useExplorePalette, type ExplorePalette } from '@/src/components/explore/theme';
 import { BattleTile } from '@/src/components/explore/BattleTile';
-import { OpenBattleCard, OPEN_CARD_W } from '@/src/components/explore/OpenBattleCard';
+import { OpenBattleCard } from '@/src/components/explore/OpenBattleCard';
+import { BattleTileSkeleton, CreatorChipSkeleton, OpenBattleCardSkeleton, PersonCardSkeleton, SkeletonRail, repeat } from '@/src/components/explore/ExploreSkeletons';
 import { TemplateCard, TEMPLATE_H, TEMPLATE_W } from '@/src/components/explore/TemplateCard';
 import { BannerCarousel } from '@/src/components/explore/BannerCarousel';
 import { CreatorChip, PersonCard } from '@/src/components/explore/PeopleCards';
@@ -257,7 +258,7 @@ export default function ExploreScreen() {
           <View>
             <SectionHeader title="Open battles — join now" icon="flash" palette={p} onSeeAll={openBattles.length > 3 ? () => seeAll('open') : undefined} />
             {open.isLoading ? (
-              <RailSkeleton width={OPEN_CARD_W} height={300} radius={22} count={2} />
+              <SkeletonRail>{repeat(2, () => <OpenBattleCardSkeleton />)}</SkeletonRail>
             ) : open.isError ? (
               <SectionError palette={p} onRetry={() => open.refetch()} />
             ) : openBattles.length ? (
@@ -287,7 +288,7 @@ export default function ExploreScreen() {
           <View>
             <SectionHeader title="Top creators" icon="trophy" iconColor="#F59E0B" palette={p} onSeeAll={() => router.push('/explore/leaderboard' as any)} />
             {creators.isLoading ? (
-              <RailSkeleton width={70} height={110} count={5} radius={16} />
+              <SkeletonRail gap={8}>{repeat(5, () => <CreatorChipSkeleton />)}</SkeletonRail>
             ) : creators.isError ? (
               <SectionError palette={p} onRetry={() => creators.refetch()} />
             ) : (creators.data || []).length ? (
@@ -309,7 +310,7 @@ export default function ExploreScreen() {
           <View>
             <SectionHeader title="People you may know" icon="people" iconColor="#22C55E" palette={p} onSeeAll={() => switchTab('people')} />
             {people.isLoading ? (
-              <RailSkeleton width={150} height={190} count={3} />
+              <SkeletonRail>{repeat(3, () => <PersonCardSkeleton width={150} />)}</SkeletonRail>
             ) : people.isError ? (
               <SectionError palette={p} onRetry={() => people.refetch()} />
             ) : (people.data || []).length ? (
@@ -372,7 +373,7 @@ export default function ExploreScreen() {
           return (
             <View style={styles.gridRow}>
               {[0, 1].map((i) => (
-                <Skeleton key={i} width={tileW} height={tileW * 0.78 + 56} borderRadius={20} />
+                <BattleTileSkeleton key={i} width={tileW} />
               ))}
             </View>
           );
@@ -395,7 +396,7 @@ export default function ExploreScreen() {
           return (
             <View style={[styles.gridRow, { marginTop: 18 }]}>
               {[0, 1].map((i) => (
-                <Skeleton key={i} width={tileW} height={200} borderRadius={20} />
+                <PersonCardSkeleton key={i} width={tileW} />
               ))}
             </View>
           );
@@ -635,7 +636,7 @@ function BattleRail({
     <View>
       <SectionHeader title={title} icon={icon} iconColor={iconColor} palette={p} onSeeAll={list.length >= 4 ? onSeeAll : undefined} />
       {query.isLoading ? (
-        <RailSkeleton width={tileW} height={tileW * 0.78 + 56} />
+        <SkeletonRail>{repeat(3, () => <BattleTileSkeleton width={tileW} />)}</SkeletonRail>
       ) : query.isError ? (
         <SectionError palette={p} onRetry={() => query.refetch()} />
       ) : list.length ? (

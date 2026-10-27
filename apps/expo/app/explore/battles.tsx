@@ -12,7 +12,7 @@ import { BATTLE_KIND_TITLE, useBattlePages, type BattleKind, type BattleType } f
 import { BattleTile } from '@/src/components/explore/BattleTile';
 import { OpenBattleCard } from '@/src/components/explore/OpenBattleCard';
 import { SectionEmpty, SectionError } from '@/src/components/explore/ExploreBits';
-import { Skeleton } from '@/src/components/ui/Skeleton';
+import { BattleTileSkeleton } from '@/src/components/explore/ExploreSkeletons';
 import { BRAND, PAD, useExplorePalette } from '@/src/components/explore/theme';
 
 const KINDS: BattleKind[] = ['trending', 'ending', 'open', 'fresh'];
@@ -77,7 +77,7 @@ export default function ExploreBattlesScreen() {
           q.isLoading ? (
             <View style={styles.row}>
               {[0, 1].map((i) => (
-                <Skeleton key={i} width={tileW} height={tileW * 0.78 + 56} borderRadius={20} />
+                <BattleTileSkeleton key={i} width={tileW} />
               ))}
             </View>
           ) : q.isError ? (
