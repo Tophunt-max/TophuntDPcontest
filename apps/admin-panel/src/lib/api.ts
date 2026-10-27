@@ -841,13 +841,49 @@ export const api = {
     const s = qs.toString();
     return get<{
       rows: any[];
-      stats: { byStatus: Record<string, number>; coinsPaid: number; milestonePaid: number };
+      stats: { byStatus: Record<string, number>; coinsPaid: number; milestonePaid: number; paidThisMonth?: number };
       topReferrers: { uid: string; username: string | null; rewarded: number; earned: number }[];
       program: any;
     }>(`/admin/referrals${s ? `?${s}` : ""}`);
   },
-  decideReferral: (id: string, action: "approve" | "reject", reason?: string) =>
-    patch(`/admin/referrals/${encodeURIComponent(id)}`, { action, reason }),
+  /** approve / reject a pending or in-review referral; reverse (claw back) a rewarded one. */
+  decideReferral: (id: string, action: "approve" | "reject" | "reverse", reason?: string) =>
+    patch<{ success: boolean; status: string; sides?: { uid: string; credited: number; taken: number; unit: string }[] }>(
+      `/admin/referrals/${encodeURIComponent(id)}`,
+      { action, reason },
+    ),
+  bulkDecideReferrals: (ids: string[], action: "approve" | "reject", reason?: string) =>
+    post<{ success: boolean; results: { id: string; ok: boolean; status?: string; error?: string }[] }>("/admin/referrals/bulk", {
+      ids,
+      action,
+      reason,
+    }),
+  referralLinks: (id: string) =>
+    get<{
+      referral: { id: string; referrerUid: string; referredUid: string; deviceId: string | null; ip: string | null };
+      sameDevice: { uid: string; username: string | null; createdAt: number; isBlocked: number | boolean | null; status: string | null }[];
+      sameIp: { id: string; uid: string; username: string | null; referrerUid: string; referrerUsername: string | null; status: string; createdAt: number }[];
+      inviterIps: { ip: string; n: number; rewarded: number }[];
+    }>(`/admin/referrals/${encodeURIComponent(id)}/links`),
+  /** Daily check-in + daily task activity per reward day. */
+  rewardStats: (days = 14) =>
+    get<{
+      dayResetOffsetMinutes: number;
+      tasks: { id: string; title: string; type: string; enabled: boolean }[];
+      days: {
+        day: number;
+        date: string;
+        checkins: number;
+        checkinCoins: number;
+        taskClaims: number;
+        taskCoins: number;
+        tasks: Record<string, { claims: number; coins: number }>;
+      }[];
+      activeStreaks: { atLeast7: number; atLeast30: number };
+    }>(`/admin/rewards/stats?days=${days}`),
+  userRewards: (uid: string) => get<any>(`/admin/users/${encodeURIComponent(uid)}/rewards`),
+  setUserStreak: (uid: string, body: { streak: number; continueStreak?: boolean; reason: string }) =>
+    patch(`/admin/users/${encodeURIComponent(uid)}/streak`, body),
   // `deposits` / `withdrawals` are RUPEES (they used to be coin counts charted as
   // money); the *Coins fields carry the coin volume.
   financeTrends: () =>

@@ -9,7 +9,8 @@ import { PageHeader, fmtDateTime, fmtNumber, exportCsv } from "@/lib/format";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { toast } from "@/lib/toast";
 import { SegTabs, UserCell, ActionBtn } from "@/components/finance/bits";
-import { Check, X, Download, Save, Plus, Trash2, Users, Hourglass, Coins, ShieldAlert, Trophy, AlertTriangle } from "lucide-react";
+import { Check, X, Download, Save, Plus, Trash2, Users, Hourglass, Coins, ShieldAlert, Trophy, AlertTriangle, Undo2, Link2, Wallet } from "lucide-react";
+import { Modal } from "@/components/ui/Modal";
 
 /**
  * Referral program — the whole thing, managed here.
@@ -33,6 +34,8 @@ interface Program {
   maxRewardedPerReferrerPerDay: number;
   requireReview: boolean;
   milestones: { count: number; bonus: number }[];
+  maxCoinsPerMonth: number;
+  minPurchaseInr: number;
 }
 
 const DEFAULTS: Program = {
@@ -46,6 +49,8 @@ const DEFAULTS: Program = {
   maxRewardedPerReferrerPerDay: 20,
   requireReview: false,
   milestones: [],
+  maxCoinsPerMonth: 0,
+  minPurchaseInr: 0,
 };
 
 const ACTIONS: { k: QualifyAction; l: string; d: string }[] = [
@@ -64,6 +69,7 @@ const TABS = [
   { key: "rewarded", label: "Rewarded" },
   { key: "rejected", label: "Rejected" },
   { key: "expired", label: "Expired" },
+  { key: "reversed", label: "Reversed" },
 ];
 
 /** Why a referral was held for review (worker applyReferralCode fraud signals). */
@@ -71,6 +77,8 @@ const HOLD_REASONS: Record<string, string> = {
   same_ip_burst: "Isi referrer ke kai referral ek hi IP se (24 ghante)",
   ip_shared: "Is IP se bahut saare referral (24 ghante)",
   referrer_velocity: "Referrer ko 1 ghante me bahut referral",
+  no_device: "App ne device id nahi bheji (device checks nahi chale)",
+  monthly_budget: "Is mahine ka referral budget khatam",
 };
 
 const REASONS: Record<string, string> = {
@@ -79,6 +87,7 @@ const REASONS: Record<string, string> = {
   referrer_lifetime_cap: "Inviter hit the lifetime cap (friend still paid)",
   referrer_daily_cap: "Inviter hit the daily cap (friend still paid)",
   referrer_unavailable: "Inviter blocked / inactive (friend still paid)",
+  referred_unavailable: "Friend blocked / deleted before payout (nobody paid)",
   admin_rejected: "Rejected by an admin",
 };
 
@@ -88,6 +97,7 @@ const STATUS_VARIANT: Record<string, string> = {
   rewarded: "success",
   rejected: "danger",
   expired: "default",
+  reversed: "danger",
 };
 
 const field =
@@ -103,6 +113,8 @@ function validate(p: Program): string | null {
     ["Qualify window", p.qualifyWindowDays, 1, 365],
     ["Lifetime cap", p.maxRewardedPerReferrer, 0, 100_000],
     ["Daily cap", p.maxRewardedPerReferrerPerDay, 0, 10_000],
+    ["Monthly budget", p.maxCoinsPerMonth, 0, 100_000_000],
+    ["Minimum first purchase", p.minPurchaseInr, 0, 1_000_000],
   ];
   for (const [name, n, lo, hi] of ints) {
     if (!Number.isInteger(n) || n < lo || n > hi) return `${name} must be a whole number from ${lo} to ${hi}.`;
@@ -155,13 +167,45 @@ export default function Referrals() {
   const total = Object.values(by).reduce((t: number, n: any) => t + (Number(n) || 0), 0);
 
   const decideMut = useMutation({
-    mutationFn: ({ id, action, reason }: { id: string; action: "approve" | "reject"; reason?: string }) => api.decideReferral(id, action, reason),
-    onSuccess: (_r, v) => {
-      toast.success(v.action === "approve" ? "Referral approved & paid" : "Referral rejected");
+    mutationFn: ({ id, action, reason }: { id: string; action: "approve" | "reject" | "reverse"; reason?: string }) => api.decideReferral(id, action, reason),
+    onSuccess: (r, v) => {
+      if (v.action === "reverse") {
+        const lines = (r.sides ?? []).map((s) => `${s.uid}: ${s.taken}/${s.credited} ${s.unit} wapas`).join(" · ");
+        toast.success(`Referral reversed. ${lines || "Koi coin credit nahi tha."}`);
+      } else if (v.action === "approve") {
+        toast.success(r.status === "rewarded" ? "Referral approved & paid" : r.status === "rejected" ? "Friend blocked/deleted: rejected, nobody paid" : `Referral is ${r.status}`);
+      } else toast.success("Referral rejected");
       qc.invalidateQueries({ queryKey: ["referrals"] });
     },
     onError: (e: any) => toast.error(e.message),
   });
+
+  // Bulk approve / reject of pending + in-review rows.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  useEffect(() => setSelected(new Set()), [tab, search]);
+  const decidable = rows.filter((r: any) => r.status === "pending" || r.status === "review");
+  const toggle = (id: string) =>
+    setSelected((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const bulkMut = useMutation({
+    mutationFn: ({ action, reason }: { action: "approve" | "reject"; reason?: string }) => api.bulkDecideReferrals([...selected], action, reason),
+    onSuccess: (r) => {
+      const ok = r.results.filter((x) => x.ok).length;
+      const failed = r.results.filter((x) => !x.ok);
+      if (failed.length) toast.error(`${ok} ho gaye, ${failed.length} fail: ${failed[0].error}`);
+      else toast.success(`${ok} referrals updated`);
+      setSelected(new Set());
+      qc.invalidateQueries({ queryKey: ["referrals"] });
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const [linksFor, setLinksFor] = useState<string | null>(null);
+  const budget = Number(data?.program?.maxCoinsPerMonth || 0);
+  const paidThisMonth = Number(data?.stats?.paidThisMonth || 0);
 
   return (
     <div>
@@ -189,6 +233,20 @@ export default function Referrals() {
         <StatCard icon={AlertTriangle} label="Needs review" value={fmtNumber(Number(by.review || 0))} gradient="gradient-blue" />
         <StatCard icon={ShieldAlert} label="Rejected / expired" value={fmtNumber(Number(by.rejected || 0) + Number(by.expired || 0))} gradient="gradient-red" />
         <StatCard icon={Coins} label="💎 Diamond paid (incl. milestones)" value={fmtNumber(data?.stats?.coinsPaid ?? 0)} gradient="gradient-green" />
+      </div>
+      <div className="mb-6 rounded-2xl border border-border bg-card p-4 text-sm flex items-center gap-3">
+        <Wallet size={16} className="text-emerald-600" />
+        <span>
+          Is mahine referral par diya: <b>{fmtNumber(paidThisMonth)}</b>
+          {budget > 0 ? (
+            <>
+              {" "}/ budget <b>{fmtNumber(budget)}</b>
+              {paidThisMonth >= budget && <span className="ml-2 font-semibold text-red-600">Budget khatam: naye referral review me ruk rahe hain</span>}
+            </>
+          ) : (
+            " (koi monthly budget set nahi)"
+          )}
+        </span>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-5 mb-6">
@@ -235,12 +293,58 @@ export default function Referrals() {
         />
       </div>
 
+      {decidable.length > 0 && (
+        <div className="mb-3 flex flex-wrap items-center gap-2 text-sm">
+          <button
+            type="button"
+            onClick={() => setSelected(selected.size === decidable.length ? new Set() : new Set(decidable.map((r: any) => r.id)))}
+            className="px-3 py-1.5 rounded-lg bg-secondary font-medium"
+          >
+            {selected.size === decidable.length ? "Selection hatao" : `Sab pending/review chuno (${decidable.length})`}
+          </button>
+          {selected.size > 0 && (
+            <>
+              <span className="text-muted-foreground">{selected.size} selected</span>
+              <ActionBtn
+                tone="green"
+                title="Approve & pay all selected"
+                onClick={async () => {
+                  if (await confirm({ title: `Approve ${selected.size} referrals?`, description: "Sabko abhi pay kiya jayega (caps aur monthly budget lagu)." }))
+                    bulkMut.mutate({ action: "approve" });
+                }}
+              >
+                <Check size={14} /> Approve selected
+              </ActionBtn>
+              <ActionBtn
+                tone="red"
+                title="Reject all selected"
+                onClick={() => {
+                  const reason = window.prompt("Reason for rejecting (audit log):", "Suspected fake accounts");
+                  if (reason === null) return;
+                  bulkMut.mutate({ action: "reject", reason: reason.trim() || "admin_rejected" });
+                }}
+              >
+                <X size={14} /> Reject selected
+              </ActionBtn>
+            </>
+          )}
+        </div>
+      )}
+
       <Table
         loading={isLoading}
         data={rows}
         keyFn={(r: any) => r.id}
         empty="No referrals"
         columns={[
+          {
+            key: "sel",
+            header: "",
+            render: (r: any) =>
+              r.status === "pending" || r.status === "review" ? (
+                <input type="checkbox" aria-label="Select referral" checked={selected.has(r.id)} onChange={() => toggle(r.id)} />
+              ) : null,
+          },
           { key: "ref", header: "Inviter", render: (r: any) => <UserCell name={r.referrerUsername || r.referrerUid} sub={r.code || r.referrerUid} /> },
           { key: "friend", header: "Friend", render: (r: any) => <UserCell name={r.referredUsername || r.referredUid} sub={r.referredUid} /> },
           {
@@ -282,7 +386,19 @@ export default function Referrals() {
                 <span className="text-muted-foreground">—</span>
               ),
           },
-          { key: "device", header: "Device", render: (r: any) => <span className="font-mono text-[11px] text-muted-foreground">{r.deviceId ? String(r.deviceId).slice(0, 10) : "—"}</span> },
+          {
+            key: "device",
+            header: "Device / IP",
+            render: (r: any) => (
+              <div className="text-[11px]">
+                <p className="font-mono text-muted-foreground">{r.deviceId ? String(r.deviceId).slice(0, 10) : "— no device"}</p>
+                <p className="font-mono text-muted-foreground">{r.ip || "—"}</p>
+                <button type="button" onClick={() => setLinksFor(r.id)} className="mt-1 inline-flex items-center gap-1 font-semibold text-primary hover:underline">
+                  <Link2 size={11} /> Linked accounts
+                </button>
+              </div>
+            ),
+          },
           {
             key: "dates",
             header: "Dates",
@@ -330,13 +446,93 @@ export default function Referrals() {
                     <X size={14} /> Reject
                   </ActionBtn>
                 </div>
+              ) : r.status === "rewarded" ? (
+                <div className="flex items-center justify-end">
+                  <ActionBtn
+                    tone="red"
+                    title="Claw back the coins this referral paid"
+                    onClick={async () => {
+                      const reason = window.prompt(
+                        "Reverse karne ka reason (audit log). Dono taraf se referral ke coin wapas liye jayenge, jitne abhi wallet me bache hain:",
+                        "Fake account",
+                      );
+                      if (reason === null) return;
+                      if (reason.trim().length < 3) return toast.error("Reason kam se kam 3 akshar ka ho.");
+                      if (await confirm({ title: "Reverse referral?", description: "Ye wapas nahi hota. Milestone bonus nahi chhuye jate." }))
+                        decideMut.mutate({ id: r.id, action: "reverse", reason: reason.trim() });
+                    }}
+                  >
+                    <Undo2 size={14} /> Reverse
+                  </ActionBtn>
+                </div>
               ) : (
                 <span className="text-xs text-muted-foreground">—</span>
               ),
           },
         ]}
       />
+      <LinkedAccounts id={linksFor} onClose={() => setLinksFor(null)} />
     </div>
+  );
+}
+
+/** Accounts sharing a device or IP with a referral (GET /admin/referrals/:id/links). */
+function LinkedAccounts({ id, onClose }: { id: string | null; onClose: () => void }) {
+  const { data, isLoading } = useQuery({ queryKey: ["referral-links", id], queryFn: () => api.referralLinks(id!), enabled: !!id });
+  return (
+    <Modal open={!!id} onClose={onClose} title="Linked accounts" width="max-w-2xl">
+      {isLoading || !data ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : (
+        <div className="space-y-5 text-sm">
+          <p className="text-xs text-muted-foreground">
+            Friend <span className="font-mono">{data.referral.referredUid}</span> · device <span className="font-mono">{data.referral.deviceId || "—"}</span> · IP{" "}
+            <span className="font-mono">{data.referral.ip || "—"}</span>
+          </p>
+          <section>
+            <p className="font-semibold mb-1">Same device ({data.sameDevice.length})</p>
+            {data.sameDevice.length === 0 ? (
+              <p className="text-xs text-muted-foreground">Koi doosra account is device par nahi mila.</p>
+            ) : (
+              <ul className="space-y-1">
+                {data.sameDevice.map((u) => (
+                  <li key={u.uid} className="flex justify-between gap-2">
+                    <span>{u.username || u.uid} <span className="text-xs text-muted-foreground font-mono">{u.uid}</span></span>
+                    <span className="text-xs text-muted-foreground">{fmtDateTime(u.createdAt)}{u.isBlocked ? " · blocked" : ""}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+          <section>
+            <p className="font-semibold mb-1">Same IP par doosre referrals ({data.sameIp.length})</p>
+            {data.sameIp.length === 0 ? (
+              <p className="text-xs text-muted-foreground">Koi nahi.</p>
+            ) : (
+              <ul className="space-y-1">
+                {data.sameIp.map((r) => (
+                  <li key={r.id} className="flex justify-between gap-2">
+                    <span>{r.username || r.uid} <span className="text-xs text-muted-foreground">← {r.referrerUsername || r.referrerUid}</span></span>
+                    <span className="text-xs text-muted-foreground">{r.status} · {fmtDateTime(r.createdAt)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+          <section>
+            <p className="font-semibold mb-1">Inviter ke referrals, IP ke hisaab se</p>
+            <ul className="space-y-1">
+              {data.inviterIps.map((r) => (
+                <li key={r.ip || "none"} className="flex justify-between gap-2">
+                  <span className="font-mono text-xs">{r.ip || "(IP nahi)"}</span>
+                  <span className={`text-xs ${r.n >= 3 ? "font-semibold text-red-600" : "text-muted-foreground"}`}>{r.n} referrals · {r.rewarded} rewarded</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        </div>
+      )}
+    </Modal>
   );
 }
 
@@ -424,6 +620,9 @@ export function ProgramSettings({ program }: { program?: Partial<Program> }) {
         {numInput("qualifyWindowDays", "Qualify window (days)", "Unqualified referrals expire after this.")}
         {numInput("maxRewardedPerReferrer", "Lifetime cap per inviter", "0 = unlimited. Beyond it the friend is still paid.")}
         {numInput("maxRewardedPerReferrerPerDay", "Daily cap per inviter", "0 = unlimited. Stops referral farming bursts.")}
+        {numInput("maxCoinsPerMonth", "Monthly budget (inviter + friend coins)", "0 = no limit. Poora hone par naye referral review me rukte hain; agle mahine apne aap pay hote hain. Milestone bonus isme nahi.")}
+        {p.qualifyAction === "first_purchase" &&
+          numInput("minPurchaseInr", "Minimum first purchase (₹)", "0 = koi bhi purchase. Isse chhoti purchase qualify nahi karti; baad ki badi purchase kar sakti hai.")}
       </div>
 
       <Toggle
@@ -486,7 +685,8 @@ export function ProgramSettings({ program }: { program?: Partial<Program> }) {
       <div className="mt-4 rounded-xl bg-secondary/60 p-3 text-xs text-muted-foreground">
         <p className="font-semibold text-foreground mb-1">Users see</p>
         “Dost ko invite karo — jab woh {ACTION_LABEL[p.qualifyAction]?.toLowerCase()} karega, aapko {p.referrerReward} coins aur aapke dost ko {p.refereeReward} coins
-        milenge.” Fraud checks always on: no self-referral, no referrer's device, one referral per device.
+        milenge.” Fraud checks always on: no self-referral, no referrer's device, one referral per device, a blocked friend is never paid, and a referral without
+        a device id waits for review.
       </div>
 
       {error && (

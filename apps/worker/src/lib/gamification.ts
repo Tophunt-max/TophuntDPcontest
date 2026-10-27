@@ -14,10 +14,22 @@ interface Badge {
 export interface GamificationSettings {
   xpThreshold: number;
   xpIncrement: number;
-  /** Coins for the first daily claim of a UTC day. */
+  /** Coins for the first daily claim of a reward day. */
   dailyLoginReward: number;
   /** Extra coins per consecutive day, multiplied by the current streak. */
   dailyStreakBonus: number;
+  /** Off: `claimDailyReward` refuses and the app hides the check-in track. */
+  dailyLoginEnabled: boolean;
+  /**
+   * Fixed per-day amounts (day 1, day 2, …). When set, it replaces the
+   * base + streak-bonus formula and repeats once the streak passes its end.
+   */
+  dailyRewardSchedule: number[];
+  /**
+   * When the reward day starts, as minutes ahead of UTC (330 = midnight IST).
+   * Used by the daily check-in, daily tasks and the rewarded-ad cap.
+   */
+  dayResetOffsetMinutes: number;
   // NOTE: signupBonus and referralBonus deliberately do NOT live here any more.
   // Both are credited straight to a balance and are now sourced exclusively from
   // `appConfig.rewardSettings` via getRewardSettings() (settings.ts) — the same
@@ -33,23 +45,123 @@ const DEFAULT_SETTINGS: GamificationSettings = {
   xpIncrement: 500,
   dailyLoginReward: 10,
   dailyStreakBonus: 2,
+  dailyLoginEnabled: true,
+  dailyRewardSchedule: [],
+  dayResetOffsetMinutes: 0,
   badges: [],
   hallOfFameRewards: [1000, 500, 250],
 };
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** The streak bonus stops growing after this many days (formula mode). */
+export const DAILY_STREAK_BONUS_MAX_DAYS = 30;
+/** Longest fixed daily schedule an admin can save. */
+export const DAILY_SCHEDULE_MAX_DAYS = 30;
+/** Allowed day-reset offsets: UTC-12:00 to UTC+14:00. */
+export const DAY_OFFSET_MIN = -720;
+export const DAY_OFFSET_MAX = 840;
+/** Days shown on the app's check-in track. */
+export const DAILY_TRACK_DAYS = 7;
+
+function clampOffset(minutes: unknown): number {
+  const n = Number(minutes);
+  return Number.isInteger(n) && n >= DAY_OFFSET_MIN && n <= DAY_OFFSET_MAX ? n : 0;
+}
+
+/** Reward-day number of `ts` (with offset 0 this is the UTC day number). */
+export function rewardDayNumber(ts: number, offsetMinutes: number): number {
+  return Math.floor((ts + clampOffset(offsetMinutes) * 60_000) / DAY_MS);
+}
+
+/** Epoch ms at which the reward day containing `ts` starts. */
+export function rewardDayStart(ts: number, offsetMinutes: number): number {
+  return rewardDayNumber(ts, offsetMinutes) * DAY_MS - clampOffset(offsetMinutes) * 60_000;
+}
+
+/** Coins for the claim that makes the streak `streak` days long (streak >= 1). */
+export function dailyRewardFor(
+  settings: Pick<GamificationSettings, "dailyLoginReward" | "dailyStreakBonus" | "dailyRewardSchedule">,
+  streak: number,
+): number {
+  const s = Math.max(1, Math.floor(streak));
+  const schedule = settings.dailyRewardSchedule || [];
+  if (schedule.length) return schedule[(s - 1) % schedule.length];
+  return settings.dailyLoginReward + Math.min(s, DAILY_STREAK_BONUS_MAX_DAYS) * settings.dailyStreakBonus;
+}
+
+export interface DailyRewardState {
+  enabled: boolean;
+  /** Streak shown to the user: 0 when it has already broken. */
+  streak: number;
+  claimedToday: boolean;
+  /** Streak day today's claim counts as (claimed or not). */
+  todayStreakDay: number;
+  /** Coins today's claim pays (or paid). */
+  todayReward: number;
+  dayStartsAt: number;
+  nextResetAt: number;
+  track: { day: number; amount: number; status: "claimed" | "ready" | "upcoming" }[];
+}
+
+/**
+ * Daily check-in state computed exactly the way `claimDailyReward` pays, so the
+ * app never shows an amount the server would not credit.
+ */
+export function dailyRewardState(
+  settings: GamificationSettings,
+  user: { streak?: number | null; lastDailyClaim?: number | null },
+  ts: number,
+): DailyRewardState {
+  const startOfToday = rewardDayStart(ts, settings.dayResetOffsetMinutes);
+  const startOfYesterday = startOfToday - DAY_MS;
+  const lastMs = user.lastDailyClaim ? Number(user.lastDailyClaim) : 0;
+  const stored = Math.max(0, Number(user.streak) || 0);
+  const claimedToday = lastMs >= startOfToday;
+  const alive = claimedToday || (lastMs >= startOfYesterday && lastMs < startOfToday);
+  const todayStreakDay = claimedToday ? Math.max(1, stored) : alive ? stored + 1 : 1;
+  const windowStart = Math.floor((todayStreakDay - 1) / DAILY_TRACK_DAYS) * DAILY_TRACK_DAYS + 1;
+  const track = Array.from({ length: DAILY_TRACK_DAYS }, (_, i) => {
+    const day = windowStart + i;
+    const status: "claimed" | "ready" | "upcoming" =
+      day < todayStreakDay ? "claimed" : day === todayStreakDay ? (claimedToday ? "claimed" : "ready") : "upcoming";
+    return { day, amount: dailyRewardFor(settings, day), status };
+  });
+  return {
+    enabled: settings.dailyLoginEnabled,
+    streak: alive ? stored : 0,
+    claimedToday,
+    todayStreakDay,
+    todayReward: dailyRewardFor(settings, todayStreakDay),
+    dayStartsAt: startOfToday,
+    nextResetAt: startOfToday + DAY_MS,
+    track,
+  };
+}
 
 export interface DailyTaskDef {
   id: string;
   title: string;
   reward: number;
   target: number;
-  type: "vote" | "share" | "ad";
+  type: "vote" | "share" | "contest" | "ad";
+  /** Off: hidden and not claimable, but kept in the list. */
+  enabled: boolean;
+  /** Optional window (epoch ms) for limited-time tasks. */
+  startsAt: number | null;
+  endsAt: number | null;
 }
-export const DAILY_TASK_TYPES = ["vote", "share", "ad"] as const;
+export const DAILY_TASK_TYPES = ["vote", "share", "contest", "ad"] as const;
 export const DEFAULT_DAILY_TASKS: DailyTaskDef[] = [
-  { id: "vote5", title: "Vote in 5 battles", reward: 15, target: 5, type: "vote" },
-  { id: "share", title: "Share your profile", reward: 10, target: 1, type: "share" },
-  { id: "watch_ad", title: "Watch a video ad", reward: 5, target: 1, type: "ad" },
+  { id: "vote5", title: "Vote in 5 battles", reward: 15, target: 5, type: "vote", enabled: true, startsAt: null, endsAt: null },
+  { id: "share", title: "Share a battle", reward: 10, target: 1, type: "share", enabled: true, startsAt: null, endsAt: null },
+  { id: "watch_ad", title: "Watch a video ad", reward: 5, target: 1, type: "ad", enabled: true, startsAt: null, endsAt: null },
 ];
+
+const optionalMs = (v: unknown): number | null => {
+  const n = Number(v);
+  return v !== undefined && v !== null && v !== "" && Number.isInteger(n) && n > 0 ? n : null;
+};
+
 /** Daily tasks from gamification settings (admin override) or defaults. */
 export function getDailyTaskDefs(settings: any): DailyTaskDef[] {
   const custom = settings?.dailyTasks;
@@ -60,9 +172,17 @@ export function getDailyTaskDefs(settings: any): DailyTaskDef[] {
       reward: Number(t.reward || 0),
       target: Number(t.target || 1),
       type: ((DAILY_TASK_TYPES as readonly string[]).includes(t.type) ? t.type : "ad") as DailyTaskDef["type"],
+      enabled: t.enabled !== false,
+      startsAt: optionalMs(t.startsAt),
+      endsAt: optionalMs(t.endsAt),
     }));
   }
   return DEFAULT_DAILY_TASKS;
+}
+
+/** Tasks a user can see and claim at `ts`: enabled and inside their window. */
+export function activeDailyTasks(tasks: DailyTaskDef[], ts: number): DailyTaskDef[] {
+  return tasks.filter((t) => t.enabled && (t.startsAt === null || ts >= t.startsAt) && (t.endsAt === null || ts < t.endsAt));
 }
 
 const MAX_REWARD = 1_000_000;
@@ -88,10 +208,33 @@ export function validateGamificationCoinLists(body: any): void {
       if (ids.has(id)) throw new Error(`Daily task id "${id}" is used twice.`);
       ids.add(id);
       if (!String(t?.title ?? "").trim() || String(t.title).length > 80) throw new Error(`Task "${id}": title is required (max 80 characters).`);
-      if (!(DAILY_TASK_TYPES as readonly string[]).includes(t?.type)) throw new Error(`Task "${id}": type must be vote, share or ad.`);
+      if (!(DAILY_TASK_TYPES as readonly string[]).includes(t?.type)) throw new Error(`Task "${id}": type must be ${DAILY_TASK_TYPES.join(", ")}.`);
       if (!wholeCoins(t?.reward)) throw new Error(`Task "${id}": reward must be a whole number of coins between 0 and ${MAX_REWARD}.`);
       const target = Number(t?.target);
       if (!Number.isInteger(target) || target < 1 || target > 1000) throw new Error(`Task "${id}": target must be a whole number from 1 to 1000.`);
+      if (t?.enabled !== undefined && typeof t.enabled !== "boolean") throw new Error(`Task "${id}": enabled must be true or false.`);
+      for (const k of ["startsAt", "endsAt"] as const) {
+        const v = t?.[k];
+        if (v !== undefined && v !== null && optionalMs(v) === null) throw new Error(`Task "${id}": ${k} must be empty or a date.`);
+      }
+      const s = optionalMs(t?.startsAt);
+      const e = optionalMs(t?.endsAt);
+      if (s !== null && e !== null && e <= s) throw new Error(`Task "${id}": the end must be after the start.`);
+    }
+  }
+  if (body?.dailyLoginEnabled !== undefined && typeof body.dailyLoginEnabled !== "boolean") {
+    throw new Error("dailyLoginEnabled must be true or false.");
+  }
+  if (body?.dailyRewardSchedule !== undefined) {
+    const s = body.dailyRewardSchedule;
+    if (!Array.isArray(s) || s.length > DAILY_SCHEDULE_MAX_DAYS || !s.every(wholeCoins)) {
+      throw new Error(`dailyRewardSchedule must be up to ${DAILY_SCHEDULE_MAX_DAYS} whole coin amounts (empty = use the streak formula).`);
+    }
+  }
+  if (body?.dayResetOffsetMinutes !== undefined) {
+    const n = Number(body.dayResetOffsetMinutes);
+    if (typeof body.dayResetOffsetMinutes === "boolean" || !Number.isInteger(n) || n < DAY_OFFSET_MIN || n > DAY_OFFSET_MAX) {
+      throw new Error(`dayResetOffsetMinutes must be a whole number of minutes from ${DAY_OFFSET_MIN} to ${DAY_OFFSET_MAX}.`);
     }
   }
   if (body?.hallOfFameRewards !== undefined) {
@@ -154,6 +297,11 @@ export async function getSettings(env: Env): Promise<GamificationSettings> {
       Array.isArray(data.hallOfFameRewards) && data.hallOfFameRewards.length === 3
         ? data.hallOfFameRewards.map((v: unknown, i: number) => sanitizeAmount(v, DEFAULT_SETTINGS.hallOfFameRewards[i]))
         : DEFAULT_SETTINGS.hallOfFameRewards,
+    dailyLoginEnabled: data.dailyLoginEnabled !== false,
+    dailyRewardSchedule: Array.isArray(data.dailyRewardSchedule)
+      ? data.dailyRewardSchedule.slice(0, DAILY_SCHEDULE_MAX_DAYS).map((v: unknown) => sanitizeAmount(v, 0))
+      : [],
+    dayResetOffsetMinutes: clampOffset(data.dayResetOffsetMinutes),
   };
   for (const key of COIN_KEYS) merged[key] = sanitizeAmount(merged[key], DEFAULT_SETTINGS[key]);
   for (const key of XP_KEYS) {

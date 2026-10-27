@@ -40,6 +40,7 @@ const STATUS: Record<ReferralStatus, { label: string; color: string; bg: string 
   rewarded: { label: 'Rewarded', color: '#15803D', bg: '#DCFCE7' },
   rejected: { label: 'Not eligible', color: '#B91C1C', bg: '#FEE2E2' },
   expired: { label: 'Expired', color: '#475569', bg: '#E2E8F0' },
+  reversed: { label: 'Reversed', color: '#B91C1C', bg: '#FEE2E2' },
 };
 
 /**
@@ -66,6 +67,8 @@ export default function ReferralScreen() {
   }, []);
 
   const program = data?.program;
+  // Diamond (play-only) or DP coin: how the server credits referral rewards.
+  const unit = program?.rewardUnit ?? 'Diamond';
   const link = useMemo(() => {
     if (!data?.code) return null;
     const origin = appShareOrigin();
@@ -158,10 +161,10 @@ export default function ReferralScreen() {
             {program?.enabled ? (
               <>
                 <Text style={styles.heroTitle}>
-                  Dost ko invite karo, dono ko Diamond! 💎
+                  Dost ko invite karo, dono ko {unit}! 💎
                 </Text>
                 <Text style={styles.heroSub}>
-                  Aapko {program.referrerReward} Diamond · Dost ko {program.refereeReward} Diamond
+                  Aapko {program.referrerReward} {unit} · Dost ko {program.refereeReward} {unit}
                 </Text>
               </>
             ) : (
@@ -206,7 +209,7 @@ export default function ReferralScreen() {
                 ['Invited', data.stats.invited],
                 ['Successful', data.stats.successful],
                 ['Pending', data.stats.pending],
-                ['Diamond earned', data.stats.earned],
+                [`${unit} earned`, data.stats.earned],
               ] as const
             ).map(([k, v]) => (
               <View key={k} style={[styles.stat, { backgroundColor: card, borderColor: border }]}>
@@ -224,9 +227,9 @@ export default function ReferralScreen() {
                 'Apna code ya invite link dost ko bhejo',
                 `Dost signup par aapka code lagaye${program.applyWindowDays ? ` (join karne ke ${Math.max(1, program.applyWindowDays)} din ke andar)` : ''}`,
                 program.qualifyAction === 'signup'
-                  ? 'Signup hote hi dono ko Diamond mil jaate hain'
-                  : `${QUALIFY_COPY[program.qualifyAction].step} — ${program.qualifyWindowDays} din ke andar`,
-                `Aapko ${program.referrerReward} Diamond, dost ko ${program.refereeReward} Diamond — seedha wallet mein`,
+                  ? `Signup hote hi dono ko ${unit} mil jaate hain`
+                  : `${QUALIFY_COPY[program.qualifyAction].step}${program.qualifyAction === 'first_purchase' && program.minPurchaseInr ? ` (kam se kam ₹${program.minPurchaseInr})` : ''} — ${program.qualifyWindowDays} din ke andar`,
+                `Aapko ${program.referrerReward} ${unit}, dost ko ${program.refereeReward} ${unit} — seedha wallet mein`,
               ].map((s, i) => (
                 <View key={i} style={styles.step}>
                   <View style={styles.stepDot}>
@@ -252,7 +255,7 @@ export default function ReferralScreen() {
                   <View key={m.count} style={{ marginTop: 12 }}>
                     <View style={styles.rowBetween}>
                       <Text style={[styles.stepText, { color: text, marginLeft: 0 }]}>
-                        {m.count} successful referrals → +{m.bonus} Diamond
+                        {m.count} successful referrals → +{m.bonus} {unit}
                       </Text>
                       {done ? <Ionicons name="checkmark-circle" size={18} color="#16A34A" /> : null}
                     </View>
@@ -277,11 +280,11 @@ export default function ReferralScreen() {
               <View style={[styles.rowBetween, { marginTop: 8 }]}>
                 <Text style={[styles.stepText, { color: text, marginLeft: 0, flex: 1 }]}>
                   {data.referredBy.status === 'rewarded'
-                    ? `${data.referredBy.reward} Diamond mil gaye 🎉`
+                    ? `${data.referredBy.reward} ${unit} mil gaye 🎉`
                     : data.referredBy.status === 'pending' && data.referredBy.qualifyAction
                       ? data.referredBy.qualifyAction === 'signup'
                         ? 'Reward process ho raha hai'
-                        : `${QUALIFY_COPY[data.referredBy.qualifyAction].short} karte hi ${program?.refereeReward ?? ''} Diamond milenge`
+                        : `${QUALIFY_COPY[data.referredBy.qualifyAction].short} karte hi ${program?.refereeReward ?? ''} ${unit} milenge`
                       : data.referredBy.status === 'review'
                         ? 'Reward review mein hai — jaldi milega'
                         : 'Ye referral reward ke liye eligible nahi raha'}
@@ -293,7 +296,7 @@ export default function ReferralScreen() {
             <View style={[styles.card, { backgroundColor: card, borderColor: border }]}>
               <Text style={[styles.cardTitle, { color: text }]}>Friend ka code hai?</Text>
               <Text style={[styles.fine, { color: sub, marginTop: 4 }]}>
-                Code lagao aur {program.refereeReward} Diamond pao
+                Code lagao aur {program.refereeReward} {unit} pao
                 {data.applyUntil ? ` · ${new Date(data.applyUntil).toLocaleDateString()} tak` : ''}
               </Text>
               <View style={[styles.row, { marginTop: 12 }]}>
@@ -334,7 +337,7 @@ export default function ReferralScreen() {
                   <Text style={[styles.fine, { color: sub, marginTop: 2 }]}>
                     {r.status === 'rewarded'
                       ? r.reward > 0
-                        ? `+${r.reward} Diamond mile`
+                        ? `+${r.reward} ${unit} mile`
                         : 'Dost ko reward mila (aapki limit poori)'
                       : r.status === 'pending' && program
                         ? `${QUALIFY_COPY[program.qualifyAction].short} ka intezaar${r.expiresAt ? ` · ${new Date(r.expiresAt).toLocaleDateString()} tak` : ''}`
@@ -342,7 +345,9 @@ export default function ReferralScreen() {
                           ? 'Review mein'
                           : r.status === 'expired'
                             ? 'Time par qualify nahi kiya'
-                            : 'Eligible nahi'}
+                            : r.status === 'reversed'
+                              ? 'Reward wapas liya gaya'
+                              : 'Eligible nahi'}
                   </Text>
                 </View>
                 <StatusPill status={r.status} />

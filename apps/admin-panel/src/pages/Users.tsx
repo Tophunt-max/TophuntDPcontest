@@ -260,7 +260,7 @@ function UserDetail({ id, onClose, onDone }: { id: string; onClose: () => void; 
   const user = useQuery({ queryKey: ["user", id], queryFn: () => api.user(id) });
   const followers = useQuery({ queryKey: ["user-followers", id], queryFn: () => api.userFollowers(id) });
   const txns = useQuery({ queryKey: ["user-txns", id], queryFn: () => api.transactions({ uid: id, limit: 50 }) });
-  const [tab, setTab] = useState<"profile" | "followers" | "transactions">("profile");
+  const [tab, setTab] = useState<"profile" | "followers" | "transactions" | "rewards">("profile");
   const u = user.data;
 
   const [form, setForm] = useState({ fullName: "", username: "", bio: "" });
@@ -313,7 +313,7 @@ function UserDetail({ id, onClose, onDone }: { id: string; onClose: () => void; 
             </div>
 
             <div className="flex gap-1 mb-4 bg-secondary/50 p-1 rounded-xl w-fit">
-              {(["profile", "followers", "transactions"] as const).map((t) => (
+              {(["profile", "followers", "transactions", "rewards"] as const).map((t) => (
                 <button key={t} onClick={() => setTab(t)} className={`px-4 py-1.5 rounded-lg text-sm font-medium capitalize ${tab === t ? "bg-card shadow-sm text-foreground" : "text-muted-foreground"}`}>{t}</button>
               ))}
             </div>
@@ -346,6 +346,8 @@ function UserDetail({ id, onClose, onDone }: { id: string; onClose: () => void; 
               </div>
             )}
 
+            {tab === "rewards" && <UserRewards uid={id} />}
+
             {tab === "transactions" && (
               <div className="space-y-1 max-h-72 overflow-auto">
                 {(txns.data ?? []).length === 0 ? <p className="text-sm text-muted-foreground py-6 text-center">No transactions</p> : txns.data!.map((t: any) => (
@@ -376,6 +378,113 @@ function UserDetail({ id, onClose, onDone }: { id: string; onClose: () => void; 
         <div className="mt-5 flex justify-end">
           <button onClick={onClose} className="px-4 py-2 rounded-xl bg-secondary text-sm font-medium">Close</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Daily check-in streak, recent check-ins, task claims and referral rows for one
+ * user, plus the support streak fix (PATCH /admin/users/:id/streak, audited).
+ */
+function UserRewards({ uid }: { uid: string }) {
+  const q = useQuery({ queryKey: ["user-rewards", uid], queryFn: () => api.userRewards(uid) });
+  const [streak, setStreak] = useState("");
+  const [continueStreak, setContinueStreak] = useState(true);
+  const [reason, setReason] = useState("");
+  const fix = useMutation({
+    mutationFn: () => api.setUserStreak(uid, { streak: Number(streak), continueStreak, reason: reason.trim() }),
+    onSuccess: () => {
+      toast.success("Streak updated");
+      setReason("");
+      q.refetch();
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const d = q.data;
+  if (!d) return <p className="text-sm text-muted-foreground py-6 text-center">Loading…</p>;
+  const field = "px-3 py-2 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring";
+  return (
+    <div className="space-y-4 text-sm">
+      <div className="grid grid-cols-3 gap-2 text-center">
+        <div className="rounded-xl bg-secondary py-2">
+          <div className="font-bold">{d.streakAlive ? d.streak : 0}</div>
+          <div className="text-[11px] text-muted-foreground">Streak {d.streakAlive ? "" : `(tooti, saved ${d.streak})`}</div>
+        </div>
+        <div className="rounded-xl bg-secondary py-2">
+          <div className="font-bold">{d.claimedToday ? "Haan" : "Nahi"}</div>
+          <div className="text-[11px] text-muted-foreground">Aaj check-in</div>
+        </div>
+        <div className="rounded-xl bg-secondary py-2">
+          <div className="font-bold">{d.lastDailyClaim ? fmtDateTime(d.lastDailyClaim) : "—"}</div>
+          <div className="text-[11px] text-muted-foreground">Aakhri check-in</div>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border p-3">
+        <p className="font-semibold mb-2">Streak theek karo (support)</p>
+        <div className="flex flex-wrap gap-2 items-center">
+          <input type="number" min={0} className={`${field} w-28`} placeholder="Streak" value={streak} onChange={(e) => setStreak(e.target.value)} />
+          <input className={`${field} flex-1 min-w-[160px]`} placeholder="Reason (zaroori)" value={reason} onChange={(e) => setReason(e.target.value)} maxLength={200} />
+          <button
+            onClick={() => fix.mutate()}
+            disabled={streak === "" || reason.trim().length < 3 || fix.isPending}
+            className="gradient-purple text-white text-sm font-semibold px-4 py-2 rounded-xl disabled:opacity-50"
+          >
+            Save
+          </button>
+        </div>
+        <label className="flex items-center gap-2 mt-2 text-xs text-muted-foreground">
+          <input type="checkbox" checked={continueStreak} onChange={(e) => setContinueStreak(e.target.checked)} />
+          Kal ko claimed maano, taaki agla check-in streak aage badhaye (aaj ka reward dobara nahi milta)
+        </label>
+      </div>
+
+      <div>
+        <p className="font-semibold mb-1">Check-ins ({d.checkins.length})</p>
+        <div className="max-h-40 overflow-auto space-y-1">
+          {d.checkins.length === 0 ? (
+            <p className="text-xs text-muted-foreground">Koi nahi.</p>
+          ) : (
+            d.checkins.map((c: any) => (
+              <div key={c.id} className="flex justify-between text-xs">
+                <span className="text-muted-foreground">{fmtDateTime(c.createdAt)} · {c.description}</span>
+                <span className="font-semibold">+{fmtNumber(c.amount)}</span>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      <div>
+        <p className="font-semibold mb-1">Task claims ({d.taskClaims.length})</p>
+        <div className="max-h-40 overflow-auto space-y-1">
+          {d.taskClaims.length === 0 ? (
+            <p className="text-xs text-muted-foreground">Koi nahi.</p>
+          ) : (
+            d.taskClaims.map((t: any) => (
+              <div key={`${t.taskId}-${t.day}`} className="flex justify-between text-xs">
+                <span className="text-muted-foreground">{fmtDateTime(t.createdAt)} · {t.taskId}</span>
+                <span className="font-semibold">+{fmtNumber(t.reward)}</span>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      <div>
+        <p className="font-semibold mb-1">Referral</p>
+        <p className="text-xs text-muted-foreground">
+          Code: <span className="font-mono">{d.referralCode || "—"}</span> · Device: <span className="font-mono">{d.deviceId ? String(d.deviceId).slice(0, 12) : "—"}</span>
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Invite kiya:{" "}
+          {d.invited.length === 0 ? "koi nahi" : d.invited.map((r: any) => `${r.status} ${r.n}`).join(" · ")}
+          {d.invited.length > 0 && ` · kamaya ${fmtNumber(d.invited.reduce((t: number, r: any) => t + Number(r.earned || 0), 0))}`}
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Kisne invite kiya: {d.referredBy ? `${d.referredBy.referrerUsername || d.referredBy.referrerUid} (${d.referredBy.status})` : "—"}
+        </p>
       </div>
     </div>
   );

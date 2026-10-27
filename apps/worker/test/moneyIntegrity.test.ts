@@ -563,9 +563,9 @@ describe('the referral bonus is credited once, atomically, from app settings', (
     await seedUser(env, 'ref', 0, { referralCode: 'THTEST1' });
     await seedUser(env, 'newbie', 0);
 
-    const res = await call(env, 'newbie', 'completeSignup', { referralCode: 'THTEST1' });
+    const res = await call(env, 'newbie', 'completeSignup', { referralCode: 'THTEST1', deviceId: 'dev-newbie' });
     expect(res.status).toBe(200);
-    await call(env, 'newbie', 'completeSignup', { referralCode: 'THTEST1' });
+    await call(env, 'newbie', 'completeSignup', { referralCode: 'THTEST1', deviceId: 'dev-newbie' });
 
     expect(Number((await getUser(env, 'ref'))?.dpcoin)).toBe(40);
     expect(Number((await getUser(env, 'newbie'))?.dpcoin)).toBe(60);
@@ -635,7 +635,7 @@ describe('the referral bonus is credited once, atomically, from app settings', (
     await seedUser(env, 'ref', 0, { referralCode: 'THTEST1' });
     await seedUser(env, 'newbie', 0);
 
-    await call(env, 'newbie', 'completeSignup', { referralCode: 'THTEST1' });
+    await call(env, 'newbie', 'completeSignup', { referralCode: 'THTEST1', deviceId: 'dev-newbie' });
 
     expect(Number((await getUser(env, 'newbie'))?.dpcoin)).toBe(77);
     expect(Number((await getUser(env, 'ref'))?.dpcoin)).toBe(77);

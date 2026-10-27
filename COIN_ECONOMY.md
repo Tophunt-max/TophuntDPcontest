@@ -39,7 +39,18 @@ Settings, Referrals, Deposits, Rewards) link there, so each setting has one edit
 ## Abuse checks (advisory, never block)
 
 - **Withdrawal risk** (`lib/withdrawalRisk.ts`): flags `new_account`, `shared_device`, `mostly_free_coins`, `frequent`, `never_played`. High = shared device or 2+ flags. Shown in Withdrawals as a badge.
-- **Referral holds** (`lib/referralProgram.ts`): `same_ip_burst`, `ip_shared`, `referrer_velocity`. A held referral goes to review instead of paying out.
+- **Referral holds** (`lib/referralProgram.ts`): `same_ip_burst`, `ip_shared`, `referrer_velocity`, `no_device` (the app sent no device id), `monthly_budget`. A held referral goes to review instead of paying out.
+
+## Daily check-in, daily tasks, referrals (admin controls)
+
+- **Daily check-in** (Earn → Daily check-in, `gamification` row): on/off (`dailyLoginEnabled`), base + streak bonus (bonus capped at 30 days) or a fixed per-day schedule (`dailyRewardSchedule`, up to 30 days, repeats). The app draws its track from `getDailyReward`, which uses the same function the claim pays with, so the app and the server always agree.
+- **Day reset** (`dayResetOffsetMinutes`): when the reward day starts, as minutes ahead of UTC (0 = midnight UTC, 330 = midnight IST). Used by check-in, daily tasks and the rewarded-ad cap. The day it changes, a user may get one extra claim.
+- **Daily tasks** (Earn → Daily tasks): per task `enabled`, optional `startsAt` / `endsAt`. Types: `vote` (votes today), `share` (different battles shared today; the same battle again within 24h is not recorded), `contest` (contest entries today), `ad`. Progress is counted on the server. Task ids are locked in the panel once saved, because a new id can be claimed again the same day.
+- **Stats** (Earn → "Check-in aur tasks" card, `GET /admin/rewards/stats`): check-ins, task claims and coins per day; users on 7+ and 30+ day streaks.
+- **One user** (Users → user → rewards): streak, check-ins, task claims, referrals, and the audited streak fix (`PATCH /admin/users/:id/streak`).
+- **Referral caps and budget**: the lifetime cap, 24h cap and monthly budget (`maxCoinsPerMonth`, inviter + friend coins per UTC month) are sub-queries in the WHERE of the single `rewarded` flip, so referrals that qualify at the same moment cannot overshoot them. Over the budget, a referral waits in review and the cron pays it once there is room. The coins are credited after the flip; the cron repairs a credit lost to a crash.
+- **Referral rules**: `minPurchaseInr` for `first_purchase`; a friend blocked or deleted before payout is rejected (`referred_unavailable`).
+- **Referral admin tools** (Referrals page): bulk approve / reject, linked accounts (same device / IP, the inviter's referrals per IP), and **Reverse** for a rewarded referral. Reverse takes back what each credit added, from the same balance (Diamond or DP coin), up to what is left in the wallet (`referral_clawback` ledger rows), and reports any shortfall. Milestone bonuses are not touched.
 
 ## Alerts and reports (`lib/coinAlerts.ts`)
 

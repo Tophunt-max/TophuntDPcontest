@@ -1,11 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   FlatList,
   TouchableOpacity,
-  Share,
   Modal,
   ActivityIndicator,
 } from "react-native";
@@ -34,11 +33,8 @@ import { useFeature } from '@/src/services/appSettings';
 import { readApi } from '@/src/services/api';
 import { useQuery } from '@tanstack/react-query';
 import { useDesignWindow } from '@/src/lib/layout';
-import { appShareOrigin } from '@/src/lib/share';
-import { referralCaption } from '@/src/lib/shareCaptions';
 
 
-const DAILY_REWARDS = [10, 15, 20, 25, 30, 50, 100];
 const FILTERS = ['All', 'Income', 'Expense'];
 
 // The server refuses daily/ads/tasks coins once the admin's free rewards
@@ -46,7 +42,11 @@ const FILTERS = ['All', 'Income', 'Expense'];
 const freeRewardsOut = (e: any) => typeof e?.message === 'string' && e.message.toLowerCase().includes('free rewards khatam');
 const FREE_REWARDS_OUT_MSG = 'Aaj ke free rewards khatam ho gaye hain. Thodi der baad try karo.';
 
-const taskIcon = (type: string) => (type === 'vote' ? 'stats-chart' : type === 'share' ? 'share-social' : 'videocam');
+const taskIcon = (type: string) =>
+  type === 'vote' ? 'stats-chart' : type === 'share' ? 'share-social' : type === 'contest' ? 'trophy' : 'videocam';
+
+/** One slot of the check-in track, as the Worker's `getDailyReward` returns it. */
+type DailySlot = { day: number; amount: number; status: 'claimed' | 'ready' | 'upcoming' };
 
 /** Free rewards may be play-only (locked): spendable on contests, never withdrawable. */
 // A reward credited as Diamonds (play-only) or as DP coins (withdrawable).
@@ -78,28 +78,20 @@ export default function WalletScreen() {
   const primaryColor = '#FF4D67';
 
   // State
-  const [currentDay, setCurrentDay] = useState(0);
-  const [claimedToday, setClaimedToday] = useState(false);
   const [activeFilter, setActiveFilter] = useState('All');
 
-  // Derive the daily check-in state from real server data (streak + last claim)
-  // instead of hardcoding it, so the UI reflects what the user has actually claimed.
-  useEffect(() => {
-    if (!profile) return;
-    const lastMs = (profile as any).lastDailyClaim ? Number((profile as any).lastDailyClaim) : 0;
-    const d = new Date();
-    const startOfTodayUTC = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-    const claimed = lastMs >= startOfTodayUTC;
-    const streak = (profile as any).streak || 0;
-    setClaimedToday(claimed);
-    if (claimed) {
-      // Today already claimed: highlight the last claimed day on the track.
-      setCurrentDay(Math.max(0, Math.min(streak - 1, DAILY_REWARDS.length - 1)));
-    } else {
-      // Not claimed yet today: the next day in the streak is ready to claim.
-      setCurrentDay(Math.min(streak, DAILY_REWARDS.length - 1));
-    }
-  }, [profile]);
+  // The check-in track comes from the server (`getDailyReward`): the amounts,
+  // the day reset time and the streak are exactly what `claimDailyReward` pays,
+  // so the app never shows an amount of its own.
+  const { data: daily, refetch: refetchDaily } = useQuery({
+    queryKey: ['daily-reward', user?.uid],
+    queryFn: () => walletService.getDailyReward(),
+    enabled: !!user?.uid,
+  });
+  const dailyTrack: DailySlot[] = (daily as any)?.track ?? [];
+  const dailyEnabled = (daily as any)?.enabled !== false;
+  const claimedToday = (daily as any)?.claimedToday === true;
+  const dailyStreak = Number((daily as any)?.streak ?? 0);
   
   // Ad Simulation State
   const [isWatchingAd, setIsWatchingAd] = useState(false);
@@ -170,16 +162,15 @@ export default function WalletScreen() {
     try {
         // The Worker returns { success, coinsEarned, xpEarned, streak } — read the
         // coin amount off the object instead of stringifying the whole response.
-        const res: any = await walletService.claimDailyBonus(user.uid, currentDay);
+        const res: any = await walletService.claimDailyBonus();
         const earned = res?.coinsEarned ?? 0;
-        setClaimedToday(true);
         Alert.alert("Bonus Claimed!", `You received ${earned} ${rewardUnit(res)}.${playOnly(res)}`);
-        // refetch re-runs the derivation effect above with the new streak/lastClaim.
+        refetchDaily();
         refetchProfile();
     } catch (error: any) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         const alreadyClaimed = typeof error?.message === 'string' && error.message.toLowerCase().includes('already');
-        setClaimedToday(alreadyClaimed ? true : claimedToday);
+        refetchDaily();
         Alert.alert(
           "Error",
           alreadyClaimed
@@ -192,18 +183,6 @@ export default function WalletScreen() {
   };
 
   const referralCode = (profile as any)?.referralCode || '';
-  const handleRefer = async () => {
-    Haptics.selectionAsync();
-    try {
-      const code = referralCode || 'TOPHUNT';
-      const origin = appShareOrigin();
-      // The invite link pre-fills the code at signup (app/invite/[code].tsx).
-      const url = origin && referralCode ? `${origin.replace(/\/$/, '')}/invite/${encodeURIComponent(referralCode)}` : origin;
-      await Share.share({ message: referralCaption(code, url) });
-    } catch (error) {
-      Alert.alert('Error', 'Could not open share dialog');
-    }
-  };
 
   /**
    * Start a rewarded ad.
@@ -254,7 +233,9 @@ export default function WalletScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     if (task.claimed) return;
     if (task.claimable) { claimTask(task.id); return; }
-    if (task.type === 'share') handleRefer();
+    // The share task counts battles shared from a battle's share button, so it
+    // sends the user to the battles; sharing the invite link does not count.
+    if (task.type === 'share' || task.type === 'contest') router.push('/explore/battles' as any);
     else if (task.type === 'vote') router.push('/');
     else if (task.type === 'ad') startRewardedAd();
   };
@@ -284,22 +265,19 @@ export default function WalletScreen() {
     );
   };
 
-  const renderDailyItem = (amount: number, index: number) => {
-    let status = 'locked'; 
-    if (index < currentDay) status = 'claimed';
-    else if (index === currentDay) status = claimedToday ? 'claimed' : 'ready';
-    
-    const isReady = status === 'ready';
-    const isClaimed = status === 'claimed';
-    
+  const renderDailyItem = (slot: DailySlot, index: number) => {
+    const isReady = slot.status === 'ready';
+    const isClaimed = slot.status === 'claimed';
+    const next = dailyTrack[index + 1];
+
     return (
-        <View key={index} style={[styles.dayWrapper, { width: daySlot }]}>
+        <View key={slot.day} style={[styles.dayWrapper, { width: daySlot }]}>
             {/* Connecting Line */}
-            {index < DAILY_REWARDS.length - 1 && (
+            {index < dailyTrack.length - 1 && (
                 <View style={[
                     styles.connectorLine, 
                     { right: -(daySlot / 2), width: daySlot },
-                    { backgroundColor: index < currentDay ? '#4CAF50' : (isDark ? '#333' : '#E0E0E0') } 
+                    { backgroundColor: next?.status === 'claimed' ? '#4CAF50' : (isDark ? '#333' : '#E0E0E0') } 
                 ]} />
             )}
             
@@ -314,7 +292,7 @@ export default function WalletScreen() {
                 disabled={!isReady}
                 activeOpacity={0.7}
             >
-                <Text style={[styles.dayText, { color: subTextColor }]}>Day {index + 1}</Text>
+                <Text style={[styles.dayText, { color: subTextColor }]}>Day {slot.day}</Text>
                 {isClaimed ? (
                     <View style={styles.checkCircle}>
                         <Ionicons name="checkmark" size={12} color="white" />
@@ -328,7 +306,7 @@ export default function WalletScreen() {
                     <Text style={[
                         styles.dayAmount, 
                         { color: isReady ? primaryColor : (isClaimed ? '#4CAF50' : textColor) }
-                    ]}>+{amount}</Text>
+                    ]}>+{slot.amount}</Text>
                     <DiamondIcon size={11} />
                 </View>
             </TouchableOpacity>
@@ -338,7 +316,11 @@ export default function WalletScreen() {
 
   const renderTaskItem = ({ item, index }: { item: any, index: number }) => {
     const progressPercent = Math.min((item.progress / item.maxProgress) * 100, 100);
-    const label = item.claimed ? 'Done' : item.claimable ? 'Claim' : (item.type === 'vote' ? 'Vote' : item.type === 'share' ? 'Share' : 'Watch');
+    const label = item.claimed
+      ? 'Done'
+      : item.claimable
+        ? 'Claim'
+        : item.type === 'vote' ? 'Vote' : item.type === 'share' ? 'Share' : item.type === 'contest' ? 'Join' : 'Watch';
     return (
         <Animated.View entering={FadeInRight.delay(index * 100).duration(500)} style={[styles.taskCard, { backgroundColor: cardBg }]}>
             <View style={[styles.taskIconBox, { backgroundColor: isDark ? '#2A2D35' : '#F5F5F5' }]}>
@@ -507,18 +489,24 @@ export default function WalletScreen() {
                     </LinearGradient>
                 </Animated.View>
 
-                {/* Daily Bonus Section */}
+                {/* Daily Bonus Section (hidden while an admin has it switched off) */}
+                {dailyEnabled && dailyTrack.length > 0 && (
+                <>
                 <View style={styles.sectionHeader}>
                     <View>
                         <Text style={[styles.sectionTitle, { color: textColor }]}>Daily Check-in</Text>
-                        <Text style={[styles.sectionSubtitle, { color: subTextColor }]}>Earn rewards everyday!</Text>
+                        <Text style={[styles.sectionSubtitle, { color: subTextColor }]}>
+                            {dailyStreak > 0 ? `${dailyStreak} din ki streak 🔥` : 'Earn rewards everyday!'}
+                        </Text>
                     </View>
                 </View>
                 <View style={styles.dailyScrollWrapper}>
                     <View style={styles.dailyContainer}>
-                        {DAILY_REWARDS.map((amount, index) => renderDailyItem(amount, index))}
+                        {dailyTrack.map((slot, index) => renderDailyItem(slot, index))}
                     </View>
                 </View>
+                </>
+                )}
 
                 {/* Daily Tasks Section */}
                 <View style={[styles.sectionHeader, { marginTop: 25 }]}>
@@ -555,8 +543,8 @@ export default function WalletScreen() {
                                 <Text style={[styles.referTitle, { color: isDark ? '#fff' : '#101010' }]}>Refer & Earn</Text>
                                 <Text style={styles.referDesc}>
                                     {appConfig?.referral?.enabled && Number(appConfig.referral.referrerReward) > 0
-                                        ? `Har dost par ${appConfig.referral.referrerReward} Diamond — dost ko bhi ${appConfig.referral.refereeReward}!`
-                                        : 'Invite friends & earn bonus Diamonds!'}
+                                        ? `Har dost par ${appConfig.referral.referrerReward} ${appConfig.referral.rewardUnit ?? 'Diamond'} — dost ko bhi ${appConfig.referral.refereeReward}!`
+                                        : `Invite friends & earn bonus ${appConfig?.referral?.rewardUnit ?? 'Diamond'}s!`}
                                 </Text>
                                 {referralCode ? <Text style={styles.referDesc}>Your code: <Text style={{fontWeight: '800', color: '#FF4D67'}}>{referralCode}</Text></Text> : null}
                             </View>

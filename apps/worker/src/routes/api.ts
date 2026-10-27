@@ -117,7 +117,7 @@ import { PROFILE_INCOMPLETE_CODE } from "../lib/accountStatus";
 import { chargeablePackage } from "../lib/coinPricing";
 import { applyReferralCode, ensureReferralCode, qualifyReferral } from "../lib/referralProgram";
 import { chargeableWithdrawal, feeRuleFromConfig } from "../lib/withdrawalFee";
-import { getDailyTaskDefs, getSettings } from "../lib/gamification";
+import { activeDailyTasks, dailyRewardFor, dailyRewardState, getDailyTaskDefs, getSettings, rewardDayNumber, rewardDayStart, type DailyTaskDef } from "../lib/gamification";
 import { sendEmail, sendUserEmail } from "../lib/email";
 import { passwordChangedEmail, dataExportEmail } from "../lib/emailTemplates";
 import { newId, now, generateJoinId } from "../lib/ids";
@@ -146,9 +146,30 @@ function alertAdminEmail(c: any, cfg: any, subject: string, html: string): void 
 }
 
 /** Days since epoch in UTC (stable daily bucket key). */
-function utcDay(ts: number = Date.now()): number {
-  return Math.floor(ts / 86400000);
+/**
+ * Today's progress for a daily task type, counted on the server since
+ * `startOfDay`:
+ *  - vote:    votes cast;
+ *  - share:   DIFFERENT battles shared (sharing one battle again does not count);
+ *  - contest: contest entries (startMatch / joinMatch entry-fee ledger rows);
+ *  - ad:      not counted here (claimAdReward credits ads).
+ */
+async function dailyTaskProgress(env: Env, uid: string, type: DailyTaskDef["type"], startOfDay: number): Promise<number> {
+  let row: { n: number } | null = null;
+  if (type === "vote") {
+    row = await env.DB.prepare(`SELECT COUNT(*) AS n FROM votes WHERE voter_uid = ? AND created_at >= ?`).bind(uid, startOfDay).first();
+  } else if (type === "share") {
+    row = await env.DB.prepare(`SELECT COUNT(DISTINCT target_id) AS n FROM shares WHERE user_id = ? AND created_at >= ?`).bind(uid, startOfDay).first();
+  } else if (type === "contest") {
+    row = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM coin_transactions WHERE uid = ? AND type = 'contest_entry_fee' AND created_at >= ?`,
+    ).bind(uid, startOfDay).first();
+  }
+  return Number(row?.n ?? 0);
 }
+
+/** One share per user per battle per this window counts (and bumps the counter). */
+const SHARE_DEDUPE_MS = 24 * 60 * 60 * 1000;
 
 /** Max length of a single comment (server-enforced; UI mirrors this). */
 const MAX_COMMENT_LEN = 500;
@@ -331,8 +352,6 @@ async function assertOwnContestEntry(env: Env, uid: string, mediaUrl: unknown): 
   }
 }
 
-/** Streak days that still add to the daily bonus; longer streaks are capped here. */
-const DAILY_STREAK_BONUS_MAX_DAYS = 30;
 
 /** Devices one account keeps push tokens for (newest kept). */
 const MAX_PUSH_TOKENS = 10;
@@ -1857,14 +1876,28 @@ apiRoute.post("/", async (c) => {
       return c.json({ success: true, storyHidden: false });
     }
 
+    case "getDailyReward": {
+      // The check-in track exactly as `claimDailyReward` will pay it, so the app
+      // never shows amounts of its own.
+      const settings = await getSettings(env);
+      const user = await db
+        .select({ streak: schema.users.streak, lastDailyClaim: schema.users.lastDailyClaim })
+        .from(schema.users)
+        .where(eq(schema.users.uid, uid))
+        .get();
+      if (!user) throw httpsError("not-found", "User not found.");
+      return c.json(dailyRewardState(settings, user, now()));
+    }
+
     case "claimDailyReward": {
-      const settings = await import("../lib/gamification").then((m) => m.getSettings(env));
+      const settings = await getSettings(env);
+      if (!settings.dailyLoginEnabled) throw httpsError("failed-precondition", "Daily check-in abhi band hai.");
       const user = await db.select().from(schema.users).where(eq(schema.users.uid, uid)).get();
       if (!user) throw httpsError("not-found", "User not found.");
-      const nowDate = new Date();
-      // Use explicit UTC day boundaries (server runs in UTC) instead of
-      // toDateString(), which is ambiguous and made streak/eligibility wrong.
-      const startOfToday = Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth(), nowDate.getUTCDate());
+      const ts = now();
+      // The reward day starts at the admin's reset time (dayResetOffsetMinutes,
+      // 0 = midnight UTC), computed on the server; the client clock is never used.
+      const startOfToday = rewardDayStart(ts, settings.dayResetOffsetMinutes);
       const startOfYesterday = startOfToday - 24 * 60 * 60 * 1000;
       const lastMs = user.lastDailyClaim ? Number(user.lastDailyClaim) : 0;
       if (lastMs >= startOfToday)
@@ -1872,16 +1905,14 @@ apiRoute.post("/", async (c) => {
       // Streak continues only if the previous claim happened during "yesterday".
       let streak = user.streak || 0;
       streak = lastMs >= startOfYesterday && lastMs < startOfToday ? streak + 1 : 1;
-      // The streak keeps counting (it is shown to the user), but the bonus stops
-      // growing after DAILY_STREAK_BONUS_MAX_DAYS. Uncapped, the daily payout rose
-      // forever: 740 coins/day after a year at the defaults, and day N paid N
-      // million with the largest bonus the admin form accepts.
-      const coinReward = settings.dailyLoginReward + Math.min(streak, DAILY_STREAK_BONUS_MAX_DAYS) * settings.dailyStreakBonus;
+      // Either the admin's fixed schedule (repeating) or base + streak bonus,
+      // with the bonus capped at DAILY_STREAK_BONUS_MAX_DAYS. Uncapped, the daily
+      // payout rose forever (lib/gamification.ts#dailyRewardFor).
+      const coinReward = dailyRewardFor(settings, streak);
       if (!Number.isInteger(coinReward) || coinReward < 0 || coinReward > MAX_COIN_AMOUNT) {
         throw httpsError("internal", "Daily reward is misconfigured.");
       }
       const xpReward = 50;
-      const ts = now();
       // Free reward: play-only unless App Control says otherwise (lib/rewardLocking.ts).
       const dailyCfg = await getAppConfig(env);
       const dailyLocked = lockedPart(dailyCfg, "daily", coinReward);
@@ -2010,8 +2041,9 @@ apiRoute.post("/", async (c) => {
         );
       }
 
-      const day = Math.floor(Date.now() / 86_400_000); // UTC day bucket
       const ts = now();
+      // Same reward day as the check-in and daily tasks (admin reset time).
+      const day = rewardDayNumber(ts, (await getSettings(env)).dayResetOffsetMinutes);
       const claimId = newId();
       const adCfg = await getAppConfig(env);
       const adLocked = lockedPart(adCfg, "ads", Number(ads.reward) || 0);
@@ -2075,14 +2107,14 @@ apiRoute.post("/", async (c) => {
 
     // ================= DAILY TASKS =================
     case "getDailyTasks": {
-      const settings: any = await getSettings(env);
-      const tasks = getDailyTaskDefs(settings);
-      const day = utcDay();
-      const startOfDay = day * 86400000;
-      const votesToday =
-        (await db.select({ v: count() }).from(schema.votes).where(and(eq(schema.votes.voterUid, uid), gte(schema.votes.createdAt, startOfDay))).get())?.v ?? 0;
-      const sharesToday =
-        (await db.select({ v: count() }).from(schema.shares).where(and(eq(schema.shares.userId, uid), gte(schema.shares.createdAt, startOfDay))).get())?.v ?? 0;
+      const settings = await getSettings(env);
+      const ts = now();
+      const tasks = activeDailyTasks(getDailyTaskDefs(settings), ts);
+      const day = rewardDayNumber(ts, settings.dayResetOffsetMinutes);
+      const startOfDay = rewardDayStart(ts, settings.dayResetOffsetMinutes);
+      const types = new Set(tasks.map((t) => t.type));
+      const progressByType: Record<string, number> = {};
+      for (const type of types) progressByType[type] = await dailyTaskProgress(env, uid, type, startOfDay);
       const claimed = await db
         .select({ taskId: schema.dailyTaskClaims.taskId })
         .from(schema.dailyTaskClaims)
@@ -2090,36 +2122,44 @@ apiRoute.post("/", async (c) => {
         .all();
       const claimedSet = new Set(claimed.map((r) => r.taskId));
       const out = tasks.map((t) => {
-        const progress = t.type === "vote" ? votesToday : t.type === "share" ? sharesToday : 0;
+        const progress = progressByType[t.type] ?? 0;
         const isClaimed = claimedSet.has(t.id);
         // "ad" tasks are credited via the separate claimAdReward flow (watch an
         // ad), so they're never "claimable" through the generic task claim.
         const eligible = t.type === "ad" ? false : progress >= t.target;
-        return { id: t.id, title: t.title, reward: t.reward, target: t.target, type: t.type, progress: Math.min(progress, t.target), claimed: isClaimed, claimable: eligible && !isClaimed };
+        return {
+          id: t.id,
+          title: t.title,
+          reward: t.reward,
+          target: t.target,
+          type: t.type,
+          progress: Math.min(progress, t.target),
+          claimed: isClaimed,
+          claimable: eligible && !isClaimed,
+          endsAt: t.endsAt,
+        };
       });
-      return c.json({ tasks: out });
+      return c.json({ tasks: out, resetsAt: startOfDay + 86_400_000 });
     }
 
     case "claimDailyTask": {
       const { taskId } = body;
       if (!taskId) throw httpsError("invalid-argument", "taskId is required.");
-      const settings: any = await getSettings(env);
-      const task = getDailyTaskDefs(settings).find((t) => t.id === taskId);
+      const settings = await getSettings(env);
+      const nowMs = now();
+      // A disabled or out-of-window task cannot be claimed.
+      const task = activeDailyTasks(getDailyTaskDefs(settings), nowMs).find((t) => t.id === taskId);
       if (!task) throw httpsError("not-found", "Unknown task.");
       if (task.type === "ad") throw httpsError("failed-precondition", "Ad rewards are claimed by watching an ad.");
-      const day = utcDay();
-      const startOfDay = day * 86400000;
+      const day = rewardDayNumber(nowMs, settings.dayResetOffsetMinutes);
+      const startOfDay = rewardDayStart(nowMs, settings.dayResetOffsetMinutes);
 
-      // Verify progress for verifiable tasks.
-      if (task.type === "vote") {
-        const v = (await db.select({ v: count() }).from(schema.votes).where(and(eq(schema.votes.voterUid, uid), gte(schema.votes.createdAt, startOfDay))).get())?.v ?? 0;
-        if (v < task.target) throw httpsError("failed-precondition", "Task not completed yet.");
-      } else if (task.type === "share") {
-        const s = (await db.select({ v: count() }).from(schema.shares).where(and(eq(schema.shares.userId, uid), gte(schema.shares.createdAt, startOfDay))).get())?.v ?? 0;
-        if (s < task.target) throw httpsError("failed-precondition", "Task not completed yet.");
+      // Progress is always recounted on the server.
+      if ((await dailyTaskProgress(env, uid, task.type, startOfDay)) < task.target) {
+        throw httpsError("failed-precondition", "Task not completed yet.");
       }
 
-      const ts = now();
+      const ts = nowMs;
       const reward = assertCoinAmount(task.reward, "task reward");
       const taskCfg = await getAppConfig(env);
       const taskLocked = lockedPart(taskCfg, "tasks", reward);
@@ -3323,8 +3363,17 @@ apiRoute.post("/", async (c) => {
     case "shareContest": {
       const { matchId } = body;
       if (!matchId) throw httpsError("invalid-argument", "matchId is required.");
+      await rateLimit(env, `share:${uid}`, 60, 3600);
       await assertMatchInteractionAllowed(env, uid, matchId);
-      await db.insert(schema.shares).values({ id: newId(), userId: uid, targetType: "match", targetId: matchId, createdAt: now() });
+      const shareTs = now();
+      // The "share" daily task counts distinct battles, and the share counter
+      // should count people: the same user sharing the same battle again within
+      // a day records nothing new.
+      const recent = await env.DB.prepare(
+        `SELECT 1 AS x FROM shares WHERE user_id = ? AND target_type = 'match' AND target_id = ? AND created_at >= ? LIMIT 1`,
+      ).bind(uid, String(matchId), shareTs - SHARE_DEDUPE_MS).first();
+      if (recent) return c.json({ success: true, counted: false });
+      await db.insert(schema.shares).values({ id: newId(), userId: uid, targetType: "match", targetId: matchId, createdAt: shareTs });
       const counters = await bumpEngagement(env, matchId, "share", 1);
       await publish(env, `match:${matchId}`, { type: "share", shareCount: counters.share ?? 0 });
       return c.json({ success: true });

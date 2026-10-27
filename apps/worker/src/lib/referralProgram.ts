@@ -39,7 +39,8 @@ import { rewardLocked } from "./rewardLocking";
 export const QUALIFY_ACTIONS = ["signup", "verified", "first_contest", "first_purchase"] as const;
 export type QualifyAction = (typeof QUALIFY_ACTIONS)[number];
 export type ReferralEvent = "signup" | "verified" | "contest" | "purchase";
-export const REFERRAL_STATUSES = ["pending", "review", "rewarded", "rejected", "expired"] as const;
+/** `reversed`: paid, then clawed back by an admin (reverseReferral). */
+export const REFERRAL_STATUSES = ["pending", "review", "rewarded", "rejected", "expired", "reversed"] as const;
 
 /** Hold for review: this many referrals of ONE referrer from one IP in 24h. */
 export const REFERRAL_HOLD_SAME_IP = 2;
@@ -72,6 +73,13 @@ export interface ReferralProgramConfig {
   /** Hold qualified referrals for an admin before paying. */
   requireReview: boolean;
   milestones: ReferralMilestone[];
+  /**
+   * Referral coins (inviter + friend) paid per calendar month, UTC (0 = no
+   * limit). Once reached, qualified referrals wait in review.
+   */
+  maxCoinsPerMonth: number;
+  /** first_purchase only: the purchase must be at least this many ₹ (0 = any). */
+  minPurchaseInr: number;
 }
 
 export const REFERRAL_DEFAULTS: ReferralProgramConfig = {
@@ -85,6 +93,8 @@ export const REFERRAL_DEFAULTS: ReferralProgramConfig = {
   maxRewardedPerReferrerPerDay: 20,
   requireReview: false,
   milestones: [],
+  maxCoinsPerMonth: 0,
+  minPurchaseInr: 0,
 };
 
 const MAX_COINS = 100_000;
@@ -124,6 +134,8 @@ export function parseReferralConfig(appConfig: any): ReferralProgramConfig {
     ["qualifyWindowDays", 1, 365],
     ["maxRewardedPerReferrer", 0, 100_000],
     ["maxRewardedPerReferrerPerDay", 0, 10_000],
+    ["maxCoinsPerMonth", 0, 100_000_000],
+    ["minPurchaseInr", 0, 1_000_000],
   ];
   for (const [k, lo, hi] of bounds) {
     const n = int(src[k], lo, hi);
@@ -159,6 +171,8 @@ export function validateReferralPatch(p: any): void {
   whole("qualifyWindowDays", 1, 365, "Qualify window (days)");
   whole("maxRewardedPerReferrer", 0, 100_000, "Lifetime referral cap");
   whole("maxRewardedPerReferrerPerDay", 0, 10_000, "Daily referral cap");
+  whole("maxCoinsPerMonth", 0, 100_000_000, "Monthly referral budget (coins)");
+  whole("minPurchaseInr", 0, 1_000_000, "Minimum first purchase (₹)");
   if (p.milestones !== undefined) {
     if (!Array.isArray(p.milestones) || p.milestones.length > 20) bad("Milestones: a list of at most 20 tiers.");
     const seen = new Set<number>();
@@ -174,8 +188,12 @@ export function validateReferralPatch(p: any): void {
   }
 }
 
-/** What the app may show before sign-in (public app config). */
-export function publicReferralConfig(cfg: ReferralProgramConfig) {
+/**
+ * What the app may show before sign-in (public app config). `rewardUnit` says
+ * how referral rewards are credited: "Diamond" (play-only) or "DP coin"
+ * (App Control → reward locking), so the app never hardcodes it.
+ */
+export function publicReferralConfig(cfg: ReferralProgramConfig, appConfig?: any) {
   return {
     enabled: cfg.enabled,
     referrerReward: cfg.referrerReward,
@@ -184,6 +202,8 @@ export function publicReferralConfig(cfg: ReferralProgramConfig) {
     applyWindowDays: cfg.applyWindowDays,
     qualifyWindowDays: cfg.qualifyWindowDays,
     milestones: cfg.milestones,
+    minPurchaseInr: cfg.minPurchaseInr,
+    rewardUnit: rewardLocked(appConfig, "referral") ? "Diamond" : "DP coin",
   };
 }
 
@@ -294,7 +314,7 @@ export async function applyReferralCode(
     const reused = await db
       .select({ id: schema.referrals.id })
       .from(schema.referrals)
-      .where(and(eq(schema.referrals.deviceId, deviceId), inArray(schema.referrals.status, ["pending", "review", "rewarded"])))
+      .where(and(eq(schema.referrals.deviceId, deviceId), inArray(schema.referrals.status, ["pending", "review", "rewarded", "reversed"])))
       .get();
     if (reused) rejectReason = "device_already_used";
   }
@@ -318,6 +338,9 @@ export async function applyReferralCode(
     if (ip && Number(signals?.same_ip_same_referrer) >= REFERRAL_HOLD_SAME_IP) holdReason = "same_ip_burst";
     else if (ip && Number(signals?.same_ip_any) >= REFERRAL_HOLD_IP_SHARED) holdReason = "ip_shared";
     else if (Number(signals?.referrer_last_hour) >= REFERRAL_HOLD_VELOCITY) holdReason = "referrer_velocity";
+    // The app always sends a device id. Without one, none of the device checks
+    // above ran, so a person decides.
+    else if (!deviceId) holdReason = "no_device";
   }
   const id = newId();
   const status: ReferralStatus = rejectReason ? "rejected" : "pending";
@@ -352,8 +375,17 @@ export async function applyReferralCode(
  * Called by the qualifying actions (signup, verification, contest entry, coin
  * purchase). Cheap when nothing applies: one indexed lookup by `referred_uid`.
  * Never throws — a referral problem must not fail the action that triggered it.
+ *
+ * `amountInr` is the purchase amount for the "purchase" event; with
+ * `minPurchaseInr` set, a smaller purchase does not qualify (a later, larger
+ * one still can).
  */
-export async function qualifyReferral(env: Env, uid: string, event: ReferralEvent, opts: { nowMs?: number } = {}): Promise<void> {
+export async function qualifyReferral(
+  env: Env,
+  uid: string,
+  event: ReferralEvent,
+  opts: { nowMs?: number; amountInr?: number } = {},
+): Promise<void> {
   try {
     const ts = opts.nowMs ?? now();
     const db = getDb(env);
@@ -371,6 +403,7 @@ export async function qualifyReferral(env: Env, uid: string, event: ReferralEven
     }
     const cfgRow = await db.select({ data: schema.settings.data }).from(schema.settings).where(eq(schema.settings.id, "appConfig")).get();
     const cfg = parseReferralConfig(cfgRow?.data);
+    if (event === "purchase" && cfg.minPurchaseInr > 0 && !(Number(opts.amountInr) >= cfg.minPurchaseInr)) return;
     // A fraud signal recorded when the code was applied (applyReferralCode)
     // holds this referral for an admin even when the program pays automatically.
     const next: ReferralStatus = cfg.requireReview || row.holdReason ? "review" : "rewarded";
@@ -425,72 +458,168 @@ async function creditOnce(env: Env, uid: string, amount: number, description: st
   }
 }
 
+/** An account that may receive a referral reward. */
+function inGoodStanding(u: { status: string | null; isBlocked: boolean | null } | undefined): boolean {
+  return !!u && !u.isBlocked && (!u.status || u.status === "active");
+}
+
+/** Start of the current calendar month, UTC (the monthly referral budget window). */
+export function referralMonthStart(ts: number): number {
+  const d = new Date(ts);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+}
+
+export type PayOutcome = {
+  referrerReward: number;
+  refereeReward: number;
+  /** Why the inviter's share was 0, or why nothing was paid. */
+  capped: string | null;
+  status: ReferralStatus;
+};
+
 /**
- * Pay a qualified (or admin-approved) referral. Idempotent end to end: the
- * credits are claim-keyed per referred user, and the final `rewarded` flip is a
- * compare-and-swap, so running twice pays once.
+ * Pay a qualified (or admin-approved) referral.
+ *
+ * The decision and the caps are ONE statement: the `rewarded` flip carries the
+ * lifetime cap, the 24h cap and the monthly budget as sub-queries in its WHERE.
+ * D1 runs statements one at a time, so two referrals of the same inviter that
+ * qualify together cannot both see "one slot left" — the second one sees the
+ * first one's row (AUDIT G13). Only the request whose flip applied credits the
+ * coins, and each credit is claim-keyed, so a retry pays once. A crash between
+ * the flip and the credits is repaired by `reconcileReferrals`.
+ *
+ * Outcomes:
+ *  - both sides paid;
+ *  - inviter over a cap or not in good standing: the friend is paid, the
+ *    inviter's share is 0 with the reason;
+ *  - the invited friend blocked / deleted: rejected, nobody is paid;
+ *  - monthly budget used up: stays (or goes) in review with hold reason
+ *    `monthly_budget`, paid later by an admin once there is room.
  */
 export async function payReferral(
   env: Env,
   referralId: string,
   cfg: ReferralProgramConfig,
-  opts: { ts?: number; decidedBy?: string | null } = {},
-): Promise<{ referrerReward: number; refereeReward: number; capped: string | null }> {
+  opts: { ts?: number; decidedBy?: string | null; byAdmin?: boolean } = {},
+): Promise<PayOutcome> {
   const ts = opts.ts ?? now();
   const db = getDb(env);
   const row = await db.select().from(schema.referrals).where(eq(schema.referrals.id, referralId)).get();
   if (!row) throw httpsError("not-found", "Referral not found.");
-  if (row.status === "rewarded") return { referrerReward: Number(row.referrerReward) || 0, refereeReward: Number(row.refereeReward) || 0, capped: null };
+  if (row.status === "rewarded") {
+    return { referrerReward: Number(row.referrerReward) || 0, refereeReward: Number(row.refereeReward) || 0, capped: null, status: "rewarded" };
+  }
   if (row.status !== "pending" && row.status !== "review") throw httpsError("failed-precondition", `A ${row.status} referral cannot be paid.`);
 
-  // Referrer still in good standing?
-  const ref = await db.select({ status: schema.users.status, isBlocked: schema.users.isBlocked }).from(schema.users).where(eq(schema.users.uid, row.referrerUid)).get();
-  let capped: string | null = null;
-  if (!ref || ref.isBlocked || (ref.status && ref.status !== "active")) capped = "referrer_unavailable";
+  const standing = { status: schema.users.status, isBlocked: schema.users.isBlocked };
+  const friend = await db.select(standing).from(schema.users).where(eq(schema.users.uid, row.referredUid)).get();
+  if (!inGoodStanding(friend)) {
+    // Paying a banned or deleted account would hand its coins to a farmer.
+    await db
+      .update(schema.referrals)
+      .set({ status: "rejected", rejectReason: "referred_unavailable", decidedBy: opts.decidedBy ?? row.decidedBy ?? null, updatedAt: ts })
+      .where(and(eq(schema.referrals.id, row.id), inArray(schema.referrals.status, ["pending", "review"])))
+      .run();
+    return { referrerReward: 0, refereeReward: 0, capped: "referred_unavailable", status: "rejected" };
+  }
+  const inviter = await db.select(standing).from(schema.users).where(eq(schema.users.uid, row.referrerUid)).get();
+  const inviterOk = inGoodStanding(inviter);
 
-  // Caps on the referrer's share (the invited user is still paid).
-  if (!capped && (cfg.maxRewardedPerReferrer > 0 || cfg.maxRewardedPerReferrerPerDay > 0)) {
+  const refereeReward = cfg.refereeReward;
+  const monthStart = referralMonthStart(ts);
+  const budgetGate = `(? = 0 OR (SELECT COALESCE(SUM(referrer_reward + referee_reward), 0) FROM referrals
+                                   WHERE status = 'rewarded' AND rewarded_at >= ?) + ? <= ?)`;
+  const capGate = `(? = 0 OR (SELECT COUNT(*) FROM referrals
+                               WHERE referrer_uid = ? AND status = 'rewarded' AND referrer_reward > 0) < ?)
+               AND (? = 0 OR (SELECT COUNT(*) FROM referrals
+                               WHERE referrer_uid = ? AND status = 'rewarded' AND referrer_reward > 0 AND rewarded_at >= ?) < ?)`;
+  const flip = async (referrerReward: number, reason: string | null, withCaps: boolean): Promise<boolean> => {
+    const sqlText = `UPDATE referrals
+        SET status = 'rewarded', referrer_reward = ?, referee_reward = ?, bonus = ?, rewarded_at = ?,
+            qualified_at = COALESCE(qualified_at, ?), reject_reason = ?, decided_by = ?, updated_at = ?
+      WHERE id = ? AND status IN ('pending', 'review')
+        AND ${budgetGate}
+        ${withCaps ? `AND ${capGate}` : ""}`;
+    const binds: unknown[] = [
+      referrerReward, refereeReward, referrerReward, ts, ts, reason, opts.decidedBy ?? row.decidedBy ?? null, ts,
+      row.id,
+      cfg.maxCoinsPerMonth, monthStart, referrerReward + refereeReward, cfg.maxCoinsPerMonth,
+    ];
+    if (withCaps) {
+      binds.push(
+        cfg.maxRewardedPerReferrer, row.referrerUid, cfg.maxRewardedPerReferrer,
+        cfg.maxRewardedPerReferrerPerDay, row.referrerUid, ts - DAY, cfg.maxRewardedPerReferrerPerDay,
+      );
+    }
+    const res = await env.DB.prepare(sqlText).bind(...binds).run();
+    return Number(res.meta?.changes || 0) > 0;
+  };
+
+  let referrerReward = inviterOk ? cfg.referrerReward : 0;
+  let capped: string | null = inviterOk ? null : "referrer_unavailable";
+  let applied = referrerReward > 0 ? await flip(referrerReward, null, true) : await flip(0, capped, false);
+  if (!applied && referrerReward > 0) {
+    // Over a cap, or over the budget with the inviter's share. Try the friend's
+    // share alone, labelled with the cap that blocked the inviter.
     const counts = await env.DB.prepare(
-      `SELECT COUNT(*) AS total,
-              SUM(CASE WHEN rewarded_at >= ? THEN 1 ELSE 0 END) AS today
+      `SELECT COUNT(*) AS total, SUM(CASE WHEN rewarded_at >= ? THEN 1 ELSE 0 END) AS today
          FROM referrals WHERE referrer_uid = ? AND status = 'rewarded' AND referrer_reward > 0`,
     )
       .bind(ts - DAY, row.referrerUid)
       .first<{ total: number; today: number }>();
     if (cfg.maxRewardedPerReferrer > 0 && Number(counts?.total || 0) >= cfg.maxRewardedPerReferrer) capped = "referrer_lifetime_cap";
     else if (cfg.maxRewardedPerReferrerPerDay > 0 && Number(counts?.today || 0) >= cfg.maxRewardedPerReferrerPerDay) capped = "referrer_daily_cap";
+    if (capped) {
+      referrerReward = 0;
+      applied = await flip(0, capped, false);
+    }
+  }
+  if (!applied) {
+    const cur = await db.select().from(schema.referrals).where(eq(schema.referrals.id, row.id)).get();
+    if (cur && cur.status === "rewarded") {
+      // Someone else paid it a moment ago.
+      return { referrerReward: Number(cur.referrerReward) || 0, refereeReward: Number(cur.refereeReward) || 0, capped: null, status: "rewarded" };
+    }
+    if (cur && (cur.status === "pending" || cur.status === "review")) {
+      // The only gate left is the monthly budget: wait for an admin.
+      await db
+        .update(schema.referrals)
+        .set({ status: "review", holdReason: "monthly_budget", qualifiedAt: cur.qualifiedAt ?? ts, updatedAt: ts })
+        .where(and(eq(schema.referrals.id, row.id), inArray(schema.referrals.status, ["pending", "review"])))
+        .run();
+      if (opts.byAdmin) throw httpsError("failed-precondition", "Is mahine ka referral budget khatam ho gaya hai. Budget badhao ya agle mahine approve karo.");
+      return { referrerReward: 0, refereeReward: 0, capped: "monthly_budget", status: "review" };
+    }
+    throw httpsError("failed-precondition", `A ${cur?.status ?? "missing"} referral cannot be paid.`);
   }
 
-  const referrerReward = capped ? 0 : cfg.referrerReward;
-  const refereeReward = cfg.refereeReward;
-  // Existing claim keys — the same ones the old instant referral used — so an
-  // account paid under the old rule can never be paid again.
-  await creditOnce(env, row.referredUid, refereeReward, "Referral welcome bonus", `referral_bonus:referred:${row.referredUid}`);
-  await creditOnce(env, row.referrerUid, referrerReward, "Referral bonus — invited a friend", `referral_bonus:referrer:${row.referredUid}`);
-
-  const flip = await db
-    .update(schema.referrals)
-    .set({
-      status: "rewarded",
-      referrerReward,
-      refereeReward,
-      bonus: referrerReward,
-      rewardedAt: ts,
-      qualifiedAt: row.qualifiedAt ?? ts,
-      rejectReason: capped,
-      decidedBy: opts.decidedBy ?? row.decidedBy ?? null,
-      updatedAt: ts,
-    })
-    .where(and(eq(schema.referrals.id, row.id), inArray(schema.referrals.status, ["pending", "review"])))
-    .run();
-  if (Number(flip.meta?.changes || 0) === 0) return { referrerReward, refereeReward, capped };
+  await creditReferralSides(env, row.referredUid, row.referrerUid, refereeReward, referrerReward);
 
   // Referral rewards are Diamonds unless App Control pays them as DP coins.
   const unit = await referralUnit(env);
   if (refereeReward > 0) await notifySafe(env, row.referredUid, "Referral reward mil gaya! 🎉", `${refereeReward} ${unit} aapke wallet mein aa gaye.`);
   if (referrerReward > 0) await notifySafe(env, row.referrerUid, "Referral bonus! 🎉", `Aapke dost ne qualify kiya — ${referrerReward} ${unit} aapke wallet mein.`);
-  if (!capped) await payMilestones(env, row.referrerUid, cfg);
-  return { referrerReward, refereeReward, capped };
+  if (referrerReward > 0) await payMilestones(env, row.referrerUid, cfg);
+  return { referrerReward, refereeReward, capped, status: "rewarded" };
+}
+
+/**
+ * The two claim-keyed credits of a rewarded referral. The keys are the ones the
+ * old instant referral used, so an account paid under the old rule is never paid
+ * again. A failure is logged, not thrown: the referral is already `rewarded`
+ * and the cron re-runs the missing credit.
+ */
+async function creditReferralSides(env: Env, referredUid: string, referrerUid: string, refereeReward: number, referrerReward: number) {
+  for (const [uid, amount, desc, key] of [
+    [referredUid, refereeReward, "Referral welcome bonus", `referral_bonus:referred:${referredUid}`],
+    [referrerUid, referrerReward, "Referral bonus — invited a friend", `referral_bonus:referrer:${referredUid}`],
+  ] as const) {
+    try {
+      await creditOnce(env, uid, amount, desc, key);
+    } catch (e) {
+      console.error("[referral] credit failed (cron will retry)", key, e);
+    }
+  }
 }
 
 /** "Diamond" or "DP coin": how referral rewards are credited (lib/rewardLocking.ts). */
@@ -516,34 +645,60 @@ async function payMilestones(env: Env, referrerUid: string, cfg: ReferralProgram
  * Cron:
  *  - pending referrals past their qualify window (and never qualified) expire;
  *  - a referral that qualified but whose payout was interrupted (a crash between
- *    the claim and the credit) is paid now — every step is idempotent.
+ *    the claim and the flip) is paid now — every step is idempotent;
+ *  - a `rewarded` referral whose credit did not land (a crash between the flip
+ *    and the credit) gets the missing credit;
+ *  - referrals held only by the monthly budget are retried, so they pay
+ *    themselves once a new month (or a bigger budget) has room.
  */
-export async function reconcileReferrals(env: Env, nowMs: number = now()): Promise<{ expired: number; paid: number }> {
+export async function reconcileReferrals(env: Env, nowMs: number = now()): Promise<{ expired: number; paid: number; repaired: number }> {
   const res = await env.DB.prepare(
     `UPDATE referrals SET status = 'expired', updated_at = ?
       WHERE status = 'pending' AND qualified_at IS NULL AND expires_at IS NOT NULL AND expires_at < ?`,
   )
     .bind(nowMs, nowMs)
     .run();
+  const cfgRow = await getDb(env).select({ data: schema.settings.data }).from(schema.settings).where(eq(schema.settings.id, "appConfig")).get();
+  const cfg = parseReferralConfig(cfgRow?.data);
   const stuck = await env.DB.prepare(
-    `SELECT id FROM referrals WHERE status = 'pending' AND qualified_at IS NOT NULL AND qualified_at < ? LIMIT 25`,
+    `SELECT id FROM referrals
+      WHERE (status = 'pending' AND qualified_at IS NOT NULL AND qualified_at < ?)
+         OR (? = 0 AND status = 'review' AND hold_reason = 'monthly_budget')
+      LIMIT 25`,
   )
-    .bind(nowMs - 5 * 60 * 1000)
+    .bind(nowMs - 5 * 60 * 1000, cfg.requireReview ? 1 : 0)
     .all<{ id: string }>();
   let paid = 0;
-  if (stuck.results?.length) {
-    const cfgRow = await getDb(env).select({ data: schema.settings.data }).from(schema.settings).where(eq(schema.settings.id, "appConfig")).get();
-    const cfg = parseReferralConfig(cfgRow?.data);
-    for (const r of stuck.results) {
-      try {
-        await payReferral(env, r.id, cfg, { ts: nowMs });
-        paid++;
-      } catch (e) {
-        console.error("[referral] reconcile pay failed (will retry)", r.id, e);
-      }
+  for (const r of stuck.results ?? []) {
+    try {
+      const out = await payReferral(env, r.id, cfg, { ts: nowMs });
+      if (out.status === "rewarded") paid++;
+    } catch (e) {
+      console.error("[referral] reconcile pay failed (will retry)", r.id, e);
     }
   }
-  return { expired: Number(res.meta?.changes || 0), paid };
+  // Rewarded in the last week, older than 5 minutes, with a credit missing.
+  const missing = await env.DB.prepare(
+    `SELECT r.referred_uid AS referredUid, r.referrer_uid AS referrerUid, r.referee_reward AS refereeReward, r.referrer_reward AS referrerReward
+       FROM referrals r
+      WHERE r.status = 'rewarded' AND r.rewarded_at < ? AND r.rewarded_at >= ?
+        AND (
+          (r.referee_reward > 0 AND EXISTS (SELECT 1 FROM users WHERE uid = r.referred_uid)
+             AND NOT EXISTS (SELECT 1 FROM coin_transactions WHERE id = 'referral_bonus:referred:' || r.referred_uid))
+          OR
+          (r.referrer_reward > 0 AND EXISTS (SELECT 1 FROM users WHERE uid = r.referrer_uid)
+             AND NOT EXISTS (SELECT 1 FROM coin_transactions WHERE id = 'referral_bonus:referrer:' || r.referred_uid))
+        )
+      LIMIT 25`,
+  )
+    .bind(nowMs - 5 * 60 * 1000, nowMs - 7 * DAY)
+    .all<{ referredUid: string; referrerUid: string; refereeReward: number; referrerReward: number }>();
+  let repaired = 0;
+  for (const m of missing.results ?? []) {
+    await creditReferralSides(env, m.referredUid, m.referrerUid, Number(m.refereeReward) || 0, Number(m.referrerReward) || 0);
+    repaired++;
+  }
+  return { expired: Number(res.meta?.changes || 0), paid, repaired };
 }
 
 // ---------------------------------------------------------------------------
@@ -573,8 +728,145 @@ export async function decideReferral(
   }
   if (!["pending", "review"].includes(row.status)) throw httpsError("failed-precondition", `A ${row.status} referral cannot be approved.`);
   const cfgRow = await db.select({ data: schema.settings.data }).from(schema.settings).where(eq(schema.settings.id, "appConfig")).get();
-  await payReferral(env, id, parseReferralConfig(cfgRow?.data), { ts, decidedBy: adminUid });
-  return { status: "rewarded" };
+  const out = await payReferral(env, id, parseReferralConfig(cfgRow?.data), { ts, decidedBy: adminUid, byAdmin: true });
+  return { status: out.status };
+}
+
+export interface ReversalSide {
+  uid: string;
+  /** Coins credited by the referral. */
+  credited: number;
+  /** Coins taken back (less than `credited` if the user already spent them). */
+  taken: number;
+  unit: "Diamond" | "DP coin";
+}
+
+/**
+ * Claw back a paid referral (fake account found later, refunded purchase…).
+ *
+ * The `rewarded → reversed` flip is a compare-and-swap, so only one admin
+ * request runs the debits. Each side gives back what its credit added, from the
+ * same balance it went to (Diamond or DP coin, read off the ledger row), up to
+ * what is still there: coins already spent on contests cannot be pulled back
+ * without driving a balance negative, so the shortfall is reported instead.
+ * Debits are claim-keyed (`referral_reversal:…`), so a retry takes nothing twice.
+ * Milestone bonuses already paid are not touched.
+ */
+export async function reverseReferral(
+  env: Env,
+  id: string,
+  adminUid: string | null,
+  reason: string,
+): Promise<{ status: ReferralStatus; sides: ReversalSide[] }> {
+  const db = getDb(env);
+  const row = await db.select().from(schema.referrals).where(eq(schema.referrals.id, id)).get();
+  if (!row) throw httpsError("not-found", "Referral not found.");
+  if (row.status !== "rewarded") throw httpsError("failed-precondition", `Only a rewarded referral can be reversed (this one is ${row.status}).`);
+  const ts = now();
+  const flip = await db
+    .update(schema.referrals)
+    .set({ status: "reversed", rejectReason: String(reason || "admin_reversed").slice(0, 200), decidedBy: adminUid, updatedAt: ts })
+    .where(and(eq(schema.referrals.id, id), eq(schema.referrals.status, "rewarded")))
+    .run();
+  if (Number(flip.meta?.changes || 0) === 0) throw httpsError("failed-precondition", "Referral was already reversed.");
+
+  const sides: ReversalSide[] = [];
+  for (const [uid, side] of [
+    [row.referredUid, "referred"],
+    [row.referrerUid, "referrer"],
+  ] as const) {
+    const credit = await env.DB.prepare(`SELECT amount, locked_delta FROM coin_transactions WHERE id = ?`)
+      .bind(`referral_bonus:${side}:${row.referredUid}`)
+      .first<{ amount: number; locked_delta: number | null }>();
+    const credited = Math.max(0, Number(credit?.amount) || 0);
+    if (!credited) continue;
+    const diamond = Number(credit?.locked_delta || 0) > 0;
+    const bal = await env.DB.prepare(`SELECT dpcoin, locked_coins FROM users WHERE uid = ?`).bind(uid).first<{ dpcoin: number; locked_coins: number }>();
+    const dp = Number(bal?.dpcoin) || 0;
+    const locked = Number(bal?.locked_coins) || 0;
+    const available = !bal ? 0 : diamond ? Math.min(locked, dp) : Math.max(0, dp - locked);
+    const take = Math.floor(Math.min(credited, available));
+    let taken = 0;
+    if (take > 0) {
+      try {
+        await adjustUserWallet(env, {
+          uid,
+          amount: take,
+          direction: "subtract",
+          type: "referral_clawback",
+          description: `Referral reversed: ${String(reason || "admin").slice(0, 80)}${diamond ? " (Diamond)" : ""}`,
+          claimKey: `referral_reversal:${side}:${row.referredUid}`,
+          ledgerId: `referral_reversal:${side}:${row.referredUid}`,
+          locked: diamond,
+          ts,
+        });
+        taken = take;
+      } catch (err) {
+        if (!(err instanceof WalletReplay)) console.error("[referral] clawback failed", id, side, err);
+      }
+    }
+    sides.push({ uid, credited, taken, unit: diamond ? "Diamond" : "DP coin" });
+  }
+  return { status: "reversed", sides };
+}
+
+/**
+ * Accounts linked to a referral by device or network, for an admin judging
+ * whether the friend is a real person. Read-only.
+ */
+export async function referralLinks(env: Env, id: string) {
+  const row = await getDb(env).select().from(schema.referrals).where(eq(schema.referrals.id, id)).get();
+  if (!row) throw httpsError("not-found", "Referral not found.");
+  const userCols = `u.uid, u.username, u.created_at AS createdAt, u.is_blocked AS isBlocked, u.status`;
+  const deviceIds = [row.deviceId].filter(Boolean) as string[];
+  const friendDevice = await env.DB.prepare(`SELECT device_id AS d FROM users WHERE uid = ?`).bind(row.referredUid).first<{ d: string | null }>();
+  if (friendDevice?.d && !deviceIds.includes(friendDevice.d)) deviceIds.push(friendDevice.d);
+  const sameDevice = deviceIds.length
+    ? (
+        await env.DB.prepare(
+          `SELECT ${userCols} FROM users u
+            WHERE u.device_id IN (${deviceIds.map(() => "?").join(",")}) AND u.uid != ?
+            UNION
+           SELECT ${userCols} FROM referrals r JOIN users u ON u.uid = r.referred_uid
+            WHERE r.device_id IN (${deviceIds.map(() => "?").join(",")}) AND r.referred_uid != ?
+            LIMIT 50`,
+        )
+          .bind(...deviceIds, row.referredUid, ...deviceIds, row.referredUid)
+          .all()
+      ).results ?? []
+    : [];
+  const sameIp = row.ip
+    ? (
+        await env.DB.prepare(
+          `SELECT r.id, r.referred_uid AS uid, u.username, r.referrer_uid AS referrerUid, ru.username AS referrerUsername,
+                  r.status, r.created_at AS createdAt
+             FROM referrals r
+             LEFT JOIN users u ON u.uid = r.referred_uid
+             LEFT JOIN users ru ON ru.uid = r.referrer_uid
+            WHERE r.ip = ? AND r.id != ?
+            ORDER BY r.created_at DESC LIMIT 50`,
+        )
+          .bind(row.ip, row.id)
+          .all()
+      ).results ?? []
+    : [];
+  // The inviter's other referrals grouped by IP: one address behind many
+  // "friends" is the usual farm.
+  const inviterIps = (
+    await env.DB.prepare(
+      `SELECT COALESCE(ip, '') AS ip, COUNT(*) AS n,
+              SUM(CASE WHEN status = 'rewarded' THEN 1 ELSE 0 END) AS rewarded
+         FROM referrals WHERE referrer_uid = ? GROUP BY COALESCE(ip, '') ORDER BY n DESC LIMIT 20`,
+    )
+      .bind(row.referrerUid)
+      .all()
+  ).results ?? [];
+  return {
+    referral: { id: row.id, referrerUid: row.referrerUid, referredUid: row.referredUid, deviceId: row.deviceId, ip: row.ip },
+    sameDevice,
+    sameIp,
+    inviterIps,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -625,7 +917,7 @@ export async function referralSummary(env: Env, uid: string, origin: string) {
   const canApply =
     cfg.enabled && !me?.referredBy && !mine && !!me && ts - Number(me.createdAt) <= Math.max(1, cfg.applyWindowDays) * DAY;
   return {
-    program: publicReferralConfig(cfg),
+    program: publicReferralConfig(cfg, cfgRow?.data),
     code,
     link: code ? `${origin.replace(/\/$/, "")}/invite/${encodeURIComponent(code)}` : null,
     stats: {

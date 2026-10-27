@@ -158,7 +158,7 @@ describe('applying a code', () => {
 describe('qualifying and paying', () => {
   it('first contest: pays both sides exactly once, ledgered, only on the right event', async () => {
     const env = await setup();
-    await applyReferralCode(env as any, 'friend', 'THREF1');
+    await applyReferralCode(env as any, 'friend', 'THREF1', { deviceId: 'dev-friend' });
     await qualifyReferral(env as any, 'friend', 'purchase');
     await qualifyReferral(env as any, 'friend', 'verified');
     expect((await referral(env, 'friend'))?.status).toBe('pending');
@@ -174,7 +174,7 @@ describe('qualifying and paying', () => {
 
   it('first purchase', async () => {
     const env = await setup({ qualifyAction: 'first_purchase' });
-    await applyReferralCode(env as any, 'friend', 'THREF1');
+    await applyReferralCode(env as any, 'friend', 'THREF1', { deviceId: 'dev-friend' });
     await qualifyReferral(env as any, 'friend', 'contest');
     expect(await coins(env, 'friend')).toBe(0);
     await qualifyReferral(env as any, 'friend', 'purchase');
@@ -183,7 +183,7 @@ describe('qualifying and paying', () => {
 
   it('verified needs BOTH email and mobile', async () => {
     const env = await setup({ qualifyAction: 'verified' });
-    await applyReferralCode(env as any, 'friend', 'THREF1');
+    await applyReferralCode(env as any, 'friend', 'THREF1', { deviceId: 'dev-friend' });
     await drizzleOf(env).update(schema.users).set({ emailVerified: true }).where(eq(schema.users.uid, 'friend'));
     await qualifyReferral(env as any, 'friend', 'verified');
     expect((await referral(env, 'friend'))?.status).toBe('pending');
@@ -200,7 +200,7 @@ describe('qualifying and paying', () => {
       `INSERT INTO coin_transactions (id, uid, type, amount, description, created_at) VALUES ('referral_bonus:referred:friend', 'friend', 'referral_bonus', 50, 'old', 1)`,
     ).run();
     await env.DB.prepare(`UPDATE users SET dpcoin = 50 WHERE uid = 'friend'`).run();
-    await applyReferralCode(env as any, 'friend', 'THREF1');
+    await applyReferralCode(env as any, 'friend', 'THREF1', { deviceId: 'dev-friend' });
     expect(await coins(env, 'friend')).toBe(50);
     expect(await ledger(env, 'friend')).toHaveLength(1);
   });
@@ -208,8 +208,8 @@ describe('qualifying and paying', () => {
   it('a lifetime cap stops the referrer\'s share but still pays the friend', async () => {
     const env = await setup({ qualifyAction: 'signup', maxRewardedPerReferrer: 1 });
     await seedUser(env, 'f2');
-    await applyReferralCode(env as any, 'friend', 'THREF1');
-    await applyReferralCode(env as any, 'f2', 'THREF1');
+    await applyReferralCode(env as any, 'friend', 'THREF1', { deviceId: 'dev-friend' });
+    await applyReferralCode(env as any, 'f2', 'THREF1', { deviceId: 'dev-f2' });
     expect(await coins(env, 'ref')).toBe(30);
     expect(await coins(env, 'f2')).toBe(20);
     expect(await referral(env, 'f2')).toMatchObject({ status: 'rewarded', referrerReward: 0, rejectReason: 'referrer_lifetime_cap' });
@@ -218,8 +218,8 @@ describe('qualifying and paying', () => {
   it('a daily cap', async () => {
     const env = await setup({ qualifyAction: 'signup', maxRewardedPerReferrerPerDay: 1 });
     await seedUser(env, 'f2');
-    await applyReferralCode(env as any, 'friend', 'THREF1');
-    await applyReferralCode(env as any, 'f2', 'THREF1');
+    await applyReferralCode(env as any, 'friend', 'THREF1', { deviceId: 'dev-friend' });
+    await applyReferralCode(env as any, 'f2', 'THREF1', { deviceId: 'dev-f2' });
     expect(await coins(env, 'ref')).toBe(30);
     expect((await referral(env, 'f2'))?.rejectReason).toBe('referrer_daily_cap');
   });
@@ -228,11 +228,11 @@ describe('qualifying and paying', () => {
     const env = await setup({ qualifyAction: 'signup', milestones: [{ count: 2, bonus: 100 }, { count: 5, bonus: 500 }] });
     await seedUser(env, 'f2');
     await seedUser(env, 'f3');
-    await applyReferralCode(env as any, 'friend', 'THREF1');
+    await applyReferralCode(env as any, 'friend', 'THREF1', { deviceId: 'dev-friend' });
     expect(await coins(env, 'ref')).toBe(30);
-    await applyReferralCode(env as any, 'f2', 'THREF1');
+    await applyReferralCode(env as any, 'f2', 'THREF1', { deviceId: 'dev-f2' });
     expect(await coins(env, 'ref')).toBe(30 + 30 + 100);
-    await applyReferralCode(env as any, 'f3', 'THREF1');
+    await applyReferralCode(env as any, 'f3', 'THREF1', { deviceId: 'dev-f3' });
     expect(await coins(env, 'ref')).toBe(30 * 3 + 100);
     expect((await ledger(env, 'ref')).filter((r: any) => String(r.id).startsWith('referral_milestone:'))).toHaveLength(1);
   });
@@ -242,7 +242,7 @@ describe('qualifying and paying', () => {
 describe('admin review', () => {
   it('requireReview holds a qualified referral until an admin approves it', async () => {
     const env = await setup({ qualifyAction: 'signup', requireReview: true });
-    await applyReferralCode(env as any, 'friend', 'THREF1');
+    await applyReferralCode(env as any, 'friend', 'THREF1', { deviceId: 'dev-friend' });
     const row = await referral(env, 'friend');
     expect(row?.status).toBe('review');
     expect(await coins(env, 'friend')).toBe(0);
@@ -262,7 +262,7 @@ describe('admin review', () => {
 
   it('a rejected referral never pays, even if the friend qualifies later', async () => {
     const env = await setup();
-    await applyReferralCode(env as any, 'friend', 'THREF1');
+    await applyReferralCode(env as any, 'friend', 'THREF1', { deviceId: 'dev-friend' });
     const row = await referral(env, 'friend');
     expect((await admin(env, 'PATCH', `/referrals/${row!.id}`, { action: 'reject', reason: 'fake account' })).status).toBe(200);
     await qualifyReferral(env as any, 'friend', 'contest');
@@ -274,10 +274,10 @@ describe('admin review', () => {
   it('the admin list filters and reports stats', async () => {
     const env = await setup({ qualifyAction: 'signup' });
     await seedUser(env, 'f2');
-    await applyReferralCode(env as any, 'friend', 'THREF1');
+    await applyReferralCode(env as any, 'friend', 'THREF1', { deviceId: 'dev-friend' });
     // Switch to the default qualifying action, so the second referral stays pending.
     await env.DB.prepare(`UPDATE settings SET data = ? WHERE id = 'appConfig'`).bind(JSON.stringify({ referralProgram: { referrerReward: 30, refereeReward: 20 } })).run();
-    await applyReferralCode(env as any, 'f2', 'THREF1');
+    await applyReferralCode(env as any, 'f2', 'THREF1', { deviceId: 'dev-f2' });
 
     const all = await admin(env, 'GET', '/referrals');
     expect(all.status).toBe(200);
@@ -296,7 +296,7 @@ describe('admin review', () => {
 describe('expiry', () => {
   it('an unqualified referral expires and can no longer pay', async () => {
     const env = await setup({ qualifyWindowDays: 1 });
-    await applyReferralCode(env as any, 'friend', 'THREF1');
+    await applyReferralCode(env as any, 'friend', 'THREF1', { deviceId: 'dev-friend' });
     expect((await reconcileReferrals(env as any)).expired).toBe(0);
     expect((await reconcileReferrals(env as any, Date.now() + 2 * DAY)).expired).toBe(1);
     await qualifyReferral(env as any, 'friend', 'contest');
@@ -306,7 +306,7 @@ describe('expiry', () => {
 
   it('qualifying after the window (before the cron ran) expires instead of paying', async () => {
     const env = await setup({ qualifyWindowDays: 1 });
-    await applyReferralCode(env as any, 'friend', 'THREF1');
+    await applyReferralCode(env as any, 'friend', 'THREF1', { deviceId: 'dev-friend' });
     await qualifyReferral(env as any, 'friend', 'contest', { nowMs: Date.now() + 2 * DAY });
     expect((await referral(env, 'friend'))?.status).toBe('expired');
     expect(await coins(env, 'ref')).toBe(0);
@@ -314,7 +314,7 @@ describe('expiry', () => {
 
   it('the cron finishes a payout interrupted after the claim', async () => {
     const env = await setup();
-    await applyReferralCode(env as any, 'friend', 'THREF1');
+    await applyReferralCode(env as any, 'friend', 'THREF1', { deviceId: 'dev-friend' });
     // Simulate a crash between the claim and the credit.
     await env.DB.prepare(`UPDATE referrals SET qualified_at = ? WHERE referred_uid = 'friend'`).bind(Date.now() - 10 * 60 * 1000).run();
     expect((await reconcileReferrals(env as any)).paid).toBe(1);
@@ -327,7 +327,7 @@ describe('expiry', () => {
 describe('read surfaces', () => {
   it('/read/me/referrals: code, link, stats, friends, and who referred me', async () => {
     const env = await setup({ qualifyAction: 'signup' });
-    await applyReferralCode(env as any, 'friend', 'THREF1');
+    await applyReferralCode(env as any, 'friend', 'THREF1', { deviceId: 'dev-friend' });
 
     const mine = await read(env, 'ref', '/me/referrals');
     expect(mine.status).toBe(200);
