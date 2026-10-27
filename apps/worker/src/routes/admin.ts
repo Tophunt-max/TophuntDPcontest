@@ -5857,16 +5857,17 @@ adminRoute.post("/ops/hall-of-fame", async (c) => {
 });
 
 
-// ======================= VIDEO MIGRATION (R2 -> Bunny Stream) =======================
+// ======================= VIDEO MIGRATION (legacy R2 MP4 -> Qencode HLS) =======================
 /**
- * Enqueue one resumable batch of existing R2 videos for migration to Bunny.
+ * Enqueue one resumable batch of existing raw R2 videos for encoding by Qencode.
  *
- * Driven by `apps/admin-panel/scripts/migrate-videos-to-bunny.mjs`. Lives here
- * rather than in the script so the Bunny API key never leaves the Worker.
+ * Driven by `apps/admin-panel/scripts/migrate-videos-to-qencode.mjs`. Lives here
+ * rather than in the script so the Qencode key and R2 credentials never leave
+ * the Worker.
  *
  * Safe to re-run: enqueued rows are marked `migrating`, and `mediaUrl` is not
- * repointed until Bunny reports the encode `ready` (the webhook does that), so
- * playback keeps working from R2 throughout.
+ * repointed until the encode is `ready` (applyEncodeResult does that), so
+ * playback keeps working from the original throughout.
  */
 adminRoute.post("/videos/migrate-batch", async (c) => {
   requireFullAdmin(c);
@@ -5876,7 +5877,7 @@ adminRoute.post("/videos/migrate-batch", async (c) => {
 
   let result;
   try {
-    result = await runVideoBackfillBatch(c.env, { limit, target });
+    result = await runVideoBackfillBatch(c.env, { limit, target, callbackOrigin: new URL(c.req.url).origin });
   } catch (e: any) {
     throw httpsError("failed-precondition", e?.message || "Video migration failed.");
   }

@@ -24,7 +24,7 @@ apps/admin-panel   React + Vite admin panel (Cloudflare Pages)
 - **Identity** — Firebase Auth remains the source of truth. The Worker verifies ID
   tokens at the edge and re-checks the account's D1 row on every request, so a
   blocked account is revoked immediately rather than an hour later.
-- **Media** — R2, with optional Bunny Stream transcoding for video.
+- **Media** — R2, with optional Qencode transcoding for video (HLS output stored back in R2).
 - **Hot paths** — votes are counted in a per-match `VoteCounter` Durable Object and
   batch-flushed to D1, keeping the viral path off D1's single writer. Realtime chat
   and notifications use a `RealtimeHub` Durable Object over WebSockets.

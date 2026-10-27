@@ -198,7 +198,7 @@ describe('videoStatus ownership', () => {
       .values({
         id,
         ownerUid,
-        provider: 'bunny',
+        provider: 'qencode',
         status: 'ready',
         playbackUrl: `https://cdn.test/${id}/playlist.m3u8`,
         mp4Url: `https://cdn.test/${id}/720p.mp4`,

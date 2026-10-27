@@ -1,5 +1,5 @@
 import { isUploadCancelled, uploadToR2 } from '@/src/lib/uploadToR2';
-import { uploadVideoToBunny } from '@/src/services/video/bunnyUpload';
+import { uploadVideoForEncoding } from '@/src/services/video/qencodeUpload';
 
 /**
  * Upload a video and return the URL to store as its media URL.
@@ -11,23 +11,24 @@ import { uploadVideoToBunny } from '@/src/services/video/bunnyUpload';
  * It was re-derived at two — `services/contests/uploadMedia.ts` and
  * `app/story/create/index.tsx` — and both had the same shape:
  *
- *     try { const bunny = await uploadVideoToBunny(...); if (bunny) ... }
+ *     try { const v = await uploadToVideoService(...); if (v) ... }
  *     catch (e) { console.warn('falling back to R2', e); }
  *     if (!mediaUrl) await uploadToR2(uri, 'video/mp4', folder);
  *
- * That treats "Bunny is not set up" and "Bunny is set up and the upload failed"
- * as the same event, and they are opposites. In the first, R2 is the intended
- * destination. In the second, R2 has already stopped accepting video — Bunny
- * being configured is exactly what closes it — so the retry cannot succeed, and
- * the user sees a rejection about file types instead of the real failure. Worse,
- * a transient Bunny error would quietly put a video in the image bucket, which is
- * the thing this whole split exists to prevent.
+ * That treats "the encoder is not set up" and "it is set up and the upload
+ * failed" as the same event, and they are opposites. In the first, R2 is the
+ * intended destination. In the second, `POST /upload` has already stopped
+ * accepting video — the encoder being live is exactly what closes it — so the
+ * retry cannot succeed, and the user sees a rejection about file types instead
+ * of the real failure. Worse, a transient error could publish a raw, unencoded
+ * video, which is the thing this whole split exists to prevent.
  *
  * So:
  *  - `not-configured` + `r2Fallback` → R2, deliberately. This is the pre-cutover
  *    path and it is not an error.
  *  - `not-configured` + no fallback  → nothing can accept it. Surface that.
- *  - a thrown error                  → Bunny is live and failed. Propagate it.
+ *  - a thrown error                  → the encoder is live and the upload
+ *    failed. Propagate it.
  *  - `unavailable`                   → the question went unanswered. R2 MAY be
  *    right, so it is still tried, but its answer never becomes the user-facing
  *    error — see the branch below for why that distinction is the whole point.
@@ -39,7 +40,7 @@ function asError(error: unknown): Error {
   return new Error(typeof error === 'string' ? error : 'Could not start the video upload.');
 }
 export interface UploadVideoOptions {
-  /** Bunny library title, and the fallback R2 upload's log label. */
+  /** Unused since Bunny was removed; kept so call sites need no change. */
   title?: string;
   targetType?: 'story' | 'contest_entry';
   /** R2 prefix used only on the pre-cutover fallback path. */
@@ -50,9 +51,9 @@ export interface UploadVideoOptions {
 }
 
 export async function uploadVideo(uri: string, options: UploadVideoOptions): Promise<string> {
-  const { title, targetType, r2Folder, onProgress, signal } = options;
+  const { targetType, r2Folder, onProgress, signal } = options;
 
-  const outcome = await uploadVideoToBunny(uri, { title, targetType, onProgress, signal });
+  const outcome = await uploadVideoForEncoding(uri, { targetType, onProgress, signal });
 
   if (outcome.status === 'uploaded') return outcome.playbackUrl;
 
@@ -61,13 +62,13 @@ export async function uploadVideo(uri: string, options: UploadVideoOptions): Pro
     const status = (outcome.error as { status?: number } | null | undefined)?.status;
 
     // A 4xx is an ANSWER, not a lost question, and it is specifically an answer
-    // from past the `bunnyConfigured()` gate — `createVideoUpload` returns 200
-    // with `configured: false` when Bunny is off, so it can only reach a
-    // deliberate rejection when Bunny is LIVE. R2 is therefore already closed to
+    // from past the `qencodeConfigured()` gate — `createVideoUpload` returns 200
+    // with `configured: false` when the encoder is off, so it can only reach a
+    // deliberate rejection when it is LIVE. R2 is therefore already closed to
     // video and the fallback cannot succeed. Skipping it matters beyond
     // tidiness: `uploadToR2` sends the entire file before the Worker can refuse
     // it, so the old path pushed a whole video over mobile data to earn a
-    // rejection. The rate limit (10 video uploads/hour) lands here.
+    // rejection. The rate limit (30 video uploads/hour) lands here.
     if (typeof status === 'number' && status >= 400 && status < 500) throw cause;
 
     // No response at all (timeout, dropped tunnel) or a 5xx. NOW the routing
@@ -78,10 +79,10 @@ export async function uploadVideo(uri: string, options: UploadVideoOptions): Pro
       return (await uploadToR2(uri, 'video/mp4', r2Folder, onProgress, { signal })) as string;
     } catch (fallbackError) {
       if (isUploadCancelled(fallbackError)) throw fallbackError;
-      // Once Bunny is live, R2 replies "Videos are no longer uploaded to this
+      // Once Qencode is live, R2 replies "Videos are no longer uploaded to this
       // endpoint... Please update the app." That sentence describes OUR routing,
-      // aimed at a stale build — and this build is not stale, it asked Bunny
-      // first and got no answer. Letting it surface told users to update an
+      // aimed at a stale build — and this build is not stale, it asked the video
+      // service first and got no answer. Letting it surface told users to update an
       // already-current app and hid the actual failure, so the original error
       // wins. This is the bug the fallback was written to avoid and then caused.
       console.warn('[uploadVideo] R2 fallback also rejected:', fallbackError);
@@ -90,8 +91,8 @@ export async function uploadVideo(uri: string, options: UploadVideoOptions): Pro
   }
 
   if (!outcome.r2Fallback) {
-    // Defensive, and currently unreachable: the server only sends `r2Fallback`
-    // when Bunny is unconfigured, which is exactly when R2 still accepts video.
+    // Reached when the encoder is live but this build's request was answered as
+    // "not configured" — in practice only if a future setting closes both paths.
     // What actually stops a stale build writing a video into the image bucket is
     // `assertR2AcceptsKind` rejecting it server-side — this branch would only
     // matter if a future setting closed both paths at once.

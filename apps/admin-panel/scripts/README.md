@@ -26,7 +26,7 @@ running anything that writes: these scripts talk to whatever `WORKER_URL` says.
 | `node scripts/check-db.mjs` | Print D1 row counts (users/posts/reports/support). |
 | `node scripts/seed-contests.mjs` | Insert a sample contest template. |
 | `node scripts/test-notification.mjs <uid>` | Send a test notification (D1 + FCM push). |
-| `node scripts/migrate-videos-to-bunny.mjs` | Migrate existing R2 videos to Bunny Stream (resumable; `--status`, `--target=stories\|matches`, `--limit=N`). Requires Bunny secrets on the Worker. |
+| `node scripts/migrate-videos-to-qencode.mjs` | Encode existing raw R2 videos to HLS with Qencode (resumable; `--status`, `--target=stories\|matches`, `--limit=N`). Requires Qencode to be live on the Worker. |
 
 No `serviceAccountKey.json` is needed anymore — the Worker holds the Firebase
 service account as a secret and performs any Auth operations (e.g. setting the

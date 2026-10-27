@@ -41,8 +41,8 @@ const GROUP_META: Record<string, { title: string; icon: any; blurb: string }> = 
   sms: { title: "SMS gateway", icon: MessageSquare, blurb: "Delivers login and password-reset codes." },
   email: { title: "Email", icon: Mail, blurb: "Transactional email for verification codes." },
   payments: { title: "Payments", icon: CreditCard, blurb: "Razorpay checkout, webhook and reconciliation." },
-  video: { title: "Video (Bunny Stream)", icon: Video, blurb: "Optional. Without it, videos stay on R2." },
-  storage: { title: "Storage (R2)", icon: HardDrive, blurb: "S3 keys used to mint presigned uploads." },
+  video: { title: "Video (Qencode)", icon: Video, blurb: "Optional. Without it, videos stay on R2 as uploaded." },
+  storage: { title: "Storage (R2)", icon: HardDrive, blurb: "S3 keys for the video pipeline (Qencode reads and writes the bucket)." },
   auth: { title: "Authentication", icon: ShieldCheck, blurb: "Firebase admin operations and custom tokens." },
   observability: { title: "Observability", icon: Activity, blurb: "Where server errors are reported." },
 };
@@ -640,10 +640,10 @@ export default function Integrations() {
           secrets={byGroup.video ?? []}
           disabled={!!noStorage}
           onSaved={refresh}
-          test={<TestButton provider="bunny" />}
+          test={<TestButton provider="qencode" beforeTest={saveIfDirty} />}
         >
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="sm:col-span-2">
+          <div className="grid grid-cols-1 gap-3">
+            <div>
               <label className={label}>Video delivery</label>
               <select
                 value={cfg.video.provider}
@@ -651,29 +651,14 @@ export default function Integrations() {
                 className={field}
               >
                 <option value="r2">R2 only (direct upload, no transcoding)</option>
-                <option value="bunny">Bunny Stream (transcoded, adaptive)</option>
+                <option value="qencode">Qencode (transcoded to adaptive HLS, stored in R2)</option>
               </select>
               <p className="text-[11px] text-muted-foreground mt-1">
-                Switching back to R2 is a safe kill-switch: uploads keep working even with Bunny credentials present.
+                Qencode needs its API key here AND the R2 credentials in the Storage section — it writes the encoded
+                video into the media bucket. For playback on the website the media bucket also needs a CORS rule
+                allowing GET from the app's origins. Switching back to R2 is a safe kill-switch: new uploads go to R2
+                at once, and videos already encoded keep playing.
               </p>
-            </div>
-            <div>
-              <label className={label}>Library ID</label>
-              <input
-                value={cfg.video.libraryId}
-                onChange={(e) => setCfg({ ...cfg, video: { ...cfg.video, libraryId: e.target.value } })}
-                placeholder="123456"
-                className={`${field} font-mono`}
-              />
-            </div>
-            <div>
-              <label className={label}>Pull-zone hostname</label>
-              <input
-                value={cfg.video.cdnHostname}
-                onChange={(e) => setCfg({ ...cfg, video: { ...cfg.video, cdnHostname: e.target.value } })}
-                placeholder="vz-xxxxxxxx-xxx.b-cdn.net"
-                className={`${field} font-mono`}
-              />
             </div>
           </div>
         </Card>

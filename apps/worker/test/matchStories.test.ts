@@ -511,21 +511,22 @@ describe('the composite image', () => {
   it('a video battle never renders from the video itself, and waits for real posters', async () => {
     // Credential lookups are cached per isolate; start from this env's values.
     invalidateIntegrationCache();
-    const { env } = photoEnv({ BUNNY_STREAM_API_KEY: 'k', BUNNY_LIBRARY_ID: '1', BUNNY_CDN_HOSTNAME: 'vz.test' });
+    const { env } = photoEnv();
     await seedUser(env, 'alice');
     await seedUser(env, 'bob');
     await seedContest(env, 'cv', { type: 'video' });
-    const gA = '11111111-1111-1111-1111-111111111111';
-    const gB = '22222222-2222-2222-2222-222222222222';
+    const gA = '11111111-1111-4111-8111-111111111111';
+    const gB = '22222222-2222-4222-8222-222222222222';
+    const playlist = (id: string) => `${env.R2_PUBLIC_BASE_URL}/videos/${id}/playlist.m3u8`;
     const ts = Date.now();
     for (const [id, owner] of [[gA, 'alice'], [gB, 'bob']]) {
       await drizzleOf(env).insert(schema.videos).values({ id, ownerUid: owner, status: 'processing', createdAt: ts, updatedAt: ts } as any);
     }
     const created = await call(env, 'alice', 'startMatch', {
-      contestId: 'cv', mediaUrl: `https://vz.test/${gA}/playlist.m3u8`, mediaType: 'video', deviceId: 'a',
+      contestId: 'cv', mediaUrl: playlist(gA), mediaType: 'video', deviceId: 'a',
     });
     const matchId = created.body.matchId;
-    await call(env, 'bob', 'joinMatch', { matchId, mediaUrl: `https://vz.test/${gB}/playlist.m3u8`, mediaType: 'video', deviceId: 'b' });
+    await call(env, 'bob', 'joinMatch', { matchId, mediaUrl: playlist(gB), mediaType: 'video', deviceId: 'b' });
 
     // Still encoding: transient, nothing published, originals untouched.
     let m = await matchRow(env, matchId);
@@ -533,26 +534,17 @@ describe('the composite image', () => {
     expect(m?.vsStoryError).toContain('video_not_ready');
     expect(await allStories(env)).toHaveLength(0);
 
-    // Encoded, with Bunny posters available.
-    for (const id of [gA, gB]) {
+    // Encoded, with the posters Qencode wrote next to each playlist. Read from
+    // the bucket, never fetched from a URL.
+    for (const [id, name] of [[gA, 'alice-poster'], [gB, 'bob-poster']]) {
       await drizzleOf(env).update(schema.videos)
-        .set({ status: 'ready', thumbnailUrl: `https://vz.test/${id}/thumbnail.jpg` } as any)
+        .set({ status: 'ready', thumbnailUrl: `${env.R2_PUBLIC_BASE_URL}/videos/${id}/thumbnail.jpg` } as any)
         .where(eq(schema.videos.id, id)).run();
+      await env.MEDIA.put(`videos/${id}/thumbnail.jpg`, fakePhoto(name));
     }
-    const realFetch = globalThis.fetch;
-    globalThis.fetch = (async (url: any) => {
-      const u = String(url);
-      if (u === `https://vz.test/${gA}/thumbnail.jpg`) return new Response(fakePhoto('alice-poster'));
-      if (u === `https://vz.test/${gB}/thumbnail.jpg`) return new Response(fakePhoto('bob-poster'));
-      return new Response('nope', { status: 404 });
-    }) as any;
-    try {
-      await drizzleOf(env).update(schema.contestMatches).set({ vsStoryNextAt: 0 } as any).run();
-      expect((await runVsPublication(env as any, matchId)).outcome).toBe('published');
-    } finally {
-      globalThis.fetch = realFetch;
-      invalidateIntegrationCache();
-    }
+    await drizzleOf(env).update(schema.contestMatches).set({ vsStoryNextAt: 0 } as any).run();
+    expect((await runVsPublication(env as any, matchId)).outcome).toBe('published');
+    invalidateIntegrationCache();
     m = await matchRow(env, matchId);
     const images = env.IMAGES as ReturnType<typeof fakeImages>;
     const draws = images._outputs[0].ops.filter((o: any) => o.draw).map((d: any) => d.draw.source);
@@ -561,8 +553,8 @@ describe('the composite image', () => {
     const rows = await allStories(env);
     expect(rows).toHaveLength(2);
     expect(rows.every((r: any) => r.mediaType === 'image' && r.mediaUrl === cardUrl(matchId))).toBe(true);
-    expect((m?.userA as any).mediaUrl).toBe(`https://vz.test/${gA}/playlist.m3u8`);
-    expect((m?.userB as any).mediaUrl).toBe(`https://vz.test/${gB}/playlist.m3u8`);
+    expect((m?.userA as any).mediaUrl).toBe(playlist(gA));
+    expect((m?.userB as any).mediaUrl).toBe(playlist(gB));
   });
 
   it('refuses to treat a photo entry in a video battle as a photo battle', async () => {
@@ -1255,7 +1247,7 @@ describe('canonical share asset (getMatchShareImage)', () => {
     } as any);
     const res = await share(env, 'alice', 'v1');
     expect(res.body.kind).toBe('video');
-    expect(res.body.status).toBe('unavailable'); // no Bunny poster configured: no fake image
+    expect(res.body.status).toBe('unavailable'); // not an encoded video of ours: no fake image
     expect(res.body.url).toBeNull();
   });
 });

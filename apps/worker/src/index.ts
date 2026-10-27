@@ -496,8 +496,8 @@ app.onError((err, c) => {
   if (err instanceof ApiError) {
     // A 5xx ApiError is OUR fault and used to return from here completely
     // unrecorded — no error_logs row, no Sentry event, only an ephemeral
-    // console line. That is how a failing Bunny library stayed invisible: the
-    // upload broke for every user, `/health/deep` still reported Bunny as
+    // console line. That is how a failing video provider stayed invisible: the
+    // upload broke for every user, `/health/deep` still reported it as
     // "configured" (it only checks that the credentials EXIST), and the admin
     // panel's Error Logs page was empty, so there was nothing to diagnose from.
     //
@@ -650,11 +650,12 @@ export default {
             // NOTE: retention sweeps (pruneErrorLogs / pruneNotifications /
             // pruneOpsTables) moved to the hourly "0 * * * *" trigger above —
             // they are not time-critical and do not need to run every 10 min.
-            // Safety net for the Bunny encode webhook: promote videos stuck in
-            // `processing` (a lost webhook) and close abandoned uploads (cost).
+            // Safety net for the Qencode callback: promote videos stuck in
+            // `processing` (a lost callback), retry encodes that never started,
+            // and close abandoned uploads (cost).
             await runCronJob(env, "reconcileVideos", () => reconcileVideos(env));
             // Erasure. Deletion requests whose grace period has lapsed are purged
-            // here, a few per tick — a purge spans D1, R2, Bunny, KV and Firebase,
+            // here, a few per tick — a purge spans D1, R2, KV and Firebase,
             // so an unbounded drain would blow the subrequest budget and fail the
             // whole batch rather than the one account that did not fit.
             //

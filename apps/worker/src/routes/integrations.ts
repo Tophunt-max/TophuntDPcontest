@@ -6,6 +6,7 @@ import {
   DEFAULT_INTEGRATIONS,
   deleteSecret,
   getIntegrations,
+  getR2Credentials,
   getRazorpayCredentials,
   integrationSecretStatus,
   invalidateIntegrationCache,
@@ -18,7 +19,7 @@ import { secretStorageAvailable } from "../lib/secretBox";
 import { sendSmsDetailed, smsConfigured } from "../lib/sms";
 import { emailConfigured, sendEmailDetailed } from "../lib/email";
 import { testEmail } from "../lib/emailTemplates";
-import { bunnyConfig, mp4Url } from "../lib/bunny";
+import { qencodeConfig, verifyQencodeApiKey } from "../lib/qencode";
 
 /**
  * /admin/integrations — one place to configure every third-party service.
@@ -204,62 +205,38 @@ export function registerIntegrationRoutes(
         });
       }
 
-      case "bunny": {
-        const cfg = await bunnyConfig(c.env);
+      case "qencode": {
+        const cfg = await qencodeConfig(c.env);
         if (!cfg) {
-          return c.json({
-            ok: false,
-            message: "Bunny needs an API key, a numeric Library ID and the pull-zone hostname.",
-          });
+          const r2 = await getR2Credentials(c.env);
+          const missing = [
+            !(await resolveSecret(c.env, "QENCODE_API_KEY")) && "Qencode API key",
+            !r2.accountId && "R2_ACCOUNT_ID",
+            !r2.bucket && "R2_BUCKET",
+            !r2.accessKeyId && "R2 Access Key ID",
+            !r2.secretAccessKey && "R2 Secret Access Key",
+            !String(c.env.R2_PUBLIC_BASE_URL || "").trim() && "R2_PUBLIC_BASE_URL",
+          ].filter(Boolean);
+          return c.json({ ok: false, message: `Qencode is missing: ${missing.join(", ")}.` });
         }
-        // 10 rather than 1: the probe below needs an ENCODED video to test
-        // against, and the newest one often isn't finished yet.
-        const res = await fetch(`https://video.bunnycdn.com/library/${cfg.libraryId}/videos?itemsPerPage=10`, {
-          headers: { AccessKey: cfg.apiKey, Accept: "application/json" },
-        });
-        const text = await res.text();
-        if (!res.ok) {
-          await writeAdminAudit(c.env, c.get("user"), "integrations.test", "bunny", cfg.libraryId, { ok: false });
-          return c.json({
-            ok: false,
-            message: `Bunny rejected the request (${res.status}): ${text.slice(0, 200)}`,
-          });
-        }
-
-        // A valid key proves we can CREATE videos. It says nothing about whether
-        // anyone can WATCH them on the web, and those are separate switches.
-        //
-        // Chrome has no native HLS, so the web build rewrites Bunny's playlist URL
-        // to `/play_720p.mp4` (see the client's lib/videoSource.ts). That file only
-        // exists if "MP4 Fallback" is enabled on the library. With it off, uploads
-        // succeed, encoding succeeds, the credential test passes — and every video
-        // on tophunt.in is a dead player, with nothing anywhere saying why. So the
-        // test fetches the exact URL the browser will ask for.
-        let playback = "";
+        // Exchanging the key for a session token is the first call of every
+        // encode, so it is the honest test of the key. It starts nothing and
+        // costs nothing.
         try {
-          const items: any[] = JSON.parse(text)?.items || [];
-          // status >= 3 is Bunny's "playable" (see mapBunnyStatus).
-          const encoded = items.find((v) => Number(v?.status) >= 3 && Number(v?.status) !== 5 && v?.guid);
-          if (!encoded) {
-            playback = " No encoded video to verify web playback against yet — re-test after a video finishes.";
-          } else {
-            const probe = await fetch(mp4Url(cfg, String(encoded.guid)), { method: "HEAD" });
-            playback = probe.ok
-              ? " MP4 fallback is on, so web playback works."
-              : ` WARNING: MP4 fallback returned ${probe.status} — videos will NOT play on the website. ` +
-                `Enable "MP4 Fallback" in the Bunny library's encoding settings.`;
-          }
-        } catch {
-          playback = " Could not verify the MP4 fallback used for web playback.";
+          await verifyQencodeApiKey(c.env);
+        } catch (e: any) {
+          await writeAdminAudit(c.env, c.get("user"), "integrations.test", "qencode", null, { ok: false });
+          return c.json({ ok: false, message: `Qencode rejected the API key: ${String(e?.message || e).slice(0, 200)}` });
         }
-
-        await writeAdminAudit(c.env, c.get("user"), "integrations.test", "bunny", cfg.libraryId, { ok: true });
+        await writeAdminAudit(c.env, c.get("user"), "integrations.test", "qencode", null, { ok: true });
         return c.json({
-          // Deliberately still `ok: true` — creating videos genuinely works, and
-          // the message carries the playback caveat. Failing the whole test would
-          // imply the credentials are wrong, which is a different repair.
+          // The R2 half (Qencode writing into the bucket) can only be proven by a
+          // real encode, so the message says what this did NOT check.
           ok: true,
-          message: `Connected to Bunny library ${cfg.libraryId}.${playback}`,
+          message:
+            "Qencode API key is valid. R2 credentials are set but not exercised here — upload one test video " +
+            "and confirm it reaches \"ready\". For web playback the media bucket also needs a CORS rule " +
+            "allowing GET from the app's origins (see MEDIA_ARCHITECTURE.md).",
         });
       }
 
@@ -300,11 +277,11 @@ export function registerIntegrationRoutes(
 
 /** Readiness of each integration, for the deep health check. */
 export async function integrationHealth(env: Env): Promise<Record<string, boolean>> {
-  const [sms, email, razorpay, bunny] = await Promise.all([
+  const [sms, email, razorpay, qencode] = await Promise.all([
     smsConfigured(env),
     emailConfigured(env),
     getRazorpayCredentials(env).then((c) => !!c.keyId && !!c.keySecret),
-    bunnyConfig(env).then((c) => !!c),
+    qencodeConfig(env).then((c) => !!c),
   ]);
-  return { sms, email, razorpay, bunnyVideo: bunny };
+  return { sms, email, razorpay, qencodeVideo: qencode };
 }

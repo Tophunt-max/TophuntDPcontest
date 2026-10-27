@@ -193,10 +193,9 @@ describe('integration config', () => {
       .toThrow(/https/);
     expect(() => validateIntegrations({ ...base, email: { provider: 'resend', from: '', replyTo: '' } }))
       .toThrow(/From address/i);
-    expect(() => validateIntegrations({ ...base, video: { provider: 'bunny', libraryId: '', cdnHostname: '' } }))
-      .toThrow(/Library ID/i);
-    expect(() => validateIntegrations({ ...base, video: { provider: 'bunny', libraryId: 'abc', cdnHostname: 'x.b-cdn.net' } }))
-      .toThrow(/numeric/);
+    // Qencode has no non-secret config to get wrong; its readiness (key + R2
+    // credentials) is judged by /health/deep's media_routing check instead.
+    expect(() => validateIntegrations({ ...base, video: { provider: 'qencode' } })).not.toThrow();
   });
 
   it('exposes the Razorpay key id from config with an environment fallback', async () => {

@@ -23,10 +23,10 @@ describe('participantThumb', () => {
     expect(participantThumb({ mediaUrl: 'o.jpg' })).toBe('o.jpg');
     expect(participantThumb(null)).toBeNull();
   });
-  it('never hands a video file to an image: Bunny poster or nothing', () => {
-    const hls = 'https://vz-x.b-cdn.net/0f8b3b7e-1234-4cde-9abc-0123456789ab/playlist.m3u8';
+  it('never hands a video file to an image: encoded-video poster or nothing', () => {
+    const hls = 'https://media.tophunt.in/videos/0f8b3b7e-1234-4cde-9abc-0123456789ab/playlist.m3u8';
     expect(participantThumb({ mediaUrl: hls, mediaUrlThumb: 'bogus' }, 'video')).toBe(
-      'https://vz-x.b-cdn.net/0f8b3b7e-1234-4cde-9abc-0123456789ab/thumbnail.jpg',
+      'https://media.tophunt.in/videos/0f8b3b7e-1234-4cde-9abc-0123456789ab/thumbnail.jpg',
     );
     expect(participantThumb({ mediaUrl: 'https://r2/x.mp4', mediaType: 'video' })).toBeNull();
   });

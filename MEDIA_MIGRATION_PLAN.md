@@ -1,5 +1,10 @@
 # Media Migration Plan — R2 for photos, Bunny Stream for video
 
+> **Superseded for video (2026-10-27).** Bunny Stream was removed before it was
+> ever provisioned and replaced by Qencode, which encodes into the same R2 bucket
+> (`videos/<id>/`). This document is kept as the historical plan; the current
+> design and cutover runbook are in MEDIA_ARCHITECTURE.md.
+
 Written 2026-08-23 against commit `3bb480d`.
 
 **Goal:** every image served from Cloudflare R2, every video served from Bunny Stream.

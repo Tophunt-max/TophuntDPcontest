@@ -26,9 +26,6 @@
 /** Media hosts the edge proxy will serve (must match `_worker.js#SHARE_MEDIA_HOSTS`). */
 const MEDIA_BASES = ['https://media.tophunt.in/', 'https://tophunt-api.weadown-in.workers.dev/media/'];
 
-/** Bunny Stream pull zones carry video posters. */
-const BUNNY_HOST = /^[a-z0-9-]+\.b-cdn\.net$/i;
-
 /** Same-origin proxy path prefix (served by `public/_worker.js`). */
 export const SHARE_MEDIA_PATH = '/share-media/';
 
@@ -61,14 +58,8 @@ export function sameOriginMediaUrl(url: string | null | undefined, origin: strin
       return `${origin}${SHARE_MEDIA_PATH}${key}`;
     }
   }
-  try {
-    const u = new URL(url);
-    if (u.protocol === 'https:' && BUNNY_HOST.test(u.hostname) && !u.pathname.includes('..')) {
-      return `${origin}${SHARE_MEDIA_PATH}bunny/${u.hostname}${u.pathname}`;
-    }
-  } catch {
-    /* not a url */
-  }
+  // Encoded-video posters live next to their playlist on the media host
+  // (`videos/<id>/thumbnail.jpg`), so the bases above already cover them.
   return null;
 }
 

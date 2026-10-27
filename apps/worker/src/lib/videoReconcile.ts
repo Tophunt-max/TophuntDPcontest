@@ -1,161 +1,187 @@
 /**
- * Video encode reconciliation — the safety net under Bunny's webhook.
+ * Video encode reconciliation — one transition, three callers.
  *
- * A video's `ready`/`failed` transition normally arrives on the `/webhook/bunny`
- * callback. But a webhook is a single best-effort delivery: if it is lost (Bunny
- * outage, a deploy mid-flight, a transient 500 on our side) the `videos` row is
- * stranded in `processing` forever, and the client's "Processing…" overlay never
- * clears even though the video is actually playable. Separately, a TUS upload the
- * user abandoned leaves a row stuck in `uploading` and an object in Bunny that we
- * are billed for and nothing references.
+ * A video's `ready`/`failed` transition normally arrives on `/webhook/qencode`.
+ * But a callback is a single best-effort delivery: if it is lost (Qencode
+ * outage, a deploy mid-flight, a transient 500 here) the `videos` row is
+ * stranded in `processing` and the app's "Processing…" overlay never clears even
+ * though the video plays. Separately, an upload that never finished leaves a row
+ * in `uploading`, and possibly a raw source in R2 nothing will ever encode.
  *
- * This module fixes both, and — crucially — makes the webhook and the cron apply
- * the SAME transition through one function (`applyBunnyEncodeResult`), so the two
- * paths can never drift into disagreeing about what "ready" means.
+ * This module fixes both, and makes the webhook, the cron and the `videoStatus`
+ * live recheck apply the SAME transition through `applyEncodeResult`, so they
+ * can never disagree about what "ready" means.
+ *
+ * "Ready" requires two independent facts: Qencode says the job completed, AND
+ * the playlist is actually in R2. The second check is what makes a wrong
+ * destination, a revoked R2 token, or a misread status shape fail loudly as
+ * `failed` instead of publishing a story whose video 404s forever.
  */
-import { and, eq, lt } from "drizzle-orm";
+import { and, eq, gt, isNotNull, isNull, lt } from "drizzle-orm";
 import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { now } from "./ids";
 import {
-  bunnyConfigured,
-  bunnyMp4UrlFor,
-  bunnyPlaybackUrl,
-  bunnyThumbnailUrl,
-  deleteVideo,
-  getVideo,
-  mapBunnyStatus,
-} from "./bunny";
+  deleteVideoObjects,
+  getJobStatus,
+  mapQencodeStatus,
+  playbackUrlFor,
+  playlistKey,
+  qencodeConfigured,
+  startEncode,
+  thumbnailKey,
+  thumbnailUrlFor,
+} from "./qencode";
 import { promoteBackfilledVideo } from "./videoBackfill";
 import { createNotification } from "./notify";
 
 /**
- * A `processing` row older than this is treated as a missed webhook and polled
- * against Bunny directly. Encodes for a <=30s clip finish in well under a minute,
- * so 15 minutes is comfortably past "just slow".
+ * A `processing` row not updated for this long is treated as a missed callback
+ * and polled. Encodes of a <=60s clip finish in a minute or two.
  */
 export const PROCESSING_STALE_MS = 15 * 60 * 1000;
 
 /**
- * An `uploading` row older than this is an abandoned TUS upload. The upload
- * signature expires after an hour (see TUS_EXPIRY_SECONDS), so beyond two hours
- * the bytes are never arriving and the half-made Bunny object is pure cost.
+ * A `processing` row older than this is given up on: the job is lost or stuck,
+ * and leaving it would keep the app showing "Processing…" forever.
+ */
+export const PROCESSING_GIVE_UP_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * An `uploading` row older than this is abandoned: the app never finished
+ * sending the file, or the encode could never be started.
  */
 export const UPLOAD_ABANDON_MS = 2 * 60 * 60 * 1000;
 
 /**
- * How stale an unfinished row may be before `videoStatus` re-checks it against
- * Bunny on demand.
+ * An uploaded source whose encode failed to START is retried by the cron after
+ * this long (the upload request itself already tried once).
+ */
+export const START_RETRY_AFTER_MS = 60 * 1000;
+
+/**
+ * How stale an unfinished row may be before `videoStatus` re-checks it.
  *
- * The cron above is the safety net for a LOST webhook, but it deliberately waits
- * 15 minutes before spending a Bunny call — and it only runs every 10. That is
- * the right trade for a background sweep and the wrong one for the person
- * staring at a "Processing…" overlay: if the webhook is not configured at all
- * (it is optional, and set up in Bunny's dashboard, not by this code), their
- * video is playable within a minute but the app keeps saying "processing" for up
- * to ~25 minutes.
- *
- * So the status endpoint the client already polls does its own live check, and
- * this bounds the cost: each check bumps `updatedAt` (every branch of
- * `applyBunnyEncodeResult` writes it), so a client polling every 5s produces at
- * most one Bunny call per video per window no matter how many viewers there are.
+ * The cron waits 15 minutes before spending a Qencode call and only runs every
+ * 10 — right for a background sweep, wrong for someone watching a "Processing…"
+ * overlay. Each check bumps `updatedAt`, so a client polling every 5s produces at
+ * most one Qencode call per video per window, however many viewers there are.
  */
 export const LIVE_STATUS_RECHECK_MS = 15 * 1000;
 
-/** Bound the Bunny API calls per tick so reconciliation can never run long. */
+/** Bound the Qencode calls per cron tick. */
 const BATCH = 25;
 
+export type EncodeOutcome = "uploading" | "processing" | "ready" | "failed";
+
 /**
- * Apply Bunny's current encode result for one video to its `videos` row.
+ * Apply Qencode's current result for one video to its `videos` row.
  *
- * Shared by the webhook and the reconcile cron. Assumes the row exists and is not
- * already `ready` (both callers guarantee that). Re-fetches the authoritative
- * status from Bunny rather than trusting any caller-supplied value, and on
- * `ready` records the poster/duration, cuts a backfilled row over to Bunny, and
- * notifies the owner.
+ * Reads the job handle from the row and the state from Qencode — never from the
+ * caller, so an unauthenticated or replayed callback can only cause a re-check.
+ * On `ready` it records the URLs and duration, deletes the raw source, cuts a
+ * backfilled row over, and notifies the owner. On `failed` it deletes whatever
+ * was stored, so a failed encode does not keep costing storage.
  *
  * @param scheduleNotify Lets the webhook fire the "video ready" notification in
- *   the background (`ctx.waitUntil`) so it can ack fast; the cron omits it and
- *   the notification is awaited best-effort instead.
+ *   the background (`ctx.waitUntil`) so it acks fast; the cron awaits it instead.
  */
-export async function applyBunnyEncodeResult(
+export async function applyEncodeResult(
   env: Env,
-  guid: string,
-  opts: { statusHint?: number; scheduleNotify?: (p: Promise<unknown>) => void } = {},
-): Promise<"processing" | "ready" | "failed"> {
+  id: string,
+  opts: { scheduleNotify?: (p: Promise<unknown>) => void } = {},
+): Promise<EncodeOutcome> {
   const db = getDb(env);
-  const ts = now();
+  const row = await db.select().from(schema.videos).where(eq(schema.videos.id, id)).get();
+  if (!row) return "failed";
+  if (row.status === "ready" || row.status === "failed") return row.status;
+  // No job yet: the bytes have not arrived, or the encode has not been started.
+  // Nothing to ask Qencode; the cron's start-retry and abandon passes own this.
+  if (!row.jobId) return row.status === "processing" ? "processing" : "uploading";
 
-  const meta = await getVideo(env, guid);
-  const status = mapBunnyStatus(
-    typeof meta?.status === "number" ? meta.status : opts.statusHint,
-  );
+  const ts = now();
+  const job = await getJobStatus(row.jobId);
+  let status = mapQencodeStatus(job);
+
+  let errorMessage: string | null = null;
+  if (status === "failed") {
+    errorMessage = job?.errorDescription || "Qencode reported an encoding failure";
+  }
+  if (status === "ready" && !(await env.MEDIA.head(playlistKey(id)))) {
+    // Qencode says done, but nothing playable landed where we told it to write.
+    status = "failed";
+    errorMessage = "Encode completed but no playlist was written to R2 (check the R2 credentials Qencode uses)";
+  }
 
   if (status === "processing") {
-    await db.update(schema.videos).set({ status, updatedAt: ts }).where(eq(schema.videos.id, guid)).run();
+    await db
+      .update(schema.videos)
+      .set({ status: "processing", updatedAt: ts })
+      .where(and(eq(schema.videos.id, id), eq(schema.videos.status, row.status)))
+      .run();
     return "processing";
   }
 
   if (status === "failed") {
-    await db
+    const claim = await db
       .update(schema.videos)
-      .set({ status, errorMessage: "Bunny reported encoding failure", updatedAt: ts })
-      .where(eq(schema.videos.id, guid))
+      .set({ status: "failed", errorMessage, updatedAt: ts })
+      .where(and(eq(schema.videos.id, id), eq(schema.videos.status, row.status)))
       .run();
+    if (claim.meta.changes > 0) {
+      // A backfilled row's source is the live R2 original its story still plays;
+      // only the temporary upload (`sourceKey`) is ours to delete.
+      await deleteVideoObjects(env, id, row.sourceKey).catch((e) =>
+        console.error("[videoReconcile] cleanup after failed encode failed", id, e),
+      );
+    }
     return "failed";
   }
 
-  // ready
-  const durationSec =
-    typeof meta?.length === "number" && Number.isFinite(meta.length) ? Math.round(meta.length) : null;
-  await db
+  // ready — claimed with a status CAS so a concurrent webhook and cron cannot
+  // both notify the owner.
+  const claim = await db
     .update(schema.videos)
     .set({
       status: "ready",
-      thumbnailUrl: await bunnyThumbnailUrl(env, guid),
-      playbackUrl: await bunnyPlaybackUrl(env, guid),
-      // Derived from what Bunny ACTUALLY encoded, not a hardcoded 720p guess —
-      // see bunnyMp4UrlFor. Null when the library has MP4 Fallback off, which the
-      // web player needs to know rather than being handed a 404.
-      mp4Url: await bunnyMp4UrlFor(env, guid, meta),
-      durationSec: durationSec ?? undefined,
+      playbackUrl: playbackUrlFor(env, id),
+      thumbnailUrl: (await env.MEDIA.head(thumbnailKey(id))) ? thumbnailUrlFor(env, id) : null,
+      // No progressive MP4 is produced: web plays the HLS through hls.js.
+      mp4Url: null,
+      durationSec: job?.durationSec ?? undefined,
+      sourceKey: null,
+      errorMessage: null,
       updatedAt: ts,
     })
-    .where(eq(schema.videos.id, guid))
+    .where(and(eq(schema.videos.id, id), eq(schema.videos.status, row.status)))
     .run();
+  if (claim.meta.changes === 0) return "ready";
 
-  const owner = await db
-    .select({
-      ownerUid: schema.videos.ownerUid,
-      targetType: schema.videos.targetType,
-      targetId: schema.videos.targetId,
-      targetSide: schema.videos.targetSide,
-      r2SourceUrl: schema.videos.r2SourceUrl,
-    })
-    .from(schema.videos)
-    .where(eq(schema.videos.id, guid))
-    .get();
+  if (row.sourceKey) {
+    await env.MEDIA.delete(row.sourceKey).catch((e) =>
+      console.error("[videoReconcile] source delete failed (2-day lifecycle rule is the net)", id, e),
+    );
+  }
 
-  // Backfilled rows cut their content over to Bunny only now that the playlist
-  // exists (see promoteBackfilledVideo). A normal upload already stored the Bunny
-  // URL, so this is a no-op for it.
-  if (owner?.r2SourceUrl) {
+  // Backfilled rows cut their content over only now that the playlist exists
+  // (see promoteBackfilledVideo). A normal upload already stored the URL.
+  if (row.r2SourceUrl) {
     try {
-      await promoteBackfilledVideo(env, { id: guid, ...owner });
+      await promoteBackfilledVideo(env, { ...row, id });
     } catch (e) {
-      console.error("[videoReconcile] promote failed", guid, e);
+      console.error("[videoReconcile] promote failed", id, e);
     }
   }
 
-  if (owner?.ownerUid) {
-    const p = createNotification(env, owner.ownerUid, {
+  if (row.ownerUid) {
+    const p = createNotification(env, row.ownerUid, {
       title: "Video ready 🎬",
       body:
-        owner.targetType === "story"
+        row.targetType === "story"
           ? "Your story video has finished processing."
           : "Your contest video has finished processing.",
       type: "video_ready",
-      targetId: guid,
+      targetId: id,
     }).catch(() => {});
     if (opts.scheduleNotify) opts.scheduleNotify(p);
     else await p;
@@ -169,90 +195,119 @@ export interface ReconcileResult {
   processingChecked: number;
   promotedReady: number;
   promotedFailed: number;
+  encodesStarted: number;
   abandoned: number;
 }
 
 /**
  * One reconciliation pass, driven by the 10-minute cron.
  *
- * Only meaningful when Bunny is the video provider; with R2 there is no encode
- * step and no `processing` state, so it no-ops.
+ * Only meaningful when Qencode is the video provider; the legacy R2 path has no
+ * encode step and no `processing` state.
  */
 export async function reconcileVideos(env: Env): Promise<ReconcileResult> {
-  if (!(await bunnyConfigured(env))) {
-    return { skipped: true, processingChecked: 0, promotedReady: 0, promotedFailed: 0, abandoned: 0 };
-  }
+  const result: ReconcileResult = {
+    processingChecked: 0,
+    promotedReady: 0,
+    promotedFailed: 0,
+    encodesStarted: 0,
+    abandoned: 0,
+  };
+  if (!(await qencodeConfigured(env))) return { skipped: true, ...result };
 
   const db = getDb(env);
   const nowTs = now();
-  const result: ReconcileResult = { processingChecked: 0, promotedReady: 0, promotedFailed: 0, abandoned: 0 };
 
-  // 1) Videos stuck in `processing` past the stale window — a webhook we never
-  //    received. Poll Bunny and apply the real state.
+  const count = (outcome: EncodeOutcome) => {
+    result.processingChecked += 1;
+    if (outcome === "ready") result.promotedReady += 1;
+    else if (outcome === "failed") result.promotedFailed += 1;
+  };
+
+  // 1) `processing` past the stale window — a callback we never received.
   const stuck = await db
-    .select({ id: schema.videos.id })
+    .select({ id: schema.videos.id, createdAt: schema.videos.createdAt, sourceKey: schema.videos.sourceKey })
     .from(schema.videos)
     .where(and(eq(schema.videos.status, "processing"), lt(schema.videos.updatedAt, nowTs - PROCESSING_STALE_MS)))
     .limit(BATCH)
     .all();
-
   for (const v of stuck) {
     try {
-      const outcome = await applyBunnyEncodeResult(env, v.id);
-      result.processingChecked += 1;
-      if (outcome === "ready") result.promotedReady += 1;
-      else if (outcome === "failed") result.promotedFailed += 1;
+      const outcome = await applyEncodeResult(env, v.id);
+      if (outcome === "processing" && Number(v.createdAt) < nowTs - PROCESSING_GIVE_UP_MS) {
+        // Hours past any real encode. Stop the overlay and stop paying for storage.
+        const gaveUp = await db
+          .update(schema.videos)
+          .set({ status: "failed", errorMessage: "Encode never completed", updatedAt: now() })
+          .where(and(eq(schema.videos.id, v.id), eq(schema.videos.status, "processing")))
+          .run();
+        if (gaveUp.meta.changes > 0) await deleteVideoObjects(env, v.id, v.sourceKey);
+        count("failed");
+        continue;
+      }
+      count(outcome);
     } catch (e) {
       console.error("[videoReconcile] processing reconcile failed", v.id, e);
     }
   }
 
-  // 2) Uploads that never completed — free the Bunny object (cost) and close the
-  //    row so it stops being polled and no client waits on it.
+  // 2) Source uploaded, encode never started (Qencode was unreachable during the
+  //    upload request). Start it now. No callback origin: there is no request,
+  //    so this job resolves through pass 1 and the `videoStatus` recheck.
+  const unstarted = await db
+    .select({ id: schema.videos.id, sourceKey: schema.videos.sourceKey })
+    .from(schema.videos)
+    .where(
+      and(
+        eq(schema.videos.status, "uploading"),
+        isNotNull(schema.videos.sourceKey),
+        isNull(schema.videos.jobId),
+        lt(schema.videos.updatedAt, nowTs - START_RETRY_AFTER_MS),
+        // Past the abandon window, pass 3 owns it.
+        gt(schema.videos.createdAt, nowTs - UPLOAD_ABANDON_MS),
+      ),
+    )
+    .limit(BATCH)
+    .all();
+  for (const v of unstarted) {
+    if (!v.sourceKey) continue;
+    try {
+      const jobId = await startEncode(env, { videoId: v.id, sourceKey: v.sourceKey, callbackOrigin: null });
+      await db
+        .update(schema.videos)
+        .set({ jobId, status: "processing", updatedAt: now() })
+        .where(and(eq(schema.videos.id, v.id), eq(schema.videos.status, "uploading"), isNull(schema.videos.jobId)))
+        .run();
+      result.encodesStarted += 1;
+    } catch (e) {
+      // Bump updatedAt so a dead Qencode costs one attempt per row per minute,
+      // not one per row per tick forever; pass 3 ends it at the abandon window.
+      await db.update(schema.videos).set({ updatedAt: now() }).where(eq(schema.videos.id, v.id)).run();
+      console.error("[videoReconcile] encode start retry failed", v.id, e);
+    }
+  }
+
+  // 3) Uploads that never became a job within the abandon window. With Qencode,
+  //    `uploading` is set by the SERVER (bytes stored + job started flips it to
+  //    `processing` in the same request), so this state really does mean the
+  //    encode never began — unlike Bunny, where it only meant "the app never
+  //    told us", and deleting on that evidence destroyed real videos.
   const abandoned = await db
-    .select({ id: schema.videos.id })
+    .select({ id: schema.videos.id, sourceKey: schema.videos.sourceKey })
     .from(schema.videos)
     .where(and(eq(schema.videos.status, "uploading"), lt(schema.videos.createdAt, nowTs - UPLOAD_ABANDON_MS)))
     .limit(BATCH)
     .all();
-
   for (const v of abandoned) {
     try {
-      // ASK BUNNY FIRST. `uploading` means "we never heard that the bytes
-      // landed" — which is NOT the same as "the bytes never landed". The client's
-      // `videoUploadComplete` call is explicitly best-effort (bunnyUpload.ts
-      // swallows its failure on the grounds that the webhook reconciles), so a
-      // lost call plus a lost webhook leaves a fully uploaded, encoded video
-      // sitting in a row that still says `uploading`.
-      //
-      // Deleting on that evidence destroyed a real video that a story was already
-      // pointing at, leaving a permanently broken playlist URL and no trace of
-      // why. Silent, unrecoverable, and it only shows up under exactly the double
-      // failure this sweep exists to clean up after.
-      const meta = await getVideo(env, v.id);
-      const uploadedBytes = Number(meta?.storageSize ?? 0) > 0;
-      const encodeStarted = Number(meta?.status ?? 0) > 0;
-
-      if (meta && (uploadedBytes || encodeStarted)) {
-        // Real content. Promote it through the shared transition instead, which
-        // also fills in the poster/duration the lost webhook never delivered.
-        const outcome = await applyBunnyEncodeResult(env, v.id);
-        result.processingChecked += 1;
-        if (outcome === "ready") result.promotedReady += 1;
-        else if (outcome === "failed") result.promotedFailed += 1;
-        continue;
-      }
-
-      await deleteVideo(env, v.id); // best-effort, 404-safe
-      await db
+      const closed = await db
         .update(schema.videos)
-        .set({ status: "failed", errorMessage: "Abandoned upload (never completed)", updatedAt: now() })
+        .set({ status: "failed", errorMessage: "Abandoned upload (encode never started)", updatedAt: now() })
         .where(and(eq(schema.videos.id, v.id), eq(schema.videos.status, "uploading")))
         .run();
+      if (closed.meta.changes > 0) await deleteVideoObjects(env, v.id, v.sourceKey);
       result.abandoned += 1;
     } catch (e) {
-      // Leave the row `uploading` so the next pass retries. Better a Bunny object
-      // that lingers another 10 minutes than one deleted on incomplete evidence.
       console.error("[videoReconcile] abandoned cleanup failed", v.id, e);
     }
   }

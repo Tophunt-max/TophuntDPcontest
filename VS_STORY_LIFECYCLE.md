@@ -45,7 +45,7 @@ Invariants are enforced in SQL, not in client input:
 
 - The join UPDATE requires `user_b IS NULL`, a creator snapshot, and `creator ≠ joiner`. The joiner's media must differ from the creator's.
 - Publication runs only while `status='active'`. It requires two distinct participants who are not deleted or banned and are not blocking each other.
-- Entries must be owned media: R2 `contests/` or `contest-entries/` keys, or a ready Bunny video whose `owner_uid` is that participant.
+- Entries must be owned media: R2 `contests/` or `contest-entries/` keys, or a ready encoded video (`videos/<id>/`) whose `owner_uid` is that participant.
 - `POST /upload` now stores `uploader=<uid>` on every object. `startMatch` and `joinMatch` reject an entry uploaded by another account before any fee moves, and publication rejects it again.
 - Both story inserts and the `published` flip sit in one batch. They are gated on the lease token and on `status='active'`. The flip also requires both rows to exist.
 
@@ -82,9 +82,9 @@ own ledger idempotency.
 - Inputs are capped at 15 MB per photo and 5 MB per poster, and must be 64–12000 px
   per side. Bytes are sniffed, then `IMAGES.info()` validates them. The render has a
   25 s bound.
-- Video battles: the composite uses each video's Bunny poster, and only once both
-  videos are `ready` and the posters are on our pull zone. Until then the state is
-  transient (`video_not_ready`). Original videos are never altered. No thumbnail is
+- Video battles: the composite uses each video's poster (`videos/<id>/thumbnail.jpg`,
+  read straight from R2), and only once both videos are `ready`. Until then the
+  state is transient (`video_not_ready`). Original videos are never altered. No thumbnail is
   ever faked.
 - **Cost:** one composite per battle, billed as Images transformations (the free
   plan includes a monthly allowance). Re-runs reuse the stored object.
@@ -204,7 +204,7 @@ sheet is counted as an intended share, and the toast says only that the image wa
   are accepted, both to keep in-flight battles working and because older uploads
   are indistinguishable. Ownership is enforced for every upload made from this
   release on.
-- Video VS cards depend on Bunny posters. Legacy R2-hosted contest videos have no
+- Video VS cards depend on encoded-video posters. Legacy R2-hosted contest videos have no
   poster, so they end in `failed / video_poster_unavailable`. The battle itself is
   unaffected.
 - The composite is cached `immutable` on a deterministic per-version URL. After the

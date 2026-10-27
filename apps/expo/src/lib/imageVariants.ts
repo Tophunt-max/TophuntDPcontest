@@ -21,7 +21,7 @@
  * the same cache entry. `test/imageVariants.test.ts` pins that parity.
  *
  * WHAT IS NEVER TRANSFORMED (mirrors the Worker's `imgVariant` rules)
- *  - anything not on our media host (Google avatars, Bunny posters, blog images
+ *  - anything not on our media host (Google avatars, blog images
  *    left on their origin, local files, data:/blob: urls);
  *  - videos;
  *  - proxy-only prefixes (`vs-cards/`, `contest-banners/`, `product-images/`):

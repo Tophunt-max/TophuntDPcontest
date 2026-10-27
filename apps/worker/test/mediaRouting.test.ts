@@ -5,7 +5,7 @@
  *
  * First, `mediaRouting`'s three-way answer. Two of its states put video on R2 and
  * they mean opposite things — an operator who chose R2, and an operator who chose
- * Bunny and did not finish wiring it. `/health/deep` fails only the second, and
+ * Qencode and did not finish wiring it. `/health/deep` fails only the second, and
  * that distinction is invisible from behaviour, so nothing but a test protects it.
  *
  * Second, `categoryForKey` across BOTH key layouts. Cache policy and the
@@ -15,15 +15,15 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const integrations = vi.hoisted(() => ({ value: { video: { provider: 'r2', libraryId: '', cdnHostname: '' } } }));
-const bunny = vi.hoisted(() => ({ config: null as null | { apiKey: string; libraryId: string; cdnHostname: string } }));
+const integrations = vi.hoisted(() => ({ value: { video: { provider: 'r2' } } }));
+const qencode = vi.hoisted(() => ({ config: null as null | object }));
 
 vi.mock('../src/lib/integrations', () => ({
   getIntegrations: async () => integrations.value,
   resolveSecret: async () => null,
 }));
-vi.mock('../src/lib/bunny', () => ({
-  bunnyConfig: async () => bunny.config,
+vi.mock('../src/lib/qencode', () => ({
+  qencodeConfig: async () => qencode.config,
 }));
 
 import { mediaRouting, allowedMimesForUpload, assertR2AcceptsKind } from '../src/lib/mediaRouting';
@@ -41,16 +41,16 @@ import {
 const env = {} as any;
 
 const asLegacyR2 = () => {
-  integrations.value = { video: { provider: 'r2', libraryId: '', cdnHostname: '' } };
-  bunny.config = null;
+  integrations.value = { video: { provider: 'r2' } };
+  qencode.config = null;
 };
-const asBunnyLive = () => {
-  integrations.value = { video: { provider: 'bunny', libraryId: '42', cdnHostname: 'vz-x.b-cdn.net' } };
-  bunny.config = { apiKey: 'k', libraryId: '42', cdnHostname: 'vz-x.b-cdn.net' };
+const asQencodeLive = () => {
+  integrations.value = { video: { provider: 'qencode' } };
+  qencode.config = { apiKey: 'k', r2: { accountId: 'a', accessKeyId: 'b', secretAccessKey: 'c', bucket: 'd' } };
 };
-const asBunnyHalfWired = () => {
-  integrations.value = { video: { provider: 'bunny', libraryId: '', cdnHostname: '' } };
-  bunny.config = null;
+const asQencodeHalfWired = () => {
+  integrations.value = { video: { provider: 'qencode' } };
+  qencode.config = null;
 };
 
 beforeEach(asLegacyR2);
@@ -61,18 +61,18 @@ describe('mediaRouting', () => {
     expect(routing).toMatchObject({ videoProvider: 'r2', r2AcceptsVideo: true, reason: 'provider-setting' });
   });
 
-  it('routes video to Bunny and CLOSES R2 once Bunny is configured', async () => {
-    asBunnyLive();
+  it('routes video to Qencode and CLOSES the raw R2 path once Qencode is configured', async () => {
+    asQencodeLive();
     const routing = await mediaRouting(env);
-    expect(routing).toMatchObject({ videoProvider: 'bunny', r2AcceptsVideo: false, reason: 'bunny-live' });
+    expect(routing).toMatchObject({ videoProvider: 'qencode', r2AcceptsVideo: false, reason: 'qencode-live' });
   });
 
-  it('reports a half-wired Bunny separately from a deliberate R2 choice', async () => {
+  it('reports a half-wired Qencode separately from a deliberate R2 choice', async () => {
     // Same runtime behaviour as `provider-setting` — video still goes to R2 — but a
     // different cause, and the only one `/health/deep` fails. Without the distinct
     // reason a half-finished cutover is indistinguishable from a working setup
-    // while the Bunny library the operator thinks they are filling stays empty.
-    asBunnyHalfWired();
+    // while the operator believes video is being encoded.
+    asQencodeHalfWired();
     const routing = await mediaRouting(env);
     expect(routing).toMatchObject({ videoProvider: 'r2', r2AcceptsVideo: true, reason: 'not-configured' });
   });
@@ -80,14 +80,14 @@ describe('mediaRouting', () => {
 
 describe('assertR2AcceptsKind', () => {
   it('never blocks an image, in any state', async () => {
-    for (const state of [asLegacyR2, asBunnyLive, asBunnyHalfWired]) {
+    for (const state of [asLegacyR2, asQencodeLive, asQencodeHalfWired]) {
       state();
       await expect(assertR2AcceptsKind(env, 'image', 'avatars')).resolves.toBeUndefined();
     }
   });
 
-  it('rejects video once Bunny is live, naming the action to use instead', async () => {
-    asBunnyLive();
+  it('rejects raw video once Qencode is live, naming the action to use instead', async () => {
+    asQencodeLive();
     // This is the actual defence against a stale build POSTing a video to /upload,
     // so the message has to be actionable: a client author cannot be told to read
     // the source, and "upload failed" sends them to check their connection.
@@ -104,8 +104,8 @@ describe('assertR2AcceptsKind', () => {
 });
 
 describe('allowedMimesForUpload', () => {
-  it('is images-only when Bunny is live', async () => {
-    asBunnyLive();
+  it('is images-only when Qencode is live', async () => {
+    asQencodeLive();
     expect(await allowedMimesForUpload(env, 'stories')).not.toContain('video/mp4');
   });
 
@@ -191,7 +191,9 @@ describe('the upload allow-list is derived, not maintained by hand', () => {
   });
 
   it('excludes every prefix a client must not name', () => {
-    for (const prefix of ['contest-banners', 'payment-qr', 'blog/imported']) {
+    // `videos` and `video-src` especially: a client that could write there could
+    // publish an unencoded or forged "encoded" video under someone's video id.
+    for (const prefix of ['contest-banners', 'payment-qr', 'blog/imported', 'videos', 'video-src']) {
       expect(isUserWritablePrefix(prefix)).toBe(false);
     }
   });

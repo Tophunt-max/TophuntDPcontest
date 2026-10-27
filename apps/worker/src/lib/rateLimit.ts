@@ -62,7 +62,7 @@ export async function consumeRateLimit(
   // `failClosed: true`, on the reasoning that those are "just" engagement
   // throttles. It was wrong — `failClosed` means "refuse if the counter is
   // unreadable", NOT "this guard protects money". `deposit:{uid}`, `ad:{uid}`
-  // (mints withdrawable coins), `vidup:{uid}` (Bunny transcode spend) and
+  // (mints withdrawable coins), `vidup:{uid}` (Qencode transcode spend) and
   // `exportdata:{uid}` (PII export) were fail-open by omission and are now
   // fail-closed. `create:{ip}` (the only per-IP signup limit) is still
   // fail-open: making it fail-closed would refuse EVERY signup during a limiter

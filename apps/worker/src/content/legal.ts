@@ -260,7 +260,7 @@ We share personal data only with providers who process it for us under contract,
 
 - **Google Firebase** — authentication and push notifications.
 - **Cloudflare** — application hosting, database, media storage and delivery.
-- **Bunny Stream** — video transcoding and delivery.
+- **Qencode** — video transcoding.
 - **Razorpay** — payment processing and payouts.
 - **An SMS and an email provider** — one-time codes and account email.
 

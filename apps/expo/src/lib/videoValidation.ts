@@ -5,7 +5,7 @@
  * containers, but that check lands AFTER the whole file has been sent — a brutal
  * outcome on Indian mobile data, where a user can spend minutes uploading a
  * 4-minute clip only to be rejected. And nothing limited a STORY video's length
- * at all, so a single entry could drive unbounded Bunny encode + storage cost.
+ * at all, so a single entry could drive unbounded encode + storage cost.
  *
  * This validates the picker's own metadata (duration, file size) up front and
  * tells the user immediately, in plain language, before a byte is uploaded. It is

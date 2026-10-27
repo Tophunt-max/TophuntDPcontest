@@ -525,10 +525,10 @@ export default function AddStoryScreen() {
     setUploadProgress(0);
     const signal = beginUpload();
     try {
-      // Video goes to Bunny Stream, photos to R2. `uploadVideo` owns the
-      // pre-cutover R2 fallback and, importantly, does NOT retry on R2 when Bunny
-      // is live and fails — that retry used to turn a Bunny error into a confusing
-      // file-type rejection, and could quietly land a video in the image bucket.
+      // Video is encoded (Qencode, via the Worker), photos go to R2 as-is.
+      // `uploadVideo` owns the pre-cutover R2 fallback and, importantly, does NOT
+      // retry on R2 when the encoder is live and fails — that retry used to turn a
+      // real error into a confusing file-type rejection.
       let mediaUrl: string;
       if (media.type === 'video') {
         mediaUrl = await uploadVideo(media.uri, {

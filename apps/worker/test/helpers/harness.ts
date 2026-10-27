@@ -27,6 +27,8 @@ import { apiRoute } from '../../src/routes/api';
 import { readRoute } from '../../src/routes/read';
 import { adminRoute } from '../../src/routes/admin';
 import { telemetryRoute } from '../../src/routes/telemetry';
+import { uploadRoute } from '../../src/routes/upload';
+import { webhookRoute } from '../../src/routes/webhook';
 import { authRoute } from '../../src/routes/auth';
 
 const MIGRATIONS_DIR = path.join(import.meta.dirname, '..', '..', 'migrations');
@@ -377,9 +379,26 @@ export function fakeR2() {
         ? { key, size: existing.size, httpMetadata: existing.httpMetadata, customMetadata: existing.customMetadata }
         : null;
     },
-    async delete(key: string) {
-      deleted.push(key);
-      objects.delete(key);
+    /** Like the real binding: one key or an array of keys. */
+    async delete(key: string | string[]) {
+      for (const k of Array.isArray(key) ? key : [key]) {
+        deleted.push(k);
+        objects.delete(k);
+      }
+    },
+    /** Prefix listing with the real binding's pagination shape. */
+    async list(opts: { prefix?: string; cursor?: string; limit?: number } = {}) {
+      const prefix = opts.prefix ?? '';
+      const limit = opts.limit ?? 1000;
+      const keys = [...objects.keys()].filter((k) => k.startsWith(prefix)).sort();
+      const start = opts.cursor ? Number(opts.cursor) : 0;
+      const page = keys.slice(start, start + limit);
+      const truncated = start + limit < keys.length;
+      return {
+        objects: page.map((k) => ({ key: k, size: objects.get(k)!.size })),
+        truncated,
+        ...(truncated ? { cursor: String(start + limit) } : {}),
+      };
     },
   };
 }
@@ -653,6 +672,8 @@ export function makeApp() {
   // superadmin and so satisfies requireFullAdmin without a Firebase token.
   app.route('/admin', adminRoute);
   app.route('/telemetry', telemetryRoute);
+  app.route('/upload', uploadRoute);
+  app.route('/webhook', webhookRoute);
   return app;
 }
 

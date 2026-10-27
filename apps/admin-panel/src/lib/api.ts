@@ -561,7 +561,7 @@ export interface IntegrationsConfig {
   };
   email: { provider: "resend" | "brevo" | "maileroo" | "none"; from: string; replyTo: string };
   payments: { razorpayKeyId: string };
-  video: { provider: "bunny" | "r2"; libraryId: string; cdnHostname: string };
+  video: { provider: "qencode" | "r2" };
   push: { vapidPublicKey: string };
 }
 

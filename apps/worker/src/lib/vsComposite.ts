@@ -389,7 +389,7 @@ export async function encodeCanvasPng(width = CARD_WIDTH, height = CARD_HEIGHT):
 // ---------------------------------------------------------------------------
 
 export interface VsSideInput {
-  /** Trusted entry bytes (R2 object or Bunny poster), already size-checked. */
+  /** Trusted entry bytes (R2 entry photo or encoded-video poster), already size-checked. */
   bytes: Uint8Array;
   username: string;
 }

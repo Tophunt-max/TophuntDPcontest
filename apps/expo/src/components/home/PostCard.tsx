@@ -121,14 +121,14 @@ const PhotoMedia = ({ uri, style, width }: { uri?: string; style: any; width?: n
 // battles autoplay muted + looping; FlatList virtualization unmounts off-screen
 // cards, which releases their players.
 const VideoMedia = ({ uri, style, active }: { uri: string; style: any; active: boolean }) => {
-  // Bunny videos need ~10-60s of encoding after upload. Until then there is no
+  // Encoded videos need ~30-120s of processing after upload. Until then there is no
   // playlist to play, so show the poster frame instead of mounting a player that
   // would just error. R2 videos report status null and skip all of this.
   const { isProcessing, isFailed, thumbnailUrl } = useVideoStatus(uri);
   // Resolves playback per platform: the HLS playlist (plus expo-video's disk
   // cache) on native, and on web hls.js attached to the player's own <video>, so
   // the browser plays that same playlist instead of a guessed `play_720p.mp4`
-  // that 404s whenever Bunny never encoded that rendition.
+  // that does not exist.
   // Web: only download segments while this card may play.
   const { hostRef, playerSource, failed: streamFailed } = useHlsVideo(uri, { load: active });
 

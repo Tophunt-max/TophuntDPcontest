@@ -140,6 +140,14 @@ describe('imgVariant — on state', () => {
     }
   });
 
+  it('never transforms an encoded video playlist or segment, but does resize its poster', () => {
+    const id = '00000000-0000-4000-8000-000000000001';
+    for (const key of [`videos/${id}/playlist.m3u8`, `videos/${id}/video_1/segment-0.ts`]) {
+      expect(thumbUrl(env(), `${CURRENT}/${key}`)).toBe(`${CURRENT}/${key}`);
+    }
+    expect(thumbUrl(env(), `${CURRENT}/videos/${id}/thumbnail.jpg`)).toContain('/cdn-cgi/image/');
+  });
+
   it('never transforms video, on either base', () => {
     for (const base of [CURRENT, LEGACY]) {
       for (const ext of ['mp4', 'mov', 'webm', 'm4v']) {

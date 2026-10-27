@@ -6,8 +6,9 @@
  * R2's S3 endpoint has no CORS policy for our origin, and — more importantly —
  * bytes that never pass through us cannot be validated. See `lib/mediaTypes.ts`.
  *
- * This bucket holds IMAGES. Video lives in Bunny Stream — `lib/mediaRouting.ts`
- * owns that decision, `lib/bunny.ts` implements it. What each prefix is for, who
+ * Users upload IMAGES here. Video is encoded by Qencode into this same bucket
+ * (`videos/`, server-written) — `lib/mediaRouting.ts` owns that decision,
+ * `lib/qencode.ts` implements it. What each prefix is for, who
  * may write it, and how it is cached and expired is declared once in
  * `lib/mediaCategories.ts`; this file no longer keeps its own copy of any of it.
  */

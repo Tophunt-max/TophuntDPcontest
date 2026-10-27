@@ -4,7 +4,7 @@ import { getDb, schema } from "../db";
 import { httpsError } from "./http";
 import { deleteAuthUser } from "./firebaseAdmin";
 import { deleteMediaByUrl } from "./mediaDelete";
-import { deleteVideo } from "./bunny";
+import { deleteVideoObjects } from "./qencode";
 import { newId, now } from "./ids";
 import { invalidateBlockCache } from "./blocks";
 import { deleteChatMessagesBySender } from "./chatArchive";
@@ -45,7 +45,7 @@ import { isContestStoryType, purgeVsCompositesForUser } from "./matchStories";
  *    from the moment it is requested, so "deleted" is honest from the user's
  *    point of view, but the data still exists until the grace period lapses.
  *
- * 3. IT WAS NOT RESUMABLE. The work spans two D1 batches plus R2, Bunny, KV and
+ * 3. IT WAS NOT RESUMABLE. The work spans two D1 batches plus R2, KV and
  *    Firebase. A failure part-way left an account half-deleted, and nothing
  *    recorded how far it had got — so nothing could finish it and nobody could
  *    tell it had stalled. The purge is now a phase machine persisted on
@@ -805,10 +805,10 @@ async function phaseSnapshots(env: Env, uid: string): Promise<string[]> {
   await anonymiseMatchSnapshots(env, uid, media);
   await anonymiseChatSnapshots(env, uid);
 
-  // Any Bunny video this user owns, including contest-entry videos and abandoned
-  // uploads that never got attached to anything — neither is reachable from
-  // `posts` or `stories`, so collecting only those two left paid-for footage of
-  // a deleted user's face in the library indefinitely.
+  // Any encoded video this user owns, including contest-entry videos and
+  // abandoned uploads that never got attached to anything — neither is reachable
+  // from `posts` or `stories`, so collecting only those two would leave paid-for
+  // footage of a deleted user's face in the bucket indefinitely.
   for (const row of await db
     .select({
       id: schema.videos.id,
@@ -820,7 +820,7 @@ async function phaseSnapshots(env: Env, uid: string): Promise<string[]> {
     .all()) {
     if (row.playbackUrl) media.add(row.playbackUrl);
     else if (row.mp4Url) media.add(row.mp4Url);
-    // A row that never reached `ready` has no URL at all; the guid is the only
+    // A row that never reached `ready` has no URL at all; its id is the only
     // handle on it, so it is purged directly in the media phase.
   }
 
@@ -955,17 +955,17 @@ async function anonymiseChatSnapshots(env: Env, uid: string): Promise<void> {
 async function phaseMedia(env: Env, uid: string, urls: string[]): Promise<void> {
   await purgeDeletedAccountMedia(env, uid, urls);
 
-  // Rows that never produced a URL (upload abandoned before Bunny finished)
-  // are only reachable by guid.
+  // Rows that never produced a URL (upload abandoned, encode never finished)
+  // are only reachable by id: their output folder and raw source.
   const db = getDb(env);
   const orphans = await db
-    .select({ id: schema.videos.id })
+    .select({ id: schema.videos.id, sourceKey: schema.videos.sourceKey })
     .from(schema.videos)
     .where(eq(schema.videos.ownerUid, uid))
     .all();
   for (const row of orphans) {
-    await deleteVideo(env, row.id).catch((e) =>
-      console.error("[accountDeletion] bunny delete failed", row.id, e),
+    await deleteVideoObjects(env, row.id, row.sourceKey).catch((e) =>
+      console.error("[accountDeletion] video delete failed", row.id, e),
     );
   }
   await db
@@ -1245,7 +1245,7 @@ async function phaseAuth(env: Env, uid: string, reason: string | undefined): Pro
   }
 }
 
-/** Delete the R2/Bunny objects collected during the purge. Best-effort. */
+/** Delete the storage objects collected during the purge. Best-effort. */
 export async function purgeDeletedAccountMedia(env: Env, uid: string, urls: string[]): Promise<void> {
   for (const url of urls) {
     try {
@@ -1314,7 +1314,7 @@ export interface DueDeletionsResult {
 /**
  * Purge every request whose grace period has lapsed.
  *
- * Deliberately capped per tick. A purge touches D1, R2, Bunny, KV and Firebase,
+ * Deliberately capped per tick. A purge touches D1, R2, KV and Firebase,
  * and a Worker invocation has a subrequest budget — draining an unbounded queue
  * in one tick would fail the whole batch rather than the one account that did
  * not fit, and cron would then retry that same failing batch forever.
