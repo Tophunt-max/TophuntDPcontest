@@ -142,8 +142,10 @@ export default function BlogListScreen() {
             // is not building variants. This list was downloading full-resolution
             // covers to render them a few hundred pixels wide.
             source={{ uri: item.coverImageUrlThumb || item.coverImageUrl }}
-            // Full card width (screen minus 32); the 320 thumb was blurry on 3x screens.
+            // Card width, capped at the 320 variant: one size per blog cover saves
+            // free-plan transformations (the article page uses the 1080 one).
             displayWidth={Math.min(screenW, 800) - 32}
+            maxVariantWidth={320}
             style={featured ? styles.featuredImage : styles.cardImage}
             contentFit="cover"
             transition={200}

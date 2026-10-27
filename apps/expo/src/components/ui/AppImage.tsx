@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { PixelRatio } from 'react-native';
 import { Image, type ImageProps } from 'expo-image';
-import { originalImageUrl, previewImageUrl, responsiveImageUrl } from '@/src/lib/imageVariants';
+import { originalImageUrl, responsiveImageUrl } from '@/src/lib/imageVariants';
 
 /**
  * The app's standard image component — a thin wrapper over `expo-image` that
@@ -24,8 +24,7 @@ import { originalImageUrl, previewImageUrl, responsiveImageUrl } from '@/src/lib
  *
  * Responsive sizing (`displayWidth`): pass the width the image is drawn at, in
  * points, and one of our media urls is loaded as a Cloudflare variant of that
- * size × the screen density (src/lib/imageVariants.ts), with a small preview of
- * the same image underneath while it loads. If the variant fails, the ORIGINAL
+ * size × the screen density (src/lib/imageVariants.ts). If the variant fails, the ORIGINAL
  * is tried once before `onError` fires, so a transformation outage degrades to
  * full-size images, never to blank ones. Without `displayWidth` the url is used
  * exactly as given.
@@ -34,8 +33,8 @@ import { originalImageUrl, previewImageUrl, responsiveImageUrl } from '@/src/lib
 type Props = ImageProps & {
   /** Rendered width in points. Enables the responsive Cloudflare variant. */
   displayWidth?: number;
-  /** Skip the low-res preview (e.g. tiny thumbnails, blurred backdrops). */
-  noPreview?: boolean;
+  /** Cap the variant (e.g. 320 for list thumbnails) to save transformations. */
+  maxVariantWidth?: number;
 };
 
 /** Best-effort URI extraction, used only to derive a stable recycling key. */
@@ -57,7 +56,7 @@ export const AppImage: React.FC<Props> = ({
   recyclingKey,
   transition,
   displayWidth,
-  noPreview,
+  maxVariantWidth,
   placeholder,
   onError,
   ...rest
@@ -67,7 +66,7 @@ export const AppImage: React.FC<Props> = ({
   // and refs pass through untouched.
   const resizable = !!rawUri && !Array.isArray(source) && (typeof source === 'string' || typeof source === 'object');
   const dpr = PixelRatio.get();
-  const variant = resizable && displayWidth ? responsiveImageUrl(rawUri, displayWidth, dpr) : rawUri;
+  const variant = resizable && displayWidth ? responsiveImageUrl(rawUri, displayWidth, dpr, maxVariantWidth) : rawUri;
 
   // Fall back to the original once if the variant fails.
   const [useOriginal, setUseOriginal] = useState(false);
@@ -82,9 +81,6 @@ export const AppImage: React.FC<Props> = ({
       : finalUri;
   }, [resizable, finalUri, rawUri, source]);
 
-  const preview =
-    placeholder ??
-    (!noPreview && isVariant && !useOriginal && displayWidth ? previewImageUrl(rawUri, displayWidth, dpr) : null);
 
   return (
     <Image
@@ -95,8 +91,7 @@ export const AppImage: React.FC<Props> = ({
       // variant, so a density change does not count as a different row.
       recyclingKey={recyclingKey ?? rawUri}
       transition={transition ?? 180}
-      placeholder={preview ?? undefined}
-      placeholderContentFit={rest.placeholderContentFit ?? rest.contentFit}
+      placeholder={placeholder}
       onError={(e) => {
         if (isVariant && !useOriginal) {
           setUseOriginal(true);

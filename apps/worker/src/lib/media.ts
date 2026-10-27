@@ -170,6 +170,11 @@ export function imgVariant(env: Env, url: string | null | undefined, opts: ImgOp
     `quality=${opts.quality ?? 80}`,
     `fit=${opts.fit ?? "cover"}`,
     `format=${opts.format ?? "auto"}`,
+    // Free plan: past 5,000 unique transformations a month a NEW variant errors
+    // (9422). With this, Cloudflare answers 307 -> the original instead, so the
+    // image still shows (verified on production: err=9404 -> 307 to the source).
+    // Works because the source and the variant are on the same zone.
+    "onerror=redirect",
   ]
     .filter(Boolean)
     .join(",");

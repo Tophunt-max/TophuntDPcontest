@@ -96,7 +96,6 @@ const FitBackdrop = ({ uri }: { uri?: string | null }) =>
         // Blurred to mush anyway: the smallest variant (128) is plenty and is
         // usually already in the cache from a thumbnail elsewhere.
         displayWidth={40}
-        noPreview
         style={StyleSheet.absoluteFill}
         contentFit="cover"
         blurRadius={24}
@@ -110,8 +109,8 @@ const FitBackdrop = ({ uri }: { uri?: string | null }) =>
 const PhotoMedia = ({ uri, style, width }: { uri?: string; style: any; width?: number }) => (
   <View style={[style, styles.fitFrame]}>
     <FitBackdrop uri={uri} />
-    {/* Loaded at the slot's real width (half the card): the 640 variant on a
-        typical phone instead of the 1080 one, with a 128 preview underneath. */}
+    {/* Loaded at the slot's real width (half the card), so a small or 1x/2x
+        screen gets the 320 variant instead of always the 1080 one. */}
     <ExpoImage source={uri} displayWidth={width} style={StyleSheet.absoluteFill} contentFit="contain" />
   </View>
 );

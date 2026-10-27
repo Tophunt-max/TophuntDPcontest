@@ -2,10 +2,10 @@
  * Responsive image URLs on Cloudflare Image Transformations (Instagram-style).
  *
  * Every image the app draws from our own media host is requested at the size it
- * is DISPLAYED, times the screen's pixel density, rounded UP to one of a small
- * fixed set of widths, with `format=auto` (AVIF / WebP when the device takes it):
+ * is DISPLAYED, times the screen's pixel density, rounded UP to one of three
+ * fixed widths (128 / 320 / 1080), with `format=auto` (AVIF / WebP when the device takes it):
  *
- *   https://media.tophunt.in/cdn-cgi/image/width=640,quality=78,fit=scale-down,format=auto/<key>
+ *   https://media.tophunt.in/cdn-cgi/image/width=320,quality=70,fit=scale-down,format=auto,onerror=redirect/<key>
  *
  * Measured on production: a 41.7 KB avatar is 2.1 KB at 128 and a 342 KB
  * onboarding image is 26.5 KB at 320.
@@ -14,11 +14,11 @@
  * -------------------------------------------------------
  * Cloudflare bills per UNIQUE transformation (image x parameter string), and
  * every unique string is also its own cache entry. Exact sizes would mint a new
- * variant for every phone width. Four buckets cap it at four per image, and
- * three of them (128 / 320 / 1080) use the EXACT parameter strings the Worker
- * already emits (`apps/worker/src/lib/media.ts` avatarUrl / thumbUrl /
- * optimizedUrl), so a URL built here and one returned by the API are the same
- * cache entry. `test/imageVariants.test.ts` pins that parity.
+ * variant for every phone width. Three buckets cap it at three per image, and
+ * they use the EXACT parameter strings the Worker already emits
+ * (`apps/worker/src/lib/media.ts` avatarUrl / thumbUrl / optimizedUrl), so a
+ * URL built here and one returned by the API are the same transformation and
+ * the same cache entry. `test/imageVariants.test.ts` pins that parity.
  *
  * WHAT IS NEVER TRANSFORMED (mirrors the Worker's `imgVariant` rules)
  *  - anything not on our media host (Google avatars, Bunny posters, blog images
@@ -49,12 +49,14 @@ const VIDEO_RE = /\.(mp4|mov|webm|m4v|m3u8)(\?|#|$)/i;
 const CDN_CGI = 'cdn-cgi/image/';
 
 /**
- * Width buckets and the quality used for each. 128 / 320 / 1080 match the
- * Worker presets byte for byte; 640 is the one bucket added on the client, for
- * half-screen battle photos (the most common image in the app).
+ * Width buckets and the quality used for each: EXACTLY the Worker presets
+ * (avatarUrl / thumbUrl / optimizedUrl), byte for byte. Cloudflare's free plan
+ * allows 5,000 unique transformations a month and counts image x size (format
+ * and quality do not count), so every image costs at most three, and a url
+ * built here is the same transformation as the one the API returned.
  */
-export const WIDTH_BUCKETS = [128, 320, 640, 1080] as const;
-const QUALITY: Record<number, number> = { 128: 75, 320: 70, 640: 78, 1080: 82 };
+export const WIDTH_BUCKETS = [128, 320, 1080] as const;
+const QUALITY: Record<number, number> = { 128: 75, 320: 70, 1080: 82 };
 
 /**
  * Story photos are drawn full-width in the viewer. One fixed value (rather than
@@ -134,7 +136,9 @@ export function bucketFor(px: number): number {
 
 /** The variant url at exactly bucket `width` (must be one of WIDTH_BUCKETS). */
 function variantAt(key: string, width: number): string {
-  return `${MEDIA_BASE}${CDN_CGI}width=${width},quality=${QUALITY[width] ?? 80},fit=scale-down,format=auto/${key}`;
+  // `onerror=redirect`: past the free monthly quota a new variant would error;
+  // Cloudflare then 307s to the original instead. Same string as the Worker.
+  return `${MEDIA_BASE}${CDN_CGI}width=${width},quality=${QUALITY[width] ?? 80},fit=scale-down,format=auto,onerror=redirect/${key}`;
 }
 
 /**
@@ -146,24 +150,15 @@ export function responsiveImageUrl<T extends string | null | undefined>(
   url: T,
   displayWidth: number | null | undefined,
   dpr = 1,
+  /** Never pick a bucket wider than this (e.g. 320 for list thumbnails). */
+  maxWidth: number = MAX_VARIANT_WIDTH,
 ): T | string {
   if (!url || typeof url !== 'string') return url;
   if (!transformsEnabled || !displayWidth || !(displayWidth > 0)) return url;
   if (!isTransformable(url)) return url;
   const key = mediaKeyOf(url) as string;
   const density = Math.min(Math.max(dpr || 1, 1), MAX_DPR);
-  return variantAt(key, bucketFor(displayWidth * density));
-}
-
-/**
- * A small, cheap preview of the same image (the 128 bucket, or 320 for large
- * images) to show while the full-size variant loads — the "blurry then sharp"
- * Instagram feel. Null when there is nothing smaller worth showing.
- */
-export function previewImageUrl(url: string | null | undefined, displayWidth: number, dpr = 1): string | null {
-  if (!url || !transformsEnabled || !isTransformable(url)) return null;
-  const main = bucketFor(displayWidth * Math.min(Math.max(dpr || 1, 1), MAX_DPR));
-  if (main <= 320) return null;
-  const key = mediaKeyOf(url) as string;
-  return variantAt(key, main >= 1080 ? 320 : 128);
+  const bucket = bucketFor(displayWidth * density);
+  const capped = [...WIDTH_BUCKETS].reverse().find((w) => w <= Math.min(bucket, maxWidth)) ?? WIDTH_BUCKETS[0];
+  return variantAt(key, capped);
 }
