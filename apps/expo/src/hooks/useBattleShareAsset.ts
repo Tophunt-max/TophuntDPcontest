@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 import { contestService } from '@/src/services/contests/contestService';
 import { resolveBattleShareAsset, type BattleShareAsset } from '@/src/lib/vsShareAsset';
-import { bunnyThumbnailFromUrl } from '@/src/lib/videoSource';
+import { videoThumbnailFromUrl } from '@/src/lib/videoSource';
 import { renderVsCardBlob, vsCardInputFromMatch } from '@/src/lib/webVsCard';
 
 const POLL_MS = 3000;
@@ -18,7 +18,7 @@ export async function drawWebVsCard(matchId: string): Promise<string | null> {
   try {
     const match: any = await contestService.getMatchById(matchId);
     if (!match || (match.id && match.id !== matchId) || match.moderationHeld) return null;
-    const input = vsCardInputFromMatch(match, bunnyThumbnailFromUrl);
+    const input = vsCardInputFromMatch(match, videoThumbnailFromUrl);
     if (!input) return null;
     return URL.createObjectURL(await renderVsCardBlob(input));
   } catch (e) {

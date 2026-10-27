@@ -85,12 +85,9 @@ export const CONTENT_SECURITY_POLICY =
   "media-src 'self' blob: https:; " +
   "font-src 'self' data:; " +
   "connect-src 'self' blob: https://api.tophunt.in wss://api.tophunt.in https://media.tophunt.in " +
-  // Bunny Stream. The client uploads video via TUS straight to
-  // video.bunnycdn.com, and web HLS playback (hls.js) fetches the playlist +
-  // segments from the pull zone (*.b-cdn.net) over XHR — both are governed by
-  // connect-src, NOT media-src, so without these the upload is blocked before it
-  // leaves the page and web playback silently fails.
-  'https://video.bunnycdn.com https://*.b-cdn.net ' +
+  // Encoded video (Qencode output) is served from media.tophunt.in above and
+  // uploads go to the API origin, so neither needs another host. hls.js fetches
+  // playlists + segments over XHR, which is connect-src, not media-src.
   'https://tophunt-api.weadown-in.workers.dev wss://tophunt-api.weadown-in.workers.dev ' +
   'https://tophunt-api-staging.weadown-in.workers.dev wss://tophunt-api-staging.weadown-in.workers.dev ' +
   'https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com ' +
@@ -101,7 +98,7 @@ export const CONTENT_SECURITY_POLICY =
   // 'self': on tophunt.in the Firebase auth iframe is served first-party from
   // `/__/auth/iframe` (see FIREBASE_AUTH_PROXY below).
   "frame-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.firebaseapp.com; " +
-  // `blob:` is required by hls.js, which plays Bunny HLS on the web: it spawns
+  // `blob:` is required by hls.js, which plays HLS on the web: it spawns
   // its demuxer in a Web Worker created from a blob URL. Without this the worker
   // is blocked and playback degrades to the main thread (or fails outright).
   "worker-src 'self' blob:; " +
@@ -990,19 +987,14 @@ const SHARE_MEDIA_ORIGIN = 'https://media.tophunt.in';
 // (mirrors worker/src/lib/mediaCategories.ts: entries, avatars, VS cards, prize
 // product photos — never deposits, reports, chat or payment QR codes)
 const SHARE_MEDIA_PREFIXES = ['contests/', 'contest-entries/', 'avatars/', 'vs-cards/', 'product-images/'];
-const BUNNY_POSTER_HOST = /^[a-z0-9-]+\.b-cdn\.net$/i;
+/** Encoded-video posters (`videos/<uuid>/thumbnail.jpg`) — the poster only, never playlists or segments. */
+const VIDEO_POSTER_KEY = /^videos\/[0-9a-f-]{36}\/thumbnail\.jpg$/i;
 
 /** The upstream url for a /share-media/ path, or null when it is not allowed. */
 export function shareMediaUpstream(pathname) {
   const rest = pathname.slice(SHARE_MEDIA_PATH.length);
   if (!rest || rest.includes('..') || rest.includes('//') || /[\\\s]/.test(rest)) return null;
-  if (rest.startsWith('bunny/')) {
-    const [host, ...parts] = rest.slice('bunny/'.length).split('/');
-    const tail = parts.join('/');
-    if (!host || !BUNNY_POSTER_HOST.test(host) || !/\.(jpe?g|png|webp)$/i.test(tail)) return null;
-    return `https://${host.toLowerCase()}/${tail}`;
-  }
-  if (!SHARE_MEDIA_PREFIXES.some((p) => rest.startsWith(p))) return null;
+  if (!SHARE_MEDIA_PREFIXES.some((p) => rest.startsWith(p)) && !VIDEO_POSTER_KEY.test(rest)) return null;
   return `${SHARE_MEDIA_ORIGIN}/${rest}`;
 }
 

@@ -51,7 +51,7 @@ describe('responsive image variants', () => {
 
   it.each([
     ['third-party avatar', 'https://lh3.googleusercontent.com/a/abc=s96-c'],
-    ['bunny poster', 'https://vz-123.b-cdn.net/guid/thumbnail.jpg'],
+    ['third-party poster', 'https://vz-123.b-cdn.net/guid/thumbnail.jpg'],
     ['video', 'https://media.tophunt.in/stories/u1/clip.mp4'],
     ['VS card (proxy-only)', 'https://media.tophunt.in/vs-cards/m1.jpg'],
     ['contest banner (proxy-only)', 'https://media.tophunt.in/contest-banners/2026/10/b.jpg'],

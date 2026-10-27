@@ -172,7 +172,7 @@ describe('folder policy', () => {
 
   /**
    * The legacy video escape hatch, which is what keeps the cutover from being an
-   * outage: until Bunny is provisioned, `lib/mediaRouting.ts` passes
+   * outage: until Qencode is provisioned, `lib/mediaRouting.ts` passes
    * `allowLegacyVideo` and the five prefixes the app actually offered video in
    * accept it again. Pinned because deleting this branch is a planned follow-up,
    * and it must be deleted deliberately rather than by a refactor.

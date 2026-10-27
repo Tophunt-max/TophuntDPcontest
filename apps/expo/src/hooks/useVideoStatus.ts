@@ -1,13 +1,13 @@
 import { useQuery } from '@tanstack/react-query';
 
 import { callApi } from '@/src/services/api';
-import { bunnyGuidFromUrl, bunnyThumbnailFromUrl } from '@/src/lib/videoSource';
+import { videoIdFromUrl, videoThumbnailFromUrl } from '@/src/lib/videoSource';
 
 /**
- * Resolve whether a Bunny video has finished encoding.
+ * Resolve whether an encoded video has finished encoding.
  *
  * New UI state introduced by the migration: with R2 a video was playable the
- * instant the upload finished, but Bunny needs roughly 10-60s of encoding first.
+ * instant the upload finished, but an encoded video needs roughly 30-120s first.
  * Callers use `isProcessing` to show the poster frame with a "Processing…"
  * overlay instead of a player that would just error.
  *
@@ -28,17 +28,15 @@ interface VideoStatusRow {
 }
 
 export interface UseVideoStatusResult {
-  /** Null for non-Bunny (R2) media, which is always immediately playable. */
+  /** Null for raw R2 media, which is always immediately playable. */
   status: VideoStatus | null;
   isProcessing: boolean;
   isFailed: boolean;
   thumbnailUrl: string | null;
   durationSec: number | null;
   /**
-   * The progressive MP4 the Worker resolved from Bunny's real
-   * `availableResolutions` — the url web playback should use, instead of guessing
-   * `play_720p.mp4` (which 404s whenever that rendition was never encoded). Null
-   * when the library has MP4 Fallback off, or for non-Bunny media.
+   * A progressive MP4 for web playback, when the server has one. Always null for
+   * Qencode videos (web plays their HLS through hls.js) and for raw R2 media.
    */
   mp4Url: string | null;
 }
@@ -50,7 +48,7 @@ const isTerminal = (status: string | null | undefined) => status === 'ready' || 
  *
  * It polled every 5 s forever while the status was not terminal, per mounted
  * card, and forever when the server had no row at all (`null`), which is
- * never going to change. Now: 5 s for the first minute (a normal Bunny
+ * never going to change. Now: 5 s for the first minute (a normal short
  * encode), then backing off to a minute, and stopping after about 30 minutes.
  * No row: stop after three answers. A remount (or the next screen) asks again.
  */
@@ -63,7 +61,7 @@ export function videoStatusPollMs(status: string | null, answers: number): numbe
 }
 
 export function useVideoStatus(mediaUrl?: string | null): UseVideoStatusResult {
-  const guid = bunnyGuidFromUrl(mediaUrl);
+  const guid = videoIdFromUrl(mediaUrl);
 
   const { data } = useQuery({
     queryKey: ['videoStatus', guid],
@@ -100,7 +98,7 @@ export function useVideoStatus(mediaUrl?: string | null): UseVideoStatusResult {
     // mounting a player against a playlist that does not exist yet.
     isProcessing: status === 'uploading' || status === 'processing',
     isFailed: status === 'failed',
-    thumbnailUrl: data?.thumbnailUrl || bunnyThumbnailFromUrl(mediaUrl),
+    thumbnailUrl: data?.thumbnailUrl || videoThumbnailFromUrl(mediaUrl),
     durationSec: data?.durationSec ?? null,
     mp4Url: data?.mp4Url ?? null,
   };

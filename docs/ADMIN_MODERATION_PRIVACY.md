@@ -95,7 +95,7 @@ gate and routes), `apps/worker/src/routes/api.ts` (`createReport`),
 | `video` | `first_frame` (with ms), `stall`, `error` | Story viewer video status |
 | `search` | `results`, `empty` | Explore search, once per settled query (no query text) |
 | `sync` | `sent`, `retry`, `failed` | Offline outbox drain totals |
-| `upload` | `ok` (with ms), `failed`, `cancelled` | R2 and Bunny transfers |
+| `upload` | `ok` (with ms), `failed`, `cancelled` | R2 and video (Qencode pipeline) transfers |
 
 - **No identifiers.** A batch has the platform (`ios`/`android`/`web`/`other`), the
   app version (`1.2.3` shape, else `unknown`) and the counters. No uid, device id,

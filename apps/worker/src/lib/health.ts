@@ -109,14 +109,14 @@ export async function computeDeepHealth(env: Env): Promise<DeepHealth> {
 
   // Third-party integrations. Video is optional (see the `media_routing` check
   // below, which is where the video provider is actually judged), so an
-  // unconfigured Bunny does not fail this on its own.
+  // unconfigured Qencode does not fail this on its own.
   try {
     const providers = await integrationHealth(env);
     const missing = Object.entries(providers)
       .filter(([, ok]) => !ok)
       .map(([name]) => name);
     checks.integrations = {
-      ok: missing.filter((m) => m !== "bunnyVideo").length === 0,
+      ok: missing.filter((m) => m !== "qencodeVideo").length === 0,
       detail: missing.length ? `not configured: ${missing.join(", ")}` : undefined,
     };
   } catch (e: any) {
@@ -127,7 +127,7 @@ export async function computeDeepHealth(env: Env): Promise<DeepHealth> {
   //
   // Worth its own line because the two ways of running on R2 are indistinguishable
   // from outside and mean opposite things. An operator who deliberately selected
-  // R2 is fine. An operator who selected Bunny and did not finish wiring it is
+  // R2 is fine. An operator who selected Qencode and did not finish wiring it is
   // ALSO silently serving the R2 path — same behaviour, but a half-finished
   // cutover nobody is being told about, and the video library they think they are
   // filling is empty. Only the second fails the check.
@@ -137,11 +137,12 @@ export async function computeDeepHealth(env: Env): Promise<DeepHealth> {
     checks.media_routing = {
       ok,
       detail:
-        routing.reason === "bunny-live"
-          ? "video: bunny (R2 refuses video)"
+        routing.reason === "qencode-live"
+          ? "video: qencode (POST /upload refuses raw video)"
           : routing.reason === "provider-setting"
             ? "video: r2 (legacy path, selected in the admin panel)"
-            : "video provider is set to bunny but its config is incomplete — video is silently falling back to R2",
+            : "video provider is set to qencode but its config is incomplete (QENCODE_API_KEY, R2_ACCOUNT_ID, R2_BUCKET, " +
+              "R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY) — video is silently falling back to R2",
     };
   } catch (e: any) {
     checks.media_routing = { ok: false, detail: e?.message || "media routing check failed" };

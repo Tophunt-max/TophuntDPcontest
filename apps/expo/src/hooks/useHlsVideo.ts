@@ -3,7 +3,7 @@ import type { VideoSource } from 'expo-video';
 import { videoSourceFor } from '@/src/lib/videoSource';
 
 /**
- * Make a Bunny HLS stream playable on the current platform.
+ * Make an HLS stream (an encoded video) playable on the current platform.
  *
  * NATIVE implementation — a no-op passthrough. iOS (AVPlayer) and Android
  * (ExoPlayer) both play HLS natively, which is where adaptive bitrate comes

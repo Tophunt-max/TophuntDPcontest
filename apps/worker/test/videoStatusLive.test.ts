@@ -1,40 +1,23 @@
 /**
- * `videoStatus` re-checks an unfinished encode against Bunny on demand.
+ * `videoStatus` re-checks an unfinished encode against Qencode on demand.
  *
- * Why this exists: Bunny's encode webhook is OPTIONAL and is configured in their
- * dashboard, not by this code. On a deployment without it, the ONLY thing that
- * ever moved a row out of `processing` was the reconcile cron — which waits 15
- * minutes before spending a Bunny call and runs every 10. So a video that Bunny
- * finished in under a minute kept showing "Processing…" in the app for up to ~25
- * minutes, which is exactly what it looked like in the wild.
+ * Why this exists: the callback is a single best-effort delivery, and a job the
+ * cron (re)started has no callback at all. Without a live check the ONLY thing
+ * that moved a row out of `processing` would be the reconcile cron — which waits
+ * 15 minutes and runs every 10 — so a video encoded in a minute would show
+ * "Processing…" for up to ~25.
  *
- * The client already polls this action every 5s, so the fix is for the poll
- * itself to ask Bunny. These tests pin that it does, that it stays cheap
- * (throttled by `updatedAt`, so extra viewers cannot amplify the calls), and that
- * a Bunny failure still returns the stored row instead of breaking the poll.
+ * The client already polls this action every 5s, so the poll itself asks
+ * Qencode. These tests pin that it does, that it stays cheap (throttled by
+ * `updatedAt`, so extra viewers cannot amplify the calls), and that a Qencode
+ * failure still returns the stored row instead of breaking the poll.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../src/lib/firebaseAuth', () => ({
   verifyIdToken: async (token: string) => ({ uid: token, role: 'user' }),
   bearerToken: (h?: string | null) => (h && h.startsWith('Bearer ') ? h.slice(7) : null),
 }));
-
-const getVideoMock = vi.fn();
-let bunnyOn = true;
-
-vi.mock('../src/lib/bunny', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../src/lib/bunny')>();
-  return {
-    ...actual, // keep the real mapBunnyStatus
-    bunnyConfigured: async () => bunnyOn,
-    getVideo: (...a: any[]) => getVideoMock(...a),
-    deleteVideo: async () => undefined,
-    bunnyThumbnailUrl: async (_e: any, g: string) => `https://cdn.test/${g}/thumbnail.jpg`,
-    bunnyPlaybackUrl: async (_e: any, g: string) => `https://cdn.test/${g}/playlist.m3u8`,
-    bunnyMp4Url: async (_e: any, g: string) => `https://cdn.test/${g}/play_720p.mp4`,
-  };
-});
 vi.mock('../src/lib/notify', () => ({ createNotification: async () => {} }));
 vi.mock('../src/lib/voteCounter', () => ({
   castVote: async () => ({ votesA: 0, votesB: 0, total: 0, alreadyVoted: false, deviceUsed: false, votingClosed: false }),
@@ -44,16 +27,19 @@ vi.mock('../src/lib/voteCounter', () => ({
 }));
 
 import { makeEnv, makeApp, fakeCtx, drizzleOf, type TestEnv } from './helpers/harness';
+import { installFakeQencode, QENCODE_ENV, selectVideoProvider, writeEncodedOutput, type FakeQencode } from './helpers/qencode';
 import { LIVE_STATUS_RECHECK_MS } from '../src/lib/videoReconcile';
-import { pickMp4Height } from '../src/lib/bunny';
+import { mapQencodeStatus, videoIdFromUrl } from '../src/lib/qencode';
 import * as schema from '../src/db/schema';
 
 const app = makeApp();
+const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 
+let q: FakeQencode;
 beforeEach(() => {
-  bunnyOn = true;
-  getVideoMock.mockReset();
+  q = installFakeQencode();
 });
+afterEach(() => q.restore());
 
 async function status(env: TestEnv, uid: string, videoIds: string[]) {
   const res = await app.request(
@@ -69,23 +55,27 @@ async function status(env: TestEnv, uid: string, videoIds: string[]) {
   return { status: res.status, body: (await res.json().catch(() => ({}))) as any };
 }
 
-async function seedUser(env: TestEnv, uid: string) {
+async function liveEnv(provider: 'qencode' | 'r2' = 'qencode'): Promise<TestEnv> {
+  const { env } = makeEnv(QENCODE_ENV);
+  await selectVideoProvider(env, provider);
   const ts = Date.now();
   await drizzleOf(env)
     .insert(schema.users)
-    .values({ signupCompleted: true, uid, username: uid, fullName: uid, status: 'active', dpcoin: 0, createdAt: ts, updatedAt: ts } as any);
+    .values({ signupCompleted: true, uid: 'u1', username: 'u1', fullName: 'u1', status: 'active', dpcoin: 0, createdAt: ts, updatedAt: ts } as any);
+  return env;
 }
 
-/** A video row whose last check was `ageMs` ago. */
-async function seedVideo(env: TestEnv, id: string, videoStatus: string, ageMs: number) {
+/** A video row whose last check was `ageMs` ago, with Qencode job `job-<id>`. */
+async function seedVideo(env: TestEnv, vid: string, videoStatus: string, ageMs: number) {
   const ts = Date.now();
   await drizzleOf(env)
     .insert(schema.videos)
     .values({
-      id,
+      id: vid,
       ownerUid: 'u1',
-      provider: 'bunny',
+      provider: 'qencode',
       status: videoStatus,
+      jobId: `job-${vid}`,
       targetType: 'story',
       createdAt: ts - ageMs,
       updatedAt: ts - ageMs,
@@ -93,127 +83,116 @@ async function seedVideo(env: TestEnv, id: string, videoStatus: string, ageMs: n
 }
 
 const STALE = LIVE_STATUS_RECHECK_MS + 5_000;
+const statusCalls = () => q.calls.filter((c) => c === '/v1/status').length;
 
 describe('videoStatus live recheck', () => {
-  it('asks Bunny for a processing video and returns it READY in the same response', async () => {
-    const { env } = makeEnv();
-    await seedUser(env, 'u1');
-    await seedVideo(env, 'vid1', 'processing', STALE);
-    // Bunny status 4 = resolution done (playable).
-    getVideoMock.mockResolvedValue({ status: 4, length: 9 });
+  it('asks Qencode for a processing video and returns it READY in the same response', async () => {
+    const env = await liveEnv();
+    await seedVideo(env, id(1), 'processing', STALE);
+    q.jobs.set(`job-${id(1)}`, { status: 'completed', duration: '9' });
+    await writeEncodedOutput(env, id(1));
 
-    const res = await status(env, 'u1', ['vid1']);
+    const res = await status(env, 'u1', [id(1)]);
 
     expect(res.status).toBe(200);
-    expect(getVideoMock).toHaveBeenCalledTimes(1);
+    expect(statusCalls()).toBe(1);
     // The overlay clears on THIS poll — no waiting for the 15-minute cron.
     expect(res.body.videos[0].status).toBe('ready');
-    expect(res.body.videos[0].playbackUrl).toBe('https://cdn.test/vid1/playlist.m3u8');
+    expect(res.body.videos[0].playbackUrl).toBe(`https://cdn.test/videos/${id(1)}/playlist.m3u8`);
   });
 
-  it('does NOT call Bunny again for a video checked within the window', async () => {
-    const { env } = makeEnv();
-    await seedUser(env, 'u1');
-    // Checked just now — a 5s client poll must not spend a Bunny call.
-    await seedVideo(env, 'vid2', 'processing', 1_000);
-    getVideoMock.mockResolvedValue({ status: 4 });
+  it('does NOT call Qencode again for a video checked within the window', async () => {
+    const env = await liveEnv();
+    await seedVideo(env, id(2), 'processing', 1_000);
+    q.jobs.set(`job-${id(2)}`, { status: 'completed' });
 
-    const res = await status(env, 'u1', ['vid2']);
+    const res = await status(env, 'u1', [id(2)]);
 
-    expect(getVideoMock).not.toHaveBeenCalled();
+    expect(statusCalls()).toBe(0);
     expect(res.body.videos[0].status).toBe('processing');
   });
 
   it('leaves a genuinely-still-encoding video as processing', async () => {
-    const { env } = makeEnv();
-    await seedUser(env, 'u1');
-    await seedVideo(env, 'vid3', 'processing', STALE);
-    // Bunny status 1 = still processing.
-    getVideoMock.mockResolvedValue({ status: 1 });
+    const env = await liveEnv();
+    await seedVideo(env, id(3), 'processing', STALE);
+    q.jobs.set(`job-${id(3)}`, { status: 'encoding' });
 
-    const res = await status(env, 'u1', ['vid3']);
+    const res = await status(env, 'u1', [id(3)]);
 
-    expect(getVideoMock).toHaveBeenCalledTimes(1);
+    expect(statusCalls()).toBe(1);
     expect(res.body.videos[0].status).toBe('processing');
   });
 
-  it('surfaces a Bunny encode failure instead of spinning forever', async () => {
-    const { env } = makeEnv();
-    await seedUser(env, 'u1');
-    await seedVideo(env, 'vid4', 'processing', STALE);
-    // Bunny status 5 = failed.
-    getVideoMock.mockResolvedValue({ status: 5 });
+  it('surfaces an encode failure instead of spinning forever', async () => {
+    const env = await liveEnv();
+    await seedVideo(env, id(4), 'processing', STALE);
+    q.jobs.set(`job-${id(4)}`, { status: 'error', error: 1, error_description: 'bad source' });
 
-    const res = await status(env, 'u1', ['vid4']);
+    const res = await status(env, 'u1', [id(4)]);
 
     expect(res.body.videos[0].status).toBe('failed');
   });
 
-  it('still returns the stored row when the Bunny call throws (fail-open)', async () => {
-    const { env } = makeEnv();
-    await seedUser(env, 'u1');
-    await seedVideo(env, 'vid5', 'processing', STALE);
-    getVideoMock.mockRejectedValue(new Error('bunny down'));
+  it('still returns the stored row when the Qencode call fails (fail-open)', async () => {
+    const env = await liveEnv();
+    await seedVideo(env, id(5), 'processing', STALE);
+    q.failStatus = true;
 
-    const res = await status(env, 'u1', ['vid5']);
+    const res = await status(env, 'u1', [id(5)]);
 
     expect(res.status).toBe(200);
     expect(res.body.videos[0].status).toBe('processing');
   });
 
-  it('never calls Bunny for an already-ready video', async () => {
-    const { env } = makeEnv();
-    await seedUser(env, 'u1');
-    await seedVideo(env, 'vid6', 'ready', STALE);
+  it('never calls Qencode for an already-ready video', async () => {
+    const env = await liveEnv();
+    await seedVideo(env, id(6), 'ready', STALE);
 
-    const res = await status(env, 'u1', ['vid6']);
+    const res = await status(env, 'u1', [id(6)]);
 
-    expect(getVideoMock).not.toHaveBeenCalled();
+    expect(statusCalls()).toBe(0);
     expect(res.body.videos[0].status).toBe('ready');
   });
 
-  it('no-ops the live check when Bunny is not the provider', async () => {
-    const { env } = makeEnv();
-    bunnyOn = false;
-    await seedUser(env, 'u1');
-    await seedVideo(env, 'vid7', 'processing', STALE);
+  it('no-ops the live check when Qencode is not the provider', async () => {
+    const env = await liveEnv('r2');
+    await seedVideo(env, id(7), 'processing', STALE);
 
-    const res = await status(env, 'u1', ['vid7']);
+    const res = await status(env, 'u1', [id(7)]);
 
-    expect(getVideoMock).not.toHaveBeenCalled();
+    expect(statusCalls()).toBe(0);
     expect(res.body.videos[0].status).toBe('processing');
   });
 });
 
-/**
- * Which MP4 rendition we link on web.
- *
- * `mp4Url` was hardcoded to 720p. Bunny only produces the renditions the library
- * enabled and never upscales, so for a library capped at 480p — or a source
- * smaller than 720 lines — `play_720p.mp4` does not exist. The url 404s and the
- * web player, which has no native HLS to fall back to, reports the video as
- * unplayable. Indistinguishable from a broken upload to the person watching.
- */
-describe('pickMp4Height', () => {
-  it('picks the best rendition Bunny actually encoded', () => {
-    expect(pickMp4Height('240p,360p,480p')).toBe(480);
-    expect(pickMp4Height('240p,360p,480p,720p')).toBe(720);
-    expect(pickMp4Height('720p,1080p')).toBe(1080);
+describe('videoIdFromUrl', () => {
+  const env = { R2_PUBLIC_BASE_URL: 'https://media.test', R2_LEGACY_BASE_URLS: 'https://old.test/media' } as any;
+  const v = id(9);
+
+  it('recovers the id from the playlist, the poster or a segment on any owned base', () => {
+    expect(videoIdFromUrl(env, `https://media.test/videos/${v}/playlist.m3u8`)).toBe(v);
+    expect(videoIdFromUrl(env, `https://media.test/videos/${v}/thumbnail.jpg`)).toBe(v);
+    expect(videoIdFromUrl(env, `https://media.test/videos/${v}/video_1/segment-3.ts`)).toBe(v);
+    expect(videoIdFromUrl(env, `https://old.test/media/videos/${v}/playlist.m3u8`)).toBe(v);
   });
 
-  it('tolerates whitespace and bare numbers', () => {
-    expect(pickMp4Height(' 360p , 480p ')).toBe(480);
-    expect(pickMp4Height('360,480')).toBe(480);
+  it('returns null for anything that is not an encoded video of ours', () => {
+    expect(videoIdFromUrl(env, `https://media.test/stories/2026/10/${v}.mp4`)).toBeNull();
+    expect(videoIdFromUrl(env, `https://evil.test/videos/${v}/playlist.m3u8`)).toBeNull();
+    expect(videoIdFromUrl(env, `https://media.test/videos/not-a-uuid/playlist.m3u8`)).toBeNull();
+    // The retired Bunny shape.
+    expect(videoIdFromUrl(env, `https://vz-x.b-cdn.net/${v}/playlist.m3u8`)).toBeNull();
+    expect(videoIdFromUrl(env, null)).toBeNull();
   });
+});
 
-  it('falls back to 720p when Bunny reported no list at all', () => {
-    // Older API responses omit it; keep the previous behaviour rather than
-    // dropping the url entirely.
-    expect(pickMp4Height(undefined)).toBe(720);
-    expect(pickMp4Height('')).toBe(720);
-  });
-
-  it('returns null when the list has nothing we recognise', () => {
-    expect(pickMp4Height('144p')).toBe(null);
+describe('mapQencodeStatus', () => {
+  it('maps Qencode job states onto ours', () => {
+    expect(mapQencodeStatus(null)).toBe('processing');
+    for (const s of ['queued', 'downloading', 'encoding', 'saving']) {
+      expect(mapQencodeStatus({ status: s, error: false, errorDescription: null, durationSec: null })).toBe('processing');
+    }
+    expect(mapQencodeStatus({ status: 'completed', error: false, errorDescription: null, durationSec: 3 })).toBe('ready');
+    expect(mapQencodeStatus({ status: 'completed', error: true, errorDescription: 'x', durationSec: null })).toBe('failed');
   });
 });

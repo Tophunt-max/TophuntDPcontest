@@ -16,7 +16,7 @@ import { AlertTriangle, Clock, Trash2, Undo2, CheckCircle2 } from "lucide-react"
  * are leaving, what they say on the way out, and — the one that actually breaks
  * things — whether a purge is stuck.
  *
- * The last one matters most. A purge spans D1, R2, Bunny, KV and Firebase, and it
+ * The last one matters most. A purge spans D1, R2, KV and Firebase, and it
  * runs from cron, so a failure produces no HTTP error for anyone to see: the
  * worker's error logging deliberately skips 4xx, and a cron failure only writes a
  * console line. A deletion that stalls mid-phase would sit there silently while

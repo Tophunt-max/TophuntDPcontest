@@ -28,7 +28,7 @@
  *                 refresh) race on this one statement; exactly one wins.
  *   2. VERIFY     both participants distinct, present, joined, not deleted/banned,
  *                 not blocking each other; entries are OWNED media (R2 contest
- *                 prefixes, or a ready Bunny video owned by that participant).
+ *                 prefixes, or a ready encoded video owned by that participant).
  *   3. COMPOSE    deterministic R2 key `vs-cards/battles/<matchId>-v<N>.jpg`. If an
  *                 object with matching customMetadata (match, both uids, render
  *                 version) is already there — an earlier attempt uploaded but died
@@ -53,7 +53,7 @@ import { now } from "./ids";
 import { canonicalMediaUrl, deleteVsImageByPublicUrl, mediaKeyFromPublicUrl, vsImageKeyFromPublicUrl } from "./r2";
 import { isSafeRelativeKey, VS_CARD_PREFIX } from "./mediaCategories";
 import { sniffMediaMime, isImageMime } from "./mediaTypes";
-import { bunnyConfig, guidFromUrl } from "./bunny";
+import { thumbnailKey, videoIdFromUrl } from "./qencode";
 import { isBlockedBetween } from "./blocks";
 import { isHiddenAccountStatus } from "./accountStatus";
 import { logErrorToDb } from "./observability";
@@ -74,7 +74,6 @@ export const VS_RENDER_TIMEOUT_MS = 25_000;
 /** Entry photos are client-downscaled; this is a generous ceiling, under the 20MB binding limit. */
 export const VS_MAX_ENTRY_BYTES = 15 * 1024 * 1024;
 export const VS_MAX_POSTER_BYTES = 5 * 1024 * 1024;
-const POSTER_FETCH_TIMEOUT_MS = 10_000;
 
 /** R2 prefixes a contest entry photo may live under (see mediaCategories). */
 const ENTRY_PREFIXES = ["contests/", "contest-entries/"];
@@ -261,43 +260,34 @@ async function readR2Entry(env: Env, url: string, ownerUid: string): Promise<{ k
 }
 
 /**
- * The poster frame of a participant's Bunny video — only once that video is
- * `ready`, only if it belongs to that participant, only from our pull zone.
- * No thumbnail, no poster: we never invent one.
+ * The poster frame of a participant's encoded video — only once that video is
+ * `ready`, only if it belongs to that participant, and read straight from our
+ * bucket (`videos/<id>/thumbnail.jpg`), never from a URL. No poster, no card:
+ * we never invent one.
  */
 async function readVideoPoster(env: Env, url: string, ownerUid: string): Promise<{ key: string; bytes: Uint8Array }> {
-  const guid = await guidFromUrl(env, url);
-  if (!guid) throw new PermanentVsError("video_poster_unavailable", "entry is not a Bunny-hosted video");
-  const video = await getDb(env).select().from(schema.videos).where(eq(schema.videos.id, guid)).get();
+  const videoId = videoIdFromUrl(env, url);
+  if (!videoId) throw new PermanentVsError("video_poster_unavailable", "entry is not an encoded video");
+  const video = await getDb(env).select().from(schema.videos).where(eq(schema.videos.id, videoId)).get();
   if (!video || video.ownerUid !== ownerUid) throw new PermanentVsError("untrusted_media", "video is not owned by participant");
   if (video.status === "failed") throw new PermanentVsError("video_failed");
   if (video.status !== "ready") throw new TransientVsError("video_not_ready", undefined, 5 * 60 * 1000);
-  const cfg = await bunnyConfig(env);
-  const poster = video.thumbnailUrl;
-  let host = "";
+  const key = thumbnailKey(videoId);
+  let obj: R2ObjectBody | null;
   try {
-    host = poster ? new URL(poster).hostname : "";
-  } catch {
-    host = "";
-  }
-  if (!poster || !cfg || host !== cfg.cdnHostname || !poster.startsWith("https://")) {
-    throw new PermanentVsError("video_poster_unavailable");
-  }
-  let res: Response;
-  try {
-    res = await fetch(poster, { redirect: "error", signal: AbortSignal.timeout(POSTER_FETCH_TIMEOUT_MS) });
+    obj = await env.MEDIA.get(key);
   } catch (e: any) {
     throw new TransientVsError("poster_fetch_failed", e?.message);
   }
-  if (res.status === 404) throw new TransientVsError("poster_not_ready", undefined, 5 * 60 * 1000);
-  if (!res.ok) throw new TransientVsError("poster_fetch_failed", `HTTP ${res.status}`);
-  const declared = Number(res.headers.get("content-length") || 0);
-  if (declared > VS_MAX_POSTER_BYTES) throw new PermanentVsError("media_too_large");
-  const bytes = new Uint8Array(await res.arrayBuffer());
+  if (!obj) throw new PermanentVsError("video_poster_unavailable");
+  if (typeof (obj as any).size === "number" && (obj as any).size > VS_MAX_POSTER_BYTES) {
+    throw new PermanentVsError("media_too_large");
+  }
+  const bytes = new Uint8Array(await new Response((obj as any).body).arrayBuffer());
   if (bytes.length > VS_MAX_POSTER_BYTES) throw new PermanentVsError("media_too_large");
   const mime = sniffMediaMime(bytes);
   if (!mime || !isImageMime(mime)) throw new PermanentVsError("unsupported_format");
-  return { key: `bunny:${guid}`, bytes };
+  return { key, bytes };
 }
 
 async function resolveEntry(env: Env, match: any, p: Participant): Promise<{ key: string; bytes: Uint8Array }> {

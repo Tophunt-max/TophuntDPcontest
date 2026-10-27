@@ -126,9 +126,8 @@ export default function StoryView() {
    *
    * Needed because `isLoading` was only ever cleared by `readyToPlay`, and the
    * progress animation was started from that same branch — so a video that failed
-   * to load left a spinner up forever AND never advanced the story. A Bunny video
-   * hits exactly that during its 10-60s encode, as does one whose MP4 fallback is
-   * missing on the web.
+   * to load left a spinner up forever AND never advanced the story. An encoded
+   * video hits exactly that during its encode, as does one the web cannot play.
    */
   const [videoError, setVideoError] = useState(false);
   // The image of a photo story failed to load.
@@ -357,7 +356,7 @@ export default function StoryView() {
 
   /**
    * Consulted for TWO things: to explain a playback failure, and — on web — to
-   * get the MP4 url Bunny actually encoded.
+   * get a progressive MP4 url when the server has one.
    *
    * It never GATES the player. Gating on it (as the feed's PostCard does) would
    * put an API round trip in front of every video story, including the
@@ -378,7 +377,7 @@ export default function StoryView() {
    *
    * On web this returns a null source and attaches hls.js to expo-video's own
    * `<video>` element, so the browser plays the same HLS playlist native does —
-   * no dependency on Bunny's MP4 Fallback being enabled or on a specific
+   * no dependency on a progressive MP4 existing or on a specific
    * rendition existing. `hostRef` goes on the View wrapping <VideoView>.
    */
   const { hostRef: videoHostRef, playerSource, failed: storyStreamFailed } = useHlsVideo(
@@ -1058,8 +1057,8 @@ export default function StoryView() {
             <LinearGradient pointerEvents="none" colors={['transparent', 'rgba(0,0,0,0.6)']} style={styles.scrimBottom} />
             {isLoading && <View style={styles.loader}><ActivityIndicator size="large" color="white" /></View>}
             {/*
-              Shown instead of a spinner that would never resolve. Bunny needs
-              10-60s to encode, so a story opened right after posting is the common
+              Shown instead of a spinner that would never resolve. A video needs
+              30-120s to encode, so a story opened right after posting is the common
               case here and deserves an honest label rather than "unavailable".
             */}
             {videoError && (

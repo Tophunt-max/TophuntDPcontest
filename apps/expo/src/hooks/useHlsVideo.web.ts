@@ -7,17 +7,17 @@ import type { HlsVideoBinding, HlsVideoOptions } from './useHlsVideo';
 import { hlsErrorKind, initialHlsRecovery, nextHlsRecovery } from '@/src/lib/hlsRecovery';
 
 /**
- * Play a Bunny HLS stream on the WEB, where nothing plays it natively.
+ * Play an HLS stream (an encoded video) on the WEB, where nothing plays it natively.
  *
  * ## Why this exists
  *
- * Chrome, Firefox and Edge cannot play an `.m3u8` playlist. The app worked around
- * that by rewriting the URL to Bunny's progressive MP4 (`play_720p.mp4`), which
- * has two failure modes and hit both:
+ * Chrome, Firefox and Edge cannot play an `.m3u8` playlist. The app used to work
+ * around that by rewriting the URL to a progressive MP4 (`play_720p.mp4`) from
+ * the previous provider (Bunny), which had two failure modes and hit both:
  *
  *   1. it requires "MP4 Fallback" to be switched ON for the library — an account
  *      setting no code can guarantee;
- *   2. it names a specific rendition, and Bunny only produces the resolutions the
+ *   2. it names a specific rendition, and the encoder only produces the resolutions the
  *      library enabled and never upscales — so `play_720p.mp4` simply does not
  *      exist for plenty of real videos.
  *

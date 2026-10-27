@@ -424,7 +424,7 @@ export async function resolveContests(env: Env): Promise<void> {
   // Bounded at EXPIRED_STORY_BATCH per tick, and the row delete below is bounded to
   // exactly the rows whose media was handled here. It used to delete EVERY expired
   // story after cleaning only the first 500, so on a busy day the rest lost their
-  // row — the only pointer to their R2/Bunny object — and leaked storage forever.
+  // row — the only pointer to their R2 objects — and leaked storage forever.
   // Leftovers now wait for the next 10-minute tick with their row intact.
   //
   // A row is removed only once its media delete SUCCEEDED (or there was nothing to
@@ -441,8 +441,8 @@ export async function resolveContests(env: Env): Promise<void> {
     .all();
   const handledIds: string[] = [];
   for (const s of expiredUserStories) {
-    // Provider-aware: story videos now live in Bunny, and stories expire every
-    // 24h, so an R2-only delete here would leak a video object per story.
+    // Provider-aware: an encoded story video is a whole `videos/<id>/` folder,
+    // and stories expire every 24h, so a single-key delete would leak one per story.
     // Never a battle card, even if a personal story named one: that object is
     // owned by its match and may still back another participant's live story.
     if (!s.mediaUrl || vsImageKeyFromPublicUrl(env, s.mediaUrl)) {

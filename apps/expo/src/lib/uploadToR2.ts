@@ -163,9 +163,57 @@ export async function uploadToR2(
   onProgress?: (progress: number) => void,
   options: UploadOptions = {},
 ): Promise<string> {
+  return uploadThroughWorker(
+    uri,
+    fileType,
+    (detected) => `${API_BASE_URL}/upload?folder=${encodeURIComponent(folder)}&fileType=${encodeURIComponent(detected)}`,
+    { folder },
+    onProgress,
+    options,
+  );
+}
+
+/**
+ * Send a picked video to the Worker for encoding (`POST /upload/video`).
+ *
+ * `uploadPath` comes from the `createVideoUpload` action, so this never builds
+ * the route itself. Same verification, retries, stall timeout and cancellation
+ * as `uploadToR2`; resolves with the HLS playlist URL the server returns, which
+ * is not playable until the encode finishes (see `useVideoStatus`).
+ *
+ * A retry after a response lost at the very end is safe here: the server
+ * answers a second POST for an already-received video from its record, without
+ * starting a second encode.
+ */
+export async function uploadVideoSource(
+  uri: string,
+  uploadPath: string,
+  onProgress?: (progress: number) => void,
+  options: UploadOptions = {},
+): Promise<string> {
+  const path = uploadPath.startsWith("/") ? uploadPath : `/${uploadPath}`;
+  const sep = path.includes("?") ? "&" : "?";
+  return uploadThroughWorker(
+    uri,
+    "video/mp4",
+    (detected) => `${API_BASE_URL}${path}${sep}fileType=${encodeURIComponent(detected)}`,
+    { path },
+    onProgress,
+    options,
+  );
+}
+
+async function uploadThroughWorker(
+  uri: string,
+  fileType: string,
+  urlFor: (detectedType: string) => string,
+  logContext: Record<string, string>,
+  onProgress: ((progress: number) => void) | undefined,
+  options: UploadOptions,
+): Promise<string> {
   const { signal, retries = DEFAULT_UPLOAD_RETRIES, stallTimeoutMs = DEFAULT_STALL_TIMEOUT_MS } = options;
   if (signal?.aborted) throw new UploadCancelledError();
-  console.log(`[Upload] Starting...`, { uri, fileType, folder });
+  console.log(`[Upload] Starting...`, { uri, fileType, ...logContext });
 
   // Read the local file into a Blob.
   const fileRes = await fetch(uri);
@@ -202,7 +250,7 @@ export async function uploadToR2(
   }
 
   // Send the DETECTED type, not the caller's guess.
-  const url = `${API_BASE_URL}/upload?folder=${encodeURIComponent(folder)}&fileType=${encodeURIComponent(detected)}`;
+  const url = urlFor(detected);
 
   // Bounded retries for failures that are worth repeating. A repeat after a
   // response that was lost at the very end can store the file twice; the spare

@@ -1,200 +1,260 @@
 /**
- * The reconcile cron is the safety net under Bunny's single-delivery webhook.
+ * The reconcile cron is the safety net under Qencode's single-delivery callback.
  *
  * What must hold, and would silently rot without a test:
  *  - a video stuck in `processing` past the stale window is re-checked against
- *    Bunny and promoted to whatever it actually is (ready/failed), so a lost
- *    webhook never strands a "Processing…" overlay forever;
- *  - a `processing` row that is genuinely still encoding, or one that is not yet
- *    stale, is left alone (no premature failure, no wasted Bunny call);
- *  - an upload the user abandoned is closed and its Bunny object deleted, so it
- *    stops costing us and no client waits on it;
- *  - with Bunny not configured (R2 mode) the whole thing no-ops.
+ *    Qencode and promoted to whatever it actually is, so a lost callback never
+ *    strands a "Processing…" overlay;
+ *  - "ready" needs the playlist to really be in R2 — Qencode saying "completed"
+ *    alone must not publish a video that 404s;
+ *  - a source whose encode never started (Qencode down during the upload) is
+ *    started by the cron;
+ *  - an upload that never became a job is closed and its objects deleted;
+ *  - with Qencode not live (R2 mode) the whole thing no-ops.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { eq as drizzleEq } from 'drizzle-orm';
 
-const getVideoMock = vi.fn();
-const deleteVideoMock = vi.fn();
-
-vi.mock('../src/lib/bunny', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../src/lib/bunny')>();
-  return {
-    ...actual, // keep the real mapBunnyStatus
-    bunnyConfigured: async () => bunnyOn,
-    getVideo: (...a: any[]) => getVideoMock(...a),
-    deleteVideo: (...a: any[]) => deleteVideoMock(...a),
-    bunnyThumbnailUrl: async (_e: any, g: string) => `https://cdn.test/${g}/thumbnail.jpg`,
-    bunnyPlaybackUrl: async (_e: any, g: string) => `https://cdn.test/${g}/playlist.m3u8`,
-    // Only the base-url construction is stubbed (it needs real Bunny config);
-    // the DECISION of which rendition to link runs the real `pickMp4Height`, so
-    // this still exercises the contract that we never link a rendition Bunny did
-    // not encode. See videoStatusLive.test.ts for that function's own cases.
-    bunnyMp4UrlFor: async (_e: any, g: string, meta: any) => {
-      if (meta && meta.hasMP4Fallback === false) return null;
-      const height = actual.pickMp4Height(meta?.availableResolutions);
-      return height == null ? null : `https://cdn.test/${g}/play_${height}p.mp4`;
-    },
-  };
-});
-
-// Notifications are not what this test is about, and firing them needs more of
-// the notify stack than the harness provides.
+// Notifications are not what this test is about.
 vi.mock('../src/lib/notify', () => ({ createNotification: async () => {} }));
 
-import { reconcileVideos, PROCESSING_STALE_MS, UPLOAD_ABANDON_MS } from '../src/lib/videoReconcile';
-import { makeEnv, drizzleOf } from './helpers/harness';
+import {
+  reconcileVideos,
+  PROCESSING_STALE_MS,
+  PROCESSING_GIVE_UP_MS,
+  START_RETRY_AFTER_MS,
+  UPLOAD_ABANDON_MS,
+} from '../src/lib/videoReconcile';
+import { makeEnv, drizzleOf, type TestEnv } from './helpers/harness';
+import { installFakeQencode, QENCODE_ENV, selectVideoProvider, writeEncodedOutput, type FakeQencode } from './helpers/qencode';
 import { schema } from '../src/db';
 
-let bunnyOn = true;
+const V = {
+  ready: '00000000-0000-4000-8000-000000000001',
+  fail: '00000000-0000-4000-8000-000000000002',
+  enc: '00000000-0000-4000-8000-000000000003',
+  fresh: '00000000-0000-4000-8000-000000000004',
+  noPlaylist: '00000000-0000-4000-8000-000000000005',
+  unstarted: '00000000-0000-4000-8000-000000000006',
+  aband: '00000000-0000-4000-8000-000000000007',
+  slow: '00000000-0000-4000-8000-000000000008',
+  ancient: '00000000-0000-4000-8000-000000000009',
+};
 
-function seedVideo(db: ReturnType<typeof drizzleOf>, row: Partial<typeof schema.videos.$inferInsert> & { id: string }) {
-  return db.insert(schema.videos).values({
-    ownerUid: 'u1',
-    provider: 'bunny',
-    status: 'processing',
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-    ...row,
-  }).run();
+let q: FakeQencode;
+beforeEach(() => {
+  q = installFakeQencode();
+});
+afterEach(() => q.restore());
+
+async function liveEnv(): Promise<TestEnv> {
+  const { env } = makeEnv(QENCODE_ENV);
+  await selectVideoProvider(env, 'qencode');
+  return env;
 }
 
-beforeEach(() => {
-  bunnyOn = true;
-  getVideoMock.mockReset();
-  deleteVideoMock.mockReset().mockResolvedValue(undefined);
-});
+function seedVideo(env: TestEnv, row: Partial<typeof schema.videos.$inferInsert> & { id: string }) {
+  return drizzleOf(env)
+    .insert(schema.videos)
+    .values({
+      ownerUid: 'u1',
+      provider: 'qencode',
+      status: 'processing',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      ...row,
+    })
+    .run();
+}
+
+const rowOf = (env: TestEnv, id: string) =>
+  drizzleOf(env).select().from(schema.videos).where(drizzleEq(schema.videos.id, id)).get();
+
+const stale = () => Date.now() - (PROCESSING_STALE_MS + 60_000);
 
 describe('reconcileVideos — stuck processing', () => {
-  it('promotes a stale processing video that Bunny now reports ready', async () => {
-    const { env } = makeEnv();
-    const db = drizzleOf(env);
-    const staleTs = Date.now() - (PROCESSING_STALE_MS + 60_000);
-    await seedVideo(db, { id: 'vid-ready', status: 'processing', updatedAt: staleTs, targetType: 'story' });
-    // Bunny status 4 = resolution done (playable).
-    getVideoMock.mockResolvedValue({ status: 4, length: 12 });
+  it('promotes a stale processing video that Qencode reports completed and R2 holds', async () => {
+    const env = await liveEnv();
+    await seedVideo(env, { id: V.ready, jobId: 'job-r', sourceKey: `video-src/${V.ready}.mp4`, updatedAt: stale(), targetType: 'story' });
+    await env.MEDIA.put(`video-src/${V.ready}.mp4`, new Uint8Array([1]));
+    await writeEncodedOutput(env, V.ready);
+    q.jobs.set('job-r', { status: 'completed', duration: '12.4' });
 
-    const res = await reconcileVideos(env);
+    const res = await reconcileVideos(env as any);
 
     expect(res.promotedReady).toBe(1);
-    const row = await db.select().from(schema.videos).where(eq('vid-ready')).get();
+    const row = await rowOf(env, V.ready);
     expect(row?.status).toBe('ready');
-    expect(row?.playbackUrl).toBe('https://cdn.test/vid-ready/playlist.m3u8');
-    expect(row?.mp4Url).toBe('https://cdn.test/vid-ready/play_720p.mp4');
+    expect(row?.playbackUrl).toBe(`https://cdn.test/videos/${V.ready}/playlist.m3u8`);
+    expect(row?.thumbnailUrl).toBe(`https://cdn.test/videos/${V.ready}/thumbnail.jpg`);
+    expect(row?.mp4Url).toBeNull();
     expect(row?.durationSec).toBe(12);
+    // The raw source is no longer needed once the HLS exists.
+    expect(env.MEDIA._objects.has(`video-src/${V.ready}.mp4`)).toBe(false);
+    expect(row?.sourceKey).toBeNull();
   });
 
-  it('marks a stale processing video failed when Bunny reports failure', async () => {
-    const { env } = makeEnv();
-    const db = drizzleOf(env);
-    await seedVideo(db, { id: 'vid-fail', status: 'processing', updatedAt: Date.now() - (PROCESSING_STALE_MS + 1) });
-    getVideoMock.mockResolvedValue({ status: 5 }); // 5 = failed
+  it('marks a video failed when Qencode says completed but no playlist reached R2', async () => {
+    // A wrong destination or a revoked R2 token looks exactly like this. Calling
+    // it ready would publish a story whose video 404s forever.
+    const env = await liveEnv();
+    await seedVideo(env, { id: V.noPlaylist, jobId: 'job-np', updatedAt: stale() });
+    q.jobs.set('job-np', { status: 'completed' });
 
-    const res = await reconcileVideos(env);
+    const res = await reconcileVideos(env as any);
 
     expect(res.promotedFailed).toBe(1);
-    const row = await db.select().from(schema.videos).where(eq('vid-fail')).get();
+    const row = await rowOf(env, V.noPlaylist);
     expect(row?.status).toBe('failed');
-    expect(row?.errorMessage).toMatch(/encoding failure/i);
+    expect(row?.errorMessage).toMatch(/no playlist/i);
+  });
+
+  it('marks a stale processing video failed when Qencode reports an error, and deletes what was stored', async () => {
+    const env = await liveEnv();
+    await seedVideo(env, { id: V.fail, jobId: 'job-f', sourceKey: `video-src/${V.fail}.mp4`, updatedAt: stale() });
+    await env.MEDIA.put(`video-src/${V.fail}.mp4`, new Uint8Array([1]));
+    await env.MEDIA.put(`videos/${V.fail}/video_1/segment-0.ts`, new Uint8Array([1]));
+    q.jobs.set('job-f', { status: 'error', error: 1, error_description: 'Source video decoding error' });
+
+    const res = await reconcileVideos(env as any);
+
+    expect(res.promotedFailed).toBe(1);
+    const row = await rowOf(env, V.fail);
+    expect(row?.status).toBe('failed');
+    expect(row?.errorMessage).toMatch(/decoding/i);
+    expect(env.MEDIA._objects.has(`video-src/${V.fail}.mp4`)).toBe(false);
+    expect(env.MEDIA._objects.has(`videos/${V.fail}/video_1/segment-0.ts`)).toBe(false);
   });
 
   it('leaves a still-encoding video in processing', async () => {
-    const { env } = makeEnv();
-    const db = drizzleOf(env);
-    await seedVideo(db, { id: 'vid-enc', status: 'processing', updatedAt: Date.now() - (PROCESSING_STALE_MS + 1) });
-    getVideoMock.mockResolvedValue({ status: 2 }); // 2 = still encoding
+    const env = await liveEnv();
+    await seedVideo(env, { id: V.enc, jobId: 'job-e', updatedAt: stale() });
+    q.jobs.set('job-e', { status: 'encoding' });
 
-    const res = await reconcileVideos(env);
+    const res = await reconcileVideos(env as any);
 
     expect(res.processingChecked).toBe(1);
-    expect(res.promotedReady).toBe(0);
-    expect(res.promotedFailed).toBe(0);
-    const row = await db.select().from(schema.videos).where(eq('vid-enc')).get();
-    expect(row?.status).toBe('processing');
+    expect(res.promotedReady + res.promotedFailed).toBe(0);
+    expect((await rowOf(env, V.enc))?.status).toBe('processing');
   });
 
-  it('does NOT touch a processing video that is not yet stale', async () => {
-    const { env } = makeEnv();
-    const db = drizzleOf(env);
-    await seedVideo(db, { id: 'vid-fresh', status: 'processing', updatedAt: Date.now() });
+  it('gives up on a video that has been processing for hours', async () => {
+    const env = await liveEnv();
+    await seedVideo(env, {
+      id: V.ancient,
+      jobId: 'job-a',
+      createdAt: Date.now() - (PROCESSING_GIVE_UP_MS + 60_000),
+      updatedAt: stale(),
+    });
+    q.jobs.set('job-a', { status: 'queued' });
 
-    const res = await reconcileVideos(env);
+    const res = await reconcileVideos(env as any);
+
+    expect(res.promotedFailed).toBe(1);
+    expect((await rowOf(env, V.ancient))?.status).toBe('failed');
+  });
+
+  it('does NOT poll a processing video that is not yet stale', async () => {
+    const env = await liveEnv();
+    await seedVideo(env, { id: V.fresh, jobId: 'job-fr', updatedAt: Date.now() });
+
+    const res = await reconcileVideos(env as any);
 
     expect(res.processingChecked).toBe(0);
-    expect(getVideoMock).not.toHaveBeenCalled();
-    const row = await db.select().from(schema.videos).where(eq('vid-fresh')).get();
+    expect(q.calls).not.toContain('/v1/status');
+  });
+});
+
+describe('reconcileVideos — encodes that never started', () => {
+  it('starts the encode for an uploaded source that has no job yet', async () => {
+    const env = await liveEnv();
+    await env.MEDIA.put(`video-src/${V.unstarted}.mp4`, new Uint8Array([1]));
+    await seedVideo(env, {
+      id: V.unstarted,
+      status: 'uploading',
+      sourceKey: `video-src/${V.unstarted}.mp4`,
+      updatedAt: Date.now() - (START_RETRY_AFTER_MS + 1_000),
+    });
+
+    const res = await reconcileVideos(env as any);
+
+    expect(res.encodesStarted).toBe(1);
+    const row = await rowOf(env, V.unstarted);
     expect(row?.status).toBe('processing');
+    expect(row?.jobId).toBe(q.started[0].taskToken);
+    // No request, so no callback: this job resolves by polling.
+    expect(q.started[0].query.query.callback_url).toBeUndefined();
+  });
+
+  it('keeps the row uploading (for the next tick) when Qencode is still down', async () => {
+    const env = await liveEnv();
+    q.failStart = true;
+    await seedVideo(env, {
+      id: V.unstarted,
+      status: 'uploading',
+      sourceKey: `video-src/${V.unstarted}.mp4`,
+      updatedAt: Date.now() - (START_RETRY_AFTER_MS + 1_000),
+    });
+
+    const res = await reconcileVideos(env as any);
+
+    expect(res.encodesStarted).toBe(0);
+    const row = await rowOf(env, V.unstarted);
+    expect(row?.status).toBe('uploading');
+    expect(row?.jobId).toBeNull();
   });
 });
 
 describe('reconcileVideos — abandoned uploads', () => {
-  it('closes an old uploading row and frees its Bunny object', async () => {
-    const { env } = makeEnv();
-    const db = drizzleOf(env);
-    await seedVideo(db, { id: 'vid-aband', status: 'uploading', createdAt: Date.now() - (UPLOAD_ABANDON_MS + 60_000) });
-    // What a created-but-never-uploaded Bunny object looks like: no bytes, encode
-    // never started. Stated explicitly because deletion now depends on this answer.
-    getVideoMock.mockResolvedValue({ status: 0, storageSize: 0 });
+  it('closes an old uploading row and deletes its source', async () => {
+    const env = await liveEnv();
+    q.failStart = true; // so pass 2 cannot rescue it first
+    await env.MEDIA.put(`video-src/${V.aband}.mp4`, new Uint8Array([1]));
+    await seedVideo(env, {
+      id: V.aband,
+      status: 'uploading',
+      sourceKey: `video-src/${V.aband}.mp4`,
+      createdAt: Date.now() - (UPLOAD_ABANDON_MS + 60_000),
+    });
 
-    const res = await reconcileVideos(env);
+    const res = await reconcileVideos(env as any);
 
     expect(res.abandoned).toBe(1);
-    expect(deleteVideoMock).toHaveBeenCalledWith(expect.anything(), 'vid-aband');
-    const row = await db.select().from(schema.videos).where(eq('vid-aband')).get();
+    const row = await rowOf(env, V.aband);
     expect(row?.status).toBe('failed');
     expect(row?.errorMessage).toMatch(/abandoned/i);
-  });
-
-  it('never deletes an uploading row whose bytes actually reached Bunny', async () => {
-    // The data-loss case. `uploading` means "we were never TOLD the bytes landed",
-    // not "they didn't" — `videoUploadComplete` is best-effort on the client, so
-    // losing it AND the webhook leaves a fully encoded video in an `uploading`
-    // row. Deleting on that evidence destroyed a real video that a story was
-    // already pointing at, leaving a dead playlist URL and no trace of the cause.
-    const { env } = makeEnv();
-    const db = drizzleOf(env);
-    await seedVideo(db, { id: 'vid-good', status: 'uploading', createdAt: Date.now() - (UPLOAD_ABANDON_MS + 60_000) });
-    getVideoMock.mockResolvedValue({ status: 4, length: 9, storageSize: 1_234_567 });
-
-    const res = await reconcileVideos(env);
-
-    expect(deleteVideoMock).not.toHaveBeenCalled();
-    expect(res.abandoned).toBe(0);
-    expect(res.promotedReady).toBe(1);
-    const row = await db.select().from(schema.videos).where(eq('vid-good')).get();
-    expect(row?.status).toBe('ready');
-    expect(row?.playbackUrl).toBe('https://cdn.test/vid-good/playlist.m3u8');
+    expect(env.MEDIA._objects.has(`video-src/${V.aband}.mp4`)).toBe(false);
   });
 
   it('leaves a recent uploading row alone (slow connection, still going)', async () => {
-    const { env } = makeEnv();
-    const db = drizzleOf(env);
-    await seedVideo(db, { id: 'vid-slow', status: 'uploading', createdAt: Date.now() });
+    const env = await liveEnv();
+    await seedVideo(env, { id: V.slow, status: 'uploading', createdAt: Date.now() });
 
-    const res = await reconcileVideos(env);
+    const res = await reconcileVideos(env as any);
 
     expect(res.abandoned).toBe(0);
-    expect(deleteVideoMock).not.toHaveBeenCalled();
-    const row = await db.select().from(schema.videos).where(eq('vid-slow')).get();
-    expect(row?.status).toBe('uploading');
+    expect((await rowOf(env, V.slow))?.status).toBe('uploading');
   });
 });
 
 describe('reconcileVideos — provider guard', () => {
-  it('no-ops when Bunny is not configured (R2 mode has no encode step)', async () => {
-    bunnyOn = false;
-    const { env } = makeEnv();
-    const db = drizzleOf(env);
-    await seedVideo(db, { id: 'vid-x', status: 'processing', updatedAt: Date.now() - (PROCESSING_STALE_MS + 1) });
+  it('no-ops when Qencode is not the provider (R2 mode has no encode step)', async () => {
+    const { env } = makeEnv(QENCODE_ENV);
+    await selectVideoProvider(env, 'r2');
+    await seedVideo(env, { id: V.enc, jobId: 'job-x', updatedAt: stale() });
 
-    const res = await reconcileVideos(env);
+    const res = await reconcileVideos(env as any);
 
     expect(res.skipped).toBe(true);
-    expect(getVideoMock).not.toHaveBeenCalled();
+    expect(q.calls).toEqual([]);
+  });
+
+  it('no-ops when Qencode is selected but its credentials are missing', async () => {
+    const { env } = makeEnv({ ...QENCODE_ENV, QENCODE_API_KEY: '' });
+    await selectVideoProvider(env, 'qencode');
+
+    const res = await reconcileVideos(env as any);
+
+    expect(res.skipped).toBe(true);
   });
 });
-
-// Small helper so the assertions above read cleanly.
-import { eq as drizzleEq } from 'drizzle-orm';
-function eq(id: string) {
-  return drizzleEq(schema.videos.id, id);
-}

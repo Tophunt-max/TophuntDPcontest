@@ -46,38 +46,17 @@ RAZORPAY_KEY_SECRET=xxxxxxxx
 RAZORPAY_WEBHOOK_SECRET=xxxxxxxx
 
 # ---------------------------------------------------------------------------
-# Bunny Stream (video hosting + transcoding).
+# Qencode (video transcoding).
 #
-# Get these from the Bunny dashboard: Stream > your Video Library > API.
-# BUNNY_CDN_HOSTNAME is the library's pull-zone host and is NOT secret — it also
-# lives in wrangler.toml [vars]; set it here only to override locally.
-#
-# The API key must never reach the app: the Worker creates the video object and
-# mints a short-lived TUS signature, and the client uploads directly to Bunny
-# with that. Fail-closed — with these unset, `createVideoUpload` is rejected and
-# /webhook/bunny returns 503, so video uploads keep using the R2 path.
-#
-# Library setup checklist (MEDIA_MIGRATION_PLAN.md 2a):
-#   - Enable MP4 Fallback (required for the web build, which has no native HLS)
-#   - Choose the Volume delivery tier, not Standard: for an India-heavy audience
-#     Standard is $0.030/GB vs Volume $0.005/GB — a 6x difference
-#   - Use Standard (free) encoding; Premium is billed per output minute
-# ---------------------------------------------------------------------------
-BUNNY_STREAM_API_KEY=xxxxxxxx-xxxx-xxxx-xxxxxxxxxxxx
-BUNNY_LIBRARY_ID=123456
-BUNNY_CDN_HOSTNAME=vz-xxxxxxxx-xxx.b-cdn.net
-# REQUIRED to use the Bunny encode webhook at all. Bunny does not sign its
-# payload, so this shared secret is the only authentication available and
-# /webhook/bunny now fails closed (503) without it — previously the endpoint was
-# left wide open, and anyone could POST a VideoGuid to force an encode-state
-# transition. Set the same value as a custom header on the webhook in Bunny's
-# dashboard: `X-Bunny-Signature: <value>` (an `Authorization: Bearer <value>`
-# header is also accepted; the query string is NOT).
-#
-# Leaving it unset is a supported configuration — it only means the webhook is
-# unused. Encode state still resolves via the reconcileVideos cron and the live
-# recheck inside the `videoStatus` action, just with more latency.
-BUNNY_WEBHOOK_SECRET=
+# Qencode dashboard > Projects > your project > API key. The key stays in the
+# Worker: the app uploads the raw file to the Worker (POST /upload/video), which
+# stores it in R2 and starts the Qencode job. Qencode reads the source through a
+# presigned R2 URL and writes HLS back into R2, so it ALSO needs the R2_* values
+# above (use an R2 API token scoped to the media bucket, Object Read & Write).
+# Fail-closed — with any of these unset, video keeps using the legacy R2 path.
+# Callbacks need no secret: each job's callback URL carries a per-video HMAC
+# derived from this key.
+QENCODE_API_KEY=
 
 # ---------------------------------------------------------------------------
 # Local-dev CORS override. `.dev.vars` takes precedence over [vars] in
@@ -107,7 +86,7 @@ SENTRY_ENVIRONMENT=development
 #
 #   FIREBASE_SERVICE_ACCOUNT   admin user operations, custom tokens
 #   R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET
-#                              presigned uploads
+#                              Qencode video pipeline (presigned source, output)
 #   RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET
 #                              top-ups AND the payment reconciliation sweep
 #   RAZORPAY_WEBHOOK_SECRET    webhook 503s without it -> paid-but-uncredited

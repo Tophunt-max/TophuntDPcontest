@@ -103,13 +103,8 @@ import {
 } from "../lib/blocks";
 import { detachTokenFromOtherUsers } from "../lib/pushTokens";
 import { resolvePrefs, serializePrefs } from "../lib/notificationPrefs";
-import {
-  bunnyConfigured,
-  createVideo,
-  bunnyPlaybackUrl,
-  bunnyThumbnailUrl,
-} from "../lib/bunny";
-import { applyBunnyEncodeResult, LIVE_STATUS_RECHECK_MS } from "../lib/videoReconcile";
+import { playbackUrlFor, qencodeConfigured, thumbnailUrlFor } from "../lib/qencode";
+import { applyEncodeResult, LIVE_STATUS_RECHECK_MS } from "../lib/videoReconcile";
 import { mediaRouting } from "../lib/mediaRouting";
 import { getAppConfig, getAppControlConfig, getRewardedAdConfig } from "../lib/settings";
 import { appControlGate } from "../lib/appControl";
@@ -335,10 +330,10 @@ const notPorted = (action: string, file: string): never => {
  */
 async function assertOwnContestEntry(env: Env, uid: string, mediaUrl: unknown): Promise<void> {
   if (typeof mediaUrl !== "string" || !mediaUrl) return;
-  // R2 objects carry `customMetadata.uploader`, Bunny videos `videos.owner_uid`.
-  // This used to check R2 only, so any Bunny playback url (someone else's video
-  // entry, readable from the public feed) passed and was charged for and
-  // entered. VS publication refused it later, after the entry fee had moved.
+  // R2 objects carry `customMetadata.uploader`, encoded videos `videos.owner_uid`.
+  // Checking R2 metadata alone would let any playlist url (someone else's video
+  // entry, readable from the public feed) pass and be charged for and entered;
+  // VS publication would refuse it later, after the entry fee had moved.
   let ownership: Awaited<ReturnType<typeof mediaOwnership>>;
   try {
     ownership = await mediaOwnership(env, mediaUrl, uid);
@@ -463,39 +458,32 @@ apiRoute.post("/", async (c) => {
         "Direct-to-R2 uploads are no longer supported. Please update the app.",
       );
 
-    // ================= VIDEO (Bunny Stream) =================
+    // ================= VIDEO (Qencode) =================
     /**
-     * Mint credentials for a direct-to-Bunny resumable (TUS) video upload.
+     * Start a video upload: create the `videos` row and say where to send the
+     * bytes (`POST /upload/video?videoId=…`). See lib/qencode.ts for the
+     * pipeline and why the app never talks to Qencode directly.
      *
-     * Returns only { videoId, libraryId, expirationTime, signature } — the Bunny
-     * API key stays server-side. The client uploads the bytes itself, then the
-     * encoding webhook flips the row to 'ready'.
+     * Returns `configured: false` instead of throwing when Qencode is not live,
+     * with `r2Fallback` telling the client whether the legacy `POST /upload`
+     * video path is open (true) or closed (false, retrying there only produces
+     * a confusing rejection).
      *
-     * Returns `configured: false` instead of throwing when Bunny is not set up.
-     *
-     * `r2Fallback` tells the client what to do with that: `true` means the legacy
-     * `POST /upload` video path is still open, `false` means it is closed and
-     * retrying there would only produce a confusing rejection. The client used to
-     * infer this — it fell back on ANY failure, including a Bunny outage while R2
-     * was closed to video, which turned one clear error into two.
+     * `upload: "worker"` is how a current client says it speaks this protocol.
+     * Builds from the Bunny era do not send it; they would read
+     * `configured: true` as "tus to Bunny" and fail with a missing signature,
+     * so they are answered as if video were not configured.
      */
     case "createVideoUpload": {
-      if (!(await bunnyConfigured(env))) {
+      if (body?.upload !== "worker" || !(await qencodeConfigured(env))) {
         const routing = await mediaRouting(env);
         return c.json({ configured: false, r2Fallback: routing.r2AcceptsVideo });
       }
 
-      // Without this, anyone can create unlimited video objects in our Bunny
-      // account. The cap is charged BEFORE the object is created, deliberately —
-      // charging afterwards would let a burst of parallel requests all pass the
-      // check and create objects before any of them paid.
-      //
-      // Raised from 10 because the budget is spent on ATTEMPTS, not on posted
-      // videos: every retry against a flaky connection burns one, so a user who
-      // never managed to post anything could still lock themselves out for an
-      // hour — and this message was the only thing they'd see. 30/hour is still
-      // far below abuse and now sits above the 60/hour image cap in spirit
-      // (a story is one video, not thirty).
+      // Every row is a transcode we may pay for, so the cap is charged BEFORE
+      // the row exists — charging afterwards would let a burst of parallel
+      // requests all pass. Spent on ATTEMPTS, not posted videos, hence 30/hour
+      // rather than something tighter: retries on a flaky connection burn it.
       if (!(await consumeRateLimit(env, `vidup:${uid}`, 30, 3600, { failClosed: true }))) {
         throw httpsError(
           "resource-exhausted",
@@ -503,17 +491,16 @@ apiRoute.post("/", async (c) => {
         );
       }
 
-      const { title, targetType } = body;
+      const { targetType } = body;
       if (targetType && !["story", "contest_entry"].includes(String(targetType)))
         throw httpsError("invalid-argument", "Invalid targetType.");
 
-      const created = await createVideo(env, String(title || `upload-${uid}-${now()}`));
+      const videoId = newId();
       const ts = now();
       await db.insert(schema.videos).values({
-        id: created.guid,
-        libraryId: created.libraryId,
+        id: videoId,
         ownerUid: uid,
-        provider: "bunny",
+        provider: "qencode",
         status: "uploading",
         // target_id is filled in when the story / contest entry is created; a row
         // that stays null is an abandoned upload and can be swept later.
@@ -524,51 +511,31 @@ apiRoute.post("/", async (c) => {
 
       return c.json({
         configured: true,
-        videoId: created.guid,
-        libraryId: created.libraryId,
-        expirationTime: created.expirationTime,
-        signature: created.signature,
-        tusEndpoint: created.tusEndpoint,
+        provider: "qencode",
+        videoId,
+        // Relative to the API base, so the client never builds it.
+        uploadPath: `/upload/video?videoId=${videoId}`,
         // The eventual playback URL, so the caller can store it as mediaUrl
-        // without knowing how Bunny URLs are shaped.
-        playbackUrl: await bunnyPlaybackUrl(env, created.guid),
-        thumbnailUrl: await bunnyThumbnailUrl(env, created.guid),
+        // without knowing how video URLs are shaped. Not playable until the
+        // encode is ready — `videoStatus` reports that.
+        playbackUrl: playbackUrlFor(env, videoId),
+        thumbnailUrl: thumbnailUrlFor(env, videoId),
       });
     }
 
     /**
-     * Called by the client once the TUS upload finishes. Moves the row from
-     * 'uploading' to 'processing' and records what the video is attached to.
-     * The authoritative 'ready' transition comes from the Bunny webhook.
+     * Bunny-era action. The upload route now moves the row to `processing`
+     * itself (bytes stored + encode started), so a client claim here would only
+     * be able to put a row into `processing` with no job behind it. Kept as a
+     * no-op so an old build calling it gets a success rather than an error.
      */
     case "videoUploadComplete": {
-      const { videoId, targetType, targetId } = body;
-      if (!videoId) throw httpsError("invalid-argument", "videoId is required.");
-      const ts = now();
-      // Scoped to the owner so one user cannot mutate another's video row, and
-      // only from 'uploading' so a webhook that already landed isn't regressed.
-      const claim = await db
-        .update(schema.videos)
-        .set({
-          status: "processing",
-          targetType: targetType ? String(targetType) : undefined,
-          targetId: targetId ? String(targetId) : undefined,
-          updatedAt: ts,
-        })
-        .where(
-          and(
-            eq(schema.videos.id, String(videoId)),
-            eq(schema.videos.ownerUid, uid),
-            eq(schema.videos.status, "uploading"),
-          ),
-        )
-        .run();
-      return c.json({ success: true, updated: claim.meta.changes > 0 });
+      return c.json({ success: true, updated: false });
     }
 
     /**
      * Current processing state for a set of videos, so a client showing a
-     * "Processing…" overlay can poll without hitting Bunny directly.
+     * "Processing…" overlay can poll without hitting Qencode directly.
      *
      * Scoped to the caller's OWN uploads. The predicate used to be the id list
      * alone, which made this an enumeration endpoint for other people's media:
@@ -579,7 +546,7 @@ apiRoute.post("/", async (c) => {
      * already on the row, and `idx_videos_owner` already indexed it.
      *
      * The overlay only ever polls for a video the caller just uploaded, so this
-     * costs legitimate callers nothing. It also bounds the Bunny recheck below to
+     * costs legitimate callers nothing. It also bounds the Qencode recheck below to
      * the caller's own media, which is what makes that amplification self-limiting.
      */
     case "videoStatus": {
@@ -600,25 +567,24 @@ apiRoute.post("/", async (c) => {
       const ownedVideos = and(inArray(schema.videos.id, ids), eq(schema.videos.ownerUid, uid));
       let rows = await db.select(columns).from(schema.videos).where(ownedVideos).all();
 
-      // Ask Bunny directly for anything still unfinished and not checked in the
-      // last window. Bunny's encode webhook is OPTIONAL and configured in their
-      // dashboard, so on a deployment without it the only thing that ever cleared
-      // this state was the 15-minutes-stale cron — a video playable in a minute
-      // kept showing "Processing…" for up to ~25. This makes the overlay clear
-      // within one client poll of the encode actually finishing.
+      // Ask Qencode directly for anything still unfinished and not checked in
+      // the last window. A lost callback (or a job started by the cron, which has
+      // no callback) would otherwise only be cleared by the 15-minutes-stale
+      // cron — a video playable in a minute would show "Processing…" for up to
+      // ~25. This clears the overlay within one poll of the encode finishing.
       //
       // Bounded three ways: only unfinished rows, only past the recheck window
       // (each check bumps `updatedAt`, so viewers cannot amplify it), and at most
-      // a few per request. Fail-open — a Bunny blip must still return the row we
-      // have, never break the poll the overlay depends on.
+      // a few per request. Fail-open — a Qencode blip must still return the row
+      // we have, never break the poll the overlay depends on.
       const cutoff = now() - LIVE_STATUS_RECHECK_MS;
       const unfinished = rows
         .filter((r) => (r.status === "processing" || r.status === "uploading") && Number(r.updatedAt ?? 0) < cutoff)
         .slice(0, 3);
-      if (unfinished.length && (await bunnyConfigured(env))) {
+      if (unfinished.length && (await qencodeConfigured(env))) {
         await Promise.all(
           unfinished.map((r) =>
-            applyBunnyEncodeResult(env, r.id).catch((e) => {
+            applyEncodeResult(env, r.id).catch((e) => {
               console.error("[videoStatus] live recheck failed", r.id, e);
             }),
           ),
@@ -1464,7 +1430,7 @@ apiRoute.post("/", async (c) => {
       if (!story) throw httpsError("not-found", "Story not found.");
       if (story.userId !== uid && !(await isAdmin(c as any)))
         throw httpsError("permission-denied", "Not allowed.");
-      // Provider-aware: a story's media is in R2 or in Bunny.
+      // Provider-aware: a story's media is one R2 object or an encoded video folder.
       //
       // Only a PERSONAL story owns its media. A contest story's media is either
       // the shared VS composite — owned by the match and still displayed by the

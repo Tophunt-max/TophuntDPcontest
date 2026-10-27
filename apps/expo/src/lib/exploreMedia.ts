@@ -2,7 +2,7 @@
  * Pure helpers for the Explore screens (kept out of the components so they can be
  * unit-tested in Node).
  */
-import { bunnyThumbnailFromUrl } from '@/src/lib/videoSource';
+import { videoThumbnailFromUrl } from '@/src/lib/videoSource';
 
 export type ExploreTab = 'all' | 'photo' | 'video' | 'people';
 
@@ -10,14 +10,14 @@ export type ExploreTab = 'all' | 'photo' | 'video' | 'people';
  * The image to show for one battle participant in a grid / rail tile.
  *
  * Photos: the server's resized variants first (a 320px thumb is ~20× smaller than
- * the original), never the raw upload when a variant exists. Videos: Bunny's
- * poster frame; anything else is a video FILE that an <Image> cannot draw, so
+ * the original), never the raw upload when a variant exists. Videos: the encoded
+ * video's poster frame; anything else is a video FILE that an <Image> cannot draw, so
  * null — the tile then shows its gradient + play glyph instead of a blank box.
  */
 export function participantThumb(p: any, matchType?: string | null): string | null {
   if (!p) return null;
   const isVideo = p.mediaType === 'video' || matchType === 'video';
-  if (isVideo) return bunnyThumbnailFromUrl(p.mediaUrl) || null;
+  if (isVideo) return videoThumbnailFromUrl(p.mediaUrl) || null;
   return p.mediaUrlThumb || p.mediaUrlOptimized || p.mediaUrl || null;
 }
 

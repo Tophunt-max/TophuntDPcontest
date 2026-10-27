@@ -37,7 +37,13 @@ export interface ImgOpts {
   format?: "auto" | "webp" | "avif";
 }
 
-const VIDEO_RE = /\.(mp4|mov|webm|m4v)(\?|$)/i;
+/**
+ * Never handed to Image Transformations. `m3u8`/`ts` matter since encoded video
+ * moved onto this base (`videos/<id>/playlist.m3u8`): a playlist url wrapped in
+ * `/cdn-cgi/image/` is an unplayable video. Its poster (`thumbnail.jpg`) is an
+ * ordinary image and may still be resized.
+ */
+const VIDEO_RE = /\.(mp4|mov|webm|m4v|m3u8|ts)(\?|$)/i;
 
 /** The R2 key, if `url` sits on the current media base; else null. */
 function keyOnCurrentBase(env: Env, url: string): { base: string; key: string } | null {

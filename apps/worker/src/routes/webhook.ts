@@ -1,5 +1,5 @@
 /**
- * /webhook — public, server-to-server callbacks from payment gateways.
+ * /webhook — public, server-to-server callbacks (payment gateway, video encoder).
  *
  * These endpoints are NOT behind Firebase auth (the gateway can't present a
  * user token). Trust comes entirely from verifying the gateway's signature over
@@ -22,8 +22,8 @@ import { sendUserEmail } from "../lib/email";
 import { coinsAddedEmail, coinsReversedEmail } from "../lib/emailTemplates";
 import { timingSafeEqualSecret } from "../lib/timingSafe";
 import { newId, now } from "../lib/ids";
-import { bunnyConfigured, getBunnyWebhookSecret } from "../lib/bunny";
-import { applyBunnyEncodeResult } from "../lib/videoReconcile";
+import { callbackSignature, isVideoId, qencodeConfig, qencodeConfigured } from "../lib/qencode";
+import { applyEncodeResult } from "../lib/videoReconcile";
 
 export const webhookRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -247,103 +247,76 @@ webhookRoute.post("/razorpay", async (c) => {
 
 
 /**
- * Bunny Stream encoding callback (MEDIA_MIGRATION_PLAN.md Phase 2d).
+ * Qencode job callback (`callback_url` set by `startEncode`).
  *
- * Bunny POSTs `{ VideoLibraryId, VideoGuid, Status }` when an encode changes
- * state. We flip the `videos` row to ready/failed and record the poster frame
- * and duration so clients can drop their "Processing…" overlay.
+ * Qencode POSTs form-encoded `task_token`, `event` (queued | saved | error) and a
+ * `status` JSON on each job event. It does not sign them, and it cannot send a
+ * custom header, so authentication is the per-video HMAC that `startEncode` put
+ * in the callback URL (`?v=<videoId>&sig=<hmac>`). See `callbackSignature` for
+ * why that is a per-video value and not a shared secret.
  *
- * Follows the same discipline as the Razorpay hook above:
- *  - read the RAW body first, so a signature can be verified over exact bytes;
- *  - acknowledge with 200 even on internal failure, so Bunny stops retrying;
- *  - fail closed on configuration (503) rather than trusting an unverified call.
+ * The body is never trusted for STATE. Like the Razorpay hook re-reading the
+ * order, this re-reads the job from Qencode's /v1/status (using the job handle
+ * stored on OUR row) and the playlist from R2, through the same
+ * `applyEncodeResult` the reconcile cron uses. A forged or replayed callback can
+ * therefore only cause a re-check.
+ *
+ *  - 503 when Qencode is not configured, so nothing is processed half-wired;
+ *  - 400 on a bad signature;
+ *  - 200 otherwise, including internal failures — the cron reconciles them, and
+ *    a retry storm would only repeat the same failure.
  */
-webhookRoute.post("/bunny", async (c) => {
-  const raw = await c.req.text();
-
-  if (!(await bunnyConfigured(c.env))) {
-    console.error("[webhook/bunny] Bunny is not configured — rejecting");
+webhookRoute.post("/qencode", async (c) => {
+  if (!(await qencodeConfigured(c.env))) {
+    console.error("[webhook/qencode] Qencode is not configured — rejecting");
     return c.json({ ok: false, error: "not_configured" }, 503);
   }
+  const cfg = await qencodeConfig(c.env);
+  if (!cfg) return c.json({ ok: false, error: "not_configured" }, 503);
 
-  /**
-   * Bunny's webhook does not sign its payload, so a shared secret is the only
-   * authentication available — and it is now REQUIRED.
-   *
-   * It used to be enforced only `if (configuredSecret)`, which meant the default
-   * deployment left this endpoint completely open: anyone could POST a `VideoGuid`
-   * and force an encode-state transition. The blast radius was genuinely limited
-   * (the handler re-fetches the truth from Bunny's API rather than trusting the
-   * body, so it is forced work rather than forged state), but "limited" is not the
-   * same as "authenticated", and every other webhook here already fails closed —
-   * `/webhook/razorpay` returns 503 when its secret is missing.
-   *
-   * Failing closed is also the safe direction operationally: Bunny's webhook is
-   * OPTIONAL, and the encode-state cron plus the live recheck in `videoStatus`
-   * both already cover the case where it never fires. So a deployment without the
-   * secret configured loses nothing but the latency improvement, and gets a loud
-   * log line telling it what to set.
-   *
-   * Panel-managed with env fallback — a secret saved in the admin panel must
-   * actually take effect, which reading env directly did not honour.
-   */
-  const configuredSecret = ((await getBunnyWebhookSecret(c.env)) || "").trim();
-  if (!configuredSecret) {
-    console.error(
-      "[webhook/bunny] no Bunny webhook secret configured (panel or env) — rejecting. " +
-        "Encode state still resolves via the reconcileVideos cron and the videoStatus recheck.",
-    );
-    return c.json({ ok: false, error: "not_configured" }, 503);
-  }
-  // Header only. The secret used to be accepted from `?secret=` as well, which put
-  // a long-lived shared credential into every proxy, CDN and access log that
-  // records query strings — and unlike a header it is trivially leaked by a
-  // referrer or a copied URL.
-  const presented =
-    c.req.header("X-Bunny-Signature") ||
-    c.req.header("Authorization")?.replace(/^Bearer\s+/i, "") ||
-    "";
-  if (!(await timingSafeEqualSecret(presented, configuredSecret))) {
-    console.warn("[webhook/bunny] invalid signature");
+  const videoId = c.req.query("v") || "";
+  const presented = c.req.query("sig") || "";
+  if (!isVideoId(videoId) || !presented) return c.json({ ok: false, error: "invalid_signature" }, 400);
+  if (!(await timingSafeEqualSecret(presented, await callbackSignature(cfg, videoId)))) {
+    console.warn("[webhook/qencode] invalid signature", videoId);
     return c.json({ ok: false, error: "invalid_signature" }, 400);
   }
 
-  let evt: any;
+  let form: URLSearchParams;
   try {
-    evt = JSON.parse(raw);
+    form = new URLSearchParams(await c.req.text());
   } catch {
-    return c.json({ ok: false, error: "bad_json" }, 400);
+    return c.json({ ok: false, error: "bad_body" }, 400);
   }
-
-  const guid: string = String(evt?.VideoGuid || evt?.videoGuid || "");
-  if (!guid) return c.json({ ok: true, ignored: "no_guid" });
+  const taskToken = form.get("task_token") || "";
+  const event = form.get("event") || "";
 
   try {
     const db = getDb(c.env);
     const existing = await db
-      .select({ id: schema.videos.id, status: schema.videos.status })
+      .select({ id: schema.videos.id, status: schema.videos.status, jobId: schema.videos.jobId })
       .from(schema.videos)
-      .where(eq(schema.videos.id, guid))
+      .where(eq(schema.videos.id, videoId))
       .get();
-    // A guid we never issued (or already deleted) — ack and move on.
+    // Deleted since (story removed mid-encode) — ack and move on.
     if (!existing) return c.json({ ok: true, ignored: "unknown_video" });
-    if (existing.status === "ready") return c.json({ ok: true, ignored: "already_ready" });
+    // A callback for a job that is not this row's current one (an old job, or a
+    // signature reused with someone else's token) changes nothing.
+    if (taskToken && existing.jobId && taskToken !== existing.jobId) {
+      return c.json({ ok: true, ignored: "stale_job" });
+    }
+    if (existing.status === "ready" || existing.status === "failed") {
+      return c.json({ ok: true, ignored: `already_${existing.status}` });
+    }
+    // `queued` arrives right after start; there is nothing new to learn yet.
+    if (event === "queued") return c.json({ ok: true, ignored: "queued" });
 
-    // Apply the transition through the SAME code the reconcile cron uses, so the
-    // webhook and the safety-net poll can never disagree about what a status
-    // means. It re-fetches from Bunny rather than trusting this (possibly
-    // unauthenticated) request body, and fires the owner notification in the
-    // background so this handler still acks fast.
-    const status = await applyBunnyEncodeResult(c.env, guid, {
-      statusHint: Number(evt?.Status),
+    const status = await applyEncodeResult(c.env, videoId, {
       scheduleNotify: (p) => c.executionCtx.waitUntil(p),
     });
     return c.json({ ok: true, status });
   } catch (e) {
-    // Ack anyway — retries would just repeat the same internal failure, and the
-    // status is reconcilable by polling Bunny (the reconcile cron does exactly
-    // that).
-    console.error("[webhook/bunny] processing failed", e);
+    console.error("[webhook/qencode] processing failed", videoId, e);
     return c.json({ ok: true, error: "internal" });
   }
 });

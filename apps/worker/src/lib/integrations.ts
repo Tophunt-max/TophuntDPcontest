@@ -11,7 +11,7 @@ import { openSecret, sealSecret, secretStorageAvailable } from "./secretBox";
  * Two halves, deliberately stored differently:
  *
  *  1. CONFIG (this file's `IntegrationsConfig`) — provider choice, sender IDs,
- *     template ids, library ids, hostnames. Not secret, stored as plain JSON in
+ *     template ids. Not secret, stored as plain JSON in
  *     `settings` under id `integrations`.
  *
  *  2. SECRETS (`integration_secrets`) — API keys and tokens, encrypted at rest
@@ -71,24 +71,29 @@ export const SECRET_DEFINITIONS: SecretDefinition[] = [
   { name: "RAZORPAY_KEY_SECRET", label: "Razorpay Key Secret", group: "payments", envKey: "RAZORPAY_KEY_SECRET", help: "Signature verification AND payment reconciliation use this." },
   { name: "RAZORPAY_WEBHOOK_SECRET", label: "Razorpay Webhook Secret", group: "payments", envKey: "RAZORPAY_WEBHOOK_SECRET", help: "Without this the webhook returns 503 and paid orders are only credited by the reconciliation sweep." },
 
-  // ---- Video (Bunny Stream) ----------------------------------------------
+  // ---- Video (Qencode) ---------------------------------------------------
   {
-    name: "BUNNY_STREAM_API_KEY",
-    label: "Bunny Stream API Key",
+    name: "QENCODE_API_KEY",
+    label: "Qencode API Key",
     group: "video",
-    envKey: "BUNNY_STREAM_API_KEY",
-    help: "Bunny dashboard → Stream → your library → API. Stays server-side; never shipped to the app.",
-  },
-  {
-    name: "BUNNY_WEBHOOK_SECRET",
-    label: "Bunny Webhook Secret",
-    group: "video",
-    envKey: "BUNNY_WEBHOOK_SECRET",
-    help: "Optional. If set, the encode webhook is only accepted when it presents this value (as an X-Bunny-Signature header, a Bearer token, or ?secret= on the URL). Add the SAME value to your Bunny webhook URL, e.g. https://<worker-host>/webhook/bunny?secret=…",
+    envKey: "QENCODE_API_KEY",
+    help:
+      "Qencode dashboard → Projects → your project → API key. Stays server-side; never shipped to the app. " +
+      "Qencode also needs the R2 credentials below: it writes the encoded HLS into the media bucket.",
   },
 
-  // ---- Storage (R2 S3 API, used for presigned uploads) -------------------
-  { name: "R2_ACCESS_KEY_ID", label: "R2 Access Key ID", group: "storage", envKey: "R2_ACCESS_KEY_ID", sensitive: true },
+  // ---- Storage (R2 S3 API) -------------------------------------------------
+  // Used by the video pipeline: the Worker presigns the raw upload for Qencode to
+  // pull, and Qencode writes the encoded output back with these. Use an R2 API
+  // token scoped to the media bucket only (Object Read & Write).
+  {
+    name: "R2_ACCESS_KEY_ID",
+    label: "R2 Access Key ID",
+    group: "storage",
+    envKey: "R2_ACCESS_KEY_ID",
+    sensitive: true,
+    help: "R2 → Manage API tokens → Object Read & Write, scoped to the media bucket. Sent to Qencode with each encode job.",
+  },
   { name: "R2_SECRET_ACCESS_KEY", label: "R2 Secret Access Key", group: "storage", envKey: "R2_SECRET_ACCESS_KEY", sensitive: true },
 
   // ---- Auth / platform ---------------------------------------------------
@@ -120,7 +125,7 @@ export function secretDefinition(name: string): SecretDefinition {
 
 export type SmsProvider = "twilio" | "msg91" | "fast2sms" | "hanuotp" | "custom" | "none";
 export type EmailProvider = "resend" | "brevo" | "maileroo" | "none";
-export type VideoProvider = "bunny" | "r2";
+export type VideoProvider = "qencode" | "r2";
 
 export interface IntegrationsConfig {
   sms: {
@@ -152,9 +157,14 @@ export interface IntegrationsConfig {
     razorpayKeyId: string;
   };
   video: {
+    /**
+     * Where new video goes. `qencode`: encoded to HLS by Qencode and stored in
+     * R2 under `videos/<id>/`. `r2`: the legacy path, a raw MP4 in R2.
+     *
+     * A stored value of "bunny" (from before Bunny was removed) is read as the
+     * default, `r2` — Bunny was never provisioned, so that is what it meant.
+     */
     provider: VideoProvider;
-    libraryId: string;
-    cdnHostname: string;
   };
   push: {
     /** Web push public key. Public by design. */
@@ -175,7 +185,7 @@ export const DEFAULT_INTEGRATIONS: IntegrationsConfig = {
   },
   email: { provider: "none", from: "", replyTo: "" },
   payments: { razorpayKeyId: "" },
-  video: { provider: "r2", libraryId: "", cdnHostname: "" },
+  video: { provider: "r2" },
   push: { vapidPublicKey: "" },
 };
 
@@ -201,7 +211,7 @@ function mergeConfig(raw: any): IntegrationsConfig {
   const emailProvider = ["resend", "brevo", "maileroo", "none"].includes(email.provider)
     ? (email.provider as EmailProvider)
     : DEFAULT_INTEGRATIONS.email.provider;
-  const videoProvider = ["bunny", "r2"].includes(video.provider)
+  const videoProvider = ["qencode", "r2"].includes(video.provider)
     ? (video.provider as VideoProvider)
     : DEFAULT_INTEGRATIONS.video.provider;
   return {
@@ -221,11 +231,7 @@ function mergeConfig(raw: any): IntegrationsConfig {
       replyTo: str(email.replyTo),
     },
     payments: { razorpayKeyId: str(payments.razorpayKeyId) },
-    video: {
-      provider: videoProvider,
-      libraryId: str(video.libraryId),
-      cdnHostname: str(video.cdnHostname).replace(/^https?:\/\//, "").replace(/\/$/, ""),
-    },
+    video: { provider: videoProvider },
     push: { vapidPublicKey: str(push.vapidPublicKey) },
   };
 }
@@ -279,7 +285,7 @@ export async function saveIntegrations(
  * while saving, not when a user's OTP silently never arrives.
  */
 export function validateIntegrations(cfg: IntegrationsConfig): void {
-  const { sms, email, video } = cfg;
+  const { sms, email } = cfg;
   if (sms.provider === "twilio" && !sms.from) {
     throw httpsError("invalid-argument", "Twilio needs the sending phone number in E.164 form (e.g. +14155552671).");
   }
@@ -317,12 +323,6 @@ export function validateIntegrations(cfg: IntegrationsConfig): void {
   }
   if (email.from && !/^[^<>@\s]+@[^<>@\s.]+\.[^<>@\s]+$|^.+<[^<>@\s]+@[^<>@\s.]+\.[^<>@\s]+>$/.test(email.from)) {
     throw httpsError("invalid-argument", 'From must be an email address, optionally as "Name <a@b.com>".');
-  }
-  if (video.provider === "bunny" && (!video.libraryId || !video.cdnHostname)) {
-    throw httpsError("invalid-argument", "Bunny Stream needs both the Library ID and the pull-zone hostname.");
-  }
-  if (video.libraryId && !/^\d+$/.test(video.libraryId)) {
-    throw httpsError("invalid-argument", "The Bunny Library ID is numeric.");
   }
 }
 
@@ -516,7 +516,7 @@ export async function getRazorpayCredentials(env: Env): Promise<RazorpayCredenti
   return { keyId, keySecret, webhookSecret };
 }
 
-/** R2 S3-API credentials for presigned uploads, panel-managed with env fallback. */
+/** R2 S3-API credentials (video pipeline), panel-managed with env fallback. */
 export async function getR2Credentials(env: Env): Promise<{
   accountId: string | null;
   accessKeyId: string | null;

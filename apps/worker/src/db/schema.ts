@@ -376,8 +376,9 @@ export const contestMatches = sqliteTable(
     // { fire: n, heart: n, laugh: n } quick-reaction counters
     reactions: text("reactions", { mode: "json" }),
     endingSoonNotified: integer("ending_soon_notified", { mode: "boolean" }).default(false),
-    // Coarse marker for the Bunny backfill: 'r2' | 'bunny' | null (not yet
-    // considered). Per-participant video identity lives in the userA/userB
+    // Coarse marker for the R2 -> Qencode video backfill: 'r2' | 'migrating' |
+    // 'qencode' | null (not yet considered). Rows from the retired Bunny backfill
+    // may still say 'bunny'. Per-participant video identity lives in the userA/userB
     // snapshots' mediaUrl; processing state lives in the `videos` table.
     videoProvider: text("video_provider"),
     /**
@@ -659,7 +660,7 @@ export const stories = sqliteTable(
     type: text("type"),
     matchId: text("match_id"),
     contestTitle: text("contest_title"),
-    // 'r2' | 'bunny' | null. See contestMatches.videoProvider.
+    // 'r2' | 'migrating' | 'qencode' | null. See contestMatches.videoProvider.
     videoProvider: text("video_provider"),
     // Music attached to the story. Resolved SERVER-SIDE from `musicTrackId` in
     // createStory — never accepted from the client, because a client-supplied
@@ -1433,7 +1434,7 @@ export const accountDeletions = sqliteTable(
 //     is the only defence against a mistap or a stolen phone destroying an
 //     account irreversibly.
 //   - `phase` makes the purge resumable. The work spans two D1 batches plus R2,
-//     Bunny, KV and Firebase; a failure part-way used to leave an account half
+//     KV and Firebase; a failure part-way used to leave an account half
 //     deleted with nothing recording how far it got.
 // ---------------------------------------------------------------------------
 export const deletionRequests = sqliteTable(
@@ -1673,25 +1674,34 @@ export const settings = sqliteTable("settings", {
 
 
 // ---------------------------------------------------------------------------
-// videos  (Bunny Stream processing state — MEDIA_MIGRATION_PLAN.md Phase 2)
+// videos  (Qencode encode state — MEDIA_ARCHITECTURE.md)
 //
-// Keyed by Bunny's own video guid so the encoding webhook is a primary-key
-// update rather than a search across every table that could own a video.
+// Keyed by OUR uuid, which also names the R2 output folder `videos/<id>/`. The
+// Qencode job handle lives in `job_id`, and the raw upload Qencode pulls from in
+// `source_key`. (Migration 0017 created this table for Bunny Stream; 0069 added
+// the two Qencode columns.)
 //
-// Content links back by URL, not by a foreign key: a Bunny playback URL is
-// https://{cdn-host}/{guid}/playlist.m3u8, so the guid is recoverable from the
-// existing stories.mediaUrl / userA.mediaUrl values. That is what lets contest
-// matches — which hold TWO participant videos in JSON — work without any
+// Content links back by URL, not by a foreign key: a playback URL is
+// {R2_PUBLIC_BASE_URL}/videos/{id}/playlist.m3u8, so the id is recoverable from
+// the existing stories.mediaUrl / userA.mediaUrl values. That is what lets
+// contest matches — which hold TWO participant videos in JSON — work without any
 // participant-snapshot migration.
 // ---------------------------------------------------------------------------
 export const videos = sqliteTable(
   "videos",
   {
-    /** Bunny video guid. */
+    /** Our video id (uuid). Also the R2 folder: `videos/<id>/`. */
     id: text("id").primaryKey(),
+    /** Bunny-era column (library id). Unused by Qencode; kept for old rows. */
     libraryId: text("library_id"),
     ownerUid: text("owner_uid").notNull(),
-    provider: text("provider").notNull().default("bunny"), // bunny | r2
+    // 'qencode' for every new row. Legacy rows may say 'bunny' (DB default from
+    // migration 0017, which cannot be changed in place).
+    provider: text("provider").notNull().default("bunny"),
+    /** Qencode task_token. Null until the encode job has been started. */
+    jobId: text("job_id"),
+    /** R2 key of the raw upload Qencode encodes from. Deleted after the encode. */
+    sourceKey: text("source_key"),
     /** uploading | processing | ready | failed */
     status: text("status").notNull().default("uploading"),
     /**

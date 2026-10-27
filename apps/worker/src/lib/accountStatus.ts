@@ -3,7 +3,7 @@
  * agree on, in a module with no imports.
  *
  * These live here rather than in lib/accountDeletion.ts because
- * middleware/auth.ts needs them, and the deletion library pulls in D1, Bunny,
+ * middleware/auth.ts needs them, and the deletion library pulls in D1, R2,
  * Firebase, KV and the settings store — none of which the auth path should have
  * to load in order to compare two strings.
  */

@@ -391,7 +391,6 @@ R2_LEGACY_BASE_URLS = ""
 # Cannot be enabled on a *.workers.dev host with a /media path prefix — see the
 # production block. Staging therefore always serves originals.
 MEDIA_TRANSFORMATIONS = "false"
-BUNNY_CDN_HOSTNAME = ""
 # Staging shares the same free-plan KV quota as production (the limit is
 # per-ACCOUNT, not per-namespace), so a test run here can take production's cache
 # writes down with it. Off by default so staging behaves like production; flip to
@@ -505,12 +504,11 @@ R2_LEGACY_BASE_URLS = "https://tophunt-api.weadown-in.workers.dev/media"
 # Cloudflare -> Images -> Transformations after this ships.
 MEDIA_TRANSFORMATIONS = "true"
 
-# Bunny Stream pull-zone hostname, e.g. "vz-1a2b3c4d-e5f.b-cdn.net".
-# Not a secret. Empty disables the Bunny path entirely: `createVideoUpload` is
-# rejected and video uploads keep using the existing R2 flow, so this is safe to
-# deploy before the Bunny account exists.
-# The API key and library id are SECRETS — `wrangler secret put`, never here.
-BUNNY_CDN_HOSTNAME = ""
+# Video (Qencode). Nothing to set here: encoded video is served from
+# R2_PUBLIC_BASE_URL above (`videos/<id>/playlist.m3u8`). The QENCODE_API_KEY and
+# the R2 S3 credentials are SECRETS — admin panel (Integrations) or
+# `wrangler secret put`, never here. Without them video keeps using the legacy
+# R2 flow, so this is safe to deploy before the Qencode account exists.
 
 # ---------------------------------------------------------------------------
 # KV write kill switch. TESTING ONLY — keep this "false" in production.
@@ -540,7 +538,7 @@ BUNNY_CDN_HOSTNAME = ""
 #     `failClosed` means "refuse if the counter is unreadable", NOT "this guard
 #     protects money", and several throttles that do guard money or real spend are
 #     fail-open by omission — deposits, rewarded ads (which mint withdrawable
-#     coins), video uploads (Bunny transcode spend), the only per-IP signup limit,
+#     coins), video uploads (Qencode transcode spend), the only per-IP signup limit,
 #     and the PII data export.
 #   - The Firebase access token and JWKS caches, or the `rzp_order` payment
 #     intent. Those write through env.CACHE_KV.put directly: they are state, not

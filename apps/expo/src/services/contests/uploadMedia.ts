@@ -9,13 +9,13 @@ import { uploadVideo } from "@/src/services/media/uploadVideo";
  * `POST /upload` proxy (NOT a direct R2 presigned PUT, which CORS-fails in the
  * browser).
  *
- * Videos go to Bunny Stream (resumable TUS upload, adaptive-bitrate playback,
+ * Videos are encoded by Qencode (sent through the Worker, adaptive-bitrate HLS,
  * generated thumbnails) via `services/media/uploadVideo.ts`, which owns the
  * pre-cutover R2 fallback so this file does not have its own copy of that policy.
  *
  * The return type is a single media URL string, so callers (contest photo/video
- * setup) need no edits. For a Bunny video the URL is the HLS playlist, which is
- * also how the guid is later recovered.
+ * setup) need no edits. For an encoded video the URL is the HLS playlist, which
+ * is also how the video id is later recovered.
  */
 export const contestMediaService = {
   uploadMedia: async (

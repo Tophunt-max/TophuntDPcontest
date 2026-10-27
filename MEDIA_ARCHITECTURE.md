@@ -1,15 +1,40 @@
-# Media architecture — images on R2, video on Bunny Stream
+# Media architecture — images on R2, video encoded by Qencode into R2
 
-Companion to MEDIA_MIGRATION_PLAN.md, which is the historical plan. This is the
-current design: what lives where, what the bucket looks like, and how to complete
-or reverse the video cutover.
+Companion to MEDIA_MIGRATION_PLAN.md, which is the historical plan (written for
+Bunny Stream, since replaced by Qencode). This is the current design: what lives
+where, what the bucket looks like, and how to complete or reverse the video
+cutover.
 
 ## The split
 
 | Media | Store | Delivery |
 |---|---|---|
 | Images | Cloudflare R2 (`tophunt-media`) | `media.tophunt.in`, resized by Cloudflare Transformations |
-| Video | Bunny Stream | Bunny pull zone — HLS on native, MP4 fallback on web |
+| Video | Qencode encodes; output stored in R2 (`videos/<id>/`) | `media.tophunt.in` — HLS natively on iOS/Android, hls.js on web |
+
+### The video pipeline
+
+1. The app calls `createVideoUpload` (with `upload: "worker"`). The Worker creates
+   a `videos` row (`uploading`) with a new uuid.
+2. The app POSTs the file to `/upload/video?videoId=<id>`. The Worker checks the
+   magic bytes, stores it at `video-src/<random uuid>.<ext>` (deliberately not
+   the video id, which is public once the playlist URL is on a story), and starts
+   a Qencode job:
+   source = a presigned R2 GET, output = `s3://<account>.r2.cloudflarestorage.com/<bucket>/videos/<id>/`.
+   The row becomes `processing`.
+3. Qencode writes `videos/<id>/playlist.m3u8` (HLS 360p/480p/720p) and
+   `videos/<id>/thumbnail.jpg`, then calls `/webhook/qencode?v=<id>&sig=<hmac>`.
+4. `applyEncodeResult` (lib/videoReconcile.ts) re-reads the job from Qencode
+   `/v1/status`, checks the playlist exists in R2, marks the row `ready`, and
+   deletes the raw source. The same function runs from the 10-minute cron and
+   from the app's `videoStatus` poll, so a lost callback costs latency, not
+   correctness.
+
+The app never talks to Qencode. Qencode's tus upload credential (the task token)
+can also start jobs with any settings, so handing it to the app would let any
+account run encodes billed to us. Uploading through the Worker also means the
+bytes are verified before we pay to encode them. The trade is resumability: an
+upload that drops restarts from zero (with retries), instead of resuming.
 
 Audio is in **neither**: story music previews are `musicTracks.previewUrl`, which
 points at the externally hosted catalogue. There is no audio in the bucket and no
@@ -19,27 +44,34 @@ exists to prevent.
 
 One module decides this and nothing else is allowed to:
 **`apps/worker/src/lib/mediaRouting.ts`**. Its client mirror is
-`apps/expo/src/services/media/uploadVideo.ts`.
+`apps/expo/src/services/media/uploadVideo.ts`. The Qencode integration itself is
+**`apps/worker/src/lib/qencode.ts`**.
 
 ### It is a switch, not a deletion
 
-Bunny is not provisioned in this deployment yet, so removing the R2 video path
-outright would leave no video path at all. Instead the split is enforced by
-`integrations.video.provider`, which already existed:
+Qencode is not provisioned in this deployment yet, so removing the legacy R2
+video path outright would leave no video path at all. Instead the split is
+enforced by `integrations.video.provider`:
 
-| `provider` | Bunny config | Video goes to | R2 accepts video? | `media_routing` health |
+| `provider` | Qencode config | Video goes to | `POST /upload` accepts raw video? | `media_routing` health |
 |---|---|---|---|---|
-| `bunny` | complete | **Bunny** | **No — rejected** | ok |
-| `r2` | any | R2 (legacy) | Yes | ok, reported as legacy |
-| `bunny` | incomplete | R2 (silent fallback) | Yes | **fails** |
+| `qencode` | complete | **Qencode → R2 `videos/`** | **No — rejected** | ok |
+| `r2` | any | R2 (legacy raw MP4) | Yes | ok, reported as legacy |
+| `qencode` | incomplete | R2 (silent fallback) | Yes | **fails** |
 
-The third row is the case worth naming: someone selected Bunny and did not finish
-wiring it. Behaviour is identical to a deliberate legacy setup, so without a
-distinct health signal a half-finished cutover looks like a working deployment
-while the video library they think they are filling stays empty.
+"Complete" means `QENCODE_API_KEY` **and** the R2 S3 credentials
+(`R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`), since
+Qencode reads the source and writes the output with them.
+
+The third row is the case worth naming: someone selected Qencode and did not
+finish wiring it. Behaviour is identical to a deliberate legacy setup, so without
+a distinct health signal a half-finished cutover looks like a working deployment.
+
+A stored provider value of `bunny` (from before Bunny was removed) is read as
+`r2`. Bunny was never provisioned, so that is what it meant.
 
 Both directions are an admin-panel setting — no deploy, no client release.
-Rollback from a broken Bunny library has to be faster than a deploy.
+Rollback from a broken encoder setup has to be faster than a deploy.
 
 ## R2 folder structure
 
@@ -63,6 +95,8 @@ disagree the code wins.
 | `contest-banners/` | **admin** | **no-store** | — | Has a real deletion lifecycle |
 | `payment-qr/` | **admin** | immutable | — | Shown on the deposit screen |
 | `blog/imported/` | **server** | immutable | — | Importer only; keyed by content hash |
+| `videos/` | **server** | immutable | — | Qencode output: `videos/<uuid>/playlist.m3u8`, renditions, `thumbnail.jpg` |
+| `video-src/` | **server** | no-store | 2 d | Raw uploads Qencode encodes from; deleted when the encode finishes |
 
 `writer` is enforced: `POST /upload` derives its allow-list from
 `writer === "user"`, so an admin- or server-owned prefix cannot be opened to
@@ -74,6 +108,8 @@ clobber a banner shown to everyone.
 ```
 {prefix}/{YYYY}/{MM}/{uuid}{ext}      new uploads
 blog/imported/{sha256}{ext}           content-hash keyed, deliberately NOT sharded
+videos/{uuid}/…                       one folder per encoded video, NOT sharded
+video-src/{random-uuid}{ext}          temporary raw upload, NOT sharded; key on videos.source_key
 {prefix}/images/{uuid}{ext}           legacy, still served and still deletable
 ```
 
@@ -121,6 +157,7 @@ lifecycle rules**:
 | Rule | Prefix | Action | Apply now? |
 |---|---|---|---|
 | `vs-cards-safety-net` | `vs-cards/` | Delete 7 days after upload | Yes |
+| `video-src-safety-net` | `video-src/` | Delete 2 days after upload | Yes |
 | `stories-safety-net` | `stories/` | Delete 30 days after upload | **Not yet — see below** |
 
 Both are safety nets under a cron that already deletes these on a 24-hour clock,
@@ -128,10 +165,14 @@ never the primary mechanism — a lifecycle rule cannot also clear the D1 row th
 points at the object, so relying on one alone would leave rows referencing objects
 that no longer exist.
 
+**Do not add a lifecycle rule on `videos/`.** Encoded contest-entry videos are
+kept indefinitely (match history), and story videos are deleted by the
+story-expiry cron with their row. A prefix rule cannot tell the two apart.
+
 **Hold the `stories/` rule until the video backfill is confirmed drained.** A
 lifecycle rule is prefix-scoped and cannot consult `video_provider`. During the
 backfill a story row deliberately keeps pointing at its R2 original until the
-encoding webhook promotes it, so a row stalled at `video_provider = 'migrating'`
+encode completes and promotes it, so a row stalled at `video_provider = 'migrating'`
 (lost webhook, failed encode) still references an object in `stories/`. Deleting it
 is silent and permanent. Check `GET /admin/videos/migration-status` reports no
 pending rows first.
@@ -142,39 +183,50 @@ dispute or chargeback is open destroys the only proof of it, so a retention peri
 there is a finance/legal decision rather than a storage-cost one. Left to be made
 explicitly.
 
-## Bunny cutover runbook
+## Qencode cutover runbook
 
-Nothing here needs a deploy or an app release.
+Nothing here needs an app release beyond the build that contains the new upload
+client. Do it on staging first: this path is tested against a fake Qencode API,
+not against a real account.
 
-**Prerequisites, on the Bunny side:**
-1. Create a Stream video library.
-2. **Enable MP4 Fallback** on it. The web build has no native HLS and plays
-   `play_720p.mp4`; without this those URLs 404.
-3. Point the encoding webhook at `POST https://api.tophunt.in/webhook/bunny` and
-   note the secret.
+**Prerequisites:**
+1. A Qencode account and project. Copy the project's API key.
+2. An R2 API token scoped to the media bucket, **Object Read & Write**. Qencode
+   receives these keys with every job (it writes the output), so do not reuse an
+   account-wide token.
+3. **An R2 CORS rule on the media bucket** allowing `GET` and `HEAD` from the web
+   app's origins (e.g. `https://tophunt.in`). hls.js fetches playlists and
+   segments with XHR; without the rule, video does not play on the website.
+   Native apps are unaffected.
+4. The `video-src-safety-net` lifecycle rule above.
 
-**Then, in the admin panel → Integrations → Video:**
-4. Enter the API key and the webhook secret (encrypted credential store).
-5. Enter the library id and the pull-zone hostname.
-6. Set provider to **bunny**.
+**Then, in the admin panel → Integrations:**
+5. Video: enter the Qencode API key.
+6. Storage: enter the R2 access key id and secret (and make sure `R2_ACCOUNT_ID`
+   and `R2_BUCKET` are set on the Worker).
+7. Video: set provider to **qencode** and press **Test** (checks the API key).
 
 **Verify:**
-7. `GET /health/deep` → `checks.media_routing.ok === true` with
-   `"video: bunny (R2 refuses video)"`. If it reads *"config is incomplete"*, one
-   of steps 4–5 is missing.
-8. Upload one story video. It should appear in the Bunny library, and
-   `POST /upload?fileType=video/mp4` should now return a `failed-precondition`
-   naming `createVideoUpload`.
+8. `GET /health/deep` → `checks.media_routing.ok === true` with
+   `"video: qencode (POST /upload refuses raw video)"`. If it reads *"config is
+   incomplete"*, one of steps 5–6 is missing.
+9. Post one story video from a current build. It should show "Processing…", then
+   play. In R2 you should see `videos/<id>/playlist.m3u8` and `thumbnail.jpg`, and
+   the row's `video-src/…` source should be gone. Check it plays on the website too (step 3).
 
-**Rollback:** set provider back to **r2**. Takes effect on the next request; R2
-starts accepting video again immediately. Videos already in Bunny keep playing —
-the client detects them by the `.m3u8` in the stored URL, so the two coexist with
-no big-bang switch either way.
+**Old app builds:** a build from before this change does not send
+`upload: "worker"`, so it is answered "video not configured", and `POST /upload`
+refuses its raw video while Qencode is live. Those users cannot post video until
+they update. Flip the provider once enough users are on the new build.
 
-**Then, optionally, the backfill** (`apps/admin-panel/scripts/migrate-videos-to-bunny.mjs`)
-moves existing R2 videos across. Bunny pulls from R2 itself, so nothing is
-downloaded and re-uploaded. Do **not** delete the R2 originals until the D1 rows
-have flipped to the Bunny URLs.
+**Rollback:** set provider back to **r2**. New uploads go to R2 on the next
+request. Videos already encoded keep playing, because the app detects them by
+the `.m3u8` in the stored URL.
+
+**Then, optionally, the backfill** (`apps/admin-panel/scripts/migrate-videos-to-qencode.mjs`)
+encodes existing raw R2 videos. Qencode pulls each original from R2 itself. Each
+row is a billed encode, so check the volume with `--status` first. Do **not**
+delete the R2 originals until the D1 rows have flipped to the encoded URLs.
 
 ## Deleting media: only the owner's
 
@@ -186,11 +238,14 @@ A story or post holds a URL, not ownership: `createStory` accepts any URL, and
 the app's Repost puts the original author's URL on a new story. Deleting by URL
 alone deleted the author's photo or video when the repost was deleted or
 expired. So the delete first checks who uploaded the object: R2
-`customMetadata.uploader` (written by `POST /upload` since 2026-10-18) or Bunny
-`videos.owner_uid`. An object recorded as another account's is kept. An object
+`customMetadata.uploader` (written by `POST /upload` since 2026-10-18) or, for
+an encoded video, `videos.owner_uid`. An object recorded as another account's is kept. An object
 with no record (older uploads) is deleted as before. The same lookup
-(`mediaOwnership`) makes `startMatch`/`joinMatch` refuse another user's Bunny
-video, not only R2 photos. Tests: `apps/worker/test/mediaOwnership.test.ts`.
+(`mediaOwnership`) makes `startMatch`/`joinMatch` refuse another user's encoded
+video, not only R2 photos.
+
+An encoded video is a whole folder, so its delete is `deleteVideoObjects`: list
+`videos/<id>/` and delete every key, plus any leftover raw source. Tests: `apps/worker/test/mediaOwnership.test.ts`.
 
 When the original story expires its media goes, and a repost of it then shows
 nothing: the author's lifecycle wins.
@@ -198,8 +253,7 @@ nothing: the author's lifecycle wins.
 ## Known gaps
 
 - **Unattached uploads are never swept.** `videos.target_id` is never written,
-  so a Bunny video that finished uploading but whose story or entry was never
-  created stays in the library, billed. R2 keeps no upload record at all. Fix:
+  so an encoded video whose story or entry was never created stays in R2. R2 keeps no upload record at all. Fix:
   write `target_id` when the story or entry row is created, then add a sweep of
   ready/processing rows with no target older than 24 h, starting in report-only
   mode (a wrong delete loses user content).
@@ -208,13 +262,21 @@ nothing: the author's lifecycle wins.
 - **R2 objects carry no stored Cache-Control.** `MEDIA.put` stores only the
   content type, so the custom domain serves whatever a zone rule sets. Check the
   dashboard.
-- **Whole-video buffering.** The client reads the file into a Blob and the
-  Worker buffers the body; on native, tus could stream from the file URI.
-- **Bunny has never run against a real account.** MEDIA_MIGRATION_PLAN.md is
-  explicit that the whole Phase 2/3 path is type-checked and bundled but never
-  executed. Unverified: TUS signature acceptance, the `VideoGuid`/`Status` webhook
-  field names, `mapBunnyStatus` thresholds, fetch-from-URL. **Do the cutover on
-  staging first.**
+- **Whole-video buffering, no resume.** The client reads the file into a Blob
+  and the Worker buffers the body (80 MB cap). A dropped upload restarts from
+  zero; see "The video pipeline" for why Qencode's resumable tus upload is not
+  used.
+- **Qencode has never run against a real account.** The pipeline is tested
+  against a fake of Qencode's documented API. Unverified until staging: the
+  `advanced_hls` output layout in R2 (master at `playlist.m3u8`), the `time`
+  unit of the thumbnail, the `/v1/status` field names, the content types
+  Qencode sets on R2 objects, and R2 accepting Qencode's S3 writes. **Do the
+  cutover on staging first.**
+- **A video deleted mid-encode can leak its output.** Deleting removes what is
+  in `videos/<id>/` at that moment; a still-running job can write after it. The
+  job is not cancelled.
+- **No progressive MP4.** Only HLS is produced. Web plays it through hls.js; a
+  browser with neither MSE nor native HLS cannot play video.
 - **New contest banners bypass the `no-store` proxy.** `uploadToR2` writes them to
   `R2_PUBLIC_BASE_URL`, so a deleted banner can stay CDN-cached. Closing it needs
   an R2/zone cache rule for the `contest-banners/` prefix.
@@ -228,7 +290,7 @@ nothing: the author's lifecycle wins.
   purge, unlike the banner delete. Pre-existing; the fix is either `no-store` on
   that prefix or a purge in the delete path.
 - **The `legacyVideo` branch is deletable after cutover.** Once provider is
-  `bunny` in production and no build old enough to POST a video to `/upload` is
+  `qencode` in production and no build old enough to POST a video to `/upload` is
   installed, every `legacyVideo` flag, the branch in `allowedMimesForCategory` that
   reads it, and the R2 fallback in `uploadVideo.ts` go in one commit — along with
   `video/mp4` and `video/quicktime` from the R2 MIME allow-list.

@@ -692,25 +692,31 @@ describe('anonymisation reaches JSON snapshots, not just the users row', () => {
     expect((match?.userB as any).username).toBe('bob');
   });
 
-  it('purges Bunny videos the user owns, including ones never attached to a post', async () => {
+  it('purges encoded videos the user owns, including ones never attached to a post', async () => {
     const { env } = makeEnv();
     await seedUser(env, 'alice');
     const db = drizzleOf(env);
     const ts = Date.now();
+    const abandoned = '00000000-0000-4000-8000-0000000000a1';
+    const ready = '00000000-0000-4000-8000-0000000000a2';
+    await env.MEDIA.put(`video-src/${abandoned}.mp4`, new Uint8Array([1]));
+    await env.MEDIA.put(`videos/${ready}/playlist.m3u8`, '#EXTM3U');
+    await env.MEDIA.put(`videos/${ready}/video_1/segment-0.ts`, new Uint8Array([0x47]));
     await db.insert(schema.videos).values({
-      id: 'guid-abandoned',
+      id: abandoned,
       ownerUid: 'alice',
-      provider: 'bunny',
+      provider: 'qencode',
       status: 'uploading',
+      sourceKey: `video-src/${abandoned}.mp4`,
       createdAt: ts,
       updatedAt: ts,
     } as any);
     await db.insert(schema.videos).values({
-      id: 'guid-ready',
+      id: ready,
       ownerUid: 'alice',
-      provider: 'bunny',
+      provider: 'qencode',
       status: 'ready',
-      playbackUrl: 'https://vz.b-cdn.net/guid-ready/playlist.m3u8',
+      playbackUrl: `https://cdn.test/videos/${ready}/playlist.m3u8`,
       createdAt: ts,
       updatedAt: ts,
     } as any);
@@ -718,6 +724,8 @@ describe('anonymisation reaches JSON snapshots, not just the users row', () => {
     await executeAccountDeletion(env as any, 'alice');
 
     expect((await db.select().from(schema.videos).all()).length).toBe(0);
+    // The footage itself, not just the rows.
+    expect([...env.MEDIA._objects.keys()].filter((k) => k.startsWith('video')).length).toBe(0);
   });
 });
 

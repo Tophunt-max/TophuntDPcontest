@@ -8,7 +8,7 @@
  * media still used by the author's Highlights or contest entry. Anyone could do
  * the same to anyone on purpose.
  */
-import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { vi, describe, it, expect } from 'vitest';
 import { eq } from 'drizzle-orm';
 
 vi.mock('../src/lib/firebaseAuth', () => ({
@@ -24,7 +24,16 @@ import { invalidateIntegrationCache } from '../src/lib/integrations';
 
 const app = makeApp();
 const BASE = 'https://cdn.test';
-const GUID = '11111111-2222-3333-4444-555555555555';
+const GUID = '11111111-2222-4333-8444-555555555555';
+const PLAYLIST = `${BASE}/videos/${GUID}/playlist.m3u8`;
+
+/** What an encoded video leaves in the bucket. */
+async function encoded(env: TestEnv) {
+  await env.MEDIA.put(`videos/${GUID}/playlist.m3u8`, '#EXTM3U');
+  await env.MEDIA.put(`videos/${GUID}/video_1/segment-0.ts`, new Uint8Array([0x47]));
+  await env.MEDIA.put(`videos/${GUID}/thumbnail.jpg`, new Uint8Array([0xff, 0xd8, 0xff]));
+}
+const videoObjects = (env: TestEnv) => [...env.MEDIA._objects.keys()].filter((k) => k.startsWith(`videos/${GUID}/`));
 
 async function call(env: TestEnv, uid: string, action: string, data: any = {}) {
   const res = await app.request(
@@ -50,22 +59,9 @@ async function upload(env: TestEnv, key: string, uploader: string | null) {
   return `${BASE}/${key}`;
 }
 
-let bunnyDeletes: string[] = [];
-const realFetch = globalThis.fetch;
-beforeEach(() => {
-  bunnyDeletes = [];
-  globalThis.fetch = (async (url: any, init?: any) => {
-    if (init?.method === 'DELETE') bunnyDeletes.push(String(url));
-    return new Response('{}', { status: 200 });
-  }) as any;
-});
-afterEach(() => {
-  globalThis.fetch = realFetch;
-});
-
-async function env0(bunny = false) {
+async function env0() {
   invalidateIntegrationCache();
-  const { env } = makeEnv(bunny ? ({ BUNNY_STREAM_API_KEY: 'k', BUNNY_LIBRARY_ID: '1', BUNNY_CDN_HOSTNAME: 'vz.test' } as any) : {});
+  const { env } = makeEnv();
   for (const u of ['alice', 'bob']) await seedUser(env, u);
   return env;
 }
@@ -96,32 +92,36 @@ describe('story media ownership on delete', () => {
     expect(await drizzleOf(env).select().from(schema.stories).all()).toHaveLength(0); // the row still goes
   });
 
-  it("a story naming someone else's Bunny video cannot delete it", async () => {
-    const env = await env0(true);
+  it("a story naming someone else's encoded video cannot delete it", async () => {
+    const env = await env0();
     const ts = Date.now();
+    await encoded(env);
     await drizzleOf(env).insert(schema.videos).values({ id: GUID, ownerUid: 'alice', status: 'ready', createdAt: ts, updatedAt: ts } as any);
-    const s = await call(env, 'bob', 'createStory', { mediaUrl: `https://vz.test/${GUID}/playlist.m3u8`, mediaType: 'video' });
+    const s = await call(env, 'bob', 'createStory', { mediaUrl: PLAYLIST, mediaType: 'video' });
 
     await call(env, 'bob', 'deleteStory', { storyId: s.body.storyId });
 
-    expect(bunnyDeletes).toEqual([]);
+    expect(videoObjects(env)).toHaveLength(3);
     expect(await drizzleOf(env).select().from(schema.videos).where(eq(schema.videos.id, GUID)).get()).toBeTruthy();
   });
 
-  it("the owner deleting their own Bunny story video still deletes it", async () => {
-    const env = await env0(true);
+  it("the owner deleting their own story video deletes the whole folder, not just the playlist", async () => {
+    // A single-key delete of the playlist URL would leave every segment and the
+    // poster behind, billed and unreferenced.
+    const env = await env0();
     const ts = Date.now();
+    await encoded(env);
     await drizzleOf(env).insert(schema.videos).values({ id: GUID, ownerUid: 'alice', status: 'ready', createdAt: ts, updatedAt: ts } as any);
-    const s = await call(env, 'alice', 'createStory', { mediaUrl: `https://vz.test/${GUID}/playlist.m3u8`, mediaType: 'video' });
+    const s = await call(env, 'alice', 'createStory', { mediaUrl: PLAYLIST, mediaType: 'video' });
 
     await call(env, 'alice', 'deleteStory', { storyId: s.body.storyId });
 
-    expect(bunnyDeletes.some((u) => u.includes(GUID))).toBe(true);
+    expect(videoObjects(env)).toEqual([]);
     expect(await drizzleOf(env).select().from(schema.videos).where(eq(schema.videos.id, GUID)).get()).toBeUndefined();
   });
 
-  it("a contest entry using someone else's Bunny video is refused before any coins move", async () => {
-    const env = await env0(true);
+  it("a contest entry using someone else's encoded video is refused before any coins move", async () => {
+    const env = await env0();
     const ts = Date.now();
     await drizzleOf(env).insert(schema.videos).values({ id: GUID, ownerUid: 'alice', status: 'ready', createdAt: ts, updatedAt: ts } as any);
     await drizzleOf(env).update(schema.users).set({ dpcoin: 500 } as any).where(eq(schema.users.uid, 'bob')).run();
@@ -130,7 +130,7 @@ describe('story media ownership on delete', () => {
     } as any);
 
     const res = await call(env, 'bob', 'startMatch', {
-      contestId: 'cv', mediaUrl: `https://vz.test/${GUID}/playlist.m3u8`, mediaType: 'video', deviceId: 'b',
+      contestId: 'cv', mediaUrl: PLAYLIST, mediaType: 'video', deviceId: 'b',
     });
 
     expect(res.body?.error?.message ?? res.body).toMatch(/another account/);

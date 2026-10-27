@@ -16,15 +16,18 @@
  * prefix nobody can write a lifecycle rule for.
  *
  * ---------------------------------------------------------------------------
- * IMAGES ONLY
+ * USER PREFIXES ARE IMAGES ONLY
  * ---------------------------------------------------------------------------
- * Every category here is `["image"]`. Video belongs to Bunny Stream, not R2 —
- * see `lib/mediaRouting.ts` for the switch and MEDIA_ARCHITECTURE.md for why.
+ * Every user-written category is `["image"]`. Video is never stored as uploaded:
+ * it goes through the Qencode pipeline (`lib/qencode.ts`), whose two prefixes
+ * below — `video-src/` (raw upload) and `videos/` (encoded HLS) — are written by
+ * the server only. See `lib/mediaRouting.ts` for the switch and
+ * MEDIA_ARCHITECTURE.md for why.
  *
- * `legacyVideo` marks the categories that accepted video BEFORE that split, and
- * exists only so the pre-Bunny path can keep working during cutover. It is a
- * dated concession, not a property of the category: once
- * `integrations.video.provider` is `"bunny"` in production and no build old
+ * `legacyVideo` marks the categories that accepted raw video BEFORE that split,
+ * and exists only so the legacy path keeps working until Qencode is live. It is
+ * a dated concession, not a property of the category: once
+ * `integrations.video.provider` is `"qencode"` in production and no build old
  * enough to POST a video to `/upload` is still installed, every `legacyVideo`
  * flag and the branch in `allowedMimesForCategory` that reads it can be deleted
  * in one commit.
@@ -40,8 +43,9 @@ import { ALLOWED_MEDIA_MIME_TYPES, IMAGE_MIME_TYPES, kindOf } from "./mediaTypes
  *              deployment-owned: a user who could write here could plant or
  *              clobber a banner or a payment QR code, which are shown to
  *              everyone and are trusted by the people looking at them.
- * - `server` — written only by the Worker itself (the blog importer fetching a
- *              remote image). Never reachable from a client upload.
+ * - `server` — written only by the Worker itself (the blog importer, the VS
+ *              card renderer, the video pipeline) or by Qencode on its behalf.
+ *              Never reachable from `POST /upload`.
  */
 export type MediaWriter = "user" | "admin" | "server";
 
@@ -61,7 +65,7 @@ export interface MediaCategory {
   /** R2 key prefix. May contain a slash (`blog/imported`). */
   readonly prefix: string;
   readonly writer: MediaWriter;
-  /** Families this prefix may contain. Always image-only — video is on Bunny. */
+  /** Families this prefix may contain. Image-only for every user prefix. */
   readonly kinds: readonly MediaKind[];
   readonly cache: CachePolicy;
   /**
@@ -85,7 +89,7 @@ export interface MediaCategory {
    * defeats the deduplication that prefix exists for.
    */
   readonly dateSharded: boolean;
-  /** Accepted video before the Bunny split. Temporary — see the file header. */
+  /** Accepted raw video before the Qencode split. Temporary — see the file header. */
   readonly legacyVideo: boolean;
   /**
    * Keep serving this prefix through the Worker's `/media/*` route; never
@@ -134,6 +138,10 @@ export const ONBOARDING_IMAGE_PREFIX = "onboarding";
 /** Promo banners for the Explore page carousel, set from the admin panel. */
 export const EXPLORE_BANNER_PREFIX = "explore-banners";
 export const BLOG_IMPORT_PREFIX = "blog/imported";
+/** Encoded video (HLS + poster), one folder per video. See lib/qencode.ts. */
+export const VIDEO_PREFIX = "videos";
+/** Raw video uploads waiting to be encoded. See lib/qencode.ts. */
+export const VIDEO_SOURCE_PREFIX = "video-src";
 
 /**
  * Ordered for readability, not for lookup — `categoryForKey` matches on longest
@@ -378,6 +386,38 @@ export const MEDIA_CATEGORIES: readonly MediaCategory[] = [
     proxyOnly: false,
     description: "Images pulled in by the blog/archive importer, keyed by content hash.",
   },
+  {
+    prefix: VIDEO_PREFIX,
+    // Written by Qencode with the R2 credentials the Worker hands it per job, and
+    // deleted by `deleteVideoObjects`. Never by a client.
+    writer: "server",
+    kinds: ["video"],
+    // Every object lives in a folder named by a fresh uuid and is written once,
+    // when the encode finishes.
+    cache: "immutable",
+    retentionDays: null,
+    // `videos/<uuid>/playlist.m3u8`, `videos/<uuid>/video_1/…`. The uuid folder
+    // is the unit of deletion, so no month shard in front of it.
+    dateSharded: false,
+    legacyVideo: false,
+    proxyOnly: false,
+    description: "Encoded video: HLS playlist, renditions and a poster per video id. Story and contest video URLs point here.",
+  },
+  {
+    prefix: VIDEO_SOURCE_PREFIX,
+    // Written by `POST /upload/video` after the bytes are verified as a video.
+    writer: "server",
+    kinds: ["video"],
+    // Never meant to be served: Qencode reads it through a presigned URL.
+    cache: "no-store",
+    // Deleted as soon as the encode is ready or failed; the reconcile cron fails
+    // and deletes uploads that never finish. 2 days is the safety net.
+    retentionDays: 2,
+    dateSharded: false,
+    legacyVideo: false,
+    proxyOnly: false,
+    description: "Raw video uploads Qencode encodes from. Temporary.",
+  },
 ] as const;
 
 /** Longest prefix first, so `blog/imported` wins over a hypothetical `blog`. */
@@ -447,7 +487,7 @@ export function isUserWritablePrefix(prefix: string): boolean {
  *
  * `allowLegacyVideo` is supplied by `lib/mediaRouting.ts` from the live provider
  * setting; it is never read from config here, because "what may this prefix
- * contain" and "is Bunny switched on" are separate questions and mixing them is
+ * contain" and "is Qencode switched on" are separate questions and mixing them is
  * how a storage rule ends up depending on an integration being reachable.
  */
 export function allowedMimesForCategory(
