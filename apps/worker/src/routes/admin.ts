@@ -194,14 +194,25 @@ const ADMIN_ROLES = ["superadmin", "admin", "moderator"];
 // too — every full revocation closes sockets now, not just the two admin paths — and two
 // copies is how they would drift on which channels count.
 
-/** Resolve the caller's effective admin role from claim or the D1 users row. */
+/**
+ * Resolve the caller's effective admin role from claim or the D1 users row.
+ *
+ * Superadmin is never granted through the API (`/set-role` refuses it); it is
+ * set directly on the D1 row. The token claim can still say "admin" from an
+ * earlier `/set-role`, so a D1 superadmin outranks the claim. Nothing else
+ * changes: without a staff claim the D1 role is used as before, and a demotion
+ * through `/set-role` rewrites both the claim and the row.
+ */
 async function resolveAdminRole(c: any): Promise<string | null> {
   const user = c.get("user");
   if (!user?.uid) return null;
-  if (user.role && ADMIN_ROLES.includes(user.role)) return user.role;
+  const claim = user.role && ADMIN_ROLES.includes(user.role) ? (user.role as string) : null;
+  if (claim === "superadmin") return claim;
   const db = getDb(c.env);
   const row = await db.select({ role: schema.users.role }).from(schema.users).where(eq(schema.users.uid, user.uid)).get();
-  return row?.role && ADMIN_ROLES.includes(row.role) ? row.role : null;
+  const stored = row?.role && ADMIN_ROLES.includes(row.role) ? row.role : null;
+  if (stored === "superadmin") return stored;
+  return claim ?? stored;
 }
 
 // Gate: shared secret (server-to-server, treated as superadmin) OR an admin/
