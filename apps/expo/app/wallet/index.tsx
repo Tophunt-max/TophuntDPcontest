@@ -362,9 +362,21 @@ export default function WalletScreen() {
     </Animated.View>
   );
 
+  // Shared by the loaded list and the skeleton, so the header never moves.
+  const walletHeader = (
+    <View style={styles.header}>
+      <BackButton size={26} color={textColor} style={styles.backButton} />
+      <Text style={[styles.title, { color: textColor }]}>My Wallet</Text>
+      <TouchableOpacity onPress={() => router.push('/wallet/store')}>
+        <Ionicons name="scan-outline" size={24} color={textColor} />
+      </TouchableOpacity>
+    </View>
+  );
+
   if (profileLoading) {
     return (
       <SafeAreaView style={[styles.container, { backgroundColor }]}>
+        {walletHeader}
         <WalletSkeleton />
       </SafeAreaView>
     );
@@ -380,14 +392,7 @@ export default function WalletScreen() {
         showsVerticalScrollIndicator={false}
         ListHeaderComponent={
             <View>
-                {/* Header */}
-                <View style={styles.header}>
-                    <BackButton size={26} color={textColor} style={styles.backButton} />
-                    <Text style={[styles.title, { color: textColor }]}>My Wallet</Text>
-                    <TouchableOpacity onPress={() => router.push('/wallet/store')}>
-                        <Ionicons name="scan-outline" size={24} color={textColor} />
-                    </TouchableOpacity>
-                </View>
+                {walletHeader}
 
                 {/* Balance Card */}
                 <Animated.View entering={FadeInDown.duration(600)} style={styles.balanceContainer}>

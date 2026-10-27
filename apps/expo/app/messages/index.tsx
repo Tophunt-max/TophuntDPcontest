@@ -513,9 +513,9 @@ export default function MessagesScreen() {
       </LinearGradient>
 
       {loading && chats.length === 0 ? (
-        <View style={{ paddingHorizontal: 20, paddingTop: 20 }}>
+        <View style={styles.flatListContent}>
           {[1, 2, 3, 4, 5, 6].map((i) => (
-            <MessageSkeleton key={i} isDark={isDark} />
+            <MessageSkeleton key={i} />
           ))}
         </View>
       ) : (
