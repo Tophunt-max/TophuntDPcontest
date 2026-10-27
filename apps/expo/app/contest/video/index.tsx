@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { balancesOf } from '@/src/lib/balances';
 import { View, Text, StyleSheet, TouchableOpacity, FlatList, ActivityIndicator, ScrollView, TextInput, ImageBackground } from 'react-native';
 import { Alert } from '@/src/lib/appAlert';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -162,11 +163,10 @@ export default function VideoContestScreen() {
     // players — so this gate demanded twice the real price, and disagreed with
     // the price the card in this very file advertises.
     const fee = entryFeePerPlayer(selectedContest);
-    // Profile balance is stored as `Dpcoin` (there is no `coins` field), so the
-    // old `profile?.coins` read was always undefined and blocked every entry.
-    const userCoins = (profile as any)?.Dpcoin ?? (profile as any)?.coins ?? 0;
+    // Entry fees are paid in Diamonds only (src/lib/balances.ts).
+    const userCoins = balancesOf(profile as any).diamonds;
     if (userCoins < fee) {
-        Alert.alert("Insufficient Coins", `Need ${fee} Coins. Current: ${userCoins}`);
+        Alert.alert("Diamond kam hain", `Entry ke liye ${fee} Diamond chahiye, aapke paas ${userCoins} hain. Diamond store se lo ya daily reward, tasks se kamao.`);
         return;
     }
 

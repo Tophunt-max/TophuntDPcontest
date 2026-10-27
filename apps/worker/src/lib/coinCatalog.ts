@@ -30,6 +30,8 @@ export interface PublicCoinPackage {
   purchasable: boolean;
   /** The bonus is a platform promo (lib/promoBudget.ts): play-only coins, not withdrawable. */
   bonusLocked: boolean;
+  /** What the package credits: always Diamonds (play-only, entry fees; lib/diamonds.ts). */
+  currency: "diamond";
 }
 
 export async function listPublicCoinPackages(env: Env): Promise<PublicCoinPackage[]> {
@@ -61,6 +63,7 @@ export async function listPublicCoinPackages(env: Env): Promise<PublicCoinPackag
       totalCoins: priced.baseCoins + bonusCoins,
       purchasable: priced.purchasable,
       bonusLocked: priced.bonusLocked && !promoOff,
+      currency: "diamond",
     };
   });
 }

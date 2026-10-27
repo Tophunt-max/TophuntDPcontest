@@ -122,6 +122,7 @@ import { sendEmail, sendUserEmail } from "../lib/email";
 import { passwordChangedEmail, dataExportEmail } from "../lib/emailTemplates";
 import { newId, now, generateJoinId } from "../lib/ids";
 import { lockedPart } from "../lib/rewardLocking";
+import { DIAMONDS_COVER, notEnoughDiamonds } from "../lib/diamonds";
 import { assessWithdrawalRisk, RISK_FLAG_LABELS } from "../lib/withdrawalRisk";
 import {
   FREE_REWARDS_EXHAUSTED,
@@ -736,26 +737,26 @@ apiRoute.post("/", async (c) => {
       // was meant to cover — the batch not applying — left the user charged with
       // no match; and if the refund also failed, the coins were simply gone with
       // no trace. Same pattern as joinMatch and lib/money.ts#adjustUserWallet.
-      const solvent = `EXISTS (SELECT 1 FROM users WHERE uid = ? AND dpcoin >= ?)`;
-      // Locked (play-only promo) coins are spent FIRST on an entry fee. The
-      // ledger row records how many, so a refund can lock them again.
+      // Entry fees are paid in Diamonds only (users.locked_coins, see
+      // lib/diamonds.ts). DP coins (dpcoin - locked_coins) are for withdrawal
+      // and never pay an entry. The ledger row records the Diamonds spent, so a
+      // refund gives them back as Diamonds.
+      const solvent = `EXISTS (SELECT 1 FROM users WHERE uid = ? AND ${DIAMONDS_COVER})`;
       const reserved = `COALESCE((SELECT coins FROM promo_reservations WHERE id = ? AND status = 'held'), 0)`;
       const createStatements: D1PreparedStatement[] = [
         env.DB.prepare(
           `INSERT OR IGNORE INTO coin_transactions
              (id, uid, amount, type, contest_id, description, created_at, locked_delta)
-           SELECT ?, ?, ?, 'contest_entry_fee', ?, ?, ?,
-                  -(SELECT MIN(locked_coins, ?) FROM users WHERE uid = ?)
+           SELECT ?, ?, ?, 'contest_entry_fee', ?, ?, ?, ?
             WHERE ${solvent}`,
         ).bind(
           entryTransactionId,
           uid,
           -fee,
           contestId ?? null,
-          `Entry fee (50% split) for ${contest.title || "contest"}`,
+          `Entry fee (50% split) for ${contest.title || "contest"} (Diamond)`,
           ts,
-          fee,
-          uid,
+          -fee,
           uid,
           fee,
         ),
@@ -820,8 +821,8 @@ apiRoute.post("/", async (c) => {
         ),
         env.DB.prepare(
           `UPDATE users
-              SET dpcoin = dpcoin - ?, locked_coins = MAX(0, locked_coins - ?), xp = xp + 10, updated_at = ?
-            WHERE uid = ? AND dpcoin >= ?`,
+              SET dpcoin = dpcoin - ?, locked_coins = locked_coins - ?, xp = xp + 10, updated_at = ?
+            WHERE uid = ? AND ${DIAMONDS_COVER}`,
         ).bind(fee, fee, ts, uid, fee),
       );
       const createResults = await env.DB.batch(createStatements);
@@ -830,7 +831,7 @@ apiRoute.post("/", async (c) => {
         if (productSubsidy > 0) await releaseStatement(env, reservationId, now()).run().catch(() => {});
         // Nothing was charged and no match was created — the two INSERTs share
         // this statement's gate.
-        throw httpsError("failed-precondition", `Insufficient Dpcoin. Required: ${fee}, Current: ${user.dpcoin}`);
+        throw await notEnoughDiamonds(env, uid, fee);
       }
 
       // Close the create-vs-pause race: the admin pause update refuses to run
@@ -1058,7 +1059,7 @@ apiRoute.post("/", async (c) => {
               AND (expires_at IS NULL OR expires_at > ?)
               AND json_extract(user_a, '$.uid') IS NOT NULL
               AND json_extract(user_a, '$.uid') != ?
-              AND EXISTS (SELECT 1 FROM users WHERE uid = ? AND dpcoin >= ?)`,
+              AND EXISTS (SELECT 1 FROM users WHERE uid = ? AND ${DIAMONDS_COVER})`,
         ).bind(
           joinIdB,
           ts,
@@ -1073,12 +1074,11 @@ apiRoute.post("/", async (c) => {
           uid,
           fee,
         ),
-        // Locked (play-only) coins are spent first; the row records how many.
+        // Paid in Diamonds only; the claim above already checked the user has them.
         env.DB.prepare(
           `INSERT OR IGNORE INTO coin_transactions
              (id, uid, amount, type, contest_id, match_id, description, created_at, locked_delta)
-           SELECT ?, ?, ?, 'contest_entry_fee', ?, ?, ?, ?,
-                  -(SELECT MIN(locked_coins, ?) FROM users WHERE uid = ?)
+           SELECT ?, ?, ?, 'contest_entry_fee', ?, ?, ?, ?, ?
             WHERE ${claimGate}`,
         ).bind(
           entryLedgerId,
@@ -1086,16 +1086,15 @@ apiRoute.post("/", async (c) => {
           -fee,
           match.contestId ?? null,
           matchId,
-          `Entry fee (50% split) for ${match.title || "contest"}`,
+          `Entry fee (50% split) for ${match.title || "contest"} (Diamond)`,
           ts,
-          fee,
-          uid,
+          -fee,
           matchId,
           joinIdB,
         ),
         env.DB.prepare(
           `UPDATE users
-              SET dpcoin = dpcoin - ?, locked_coins = MAX(0, locked_coins - ?), xp = xp + 10, updated_at = ?
+              SET dpcoin = dpcoin - ?, locked_coins = locked_coins - ?, xp = xp + 10, updated_at = ?
             WHERE uid = ? AND ${claimGate}`,
         ).bind(fee, fee, ts, uid, matchId, joinIdB),
       ]);
@@ -1116,7 +1115,7 @@ apiRoute.post("/", async (c) => {
         if ((stillWaiting.userA as any).uid === uid) {
           throw httpsError("failed-precondition", "You cannot join your own match.");
         }
-        throw httpsError("failed-precondition", `Insufficient Dpcoin. Required: ${fee}, Current: ${user.dpcoin}`);
+        throw await notEnoughDiamonds(env, uid, fee);
       }
 
       // The battle now has two sides. Kick the server-owned VS publication
@@ -2573,7 +2572,7 @@ apiRoute.post("/", async (c) => {
         if (withdrawable < amt && Number(me?.dpcoin ?? 0) >= amt) {
           throw httpsError(
             "failed-precondition",
-            `Aapke ${Number(me?.locked_coins ?? 0)} bonus coins sirf khelne ke liye hain, withdraw nahi ho sakte. Abhi withdraw kar sakte ho: ${withdrawable} coins.`,
+            `Diamond withdraw nahi hote, sirf DP coin withdraw hote hain. Abhi withdraw kar sakte ho: ${withdrawable} DP coin.`,
           );
         }
         if (policy.maxPerDay > 0 && withdrawable >= amt) {

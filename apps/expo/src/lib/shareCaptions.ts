@@ -69,7 +69,7 @@ export function resultCaption(s: BattleResultSummary, url: string): string {
   if (s.outcome === 'winner' && s.winner) {
     const w = handle(s.winner.username, 'Winner');
     const prize =
-      s.prize?.kind === 'coins' ? `💰 And won ${inr(s.prize.coins)} Dpcoins 🪙`
+      s.prize?.kind === 'coins' ? `💰 And won ${inr(s.prize.coins)} DP coins 🪙`
       : s.prize?.kind === 'product' ? `🎁 And won ${s.prize.title}!`
       : null;
     const margin = s.loser && s.margin > 0 ? ` — ${handle(s.loser.username, 'rival')} ko ${plural(s.margin, 'vote', 'votes')} se haraya` : '';
@@ -131,7 +131,7 @@ export function storyCaption(username: string | null | undefined, url: string): 
 /** Wallet "Refer & earn". */
 export function referralCaption(code: string, url: string | null): string {
   return join([
-    '🎁 TopHunt join karo aur free Dpcoins kamao! 💰',
+    '🎁 TopHunt join karo aur free Diamond kamao! 💎',
     '📸 Photo & video battles khelo, vote karo, prizes jeeto 🏆',
     `🔑 Mera referral code: ${code}`,
     url ? `👉 ${url}` : null,

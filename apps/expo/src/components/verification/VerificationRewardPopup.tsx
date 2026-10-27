@@ -90,8 +90,8 @@ export function VerificationRewardPopup() {
             <Text style={styles.emoji} accessibilityElementsHidden>🎉</Text>
             <Text style={[styles.title, { color: textColor }]}>
               {status.registrationReward > 0
-                ? `${status.registrationReward} welcome coins added!`
-                : `Verify karo, ${status.completionReward} coins pao!`}
+                ? `${status.registrationReward} welcome Diamond mil gaye!`
+                : `Verify karo, ${status.completionReward} Diamond pao!`}
             </Text>
             <Text style={[styles.body, { color: subTextColor }]}>{rewardExplainer(status)}</Text>
 

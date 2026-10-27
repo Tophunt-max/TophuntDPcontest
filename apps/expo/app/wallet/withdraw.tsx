@@ -67,9 +67,9 @@ export default function WithdrawScreen() {
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState<any[]>([]);
 
-  // Promo bonus coins (bought with a budget-funded package bonus) are locked:
-  // they can be spent on contests but never withdrawn. The server enforces this;
-  // the screen only offers what can actually leave.
+  // Only DP coins (contest prizes) are withdrawn; Diamonds (packages, free
+  // rewards) only pay entry fees (src/lib/balances.ts). The server enforces
+  // this; the screen only offers what can actually leave.
   const total = Number(profile?.Dpcoin || 0);
   const locked = Math.min(total, Math.max(0, Number(profile?.lockedCoins || 0)));
   const balance = Math.max(0, total - locked);
@@ -99,8 +99,8 @@ export default function WithdrawScreen() {
       return Alert.alert(
         'Insufficient balance',
         locked > 0
-          ? `Aap ${balance} coins tak withdraw kar sakte ho. ${locked} bonus coins sirf khelne ke liye hain.`
-          : 'You do not have enough coins.',
+          ? `Aap ${balance} DP coin tak withdraw kar sakte ho. Diamond (${locked}) withdraw nahi hote.`
+          : `Aapke paas sirf ${balance} DP coin hain.`,
       );
     }
     if (!account.trim()) return Alert.alert('Account required', 'Enter your payout account details.');
@@ -145,18 +145,16 @@ export default function WithdrawScreen() {
         ) : (
           <>
             <View style={[styles.card, { backgroundColor: cardBg }]}>
-              <Text style={[styles.label, { color: subTextColor }]}>{locked > 0 ? 'Withdraw ho sakte hain' : 'Available balance'}</Text>
+              <Text style={[styles.label, { color: subTextColor }]}>Withdraw ho sakte hain</Text>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <CoinIcon size={26} />
-                <Text style={[styles.balance, { color: textColor }]}>{balance} <Text style={{ fontSize: 16, color: subTextColor }}>coins</Text></Text>
+                <Text style={[styles.balance, { color: textColor }]}>{balance} <Text style={{ fontSize: 16, color: subTextColor }}>DP coin</Text></Text>
               </View>
-              {locked > 0 ? (
-                <Text style={[styles.hint, { color: subTextColor }]}>
-                  + {locked} bonus coins (sirf contest khelne ke liye, withdraw nahi). Total {total}.
-                </Text>
-              ) : null}
               <Text style={[styles.hint, { color: subTextColor }]}>
-                Min {minAmount} coins{maxAmount > 0 ? ` • Max ${maxAmount}` : ''}{maxPerDay > 0 ? ` • Roz ${maxPerDay} request` : ''} • Rate ₹{rate}/coin
+                Sirf contest jeet kar mile DP coin withdraw hote hain.{locked > 0 ? ` Aapke ${locked} Diamond sirf contest entry ke liye hain.` : ''}
+              </Text>
+              <Text style={[styles.hint, { color: subTextColor }]}>
+                Min {minAmount} DP coin{maxAmount > 0 ? ` • Max ${maxAmount}` : ''}{maxPerDay > 0 ? ` • Roz ${maxPerDay} request` : ''} • Rate ₹{rate}/coin
               </Text>
               {feeText ? (
                 <Text style={[styles.hint, { color: subTextColor }]}>Platform fee: {feeText} — payout se kategi</Text>

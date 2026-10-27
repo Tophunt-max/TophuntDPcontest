@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { Ionicons } from '@/src/lib/icons';
-import { CoinIcon } from '@/src/components/ui/CoinIcon';
+import { DiamondIcon } from '@/src/components/ui/DiamondIcon';
 import { useCountdown } from '@/src/hooks/useCountdown';
 import { entryFeePerPlayer, isFreeContest, type ContestPricingInput } from '@/src/lib/contestPricing';
 import { contestPrize, prizeTag, type ContestPrizeInput } from '@/src/lib/contestPrize';
@@ -116,9 +116,10 @@ export function ContestEntryBadge({
   return (
     <View
       style={[styles.badge, styles.paidBadge, small && styles.badgeSm]}
-      accessibilityLabel={`Entry costs ${fee} coins`}
+      accessibilityLabel={`Entry costs ${fee} Diamonds`}
     >
-      <CoinIcon size={iconSize} color={PAID_FG} />
+      {/* Entry fees are paid in Diamonds only (src/lib/balances.ts). */}
+      <DiamondIcon size={iconSize} color={PAID_FG} />
       <Text
         style={[styles.badgeText, styles.numeric, { color: PAID_FG }, small && styles.badgeTextSm]}
         numberOfLines={1}

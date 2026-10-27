@@ -27,7 +27,8 @@ import { RulesModal } from '@/src/components/modals/RulesModal';
 import { useProfile } from '@/src/hooks/useProfileData'; 
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { BackButton } from '@/src/components/ui/BackButton';
-import { CoinIcon } from '@/src/components/ui/CoinIcon'; 
+import { DiamondIcon } from '@/src/components/ui/DiamondIcon';
+import { balancesOf } from '@/src/lib/balances';
 import { BattleSetupSkeleton } from '@/src/components/contests/BattleSetupSkeleton';
 import { useToast } from '@/src/components/toast/ToastProvider';
 import Animated, { 
@@ -269,7 +270,8 @@ export default function BattleSetupScreen() {
     // coin more than is actually taken, which showed as "Insufficient Coins" to
     // a user holding exactly enough.
     const fee = entryFeePerPlayer(selectedContest);
-    const userCoins = profile?.coins || profile?.Dpcoin || 0;
+    // Entry fees are paid in Diamonds only (src/lib/balances.ts).
+    const userCoins = balancesOf(profile).diamonds;
 
     // This screen can be open for far longer than the 60s the contest list is
     // cached for — pick a photo, crop it, adjust it — so the closing time is
@@ -284,7 +286,7 @@ export default function BattleSetupScreen() {
 
     // Logic for "Get Coins" flow
     if (userCoins < fee) {
-      addToast(`Insufficient Coins. Redirecting to Wallet...`, 'info');
+      addToast(`Entry ke liye ${fee} Diamond chahiye. Diamond store khul raha hai...`, 'info');
       router.push('/wallet/store'); // Assuming this route exists
       return;
     }
@@ -392,8 +394,9 @@ export default function BattleSetupScreen() {
   const winnerBannerText =
     winningPrize.type === 'product'
       ? `Winner Gets ${winningPrize.product.title}!`
-      : `Winner Gets ${winningPrize.coins} Coins!`;
-  const userCoins = profile?.coins || profile?.Dpcoin || 0;
+      : `Winner Gets ${winningPrize.coins} DP coin!`;
+  // Entry fees are paid in Diamonds only (src/lib/balances.ts).
+  const userCoins = balancesOf(profile).diamonds;
   const hasInsufficientCoins = userCoins < fee;
 
   // Identify if we are User B joining an existing match
@@ -412,7 +415,7 @@ export default function BattleSetupScreen() {
             onPress={navigateToWallet} 
             style={[styles.walletContainer, { backgroundColor: cardBg }]}
          >
-            <CoinIcon size={20} />
+            <DiamondIcon size={20} />
             <Text style={[styles.walletText, { color: textColor }]}>{userCoins}</Text>
          </TouchableOpacity>
       </View>
@@ -446,7 +449,7 @@ export default function BattleSetupScreen() {
               <Text style={[styles.playerName, { color: textColor }]} numberOfLines={1}>You</Text>
               <View style={styles.feeInfo}>
                 <Text style={styles.feeMinus}>-{fee}</Text>
-                <CoinIcon size={18} />
+                <DiamondIcon size={18} />
               </View>
             </View>
 
@@ -479,7 +482,7 @@ export default function BattleSetupScreen() {
               </Text>
               <View style={styles.feeInfo}>
                 <Text style={styles.feeMinus}>-{fee}</Text>
-                <CoinIcon size={18} />
+                <DiamondIcon size={18} />
               </View>
             </View>
           </View>
@@ -652,9 +655,9 @@ export default function BattleSetupScreen() {
                   <ActivityIndicator color="#FFF" />
                 ) : (
                   <View style={styles.joinBtnContent}>
-                    {!hasInsufficientCoins && <CoinIcon size={20} color="#FFF" />}
+                    {!hasInsufficientCoins && <DiamondIcon size={20} color="#FFF" />}
                     <Text style={styles.joinBtnText}>
-                      {hasInsufficientCoins ? "Get Coins" : `Pay ${fee} Coins & Join`}
+                      {hasInsufficientCoins ? "Diamond lo" : `Pay ${fee} Diamond & Join`}
                     </Text>
                   </View>
                 )}
@@ -663,7 +666,7 @@ export default function BattleSetupScreen() {
           {/* Coin Animation */}
           {showCoinAnimation && (
             <Animated.View style={[styles.flyingCoin, animatedCoinStyle]}>
-                <CoinIcon size={32} />
+                <DiamondIcon size={32} />
                 <Text style={styles.flyingCoinText}>-{fee}</Text>
             </Animated.View>
           )}

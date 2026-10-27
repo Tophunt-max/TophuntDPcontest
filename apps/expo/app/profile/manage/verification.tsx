@@ -93,7 +93,7 @@ export default function VerificationScreen() {
 
   const announce = (outcome: RewardOutcome | undefined, fallbackTitle: string, fallbackBody: string) => {
     const msg = rewardOutcomeMessage(outcome);
-    if (outcome?.credited) Alert.alert('Reward unlocked 🎉', msg || 'Bonus coins added to your wallet!');
+    if (outcome?.credited) Alert.alert('Reward unlocked 🎉', msg || 'Bonus Diamond aapke wallet me aa gaye!');
     else if (msg) Alert.alert(fallbackTitle, `${fallbackBody}\n\n${msg}`);
     else Alert.alert(fallbackTitle, fallbackBody);
   };

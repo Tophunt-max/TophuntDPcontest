@@ -294,7 +294,7 @@ export async function tryCreditVerificationReward(env: Env, uid: string): Promis
         uid,
         amount,
         lockedAmount > 0
-          ? "Bonus for verifying your email and mobile number (sirf khelne ke liye)"
+          ? "Bonus for verifying your email and mobile number (Diamond)"
           : "Bonus for verifying your email and mobile number",
         ts,
         lockedAmount,

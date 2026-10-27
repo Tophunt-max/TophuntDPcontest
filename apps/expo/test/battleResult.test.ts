@@ -129,7 +129,7 @@ describe('prize on the result page', () => {
 
   it('the share caption names the prize', () => {
     const coins = summarizeResult(match({ rewardAmount: 1250 }), now);
-    expect(winnerCaption(coins, 'https://tophunt.in/battle/m1/result')).toContain('won 1,250 Dpcoins');
+    expect(winnerCaption(coins, 'https://tophunt.in/battle/m1/result')).toContain('won 1,250 DP coins');
     const product = summarizeResult(match({ prizeType: 'product', prizeProductTitle: 'Earbuds' }), now);
     expect(winnerCaption(product, 'u')).toContain('won Earbuds');
   });

@@ -259,7 +259,7 @@ describe('claimDailyReward', () => {
 describe('startMatch (entry fee)', () => {
   it('deducts half the entry fee and records a ledger entry', async () => {
     const { env } = makeEnv();
-    await seedUser(env, 'alice', 100);
+    await seedUser(env, 'alice', 100, { lockedCoins: 100 });
     await seedContest(env, 'c1', 100); // fee = 50
 
     const { status, body } = await call(env, 'alice', 'startMatch', { contestId: 'c1', mediaUrl: 'm', mediaType: 'photo' });
@@ -274,9 +274,28 @@ describe('startMatch (entry fee)', () => {
     expect(txns.some((t: any) => t.type === 'contest_entry_fee' && t.amount === -50)).toBe(true);
   });
 
+  it('takes the fee in Diamonds only: DP coins never pay an entry', async () => {
+    const { env } = makeEnv();
+    // 500 coins, of which 30 are Diamonds: enough in total, not in Diamonds.
+    await seedUser(env, 'rich', 500, { lockedCoins: 30 });
+    await seedContest(env, 'c1', 100); // fee = 50
+    const { status, body } = await call(env, 'rich', 'startMatch', { contestId: 'c1', mediaUrl: 'm', mediaType: 'photo' });
+    expect(status).toBe(412);
+    expect(body.error.reason).toBe('not_enough_diamonds');
+    expect(await getUser(env, 'rich')).toMatchObject({ dpcoin: 500, lockedCoins: 30 });
+
+    await seedUser(env, 'gem', 80, { lockedCoins: 60 });
+    expect((await call(env, 'gem', 'startMatch', { contestId: 'c1', mediaUrl: 'm', mediaType: 'photo' })).status).toBe(200);
+    // 50 Diamonds spent, the 20 DP coins untouched.
+    expect(await getUser(env, 'gem')).toMatchObject({ dpcoin: 30, lockedCoins: 10 });
+    const fee = (await drizzleOf(env).select().from(schema.coinTransactions).where(eq(schema.coinTransactions.uid, 'gem')).all())
+      .find((t: any) => t.type === 'contest_entry_fee');
+    expect(fee).toMatchObject({ amount: -50, lockedDelta: -50 });
+  });
+
   it('rejects when the user cannot afford the fee (no deduction)', async () => {
     const { env } = makeEnv();
-    await seedUser(env, 'poor', 10);
+    await seedUser(env, 'poor', 10, { lockedCoins: 10 });
     await seedContest(env, 'c1', 100); // fee = 50
     const { status } = await call(env, 'poor', 'startMatch', { contestId: 'c1', mediaUrl: 'm', mediaType: 'photo' });
     expect(status).toBe(412);
@@ -289,7 +308,7 @@ describe('startMatch (entry fee)', () => {
 describe('joinMatch', () => {
   async function startWaitingMatch(env: TestEnv) {
     await seedContest(env, 'c1', 100); // fee = 50
-    await seedUser(env, 'alice', 100);
+    await seedUser(env, 'alice', 100, { lockedCoins: 100 });
     const { body } = await call(env, 'alice', 'startMatch', { contestId: 'c1', mediaUrl: 'ma', mediaType: 'photo' });
     return body.matchId as string;
   }
@@ -297,7 +316,7 @@ describe('joinMatch', () => {
   it('activates the match and deducts the joiner fee', async () => {
     const { env } = makeEnv();
     const matchId = await startWaitingMatch(env);
-    await seedUser(env, 'bob', 100);
+    await seedUser(env, 'bob', 100, { lockedCoins: 100 });
 
     const { status, body } = await call(env, 'bob', 'joinMatch', { matchId, mediaUrl: 'mb', mediaType: 'photo' });
     expect(status).toBe(200);
@@ -321,8 +340,8 @@ describe('joinMatch', () => {
   it('rejects a second joiner once the match is active', async () => {
     const { env } = makeEnv();
     const matchId = await startWaitingMatch(env);
-    await seedUser(env, 'bob', 100);
-    await seedUser(env, 'carol', 100);
+    await seedUser(env, 'bob', 100, { lockedCoins: 100 });
+    await seedUser(env, 'carol', 100, { lockedCoins: 100 });
     await call(env, 'bob', 'joinMatch', { matchId, mediaUrl: 'mb', mediaType: 'photo' });
     const { status } = await call(env, 'carol', 'joinMatch', { matchId, mediaUrl: 'mc', mediaType: 'photo' });
     expect(status).toBe(412);
@@ -335,8 +354,8 @@ describe('joinMatch', () => {
 describe('submitVote (validation)', () => {
   async function activeMatch(env: TestEnv) {
     await seedContest(env, 'c1', 100);
-    await seedUser(env, 'alice', 100);
-    await seedUser(env, 'bob', 100);
+    await seedUser(env, 'alice', 100, { lockedCoins: 100 });
+    await seedUser(env, 'bob', 100, { lockedCoins: 100 });
     const { body } = await call(env, 'alice', 'startMatch', { contestId: 'c1', mediaUrl: 'ma', mediaType: 'photo' });
     await call(env, 'bob', 'joinMatch', { matchId: body.matchId, mediaUrl: 'mb', mediaType: 'photo' });
     return body.matchId as string;
@@ -344,7 +363,7 @@ describe('submitVote (validation)', () => {
 
   it('rejects missing fields', async () => {
     const { env } = makeEnv();
-    await seedUser(env, 'carol', 0);
+    await seedUser(env, 'carol', 0, { lockedCoins: 0 });
     const { status } = await call(env, 'carol', 'submitVote', { matchId: 'x' });
     expect(status).toBe(400);
   });
@@ -352,8 +371,8 @@ describe('submitVote (validation)', () => {
   it('rejects voting on a non-active match', async () => {
     const { env } = makeEnv();
     await seedContest(env, 'c1', 100);
-    await seedUser(env, 'alice', 100);
-    await seedUser(env, 'carol', 0);
+    await seedUser(env, 'alice', 100, { lockedCoins: 100 });
+    await seedUser(env, 'carol', 0, { lockedCoins: 0 });
     const { body } = await call(env, 'alice', 'startMatch', { contestId: 'c1', mediaUrl: 'ma', mediaType: 'photo' });
     const { status } = await call(env, 'carol', 'submitVote', { matchId: body.matchId, votedForUid: 'alice', deviceId: 'd1' });
     expect(status).toBe(412);
@@ -369,7 +388,7 @@ describe('submitVote (validation)', () => {
   it('rejects a vote for a non-participant', async () => {
     const { env } = makeEnv();
     const matchId = await activeMatch(env);
-    await seedUser(env, 'carol', 0);
+    await seedUser(env, 'carol', 0, { lockedCoins: 0 });
     const { status } = await call(env, 'carol', 'submitVote', { matchId, votedForUid: 'nobody', deviceId: 'd1' });
     expect(status).toBe(400);
   });

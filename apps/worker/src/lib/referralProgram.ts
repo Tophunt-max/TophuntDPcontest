@@ -413,7 +413,7 @@ async function creditOnce(env: Env, uid: string, amount: number, description: st
       amount,
       direction: "add",
       type: "referral_bonus",
-      description: locked ? `${description} (sirf khelne ke liye)` : description,
+      description: locked ? `${description} (Diamond)` : description,
       claimKey,
       ledgerId: claimKey,
       locked,

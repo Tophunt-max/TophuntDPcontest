@@ -6,9 +6,7 @@ import {
   CheckCircle2,
   Coins,
   Download,
-  Gift,
   KeyRound,
-  Lock,
   Plus,
   Scale,
   Search,
@@ -23,6 +21,7 @@ import {
   type PromoBudgetStatus,
 } from "@/lib/api";
 import { Table } from "@/components/ui/Table";
+import { DiamondIcon } from "@/components/ui/DiamondIcon";
 import { Badge } from "@/components/ui/Badge";
 import { StatCard } from "@/components/ui/StatCard";
 import { SegTabs } from "@/components/finance/bits";
@@ -196,7 +195,7 @@ function EarnTab() {
           columns={[
             { key: "s", header: "Source", render: (t) => <span className="font-medium text-foreground">{t.label}</span> },
             { key: "c", header: "Coins diye", className: "text-right", render: (t) => fmtNumber(byType.get(t.type)?.credits ?? 0) },
-            { key: "l", header: "Locked", className: "text-right", render: (t) => fmtNumber(Math.max(0, byType.get(t.type)?.locked ?? 0)) },
+            { key: "l", header: "Diamond", className: "text-right", render: (t) => fmtNumber(Math.max(0, byType.get(t.type)?.locked ?? 0)) },
             { key: "n", header: "Entries", className: "text-right", render: (t) => fmtNumber(byType.get(t.type)?.count ?? 0) },
             { key: "r", header: "≈ ₹", className: "text-right", render: (t) => inr((byType.get(t.type)?.credits ?? 0) * (month.data?.payoutRate ?? 0)) },
           ]}
@@ -255,7 +254,7 @@ function CashOutTab() {
       <Card title="Payout ka hisab">
         {eco.data ? (
           <>
-            <Row label="Withdraw ho sakne wale coin" value={fmtNumber(eco.data.supply.withdrawable)} />
+            <Row label="DP coin (withdraw ho sakte)" value={fmtNumber(eco.data.supply.withdrawable)} />
             <Row label="Liability (agar sab nikal lein)" value={inr(eco.data.supply.liabilityInr)} />
             <Row label="Payout bheja" value={inr(eco.data.cash.paidOutInr)} />
             <Row label="Payout baaki (pending/approved)" value={inr(eco.data.cash.pendingOutInr)} strong />
@@ -285,7 +284,7 @@ function HealthTab() {
         { label: "Approved deposits not credited", n: m.strandedApprovedDeposits },
         { label: "Clawback shortfalls", n: m.clawbackShortfalls.count },
         { label: "Withdrawal ledger gaps", n: m.withdrawalLedgerGaps?.count },
-        { label: "Locked coin drift", n: (m.lockedDrift?.count ?? 0) + (m.lockedDrift?.overBalance ?? 0) },
+        { label: "Diamond drift", n: (m.lockedDrift?.count ?? 0) + (m.lockedDrift?.overBalance ?? 0) },
         { label: "Stuck promo reservations", n: m.staleReservations },
       ]
     : [];
@@ -410,8 +409,8 @@ function OverviewBody({ data }: { data: CoinEconomyData }) {
     <div className="space-y-6">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard icon={Coins} label="Users ke paas total coin" value={fmtNumber(data.supply.total)} gradient="gradient-purple" />
-        <StatCard icon={Wallet} label="Withdraw ho sakte hain" value={fmtNumber(data.supply.withdrawable)} gradient="gradient-green" />
-        <StatCard icon={Lock} label="Locked (promo, sirf khelne ke liye)" value={fmtNumber(data.supply.locked)} gradient="gradient-orange" />
+        <StatCard icon={Wallet} label="DP coin (withdraw ho sakte)" value={fmtNumber(data.supply.withdrawable)} gradient="gradient-green" />
+        <StatCard icon={DiamondIcon as any} label="Diamond (sirf contest entry)" value={fmtNumber(data.supply.locked)} gradient="gradient-cyan" />
         <StatCard icon={Scale} label={`Liability (₹${fmtNumber(data.payoutRate)}/coin)`} value={inr(data.supply.liabilityInr)} gradient="gradient-red" />
       </div>
       {data.house && data.house.total ? (
@@ -474,7 +473,7 @@ function OverviewBody({ data }: { data: CoinEconomyData }) {
             { key: "in", header: "Users ko mile", className: "text-right", render: ([, c]) => <span className="text-green-600">{fmtNumber(c.credits)}</span> },
             { key: "out", header: "Users se gaye", className: "text-right", render: ([, c]) => <span className="text-red-600">{fmtNumber(c.debits)}</span> },
             { key: "net", header: "Net", className: "text-right", render: ([, c]) => <span className="font-semibold">{signed(c.net)}</span> },
-            { key: "locked", header: "Locked (net)", className: "text-right", render: ([, c]) => (c.locked ? <span className="text-amber-600">{signed(c.locked)}</span> : <span className="text-muted-foreground">—</span>) },
+            { key: "locked", header: "Diamond (net)", className: "text-right", render: ([, c]) => (c.locked ? <span className="text-amber-600">{signed(c.locked)}</span> : <span className="text-muted-foreground">—</span>) },
           ]}
         />
         <details className="mt-3">
@@ -488,7 +487,7 @@ function OverviewBody({ data }: { data: CoinEconomyData }) {
               { key: "in", header: "+", className: "text-right", render: (t) => fmtNumber(t.credits) },
               { key: "out", header: "−", className: "text-right", render: (t) => fmtNumber(t.debits) },
               { key: "net", header: "Net", className: "text-right", render: (t) => signed(t.net) },
-              { key: "locked", header: "Locked", className: "text-right", render: (t) => (t.locked ? signed(t.locked) : "—") },
+              { key: "locked", header: "Diamond", className: "text-right", render: (t) => (t.locked ? signed(t.locked) : "—") },
             ]}
           />
         </details>
@@ -660,7 +659,7 @@ function BudgetDialog({ budget, onClose, onDone }: { budget?: PromoBudget; onClo
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">Kis ke liye</label>
             <select className={field} value={form.kind} onChange={(e) => set("kind", e.target.value)}>
-              <option value="package_bonus">Coin package ka bonus (locked, sirf khelne ke liye)</option>
+              <option value="package_bonus">Coin package ka bonus Diamond</option>
               <option value="contest_prize">Contest coin prize jo pot se zyada ho</option>
               <option value="product_prize">Product prize ki coin value (sirf admin ko dikhegi)</option>
               <option value="free_rewards">Free rewards ki limit (daily login, ads, tasks)</option>
@@ -1035,8 +1034,8 @@ function UserStatementView() {
         <>
           <div className="grid gap-4 sm:grid-cols-3">
             <StatCard icon={Coins} label={`${data.user.username ?? data.user.uid} ka balance`} value={fmtNumber(data.user.balance)} gradient="gradient-purple" />
-            <StatCard icon={Wallet} label="Withdraw ho sakte hain" value={fmtNumber(data.user.withdrawable)} gradient="gradient-green" />
-            <StatCard icon={Gift} label="Locked (promo)" value={fmtNumber(data.user.locked)} gradient="gradient-orange" />
+            <StatCard icon={Wallet} label="DP coin (withdraw ho sakte)" value={fmtNumber(data.user.withdrawable)} gradient="gradient-green" />
+            <StatCard icon={DiamondIcon as any} label="Diamond" value={fmtNumber(data.user.locked)} gradient="gradient-cyan" />
           </div>
           <div className={`rounded-xl px-4 py-2 text-sm ${data.ledger.balanced ? "bg-green-50 text-green-800" : "bg-red-50 text-red-800"}`}>
             {data.ledger.balanced
@@ -1055,8 +1054,8 @@ function UserStatementView() {
               { key: "t", header: "Kab", render: (e) => <span className="text-xs whitespace-nowrap">{fmtDateTime(e.createdAt)}</span> },
               { key: "ty", header: "Type", render: (e) => <span><span className="font-mono text-xs">{e.type}</span>{e.budgetId ? <span className="block text-xs text-purple-600">budget</span> : null}</span> },
               { key: "a", header: "Coins", className: "text-right", render: (e) => <span className={e.amount < 0 ? "text-red-600" : "text-green-600"}>{signed(e.amount)}</span> },
-              { key: "l", header: "Locked", className: "text-right", render: (e) => (e.lockedDelta ? <span className="text-amber-600">{signed(e.lockedDelta)}</span> : <span className="text-muted-foreground">—</span>) },
-              { key: "b", header: "Balance baad me", className: "text-right", render: (e) => <span>{fmtNumber(e.balanceAfter)}{e.lockedAfter ? <span className="block text-xs text-amber-600">{fmtNumber(e.lockedAfter)} locked</span> : null}</span> },
+              { key: "l", header: "Diamond", className: "text-right", render: (e) => (e.lockedDelta ? <span className="text-amber-600">{signed(e.lockedDelta)}</span> : <span className="text-muted-foreground">—</span>) },
+              { key: "b", header: "Balance baad me", className: "text-right", render: (e) => <span>{fmtNumber(e.balanceAfter)}{e.lockedAfter ? <span className="block text-xs text-cyan-600">{fmtNumber(e.lockedAfter)} Diamond</span> : null}</span> },
               { key: "d", header: "Detail", render: (e) => <span className="text-xs text-muted-foreground">{e.description}</span> },
             ]}
           />

@@ -8,6 +8,7 @@ import { useConfirm } from "@/components/ConfirmDialog";
 import { toast } from "@/lib/toast";
 import { fmtDateTime, exportCsv } from "@/lib/format";
 import { Search, Ban, CheckCircle2, Trash2, Wallet, ShieldCheck, Eye, BadgeCheck, Star, Download, ChevronLeft, ChevronRight, LogOut } from "lucide-react";
+import { DiamondIcon } from "@/components/ui/DiamondIcon";
 
 export default function UsersPage() {
   const qc = useQueryClient();
@@ -78,7 +79,7 @@ export default function UsersPage() {
               />
             </div>
             <button
-              onClick={() => exportCsv(`users-${Date.now()}.csv`, data, ["id", "username", "fullName", "email", "Dpcoin", "level", "role", "isBlocked", "createdAt"])}
+              onClick={() => exportCsv(`users-${Date.now()}.csv`, data, ["id", "username", "fullName", "email", "Dpcoin", "lockedCoins", "level", "role", "isBlocked", "createdAt"])}
               className="flex items-center gap-2 px-3 py-2 rounded-xl bg-secondary text-sm font-medium hover:bg-secondary/70"
             >
               <Download size={15} /> CSV
@@ -125,8 +126,19 @@ export default function UsersPage() {
           },
           {
             key: "coins",
-            header: "DP Coins",
-            render: (u: any) => <span className="font-medium">{fmtNumber(u.Dpcoin)}</span>,
+            header: "DP coin",
+            // users.dpcoin is the total; the Diamond part is locked_coins.
+            render: (u: any) => <span className="font-medium">{fmtNumber(Math.max(0, Number(u.Dpcoin || 0) - Number(u.lockedCoins || 0)))}</span>,
+          },
+          {
+            key: "diamonds",
+            header: "Diamond",
+            render: (u: any) => (
+              <span className="inline-flex items-center gap-1 font-medium">
+                <DiamondIcon size={13} />
+                {fmtNumber(Math.min(Number(u.Dpcoin || 0), Number(u.lockedCoins || 0)))}
+              </span>
+            ),
           },
           { key: "level", header: "Level", render: (u: any) => <span>{u.level ?? 0}</span> },
           {
@@ -366,12 +378,13 @@ function WalletDialog({
   const [amount, setAmount] = useState("");
   const [type, setType] = useState<"add" | "subtract">("add");
   const [reason, setReason] = useState("");
-  // Added coins can be play-only (locked): spendable on contests, never withdrawable.
+  // Which balance: DP coin (withdrawable prizes) or Diamond (users.locked_coins,
+  // entry fees only). Subtracting Diamonds takes only Diamonds.
   const [locked, setLocked] = useState(false);
   // One id per dialog: a double click or a retry of this adjustment is applied once.
   const [requestId] = useState(() => crypto.randomUUID());
   const mut = useMutation({
-    mutationFn: () => api.adjustWallet(user.id, Number(amount), type, reason.trim(), requestId, type === "add" && locked),
+    mutationFn: () => api.adjustWallet(user.id, Number(amount), type, reason.trim(), requestId, locked),
     onSuccess: (d: any) => {
       toast.success(`Wallet updated. New balance: ${d.newBalance}`);
       onDone();
@@ -403,7 +416,7 @@ function WalletDialog({
           type="number"
           value={amount}
           onChange={(e) => setAmount(e.target.value)}
-          placeholder="Amount of DP Coins"
+          placeholder={locked ? "Kitne Diamond" : "Kitne DP coin"}
           className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-ring"
         />
         <input
@@ -414,12 +427,15 @@ function WalletDialog({
           aria-label="Reason for the adjustment"
           className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-ring"
         />
-        {type === "add" && (
-          <label className="flex items-center gap-2 text-sm mb-4">
-            <input type="checkbox" checked={locked} onChange={(e) => setLocked(e.target.checked)} />
-            Sirf khelne ke liye (locked, withdraw nahi hoga)
-          </label>
-        )}
+        <label className="block text-xs text-muted-foreground mb-1">Kaunsa balance</label>
+        <select
+          value={locked ? "diamond" : "dpcoin"}
+          onChange={(e) => setLocked(e.target.value === "diamond")}
+          className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-ring"
+        >
+          <option value="dpcoin">DP coin (withdraw ho sakta hai)</option>
+          <option value="diamond">Diamond (sirf contest entry, withdraw nahi)</option>
+        </select>
         <div className="flex gap-2">
           <button onClick={onClose} className="flex-1 py-2.5 rounded-xl bg-secondary text-foreground text-sm font-medium">
             Cancel

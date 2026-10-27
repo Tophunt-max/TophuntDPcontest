@@ -3,7 +3,7 @@ import { View, Text, StyleSheet } from 'react-native';
 import { AppImage } from '@/src/components/ui/AppImage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@/src/lib/icons';
-import { CoinIcon } from '@/src/components/ui/CoinIcon';
+import { DiamondIcon } from '@/src/components/ui/DiamondIcon';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
 import { entryFeePerPlayer } from '@/src/lib/contestPricing';
@@ -76,7 +76,7 @@ export const OpenBattleCard = React.memo(function OpenBattleCard({
       </View>
       <Text style={[styles.title, { color: palette.text }]} numberOfLines={1}>{title}</Text>
       <View style={styles.metaRow}>
-        <CoinIcon size={11} color={palette.sub} />
+        {fee > 0 ? <DiamondIcon size={11} color={palette.sub} /> : null}
         <Text style={[styles.meta, { color: palette.sub }]}>{fee > 0 ? `Entry ${fee}` : 'Free entry'}</Text>
         <View style={{ flex: 1 }} />
         {prize.type === 'product' ? (

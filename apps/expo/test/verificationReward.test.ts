@@ -35,23 +35,23 @@ const base: VerificationStatus = {
 describe('copy', () => {
   it('says exactly the required explainer with the default amounts (90 additional, not another 100)', () => {
     expect(rewardExplainer(base)).toBe(
-      'Register karne par 10 coins milte hain. Email aur mobile number dono verify karne par additional 90 coins milenge. Total reward: 100 coins.',
+      'Register karne par 10 Diamond milte hain. Email aur mobile number dono verify karne par additional 90 Diamond milenge. Total reward: 100 Diamond.',
     );
   });
 
   it('a new account (no signup bonus) is only told about the verification reward', () => {
     expect(rewardExplainer({ registrationReward: 0, completionReward: 90, totalReward: 90 })).toBe(
-      'Email aur mobile number dono verify karne par 90 coins milenge.',
+      'Email aur mobile number dono verify karne par 90 Diamond milenge.',
     );
-    expect(progressLabel({ earnedReward: 0, totalReward: 90 })).toBe('0/90 coins');
+    expect(progressLabel({ earnedReward: 0, totalReward: 90 })).toBe('0/90 Diamond');
   });
 
   it('shows progress and what is still missing for each state', () => {
-    expect(progressLabel(base)).toBe('10/100 coins');
+    expect(progressLabel(base)).toBe('10/100 Diamond');
     expect(remainingMessage(base)).toMatch(/email and mobile/);
     expect(remainingMessage({ ...base, remaining: ['phone'] })).toMatch(/^Email verified\. Verify your mobile/);
     expect(remainingMessage({ ...base, remaining: ['email'] })).toMatch(/^Mobile verified\. Verify your email/);
-    expect(progressLabel({ ...base, earnedReward: 100 })).toBe('100/100 coins');
+    expect(progressLabel({ ...base, earnedReward: 100 })).toBe('100/100 Diamond');
     expect(remainingMessage({ ...base, completed: true, remaining: [] })).toBe('');
   });
 

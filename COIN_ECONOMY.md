@@ -4,6 +4,19 @@ Every coin setting and report lives in the admin panel under **Coin Economy**
 (`apps/admin-panel/src/pages/CoinEconomy.tsx`). Older pages (App Control, App
 Settings, Referrals, Deposits, Rewards) link there, so each setting has one editor.
 
+## Two balances: DP coin and Diamond
+
+| Balance | Stored as | Comes from | Used for |
+|---|---|---|---|
+| 💎 Diamond | `users.locked_coins` | Coin packages (Razorpay and manual deposits), signup and verification, daily login, tasks, ads, referrals, promo bonuses, launch bonus | **Contest entry fees only.** Never withdrawn. |
+| 🪙 DP coin | `users.dpcoin − users.locked_coins` | Contest prizes; free rewards whose `rewardLocking` switch is OFF; admin adjustments | **Withdrawal only.** Cannot pay an entry fee. |
+
+- `users.dpcoin` stays the total. Every ledger row's `locked_delta` is its Diamond part, so the two ledger invariants cover both balances.
+- Entry fee: `MIN(locked_coins, dpcoin) >= fee`, the whole fee in Diamonds (`lib/diamonds.ts`). A refund returns Diamonds.
+- Refund / chargeback of a purchase takes Diamonds first, then DP coins (`DIAMONDS_AFTER_DEBIT` in `lib/money.ts`).
+- Admin wallet: choose DP coin or Diamond. Subtracting Diamonds takes only Diamonds.
+- Icon: `apps/expo/src/components/ui/DiamondIcon.tsx`, `apps/admin-panel/src/components/ui/DiamondIcon.tsx`, `diamond.svg` (expo `assets/svgs`, admin `public`).
+
 ## Concepts
 
 | Term | Meaning | Where |

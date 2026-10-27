@@ -1670,9 +1670,9 @@ adminRoute.post("/users/:id/wallet", async (c) => {
   if (!["add", "subtract"].includes(type)) {
     throw httpsError("invalid-argument", "type must be add or subtract.");
   }
-  // An added amount can be given as locked (play-only) coins: spendable on
-  // contests, never withdrawable (users.locked_coins).
-  const locked = type === "add" && rawLocked === true;
+  // Diamond (users.locked_coins) or DP coin. Adding Diamonds credits play-only
+  // coins; subtracting Diamonds takes only Diamonds (lib/money.ts).
+  const locked = rawLocked === true;
   const amt = assertCoinAmount(amount, "amount");
   // Every manual balance change needs a stated reason, and is idempotent. The
   // key used to be an optional header the admin panel never sent, so a double
@@ -1697,7 +1697,7 @@ adminRoute.post("/users/:id/wallet", async (c) => {
       type: "admin_adjustment",
       // Who and why travel with the ledger row itself, so they survive even if
       // the audit write below fails.
-      description: `Admin ${type} ${amt} Dpcoin${locked ? " (locked, sirf khelne ke liye)" : ""} by ${adminUid}: ${reason}`.slice(0, 300),
+      description: `Admin ${type} ${amt} ${locked ? "Diamond" : "DP coin"} by ${adminUid}: ${reason}`.slice(0, 300),
       claimKey: `admin_wallet:${userId}:${idemKey}`,
       locked,
       ts: now(),
@@ -4573,11 +4573,12 @@ adminRoute.patch("/deposits/:id", async (c) => {
     // play-only `promo_bonus` row; the deposit row carries the paid coins only.
     const promoBonus = d.budgetId && depBonus > 0 ? depBonus : 0;
     const paidCoins = coins - promoBonus;
+    // A deposit buys Diamonds (lib/diamonds.ts): play-only, never withdrawable.
     const results = await c.env.DB.batch([
       c.env.DB.prepare(
-        `UPDATE users SET dpcoin = dpcoin + ?, updated_at = ?
+        `UPDATE users SET dpcoin = dpcoin + ?, locked_coins = locked_coins + ?, updated_at = ?
           WHERE uid = ? AND ${pendingGate}`,
-      ).bind(paidCoins, ts, d.userId, ...gateArgs),
+      ).bind(paidCoins, paidCoins, ts, d.userId, ...gateArgs),
       c.env.DB.prepare(
         `INSERT OR IGNORE INTO payments
            (id, user_id, amount, coins, amount_paise, source, status, created_at)
@@ -4589,15 +4590,16 @@ adminRoute.patch("/deposits/:id", async (c) => {
       ).bind(`dep_${id}`, d.userId, coins, coins, toPaise(Number(d.payAmount) || 0), ts, ...gateArgs),
       c.env.DB.prepare(
         `INSERT OR IGNORE INTO coin_transactions
-           (id, uid, amount, type, description, created_at)
-         SELECT ?, ?, ?, 'manual_deposit', ?, ?
+           (id, uid, amount, type, description, created_at, locked_delta)
+         SELECT ?, ?, ?, 'manual_deposit', ?, ?, ?
           WHERE ${pendingGate}`,
       ).bind(
         ledgerId,
         d.userId,
         paidCoins,
-        `Manual deposit approved${bonusSuffix} (UTR ${d.utr || "-"})`,
+        `Diamond deposit approved${bonusSuffix} (UTR ${d.utr || "-"})`,
         ts,
+        paidCoins,
         ...gateArgs,
       ),
       ...(promoBonus > 0
@@ -4610,7 +4612,7 @@ adminRoute.patch("/deposits/:id", async (c) => {
               reservationId: depositReservationId(id),
               ledgerId: `promo_bonus:deposit:${id}`,
               refId: id,
-              description: `Bonus ${promoBonus} coins (sirf khelne ke liye) — deposit ${id}`,
+              description: `Bonus ${promoBonus} Diamond — deposit ${id}`,
               ts,
             },
             pendingGate,

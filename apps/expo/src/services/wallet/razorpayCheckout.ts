@@ -67,7 +67,7 @@ async function openWebCheckout(order: CreatedOrder, prefill?: PurchasePrefill): 
       amount: order.amount, // paise; informational — order_id is authoritative
       currency: order.currency || 'INR',
       name: 'Tophunt',
-      description: order.name || `${order.coins} Dpcoins`,
+      description: order.name || `${order.coins} Diamond`,
       prefill: {
         name: prefill?.name || undefined,
         email: prefill?.email || undefined,
@@ -118,7 +118,7 @@ async function openNativeCheckout(order: CreatedOrder, prefill?: PurchasePrefill
     amount: order.amount,
     currency: order.currency || 'INR',
     name: 'Tophunt',
-    description: order.name || `${order.coins} Dpcoins`,
+    description: order.name || `${order.coins} Diamond`,
     prefill: prefill || {},
     theme: { color: '#FF4D67' },
   };

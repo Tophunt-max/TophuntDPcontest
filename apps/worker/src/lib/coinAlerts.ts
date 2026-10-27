@@ -163,7 +163,7 @@ export async function buildCoinReport(env: Env, from: number, to: number, title:
     <h2 style="margin:0 0 4px">${esc(title)}</h2>
     <p style="margin:0 0 16px;color:#666">${esc(new Date(from).toISOString().slice(0, 16))} → ${esc(new Date(to).toISOString().slice(0, 16))} UTC</p>
     <h3>Abhi ki halat</h3>
-    <table>${row("Users ke paas coin", n(eco.supply.total))}${row("Withdraw ho sakte hain", n(eco.supply.withdrawable))}${row("Locked (sirf khelne ke liye)", n(eco.supply.locked))}${row("Liability", `₹${eco.supply.liabilityInr.toFixed(2)}`)}${row("Payout pending", `₹${eco.cash.pendingOutInr.toFixed(2)}`)}</table>
+    <table>${row("Users ke paas coin", n(eco.supply.total))}${row("DP coin (withdraw ho sakte)", n(eco.supply.withdrawable))}${row("Diamond (sirf khelne ke liye)", n(eco.supply.locked))}${row("Liability", `₹${eco.supply.liabilityInr.toFixed(2)}`)}${row("Payout pending", `₹${eco.cash.pendingOutInr.toFixed(2)}`)}</table>
     <h3>Is dauran coin flow</h3>
     <table>${cats.map(([k, c]) => row(CATEGORY_LABELS[k] ?? c.label, `${c.net > 0 ? "+" : ""}${n(c.net)}`)).join("")}</table>
     <h3>Platform</h3>

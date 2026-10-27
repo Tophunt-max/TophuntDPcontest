@@ -29,6 +29,7 @@ import {
 import { PageHeader, fmtDate, fmtNumber } from "@/lib/format";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { toast } from "@/lib/toast";
+import { DiamondIcon } from "@/components/ui/DiamondIcon";
 import {
   AlertCircle,
   Clock3,
@@ -450,7 +451,10 @@ export default function Contests() {
               // showed "500 / 0" and read as a misconfigured contest.
               render: (contest) => (
                 <div className="whitespace-nowrap text-sm">
-                  <span className="font-medium">{fmtNumber(contest.totalEntryFee)}</span>
+                  <span className="inline-flex items-center gap-1 font-medium" title="Entry fee, Diamond me">
+                    <DiamondIcon size={13} />
+                    {fmtNumber(contest.totalEntryFee)}
+                  </span>
                   <span className="mx-1.5 text-muted-foreground">/</span>
                   {contest.prizeType === "product" ? (
                     <span className="inline-flex max-w-40 items-center gap-1 align-middle" title={contest.prizeProductTitle || "Product prize"}>
@@ -1457,9 +1461,9 @@ function ContestDialog({
             <section className="space-y-4 border-t border-border pt-5">
               <FormSectionTitle title="Economy and match policy" description="All values must be whole numbers within the supported limits." />
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                <NumberField label="Total entry fee" value={form.totalEntryFee} min={0} max={1_000_000} error={errors.totalEntryFee} disabled={saving} onChange={(value) => set("totalEntryFee", value)} />
+                <NumberField label="Total entry fee (Diamond, dono players ka)" value={form.totalEntryFee} min={0} max={1_000_000} error={errors.totalEntryFee} disabled={saving} onChange={(value) => set("totalEntryFee", value)} />
                 <NumberField
-                  label="Reward coins"
+                  label="Prize (DP coin, withdraw hone wala)"
                   value={isProduct ? "0" : form.rewardCoins}
                   min={0}
                   max={10_000_000}

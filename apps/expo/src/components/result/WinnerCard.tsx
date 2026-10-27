@@ -335,7 +335,7 @@ export const WinnerCard = forwardRef<View, Props>(({ summary, width, onReady }, 
               {prize.kind === 'coins' ? (
                 <Text style={[styles.prizeAmount, { fontSize: f(22), lineHeight: f(26) }]} numberOfLines={1}>
                   {coinsLabel(prize.coins)}
-                  <Text style={[styles.prizeUnit, { fontSize: f(13) }]}> Dpcoins</Text>
+                  <Text style={[styles.prizeUnit, { fontSize: f(13) }]}> DP coin</Text>
                 </Text>
               ) : (
                 <>

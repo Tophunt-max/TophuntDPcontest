@@ -17,6 +17,8 @@ import { Ionicons } from '@/src/lib/icons';
 import { BackButton } from '@/src/components/ui/BackButton';
 import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
 import { CoinIcon } from '@/src/components/ui/CoinIcon';
+import { DiamondIcon } from '@/src/components/ui/DiamondIcon';
+import { balancesOf, splitTransaction } from '@/src/lib/balances';
 import { WalletSkeleton } from '@/src/components/skeletons/WalletSkeleton';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
@@ -47,8 +49,10 @@ const FREE_REWARDS_OUT_MSG = 'Aaj ke free rewards khatam ho gaye hain. Thodi der
 const taskIcon = (type: string) => (type === 'vote' ? 'stats-chart' : type === 'share' ? 'share-social' : 'videocam');
 
 /** Free rewards may be play-only (locked): spendable on contests, never withdrawable. */
+// A reward credited as Diamonds (play-only) or as DP coins (withdrawable).
+const rewardUnit = (res: any) => (Number(res?.lockedCoins || 0) > 0 ? 'Diamond' : 'DP coin');
 const playOnly = (res: any) =>
-  Number(res?.lockedCoins || 0) > 0 ? '\nYe coins sirf contest khelne ke liye hain (withdraw nahi). Contest jeet kar mile coins withdraw honge.' : '';
+  Number(res?.lockedCoins || 0) > 0 ? '\nDiamond se contest khelo. Jeet kar DP coin milenge, jo withdraw hote hain.' : '';
 
 export default function WalletScreen() {
   // Seven day slots across the design width (the phone column on desktop).
@@ -138,7 +142,7 @@ export default function WalletScreen() {
     try {
       const r: any = await walletService.claimDailyTask(taskId);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert('Reward earned!', `You got ${r.reward} Dpcoins!${playOnly(r)}`);
+      Alert.alert('Reward earned!', `You got ${r.reward} ${rewardUnit(r)}!${playOnly(r)}`);
       refetchProfile();
       refetchTasks();
     } catch (e: any) {
@@ -169,7 +173,7 @@ export default function WalletScreen() {
         const res: any = await walletService.claimDailyBonus(user.uid, currentDay);
         const earned = res?.coinsEarned ?? 0;
         setClaimedToday(true);
-        Alert.alert("Bonus Claimed!", `You received ${earned} Dpcoins.${playOnly(res)}`);
+        Alert.alert("Bonus Claimed!", `You received ${earned} ${rewardUnit(res)}.${playOnly(res)}`);
         // refetch re-runs the derivation effect above with the new streak/lastClaim.
         refetchProfile();
     } catch (error: any) {
@@ -229,7 +233,7 @@ export default function WalletScreen() {
       // Server credits the reward (with a daily cap) and returns the amount.
       const res: any = await walletService.claimAdReward();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert("Reward Earned!", `You earned ${res?.coinsEarned ?? 0} Dpcoins for watching the ad!${playOnly(res)}`);
+      Alert.alert("Reward Earned!", `You earned ${res?.coinsEarned ?? 0} ${rewardUnit(res)} for watching the ad!${playOnly(res)}`);
       refetchProfile();
       refetchTasks();
     } catch (error: any) {
@@ -320,10 +324,13 @@ export default function WalletScreen() {
                         <Ionicons name="gift" size={20} color={isReady ? primaryColor : (isDark ? '#555' : '#CCC')} />
                     </View>
                 )}
-                <Text style={[
-                    styles.dayAmount, 
-                    { color: isReady ? primaryColor : (isClaimed ? '#4CAF50' : textColor) }
-                ]}>+{amount}</Text>
+                <View style={styles.transAmountRow}>
+                    <Text style={[
+                        styles.dayAmount, 
+                        { color: isReady ? primaryColor : (isClaimed ? '#4CAF50' : textColor) }
+                    ]}>+{amount}</Text>
+                    <DiamondIcon size={11} />
+                </View>
             </TouchableOpacity>
         </View>
     );
@@ -354,6 +361,7 @@ export default function WalletScreen() {
                 {!item.claimed && (
                   <View style={styles.taskRewardBadge}>
                       <Text style={styles.taskRewardText}>+{item.reward}</Text>
+                      <DiamondIcon size={11} />
                   </View>
                 )}
             </TouchableOpacity>
@@ -374,15 +382,27 @@ export default function WalletScreen() {
         <View style={{ flex: 1, marginLeft: 14 }}>
             <Text style={[styles.transTitle, { color: textColor }]}>{item.description}</Text>
             <Text style={[styles.transDate, { color: subTextColor }]}>{item.date} • {item.type.replace('_', ' ').toUpperCase()}</Text>
-            {item.amount > 0 && item.lockedDelta > 0 ? (
-                <Text style={styles.lockedTag}>
-                    {item.lockedDelta >= item.amount ? 'Sirf khelne ke liye' : `${item.lockedDelta} sirf khelne ke liye`}
-                </Text>
-            ) : null}
         </View>
-        <Text style={[styles.transAmount, { color: item.amount > 0 ? "#4CAF50" : "#FF4D67" }]}>
-            {item.amount > 0 ? '+' : ''}{item.amount}
-        </Text>
+        {/* Each row split into its Diamond and DP coin parts (src/lib/balances.ts). */}
+        <View style={styles.transAmounts}>
+            {(() => {
+                const part = splitTransaction(item.amount, item.lockedDelta);
+                const rows: React.ReactNode[] = [];
+                if (part.diamonds) rows.push(
+                    <View key="d" style={styles.transAmountRow}>
+                        <Text style={[styles.transAmount, { color: part.diamonds > 0 ? "#4CAF50" : "#FF4D67" }]}>{part.diamonds > 0 ? '+' : ''}{part.diamonds}</Text>
+                        <DiamondIcon size={14} />
+                    </View>,
+                );
+                if (part.dpcoin || !part.diamonds) rows.push(
+                    <View key="c" style={styles.transAmountRow}>
+                        <Text style={[styles.transAmount, { color: part.dpcoin > 0 ? "#4CAF50" : "#FF4D67" }]}>{part.dpcoin > 0 ? '+' : ''}{part.dpcoin}</Text>
+                        <CoinIcon size={14} />
+                    </View>,
+                );
+                return rows;
+            })()}
+        </View>
         </View>
     </Animated.View>
   );
@@ -431,27 +451,32 @@ export default function WalletScreen() {
                         <View style={styles.cardCircle1} />
                         <View style={styles.cardCircle2} />
 
-                        <View style={styles.balanceHeader}>
-                            <Text style={styles.balanceLabel}>Total Balance</Text>
-                            <View style={styles.coinBadge}>
-                                <CoinIcon size={14} color="#FFF" />
-                                <Text style={styles.coinBadgeText}>Dpcoin</Text>
-                            </View>
-                        </View>
-                        
-                        <View style={styles.row}>
-                            <Text style={styles.balanceValue}>{profile?.Dpcoin || 0}</Text>
-                        </View>
-                        {/* Live ₹ value at the admin's coin rate (App Control). */}
-                        {coinsInInr(profile?.Dpcoin || 0, coinRate(appConfig)) ? (
-                            <Text style={styles.balanceLabel}>Value {coinsInInr(profile?.Dpcoin || 0, coinRate(appConfig))}</Text>
-                        ) : null}
-                        {/* Promo bonus coins are play-only: spendable on contests, never withdrawable. */}
-                        {Number(profile?.lockedCoins || 0) > 0 ? (
-                            <Text style={[styles.balanceLabel, { fontSize: 13, marginTop: 4 }]}>
-                                Isme {Math.min(Number(profile?.Dpcoin || 0), Number(profile?.lockedCoins || 0))} bonus coins sirf khelne ke liye hain (withdraw nahi)
-                            </Text>
-                        ) : null}
+                        {/* Two balances: DP coins (prizes, withdrawable, ₹ value) and
+                            Diamonds (packages + free rewards, entry fees only). */}
+                        {(() => {
+                            const bal = balancesOf(profile);
+                            const value = coinsInInr(bal.dpcoin, coinRate(appConfig));
+                            return (
+                                <View style={styles.balanceSplit}>
+                                    <View style={{ flex: 1 }}>
+                                        <View style={[styles.coinBadge, styles.balancePill]}>
+                                            <CoinIcon size={14} color="#FFF" />
+                                            <Text style={styles.coinBadgeText}>DP coin</Text>
+                                        </View>
+                                        <Text style={styles.balanceValue}>{bal.dpcoin}</Text>
+                                        <Text style={[styles.balanceLabel, { fontSize: 12 }]}>{value ? `Withdraw · ${value}` : 'Withdraw ho sakte'}</Text>
+                                    </View>
+                                    <View style={{ flex: 1 }}>
+                                        <View style={[styles.coinBadge, styles.balancePill]}>
+                                            <DiamondIcon size={14} color="#FFF" />
+                                            <Text style={styles.coinBadgeText}>Diamond</Text>
+                                        </View>
+                                        <Text style={styles.balanceValue}>{bal.diamonds}</Text>
+                                        <Text style={[styles.balanceLabel, { fontSize: 12 }]}>Contest entry ke liye</Text>
+                                    </View>
+                                </View>
+                            );
+                        })()}
                         
                         {topupsEnabled && (
                         <TouchableOpacity 
@@ -463,7 +488,7 @@ export default function WalletScreen() {
                             activeOpacity={0.9}
                         >
                             <Ionicons name="add" size={20} color="#FF4D67" />
-                            <Text style={styles.topUpText}>Top Up Balance</Text>
+                            <Text style={styles.topUpText}>Diamond lo</Text>
                         </TouchableOpacity>
                         )}
                         {withdrawalsEnabled && (
@@ -530,8 +555,8 @@ export default function WalletScreen() {
                                 <Text style={[styles.referTitle, { color: isDark ? '#fff' : '#101010' }]}>Refer & Earn</Text>
                                 <Text style={styles.referDesc}>
                                     {appConfig?.referral?.enabled && Number(appConfig.referral.referrerReward) > 0
-                                        ? `Har dost par ${appConfig.referral.referrerReward} coins — dost ko bhi ${appConfig.referral.refereeReward}!`
-                                        : 'Invite friends & earn bonus coins!'}
+                                        ? `Har dost par ${appConfig.referral.referrerReward} Diamond — dost ko bhi ${appConfig.referral.refereeReward}!`
+                                        : 'Invite friends & earn bonus Diamonds!'}
                                 </Text>
                                 {referralCode ? <Text style={styles.referDesc}>Your code: <Text style={{fontWeight: '800', color: '#FF4D67'}}>{referralCode}</Text></Text> : null}
                             </View>
@@ -637,7 +662,7 @@ const styles = StyleSheet.create({
   taskProgressText: { fontSize: 12, fontFamily: 'Urbanist-Medium', color: 'gray' },
   taskButton: { alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFF0F3', paddingVertical: 8, paddingHorizontal: 16, borderRadius: 12 },
   taskButtonText: { color: '#FF4D67', fontFamily: 'Urbanist-Bold', fontSize: 14 },
-  taskRewardBadge: { position: 'absolute', top: -8, right: -8, backgroundColor: '#FFD700', borderRadius: 8, paddingHorizontal: 6, paddingVertical: 2 },
+  taskRewardBadge: { position: 'absolute', top: -8, right: -8, backgroundColor: '#FFD700', borderRadius: 8, paddingHorizontal: 6, paddingVertical: 2, flexDirection: 'row', alignItems: 'center', gap: 2 },
   taskRewardText: { fontSize: 10, fontFamily: 'Urbanist-Bold', color: '#000' },
 
   // Refer Banner
@@ -670,6 +695,10 @@ const styles = StyleSheet.create({
     fontFamily: 'Urbanist-SemiBold',
   },
   transAmount: { fontSize: 16, fontFamily: 'Urbanist-Bold' },
+  transAmounts: { alignItems: 'flex-end', gap: 2 },
+  transAmountRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  balanceSplit: { flexDirection: 'row', gap: 16, marginBottom: 22 },
+  balancePill: { alignSelf: 'flex-start', marginBottom: 6 },
 
   // Empty State
   emptyState: { alignItems: 'center', marginTop: 40, paddingBottom: 50 },

@@ -56,7 +56,7 @@ describe('live coin packages', () => {
     expect(lastPush().payload.type).toBe('coin-packages');
     expect(lastPush().payload.packages).toEqual([
       // Price = BASE coins × buy rate; the 10 bonus coins are free.
-      { id: created.body.id, name: 'Starter', coins: 100, bonusCoins: 10, priceInr: 150, totalCoins: 110, purchasable: true, bonusLocked: false },
+      { id: created.body.id, name: 'Starter', coins: 100, bonusCoins: 10, priceInr: 150, totalCoins: 110, purchasable: true, bonusLocked: false, currency: 'diamond' },
     ]);
     const v1 = lastPush().payload.version;
 

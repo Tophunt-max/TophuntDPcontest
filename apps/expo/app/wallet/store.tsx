@@ -12,10 +12,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@/src/lib/icons';
 import { CoinStoreSkeleton } from '@/src/components/skeletons/CoinStoreSkeleton';
-import { CoinIcon } from '@/src/components/ui/CoinIcon';
+import { DiamondIcon } from '@/src/components/ui/DiamondIcon';
+import { balancesOf } from '@/src/lib/balances';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useCoinPackages, useCoinRate } from '@/src/hooks/useCoinPackages';
-import { coinsInInr, type CoinPackage } from '@/src/lib/coinValue';
+import { useCoinPackages } from '@/src/hooks/useCoinPackages';
+import { type CoinPackage } from '@/src/lib/coinValue';
 import { purchasePackage } from '@/src/services/wallet/razorpayCheckout';
 import { useAuth } from '@/src/hooks/useAuth';
 import { useProfile } from '@/src/hooks/useProfileData';
@@ -31,7 +32,6 @@ export default function CoinStoreScreen() {
   const { data: profile, refetch: refetchProfile } = useProfile(user?.uid || '');
   const { addToast } = useToast();
   // ₹ per coin (live from App Control).
-  const rate = useCoinRate();
   const [loading, setLoading] = useState<string | null>(null);
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
@@ -88,7 +88,7 @@ export default function CoinStoreScreen() {
       if (pending) {
         addToast({ text: 'Payment received — your coins will appear as soon as the bank confirms it.', type: 'info' });
       } else {
-        addToast({ text: `${coins} Dpcoins added to your wallet!`, type: 'success', icon: 'coins' });
+        addToast({ text: `${coins} Diamond aapke wallet me aa gaye!`, type: 'success', icon: 'coins' });
       }
       router.back();
     } catch (error: any) {
@@ -136,16 +136,13 @@ export default function CoinStoreScreen() {
 
         <View style={styles.coinContainer}>
           <View style={[styles.coinCircle, { backgroundColor: isDark ? '#2A2D36' : '#FFF0F2' }]}>
-            <CoinIcon size={30} color="#FF4D67" />
+            <DiamondIcon size={30} />
           </View>
           <Text style={[styles.coinText, { color: textColor }]}>{item.totalCoins}</Text>
-          <Text style={[styles.coinLabel, { color: subText }]}>Dpcoins</Text>
-          {coinsInInr(item.totalCoins, rate) ? (
-            <Text style={[styles.coinLabel, { color: subText, fontSize: 11 }]}>Value {coinsInInr(item.totalCoins, rate)}</Text>
-          ) : null}
+          <Text style={[styles.coinLabel, { color: subText }]}>Diamond</Text>
           {item.bonusCoins > 0 ? (
             <View style={styles.bonusPill}>
-              <Text style={styles.bonusLabel}>+{item.bonusCoins} bonus{item.bonusLocked ? ' · sirf khelne ke liye' : ''}</Text>
+              <Text style={styles.bonusLabel}>+{item.bonusCoins} bonus Diamond</Text>
             </View>
           ) : (
             <View style={styles.bonusPillPlaceholder} />
@@ -173,7 +170,7 @@ export default function CoinStoreScreen() {
       >
         <CloseIcon size={28} color={textColor} />
       </TouchableOpacity>
-      <Text style={[styles.title, { color: textColor }]}>Dpcoin Store</Text>
+      <Text style={[styles.title, { color: textColor }]}>Diamond Store</Text>
       <View style={{ width: 28 }} />
     </View>
   );
@@ -184,14 +181,13 @@ export default function CoinStoreScreen() {
 
       <View style={styles.balanceContainer}>
         <LinearGradient colors={['#FF4D67', '#FF8A9B']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.gradient}>
-          <Text style={styles.balanceLabel}>Current Balance</Text>
+          {/* The store sells Diamonds: contest entry only, never withdrawn. */}
+          <Text style={styles.balanceLabel}>Aapke Diamond</Text>
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-            <CoinIcon size={24} color="white" style={{ marginRight: 8 }} />
-            <Text style={styles.balanceValue}>{profile?.Dpcoin ?? 0} Dpcoins</Text>
+            <DiamondIcon size={24} color="white" style={{ marginRight: 8 }} />
+            <Text style={styles.balanceValue}>{balancesOf(profile).diamonds} Diamond</Text>
           </View>
-          {coinsInInr(profile?.Dpcoin ?? 0, rate) ? (
-            <Text style={[styles.balanceLabel, { marginTop: 4 }]}>{coinsInInr(profile?.Dpcoin ?? 0, rate)}</Text>
-          ) : null}
+          <Text style={[styles.balanceLabel, { marginTop: 4 }]}>Diamond se contest me entry hoti hai. Jeet kar DP coin milte hain.</Text>
         </LinearGradient>
       </View>
 

@@ -44,18 +44,18 @@ export interface RewardOutcome {
  */
 export function rewardExplainer(s: Pick<VerificationStatus, 'registrationReward' | 'completionReward' | 'totalReward'>): string {
   if (!(s.registrationReward > 0)) {
-    return `Email aur mobile number dono verify karne par ${s.completionReward} coins milenge.`;
+    return `Email aur mobile number dono verify karne par ${s.completionReward} Diamond milenge.`;
   }
   return (
-    `Register karne par ${s.registrationReward} coins milte hain. ` +
-    `Email aur mobile number dono verify karne par additional ${s.completionReward} coins milenge. ` +
-    `Total reward: ${s.totalReward} coins.`
+    `Register karne par ${s.registrationReward} Diamond milte hain. ` +
+    `Email aur mobile number dono verify karne par additional ${s.completionReward} Diamond milenge. ` +
+    `Total reward: ${s.totalReward} Diamond.`
   );
 }
 
 /** "10/100 coins" — earned so far out of the total on offer. */
 export function progressLabel(s: Pick<VerificationStatus, 'earnedReward' | 'totalReward'>): string {
-  return `${s.earnedReward}/${s.totalReward} coins`;
+  return `${s.earnedReward}/${s.totalReward} Diamond`;
 }
 
 /** What is still needed, in plain words. Empty when nothing is. */

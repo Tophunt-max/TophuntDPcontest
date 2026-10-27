@@ -154,7 +154,7 @@ export default function DepositScreen() {
         {!manualEnabled ? (
           <View style={[styles.card, { backgroundColor: cardBg, alignItems: 'center' }]}>
             <Ionicons name="card-outline" size={40} color={subTextColor} />
-            <Text style={[styles.disabledText, { color: subTextColor }]}>Manual QR deposits are not enabled. Please use the in-app store to buy coins.</Text>
+            <Text style={[styles.disabledText, { color: subTextColor }]}>Manual QR deposits are not enabled. Please use the in-app store to buy Diamonds.</Text>
             <TouchableOpacity style={[styles.submitBtn, { backgroundColor: primaryColor, marginTop: 16 }]} onPress={() => router.replace('/wallet/store')}>
               <Text style={styles.submitText}>Open Coin Store</Text>
             </TouchableOpacity>
@@ -200,16 +200,16 @@ export default function DepositScreen() {
                         activeOpacity={0.85}
                         accessibilityRole="radio"
                         accessibilityState={{ selected: active }}
-                        accessibilityLabel={`${p.totalCoins} coins for ₹${p.priceInr}`}
+                        accessibilityLabel={`${p.totalCoins} Diamonds for ₹${p.priceInr}`}
                         style={[
                           styles.pkgCard,
                           { borderColor: active ? primaryColor : isDark ? '#35383F' : '#EEE', backgroundColor: active ? 'rgba(255,77,103,0.08)' : 'transparent' },
                         ]}
                       >
                         <Text style={[styles.pkgCoins, { color: textColor }]}>{p.totalCoins}</Text>
-                        <Text style={[styles.pkgLabel, { color: subTextColor }]}>Dpcoins</Text>
+                        <Text style={[styles.pkgLabel, { color: subTextColor }]}>Diamond</Text>
                         {p.bonusCoins > 0 && (
-                          <Text style={styles.pkgBonus}>+{p.bonusCoins} bonus{p.bonusLocked ? ' (sirf khelne ke liye)' : ''}</Text>
+                          <Text style={styles.pkgBonus}>+{p.bonusCoins} bonus Diamond</Text>
                         )}
                         <Text style={[styles.pkgPrice, { color: active ? primaryColor : textColor }]}>₹{Number(p.priceInr).toLocaleString('en-IN')}</Text>
                       </TouchableOpacity>
@@ -219,7 +219,7 @@ export default function DepositScreen() {
               )}
               {selected && (
                 <Text style={[styles.cashPreview, { color: primaryColor }]}>
-                  Pay ₹{payInr.toFixed(2)} for {selected.totalCoins} Dpcoins
+                  Pay ₹{payInr.toFixed(2)} for {selected.totalCoins} Diamond
                 </Text>
               )}
 
@@ -277,7 +277,7 @@ export default function DepositScreen() {
           history.map((d) => (
             <View key={d.id} style={[styles.historyItem, { backgroundColor: cardBg }]}>
               <View style={{ flex: 1 }}>
-                <Text style={[styles.histAmount, { color: textColor }]}>{d.amount} coins • ₹{Number(d.payAmount || 0).toFixed(2)}</Text>
+                <Text style={[styles.histAmount, { color: textColor }]}>{d.amount} Diamond • ₹{Number(d.payAmount || 0).toFixed(2)}</Text>
                 <Text style={[styles.note, { color: subTextColor }]}>UTR {d.utr}</Text>
               </View>
               <View style={[styles.statusPill, { backgroundColor: statusColor(d.status) + '22' }]}>

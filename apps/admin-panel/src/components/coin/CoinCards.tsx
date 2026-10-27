@@ -219,10 +219,10 @@ export function RewardLockingCard({ data, pending, onSave }: CardProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
   return (
-    <Card icon={Lock} title="Free rewards: sirf khelne ke liye?" tint="text-orange-500" onSave={() => onSave({ rewardLocking: locked })} pending={pending}>
+    <Card icon={Lock} title="Free rewards: Diamond ya DP coin?" tint="text-cyan-500" onSave={() => onSave({ rewardLocking: locked })} pending={pending}>
       <p className="mb-3 text-xs text-muted-foreground">
-        ON = ye coin locked milenge: contest entry fee me lagenge, withdraw nahi honge (contest jeet kar mila prize withdraw hoga).
-        OFF = seedha withdraw ho sakte hain. Badlav sirf naye coin par lagta hai, purana balance waisa hi rehta hai.
+        ON = Diamond milenge: sirf contest entry fee me lagenge, withdraw nahi honge (jeet ka prize DP coin me milta hai).
+        OFF = DP coin milenge: withdraw ho sakte hain, par entry fee nahi bhar sakte. Badlav sirf naye reward par lagta hai.
       </p>
       {REWARD_LOCK_ROWS.map((r) => (
         <Toggle key={r.key} label={r.label} checked={locked[r.key]} onChange={(v: boolean) => setLocked({ ...locked, [r.key]: v })} />

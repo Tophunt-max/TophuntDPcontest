@@ -76,7 +76,7 @@ async function seedUser(env: TestEnv, uid: string, dpcoin = 0, extra: Record<str
   const ts = Date.now();
   await drizzleOf(env)
     .insert(schema.users)
-    .values({ signupCompleted: true, uid, username: uid, fullName: uid, dpcoin, createdAt: ts, updatedAt: ts, ...extra } as any);
+    .values({ signupCompleted: true, uid, username: uid, fullName: uid, dpcoin, lockedCoins: dpcoin, createdAt: ts, updatedAt: ts, ...extra } as any);
 }
 
 async function getUser(env: TestEnv, uid: string) {

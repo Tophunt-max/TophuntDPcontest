@@ -158,10 +158,10 @@ export default function ReferralScreen() {
             {program?.enabled ? (
               <>
                 <Text style={styles.heroTitle}>
-                  Dost ko invite karo, dono ko coins! 🎉
+                  Dost ko invite karo, dono ko Diamond! 💎
                 </Text>
                 <Text style={styles.heroSub}>
-                  Aapko {program.referrerReward} coins · Dost ko {program.refereeReward} coins
+                  Aapko {program.referrerReward} Diamond · Dost ko {program.refereeReward} Diamond
                 </Text>
               </>
             ) : (
@@ -224,9 +224,9 @@ export default function ReferralScreen() {
                 'Apna code ya invite link dost ko bhejo',
                 `Dost signup par aapka code lagaye${program.applyWindowDays ? ` (join karne ke ${Math.max(1, program.applyWindowDays)} din ke andar)` : ''}`,
                 program.qualifyAction === 'signup'
-                  ? 'Signup hote hi dono ko coins mil jaate hain'
+                  ? 'Signup hote hi dono ko Diamond mil jaate hain'
                   : `${QUALIFY_COPY[program.qualifyAction].step} — ${program.qualifyWindowDays} din ke andar`,
-                `Aapko ${program.referrerReward} coins, dost ko ${program.refereeReward} coins — seedha wallet mein`,
+                `Aapko ${program.referrerReward} Diamond, dost ko ${program.refereeReward} Diamond — seedha wallet mein`,
               ].map((s, i) => (
                 <View key={i} style={styles.step}>
                   <View style={styles.stepDot}>
@@ -252,7 +252,7 @@ export default function ReferralScreen() {
                   <View key={m.count} style={{ marginTop: 12 }}>
                     <View style={styles.rowBetween}>
                       <Text style={[styles.stepText, { color: text, marginLeft: 0 }]}>
-                        {m.count} successful referrals → +{m.bonus} coins
+                        {m.count} successful referrals → +{m.bonus} Diamond
                       </Text>
                       {done ? <Ionicons name="checkmark-circle" size={18} color="#16A34A" /> : null}
                     </View>
@@ -277,11 +277,11 @@ export default function ReferralScreen() {
               <View style={[styles.rowBetween, { marginTop: 8 }]}>
                 <Text style={[styles.stepText, { color: text, marginLeft: 0, flex: 1 }]}>
                   {data.referredBy.status === 'rewarded'
-                    ? `${data.referredBy.reward} coins mil gaye 🎉`
+                    ? `${data.referredBy.reward} Diamond mil gaye 🎉`
                     : data.referredBy.status === 'pending' && data.referredBy.qualifyAction
                       ? data.referredBy.qualifyAction === 'signup'
                         ? 'Reward process ho raha hai'
-                        : `${QUALIFY_COPY[data.referredBy.qualifyAction].short} karte hi ${program?.refereeReward ?? ''} coins milenge`
+                        : `${QUALIFY_COPY[data.referredBy.qualifyAction].short} karte hi ${program?.refereeReward ?? ''} Diamond milenge`
                       : data.referredBy.status === 'review'
                         ? 'Reward review mein hai — jaldi milega'
                         : 'Ye referral reward ke liye eligible nahi raha'}
@@ -293,7 +293,7 @@ export default function ReferralScreen() {
             <View style={[styles.card, { backgroundColor: card, borderColor: border }]}>
               <Text style={[styles.cardTitle, { color: text }]}>Friend ka code hai?</Text>
               <Text style={[styles.fine, { color: sub, marginTop: 4 }]}>
-                Code lagao aur {program.refereeReward} coins pao
+                Code lagao aur {program.refereeReward} Diamond pao
                 {data.applyUntil ? ` · ${new Date(data.applyUntil).toLocaleDateString()} tak` : ''}
               </Text>
               <View style={[styles.row, { marginTop: 12 }]}>
@@ -334,7 +334,7 @@ export default function ReferralScreen() {
                   <Text style={[styles.fine, { color: sub, marginTop: 2 }]}>
                     {r.status === 'rewarded'
                       ? r.reward > 0
-                        ? `+${r.reward} coins mile`
+                        ? `+${r.reward} Diamond mile`
                         : 'Dost ko reward mila (aapki limit poori)'
                       : r.status === 'pending' && program
                         ? `${QUALIFY_COPY[program.qualifyAction].short} ka intezaar${r.expiresAt ? ` · ${new Date(r.expiresAt).toLocaleDateString()} tak` : ''}`

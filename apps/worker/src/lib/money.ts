@@ -147,6 +147,14 @@ export function matchPrizeCeiling(totalEntryFee: unknown, subsidyCoins: unknown)
  */
 export const LOCKED_AFTER_DEBIT = "MIN(locked_coins, MAX(0, dpcoin - ?))";
 
+/**
+ * SQL for `users.locked_coins` after reversing a coin PURCHASE of `?` coins.
+ * Purchases are credited as Diamonds (lib/diamonds.ts), so the reversal takes
+ * Diamonds first and only the rest from DP coins; Diamonds still never exceed
+ * what is left of the balance. Bind the debit amount TWICE.
+ */
+export const DIAMONDS_AFTER_DEBIT = "MIN(MAX(0, locked_coins - ?), MAX(0, dpcoin - ?))";
+
 export interface WalletAdjustment {
   uid: string;
   /** Always a positive whole number — direction is set by `direction`. */
@@ -164,8 +172,10 @@ export interface WalletAdjustment {
    */
   claimKey?: string;
   /**
-   * Credit as LOCKED (play-only) coins: spendable on entry fees, never
-   * withdrawable (users.locked_coins). Only meaningful with direction "add".
+   * Diamonds (users.locked_coins, lib/diamonds.ts) instead of DP coins.
+   * "add": credit Diamonds (play-only, never withdrawable).
+   * "subtract": take Diamonds only, and fail if the user has fewer.
+   * Without it a subtraction takes DP coins first, as before.
    */
   locked?: boolean;
   contestId?: string | null;
@@ -235,6 +245,17 @@ export async function adjustUserWallet(
   const delta = input.direction === "add" ? amount : -amount;
   // Added locked coins (a play-only reward), bound into both statements below.
   const lockedAdd = input.direction === "add" && input.locked ? amount : 0;
+  // A Diamond subtraction: gated on the Diamonds, and moves only them.
+  const fromDiamonds = input.direction === "subtract" && input.locked === true;
+  const gateSql = fromDiamonds ? "MIN(locked_coins, dpcoin) >= ?" : "dpcoin + ? >= 0";
+  const gateArg = fromDiamonds ? amount : delta;
+  const lockedDeltaSql = fromDiamonds
+    ? "(SELECT -? FROM users WHERE uid = ?)"
+    : "(SELECT CASE WHEN ? < 0 THEN MIN(locked_coins, MAX(0, dpcoin + ?)) - locked_coins ELSE ? END FROM users WHERE uid = ?)";
+  const lockedSetSql = fromDiamonds
+    ? "locked_coins - ?"
+    : "CASE WHEN ? < 0 THEN MIN(locked_coins, MAX(0, dpcoin + ?)) ELSE locked_coins + ? END";
+  const lockedArgs = fromDiamonds ? [amount] : [delta, delta, lockedAdd];
   const ts = input.ts ?? Date.now();
   const ledgerId = input.ledgerId ?? crypto.randomUUID();
 
@@ -272,10 +293,9 @@ export async function adjustUserWallet(
       `INSERT OR IGNORE INTO coin_transactions
          (id, uid, amount, type, contest_id, match_id, description, created_at, locked_delta)
        SELECT ?, ?, ?, ?, ?, ?, ?, ?,
-              (SELECT CASE WHEN ? < 0 THEN MIN(locked_coins, MAX(0, dpcoin + ?)) - locked_coins ELSE ? END
-                 FROM users WHERE uid = ?)
+              ${lockedDeltaSql}
         WHERE EXISTS (
-          SELECT 1 FROM users WHERE uid = ? AND dpcoin + ? >= 0
+          SELECT 1 FROM users WHERE uid = ? AND ${gateSql}
         )
         ${claimGate}`,
     ).bind(
@@ -287,22 +307,20 @@ export async function adjustUserWallet(
       input.matchId ?? null,
       input.description,
       ts,
-      delta,
-      delta,
-      lockedAdd,
+      ...lockedArgs,
       input.uid,
       input.uid,
-      delta,
+      gateArg,
       ...claimBindings,
     ),
     env.DB.prepare(
       `UPDATE users
           SET dpcoin = dpcoin + ?,
-              locked_coins = CASE WHEN ? < 0 THEN MIN(locked_coins, MAX(0, dpcoin + ?)) ELSE locked_coins + ? END,
+              locked_coins = ${lockedSetSql},
               updated_at = ?
-        WHERE uid = ? AND dpcoin + ? >= 0
+        WHERE uid = ? AND ${gateSql}
           ${claimGate}`,
-    ).bind(delta, delta, delta, lockedAdd, ts, input.uid, delta, ...claimBindings),
+    ).bind(delta, ...lockedArgs, ts, input.uid, gateArg, ...claimBindings),
   );
 
   const results = await env.DB.batch(statements);
@@ -319,9 +337,9 @@ export async function adjustUserWallet(
       // Our nonce did not win the claim => this exact adjustment already ran.
       if (claimed && claimed.nonce !== nonce) throw new WalletReplay(input.claimKey);
     }
-    const existing = await env.DB.prepare(`SELECT dpcoin FROM users WHERE uid = ?`)
+    const existing = await env.DB.prepare(`SELECT dpcoin, locked_coins FROM users WHERE uid = ?`)
       .bind(input.uid)
-      .first<{ dpcoin: number | null }>();
+      .first<{ dpcoin: number | null; locked_coins: number | null }>();
     // The batch COMMITTED — the claim row is in the database even though no money
     // moved, because the claim insert is unconditional while the money statements
     // are gated. Leaving it there permanently poisons the key: a legitimate retry
@@ -335,6 +353,12 @@ export async function adjustUserWallet(
     // ledger insert shares that gate, so there is no committed effect to protect.
     await releaseWalletClaim(env, input.claimKey, nonce);
     if (!existing) throw httpsError("not-found", "User not found.");
+    if (fromDiamonds) {
+      throw httpsError(
+        "failed-precondition",
+        `Insufficient Diamonds: cannot subtract ${amount} from ${Math.min(Number(existing.locked_coins || 0), Number(existing.dpcoin || 0))} Diamonds.`,
+      );
+    }
     throw httpsError(
       "failed-precondition",
       `Insufficient balance: cannot subtract ${amount} coins from a balance of ${Number(existing.dpcoin || 0)}.`,
