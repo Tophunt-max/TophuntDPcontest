@@ -1212,6 +1212,9 @@ export const withdrawals = sqliteTable(
     id: text("id").primaryKey(),
     userId: text("user_id").notNull(),
     amount: real("amount").notNull(), // Dpcoins requested
+    /** Risk review computed at request time (migration 0068): low | medium | high, and the reasons (JSON array). */
+    riskLevel: text("risk_level"),
+    riskFlags: text("risk_flags", { mode: "json" }),
     cashAmount: real("cash_amount").default(0), // NET ₹ actually paid (after the platform fee)
     /** coins × payout rate at request time (migration 0062). */
     grossAmount: real("gross_amount"),
@@ -1265,6 +1268,9 @@ export const referrals = sqliteTable(
     rewardedAt: integer("rewarded_at"),
     expiresAt: integer("expires_at"),
     rejectReason: text("reject_reason"),
+    /** IP the code was applied from, and why it is held for review (migration 0068). */
+    ip: text("ip"),
+    holdReason: text("hold_reason"),
     deviceId: text("device_id"),
     decidedBy: text("decided_by"),
     updatedAt: integer("updated_at"),

@@ -1107,7 +1107,8 @@ async function withPromoPrizeAvailability<T extends Record<string, any>>(env: En
     if (!r.subsidyBudgetId) return r;
     const { pot, isProduct, extra } = need(r);
     if (extra <= 0) return r;
-    if ((room.get(String(r.subsidyBudgetId)) ?? 0) >= extra) return r;
+    // Coin prize above the pot, funded right now: the card can say so.
+    if ((room.get(String(r.subsidyBudgetId)) ?? 0) >= extra) return isProduct ? r : { ...r, promoPrize: true };
     // A product has no smaller fallback: new matches are refused until the admin
     // raises the budget, and the card can say so.
     return isProduct ? { ...r, prizesSoldOut: true } : { ...r, rewardCoins: pot };
@@ -1155,6 +1156,8 @@ const mapContest = (r: any) => ({
   isFree: perPlayerEntryFee(r.totalEntryFee) <= 0,
   // A product contest whose prize budget is used up: new matches are refused.
   prizesSoldOut: r.prizesSoldOut === true,
+  // The winner gets more than the entry fees: the platform adds the rest.
+  promoPrize: r.promoPrize === true,
   createdBy: r.createdBy,
   createdAt: r.createdAt,
 });
@@ -2191,6 +2194,9 @@ readRoute.get("/transactions", requireAuth, async (c) => {
       description: r.description || r.type,
       contestId: r.contestId ?? null,
       matchId: r.matchId ?? null,
+      // How this row moved the play-only (locked) balance, so the app can label
+      // bonus coins "sirf khelne ke liye".
+      lockedDelta: Number(r.lockedDelta || 0),
       createdAt: r.createdAt,
     })),
     nextCursor,

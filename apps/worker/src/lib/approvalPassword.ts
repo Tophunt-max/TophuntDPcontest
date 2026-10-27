@@ -21,8 +21,11 @@ import { eq } from "drizzle-orm";
 import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { httpsError } from "./http";
-import { consumeRateLimit } from "./rateLimit";
+import { consumeRateLimit, rateLimit } from "./rateLimit";
 import { now } from "./ids";
+import { deleteOtp, generateOtp, setOtp, verifyOtp } from "./otp";
+import { sendEmail } from "./email";
+import { securityCodeEmail } from "./emailTemplates";
 
 const SETTINGS_ID = "approvalSecret";
 /** Cloudflare Workers cap PBKDF2 at 100,000 iterations. */
@@ -168,6 +171,10 @@ export async function setApprovalPassword(
       throw httpsError("failed-precondition", "Purana approval password galat hai.", APPROVAL_INVALID);
     }
   }
+  await writeSecret(c.env, next, user?.uid ?? null);
+}
+
+async function writeSecret(env: Env, next: string, updatedBy: string | null): Promise<void> {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const ts = now();
   const data: StoredSecret = {
@@ -175,10 +182,67 @@ export async function setApprovalPassword(
     hash: await derive(next, salt, ITERATIONS),
     iterations: ITERATIONS,
     updatedAt: ts,
-    updatedBy: user?.uid ?? null,
+    updatedBy,
   };
-  await getDb(c.env)
+  await getDb(env)
     .insert(schema.settings)
     .values({ id: SETTINGS_ID, data: data as any, updatedAt: ts })
     .onConflictDoUpdate({ target: schema.settings.id, set: { data: data as any, updatedAt: ts } });
+}
+
+// ---------------------------------------------------------------------------
+// Forgotten approval password: superadmin + recent sign-in + email code
+// ---------------------------------------------------------------------------
+
+function assertSuperadmin(c: any): { uid: string; email: string | null } {
+  const user = c.get("user");
+  if (!user || c.get("adminRole") !== "superadmin") {
+    throw httpsError("permission-denied", "Approval password sirf superadmin reset kar sakta hai.");
+  }
+  return { uid: user.uid, email: user.email ?? null };
+}
+
+async function adminEmail(env: Env, uid: string, tokenEmail: string | null): Promise<string> {
+  if (tokenEmail) return tokenEmail;
+  const row = await getDb(env).select({ email: schema.users.email }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+  if (!row?.email) throw httpsError("failed-precondition", "Aapke admin account par email nahi hai, reset code nahi bheja ja sakta.");
+  return row.email;
+}
+
+const maskEmail = (e: string) => {
+  const [l, d] = e.split("@");
+  return d ? `${l.slice(0, 2)}${"*".repeat(Math.max(3, l.length - 2))}@${d}` : "***";
+};
+
+/**
+ * Step 1: email a one-time code to the superadmin's own login email. The route
+ * is also behind the admin "sudo" gate, so the caller has just re-entered the
+ * login password. Rate limited: 3 codes per hour.
+ */
+export async function requestApprovalReset(c: any): Promise<{ sentTo: string }> {
+  const { uid, email } = assertSuperadmin(c);
+  await rateLimit(c.env, `approval_reset:${uid}`, 3, 3600, { failClosed: true });
+  const to = await adminEmail(c.env, uid, email);
+  const otp = generateOtp();
+  await setOtp(c.env, "approval_reset", uid, { otp, expiresAt: Date.now() + 10 * 60 * 1000 }, 10 * 60);
+  const sent = await sendEmail(c.env, { to, ...securityCodeEmail(otp) });
+  if (!sent) {
+    await deleteOtp(c.env, "approval_reset", uid);
+    throw httpsError("unavailable", "Email nahi bheja ja saka. Integrations me email provider check karo.");
+  }
+  return { sentTo: maskEmail(to) };
+}
+
+/** Step 2: the emailed code + a new approval password. The old one is not needed. */
+export async function confirmApprovalReset(c: any, input: { code?: unknown; next?: unknown }): Promise<void> {
+  const { uid } = assertSuperadmin(c);
+  const next = typeof input.next === "string" ? input.next : "";
+  if (next.length < MIN_LENGTH || next.length > MAX_LENGTH) {
+    throw httpsError("invalid-argument", `Approval password ${MIN_LENGTH}–${MAX_LENGTH} characters ka hona chahiye.`);
+  }
+  await rateLimit(c.env, `approval_reset_verify:${uid}`, 10, 3600, { failClosed: true });
+  await verifyOtp(c.env, "approval_reset", uid, typeof input.code === "string" ? input.code : String(input.code ?? ""));
+  await writeSecret(c.env, next, uid);
+  // A reset also lifts a lockout from wrong guesses.
+  await c.env.OTP_KV.delete(lockKey(uid)).catch(() => {});
 }

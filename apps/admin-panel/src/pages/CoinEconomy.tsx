@@ -30,6 +30,7 @@ import { PageHeader, exportCsv, fmtDateTime, fmtNumber } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { CoinPricingCard, RewardLockingCard, WithdrawalCard } from "@/components/coin/CoinCards";
+import { CoinAlertsCard, FreeRewardsBudgetCard } from "@/components/coin/AlertCards";
 import { AdsRewardCard, DailyLoginCard, DailyTasksCard, HallOfFameCard, VerificationRewardCard } from "@/components/coin/EarnCards";
 import { ProgramSettings } from "@/pages/Referrals";
 import { GatewayConfig } from "@/pages/Deposits";
@@ -71,6 +72,7 @@ const KIND_LABEL: Record<PromoBudgetKind, string> = {
   package_bonus: "Package bonus",
   contest_prize: "Contest prize (coins)",
   product_prize: "Product prize (coin value)",
+  free_rewards: "Free rewards (daily, ads, tasks)",
 };
 
 const PLATFORM_LABEL: Record<string, string> = {
@@ -80,6 +82,7 @@ const PLATFORM_LABEL: Record<string, string> = {
   product_prize_reversal: "Cancel hue prize claim — budget me wapas",
   platform_fee: "Entry fee platform ne rakhi",
   product_prize_fund: "Product prize ke liye entry fee rakhi",
+  free_reward: "Free rewards diye (budget se)",
 };
 
 const inr = (n: number) => `₹${fmtNumber(Math.round((n || 0) * 100) / 100)}`;
@@ -200,6 +203,8 @@ function EarnTab() {
       </Card>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <RewardLockingCard data={data} pending={save.isPending} onSave={(p) => save.mutate(p)} />
+        <FreeRewardsBudgetCard data={data} pending={save.isPending} onSave={(p) => save.mutate(p)} />
+        <CoinAlertsCard data={data} pending={save.isPending} onSave={(p) => save.mutate(p)} />
         <VerificationRewardCard data={data} />
         <DailyLoginCard rewards={rewards.data} />
         <DailyTasksCard rewards={rewards.data} />
@@ -318,11 +323,83 @@ function HealthTab() {
 
 // ─── Overview ────────────────────────────────────────────────────────────────
 
+const RANGES = [
+  { key: "all", label: "Shuru se" },
+  { key: "today", label: "Aaj" },
+  { key: "7d", label: "7 din" },
+  { key: "30d", label: "30 din" },
+  { key: "custom", label: "Custom" },
+];
+
+const startOfToday = () => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+};
+
+/**
+ * Coin flows (by source) and the platform side follow the range (worker
+ * coinEconomyOverview filters coin_transactions / platform_ledger); supply,
+ * cash and checks are always all-time.
+ */
 function Overview() {
-  const { data, isLoading, error } = useQuery({ queryKey: ["coin-economy"], queryFn: () => api.coinEconomy() });
-  if (isLoading) return <p className="text-sm text-muted-foreground py-10 text-center">Loading…</p>;
-  if (error || !data) return <ErrorBox error={error} />;
-  return <OverviewBody data={data} />;
+  const [range, setRange] = useState("all");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const bounds = (() => {
+    const now = Date.now();
+    if (range === "today") return { from: startOfToday() };
+    if (range === "7d") return { from: now - 7 * 24 * 60 * 60 * 1000 };
+    if (range === "30d") return { from: now - 30 * 24 * 60 * 60 * 1000 };
+    if (range === "custom") {
+      // Whole days: from 00:00 of the first day to 23:59:59 of the last.
+      const f = from ? new Date(`${from}T00:00:00`).getTime() : undefined;
+      const t = to ? new Date(`${to}T23:59:59.999`).getTime() : undefined;
+      return { from: f, to: t };
+    }
+    return {};
+  })();
+  // Round "now"-relative bounds to the minute so the query key stays stable.
+  const key = [bounds.from ? Math.floor(bounds.from / 60_000) : 0, bounds.to ? Math.floor(bounds.to / 60_000) : 0];
+  const { data, isLoading, error } = useQuery({
+    queryKey: range === "all" ? ["coin-economy"] : ["coin-economy", range, ...key],
+    queryFn: () => api.coinEconomy(bounds),
+  });
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        {RANGES.map((r) => (
+          <button
+            key={r.key}
+            onClick={() => setRange(r.key)}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold ${range === r.key ? "gradient-purple text-white" : "bg-secondary text-foreground"}`}
+          >
+            {r.label}
+          </button>
+        ))}
+        {range === "custom" && (
+          <span className="flex items-center gap-2 text-xs">
+            <input type="date" className="px-2 py-1.5 rounded-lg border border-border bg-background" value={from} onChange={(e) => setFrom(e.target.value)} />
+            se
+            <input type="date" className="px-2 py-1.5 rounded-lg border border-border bg-background" value={to} onChange={(e) => setTo(e.target.value)} />
+            tak
+          </span>
+        )}
+      </div>
+      {range !== "all" && (
+        <p className="text-xs text-muted-foreground">
+          "Coin kahan se aaye" aur "Platform ka hisab" is time ke hain. Balance, liability, paisa (₹) aur checks hamesha shuru se abhi tak ke hain.
+        </p>
+      )}
+      {isLoading ? (
+        <p className="text-sm text-muted-foreground py-10 text-center">Loading…</p>
+      ) : error || !data ? (
+        <ErrorBox error={error} />
+      ) : (
+        <OverviewBody data={data} />
+      )}
+    </div>
+  );
 }
 
 function OverviewBody({ data }: { data: CoinEconomyData }) {
@@ -477,7 +554,7 @@ function Budgets() {
             header: "Linked",
             render: (b) => (
               <span className="text-xs text-muted-foreground">
-                {b.kind === "package_bonus" ? `${b.linkedPackages} package` : `${b.linkedContests} contest`} · {b.usedCount} use
+                {b.kind === "package_bonus" ? `${b.linkedPackages} package` : b.kind === "free_rewards" ? "daily, ads, tasks" : `${b.linkedContests} contest`} · {b.usedCount} use
                 {b.status === "active" && b.remainingCoins <= 0 ? <span className="block text-red-600">Khatam — Edit karke total badhao</span> : null}
               </span>
             ),
@@ -552,7 +629,7 @@ function BudgetDialog({ budget, onClose, onDone }: { budget?: PromoBudget; onClo
         totalCoins: Number(form.totalCoins),
         startsAt: fromLocal(form.startsAt),
         endsAt: fromLocal(form.endsAt),
-        perUserLimit: form.kind === "package_bonus" && form.perUserLimit ? Number(form.perUserLimit) : null,
+        perUserLimit: (form.kind === "package_bonus" || form.kind === "free_rewards") && form.perUserLimit ? Number(form.perUserLimit) : null,
         note: form.note.trim() || null,
         reason: form.reason.trim(),
       };
@@ -580,6 +657,7 @@ function BudgetDialog({ budget, onClose, onDone }: { budget?: PromoBudget; onClo
               <option value="package_bonus">Coin package ka bonus (locked, sirf khelne ke liye)</option>
               <option value="contest_prize">Contest coin prize jo pot se zyada ho</option>
               <option value="product_prize">Product prize ki coin value (sirf admin ko dikhegi)</option>
+              <option value="free_rewards">Free rewards ki limit (daily login, ads, tasks)</option>
             </select>
           </div>
         )}
@@ -589,7 +667,7 @@ function BudgetDialog({ budget, onClose, onDone }: { budget?: PromoBudget; onClo
             <input type="number" className={field} value={form.totalCoins} onChange={(e) => set("totalCoins", e.target.value)} />
             {isEdit && committed > 0 ? <p className="mt-1 text-xs text-muted-foreground">Kam se kam {fmtNumber(committed)}</p> : null}
           </div>
-          {form.kind === "package_bonus" ? (
+          {form.kind === "package_bonus" || form.kind === "free_rewards" ? (
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">Per user max coins</label>
               <input type="number" className={field} placeholder="Koi limit nahi" value={form.perUserLimit} onChange={(e) => set("perUserLimit", e.target.value)} />
@@ -719,6 +797,7 @@ function ApprovalPasswordCard({ configured, updatedAt }: { configured: boolean; 
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirmNext, setConfirmNext] = useState("");
+  const [resetOpen, setResetOpen] = useState(false);
   const mut = useMutation({
     mutationFn: () => api.setApprovalPassword({ current: configured ? current : undefined, next }),
     onSuccess: () => {
@@ -745,10 +824,18 @@ function ApprovalPasswordCard({ configured, updatedAt }: { configured: boolean; 
             </p>
           </div>
         </div>
-        <button onClick={() => setOpen((o) => !o)} className="text-sm font-medium text-primary whitespace-nowrap">
-          {configured ? "Change" : "Set password"}
-        </button>
+        <div className="flex flex-col items-end gap-1">
+          <button onClick={() => { setOpen((o) => !o); setResetOpen(false); }} className="text-sm font-medium text-primary whitespace-nowrap">
+            {configured ? "Change" : "Set password"}
+          </button>
+          {configured && (
+            <button onClick={() => { setResetOpen((o) => !o); setOpen(false); }} className="text-xs text-muted-foreground underline whitespace-nowrap">
+              Bhool gaye? Reset
+            </button>
+          )}
+        </div>
       </div>
+      {resetOpen && <ApprovalReset onDone={() => setResetOpen(false)} />}
       {open && (
         <div className="mt-3 grid gap-2 sm:grid-cols-3">
           {configured && (
@@ -764,6 +851,71 @@ function ApprovalPasswordCard({ configured, updatedAt }: { configured: boolean; 
               className="px-4 py-2 rounded-xl gradient-purple text-white text-sm font-semibold disabled:opacity-50"
             >
               Save
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Forgotten approval password: superadmin only. Step 1 emails a 6-digit code
+ * to the superadmin's login email (may ask to sign in again first); step 2
+ * sets a new password with that code. Worker lib/approvalPassword.ts.
+ */
+function ApprovalReset({ onDone }: { onDone: () => void }) {
+  const qc = useQueryClient();
+  const [sentTo, setSentTo] = useState<string | null>(null);
+  const [code, setCode] = useState("");
+  const [next, setNext] = useState("");
+  const [confirmNext, setConfirmNext] = useState("");
+  const request = useMutation({
+    mutationFn: () => api.requestApprovalReset(),
+    onSuccess: (r) => {
+      setSentTo(r.sentTo);
+      toast.success(`Code bheja: ${r.sentTo}`);
+    },
+    onError: (e) => toast.error(describeError(e)),
+  });
+  const confirmReset = useMutation({
+    mutationFn: () => api.confirmApprovalReset({ code: code.trim(), next }),
+    onSuccess: () => {
+      toast.success("Naya approval password set ho gaya");
+      qc.invalidateQueries({ queryKey: ["approval-password"] });
+      onDone();
+    },
+    onError: (e) => toast.error(describeError(e)),
+  });
+  return (
+    <div className="mt-3 rounded-xl border border-border bg-background p-3 space-y-2">
+      <p className="text-xs text-muted-foreground">
+        Sirf superadmin reset kar sakta hai. Aapke login email par 6 digit ka code jayega, phir naya password set karo.
+      </p>
+      {!sentTo ? (
+        <button
+          onClick={() => request.mutate()}
+          disabled={request.isPending}
+          className="px-4 py-2 rounded-xl gradient-purple text-white text-sm font-semibold disabled:opacity-50"
+        >
+          Email par code bhejo
+        </button>
+      ) : (
+        <div className="grid gap-2 sm:grid-cols-3">
+          <input className={field} inputMode="numeric" maxLength={6} placeholder={`Code (${sentTo})`} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} autoComplete="one-time-code" />
+          <input type="password" className={field} placeholder="Naya (kam se kam 6)" value={next} onChange={(e) => setNext(e.target.value)} autoComplete="new-password" />
+          <input type="password" className={field} placeholder="Naya dobara" value={confirmNext} onChange={(e) => setConfirmNext(e.target.value)} autoComplete="new-password" />
+          {confirmNext.length > 0 && next !== confirmNext ? <p className="text-xs text-red-600 sm:col-span-3">Dono naye password match nahi kar rahe.</p> : null}
+          <div className="sm:col-span-3 flex justify-end gap-2">
+            <button onClick={() => request.mutate()} disabled={request.isPending} className="px-3 py-2 rounded-xl bg-secondary text-xs font-medium">
+              Code dobara bhejo
+            </button>
+            <button
+              onClick={() => confirmReset.mutate()}
+              disabled={confirmReset.isPending || code.length !== 6 || next.length < 6 || next !== confirmNext}
+              className="px-4 py-2 rounded-xl gradient-purple text-white text-sm font-semibold disabled:opacity-50"
+            >
+              Reset
             </button>
           </div>
         </div>

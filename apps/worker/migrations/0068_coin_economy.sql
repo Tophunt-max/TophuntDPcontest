@@ -16,8 +16,9 @@ CREATE INDEX IF NOT EXISTS idx_txn_type_created ON coin_transactions (type, crea
 CREATE INDEX IF NOT EXISTS idx_txn_contest ON coin_transactions (contest_id);
 
 -- 3. One budget per offer. kind = package_bonus (funds bonus coins on coin
---    packages), contest_prize (funds the part of a coin prize above the pot) or
---    product_prize (funds the coin cost of a physical prize above the pot).
+--    packages), contest_prize (funds the part of a coin prize above the pot),
+--    product_prize (funds the coin cost of a physical prize above the pot) or
+--    free_rewards (caps daily login + rewarded ads + daily task coins).
 --    status = active | paused | closed. per_user_limit = max coins one user can
 --    receive from this budget (NULL = no limit).
 CREATE TABLE IF NOT EXISTS promo_budgets (
@@ -59,7 +60,7 @@ CREATE INDEX IF NOT EXISTS idx_promo_res_user ON promo_reservations (budget_id, 
 -- 5. The platform's own side of every coin it creates or keeps. coins > 0 is
 --    platform income (entry fees kept), coins < 0 is platform expense (promo
 --    bonus, prize subsidy). kind = promo_bonus | prize_subsidy | product_prize |
---    product_prize_reversal | platform_fee | product_prize_fund.
+--    product_prize_reversal | free_reward | platform_fee | product_prize_fund.
 CREATE TABLE IF NOT EXISTS platform_ledger (
   id           TEXT PRIMARY KEY,
   kind         TEXT NOT NULL,
@@ -88,3 +89,18 @@ ALTER TABLE contests ADD COLUMN prize_cost_coins REAL NOT NULL DEFAULT 0;
 ALTER TABLE contest_matches ADD COLUMN prize_cost_coins REAL NOT NULL DEFAULT 0;
 ALTER TABLE payment_orders ADD COLUMN budget_id TEXT;
 ALTER TABLE deposits ADD COLUMN budget_id TEXT;
+
+-- 7. Withdrawal risk review: flags computed when the request is made (new
+--    account, shared device, balance mostly free rewards, many recent
+--    requests). risk_level = low | medium | high. Shown to the admin, who
+--    approves every payout anyway.
+ALTER TABLE withdrawals ADD COLUMN risk_level TEXT;
+ALTER TABLE withdrawals ADD COLUMN risk_flags TEXT;
+
+-- 8. Referral fraud: the IP a code was applied from, and why a referral is
+--    held for admin review (same IP burst, referrer velocity) even when the
+--    program does not require review.
+ALTER TABLE referrals ADD COLUMN ip TEXT;
+ALTER TABLE referrals ADD COLUMN hold_reason TEXT;
+CREATE INDEX IF NOT EXISTS idx_referrals_referrer_created ON referrals (referrer_uid, created_at);
+

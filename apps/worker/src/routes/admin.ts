@@ -128,6 +128,8 @@ import { computeMoneyHealth } from "../lib/moneyHealth";
 import {
   approvalPasswordStatus,
   assertApproval,
+  confirmApprovalReset,
+  requestApprovalReset,
   setApprovalPassword,
   withoutApproval,
 } from "../lib/approvalPassword";
@@ -144,6 +146,8 @@ import {
   validateBudgetInput,
 } from "../lib/promoBudget";
 import { budgetActivity, coinEconomyOverview, contestPnl, packagePnl, userStatement } from "../lib/coinEconomy";
+import { buildCoinReport, runCoinAlerts } from "../lib/coinAlerts";
+import { sendEmail } from "../lib/email";
 import { cronHealth } from "../lib/ops";
 import { decideReferral, parseReferralConfig, qualifyReferral, reconcileReferrals } from "../lib/referralProgram";
 
@@ -261,7 +265,7 @@ const SENSITIVE_ADMIN_ROUTES: Array<[method: string, path: RegExp]> = [
   // Promo budgets make the platform pay coins nobody paid for; they also need
   // the separate approval password (lib/approvalPassword.ts).
   ["*", /^\/promo-budgets(\/.*)?$/],
-  ["*", /^\/approval-password$/],
+  ["*", /^\/approval-password(\/.*)?$/],
   ["*", /^\/integrations(\/.*)?$/],
 ];
 export function isSensitiveAdminRoute(method: string, path: string): boolean {
@@ -420,7 +424,20 @@ adminRoute.get("/auth-methods", async (c) => {
 adminRoute.post("/app-settings", async (c) => {
   requireFullAdmin(c);
   const db = getDb(c.env);
-  const body = await c.req.json<any>();
+  const rawBody = await c.req.json<any>();
+  // Free-rewards cap (lib/promoBudget.ts): linking a budget changes what users
+  // can earn, so it needs the approval password like every other promo action.
+  if (rawBody && Object.prototype.hasOwnProperty.call(rawBody, "freeRewardsBudgetId")) {
+    const v = rawBody.freeRewardsBudgetId;
+    if (v !== null && v !== "" && (typeof v !== "string" || v.length > 64)) {
+      throw httpsError("invalid-argument", "freeRewardsBudgetId must be a budget id or null.");
+    }
+    if (v) await assertLinkableBudget(c.env, v, "free_rewards");
+    await assertApproval(c, rawBody);
+    rawBody.freeRewardsBudgetId = v || null;
+  }
+  // Never stored: the approval password only authorises this request.
+  const body = withoutApproval(rawBody);
   const rewardSettings = body?.rewardSettings;
   if (rewardSettings && typeof rewardSettings === "object") {
     // The signup bonus no longer exists (coins for joining come only from a
@@ -3980,6 +3997,8 @@ adminRoute.get("/withdrawals", async (c) => {
       adminNote: schema.withdrawals.adminNote,
       payoutRef: schema.withdrawals.payoutRef,
       paidAt: schema.withdrawals.paidAt,
+      riskLevel: schema.withdrawals.riskLevel,
+      riskFlags: schema.withdrawals.riskFlags,
       createdAt: schema.withdrawals.createdAt,
       updatedAt: schema.withdrawals.updatedAt,
       username: schema.users.username,
@@ -4333,7 +4352,7 @@ adminRoute.get("/referrals", async (c) => {
     `SELECT r.id, r.referrer_uid AS referrerUid, r.referred_uid AS referredUid, r.status, r.code,
             r.referrer_reward AS referrerReward, r.referee_reward AS refereeReward, r.qualify_action AS qualifyAction,
             r.qualified_at AS qualifiedAt, r.rewarded_at AS rewardedAt, r.expires_at AS expiresAt,
-            r.reject_reason AS rejectReason, r.device_id AS deviceId, r.decided_by AS decidedBy, r.created_at AS createdAt,
+            r.reject_reason AS rejectReason, r.hold_reason AS holdReason, r.ip AS ip, r.device_id AS deviceId, r.decided_by AS decidedBy, r.created_at AS createdAt,
             ru.username AS referrerUsername, iu.username AS referredUsername,
             iu.email_verified AS referredEmailVerified, iu.phone_verified AS referredPhoneVerified,
             iu.contests_joined AS referredContests
@@ -5080,6 +5099,23 @@ adminRoute.post("/approval-password", async (c) => {
   return c.json({ success: true });
 });
 
+// Forgotten approval password: superadmin only, recent sign-in (sudo gate) and
+// a code emailed to the superadmin's own login email.
+adminRoute.post("/approval-password/reset/request", async (c) => {
+  requireFullAdmin(c);
+  const out = await requestApprovalReset(c);
+  await logAudit(c, "approval-password.reset.request", "settings", "approvalSecret", { sentTo: out.sentTo });
+  return c.json({ success: true, ...out });
+});
+
+adminRoute.post("/approval-password/reset/confirm", async (c) => {
+  requireFullAdmin(c);
+  const body = await c.req.json<any>().catch(() => ({}));
+  await confirmApprovalReset(c, { code: body?.code, next: body?.next });
+  await logAudit(c, "approval-password.reset", "settings", "approvalSecret");
+  return c.json({ success: true });
+});
+
 adminRoute.get("/promo-budgets", async (c) => {
   requireFullAdmin(c);
   return c.json(await listBudgets(c.env));
@@ -5122,7 +5158,9 @@ adminRoute.post("/promo-budgets", async (c) => {
     status: values.status ?? "active",
     startsAt: values.startsAt ?? null,
     endsAt: values.endsAt ?? null,
-    perUserLimit: values.kind === "package_bonus" ? values.perUserLimit ?? null : null,
+    // Per-user caps apply where the recipient is known up front: package bonus
+    // and free rewards (e.g. "max 500 free coins per user this month").
+    perUserLimit: values.kind === "package_bonus" || values.kind === "free_rewards" ? values.perUserLimit ?? null : null,
     note: values.note ?? null,
     createdBy: user?.email || user?.uid || "server",
     createdAt: ts,
@@ -5158,7 +5196,7 @@ adminRoute.patch("/promo-budgets/:id", async (c) => {
     throw httpsError("invalid-argument", "End date must be after the start date.");
   }
   const set: Record<string, any> = { ...values, updatedAt: now() };
-  if (current.kind !== "package_bonus") delete set.perUserLimit;
+  if (current.kind !== "package_bonus" && current.kind !== "free_rewards") delete set.perUserLimit;
   // Raising/lowering the total is re-checked in SQL against what is committed
   // NOW, so a purchase landing between the read above and this write cannot
   // leave the budget below what it has already paid.
@@ -5193,6 +5231,26 @@ adminRoute.get("/coin-economy", async (c) => {
     approvalPasswordStatus(c.env),
   ]);
   return c.json({ ...overview, budgetList: budgets, approvalPassword: approval });
+});
+
+// Send the coin report to the admin alert email right now (preview / test).
+adminRoute.post("/coin-economy/report", async (c) => {
+  requireFullAdmin(c);
+  const cfg = await getAppConfig(c.env);
+  const to = String(cfg?.adminAlertEmail || "");
+  if (!to) throw httpsError("failed-precondition", "Pehle App Settings me 'Admin alert email' set karo.");
+  const body = await c.req.json<any>().catch(() => ({}));
+  const days = body?.period === "weekly" ? 7 : 1;
+  const end = Date.now();
+  const r = await buildCoinReport(c.env, end - days * 24 * 60 * 60 * 1000, end, days === 7 ? "Weekly coin report (manual)" : "Daily coin report (manual)");
+  const sent = await sendEmail(c.env, { to, ...r });
+  if (!sent) throw httpsError("unavailable", "Email nahi gaya. Integrations me email provider check karo.");
+  return c.json({ success: true, to });
+});
+
+adminRoute.post("/coin-economy/alerts/run", async (c) => {
+  requireFullAdmin(c);
+  return c.json(await runCoinAlerts(c.env));
 });
 
 adminRoute.get("/coin-economy/contests", async (c) => {

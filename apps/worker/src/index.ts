@@ -45,6 +45,7 @@ import { captureError, logErrorToDb, pruneErrorLogs } from "./lib/observability"
 import { pruneOpsTables, runCronJob } from "./lib/ops";
 import { reconcilePaymentOrders } from "./lib/coinOrders";
 import { moneyHealthAlert } from "./lib/moneyHealth";
+import { maybeSendCoinReport, runCoinAlerts } from "./lib/coinAlerts";
 import { reconcileVideos } from "./lib/videoReconcile";
 import { computeDeepHealth } from "./lib/health";
 import { pruneNotifications } from "./lib/notify";
@@ -601,6 +602,7 @@ export default {
             // Ledger/balance invariants, alerted instead of waiting for an admin
             // to open the Money Health page (lib/moneyHealth.ts).
             await runCronJob(env, "moneyHealthCheck", () => moneyHealthAlert(env));
+            await runCronJob(env, "coinAlerts", () => runCoinAlerts(env));
           })(),
         );
         break;
@@ -629,6 +631,7 @@ export default {
             // Retention: heartbeat rows, expired replay claims and stale admin
             // notifications.
             await runCronJob(env, "pruneIdempotencyKeys", () => pruneOpsTables(env));
+            await runCronJob(env, "coinReport", () => maybeSendCoinReport(env));
           })(),
         );
         break;

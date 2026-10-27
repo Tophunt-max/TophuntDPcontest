@@ -122,7 +122,11 @@ import { sendEmail, sendUserEmail } from "../lib/email";
 import { passwordChangedEmail, dataExportEmail } from "../lib/emailTemplates";
 import { newId, now, generateJoinId } from "../lib/ids";
 import { lockedPart } from "../lib/rewardLocking";
+import { assessWithdrawalRisk, RISK_FLAG_LABELS } from "../lib/withdrawalRisk";
 import {
+  FREE_REWARDS_EXHAUSTED,
+  freeRewardBudgetStatements,
+  freeRewardsBudgetId,
   notifyBudgetExhausted,
   ORDER_RESERVATION_TTL_MS,
   depositReservationId,
@@ -1880,7 +1884,20 @@ apiRoute.post("/", async (c) => {
       const xpReward = 50;
       const ts = now();
       // Free reward: play-only unless App Control says otherwise (lib/rewardLocking.ts).
-      const dailyLocked = lockedPart(await getAppConfig(env), "daily", coinReward);
+      const dailyCfg = await getAppConfig(env);
+      const dailyLocked = lockedPart(dailyCfg, "daily", coinReward);
+      const dailyLedgerId = `daily_reward:${uid}:${startOfToday}`;
+      // Capped by the free-rewards budget when one is set (lib/promoBudget.ts).
+      const dailyBudget = freeRewardBudgetStatements(env, {
+        budgetId: freeRewardsBudgetId(dailyCfg),
+        refId: dailyLedgerId,
+        uid,
+        coins: coinReward,
+        ts,
+        label: "Daily login reward",
+        gate: `EXISTS (SELECT 1 FROM users WHERE uid = ? AND (last_daily_claim IS NULL OR last_daily_claim < ?))`,
+        gateArgs: [uid, startOfToday],
+      });
       // Atomic guard: the conditional WHERE + affected-row check guarantees only
       // ONE claim per UTC day even if two requests race.
       //
@@ -1890,13 +1907,14 @@ apiRoute.post("/", async (c) => {
       // with no ledger entry.
       const eligible = `(last_daily_claim IS NULL OR last_daily_claim < ?)`;
       const dailyResults = await env.DB.batch([
+        ...dailyBudget.reserve,
         env.DB.prepare(
           `INSERT OR IGNORE INTO coin_transactions
              (id, uid, amount, type, description, created_at, locked_delta)
            SELECT ?, ?, ?, 'daily_reward', ?, ?, ?
-            WHERE EXISTS (SELECT 1 FROM users WHERE uid = ? AND ${eligible})`,
+            WHERE EXISTS (SELECT 1 FROM users WHERE uid = ? AND ${eligible}) AND ${dailyBudget.heldGate}`,
         ).bind(
-          `daily_reward:${uid}:${startOfToday}`,
+          dailyLedgerId,
           uid,
           coinReward,
           `Daily login reward (${streak} day streak)`,
@@ -1904,6 +1922,7 @@ apiRoute.post("/", async (c) => {
           dailyLocked,
           uid,
           startOfToday,
+          ...dailyBudget.heldArgs,
         ),
         // Also requires THIS request's ledger row. The ledger insert is OR IGNORE on
         // a per-day id, so if `last_daily_claim` were ever moved back within the day
@@ -1913,10 +1932,19 @@ apiRoute.post("/", async (c) => {
               SET dpcoin = dpcoin + ?, locked_coins = locked_coins + ?, xp = xp + ?, streak = ?, last_daily_claim = ?, updated_at = ?
             WHERE uid = ? AND ${eligible}
               AND EXISTS (SELECT 1 FROM coin_transactions WHERE id = ? AND created_at = ?)`,
-        ).bind(coinReward, dailyLocked, xpReward, streak, ts, ts, uid, startOfToday, `daily_reward:${uid}:${startOfToday}`, ts),
+        ).bind(coinReward, dailyLocked, xpReward, streak, ts, ts, uid, startOfToday, dailyLedgerId, ts),
+        ...dailyBudget.finalize,
       ]);
-      if (Number(dailyResults[1]?.meta?.changes || 0) === 0)
+      if (Number(dailyResults[dailyBudget.reserve.length + 1]?.meta?.changes || 0) === 0) {
+        if (dailyBudget.reservationId) {
+          const r = await env.DB.prepare(`SELECT 1 AS x FROM promo_reservations WHERE id = ?`).bind(dailyBudget.reservationId).first();
+          if (!r) {
+            c.executionCtx.waitUntil(notifyBudgetExhausted(env, String(freeRewardsBudgetId(dailyCfg)), "Free rewards (daily login / ads / tasks)"));
+            throw httpsError("failed-precondition", "Aaj ke free rewards khatam ho gaye hain. Thodi der baad try karo.", FREE_REWARDS_EXHAUSTED);
+          }
+        }
         throw httpsError("already-exists", "Daily reward already claimed today.");
+      }
       return c.json({ success: true, coinsEarned: coinReward, xpEarned: xpReward, streak, lockedCoins: dailyLocked });
     }
 
@@ -1986,31 +2014,52 @@ apiRoute.post("/", async (c) => {
       const day = Math.floor(Date.now() / 86_400_000); // UTC day bucket
       const ts = now();
       const claimId = newId();
-      const adLocked = lockedPart(await getAppConfig(env), "ads", Number(ads.reward) || 0);
+      const adCfg = await getAppConfig(env);
+      const adLocked = lockedPart(adCfg, "ads", Number(ads.reward) || 0);
       // The cap is enforced by a COUNT(*) guard evaluated INSIDE the crediting
       // transaction, and the credit + ledger are gated on that claim row
       // existing. Concurrent requests are serialised by the transaction, so the
       // cap is exact rather than approximate.
       const claimGate = `EXISTS (SELECT 1 FROM ad_reward_claims WHERE id = ?)`;
+      const adBudget = freeRewardBudgetStatements(env, {
+        budgetId: freeRewardsBudgetId(adCfg),
+        refId: `ad:${claimId}`,
+        uid,
+        coins: Number(ads.reward) || 0,
+        ts,
+        label: "Rewarded ad",
+        gate: claimGate,
+        gateArgs: [claimId],
+      });
       const adResults = await env.DB.batch([
         env.DB.prepare(
           `INSERT INTO ad_reward_claims (id, uid, day, provider, reward, created_at)
            SELECT ?, ?, ?, ?, ?, ?
             WHERE (SELECT COUNT(*) FROM ad_reward_claims WHERE uid = ? AND day = ?) < ?`,
         ).bind(claimId, uid, day, ads.provider, ads.reward, ts, uid, day, ads.dailyCap),
+        ...adBudget.reserve,
         env.DB.prepare(
           `INSERT OR IGNORE INTO coin_transactions
              (id, uid, amount, type, description, created_at, locked_delta)
            SELECT ?, ?, ?, 'ad_reward', ?, ?, ?
-            WHERE ${claimGate}`,
-        ).bind(newId(), uid, ads.reward, "Rewarded ad view", ts, adLocked, claimId),
+            WHERE ${claimGate} AND ${adBudget.heldGate}`,
+        ).bind(newId(), uid, ads.reward, "Rewarded ad view", ts, adLocked, claimId, ...adBudget.heldArgs),
         env.DB.prepare(
-          `UPDATE users SET dpcoin = dpcoin + ?, locked_coins = locked_coins + ?, updated_at = ? WHERE uid = ? AND ${claimGate}`,
-        ).bind(ads.reward, adLocked, ts, uid, claimId),
+          `UPDATE users SET dpcoin = dpcoin + ?, locked_coins = locked_coins + ?, updated_at = ? WHERE uid = ? AND ${claimGate} AND ${adBudget.heldGate}`,
+        ).bind(ads.reward, adLocked, ts, uid, claimId, ...adBudget.heldArgs),
+        ...adBudget.finalize,
+        // Budget had no room: the claim must not count against today's cap.
+        ...(adBudget.reservationId
+          ? [env.DB.prepare(`DELETE FROM ad_reward_claims WHERE id = ? AND NOT EXISTS (SELECT 1 FROM promo_reservations WHERE id = ?)`).bind(claimId, adBudget.reservationId)]
+          : []),
       ]);
 
       if (Number(adResults[0]?.meta?.changes || 0) === 0) {
         throw httpsError("resource-exhausted", "Daily ad reward limit reached. Come back tomorrow!");
+      }
+      if (Number(adResults[adBudget.reserve.length + 2]?.meta?.changes || 0) === 0) {
+        c.executionCtx.waitUntil(notifyBudgetExhausted(env, String(freeRewardsBudgetId(adCfg)), "Free rewards (daily login / ads / tasks)"));
+        throw httpsError("failed-precondition", "Aaj ke free rewards khatam ho gaye hain. Thodi der baad try karo.", FREE_REWARDS_EXHAUSTED);
       }
       const usedToday = await db
         .select({ n: count() })
@@ -2073,7 +2122,8 @@ apiRoute.post("/", async (c) => {
 
       const ts = now();
       const reward = assertCoinAmount(task.reward, "task reward");
-      const taskLocked = lockedPart(await getAppConfig(env), "tasks", reward);
+      const taskCfg = await getAppConfig(env);
+      const taskLocked = lockedPart(taskCfg, "tasks", reward);
       /**
        * Claim + credit + ledger in ONE batch, the same shape as `claimAdReward`
        * above.
@@ -2102,22 +2152,41 @@ apiRoute.post("/", async (c) => {
          AND NOT EXISTS (SELECT 1 FROM coin_transactions WHERE id = ?)
          AND EXISTS (SELECT 1 FROM users WHERE uid = ?)`;
       const taskBindings = [uid, taskId, day, ledgerId, uid];
+      const taskBudget = freeRewardBudgetStatements(env, {
+        budgetId: freeRewardsBudgetId(taskCfg),
+        refId: ledgerId,
+        uid,
+        coins: reward,
+        ts,
+        label: `Daily task "${task.title}"`,
+        gate: taskGate,
+        gateArgs: taskBindings,
+      });
       const taskResults = await env.DB.batch([
         env.DB.prepare(
           `INSERT OR IGNORE INTO daily_task_claims (uid, task_id, day, reward, created_at)
            VALUES (?, ?, ?, ?, ?)`,
         ).bind(uid, taskId, day, reward, ts),
+        ...taskBudget.reserve,
         env.DB.prepare(
-          `UPDATE users SET dpcoin = dpcoin + ?, locked_coins = locked_coins + ?, updated_at = ? WHERE uid = ? AND ${taskGate}`,
-        ).bind(reward, taskLocked, ts, uid, ...taskBindings),
+          `UPDATE users SET dpcoin = dpcoin + ?, locked_coins = locked_coins + ?, updated_at = ? WHERE uid = ? AND ${taskGate} AND ${taskBudget.heldGate}`,
+        ).bind(reward, taskLocked, ts, uid, ...taskBindings, ...taskBudget.heldArgs),
         env.DB.prepare(
           `INSERT OR IGNORE INTO coin_transactions
              (id, uid, amount, type, description, created_at, locked_delta)
            SELECT ?, ?, ?, 'daily_task', ?, ?, ?
-            WHERE ${taskGate}`,
-        ).bind(ledgerId, uid, reward, `Task reward: ${task.title}`, ts, taskLocked, ...taskBindings),
+            WHERE ${taskGate} AND ${taskBudget.heldGate}`,
+        ).bind(ledgerId, uid, reward, `Task reward: ${task.title}`, ts, taskLocked, ...taskBindings, ...taskBudget.heldArgs),
+        ...taskBudget.finalize,
       ]);
-      if (Number(taskResults[1]?.meta?.changes || 0) === 0) {
+      if (Number(taskResults[taskBudget.reserve.length + 1]?.meta?.changes || 0) === 0) {
+        if (taskBudget.reservationId) {
+          const credited = await env.DB.prepare(`SELECT 1 AS x FROM coin_transactions WHERE id = ?`).bind(ledgerId).first();
+          if (!credited) {
+            c.executionCtx.waitUntil(notifyBudgetExhausted(env, String(freeRewardsBudgetId(taskCfg)), "Free rewards (daily login / ads / tasks)"));
+            throw httpsError("failed-precondition", "Aaj ke free rewards khatam ho gaye hain. Thodi der baad try karo.", FREE_REWARDS_EXHAUSTED);
+          }
+        }
         throw httpsError("already-exists", "Task already claimed today.");
       }
       return c.json({ success: true, reward, lockedCoins: taskLocked });
@@ -2423,6 +2492,8 @@ apiRoute.post("/", async (c) => {
       const ts = now();
       const id = newId();
       const cashAmount = quote.netInr;
+      // Risk review for the admin who approves this payout (lib/withdrawalRisk.ts).
+      const risk = await assessWithdrawalRisk(env, uid, ts);
 
       // Escrow the coins, create the withdrawal row and write the hold ledger
       // entry in ONE transaction.
@@ -2452,8 +2523,8 @@ apiRoute.post("/", async (c) => {
       const withdrawalResults = await env.DB.batch([
         env.DB.prepare(
           `INSERT INTO withdrawals
-             (id, user_id, amount, cash_amount, gross_amount, fee_amount, fee_detail, method, account_details, status, reserved, created_at, updated_at)
-           SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?, ?
+             (id, user_id, amount, cash_amount, gross_amount, fee_amount, fee_detail, method, account_details, status, reserved, created_at, updated_at, risk_level, risk_flags)
+           SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?, ?, ?, ?
             WHERE ${solvent} ${capGate}`,
         ).bind(
           id,
@@ -2467,6 +2538,8 @@ apiRoute.post("/", async (c) => {
           destination.accountDetails,
           ts,
           ts,
+          risk.level,
+          JSON.stringify(risk.flags),
           uid,
           amt,
           ...capBindings,
@@ -2508,8 +2581,8 @@ apiRoute.post("/", async (c) => {
       }
 
       await db.insert(schema.adminNotifications).values({
-        id: newId(), title: "New Withdrawal Request",
-        message: `A user requested a payout of ${amt} coins to ${destination.masked} — pay ₹${quote.netInr.toFixed(2)} (gross ₹${quote.grossInr.toFixed(2)} − platform fee ₹${quote.feeInr.toFixed(2)}).`,
+        id: newId(), title: risk.level === "high" ? "⚠️ HIGH RISK Withdrawal Request" : "New Withdrawal Request",
+        message: `${risk.level !== "low" ? `[Risk: ${risk.level} — ${risk.flags.map((f) => RISK_FLAG_LABELS[f] ?? f).join(", ")}] ` : ""}A user requested a payout of ${amt} coins to ${destination.masked} — pay ₹${quote.netInr.toFixed(2)} (gross ₹${quote.grossInr.toFixed(2)} − platform fee ₹${quote.feeInr.toFixed(2)}).`,
         link: "/withdrawals", isRead: false, createdAt: ts,
       });
       alertAdminEmail(c, cfg, "New Withdrawal Request",
@@ -3741,7 +3814,7 @@ apiRoute.post("/", async (c) => {
         }
         if (refCode) {
           try {
-            referral = await applyReferralCode(env, uid, refCode, { deviceId: body.deviceId ?? null });
+            referral = await applyReferralCode(env, uid, refCode, { deviceId: body.deviceId ?? null, ip: clientIp(c.req.raw.headers) });
           } catch (e: any) {
             referral = { status: "refused", message: e?.message || "Referral code could not be applied." };
           }
@@ -3781,7 +3854,7 @@ apiRoute.post("/", async (c) => {
     // window). Same rules and fraud checks as the signup path.
     case "applyReferralCode": {
       await rateLimit(env, `refapply:${uid}`, 10, 3600, { failClosed: true });
-      const result = await applyReferralCode(env, uid, body.code, { deviceId: body.deviceId ?? null });
+      const result = await applyReferralCode(env, uid, body.code, { deviceId: body.deviceId ?? null, ip: clientIp(c.req.raw.headers) });
       return c.json({ success: true, ...result });
     }
 

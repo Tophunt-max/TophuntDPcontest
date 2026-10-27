@@ -10,6 +10,12 @@ interface Props {
   queryKey: string;
   load: () => Promise<any>;
   save: (payload: any) => Promise<any>;
+  /**
+   * Keys edited somewhere else (a form with its own validation). They are
+   * hidden here and never posted; the Worker shallow-merges the posted object,
+   * so the stored values stay as they are.
+   */
+  omitKeys?: string[];
 }
 
 /**
@@ -17,15 +23,20 @@ interface Props {
  * gamification). Renders the current config and lets an admin edit it as
  * validated JSON — the Worker merges the posted object into the stored one.
  */
-export function SettingsEditor({ title, subtitle, queryKey, load, save }: Props) {
+export function SettingsEditor({ title, subtitle, queryKey, load, save, omitKeys }: Props) {
   const qc = useQueryClient();
-  const { data, isLoading } = useQuery({ queryKey: [queryKey], queryFn: load });
+  const { data: raw, isLoading } = useQuery({ queryKey: [queryKey], queryFn: load });
+  const data =
+    raw && typeof raw === "object" && omitKeys?.length
+      ? Object.fromEntries(Object.entries(raw).filter(([k]) => !omitKeys.includes(k)))
+      : raw;
   const [text, setText] = useState("");
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     if (data) setText(JSON.stringify(data, null, 2));
-  }, [data]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [raw]);
 
   const mut = useMutation({
     mutationFn: (payload: any) => save(payload),
@@ -42,6 +53,11 @@ export function SettingsEditor({ title, subtitle, queryKey, load, save }: Props)
       parsed = JSON.parse(text);
     } catch (e: any) {
       setErr("Invalid JSON: " + e.message);
+      return;
+    }
+    const blocked = parsed && typeof parsed === "object" ? Object.keys(parsed).filter((k) => omitKeys?.includes(k)) : [];
+    if (blocked.length) {
+      setErr(`${blocked.join(", ")} yahan edit nahi hota. Coin Economy → Earn me badlo.`);
       return;
     }
     setErr(null);

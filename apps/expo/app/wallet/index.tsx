@@ -39,6 +39,11 @@ import { referralCaption } from '@/src/lib/shareCaptions';
 const DAILY_REWARDS = [10, 15, 20, 25, 30, 50, 100];
 const FILTERS = ['All', 'Income', 'Expense'];
 
+// The server refuses daily/ads/tasks coins once the admin's free rewards
+// budget runs out (worker FREE_REWARDS_EXHAUSTED); its message says so.
+const freeRewardsOut = (e: any) => typeof e?.message === 'string' && e.message.toLowerCase().includes('free rewards khatam');
+const FREE_REWARDS_OUT_MSG = 'Aaj ke free rewards khatam ho gaye hain. Thodi der baad try karo.';
+
 const taskIcon = (type: string) => (type === 'vote' ? 'stats-chart' : type === 'share' ? 'share-social' : 'videocam');
 
 /** Free rewards may be play-only (locked): spendable on contests, never withdrawable. */
@@ -104,6 +109,8 @@ export default function WalletScreen() {
         id: t.id,
         type: t.type,
         amount: t.amount,
+        // > 0 = these coins arrived play-only (promo bonus / free reward).
+        lockedDelta: Number(t.lockedDelta || 0),
         description: t.description || t.type,
         date: t.createdAt ? new Date(Number(t.createdAt)).toLocaleDateString() : '',
       }));
@@ -169,7 +176,14 @@ export default function WalletScreen() {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         const alreadyClaimed = typeof error?.message === 'string' && error.message.toLowerCase().includes('already');
         setClaimedToday(alreadyClaimed ? true : claimedToday);
-        Alert.alert("Error", alreadyClaimed ? "You have already claimed your daily reward today." : "Could not claim bonus.");
+        Alert.alert(
+          "Error",
+          alreadyClaimed
+            ? "You have already claimed your daily reward today."
+            : freeRewardsOut(error)
+              ? FREE_REWARDS_OUT_MSG
+              : "Could not claim bonus.",
+        );
     }
   };
 
@@ -223,9 +237,11 @@ export default function WalletScreen() {
       const limitHit = typeof error?.message === 'string' && error.message.toLowerCase().includes('limit');
       Alert.alert(
         'Reward',
-        limitHit
-          ? "You've reached today's ad reward limit. Come back tomorrow!"
-          : "Couldn't credit your reward right now. Please try again.",
+        freeRewardsOut(error)
+          ? FREE_REWARDS_OUT_MSG
+          : limitHit
+            ? "You've reached today's ad reward limit. Come back tomorrow!"
+            : "Couldn't credit your reward right now. Please try again.",
       );
     }
   };
@@ -358,6 +374,11 @@ export default function WalletScreen() {
         <View style={{ flex: 1, marginLeft: 14 }}>
             <Text style={[styles.transTitle, { color: textColor }]}>{item.description}</Text>
             <Text style={[styles.transDate, { color: subTextColor }]}>{item.date} • {item.type.replace('_', ' ').toUpperCase()}</Text>
+            {item.amount > 0 && item.lockedDelta > 0 ? (
+                <Text style={styles.lockedTag}>
+                    {item.lockedDelta >= item.amount ? 'Sirf khelne ke liye' : `${item.lockedDelta} sirf khelne ke liye`}
+                </Text>
+            ) : null}
         </View>
         <Text style={[styles.transAmount, { color: item.amount > 0 ? "#4CAF50" : "#FF4D67" }]}>
             {item.amount > 0 ? '+' : ''}{item.amount}
@@ -636,6 +657,18 @@ const styles = StyleSheet.create({
   iconBox: { width: 48, height: 48, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
   transTitle: { fontSize: 16, fontFamily: 'Urbanist-Bold', marginBottom: 4 },
   transDate: { fontSize: 12, fontFamily: 'Urbanist-Medium' },
+  lockedTag: {
+    alignSelf: 'flex-start',
+    marginTop: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(255, 152, 0, 0.15)',
+    color: '#E65100',
+    fontSize: 11,
+    fontFamily: 'Urbanist-SemiBold',
+  },
   transAmount: { fontSize: 16, fontFamily: 'Urbanist-Bold' },
 
   // Empty State

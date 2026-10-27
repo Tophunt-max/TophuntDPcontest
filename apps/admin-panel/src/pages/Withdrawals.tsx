@@ -11,6 +11,34 @@ import { toast } from "@/lib/toast";
 import { Check, X, BadgeCheck, Download, Banknote, Coins, IndianRupee, Hourglass, Percent } from "lucide-react";
 import { SegTabs, UserCell, MethodBadge, ActionBtn } from "@/components/finance/bits";
 
+// Same labels as worker lib/withdrawalRisk.ts RISK_FLAG_LABELS. Advisory only:
+// a high risk request can still be approved after a closer look.
+const RISK_FLAG_LABELS: Record<string, string> = {
+  new_account: "Naya account (7 din se kam)",
+  shared_device: "Same device par doosra account",
+  mostly_free_coins: "Zyada tar coin free rewards se",
+  frequent: "7 din me 3+ withdrawal request",
+  never_played: "Na kabhi coin khareeda, na contest jeeta",
+};
+
+function RiskCell({ level, flags }: { level?: string | null; flags?: unknown }) {
+  if (!level) return <span className="text-xs text-muted-foreground">—</span>;
+  const list = Array.isArray(flags) ? (flags as string[]) : [];
+  const variant = level === "high" ? "danger" : level === "medium" ? "warning" : "success";
+  return (
+    <div title={list.map((f) => RISK_FLAG_LABELS[f] ?? f).join("\n") || "Koi flag nahi"}>
+      <Badge variant={variant}>{level}</Badge>
+      {list.length > 0 && (
+        <ul className="mt-1 space-y-0.5">
+          {list.map((f) => (
+            <li key={f} className="text-[11px] text-muted-foreground">{RISK_FLAG_LABELS[f] ?? f}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 const TABS = [
   { key: "pending", label: "Pending" },
   { key: "approved", label: "Approved" },
@@ -59,7 +87,7 @@ export default function Withdrawals() {
         subtitle="Cash payout requests"
         action={
           <button
-            onClick={() => exportCsv(`withdrawals-${Date.now()}.csv`, data, ["id", "userId", "username", "amount", "grossAmount", "feeAmount", "cashAmount", "method", "accountDetails", "status", "payoutRef", "paidAt", "createdAt"])}
+            onClick={() => exportCsv(`withdrawals-${Date.now()}.csv`, data, ["id", "userId", "username", "amount", "grossAmount", "feeAmount", "cashAmount", "method", "accountDetails", "status", "riskLevel", "riskFlags", "payoutRef", "paidAt", "createdAt"])}
             className="flex items-center gap-2 px-4 py-2 rounded-xl bg-secondary text-sm font-medium hover:bg-secondary/70 transition-colors"
           >
             <Download size={15} /> Export CSV
@@ -112,6 +140,7 @@ export default function Withdrawals() {
               </div>
             ),
           },
+          { key: "risk", header: "Risk", render: (w: any) => <RiskCell level={w.riskLevel} flags={w.riskFlags} /> },
           { key: "method", header: "Method", render: (w: any) => <MethodBadge method={w.method} /> },
           { key: "account", header: "Account", render: (w: any) => <span className="text-xs text-muted-foreground font-mono">{w.accountDetails || "—"}</span> },
           { key: "status", header: "Status", render: (w: any) => <Badge variant={w.status === "approved" ? "success" : w.status === "paid" ? "paid" : w.status === "rejected" ? "danger" : "pending"}>{w.status}</Badge> },

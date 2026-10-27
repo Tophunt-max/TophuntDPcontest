@@ -1168,6 +1168,11 @@ export const api = {
   approvalPasswordStatus: () => get<{ configured: boolean; updatedAt: number | null }>("/admin/approval-password"),
   setApprovalPassword: (payload: { current?: string; next: string }) =>
     post<{ success: boolean }>("/admin/approval-password", payload),
+  requestApprovalReset: () => post<{ success: boolean; sentTo: string }>("/admin/approval-password/reset/request", {}),
+  confirmApprovalReset: (payload: { code: string; next: string }) =>
+    post<{ success: boolean }>("/admin/approval-password/reset/confirm", payload),
+  sendCoinReport: (period: "daily" | "weekly") => post<{ success: boolean; to: string }>("/admin/coin-economy/report", { period }),
+  runCoinAlerts: () => post<{ budgets: number; liability: boolean; heavyEarners: number }>("/admin/coin-economy/alerts/run", {}),
   cronHealth: () => get<CronJobHealth[]>("/admin/ops/cron-health"),
 
   // SEO
@@ -1177,7 +1182,7 @@ export const api = {
 
 // ─── Coin economy (worker: lib/promoBudget.ts, lib/coinEconomy.ts) ───────────
 
-export type PromoBudgetKind = "package_bonus" | "contest_prize" | "product_prize";
+export type PromoBudgetKind = "package_bonus" | "contest_prize" | "product_prize" | "free_rewards";
 export type PromoBudgetStatus = "active" | "paused" | "closed";
 
 export interface PromoBudget {

@@ -66,6 +66,13 @@ const TABS = [
   { key: "expired", label: "Expired" },
 ];
 
+/** Why a referral was held for review (worker applyReferralCode fraud signals). */
+const HOLD_REASONS: Record<string, string> = {
+  same_ip_burst: "Isi referrer ke kai referral ek hi IP se (24 ghante)",
+  ip_shared: "Is IP se bahut saare referral (24 ghante)",
+  referrer_velocity: "Referrer ko 1 ghante me bahut referral",
+};
+
 const REASONS: Record<string, string> = {
   same_device_as_referrer: "Same device as the inviter",
   device_already_used: "Device already used for a referral",
@@ -166,7 +173,7 @@ export default function Referrals() {
             onClick={() =>
               exportCsv(`referrals-${Date.now()}.csv`, rows, [
                 "id", "referrerUsername", "referrerUid", "referredUsername", "referredUid", "code", "status",
-                "qualifyAction", "referrerReward", "refereeReward", "rejectReason", "deviceId", "createdAt", "qualifiedAt", "rewardedAt", "expiresAt",
+                "qualifyAction", "referrerReward", "refereeReward", "rejectReason", "holdReason", "ip", "deviceId", "createdAt", "qualifiedAt", "rewardedAt", "expiresAt",
               ])
             }
             className="flex items-center gap-2 px-4 py-2 rounded-xl bg-secondary text-sm font-medium hover:bg-secondary/70 transition-colors"
@@ -243,6 +250,11 @@ export default function Referrals() {
               <div>
                 <Badge variant={STATUS_VARIANT[r.status] || "default"}>{r.status}</Badge>
                 {r.rejectReason && <p className="text-[11px] text-muted-foreground mt-1 max-w-[220px]">{REASONS[r.rejectReason] || r.rejectReason}</p>}
+                {r.holdReason && (
+                  <p className="text-[11px] font-medium text-amber-700 mt-1 max-w-[220px]">
+                    ⚠️ {HOLD_REASONS[r.holdReason] || r.holdReason}
+                  </p>
+                )}
               </div>
             ),
           },

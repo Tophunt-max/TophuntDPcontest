@@ -8,6 +8,9 @@
  *                   two players funded
  *   product_prize   the coin cost of a physical prize (set by the admin, never
  *                   shown to users) above the pot, per match won
+ *   free_rewards    a cap on daily login + rewarded ads + daily task coins
+ *                   (appConfig.freeRewardsBudgetId); when it runs out those
+ *                   rewards pause until the admin raises it
  *
  * Each offer has its OWN budget (`promo_budgets`), with a hard coin limit, an
  * optional time window and an optional per-user limit. Coins are set aside
@@ -34,8 +37,10 @@
 import type { Env } from "../types";
 import { httpsError } from "./http";
 import { MAX_COIN_AMOUNT } from "./money";
+import { getAppConfig } from "./settings";
+import { sendEmail } from "./email";
 
-export const BUDGET_KINDS = ["package_bonus", "contest_prize", "product_prize"] as const;
+export const BUDGET_KINDS = ["package_bonus", "contest_prize", "product_prize", "free_rewards"] as const;
 export type BudgetKind = (typeof BUDGET_KINDS)[number];
 export const BUDGET_STATUSES = ["active", "paused", "closed"] as const;
 export type BudgetStatus = (typeof BUDGET_STATUSES)[number];
@@ -69,7 +74,7 @@ export interface ReserveInput {
   /** The recipient, for the per-user limit. Null skips the per-user check. */
   uid: string | null;
   coins: number;
-  refType: "order" | "deposit" | "match";
+  refType: "order" | "deposit" | "match" | "free";
   refId: string;
   expiresAt: number | null;
   ts: number;
@@ -127,7 +132,7 @@ export function releaseStatement(env: Env, reservationId: string, ts: number, ga
 
 export interface PlatformEntry {
   id: string;
-  kind: "promo_bonus" | "prize_subsidy" | "product_prize" | "product_prize_reversal" | "platform_fee" | "product_prize_fund";
+  kind: "promo_bonus" | "prize_subsidy" | "product_prize" | "product_prize_reversal" | "free_reward" | "platform_fee" | "product_prize_fund";
   /** + platform income, − platform expense. */
   coins: number;
   budgetId?: string | null;
@@ -216,31 +221,106 @@ export function promoBonusCreditStatements(
 }
 
 /**
+ * One admin notification (and an email to `adminAlertEmail`, if set) per
+ * `title` per `dedupeMs`. Best-effort: never throws. Returns true when sent.
+ */
+export async function adminAlert(env: Env, title: string, message: string, link = "/coin-economy", dedupeMs = 24 * 60 * 60 * 1000): Promise<boolean> {
+  try {
+    const ts = Date.now();
+    const recent = await env.DB.prepare(`SELECT 1 AS x FROM admin_notifications WHERE title = ? AND created_at > ? LIMIT 1`)
+      .bind(title, ts - dedupeMs)
+      .first();
+    if (recent) return false;
+    await env.DB.prepare(`INSERT INTO admin_notifications (id, title, message, link, created_at) VALUES (?, ?, ?, ?, ?)`)
+      .bind(crypto.randomUUID(), title, message, link, ts)
+      .run();
+    const to = String((await getAppConfig(env))?.adminAlertEmail || "");
+    if (to) {
+      const esc = (x: string) => x.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch] as string);
+      await sendEmail(env, { to, subject: `[TopHunt] ${title}`, html: `<p><b>${esc(title)}</b></p><p>${esc(message)}</p><p>Admin panel → ${esc(link)}</p>` }).catch(() => {});
+    }
+    return true;
+  } catch (e) {
+    console.error("[promoBudget] admin alert failed", title, e);
+    return false;
+  }
+}
+
+/**
  * Tell the admin a budget could not fund an offer (e.g. a product contest
  * refusing new matches). One notification per budget per 24 hours. Best-effort.
  */
 export async function notifyBudgetExhausted(env: Env, budgetId: string, what: string): Promise<void> {
-  try {
-    const b = await env.DB.prepare(`SELECT name FROM promo_budgets WHERE id = ?`).bind(budgetId).first<{ name: string }>();
-    const title = `Promo budget khatam: ${b?.name ?? budgetId}`;
-    const ts = Date.now();
-    const recent = await env.DB.prepare(`SELECT 1 AS x FROM admin_notifications WHERE title = ? AND created_at > ? LIMIT 1`)
-      .bind(title, ts - 24 * 60 * 60 * 1000)
-      .first();
-    if (recent) return;
-    await env.DB.prepare(`INSERT INTO admin_notifications (id, title, message, link, created_at) VALUES (?, ?, ?, ?, ?)`)
-      .bind(
-        crypto.randomUUID(),
-        title,
-        `"${what}" ke naye match budget ki kami se ruk gaye hain. Coin Economy → Budgets me total badhao.`,
-        "/coin-economy",
-        ts,
-      )
-      .run();
-  } catch (e) {
-    console.error("[promoBudget] could not notify", budgetId, e);
-  }
+  const b = await env.DB.prepare(`SELECT name FROM promo_budgets WHERE id = ?`).bind(budgetId).first<{ name: string }>().catch(() => null);
+  await adminAlert(
+    env,
+    `Promo budget khatam: ${b?.name ?? budgetId}`,
+    `"${what}" budget ki kami se ruk gaya hai. Coin Economy → Budgets me total badhao.`,
+  );
 }
+
+/**
+ * Free rewards (daily login, rewarded ads, daily tasks) capped by a
+ * `free_rewards` budget: the statements to put in the reward's own batch.
+ *
+ *   reserve      first, gated like the reward itself
+ *   heldGate     add to the credit + ledger statements: they apply only if the
+ *                budget had room (and the per-user limit allowed it)
+ *   finalize     last: count it as spent, ledger the platform side, mark used
+ *
+ * With no budget configured, returns empty pieces and the reward is uncapped.
+ */
+export function freeRewardBudgetStatements(
+  env: Env,
+  p: { budgetId: string | null; refId: string; uid: string; coins: number; ts: number; label: string; gate: string; gateArgs: unknown[] },
+): { reserve: D1PreparedStatement[]; heldGate: string; heldArgs: unknown[]; finalize: D1PreparedStatement[]; reservationId: string | null } {
+  if (!p.budgetId || !(p.coins > 0)) return { reserve: [], heldGate: "1 = 1", heldArgs: [], finalize: [], reservationId: null };
+  const id = `free:${p.refId}`;
+  const held = `EXISTS (SELECT 1 FROM promo_reservations WHERE id = ? AND status = 'held')`;
+  return {
+    reservationId: id,
+    reserve: [
+      reserveStatement(env, {
+        id,
+        budgetId: p.budgetId,
+        kind: "free_rewards",
+        uid: p.uid,
+        coins: p.coins,
+        refType: "free",
+        refId: p.refId,
+        expiresAt: null,
+        ts: p.ts,
+        gate: p.gate,
+        gateArgs: p.gateArgs,
+      }),
+    ],
+    heldGate: held,
+    heldArgs: [id],
+    finalize: [
+      env.DB.prepare(`UPDATE promo_budgets SET spent_coins = spent_coins + ?, updated_at = ? WHERE id = ? AND ${held}`)
+        .bind(p.coins, p.ts, p.budgetId, id),
+      platformLedgerStatement(env, {
+        id: `pl:free:${p.refId}`,
+        kind: "free_reward",
+        coins: -p.coins,
+        budgetId: p.budgetId,
+        uid: p.uid,
+        refId: p.refId,
+        description: `${p.label}: ${p.coins} coins`,
+        ts: p.ts,
+      }, held, [id]),
+      env.DB.prepare(`UPDATE promo_reservations SET status = 'used', updated_at = ? WHERE id = ? AND status = 'held'`).bind(p.ts, id),
+    ],
+  };
+}
+
+/** The configured free-rewards budget id, or null (uncapped). */
+export function freeRewardsBudgetId(cfg: any): string | null {
+  const id = cfg?.freeRewardsBudgetId;
+  return typeof id === "string" && id ? id : null;
+}
+
+export const FREE_REWARDS_EXHAUSTED = "free_rewards_exhausted";
 
 // ---------------------------------------------------------------------------
 // Admin-side validation and reads
@@ -406,6 +486,7 @@ export async function assertLinkableBudget(env: Env, id: string, kind: BudgetKin
       package_bonus: "Coin package ke liye 'Package bonus' budget chuno.",
       contest_prize: "Coin prize wale contest ke liye 'Contest prize' budget chuno.",
       product_prize: "Product prize wale contest ke liye 'Product prize' budget chuno.",
+      free_rewards: "Free rewards ki limit ke liye 'Free rewards' budget chuno.",
     };
     throw httpsError("invalid-argument", `Galat budget type. ${need[kind]}`);
   }

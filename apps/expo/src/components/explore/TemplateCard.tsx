@@ -4,10 +4,10 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@/src/lib/icons';
 import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
 import { CoinIcon } from '@/src/components/ui/CoinIcon';
-import { ContestCountdownBadge, ContestEntryBadge } from '@/src/components/contests/ContestBadges';
+import { ContestCountdownBadge, ContestEntryBadge, PrizeTagLine } from '@/src/components/contests/ContestBadges';
 import { useCountdown } from '@/src/hooks/useCountdown';
 import { isFreeContest } from '@/src/lib/contestPricing';
-import { contestPrize, describePrize } from '@/src/lib/contestPrize';
+import { contestPrize, describePrize, prizeTag } from '@/src/lib/contestPrize';
 import { ScaleTouchable } from './ScaleTouchable';
 import { colorForType, gradForType } from './theme';
 
@@ -152,6 +152,7 @@ export const TemplateCard = React.memo(function TemplateCard({ item, onStart }: 
                     {prize.product.title}
                   </Text>
                 </View>
+                {prizeTag(item) === 'sold_out' && <PrizeTagLine tag="sold_out" color="#FCA5A5" />}
               </>
             ) : prize.coins > 0 ? (
               <>
@@ -162,6 +163,7 @@ export const TemplateCard = React.memo(function TemplateCard({ item, onStart }: 
                     {prize.coins}
                   </Text>
                 </View>
+                {prizeTag(item) === 'promo' && <PrizeTagLine tag="promo" color="#86EFAC" />}
               </>
             ) : null}
             <Text style={styles.templateTitle} numberOfLines={2}>
