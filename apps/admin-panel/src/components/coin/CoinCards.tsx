@@ -203,7 +203,7 @@ export function CoinPricingCard({ data, pending, onSave }: CardProps) {
  * to coins credited from now on — balances already earned keep their status.
  */
 const REWARD_LOCK_ROWS: { key: string; label: string }[] = [
-  { key: "verification", label: "Email + mobile verification bonus" },
+  { key: "verification", label: "Signup bonus (turant + email/mobile verify)" },
   { key: "referral", label: "Referral bonus (dono ko)" },
   { key: "daily", label: "Daily login reward" },
   { key: "ads", label: "Rewarded ads" },

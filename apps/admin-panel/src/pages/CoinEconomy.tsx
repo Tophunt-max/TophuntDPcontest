@@ -168,7 +168,8 @@ function PendingQueues() {
 // ─── Earn ────────────────────────────────────────────────────────────────────
 
 const EARN_TYPES: { type: string; label: string }[] = [
-  { type: "verification_bonus", label: "Verification bonus" },
+  { type: "signup_bonus", label: "Signup bonus (turant)" },
+  { type: "verification_bonus", label: "Signup bonus (email + mobile verify)" },
   { type: "referral_bonus", label: "Referral" },
   { type: "daily_reward", label: "Daily login" },
   { type: "daily_task", label: "Daily tasks" },

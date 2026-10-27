@@ -284,7 +284,7 @@ export default function AppSettings() {
         {/* ---- Coins: owned by Coin Economy ---- */}
         <Section icon={Coins} title="Coins & rewards" blurb="Ab sab ek jagah: Coin Economy.">
           <p className="text-sm text-muted-foreground">
-            Verification bonus, referral, daily login, daily tasks, rewarded ads, Hall of Fame, withdrawals, buy rate aur payment
+            Signup bonus, referral, daily login, daily tasks, rewarded ads, Hall of Fame, withdrawals, buy rate aur payment
             gateway{" "}
             <Link href="/coin-economy" className="font-semibold text-foreground underline">Coin Economy</Link> (Earn, Buy aur Cash out
             tabs) mein set hote hain.
