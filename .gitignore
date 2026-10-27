@@ -45,6 +45,22 @@ yarn-error.*
 .env.local
 .env*.local
 
+# Google / Firebase service-account keys. A Firebase Admin key was committed
+# once (apps/admin/scripts/serviceAccountKey.json) and must never be again.
+serviceAccountKey*.json
+*service-account*.json
+*serviceAccount*.json
+*-adminsdk-*.json
+
+# Firebase / Google Cloud CLI debug logs. They can contain runtime config
+# values; a committed firebase-debug.log leaked AWS S3 keys.
+firebase-debug*.log
+firestore-debug*.log
+database-debug*.log
+ui-debug*.log
+pubsub-debug*.log
+*-debug.log
+
 # Wrangler build/state output
 .wrangler/
 
