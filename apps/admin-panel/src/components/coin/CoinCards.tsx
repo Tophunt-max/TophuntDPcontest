@@ -179,17 +179,17 @@ export function CoinPricingCard({ data, pending, onSave }: CardProps) {
     onSave({ coinPricing: { buyRate: r } });
   };
   return (
-    <Card icon={Coins} title="Coin Pricing (Buy rate)" tint="text-pink-500" onSave={submit} pending={pending}>
+    <Card icon={Coins} title="Diamond ka daam (Buy rate)" tint="text-pink-500" onSave={submit} pending={pending}>
       {stored === undefined || stored === null || stored === "" ? (
         <div className="mb-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-          Buy rate abhi set nahi hai — daam payout rate (₹{payout}/coin) se ban raha hai, isliye bonus wale packages bik nahi rahe (nuksaan se bachne ke liye). Buy rate set karo.
+          Buy rate abhi set nahi hai — daam DP coin payout rate (₹{payout}) se ban raha hai, isliye bonus wale packages bik nahi rahe (nuksaan se bachne ke liye). Buy rate set karo.
         </div>
       ) : null}
-      <label className={label}>Buy rate (₹ per coin)</label>
+      <label className={label}>Buy rate (₹ per Diamond)</label>
       <input type="number" step="0.01" min={0} className={field} value={buyRate} placeholder={`e.g. ${(payout * 2).toFixed(2)}`} onChange={(e) => setBuyRate(e.target.value)} />
       <p className="mt-1 text-xs text-muted-foreground">
-        Package daam = base coins × buy rate (bonus free). Payout rate ₹{payout}/coin.
-        {margin ? ` Har base coin par ${(Math.max(0, (margin - 1) * 100)).toFixed(0)}% margin.` : ""} Jo package bonus milake daam se zyada payout de, use server bechne nahi deta — save karne par minimum safe rate bata dega.
+        Package daam = Diamond × buy rate (bonus free). DP coin payout ₹{payout}.
+        {margin ? ` Har Diamond par ${(Math.max(0, (margin - 1) * 100)).toFixed(0)}% margin.` : ""} Diamond withdraw nahi hote, par do log aapas me khel kar unhe DP coin bana sakte hain. Isliye buy rate kabhi payout rate se kam nahi hona chahiye. Jo package bonus milakar nuksaan kare, use server bechne nahi deta, aur save karne par minimum safe rate bata deta hai.
       </p>
     </Card>
   );

@@ -2925,6 +2925,8 @@ adminRoute.get("/transactions", async (c) => {
       id: schema.coinTransactions.id,
       uid: schema.coinTransactions.uid,
       amount: schema.coinTransactions.amount,
+      // Diamond part of the row (lib/diamonds.ts); DP coin part = amount − lockedDelta.
+      lockedDelta: schema.coinTransactions.lockedDelta,
       type: schema.coinTransactions.type,
       contestId: schema.coinTransactions.contestId,
       matchId: schema.coinTransactions.matchId,

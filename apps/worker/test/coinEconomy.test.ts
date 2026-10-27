@@ -219,6 +219,11 @@ describe('contest prize subsidy', () => {
 
     const eco = await coinEconomyOverview(env as any);
     expect(eco.checks.filter((c: any) => !c.ok)).toEqual([]);
+    // Diamonds → DP coins: m1's two 10-Diamond entries (the refunded ones net to
+    // zero) became a 50 DP coin prize, 30 of it from the budget.
+    expect(eco.conversion).toEqual({ entryDiamonds: 20, prizeDp: 50, subsidyDp: 30, burnedDiamonds: 0 });
+    expect(eco.dpFlow.in.contests).toBe(50);
+    expect(eco.diamondFlow.out.contests).toBe(50); // 5 entries × 10, before refunds
     expect((await admin(env, 'GET', '/coin-economy/contests')).body[0]).toMatchObject({ subsidy: 30, prizes: 50 });
     expect((await admin(env, 'GET', '/coin-economy/users/alice')).body.ledger.balanced).toBe(true);
     await expectBalanced(env);

@@ -54,8 +54,8 @@ export default function Transactions() {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <StatCard icon={IndianRupee} label="Net Revenue (₹)" value={`₹${fmtNumber(revenue.data?.netRevenueInr ?? 0)}`} gradient="gradient-green" />
         <StatCard icon={CreditCard} label="Payments" value={fmtNumber(revenue.data?.paymentCount ?? 0)} gradient="gradient-blue" />
-        <StatCard icon={Coins} label="Coins Sold" value={fmtNumber(revenue.data?.coinsSold ?? 0)} gradient="gradient-orange" />
-        <StatCard icon={Wallet} label="Coins in Circulation" value={fmtNumber(revenue.data?.coinsInCirculation ?? 0)} gradient="gradient-purple" />
+        <StatCard icon={Coins} label="💎 Diamond bike" value={fmtNumber(revenue.data?.coinsSold ?? 0)} gradient="gradient-orange" />
+        <StatCard icon={Wallet} label="Users ke paas (DP coin + Diamond)" value={fmtNumber(revenue.data?.coinsInCirculation ?? 0)} gradient="gradient-purple" />
       </div>
 
       {(revenue.data?.refundedInr ?? 0) > 0 || (revenue.data?.paymentsWithoutRecordedAmount ?? 0) > 0 ? (
@@ -158,11 +158,20 @@ export default function Transactions() {
           {
             key: "amount",
             header: "Amount",
-            render: (t: any) => (
-              <span className={`font-bold ${t.amount >= 0 ? "text-green-600" : "text-red-600"}`}>
-                {t.amount >= 0 ? "+" : ""}{fmtNumber(t.amount)}
-              </span>
-            ),
+            // Split into DP coin and Diamond (lockedDelta is the Diamond part).
+            render: (t: any) => {
+              const d = Number(t.lockedDelta || 0);
+              const c = Number(t.amount || 0) - d;
+              const fmt = (n: number) => `${n >= 0 ? "+" : ""}${fmtNumber(n)}`;
+              return (
+                <span className="font-bold whitespace-nowrap">
+                  {c ? <span className={c >= 0 ? "text-green-600" : "text-red-600"}>{fmt(c)} 🪙</span> : null}
+                  {c && d ? " " : null}
+                  {d ? <span className={d >= 0 ? "text-cyan-700" : "text-red-600"}>{fmt(d)} 💎</span> : null}
+                  {!c && !d ? "0" : null}
+                </span>
+              );
+            },
           },
           { key: "type", header: "Type", render: (t: any) => <Badge variant={t.amount >= 0 ? "success" : "danger"}>{t.type}</Badge> },
           { key: "desc", header: "Description", render: (t: any) => <span className="text-muted-foreground">{t.description || "—"}</span> },

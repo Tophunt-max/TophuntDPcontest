@@ -45,8 +45,8 @@ export default function CoinPackages() {
   return (
     <div>
       <PageHeader
-        title="Coin Packages"
-        subtitle={`${data.length} top-up packages · Price = base coins × buy rate (₹${fmtNumber(rate)}/coin), bonus free · payout ₹${fmtNumber(payout)}/coin — rates App Control mein badlo`}
+        title="Diamond Packages"
+        subtitle={`${data.length} packages, sab Diamond dete hain · Daam = Diamond × buy rate (₹${fmtNumber(rate)}/Diamond), bonus free · DP coin payout ₹${fmtNumber(payout)} — rates Coin Economy → Buy me badlo`}
         action={
           <button onClick={() => setDialog("new")} className="flex items-center gap-2 gradient-purple text-white text-sm font-semibold px-4 py-2 rounded-xl">
             <Plus size={16} /> New Package
@@ -63,7 +63,7 @@ export default function CoinPackages() {
           { key: "name", header: "Name", render: (p: any) => <span className="font-medium text-foreground">{p.name || "Untitled"}</span> },
           {
             key: "coins",
-            header: "Coins",
+            header: "💎 Diamond",
             render: (p: any) => {
               const b = p.budgetId ? budgetById.get(p.budgetId) : undefined;
               return (
@@ -163,8 +163,8 @@ function PackageDialog({ pkg, rate, payout, budgets, onClose, onDone }: { pkg?: 
         <div className="space-y-3">
           <input className={field} placeholder="Package name e.g. Starter Pack" value={form.name} onChange={(e) => set("name", e.target.value)} />
           <div className="grid grid-cols-2 gap-3">
-            <Num label="Coins" v={form.coins} on={(v: string) => set("coins", v)} cls={field} />
-            <Num label="Bonus coins" v={form.bonusCoins} on={(v: string) => set("bonusCoins", v)} cls={field} />
+            <Num label="Diamond" v={form.coins} on={(v: string) => set("coins", v)} cls={field} />
+            <Num label="Bonus Diamond" v={form.bonusCoins} on={(v: string) => set("bonusCoins", v)} cls={field} />
             <Num label="Sort order" v={form.sortOrder} on={(v: string) => set("sortOrder", v)} cls={field} />
           </div>
           <div className="rounded-xl bg-secondary px-3 py-2.5 text-sm">

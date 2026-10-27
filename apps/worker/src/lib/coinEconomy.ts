@@ -54,11 +54,11 @@ export const LEDGER_CATEGORIES: Record<string, string> = {
 };
 
 export const CATEGORY_LABELS: Record<string, string> = {
-  paid_in: "Paise se khareede gaye coin",
-  promo: "Promo bonus (budget se, locked)",
-  rewards: "Free rewards (signup, referral, daily, ads, tasks)",
+  paid_in: "Khareede gaye Diamond (₹ se)",
+  promo: "Promo bonus Diamond (budget se)",
+  rewards: "Free rewards (signup, referral, daily, ads, tasks, Hall of Fame)",
   admin: "Admin adjustments",
-  contests: "Contests (entry fee − prize − refund)",
+  contests: "Contests (entry Diamond, prize DP coin, refund)",
   cash_out: "Withdrawals",
   reversals: "Refund clawback / account deletion",
   other: "Other",
@@ -94,6 +94,34 @@ export interface LedgerTypeRow {
   /** Locked (play-only) coins this type added (+) or removed (−). */
   locked: number;
   count: number;
+  /** The same rows split by balance (lib/diamonds.ts): Diamond = locked_delta, DP coin = amount − locked_delta. */
+  diamondIn: number;
+  diamondOut: number;
+  dpIn: number;
+  dpOut: number;
+}
+
+/** In / out of one balance, by source category. */
+export interface BalanceFlow {
+  in: Record<string, number>;
+  out: Record<string, number>;
+  totalIn: number;
+  totalOut: number;
+}
+
+function flowOf(types: LedgerTypeRow[], inKey: "diamondIn" | "dpIn", outKey: "diamondOut" | "dpOut"): BalanceFlow {
+  const flow: BalanceFlow = { in: {}, out: {}, totalIn: 0, totalOut: 0 };
+  for (const t of types) {
+    if (t[inKey]) {
+      flow.in[t.category] = (flow.in[t.category] ?? 0) + t[inKey];
+      flow.totalIn += t[inKey];
+    }
+    if (t[outKey]) {
+      flow.out[t.category] = (flow.out[t.category] ?? 0) + t[outKey];
+      flow.totalOut += t[outKey];
+    }
+  }
+  return flow;
 }
 
 /** Optional [from, to) window in ms for the flow figures. Supply/checks are always all-time. */
@@ -128,7 +156,11 @@ export async function coinEconomyOverview(env: Env, range: Range = {}) {
       all<any>(env, `SELECT type,
                             COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END),0) AS credits,
                             COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END),0) AS debits,
-                            COALESCE(SUM(amount),0) AS net, COALESCE(SUM(locked_delta),0) AS locked, COUNT(*) AS n
+                            COALESCE(SUM(amount),0) AS net, COALESCE(SUM(locked_delta),0) AS locked, COUNT(*) AS n,
+                            COALESCE(SUM(CASE WHEN locked_delta > 0 THEN locked_delta ELSE 0 END),0) AS d_in,
+                            COALESCE(SUM(CASE WHEN locked_delta < 0 THEN -locked_delta ELSE 0 END),0) AS d_out,
+                            COALESCE(SUM(CASE WHEN amount - locked_delta > 0 THEN amount - locked_delta ELSE 0 END),0) AS c_in,
+                            COALESCE(SUM(CASE WHEN amount - locked_delta < 0 THEN locked_delta - amount ELSE 0 END),0) AS c_out
                        FROM coin_transactions ${userTxRange.sql} GROUP BY type`, ...userTxRange.binds),
       all<any>(env, `SELECT kind, COALESCE(SUM(coins),0) AS coins, COUNT(*) AS n
                        FROM platform_ledger ${txRange.sql} GROUP BY kind`, ...txRange.binds),
@@ -164,6 +196,10 @@ export async function coinEconomyOverview(env: Env, range: Range = {}) {
       net: num(r.net),
       locked: num(r.locked),
       count: num(r.n),
+      diamondIn: num(r.d_in),
+      diamondOut: num(r.d_out),
+      dpIn: num(r.c_in),
+      dpOut: num(r.c_out),
     }))
     .sort((a, b) => Math.abs(b.net) - Math.abs(a.net));
 
@@ -175,6 +211,16 @@ export async function coinEconomyOverview(env: Env, range: Range = {}) {
     c.net += t.net;
     c.locked += t.locked;
   }
+
+  // Diamonds and DP coins move separately: where each came from and went.
+  const diamondFlow = flowOf(types, "diamondIn", "diamondOut");
+  const dpFlow = flowOf(types, "dpIn", "dpOut");
+  // The one path that turns Diamonds into withdrawable DP coins: entry fees
+  // (Diamonds, net of refunds) against prizes won (DP coins, incl. subsidy).
+  const typeRow = (t: string) => types.find((x) => x.type === t);
+  const entryDiamonds = (typeRow("contest_entry_fee")?.diamondOut ?? 0)
+    - (typeRow("contest_refund")?.diamondIn ?? 0) - (typeRow("contest_entry_refund")?.diamondIn ?? 0);
+  const prizeDp = typeRow("contest_win_reward")?.dpIn ?? 0;
 
   const platformKinds: Record<string, { coins: number; count: number }> = {};
   for (const p of platform) platformKinds[p.kind] = { coins: num(p.coins), count: num(p.n) };
@@ -191,19 +237,19 @@ export async function coinEconomyOverview(env: Env, range: Range = {}) {
   const checks = [
     {
       key: "supply_vs_ledger",
-      label: "Users ke coin = ledger ka total",
+      label: "Users ka total (DP coin + Diamond) = ledger ka total",
       ok: Math.abs(total + houseTotal - ledgerTotal) < 0.5,
       detail: `Users: ${total}${houseTotal ? ` + superadmin ${houseTotal}` : ""}, ledger: ${ledgerTotal}`,
     },
     {
       key: "locked_vs_ledger",
-      label: "Locked coin = ledger ka locked total",
+      label: "Diamond = ledger ka Diamond total",
       ok: Math.abs(locked + houseLocked - lockedLedgerTotal) < 0.5,
       detail: `Users: ${locked}${houseLocked ? ` + superadmin ${houseLocked}` : ""}, ledger: ${lockedLedgerTotal}`,
     },
     {
       key: "locked_le_balance",
-      label: "Kisi ke locked coin uske balance se zyada nahi",
+      label: "Kisi ke Diamond uske total balance se zyada nahi",
       ok: num(lockedOver?.n) === 0 && num(lockedNeg?.n) === 0,
       detail: `${num(lockedOver?.n)} account(s) over, ${num(lockedNeg?.n)} negative`,
     },
@@ -238,6 +284,18 @@ export async function coinEconomyOverview(env: Env, range: Range = {}) {
       refundedInr: num(cash?.refunded_paise) / 100,
       paidOutInr: num(cash?.paid_out_inr),
       pendingOutInr: num(cash?.pending_out_inr),
+    },
+    /** Each balance's flow in the range, by source category. */
+    diamondFlow,
+    dpFlow,
+    /** Diamonds paid in entry fees (net of refunds) and DP coins paid as prizes. */
+    conversion: {
+      entryDiamonds,
+      prizeDp,
+      /** Prize DP coins above the Diamonds spent: platform subsidy (budgets). */
+      subsidyDp: Math.max(0, prizeDp - entryDiamonds),
+      /** Entry Diamonds that became no prize (platform fee, product prizes, ties). */
+      burnedDiamonds: Math.max(0, entryDiamonds - prizeDp),
     },
     /** Superadmin coins: not in supply, liability or flows. */
     house: { total: houseTotal, locked: houseLocked, accounts: num(house?.n) },

@@ -13,6 +13,7 @@ import {
   Coins, IndianRupee, Hourglass, ShieldAlert, Zap, Layers, Upload, Trash2, Loader2,
 } from "lucide-react";
 import { SegTabs, UserCell, MethodBadge, ActionBtn } from "@/components/finance/bits";
+import { DiamondIcon } from "@/components/ui/DiamondIcon";
 
 const TABS = [
   { key: "pending", label: "Pending" },
@@ -64,7 +65,7 @@ export default function Deposits() {
       {/* Summary */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <StatCard icon={Hourglass} label={`Requests (${tab || "all"})`} value={fmtNumber(stats.count)} gradient="gradient-orange" />
-        <StatCard icon={Coins} label="Coins requested" value={fmtNumber(stats.coins)} gradient="gradient-purple" />
+        <StatCard icon={Coins} label="💎 Diamond requested" value={fmtNumber(stats.coins)} gradient="gradient-purple" />
         <StatCard icon={IndianRupee} label="Amount" value={`₹${fmtNumber(stats.rupees)}`} gradient="gradient-green" />
         <StatCard icon={ShieldAlert} label="Duplicate UTRs" value={fmtNumber(stats.dups)} gradient="gradient-red" />
       </div>
@@ -89,10 +90,10 @@ export default function Deposits() {
           },
           {
             key: "amount",
-            header: "Coins",
+            header: "Diamond",
             render: (d: any) => (
               <span className="inline-flex items-center gap-1.5 font-bold text-foreground">
-                <Coins size={14} className="text-amber-500" />{fmtNumber(d.amount)}
+                <DiamondIcon size={14} />{fmtNumber(d.amount)}
                 {/* amount already includes the bonus — shown so an approver can
                     see why the coins exceed the base package. */}
                 {d.bonusCoins ? <span className="text-green-600 font-semibold">(+{fmtNumber(d.bonusCoins)} bonus)</span> : null}
