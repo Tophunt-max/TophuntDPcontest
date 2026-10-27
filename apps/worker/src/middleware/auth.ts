@@ -4,6 +4,7 @@ import type { AuthUser, Env, Variables } from "../types";
 import { verifyIdToken, bearerToken } from "../lib/firebaseAuth";
 import { assertSessionNotRevoked } from "../lib/sessionRevocation";
 import { httpsError } from "../lib/http";
+import { edgeLimit } from "../lib/edgeLimit";
 import { getDb, schema } from "../db";
 import {
   BLOCKED_STATUS,
@@ -281,7 +282,13 @@ export const optionalAuth = createMiddleware<MW>(async (c, next) => {
  */
 export const guestReadLimit = createMiddleware<MW>(async (c, next) => {
   const limiter = c.env.GUEST_READ_LIMITER;
-  if (!c.get("user") && limiter) {
+  // Signed-in readers get their own per-uid budget (USER_READ_LIMITER). Before
+  // this, signing in removed the only limit on bulk reads of public content.
+  const signedIn = c.get("user");
+  if (signedIn) {
+    await edgeLimit(c.env, "USER_READ_LIMITER", `userread:${signedIn.uid}`, c.header.bind(c));
+  }
+  if (!signedIn && limiter) {
     const ip =
       c.req.header("CF-Connecting-IP") || c.req.header("X-Forwarded-For")?.split(",")[0]?.trim() || "unknown";
     let allowed = true;

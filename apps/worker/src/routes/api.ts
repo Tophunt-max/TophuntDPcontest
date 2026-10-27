@@ -23,6 +23,7 @@ import { publish, publishMany } from "../lib/publish";
 import { castVote, bumpEngagement } from "../lib/voteCounter";
 import { appendMessage, markChatMessagesRead, purgeChatMessages } from "../lib/chatArchive";
 import { clientIp, consumeRateLimit, rateLimit } from "../lib/rateLimit";
+import { edgeLimit } from "../lib/edgeLimit";
 import { recordFeedDismissal, removeFeedDismissal } from "../lib/feedDismissals";
 import { mintWsTicket } from "../lib/wsTicket";
 import {
@@ -297,6 +298,13 @@ export const apiRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 // See lib/accountStatus.ts for both lists.
 apiRoute.use("*", requireApiAuth);
 
+// Backstop over EVERY action, per uid (lib/edgeLimit.ts). Many actions have no
+// limit of their own; this bounds a script calling them in a loop at no DO cost.
+apiRoute.use("*", async (c, next) => {
+  await edgeLimit(c.env, "API_ACTION_LIMITER", `api:${c.get("user")!.uid}`, c.header.bind(c));
+  await next();
+});
+
 // App Control (lib/appControl.ts): maintenance, switched-off features and a
 // hard minimum native version refuse here, with a `reason` the app acts on.
 // Staff (admin/moderator tokens) pass, so they can operate during maintenance.
@@ -551,6 +559,8 @@ apiRoute.post("/", async (c) => {
      * the caller's own media, which is what makes that amplification self-limiting.
      */
     case "videoStatus": {
+      // Can re-check unfinished encodes against the Bunny API.
+      await rateLimit(env, `videostatus:${uid}`, 60, 60);
       const { videoIds } = body;
       const ids = (Array.isArray(videoIds) ? videoIds : [videoIds])
         .filter((v: any) => typeof v === "string" && v)
@@ -597,6 +607,8 @@ apiRoute.post("/", async (c) => {
 
     // ================= CONTEST MATCHES =================
     case "startMatch": {
+      // Creates a battle, moves Diamonds and can reserve promo subsidy.
+      await rateLimit(env, `startmatch:${uid}`, 20, 3600, { failClosed: true });
       const { contestId, mediaUrl, mediaType, caption, deviceId, invitedUid } = body;
       // Idempotency fallback: if the client didn't send an explicit key, derive
       // a short-lived one so a double-tap / retry can't create two matches and
@@ -938,6 +950,8 @@ apiRoute.post("/", async (c) => {
     }
 
     case "joinMatch": {
+      // Moves Diamonds and triggers VS publication.
+      await rateLimit(env, `joinmatch:${uid}`, 30, 3600, { failClosed: true });
       const { matchId, mediaUrl, mediaType, caption, deviceId } = body;
       const match = await db.select().from(schema.contestMatches).where(eq(schema.contestMatches.id, matchId)).get();
       if (!match) throw httpsError("not-found", "Match not found.");
@@ -1364,6 +1378,8 @@ apiRoute.post("/", async (c) => {
     }
 
     case "deletePost": {
+      // Deletes R2/Bunny media.
+      await rateLimit(env, `deletepost:${uid}`, 60, 3600);
       const { postId } = body;
       if (!postId) throw httpsError("invalid-argument", "Post ID is required.");
       const post = await db.select().from(schema.posts).where(eq(schema.posts.id, postId)).get();
@@ -1425,6 +1441,8 @@ apiRoute.post("/", async (c) => {
       return c.json({ success: true, storyId, musicAttached: !!track });
     }
     case "deleteStory": {
+      // Deletes R2/Bunny media.
+      await rateLimit(env, `deletestory:${uid}`, 60, 3600);
       const { storyId } = body;
       if (!storyId) throw httpsError("invalid-argument", "storyId is required.");
       const story = await db.select().from(schema.stories).where(eq(schema.stories.id, storyId)).get();
@@ -1857,6 +1875,8 @@ apiRoute.post("/", async (c) => {
     }
 
     case "claimDailyReward": {
+      // Idempotent per day; bounds D1 batch spam.
+      await rateLimit(env, `dailyclaim:${uid}`, 10, 3600);
       const settings = await getSettings(env);
       if (!settings.dailyLoginEnabled) throw httpsError("failed-precondition", "Daily check-in abhi band hai.");
       const user = await db.select().from(schema.users).where(eq(schema.users.uid, uid)).get();
@@ -2110,6 +2130,8 @@ apiRoute.post("/", async (c) => {
     }
 
     case "claimDailyTask": {
+      // Idempotent per task/day; bounds D1 batch spam.
+      await rateLimit(env, `taskclaim:${uid}`, 30, 3600);
       const { taskId } = body;
       if (!taskId) throw httpsError("invalid-argument", "taskId is required.");
       const settings = await getSettings(env);
@@ -2331,6 +2353,8 @@ apiRoute.post("/", async (c) => {
     // from the order record created above — NOT from the client — so a client
     // can never mint arbitrary coins by calling this directly.
     case "topup": {
+      // Each call verifies with the Razorpay API.
+      await rateLimit(env, `topup:${uid}`, 30, 3600, { failClosed: true });
       const { paymentId, orderId, signature } = body;
       if (!paymentId || !orderId || !signature)
         throw httpsError("invalid-argument", "paymentId, orderId and signature are required.");
@@ -3347,6 +3371,8 @@ apiRoute.post("/", async (c) => {
     }
 
     case "reactToMatch": {
+      // Each reaction is published to every socket on the match.
+      await rateLimit(env, `matchreact:${uid}`, 60, 60);
       const { matchId, type } = body;
       if (!matchId || !type) throw httpsError("invalid-argument", "matchId and type are required.");
       await assertMatchInteractionAllowed(env, uid, matchId);
@@ -3363,6 +3389,8 @@ apiRoute.post("/", async (c) => {
     }
 
     case "toggleBookmark": {
+      // D1 write per call.
+      await rateLimit(env, `bookmark:${uid}`, 60, 60);
       const { matchId } = body;
       if (!matchId) throw httpsError("invalid-argument", "matchId is required.");
       // Optional explicit target state, as in likeContest: replay-safe for the
@@ -3525,6 +3553,8 @@ apiRoute.post("/", async (c) => {
     }
 
     case "deleteComment": {
+      // D1 writes and counter updates.
+      await rateLimit(env, `deletecomment:${uid}`, 60, 3600);
       const { targetType, targetId, commentId } = body;
       if (!commentId) throw httpsError("invalid-argument", "commentId is required.");
       // The thread to purge comes from the DELETED ROW, not the request body. The
@@ -3648,6 +3678,8 @@ apiRoute.post("/", async (c) => {
     // address; there is nothing to spoof. Best-effort and never fatal — a mail
     // blip must not make a completed password change look failed to the client.
     case "notifyPasswordChanged": {
+      // Sends an email and revokes sessions.
+      await rateLimit(env, `pwnotify:${uid}`, 5, 3600, { failClosed: true });
       /**
        * End every OTHER session, keeping the device that just did this.
        *
@@ -3712,6 +3744,8 @@ apiRoute.post("/", async (c) => {
     // ================= PROFILE =================
     case "updateProfile":
     case "completeSignup": {
+      // Profile/username writes, banned-word scan, referral apply.
+      await rateLimit(env, `profile:${uid}`, 30, 3600);
       // Block banned words in user-visible profile fields.
       if (action === "updateProfile") await assertClean(env, body.username, body.fullName, body.bio);
       // `completeSignup` writes no profile fields: the row and its
@@ -3889,6 +3923,8 @@ apiRoute.post("/", async (c) => {
       return c.json({ success: true });
     }
     case "reactToStory": {
+      // Writes a reaction row and may notify the author.
+      await rateLimit(env, `storyreact:${uid}`, 60, 60);
       const { storyId, emoji } = body;
       if (!storyId) throw httpsError("invalid-argument", "storyId is required.");
       await assertStoryInteractionAllowed(env, uid, storyId);
@@ -3916,6 +3952,8 @@ apiRoute.post("/", async (c) => {
      * highlight that predates this fix cannot leak either.
      */
     case "createHighlight": {
+      // D1 writes.
+      await rateLimit(env, `highlight:${uid}`, 30, 3600);
       const { name, coverImageUrl, storyIds } = body;
       const highlightName = name == null ? null : requiredId(name, "name", 120);
       // Constrained like `setMatchVsImage` does: a highlight cover is rendered on a
@@ -3935,6 +3973,8 @@ apiRoute.post("/", async (c) => {
       return c.json({ success: true, highlightId: id });
     }
     case "addStoryToHighlight": {
+      // D1 writes.
+      await rateLimit(env, `highlightadd:${uid}`, 60, 3600);
       const { highlightId, storyId } = body;
       if (!highlightId || !storyId) throw httpsError("invalid-argument", "highlightId and storyId are required.");
       const h = await db.select().from(schema.highlights).where(eq(schema.highlights.id, highlightId)).get();
