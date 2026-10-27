@@ -1092,15 +1092,25 @@ async function servePersonalizedFeed(
  * `rewardCoins`, `winningCoins` and `publicPrize` all agree.
  */
 async function withPromoPrizeAvailability<T extends Record<string, any>>(env: Env, rows: T[]): Promise<T[]> {
-  const linked = rows.filter((r) => r.subsidyBudgetId && Number(r.rewardCoins || 0) > matchPot(r.totalEntryFee));
+  // What one more match would need from its budget: the coin prize above the
+  // pot, or a product's (admin-only) coin cost above the pot.
+  const need = (r: T) => {
+    const pot = matchPot(r.totalEntryFee);
+    const isProduct = r.prizeType === "product";
+    const target = isProduct ? Number(r.prizeCostCoins || 0) : Number(r.rewardCoins || 0);
+    return { pot, isProduct, extra: Math.max(0, target - pot) };
+  };
+  const linked = rows.filter((r) => r.subsidyBudgetId && need(r).extra > 0);
   if (!linked.length) return rows;
   const room = await budgetsWithRoom(env, linked.map((r) => String(r.subsidyBudgetId)));
   return rows.map((r) => {
     if (!r.subsidyBudgetId) return r;
-    const pot = matchPot(r.totalEntryFee);
-    const reward = Number(r.rewardCoins || 0);
-    if (reward <= pot) return r;
-    return (room.get(String(r.subsidyBudgetId)) ?? 0) >= reward - pot ? r : { ...r, rewardCoins: pot };
+    const { pot, isProduct, extra } = need(r);
+    if (extra <= 0) return r;
+    if ((room.get(String(r.subsidyBudgetId)) ?? 0) >= extra) return r;
+    // A product has no smaller fallback: new matches are refused until the admin
+    // raises the budget, and the card can say so.
+    return isProduct ? { ...r, prizesSoldOut: true } : { ...r, rewardCoins: pot };
   });
 }
 
@@ -1143,6 +1153,8 @@ const mapContest = (r: any) => ({
   // anything, and testing the pot instead would label that contest "paid" and
   // then quote it at 0 coins.
   isFree: perPlayerEntryFee(r.totalEntryFee) <= 0,
+  // A product contest whose prize budget is used up: new matches are refused.
+  prizesSoldOut: r.prizesSoldOut === true,
   createdBy: r.createdBy,
   createdAt: r.createdAt,
 });

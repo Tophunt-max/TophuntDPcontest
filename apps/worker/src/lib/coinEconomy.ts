@@ -241,14 +241,17 @@ export async function contestPnl(env: Env, limit = 200) {
   const rows = await all<any>(
     env,
     `SELECT c.id, c.title, c.status, c.total_entry_fee AS fee, c.reward_coins AS reward,
-            c.prize_type AS prize_type, c.subsidy_budget_id AS budget_id,
+            c.prize_type AS prize_type, c.subsidy_budget_id AS budget_id, c.prize_cost_coins AS prize_cost,
             (SELECT COUNT(*) FROM contest_matches m WHERE m.contest_id = c.id) AS matches,
             (SELECT COUNT(*) FROM contest_matches m WHERE m.contest_id = c.id AND m.winner_uid IS NOT NULL) AS won,
             (SELECT COUNT(*) FROM contest_matches m WHERE m.contest_id = c.id AND m.status IN ('waiting_for_opponent','active')) AS live,
             COALESCE((SELECT -SUM(amount) FROM coin_transactions t WHERE t.contest_id = c.id AND t.type = 'contest_entry_fee'), 0) AS fees_in,
             COALESCE((SELECT SUM(amount) FROM coin_transactions t WHERE t.contest_id = c.id AND t.type IN ('contest_refund','contest_entry_refund')), 0) AS refunds,
             COALESCE((SELECT SUM(amount) FROM coin_transactions t WHERE t.contest_id = c.id AND t.type = 'contest_win_reward'), 0) AS prizes,
-            COALESCE((SELECT -SUM(coins) FROM platform_ledger p WHERE p.contest_id = c.id AND p.kind = 'prize_subsidy'), 0) AS subsidy,
+            COALESCE((SELECT -SUM(coins) FROM platform_ledger p WHERE p.contest_id = c.id AND p.kind IN ('prize_subsidy','product_prize')), 0) AS subsidy,
+            COALESCE((SELECT SUM(coins) FROM platform_ledger p
+                       WHERE p.kind = 'product_prize_reversal'
+                         AND p.match_id IN (SELECT id FROM contest_matches m WHERE m.contest_id = c.id)), 0) AS reversed,
             COALESCE((SELECT SUM(coins) FROM platform_ledger p WHERE p.contest_id = c.id AND p.kind IN ('platform_fee','product_prize_fund')), 0) AS kept,
             COALESCE((SELECT SUM(coins) FROM promo_reservations r
                        WHERE r.ref_type = 'match' AND r.status = 'held'
@@ -270,13 +273,17 @@ export async function contestPnl(env: Env, limit = 200) {
       rewardCoins: num(r.reward),
       prizeType: r.prize_type ?? "coins",
       subsidyBudgetId: r.budget_id ?? null,
+      /** Admin-only coin cost of one product (product contests). */
+      prizeCostCoins: num(r.prize_cost),
       matches: num(r.matches),
       won: num(r.won),
       live: num(r.live),
       feesIn,
       refunds,
       prizes,
-      subsidy: num(r.subsidy),
+      // Budget coins actually spent: coin subsidy or product cost, net of
+      // cancelled prize claims that returned their coins.
+      subsidy: num(r.subsidy) - num(r.reversed),
       subsidyHeld: num(r.subsidy_held),
       platformKept: num(r.kept),
       // Coins this contest took out of (+) or put into (−) the users' side.

@@ -104,6 +104,7 @@ import {
   assertPrizeFundedByPot,
   matchPot,
   matchPrizeCeiling,
+  assertProductCostFunded,
   LOCKED_AFTER_DEBIT,
   perPlayerEntryFee,
   roundFiat,
@@ -133,6 +134,8 @@ import {
   assertLinkableBudget,
   depositReservationId,
   getBudget,
+  matchReservationId,
+  platformLedgerStatement,
   listBudgets,
   promoBonusCreditStatements,
   releaseStatement,
@@ -977,20 +980,27 @@ adminRoute.patch("/contests/:id", async (c) => {
   const mergedBudget = hasOwn(values, "subsidyBudgetId") ? values.subsidyBudgetId : current.subsidyBudgetId ?? null;
   const mergedPrizeType = hasOwn(values, "prizeType") ? values.prizeType : normalizePrizeType(current.prizeType);
   const budgetChanged = hasOwn(values, "subsidyBudgetId") && values.subsidyBudgetId !== (current.subsidyBudgetId ?? null);
-  if (mergedBudget && mergedPrizeType === "product") {
-    throw httpsError("invalid-argument", "Product prize wale contest ko coin prize budget se nahi joda ja sakta.");
+  // Switching the prize kind changes which budget kind fits, so it re-checks too.
+  const kindChanged = mergedPrizeType !== normalizePrizeType(current.prizeType);
+  if (mergedBudget && (budgetChanged || kindChanged)) {
+    await assertLinkableBudget(c.env, mergedBudget, mergedPrizeType === "product" ? "product_prize" : "contest_prize");
   }
-  if (budgetChanged && mergedBudget) await assertLinkableBudget(c.env, mergedBudget, "contest_prize");
+  const mergedFee = hasOwn(values, "totalEntryFee") ? values.totalEntryFee : Number(current.totalEntryFee ?? 0);
+  const mergedCost = mergedPrizeType === "product"
+    ? (hasOwn(values, "prizeCostCoins") ? values.prizeCostCoins : Number(current.prizeCostCoins ?? 0))
+    : 0;
+  assertProductCostFunded(mergedFee, mergedCost, mergedBudget);
   const rewardChanged = hasOwn(values, "rewardCoins") && values.rewardCoins !== Number(current.rewardCoins ?? 0);
   const feeChanged = hasOwn(values, "totalEntryFee") && values.totalEntryFee !== Number(current.totalEntryFee ?? 0);
-  if (budgetChanged || (mergedBudget && (rewardChanged || feeChanged))) await assertApproval(c, body as any);
+  const costChanged = hasOwn(values, "prizeCostCoins") && values.prizeCostCoins !== Number(current.prizeCostCoins ?? 0);
+  if (budgetChanged || (mergedBudget && (rewardChanged || feeChanged || costChanged || kindChanged))) await assertApproval(c, body as any);
 
   // Validate the invariant on the MERGED result: a PATCH that only raises
   // rewardCoins, or only lowers totalEntryFee, must be rejected just the same.
   assertPrizeFundedByPot(
     hasOwn(values, "totalEntryFee") ? values.totalEntryFee : Number(current.totalEntryFee ?? 0),
     hasOwn(values, "rewardCoins") ? values.rewardCoins : Number(current.rewardCoins ?? 0),
-    { subsidyBudgetId: mergedBudget },
+    { subsidyBudgetId: mergedPrizeType === "product" ? null : mergedBudget },
   );
 
   // Same reason as above: a PATCH that only moves one edge of the window has to
@@ -1025,7 +1035,7 @@ adminRoute.patch("/contests/:id", async (c) => {
     // back to "coins" nulls the product columns — so they are safe to copy through
     // individually here.
     "prizeType", "prizeProductTitle", "prizeProductImageUrl", "prizeProductValue", "prizeProductDescription",
-    "subsidyBudgetId",
+    "subsidyBudgetId", "prizeCostCoins",
   ]) {
     if (hasOwn(values, field)) set[field] = values[field];
   }
@@ -2622,6 +2632,7 @@ adminRoute.get("/contests", async (c) => {
       prizeProductValue: schema.contests.prizeProductValue,
       prizeProductDescription: schema.contests.prizeProductDescription,
       subsidyBudgetId: schema.contests.subsidyBudgetId,
+      prizeCostCoins: schema.contests.prizeCostCoins,
       voteDurationDays: schema.contests.voteDurationDays,
       autoCancelHours: schema.contests.autoCancelHours,
       minVotes: schema.contests.minVotes,
@@ -2663,6 +2674,8 @@ adminRoute.get("/contests", async (c) => {
       prizePool: row.rewardCoins,
       ...publicPrize(row),
       subsidyBudgetId: row.subsidyBudgetId ?? null,
+      // Admin-only: what one product costs the platform, in coins.
+      prizeCostCoins: Number(row.prizeCostCoins ?? 0),
       voteDurationDays: row.voteDurationDays,
       autoCancelHours: row.autoCancelHours,
       minVotes: row.minVotes,
@@ -2794,11 +2807,13 @@ adminRoute.post("/contests", async (c) => {
   // A prize larger than the pot the two players fund would mint coins on every
   // settled match — unless a promo budget pays the difference, reserved per
   // match (lib/promoBudget.ts). Enforced here and on PATCH against the MERGED values.
+  const isProductContest = values.prizeType === "product";
   if (values.subsidyBudgetId) {
-    await assertLinkableBudget(c.env, values.subsidyBudgetId, "contest_prize");
+    await assertLinkableBudget(c.env, values.subsidyBudgetId, isProductContest ? "product_prize" : "contest_prize");
     await assertApproval(c, body as any);
   }
-  assertPrizeFundedByPot(values.totalEntryFee, values.rewardCoins, { subsidyBudgetId: values.subsidyBudgetId });
+  assertProductCostFunded(values.totalEntryFee, isProductContest ? values.prizeCostCoins : 0, values.subsidyBudgetId);
+  assertPrizeFundedByPot(values.totalEntryFee, values.rewardCoins, { subsidyBudgetId: isProductContest ? null : values.subsidyBudgetId });
   assertContestWindow(values.startsAt, values.endsAt, { requireFuture: true });
 
   const id = newId();
@@ -2823,6 +2838,7 @@ adminRoute.post("/contests", async (c) => {
     prizeProductValue: values.prizeProductValue,
     prizeProductDescription: values.prizeProductDescription,
     subsidyBudgetId: values.subsidyBudgetId ?? null,
+    prizeCostCoins: values.prizeType === "product" ? values.prizeCostCoins ?? 0 : 0,
     startsAt: values.startsAt,
     endsAt: values.endsAt,
     extra,
@@ -5759,6 +5775,32 @@ adminRoute.get("/prize-claims/:id", async (c) => {
  * `failed-precondition` telling them to refresh, rather than silently overwriting
  * the first one's decision and its timestamp.
  */
+async function returnProductPrizeToBudget(env: any, matchId: string, productTitle: string | null, ts: number): Promise<void> {
+  const resId = matchReservationId(matchId);
+  const used = `EXISTS (SELECT 1 FROM promo_reservations WHERE id = ? AND status = 'used' AND ref_type = 'match')`;
+  const res = await env.DB.prepare(`SELECT budget_id, coins FROM promo_reservations WHERE id = ? AND status = 'used'`)
+    .bind(resId)
+    .first();
+  if (!res || !(Number(res.coins) > 0)) return;
+  const coins = Number(res.coins);
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE promo_budgets SET spent_coins = MAX(0, spent_coins - ?), updated_at = ? WHERE id = ? AND ${used}`,
+    ).bind(coins, ts, res.budget_id, resId),
+    platformLedgerStatement(env, {
+      id: `pl:product_prize_reversal:${matchId}`,
+      kind: "product_prize_reversal",
+      coins,
+      budgetId: res.budget_id,
+      matchId,
+      description: `Prize claim cancelled${productTitle ? ` ("${productTitle}")` : ""}: ${coins} coins back to the budget`,
+      ts,
+    }, used, [resId]),
+    env.DB.prepare(`UPDATE promo_reservations SET status = 'released', updated_at = ? WHERE id = ? AND status = 'used'`)
+      .bind(ts, resId),
+  ]);
+}
+
 adminRoute.post("/prize-claims/:id/status", async (c) => {
   requireFullAdmin(c);
   const db = getDb(c.env);
@@ -5827,6 +5869,13 @@ adminRoute.post("/prize-claims/:id/status", async (c) => {
     .run();
   if (updated.meta.changes === 0) {
     throw httpsError("failed-precondition", "This claim changed while you were working on it. Refresh and try again.");
+  }
+  // A cancelled product was never handed over, so the coins its product_prize
+  // budget paid for it (lib/promoBudget.ts) go back to that budget, with a
+  // reversal row in the platform ledger. Gated on the reservation still being
+  // `used`, and that flip comes last, so this can only ever run once.
+  if (nextStatus === "cancelled" && claim.matchId) {
+    await returnProductPrizeToBudget(c.env, claim.matchId, claim.productTitle ?? null, ts);
   }
 
   // Best-effort, and after the write: the winner is told what happened to their

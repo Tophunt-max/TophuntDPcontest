@@ -309,6 +309,8 @@ export const contests = sqliteTable("contests", {
   prizeProductDescription: text("prize_product_description"),
   /** Promo budget (kind contest_prize) that pays the part of rewardCoins above the pot (migration 0068). */
   subsidyBudgetId: text("subsidy_budget_id"),
+  /** Admin-only coin cost of a product prize (migration 0068). Never sent to the app. */
+  prizeCostCoins: real("prize_cost_coins").notNull().default(0),
   // Validity window, epoch ms, both nullable (NULL = unbounded). These are the
   // TEMPLATE's own lifetime — when it becomes joinable and when it stops being
   // offered — and are not to be confused with voteDurationDays/autoCancelHours,
@@ -369,6 +371,8 @@ export const contestMatches = sqliteTable(
     /** Coins reserved from a promo budget on top of the pot (migration 0068). */
     subsidyCoins: real("subsidy_coins").notNull().default(0),
     subsidyBudgetId: text("subsidy_budget_id"),
+    /** Snapshot of the contest's admin-only product cost (migration 0068). */
+    prizeCostCoins: real("prize_cost_coins").notNull().default(0),
     // { fire: n, heart: n, laugh: n } quick-reaction counters
     reactions: text("reactions", { mode: "json" }),
     endingSoonNotified: integer("ending_soon_notified", { mode: "boolean" }).default(false),

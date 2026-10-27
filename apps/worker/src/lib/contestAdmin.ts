@@ -47,6 +47,8 @@ const CONTEST_CANONICAL_EXTRA_KEYS = [
   "prizeProductDescription",
   // Promo budget that pays the part of the prize above the pot (migration 0068).
   "subsidyBudgetId",
+  // Admin-only coin cost of a product prize. A physical column, and never public.
+  "prizeCostCoins",
   // Never stored: the approval password and the audit reason travel in the body.
   "approvalPassword",
   "reason",
@@ -342,9 +344,16 @@ export function validateContestInput(
   } else if (creating) {
     values.subsidyBudgetId = null;
   }
-  if (values.prizeType === "product" && values.subsidyBudgetId) {
-    throw httpsError("invalid-argument", "Product prize wale contest ko coin prize budget se nahi joda ja sakta.");
+  // Admin-only coin cost of a product prize (what one product costs the
+  // platform, in coins). Never sent to the app. Only meaningful for a product.
+  const cost = firstAlias(body, ["prizeCostCoins"]);
+  if (cost.present) {
+    recognized = true;
+    values.prizeCostCoins = contestInteger(cost.value ?? 0, "prizeCostCoins", 0, 10_000_000);
+  } else if (creating) {
+    values.prizeCostCoins = 0;
   }
+  if (values.prizeType === "coins") values.prizeCostCoins = 0;
 
   const durationDays = firstAlias(body, ["voteDurationDays"]);
   const durationHours = firstAlias(body, ["durationHours"]);

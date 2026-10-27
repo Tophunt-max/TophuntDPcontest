@@ -6,6 +6,8 @@
  *   package_bonus   bonus coins on a coin package beyond what its price covers
  *   contest_prize   the part of a contest prize that is larger than the pot the
  *                   two players funded
+ *   product_prize   the coin cost of a physical prize (set by the admin, never
+ *                   shown to users) above the pot, per match won
  *
  * Each offer has its OWN budget (`promo_budgets`), with a hard coin limit, an
  * optional time window and an optional per-user limit. Coins are set aside
@@ -33,7 +35,7 @@ import type { Env } from "../types";
 import { httpsError } from "./http";
 import { MAX_COIN_AMOUNT } from "./money";
 
-export const BUDGET_KINDS = ["package_bonus", "contest_prize"] as const;
+export const BUDGET_KINDS = ["package_bonus", "contest_prize", "product_prize"] as const;
 export type BudgetKind = (typeof BUDGET_KINDS)[number];
 export const BUDGET_STATUSES = ["active", "paused", "closed"] as const;
 export type BudgetStatus = (typeof BUDGET_STATUSES)[number];
@@ -125,7 +127,7 @@ export function releaseStatement(env: Env, reservationId: string, ts: number, ga
 
 export interface PlatformEntry {
   id: string;
-  kind: "promo_bonus" | "prize_subsidy" | "platform_fee" | "product_prize_fund";
+  kind: "promo_bonus" | "prize_subsidy" | "product_prize" | "product_prize_reversal" | "platform_fee" | "product_prize_fund";
   /** + platform income, − platform expense. */
   coins: number;
   budgetId?: string | null;
@@ -211,6 +213,33 @@ export function promoBonusCreditStatements(
         WHERE id = ? AND ${gate}`,
     ).bind(p.ts, p.reservationId, ...gateArgs),
   ];
+}
+
+/**
+ * Tell the admin a budget could not fund an offer (e.g. a product contest
+ * refusing new matches). One notification per budget per 24 hours. Best-effort.
+ */
+export async function notifyBudgetExhausted(env: Env, budgetId: string, what: string): Promise<void> {
+  try {
+    const b = await env.DB.prepare(`SELECT name FROM promo_budgets WHERE id = ?`).bind(budgetId).first<{ name: string }>();
+    const title = `Promo budget khatam: ${b?.name ?? budgetId}`;
+    const ts = Date.now();
+    const recent = await env.DB.prepare(`SELECT 1 AS x FROM admin_notifications WHERE title = ? AND created_at > ? LIMIT 1`)
+      .bind(title, ts - 24 * 60 * 60 * 1000)
+      .first();
+    if (recent) return;
+    await env.DB.prepare(`INSERT INTO admin_notifications (id, title, message, link, created_at) VALUES (?, ?, ?, ?, ?)`)
+      .bind(
+        crypto.randomUUID(),
+        title,
+        `"${what}" ke naye match budget ki kami se ruk gaye hain. Coin Economy → Budgets me total badhao.`,
+        "/coin-economy",
+        ts,
+      )
+      .run();
+  } catch (e) {
+    console.error("[promoBudget] could not notify", budgetId, e);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -373,12 +402,12 @@ export async function assertLinkableBudget(env: Env, id: string, kind: BudgetKin
   const b = await getBudget(env, id);
   if (!b) throw httpsError("not-found", "Promo budget not found.");
   if (b.kind !== kind) {
-    throw httpsError(
-      "invalid-argument",
-      kind === "package_bonus"
-        ? "Ye budget contest prize ke liye hai. Coin package ke liye 'package_bonus' budget chuno."
-        : "Ye budget package bonus ke liye hai. Contest prize ke liye 'contest_prize' budget chuno.",
-    );
+    const need: Record<BudgetKind, string> = {
+      package_bonus: "Coin package ke liye 'Package bonus' budget chuno.",
+      contest_prize: "Coin prize wale contest ke liye 'Contest prize' budget chuno.",
+      product_prize: "Product prize wale contest ke liye 'Product prize' budget chuno.",
+    };
+    throw httpsError("invalid-argument", `Galat budget type. ${need[kind]}`);
   }
   if (b.status === "closed") throw httpsError("failed-precondition", "Ye budget closed hai. Naya budget banao.");
   return b;

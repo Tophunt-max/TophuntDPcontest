@@ -50,12 +50,15 @@ const TABS = [
 
 const KIND_LABEL: Record<PromoBudgetKind, string> = {
   package_bonus: "Package bonus",
-  contest_prize: "Contest prize",
+  contest_prize: "Contest prize (coins)",
+  product_prize: "Product prize (coin value)",
 };
 
 const PLATFORM_LABEL: Record<string, string> = {
   promo_bonus: "Package bonus diya (budget se)",
   prize_subsidy: "Contest prize subsidy (budget se)",
+  product_prize: "Product prize ki coin value (budget se)",
+  product_prize_reversal: "Cancel hue prize claim — budget me wapas",
   platform_fee: "Entry fee platform ne rakhi",
   product_prize_fund: "Product prize ke liye entry fee rakhi",
 };
@@ -245,6 +248,7 @@ function Budgets() {
             render: (b) => (
               <span className="text-xs text-muted-foreground">
                 {b.kind === "package_bonus" ? `${b.linkedPackages} package` : `${b.linkedContests} contest`} · {b.usedCount} use
+                {b.status === "active" && b.remainingCoins <= 0 ? <span className="block text-red-600">Khatam — Edit karke total badhao</span> : null}
               </span>
             ),
           },
@@ -344,7 +348,8 @@ function BudgetDialog({ budget, onClose, onDone }: { budget?: PromoBudget; onClo
             <label className="text-xs text-muted-foreground mb-1 block">Kis ke liye</label>
             <select className={field} value={form.kind} onChange={(e) => set("kind", e.target.value)}>
               <option value="package_bonus">Coin package ka bonus (locked, sirf khelne ke liye)</option>
-              <option value="contest_prize">Contest prize jo pot se zyada ho</option>
+              <option value="contest_prize">Contest coin prize jo pot se zyada ho</option>
+              <option value="product_prize">Product prize ki coin value (sirf admin ko dikhegi)</option>
             </select>
           </div>
         )}
@@ -560,7 +565,7 @@ function ContestsPnl() {
               <span>
                 <span className="font-medium text-foreground">{c.title ?? c.id}</span>
                 <span className="block text-xs text-muted-foreground">
-                  fee {fmtNumber(c.totalEntryFee)} · prize {c.prizeType === "product" ? "product" : fmtNumber(c.rewardCoins)}
+                  fee {fmtNumber(c.totalEntryFee)} · prize {c.prizeType === "product" ? `product${c.prizeCostCoins ? ` (${fmtNumber(c.prizeCostCoins)} coin value)` : ""}` : fmtNumber(c.rewardCoins)}
                   {c.subsidyBudgetId ? " · promo" : ""} · {c.status}
                 </span>
               </span>
@@ -570,7 +575,7 @@ function ContestsPnl() {
           { key: "f", header: "Entry fee aayi", className: "text-right", render: (c) => fmtNumber(c.feesIn) },
           { key: "r", header: "Refund", className: "text-right", render: (c) => fmtNumber(c.refunds) },
           { key: "p", header: "Prize diya", className: "text-right", render: (c) => fmtNumber(c.prizes) },
-          { key: "s", header: "Subsidy (budget)", className: "text-right", render: (c) => <span className="text-red-600">{fmtNumber(c.subsidy)}{c.subsidyHeld ? <span className="block text-xs text-amber-600">{fmtNumber(c.subsidyHeld)} reserved</span> : null}</span> },
+          { key: "s", header: "Budget se diya", className: "text-right", render: (c) => <span className="text-red-600">{fmtNumber(c.subsidy)}{c.subsidyHeld ? <span className="block text-xs text-amber-600">{fmtNumber(c.subsidyHeld)} reserved</span> : null}</span> },
           { key: "k", header: "Platform ne rakha", className: "text-right", render: (c) => <span className="text-green-600">{fmtNumber(c.platformKept)}</span> },
         ]}
       />

@@ -16,7 +16,8 @@ CREATE INDEX IF NOT EXISTS idx_txn_type_created ON coin_transactions (type, crea
 CREATE INDEX IF NOT EXISTS idx_txn_contest ON coin_transactions (contest_id);
 
 -- 3. One budget per offer. kind = package_bonus (funds bonus coins on coin
---    packages) or contest_prize (funds the part of a prize above the pot).
+--    packages), contest_prize (funds the part of a coin prize above the pot) or
+--    product_prize (funds the coin cost of a physical prize above the pot).
 --    status = active | paused | closed. per_user_limit = max coins one user can
 --    receive from this budget (NULL = no limit).
 CREATE TABLE IF NOT EXISTS promo_budgets (
@@ -57,8 +58,8 @@ CREATE INDEX IF NOT EXISTS idx_promo_res_user ON promo_reservations (budget_id, 
 
 -- 5. The platform's own side of every coin it creates or keeps. coins > 0 is
 --    platform income (entry fees kept), coins < 0 is platform expense (promo
---    bonus, prize subsidy). kind = promo_bonus | prize_subsidy | platform_fee |
---    product_prize_fund.
+--    bonus, prize subsidy). kind = promo_bonus | prize_subsidy | product_prize |
+--    product_prize_reversal | platform_fee | product_prize_fund.
 CREATE TABLE IF NOT EXISTS platform_ledger (
   id           TEXT PRIMARY KEY,
   kind         TEXT NOT NULL,
@@ -81,5 +82,9 @@ ALTER TABLE coin_packages ADD COLUMN budget_id TEXT;
 ALTER TABLE contests ADD COLUMN subsidy_budget_id TEXT;
 ALTER TABLE contest_matches ADD COLUMN subsidy_coins REAL NOT NULL DEFAULT 0;
 ALTER TABLE contest_matches ADD COLUMN subsidy_budget_id TEXT;
+-- Admin-only coin cost of a product prize (never sent to the app), and the
+-- snapshot of it on each match.
+ALTER TABLE contests ADD COLUMN prize_cost_coins REAL NOT NULL DEFAULT 0;
+ALTER TABLE contest_matches ADD COLUMN prize_cost_coins REAL NOT NULL DEFAULT 0;
 ALTER TABLE payment_orders ADD COLUMN budget_id TEXT;
 ALTER TABLE deposits ADD COLUMN budget_id TEXT;

@@ -182,9 +182,10 @@ export async function settleWinner(
   const pot = matchPot(funding?.entry_fee ?? 0);
   const reservedSubsidy = Math.max(0, Number(funding?.subsidy_coins || 0));
   const budgetId = funding?.subsidy_budget_id ?? null;
-  // Only the part of the prize above the pot is paid by the budget; the rest of
-  // a reservation (a prize clamped lower) goes back to it.
-  const subsidyUsed = product ? 0 : Math.min(reservedSubsidy, Math.max(0, rewardAmount - pot));
+  // Coin prize: only the part above the pot is paid by the budget; the rest of a
+  // reservation (a prize clamped lower) goes back to it. Product prize: the whole
+  // reservation (its admin-set coin cost above the pot) is spent on the product.
+  const subsidyUsed = product ? reservedSubsidy : Math.min(reservedSubsidy, Math.max(0, rewardAmount - pot));
   // Entry fees the platform keeps: the pot minus the part of it paid out.
   const platformFee = product ? 0 : Math.max(0, pot - (rewardAmount - subsidyUsed));
 
@@ -267,14 +268,16 @@ export async function settleWinner(
             WHERE id = ? AND status = 'held' AND ${gate}`,
         ).bind(subsidyUsed, input.winnerUid, input.completedAt, reservationId, ...gateArgs),
         platformLedgerStatement(env, {
-          id: `pl:prize_subsidy:${input.matchId}`,
-          kind: "prize_subsidy",
+          id: `pl:${product ? "product_prize" : "prize_subsidy"}:${input.matchId}`,
+          kind: product ? "product_prize" : "prize_subsidy",
           coins: -subsidyUsed,
           budgetId,
           contestId: input.contestId ?? null,
           matchId: input.matchId,
           uid: input.winnerUid,
-          description: `Prize subsidy: ${subsidyUsed} coins on top of the ${pot}-coin pot`,
+          description: product
+            ? `Product prize "${product.title}": ${subsidyUsed} coins from the budget on top of the ${pot}-coin pot`
+            : `Prize subsidy: ${subsidyUsed} coins on top of the ${pot}-coin pot`,
           ts: input.completedAt,
         }, gate, gateArgs),
       );

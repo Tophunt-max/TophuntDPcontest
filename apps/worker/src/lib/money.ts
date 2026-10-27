@@ -114,6 +114,23 @@ export function assertPrizeFundedByPot(
 }
 
 /**
+ * A product prize's admin-set coin cost above the pot must be paid by a
+ * product_prize promo budget, reserved per match like a coin subsidy. A cost
+ * at or below the pot (or no cost at all) needs no budget.
+ */
+export function assertProductCostFunded(totalEntryFee: unknown, prizeCostCoins: unknown, budgetId?: string | null): void {
+  const cost = Number(prizeCostCoins || 0);
+  const pot = matchPot(totalEntryFee);
+  if (cost > pot && !budgetId) {
+    throw httpsError(
+      "invalid-argument",
+      `Product ki cost (${cost} coins) pot (${pot}) se zyada hai. Contest ko ek "Product prize" budget se jodo ` +
+        `(har jeet par ${cost - pot} coin budget se katenge).`,
+    );
+  }
+}
+
+/**
  * The most a match may ever pay: the pot the two players funded, plus the
  * subsidy reserved for it from a promo budget when it was created. Every
  * settlement path clamps to this, so nothing can pay more than was funded.

@@ -140,6 +140,8 @@ export interface ContestPrizeFields {
    * the pot, reserved per match. Null = the prize is capped at the pot.
    */
   subsidyBudgetId?: string | null;
+  /** Admin-only coin cost of a product prize; paid above the pot by a product_prize budget. Never shown in the app. */
+  prizeCostCoins?: number;
 }
 
 export interface AdminContest extends ContestPrizeFields {
@@ -1173,7 +1175,7 @@ export const api = {
 
 // ─── Coin economy (worker: lib/promoBudget.ts, lib/coinEconomy.ts) ───────────
 
-export type PromoBudgetKind = "package_bonus" | "contest_prize";
+export type PromoBudgetKind = "package_bonus" | "contest_prize" | "product_prize";
 export type PromoBudgetStatus = "active" | "paused" | "closed";
 
 export interface PromoBudget {
@@ -1240,6 +1242,7 @@ export interface ContestPnl {
   rewardCoins: number;
   prizeType: string;
   subsidyBudgetId: string | null;
+  prizeCostCoins: number;
   matches: number;
   won: number;
   live: number;

@@ -123,6 +123,7 @@ import { passwordChangedEmail, dataExportEmail } from "../lib/emailTemplates";
 import { newId, now, generateJoinId } from "../lib/ids";
 import { lockedPart } from "../lib/rewardLocking";
 import {
+  notifyBudgetExhausted,
   ORDER_RESERVATION_TTL_MS,
   depositReservationId,
   matchReservationId,
@@ -705,6 +706,34 @@ apiRoute.post("/", async (c) => {
           ? Number(contest.rewardCoins || 0) - prizeCoins
           : 0;
       const reservationId = matchReservationId(matchId);
+      // Product prize with an admin-only coin cost (never sent to the app): the
+      // part above the pot is RESERVED from a product_prize budget before anyone
+      // is charged. Unlike a coin prize there is no smaller fallback prize, so an
+      // exhausted budget stops new matches until the admin raises it.
+      const productCost = isProductPrize ? Math.max(0, Number(contest.prizeCostCoins || 0)) : 0;
+      const productSubsidy =
+        isProductPrize && contest.subsidyBudgetId && productCost > matchPot(totalFee) ? productCost - matchPot(totalFee) : 0;
+      if (productSubsidy > 0) {
+        const got = await tryReserve(env, {
+          id: reservationId,
+          budgetId: String(contest.subsidyBudgetId),
+          kind: "product_prize",
+          uid: null,
+          coins: productSubsidy,
+          refType: "match",
+          refId: matchId,
+          expiresAt: null,
+          ts,
+        });
+        if (!got) {
+          c.executionCtx.waitUntil(notifyBudgetExhausted(env, String(contest.subsidyBudgetId), contest.title || "contest"));
+          throw httpsError(
+            "failed-precondition",
+            "Is contest ke prize abhi khatam ho gaye hain. Thodi der baad dobara try karo.",
+            "prize_budget_exhausted",
+          );
+        }
+      }
       // Media urls are canonicalised onto the current media base BEFORE being
       // frozen into the snapshot. These two columns are the feed's media and they
       // are permanent, so a legacy-host url written here is one the manual D1
@@ -777,10 +806,12 @@ apiRoute.post("/", async (c) => {
              (id, contest_id, status, type, title, entry_fee, is_private, invited_uid,
               join_id_a, user_a, total_votes, min_votes_required, prize_coins,
               prize_type, prize_product_title, prize_product_image_url, prize_product_value,
-              created_at, expires_at, subsidy_coins, subsidy_budget_id)
-           SELECT ?, ?, 'waiting_for_opponent', ?, ?, ?, ?, ?, ?, ?, 0, ?, ? + ${reserved}, ?, ?, ?, ?, ?, ?,
+              created_at, expires_at, subsidy_coins, subsidy_budget_id, prize_cost_coins)
+           SELECT ?, ?, 'waiting_for_opponent', ?, ?, ?, ?, ?, ?, ?, 0, ?,
+                  ? + CASE WHEN ? = 1 THEN ${reserved} ELSE 0 END, ?, ?, ?, ?, ?, ?,
                   ${reserved},
-                  CASE WHEN ${reserved} > 0 THEN ? ELSE NULL END
+                  CASE WHEN ${reserved} > 0 THEN ? ELSE NULL END,
+                  ?
             WHERE ${solvent}`,
         ).bind(
           matchId,
@@ -794,6 +825,8 @@ apiRoute.post("/", async (c) => {
           JSON.stringify(userASnapshot),
           Math.max(0, Number(contest.minVotes || 0)),
           prizeCoins,
+          // A product's reserved coins pay for the product, not a coin prize.
+          isProductPrize ? 0 : 1,
           reservationId,
           prizeType,
           isProductPrize ? contest.prizeProductTitle ?? null : null,
@@ -804,6 +837,7 @@ apiRoute.post("/", async (c) => {
           reservationId,
           reservationId,
           contest.subsidyBudgetId ?? null,
+          productCost,
           uid,
           fee,
         ),
@@ -815,6 +849,8 @@ apiRoute.post("/", async (c) => {
       );
       const createResults = await env.DB.batch(createStatements);
       if (Number(createResults[createResults.length - 1]?.meta?.changes || 0) === 0) {
+        // Not charged, no match: give a product reservation made above back.
+        if (productSubsidy > 0) await releaseStatement(env, reservationId, now()).run().catch(() => {});
         // Nothing was charged and no match was created — the two INSERTs share
         // this statement's gate.
         throw httpsError("failed-precondition", `Insufficient Dpcoin. Required: ${fee}, Current: ${user.dpcoin}`);
