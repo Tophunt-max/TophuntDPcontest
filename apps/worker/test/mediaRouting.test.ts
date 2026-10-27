@@ -61,10 +61,13 @@ describe('mediaRouting', () => {
     expect(routing).toMatchObject({ videoProvider: 'r2', r2AcceptsVideo: true, reason: 'provider-setting' });
   });
 
-  it('routes video to Qencode and CLOSES the raw R2 path once Qencode is configured', async () => {
+  it('routes video to Qencode, and keeps the raw R2 path open for pre-Qencode builds', async () => {
+    // Closing it broke every installed build that predates Qencode the moment the
+    // provider was switched in production ("Video uploads are temporarily
+    // unavailable" on every post). It closes only once those builds are gone.
     asQencodeLive();
     const routing = await mediaRouting(env);
-    expect(routing).toMatchObject({ videoProvider: 'qencode', r2AcceptsVideo: false, reason: 'qencode-live' });
+    expect(routing).toMatchObject({ videoProvider: 'qencode', r2AcceptsVideo: true, reason: 'qencode-live' });
   });
 
   it('reports a half-wired Qencode separately from a deliberate R2 choice', async () => {
@@ -86,12 +89,10 @@ describe('assertR2AcceptsKind', () => {
     }
   });
 
-  it('rejects raw video once Qencode is live, naming the action to use instead', async () => {
+  it('still accepts raw video from old builds while Qencode is live, only where the app offered it', async () => {
     asQencodeLive();
-    // This is the actual defence against a stale build POSTing a video to /upload,
-    // so the message has to be actionable: a client author cannot be told to read
-    // the source, and "upload failed" sends them to check their connection.
-    await expect(assertR2AcceptsKind(env, 'video', 'stories')).rejects.toThrow(/createVideoUpload/);
+    await expect(assertR2AcceptsKind(env, 'video', 'stories')).resolves.toBeUndefined();
+    await expect(assertR2AcceptsKind(env, 'video', 'avatars')).rejects.toThrow(/images only/i);
   });
 
   it('allows video on the legacy path, but only where the app ever offered it', async () => {
@@ -104,9 +105,10 @@ describe('assertR2AcceptsKind', () => {
 });
 
 describe('allowedMimesForUpload', () => {
-  it('is images-only when Qencode is live', async () => {
+  it('keeps video on the legacy prefixes while Qencode is live (old builds)', async () => {
     asQencodeLive();
-    expect(await allowedMimesForUpload(env, 'stories')).not.toContain('video/mp4');
+    expect(await allowedMimesForUpload(env, 'stories')).toContain('video/mp4');
+    expect(await allowedMimesForUpload(env, 'avatars')).not.toContain('video/mp4');
   });
 
   it('re-admits video on the legacy path', async () => {
