@@ -1,11 +1,12 @@
-import { Suspense, lazy, type ComponentType } from "react";
-import { Switch, Route, Redirect } from "wouter";
+import { Suspense, lazy, useEffect, type ComponentType } from "react";
+import { Switch, Route, Redirect, useLocation } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { Layout } from "@/components/Layout";
 import { PopupToaster } from "@/lib/toast";
 import { ConfirmProvider } from "@/components/ConfirmDialog";
 import Login from "@/pages/Login";
+import { reloadIfStale, startUpdateCheck, useUpdateAvailable } from "@/lib/updateCheck";
 
 /**
  * A code-split route whose chunk fails to load must NOT blank the screen.
@@ -155,9 +156,35 @@ function ProtectedApp() {
   );
 }
 
+/**
+ * Shown once a newer admin panel is deployed while this tab is open. A banner,
+ * not an automatic reload, so nothing half-typed is lost; navigating to another
+ * page also reloads (see `reloadIfStale`).
+ */
+function UpdateBanner() {
+  const available = useUpdateAvailable();
+  const [location] = useLocation();
+  useEffect(() => startUpdateCheck(), []);
+  useEffect(() => reloadIfStale(), [location]);
+  if (!available) return null;
+  return (
+    <div className="fixed bottom-4 left-1/2 z-[100] -translate-x-1/2 flex items-center gap-3 rounded-lg border bg-background px-4 py-2 text-sm shadow-lg">
+      <span>A new version of the admin panel is available.</span>
+      <button
+        type="button"
+        onClick={() => window.location.reload()}
+        className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground"
+      >
+        Reload
+      </button>
+    </div>
+  );
+}
+
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
+      <UpdateBanner />
       <AuthProvider>
         <ConfirmProvider>
           <ProtectedApp />

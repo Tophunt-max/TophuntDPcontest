@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
@@ -11,9 +11,25 @@ import path from "path";
 // should reach a working backend rather than a hostname that no longer resolves.
 const WORKER_URL = process.env.VITE_API_URL ?? "https://api.tophunt.in";
 
+// Identifies this build, so a tab left open across a deploy can tell it is
+// stale (src/lib/updateCheck.ts). The commit on Cloudflare Pages; otherwise a
+// timestamp, which is unique per local build.
+const BUILD_ID = (process.env.CF_PAGES_COMMIT_SHA || "").slice(0, 12) || `local-${Date.now().toString(36)}`;
+
+/** Writes dist/version.json, which `_headers` serves uncached. */
+function buildVersionFile(): Plugin {
+  return {
+    name: "tophunt-build-version",
+    apply: "build",
+    generateBundle() {
+      this.emitFile({ type: "asset", fileName: "version.json", source: JSON.stringify({ buildId: BUILD_ID }) });
+    },
+  };
+}
+
 export default defineConfig({
   base: "/",
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), buildVersionFile()],
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "src"),
@@ -22,6 +38,7 @@ export default defineConfig({
   },
   define: {
     "import.meta.env.VITE_API_URL": JSON.stringify(WORKER_URL),
+    "import.meta.env.VITE_BUILD_ID": JSON.stringify(BUILD_ID),
   },
   build: {
     outDir: "dist",
