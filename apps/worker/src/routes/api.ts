@@ -1738,6 +1738,49 @@ apiRoute.post("/", async (c) => {
       return c.json({ success: true, muted: false });
     }
 
+    // Restrict / hide-story-from (migration 0067, lib/socialSafety.ts). Both are
+    // one-way and silent: the other account is never told and follows are kept.
+    // The read paths query the tables directly (no relations cache), so there is
+    // nothing to invalidate except the shared stories base for hides.
+    case "restrictUser":
+    case "hideStoryFrom": {
+      const restrict = action === "restrictUser";
+      await rateLimit(env, `${restrict ? "restrict" : "storyhide"}:${uid}`, 120, 3600);
+      const targetUserId = requiredId(body.targetUserId, "targetUserId", 128);
+      if (targetUserId === uid) throw httpsError("invalid-argument", "You cannot do this to yourself.");
+      const target = await db.select({ uid: schema.users.uid }).from(schema.users).where(eq(schema.users.uid, targetUserId)).get();
+      if (!target) throw httpsError("not-found", "User not found.");
+      if (restrict) {
+        await db
+          .insert(schema.userRestricts)
+          .values({ restricterId: uid, restrictedId: targetUserId, createdAt: now() })
+          .onConflictDoNothing();
+        return c.json({ success: true, restricted: true });
+      }
+      await db
+        .insert(schema.userStoryHides)
+        .values({ ownerId: uid, hiddenUid: targetUserId, createdAt: now() })
+        .onConflictDoNothing();
+      return c.json({ success: true, storyHidden: true });
+    }
+
+    case "unrestrictUser":
+    case "unhideStoryFrom": {
+      const restrict = action === "unrestrictUser";
+      await rateLimit(env, `${restrict ? "restrict" : "storyhide"}:${uid}`, 120, 3600);
+      const targetUserId = requiredId(body.targetUserId, "targetUserId", 128);
+      if (restrict) {
+        await db
+          .delete(schema.userRestricts)
+          .where(and(eq(schema.userRestricts.restricterId, uid), eq(schema.userRestricts.restrictedId, targetUserId)));
+        return c.json({ success: true, restricted: false });
+      }
+      await db
+        .delete(schema.userStoryHides)
+        .where(and(eq(schema.userStoryHides.ownerId, uid), eq(schema.userStoryHides.hiddenUid, targetUserId)));
+      return c.json({ success: true, storyHidden: false });
+    }
+
     case "claimDailyReward": {
       const settings = await import("../lib/gamification").then((m) => m.getSettings(env));
       const user = await db.select().from(schema.users).where(eq(schema.users.uid, uid)).get();

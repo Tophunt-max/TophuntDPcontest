@@ -383,9 +383,32 @@ export async function resolveContests(env: Env): Promise<void> {
       const userA = m.userA as any;
       const userB = m.userB as any;
       const msg = `⏳ Hurry! The battle "${m.title || "Match"}" ends in less than an hour. Get more votes!`;
-      await createNotificationsBulk(env, [userA?.uid, userB?.uid].filter(Boolean), {
+      const participants = [userA?.uid, userB?.uid].filter(Boolean) as string[];
+      await createNotificationsBulk(env, participants, {
         title: "Battle Ending Soon!", body: msg, type: "contest-ending", targetId: m.id,
       });
+      // People who SAVED the battle get a "last chance to vote" nudge, under the
+      // same once-per-battle claim (idx_bookmarks_match, migration 0067). Capped:
+      // a nudge, not a broadcast. A failure here never blocks the next battle.
+      try {
+        const savers = await db
+          .select({ uid: schema.bookmarks.userId })
+          .from(schema.bookmarks)
+          .where(eq(schema.bookmarks.matchId, m.id))
+          .limit(1000)
+          .all();
+        const recipients = savers.map((s) => s.uid).filter((u) => !participants.includes(u));
+        if (recipients.length) {
+          await createNotificationsBulk(env, recipients, {
+            title: "Last chance to vote ⏳",
+            body: `"${m.title || "A battle"}" you saved ends in less than an hour. Cast your vote now!`,
+            type: "contest-ending",
+            targetId: m.id,
+          });
+        }
+      } catch (e) {
+        console.error("[cron] saver reminder failed (continuing)", m.id, e);
+      }
     }
   }
 

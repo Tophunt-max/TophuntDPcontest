@@ -156,9 +156,54 @@ export interface BlockedAccount {
   profileImageUrl: string | null;
   profileImageUrlThumb: string | null;
 }
-export async function fetchBlockedAccounts(): Promise<{ blocked: BlockedAccount[]; muted: BlockedAccount[] }> {
+export async function fetchBlockedAccounts(): Promise<{
+  blocked: BlockedAccount[];
+  muted: BlockedAccount[];
+  restricted: BlockedAccount[];
+  storyHidden: BlockedAccount[];
+}> {
   const res: any = await readApi('/read/blocked');
-  return { blocked: res?.blocked || [], muted: res?.muted || [] };
+  return {
+    blocked: res?.blocked || [],
+    muted: res?.muted || [],
+    restricted: res?.restricted || [],
+    storyHidden: res?.storyHidden || [],
+  };
+}
+
+/**
+ * Restrict: their comments on your battles/posts are visible only to them (and
+ * you), and nothing they do notifies you. Hide story: your stories never reach
+ * that one account. Both are one-way and silent.
+ */
+export const restrictUserService = (targetUserId: string) => callApi('restrictUser', { targetUserId });
+export const unrestrictUserService = (targetUserId: string) => callApi('unrestrictUser', { targetUserId });
+export const hideStoryFromService = (targetUserId: string) => callApi('hideStoryFrom', { targetUserId });
+export const unhideStoryFromService = (targetUserId: string) => callApi('unhideStoryFrom', { targetUserId });
+
+export interface MutualFollowers {
+  count: number;
+  users: Array<{ uid: string; username: string | null; avatarUrl: string | null }>;
+}
+export async function fetchMutualFollowers(targetUserId: string): Promise<MutualFollowers> {
+  const res: any = await readApi(`/read/users/${targetUserId}/mutuals`);
+  return { count: Number(res?.count || 0), users: Array.isArray(res?.users) ? res.users : [] };
+}
+
+export type MyReportStatus = 'open' | 'actioned' | 'dismissed';
+export interface MyReport {
+  id: string;
+  targetType: 'battle' | 'account' | 'comment' | 'post' | 'story' | string;
+  /** Set for battles and accounts only (a removed comment has nowhere to link). */
+  targetId: string | null;
+  reason: string | null;
+  status: MyReportStatus;
+  createdAt: number;
+  resolvedAt: number | null;
+}
+export async function fetchMyReports(): Promise<MyReport[]> {
+  const res: any = await readApi('/read/me/reports');
+  return Array.isArray(res?.items) ? res.items : [];
 }
 
 export const equipBadgeService = async (_userId: string, badge: Badge | null) => {

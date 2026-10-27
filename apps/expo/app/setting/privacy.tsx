@@ -265,7 +265,7 @@ export default function PrivacySettingsScreen() {
           <Row
             icon="ban-outline"
             title="Blocked & Muted"
-            description="Review and undo accounts you have blocked or muted"
+            description="Review and undo accounts you have blocked, muted, restricted or hidden your story from"
             onPress={() => router.push('/setting/blocked')}
           />
           <Row

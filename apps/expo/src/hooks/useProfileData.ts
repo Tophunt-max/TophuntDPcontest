@@ -11,6 +11,12 @@ import {
   muteUserService,
   unblockUserService,
   unmuteUserService,
+  restrictUserService,
+  unrestrictUserService,
+  hideStoryFromService,
+  unhideStoryFromService,
+  fetchMutualFollowers,
+  fetchMyReports,
 } from '../services/users';
 import { bumpSocialGraphVersion } from '../lib/socialGraphVersion';
 import { isProfileComplete, markOnboardingIncomplete, PROFILE_INCOMPLETE_CODE } from '../lib/profileCompletion';
@@ -146,16 +152,60 @@ export const useUserBookmarks = (userId: string, enabled = true) => {
  * (a pending request to a private account), none, or self. Its own query so
  * the profile itself can stay a shared, viewer-agnostic cache entry.
  */
+export interface RelationshipInfo {
+  state: FollowState;
+  /** They follow the viewer ("Follows you" badge). */
+  followsMe: boolean;
+  /** The viewer restricted them / hid their own stories from them (⋮ sheet rows). */
+  restrictedByMe: boolean;
+  storyHiddenByMe: boolean;
+}
+
+const NO_RELATIONSHIP: RelationshipInfo = { state: 'none', followsMe: false, restrictedByMe: false, storyHiddenByMe: false };
+
+/** Accepts the legacy bare-state cache shape too, so a merge never loses data. */
+function asRelationship(v: unknown): RelationshipInfo {
+  if (typeof v === 'string') return { ...NO_RELATIONSHIP, state: v as FollowState };
+  return { ...NO_RELATIONSHIP, ...((v as Partial<RelationshipInfo>) || {}) };
+}
+
 export const useRelationship = (targetUserId: string, enabled = true) => {
   const { user } = useAuth();
   return useQuery({
     queryKey: ['relationship', targetUserId, user?.uid],
-    queryFn: async (): Promise<FollowState> => {
+    queryFn: async (): Promise<RelationshipInfo> => {
       const res: any = await readApi(`/read/users/${targetUserId}/relationship`);
       const s = res?.state;
-      return s === 'following' || s === 'requested' || s === 'self' ? s : 'none';
+      return {
+        state: s === 'following' || s === 'requested' || s === 'self' ? s : 'none',
+        followsMe: !!res?.followsMe,
+        restrictedByMe: !!res?.restrictedByMe,
+        storyHiddenByMe: !!res?.storyHiddenByMe,
+      };
     },
     enabled: !!user && !!targetUserId && enabled,
+    staleTime: 15_000,
+  });
+};
+
+/** "Followed by @a, @b and N others" for another user's profile. */
+export const useMutualFollowers = (targetUserId: string, enabled = true) => {
+  const { user } = useAuth();
+  return useQuery({
+    queryKey: ['mutuals', targetUserId, user?.uid],
+    queryFn: () => fetchMutualFollowers(targetUserId),
+    enabled: !!user && !!targetUserId && enabled,
+    staleTime: 60_000,
+  });
+};
+
+/** The signed-in user's reports and their outcome (Settings › My reports). */
+export const useMyReports = () => {
+  const { user } = useAuth();
+  return useQuery({
+    queryKey: ['myReports', user?.uid],
+    queryFn: fetchMyReports,
+    enabled: !!user,
     staleTime: 15_000,
   });
 };
@@ -172,7 +222,10 @@ export const useToggleFollow = () => {
     onSuccess: (result, { targetUserId }) => {
       // The server's answer is authoritative: a private account answers
       // `requested`, not `following`.
-      queryClient.setQueryData(['relationship', targetUserId, user?.uid], followStateFromResult(result));
+      queryClient.setQueryData(['relationship', targetUserId, user?.uid], (old: unknown) => ({
+        ...asRelationship(old),
+        state: followStateFromResult(result),
+      }));
       queryClient.invalidateQueries({ queryKey: ['profile', targetUserId] });
       queryClient.invalidateQueries({ queryKey: ['profile', user?.uid] });
       // Following (or unfollowing) a PRIVATE account changes what is unlocked.
@@ -270,6 +323,7 @@ const QUERY_KEYS_AFFECTED_BY_BLOCK = [
   'relationship',
   'followRequests',
   'followRequestCount',
+  'mutuals', // a blocked account drops out of "Followed by …"
 ];
 
 function useBlockMutation(fn: (targetUserId: string) => Promise<any>) {
@@ -297,6 +351,31 @@ export const useBlockUser = () => useBlockMutation(blockUserService);
 export const useUnblockUser = () => useBlockMutation(unblockUserService);
 export const useMuteUser = () => useBlockMutation(muteUserService);
 export const useUnmuteUser = () => useBlockMutation(unmuteUserService);
+
+/**
+ * Restrict / hide-story-from: one-way and silent, so only the relationship
+ * flags, the management list, stories and comment threads need a refresh.
+ */
+function useQuietRelationMutation(fn: (targetUserId: string) => Promise<any>) {
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
+  return useMutation({
+    mutationFn: async (targetUserId: string) => {
+      if (!user) throw new Error('Authentication required');
+      return fn(targetUserId);
+    },
+    onSuccess: () => {
+      for (const key of ['relationship', 'blockedAccounts', 'stories']) {
+        queryClient.invalidateQueries({ queryKey: [key] });
+      }
+    },
+  });
+}
+
+export const useRestrictUser = () => useQuietRelationMutation(restrictUserService);
+export const useUnrestrictUser = () => useQuietRelationMutation(unrestrictUserService);
+export const useHideStoryFrom = () => useQuietRelationMutation(hideStoryFromService);
+export const useUnhideStoryFrom = () => useQuietRelationMutation(unhideStoryFromService);
 
 /**
  * React-query keys that carry a rendered copy of the signed-in user's avatar.

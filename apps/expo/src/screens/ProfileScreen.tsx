@@ -260,7 +260,7 @@ const ProfileContent = ({
   const { data: relationship } = useRelationship(targetUserId, !!currentUser && !isOwnProfile);
   const followState: FollowState = isOwnProfile
     ? 'self'
-    : relationship ?? (isFollowing ? 'following' : 'none');
+    : relationship?.state ?? (isFollowing ? 'following' : 'none');
 
   // Private account the viewer may not see behind (server-decided). Nothing
   // below the header is requested, and the lock notice replaces it.
@@ -415,6 +415,9 @@ const ProfileContent = ({
               onToggleFollow={handleToggleFollow}
               isFollowing={isFollowing}
               followState={followState}
+              followsMe={!isOwnProfile && !!relationship?.followsMe}
+              isRestricted={!!relationship?.restrictedByMe}
+              isStoryHidden={!!relationship?.storyHiddenByMe}
               connectionsLocked={locked}
               onRefresh={handleRefresh}
             />

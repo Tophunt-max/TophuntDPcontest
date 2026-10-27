@@ -146,7 +146,7 @@ describe('following a private account creates a request, not a follow', () => {
     const n = await notificationsOf(env, 'priv', 'follow_request');
     expect(n).toHaveLength(1);
     expect(n[0].actorId).toBe('stranger');
-    expect((await read(env, 'stranger', '/users/priv/relationship')).body).toEqual({ state: 'requested' });
+    expect((await read(env, 'stranger', '/users/priv/relationship')).body).toMatchObject({ state: 'requested' });
   });
 
   it('tapping "Requested" withdraws the request and its notification', async () => {
@@ -156,7 +156,7 @@ describe('following a private account creates a request, not a follow', () => {
     expect(res.body).toMatchObject({ isFollowing: false, requested: false });
     expect(await notificationsOf(env, 'priv', 'follow_request')).toHaveLength(0);
     expect((await read(env, 'priv', '/follow-requests')).body).toEqual([]);
-    expect((await read(env, 'stranger', '/users/priv/relationship')).body).toEqual({ state: 'none' });
+    expect((await read(env, 'stranger', '/users/priv/relationship')).body).toMatchObject({ state: 'none' });
   });
 
   it('a public account is still followed directly', async () => {
@@ -164,7 +164,7 @@ describe('following a private account creates a request, not a follow', () => {
     const res = await call(env, 'stranger', 'toggleFollow', { targetUserId: 'pub' });
     expect(res.body).toMatchObject({ isFollowing: true, requested: false });
     expect(await follows(env, 'stranger', 'pub')).toBe(true);
-    expect((await read(env, 'stranger', '/users/pub/relationship')).body).toEqual({ state: 'following' });
+    expect((await read(env, 'stranger', '/users/pub/relationship')).body).toMatchObject({ state: 'following' });
   });
 
   it('a blocked account cannot request', async () => {
@@ -246,7 +246,7 @@ describe('the owner answers requests', () => {
 
     expect((await read(env, 'stranger', '/users/priv')).body).toMatchObject({ locked: false });
     expect((await read(env, 'stranger', '/users/priv/matches')).body).toHaveLength(1);
-    expect((await read(env, 'stranger', '/users/priv/relationship')).body).toEqual({ state: 'following' });
+    expect((await read(env, 'stranger', '/users/priv/relationship')).body).toMatchObject({ state: 'following' });
   });
 
   it('delete: removes the request silently', async () => {
@@ -256,7 +256,7 @@ describe('the owner answers requests', () => {
     expect(res.body).toMatchObject({ accepted: false });
     expect(await follows(env, 'stranger', 'priv')).toBe(false);
     expect(await notificationsOf(env, 'stranger', 'follow_accept')).toHaveLength(0);
-    expect((await read(env, 'stranger', '/users/priv/relationship')).body).toEqual({ state: 'none' });
+    expect((await read(env, 'stranger', '/users/priv/relationship')).body).toMatchObject({ state: 'none' });
   });
 
   it('only the owner can confirm: a third party "confirming" changes nothing', async () => {

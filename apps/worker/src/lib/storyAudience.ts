@@ -21,6 +21,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { isHiddenAccountStatus } from "./accountStatus";
+import { storyHidersAmong } from "./socialSafety";
 
 /**
  * The shared stories-bar base (rows + owner privacy/ban facts). Purged when an
@@ -102,6 +103,10 @@ export async function filterStoriesForViewer<T extends { userId: string; visibil
   if (!rows.length) return rows;
   const owners = meta ?? (await storyOwnerMeta(env, rows.map((r) => r.userId)));
   const needFollow = rows.filter((r) => r.userId !== viewerUid && storyNeedsFollow(r, owners.get(r.userId))).map((r) => r.userId);
-  const follows = await followedAmong(env, viewerUid, needFollow);
-  return rows.filter((r) => storyVisibleTo(r, owners.get(r.userId), viewerUid, follows));
+  const [follows, hiders] = await Promise.all([
+    followedAmong(env, viewerUid, needFollow),
+    // "Hide my story from" (migration 0067): owners who hid their stories from this viewer.
+    storyHidersAmong(env, viewerUid, rows.map((r) => r.userId)),
+  ]);
+  return rows.filter((r) => !hiders.has(r.userId) && storyVisibleTo(r, owners.get(r.userId), viewerUid, follows));
 }

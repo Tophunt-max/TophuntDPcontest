@@ -76,6 +76,13 @@ import {
 } from "../lib/blocks";
 import { applyVsStoryPrivacy } from "../lib/matchStories";
 import { filterStoriesForViewer, STORIES_FEED_CACHE_KEY, storyOwnerMeta, type StoryOwnerMeta } from "../lib/storyAudience";
+import {
+  filterRestrictedComments,
+  isRestrictedBy,
+  isStoryHiddenFrom,
+  mutualFollowersOf,
+  restrictionsByOwners,
+} from "../lib/socialSafety";
 import { ensureMatchShareImage, publicVsStoryStatus, runVsPublication } from "../lib/vsPublication";
 import {
   DELETED_STATUS,
@@ -3021,13 +3028,36 @@ readRoute.get("/users/:id/bookmarks", requireAuth, async (c) => {
 readRoute.get("/blocked", requireAuth, async (c) => {
   const uid = c.get("user").uid;
   const rel = await getRelations(c.env, uid);
-  const [blocked, muted] = await Promise.all([
+  const db = getDb(c.env);
+  // Restricted and story-hidden accounts (migration 0067) are managed here too.
+  const [restrictRows, hideRows] = await Promise.all([
+    db
+      .select({ uid: schema.userRestricts.restrictedId })
+      .from(schema.userRestricts)
+      .where(eq(schema.userRestricts.restricterId, uid))
+      .limit(1000)
+      .all(),
+    db
+      .select({ uid: schema.userStoryHides.hiddenUid })
+      .from(schema.userStoryHides)
+      .where(eq(schema.userStoryHides.ownerId, uid))
+      .limit(1000)
+      .all(),
+  ]);
+  const [blocked, muted, restricted, storyHidden] = await Promise.all([
     describeUsers(c.env, rel.blockedByMe),
     describeUsers(c.env, rel.muted),
+    describeUsers(c.env, restrictRows.map((r) => r.uid)),
+    describeUsers(c.env, hideRows.map((r) => r.uid)),
   ]);
   const withThumbs = (rows: Awaited<ReturnType<typeof describeUsers>>) =>
     rows.map((r) => ({ ...r, profileImageUrlThumb: avatarUrl(c.env, r.profileImageUrl) }));
-  const res = c.json({ blocked: withThumbs(blocked), muted: withThumbs(muted) }) as Response;
+  const res = c.json({
+    blocked: withThumbs(blocked),
+    muted: withThumbs(muted),
+    restricted: withThumbs(restricted),
+    storyHidden: withThumbs(storyHidden),
+  }) as Response;
   res.headers.set("Cache-Control", "private, no-store");
   return res;
 });
@@ -3216,8 +3246,39 @@ readRoute.get("/users/:id/relationship", requireAuth, async (c) => {
   const uid = c.get("user").uid;
   const target = c.req.param("id");
   c.header("Cache-Control", "private, no-store");
-  if (await profileHiddenFrom(c, target)) return c.json({ state: "none" });
-  return c.json({ state: await followStateOf(c.env, uid, target) });
+  if (await profileHiddenFrom(c, target)) {
+    return c.json({ state: "none", followsMe: false, restrictedByMe: false, storyHiddenByMe: false });
+  }
+  if (uid === target) return c.json({ state: "self", followsMe: false, restrictedByMe: false, storyHiddenByMe: false });
+  // Also per-viewer, so they live here and not on the shared profile entry:
+  //   followsMe        — the reverse edge, for the "Follows you" badge;
+  //   restrictedByMe / storyHiddenByMe — the ⋮ sheet's Restrict and Hide story rows.
+  const [state, followsMe, restrictedByMe, storyHiddenByMe] = await Promise.all([
+    followStateOf(c.env, uid, target),
+    viewerFollows(c.env, target, uid),
+    isRestrictedBy(c.env, uid, target),
+    isStoryHiddenFrom(c.env, uid, target),
+  ]);
+  return c.json({ state, followsMe, restrictedByMe, storyHiddenByMe });
+});
+
+/**
+ * "Followed by @a, @b and 3 others": accounts the viewer follows that also
+ * follow this profile. Only ever includes the VIEWER's own followings, so it
+ * reveals nothing the viewer could not already see on their own Following list,
+ * minus blocked and hidden accounts. Private, uncached.
+ */
+readRoute.get("/users/:id/mutuals", requireAuth, async (c) => {
+  const uid = c.get("user").uid;
+  const target = c.req.param("id");
+  c.header("Cache-Control", "private, no-store");
+  if (uid === target || (await profileHiddenFrom(c, target))) return c.json({ count: 0, users: [] });
+  const blocked = await blockedUidsFor(c.env, uid);
+  const result = await mutualFollowersOf(c.env, uid, target, blocked, 3);
+  return c.json({
+    count: result.count,
+    users: result.users.map((u) => ({ uid: u.uid, username: u.username, avatarUrl: avatarUrl(c.env, u.profileImageUrl) || null })),
+  });
 });
 
 /**
@@ -3345,6 +3406,46 @@ readRoute.get("/me/feed-dismissals", requireAuth, async (c) => {
   return c.json({
     items: page.map((r) => ({ matchId: r.matchId, dismissedAt: Number(r.createdAt), match: byId.get(r.matchId) ?? null })),
     nextCursor: rows.length > limit ? Number(page[page.length - 1].createdAt) : null,
+  });
+});
+
+/**
+ * The signed-in user's own reports and their outcome, newest first (Settings ›
+ * My reports). Status: 'open' (in review), 'actioned' (content removed) or
+ * 'dismissed' (reviewed, no violation). Never reveals anything about other
+ * reporters or what happened to the reported account beyond that.
+ */
+readRoute.get("/me/reports", requireAuth, async (c) => {
+  const uid = c.get("user").uid;
+  c.header("Cache-Control", "private, no-store");
+  const rows = await getDb(c.env)
+    .select({
+      id: schema.reports.id,
+      targetType: schema.reports.targetType,
+      targetId: schema.reports.targetId,
+      reason: schema.reports.reason,
+      status: schema.reports.status,
+      createdAt: schema.reports.createdAt,
+      resolvedAt: schema.reports.resolvedAt,
+    })
+    .from(schema.reports)
+    .where(eq(schema.reports.reporterId, uid))
+    .orderBy(desc(schema.reports.createdAt))
+    .limit(50)
+    .all();
+  const kind = (t: string | null) =>
+    t === "match" || t === "contestMatch" || t === "contestMatches" ? "battle" : t === "user" ? "account" : t || "content";
+  return c.json({
+    items: rows.map((r) => ({
+      id: r.id,
+      targetType: kind(r.targetType),
+      // Only battles and accounts get a link; a removed comment/post has nowhere to go.
+      targetId: kind(r.targetType) === "battle" || kind(r.targetType) === "account" ? r.targetId : null,
+      reason: r.reason,
+      status: r.status === "actioned" || r.status === "dismissed" ? r.status : "open",
+      createdAt: r.createdAt,
+      resolvedAt: r.resolvedAt ?? null,
+    })),
   });
 });
 
@@ -3870,6 +3971,25 @@ readRoute.get("/comments", optionalAuth, guestReadLimit, async (c) => {
     const blockedAuthors = await blockedUidsFor(c.env, uid);
     if (blockedAuthors.size > 0) items = excludeHiddenBy(items, blockedAuthors, (r: any) => r.userId);
   }
+  // Restrict (migration 0067), for guests too: a comment by an account the
+  // battle's participants / the post's owner restricted is shown only to its
+  // author and to the owner who restricted them. Also after the shared cache.
+  if (items.length > 0 && !isBlog) {
+    let owners: Array<string | null | undefined> = [];
+    if (isMatch) {
+      const m = await db
+        .select({ a: schema.contestMatches.userA, b: schema.contestMatches.userB })
+        .from(schema.contestMatches)
+        .where(eq(schema.contestMatches.id, targetId))
+        .get();
+      owners = [(m?.a as any)?.uid, (m?.b as any)?.uid];
+    } else {
+      const p = await db.select({ userId: schema.posts.userId }).from(schema.posts).where(eq(schema.posts.id, targetId)).get();
+      owners = [p?.userId];
+    }
+    const restrictions = await restrictionsByOwners(c.env, owners);
+    if (restrictions.size > 0) items = filterRestrictedComments(items, restrictions, uid);
+  }
   if (uid && items.length > 0) {
     const commentIds = items.map((r: any) => r.id);
     const likedRows = await db
@@ -3883,6 +4003,7 @@ readRoute.get("/comments", optionalAuth, guestReadLimit, async (c) => {
     return c.json({ items, nextCursor: payload.nextCursor, ...(payload.total != null ? { total: payload.total } : {}) });
   }
 
+  // A guest's restrict-filtered list is the same for every guest, so it stays public.
   c.header("Cache-Control", "public, max-age=10");
   return c.json({ items, nextCursor: payload.nextCursor, ...(payload.total != null ? { total: payload.total } : {}) });
 });

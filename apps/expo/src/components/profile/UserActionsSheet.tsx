@@ -1,9 +1,18 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@/src/lib/icons';
 import { ReanimatedBottomSheet } from '@/src/components/modals/ReanimatedBottomSheet';
 import { useConfirm, type ConfirmOptions } from '@/src/components/modals/ConfirmDialog';
-import { useBlockUser, useMuteUser, useUnblockUser, useUnmuteUser } from '@/src/hooks/useProfileData';
+import {
+  useBlockUser,
+  useHideStoryFrom,
+  useMuteUser,
+  useRestrictUser,
+  useUnblockUser,
+  useUnhideStoryFrom,
+  useUnmuteUser,
+  useUnrestrictUser,
+} from '@/src/hooks/useProfileData';
 import { useReportReason, USER_REPORT_REASONS } from '@/src/components/modals/ReportReasonDialog';
 import { profilePath, reportUserService } from '@/src/services/users';
 import { shareBattleLink, shareOrigin } from '@/src/lib/share';
@@ -20,11 +29,12 @@ import { reportError } from '@/src/lib/reportError';
  * report. Both app stores require the self-serve version in an app carrying
  * user-generated content.
  *
- * Every row (Mute, Unmute, Report, Block, Unblock) asks first in the same themed
- * `ConfirmDialog` as Logout, identical on native and web. The dialog stays open
- * with a spinner while the request runs, so the action cannot be sent twice, and
- * it spells out what will happen. Block and Report get the red (destructive)
- * button; the reversible Mute / Unmute / Unblock get the brand-pink one.
+ * Rows: Share profile, Copy profile link, Mute, Restrict, Hide your story,
+ * Report, Block (each with its undo). Every action asks first in the same themed
+ * `ConfirmDialog` as Logout (Report uses `ReportReasonDialog`, the same card with
+ * a reason list), identical on native and web. The dialog stays open with a
+ * spinner while the request runs, so the action cannot be sent twice. Block and
+ * Report get the red (destructive) button; the reversible ones the brand pink.
  */
 
 type Props = {
@@ -34,10 +44,12 @@ type Props = {
   username?: string | null;
   isBlocked?: boolean;
   isMuted?: boolean;
+  isRestricted?: boolean;
+  isStoryHidden?: boolean;
   isDark?: boolean;
 };
 
-type ActionKey = 'mute' | 'report' | 'block';
+type ActionKey = 'mute' | 'report' | 'block' | 'restrict' | 'storyHide';
 
 export const UserActionsSheet: React.FC<Props> = ({
   visible,
@@ -46,9 +58,12 @@ export const UserActionsSheet: React.FC<Props> = ({
   username,
   isBlocked = false,
   isMuted = false,
+  isRestricted = false,
+  isStoryHidden = false,
   isDark = false,
 }) => {
   const [busy, setBusy] = useState<ActionKey | null>(null);
+  const { height: windowHeight } = useWindowDimensions();
   const { confirm, dialog } = useConfirm();
   const { askReason, dialog: reasonDialog } = useReportReason();
 
@@ -56,6 +71,10 @@ export const UserActionsSheet: React.FC<Props> = ({
   const { mutateAsync: unblock } = useUnblockUser();
   const { mutateAsync: mute } = useMuteUser();
   const { mutateAsync: unmute } = useUnmuteUser();
+  const { mutateAsync: restrict } = useRestrictUser();
+  const { mutateAsync: unrestrict } = useUnrestrictUser();
+  const { mutateAsync: hideStory } = useHideStoryFrom();
+  const { mutateAsync: unhideStory } = useUnhideStoryFrom();
 
   const textColor = isDark ? '#FFFFFF' : '#212121';
   const secondary = isDark ? '#A0A0A0' : '#666';
@@ -121,6 +140,53 @@ export const UserActionsSheet: React.FC<Props> = ({
           },
           () => mute(targetUserId),
           `Muted ${name}. You won't see their posts in your feed.`,
+        );
+
+  const handleRestrict = () =>
+    isRestricted
+      ? ask(
+          'restrict',
+          {
+            title: `Unrestrict ${name}?`,
+            message: 'Their new comments on your battles will be visible to everyone again, and you will get notifications from them.',
+            confirmLabel: 'Unrestrict',
+          },
+          () => unrestrict(targetUserId),
+          `Unrestricted ${name}.`,
+        )
+      : ask(
+          'restrict',
+          {
+            title: `Restrict ${name}?`,
+            message:
+              "Their comments on your battles will only be visible to them, and you won't get notifications from them. They won't be told, and you'll still follow each other.",
+            confirmLabel: 'Restrict',
+          },
+          () => restrict(targetUserId),
+          `Restricted ${name}.`,
+        );
+
+  const handleStoryHide = () =>
+    isStoryHidden
+      ? ask(
+          'storyHide',
+          {
+            title: `Show your story to ${name}?`,
+            message: 'They will be able to see your stories again.',
+            confirmLabel: 'Show story',
+          },
+          () => unhideStory(targetUserId),
+          `${name} can see your stories again.`,
+        )
+      : ask(
+          'storyHide',
+          {
+            title: `Hide your story from ${name}?`,
+            message: "They won't see any of your stories or highlights. They won't be told.",
+            confirmLabel: 'Hide story',
+          },
+          () => hideStory(targetUserId),
+          `Your stories are hidden from ${name}.`,
         );
 
   const handleBlock = () =>
@@ -267,8 +333,14 @@ export const UserActionsSheet: React.FC<Props> = ({
 
   return (
     <>
-      <ReanimatedBottomSheet visible={visible} onClose={onClose} maxHeight={560}>
-        <View style={styles.container}>
+      <ReanimatedBottomSheet visible={visible} onClose={onClose} maxHeight={Math.round(windowHeight * 0.85)}>
+        {/* Eight rows do not fit a small phone (iPhone SE is 667pt): scroll instead of clipping. */}
+        <ScrollView
+          style={{ maxHeight: Math.round(windowHeight * 0.85) - 80 }}
+          contentContainerStyle={styles.container}
+          showsVerticalScrollIndicator={false}
+          bounces={false}
+        >
           {!!username && (
             <>
               <Row icon="share-social-outline" label="Share profile" onPress={handleShare} />
@@ -286,6 +358,24 @@ export const UserActionsSheet: React.FC<Props> = ({
             }
             onPress={handleMute}
             loading={busy === 'mute'}
+          />
+          <Row
+            icon={isRestricted ? 'shield-checkmark-outline' : 'shield-outline'}
+            label={isRestricted ? 'Unrestrict' : 'Restrict'}
+            hint={
+              isRestricted
+                ? 'Their comments are hidden from others right now'
+                : 'Only they see their comments on your battles. No notifications from them.'
+            }
+            onPress={handleRestrict}
+            loading={busy === 'restrict'}
+          />
+          <Row
+            icon={isStoryHidden ? 'eye-outline' : 'eye-off-outline'}
+            label={isStoryHidden ? 'Show your story' : 'Hide your story'}
+            hint={isStoryHidden ? 'They currently cannot see your stories' : "They won't see your stories or highlights"}
+            onPress={handleStoryHide}
+            loading={busy === 'storyHide'}
           />
           <Row
             icon="flag-outline"
@@ -306,7 +396,7 @@ export const UserActionsSheet: React.FC<Props> = ({
             danger={!isBlocked}
             loading={busy === 'block'}
           />
-        </View>
+        </ScrollView>
       </ReanimatedBottomSheet>
       {/* Modals, so they draw above the sheet's Portal on native and web. */}
       {reasonDialog}

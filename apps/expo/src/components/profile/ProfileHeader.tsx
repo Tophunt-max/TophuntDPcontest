@@ -22,7 +22,9 @@ import { startChat } from '@/src/services/messages/messageService';
 import { useFeature } from '@/src/services/appSettings';
 import { Colors } from '@/constants/theme';
 import { UserActionsSheet } from '@/src/components/profile/UserActionsSheet';
-import { useUnblockUser } from '@/src/hooks/useProfileData';
+import { useMutualFollowers, useUnblockUser } from '@/src/hooks/useProfileData';
+import { useAuth } from '@/src/hooks/useAuth';
+import { Avatar } from '@/src/components/ui/Avatar';
 import { emitToast } from '@/src/lib/toastBridge';
 import { reportError } from '@/src/lib/reportError';
 import { useDesignWindow } from '@/src/lib/layout';
@@ -44,6 +46,11 @@ type ProfileHeaderProps = {
    */
   connectionsLocked?: boolean;
   onRefresh?: () => void;
+  /** They follow the viewer: shows a "Follows you" badge. */
+  followsMe?: boolean;
+  /** The viewer's own Restrict / Hide-story choices, for the ⋮ sheet. */
+  isRestricted?: boolean;
+  isStoryHidden?: boolean;
 };
 
 /**
@@ -52,6 +59,43 @@ type ProfileHeaderProps = {
  * still has to be able to find the person in order to unblock them. Everything
  * except the identity and an Unblock button is suppressed.
  */
+/**
+ * "Followed by @a, @b and 3 others" — accounts the viewer follows that also
+ * follow this profile. Hidden for guests and when there are none. Tapping opens
+ * the profile's followers list.
+ */
+const MutualFollowersLine: React.FC<{ targetUserId: string; isDark: boolean; onOpen?: () => void }> = ({
+  targetUserId,
+  isDark,
+  onOpen,
+}) => {
+  const { user: viewer } = useAuth();
+  const { data } = useMutualFollowers(targetUserId, !!viewer);
+  if (!data || data.count === 0) return null;
+  const names = data.users.map((u) => `@${u.username || 'user'}`);
+  const others = data.count - names.length;
+  const text = others > 0 ? `${names.join(', ')} and ${others} other${others === 1 ? '' : 's'}` : names.join(' and ');
+  return (
+    <TouchableOpacity
+      style={styles.mutualsRow}
+      onPress={() => onOpen?.()}
+      accessibilityRole="button"
+      accessibilityLabel={`Followed by ${text}`}
+    >
+      <View style={styles.mutualsAvatars}>
+        {data.users.map((u, i) => (
+          <View key={u.uid} style={[styles.mutualAvatar, { marginLeft: i === 0 ? 0 : -8, borderColor: isDark ? '#181A20' : '#FFF' }]}>
+            <Avatar uri={u.avatarUrl} name={u.username || 'user'} size={20} />
+          </View>
+        ))}
+      </View>
+      <Text style={[styles.mutualsText, { color: isDark ? '#BDBDBD' : '#666' }]} numberOfLines={2}>
+        Followed by <Text style={styles.mutualsNames}>{text}</Text>
+      </Text>
+    </TouchableOpacity>
+  );
+};
+
 const BlockedProfileNotice: React.FC<{
   user: UserProfile;
   isDark: boolean;
@@ -98,7 +142,18 @@ const calculateLevelInfo = (xp: number) => {
     return { level, progressXp: currentLevelProgress, nextLevelXp: nextLevelThreshold, percentage: Math.min(percentage, 100) };
 };
 
-const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onToggleFollow, isFollowing: isFollowingProp, followState, connectionsLocked, onRefresh }) => {
+const ProfileHeader: React.FC<ProfileHeaderProps> = ({
+  user,
+  isOwnProfile,
+  onToggleFollow,
+  isFollowing: isFollowingProp,
+  followState,
+  connectionsLocked,
+  onRefresh,
+  followsMe = false,
+  isRestricted = false,
+  isStoryHidden = false,
+}) => {
   const state: FollowState = followState ?? (isFollowingProp ? 'following' : 'none');
   const isFollowing = isFollowActive(state);
   const { requireAuth } = useAuthGate();
@@ -288,6 +343,8 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
           username={user.username}
           isBlocked={isBlockedByMe}
           isMuted={isMutedByMe}
+          isRestricted={isRestricted}
+          isStoryHidden={isStoryHidden}
           isDark={isDark}
         />
       )}
@@ -313,7 +370,15 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ user, isOwnProfile, onTog
           </Text>
           <VerifiedBadge verified={user.verified} size={20} />
         </View>
+        {!isOwnProfile && followsMe && (
+          <View style={[styles.followsYouPill, { backgroundColor: isDark ? '#2A2D35' : '#F1F1F4' }]} accessibilityLabel="Follows you">
+            <Text style={[styles.followsYouText, { color: isDark ? '#D0D0D0' : '#555' }]}>Follows you</Text>
+          </View>
+        )}
         {user.bio ? <Text style={[styles.bioText, { color: isDark ? '#E0E0E0' : '#666' }]}>{user.bio}</Text> : null}
+        {!isOwnProfile && (
+          <MutualFollowersLine targetUserId={user.uid} isDark={isDark} onOpen={() => navigateToConnections('followers')} />
+        )}
       </View>
       
       {/* ACTION BUTTONS (Edit Profile vs Follow/Message) */}
@@ -431,6 +496,13 @@ const styles = StyleSheet.create({
   infoSection: { alignItems: 'center', marginTop: 15, paddingHorizontal: 20 },
   fullNameText: { fontSize: 22, fontFamily: 'Urbanist-Bold' },
   bioText: { fontSize: 14, textAlign: 'center', marginTop: 8, fontFamily: 'Urbanist-Regular' },
+  followsYouPill: { alignSelf: 'center', marginTop: 6, paddingHorizontal: 10, paddingVertical: 3, borderRadius: 10 },
+  followsYouText: { fontSize: 12, fontFamily: 'Urbanist-SemiBold' },
+  mutualsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 10, paddingHorizontal: 24, gap: 8 },
+  mutualsAvatars: { flexDirection: 'row' },
+  mutualAvatar: { borderWidth: 1.5, borderRadius: 12, overflow: 'hidden' },
+  mutualsText: { flexShrink: 1, fontSize: 12, fontFamily: 'Urbanist-Regular' },
+  mutualsNames: { fontFamily: 'Urbanist-SemiBold' },
   
   // Action Buttons
   actionButtonsContainer: { marginTop: 20, paddingHorizontal: 20, alignItems: 'center' },

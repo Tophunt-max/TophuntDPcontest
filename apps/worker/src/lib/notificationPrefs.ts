@@ -101,6 +101,8 @@ export const CATEGORY_BY_TYPE: Record<string, NotificationCategory> = {
 
   // --- admin / marketing ---
   admin: "admin",
+  // "Update on your report" to the person who reported (routes/admin.ts).
+  report_update: "admin",
   event: "admin",
   ad: "admin",
 };
