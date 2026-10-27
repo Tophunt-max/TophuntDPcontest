@@ -101,7 +101,7 @@ describe('imgVariant — off state is a perfect passthrough', () => {
 describe('imgVariant — on state', () => {
   it('builds a variant for a url already on the current base', () => {
     expect(thumbUrl(env(), `${CURRENT}/stories/images/abc.jpg`)).toBe(
-      `${CURRENT}/cdn-cgi/image/width=320,quality=70,fit=scale-down,format=auto/stories/images/abc.jpg`,
+      `${CURRENT}/cdn-cgi/image/width=320,quality=70,fit=scale-down,format=auto,onerror=redirect/stories/images/abc.jpg`,
     );
   });
 
@@ -121,7 +121,7 @@ describe('imgVariant — on state', () => {
       fit: 'contain',
       format: 'webp',
     });
-    expect(out).toBe(`${CURRENT}/cdn-cgi/image/width=100,height=50,quality=90,fit=contain,format=webp/a/b.jpg`);
+    expect(out).toBe(`${CURRENT}/cdn-cgi/image/width=100,height=50,quality=90,fit=contain,format=webp,onerror=redirect/a/b.jpg`);
   });
 
   it('uses scale-down on every preset, so a variant is never upscaled', () => {
@@ -286,13 +286,13 @@ describe('enrichMatchMedia', () => {
       expect(out[side].mediaUrl).toBe(`${CURRENT}/contests/images/entry.jpg`);
       expect(out[side].profilePic).toBe(`${CURRENT}/avatars/images/av.jpg`);
       expect(out[side].mediaUrlThumb).toBe(
-        `${CURRENT}/cdn-cgi/image/width=320,quality=70,fit=scale-down,format=auto/contests/images/entry.jpg`,
+        `${CURRENT}/cdn-cgi/image/width=320,quality=70,fit=scale-down,format=auto,onerror=redirect/contests/images/entry.jpg`,
       );
       expect(out[side].mediaUrlOptimized).toBe(
-        `${CURRENT}/cdn-cgi/image/width=1080,quality=82,fit=scale-down,format=auto/contests/images/entry.jpg`,
+        `${CURRENT}/cdn-cgi/image/width=1080,quality=82,fit=scale-down,format=auto,onerror=redirect/contests/images/entry.jpg`,
       );
       expect(out[side].profilePicThumb).toBe(
-        `${CURRENT}/cdn-cgi/image/width=128,quality=75,fit=scale-down,format=auto/avatars/images/av.jpg`,
+        `${CURRENT}/cdn-cgi/image/width=128,quality=75,fit=scale-down,format=auto,onerror=redirect/avatars/images/av.jpg`,
       );
     }
   });

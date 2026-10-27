@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, Image, FlatList, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { AppImage } from '@/src/components/ui/AppImage';
 import { fetchUserHighlights } from '@/src/services/stories/storyService';
 import { Ionicons } from '@/src/lib/icons';
 import { useRouter } from 'expo-router';
@@ -40,7 +41,7 @@ const Highlights: React.FC<HighlightsProps> = ({ userId }) => {
         onPress={() => handleHighlightPress(item.id)}
     >
       <View style={styles.imageWrapper}>
-        <Image source={{ uri: item.coverImageUrl }} style={styles.image} />
+        <AppImage source={{ uri: item.coverImageUrl }} displayWidth={64} style={styles.image} contentFit="cover" />
       </View>
       <Text style={styles.name} numberOfLines={1}>{item.name}</Text>
     </TouchableOpacity>

@@ -215,7 +215,7 @@ export default function BlogDetailScreen({ permalink = false }: Props) {
             {/* Hero cover with floating back/share pills */}
             {post.coverImageUrl ? (
               <View style={styles.heroWrap}>
-                <Image source={{ uri: post.coverImageUrl }} style={[styles.cover, { height: heroH }]} contentFit="cover" transition={220} />
+                <Image source={{ uri: post.coverImageUrl }} displayWidth={colW} style={[styles.cover, { height: heroH }]} contentFit="cover" transition={220} />
                 <View style={styles.heroOverlay} pointerEvents="box-none">
                   <TouchableOpacity onPress={goToBlog} style={styles.pill} hitSlop={6}>
                     <Text style={styles.pillText}>{'\u2190'}  All posts</Text>

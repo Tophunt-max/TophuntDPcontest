@@ -216,7 +216,7 @@ export default function HighlightView() {
       <StatusBar hidden />
       <View style={styles.mediaContainer} {...mainPanResponder.panHandlers}>
         {currentStory.mediaType === 'image' ? (
-            <Image source={{ uri: currentStory.mediaUrl }} style={[styles.media, { width }]} contentFit="contain" />
+            <Image source={{ uri: currentStory.mediaUrl }} displayWidth={width} style={[styles.media, { width }]} contentFit="contain" />
         ) : (
             <VideoView player={player} style={[styles.media, { width }]} contentFit="contain" />
         )}
@@ -233,7 +233,7 @@ export default function HighlightView() {
             ))}
           </View>
           <View style={styles.userInfo}>
-            <Image source={{ uri: highlightData.avatarUrl }} style={styles.avatar} />
+            <Image source={{ uri: highlightData.avatarUrl }} displayWidth={40} style={styles.avatar} contentFit="cover" />
             <View style={styles.userTextContainer}>
                 <Text style={styles.username}>{highlightData.username}</Text>
                 <Text style={styles.timeAgo}>{highlightData.name}</Text>
@@ -269,7 +269,7 @@ export default function HighlightView() {
               keyExtractor={(item, index) => `${item.uid}_${index}`}
               renderItem={({ item }) => (
                   <View style={styles.viewerItem}>
-                      <Image source={{ uri: item.avatarUrl }} style={styles.viewerAvatar} />
+                      <Image source={{ uri: item.avatarUrl }} displayWidth={45} style={styles.viewerAvatar} contentFit="cover" />
                       <Text style={styles.viewerName}>{item.username}</Text>
                       <Text style={styles.viewTime}>
                           {formatClockTime(item.viewedAt)}

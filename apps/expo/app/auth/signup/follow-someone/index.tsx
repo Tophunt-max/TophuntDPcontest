@@ -3,13 +3,13 @@ import {
   View,
   Text,
   FlatList,
-  Image,
   TouchableOpacity,
   StyleSheet,
   TextInput,
   ActivityIndicator,
   RefreshControl,
 } from "react-native";
+import { AppImage } from '@/src/components/ui/AppImage';
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { fetchSuggestedUsers, toggleFollowService } from "@/src/services/users";
@@ -152,7 +152,7 @@ export default function FollowSomeone() {
             const followed = (signup.following || []).includes(item.id);
             return (
               <View style={styles.userCard}>
-                <Image source={{ uri: item.avatar }} style={styles.avatar} />
+                <AppImage source={{ uri: item.avatar }} displayWidth={50} style={styles.avatar} contentFit="cover" />
                 <View style={{ flex: 1 }}>
                     <Text style={styles.userName}>{item.name}</Text>
                     <Text style={styles.userHandle}>@{item.username}</Text>

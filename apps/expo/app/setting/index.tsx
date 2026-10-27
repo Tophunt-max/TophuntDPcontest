@@ -455,6 +455,14 @@ export default function SettingScreen() {
             accessibilityHint: 'Removes cached photos and videos to free up storage',
           })}
 
+        {/* Instagram's "Use less mobile data": lighter photos, no preloading. */}
+        {renderItem({
+          icon: <Ionicons name="cellular-outline" size={24} color={textColor} />,
+          label: 'Data Saver',
+          onPress: () => router.push('/setting/data-saver' as any),
+          accessibilityHint: 'Load lighter photos and skip preloading to use less data',
+        })}
+
         {sectionTitle('SUPPORT')}
 
         {renderItem({

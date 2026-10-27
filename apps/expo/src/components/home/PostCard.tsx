@@ -1,6 +1,7 @@
 import React, { useState, memo, useEffect, useCallback, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Pressable, ActivityIndicator, AccessibilityInfo } from 'react-native';
 import { AppImage as ExpoImage } from '../ui/AppImage';
+import { useDesignWindow } from '@/src/lib/layout';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { Ionicons, MaterialCommunityIcons } from '@/src/lib/icons';
 import { CommentSheet } from '../comments/CommentSheet';
@@ -92,6 +93,9 @@ const FitBackdrop = ({ uri }: { uri?: string | null }) =>
     <>
       <ExpoImage
         source={uri}
+        // Blurred to mush anyway: the smallest variant (128) is plenty and is
+        // usually already in the cache from a thumbnail elsewhere.
+        displayWidth={40}
         style={StyleSheet.absoluteFill}
         contentFit="cover"
         blurRadius={24}
@@ -102,10 +106,12 @@ const FitBackdrop = ({ uri }: { uri?: string | null }) =>
     </>
   ) : null;
 
-const PhotoMedia = ({ uri, style }: { uri?: string; style: any }) => (
+const PhotoMedia = ({ uri, style, width }: { uri?: string; style: any; width?: number }) => (
   <View style={[style, styles.fitFrame]}>
     <FitBackdrop uri={uri} />
-    <ExpoImage source={uri} style={StyleSheet.absoluteFill} contentFit="contain" />
+    {/* Loaded at the slot's real width (half the card), so a small or 1x/2x
+        screen gets the 320 variant instead of always the 1080 one. */}
+    <ExpoImage source={uri} displayWidth={width} style={StyleSheet.absoluteFill} contentFit="contain" />
   </View>
 );
 
@@ -196,8 +202,20 @@ const VideoMedia = ({ uri, style, active }: { uri: string; style: any; active: b
   );
 };
 
-const BattleMedia = ({ isVideo, uri, style, active }: { isVideo: boolean; uri?: string; style: any; active: boolean }) =>
-  isVideo && uri ? <VideoMedia uri={uri} style={style} active={active} /> : <PhotoMedia uri={uri} style={style} />;
+const BattleMedia = ({
+  isVideo,
+  uri,
+  style,
+  active,
+  width,
+}: {
+  isVideo: boolean;
+  uri?: string;
+  style: any;
+  active: boolean;
+  width?: number;
+}) =>
+  isVideo && uri ? <VideoMedia uri={uri} style={style} active={active} /> : <PhotoMedia uri={uri} style={style} width={width} />;
 
 /** Compact vote count formatting (1.2k / 3.4M) for the on-image chips. */
 const formatVotes = (n: number): string => {
@@ -210,6 +228,10 @@ const formatVotes = (n: number): string => {
 export const PostCard = memo(({ item, isDark, onMatchEnded, onNotInterested, liveActive = true, playActive = true }: PostCardProps) => {
   const { user } = useAuth();
   const { requireAuth } = useAuthGate();
+  // Each A/B slot: the card column minus mediaSection's 16px side margins and
+  // 12px gap, halved. Drives the responsive image size (src/lib/imageVariants.ts).
+  const { width: columnWidth } = useDesignWindow();
+  const slotWidth = Math.max(1, (columnWidth - 32 - 12) / 2);
   const router = useRouter();
   const { addToast } = useToast();
 
@@ -823,6 +845,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, onNotInterested, liv
             uri={item.userA.mediaUrlOptimized || item.userA.mediaUrl}
             style={styles.postImage}
             active={playActive}
+            width={slotWidth}
           />
           {aWins && <View style={styles.crownContainer}><MaterialCommunityIcons name="crown" size={20} color="#FFD700" /></View>}
         </View>
@@ -834,6 +857,7 @@ export const PostCard = memo(({ item, isDark, onMatchEnded, onNotInterested, liv
               uri={userB.mediaUrlOptimized || userB.mediaUrl}
               style={styles.postImage}
               active={playActive}
+              width={slotWidth}
             />
           ) : (
             // Waiting for an opponent: the slot stays, empty, rather than throwing.

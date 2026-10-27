@@ -23,7 +23,8 @@ import { Alert } from '@/src/lib/appAlert';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { AppImage as Image } from '@/src/components/ui/AppImage';
+import { AppImage as Image, displayImageUrl } from '@/src/components/ui/AppImage';
+import { STORY_IMAGE_WIDTH } from '@/src/lib/imageVariants';
 import { useVideoPlayer, VideoView, createVideoPlayer } from 'expo-video';
 import { useAudioPlayer } from 'expo-audio';
 import {
@@ -206,7 +207,7 @@ export default function StoryView() {
   useEffect(() => {
     const adjacentImages = [nextStoryItem, prevStoryItem]
       .filter((s) => s && !isVideoStory(s) && !!s.mediaUrl)
-      .map((s) => s!.mediaUrl);
+      .map((s) => displayImageUrl(s!.mediaUrl, STORY_IMAGE_WIDTH));
     if (adjacentImages.length) void prefetchImages(adjacentImages);
   }, [nextStoryItem?.mediaUrl, prevStoryItem?.mediaUrl]);
 
@@ -1000,6 +1001,9 @@ export default function StoryView() {
                 <View style={[styles.mediaSafe, { paddingTop: insets.top + CHROME_TOP, paddingBottom: insets.bottom + CHROME_BOTTOM }]}>
                     <Image
                         source={{ uri: currentStory.mediaUrl }}
+                        // Full width of the viewer (1080 variant on most phones).
+                        // Must match the prefetch below and in StoriesBar.
+                        displayWidth={STORY_IMAGE_WIDTH}
                         style={styles.mediaFill}
                         contentFit="contain"
                         accessibilityLabel={`Story by ${currentUserStories?.username || 'user'}`}
@@ -1288,7 +1292,7 @@ export default function StoryView() {
                     </View>
                     <FlatList data={highlights} horizontal showsHorizontalScrollIndicator={false} keyExtractor={(item) => item.id} contentContainerStyle={{ paddingVertical: 20 }} renderItem={({ item }) => (
                         <TouchableOpacity style={styles.highlightItem} onPress={() => handleAddToHighlight(item.id)}>
-                            <Image source={{ uri: item.coverImageUrl }} style={styles.highlightThumb} />
+                            <Image source={{ uri: item.coverImageUrl }} displayWidth={60} style={styles.highlightThumb} contentFit="cover" />
                             <Text style={[styles.highlightName, { color: textColorTheme }]} numberOfLines={1}>{item.name}</Text>
                         </TouchableOpacity>
                     )} />
@@ -1305,7 +1309,7 @@ export default function StoryView() {
             </View>
             <FlatList data={viewers} keyExtractor={(item, index) => `${item.uid}_${index}`} renderItem={({ item }) => (
                 <View style={[styles.viewerItem, { borderBottomColor: isDarkTheme ? '#35383F' : '#F0F0F0' }]}>
-                    <Image source={{ uri: item.avatarUrl }} style={styles.viewerAvatar} />
+                    <Image source={{ uri: item.avatarUrl }} displayWidth={45} style={styles.viewerAvatar} contentFit="cover" />
                     <View style={{ flex: 1 }}>
                         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                             <Text style={[styles.viewerName, { color: textColorTheme }]} numberOfLines={1}>{item.username}</Text>

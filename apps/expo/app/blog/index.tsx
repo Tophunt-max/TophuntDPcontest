@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { AppImage as Image } from '@/src/components/ui/AppImage';
+import { useDesignWindow } from '@/src/lib/layout';
 import { Ionicons } from '@/src/lib/icons';
 import { BackButton } from '@/src/components/ui/BackButton';
 import { BlogSkeleton } from '@/src/components/skeletons/BlogSkeleton';
@@ -22,6 +23,8 @@ import { useWebSeo } from '@/src/lib/webSeo';
 
 export default function BlogListScreen() {
   const router = useRouter();
+  // Card width for the responsive cover (the list is a phone column on desktop too).
+  const { width: screenW } = useDesignWindow();
   const isDark = useColorScheme() === 'dark';
 
   useWebSeo({
@@ -139,6 +142,10 @@ export default function BlogListScreen() {
             // is not building variants. This list was downloading full-resolution
             // covers to render them a few hundred pixels wide.
             source={{ uri: item.coverImageUrlThumb || item.coverImageUrl }}
+            // Card width, capped at the 320 variant: one size per blog cover saves
+            // free-plan transformations (the article page uses the 1080 one).
+            displayWidth={Math.min(screenW, 800) - 32}
+            maxVariantWidth={320}
             style={featured ? styles.featuredImage : styles.cardImage}
             contentFit="cover"
             transition={200}

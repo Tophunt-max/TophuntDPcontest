@@ -1,5 +1,6 @@
 import React from 'react';
-import { View, FlatList, Image, StyleSheet, Text, ActivityIndicator } from 'react-native';
+import { View, FlatList, StyleSheet, Text, ActivityIndicator } from 'react-native';
+import { AppImage } from '@/src/components/ui/AppImage';
 import { Post } from '@/src/types/user';
 import { Ionicons } from '@/src/lib/icons';
 import { Colors } from '@/constants/theme';
@@ -29,7 +30,7 @@ const PostGrid: React.FC<PostGridProps> = ({
   const itemSize = width / numColumns;
   const renderItem = ({ item }: { item: Post }) => (
     <View style={[styles.itemContainer, { width: itemSize, height: itemSize * 1.5 }]}>
-      <Image source={{ uri: item.mediaUrl }} style={styles.itemImage} />
+      <AppImage source={{ uri: item.mediaUrl }} displayWidth={itemSize} style={styles.itemImage} contentFit="cover" />
       {item.mediaType === 'video' && (
         <Ionicons name="play" size={24} color="white" style={styles.videoIcon} />
       )}

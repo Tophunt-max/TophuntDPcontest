@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, Image, Platform, useWindowDimensions, type ImageSourcePropType } from 'react-native';
+import { AppImage } from '@/src/components/ui/AppImage';
 import Animated, { useAnimatedStyle, useFrameCallback, useSharedValue } from 'react-native-reanimated';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useReduceMotion } from '@/src/hooks/usePlaybackEnvironment';
@@ -92,7 +93,7 @@ export function SplashVisual({
       <Animated.View style={[styles.logoContainer, logoStyle]}>
         {imageSource ? (
           // Admin-configured splash image (`splashImageUrl`): keep the square card look.
-          <Image source={imageSource} style={styles.customLogo} resizeMode="contain" accessibilityLabel="TopHunt" />
+          <AppImage source={imageSource as any} displayWidth={140} style={styles.customLogo} contentFit="contain" transition={0} accessibilityLabel="TopHunt" />
         ) : (
           <Image
             source={LOGO}

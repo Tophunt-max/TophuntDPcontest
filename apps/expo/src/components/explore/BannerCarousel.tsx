@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, Linking, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
-import { Image } from 'expo-image';
+import { AppImage } from '@/src/components/ui/AppImage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { bannerTarget } from '@/src/lib/exploreMedia';
@@ -83,7 +83,7 @@ export function BannerCarousel({ banners, width }: { banners: ExploreBanner[]; w
             accessibilityRole={bannerTarget(item.link) ? 'link' : 'image'}
             accessibilityLabel={[item.title, item.subtitle].filter(Boolean).join('. ') || 'Promotion'}
           >
-            <Image source={{ uri: item.imageUrl }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} cachePolicy="memory-disk" />
+            <AppImage source={{ uri: item.imageUrl }} displayWidth={itemW} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
             {item.title || item.subtitle ? (
               <LinearGradient colors={['transparent', 'rgba(0,0,0,0.72)']} style={styles.scrim}>
                 {item.title ? <Text style={styles.title} numberOfLines={1}>{item.title}</Text> : null}

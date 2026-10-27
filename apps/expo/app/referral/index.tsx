@@ -8,8 +8,8 @@ import {
   TextInput,
   ActivityIndicator,
   RefreshControl,
-  Image,
 } from 'react-native';
+import { AppImage } from '@/src/components/ui/AppImage';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
@@ -323,7 +323,7 @@ export default function ReferralScreen() {
             data.referrals.map((r) => (
               <View key={r.id} style={[styles.friend, { backgroundColor: card, borderColor: border }]}>
                 {r.avatarUrl ? (
-                  <Image source={{ uri: r.avatarUrl }} style={styles.avatar} />
+                  <AppImage source={{ uri: r.avatarUrl }} displayWidth={40} style={styles.avatar} contentFit="cover" />
                 ) : (
                   <View style={[styles.avatar, { backgroundColor: BRAND, alignItems: 'center', justifyContent: 'center' }]}>
                     <Text style={{ color: '#fff', fontFamily: 'Urbanist-Bold' }}>{(r.username || '?').slice(0, 1).toUpperCase()}</Text>

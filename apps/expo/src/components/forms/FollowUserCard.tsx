@@ -1,5 +1,6 @@
 import React from 'react';
-import { View, Text, Image, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { AppImage } from '@/src/components/ui/AppImage';
 import { PrimaryButton } from '../buttons/PrimaryButton'; // Assuming we can reuse generic button or create specific small one
 
 interface User {
@@ -18,7 +19,7 @@ interface FollowUserCardProps {
 export const FollowUserCard: React.FC<FollowUserCardProps> = ({ user, isFollowing, onToggleFollow }) => {
   return (
     <View style={styles.container}>
-      <Image source={{ uri: user.avatarUrl }} style={styles.avatar} />
+      <AppImage source={{ uri: user.avatarUrl }} displayWidth={60} style={styles.avatar} contentFit="cover" />
       <View style={styles.info}>
         <Text style={styles.name}>{user.fullName}</Text>
         <Text style={styles.occupation}>{user.occupation}</Text>

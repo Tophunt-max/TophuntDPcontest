@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, ActivityIndicator, Keyboard } from 'react-native';
+import { AppImage } from '@/src/components/ui/AppImage';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { Image } from 'expo-image';
 import { BackButton } from '@/src/components/ui/BackButton';
 import { Ionicons } from '@/src/lib/icons';
 import { CloseIcon } from '@/src/components/ui/CloseIcon';
@@ -214,7 +214,7 @@ export default function ExploreSearchScreen() {
                   >
                     <View style={[styles.contestIcon, { backgroundColor: p.chip }]}>
                       {c.bannerUrl ? (
-                        <Image source={{ uri: c.bannerUrl }} style={StyleSheet.absoluteFill} contentFit="cover" />
+                        <AppImage source={{ uri: c.bannerUrl }} displayWidth={44} style={StyleSheet.absoluteFill} contentFit="cover" />
                       ) : (
                         <Ionicons name={typeIcon(c.type)} size={20} color={BRAND} />
                       )}
@@ -252,7 +252,7 @@ export default function ExploreSearchScreen() {
                   <TouchableOpacity key={b.id} style={styles.contest} onPress={() => go(`/blog/${b.slug}`)} accessibilityRole="link">
                     <View style={[styles.contestIcon, { backgroundColor: p.chip }]}>
                       {b.coverImageUrlThumb || b.coverImageUrl ? (
-                        <Image source={{ uri: b.coverImageUrlThumb || b.coverImageUrl }} style={StyleSheet.absoluteFill} contentFit="cover" />
+                        <AppImage source={{ uri: b.coverImageUrlThumb || b.coverImageUrl }} displayWidth={44} style={StyleSheet.absoluteFill} contentFit="cover" />
                       ) : (
                         <Ionicons name="newspaper-outline" size={20} color={BRAND} />
                       )}

@@ -1,9 +1,11 @@
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { PixelRatio } from 'react-native';
 import { Image, type ImageProps } from 'expo-image';
+import { originalImageUrl, previewImageUrl, responsiveImageUrl } from '@/src/lib/imageVariants';
 
 /**
  * The app's standard image component — a thin wrapper over `expo-image` that
- * applies our caching defaults in one place.
+ * applies our caching defaults and responsive sizing in one place.
  *
  * Why this exists: `cachePolicy` was set on only 3 of the 9 `expo-image` call
  * sites, so most images used the library default (`'disk'`). Disk caching alone
@@ -11,7 +13,7 @@ import { Image, type ImageProps } from 'expo-image';
  * scrolling feel heavy even though the bytes were already local. Centralising the
  * defaults means they cannot drift apart again.
  *
- * Three defaults, all overridable per call site:
+ * Defaults, all overridable per call site:
  *
  *  - `cachePolicy: 'memory-disk'` — adds an in-memory layer on top of disk, so a
  *    row scrolling back into view is instant rather than a fresh decode.
@@ -19,7 +21,21 @@ import { Image, type ImageProps } from 'expo-image';
  *    reuses row views) this is what stops a row briefly showing the PREVIOUS
  *    row's image before the new one loads.
  *  - `transition: 180` — a short cross-fade instead of a hard pop-in.
+ *
+ * Responsive sizing (`displayWidth`): pass the width the image is drawn at, in
+ * points, and one of our media urls is loaded as a Cloudflare variant of that
+ * size × the screen density (src/lib/imageVariants.ts). If the variant fails, the ORIGINAL
+ * is tried once before `onError` fires, so a transformation outage degrades to
+ * full-size images, never to blank ones. Without `displayWidth` the url is used
+ * exactly as given.
  */
+
+type Props = ImageProps & {
+  /** Rendered width in points. Enables the responsive Cloudflare variant. */
+  displayWidth?: number;
+  /** Cap the variant (e.g. 320 for list thumbnails) to save transformations. */
+  maxVariantWidth?: number;
+};
 
 /** Best-effort URI extraction, used only to derive a stable recycling key. */
 function uriOf(source: ImageProps['source']): string | undefined {
@@ -34,22 +50,80 @@ function uriOf(source: ImageProps['source']): string | undefined {
   return undefined;
 }
 
-export const AppImage: React.FC<ImageProps> = ({
+export const AppImage: React.FC<Props> = ({
   source,
   cachePolicy,
   recyclingKey,
   transition,
+  displayWidth,
+  maxVariantWidth,
+  placeholder,
+  onError,
   ...rest
-}) => (
-  <Image
-    source={source}
-    cachePolicy={cachePolicy ?? 'memory-disk'}
-    // `?? uriOf(source)` rather than `||` so an explicit null (meaning "do not
-    // reset on recycle") is preserved.
-    recyclingKey={recyclingKey ?? uriOf(source)}
-    transition={transition ?? 180}
-    {...rest}
-  />
-);
+}) => {
+  const rawUri = uriOf(source);
+  // Only plain `{ uri }` / string sources are resized; arrays, local requires
+  // and refs pass through untouched.
+  const resizable = !!rawUri && !Array.isArray(source) && (typeof source === 'string' || typeof source === 'object');
+  const dpr = PixelRatio.get();
+  // Chosen ONCE per image (memo deps exclude the network policy): if the
+  // connection or Data saver changes while this image is on screen, it keeps the
+  // variant it has instead of flashing and downloading another copy. Images that
+  // mount afterwards get the new policy.
+  const variant = useMemo(
+    () => (resizable && displayWidth ? responsiveImageUrl(rawUri, displayWidth, dpr, maxVariantWidth) : rawUri),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rawUri, displayWidth, maxVariantWidth, resizable],
+  );
+  const preview = useMemo(
+    () => (placeholder ? null : previewImageUrl(rawUri, variant as string)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rawUri, variant],
+  );
+
+  // Fall back to the original once if the variant fails.
+  const [useOriginal, setUseOriginal] = useState(false);
+  useEffect(() => setUseOriginal(false), [rawUri]);
+  const finalUri = useOriginal ? originalImageUrl(rawUri) : variant;
+  const isVariant = !!variant && variant !== rawUri;
+
+  const finalSource = useMemo(() => {
+    if (!resizable || !finalUri || finalUri === rawUri) return source;
+    return typeof source === 'object' && source && !Array.isArray(source)
+      ? { ...(source as object), uri: finalUri }
+      : finalUri;
+  }, [resizable, finalUri, rawUri, source]);
+
+
+  return (
+    <Image
+      source={finalSource}
+      cachePolicy={cachePolicy ?? 'memory-disk'}
+      // `?? uriOf(source)` rather than `||` so an explicit null (meaning "do not
+      // reset on recycle") is preserved. Keyed on the stored url, not the
+      // variant, so a density change does not count as a different row.
+      recyclingKey={recyclingKey ?? rawUri}
+      transition={transition ?? 180}
+      placeholder={placeholder ?? preview ?? undefined}
+      placeholderContentFit={rest.placeholderContentFit ?? rest.contentFit}
+      onError={(e) => {
+        if (isVariant && !useOriginal) {
+          setUseOriginal(true);
+          return;
+        }
+        onError?.(e);
+      }}
+      {...rest}
+    />
+  );
+};
+
+/**
+ * The exact url `<AppImage displayWidth={w}>` will load for `url`, for callers
+ * that prefetch: warming any other url would download a second copy.
+ */
+export function displayImageUrl(url: string | null | undefined, displayWidth: number): string | null | undefined {
+  return responsiveImageUrl(url, displayWidth, PixelRatio.get());
+}
 
 export default AppImage;

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Modal, Image, ScrollView, Linking } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Modal, ScrollView, Linking } from 'react-native';
+import { AppImage } from '@/src/components/ui/AppImage';
 import { safeExternalUrl } from '@/src/lib/safeLink';
 import { useQuery } from '@tanstack/react-query';
 import { useThemeColor } from '@/hooks/use-theme-color';
@@ -121,7 +122,7 @@ export function AnnouncementPopup() {
           </TouchableOpacity>
 
           {announcement.image ? (
-            <Image source={{ uri: announcement.image }} style={styles.image} resizeMode="cover" />
+            <AppImage source={{ uri: announcement.image }} displayWidth={420} style={styles.image} contentFit="cover" />
           ) : null}
 
           <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>

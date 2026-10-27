@@ -13,6 +13,7 @@ import {
   TextInput,
   Modal
 } from 'react-native';
+import { AppImage } from '@/src/components/ui/AppImage';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@/src/lib/icons';
@@ -504,7 +505,7 @@ export default function BattleSetupScreen() {
                        {opponent.displayName || opponent.username || "Opponent"}
                     </Text>
                  </View>
-                 <Image source={{ uri: opponent.mediaUrl }} style={styles.previewImg} />
+                 <AppImage source={{ uri: opponent.mediaUrl }} displayWidth={360} style={styles.previewImg} contentFit="cover" />
               </View>
 
               <View style={styles.vsSmallCircle}>
