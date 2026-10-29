@@ -55,8 +55,20 @@ export const SNAPSHOT_FORMAT = 1;
 export const MAX_SNAPSHOT_ITEMS = 16;
 /** Serialized size cap per snapshot. Real pages are a few KB per item. */
 export const MAX_SNAPSHOT_BYTES = 200_000;
-/** Older than this, a snapshot is not shown at all (battle state moves too far). */
-export const MAX_RENDER_AGE_MS = 12 * 60 * 60 * 1000;
+/**
+ * Older than this, a snapshot is not shown at all. A week, like other apps'
+ * offline feeds: it is always revalidated when painted, and battles that ended
+ * more than a day ago are dropped at read time (relevantItems), so an old
+ * snapshot shrinks to what is still worth showing instead of going blank.
+ */
+export const MAX_RENDER_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * Format of a snapshot the server has since answered EMPTY for (nobody
+ * followed, no live battles). Never painted on a normal start, where the empty
+ * answer is the truth; only offered when the network fails and the screen would
+ * otherwise be blank (loadOfflineFeed).
+ */
+export const SUPERSEDED_FORMAT = -SNAPSHOT_FORMAT;
 /** A finished battle older than this is no longer feed material. */
 const COMPLETED_KEEP_MS = 24 * 60 * 60 * 1000;
 
@@ -115,18 +127,34 @@ export function sanitizeFeedItems(items: any[], now = Date.now()): any[] {
   return kept;
 }
 
+/** Drop battles that ended more than a day before `now` (same rule as saving). */
+export function relevantItems(items: any[], now = Date.now()): any[] {
+  return (Array.isArray(items) ? items : []).filter((m) => {
+    const expiresAt = Number(m?.expiresAt);
+    return !(Number.isFinite(expiresAt) && expiresAt < now - COMPLETED_KEEP_MS);
+  });
+}
+
 /** May this snapshot be painted for `owner` right now? */
-export function isRenderable(snap: FeedSnapshot | null | undefined, owner: string, now = Date.now()): snap is FeedSnapshot {
+export function isRenderable(
+  snap: FeedSnapshot | null | undefined,
+  owner: string,
+  now = Date.now(),
+  formats: readonly number[] = [SNAPSHOT_FORMAT],
+): snap is FeedSnapshot {
   return (
     !!snap &&
     snap.owner === owner &&
-    snap.format === SNAPSHOT_FORMAT &&
+    formats.includes(snap.format) &&
     Array.isArray(snap.items) &&
-    snap.items.length > 0 &&
+    relevantItems(snap.items, now).length > 0 &&
     now - snap.fetchedAt >= 0 &&
     now - snap.fetchedAt <= MAX_RENDER_AGE_MS
   );
 }
+
+/** A renderable snapshot with only its still-relevant battles. */
+const trimmed = (snap: FeedSnapshot, now: number): FeedSnapshot => ({ ...snap, items: relevantItems(snap.items, now) });
 
 /**
  * What Home does when a (viewer, tab) is shown.
@@ -299,19 +327,38 @@ export async function loadFeedSnapshot(owner: string, tab: FeedTab, now = Date.n
   const inMemory = memory.get(id);
   if (isRenderable(inMemory, owner, now)) {
     stats.memoryHits += 1;
-    return inMemory;
+    return trimmed(inMemory, now);
   }
   try {
     const fromDisk = await store.read(id);
     if (isRenderable(fromDisk, owner, now)) {
       memory.set(id, fromDisk);
       stats.diskHits += 1;
-      return fromDisk;
+      return trimmed(fromDisk, now);
     }
   } catch (e) {
     console.warn('[feedSnapshot] read failed (continuing without cache)', e);
   }
   stats.misses += 1;
+  return null;
+}
+
+/**
+ * The last saved battles for a screen that would otherwise be blank because
+ * the network failed: a normal snapshot, or one the server later answered empty
+ * for (SUPERSEDED_FORMAT). Shown with the "saved battles" notice. Never throws.
+ */
+export async function loadOfflineFeed(owner: string, tab: FeedTab, now = Date.now()): Promise<FeedSnapshot | null> {
+  const id = snapshotId(owner, tab);
+  const formats = [SNAPSHOT_FORMAT, SUPERSEDED_FORMAT];
+  const inMemory = memory.get(id);
+  if (isRenderable(inMemory, owner, now, formats)) return trimmed(inMemory, now);
+  try {
+    const fromDisk = await store.read(id);
+    if (isRenderable(fromDisk, owner, now, formats)) return trimmed(fromDisk, now);
+  } catch {
+    /* no cache */
+  }
   return null;
 }
 
@@ -330,11 +377,21 @@ export async function saveFeedSnapshot(
   // Drop the other owners' session entries too, mirroring the store.
   for (const [k, v] of memory) if (v.owner !== owner) memory.delete(k);
   if (clean.length === 0) {
-    // An empty answer is a real answer (e.g. nobody followed yet): forget the old
-    // snapshot rather than resurrecting it on the next start.
+    // An empty answer is a real answer (e.g. nobody followed yet, no live
+    // battles): the old snapshot must not be painted on the next start. It is
+    // kept as SUPERSEDED, though, so an offline open can still show what was
+    // last seen instead of a blank screen (loadOfflineFeed).
+    let previous: FeedSnapshot | null = memory.get(id) ?? null;
     memory.delete(id);
     try {
-      await store.remove({ id });
+      previous = previous ?? (await store.read(id));
+      if (previous && previous.owner === owner && previous.items?.length) {
+        if (startedAtGeneration !== generation) return;
+        await store.write(id, { ...previous, format: SUPERSEDED_FORMAT });
+        if (startedAtGeneration !== generation) await store.remove({ id });
+      } else {
+        await store.remove({ id });
+      }
     } catch {
       /* best-effort */
     }

@@ -11,9 +11,17 @@
  *    Pages redirects `*.html` to an extension-less url that this site answers
  *    with the app shell.
  *
+ *  - images from the media host (MEDIA_ORIGINS), cache-first, at most
+ *    MAX_MEDIA_ENTRIES (oldest dropped first), so feed cards, avatars and
+ *    Story thumbnails the user already saw still show offline. Only
+ *    `destination: image` GETs, fetched with CORS so the stored copy is a real
+ *    (not opaque) response; video and Range requests are never cached. Media
+ *    keys are unguessable public URLs, the same bytes the browser HTTP cache
+ *    holds; the app deletes this cache on sign-out (lib/serviceWorker.web.ts).
+ *
  * What it never touches (the request goes straight to the network as if this file
- * did not exist): anything not GET, anything cross-origin (the API, Firebase,
- * Razorpay, media hosts), `/__/*` (Firebase auth proxy), `/api`, `/read`, `/auth/*`
+ * did not exist): anything not GET, anything else cross-origin (the API, Firebase,
+ * Razorpay, media video), `/__/*` (Firebase auth proxy), `/api`, `/read`, `/auth/*`
  * API calls, requests carrying credentials headers, Range requests, and the two
  * service-worker scripts. Responses marked `no-store` or `private` are never kept.
  * Signed-in data is therefore never in Cache Storage; it lives where it did before
@@ -36,6 +44,10 @@ const SHELL_CACHE = `${PREFIX}shell`;
 const SHELL_KEY = '/__sw_shell__';
 /** Runtime-cached hashed files kept at most (oldest dropped first). */
 const MAX_STATIC_ENTRIES = 150;
+/** Offline images. Name shared with src/lib/serviceWorker.web.ts (sign-out clear). */
+const MEDIA_CACHE = `${PREFIX}media`;
+const MEDIA_ORIGINS = ['https://media.tophunt.in'];
+const MAX_MEDIA_ENTRIES = 300;
 
 /** Shown for a navigation when offline and no app shell has been saved yet. */
 const OFFLINE_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -65,10 +77,12 @@ function route(request, origin) {
   } catch {
     return null;
   }
-  if (url.origin !== origin) return null;
-  if (NEVER.test(url.pathname)) return null;
   const h = request.headers;
   if (h.get('authorization') || h.get('range') || h.get('x-admin-secret')) return null;
+  if (url.origin !== origin) {
+    return MEDIA_ORIGINS.includes(url.origin) && request.destination === 'image' ? 'media' : null;
+  }
+  if (NEVER.test(url.pathname)) return null;
   if (request.mode === 'navigate') return 'navigate';
   if (HASHED.test(url.pathname) && !url.search) return 'static';
   return null;
@@ -80,9 +94,31 @@ function storable(res) {
   return !/\bno-store\b|\bprivate\b/.test(cc);
 }
 
-async function trim(cache) {
+async function trim(cache, max = MAX_STATIC_ENTRIES) {
   const keys = await cache.keys();
-  for (let i = 0; i < keys.length - MAX_STATIC_ENTRIES; i++) await cache.delete(keys[i]);
+  for (let i = 0; i < keys.length - max; i++) await cache.delete(keys[i]);
+}
+
+/**
+ * Media image: the saved copy if there is one, else the network (with CORS, so
+ * the copy is storable). If the CORS fetch fails (offline, or a host that does
+ * not allow this origin) the browser's own request runs instead, unchanged.
+ */
+async function mediaFirst(request) {
+  const cache = await caches.open(MEDIA_CACHE);
+  const hit = await cache.match(request.url);
+  if (hit) return hit;
+  let res;
+  try {
+    res = await fetch(new Request(request.url, { mode: 'cors', credentials: 'omit' }));
+  } catch {
+    return fetch(request);
+  }
+  if (storable(res)) {
+    await cache.put(request.url, res.clone());
+    await trim(cache, MAX_MEDIA_ENTRIES);
+  }
+  return res;
 }
 
 async function staticFirst(request) {
@@ -147,6 +183,7 @@ self.addEventListener('fetch', (event) => {
   const kind = route(event.request, self.location.origin);
   if (kind === 'static') event.respondWith(staticFirst(event.request));
   else if (kind === 'navigate') event.respondWith(navigate(event.request));
+  else if (kind === 'media') event.respondWith(mediaFirst(event.request));
 });
 
-self.__tophuntSw = { route, storable, navigate, staticFirst, BUILD_ID, PRECACHE, STATIC_CACHE, SHELL_CACHE, SHELL_KEY };
+self.__tophuntSw = { route, storable, navigate, staticFirst, mediaFirst, BUILD_ID, PRECACHE, STATIC_CACHE, SHELL_CACHE, SHELL_KEY, MEDIA_CACHE, MAX_MEDIA_ENTRIES };

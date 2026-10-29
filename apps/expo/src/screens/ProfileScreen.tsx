@@ -463,13 +463,18 @@ const ProfileContent = ({
             <>
             {isOwnProfile && (
               <>
-                <WalletCard
-                  Dpcoin={profile?.Dpcoin || 0}
-                  lockedCoins={profile?.lockedCoins || 0}
-                  stats={profile?.stats || { contestsJoined: 0, wins: 0, totalVotesReceived: 0 }}
-                  onPress={() => router.push('/wallet')}
-                  onPressWins={() => router.push(`/profile/wins?userId=${targetUserId}`)}
-                />
+                {/* A profile restored from the offline copy has no balance (never
+                    saved to disk, src/lib/queryPersistence.ts): hide the card
+                    rather than show a wrong 0 until the network answers. */}
+                {!(profile as any)?.__offline && (
+                  <WalletCard
+                    Dpcoin={profile?.Dpcoin || 0}
+                    lockedCoins={profile?.lockedCoins || 0}
+                    stats={profile?.stats || { contestsJoined: 0, wins: 0, totalVotesReceived: 0 }}
+                    onPress={() => router.push('/wallet')}
+                    onPressWins={() => router.push(`/profile/wins?userId=${targetUserId}`)}
+                  />
+                )}
                 {/*
                   Physical prizes have no home in the WalletCard — they are not coins
                   and never touch a balance. This renders nothing at all for a user

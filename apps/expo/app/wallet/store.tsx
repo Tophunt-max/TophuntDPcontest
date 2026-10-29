@@ -13,7 +13,7 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@/src/lib/icons';
 import { CoinStoreSkeleton } from '@/src/components/skeletons/CoinStoreSkeleton';
 import { DiamondIcon } from '@/src/components/ui/DiamondIcon';
-import { balancesOf } from '@/src/lib/balances';
+import { balancesOf, hasLiveBalance } from '@/src/lib/balances';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useCoinPackages } from '@/src/hooks/useCoinPackages';
 import { type CoinPackage } from '@/src/lib/coinValue';
@@ -185,7 +185,7 @@ export default function CoinStoreScreen() {
           <Text style={styles.balanceLabel}>Aapke Diamond</Text>
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
             <DiamondIcon size={24} color="white" style={{ marginRight: 8 }} />
-            <Text style={styles.balanceValue}>{balancesOf(profile).diamonds} Diamond</Text>
+            <Text style={styles.balanceValue}>{hasLiveBalance(profile) ? balancesOf(profile).diamonds : '—'} Diamond</Text>
           </View>
           <Text style={[styles.balanceLabel, { marginTop: 4 }]}>Diamond se contest me entry hoti hai. Jeet kar DP coin milte hain.</Text>
         </LinearGradient>

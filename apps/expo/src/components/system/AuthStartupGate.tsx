@@ -1,14 +1,38 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import NetInfo from '@react-native-community/netinfo';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { SplashVisual } from '@/src/components/system/SplashVisual';
+import { STARTUP_SLOW_HINT_MS, startupHint } from '@/src/lib/startupHint';
+
+/** Calm status for the restoring splash: offline at once, slow after a few seconds. */
+function useStartupHint(): string | null {
+  const [slow, setSlow] = useState(false);
+  const [connected, setConnected] = useState<boolean | null>(null);
+  useEffect(() => {
+    const t = setTimeout(() => setSlow(true), STARTUP_SLOW_HINT_MS);
+    const off = NetInfo.addEventListener((s) => setConnected(s.isConnected ?? null));
+    return () => {
+      clearTimeout(t);
+      off();
+    };
+  }, []);
+  return startupHint(slow, connected);
+}
+
+function RestoringSplash() {
+  return <SplashVisual hint={useStartupHint()} />;
+}
 
 /**
  * First paint while Firebase restores persistence.
  *
  * Uses the canonical OLD splash visual — not a separate “session restore” screen —
  * so the Instagram-style auth gate fixes guest flicker without changing the
- * design the user already knows. Only the rare 15s recovery state adds controls.
+ * design the user already knows. A slow or missing connection only adds a calm
+ * status line (Firebase keeps the saved login and finishes on its own). The
+ * Retry / Continue as guest controls appear only if restore truly hangs past
+ * Firebase's own network timeout (services/authSession.ts watchdog).
  */
 export function AuthStartupGate({
   failed = false,
@@ -22,7 +46,7 @@ export function AuthStartupGate({
   const dark = useColorScheme() === 'dark';
   const sub = dark ? '#A0A0A0' : '#666';
 
-  if (!failed) return <SplashVisual />;
+  if (!failed) return <RestoringSplash />;
 
   return (
     <SplashVisual

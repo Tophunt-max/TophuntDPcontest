@@ -188,6 +188,9 @@ export default function StoryView() {
       const single = await fetchUserStoriesByUserId(String(userId));
       return single?.stories?.length ? [single] : feed;
     },
+    // Offline: still run, so fetchStories falls back to the on-device cache
+    // instead of the query pausing with nothing to show (see StoriesBar).
+    networkMode: 'offlineFirst',
   });
   const { requireAuth } = useAuthGate();
 

@@ -35,10 +35,13 @@ export function SplashVisual({
   imageSource,
   loading = true,
   footer,
+  hint,
 }: {
   imageSource?: ImageSourcePropType;
   loading?: boolean;
   footer?: React.ReactNode;
+  /** One calm status line under the loader (e.g. a slow connection). */
+  hint?: string | null;
 }) {
   const dark = useColorScheme() === 'dark';
   const reduceMotion = useReduceMotion();
@@ -123,7 +126,15 @@ export function SplashVisual({
             ))}
           </Animated.View>
         </View>
-      ) : footer ? (
+      ) : null}
+      {loading && hint ? (
+        <View style={styles.hintWrapper}>
+          <Text style={[styles.hint, { color: dark ? '#A0A0A0' : '#666' }]} accessibilityLiveRegion="polite">
+            {hint}
+          </Text>
+        </View>
+      ) : null}
+      {!loading && footer ? (
         <View style={styles.footer}>{footer}</View>
       ) : null}
     </View>
@@ -147,6 +158,9 @@ const styles = StyleSheet.create({
   textContainer: { alignItems: 'center' },
   tagline: { fontSize: 18, fontFamily: 'Urbanist-Medium', color: '#9E9E9E' },
   loadingWrapper: { position: 'absolute', bottom: 80 },
+  // Below the loader, clear of it (loader: 40 tall at bottom 80).
+  hintWrapper: { position: 'absolute', left: 28, right: 28, bottom: 40, alignItems: 'center' },
+  hint: { fontFamily: 'Urbanist-Medium', fontSize: 13, textAlign: 'center', maxWidth: 320 },
   spinnerContainer: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
   spinnerDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#FF4D67', position: 'absolute' },
   footer: { position: 'absolute', left: 28, right: 28, bottom: 58, alignItems: 'center' },

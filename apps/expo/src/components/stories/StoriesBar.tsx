@@ -40,6 +40,11 @@ export const StoriesBar: React.FC = () => {
     // QueryFunctionContext in as fetchStories' options argument.
     queryFn: () => fetchStories(),
     enabled: authResolved,
+    // Run fetchStories even while offline: its network failure falls back to
+    // the on-device Story cache. With react-query's default ('online') the
+    // query was paused offline, so the cache was never read and the bar
+    // showed only "Your story".
+    networkMode: 'offlineFirst',
     staleTime: 5000, // Reduced staleTime for more frequent updates
     refetchOnWindowFocus: true,
   });

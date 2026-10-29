@@ -19,6 +19,7 @@ import {
   feedOwnerKey,
   getFeedCacheStats,
   loadFeedSnapshot,
+  loadOfflineFeed,
   MAX_RENDER_AGE_MS,
   MAX_SNAPSHOT_BYTES,
   MAX_SNAPSHOT_ITEMS,
@@ -144,6 +145,30 @@ describe('expiry and format', () => {
     await saveFeedSnapshot(owner, 'following', [], null);
     restart(store);
     expect(await loadFeedSnapshot(owner, 'following')).toBeNull();
+  });
+
+  it('…but keeps it as an offline fallback for the same owner only', async () => {
+    const owner = feedOwnerKey('alice');
+    await saveFeedSnapshot(owner, 'following', [match('m1')], null);
+    await saveFeedSnapshot(owner, 'following', [], null);
+    restart(store);
+    expect((await loadOfflineFeed(owner, 'following'))?.items.map((m) => m.id)).toEqual(['m1']);
+    expect(await loadOfflineFeed(feedOwnerKey('bob'), 'following')).toBeNull();
+    await clearFeedSnapshots();
+    expect(await loadOfflineFeed(owner, 'following')).toBeNull();
+  });
+
+  it('shows a days-old snapshot, minus battles that ended over a day ago', async () => {
+    const owner = feedOwnerKey('alice');
+    const now = Date.now();
+    const saved = now - 3 * 24 * 3600_000;
+    await saveFeedSnapshot(owner, 'foryou', [
+      match('old', { expiresAt: now - 2 * 24 * 3600_000 }),
+      match('live', { expiresAt: now + 3600_000 }),
+    ], null, saved);
+    restart(store);
+    expect((await loadFeedSnapshot(owner, 'foryou', now))?.items.map((m) => m.id)).toEqual(['live']);
+    expect(MAX_RENDER_AGE_MS).toBe(7 * 24 * 3600_000);
   });
 });
 

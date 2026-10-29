@@ -22,6 +22,10 @@ import { NotificationSkeleton } from '@/src/components/notifications/Notificatio
 import { BackButton } from '@/src/components/ui/BackButton';
 import { Ionicons } from '@/src/lib/icons';
 import { useFollowRequestCount } from '@/src/hooks/useProfileData';
+import { loadOffline, offlineOwner, saveOffline } from '@/src/lib/offlineStore';
+
+/** Offline snapshot of the latest notifications page. */
+const OFFLINE_NAME = 'notifications';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 
@@ -171,6 +175,21 @@ export default function NotificationsScreen() {
 
     const notifications = useMemo(() => mergeNotifications(head, tail), [head, tail]);
 
+    // Paint the last saved first page while the live head loads, so an offline
+    // open shows notifications instead of a skeleton (src/lib/offlineStore.ts).
+    useEffect(() => {
+        if (!user?.uid) return;
+        let cancelled = false;
+        void loadOffline<NotificationItem[]>(offlineOwner(user.uid), OFFLINE_NAME).then((saved) => {
+            if (cancelled || !saved?.data?.length) return;
+            setHead((current) => (current.length ? current : saved.data));
+            setLoading(false);
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [user?.uid]);
+
     // Subscribe to the live head (WebSocket + safety-net poll).
     useEffect(() => {
         if (!user?.uid) {
@@ -182,8 +201,10 @@ export default function NotificationsScreen() {
             return;
         }
         setLoadFailed(false);
+        const owner = offlineOwner(user.uid);
         const unsubscribe = notificationService.subscribeToNotifications(user.uid, HEAD_LIMIT, (items) => {
             setHead(items);
+            void saveOffline(owner, OFFLINE_NAME, items.slice(0, HEAD_LIMIT));
             setLoading(false);
             setLoadFailed(false);
             setRefreshing(false);

@@ -18,7 +18,21 @@ import { onAuthStateChanged, type Unsubscribe, type User } from 'firebase/auth';
 import { auth } from '@/src/services/firebase/initFirebase';
 import { authFlags, type AuthSnapshot } from '@/src/lib/authState';
 
-const RESTORE_WATCHDOG_MS = 15_000;
+/**
+ * How long to wait before offering Retry / Continue as guest.
+ *
+ * With a saved login, Firebase checks the account over the network before its
+ * first event (@firebase/auth `initializeCurrentUser` -> `_reloadWithoutSaving`).
+ * On a connection that is up but passes no data (mobile "No internet
+ * connection" with signal bars), that request hangs until Firebase's own API
+ * timeout: 30s on web, 60s on React Native (`DEFAULT_API_TIMEOUT_MS`). Firebase
+ * then keeps the saved user and emits it. The old 15s watchdog fired first and
+ * showed a "restore failed" screen for a session that was about to restore.
+ * The watchdog now waits past Firebase's timeout, so it only catches a real
+ * hang (e.g. storage that never answers); the splash says the network is slow.
+ */
+// `document` exists only on web (no react-native import: this module is unit-tested in Node).
+const RESTORE_WATCHDOG_MS = typeof document !== 'undefined' ? 35_000 : 65_000;
 const listeners = new Set<() => void>();
 let observer: Unsubscribe | null = null;
 let watchdog: ReturnType<typeof setTimeout> | null = null;

@@ -1,6 +1,7 @@
 import { AppState } from 'react-native';
 import { auth } from './firebase/initFirebase';
 import { API_BASE_URL, callApi, probeSession } from './api';
+import { onNetworkRecovered } from '@/src/lib/networkRecovery';
 
 /**
  * Instant push over WebSockets, backed by the Worker's RealtimeHub Durable
@@ -227,6 +228,27 @@ function dispatch(conn: Conn, event: RealtimeEvent) {
   });
 }
 
+/**
+ * Network back: a socket waiting out its backoff (up to 30 s) reconnects now.
+ * The reopen sends RESYNC to its `live()` subscribers, which refetch.
+ * Exported for tests.
+ */
+export function reconnectWaitingSockets(): number {
+  let n = 0;
+  for (const [channel, conn] of conns) {
+    if (conn.closedByUs || !conn.reconnectTimer) continue;
+    clearTimeout(conn.reconnectTimer);
+    conn.reconnectTimer = null;
+    conn.attempts = 0;
+    n += 1;
+    void openSocket(channel, conn);
+  }
+  return n;
+}
+onNetworkRecovered(() => {
+  reconnectWaitingSockets();
+});
+
 function scheduleReconnect(channel: string, conn: Conn) {
   if (conn.closedByUs) return;
   conn.attempts += 1;
@@ -402,6 +424,9 @@ export function live<T>(
     if (!opts.shouldRefresh || opts.shouldRefresh(event)) void refresh();
   });
   const safety = setInterval(refresh, fallbackMs);
+  // Network back: refetch now. The socket may still be reconnecting, and the
+  // safety poll above can be a minute away (three for notifications).
+  const offRecovered = onNetworkRecovered(() => void refresh());
   // Back in the foreground: refetch now. Fetches are skipped while backgrounded,
   // and nothing used to trigger one on return, so a screen stayed stale until the
   // next event or safety poll (up to 60 s, 180 s for notifications).
@@ -414,6 +439,7 @@ export function live<T>(
   return () => {
     active = false;
     clearInterval(safety);
+    offRecovered();
     appSub?.remove?.();
     unsub();
   };

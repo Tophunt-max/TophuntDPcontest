@@ -8,7 +8,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { BottomNav } from '@/src/components/home/BottomNav';
 import { Ionicons } from '@/src/lib/icons';
 import { DiamondIcon } from '@/src/components/ui/DiamondIcon';
-import { balancesOf } from '@/src/lib/balances';
+import { balancesOf, hasLiveBalance } from '@/src/lib/balances';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { Skeleton } from '@/src/components/ui/Skeleton';
 import { useAuth } from '@/src/hooks/useAuth';
@@ -114,7 +114,7 @@ export default function ExploreScreen() {
 
   // The header chip shows Diamonds: what entry fees are paid with.
   const coins = balancesOf(profile as any).diamonds;
-  const shell = accountShellFlags(authStatus, identity.hasIdentity, !!profile);
+  const shell = accountShellFlags(authStatus, identity.hasIdentity, hasLiveBalance(profile));
   const tileW = (width - PAD * 2 - GRID_GAP) / 2;
   const railTileW = Math.min(200, Math.round(width * 0.46));
 

@@ -48,3 +48,15 @@ export function accountShellFlags(status: AuthStatus, hasIdentity: boolean, hasF
 export function cachedValueForUid<T extends { uid: string }>(uid: string | null | undefined, cached: T | null): T | null {
   return !!uid && cached?.uid === uid ? cached : null;
 }
+
+/**
+ * On a viewer change (app/_layout.tsx), wipe the on-device feed / Story /
+ * offline caches only when a real ACCOUNT left (sign-out, or A -> B). Guest ->
+ * account keeps them: the guest shell can precede a slow restore of the same
+ * saved login ("Continue as guest"), and wiping then deleted that account's own
+ * offline data. Every cache is owner-checked on read, so this never exposes
+ * another account's data.
+ */
+export function shouldWipeDeviceCaches(prevUid: string | null, nextUid: string | null): boolean {
+  return prevUid !== null && prevUid !== nextUid;
+}

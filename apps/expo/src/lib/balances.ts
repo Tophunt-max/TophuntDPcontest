@@ -13,6 +13,15 @@ export interface Balances {
   diamonds: number;
 }
 
+/**
+ * False for a profile restored from the offline copy (src/lib/queryPersistence.ts
+ * never saves balances to disk, and marks such a profile `__offline`). Screens
+ * show a loading / "—" state instead of a wrong 0 until the server answers.
+ */
+export function hasLiveBalance(profile: unknown): boolean {
+  return !!profile && !(profile as { __offline?: boolean }).__offline;
+}
+
 export function balancesOf(profile: { Dpcoin?: unknown; dpcoin?: unknown; lockedCoins?: unknown } | null | undefined): Balances {
   const total = Math.max(0, Number(profile?.Dpcoin ?? profile?.dpcoin ?? 0) || 0);
   const diamonds = Math.min(total, Math.max(0, Number(profile?.lockedCoins ?? 0) || 0));
