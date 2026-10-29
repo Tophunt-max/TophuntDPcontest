@@ -77,6 +77,8 @@ const PRIVATE_USER_FIELDS = [
   'lockedCoins',
   'streak',
   'lastDailyClaim',
+  // Which level-up the user was last notified about (migration 0070). Internal.
+  'levelSeen',
   // Internal / operational.
   'role',
   'isBlocked',

@@ -538,7 +538,10 @@ describe('chat creation and badges take identity from the server, not the client
 
   it('equipBadge only equips a level badge the user has reached, built server-side', async () => {
     const { env } = env0();
-    await seedUser(env, 'alice', 0, { level: 3 });
+    // Level 3 earned through XP (1500 with the default 500/500 curve). The
+    // stored `users.level` column is frozen and must be ignored, so it is left
+    // at 1 here on purpose: the old check read it and refused every badge.
+    await seedUser(env, 'alice', 0, { level: 1, xp: 1500 });
 
     const tooHigh = await api(env, 'alice', 'equipBadge', { badge: { name: 'Official', icon: 'verified', level: 50 } });
     expect(tooHigh.status).toBe(403);

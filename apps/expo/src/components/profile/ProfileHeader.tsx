@@ -1,23 +1,26 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
-  Modal,
   ActivityIndicator,
 } from "react-native";
 import { AppImage } from '@/src/components/ui/AppImage';
 import { Alert } from '@/src/lib/appAlert';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { UserProfile, Badge } from '@/src/types/user';
+import { UserProfile } from '@/src/types/user';
 import { Settings_Icon, ChatIcon_Light, ChatIcon_Dark } from '@/assets/svgs';
 import { Ionicons } from '@/src/lib/icons';
 import { useRouter } from 'expo-router';
-import { LinearGradient } from 'expo-linear-gradient';
-import { equipBadgeService } from '@/src/services/users';
-import Animated, { useSharedValue, useAnimatedStyle, withSpring, withRepeat, withTiming, Easing } from 'react-native-reanimated';
+import { isLevelInfo } from '@/src/lib/progression';
+import { LevelProgressBar } from '@/src/components/gamification/LevelProgressBar';
+import { ProfileFrame } from '@/src/components/gamification/ProfileFrame';
+import { LevelBadge } from '@/src/components/gamification/LevelBadge';
+import Animated, { ZoomIn, useReducedMotion } from 'react-native-reanimated';
+import { useDesignWindow } from '@/src/lib/layout';
+import type { PublicCosmetics } from '@/src/services/gamification';
 import { startChat } from '@/src/services/messages/messageService';
 import { useFeature } from '@/src/services/appSettings';
 import { Colors } from '@/constants/theme';
@@ -27,7 +30,6 @@ import { useAuth } from '@/src/hooks/useAuth';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { emitToast } from '@/src/lib/toastBridge';
 import { reportError } from '@/src/lib/reportError';
-import { useDesignWindow } from '@/src/lib/layout';
 import { VerifiedBadge } from '@/src/components/ui/VerifiedBadge';
 import { useAuthGate } from '@/src/hooks/useAuthGate';
 import { followButtonLabel, isFollowActive, type FollowState } from '@/src/lib/followState';
@@ -127,21 +129,6 @@ const BlockedProfileNotice: React.FC<{
   );
 };
 
-const calculateLevelInfo = (xp: number) => {
-    let level = 1;
-    let threshold = 500;
-    let accumulatedXp = 0;
-    while (xp >= accumulatedXp + threshold) {
-        accumulatedXp += threshold;
-        level++;
-        threshold += 500; 
-    }
-    const nextLevelThreshold = threshold;
-    const currentLevelProgress = xp - accumulatedXp;
-    const percentage = (currentLevelProgress / nextLevelThreshold) * 100;
-    return { level, progressXp: currentLevelProgress, nextLevelXp: nextLevelThreshold, percentage: Math.min(percentage, 100) };
-};
-
 const ProfileHeader: React.FC<ProfileHeaderProps> = ({
   user,
   isOwnProfile,
@@ -156,17 +143,15 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({
 }) => {
   const state: FollowState = followState ?? (isFollowingProp ? 'following' : 'none');
   const isFollowing = isFollowActive(state);
-  const { requireAuth } = useAuthGate();
   const { width: designW } = useDesignWindow();
+  const reduceMotion = useReducedMotion();
+  const { requireAuth } = useAuthGate();
   const router = useRouter();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
   const textColor = isDark ? Colors.dark.text : Colors.light.text;
   
-  const [claimModalVisible, setClaimModalVisible] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [canClaim, setCanClaim] = useState(false);
   const [isStartingChat, setIsStartingChat] = useState(false);
   const [actionsVisible, setActionsVisible] = useState(false);
   const [unblocking, setUnblocking] = useState(false);
@@ -193,55 +178,16 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({
     }
   };
 
-  const xp = user.xp || 0;
-  const levelInfo = calculateLevelInfo(xp);
+  // Level, progress and rank come from the server (`levelInfo`, computed by the
+  // Worker's level engine). The app no longer runs its own copy of the formula:
+  // that copy had the thresholds hardcoded and disagreed with the server as soon
+  // as an admin changed them. Without a levelInfo (an older Worker) the badge
+  // falls back to the server's `level` and no progress bar is drawn.
+  const levelInfo = isLevelInfo((user as any).levelInfo) ? (user as any).levelInfo : null;
+  const levelNumber = levelInfo?.level ?? (Number(user.level) || 1);
+  const cosmetics = ((user as any).cosmetics ?? null) as PublicCosmetics | null;
+  const titleText = cosmetics?.title?.text ?? levelInfo?.rank?.name ?? null;
   const equippedBadge = user.equippedBadge;
-
-  // Animation shared values
-  const badgeScale = useSharedValue(0);
-  const claimBtnScale = useSharedValue(1);
-
-  useEffect(() => {
-    // Logic: If progress is >= 99% and there's an unclaimed badge for this level
-    // In a real app, you'd check if user.badges already contains this level's badge
-    const hasBadgeForCurrentLevel = user.badges?.some(b => b.level === levelInfo.level);
-    if (levelInfo.percentage >= 99 && !hasBadgeForCurrentLevel && isOwnProfile) {
-        setCanClaim(true);
-        claimBtnScale.value = withRepeat(withSpring(1.1), -1, true);
-    } else {
-        setCanClaim(false);
-    }
-  }, [levelInfo.percentage, user.badges]);
-
-  const animatedBadgeStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: badgeScale.value }]
-  }));
-
-  const animatedClaimBtnStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: claimBtnScale.value }]
-  }));
-
-  const handleClaim = () => {
-    setClaimModalVisible(true);
-    badgeScale.value = withSpring(1, { damping: 10, stiffness: 100 });
-  };
-
-  const confirmClaim = async () => {
-    setLoading(true);
-    // In reality, this would call a backend function to 'claim' and add to user.badges
-    // For now, we simulate equipping it
-    try {
-        const newBadge: Badge = { name: `Level ${levelInfo.level} Hero`, icon: 'trophy', level: levelInfo.level };
-        await equipBadgeService(user.uid, newBadge);
-        setClaimModalVisible(false);
-        if (onRefresh) onRefresh();
-    } catch (error) {
-        console.error(error);
-        Alert.alert('Error', 'Failed to claim badge. Please try again.');
-    } finally {
-        setLoading(false);
-    }
-  };
 
   const handleMessagePress = async () => {
     if (isStartingChat) return;
@@ -351,17 +297,27 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({
       )}
 
       <View style={styles.avatarWrapper}>
-        <View style={[styles.avatarBorder, { backgroundColor, borderColor: isDark ? '#35383F' : '#eee' }, equippedBadge && { borderColor: '#FFD700', borderWidth: 3 }]}>
-          <AppImage source={profileImage} displayWidth={100} style={styles.avatarImage} contentFit="cover" />
-        </View>
+        <ProfileFrame frame={cosmetics?.frame ?? null} size={100} fallbackBorder={equippedBadge ? '#FFD700' : isDark ? '#35383F' : '#eee'}>
+          <View style={[styles.avatarInner, { backgroundColor }]}>
+            <AppImage source={profileImage} displayWidth={100} style={styles.avatarImage} contentFit="cover" />
+          </View>
+        </ProfileFrame>
         {equippedBadge && (
             <View style={[styles.equippedBadgeIcon, { backgroundColor }]}>
                 <Ionicons name="trophy" size={18} color="#FFD700" />
             </View>
         )}
-        <LinearGradient colors={['#FFD700', '#FFA500']} style={styles.levelBadge}>
-            <Text style={styles.levelText}>Lv. {levelInfo.level}</Text>
-        </LinearGradient>
+        {/* The server's level on the rank's emblem (one component for every level). */}
+        {/* Enters once per mount (not on refetch); still under reduced motion. */}
+        <Animated.View style={styles.levelBadge} entering={reduceMotion ? undefined : ZoomIn.springify().damping(12).delay(150)}>
+          <LevelBadge
+            level={levelNumber}
+            rankId={levelInfo?.rank?.id}
+            rankName={levelInfo?.rank?.name}
+            isMaxLevel={!!levelInfo?.isMaxLevel}
+            size={designW >= 600 ? 'md' : 'sm'}
+          />
+        </Animated.View>
       </View>
 
       <View style={styles.infoSection}>
@@ -371,6 +327,22 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({
           </Text>
           <VerifiedBadge verified={user.verified} size={20} />
         </View>
+        {titleText ? (
+          <View style={styles.rankRow} accessibilityLabel={`Rank ${titleText}`}>
+            <Ionicons name={levelInfo?.rank?.icon || 'star'} size={13} color={levelInfo?.rank?.color || '#FFB300'} />
+            <Text style={[styles.rankText, { color: levelInfo?.rank?.color || '#FFB300' }]}>{titleText}</Text>
+          </View>
+        ) : null}
+        {cosmetics?.pinned?.length ? (
+          <View style={styles.pinnedRow} accessibilityLabel={`Pinned achievements: ${cosmetics.pinned.map((a) => a.name).join(', ')}`}>
+            {cosmetics.pinned.map((a) => (
+              <View key={a.id} style={[styles.pinnedChip, { backgroundColor: isDark ? '#1F222A' : '#FFF5E6' }]}>
+                <Ionicons name={a.icon || 'trophy'} size={12} color="#FFB300" />
+                <Text style={[styles.pinnedText, { color: textColor }]} numberOfLines={1}>{a.name}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
         {!isOwnProfile && followsMe && (
           <View style={[styles.followsYouPill, { backgroundColor: isDark ? '#2A2D35' : '#F1F1F4' }]} accessibilityLabel="Follows you">
             <Text style={[styles.followsYouText, { color: isDark ? '#D0D0D0' : '#555' }]}>Follows you</Text>
@@ -428,53 +400,29 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({
         </TouchableOpacity>
       </View>
       
-      {/* XP/Level Bar */}
-      <View style={styles.xpContainer}>
-        <View style={styles.xpHeader}>
-            <Text style={styles.xpLabel}>Level {levelInfo.level} Progress</Text>
-            <Text style={[styles.xpValue, { color: isDark ? '#BDBDBD' : '#888' }]}>{Math.floor(levelInfo.progressXp)} / {levelInfo.nextLevelXp} XP</Text>
+      {/* XP / level bar — server-computed (worker lib/progression.ts#levelInfo) */}
+      {levelInfo ? (
+        <View style={styles.xpContainer}>
+          <LevelProgressBar info={levelInfo} isDark={isDark} />
+          {isOwnProfile ? (
+            <TouchableOpacity
+              style={styles.rewardsLink}
+              onPress={() => router.push('/rewards' as any)}
+              accessibilityRole="button"
+              accessibilityLabel="Open Level and Rewards"
+            >
+              <Ionicons name="gift-outline" size={14} color="#FF4D67" />
+              <Text style={styles.rewardsLinkText} numberOfLines={1}>
+                {levelInfo.isMaxLevel
+                  ? 'Max level reached · Level & Rewards'
+                  : levelInfo.nextMilestone
+                    ? `Next unlock: Level ${levelInfo.nextMilestone.level} · ${levelInfo.nextMilestone.title}`
+                    : 'Level & Rewards'}
+              </Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
-        
-        {canClaim && isOwnProfile ? (
-            <Animated.View style={animatedClaimBtnStyle}>
-                <TouchableOpacity onPress={handleClaim}>
-                    <LinearGradient colors={['#FFD700', '#FF8C00']} style={[styles.claimButton, { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }]}>
-                        <Ionicons name="gift" size={16} color="#fff" />
-                        <Text style={styles.claimButtonText}>CLAIM LEVEL BADGE</Text>
-                    </LinearGradient>
-                </TouchableOpacity>
-            </Animated.View>
-        ) : (
-            <View style={[styles.progressBarBg, { backgroundColor: isDark ? '#1F222A' : '#F0F0F0' }]}>
-                <LinearGradient
-                    colors={['#FF4D67', '#FF8A9B']}
-                    start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                    style={[styles.progressBarFill, { width: `${levelInfo.percentage}%` }]}
-                />
-            </View>
-        )}
-      </View>
-
-      {/* Badges Reveal Modal */}
-      <Modal visible={claimModalVisible} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
-            <Animated.View style={[styles.badgeRevealCard, { width: designW * 0.8, backgroundColor }, animatedBadgeStyle]}>
-                <Text style={styles.congratsText}>CONGRATULATIONS!</Text>
-                <Text style={[styles.reachText, { color: textColor }]}>You reached Level {levelInfo.level}</Text>
-                
-                <View style={[styles.badgeCircle, { backgroundColor: isDark ? '#2D2D2D' : '#FFF5E6' }]}>
-                    <Ionicons name="trophy" size={60} color="#FFD700" />
-                </View>
-
-                <Text style={[styles.badgeNameText, { color: textColor }]}>Level {levelInfo.level} Badge</Text>
-                <Text style={[styles.badgeDescText, { color: isDark ? '#BDBDBD' : '#666' }]}>This badge will now be shown on your profile ring.</Text>
-
-                <TouchableOpacity style={styles.confirmClaimBtn} onPress={confirmClaim} disabled={loading}>
-                    {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.confirmClaimBtnText}>CLAIM & EQUIP</Text>}
-                </TouchableOpacity>
-            </Animated.View>
-        </View>
-      </Modal>
+      ) : null}
 
     </View>
   );
@@ -489,10 +437,9 @@ const styles = StyleSheet.create({
   titleRow: { flexDirection: 'row', alignItems: 'center', flex: 1, justifyContent: 'center' },
   nameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', maxWidth: '100%' },
   avatarWrapper: { alignSelf: 'center', marginTop: 10, position: 'relative' },
-  avatarBorder: { width: 110, height: 110, borderRadius: 55, borderWidth: 1, padding: 3, justifyContent: 'center', alignItems: 'center' },
+  avatarInner: { width: 100, height: 100, borderRadius: 50, overflow: 'hidden' },
   avatarImage: { width: 100, height: 100, borderRadius: 50 },
-  levelBadge: { position: 'absolute', bottom: 0, alignSelf: 'center', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10, borderWidth: 2, borderColor: '#FFF' },
-  levelText: { fontSize: 10, fontFamily: 'Urbanist-Bold', color: '#FFF' },
+  levelBadge: { position: 'absolute', bottom: -8, alignSelf: 'center' },
   equippedBadgeIcon: { position: 'absolute', top: -5, left: -5, borderRadius: 15, width: 30, height: 30, justifyContent: 'center', alignItems: 'center', elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 2 },
   infoSection: { alignItems: 'center', marginTop: 15, paddingHorizontal: 20 },
   fullNameText: { fontSize: 22, fontFamily: 'Urbanist-Bold' },
@@ -527,30 +474,18 @@ const styles = StyleSheet.create({
   blockedButtonText: { color: '#fff', fontFamily: 'Urbanist-Bold', fontSize: 15 },
 
   xpContainer: { marginTop: 20, paddingHorizontal: 30, width: '100%' },
-  xpHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
-  xpLabel: { fontSize: 12, fontFamily: 'Urbanist-Bold', color: '#FF4D67' },
-  xpValue: { fontSize: 12 },
-  progressBarBg: { height: 10, borderRadius: 5, overflow: 'hidden' },
-  progressBarFill: { height: '100%', borderRadius: 5 },
-  claimButton: { height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#FFA500', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 4 },
-  claimButtonText: { color: '#fff', fontFamily: 'Urbanist-Bold', fontSize: 14 },
+  rewardsLink: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10, alignSelf: 'center', paddingVertical: 4, paddingHorizontal: 8 },
+  rewardsLinkText: { color: '#FF4D67', fontFamily: 'Urbanist-SemiBold', fontSize: 12, flexShrink: 1 },
+  rankRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
+  rankText: { fontSize: 13, fontFamily: 'Urbanist-Bold' },
+  pinnedRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 6, marginTop: 8 },
+  pinnedChip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, maxWidth: 140 },
+  pinnedText: { fontSize: 11, fontFamily: 'Urbanist-SemiBold', flexShrink: 1 },
   statsRow: { flexDirection: 'row', justifyContent: 'space-around', marginTop: 25 },
   statItem: { alignItems: 'center', flex: 1 },
   statValue: { fontSize: 20, fontFamily: 'Urbanist-Bold' },
   statLabel: { fontSize: 13, marginTop: 4, fontFamily: 'Urbanist-Medium' },
   
-  // Reveal Modal
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', alignItems: 'center' },
-  // Width is inline (80% of the design width), so it fits the desktop column.
-  badgeRevealCard: { borderRadius: 30, padding: 30, alignItems: 'center' },
-  congratsText: { fontSize: 14, fontFamily: 'Urbanist-Bold', color: '#FFA500', letterSpacing: 2 },
-  reachText: { fontSize: 24, fontFamily: 'Urbanist-Bold', marginVertical: 10 },
-  badgeCircle: { width: 120, height: 120, borderRadius: 60, justifyContent: 'center', alignItems: 'center', marginVertical: 20, borderWidth: 5, borderColor: '#FFD700' },
-  largeBadgeIcon: { fontSize: 60 },
-  badgeNameText: { fontSize: 20, fontFamily: 'Urbanist-Bold' },
-  badgeDescText: { fontSize: 14, textAlign: 'center', marginTop: 10, lineHeight: 20 },
-  confirmClaimBtn: { marginTop: 30, backgroundColor: '#FF4D67', width: '100%', height: 50, borderRadius: 25, justifyContent: 'center', alignItems: 'center' },
-  confirmClaimBtnText: { color: '#fff', fontFamily: 'Urbanist-Bold', fontSize: 16 }
 });
 
 export default ProfileHeader;

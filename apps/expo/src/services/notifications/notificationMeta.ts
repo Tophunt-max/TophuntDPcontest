@@ -119,6 +119,14 @@ export function getNotificationDestination(
     case "referral" as NotificationType:
       return "/referral";
 
+    // Progression (worker lib/achievements.ts, lib/seasons.ts): Level & Rewards.
+    case "level_up" as NotificationType:
+    case "season_result" as NotificationType:
+    case "hall-of-fame" as NotificationType:
+      return "/rewards";
+    case "achievement" as NotificationType:
+      return "/rewards/achievements";
+
     case "admin":
       return null; // url already handled above; nothing else to open
 
@@ -186,6 +194,13 @@ export function getNotificationTag(type: NotificationType | undefined): Notifica
     case "contest":
     case "match":
       return { label: "Battle", color: "#F97316", icon: "trophy" };
+    case "level_up" as NotificationType:
+      return { label: "Level up", color: "#7C4DFF", icon: "star" };
+    case "achievement" as NotificationType:
+      return { label: "Achievement", color: "#FFB300", icon: "ribbon" };
+    case "season_result" as NotificationType:
+    case "hall-of-fame" as NotificationType:
+      return { label: "Season", color: "#FF5252", icon: "medal" };
     default:
       return DEFAULT_TAG;
   }
@@ -226,6 +241,7 @@ export const CATEGORY_BY_TYPE: Record<string, NotificationCategory> = {
   share: "social",
   message: "social",
   level_up: "social",
+  achievement: "social",
   // contest
   vote: "contest",
   photo: "contest",
@@ -241,6 +257,7 @@ export const CATEGORY_BY_TYPE: Record<string, NotificationCategory> = {
   "contest-refund": "contest",
   "contest-ending": "contest",
   "hall-of-fame": "contest",
+  season_result: "contest",
   monthly_hall_of_fame_reward: "contest",
   "prize-claim": "contest",
   // wallet

@@ -222,6 +222,10 @@ async function createUserProfile(
       lockedCoins: signupLocked,
       xp: 0,
       level: 1,
+      // Level 1 already "seen": only accounts that predate the XP ledger get the
+      // silent first progression sync (lib/achievements.ts). A new account's
+      // first achievements must pay their XP.
+      levelSeen: 1,
       signupCompleted: true,
       createdAt: ts,
       updatedAt: ts,

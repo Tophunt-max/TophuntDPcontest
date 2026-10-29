@@ -30,6 +30,7 @@ import {
   Bell,
   Megaphone,
   Gift,
+  Sparkles,
   UserPlus,
   Compass,
   SlidersHorizontal,
@@ -96,10 +97,11 @@ const nav = [
   { href: "/notifications", label: "Notifications", icon: Bell, section: "engagement" },
   { href: "/announcements", label: "Announcements", icon: Megaphone, section: "engagement" },
   { href: "/referrals", label: "Referral Program", icon: UserPlus, section: "engagement" },
+  { href: "/gamification", label: "Gamification (XP & Levels)", icon: Sparkles, section: "engagement" },
   { href: "/explore", label: "Explore Page", icon: Compass, section: "engagement" },
   { href: "/feed-ranking", label: "Feed Ranking", icon: ListOrdered, section: "engagement" },
   { href: "/system-health", label: "System Health", icon: Activity, section: "system" },
-  { href: "/rewards", label: "Rewards & Gamification", icon: Gift, section: "system" },
+  { href: "/rewards", label: "Rewards (raw settings)", icon: Gift, section: "system" },
   { href: "/app-control", label: "App Control", icon: SlidersHorizontal, section: "system" },
   { href: "/app-settings", label: "App Settings", icon: Settings, section: "system" },
   { href: "/onboarding", label: "Onboarding", icon: GalleryHorizontal, section: "system" },
@@ -115,6 +117,8 @@ const nav = [
 export const MODERATOR_PAGES = new Set([
   "/dashboard", "/analytics", "/users", "/matches", "/posts", "/stories", "/comments",
   "/blog", "/reports", "/support", "/moderation",
+  // Read-only inspection and review flags; XP / coin writes are full-admin on the server.
+  "/gamification",
 ]);
 const canSee = (role: string | null | undefined, href: string) =>
   !role || isFullAdminRole(role as any) || MODERATOR_PAGES.has(href);

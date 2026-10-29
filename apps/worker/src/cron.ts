@@ -17,6 +17,9 @@ import { contestWinEmail, contestRefundEmail, prizeClaimEmail } from "./lib/emai
 import { drainBroadcastJobs, enqueueBroadcast } from "./lib/broadcast";
 import { finalizeVotes } from "./lib/voteCounter";
 import { settleRefund, settleWinner } from "./lib/contestSettlement";
+import { getProgression } from "./lib/progression";
+import { xpAwardStatements } from "./lib/xpService";
+import { flagSameDeviceMatch, syncProgressionSafe } from "./lib/achievements";
 import { matchPot, matchPrizeCeiling, perPlayerEntryFee } from "./lib/money";
 import { normalizePrizeType, resolveMatchPrize, type PrizeFields } from "./lib/prizes";
 import { deleteMediaByUrl } from "./lib/mediaDelete";
@@ -176,6 +179,9 @@ export async function resolveMatch(env: Env, match: Match): Promise<void> {
     if (!settled) return;
     await publishMatchStatus(env, match.id, "cancelled", votesA, votesB);
     console.warn("[resolveMatch] voided same-device match", match.id, userA.uid, userB.uid);
+    // A review flag for staff (lib/achievements.ts). Never an automatic penalty:
+    // a shared family phone looks the same as two accounts on one device.
+    await flagSameDeviceMatch(env, match.id, [userA.uid, userB.uid]);
     return;
   }
 
@@ -253,6 +259,9 @@ export async function resolveMatch(env: Env, match: Match): Promise<void> {
   if (!settled) return;
 
   await publishMatchStatus(env, match.id, "completed", votesA, votesB, winnerUid);
+  // Win/loss XP just landed: level-ups and achievements (lib/achievements.ts).
+  await syncProgressionSafe(env, winnerUid);
+  await syncProgressionSafe(env, loserUid);
   if (prize.product) {
     // A product is not delivered by winning — it has to be claimed, and the claim
     // needs an address. So the notification's job is to get the winner to that
@@ -693,6 +702,7 @@ export async function monthlyHallOfFame(env: Env, period = previousMonthPeriod()
   let paid = 0;
   let skipped = 0;
   const failures: string[] = [];
+  const progression = await getProgression(env);
 
   for (const winner of winners) {
     const { uid, rank, reward } = winner;
@@ -744,9 +754,20 @@ export async function monthlyHallOfFame(env: Env, period = previousMonthPeriod()
         ).bind(claimKey, nonce, "hall_of_fame", ts),
         env.DB.prepare(
           `UPDATE users
-              SET dpcoin = dpcoin + ?, locked_coins = locked_coins + ?, xp = xp + 500, badges = ?, monthly_wins = 0, updated_at = ?
+              SET dpcoin = dpcoin + ?, locked_coins = locked_coins + ?, badges = ?, monthly_wins = 0, updated_at = ?
             WHERE uid = ? AND ${gates}`,
         ).bind(reward, reward, JSON.stringify(currentBadges), ts, uid, claimKey, nonce, ledgerId, uid),
+        // Hall of Fame XP (lib/xpService.ts), same gates, before the ledger insert.
+        ...xpAwardStatements(env, progression, {
+          uid,
+          action: "hall_of_fame",
+          eventId: `hall_of_fame:${period}:${uid}`,
+          sourceType: "hall_of_fame",
+          sourceId: period,
+          ts,
+          gate: gates,
+          gateArgs: [claimKey, nonce, ledgerId, uid],
+        }).statements,
         env.DB.prepare(
           `INSERT OR IGNORE INTO coin_transactions
              (id, uid, amount, type, description, created_at, locked_delta)

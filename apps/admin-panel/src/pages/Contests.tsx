@@ -609,6 +609,9 @@ type ContestFormState = {
   voteDurationDays: string;
   autoCancelHours: string;
   minVotes: string;
+  /** Level-based eligibility; "" means no limit. Checked again by the Worker at entry. */
+  minLevel: string;
+  maxLevel: string;
   /** datetime-local strings; "" means unbounded. */
   startsAt: string;
   endsAt: string;
@@ -644,6 +647,8 @@ function formFromContest(contest: AdminContest | undefined, mode: DialogMode): C
     voteDurationDays: String(contest?.voteDurationDays ?? 1),
     autoCancelHours: String(contest?.autoCancelHours ?? 24),
     minVotes: String(contest?.minVotes ?? 0),
+    minLevel: contest?.minLevel != null ? String(contest.minLevel) : "",
+    maxLevel: contest?.maxLevel != null ? String(contest.maxLevel) : "",
     startsAt: staleWindow ? "" : msToLocalInput(contest?.startsAt ?? null),
     endsAt: staleWindow ? "" : msToLocalInput(inheritedEnd),
     // A duplicate DOES inherit the product image URL. That is safe here where a
@@ -933,6 +938,13 @@ function ContestDialog({
     const voteDurationDays = integer("voteDurationDays", "Vote duration", 1, 30);
     const autoCancelHours = integer("autoCancelHours", "Waiting auto-cancel", 1, 168);
     const minVotes = integer("minVotes", "Minimum votes", 0, 1_000_000);
+    const optionalLevel = (key: "minLevel" | "maxLevel", label: string): number | null => {
+      if (!form[key].trim()) return null;
+      return integer(key, label, 1, 1000);
+    };
+    const minLevel = optionalLevel("minLevel", "Minimum level");
+    const maxLevel = optionalLevel("maxLevel", "Maximum level");
+    if (minLevel != null && maxLevel != null && maxLevel < minLevel) next.maxLevel = "Maximum level must be at least the minimum level.";
 
     // Product prize. These mirror the Worker's `assertProductPrize` so a bad prize
     // is caught before the banner and the product image are both uploaded.
@@ -1018,6 +1030,8 @@ function ContestDialog({
         voteDurationDays,
         autoCancelHours,
         minVotes,
+        minLevel,
+        maxLevel,
         startsAt: preserveUntouched('startsAt', startsAt),
         endsAt: preserveUntouched('endsAt', endsAt),
         prizeType: form.prizeType,
@@ -1065,6 +1079,8 @@ function ContestDialog({
           voteDurationDays: Number(initial.voteDurationDays),
           autoCancelHours: Number(initial.autoCancelHours),
           minVotes: Number(initial.minVotes),
+          minLevel: initial.minLevel ? Number(initial.minLevel) : null,
+          maxLevel: initial.maxLevel ? Number(initial.maxLevel) : null,
           // The stored values, not the minute-truncated form text, so an
           // untouched window never shows up in the diff. Matches what
           // `preserveUntouched` puts in the payload.
@@ -1472,6 +1488,8 @@ function ContestDialog({
                   onChange={(value) => set("rewardCoins", value)}
                 />
                 <NumberField label="Minimum votes" value={form.minVotes} min={0} max={1_000_000} error={errors.minVotes} disabled={saving} onChange={(value) => set("minVotes", value)} />
+                <NumberField label="Minimum player level (optional)" value={form.minLevel} min={1} max={1000} error={errors.minLevel} disabled={saving} onChange={(value) => set("minLevel", value)} />
+                <NumberField label="Maximum player level (optional)" value={form.maxLevel} min={1} max={1000} error={errors.maxLevel} disabled={saving} onChange={(value) => set("maxLevel", value)} />
                 <NumberField label="Vote duration (days)" value={form.voteDurationDays} min={1} max={30} error={errors.voteDurationDays} disabled={saving} onChange={(value) => set("voteDurationDays", value)} />
                 <NumberField label="Waiting auto-cancel (hours)" value={form.autoCancelHours} min={1} max={168} error={errors.autoCancelHours} disabled={saving} onChange={(value) => set("autoCancelHours", value)} />
               </div>

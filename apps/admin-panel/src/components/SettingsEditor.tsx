@@ -16,6 +16,8 @@ interface Props {
    * so the stored values stay as they are.
    */
   omitKeys?: string[];
+  /** Says where an omitted key is edited, shown if one is pasted back in. */
+  omitHint?: (keys: string[]) => string;
 }
 
 /**
@@ -23,7 +25,7 @@ interface Props {
  * gamification). Renders the current config and lets an admin edit it as
  * validated JSON — the Worker merges the posted object into the stored one.
  */
-export function SettingsEditor({ title, subtitle, queryKey, load, save, omitKeys }: Props) {
+export function SettingsEditor({ title, subtitle, queryKey, load, save, omitKeys, omitHint }: Props) {
   const qc = useQueryClient();
   const { data: raw, isLoading } = useQuery({ queryKey: [queryKey], queryFn: load });
   const data =
@@ -57,7 +59,7 @@ export function SettingsEditor({ title, subtitle, queryKey, load, save, omitKeys
     }
     const blocked = parsed && typeof parsed === "object" ? Object.keys(parsed).filter((k) => omitKeys?.includes(k)) : [];
     if (blocked.length) {
-      setErr(`${blocked.join(", ")} yahan edit nahi hota. Coin Economy → Earn me badlo.`);
+      setErr(omitHint ? omitHint(blocked) : `${blocked.join(", ")} yahan edit nahi hota. Coin Economy → Earn me badlo.`);
       return;
     }
     setErr(null);

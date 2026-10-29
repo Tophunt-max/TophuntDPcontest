@@ -1106,6 +1106,13 @@ describe('deletion completeness across the whole schema', () => {
     // so deleting it would let a re-run pay the current leaderboard for an old
     // month. Carries no personal data beyond the already-anonymised uid.
     hall_of_fame_awards: 'monthly award record + payout replay guard',
+    // The XP ledger is append-only: reversals and appeals reference it, and it
+    // carries no personal data beyond the anonymised uid (migration 0070).
+    user_xp_events: 'append-only XP audit ledger (anonymised uid)',
+    // Archived season ranking: the finalize replay guard, like hall_of_fame_awards.
+    season_results: 'season award record + finalize replay guard',
+    // Evidence about suspicious activity, reviewed by staff, like `reports`.
+    xp_flags: 'moderation evidence',
   };
 
   /** Column names that identify a person in this schema. */

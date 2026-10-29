@@ -69,6 +69,10 @@ const TABLE: Record<string, RouteAccess> = {
   'contest/video': 'public', // listing; submitting is gated
   'profile/connections': 'public',
   'profile/wins': 'public',
+  // XP leaderboards and the Hall of Fame are public, like the Explore leaderboard.
+  // The rest of /rewards is the signed-in user's own progression (private).
+  'rewards/leaderboard': 'public',
+  'rewards/hall-of-fame': 'public',
   // Friend's invite link: stores the code, then routes to signup or Refer & Earn.
   'invite/[code]': 'public',
   '+not-found': 'public',

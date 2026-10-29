@@ -37,6 +37,8 @@ export const LEDGER_CATEGORIES: Record<string, string> = {
   ad_reward: "rewards",
   daily_task: "rewards",
   monthly_hall_of_fame_reward: "rewards",
+  // Level-milestone / season Diamonds (lib/rewardGrants.ts), paid from a budget.
+  gamification_reward: "rewards",
   admin_adjustment: "admin",
   house_coins: "admin",
   contest_entry_fee: "contests",

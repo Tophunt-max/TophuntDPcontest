@@ -30,6 +30,7 @@ import { PrivateAccountNotice } from '@/src/components/profile/PrivateAccountNot
 import { intentFor, type FollowState } from '@/src/lib/followState';
 import { Alert } from '@/src/lib/appAlert';
 import { useListPlayback } from '@/src/hooks/useListPlayback';
+import { LevelUpCelebration } from '@/src/components/gamification/LevelUpCelebration';
 
 interface ProfileScreenProps {
   /**
@@ -413,6 +414,16 @@ const ProfileContent = ({
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
+      {/* Non-blocking, once per level per device (server level only). */}
+      {isOwnProfile ? (
+        <LevelUpCelebration
+          uid={currentUser?.uid}
+          level={(profile as any)?.levelInfo?.level ?? null}
+          rankId={(profile as any)?.levelInfo?.rank?.id}
+          rankName={(profile as any)?.levelInfo?.rank?.name}
+          onView={() => router.push('/rewards' as any)}
+        />
+      ) : null}
       <FlatList
         data={isBlockedByMe || locked ? [] : currentData}
         keyExtractor={(item: any) => item.id}
