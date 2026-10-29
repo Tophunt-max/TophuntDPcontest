@@ -5,9 +5,9 @@ import { Platform, useWindowDimensions, type ViewStyle } from 'react-native';
  *
  * THE PROBLEM THIS SOLVES
  * ----------------------
- * Screens size their illustrations off the window WIDTH — the login art is
- * `width * 0.6` wide by `width * 0.4` tall. On a phone that is right: 400px of
- * window gives a 240x160 illustration.
+ * Screens size their illustrations off the window WIDTH — the login art used to
+ * be `width * 0.6` wide by `width * 0.4` tall (now `loginArtSize` below). On a
+ * phone that is right: 400px of window gives a 240x160 illustration.
  *
  * On a desktop browser it is not. 1280px of window gives 768x512, and a 512px
  * tall illustration is what pushed /auth/login's content to 1015px — taller than
@@ -110,6 +110,24 @@ export const webPhoneColumn: ViewStyle =
  * the optional absolute `cap`. Whichever limit is tightest wins, so a short
  * landscape window shrinks the art by height and a narrow phone by width.
  */
+/** Aspect of the login "Welcome VS" art (assets/svgs/connect*.svg, 768x512). */
+export const LOGIN_ART_ASPECT = 768 / 512;
+
+/**
+ * Login art size for any screen: the full content width of the phone column
+ * (window minus the screen's 24px side padding, at most PHONE_MAX_WIDTH), but
+ * never taller than 34% of the window, so a short phone, a landscape phone or
+ * a short desktop window still shows the sign-in buttons without scrolling.
+ */
+export function loginArtSize(windowWidth: number, windowHeight: number): { width: number; height: number } {
+  return fitArt({
+    aspect: LOGIN_ART_ASPECT,
+    maxWidth: designWidth(windowWidth) - 48,
+    maxHeight: windowHeight * 0.34,
+    cap: PHONE_MAX_WIDTH,
+  });
+}
+
 export function fitArt({
   aspect,
   maxWidth,

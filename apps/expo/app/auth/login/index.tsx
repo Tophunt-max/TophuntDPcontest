@@ -23,7 +23,7 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useToast } from "../../../src/components/toast/ToastProvider";
 import { Colors } from "@/constants/theme";
 import { SocialAuthService, socialProviderAvailability, completeWebRedirectSignIn } from "../../../src/services/auth/socialAuth";
-import { designWidth, PHONE_MAX_WIDTH } from "@/src/lib/layout";
+import { loginArtSize, PHONE_MAX_WIDTH } from "@/src/lib/layout";
 import { useAuthMethods } from "@/src/hooks/useAuthMethods";
 import { lastAuthMethod, type LastAuthMethod } from "@/src/lib/lastAuthMethod";
 import { InAppBrowserNotice } from "@/src/components/auth/InAppBrowserNotice";
@@ -37,10 +37,10 @@ export default function LoginWelcomeScreen() {
   // `useWindowDimensions` rather than a module-scope `Dimensions.get('window')`:
   // the latter is captured once when the bundle loads, so resizing a desktop
   // browser left the illustration sized for whatever window the user arrived with.
-  const { width: windowWidth } = useWindowDimensions();
-  // Clamped, or a wide window makes the art tall enough to push the content past
-  // the viewport — which is what made this screen unreadable on desktop.
-  const artWidth = designWidth(windowWidth);
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  // Fills the phone column, capped by the window height so the buttons stay in
+  // view on short / landscape screens and desktop (src/lib/layout.ts).
+  const art = loginArtSize(windowWidth, windowHeight);
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   const backgroundColor = isDark ? Colors.dark.background : Colors.light.background;
@@ -153,9 +153,9 @@ export default function LoginWelcomeScreen() {
         {/* Welcome Illustration */}
         <View style={styles.illustrationContainer}>
            {isDark ? (
-             <Connect_Dark width={artWidth * 0.6} height={artWidth * 0.4} />
+             <Connect_Dark width={art.width} height={art.height} />
            ) : (
-             <Connect_Light width={artWidth * 0.6} height={artWidth * 0.4} />
+             <Connect_Light width={art.width} height={art.height} />
            )}
         </View>
 
