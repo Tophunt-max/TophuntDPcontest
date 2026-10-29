@@ -38,13 +38,15 @@
  */
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./types";
+import { getProgression, type Progression } from "./lib/progression";
+import { xpAwardStatements } from "./lib/xpService";
 
 /** How long events accumulate in the DO before being batch-written to D1. */
 const FLUSH_MS = 5_000;
-/** XP awarded per (new) vote — matches the previous inline awardXp(uid, 5). */
-const VOTE_XP = 5;
 /** Bound each D1 batch below platform statement limits during viral bursts. */
 const FLUSH_VOTER_LIMIT = 25;
+/** Vote XP awards per flush. Each is 4 statements (lib/xpService.ts), so the batch stays the size it was. */
+const FLUSH_XP_LIMIT = 12;
 /** Actor-local schema version for deduplicated/rebuilt tallies. */
 const VOTE_STATE_VERSION = "2";
 
@@ -452,27 +454,40 @@ export class VoteCounter extends DurableObject<Env> {
       }
     }
 
-    // 4) Exactly-once vote XP. Each conditional increment and its ledger insert
-    // are in the same D1 batch. If this actor retries after a crash, the ledger
-    // makes the UPDATE a no-op instead of crediting XP twice.
-    const xpPending = (
-      this.sql
-        .exec(`SELECT voter_uid FROM voters WHERE xp_awarded = 0 ORDER BY created_at LIMIT ${FLUSH_VOTER_LIMIT}`)
-        .toArray() as Array<{ voter_uid: string }>
-    ).map((r) => r.voter_uid);
+    // 4) Exactly-once vote XP through the XP engine (lib/xpService.ts). The
+    // event id `vote:<match>:<voter>` is the idempotency key, and the daily vote
+    // cap is enforced inside the same statement. `vote_xp_awards` is still
+    // written and still gates the award, so a vote whose XP was paid before the
+    // ledger existed is never paid again.
+    let progression: Progression | null = null;
+    try {
+      progression = await getProgression(this.env);
+    } catch (e) {
+      // Leave xp_awarded = 0; the next flush retries the XP part.
+      console.error("[VoteCounter] progression config unavailable, deferring vote XP", matchId, e);
+      // Finalization must not loop on a flush that can never finish its XP part.
+      if (strict) throw e;
+    }
+    const xpPending = progression
+      ? (
+          this.sql
+            .exec(`SELECT voter_uid FROM voters WHERE xp_awarded = 0 ORDER BY created_at LIMIT ${FLUSH_XP_LIMIT}`)
+            .toArray() as Array<{ voter_uid: string }>
+        ).map((r) => r.voter_uid)
+      : [];
     const ts = Date.now();
     for (const voterUid of xpPending) {
-      statements.push(
-        this.env.DB.prepare(
-          `UPDATE users
-              SET xp = xp + ?, updated_at = ?
-            WHERE uid = ?
-              AND NOT EXISTS (
-                SELECT 1 FROM vote_xp_awards
-                 WHERE match_id = ? AND voter_uid = ?
-              )`,
-        ).bind(VOTE_XP, ts, voterUid, matchId, voterUid),
-      );
+      const award = xpAwardStatements(this.env, progression!, {
+        uid: voterUid,
+        action: "vote",
+        eventId: `vote:${matchId}:${voterUid}`,
+        sourceType: "match",
+        sourceId: matchId,
+        ts,
+        gate: `NOT EXISTS (SELECT 1 FROM vote_xp_awards WHERE match_id = ? AND voter_uid = ?)`,
+        gateArgs: [matchId, voterUid],
+      });
+      statements.push(...award.statements);
       statements.push(
         this.env.DB.prepare(
           "INSERT OR IGNORE INTO vote_xp_awards (match_id, voter_uid, created_at) VALUES (?, ?, ?)",

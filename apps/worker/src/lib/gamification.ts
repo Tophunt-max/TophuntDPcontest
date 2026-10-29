@@ -142,6 +142,8 @@ export interface DailyTaskDef {
   id: string;
   title: string;
   reward: number;
+  /** XP for completing the task (daily quest). 0 = none. Capped by the daily_task rule. */
+  xp: number;
   target: number;
   type: "vote" | "share" | "contest" | "ad";
   /** Off: hidden and not claimable, but kept in the list. */
@@ -152,9 +154,9 @@ export interface DailyTaskDef {
 }
 export const DAILY_TASK_TYPES = ["vote", "share", "contest", "ad"] as const;
 export const DEFAULT_DAILY_TASKS: DailyTaskDef[] = [
-  { id: "vote5", title: "Vote in 5 battles", reward: 15, target: 5, type: "vote", enabled: true, startsAt: null, endsAt: null },
-  { id: "share", title: "Share a battle", reward: 10, target: 1, type: "share", enabled: true, startsAt: null, endsAt: null },
-  { id: "watch_ad", title: "Watch a video ad", reward: 5, target: 1, type: "ad", enabled: true, startsAt: null, endsAt: null },
+  { id: "vote5", title: "Vote in 5 battles", reward: 15, xp: 15, target: 5, type: "vote", enabled: true, startsAt: null, endsAt: null },
+  { id: "share", title: "Share a battle", reward: 10, xp: 0, target: 1, type: "share", enabled: true, startsAt: null, endsAt: null },
+  { id: "watch_ad", title: "Watch a video ad", reward: 5, xp: 0, target: 1, type: "ad", enabled: true, startsAt: null, endsAt: null },
 ];
 
 const optionalMs = (v: unknown): number | null => {
@@ -170,6 +172,7 @@ export function getDailyTaskDefs(settings: any): DailyTaskDef[] {
       id: String(t.id),
       title: String(t.title || t.id),
       reward: Number(t.reward || 0),
+      xp: Number.isInteger(Number(t.xp)) && Number(t.xp) >= 0 && Number(t.xp) <= 10_000 ? Number(t.xp) : 0,
       target: Number(t.target || 1),
       type: ((DAILY_TASK_TYPES as readonly string[]).includes(t.type) ? t.type : "ad") as DailyTaskDef["type"],
       enabled: t.enabled !== false,
@@ -210,6 +213,9 @@ export function validateGamificationCoinLists(body: any): void {
       if (!String(t?.title ?? "").trim() || String(t.title).length > 80) throw new Error(`Task "${id}": title is required (max 80 characters).`);
       if (!(DAILY_TASK_TYPES as readonly string[]).includes(t?.type)) throw new Error(`Task "${id}": type must be ${DAILY_TASK_TYPES.join(", ")}.`);
       if (!wholeCoins(t?.reward)) throw new Error(`Task "${id}": reward must be a whole number of coins between 0 and ${MAX_REWARD}.`);
+      if (t?.xp !== undefined && t.xp !== null && (typeof t.xp !== "number" || !Number.isInteger(t.xp) || t.xp < 0 || t.xp > 10_000)) {
+        throw new Error(`Task "${id}": xp must be a whole number from 0 to 10000.`);
+      }
       const target = Number(t?.target);
       if (!Number.isInteger(target) || target < 1 || target > 1000) throw new Error(`Task "${id}": target must be a whole number from 1 to 1000.`);
       if (t?.enabled !== undefined && typeof t.enabled !== "boolean") throw new Error(`Task "${id}": enabled must be true or false.`);
@@ -257,7 +263,7 @@ export function validateGamificationCoinLists(body: any): void {
 // Where those rewards actually come from today:
 //   * a match win  -> the contest's own `rewardCoins`, capped by the entry-fee
 //                     pot and snapshotted per match (lib/contestSettlement.ts)
-//   * a vote       -> a flat VOTE_XP constant in voteCounter.ts (XP only, no coins)
+//   * a vote       -> the `vote` XP rule (lib/progression.ts), XP only, no coins
 //   * joining      -> nothing; joining costs an entry fee rather than paying one
 
 /** Coin-valued settings keys. These reach a real balance, so they are sanitised.
@@ -311,12 +317,12 @@ export async function getSettings(env: Env): Promise<GamificationSettings> {
   return merged as GamificationSettings;
 }
 
-/** Level from cumulative XP with escalating thresholds (unchanged formula). */
-export function calculateLevel(xp: number, threshold: number, increment: number): number {
+/** Level from cumulative XP with escalating thresholds (unchanged formula), capped at `maxLevel`. */
+export function calculateLevel(xp: number, threshold: number, increment: number, maxLevel = Number.POSITIVE_INFINITY): number {
   let level = 1;
   let currentThreshold = threshold;
   let accumulatedXp = 0;
-  while (xp >= accumulatedXp + currentThreshold) {
+  while (level < maxLevel && xp >= accumulatedXp + currentThreshold) {
     accumulatedXp += currentThreshold;
     level++;
     currentThreshold += increment;
@@ -324,16 +330,21 @@ export function calculateLevel(xp: number, threshold: number, increment: number)
   return level;
 }
 
+/** Default and bounds of `progression.maxLevel` (lib/progression.ts owns the rest of that config). */
+const DEFAULT_MAX_LEVEL = 100;
+function maxLevelOf(settings: any): number {
+  const n = settings?.progression?.maxLevel;
+  return typeof n === "number" && Number.isInteger(n) && n >= 2 && n <= 1000 ? n : DEFAULT_MAX_LEVEL;
+}
+
 /**
  * The level a given cumulative XP maps to — DERIVED, never stored.
  *
- * XP is the single source of truth: it is incremented atomically (`xp = xp + N`)
- * wherever it is earned (votes, match results, the daily reward, …) and the level
- * is computed from it on read. The old `awardXp` that ALSO wrote `users.level`
- * was removed — it had no callers and did a non-atomic read-modify-write, and its
- * absence is exactly why every account's stored `level` sat frozen at its seeded
- * value while XP climbed. Deriving on read means the level can never drift from
- * the XP behind it, and there is no write to race.
+ * XP is the single source of truth. Every award goes through lib/xpService.ts,
+ * which appends a `user_xp_events` row and moves `users.xp` in the same D1 batch,
+ * and the level is computed from that XP on read. The stored `users.level`
+ * column is legacy and frozen; nothing should read it. Capped at the configured
+ * max level (lib/progression.ts) — XP keeps accumulating past it.
  */
 export function levelForXp(
   xp: number,
@@ -341,7 +352,7 @@ export function levelForXp(
 ): number {
   const n = Number(xp);
   const safeXp = Number.isFinite(n) && n > 0 ? n : 0;
-  return calculateLevel(safeXp, settings.xpThreshold, settings.xpIncrement);
+  return calculateLevel(safeXp, settings.xpThreshold, settings.xpIncrement, maxLevelOf(settings));
 }
 
 // ---------------------------------------------------------------------------
@@ -362,5 +373,5 @@ export function levelForXp(
 // If per-action coin rewards are wanted again, route them through
 // `adjustUserWallet` in lib/money.ts (positive whole amount + `direction`, plus a
 // `claimKey` so a retry cannot double-pay), which gives the ledger row and the
-// replay protection for free. `awardXp` above is unaffected — XP is not money.
+// replay protection for free. XP is not money: it goes through lib/xpService.ts.
 // ---------------------------------------------------------------------------

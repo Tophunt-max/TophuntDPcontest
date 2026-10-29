@@ -78,6 +78,10 @@ export const users = sqliteTable(
     equippedBadge: text("equipped_badge"),
     streak: integer("streak").default(0),
     lastDailyClaim: integer("last_daily_claim"),
+    /** Level the user was last told about (migration 0070). NULL = not synced yet. */
+    levelSeen: integer("level_seen"),
+    /** Equipped cosmetics + pinned achievements, JSON (migration 0070, lib/cosmetics.ts). */
+    cosmetics: text("cosmetics", { mode: "json" }),
 
     // denormalized counters (were users.stats.* / top-level counts)
     followersCount: integer("followers_count").default(0),
@@ -129,6 +133,7 @@ export const users = sqliteTable(
     // anonymised. Before migration 0039 `status` was never queried, so that
     // filter would have turned every user listing into a table scan.
     statusIdx: index("idx_users_status").on(t.status),
+    xpIdx: index("idx_users_xp").on(t.xp),
   }),
 );
 
@@ -317,6 +322,9 @@ export const contests = sqliteTable("contests", {
   // which time an individual match. See migrations/0038_contest_validity.sql.
   startsAt: integer("starts_at"),
   endsAt: integer("ends_at"),
+  /** Optional level-based tournament eligibility (migration 0070). NULL = no limit. */
+  minLevel: integer("min_level"),
+  maxLevel: integer("max_level"),
   extra: text("extra", { mode: "json" }), // any additional template fields
   createdBy: text("created_by"),
   createdAt: integer("created_at").notNull(),
@@ -1943,5 +1951,210 @@ export const platformLedger = sqliteTable(
     kindIdx: index("idx_platform_ledger_kind").on(t.kind, t.createdAt),
     budgetIdx: index("idx_platform_ledger_budget").on(t.budgetId),
     contestIdx: index("idx_platform_ledger_contest").on(t.contestId),
+  }),
+);
+
+
+// ---------------------------------------------------------------------------
+// Gamification (migration 0070). See lib/xpService.ts and GAMIFICATION.md.
+// ---------------------------------------------------------------------------
+export const userXpEvents = sqliteTable(
+  "user_xp_events",
+  {
+    id: text("id").primaryKey(),
+    uid: text("uid").notNull(),
+    action: text("action").notNull(),
+    delta: integer("delta").notNull(),
+    requested: integer("requested").notNull().default(0),
+    day: integer("day").notNull().default(0),
+    sourceType: text("source_type"),
+    sourceId: text("source_id"),
+    ruleVersion: integer("rule_version").notNull().default(1),
+    reverses: text("reverses"),
+    reason: text("reason"),
+    actor: text("actor"),
+    nonce: text("nonce"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    uidCreatedIdx: index("idx_xp_events_uid_created").on(t.uid, t.createdAt),
+    actionCreatedIdx: index("idx_xp_events_action_created").on(t.action, t.createdAt),
+    createdIdx: index("idx_xp_events_created").on(t.createdAt),
+  }),
+);
+
+export const userXpDaily = sqliteTable(
+  "user_xp_daily",
+  {
+    uid: text("uid").notNull(),
+    day: integer("day").notNull(),
+    action: text("action").notNull(),
+    xp: integer("xp").notNull().default(0),
+    events: integer("events").notNull().default(0),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.uid, t.day, t.action] }),
+    dayUidIdx: index("idx_xp_daily_day_uid").on(t.day, t.uid),
+  }),
+);
+
+export const achievementDefinitions = sqliteTable("achievement_definitions", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  description: text("description").notNull().default(""),
+  icon: text("icon").notNull().default("trophy"),
+  category: text("category").notNull().default("general"),
+  rarity: text("rarity").notNull().default("common"),
+  metric: text("metric").notNull(),
+  threshold: integer("threshold").notNull().default(1),
+  xpReward: integer("xp_reward").notNull().default(0),
+  itemId: text("item_id"),
+  repeatable: integer("repeatable", { mode: "boolean" }).notNull().default(false),
+  maxTiers: integer("max_tiers").notNull().default(1),
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
+  hidden: integer("hidden", { mode: "boolean" }).notNull().default(false),
+  startsAt: integer("starts_at"),
+  endsAt: integer("ends_at"),
+  sort: integer("sort").notNull().default(0),
+  version: integer("version").notNull().default(1),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+export const userAchievements = sqliteTable(
+  "user_achievements",
+  {
+    uid: text("uid").notNull(),
+    achievementId: text("achievement_id").notNull(),
+    tier: integer("tier").notNull().default(1),
+    unlockedAt: integer("unlocked_at").notNull(),
+    xpAwarded: integer("xp_awarded").notNull().default(0),
+    eventId: text("event_id"),
+    source: text("source").notNull().default("progress"),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.uid, t.achievementId, t.tier] }),
+    defIdx: index("idx_user_achievements_def").on(t.achievementId, t.unlockedAt),
+    uidIdx: index("idx_user_achievements_uid").on(t.uid, t.unlockedAt),
+  }),
+);
+
+export const rewardCatalog = sqliteTable("reward_catalog", {
+  id: text("id").primaryKey(),
+  type: text("type").notNull(),
+  name: text("name").notNull(),
+  description: text("description").notNull().default(""),
+  rarity: text("rarity").notNull().default("common"),
+  asset: text("asset", { mode: "json" }).notNull(),
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
+  sort: integer("sort").notNull().default(0),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+export const userInventory = sqliteTable(
+  "user_inventory",
+  {
+    uid: text("uid").notNull(),
+    itemId: text("item_id").notNull(),
+    source: text("source").notNull(),
+    sourceRef: text("source_ref"),
+    acquiredAt: integer("acquired_at").notNull(),
+    revokedAt: integer("revoked_at"),
+    revokeReason: text("revoke_reason"),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.uid, t.itemId] }),
+    itemIdx: index("idx_user_inventory_item").on(t.itemId),
+  }),
+);
+
+export const rewardGrants = sqliteTable(
+  "reward_grants",
+  {
+    id: text("id").primaryKey(),
+    uid: text("uid").notNull(),
+    sourceType: text("source_type").notNull(),
+    sourceId: text("source_id").notNull(),
+    coins: integer("coins").notNull(),
+    status: text("status").notNull().default("claimable"),
+    note: text("note"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    claimedAt: integer("claimed_at"),
+  },
+  (t) => ({
+    uidIdx: index("idx_reward_grants_uid").on(t.uid, t.status),
+    statusIdx: index("idx_reward_grants_status").on(t.status, t.createdAt),
+  }),
+);
+
+export const questClaims = sqliteTable(
+  "quest_claims",
+  {
+    uid: text("uid").notNull(),
+    questId: text("quest_id").notNull(),
+    periodKey: text("period_key").notNull(),
+    xp: integer("xp").notNull().default(0),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.uid, t.questId, t.periodKey] }) }),
+);
+
+export const seasons = sqliteTable(
+  "seasons",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    description: text("description").notNull().default(""),
+    startsAt: integer("starts_at").notNull(),
+    endsAt: integer("ends_at").notNull(),
+    startDay: integer("start_day").notNull(),
+    endDay: integer("end_day").notNull(),
+    status: text("status").notNull().default("scheduled"),
+    topN: integer("top_n").notNull().default(100),
+    rewards: text("rewards", { mode: "json" }).notNull(),
+    policyVersion: integer("policy_version").notNull().default(1),
+    createdBy: text("created_by"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    finalizedAt: integer("finalized_at"),
+  },
+  (t) => ({ statusIdx: index("idx_seasons_status").on(t.status, t.endDay) }),
+);
+
+export const seasonResults = sqliteTable(
+  "season_results",
+  {
+    seasonId: text("season_id").notNull(),
+    uid: text("uid").notNull(),
+    rank: integer("rank").notNull(),
+    xp: integer("xp").notNull(),
+    rewards: text("rewards", { mode: "json" }).notNull(),
+    rewardState: text("reward_state").notNull().default("pending"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.seasonId, t.uid] }),
+    rankIdx: index("idx_season_results_rank").on(t.seasonId, t.rank),
+  }),
+);
+
+export const xpFlags = sqliteTable(
+  "xp_flags",
+  {
+    id: text("id").primaryKey(),
+    uid: text("uid").notNull(),
+    kind: text("kind").notNull(),
+    detail: text("detail", { mode: "json" }),
+    status: text("status").notNull().default("open"),
+    createdAt: integer("created_at").notNull(),
+    reviewedBy: text("reviewed_by"),
+    reviewedAt: integer("reviewed_at"),
+    reviewNote: text("review_note"),
+  },
+  (t) => ({
+    statusIdx: index("idx_xp_flags_status").on(t.status, t.createdAt),
+    uidIdx: index("idx_xp_flags_uid").on(t.uid, t.createdAt),
   }),
 );

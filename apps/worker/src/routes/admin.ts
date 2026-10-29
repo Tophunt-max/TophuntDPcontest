@@ -49,7 +49,8 @@ import {
 } from "../lib/coinPricing";
 import { assertSessionUsable } from "../middleware/auth";
 import { getAppConfig, getGamificationSettings, getSeoAudit, invalidateSetting } from "../lib/settings";
-import { getDailyTaskDefs, getSettings as getGamification, rewardDayNumber, rewardDayStart, validateGamificationCoinLists } from "../lib/gamification";
+import { awardXp } from "../lib/xpService";
+import { getDailyTaskDefs, getSettings as getGamification, levelForXp, rewardDayNumber, rewardDayStart, validateGamificationCoinLists } from "../lib/gamification";
 import { legalDocsForAdmin, LEGAL_DOC_KEYS, LEGAL_LAST_UPDATED } from "../content/legal";
 import { deleteAuthUser, updateAuthUser, setCustomClaims, getUserByEmail } from "../lib/firebaseAdmin";
 import { createNotification, createNotificationsBulk } from "../lib/notify";
@@ -115,6 +116,7 @@ import {
 import { fetchExternalImage } from "../lib/safeFetch";
 import { enforceAdminIdempotency } from "../lib/idempotency";
 import { registerIntegrationRoutes } from "./integrations";
+import { registerGamificationRoutes } from "./adminGamification";
 import { assertIdentifiersAvailable, recordUsernameTransition, validateUsername } from "../lib/userIdentifiers";
 import { revokeAllSessions } from "../lib/sessionRevocation";
 import {
@@ -277,6 +279,12 @@ const SENSITIVE_ADMIN_ROUTES: Array<[method: string, path: RegExp]> = [
   ["*", /^\/promo-budgets(\/.*)?$/],
   ["*", /^\/approval-password(\/.*)?$/],
   ["*", /^\/integrations(\/.*)?$/],
+  // Gamification writes that move XP, coins or the configuration.
+  ["POST", /^\/gamification\/config$/],
+  ["POST", /^\/gamification\/users\/[^/]+\/xp$/],
+  ["POST", /^\/gamification\/events\/[^/]+\/reverse$/],
+  ["POST", /^\/gamification\/seasons(\/[^/]+\/(finalize|cancel))?$/],
+  ["PATCH", /^\/gamification\/seasons\/[^/]+$/],
 ];
 export function isSensitiveAdminRoute(method: string, path: string): boolean {
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") return false;
@@ -342,6 +350,9 @@ function isFullAdmin(c: any): boolean {
 // Config + encrypted credentials, all manageable from the panel. See
 // routes/integrations.ts for why credential values are write-only.
 registerIntegrationRoutes(adminRoute, requireFullAdmin);
+
+// ---- gamification (routes/adminGamification.ts) ----
+registerGamificationRoutes(adminRoute, requireFullAdmin, isFullAdmin, logAudit);
 
 // ---- app settings (settings/appConfig) ----
 
@@ -1204,7 +1215,7 @@ adminRoute.patch("/contests/:id", async (c) => {
   const set: Record<string, any> = {};
   for (const field of [
     "title", "type", "status", "totalEntryFee", "rewardCoins", "voteDurationDays", "autoCancelHours", "minVotes", "bannerUrl",
-    "startsAt", "endsAt",
+    "startsAt", "endsAt", "minLevel", "maxLevel",
     // Prize kind + product fields. `validateContestInput` only emits these as a
     // consistent set — switching to "product" forces rewardCoins to 0, switching
     // back to "coins" nulls the product columns — so they are safe to copy through
@@ -2707,7 +2718,7 @@ const ADMIN_USER_FULL_ONLY = ["email", "phone", "dob", "coordinates", "deviceId"
  * content-only moderator role could page through every user's email, phone,
  * date of birth, location and FCM push tokens.
  */
-export function adminUser(row: any, fullAdmin: boolean) {
+export function adminUser(row: any, fullAdmin: boolean, gs?: Parameters<typeof levelForXp>[1]) {
   const u: Record<string, any> = { ...row };
   for (const k of ADMIN_USER_NEVER) delete u[k];
   if (!fullAdmin) for (const k of ADMIN_USER_FULL_ONLY) delete u[k];
@@ -2715,7 +2726,8 @@ export function adminUser(row: any, fullAdmin: boolean) {
     id: u.uid,
     ...u,
     Dpcoin: u.dpcoin ?? 0,
-    level: u.level ?? 0,
+    // Derived from XP; the stored column is frozen (lib/gamification.ts#levelForXp).
+    level: levelForXp(u.xp ?? 0, gs ?? { xpThreshold: 500, xpIncrement: 500 }),
     createdAt: u.createdAt ? new Date(u.createdAt).toISOString() : null,
     stats: {
       postsCount: u.postsCount ?? 0,
@@ -2757,7 +2769,8 @@ adminRoute.get("/users", async (c) => {
     .offset(offset)
     .all();
   if (rows.length === limit) c.header("X-Next-Offset", String(offset + limit));
-  return c.json(rows.map((r) => adminUser(r, full)));
+  const gsList = await getGamification(c.env);
+  return c.json(rows.map((r) => adminUser(r, full, gsList)));
 });
 
 adminRoute.get("/users/:id/posts", async (c) => {
@@ -2775,7 +2788,7 @@ adminRoute.get("/users/:id/stories", async (c) => {
 adminRoute.get("/users/:id", async (c) => {
   const db = getDb(c.env);
   const u = await db.select().from(schema.users).where(eq(schema.users.uid, c.req.param("id"))).get();
-  return c.json(u ? adminUser(u, isFullAdmin(c)) : null);
+  return c.json(u ? adminUser(u, isFullAdmin(c), await getGamification(c.env)) : null);
 });
 
 adminRoute.get("/posts", async (c) => {
@@ -3016,6 +3029,8 @@ adminRoute.post("/contests", async (c) => {
     prizeCostCoins: values.prizeType === "product" ? values.prizeCostCoins ?? 0 : 0,
     startsAt: values.startsAt,
     endsAt: values.endsAt,
+    minLevel: values.minLevel ?? null,
+    maxLevel: values.maxLevel ?? null,
     extra,
     createdBy,
     createdAt,
@@ -5612,7 +5627,7 @@ adminRoute.post("/users/:id/grant", async (c) => {
   requireFullAdmin(c);
   const db = getDb(c.env);
   const id = c.req.param("id");
-  const { xp, badge } = await c.req.json<any>();
+  const { xp, badge, reason } = await c.req.json<any>();
   // XP was accepted as any number: NaN, Infinity, fractions and huge values all
   // went straight into the leaderboard. A grant is repeatable by design, so an
   // Idempotency-Key makes a double-click a no-op.
@@ -5629,21 +5644,44 @@ adminRoute.post("/users/:id/grant", async (c) => {
     throw httpsError("invalid-argument", "badge must be 1–60 characters.");
   }
   if (!xpDelta && !badgeName) throw httpsError("invalid-argument", "Provide xp and/or a badge to grant.");
+  // An XP grant is an audited adjustment on the XP ledger (lib/xpService.ts):
+  // it needs a reason, like every other manual correction.
+  const why = typeof reason === "string" ? reason.trim() : "";
+  if (xpDelta && (why.length < 3 || why.length > 300)) {
+    throw httpsError("invalid-argument", "reason is required for an XP grant (3-300 characters).");
+  }
 
   const user = await db.select({ xp: schema.users.xp, badges: schema.users.badges }).from(schema.users).where(eq(schema.users.uid, id)).get();
   if (!user) throw httpsError("not-found", "User not found.");
 
   const idem = await enforceAdminIdempotency(c, "user.grant", id);
   try {
-    const set: any = { updatedAt: now() };
-    if (xpDelta) set.xp = sql`${schema.users.xp} + ${xpDelta}`;
+    let xpResult: { applied: boolean; delta: number } | null = null;
+    if (xpDelta) {
+      xpResult = await awardXp(c.env, {
+        uid: id,
+        action: "admin_adjustment",
+        eventId: `admin_xp:${id}:${newId()}`,
+        amount: xpDelta,
+        sourceType: "admin",
+        reason: why,
+        actor: c.get("user")?.uid ?? "server",
+        ts: now(),
+      });
+    }
     if (badgeName) {
       const badges = ((user.badges as unknown as string[]) || []).slice();
       if (!badges.includes(badgeName)) badges.push(badgeName);
-      set.badges = badges as any;
+      await db.update(schema.users).set({ badges: badges as any, updatedAt: now() }).where(eq(schema.users.uid, id));
     }
-    await db.update(schema.users).set(set).where(eq(schema.users.uid, id));
-    await logAudit(c, "user.grant", "user", id, { xp: xpDelta, badge: badgeName });
+    await logAudit(c, "user.grant", "user", id, {
+      xp: xpDelta,
+      xpApplied: xpResult?.delta ?? 0,
+      before: user.xp ?? 0,
+      after: (user.xp ?? 0) + (xpResult?.delta ?? 0),
+      reason: why || null,
+      badge: badgeName,
+    });
     return c.json({ message: "Granted" });
   } catch (e) {
     await idem?.finish(false);
@@ -5697,7 +5735,9 @@ adminRoute.get("/leaderboard", async (c) => {
     .orderBy(desc(orderCol))
     .limit(50)
     .all();
-  return c.json(rows.map((r) => ({ ...r, verified: !!r.verified })));
+  // Level is derived from XP (lib/gamification.ts#levelForXp), never the frozen column.
+  const gs = await getGamification(c.env);
+  return c.json(rows.map((r) => ({ ...r, level: levelForXp(r.xp ?? 0, gs), verified: !!r.verified })));
 });
 
 // ======================= MESSAGES MODERATION =======================

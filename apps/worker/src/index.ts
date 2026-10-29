@@ -43,6 +43,7 @@ import { ensureMigrated } from "./db/autoMigrate";
 import { processBroadcastJob } from "./lib/broadcast";
 import { captureError, logErrorToDb, pruneErrorLogs } from "./lib/observability";
 import { pruneOpsTables, runCronJob } from "./lib/ops";
+import { gamificationHourly } from "./lib/gamificationCron";
 import { reconcilePaymentOrders } from "./lib/coinOrders";
 import { moneyHealthAlert } from "./lib/moneyHealth";
 import { maybeSendCoinReport, runCoinAlerts } from "./lib/coinAlerts";
@@ -632,6 +633,8 @@ export default {
             // notifications.
             await runCronJob(env, "pruneIdempotencyKeys", () => pruneOpsTables(env));
             await runCronJob(env, "coinReport", () => maybeSendCoinReport(env));
+            // Seasons, background level-up/achievement sync, XP ledger check.
+            await runCronJob(env, "gamificationHourly", () => gamificationHourly(env));
           })(),
         );
         break;

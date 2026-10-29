@@ -26,6 +26,7 @@ import type { Env } from "../types";
 import { getDb, schema } from "../db";
 import { newId, now } from "./ids";
 import { createNotificationsBulk } from "./notify";
+import { getProgression, xpForLevel } from "./progression";
 
 export interface BroadcastSegment {
   /** Only users on this platform ("web" | "android" | "ios"). */
@@ -80,10 +81,19 @@ async function sendBroadcastQueueMessage(env: Env, jobId: string): Promise<void>
   }
 }
 
-function segmentConditions(segment?: BroadcastSegment | null) {
+/**
+ * Recipient filters. `minLevel` is matched against XP (the level is derived
+ * from XP; the stored `users.level` column is frozen and must not be read), by
+ * converting it to the cumulative XP that level needs.
+ */
+async function segmentConditions(env: Env, segment?: BroadcastSegment | null) {
   const conds: any[] = [];
   if (segment?.platform) conds.push(eq(schema.users.platform, segment.platform));
-  if (typeof segment?.minLevel === "number") conds.push(gte(schema.users.level, segment.minLevel));
+  if (typeof segment?.minLevel === "number" && segment.minLevel > 1) {
+    const { curve } = await getProgression(env);
+    const level = Math.min(Math.floor(segment.minLevel), curve.maxLevel);
+    conds.push(gte(sql`COALESCE(${schema.users.xp}, 0)`, xpForLevel(level, curve)));
+  }
   return conds;
 }
 
@@ -101,7 +111,7 @@ export async function enqueueBroadcast(
   const ts = now();
   const jobId = newId();
 
-  const conds = segmentConditions(input.segment);
+  const conds = await segmentConditions(env, input.segment);
   const countRow = await db
     .select({ v: sql<number>`count(*)` })
     .from(schema.users)
@@ -163,7 +173,7 @@ async function claimRunning(env: Env, job: BroadcastJob): Promise<boolean> {
 async function runBroadcastPage(env: Env, job: BroadcastJob): Promise<{ done: boolean }> {
   const db = getDb(env);
   const segment = (job.segment as BroadcastSegment | null) ?? undefined;
-  const conds = segmentConditions(segment);
+  const conds = await segmentConditions(env, segment);
   if (job.cursor) conds.push(gt(schema.users.uid, job.cursor));
 
   const page = await db

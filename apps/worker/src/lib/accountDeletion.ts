@@ -788,6 +788,7 @@ async function phaseSnapshots(env: Env, uid: string): Promise<string[]> {
         referralCode: null,
         referredBy: null,
         equippedBadge: null,
+        cosmetics: null,
         isBlocked: true,
         status: DELETED_STATUS,
         isPrivate: true,
@@ -1135,6 +1136,14 @@ async function phaseSocial(env: Env, uid: string): Promise<void> {
     db.delete(schema.userStoryHides).where(eq(schema.userStoryHides.hiddenUid, uid)),
     // Their own "Not interested" history (it names other creators).
     db.delete(schema.feedDismissals).where(eq(schema.feedDismissals.viewerUid, uid)),
+    // Gamification (migration 0070): progress, cosmetics and unclaimed rewards
+    // are personal and serve no one else. The XP ledger (user_xp_events), season
+    // results and review flags are RETAINED — see the deletion test's list.
+    db.delete(schema.userXpDaily).where(eq(schema.userXpDaily.uid, uid)),
+    db.delete(schema.userAchievements).where(eq(schema.userAchievements.uid, uid)),
+    db.delete(schema.userInventory).where(eq(schema.userInventory.uid, uid)),
+    db.delete(schema.questClaims).where(eq(schema.questClaims.uid, uid)),
+    db.delete(schema.rewardGrants).where(eq(schema.rewardGrants.uid, uid)),
     // Every notification naming them as the actor in someone else's inbox. Only
     // follow-request notifications were removed, so likes, comments and follows by
     // a deleted account stayed in other people's lists. (Reports they filed are

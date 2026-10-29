@@ -46,6 +46,8 @@ export const CATEGORY_BY_TYPE: Record<string, NotificationCategory> = {
   // already put it; listing it makes that a decision rather than an accident.
   // It is not `wallet` — levelling up awards a badge, not coins.
   level_up: "social",
+  // Achievement unlocks (lib/achievements.ts): progress, like level_up.
+  achievement: "social",
 
   // --- contest ---
   vote: "contest",
@@ -66,6 +68,8 @@ export const CATEGORY_BY_TYPE: Record<string, NotificationCategory> = {
   "contest-refund": "contest",
   "contest-ending": "contest",
   "hall-of-fame": "contest",
+  // A season ended and the user finished in the rewarded ranks (lib/seasons.ts).
+  season_result: "contest",
   monthly_hall_of_fame_reward: "contest",
   /**
    * Physical prize: "you won a phone, add your delivery address", and every

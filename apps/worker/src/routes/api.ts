@@ -112,7 +112,11 @@ import { PROFILE_INCOMPLETE_CODE } from "../lib/accountStatus";
 import { chargeablePackage } from "../lib/coinPricing";
 import { applyReferralCode, ensureReferralCode, qualifyReferral } from "../lib/referralProgram";
 import { chargeableWithdrawal, feeRuleFromConfig } from "../lib/withdrawalFee";
-import { activeDailyTasks, dailyRewardFor, dailyRewardState, getDailyTaskDefs, getSettings, rewardDayNumber, rewardDayStart, type DailyTaskDef } from "../lib/gamification";
+import { assertLevelEligible, getProgression } from "../lib/progression";
+import { xpAwardStatements, xpEventOutcome, xpReversalStatements } from "../lib/xpService";
+import { syncProgressionSafe } from "../lib/achievements";
+import { handleGamificationAction } from "../lib/gamificationApi";
+import { activeDailyTasks, dailyRewardFor, dailyRewardState, getDailyTaskDefs, getSettings, levelForXp, rewardDayNumber, rewardDayStart, type DailyTaskDef } from "../lib/gamification";
 import { sendEmail, sendUserEmail } from "../lib/email";
 import { passwordChangedEmail, dataExportEmail } from "../lib/emailTemplates";
 import { newId, now, generateJoinId } from "../lib/ids";
@@ -614,6 +618,8 @@ apiRoute.post("/", async (c) => {
       assertContestOpenNow(contest, "new matches");
       const user = await db.select().from(schema.users).where(eq(schema.users.uid, uid)).get();
       if (!user) throw httpsError("not-found", "User document not found.");
+      // Level-based tournament eligibility, before any fee moves.
+      await assertLevelEligible(env, contest, user.xp);
       // Checked BEFORE the entry fee is debited. joinMatch refuses a blocked
       // invitee, so without this the creator pays to create a private match that
       // the only person allowed to join can never join — the coins would sit
@@ -807,12 +813,26 @@ apiRoute.post("/", async (c) => {
         ),
         env.DB.prepare(
           `UPDATE users
-              SET dpcoin = dpcoin - ?, locked_coins = locked_coins - ?, xp = xp + 10, updated_at = ?
+              SET dpcoin = dpcoin - ?, locked_coins = locked_coins - ?, updated_at = ?
             WHERE uid = ? AND ${DIAMONDS_COVER}`,
         ).bind(fee, fee, ts, uid, fee),
       );
+      const chargeIndex = createStatements.length - 1;
+      // Entry XP (lib/xpService.ts), only if this batch actually charged: the
+      // entry ledger id is unique to this new match. Reversed if the match is
+      // later cancelled (lib/contestSettlement.ts#settleRefund).
+      createStatements.push(...xpAwardStatements(env, await getProgression(env), {
+        uid,
+        action: "contest_entry",
+        eventId: entryTransactionId,
+        sourceType: "match",
+        sourceId: matchId,
+        ts,
+        gate: `EXISTS (SELECT 1 FROM coin_transactions WHERE id = ? AND created_at = ?)`,
+        gateArgs: [entryTransactionId, ts],
+      }).statements);
       const createResults = await env.DB.batch(createStatements);
-      if (Number(createResults[createResults.length - 1]?.meta?.changes || 0) === 0) {
+      if (Number(createResults[chargeIndex]?.meta?.changes || 0) === 0) {
         // Not charged, no match: give a product reservation made above back.
         if (productSubsidy > 0) await releaseStatement(env, reservationId, now()).run().catch(() => {});
         // Nothing was charged and no match was created — the two INSERTs share
@@ -872,17 +892,25 @@ apiRoute.post("/", async (c) => {
           const refundBindings = [matchId, refundTransactionId];
           // The entry above was paid in Diamonds, so they go back as Diamonds.
           const relock = "?";
+          // The entry XP granted above is reversed by an append-only reversal
+          // event, which can never drive lifetime XP below zero.
+          const xpUndo = xpReversalStatements(env, {
+            originalId: entryTransactionId,
+            reason: "Entry refunded: contest stopped accepting new matches",
+            actor: "system",
+            ts: rollbackTs,
+            gate: refundGate,
+            gateArgs: refundBindings,
+          });
           const rollback = await env.DB.batch([
             // The promo subsidy (if any) goes back to its budget. First, because
             // every later statement changes what `refundGate` sees.
             releaseStatement(env, reservationId, rollbackTs, refundGate, refundBindings),
+            ...xpUndo,
             env.DB.prepare(
-              // `MAX(0, xp - 10)` — reversing the +10 granted above must not be
-              // able to drive lifetime XP negative, which a plain `xp - 10` could
-              // for an account whose only XP was this entry.
               `UPDATE users
                   SET dpcoin = dpcoin + ?, locked_coins = locked_coins + ${relock},
-                      xp = MAX(0, xp - 10), updated_at = ?
+                      updated_at = ?
                 WHERE uid = ? AND ${refundGate}`,
             ).bind(fee, fee, rollbackTs, uid, ...refundBindings),
             env.DB.prepare(
@@ -905,7 +933,7 @@ apiRoute.post("/", async (c) => {
               `DELETE FROM contest_matches WHERE id = ? AND status = 'waiting_for_opponent'`,
             ).bind(matchId),
           ]);
-          if (Number(rollback[3]?.meta?.changes || 0) > 0) {
+          if (Number(rollback[3 + xpUndo.length]?.meta?.changes || 0) > 0) {
             throw httpsError("failed-precondition", "This contest stopped accepting new matches. Your entry fee was refunded.");
           }
         } catch (e: any) {
@@ -984,6 +1012,8 @@ apiRoute.post("/", async (c) => {
             reward: schema.contests.rewardCoins,
             startsAt: schema.contests.startsAt,
             endsAt: schema.contests.endsAt,
+            minLevel: schema.contests.minLevel,
+            maxLevel: schema.contests.maxLevel,
           }).from(schema.contests).where(eq(schema.contests.id, match.contestId)).get()
         : null;
       if (match.contestId && !contestPolicy) {
@@ -996,6 +1026,7 @@ apiRoute.post("/", async (c) => {
       // start a vote that runs past the contest's own closing time. The
       // creator's waiting match is refunded by the existing auto-cancel sweep.
       if (contestPolicy) assertContestOpenNow(contestPolicy, "opponents");
+      await assertLevelEligible(env, contestPolicy, user.xp);
       const voteDays = Number(contestPolicy?.voteDays || 1);
       const minVotesRequired = Math.max(
         0,
@@ -1080,9 +1111,20 @@ apiRoute.post("/", async (c) => {
         ),
         env.DB.prepare(
           `UPDATE users
-              SET dpcoin = dpcoin - ?, locked_coins = locked_coins - ?, xp = xp + 10, updated_at = ?
+              SET dpcoin = dpcoin - ?, locked_coins = locked_coins - ?, updated_at = ?
             WHERE uid = ? AND ${claimGate}`,
         ).bind(fee, fee, ts, uid, matchId, joinIdB),
+        // Entry XP, gated on the same slot claim as the charge (lib/xpService.ts).
+        ...xpAwardStatements(env, await getProgression(env), {
+          uid,
+          action: "contest_entry",
+          eventId: entryLedgerId,
+          sourceType: "match",
+          sourceId: matchId,
+          ts,
+          gate: claimGate,
+          gateArgs: [matchId, joinIdB],
+        }).statements,
       ]);
 
       if (Number(joinResults[0]?.meta?.changes || 0) === 0) {
@@ -1114,6 +1156,9 @@ apiRoute.post("/", async (c) => {
           console.error("[joinMatch] VS publication kick failed (cron will retry)", matchId, e);
         }),
       );
+      // Both entries are now valid (the battle runs): first-contest and creator
+      // achievements may unlock (lib/achievements.ts). Best-effort.
+      c.executionCtx.waitUntil(Promise.all([syncProgressionSafe(env, uid), syncProgressionSafe(env, userA.uid)]));
 
       c.executionCtx.waitUntil(
         sendPushNotification(
@@ -1879,7 +1924,6 @@ apiRoute.post("/", async (c) => {
       if (!Number.isInteger(coinReward) || coinReward < 0 || coinReward > MAX_COIN_AMOUNT) {
         throw httpsError("internal", "Daily reward is misconfigured.");
       }
-      const xpReward = 50;
       // Free reward: play-only unless App Control says otherwise (lib/rewardLocking.ts).
       const dailyCfg = await getAppConfig(env);
       const dailyLocked = lockedPart(dailyCfg, "daily", coinReward);
@@ -1903,6 +1947,17 @@ apiRoute.post("/", async (c) => {
       // to be a separate statement, so a failure between the two credited coins
       // with no ledger entry.
       const eligible = `(last_daily_claim IS NULL OR last_daily_claim < ?)`;
+      const dailyXp = xpAwardStatements(env, await getProgression(env), {
+        uid,
+        action: "daily_checkin",
+        eventId: `daily_checkin:${uid}:${startOfToday}`,
+        sourceType: "checkin",
+        sourceId: String(startOfToday),
+        ts,
+        gate: `EXISTS (SELECT 1 FROM users WHERE uid = ? AND last_daily_claim = ?)
+               AND EXISTS (SELECT 1 FROM coin_transactions WHERE id = ? AND created_at = ?)`,
+        gateArgs: [uid, ts, dailyLedgerId, ts],
+      });
       const dailyResults = await env.DB.batch([
         ...dailyBudget.reserve,
         env.DB.prepare(
@@ -1926,11 +1981,13 @@ apiRoute.post("/", async (c) => {
         // (an admin edit, a data repair) the balance moved with no ledger row.
         env.DB.prepare(
           `UPDATE users
-              SET dpcoin = dpcoin + ?, locked_coins = locked_coins + ?, xp = xp + ?, streak = ?, last_daily_claim = ?, updated_at = ?
+              SET dpcoin = dpcoin + ?, locked_coins = locked_coins + ?, streak = ?, last_daily_claim = ?, updated_at = ?
             WHERE uid = ? AND ${eligible}
               AND EXISTS (SELECT 1 FROM coin_transactions WHERE id = ? AND created_at = ?)`,
-        ).bind(coinReward, dailyLocked, xpReward, streak, ts, ts, uid, startOfToday, dailyLedgerId, ts),
+        ).bind(coinReward, dailyLocked, streak, ts, ts, uid, startOfToday, dailyLedgerId, ts),
         ...dailyBudget.finalize,
+        // Check-in XP (lib/xpService.ts): only when THIS request's claim applied.
+        ...dailyXp.statements,
       ]);
       if (Number(dailyResults[dailyBudget.reserve.length + 1]?.meta?.changes || 0) === 0) {
         if (dailyBudget.reservationId) {
@@ -1942,7 +1999,9 @@ apiRoute.post("/", async (c) => {
         }
         throw httpsError("already-exists", "Daily reward already claimed today.");
       }
-      return c.json({ success: true, coinsEarned: coinReward, xpEarned: xpReward, streak, lockedCoins: dailyLocked });
+      const xpEarned = dailyXp.active ? (await xpEventOutcome(env, dailyXp.eventId, dailyXp.nonce)).delta : 0;
+      c.executionCtx.waitUntil(syncProgressionSafe(env, uid));
+      return c.json({ success: true, coinsEarned: coinReward, xpEarned, streak, lockedCoins: dailyLocked });
     }
 
     // (Rewarded ads: see claimAdReward below. It is FAIL-CLOSED: with no AdMob
@@ -2098,6 +2157,7 @@ apiRoute.post("/", async (c) => {
           id: t.id,
           title: t.title,
           reward: t.reward,
+          xp: t.type === "ad" ? 0 : t.xp,
           target: t.target,
           type: t.type,
           progress: Math.min(progress, t.target),
@@ -2168,6 +2228,17 @@ apiRoute.post("/", async (c) => {
         gate: taskGate,
         gateArgs: taskBindings,
       });
+      const taskXp = xpAwardStatements(env, await getProgression(env), {
+        uid,
+        action: "daily_task",
+        eventId: ledgerId,
+        amount: task.xp,
+        sourceType: "daily_task",
+        sourceId: taskId,
+        ts,
+        gate: `EXISTS (SELECT 1 FROM coin_transactions WHERE id = ? AND created_at = ?)`,
+        gateArgs: [ledgerId, ts],
+      });
       const taskResults = await env.DB.batch([
         env.DB.prepare(
           `INSERT OR IGNORE INTO daily_task_claims (uid, task_id, day, reward, created_at)
@@ -2184,6 +2255,8 @@ apiRoute.post("/", async (c) => {
             WHERE ${taskGate} AND ${taskBudget.heldGate}`,
         ).bind(ledgerId, uid, reward, `Task reward: ${task.title}${taskLocked > 0 ? " · Diamond" : ""}`, ts, taskLocked, ...taskBindings, ...taskBudget.heldArgs),
         ...taskBudget.finalize,
+        // Daily-quest XP, only when this request's ledger row was written.
+        ...taskXp.statements,
       ]);
       if (Number(taskResults[taskBudget.reserve.length + 1]?.meta?.changes || 0) === 0) {
         if (taskBudget.reservationId) {
@@ -2195,7 +2268,9 @@ apiRoute.post("/", async (c) => {
         }
         throw httpsError("already-exists", "Task already claimed today.");
       }
-      return c.json({ success: true, reward, lockedCoins: taskLocked });
+      const taskXpEarned = taskXp.active ? (await xpEventOutcome(env, taskXp.eventId, taskXp.nonce)).delta : 0;
+      if (taskXpEarned) c.executionCtx.waitUntil(syncProgressionSafe(env, uid));
+      return c.json({ success: true, reward, lockedCoins: taskLocked, xpEarned: taskXpEarned });
     }
 
     // ================= WALLET =================
@@ -2807,6 +2882,8 @@ apiRoute.post("/", async (c) => {
         autoCancelHours: values.autoCancelHours,
         minVotes: values.minVotes,
         bannerUrl: values.bannerUrl,
+        minLevel: values.minLevel ?? null,
+        maxLevel: values.maxLevel ?? null,
         extra: createContestExtra(body, values),
         createdBy: uid,
         createdAt,
@@ -3019,9 +3096,13 @@ apiRoute.post("/", async (c) => {
       let equipped: string | null = null;
       if (body.badge != null) {
         const level = Number(body.badge?.level);
-        const me = await db.select({ level: schema.users.level }).from(schema.users).where(eq(schema.users.uid, uid)).get();
+        // The level the caller has actually reached, derived from XP. This read
+        // the frozen `users.level` column, so every badge above the seeded
+        // level 1 was refused.
+        const me = await db.select({ xp: schema.users.xp }).from(schema.users).where(eq(schema.users.uid, uid)).get();
         if (!me) throw httpsError("not-found", "User not found.");
-        if (!Number.isInteger(level) || level < 1 || level > Number(me.level ?? 1)) {
+        const reached = levelForXp(me.xp ?? 0, await getSettings(env));
+        if (!Number.isInteger(level) || level < 1 || level > reached) {
           throw httpsError("permission-denied", "You have not unlocked this badge yet.");
         }
         equipped = JSON.stringify({ name: `Level ${level} Hero`, icon: "trophy", level });
@@ -4340,6 +4421,28 @@ apiRoute.post("/", async (c) => {
     case "join":
     case "vote":
       return notPorted(action, "contests/contestHandler.ts (legacy entries/battles matchmaking)");
+
+    // ================= GAMIFICATION (lib/gamificationApi.ts) =================
+    case "getProgression":
+    case "getAchievements":
+    case "getInventory":
+    case "equipCosmetic":
+    case "pinAchievements":
+    case "getQuests":
+    case "claimQuest":
+    case "getXpHistory":
+    case "claimRewardGrant":
+    case "getCreatorInsights":
+    case "getXpRank":
+      return c.json(
+        await handleGamificationAction(action, {
+          env,
+          uid,
+          body,
+          waitUntil: (p) => c.executionCtx.waitUntil(p),
+          purgeProfile: () => c.executionCtx.waitUntil(purgeShared(c, userCacheKey(uid))),
+        }),
+      );
 
     default:
       throw httpsError("invalid-argument", `Action '${action}' nahi mila.`);

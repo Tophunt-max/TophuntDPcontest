@@ -21,7 +21,7 @@ import { getAppConfig } from "./settings";
 import { sendEmail } from "./email";
 
 const DAY = 24 * 60 * 60 * 1000;
-const FREE_TYPES = ["verification_bonus", "referral_bonus", "daily_reward", "ad_reward", "daily_task"];
+const FREE_TYPES = ["verification_bonus", "referral_bonus", "daily_reward", "ad_reward", "daily_task", "gamification_reward"];
 const DEFAULT_FREE_COINS_ALERT = 300;
 
 export function freeCoinsAlertThreshold(cfg: any): number {

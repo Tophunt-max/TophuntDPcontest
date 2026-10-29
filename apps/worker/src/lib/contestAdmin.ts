@@ -21,6 +21,8 @@ const CONTEST_CANONICAL_EXTRA_KEYS = [
   "durationHours",
   "autoCancelHours",
   "minVotes",
+  "minLevel",
+  "maxLevel",
   "createdBy",
   "createdAt",
   // Validity window and every alias it is accepted under. These are physical
@@ -383,6 +385,19 @@ export function validateContestInput(
   if (autoCancel.present || creating) {
     recognized ||= autoCancel.present;
     values.autoCancelHours = contestInteger(autoCancel.present ? autoCancel.value : 24, "autoCancelHours", 1, 168);
+  }
+
+  // Optional level-based tournament eligibility (migration 0070). Empty = no
+  // limit. It gates who may ENTER; it never changes votes, fees or prizes.
+  for (const field of ["minLevel", "maxLevel"] as const) {
+    const lv = firstAlias(body, [field]);
+    if (lv.present) {
+      recognized = true;
+      values[field] = lv.value === null || lv.value === "" ? null : contestInteger(lv.value, field, 1, 1000);
+    }
+  }
+  if (values.minLevel != null && values.maxLevel != null && values.maxLevel < values.minLevel) {
+    throw httpsError("invalid-argument", "maxLevel must be at least minLevel.");
   }
 
   const minVotes = firstAlias(body, ["minVotes"]);

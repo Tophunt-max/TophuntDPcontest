@@ -25,7 +25,7 @@ export interface WithdrawalRisk {
 }
 
 const DAY = 24 * 60 * 60 * 1000;
-const FREE_TYPES = ["verification_bonus", "referral_bonus", "daily_reward", "ad_reward", "daily_task", "signup_bonus"];
+const FREE_TYPES = ["verification_bonus", "referral_bonus", "daily_reward", "ad_reward", "daily_task", "signup_bonus", "gamification_reward"];
 
 export const RISK_FLAG_LABELS: Record<string, string> = {
   new_account: "Naya account (7 din se kam)",

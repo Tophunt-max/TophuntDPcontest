@@ -2,6 +2,8 @@ import type { Env } from "../types";
 import type { ProductPrize } from "./prizes";
 import { matchPot } from "./money";
 import { matchReservationId, platformLedgerStatement, releaseStatement } from "./promoBudget";
+import { getProgression } from "./progression";
+import { xpAwardStatements, xpReversalStatements } from "./xpService";
 
 export type MatchStatus = "waiting_for_opponent" | "active";
 export type FinalMatchStatus = "completed" | "cancelled";
@@ -55,6 +57,22 @@ export async function settleRefund(
   ];
 
   const claimed = `EXISTS (SELECT 1 FROM contest_matches WHERE id = ? AND settlement_id = ?)`;
+  // A CANCELLED match earns no participation XP: the entry XP granted when it was
+  // entered is reversed (append-only, see lib/xpService.ts). A tie is "completed"
+  // and keeps it. Entries from before the XP ledger have no event, so this is a
+  // no-op for them — nothing historical changes.
+  if (input.finalStatus === "cancelled") {
+    for (const uid of participantUids) {
+      statements.push(...xpReversalStatements(env, {
+        originalId: `contest_entry:${input.matchId}:${uid}`,
+        reason: `Match cancelled: ${input.description}`,
+        actor: "system",
+        ts: input.completedAt,
+        gate: claimed,
+        gateArgs: [input.matchId, settlementId],
+      }));
+    }
+  }
   // A promo subsidy reserved for this match goes back to its budget: nobody won it.
   statements.push(releaseStatement(env, matchReservationId(input.matchId), input.completedAt, claimed, [input.matchId, settlementId]));
 
@@ -179,6 +197,7 @@ export async function settleWinner(
     `SELECT entry_fee, subsidy_coins, subsidy_budget_id FROM contest_matches WHERE id = ?`,
   ).bind(input.matchId).first<{ entry_fee: number | null; subsidy_coins: number | null; subsidy_budget_id: string | null }>();
   const pot = matchPot(funding?.entry_fee ?? 0);
+  const progression = await getProgression(env);
   const reservedSubsidy = Math.max(0, Number(funding?.subsidy_coins || 0));
   const budgetId = funding?.subsidy_budget_id ?? null;
   // Coin prize: only the part above the pot is paid by the budget; the rest of a
@@ -208,7 +227,7 @@ export async function settleWinner(
     ),
     env.DB.prepare(
       `UPDATE users
-          SET dpcoin = dpcoin + ?, xp = xp + 100,
+          SET dpcoin = dpcoin + ?,
               wins = wins + 1, monthly_wins = monthly_wins + 1,
               updated_at = ?
         WHERE uid = ? AND ${gate}
@@ -221,18 +240,29 @@ export async function settleWinner(
       settlementId,
       transactionId,
     ),
-    env.DB.prepare(
-      `UPDATE users
-          SET xp = xp + 20, updated_at = ?
-        WHERE uid = ? AND ${gate}
-          AND NOT EXISTS (SELECT 1 FROM coin_transactions WHERE id = ?)`,
-    ).bind(
-      input.completedAt,
-      input.loserUid,
-      input.matchId,
-      settlementId,
-      transactionId,
-    ),
+    // Win / loss XP through the XP engine, with the same two gates the stats
+    // update uses. Before the ledger insert below, so both read the same
+    // "not yet settled" snapshot.
+    ...xpAwardStatements(env, progression, {
+      uid: input.winnerUid,
+      action: "match_win",
+      eventId: `match_win:${input.matchId}`,
+      sourceType: "match",
+      sourceId: input.matchId,
+      ts: input.completedAt,
+      gate: `${gate} AND NOT EXISTS (SELECT 1 FROM coin_transactions WHERE id = ?)`,
+      gateArgs: [input.matchId, settlementId, transactionId],
+    }).statements,
+    ...xpAwardStatements(env, progression, {
+      uid: input.loserUid,
+      action: "match_loss",
+      eventId: `match_loss:${input.matchId}:${input.loserUid}`,
+      sourceType: "match",
+      sourceId: input.matchId,
+      ts: input.completedAt,
+      gate: `${gate} AND NOT EXISTS (SELECT 1 FROM coin_transactions WHERE id = ?)`,
+      gateArgs: [input.matchId, settlementId, transactionId],
+    }).statements,
     env.DB.prepare(
       `INSERT OR IGNORE INTO coin_transactions
          (id, uid, amount, type, contest_id, match_id, description, created_at, budget_id)

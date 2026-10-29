@@ -26,6 +26,9 @@ import {
 } from "../lib/feedRanking";
 import { FEED_DEFAULT_WEIGHTS, rankingVersion, sanitizeFeedWeights, type FeedWeights } from "../lib/feedWeights";
 import { getSettings as getGamificationSettings, levelForXp } from "../lib/gamification";
+import { getProgression, levelInfo, xpForLevel } from "../lib/progression";
+import { loadAchievementDefs, loadCatalog, resolveCosmetics } from "../lib/cosmetics";
+import { hallOfFame, LEADERBOARD_PERIODS, leaderboardPage, myRank, rangeFor, type LeaderboardPeriod } from "../lib/seasons";
 import { resolveLegalContent } from "../content/legal";
 import {
   enrichMatchMedia,
@@ -508,6 +511,15 @@ export const READ_CACHE_TTLS = {
    * from the hot path entirely, and a guest pays ZERO D1 for it.
    */
   usersSuggested: { edge: 120, kv: null, invalidated: false, ceiling: 120 },
+  /**
+   * XP leaderboards (lifetime / week / month / season). Same reasoning as
+   * `leaderboard`: a rank is a global fact, nothing invalidates it, edge-only.
+   */
+  xpLeaderboard: { edge: 60, kv: null, invalidated: false, ceiling: 60 },
+  /** Ranks, milestones, cosmetic catalog and achievement list. Admin edits are rare and cosmetic. */
+  gamificationCatalog: { edge: 300, kv: null, invalidated: false, ceiling: 300 },
+  /** Hall of Fame: changes monthly and at season end. */
+  hallOfFame: { edge: 300, kv: null, invalidated: false, ceiling: 300 },
   /**
    * Stories bar. A shared base of the live stories; the per-viewer block/mute
    * filter, grouping and current-user-first ordering all run per request after the
@@ -1141,6 +1153,9 @@ const mapContest = (r: any) => ({
   voteDurationDays: r.voteDurationDays,
   autoCancelHours: r.autoCancelHours,
   minVotes: r.minVotes,
+  // Level-based eligibility (null = anyone). Checked again on the server at entry.
+  minLevel: r.minLevel ?? null,
+  maxLevel: r.maxLevel ?? null,
   // Validity window as ABSOLUTE epoch milliseconds, deliberately not a
   // precomputed "seconds remaining": this response is cached for 60s (KV +
   // Cache-Control below), so a relative figure would be served up to a minute
@@ -1791,6 +1806,136 @@ readRoute.get("/leaderboard/me", requireAuth, async (c) => {
     .where(and(discoverableUser, sql`COALESCE(${col}, 0) > ${score}`))
     .get();
   return c.json({ by, rank: Number(ahead?.n || 0) + 1, score });
+});
+
+// ================= GAMIFICATION (lib/progression.ts, lib/seasons.ts) =================
+/**
+ * Public catalog: ranks, the level roadmap, cosmetics and achievements. Identical
+ * for everyone, so it is shared-cacheable. Hidden achievements are omitted.
+ */
+readRoute.get("/gamification/catalog", optionalAuth, guestReadLimit, async (c) => {
+  const data = await cachedJson<any>(c, {
+    key: "cache:gamification:catalog",
+    edgeTtlSec: READ_CACHE_TTLS.gamificationCatalog.edge,
+    kvTtlSec: READ_CACHE_TTLS.gamificationCatalog.kv,
+    load: async () => {
+      const p = await getProgression(c.env);
+      const items = (await loadCatalog(c.env)).filter((i) => i.active);
+      const defs = (await loadAchievementDefs(c.env)).filter((d) => d.active && !d.hidden);
+      return {
+        maxLevel: p.curve.maxLevel,
+        ranks: p.cfg.ranks.map((r) => ({ ...r, minXp: xpForLevel(r.minLevel, p.curve) })),
+        milestones: [...p.cfg.milestones].sort((a, b) => a.level - b.level).map((m) => ({ ...m, xp: xpForLevel(m.level, p.curve) })),
+        items: items.map((i) => ({ id: i.id, type: i.type, name: i.name, description: i.description, rarity: i.rarity, asset: i.asset })),
+        achievements: defs.map((d) => ({
+          id: d.id, name: d.name, description: d.description, icon: d.icon, category: d.category, rarity: d.rarity,
+          xpReward: d.xpReward, threshold: d.threshold, repeatable: d.repeatable, maxTiers: d.maxTiers,
+        })),
+      };
+    },
+  });
+  c.header("Cache-Control", `public, max-age=${READ_CACHE_TTLS.gamificationCatalog.edge}`);
+  return c.json(data);
+});
+
+/**
+ * XP leaderboards: ?period=lifetime|week|month|season&limit=&cursor=<offset>.
+ * Public profile fields only, deterministic tie-break (lib/seasons.ts), max 500
+ * deep. Blocked accounts are dropped per viewer after the shared cache, like
+ * `/leaderboard`.
+ */
+readRoute.get("/leaderboard/xp", optionalAuth, guestReadLimit, async (c) => {
+  const raw = c.req.query("period");
+  const period = (LEADERBOARD_PERIODS as string[]).includes(raw ?? "") ? (raw as LeaderboardPeriod) : "lifetime";
+  const limit = pageLimit(c, 20, 50);
+  const offset = Math.min(500, Math.max(0, parseInt(c.req.query("cursor") || "0", 10) || 0));
+  const data = await cachedJson<any>(c, {
+    key: `cache:xplb:${period}:${offset}:${limit}`,
+    edgeTtlSec: READ_CACHE_TTLS.xpLeaderboard.edge,
+    kvTtlSec: READ_CACHE_TTLS.xpLeaderboard.kv,
+    load: async () => {
+      const p = await getProgression(c.env);
+      const range = await rangeFor(c.env, p, period);
+      if (period === "season" && !range) return { period, active: false, label: null, endsAt: null, rows: [], nextCursor: null };
+      const rows = await leaderboardPage(c.env, range, offset, limit);
+      return {
+        period,
+        active: true,
+        label: range?.label ?? "All time",
+        endsAt: range?.endsAt ?? null,
+        rows: rows.map((r) => {
+          const info = levelInfo(r.lifetimeXp, p.curve, p.cfg);
+          return { ...r, level: info.level, rank: r.rank, rankTitle: info.rank.name, profileImageUrlThumb: avatarUrl(c.env, r.profileImageUrl) };
+        }),
+        nextCursor: rows.length === limit && offset + limit < 500 ? String(offset + limit) : null,
+      };
+    },
+  });
+  const viewerUid = c.get("user")?.uid;
+  c.header("Cache-Control", "public, max-age=30");
+  if (viewerUid && data.rows?.length) {
+    const blocked = await blockedUidsFor(c.env, viewerUid);
+    if (blocked.size) {
+      c.header("Cache-Control", "private, no-store");
+      return c.json({ ...data, rows: excludeHiddenBy(data.rows, blocked, (r: any) => r.uid) });
+    }
+  }
+  return c.json(data);
+});
+
+readRoute.get("/leaderboard/xp/me", requireAuth, async (c) => {
+  const uid = c.get("user").uid;
+  const raw = c.req.query("period");
+  const period = (LEADERBOARD_PERIODS as string[]).includes(raw ?? "") ? (raw as LeaderboardPeriod) : "lifetime";
+  await rateLimit(c.env, `xplbme:${uid}`, 120, 3600);
+  const p = await getProgression(c.env);
+  const range = await rangeFor(c.env, p, period);
+  c.header("Cache-Control", "private, no-store");
+  if (period === "season" && !range) return c.json({ period, rank: null, score: 0, active: false });
+  return c.json({ period, active: true, ...(await myRank(c.env, uid, range)) });
+});
+
+/** Hall of Fame: monthly winners, season champions and Legends. */
+readRoute.get("/hall-of-fame", optionalAuth, guestReadLimit, async (c) => {
+  const data = await cachedJson<any>(c, {
+    key: "cache:hall-of-fame",
+    edgeTtlSec: READ_CACHE_TTLS.hallOfFame.edge,
+    kvTtlSec: READ_CACHE_TTLS.hallOfFame.kv,
+    load: async () => {
+      const h = await hallOfFame(c.env);
+      const thumb = (r: any) => ({ ...r, profileImageUrlThumb: avatarUrl(c.env, r.profileImageUrl) });
+      return { ...h, monthly: h.monthly.map(thumb), seasons: h.seasons.map(thumb), legends: h.legends.map(thumb) };
+    },
+  });
+  c.header("Cache-Control", `public, max-age=${READ_CACHE_TTLS.hallOfFame.edge}`);
+  return c.json(data);
+});
+
+/**
+ * Someone's unlocked achievements (names, icons, dates). The same block rule as
+ * the profile: a user who blocked the viewer is indistinguishable from none.
+ * No progress counters and no hidden metrics — those are the owner's own.
+ */
+readRoute.get("/users/:id/achievements", optionalAuth, guestReadLimit, async (c) => {
+  const id = c.req.param("id");
+  const viewer = c.get("user")?.uid;
+  if (viewer && viewer !== id) {
+    const rel = await getRelations(c.env, viewer);
+    if (rel.blocked.includes(id) || rel.blockedByMe.includes(id)) return c.json({ achievements: [] });
+  }
+  const owner = await c.env.DB.prepare(`SELECT status FROM users u WHERE u.uid = ?`).bind(id).first<{ status: string | null }>();
+  if (!owner || owner.status === "deleted" || owner.status === "pending_deletion") return c.json({ achievements: [] });
+  const rows = await c.env.DB.prepare(
+    `SELECT achievement_id, MAX(tier) AS tier, MIN(unlocked_at) AS unlocked_at FROM user_achievements WHERE uid = ? GROUP BY achievement_id`,
+  ).bind(id).all<any>();
+  const defs = new Map((await loadAchievementDefs(c.env)).map((d) => [d.id, d]));
+  c.header("Cache-Control", "private, max-age=60");
+  return c.json({
+    achievements: (rows.results ?? [])
+      .map((r) => ({ r, d: defs.get(r.achievement_id) }))
+      .filter((x) => !!x.d)
+      .map(({ r, d }) => ({ id: d!.id, name: d!.name, icon: d!.icon, rarity: d!.rarity, category: d!.category, tier: Number(r.tier), unlockedAt: Number(r.unlocked_at) })),
+  });
 });
 
 // ================= APP CONFIG =================
@@ -2560,6 +2705,11 @@ export const PUBLIC_PROFILE_FIELDS = [
   "equippedBadge",
   "xp",
   "level",
+  // Server-computed progress bar + rank (lib/progression.ts#levelInfo), and the
+  // equipped cosmetics RESOLVED against the catalog (lib/cosmetics.ts). The raw
+  // `cosmetics` column is replaced by that resolved view before projection.
+  "levelInfo",
+  "cosmetics",
   // Counters.
   "followersCount",
   "followingCount",
@@ -2750,8 +2900,10 @@ async function serveUserProfile(c: any, id: string): Promise<Response> {
     // `users.level` any more (see lib/gamification.ts#levelForXp), so the column is
     // frozen at its seeded value; computing it here from the authoritative xp is
     // what makes leveling actually work — and it can never drift from that xp.
-    const gs = await getGamificationSettings(c.env);
-    safe.level = levelForXp(safe.xp ?? 0, gs);
+    const prog = await getProgression(c.env);
+    safe.levelInfo = levelInfo(safe.xp ?? 0, prog.curve, prog.cfg);
+    safe.level = safe.levelInfo.level;
+    safe.cosmetics = await resolveCosmetics(c.env, safe.cosmetics);
     return safe;
   };
 
