@@ -35,6 +35,13 @@ export interface Env {
   ANALYTICS?: { writeDataPoint(p: { indexes?: string[]; blobs?: string[]; doubles?: number[] }): void };
   ANALYTICS_DATASET?: string;
   USAGE_LIMITER?: { limit(opts: { key: string }): Promise<{ success: boolean }> };
+  // Route-wide backstops (lib/edgeLimit.ts). Workers Rate Limiting bindings:
+  // in memory per colo, no DO request. Optional: absent locally and in tests,
+  // where they fail open.
+  API_ACTION_LIMITER?: { limit(opts: { key: string }): Promise<{ success: boolean }> };
+  AUTH_IP_LIMITER?: { limit(opts: { key: string }): Promise<{ success: boolean }> };
+  USER_READ_LIMITER?: { limit(opts: { key: string }): Promise<{ success: boolean }> };
+  WS_CONNECT_LIMITER?: { limit(opts: { key: string }): Promise<{ success: boolean }> };
   // Per-chat message store (SQLite-backed DO). Owns chat message BODIES, keeping
   // the fastest-growing write path off D1's single writer. The `chats` preview
   // row + `chat_members` index stay in D1 (cross-chat inbox queries). Typed for

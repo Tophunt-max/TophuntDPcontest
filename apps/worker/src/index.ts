@@ -59,6 +59,7 @@ import {
 import { applyPublicMediaCors, preflightMediaCorsHeaders } from "./lib/mediaCors";
 import { cachePolicyForKey } from "./lib/mediaCategories";
 import { clientIp, rateLimit } from "./lib/rateLimit";
+import { edgeAllowed } from "./lib/edgeLimit";
 import { authorizeGuestMatchSocket, authorizeSignedInMatchSocket, GUEST_SOCKET_UID, parseWsChannel, trustedHubHeaders, authorizeAppConfigSocket, MAX_APP_CONFIG_SOCKETS } from "./lib/wsGuest";
 
 // Durable Object for real-time WebSocket push.
@@ -358,6 +359,12 @@ app.on(["GET", "HEAD"], "/media/*", async (c) => {
 app.get("/ws", async (c) => {
   if (c.req.header("Upgrade") !== "websocket") {
     return c.text("Expected a WebSocket upgrade.", 426);
+  }
+  // Each upgrade opens a RealtimeHub DO connection; bound reconnect loops and
+  // scripted socket floods per IP (lib/edgeLimit.ts, fails open).
+  if (!(await edgeAllowed(c.env, "WS_CONNECT_LIMITER", `ws:${clientIp(c.req.raw.headers)}`))) {
+    c.header("Retry-After", "60");
+    return c.text("Too many connections. Try again in a minute.", 429);
   }
   const channel = c.req.query("channel");
   // `ticket` (lib/wsTicket.ts) keeps the ID token out of request URLs, which

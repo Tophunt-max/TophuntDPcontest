@@ -162,6 +162,38 @@ name = "USAGE_LIMITER"
 namespace_id = "7303"
 simple = { limit = 30, period = 60 }
 
+# Route-wide backstops (src/lib/edgeLimit.ts). Same mechanism as the guest
+# limiter: per colo, in memory, no Durable Object request, fail open. They stop
+# scripts calling unlisted actions or reading in bulk with an account; the exact
+# per-action limits (RateLimiter DO) stay underneath.
+#
+# Every /api action, per signed-in uid. The busiest real client path (typing,
+# chat reads, story views) stays well under 4/s.
+[[ratelimits]]
+name = "API_ACTION_LIMITER"
+namespace_id = "7305"
+simple = { limit = 240, period = 60 }
+
+# Every /auth action, per IP. Generous for carrier NAT; signup and OTP keep
+# their own per-IP / per-number DO limits.
+[[ratelimits]]
+name = "AUTH_IP_LIMITER"
+namespace_id = "7307"
+simple = { limit = 120, period = 60 }
+
+# Signed-in reads of public content, per uid (guests use GUEST_READ_LIMITER per
+# IP). Without it, signing in removed the only scraping limit.
+[[ratelimits]]
+name = "USER_READ_LIMITER"
+namespace_id = "7309"
+simple = { limit = 600, period = 60 }
+
+# WebSocket upgrades, per IP. Each upgrade opens a RealtimeHub DO connection.
+[[ratelimits]]
+name = "WS_CONNECT_LIMITER"
+namespace_id = "7311"
+simple = { limit = 120, period = 60 }
+
 # Workers Analytics Engine: anonymous usage counters (src/lib/usageEvents.ts).
 # Read back through the SQL API with CF_ANALYTICS_TOKEN (Account Analytics: Read).
 # Free plan: 100,000 data points written and 10,000 read queries per day.
@@ -350,6 +382,26 @@ simple = { limit = 1000, period = 60 }
 name = "USAGE_LIMITER"
 namespace_id = "7304"
 simple = { limit = 30, period = 60 }
+
+[[env.staging.ratelimits]]
+name = "API_ACTION_LIMITER"
+namespace_id = "7306"
+simple = { limit = 240, period = 60 }
+
+[[env.staging.ratelimits]]
+name = "AUTH_IP_LIMITER"
+namespace_id = "7308"
+simple = { limit = 120, period = 60 }
+
+[[env.staging.ratelimits]]
+name = "USER_READ_LIMITER"
+namespace_id = "7310"
+simple = { limit = 600, period = 60 }
+
+[[env.staging.ratelimits]]
+name = "WS_CONNECT_LIMITER"
+namespace_id = "7312"
+simple = { limit = 120, period = 60 }
 
 [[env.staging.analytics_engine_datasets]]
 binding = "ANALYTICS"

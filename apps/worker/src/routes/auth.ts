@@ -25,6 +25,7 @@ import { assertLoginAllowed, assertSignupAllowed, normalizePlatform, signupMetho
 import { setOtp, generateOtp, verifyOtp, deleteOtp } from "../lib/otp";
 import { validatePasswordStrength } from "../lib/password";
 import { rateLimit, enforceSendCooldown, markSent, clearSendCooldown, clientIp } from "../lib/rateLimit";
+import { edgeLimit } from "../lib/edgeLimit";
 import { assertIdentifiersAvailable, assertUsernameNotOnHold, validateUsername } from "../lib/userIdentifiers";
 import { revokeAllSessions } from "../lib/sessionRevocation";
 import {
@@ -310,6 +311,13 @@ export const authRoute = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 authRoute.use("*", optionalAuth);
 
+// Backstop over every /auth action, per IP (lib/edgeLimit.ts). Most of these run
+// before sign-in, so the IP is the only subject available.
+authRoute.use("*", async (c, next) => {
+  await edgeLimit(c.env, "AUTH_IP_LIMITER", `auth:${clientIp(c.req.raw.headers)}`, c.header.bind(c));
+  await next();
+});
+
 authRoute.post("/", async (c) => {
   const body = await c.req.json<any>().catch(() => ({}));
   const action = body?.action;
@@ -500,7 +508,10 @@ authRoute.post("/", async (c) => {
     }
 
     case "getUserByIdentifier": {
-      await rateLimit(env, `identifier:${ip}`, 20, 60);
+      // Unauthenticated identity lookup (email/phone -> uid, name, avatar), and no
+      // app screen calls it. Kept tight and fail-CLOSED: a limiter outage must not
+      // turn it into a bulk phone-number de-anonymisation oracle.
+      await rateLimit(env, `identifier:${ip}`, 10, 60, { failClosed: true });
       const { identifier, type } = body;
       if (!identifier || !type) throw httpsError("invalid-argument", "Identifier and type are required.");
       let value = identifier;
