@@ -26,7 +26,7 @@ import { useAppConfig } from '@/src/services/appSettings';
 import { readApi } from '@/src/services/api';
 import { describeFeeRule, feeRuleFromWithdrawalConfig, MIN_NET_PAYOUT_INR, quoteWithdrawal } from '@/src/lib/withdrawalFee';
 
-import { balancesOf } from '@/src/lib/balances';
+import { balancesOf, hasLiveBalance } from '@/src/lib/balances';
 const METHODS = [
   { key: 'upi', label: 'UPI', placeholder: 'yourname@upi' },
   { key: 'bank', label: 'Bank', placeholder: 'Account no. / IFSC' },
@@ -72,6 +72,7 @@ export default function WithdrawScreen() {
   // rewards) only pay entry fees (src/lib/balances.ts). The server enforces
   // this; the screen only offers what can actually leave.
   const { dpcoin: balance, diamonds: locked } = balancesOf(profile);
+  const balanceKnown = hasLiveBalance(profile);
   const amt = Number(amount) || 0;
   // Platform fee, deducted from the payout (src/lib/withdrawalFee.ts — same
   // formula the server charges with; it refuses if this quote is stale).
@@ -91,6 +92,8 @@ export default function WithdrawScreen() {
 
   const submit = async () => {
     if (!enabled) return;
+    // Offline-restored profile: the balance is not known yet.
+    if (!balanceKnown) return Alert.alert('Balance load nahi hua', 'Internet check karke dobara try karo.');
     if (!Number.isInteger(amt) || amt <= 0) return Alert.alert('Invalid amount', 'DP coin ka poora number daalo.');
     if (amt < minAmount) return Alert.alert('Below minimum', `Minimum withdrawal is ${minAmount} DP coin.`);
     if (maxAmount > 0 && amt > maxAmount) return Alert.alert('Above maximum', `Ek baar mein zyada se zyada ${maxAmount} DP coin nikal sakte ho.`);
@@ -147,7 +150,7 @@ export default function WithdrawScreen() {
               <Text style={[styles.label, { color: subTextColor }]}>Withdraw ho sakte hain</Text>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <CoinIcon size={26} />
-                <Text style={[styles.balance, { color: textColor }]}>{balance} <Text style={{ fontSize: 16, color: subTextColor }}>DP coin</Text></Text>
+                <Text style={[styles.balance, { color: textColor }]}>{balanceKnown ? balance : '—'} <Text style={{ fontSize: 16, color: subTextColor }}>DP coin</Text></Text>
               </View>
               <Text style={[styles.hint, { color: subTextColor }]}>
                 Sirf contest jeet kar mile DP coin withdraw hote hain.{locked > 0 ? ` Aapke ${locked} Diamond sirf contest entry ke liye hain.` : ''}

@@ -73,6 +73,10 @@ focusManager.setEventListener((handleFocus) => {
 });
 
 import { useAuth } from '@/src/hooks/useAuth'; // Shared app-wide auth session
+import { shouldWipeDeviceCaches } from '@/src/lib/authState';
+import { clearOffline, offlineOwner } from '@/src/lib/offlineStore';
+import { restoreQueries } from '@/src/lib/queryPersistence';
+import { useQueryPersistence } from '@/src/hooks/useQueryPersistence';
 import { useProfile } from '@/src/hooks/useProfileData';
 import { useCachedIdentity } from '@/src/hooks/useCachedIdentity';
 import { savePendingInvite } from '@/src/services/referrals';
@@ -138,6 +142,10 @@ const queryClient = new QueryClient({
       retry: shouldRetryQuery,
       retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 8000),
       staleTime: 30_000,
+      // Unused data stays in memory for 30 min (react-query's default is 5), so
+      // data restored from disk at launch (src/lib/queryPersistence.ts) is still
+      // there when an offline user opens that screen a few minutes later.
+      gcTime: 30 * 60_000,
       refetchOnReconnect: true,
       refetchOnWindowFocus: false,
     },
@@ -252,20 +260,31 @@ function RootLayoutNav() {
   React.useEffect(() => {
     if (loading) return;
     const uid = user?.uid ?? null;
-    if (lastUidRef.current !== undefined && lastUidRef.current !== uid) {
+    const prev = lastUidRef.current;
+    if (prev !== undefined && prev !== uid) {
       queryClient.clear();
-      // The on-device Story cache is not keyed by account either: wipe it so a
-      // guest (or the next account) never sees the previous viewer's
-      // followers-only Stories or replays their queued reactions.
-      void import('@/src/services/stories/offlineStoryService')
-        .then(({ clearLocalStories }) => clearLocalStories())
-        .catch((e) => console.error('Story cache clear failed', e));
-      // Same for the Home feed snapshot: it carries the previous viewer's
-      // vote/like/bookmark flags and their personalised ordering. Home also keys
-      // its reads by uid, so this is defence in depth plus the storage bound.
-      void import('@/src/lib/feedSnapshot')
-        .then(({ clearFeedSnapshots }) => clearFeedSnapshots())
-        .catch((e) => console.error('Feed snapshot clear failed', e));
+      if (shouldWipeDeviceCaches(prev, uid)) {
+        // The on-device Story cache is not keyed by account either: wipe it so a
+        // guest (or the next account) never sees the previous viewer's
+        // followers-only Stories or replays their queued reactions.
+        void import('@/src/services/stories/offlineStoryService')
+          .then(({ clearLocalStories }) => clearLocalStories())
+          .catch((e) => console.error('Story cache clear failed', e));
+        // Same for the Home feed snapshot: it carries the previous viewer's
+        // vote/like/bookmark flags and their personalised ordering. Home also keys
+        // its reads by uid, so this is defence in depth plus the storage bound.
+        void import('@/src/lib/feedSnapshot')
+          .then(({ clearFeedSnapshots }) => clearFeedSnapshots())
+          .catch((e) => console.error('Feed snapshot clear failed', e));
+        void clearOffline();
+      } else {
+        // Guest -> account. The guest shell can come FIRST for an account that
+        // was already signed in (Continue as guest while a slow network delayed
+        // the restore). Wiping here deleted that account's own offline feed,
+        // Stories and saved screens. Every cache is owner-checked on read, so
+        // nothing of another account can surface; restore this account's.
+        void restoreQueries(queryClient, offlineOwner(uid));
+      }
     }
     // Resolved identity (launch or a change): load this account's pending
     // offline intents for the UI, then send them.
@@ -471,6 +490,15 @@ const handledNotificationTaps = new Set<string>();
 export default function RootLayout() {
   const colorScheme = useColorScheme();
   const authSession = useAuth();
+  // Saved screens (profile, explore, rewards…) for this viewer: restored once on
+  // launch, saved after fetches. src/lib/queryPersistence.ts.
+  const persistOwner =
+    authSession.status === 'authenticated' && authSession.user
+      ? offlineOwner(authSession.user.uid)
+      : authSession.status === 'guest'
+        ? offlineOwner(null)
+        : null;
+  const queriesRestored = useQueryPersistence(queryClient, persistOwner);
 
   /**
    * Text fonts.
@@ -523,6 +551,9 @@ export default function RootLayout() {
   // is unknown, so no child can paint Login / Signup, a `?` avatar, guest feed,
   // or guest-shaped viewer queries for an account Firebase is about to restore.
   if (authSession.status === 'restoring') return <AuthStartupGate />;
+  // At most RESTORE_WAIT_MS more on the splash, so the first screen paints saved
+  // data instead of skeletons when offline.
+  if (persistOwner && !queriesRestored) return <AuthStartupGate />;
   if (authSession.status === 'error') {
     return <AuthStartupGate failed onRetry={authSession.retry} onContinue={authSession.continueAsGuest} />;
   }

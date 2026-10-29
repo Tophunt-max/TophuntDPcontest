@@ -17,7 +17,7 @@ import { BackButton } from '@/src/components/ui/BackButton';
 import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
 import { CoinIcon } from '@/src/components/ui/CoinIcon';
 import { DiamondIcon } from '@/src/components/ui/DiamondIcon';
-import { balancesOf, splitTransaction } from '@/src/lib/balances';
+import { balancesOf, hasLiveBalance, splitTransaction } from '@/src/lib/balances';
 import { WalletSkeleton } from '@/src/components/skeletons/WalletSkeleton';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
@@ -404,7 +404,8 @@ export default function WalletScreen() {
     </View>
   );
 
-  if (profileLoading) {
+  // An offline-restored profile has no balance: keep the loading state until the server answers.
+  if (profileLoading || (profile && !hasLiveBalance(profile))) {
     return (
       <SafeAreaView style={[styles.container, { backgroundColor }]}>
         {walletHeader}

@@ -29,6 +29,7 @@ import {
   appendPage,
   feedOwnerKey,
   loadFeedSnapshot,
+  loadOfflineFeed,
   planFeedLoad,
   recordFeedEvent,
   snapshotGeneration,
@@ -199,7 +200,20 @@ export default function HomeScreen() {
         recordFeedEvent('offline_serve');
         setShowingSaved(true);
       } else {
-        setLoadError(error?.message || 'Battles load nahi ho sake.');
+        // Nothing on screen: the last saved battles (even ones a later empty
+        // answer superseded) beat an error screen, with the "saved" notice.
+        const saved = await loadOfflineFeed(ownerKey, tab).catch(() => null);
+        if (reqId !== reqIdRef.current || key !== feedKeyRef.current) return;
+        if (saved && saved.items.length) {
+          recordFeedEvent('offline_serve');
+          setMatches(saved.items);
+          setSource('cache');
+          sourceRef.current = 'cache';
+          hasContentRef.current = true;
+          setShowingSaved(true);
+        } else {
+          setLoadError(error?.message || 'Battles load nahi ho sake.');
+        }
       }
     } finally {
       if (reqId === reqIdRef.current) {

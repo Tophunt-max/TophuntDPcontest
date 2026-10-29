@@ -18,6 +18,11 @@ import { emitToast } from '@/src/lib/toastBridge';
 import { reportError } from '@/src/lib/reportError';
 import { auth } from '@/src/services/firebase/initFirebase';
 import { readApi, callApi } from '@/src/services/api';
+import { loadOffline, offlineOwner, saveOffline } from '@/src/lib/offlineStore';
+
+/** Offline snapshot of the inbox list (latest conversations only). */
+const OFFLINE_NAME = 'chats';
+const MAX_OFFLINE_CHATS = 50;
 import { live, subscribeChannel } from '@/src/services/realtime';
 import { useRouter } from 'expo-router';
 import { useThemeColor } from '@/hooks/use-theme-color';
@@ -170,6 +175,7 @@ export default function MessagesScreen() {
       () => readApi('/read/chats'),
       (chatsData) => {
         setChats(chatsData || []);
+        void saveOffline(offlineOwner(currentUser.uid), OFFLINE_NAME, (chatsData || []).slice(0, MAX_OFFLINE_CHATS));
         setLoadFailed(false);
         setLoading(false);
         setRefreshing(false);
@@ -186,6 +192,21 @@ export default function MessagesScreen() {
     );
 
     return unsubscribe;
+  }, [currentUser]);
+
+  // Paint the last saved chat list while the live one loads, so an offline open
+  // shows conversations instead of a skeleton (src/lib/offlineStore.ts).
+  useEffect(() => {
+    if (!currentUser) return;
+    let cancelled = false;
+    void loadOffline<ChatItemType[]>(offlineOwner(currentUser.uid), OFFLINE_NAME).then((saved) => {
+      if (cancelled || !saved?.data?.length) return;
+      setChats((current) => (current.length ? current : saved.data));
+      setLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [currentUser]);
 
   useEffect(() => {

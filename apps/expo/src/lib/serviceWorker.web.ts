@@ -29,3 +29,15 @@ export function registerServiceWorker(): void {
   if (document.readyState === 'complete') run();
   else window.addEventListener('load', run, { once: true });
 }
+
+/** Cache Storage name used by public/sw.js for offline images. Keep in sync. */
+export const OFFLINE_MEDIA_CACHE = 'tophunt-media';
+
+/** Drop the images public/sw.js kept for offline use (sign-out). Never throws. */
+export async function clearOfflineMedia(): Promise<void> {
+  try {
+    if (typeof caches !== 'undefined') await caches.delete(OFFLINE_MEDIA_CACHE);
+  } catch {
+    /* best-effort */
+  }
+}

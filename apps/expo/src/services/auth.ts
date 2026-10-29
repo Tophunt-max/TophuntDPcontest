@@ -57,6 +57,10 @@ export async function clearAccountScopedCaches(): Promise<void> {
     ['feed', () => import('@/src/lib/feedSnapshot').then((m) => m.clearFeedSnapshots())],
     ['feed position', () => import('@/src/lib/feedSession').then((m) => m.clearFeedSessions())],
     ['recent-searches', () => import('@/src/services/explore').then((m) => m.clearRecentSearches())],
+    // Saved screens, notifications and the inbox list (src/lib/offlineStore.ts).
+    ['offline-snapshots', () => import('@/src/lib/offlineStore').then((m) => m.clearOffline())],
+    // Web: images the service worker kept for offline use (public/sw.js MEDIA_CACHE).
+    ['offline-media', () => import('@/src/lib/serviceWorker').then((m) => m.clearOfflineMedia())],
     // The previous account's unread count stayed on the app icon, and its
     // delivered alerts in the notification shade, after sign-out.
     ['badge', () => import('@/src/services/notifications/notificationService').then((m) => m.notificationService.syncBadgeCount(0))],

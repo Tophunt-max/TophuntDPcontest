@@ -98,6 +98,38 @@ describe('sw.js offline behaviour', () => {
     const later: Response = await sw.navigate(req('/wallet', { mode: 'navigate' }));
     expect(await later.text()).toBe('<html>shell</html>');
   });
+  it('caches media-host IMAGES only (not video, other hosts, Range or credentials)', () => {
+    const fake = (url: string, extra: Record<string, any> = {}) =>
+      ({ method: 'GET', url, mode: 'no-cors', destination: 'image', ...extra, headers: new Headers(extra.headers || {}) }) as any;
+    const { sw } = loadSw(async () => new Response(''));
+    expect(sw.route(fake('https://media.tophunt.in/avatars/a.jpg'), ORIGIN)).toBe('media');
+    expect(sw.route(fake('https://media.tophunt.in/cdn-cgi/image/width=320/x.jpg'), ORIGIN)).toBe('media');
+    for (const r of [
+      fake('https://media.tophunt.in/v/a.mp4', { destination: 'video' }),
+      fake('https://media.tophunt.in/a.jpg', { destination: '' }),
+      fake('https://evil.example/a.jpg'),
+      fake('https://media.tophunt.in/a.jpg', { headers: { Range: 'bytes=0-9' } }),
+      fake('https://media.tophunt.in/a.jpg', { method: 'POST' }),
+    ]) {
+      expect(sw.route(r, ORIGIN), `${r.url} ${r.destination}`).toBeNull();
+    }
+  });
+
+  it('a media image is fetched once with CORS, then served offline from the cache', async () => {
+    const seen: any[] = [];
+    const { sw: worker, caches } = loadSw(async (r: any) => {
+      seen.push(r);
+      if (seen.length > 1) throw new TypeError('offline');
+      return new Response('img', { status: 200, headers: { 'content-type': 'image/jpeg' } });
+    });
+    const request = { method: 'GET', url: 'https://media.tophunt.in/a.jpg', mode: 'no-cors', destination: 'image', headers: new Headers() } as any;
+    expect(await (await worker.mediaFirst(request)).text()).toBe('img');
+    expect(seen[0].mode).toBe('cors');
+    expect(await (await worker.mediaFirst(request)).text()).toBe('img'); // offline now
+    expect(seen.length).toBe(1);
+    expect(caches.stores.get(worker.MEDIA_CACHE)?.size).toBe(1);
+  });
+
   it('a hashed file is fetched once, then served from the cache', async () => {
     let calls = 0;
     const { sw } = loadSw(async () => {

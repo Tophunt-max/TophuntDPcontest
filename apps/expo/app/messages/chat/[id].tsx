@@ -6,7 +6,13 @@ import { appendOlder, hasNewIncoming, mergeThread, newClientId, outgoingMessageI
 import { uploadToR2 } from '@/src/lib/uploadToR2';
 import { optimizeImageForUpload } from '@/src/lib/imageOptimize';
 import { live, subscribeChannel } from '@/src/services/realtime';
+import { loadOfflineInGroup, offlineOwner, saveOfflineInGroup } from '@/src/lib/offlineStore';
 import { useLocalSearchParams } from 'expo-router';
+
+/** Offline copies: the newest messages of the most recently opened chats. */
+const OFFLINE_GROUP = 'chat';
+const OFFLINE_MESSAGES = 40;
+const OFFLINE_CHATS = 20;
 import {
   View,
   Text,
@@ -100,6 +106,22 @@ export default function ChatScreen() {
 
     let cancelled = false;
     setState('loading');
+    const owner = offlineOwner(currentUser.uid);
+    // The last saved newest page of this chat was painted (offline-friendly).
+    let painted = false;
+    const remember = (rows: any[]) => {
+      if (Array.isArray(rows) && rows.length) void saveOfflineInGroup(owner, OFFLINE_GROUP, chatId, rows.slice(0, OFFLINE_MESSAGES), OFFLINE_CHATS);
+    };
+
+    // 0) SAVED MESSAGES — paint the last saved page right away; the server
+    //    answer below merges over it by id. A failed first fetch then keeps
+    //    these on screen instead of the error state.
+    void loadOfflineInGroup<any[]>(owner, OFFLINE_GROUP, chatId).then((saved) => {
+      if (cancelled || !saved?.data?.length) return;
+      painted = true;
+      setMessages((prev) => (prev.length ? prev : merge(prev, saved.data)));
+      setState((s) => (s === 'loading' || s === 'error' ? 'ready' : s));
+    });
 
     // 1) INITIAL LOAD — explicit, with real error handling. This is what fixes
     //    the infinite spinner: a failed first fetch flips us to the error state
@@ -113,8 +135,9 @@ export default function ChatScreen() {
         setOlderCursor(nextCursor);
         markRead(rows);
         setState('ready');
+        remember(rows);
       } catch {
-        if (!cancelled) setState('error');
+        if (!cancelled && !painted) setState('error');
       }
     })();
 
@@ -134,6 +157,7 @@ export default function ChatScreen() {
         // on mount left the inbox badge counting messages already on screen.
         markRead(rows);
         setState('ready');
+        remember(rows);
       },
       { filter: (e) => e.type === 'message', immediate: false },
     );
