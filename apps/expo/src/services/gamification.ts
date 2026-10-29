@@ -38,6 +38,8 @@ export interface RoadmapEntry {
   feature: string | null;
   coins: number;
   unlocked: boolean;
+  /** Coin reward state, from the user's reward grants (worker gamificationApi.ts). */
+  rewardState?: 'none' | 'pending' | 'claimable' | 'claimed' | 'ineligible';
   items: CatalogItemView[];
 }
 
@@ -120,6 +122,7 @@ export interface XpRankRow {
   score: number;
   lifetimeXp: number;
   level: number;
+  rankId?: string;
   rankTitle: string;
 }
 

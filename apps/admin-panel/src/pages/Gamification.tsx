@@ -322,7 +322,9 @@ function Achievements() {
 }
 
 // ----------------------------------------------------------------- catalog
-const EMPTY_ITEM = { id: "", type: "frame", name: "", description: "", rarity: "common", asset: { colors: ["#FF4D67", "#8B5CF6"], animated: false }, active: true, sort: 0 };
+/** Frame designs the app draws (apps/expo/src/lib/gamificationAssets.ts). */
+const FRAME_KEYS = ["frame.starter", "frame.bronze", "frame.silver", "frame.gold", "frame.champion", "frame.legendary"];
+const EMPTY_ITEM = { id: "", type: "frame", name: "", description: "", rarity: "common", asset: { key: "frame.gold", colors: ["#FF4D67", "#8B5CF6"], animated: false }, active: true, sort: 0 };
 
 function Catalog() {
   const qc = useQueryClient();
@@ -365,7 +367,10 @@ function Catalog() {
             <label className="text-sm">Sort<input type="number" className={field} value={edit.sort} onChange={(e) => setEdit({ ...edit, sort: e.target.value })} /></label>
             <label className="flex items-center gap-2 text-sm mt-6"><input type="checkbox" checked={edit.active} onChange={(e) => setEdit({ ...edit, active: e.target.checked })} /> Available</label>
           </div>
-          <p className="text-sm font-medium mt-3 mb-1">Asset (colors: up to 4 #RRGGBB, animated, icon, text)</p>
+          <p className="text-sm font-medium mt-3 mb-1">Asset (key, colors: up to 4 #RRGGBB, animated, icon, text)</p>
+          <p className="text-xs text-muted-foreground mb-1">
+            <code>key</code> picks the app artwork. Frames: {FRAME_KEYS.join(", ")}. Without a key the app picks a design from the item id, then rarity.
+          </p>
           <div className="flex gap-3 items-start">
             <textarea className={`${field} h-28 font-mono text-xs`} value={asset} onChange={(e) => setAsset(e.target.value)} />
             {(() => { try { return swatch(JSON.parse(asset)); } catch { return null; } })()}

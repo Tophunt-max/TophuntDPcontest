@@ -72,6 +72,7 @@ import m_0067_social_safety_sql from "../../migrations/0067_social_safety.sql";
 import m_0068_coin_economy_sql from "../../migrations/0068_coin_economy.sql";
 import m_0069_qencode_video_sql from "../../migrations/0069_qencode_video.sql";
 import m_0070_gamification_sql from "../../migrations/0070_gamification.sql";
+import m_0071_gamification_assets_sql from "../../migrations/0071_gamification_assets.sql";
 
 export interface Migration {
   name: string;
@@ -150,4 +151,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0068_coin_economy.sql", sql: m_0068_coin_economy_sql },
   { name: "0069_qencode_video.sql", sql: m_0069_qencode_video_sql },
   { name: "0070_gamification.sql", sql: m_0070_gamification_sql },
+  { name: "0071_gamification_assets.sql", sql: m_0071_gamification_assets_sql },
 ];

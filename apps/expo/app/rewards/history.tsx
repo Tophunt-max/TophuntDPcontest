@@ -6,6 +6,9 @@ import { useAuth } from '@/src/hooks/useAuth';
 import { BRAND, PAD, useExplorePalette } from '@/src/components/explore/theme';
 import { SectionEmpty, SectionError } from '@/src/components/explore/ExploreBits';
 import { useXpHistory } from '@/src/services/gamification';
+import { GamificationIcon } from '@/src/components/gamification/GamificationIcon';
+import { XpGainPill } from '@/src/components/gamification/RewardBits';
+import { XP_ACTION_ASSET } from '@/src/lib/gamificationAssets';
 
 /** Every XP event on the account, newest first (cursor-paginated). */
 export default function XpHistoryScreen() {
@@ -36,13 +39,14 @@ export default function XpHistoryScreen() {
           ListFooterComponent={q.isFetchingNextPage ? <ActivityIndicator color={BRAND} style={{ marginVertical: 16 }} /> : null}
           renderItem={({ item }) => (
             <View style={[styles.row, { borderColor: p.border }]} accessible accessibilityLabel={`${item.label}, ${item.delta} XP`}>
+              <View style={[styles.icon, { backgroundColor: p.chip }]}>
+                <GamificationIcon assetKey={XP_ACTION_ASSET[item.action] ?? 'xp.star'} size={18} />
+              </View>
               <View style={{ flex: 1 }}>
                 <Text style={[styles.label, { color: p.text }]}>{item.label}</Text>
                 <Text style={[styles.date, { color: p.sub }]}>{new Date(item.createdAt).toLocaleString()}</Text>
               </View>
-              <Text style={[styles.delta, { color: item.delta > 0 ? '#22C55E' : item.delta < 0 ? '#EF4444' : p.sub }]}>
-                {item.delta > 0 ? '+' : ''}{item.delta} XP
-              </Text>
+              {item.delta !== 0 ? <XpGainPill amount={item.delta} /> : <Text style={[styles.delta, { color: p.sub }]}>0 XP</Text>}
             </View>
           )}
         />
@@ -56,6 +60,7 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', height: 56, paddingHorizontal: 16 },
   headerTitle: { fontSize: 22, fontFamily: 'Urbanist-Bold' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  icon: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', marginRight: 12 },
   row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: PAD, paddingVertical: 12, borderBottomWidth: 1 },
   label: { fontSize: 14, fontFamily: 'Urbanist-SemiBold' },
   date: { fontSize: 11, fontFamily: 'Urbanist-Medium', marginTop: 2 },

@@ -14,10 +14,11 @@ import { UserProfile } from '@/src/types/user';
 import { Settings_Icon, ChatIcon_Light, ChatIcon_Dark } from '@/assets/svgs';
 import { Ionicons } from '@/src/lib/icons';
 import { useRouter } from 'expo-router';
-import { LinearGradient } from 'expo-linear-gradient';
 import { isLevelInfo } from '@/src/lib/progression';
 import { LevelProgressBar } from '@/src/components/gamification/LevelProgressBar';
 import { ProfileFrame } from '@/src/components/gamification/ProfileFrame';
+import { LevelBadge } from '@/src/components/gamification/LevelBadge';
+import { useDesignWindow } from '@/src/lib/layout';
 import type { PublicCosmetics } from '@/src/services/gamification';
 import { startChat } from '@/src/services/messages/messageService';
 import { useFeature } from '@/src/services/appSettings';
@@ -141,6 +142,7 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({
 }) => {
   const state: FollowState = followState ?? (isFollowingProp ? 'following' : 'none');
   const isFollowing = isFollowActive(state);
+  const { width: designW } = useDesignWindow();
   const { requireAuth } = useAuthGate();
   const router = useRouter();
   const colorScheme = useColorScheme();
@@ -303,9 +305,16 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({
                 <Ionicons name="trophy" size={18} color="#FFD700" />
             </View>
         )}
-        <LinearGradient colors={['#FFD700', '#FFA500']} style={styles.levelBadge}>
-            <Text style={styles.levelText} accessibilityLabel={`Level ${levelNumber}`}>Lv. {levelNumber}</Text>
-        </LinearGradient>
+        {/* The server's level on the rank's emblem (one component for every level). */}
+        <View style={styles.levelBadge}>
+          <LevelBadge
+            level={levelNumber}
+            rankId={levelInfo?.rank?.id}
+            rankName={levelInfo?.rank?.name}
+            isMaxLevel={!!levelInfo?.isMaxLevel}
+            size={designW >= 600 ? 'md' : 'sm'}
+          />
+        </View>
       </View>
 
       <View style={styles.infoSection}>
@@ -427,8 +436,7 @@ const styles = StyleSheet.create({
   avatarWrapper: { alignSelf: 'center', marginTop: 10, position: 'relative' },
   avatarInner: { width: 100, height: 100, borderRadius: 50, overflow: 'hidden' },
   avatarImage: { width: 100, height: 100, borderRadius: 50 },
-  levelBadge: { position: 'absolute', bottom: 0, alignSelf: 'center', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10, borderWidth: 2, borderColor: '#FFF' },
-  levelText: { fontSize: 10, fontFamily: 'Urbanist-Bold', color: '#FFF' },
+  levelBadge: { position: 'absolute', bottom: -8, alignSelf: 'center' },
   equippedBadgeIcon: { position: 'absolute', top: -5, left: -5, borderRadius: 15, width: 30, height: 30, justifyContent: 'center', alignItems: 'center', elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 2 },
   infoSection: { alignItems: 'center', marginTop: 15, paddingHorizontal: 20 },
   fullNameText: { fontSize: 22, fontFamily: 'Urbanist-Bold' },

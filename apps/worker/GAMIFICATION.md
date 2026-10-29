@@ -268,3 +268,35 @@ Monitor `ledger_mismatch` and `velocity` flags, `cron_runs` for
 - The level-up celebration is per device (AsyncStorage). Server notifications
   are deduplicated per account.
 - A shareable level-up card is not implemented.
+
+## 11. Visual layer (apps/expo)
+
+All XP, rank, achievement, cosmetic, reward and quest artwork is addressed by a
+stable key in `apps/expo/src/lib/gamificationAssets.ts`. Each key resolves to
+one of two things:
+
+- a glyph from the existing Lucide icon shim (`src/lib/icons.tsx`), or
+- a TopHunt-drawn SVG in `src/components/gamification/vectors.tsx`.
+
+The SVG designs are:
+
+- the XP spark;
+- six rank emblem silhouettes;
+- frame rings in six tiers, for circle and rounded-square avatars;
+- the lock badge, trophy, gift and empty-inventory illustration.
+
+They are vectors, not PNGs. They stay sharp at every density, have no
+background, follow light and dark themes, and are editable as source.
+
+The server sends only ids: rank id, achievement id, and catalog item id plus
+`asset` (frames can carry `asset.key`, migration 0071). The manifest maps those
+ids to keys. Unknown ids fall back to generic art.
+`test/gamificationAssets.test.ts` checks four things:
+
+- every key resolves to a mapped glyph or an implemented vector;
+- every id the Worker seeds has art;
+- the tier text contrast is readable;
+- the animated components honour reduced motion.
+
+The milestone roadmap's reward state (`rewardState`: none, pending, claimable,
+claimed or ineligible) comes from the user's own `reward_grants`.

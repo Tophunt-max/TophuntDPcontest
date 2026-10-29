@@ -4,15 +4,16 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BackButton } from '@/src/components/ui/BackButton';
-import { Ionicons } from '@/src/lib/icons';
 import { emitToast } from '@/src/lib/toastBridge';
 import { useAuth } from '@/src/hooks/useAuth';
 import { BRAND, BRAND_GRAD, PAD, useExplorePalette, type ExplorePalette } from '@/src/components/explore/theme';
 import { SectionError } from '@/src/components/explore/ExploreBits';
-import { LevelProgressBar } from '@/src/components/gamification/LevelProgressBar';
 import { LevelUpCelebration } from '@/src/components/gamification/LevelUpCelebration';
-import { RarityPill } from '@/src/components/gamification/RarityPill';
-import { FEATURE_LABELS, assetColors, formatXp, timeLeft } from '@/src/lib/progression';
+import { GamificationIcon } from '@/src/components/gamification/GamificationIcon';
+import { LevelRoadmap, XpProgressCard } from '@/src/components/gamification/XpProgressCard';
+import { GamificationError, GamificationLoading, RewardCard, XpGainPill } from '@/src/components/gamification/RewardBits';
+import { QUEST_ASSET, XP_ACTION_ASSET, type AssetKey } from '@/src/lib/gamificationAssets';
+import { formatXp, timeLeft } from '@/src/lib/progression';
 import {
   useClaimQuest,
   useClaimRewardGrant,
@@ -44,22 +45,31 @@ export default function RewardsScreen() {
         <LevelUpCelebration
           uid={user?.uid}
           level={data.levelInfo.level}
+          rankId={data.levelInfo.rank.id}
           rankName={data.levelInfo.rank.name}
+          previousLevel={data.leveledUp?.from ?? null}
+          xpGained={data.recentXp[0] ? { amount: data.recentXp[0].delta, label: data.recentXp[0].label } : null}
           unlocks={data.leveledUp ? data.roadmap.filter((m) => m.level > data.leveledUp!.from && m.level <= data.leveledUp!.to).map((m) => m.title) : undefined}
+          onView={() => router.push('/rewards/inventory' as any)}
         />
       ) : null}
       {q.isLoading ? (
-        <View style={styles.center}><ActivityIndicator color={BRAND} /></View>
+        <View style={{ padding: PAD, gap: 14 }}>
+          <GamificationLoading p={p} height={190} />
+          <GamificationLoading p={p} height={90} />
+        </View>
       ) : q.isError || !data ? (
-        <View style={{ marginTop: 30 }}>
-          <SectionError palette={p} onRetry={() => q.refetch()} label="Rewards load nahi ho paye. Internet check karke retry karo." />
+        <View style={{ margin: PAD }}>
+          <GamificationError p={p} onRetry={() => q.refetch()} text="Rewards load nahi ho paye. Internet check karke retry karo." />
         </View>
       ) : (
         <ScrollView
           contentContainerStyle={{ paddingBottom: 40 }}
           refreshControl={<RefreshControl refreshing={q.isRefetching} onRefresh={() => q.refetch()} tintColor={BRAND} />}
         >
-          <Hero data={data} p={p} />
+          <View style={{ paddingHorizontal: PAD }}>
+            <XpProgressCard info={data.levelInfo} title={data.cosmetics.title?.text} p={p} />
+          </View>
           {data.enabled ? <Grants data={data} p={p} /> : null}
           <Links data={data} p={p} onOpen={(r) => router.push(r as any)} />
           {data.enabled && data.season ? <SeasonCard season={data.season} p={p} onOpen={() => router.push('/rewards/leaderboard?period=season' as any)} /> : null}
@@ -69,7 +79,7 @@ export default function RewardsScreen() {
               <Text style={[styles.muted, { color: p.sub }]}>You keep earning XP from voting, battles and check-ins in the meantime.</Text>
             </View>
           )}
-          <Roadmap data={data} p={p} />
+          <Roadmap data={data} p={p} avatarUri={user?.photoURL ?? null} name={user?.displayName ?? null} />
           <Recent data={data} p={p} onMore={() => router.push('/rewards/history' as any)} />
         </ScrollView>
       )}
@@ -77,82 +87,45 @@ export default function RewardsScreen() {
   );
 }
 
-function Hero({ data, p }: { data: ProgressionView; p: ExplorePalette }) {
-  const info = data.levelInfo;
-  return (
-    <LinearGradient colors={[`${info.rank.color}33`, 'transparent']} style={[styles.hero, { borderColor: p.border }]}>
-      <View style={styles.heroTop}>
-        <LinearGradient colors={['#FFD700', '#FFA500']} style={styles.levelCircle}>
-          <Text style={styles.levelCircleText} accessibilityLabel={`Level ${info.level}`}>{info.level}</Text>
-        </LinearGradient>
-        <View style={{ flex: 1, marginLeft: 14 }}>
-          <View style={styles.rankRow}>
-            <Ionicons name={info.rank.icon} size={16} color={info.rank.color} />
-            <Text style={[styles.rankName, { color: info.rank.color }]}>{data.cosmetics.title?.text ?? info.rank.name}</Text>
-          </View>
-          <Text style={[styles.lifetime, { color: p.text }]}>{formatXp(info.xp)} XP</Text>
-          <Text style={[styles.muted, { color: p.sub }]}>
-            {info.isMaxLevel
-              ? 'Maximum level reached. XP keeps counting.'
-              : info.nextRank
-                ? `${info.nextRank.name} at level ${info.nextRank.minLevel}`
-                : `${formatXp(info.xpToNextLevel)} XP to level ${info.level + 1}`}
-          </Text>
-        </View>
-      </View>
-      <View style={{ marginTop: 14 }}>
-        <LevelProgressBar info={info} isDark={p.isDark} />
-      </View>
-      {info.nextMilestone ? (
-        <Text style={[styles.next, { color: p.text }]}>
-          Next unlock · Level {info.nextMilestone.level}: <Text style={{ fontFamily: 'Urbanist-Bold' }}>{info.nextMilestone.title}</Text>
-        </Text>
-      ) : null}
-    </LinearGradient>
-  );
-}
-
 function Grants({ data, p }: { data: ProgressionView; p: ExplorePalette }) {
   const claim = useClaimRewardGrant();
   if (!data.rewards.claimable.length) return null;
   return (
-    <View style={[styles.card, { backgroundColor: p.card, borderColor: p.border }]}>
+    <View style={[styles.card, { backgroundColor: p.card, borderColor: p.border, gap: 10 }]}>
       <Text style={[styles.cardTitle, { color: p.text }]}>Rewards to claim</Text>
       {!data.rewards.budgetAvailable ? (
         <Text style={[styles.muted, { color: p.sub }]}>Diamond rewards are paused right now. Yours are saved and can be claimed later.</Text>
       ) : null}
       {data.rewards.claimable.map((g) => (
-        <View key={g.id} style={styles.grantRow}>
-          <Ionicons name="diamond" size={18} color="#29B6F6" />
-          <Text style={[styles.grantText, { color: p.text }]} numberOfLines={2}>{g.note || 'Reward'} · {g.coins} Diamond</Text>
-          <TouchableOpacity
-            style={[styles.smallBtn, (!data.rewards.budgetAvailable || claim.isPending) && { opacity: 0.5 }]}
-            disabled={!data.rewards.budgetAvailable || claim.isPending}
-            onPress={() =>
-              claim.mutate(g.id, {
-                onSuccess: (r) => emitToast(`+${r.coins} Diamond added to your wallet`, 'success'),
-                onError: (e: any) => emitToast(e?.message || 'Could not claim right now', 'error'),
-              })
-            }
-            accessibilityRole="button"
-            accessibilityLabel={`Claim ${g.coins} Diamond`}
-          >
-            <Text style={styles.smallBtnText}>Claim</Text>
-          </TouchableOpacity>
-        </View>
+        <RewardCard
+          key={g.id}
+          p={p}
+          title={`${g.coins} Diamond`}
+          subtitle={g.note || (g.sourceType === 'season' ? 'Season reward' : 'Level milestone')}
+          assetKey={g.sourceType === 'season' ? 'reward.seasonal' : 'reward.diamond'}
+          state={data.rewards.budgetAvailable ? 'available' : 'unavailable'}
+          actionLabel="Claim"
+          busy={claim.isPending}
+          onAction={() =>
+            claim.mutate(g.id, {
+              onSuccess: (r) => emitToast(`+${r.coins} Diamond added to your wallet`, 'success'),
+              onError: (e: any) => emitToast(e?.message || 'Could not claim right now', 'error'),
+            })
+          }
+        />
       ))}
     </View>
   );
 }
 
 function Links({ data, p, onOpen }: { data: ProgressionView; p: ExplorePalette; onOpen: (route: string) => void }) {
-  const items = [
-    { icon: 'ribbon', label: 'Achievements', sub: `${data.achievements.unlocked}/${data.achievements.total}`, route: '/rewards/achievements' },
-    { icon: 'color-palette', label: 'Inventory', sub: 'Frames & titles', route: '/rewards/inventory' },
-    { icon: 'podium', label: 'Leaderboards', sub: 'Week · Month · All', route: '/rewards/leaderboard' },
-    { icon: 'trophy', label: 'Hall of Fame', sub: 'Champions', route: '/rewards/hall-of-fame' },
-    { icon: 'stats-chart', label: 'Insights', sub: 'Your stats', route: '/rewards/insights' },
-    { icon: 'time-outline', label: 'XP history', sub: 'Every XP event', route: '/rewards/history' },
+  const items: { asset: AssetKey; label: string; sub: string; route: string }[] = [
+    { asset: 'activity.achievement', label: 'Achievements', sub: `${data.achievements.unlocked}/${data.achievements.total}`, route: '/rewards/achievements' },
+    { asset: 'activity.inventory', label: 'Inventory', sub: 'Frames & titles', route: '/rewards/inventory' },
+    { asset: 'activity.leaderboard', label: 'Leaderboards', sub: 'Week · Month · All', route: '/rewards/leaderboard' },
+    { asset: 'reward.hall_of_fame', label: 'Hall of Fame', sub: 'Champions', route: '/rewards/hall-of-fame' },
+    { asset: 'activity.insights', label: 'Insights', sub: 'Your stats', route: '/rewards/insights' },
+    { asset: 'xp.history', label: 'XP history', sub: 'Every XP event', route: '/rewards/history' },
   ];
   return (
     <View style={styles.links}>
@@ -164,7 +137,7 @@ function Links({ data, p, onOpen }: { data: ProgressionView; p: ExplorePalette; 
           accessibilityRole="button"
           accessibilityLabel={`${it.label}, ${it.sub}`}
         >
-          <Ionicons name={it.icon} size={20} color={BRAND} />
+          <GamificationIcon assetKey={it.asset} size={22} />
           <Text style={[styles.linkLabel, { color: p.text }]}>{it.label}</Text>
           <Text style={[styles.linkSub, { color: p.sub }]} numberOfLines={1}>{it.sub}</Text>
         </TouchableOpacity>
@@ -177,7 +150,7 @@ function SeasonCard({ season, p, onOpen }: { season: NonNullable<ProgressionView
   return (
     <TouchableOpacity onPress={onOpen} accessibilityRole="button" accessibilityLabel={`${season.name}, ${season.xp} season XP`}>
       <LinearGradient colors={BRAND_GRAD} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.season}>
-        <Ionicons name="medal" size={24} color="#FFF" />
+        <GamificationIcon assetKey="xp.seasonal" size={24} color="#FFF" />
         <View style={{ flex: 1, marginLeft: 12 }}>
           <Text style={styles.seasonTitle}>{season.name}</Text>
           <Text style={styles.seasonSub}>
@@ -201,6 +174,9 @@ function Quests({ p }: { p: ExplorePalette }) {
       <Text style={[styles.cardTitle, { color: p.text }]}>Weekly & monthly quests</Text>
       {quests.map((qq: QuestView) => (
         <View key={qq.id} style={styles.questRow}>
+          <View style={[styles.questIcon, { backgroundColor: p.chip }]}>
+            <GamificationIcon assetKey={qq.locked ? 'reward.locked' : qq.minLevel > 1 ? 'activity.weekly_challenge' : QUEST_ASSET[qq.metric] ?? 'activity.daily_quest'} size={qq.locked ? 30 : 18} />
+          </View>
           <View style={{ flex: 1 }}>
             <Text style={[styles.questTitle, { color: qq.locked ? p.sub : p.text }]}>{qq.title}</Text>
             <Text style={[styles.muted, { color: p.sub }]}>
@@ -213,10 +189,8 @@ function Quests({ p }: { p: ExplorePalette }) {
             ) : null}
           </View>
           {qq.claimed ? (
-            <Ionicons name="checkmark-circle" size={22} color="#22C55E" />
-          ) : qq.locked ? (
-            <Ionicons name="lock-closed" size={18} color={p.sub} />
-          ) : (
+            <View accessible accessibilityLabel="Claimed"><GamificationIcon assetKey="reward.claimed" size={22} /></View>
+          ) : qq.locked ? null : (
             <TouchableOpacity
               style={[styles.smallBtn, (!qq.claimable || claim.isPending) && { opacity: 0.4 }]}
               disabled={!qq.claimable || claim.isPending}
@@ -239,39 +213,25 @@ function Quests({ p }: { p: ExplorePalette }) {
   );
 }
 
-function Roadmap({ data, p }: { data: ProgressionView; p: ExplorePalette }) {
+function Roadmap({ data, p, avatarUri, name }: { data: ProgressionView; p: ExplorePalette; avatarUri: string | null; name: string | null }) {
+  const claim = useClaimRewardGrant();
   return (
     <View style={[styles.card, { backgroundColor: p.card, borderColor: p.border }]}>
       <Text style={[styles.cardTitle, { color: p.text }]}>Level roadmap</Text>
-      {data.roadmap.map((m) => (
-        <View key={m.level} style={styles.roadRow} accessible accessibilityLabel={`Level ${m.level}: ${m.title}. ${m.unlocked ? 'Unlocked' : 'Locked'}.`}>
-          <View style={[styles.roadDot, { backgroundColor: m.unlocked ? BRAND : p.chip }]}>
-            {m.unlocked ? <Ionicons name="checkmark" size={14} color="#FFF" /> : <Text style={[styles.roadLevel, { color: p.sub }]}>{m.level}</Text>}
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={[styles.roadTitle, { color: m.unlocked ? p.text : p.sub }]}>Level {m.level} · {m.title}</Text>
-            <Text style={[styles.muted, { color: p.sub }]}>{m.description}</Text>
-            <View style={styles.roadItems}>
-              {m.feature ? (
-                <View style={[styles.featurePill, { backgroundColor: p.chip }]}>
-                  <Text style={[styles.featureText, { color: p.text }]}>{FEATURE_LABELS[m.feature] ?? m.feature}</Text>
-                </View>
-              ) : null}
-              {m.items.map((it) => (
-                <View key={it.id} style={[styles.itemChip, { borderColor: assetColors(it.asset)[0] }]}>
-                  <Text style={[styles.featureText, { color: p.text }]} numberOfLines={1}>{it.name}</Text>
-                  <RarityPill rarity={it.rarity} />
-                </View>
-              ))}
-              {m.coins > 0 && data.enabled ? (
-                <View style={[styles.featurePill, { backgroundColor: p.chip }]}>
-                  <Text style={[styles.featureText, { color: p.text }]}>{m.coins} Diamond</Text>
-                </View>
-              ) : null}
-            </View>
-          </View>
-        </View>
-      ))}
+      <LevelRoadmap
+        roadmap={data.roadmap}
+        p={p}
+        avatarUri={avatarUri}
+        name={name}
+        busy={claim.isPending}
+        claimableGrantFor={(level) => data.rewards.claimable.find((g) => g.sourceType === 'level' && g.sourceId === String(level))?.id ?? null}
+        onClaim={(id) =>
+          claim.mutate(id, {
+            onSuccess: (r) => emitToast(`+${r.coins} Diamond added to your wallet`, 'success'),
+            onError: (e: any) => emitToast(e?.message || 'Could not claim right now', 'error'),
+          })
+        }
+      />
     </View>
   );
 }
@@ -288,8 +248,11 @@ function Recent({ data, p, onMore }: { data: ProgressionView; p: ExplorePalette;
       ) : (
         data.recentXp.map((e) => (
           <View key={e.id} style={styles.rowBetween}>
-            <Text style={[styles.eventLabel, { color: p.text }]}>{e.label}</Text>
-            <Text style={[styles.eventDelta, { color: e.delta >= 0 ? '#22C55E' : '#EF4444' }]}>{e.delta >= 0 ? '+' : ''}{e.delta} XP</Text>
+            <View style={styles.eventLeft}>
+              <GamificationIcon assetKey={XP_ACTION_ASSET[e.action] ?? 'xp.star'} size={16} />
+              <Text style={[styles.eventLabel, { color: p.text }]}>{e.label}</Text>
+            </View>
+            <XpGainPill amount={e.delta} compact />
           </View>
         ))
       )}
@@ -325,6 +288,8 @@ const styles = StyleSheet.create({
   seasonTitle: { color: '#FFF', fontSize: 16, fontFamily: 'Urbanist-Bold' },
   seasonSub: { color: 'rgba(255,255,255,0.9)', fontSize: 12, fontFamily: 'Urbanist-Medium', marginTop: 2 },
   questRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 8 },
+  questIcon: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+  eventLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 },
   questTitle: { fontSize: 14, fontFamily: 'Urbanist-SemiBold' },
   miniBar: { height: 6, borderRadius: 3, marginTop: 6, overflow: 'hidden' },
   miniFill: { height: '100%', backgroundColor: BRAND, borderRadius: 3 },

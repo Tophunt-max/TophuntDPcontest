@@ -162,7 +162,7 @@ export const DEFAULT_MILESTONES: Milestone[] = [
   m(30, "Advanced insights", "Trends and advanced performance insights.", [], "advanced_insights"),
   m(35, "Rare creator badge", "A rare badge for your profile.", ["badge_rare_creator"]),
   m(40, "Seasonal collectibles", "Season Star collectible.", ["collectible_season_star"]),
-  m(50, "Champion", "Champion title and a place in the Hall of Fame legends list.", ["title_champion"], "hall_of_fame"),
+  m(50, "Champion", "Champion title, Champion frame and a place in the Hall of Fame legends list.", ["title_champion", "frame_champion"], "hall_of_fame"),
   m(60, "Royal theme", "Premium-style Royal profile theme.", ["theme_royal"]),
   m(75, "Elite set", "Elite collection.", ["collectible_elite_set"]),
   m(90, "Diamond Aura", "Rare animated frame.", ["frame_diamond_animated"]),

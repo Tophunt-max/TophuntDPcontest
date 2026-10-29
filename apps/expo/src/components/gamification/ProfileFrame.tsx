@@ -1,51 +1,68 @@
 import React, { useEffect } from 'react';
 import { View, StyleSheet } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
-import Animated, { Easing, useAnimatedStyle, useReducedMotion, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
-import { assetColors } from '@/src/lib/progression';
+import Animated, { Easing, cancelAnimation, useAnimatedStyle, useReducedMotion, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
+import { frameAsset, frameTier } from '@/src/lib/gamificationAssets';
+import { FrameRing } from './vectors';
 
 /**
- * A cosmetic ring around an avatar. Purely visual. An animated frame pulses
- * gently, and stays still when the OS asks for reduced motion.
+ * A cosmetic frame around an avatar of diameter `size`. The ring is drawn in
+ * the padding OUTSIDE the avatar, so it never covers the face or shifts the
+ * photo's crop. Purely visual.
+ *
+ * An animated frame pulses gently. It stays still when the OS asks for reduced
+ * motion, and when `paused` (e.g. the row is off-screen).
  */
 export function ProfileFrame({
   frame,
   size,
   children,
   fallbackBorder,
+  shape = 'circle',
+  paused = false,
 }: {
-  frame: { name: string; asset: Record<string, any> } | null | undefined;
+  frame: { id?: string; name: string; rarity?: string; asset: Record<string, any> } | null | undefined;
   size: number;
   children: React.ReactNode;
   fallbackBorder: string;
+  shape?: 'circle' | 'rounded';
+  paused?: boolean;
 }) {
   const reduce = useReducedMotion();
-  const animated = !!frame?.asset?.animated && !reduce;
+  const animated = !!frame?.asset?.animated && !reduce && !paused;
   const pulse = useSharedValue(1);
   useEffect(() => {
-    if (animated) pulse.value = withRepeat(withTiming(1.04, { duration: 1400, easing: Easing.inOut(Easing.ease) }), -1, true);
-    else pulse.value = 1;
+    if (animated) pulse.value = withRepeat(withTiming(1.035, { duration: 1400, easing: Easing.inOut(Easing.ease) }), -1, true);
+    else {
+      cancelAnimation(pulse);
+      pulse.value = 1;
+    }
+    return () => cancelAnimation(pulse);
   }, [animated, pulse]);
   const style = useAnimatedStyle(() => ({ transform: [{ scale: pulse.value }] }));
-  const outer = size + 10;
-  if (!frame) {
+  const th = Math.max(3, Math.round(size * 0.06));
+  const outer = size + th * 2;
+  const radius = shape === 'circle' ? outer / 2 : size * 0.2 + th;
+  const tier = frameTier(frame);
+
+  if (!frame || !tier) {
     return (
-      <View style={[styles.plain, { width: outer, height: outer, borderRadius: outer / 2, borderColor: fallbackBorder }]}>
+      <View style={[styles.center, { width: outer, height: outer, borderRadius: radius, borderWidth: 1, borderColor: fallbackBorder }]}>
         {children}
       </View>
     );
   }
-  const colors = assetColors(frame.asset);
   return (
-    <Animated.View style={[{ width: outer, height: outer }, style]} accessibilityLabel={`${frame.name} profile frame`}>
-      <LinearGradient colors={colors} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={[styles.ring, { borderRadius: outer / 2 }]}>
-        {children}
-      </LinearGradient>
+    <Animated.View
+      style={[{ width: outer, height: outer }, style]}
+      accessible
+      accessibilityLabel={`${frame.name}${frameAsset(frame)?.label ? ` (${frameAsset(frame)!.label})` : ''}`}
+    >
+      <FrameRing tier={tier.id} size={size} thickness={th} shape={shape} cornerRadius={size * 0.2} />
+      <View style={[styles.center, { width: outer, height: outer }]}>{children}</View>
     </Animated.View>
   );
 }
 
 const styles = StyleSheet.create({
-  plain: { borderWidth: 1, padding: 4, justifyContent: 'center', alignItems: 'center' },
-  ring: { flex: 1, padding: 4, justifyContent: 'center', alignItems: 'center' },
+  center: { justifyContent: 'center', alignItems: 'center' },
 });

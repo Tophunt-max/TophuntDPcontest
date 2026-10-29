@@ -419,7 +419,9 @@ const ProfileContent = ({
         <LevelUpCelebration
           uid={currentUser?.uid}
           level={(profile as any)?.levelInfo?.level ?? null}
+          rankId={(profile as any)?.levelInfo?.rank?.id}
           rankName={(profile as any)?.levelInfo?.rank?.name}
+          onView={() => router.push('/rewards' as any)}
         />
       ) : null}
       <FlatList

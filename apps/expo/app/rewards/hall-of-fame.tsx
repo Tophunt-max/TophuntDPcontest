@@ -10,6 +10,7 @@ import { BRAND, PAD, useExplorePalette, type ExplorePalette } from '@/src/compon
 import { SectionEmpty, SectionError } from '@/src/components/explore/ExploreBits';
 import { formatXp } from '@/src/lib/progression';
 import { useHallOfFame } from '@/src/services/gamification';
+import { Trophy as TrophyArt } from '@/src/components/gamification/vectors';
 
 const MEDAL = ['#FFD54A', '#CBD5E1', '#F4A261'];
 
@@ -33,6 +34,10 @@ export default function HallOfFameScreen() {
         <View style={{ marginTop: 30 }}><SectionError palette={p} onRetry={() => q.refetch()} label="Hall of Fame load nahi ho paya." /></View>
       ) : (
         <ScrollView contentContainerStyle={{ paddingBottom: 40 }} refreshControl={<RefreshControl refreshing={q.isRefetching} onRefresh={() => q.refetch()} tintColor={BRAND} />}>
+          <View style={styles.hero} accessible accessibilityLabel="Hall of Fame trophy">
+            <TrophyArt size={84} />
+            <Text style={[styles.heroText, { color: p.sub }]}>The best of TopHunt: monthly winners, season champions and Legends.</Text>
+          </View>
           <Section p={p} title="Legends" sub={`Level ${d.legendsMinLevel}+ by lifetime XP`}>
             {d.legends.length ? d.legends.map((r: any) => (
               <Person key={r.uid} p={p} rank={r.rank} name={r.fullName || r.username} avatar={r.profileImageUrlThumb || r.profileImageUrl} verified={r.verified} right={`${formatXp(r.score)} XP`} onPress={() => open(r.uid)} />
@@ -85,6 +90,8 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', height: 56, paddingHorizontal: 16 },
   headerTitle: { fontSize: 22, fontFamily: 'Urbanist-Bold' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  hero: { alignItems: 'center', paddingHorizontal: PAD, paddingTop: 8, gap: 8 },
+  heroText: { fontSize: 13, fontFamily: 'Urbanist-Medium', textAlign: 'center' },
   section: { fontSize: 17, fontFamily: 'Urbanist-Bold', paddingHorizontal: PAD },
   sub: { fontSize: 12, fontFamily: 'Urbanist-Medium', paddingHorizontal: PAD, marginBottom: 6 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 10, marginHorizontal: PAD, marginTop: 8, padding: 12, borderRadius: 14, borderWidth: 1 },

@@ -28,6 +28,7 @@ import AudioLines from 'lucide-react-native/icons/audio-lines';
 import Award from 'lucide-react-native/icons/award';
 import Ban from 'lucide-react-native/icons/ban';
 import Brush from 'lucide-react-native/icons/brush';
+import InfinityIcon from 'lucide-react-native/icons/infinity';
 import Leaf from 'lucide-react-native/icons/leaf';
 import Lightbulb from 'lucide-react-native/icons/lightbulb';
 import Ribbon from 'lucide-react-native/icons/ribbon';
@@ -184,7 +185,7 @@ export interface IconProps {
 type LucideIcon = React.ComponentType<any>;
 
 // name -> component lookup (built from the per-icon imports above).
-const I: Record<string, LucideIcon> = { Brush, Leaf, Lightbulb, Ribbon, AlarmClock, AlertCircle, ArrowDown, ArrowLeft, ArrowLeftRight, ArrowRight, ArrowUp, AtSign, AudioLines, Award, Ban, Banknote, Bell, Bookmark, Calendar, Camera, ChartColumn, ChartLine, Check, CheckCheck, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleCheck, CircleDot, CircleHelp, CircleUser, Circle, Clapperboard, Clock, Cloud, CloudOff, Coins, Compass, Copy, CreditCard, Crop, Crown, Dices, Download, Expand, Eye, EyeOff, FerrisWheel, File, FileText, Filter, Flag, Flame, Frown, Gamepad2, Gem, Gift, Globe, Hand, Heart, HeartCrack, HeartHandshake, Home, Hourglass, Image, Images, IndianRupee, Info, Landmark, LayoutGrid, Link, List, Lock, LockOpen, LogIn, LogOut, Mail, MapPin, Medal, Megaphone, Menu, MessageCircle, MessagesSquare, Mic, Moon, MoreHorizontal, MoreVertical, Music, Newspaper, Package, Palette, PartyPopper, Pause, Pencil, Phone, Play, PlayCircle, Plus, PlusCircle, QrCode, Receipt, RefreshCw, Rocket, RotateCw, ScanLine, Search, Send, Settings, Share2, Shield, ShieldCheck, Signal, SlidersHorizontal, Smartphone, Smile, Sparkles, Sprout, SquarePen, Star, Sticker, Sun, SwitchCamera, Swords, Tag, Tags, Target, Ticket, Timer, TrafficCone, Trash2, TrendingDown, TrendingUp, TriangleAlert, Trophy, Truck, Tv, Type, Upload, UploadCloud, User, UserPlus, Users, Video, VideoOff, Volume2, VolumeX, Vote, Wallet, Wand2, Wifi, WifiOff, Wrench, X, XCircle, Zap };
+const I: Record<string, LucideIcon> = { Brush, Infinity: InfinityIcon, Leaf, Lightbulb, Ribbon, AlarmClock, AlertCircle, ArrowDown, ArrowLeft, ArrowLeftRight, ArrowRight, ArrowUp, AtSign, AudioLines, Award, Ban, Banknote, Bell, Bookmark, Calendar, Camera, ChartColumn, ChartLine, Check, CheckCheck, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleCheck, CircleDot, CircleHelp, CircleUser, Circle, Clapperboard, Clock, Cloud, CloudOff, Coins, Compass, Copy, CreditCard, Crop, Crown, Dices, Download, Expand, Eye, EyeOff, FerrisWheel, File, FileText, Filter, Flag, Flame, Frown, Gamepad2, Gem, Gift, Globe, Hand, Heart, HeartCrack, HeartHandshake, Home, Hourglass, Image, Images, IndianRupee, Info, Landmark, LayoutGrid, Link, List, Lock, LockOpen, LogIn, LogOut, Mail, MapPin, Medal, Megaphone, Menu, MessageCircle, MessagesSquare, Mic, Moon, MoreHorizontal, MoreVertical, Music, Newspaper, Package, Palette, PartyPopper, Pause, Pencil, Phone, Play, PlayCircle, Plus, PlusCircle, QrCode, Receipt, RefreshCw, Rocket, RotateCw, ScanLine, Search, Send, Settings, Share2, Shield, ShieldCheck, Signal, SlidersHorizontal, Smartphone, Smile, Sparkles, Sprout, SquarePen, Star, Sticker, Sun, SwitchCamera, Swords, Tag, Tags, Target, Ticket, Timer, TrafficCone, Trash2, TrendingDown, TrendingUp, TriangleAlert, Trophy, Truck, Tv, Type, Upload, UploadCloud, User, UserPlus, Users, Video, VideoOff, Volume2, VolumeX, Vote, Wallet, Wand2, Wifi, WifiOff, Wrench, X, XCircle, Zap };
 
 // Resolve an icon by its lucide PascalCase name, falling back safely.
 const ic = (n: string): LucideIcon => I[n] || Circle;
@@ -284,7 +285,7 @@ const ionicons: Record<string, LucideIcon> = {
   'ribbon': ic('Ribbon'), 'ribbon-outline': ic('Ribbon'), 'person-circle': ic('CircleUser'),
   'shield-checkmark': ic('ShieldCheck'), 'stats-chart': ic('ChartColumn'), 'stats-chart-outline': ic('ChartColumn'),
   'color-palette': ic('Palette'), 'lock-open': ic('LockOpen'), 'crown': ic('Crown'),
-  'bulb-outline': ic('Lightbulb'), 'bulb': ic('Lightbulb'),
+  'bulb-outline': ic('Lightbulb'), 'bulb': ic('Lightbulb'), 'infinite': ic('Infinity'),
 };
 
 // --- MaterialCommunityIcons name -> lucide ---------------------------------

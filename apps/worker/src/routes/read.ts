@@ -1865,7 +1865,7 @@ readRoute.get("/leaderboard/xp", optionalAuth, guestReadLimit, async (c) => {
         endsAt: range?.endsAt ?? null,
         rows: rows.map((r) => {
           const info = levelInfo(r.lifetimeXp, p.curve, p.cfg);
-          return { ...r, level: info.level, rank: r.rank, rankTitle: info.rank.name, profileImageUrlThumb: avatarUrl(c.env, r.profileImageUrl) };
+          return { ...r, level: info.level, rank: r.rank, rankId: info.rank.id, rankTitle: info.rank.name, profileImageUrlThumb: avatarUrl(c.env, r.profileImageUrl) };
         }),
         nextCursor: rows.length === limit && offset + limit < 500 ? String(offset + limit) : null,
       };

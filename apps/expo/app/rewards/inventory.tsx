@@ -1,15 +1,14 @@
 import React, { useMemo } from 'react';
 import { View, Text, StyleSheet, SectionList, TouchableOpacity, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
 import { BackButton } from '@/src/components/ui/BackButton';
-import { Ionicons } from '@/src/lib/icons';
 import { emitToast } from '@/src/lib/toastBridge';
 import { useAuth } from '@/src/hooks/useAuth';
 import { BRAND, PAD, useExplorePalette, type ExplorePalette } from '@/src/components/explore/theme';
 import { SectionError } from '@/src/components/explore/ExploreBits';
 import { RarityPill } from '@/src/components/gamification/RarityPill';
-import { assetColors } from '@/src/lib/progression';
+import { CosmeticPreview, GamificationEmpty } from '@/src/components/gamification/RewardBits';
+import { badgeState } from '@/src/lib/gamificationAssets';
 import { useEquipCosmetic, useInventory, type InventoryItemView } from '@/src/services/gamification';
 
 const SECTIONS: { type: string; title: string; equippable: boolean }[] = [
@@ -31,6 +30,7 @@ export default function InventoryScreen() {
   const p = useExplorePalette();
   const { user } = useAuth();
   const q = useInventory(!!user);
+  const avatar = { uri: user?.photoURL ?? null, name: user?.displayName ?? null };
   const equip = useEquipCosmetic();
 
   const sections = useMemo(() => {
@@ -66,9 +66,10 @@ export default function InventoryScreen() {
           stickySectionHeadersEnabled={false}
           contentContainerStyle={{ paddingBottom: 40 }}
           refreshControl={<RefreshControl refreshing={q.isRefetching} onRefresh={() => q.refetch()} tintColor={BRAND} />}
+          ListEmptyComponent={<View style={{ margin: PAD }}><GamificationEmpty p={p} text="Your inventory is empty. Level up to unlock frames, titles and more." /></View>}
           renderSectionHeader={({ section }) => <Text style={[styles.section, { color: p.text }]}>{section.title}</Text>}
           renderItem={({ item, section }) => (
-            <ItemRow item={item} p={p} equippable={section.equippable} busy={equip.isPending} onPress={() => onEquip(item, section.equippable)} />
+            <ItemRow item={item} p={p} avatar={avatar} equippable={section.equippable} busy={equip.isPending} onPress={() => onEquip(item, section.equippable)} />
           )}
         />
       )}
@@ -77,15 +78,13 @@ export default function InventoryScreen() {
 }
 
 const ItemRow = React.memo(function ItemRow({
-  item, p, equippable, busy, onPress,
-}: { item: InventoryItemView; p: ExplorePalette; equippable: boolean; busy: boolean; onPress: () => void }) {
-  const colors = assetColors(item.asset);
-  const state = item.owned ? (item.equipped ? 'Equipped' : equippable ? 'Owned' : 'In your collection') : item.unlocksAtLevel ? `Unlocks at level ${item.unlocksAtLevel}` : 'Locked';
+  item, p, avatar, equippable, busy, onPress,
+}: { item: InventoryItemView; p: ExplorePalette; avatar: { uri: string | null; name: string | null }; equippable: boolean; busy: boolean; onPress: () => void }) {
+  const st = badgeState({ owned: item.owned, equipped: item.equipped });
+  const state = st === 'equipped' ? 'Equipped' : st === 'earned' ? (equippable ? 'Owned' : 'In your collection') : item.unlocksAtLevel ? `Locked · unlocks at level ${item.unlocksAtLevel}` : 'Locked';
   return (
-    <View style={[styles.row, { backgroundColor: p.card, borderColor: item.equipped ? BRAND : p.border, opacity: item.owned ? 1 : 0.7 }]}>
-      <LinearGradient colors={colors} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.swatch}>
-        {!item.owned ? <Ionicons name="lock-closed" size={16} color="#FFF" /> : item.asset?.icon ? <Ionicons name={String(item.asset.icon)} size={18} color="#FFF" /> : null}
-      </LinearGradient>
+    <View style={[styles.row, { backgroundColor: p.card, borderColor: item.equipped ? BRAND : p.border, opacity: item.owned ? 1 : 0.85 }]}>
+      <CosmeticPreview item={item} size={52} avatarUri={avatar.uri} name={avatar.name} />
       <View style={{ flex: 1 }}>
         <View style={styles.titleRow}>
           <Text style={[styles.name, { color: p.text }]} numberOfLines={1}>{item.name}</Text>

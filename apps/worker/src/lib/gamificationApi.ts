@@ -58,8 +58,29 @@ async function own(env: Env, uid: string) {
   return u;
 }
 
-async function roadmap(env: Env, p: Progression, level: number, owned: Set<string>) {
+/**
+ * Coin-reward state of a milestone, from the user's own `reward_grants`:
+ *   none        the milestone pays no coins
+ *   pending     not reached yet
+ *   claimable   reached; a grant is waiting to be claimed
+ *   claimed     reached and paid
+ *   ineligible  reached before coin rewards applied (no grant was created)
+ */
+export type MilestoneRewardState = "none" | "pending" | "claimable" | "claimed" | "ineligible";
+
+async function roadmap(env: Env, p: Progression, level: number, owned: Set<string>, uid: string, on: boolean) {
   const catalog = new Map((await loadCatalog(env)).map((i) => [i.id, i]));
+  const grants = new Map<string, string>();
+  if (on && p.cfg.milestones.some((m) => m.coins > 0)) {
+    const rows = await env.DB.prepare(`SELECT source_id, status FROM reward_grants WHERE uid = ? AND source_type = 'level'`).bind(uid).all<{ source_id: string; status: string }>();
+    for (const r of rows.results ?? []) grants.set(r.source_id, r.status);
+  }
+  const rewardState = (m: { level: number; coins: number }): MilestoneRewardState => {
+    if (!on || !(m.coins > 0)) return "none";
+    if (level < m.level) return "pending";
+    const g = grants.get(String(m.level));
+    return g === "claimed" ? "claimed" : g === "claimable" ? "claimable" : "ineligible";
+  };
   return [...p.cfg.milestones]
     .filter((m) => m.level <= p.curve.maxLevel)
     .sort((a, b) => a.level - b.level)
@@ -68,8 +89,9 @@ async function roadmap(env: Env, p: Progression, level: number, owned: Set<strin
       title: m.title,
       description: m.description,
       feature: m.feature,
-      coins: m.coins,
+      coins: on ? m.coins : 0,
       unlocked: level >= m.level,
+      rewardState: rewardState(m),
       items: m.items
         .map((id) => catalog.get(id))
         .filter((i) => !!i)
@@ -106,7 +128,7 @@ export async function handleGamificationAction(action: string, ctx: Ctx): Promis
         leveledUp: sync.leveledUp,
         newlyUnlocked: sync.unlocked,
         cosmetics: await resolveCosmetics(env, u.cosmetics),
-        roadmap: await roadmap(env, p, sync.levelInfo.level, owned),
+        roadmap: await roadmap(env, p, sync.levelInfo.level, owned, uid, on),
         recentXp: (recent.results ?? []).map((r) => ({ id: r.id, action: r.action, label: ACTION_LABELS[r.action] ?? r.action, delta: Number(r.delta), createdAt: Number(r.created_at) })),
         achievements: { unlocked: Number(achCount?.n || 0), total: defs.length },
         pinnedLimit: p.cfg.pinnedLimit,

@@ -10,13 +10,16 @@ import { useAuth } from '@/src/hooks/useAuth';
 import { BRAND, BRAND_GRAD, PAD, useExplorePalette, type ExplorePalette } from '@/src/components/explore/theme';
 import { SectionEmpty, SectionError } from '@/src/components/explore/ExploreBits';
 import { formatXp, timeLeft } from '@/src/lib/progression';
+import { GamificationIcon } from '@/src/components/gamification/GamificationIcon';
+import { LevelBadge } from '@/src/components/gamification/LevelBadge';
+import type { AssetKey } from '@/src/lib/gamificationAssets';
 import { useMyXpRank, useXpLeaderboard, type XpPeriod, type XpRankRow } from '@/src/services/gamification';
 
-const TABS: { key: XpPeriod; label: string }[] = [
-  { key: 'week', label: 'Week' },
-  { key: 'month', label: 'Month' },
-  { key: 'season', label: 'Season' },
-  { key: 'lifetime', label: 'All time' },
+const TABS: { key: XpPeriod; label: string; asset: AssetKey }[] = [
+  { key: 'week', label: 'Week', asset: 'xp.weekly' },
+  { key: 'month', label: 'Month', asset: 'activity.checkin' },
+  { key: 'season', label: 'Season', asset: 'xp.seasonal' },
+  { key: 'lifetime', label: 'All time', asset: 'xp.lifetime' },
 ];
 
 /**
@@ -53,6 +56,7 @@ export default function XpLeaderboardScreen() {
             accessibilityRole="tab"
             accessibilityState={{ selected: t.key === period }}
           >
+            <GamificationIcon assetKey={t.asset} size={13} color={t.key === period ? BRAND : p.sub} />
             <Text style={[styles.tabText, { color: t.key === period ? BRAND : p.sub }]}>{t.label}</Text>
           </TouchableOpacity>
         ))}
@@ -94,6 +98,8 @@ export default function XpLeaderboardScreen() {
 }
 
 const MEDAL = ['#FFD54A', '#CBD5E1', '#F4A261'];
+/** Fallback for an older Worker that sends only the rank name (default ids are its lowercase). */
+const rankIdOf = (title: string) => String(title || '').toLowerCase();
 
 const Row = React.memo(function Row({ r, p, isMe, onOpen }: { r: XpRankRow; p: ExplorePalette; isMe: boolean; onOpen: () => void }) {
   return (
@@ -114,7 +120,10 @@ const Row = React.memo(function Row({ r, p, isMe, onOpen }: { r: XpRankRow; p: E
           <Text style={[styles.name, { color: p.text }]} numberOfLines={1}>{r.fullName || r.username}</Text>
           <VerifiedBadge verified={r.verified} size={13} />
         </View>
-        <Text style={[styles.handle, { color: p.sub }]} numberOfLines={1}>Lv {r.level} · {r.rankTitle}</Text>
+        <View style={styles.levelRow}>
+          <LevelBadge level={r.level} rankId={r.rankId ?? rankIdOf(r.rankTitle)} rankName={r.rankTitle} size="xs" />
+          <Text style={[styles.handle, { color: p.sub }]} numberOfLines={1}>{r.rankTitle}</Text>
+        </View>
       </View>
       <View style={{ alignItems: 'flex-end' }}>
         <Text style={[styles.score, { color: BRAND }]}>{formatXp(r.score)}</Text>
@@ -130,7 +139,8 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 22, fontFamily: 'Urbanist-Bold' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   tabs: { flexDirection: 'row', marginHorizontal: PAD, borderRadius: 14, padding: 4, marginBottom: 6 },
-  tab: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 9, borderRadius: 11 },
+  tab: { flex: 1, flexDirection: 'row', gap: 4, alignItems: 'center', justifyContent: 'center', paddingVertical: 9, borderRadius: 11 },
+  levelRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
   tabText: { fontSize: 13, fontFamily: 'Urbanist-Bold' },
   sub: { paddingHorizontal: PAD, marginBottom: 8, fontSize: 12, fontFamily: 'Urbanist-Medium' },
   row: { flexDirection: 'row', alignItems: 'center', marginHorizontal: PAD, marginBottom: 10, padding: 12, borderRadius: 16, borderWidth: 1 },

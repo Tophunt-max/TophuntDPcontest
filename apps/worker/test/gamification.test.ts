@@ -699,3 +699,74 @@ describe('gated awards', () => {
     expect(Number(n.n)).toBe(0);
   });
 });
+
+// ===========================================================================
+describe('visual layer contract', () => {
+  it('roadmap reports each milestone coin reward state from the user grants', async () => {
+    const env = env0();
+    const milestones = [
+      { level: 2, title: 'Two', description: '', items: [], feature: null, coins: 10 },
+      { level: 3, title: 'Three', description: '', items: [], feature: null, coins: 10 },
+      { level: 5, title: 'Five', description: '', items: [], feature: null, coins: 10 },
+      { level: 6, title: 'Six', description: '', items: [], feature: null, coins: 0 },
+    ];
+    await on(env, { milestones });
+    await seedUser(env, 'alice', { xp: xpForLevel(4, CURVE) });
+    await env.DB.prepare(`INSERT INTO reward_grants (id, uid, source_type, source_id, coins, status, created_at, updated_at) VALUES ('level:2:alice','alice','level','2',10,'claimed',1,1), ('level:3:alice','alice','level','3',10,'claimable',1,1)`).run();
+    const r = await call(env, 'alice', 'getProgression');
+    const byLevel = Object.fromEntries(r.body.roadmap.map((m: any) => [m.level, m.rewardState]));
+    expect(byLevel).toEqual({ 2: 'claimed', 3: 'claimable', 5: 'pending', 6: 'none' });
+  });
+
+  it('with the experience off, the roadmap shows no coin rewards', async () => {
+    const env = env0();
+    await setProgression(env, { milestones: [{ level: 2, title: 'Two', description: '', items: [], feature: null, coins: 10 }] });
+    await seedUser(env, 'alice', { xp: 600 });
+    const r = await call(env, 'alice', 'getProgression');
+    expect(r.body.roadmap[0]).toMatchObject({ coins: 0, rewardState: 'none' });
+  });
+
+  it('seeds a real Champion frame and grants it at level 50, with asset keys on default frames', async () => {
+    const env = env0();
+    const item = await env.DB.prepare(`SELECT type, json_extract(asset, '$.key') AS k FROM reward_catalog WHERE id = 'frame_champion'`).first<any>();
+    expect(item).toEqual({ type: 'frame', k: 'frame.champion' });
+    const bronze = await env.DB.prepare(`SELECT json_extract(asset, '$.key') AS k FROM reward_catalog WHERE id = 'frame_bronze'`).first<any>();
+    expect(bronze.k).toBe('frame.bronze');
+    await on(env);
+    await seedUser(env, 'alice');
+    await syncProgression(env, 'alice');
+    await env.DB.prepare(`UPDATE users SET xp = ? WHERE uid = 'alice'`).bind(xpForLevel(50, CURVE)).run();
+    await syncProgression(env, 'alice');
+    const inv = await env.DB.prepare(`SELECT item_id FROM user_inventory WHERE uid = 'alice'`).all<any>();
+    expect(inv.results?.map((r) => r.item_id)).toEqual(expect.arrayContaining(['frame_champion', 'title_champion']));
+  });
+
+  it('leaderboard rows carry the rank id for the emblem', async () => {
+    const env = env0();
+    await seedUser(env, 'a', { xp: xpForLevel(31, CURVE) });
+    const r = await read(env, '/leaderboard/xp?period=lifetime');
+    expect(r.body.rows[0]).toMatchObject({ rankId: 'champion', rankTitle: 'Champion', level: 31 });
+  });
+
+  it('rejects a malformed asset key on a catalog item', async () => {
+    const env = env0();
+    const bad = await admin(env, 'PUT', '/gamification/catalog/frame_x', { type: 'frame', name: 'X', rarity: 'rare', asset: { key: '../../evil' } });
+    expect(bad.status).toBe(400);
+    const ok = await admin(env, 'PUT', '/gamification/catalog/frame_x', { type: 'frame', name: 'X', rarity: 'rare', asset: { key: 'frame.gold' } });
+    expect(ok.status).toBe(200);
+  });
+
+  it('public profiles expose levelInfo and resolved cosmetics but no XP history', async () => {
+    const env = env0();
+    await seedUser(env, 'bob', { xp: 1000 });
+    await awardXp(env, { uid: 'bob', action: 'match_win', eventId: 'match_win:pp', ts: Date.now() });
+    const pub = await read(env, '/users/bob', 'alice');
+    expect(pub.body.levelInfo.level).toBeGreaterThan(1);
+    expect(pub.body.recentXp).toBeUndefined();
+    expect(JSON.stringify(pub.body)).not.toContain('match_win:pp');
+    // Someone else's progression is not readable through the API either.
+    await seedUser(env, 'alice');
+    const mine = await call(env, 'alice', 'getProgression', { uid: 'bob' });
+    expect(mine.body.levelInfo.xp).toBe(0);
+  });
+});

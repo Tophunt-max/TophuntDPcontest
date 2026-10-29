@@ -6,8 +6,9 @@ import { Ionicons } from '@/src/lib/icons';
 import { emitToast } from '@/src/lib/toastBridge';
 import { useAuth } from '@/src/hooks/useAuth';
 import { BRAND, PAD, useExplorePalette, type ExplorePalette } from '@/src/components/explore/theme';
-import { SectionEmpty, SectionError } from '@/src/components/explore/ExploreBits';
+import { SectionError } from '@/src/components/explore/ExploreBits';
 import { RarityPill } from '@/src/components/gamification/RarityPill';
+import { AchievementIcon, GamificationEmpty } from '@/src/components/gamification/RewardBits';
 import { rarityColor } from '@/src/lib/progression';
 import { useAchievements, usePinAchievements, useProgression, type AchievementView } from '@/src/services/gamification';
 
@@ -78,7 +79,7 @@ export default function AchievementsScreen() {
               />
             </View>
           }
-          ListEmptyComponent={<SectionEmpty palette={p} icon="ribbon-outline" text="No achievements here yet." />}
+          ListEmptyComponent={<View style={{ marginHorizontal: PAD }}><GamificationEmpty p={p} text="No achievements here yet." /></View>}
           renderItem={({ item }) => (
             <Card a={item} p={p} pinned={pinned.includes(item.id)} canPin={canPin && item.unlocked} onPin={() => togglePin(item)} busy={pin.isPending} />
           )}
@@ -99,9 +100,7 @@ const Card = React.memo(function Card({
       accessible
       accessibilityLabel={`${a.name}. ${a.description}. ${a.unlocked ? 'Unlocked' : a.target ? `Progress ${a.progress} of ${a.target}` : 'Locked'}.`}
     >
-      <View style={[styles.icon, { backgroundColor: `${color}22` }]}>
-        <Ionicons name={a.unlocked ? a.icon : 'lock-closed'} size={22} color={color} />
-      </View>
+      <AchievementIcon a={a} size={46} dark={p.isDark} />
       <View style={{ flex: 1 }}>
         <View style={styles.titleRow}>
           <Text style={[styles.name, { color: p.text }]} numberOfLines={1}>{a.name}{a.maxTier > 1 && a.tier ? ` · Tier ${a.tier}` : ''}</Text>

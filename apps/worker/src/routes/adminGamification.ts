@@ -224,6 +224,10 @@ export function registerGamificationRoutes(
     if (colors !== undefined && (!Array.isArray(colors) || colors.length > 4 || !colors.every((x: unknown) => typeof x === "string" && /^#[0-9a-f]{6}$/i.test(x)))) {
       throw httpsError("invalid-argument", "asset.colors must be up to 4 #RRGGBB colors.");
     }
+    const key = (asset as any).key;
+    if (key !== undefined && (typeof key !== "string" || !/^[a-z]+\.[a-z0-9_]{1,40}$/.test(key))) {
+      throw httpsError("invalid-argument", "asset.key must be an app asset key like frame.gold (see the Gamification asset list).");
+    }
     const before = (await loadCatalog(c.env)).find((i) => i.id === id) ?? null;
     // An item someone already owns keeps its type: changing a frame into a title
     // would silently break every equipped slot that points at it.
