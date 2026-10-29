@@ -17,6 +17,7 @@ import { BoundedIdSet, levelUpEventId, motionTimings } from '@/src/lib/xpAnimati
 import { getCelebratedLevel, loadSeenIds, saveSeenIds, setCelebratedLevel } from '@/src/services/gamification';
 import { useScreenActive } from '@/src/hooks/useScreenActive';
 import { LevelBadge } from './LevelBadge';
+import { ArrowIcon } from '@/src/components/ui/ArrowIcon';
 import { SparkleBurst } from './SparkleBurst';
 import { XpGainPill } from './RewardBits';
 
@@ -171,9 +172,20 @@ export function LevelUpCelebration({
             <Text style={styles.kicker}>{isMaxLevel ? 'MAXIMUM LEVEL' : 'LEVEL UP'}</Text>
             <View style={styles.levels}>
               {from ? <Animated.Text style={[styles.levelText, styles.levelAbs, fromStyle]}>Level {from}</Animated.Text> : null}
-              <Animated.Text style={[styles.levelText, from ? toStyle : null]}>
-                {from ? `Level ${from} → ${shown.to}` : `Level ${shown.to}`}
-              </Animated.Text>
+              {/* The arrow is an icon: the display font has no "→" glyph on web. */}
+              <Animated.View
+                style={[styles.levelRow, from ? toStyle : null]}
+                accessible
+                accessibilityLabel={from ? `Level ${from} to level ${shown.to}` : `Level ${shown.to}`}
+              >
+                <Text style={styles.levelText}>{from ? `Level ${from}` : `Level ${shown.to}`}</Text>
+                {from ? (
+                  <>
+                    <ArrowIcon variant="arrow" direction="right" size={22} color="#FFFFFF" />
+                    <Text style={styles.levelText}>{shown.to}</Text>
+                  </>
+                ) : null}
+              </Animated.View>
             </View>
             {rankName ? <Animated.Text style={[styles.rank, rankStyle]}>{rankName}</Animated.Text> : null}
             <Animated.View style={[styles.extras, extrasStyle]}>
@@ -224,6 +236,7 @@ const styles = StyleSheet.create({
   levels: { height: 32, justifyContent: 'center', alignItems: 'center', marginTop: 4 },
   levelText: { color: '#FFF', fontSize: 24, fontFamily: 'Urbanist-Black' },
   levelAbs: { position: 'absolute' },
+  levelRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   rank: { color: '#FFE082', fontSize: 16, fontFamily: 'Urbanist-Bold', marginTop: 2 },
   extras: { alignItems: 'center', gap: 6, marginTop: 10, minHeight: 20 },
   gainRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },

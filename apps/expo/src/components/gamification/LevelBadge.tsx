@@ -51,7 +51,7 @@ export function LevelBadge({
             <Ionicons name="lock-closed" size={Math.round(px * 0.36)} color={ink} />
           ) : (
             <Text
-              style={[styles.num, { color: ink, fontSize: levelFontSize(px, level), marginTop: tier.shape === 'crown' ? px * 0.12 : 0 }]}
+              style={[styles.num, { color: ink, fontSize: levelFontSize(px, level, tier.shape), marginTop: tier.shape === 'crown' ? px * 0.12 : tier.shape === 'star' ? px * 0.06 : 0 }]}
               allowFontScaling={false}
               numberOfLines={1}
             >

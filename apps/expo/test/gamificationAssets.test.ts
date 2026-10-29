@@ -148,6 +148,8 @@ describe('level badge', () => {
     expect(levelFontSize(BADGE_SIZES.lg, 7)).toBeGreaterThan(levelFontSize(BADGE_SIZES.lg, 77));
     expect(levelFontSize(BADGE_SIZES.lg, 77)).toBeGreaterThan(levelFontSize(BADGE_SIZES.lg, 100));
     expect(levelFontSize(BADGE_SIZES.xs, 100)).toBeGreaterThanOrEqual(8);
+    // Narrow silhouettes get a smaller number so 2 digits fit inside a star.
+    expect(levelFontSize(BADGE_SIZES.lg, 44, 'star')).toBeLessThan(levelFontSize(BADGE_SIZES.lg, 44, 'shield'));
   });
 
   it('derives display state only from server facts', () => {

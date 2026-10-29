@@ -314,8 +314,10 @@ export const BADGE_SIZES = { xs: 20, sm: 28, md: 40, lg: 64, xl: 96 } as const;
 export type BadgeSize = keyof typeof BADGE_SIZES;
 
 /** Font size for the level number inside an emblem of `px`, shrinking for 3 digits. */
-export function levelFontSize(px: number, level: number): number {
+export function levelFontSize(px: number, level: number, shape?: TierStyle['shape']): number {
   const digits = String(Math.max(1, Math.floor(level))).length;
   const ratio = digits >= 3 ? 0.3 : digits === 2 ? 0.38 : 0.44;
-  return Math.max(8, Math.round(px * ratio));
+  // Star, gem and crown have a narrow centre: shrink so the number stays inside.
+  const narrow = shape === 'star' || shape === 'gem' || shape === 'crown' ? 0.78 : 1;
+  return Math.max(8, Math.round(px * ratio * narrow));
 }
