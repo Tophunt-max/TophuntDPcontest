@@ -6,6 +6,10 @@ import { Badge } from "@/components/ui/Badge";
 import { PageHeader, fmtDateTime, fmtNumber } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import { isFullAdminRole, useAuth } from "@/lib/auth";
+import {
+  MilestonesEditor, QuestsEditor, RanksEditor,
+  type MilestoneRow, type QuestRow, type RankRow,
+} from "@/components/gamification/ProgressionEditors";
 
 /**
  * Gamification admin: XP rules, levels, achievements, cosmetics, seasons,
@@ -16,7 +20,7 @@ import { isFullAdminRole, useAuth } from "@/lib/auth";
  * coins ask for a recent sign-in, and budget-linked rewards ask for the
  * approval password (handled by lib/api.ts `req`).
  */
-const TABS = ["overview", "rules", "achievements", "catalog", "seasons", "users", "flags"] as const;
+const TABS = ["overview", "rules", "achievements", "catalog", "seasons", "grants", "users", "flags"] as const;
 type Tab = (typeof TABS)[number];
 
 const field = "w-full px-3 py-2 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring";
@@ -41,6 +45,7 @@ export default function GamificationPage() {
       {tab === "achievements" && <Achievements />}
       {tab === "catalog" && <Catalog />}
       {tab === "seasons" && <Seasons />}
+      {tab === "grants" && <Grants />}
       {tab === "users" && <UserInspector />}
       {tab === "flags" && <Flags />}
     </div>
@@ -144,23 +149,16 @@ const VARIABLE = new Set(["daily_task", "quest", "achievement"]);
 function Rules() {
   const qc = useQueryClient();
   const q = useQuery({ queryKey: ["gam", "config"], queryFn: api.gamification.config });
+  const catalog = useQuery({ queryKey: ["gam", "catalog"], queryFn: api.gamification.catalog });
   const [draft, setDraft] = useState<any>(null);
-  const [json, setJson] = useState({ ranks: "", milestones: "", quests: "", betaUids: "" });
+  const [betaUids, setBetaUids] = useState("");
   useEffect(() => {
     if (!q.data) return;
     setDraft({ ...q.data.progression, xpThreshold: q.data.xpThreshold, xpIncrement: q.data.xpIncrement });
-    setJson({
-      ranks: JSON.stringify(q.data.progression.ranks, null, 2),
-      milestones: JSON.stringify(q.data.progression.milestones, null, 2),
-      quests: JSON.stringify(q.data.progression.quests, null, 2),
-      betaUids: (q.data.progression.betaUids || []).join("\n"),
-    });
+    setBetaUids((q.data.progression.betaUids || []).join("\n"));
   }, [q.data]);
   const save = useMutation({
     mutationFn: () => {
-      const parse = (k: "ranks" | "milestones" | "quests") => {
-        try { return JSON.parse(json[k]); } catch { throw new Error(`${k} is not valid JSON.`); }
-      };
       const { xpThreshold, xpIncrement, version, ...rest } = draft;
       void version;
       return api.gamification.saveConfig({
@@ -172,10 +170,17 @@ function Rules() {
           pinnedLimit: Number(rest.pinnedLimit),
           velocityFlagEvents: Number(rest.velocityFlagEvents),
           rewardBudgetId: rest.rewardBudgetId || null,
-          betaUids: json.betaUids.split(/[\s,]+/).filter(Boolean),
-          ranks: parse("ranks"),
-          milestones: parse("milestones"),
-          quests: parse("quests"),
+          betaUids: betaUids.split(/[\s,]+/).filter(Boolean),
+          // The Worker wants ranks by increasing level; milestones read best that way too.
+          ranks: [...(rest.ranks as RankRow[])]
+            .map((r) => ({ ...r, id: r.id.trim(), name: r.name.trim(), minLevel: Number(r.minLevel) }))
+            .sort((a, b) => a.minLevel - b.minLevel),
+          milestones: [...(rest.milestones as MilestoneRow[])]
+            .map((m) => ({ ...m, level: Number(m.level), coins: Number(m.coins || 0), feature: m.feature || null }))
+            .sort((a, b) => a.level - b.level),
+          quests: (rest.quests as QuestRow[]).map((x) => ({
+            ...x, id: x.id.trim(), target: Number(x.target), xp: Number(x.xp), minLevel: Number(x.minLevel || 1), enabled: x.enabled !== false,
+          })),
         },
       });
     },
@@ -198,7 +203,7 @@ function Rules() {
           </label>
         </div>
         <p className="text-sm font-medium mt-4 mb-1">Beta users (uids, one per line)</p>
-        <textarea className={`${field} h-20 font-mono`} value={json.betaUids} onChange={(e) => setJson({ ...json, betaUids: e.target.value })} />
+        <textarea className={`${field} h-20 font-mono`} value={betaUids} onChange={(e) => setBetaUids(e.target.value)} />
       </div>
 
       <div className={card}>
@@ -238,17 +243,21 @@ function Rules() {
         </div>
       </div>
 
-      {(["ranks", "milestones", "quests"] as const).map((k) => (
-        <div key={k} className={card}>
-          <p className="font-semibold mb-1 capitalize">{k}</p>
-          <p className="text-xs text-muted-foreground mb-2">
-            {k === "ranks" && "Ordered by minLevel; the first must start at level 1. Fields: id, name, minLevel, icon, color (#RRGGBB)."}
-            {k === "milestones" && "One per level. items are catalog ids granted on reaching it; coins are Diamonds paid through the reward budget (needs the approval password). Existing unlocks are never taken away."}
-            {k === "quests" && "period week|month, metric votes|entries|wins|checkins|active_days|xp, target, xp, minLevel, enabled."}
-          </p>
-          <textarea className={`${field} h-56 font-mono text-xs`} value={json[k]} onChange={(e) => setJson({ ...json, [k]: e.target.value })} />
-        </div>
-      ))}
+      <div className={card}>
+        <p className="font-semibold mb-1">Ranks</p>
+        <p className="text-xs text-muted-foreground mb-3">A rank covers every level from its start level up to the next rank. The first rank must start at level 1; rows are sorted by level on save.</p>
+        <RanksEditor rows={draft.ranks} onChange={(ranks) => setDraft({ ...draft, ranks })} />
+      </div>
+      <div className={card}>
+        <p className="font-semibold mb-1">Level milestones</p>
+        <p className="text-xs text-muted-foreground mb-3">One per level. Items are catalog ids granted on reaching the level. Diamond is paid through the reward budget and needs the approval password. Existing unlocks are never taken away.</p>
+        <MilestonesEditor rows={draft.milestones} onChange={(milestones) => setDraft({ ...draft, milestones })} itemIds={(catalog.data ?? []).map((i: any) => i.id)} />
+      </div>
+      <div className={card}>
+        <p className="font-semibold mb-1">Quests</p>
+        <p className="text-xs text-muted-foreground mb-3">Weekly or monthly goals. The user claims the XP once per period. Min level hides the quest from lower levels.</p>
+        <QuestsEditor rows={draft.quests} onChange={(quests) => setDraft({ ...draft, quests })} />
+      </div>
       <button className={btn} onClick={() => save.mutate()} disabled={save.isPending}>Save configuration</button>
     </div>
   );
@@ -401,19 +410,35 @@ const toLocal = (ms: number) => new Date(ms - new Date().getTimezoneOffset() * 6
 function Seasons() {
   const qc = useQueryClient();
   const q = useQuery({ queryKey: ["gam", "seasons"], queryFn: api.gamification.seasons });
-  const [form, setForm] = useState({ name: "", description: "", startsAt: toLocal(Date.now() + 86400000), endsAt: toLocal(Date.now() + 29 * 86400000), topN: 100, rewards: '[{"fromRank":1,"toRank":3,"coins":0,"itemId":"collectible_season_top"}]' });
+  const blank = () => ({ name: "", description: "", startsAt: toLocal(Date.now() + 86400000), endsAt: toLocal(Date.now() + 29 * 86400000), topN: 100, rewards: '[{"fromRank":1,"toRank":3,"coins":0,"itemId":"collectible_season_top"}]' });
+  const [form, setForm] = useState(blank);
+  // The season being edited, or null when the form schedules a new one.
+  const [editing, setEditing] = useState<{ id: string; status: string } | null>(null);
   const [results, setResults] = useState<string | null>(null);
   const res = useQuery({ queryKey: ["gam", "seasonResults", results], queryFn: () => api.gamification.seasonResults(results!), enabled: !!results });
   const invalidate = () => qc.invalidateQueries({ queryKey: ["gam", "seasons"] });
-  const create = useMutation({
+  const startEdit = (s: any) => {
+    setEditing({ id: s.id, status: s.status });
+    setForm({ name: s.name, description: s.description ?? "", startsAt: toLocal(s.starts_at), endsAt: toLocal(s.ends_at), topN: s.top_n, rewards: JSON.stringify(s.rewards ?? []) });
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  const stopEdit = () => { setEditing(null); setForm(blank()); };
+  const submit = useMutation({
     mutationFn: () => {
       let rewards: any;
       try { rewards = JSON.parse(form.rewards); } catch { throw new Error("rewards is not valid JSON."); }
-      return api.gamification.createSeason({ ...form, startsAt: new Date(form.startsAt).getTime(), endsAt: new Date(form.endsAt).getTime(), topN: Number(form.topN), rewards });
+      const payload: any = { name: form.name, description: form.description, topN: Number(form.topN), rewards };
+      // A running season keeps its schedule (the Worker ignores new dates for it).
+      if (!editing || editing.status === "scheduled") {
+        payload.startsAt = new Date(form.startsAt).getTime();
+        payload.endsAt = new Date(form.endsAt).getTime();
+      }
+      return editing ? api.gamification.updateSeason(editing.id, payload) : api.gamification.createSeason(payload);
     },
-    onSuccess: () => { toast.success("Season scheduled"); invalidate(); },
+    onSuccess: () => { toast.success(editing ? "Season updated" : "Season scheduled"); stopEdit(); invalidate(); },
     onError: (e) => toast.error(describeError(e)),
   });
+  const datesLocked = editing?.status === "active";
   const finalize = useMutation({ mutationFn: (id: string) => api.gamification.finalizeSeason(id), onSuccess: () => { toast.success("Finalized"); invalidate(); }, onError: (e) => toast.error(describeError(e)) });
   const cancel = useMutation({
     mutationFn: (id: string) => { const r = window.prompt("Reason for cancelling this season?") || ""; return api.gamification.cancelSeason(id, r); },
@@ -423,19 +448,23 @@ function Seasons() {
   return (
     <div className="space-y-4">
       <div className={card}>
-        <p className="font-semibold mb-3">Schedule a season</p>
+        <p className="font-semibold mb-3">{editing ? `Edit season “${form.name}”` : "Schedule a season"}</p>
         <div className="grid sm:grid-cols-2 gap-3">
           <label className="text-sm">Name<input className={field} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
           <label className="text-sm">Ranked places (top N)<input type="number" className={field} value={form.topN} onChange={(e) => setForm({ ...form, topN: Number(e.target.value) })} /></label>
-          <label className="text-sm">Starts<input type="datetime-local" className={field} value={form.startsAt} onChange={(e) => setForm({ ...form, startsAt: e.target.value })} /></label>
-          <label className="text-sm">Ends<input type="datetime-local" className={field} value={form.endsAt} onChange={(e) => setForm({ ...form, endsAt: e.target.value })} /></label>
+          <label className="text-sm">Starts<input type="datetime-local" className={field} disabled={datesLocked} value={form.startsAt} onChange={(e) => setForm({ ...form, startsAt: e.target.value })} /></label>
+          <label className="text-sm">Ends<input type="datetime-local" className={field} disabled={datesLocked} value={form.endsAt} onChange={(e) => setForm({ ...form, endsAt: e.target.value })} /></label>
+          {datesLocked && <p className="text-xs text-muted-foreground sm:col-span-2">This season is running, so its dates are fixed. Moving them would change who earned what.</p>}
           <label className="text-sm sm:col-span-2">Description<input className={field} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
           <label className="text-sm sm:col-span-2">Reward bands (JSON: fromRank, toRank, coins, itemId)
             <textarea className={`${field} h-24 font-mono text-xs`} value={form.rewards} onChange={(e) => setForm({ ...form, rewards: e.target.value })} />
           </label>
         </div>
         <p className="text-xs text-muted-foreground mt-2">Ranking: season XP, then lifetime XP, then account age. Admin XP adjustments do not count. Coin rewards become claimable grants paid from the reward budget. Lifetime XP is never reset.</p>
-        <button className={`${btn} mt-3`} onClick={() => create.mutate()} disabled={create.isPending || !form.name}>Schedule</button>
+        <div className="flex gap-2 mt-3">
+          <button className={btn} onClick={() => submit.mutate()} disabled={submit.isPending || !form.name}>{editing ? "Save changes" : "Schedule"}</button>
+          {editing && <button className={btn2} onClick={stopEdit}>Cancel edit</button>}
+        </div>
       </div>
       <Table loading={q.isLoading} data={q.data ?? []} keyFn={(s: any) => s.id} empty="No seasons"
         columns={[
@@ -445,6 +474,7 @@ function Seasons() {
           { key: "rewards", header: "Rewards", render: (s: any) => <span className="text-xs">{s.rewards.map((r: any) => `#${r.fromRank}-${r.toRank}: ${r.coins ? `${r.coins}💎 ` : ""}${r.itemId ?? ""}`).join(" · ") || "—"}</span> },
           { key: "act", header: "", render: (s: any) => (
             <div className="flex gap-2">
+              {["scheduled", "active"].includes(s.status) && <button className={btn2} onClick={() => startEdit(s)}>Edit</button>}
               <button className={btn2} onClick={() => setResults(s.id)}>Results</button>
               {["active", "finalizing"].includes(s.status) && <button className={btn2} onClick={() => finalize.mutate(s.id)}>Finalize</button>}
               {["scheduled", "active"].includes(s.status) && <button className={btn2} onClick={() => cancel.mutate(s.id)}>Cancel</button>}
@@ -491,6 +521,11 @@ function UserInspector() {
   const revoke = useMutation({
     mutationFn: (itemId: string) => { const r = window.prompt("Reason for revoking this item?") || ""; return api.gamification.revokeItem(uid!, itemId, r); },
     onSuccess: () => { toast.success("Revoked"); refresh(); },
+    onError: (e) => toast.error(describeError(e)),
+  });
+  const restore = useMutation({
+    mutationFn: (itemId: string) => { const r = window.prompt("Reason for restoring this item?") || ""; return api.gamification.restoreItem(uid!, itemId, r); },
+    onSuccess: () => { toast.success("Restored"); refresh(); },
     onError: (e) => toast.error(describeError(e)),
   });
   const grantAch = useMutation({
@@ -546,10 +581,18 @@ function UserInspector() {
                 columns={[
                   { key: "id", header: "Item", render: (i: any) => <span>{i.itemId}</span> },
                   { key: "src", header: "Source", render: (i: any) => <span className="text-xs">{i.source}</span> },
-                  { key: "state", header: "", render: (i: any) => i.revoked ? <Badge>revoked</Badge> : <button className={btn2} onClick={() => revoke.mutate(i.itemId)}>Revoke</button> },
+                  { key: "state", header: "", render: (i: any) => i.revoked
+                    ? <div className="flex gap-2 items-center"><Badge>revoked</Badge><button className={btn2} onClick={() => restore.mutate(i.itemId)} disabled={restore.isPending}>Restore</button></div>
+                    : <button className={btn2} onClick={() => revoke.mutate(i.itemId)} disabled={revoke.isPending}>Revoke</button> },
                 ]} />
             </div>
           </div>
+          {Array.isArray(d.rewardGrants) && (
+            <div className={card}>
+              <p className="font-semibold mb-2">Diamond reward grants</p>
+              <GrantsTable rows={d.rewardGrants} showUser={false} />
+            </div>
+          )}
           <div className={card}>
             <p className="font-semibold mb-2">XP events</p>
             <Table loading={ev.isLoading} data={ev.data?.events ?? []} keyFn={(e: any) => e.id} empty="No events"
@@ -570,6 +613,45 @@ function UserInspector() {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ grants
+/** Diamond rewards from level milestones and seasons (worker lib/rewardGrants.ts). */
+function GrantsTable({ rows, loading, showUser = true }: { rows: any[]; loading?: boolean; showUser?: boolean }) {
+  return (
+    <Table loading={loading} data={rows} keyFn={(g: any) => g.id} empty="No grants"
+      columns={[
+        { key: "at", header: "Created", render: (g: any) => <span className="text-xs">{fmtDateTime(g.created_at)}</span> },
+        ...(showUser ? [{ key: "user", header: "User", render: (g: any) => <span>@{g.username ?? g.uid}</span> }] : []),
+        { key: "src", header: "Source", render: (g: any) => <div><p className="text-sm">{g.source_type}</p><p className="text-xs text-muted-foreground font-mono">{g.source_id}</p></div> },
+        { key: "coins", header: "Diamond", render: (g: any) => <span className="font-semibold">{fmtNumber(g.coins)}</span> },
+        { key: "status", header: "Status", render: (g: any) => <Badge variant={g.status === "claimable" ? "primary" : undefined}>{g.status}</Badge> },
+        { key: "claimed", header: "Claimed", render: (g: any) => <span className="text-xs">{g.claimed_at ? fmtDateTime(g.claimed_at) : "—"}</span> },
+        { key: "note", header: "Note", render: (g: any) => <span className="text-xs">{g.note ?? ""}</span> },
+      ]} />
+  );
+}
+
+function Grants() {
+  const { user } = useAuth();
+  const full = !user?.role || isFullAdminRole(user.role);
+  const [status, setStatus] = useState("claimable");
+  const q = useQuery({ queryKey: ["gam", "grants", status], queryFn: () => api.gamification.grants(status), enabled: full });
+  if (!full) return <p className="text-sm text-muted-foreground">Reward grants are available to full admins.</p>;
+  const total = (q.data ?? []).reduce((a: number, g: any) => a + Number(g.coins || 0), 0);
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-muted-foreground">Diamonds a user earned from a level milestone or a season result. A claimable grant is paid from the reward budget when the user taps Claim; nothing is paid before that.</p>
+      <div className="flex gap-3 items-center">
+        <select className={`${field} w-40`} value={status} onChange={(e) => setStatus(e.target.value)}>
+          {["claimable", "claimed"].map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        {q.data && <span className="text-sm text-muted-foreground">{fmtNumber(q.data.length)} grants · {fmtNumber(total)} Diamond{q.data.length === 200 ? " (latest 200)" : ""}</span>}
+      </div>
+      {q.isError && <p className="text-sm text-red-600">{describeError(q.error)}</p>}
+      <GrantsTable rows={q.data ?? []} loading={q.isLoading} />
     </div>
   );
 }
