@@ -121,6 +121,48 @@ describe('reconnect resync', () => {
   });
 });
 
+describe('network back online', () => {
+  it('live() refetches at once, and a socket waiting out its backoff reconnects now', async () => {
+    const { reportConnectivity, __resetNetworkRecoveryForTests } = await import('@/src/lib/networkRecovery');
+    __resetNetworkRecoveryForTests();
+    // reportConnectivity is module-level: re-register realtime's own listener.
+    const { reconnectWaitingSockets } = await import('@/src/services/realtime');
+    const { onNetworkRecovered } = await import('@/src/lib/networkRecovery');
+    onNetworkRecovered(() => void reconnectWaitingSockets());
+
+    vi.spyOn(Math, 'random').mockReturnValue(0.99); // a long backoff
+    const fetcher = vi.fn(async () => 'data');
+    const off = live('user:alice', fetcher, () => {}, { fallbackMs: 10_000_000 });
+    await flush();
+    last().onopen?.();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    reportConnectivity(false);
+    last().close(); // dropped while offline: now waiting ~2-30 s
+    await flush();
+    const before = h.sockets.length;
+
+    reportConnectivity(true);
+    await flush();
+    expect(fetcher).toHaveBeenCalledTimes(2); // refetched without waiting
+    expect(h.sockets.length).toBe(before + 1); // reopened without waiting
+    off();
+  });
+
+  it('fires only on an offline -> online flip', async () => {
+    const { reportConnectivity, onNetworkRecovered, __resetNetworkRecoveryForTests } = await import('@/src/lib/networkRecovery');
+    __resetNetworkRecoveryForTests();
+    const hits = vi.fn();
+    onNetworkRecovered(hits);
+    reportConnectivity(true);
+    reportConnectivity(true);
+    expect(hits).not.toHaveBeenCalled();
+    reportConnectivity(false);
+    reportConnectivity(true);
+    expect(hits).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('foreground', () => {
   it('live() refetches when the app returns to the foreground, and stops listening on cleanup', async () => {
     const fetcher = vi.fn(async () => 'data');

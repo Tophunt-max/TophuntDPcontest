@@ -76,6 +76,7 @@ import { useAuth } from '@/src/hooks/useAuth'; // Shared app-wide auth session
 import { shouldWipeDeviceCaches } from '@/src/lib/authState';
 import { clearOffline, offlineOwner } from '@/src/lib/offlineStore';
 import { restoreQueries } from '@/src/lib/queryPersistence';
+import { reportConnectivity } from '@/src/lib/networkRecovery';
 import { useQueryPersistence } from '@/src/hooks/useQueryPersistence';
 import { useProfile } from '@/src/hooks/useProfileData';
 import { useCachedIdentity } from '@/src/hooks/useCachedIdentity';
@@ -115,9 +116,33 @@ registerServiceWorker();
 
 // Drive React Query's online state from the device's real connectivity so
 // queries pause offline and auto-refetch when the network returns.
-onlineManager.setEventListener((setOnline) =>
-  NetInfo.addEventListener((state) => setOnline(!!state.isConnected)),
-);
+//
+// Web: where `navigator.connection` exists (Chrome, Android browsers) NetInfo
+// listens ONLY to its 'change' event, which does not fire on every offline /
+// online flip. Coming back online then went unnoticed: paused queries never
+// resumed and Home kept its "saved battles" until a manual retry. The
+// browser's own online/offline events make NetInfo re-read the state.
+// The same state drives src/lib/networkRecovery.ts (sockets + live lists).
+onlineManager.setEventListener((setOnline) => {
+  const unsubscribe = NetInfo.addEventListener((state) => {
+    const online = !!state.isConnected;
+    setOnline(online);
+    reportConnectivity(online);
+  });
+  const reRead = () => void NetInfo.refresh();
+  const web = Platform.OS === 'web' && typeof window !== 'undefined';
+  if (web) {
+    window.addEventListener('online', reRead);
+    window.addEventListener('offline', reRead);
+  }
+  return () => {
+    unsubscribe();
+    if (web) {
+      window.removeEventListener('online', reRead);
+      window.removeEventListener('offline', reRead);
+    }
+  };
+});
 
 // Resilient defaults: retry transient failures, keep data briefly fresh, and
 // refetch when connectivity returns — important on flaky mobile networks.

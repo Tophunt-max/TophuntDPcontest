@@ -126,3 +126,14 @@ describe('stories offline', () => {
     }
   });
 });
+
+describe('back online', () => {
+  it('web also listens to the browser online/offline events (NetInfo only watches navigator.connection there)', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const root = readFileSync(join(__dirname, '..', 'app', '_layout.tsx'), 'utf8');
+    expect(root).toContain("window.addEventListener('online', reRead)");
+    expect(root).toContain('NetInfo.refresh()');
+    expect(root).toContain('reportConnectivity(online)');
+  });
+});
