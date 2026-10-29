@@ -87,6 +87,21 @@ describe('one app-wide auth observer', () => {
     expect(s.getAuthSessionSnapshot().error?.message).toMatch(/not cleared/);
   });
 
+  it('waits past Firebase\'s own network timeout before offering recovery', async () => {
+    // A saved login is checked over the network first; on a dead connection
+    // Firebase gives up after 30s (web) / 60s (native) and KEEPS the user.
+    // Recovery controls before that would show "restore failed" for a session
+    // that is about to restore.
+    const s = await fresh();
+    expect(s.__AUTH_RESTORE_WATCHDOG_MS).toBeGreaterThan(30_000);
+    vi.useFakeTimers();
+    const t = await fresh();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(t.getAuthSessionSnapshot().status).toBe('restoring');
+    h.next?.({ uid: 'saved-user' });
+    expect(t.getAuthSessionSnapshot()).toMatchObject({ status: 'authenticated', user: { uid: 'saved-user' } });
+  });
+
   it('explicit Continue as guest keeps the observer alive for a later sign-in', async () => {
     const s = await fresh();
     s.continueAuthSessionAsGuest();
