@@ -266,6 +266,7 @@ function UserDetail({ id, onClose, onDone }: { id: string; onClose: () => void; 
   const [form, setForm] = useState({ fullName: "", username: "", bio: "" });
   const [xp, setXp] = useState("");
   const [badge, setBadge] = useState("");
+  const [grantReason, setGrantReason] = useState("");
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
   // Prefill once loaded.
@@ -284,8 +285,8 @@ function UserDetail({ id, onClose, onDone }: { id: string; onClose: () => void; 
     onError: (e: any) => toast.error(e.message),
   });
   const grantMut = useMutation({
-    mutationFn: () => api.grantUser(id, { xp: xp ? Number(xp) : undefined, badge: badge || undefined }),
-    onSuccess: () => { toast.success("Granted"); setXp(""); setBadge(""); user.refetch(); },
+    mutationFn: () => api.grantUser(id, { xp: xp ? Number(xp) : undefined, badge: badge || undefined, reason: grantReason || undefined }),
+    onSuccess: () => { toast.success("Granted"); setXp(""); setBadge(""); setGrantReason(""); user.refetch(); },
     onError: (e: any) => toast.error(e.message),
   });
 
@@ -330,6 +331,7 @@ function UserDetail({ id, onClose, onDone }: { id: string; onClose: () => void; 
                   <div className="flex flex-wrap gap-2">
                     <input type="number" className={`${field} w-32`} placeholder="XP" value={xp} onChange={(e) => setXp(e.target.value)} />
                     <input className={`${field} flex-1 min-w-[140px]`} placeholder="Badge name" value={badge} onChange={(e) => setBadge(e.target.value)} />
+                    <input className={`${field} flex-1 min-w-[180px]`} placeholder="Reason (required for XP)" value={grantReason} onChange={(e) => setGrantReason(e.target.value)} />
                     <button onClick={() => grantMut.mutate()} disabled={(!xp && !badge) || grantMut.isPending} className="bg-secondary text-sm font-medium px-4 py-2 rounded-xl disabled:opacity-50">Grant</button>
                   </div>
                 </div>

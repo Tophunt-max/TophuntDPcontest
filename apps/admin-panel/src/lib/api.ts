@@ -158,6 +158,9 @@ export interface AdminContest extends ContestPrizeFields {
   voteDurationDays: number;
   autoCancelHours: number;
   minVotes: number;
+  /** Level-based eligibility (null = anyone), migration 0070. */
+  minLevel?: number | null;
+  maxLevel?: number | null;
   /**
    * Validity window in epoch milliseconds; null means unbounded.
    *
@@ -188,6 +191,9 @@ export interface ContestWritePayload extends ContestPrizeFields {
   voteDurationDays: number;
   autoCancelHours: number;
   minVotes: number;
+  /** Level-based eligibility (null = anyone), migration 0070. */
+  minLevel?: number | null;
+  maxLevel?: number | null;
   startsAt: number | null;
   endsAt: number | null;
 }
@@ -775,7 +781,8 @@ export const api = {
   setRole: (payload: { email?: string; userId?: string; makeAdmin?: boolean; role?: string }) =>
     post("/admin/set-role", payload),
   updateUserProfile: (id: string, payload: any) => patch(`/admin/users/${id}/profile`, payload),
-  grantUser: (id: string, payload: { xp?: number; badge?: string }) =>
+  /** XP grants need a `reason`; they are audited ledger events (worker lib/xpService.ts). */
+  grantUser: (id: string, payload: { xp?: number; badge?: string; reason?: string }) =>
     post(`/admin/users/${id}/grant`, payload),
 
   // contests
@@ -928,6 +935,38 @@ export const api = {
   blogImportFail: (payload: { url: string; error: string }) => post("/admin/blog/import/fail", payload),
 
   // settings
+  // gamification (worker routes/adminGamification.ts)
+  gamification: {
+    config: () => get<any>("/admin/gamification/config"),
+    saveConfig: (payload: { progression?: any; xpThreshold?: number; xpIncrement?: number }) => post("/admin/gamification/config", payload),
+    achievements: () => get<any[]>("/admin/gamification/achievements"),
+    saveAchievement: (id: string, payload: any) => put(`/admin/gamification/achievements/${encodeURIComponent(id)}`, payload),
+    catalog: () => get<any[]>("/admin/gamification/catalog"),
+    saveItem: (id: string, payload: any) => put(`/admin/gamification/catalog/${encodeURIComponent(id)}`, payload),
+    seasons: () => get<any[]>("/admin/gamification/seasons"),
+    createSeason: (payload: any) => post<{ id: string }>("/admin/gamification/seasons", payload),
+    updateSeason: (id: string, payload: any) => patch(`/admin/gamification/seasons/${encodeURIComponent(id)}`, payload),
+    finalizeSeason: (id: string) => post<any>(`/admin/gamification/seasons/${encodeURIComponent(id)}/finalize`),
+    cancelSeason: (id: string, reason: string) => post(`/admin/gamification/seasons/${encodeURIComponent(id)}/cancel`, { reason }),
+    seasonResults: (id: string) => get<any[]>(`/admin/gamification/seasons/${encodeURIComponent(id)}/results`),
+    user: (uid: string) => get<any>(`/admin/gamification/users/${encodeURIComponent(uid)}`),
+    userEvents: (uid: string, before?: number) =>
+      get<{ events: any[]; nextBefore: number | null }>(`/admin/gamification/users/${encodeURIComponent(uid)}/events${before ? `?before=${before}` : ""}`),
+    adjustXp: (uid: string, payload: { amount: number; reason: string; notify?: boolean }) =>
+      post<any>(`/admin/gamification/users/${encodeURIComponent(uid)}/xp`, payload),
+    reverseEvent: (eventId: string, reason: string) => post<any>(`/admin/gamification/events/${encodeURIComponent(eventId)}/reverse`, { reason }),
+    grantAchievement: (uid: string, achievementId: string, reason: string) =>
+      post<any>(`/admin/gamification/users/${encodeURIComponent(uid)}/achievements/${encodeURIComponent(achievementId)}`, { reason }),
+    revokeItem: (uid: string, itemId: string, reason: string) =>
+      post(`/admin/gamification/users/${encodeURIComponent(uid)}/inventory/${encodeURIComponent(itemId)}/revoke`, { reason }),
+    restoreItem: (uid: string, itemId: string, reason: string) =>
+      post(`/admin/gamification/users/${encodeURIComponent(uid)}/inventory/${encodeURIComponent(itemId)}/restore`, { reason }),
+    flags: (status = "open") => get<any[]>(`/admin/gamification/flags?status=${encodeURIComponent(status)}`),
+    reviewFlag: (id: string, status: string, note?: string) => patch(`/admin/gamification/flags/${encodeURIComponent(id)}`, { status, note }),
+    analytics: (days = 30) => get<any>(`/admin/gamification/analytics?days=${days}`),
+    reconcile: (uids?: string[]) => post<{ checked: number; mismatches: any[] }>("/admin/gamification/reconcile", uids ? { uids } : {}),
+    grants: (status = "claimable") => get<any[]>(`/admin/gamification/grants?status=${encodeURIComponent(status)}`),
+  },
   rewards: () => get<any>("/admin/rewards"),
   saveRewards: (payload: any) => post("/admin/rewards", payload),
   appSettings: () => get<any>("/admin/app-settings"),
