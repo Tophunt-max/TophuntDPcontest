@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -12,11 +12,13 @@ import { LevelUpCelebration } from '@/src/components/gamification/LevelUpCelebra
 import { GamificationIcon } from '@/src/components/gamification/GamificationIcon';
 import { LevelRoadmap, XpProgressCard } from '@/src/components/gamification/XpProgressCard';
 import { GamificationError, GamificationLoading, RewardCard, XpGainPill } from '@/src/components/gamification/RewardBits';
+import { AchievementUnlockToast, AnimatedCheck, AnimatedMiniBar, RewardClaimReveal } from '@/src/components/gamification/MotionBits';
+import { XpGainFloat } from '@/src/components/gamification/XpGainFloat';
+import { useXpGainFeed } from '@/src/hooks/useXpGainFeed';
 import { QUEST_ASSET, XP_ACTION_ASSET, type AssetKey } from '@/src/lib/gamificationAssets';
 import { formatXp, timeLeft } from '@/src/lib/progression';
 import {
   useClaimQuest,
-  useClaimRewardGrant,
   useProgression,
   useQuests,
   type ProgressionView,
@@ -34,6 +36,8 @@ export default function RewardsScreen() {
   const { user } = useAuth();
   const q = useProgression(!!user);
   const data = q.data;
+  // One floating +XP per NEW server event (deduped per device by event id).
+  const feed = useXpGainFeed(user?.uid, data?.recentXp);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: p.bg }]} edges={['top']}>
@@ -47,6 +51,7 @@ export default function RewardsScreen() {
           level={data.levelInfo.level}
           rankId={data.levelInfo.rank.id}
           rankName={data.levelInfo.rank.name}
+          isMaxLevel={data.levelInfo.isMaxLevel}
           previousLevel={data.leveledUp?.from ?? null}
           xpGained={data.recentXp[0] ? { amount: data.recentXp[0].delta, label: data.recentXp[0].label } : null}
           unlocks={data.leveledUp ? data.roadmap.filter((m) => m.level > data.leveledUp!.from && m.level <= data.leveledUp!.to).map((m) => m.title) : undefined}
@@ -68,7 +73,12 @@ export default function RewardsScreen() {
           refreshControl={<RefreshControl refreshing={q.isRefetching} onRefresh={() => q.refetch()} tintColor={BRAND} />}
         >
           <View style={{ paddingHorizontal: PAD }}>
-            <XpProgressCard info={data.levelInfo} title={data.cosmetics.title?.text} p={p} />
+            <XpProgressCard
+              info={data.levelInfo}
+              title={data.cosmetics.title?.text}
+              p={p}
+              gain={<XpGainFloat item={feed.current} onDone={feed.done} />}
+            />
           </View>
           {data.enabled ? <Grants data={data} p={p} /> : null}
           <Links data={data} p={p} onOpen={(r) => router.push(r as any)} />
@@ -83,20 +93,28 @@ export default function RewardsScreen() {
           <Recent data={data} p={p} onMore={() => router.push('/rewards/history' as any)} />
         </ScrollView>
       )}
+      {data ? <AchievementUnlockToast uid={user?.uid} unlocked={data.newlyUnlocked} /> : null}
     </SafeAreaView>
   );
 }
 
 function Grants({ data, p }: { data: ProgressionView; p: ExplorePalette }) {
-  const claim = useClaimRewardGrant();
-  if (!data.rewards.claimable.length) return null;
+  // Rewards the server confirmed in this session. The claim refetches the
+  // list (the grant leaves `claimable`), so the confirmed result is kept here
+  // and shown as "Claimed" with the server's amount.
+  const [done, setDone] = useState<{ id: string; coins: number; note: string | null }[]>([]);
+  const pending = data.rewards.claimable.filter((g) => !done.some((d) => d.id === g.id));
+  if (!pending.length && !done.length) return null;
   return (
     <View style={[styles.card, { backgroundColor: p.card, borderColor: p.border, gap: 10 }]}>
       <Text style={[styles.cardTitle, { color: p.text }]}>Rewards to claim</Text>
-      {!data.rewards.budgetAvailable ? (
+      {!data.rewards.budgetAvailable && pending.length ? (
         <Text style={[styles.muted, { color: p.sub }]}>Diamond rewards are paused right now. Yours are saved and can be claimed later.</Text>
       ) : null}
-      {data.rewards.claimable.map((g) => (
+      {done.map((g) => (
+        <RewardCard key={g.id} p={p} title={`+${g.coins} Diamond`} subtitle={g.note || 'Added to your wallet'} assetKey="reward.diamond" state="claimed" />
+      ))}
+      {pending.map((g) => (
         <RewardCard
           key={g.id}
           p={p}
@@ -104,13 +122,10 @@ function Grants({ data, p }: { data: ProgressionView; p: ExplorePalette }) {
           subtitle={g.note || (g.sourceType === 'season' ? 'Season reward' : 'Level milestone')}
           assetKey={g.sourceType === 'season' ? 'reward.seasonal' : 'reward.diamond'}
           state={data.rewards.budgetAvailable ? 'available' : 'unavailable'}
-          actionLabel="Claim"
-          busy={claim.isPending}
-          onAction={() =>
-            claim.mutate(g.id, {
-              onSuccess: (r) => emitToast(`+${r.coins} Diamond added to your wallet`, 'success'),
-              onError: (e: any) => emitToast(e?.message || 'Could not claim right now', 'error'),
-            })
+          trailing={
+            data.rewards.budgetAvailable ? (
+              <RewardClaimReveal grantId={g.id} p={p} onClaimed={(coins) => setDone((d) => [...d, { id: g.id, coins, note: g.note }].slice(-10))} />
+            ) : null
           }
         />
       ))}
@@ -165,6 +180,12 @@ function SeasonCard({ season, p, onOpen }: { season: NonNullable<ProgressionView
 function Quests({ p }: { p: ExplorePalette }) {
   const q = useQuests(true);
   const claim = useClaimQuest();
+  // Quests claimed as of the previous server snapshot: only a CHANGE to claimed animates.
+  const prevClaimed = useRef<Set<string> | null>(null);
+  const quests0 = q.data?.quests;
+  useEffect(() => {
+    if (quests0) prevClaimed.current = new Set(quests0.filter((x) => x.claimed).map((x) => x.id));
+  }, [quests0]);
   if (q.isLoading) return <View style={[styles.card, { backgroundColor: p.card, borderColor: p.border }]}><ActivityIndicator color={BRAND} /></View>;
   if (q.isError) return <SectionError palette={p} onRetry={() => q.refetch()} label="Quests load nahi ho paye." />;
   const quests = q.data?.quests ?? [];
@@ -182,14 +203,10 @@ function Quests({ p }: { p: ExplorePalette }) {
             <Text style={[styles.muted, { color: p.sub }]}>
               {qq.locked ? `Unlocks at level ${qq.minLevel}` : `${qq.progress}/${qq.target} · +${qq.xp} XP · resets in ${timeLeft(qq.resetsAt)}`}
             </Text>
-            {!qq.locked ? (
-              <View style={[styles.miniBar, { backgroundColor: p.chip }]}>
-                <View style={[styles.miniFill, { width: `${Math.min(100, (qq.progress / Math.max(1, qq.target)) * 100)}%` }]} />
-              </View>
-            ) : null}
+            {!qq.locked ? <AnimatedMiniBar value={qq.progress} target={qq.target} track={p.chip} /> : null}
           </View>
           {qq.claimed ? (
-            <View accessible accessibilityLabel="Claimed"><GamificationIcon assetKey="reward.claimed" size={22} /></View>
+            <AnimatedCheck done size={22} animate={!!prevClaimed.current && !prevClaimed.current.has(qq.id)} />
           ) : qq.locked ? null : (
             <TouchableOpacity
               style={[styles.smallBtn, (!qq.claimable || claim.isPending) && { opacity: 0.4 }]}
@@ -214,7 +231,6 @@ function Quests({ p }: { p: ExplorePalette }) {
 }
 
 function Roadmap({ data, p, avatarUri, name }: { data: ProgressionView; p: ExplorePalette; avatarUri: string | null; name: string | null }) {
-  const claim = useClaimRewardGrant();
   return (
     <View style={[styles.card, { backgroundColor: p.card, borderColor: p.border }]}>
       <Text style={[styles.cardTitle, { color: p.text }]}>Level roadmap</Text>
@@ -223,14 +239,7 @@ function Roadmap({ data, p, avatarUri, name }: { data: ProgressionView; p: Explo
         p={p}
         avatarUri={avatarUri}
         name={name}
-        busy={claim.isPending}
         claimableGrantFor={(level) => data.rewards.claimable.find((g) => g.sourceType === 'level' && g.sourceId === String(level))?.id ?? null}
-        onClaim={(id) =>
-          claim.mutate(id, {
-            onSuccess: (r) => emitToast(`+${r.coins} Diamond added to your wallet`, 'success'),
-            onError: (e: any) => emitToast(e?.message || 'Could not claim right now', 'error'),
-          })
-        }
       />
     </View>
   );

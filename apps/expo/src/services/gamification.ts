@@ -313,3 +313,30 @@ export async function setCelebratedLevel(uid: string, level: number): Promise<vo
     /* best-effort */
   }
 }
+
+// ---------------------------------------------------------------------------
+// Per-device "already animated" ids (XP events, level-ups, achievement unlocks).
+// Bounded (see BoundedIdSet), per account. `null` = this device has never
+// recorded any: the caller treats the current snapshot as a silent baseline.
+// ---------------------------------------------------------------------------
+export type SeenKind = 'xp' | 'levelup' | 'ach';
+const seenKey = (kind: SeenKind, uid: string) => `tophunt.seen.${kind}.${uid}`;
+
+export async function loadSeenIds(kind: SeenKind, uid: string): Promise<string[] | null> {
+  try {
+    const raw = await AsyncStorage.getItem(seenKey(kind, uid));
+    if (raw == null) return null;
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v.filter((x) => typeof x === 'string').slice(-200) : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function saveSeenIds(kind: SeenKind, uid: string, ids: string[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(seenKey(kind, uid), JSON.stringify(ids.slice(-200)));
+  } catch {
+    /* best-effort */
+  }
+}

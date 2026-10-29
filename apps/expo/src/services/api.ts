@@ -93,10 +93,13 @@ export class ApiCallError extends Error {
   code: string;
   /** HTTP status, when the failure came from a response rather than the network. */
   status?: number;
-  constructor(code: string, message: string, status?: number) {
+  /** The Worker's machine-readable `error.reason`, when it sent one (e.g. `free_rewards_exhausted`). */
+  reason?: string;
+  constructor(code: string, message: string, status?: number, reason?: string) {
     super(message);
     this.code = code;
     this.status = status;
+    this.reason = reason;
   }
 }
 
@@ -458,6 +461,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<R
           `functions/${status}`,
           json?.error?.message || `Request failed (${res.status})`,
           res.status,
+          reason || undefined,
         );
       } catch (e: any) {
         // The caller gave up: stop now, whatever the error looks like.

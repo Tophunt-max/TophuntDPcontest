@@ -33,6 +33,7 @@ import { useFeature } from '@/src/services/appSettings';
 import { readApi } from '@/src/services/api';
 import { useQuery } from '@tanstack/react-query';
 import { useDesignWindow } from '@/src/lib/layout';
+import { StreakMilestoneBanner } from '@/src/components/gamification/MotionBits';
 
 
 const FILTERS = ['All', 'Income', 'Expense'];
@@ -78,6 +79,7 @@ export default function WalletScreen() {
   const primaryColor = '#FF4D67';
 
   // State
+  const [streakCelebration, setStreakCelebration] = useState<number | null>(null);
   const [activeFilter, setActiveFilter] = useState('All');
 
   // The check-in track comes from the server (`getDailyReward`): the amounts,
@@ -164,6 +166,8 @@ export default function WalletScreen() {
         // coin amount off the object instead of stringifying the whole response.
         const res: any = await walletService.claimDailyBonus();
         const earned = res?.coinsEarned ?? 0;
+        // A 7/30/100-day milestone, from the server's streak after this claim.
+        setStreakCelebration(Number(res?.streak) || null);
         Alert.alert("Bonus Claimed!", `You received ${earned} ${rewardUnit(res)}.${playOnly(res)}`);
         refetchDaily();
         refetchProfile();
@@ -411,6 +415,7 @@ export default function WalletScreen() {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor }]}>
+      <StreakMilestoneBanner streak={streakCelebration} onDone={() => setStreakCelebration(null)} />
       <FlatList
         data={filteredTransactions}
         keyExtractor={item => item.id}

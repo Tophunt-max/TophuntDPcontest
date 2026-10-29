@@ -300,3 +300,47 @@ ids to keys. Unknown ids fall back to generic art.
 
 The milestone roadmap's reward state (`rewardState`: none, pending, claimable,
 claimed or ineligible) comes from the user's own `reward_grants`.
+
+## 12. Animations (apps/expo)
+
+Every animation is built on the app's existing `react-native-reanimated` 4
+setup, with `expo-haptics` for feedback. No dependency was added. The battle
+result screen's Lottie confetti loads a remote JSON file and fails offline, so
+it is not used here; the sparkles are a local 8-particle Reanimated burst.
+
+The rules live in `src/lib/xpAnimation.ts`, which is pure and covered by
+`test/xpAnimation.test.ts`.
+
+- **XP gain**: `useXpGainFeed` combined with `XpGainFloat`.
+  - Gains are deduplicated by the server event id, stored per account on the
+    device in a bounded set of 200. Bursts of more than 3 events merge into one
+    "+N XP", and at most 3 items are queued.
+  - The first snapshot on a device is silent.
+  - The progress bar moves from the previous server snapshot to the new one
+    (`barPlan`): within a level it slides; across levels it fills to 100% and
+    then slides on, two steps even when several levels are crossed. A reversal
+    or a remount jumps without animating.
+- **Level-up**: `LevelUpCelebration` plays dim → badge spring → sparkles →
+  old → new level → rank → unlocks → Continue, in about 1.9s.
+  - Tap anywhere to skip. It auto-dismisses after 6s, and ends if the app is
+    backgrounded or the screen loses focus.
+  - It is deduplicated by `levelup:<uid>:<level>`, recorded before it is shown.
+- **Achievements**: `AchievementUnlockToast` shows only unlocks the server
+  returned (`newlyUnlocked`), one at a time, at most 3, deduplicated per device.
+  Collections never animate all at once.
+- **Rewards**: `RewardClaimReveal` shows success only with the `coins` the
+  server returned. It has separate states for already claimed, unavailable
+  (budget), expired, offline and failed, and offers retry where a retry can
+  succeed. The client now carries the Worker's `error.reason` on `ApiCallError`.
+- **Profile**: the level badge enters once per mount. Changing frames
+  cross-fades inside a fixed-size box, so the layout does not move. Champion,
+  Legendary and max-level frames carry a slow glint; it pauses when the screen
+  is unfocused or the app is backgrounded.
+- **Quests, streaks, leaderboard**:
+  - A quest checkmark springs only when the server snapshot changes it to done.
+  - Progress bars slide.
+  - A banner marks 7, 30 and 100-day check-in streaks.
+  - Small up/down markers show rank moves between two fetches of the same
+    board. Jumps of more than 50 places are ignored.
+- **Reduced motion** turns off every animation and particle. The
+  announcements and the dismiss controls remain.

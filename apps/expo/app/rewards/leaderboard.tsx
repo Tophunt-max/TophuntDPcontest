@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -13,6 +13,7 @@ import { formatXp, timeLeft } from '@/src/lib/progression';
 import { GamificationIcon } from '@/src/components/gamification/GamificationIcon';
 import { LevelBadge } from '@/src/components/gamification/LevelBadge';
 import type { AssetKey } from '@/src/lib/gamificationAssets';
+import { RankDelta } from '@/src/components/gamification/MotionBits';
 import { useMyXpRank, useXpLeaderboard, type XpPeriod, type XpRankRow } from '@/src/services/gamification';
 
 const TABS: { key: XpPeriod; label: string; asset: AssetKey }[] = [
@@ -40,6 +41,13 @@ export default function XpLeaderboardScreen() {
   const rows = useMemo(() => (q.data?.pages ?? []).flatMap((pg) => pg.rows), [q.data]);
   const first = q.data?.pages?.[0];
   const meInList = !!user && rows.some((r) => r.uid === user.uid);
+  // Ranks from the previous fetch of THIS board, so a refresh can show who moved.
+  // Per period and per session only; a first load shows nothing.
+  const seenRanks = useRef(new Map<XpPeriod, Map<string, number>>());
+  const prevRanks = seenRanks.current.get(period) ?? null;
+  useEffect(() => {
+    if (rows.length) seenRanks.current.set(period, new Map(rows.map((r) => [r.uid, r.rank])));
+  }, [rows, period]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: p.bg }]} edges={['top']}>
@@ -79,7 +87,7 @@ export default function XpLeaderboardScreen() {
           ListEmptyComponent={<SectionEmpty palette={p} icon="flash-outline" text="No XP earned yet in this period. Be the first!" />}
           ListFooterComponent={q.isFetchingNextPage ? <ActivityIndicator color={BRAND} style={{ marginVertical: 16 }} /> : null}
           renderItem={({ item }) => (
-            <Row r={item} p={p} isMe={item.uid === user?.uid} onOpen={() => router.push(`/profile?userId=${encodeURIComponent(item.uid)}` as any)} />
+            <Row r={item} p={p} prevRank={prevRanks?.get(item.uid)} isMe={item.uid === user?.uid} onOpen={() => router.push(`/profile?userId=${encodeURIComponent(item.uid)}` as any)} />
           )}
         />
       )}
@@ -101,7 +109,7 @@ const MEDAL = ['#FFD54A', '#CBD5E1', '#F4A261'];
 /** Fallback for an older Worker that sends only the rank name (default ids are its lowercase). */
 const rankIdOf = (title: string) => String(title || '').toLowerCase();
 
-const Row = React.memo(function Row({ r, p, isMe, onOpen }: { r: XpRankRow; p: ExplorePalette; isMe: boolean; onOpen: () => void }) {
+const Row = React.memo(function Row({ r, p, isMe, onOpen, prevRank }: { r: XpRankRow; p: ExplorePalette; isMe: boolean; onOpen: () => void; prevRank?: number }) {
   return (
     <TouchableOpacity
       style={[styles.row, { backgroundColor: isMe ? (p.isDark ? '#2A1A22' : '#FFF1F3') : p.card, borderColor: isMe ? BRAND : p.border }]}
@@ -119,6 +127,7 @@ const Row = React.memo(function Row({ r, p, isMe, onOpen }: { r: XpRankRow; p: E
         <View style={styles.nameRow}>
           <Text style={[styles.name, { color: p.text }]} numberOfLines={1}>{r.fullName || r.username}</Text>
           <VerifiedBadge verified={r.verified} size={13} />
+          <RankDelta prev={prevRank} next={r.rank} />
         </View>
         <View style={styles.levelRow}>
           <LevelBadge level={r.level} rankId={r.rankId ?? rankIdOf(r.rankTitle)} rankName={r.rankTitle} size="xs" />

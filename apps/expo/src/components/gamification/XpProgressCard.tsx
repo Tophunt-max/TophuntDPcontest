@@ -9,13 +9,14 @@ import { LevelBadge } from './LevelBadge';
 import { LevelProgressBar } from './LevelProgressBar';
 import { GamificationIcon } from './GamificationIcon';
 import { CosmeticPreview, RewardCard, RewardSheet } from './RewardBits';
+import { RewardClaimReveal } from './MotionBits';
 
 /**
  * Level, rank, lifetime XP, progress to the next level and the next milestone.
  * Everything comes from the server's `levelInfo`; at max level the card says
  * so instead of computing a progress figure.
  */
-export function XpProgressCard({ info, title, p }: { info: LevelInfo; title?: string | null; p: ExplorePalette }) {
+export function XpProgressCard({ info, title, p, gain }: { info: LevelInfo; title?: string | null; p: ExplorePalette; /** Floating +XP slot (XpGainFloat). */ gain?: React.ReactNode }) {
   const tier = tierForRank(info.rank.id, { isMaxLevel: info.isMaxLevel });
   return (
     <LinearGradient colors={[`${tier.colors[0]}55`, 'transparent']} style={[styles.card, { borderColor: p.border }]}>
@@ -38,6 +39,7 @@ export function XpProgressCard({ info, title, p }: { info: LevelInfo; title?: st
       </View>
       <View style={{ marginTop: 14 }}>
         <LevelProgressBar info={info} isDark={p.isDark} />
+        {gain}
       </View>
       {info.nextMilestone ? (
         <View style={styles.nextRow}>
@@ -144,13 +146,12 @@ export function LevelRoadmap({
                 subtitle={open.rewardState === 'ineligible' ? 'Reached before coin rewards started.' : 'Paid from the rewards budget.'}
                 assetKey="reward.diamond"
                 state={open.rewardState === 'ineligible' ? 'unavailable' : milestoneState(open)}
-                actionLabel="Claim"
-                busy={busy}
-                onAction={() => {
-                  const g = claimableGrantFor?.(open.level);
-                  if (g && onClaim) onClaim(g);
-                }}
               />
+            ) : null}
+            {open.coins > 0 && open.rewardState === 'claimable' && claimableGrantFor?.(open.level) ? (
+              <View style={{ alignItems: 'flex-end' }}>
+                <RewardClaimReveal grantId={claimableGrantFor(open.level)!} p={p} onClaimed={onClaim ? () => onClaim(claimableGrantFor(open.level)!) : undefined} />
+              </View>
             ) : null}
             {!open.items.length && !open.coins ? (
               <Text style={[styles.sub, { color: p.text }]}>Unlocks: {open.feature ? FEATURE_LABELS[open.feature] ?? open.feature : open.title}</Text>

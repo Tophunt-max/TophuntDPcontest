@@ -18,6 +18,7 @@ import { isLevelInfo } from '@/src/lib/progression';
 import { LevelProgressBar } from '@/src/components/gamification/LevelProgressBar';
 import { ProfileFrame } from '@/src/components/gamification/ProfileFrame';
 import { LevelBadge } from '@/src/components/gamification/LevelBadge';
+import Animated, { ZoomIn, useReducedMotion } from 'react-native-reanimated';
 import { useDesignWindow } from '@/src/lib/layout';
 import type { PublicCosmetics } from '@/src/services/gamification';
 import { startChat } from '@/src/services/messages/messageService';
@@ -143,6 +144,7 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({
   const state: FollowState = followState ?? (isFollowingProp ? 'following' : 'none');
   const isFollowing = isFollowActive(state);
   const { width: designW } = useDesignWindow();
+  const reduceMotion = useReducedMotion();
   const { requireAuth } = useAuthGate();
   const router = useRouter();
   const colorScheme = useColorScheme();
@@ -306,7 +308,8 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({
             </View>
         )}
         {/* The server's level on the rank's emblem (one component for every level). */}
-        <View style={styles.levelBadge}>
+        {/* Enters once per mount (not on refetch); still under reduced motion. */}
+        <Animated.View style={styles.levelBadge} entering={reduceMotion ? undefined : ZoomIn.springify().damping(12).delay(150)}>
           <LevelBadge
             level={levelNumber}
             rankId={levelInfo?.rank?.id}
@@ -314,7 +317,7 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({
             isMaxLevel={!!levelInfo?.isMaxLevel}
             size={designW >= 600 ? 'md' : 'sm'}
           />
-        </View>
+        </Animated.View>
       </View>
 
       <View style={styles.infoSection}>

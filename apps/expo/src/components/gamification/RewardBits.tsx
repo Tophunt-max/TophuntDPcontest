@@ -140,6 +140,7 @@ export function RewardCard({
   onAction,
   busy,
   onPress,
+  trailing,
 }: {
   p: ExplorePalette;
   title: string;
@@ -151,6 +152,8 @@ export function RewardCard({
   onAction?: () => void;
   busy?: boolean;
   onPress?: () => void;
+  /** Custom right-hand slot (e.g. RewardClaimReveal), used instead of the action button. */
+  trailing?: React.ReactNode;
 }) {
   const s = STATE_COPY[state];
   const muted = state === 'locked' || state === 'unavailable';
@@ -170,7 +173,8 @@ export function RewardCard({
           <Text style={[styles.stateText, { color: s.color }]}>{s.label}</Text>
         </View>
       </View>
-      {actionLabel && onAction ? (
+      {trailing ?? null}
+      {!trailing && actionLabel && onAction ? (
         <TouchableOpacity
           style={[styles.btn, (busy || state !== 'available') && { opacity: 0.45 }]}
           disabled={busy || state !== 'available'}
