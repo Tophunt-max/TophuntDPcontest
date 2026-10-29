@@ -171,6 +171,8 @@ function applyStatements(env: Env, eventId: string, nonce: string, ts: number, d
 export interface XpReversalInput {
   /** The event being reversed. */
   originalId: string;
+  /** Per-attempt token; generated when omitted. */
+  nonce?: string;
   reason: string;
   actor?: string | null;
   ts: number;
@@ -190,7 +192,7 @@ export const reversalId = (originalId: string) => `reversal:${originalId}`;
  */
 export function xpReversalStatements(env: Env, input: XpReversalInput): D1PreparedStatement[] {
   const id = reversalId(input.originalId);
-  const nonce = crypto.randomUUID();
+  const nonce = input.nonce ?? crypto.randomUUID();
   const gate = input.gate ? `AND (${input.gate})` : "";
   return [
     env.DB.prepare(
@@ -223,11 +225,10 @@ export async function awardXp(env: Env, input: XpAwardInput, p?: Progression): P
 
 /** Reverse on its own. Returns the (negative) delta applied, or null if nothing was reversed. */
 export async function reverseXp(env: Env, input: XpReversalInput): Promise<number | null> {
-  await env.DB.batch(xpReversalStatements(env, input));
-  const row = await env.DB.prepare(`SELECT delta, created_at FROM user_xp_events WHERE id = ?`)
-    .bind(reversalId(input.originalId))
-    .first<{ delta: number; created_at: number }>();
-  return row && Number(row.created_at) === input.ts ? Number(row.delta) : null;
+  const nonce = input.nonce ?? crypto.randomUUID();
+  await env.DB.batch(xpReversalStatements(env, { ...input, nonce }));
+  const out = await xpEventOutcome(env, reversalId(input.originalId), nonce);
+  return out.applied ? out.delta : null;
 }
 
 /**

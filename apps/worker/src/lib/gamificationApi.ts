@@ -120,13 +120,39 @@ export async function handleGamificationAction(action: string, ctx: Ctx): Promis
       const achCount = await env.DB.prepare(`SELECT COUNT(DISTINCT achievement_id) AS n FROM user_achievements WHERE uid = ?`).bind(uid).first<{ n: number }>();
       const defs = (await loadAchievementDefs(env)).filter((d) => d.active && !d.hidden);
       const season = on ? await currentSeason(env, p) : null;
-      const seasonStanding = season ? await myRank(env, uid, { startDay: season.start_day, endDay: season.end_day, label: season.name }) : null;
+      // Season XP only: one range read on the user's own (uid, day) primary key.
+      // The global rank is an aggregate over every earner, so it is computed on
+      // the leaderboard screen (getXpRank), never on every Rewards open.
+      const seasonXp = season
+        ? Number((await env.DB.prepare(
+            `SELECT COALESCE(SUM(xp), 0) AS s FROM user_xp_daily WHERE uid = ? AND day BETWEEN ? AND ? AND action <> 'admin_adjustment'`,
+          ).bind(uid, season.start_day, season.end_day).first<{ s: number }>())?.s ?? 0)
+        : 0;
+      // Unlocks the user may not have SEEN yet: background syncs (after a
+      // check-in, a join, the cron) usually write them before this call. The
+      // app dedupes per device by id + tier, so returning a recent window is safe.
+      const recentUnlocks = on
+        ? (await env.DB.prepare(
+            `SELECT achievement_id, tier, xp_awarded FROM user_achievements
+              WHERE uid = ? AND source <> 'backfill' AND unlocked_at > ? ORDER BY unlocked_at DESC LIMIT 5`,
+          ).bind(uid, Date.now() - 7 * 86_400_000).all<any>()).results ?? []
+        : [];
       const grants = on ? (await listGrants(env, uid)).filter((g) => g.status === "claimable") : [];
       return {
         enabled: on,
         levelInfo: sync.levelInfo,
         leveledUp: sync.leveledUp,
-        newlyUnlocked: sync.unlocked,
+        newlyUnlocked: (() => {
+          const byId = new Map(defs.map((d) => [d.id, d]));
+          const out = [...sync.unlocked];
+          for (const r of recentUnlocks) {
+            const d = byId.get(r.achievement_id);
+            if (d && !out.some((u) => u.id === d.id && u.tier === Number(r.tier))) {
+              out.push({ id: d.id, name: d.name, icon: d.icon, rarity: d.rarity, tier: Number(r.tier), xp: Number(r.xp_awarded) });
+            }
+          }
+          return out.slice(0, 5);
+        })(),
         cosmetics: await resolveCosmetics(env, u.cosmetics),
         roadmap: await roadmap(env, p, sync.levelInfo.level, owned, uid, on),
         recentXp: (recent.results ?? []).map((r) => ({ id: r.id, action: r.action, label: ACTION_LABELS[r.action] ?? r.action, delta: Number(r.delta), createdAt: Number(r.created_at) })),
@@ -134,7 +160,7 @@ export async function handleGamificationAction(action: string, ctx: Ctx): Promis
         pinnedLimit: p.cfg.pinnedLimit,
         showcaseUnlocksAt: featureLevel(p.cfg, "achievement_showcase") ?? 1,
         season: season
-          ? { id: season.id, name: season.name, endsAt: season.ends_at, xp: seasonStanding?.score ?? 0, rank: seasonStanding?.rank ?? null }
+          ? { id: season.id, name: season.name, endsAt: season.ends_at, xp: seasonXp, rank: null }
           : null,
         rewards: {
           claimable: grants,

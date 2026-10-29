@@ -37,6 +37,9 @@ import { XpGainPill } from './RewardBits';
  * It displays server values only (level, previous level, rank, unlocks, the XP
  * of the triggering event). It writes nothing to the server.
  */
+/** Level-up ids already handled in this JS session (bounded by levels reachable). */
+const CLAIMED_THIS_SESSION = new Set<string>();
+
 export function LevelUpCelebration({
   uid,
   level,
@@ -82,9 +85,15 @@ export function LevelUpCelebration({
     setShown(null);
   };
 
-  // Decide whether to celebrate. Runs only when the server level changes.
+  // Decide whether to celebrate: only while this screen is visible (a hidden
+  // instance under another screen must not consume the level-up), and only
+  // once per app session even if two instances (Profile, Rewards) see the new
+  // level together — the id is claimed synchronously before any storage I/O.
   useEffect(() => {
-    if (!uid || !level) return;
+    if (!uid || !level || !active) return;
+    const claimId = levelUpEventId(uid, level);
+    if (CLAIMED_THIS_SESSION.has(claimId)) return;
+    CLAIMED_THIS_SESSION.add(claimId);
     let alive = true;
     (async () => {
       const [last, seenIds] = await Promise.all([getCelebratedLevel(uid), loadSeenIds('levelup', uid)]);
@@ -103,7 +112,7 @@ export function LevelUpCelebration({
     };
     // previousLevel is display-only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [uid, level]);
+  }, [uid, level, active]);
 
   // Play the sequence when shown.
   useEffect(() => {

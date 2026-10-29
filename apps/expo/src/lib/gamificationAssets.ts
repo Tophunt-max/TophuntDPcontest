@@ -39,7 +39,7 @@ export type AssetDef =
 // SILHOUETTE (vectors.tsx) and a text label, so it reads in grayscale and to
 // screen readers.
 // ---------------------------------------------------------------------------
-export type TierId = 'starter' | 'bronze' | 'silver' | 'gold' | 'champion' | 'legendary' | 'max';
+export type TierId = 'starter' | 'bronze' | 'silver' | 'gold' | 'champion' | 'diamond' | 'legendary' | 'max';
 
 export interface TierStyle {
   id: TierId;
@@ -49,7 +49,7 @@ export interface TierStyle {
   /** Text / glyph colour that passes contrast on `colors`. */
   ink: string;
   /** Emblem silhouette drawn by vectors.tsx. */
-  shape: 'circle' | 'hexagon' | 'shield' | 'crest' | 'star' | 'crown';
+  shape: 'circle' | 'hexagon' | 'shield' | 'crest' | 'star' | 'gem' | 'crown';
 }
 
 export const TIERS: Record<TierId, TierStyle> = {
@@ -58,6 +58,7 @@ export const TIERS: Record<TierId, TierStyle> = {
   silver: { id: 'silver', label: 'Silver', colors: ['#E8ECF1', '#7D8794'], ink: '#1F2933', shape: 'shield' },
   gold: { id: 'gold', label: 'Gold', colors: ['#FFE082', '#E08E00'], ink: '#3B2600', shape: 'crest' },
   champion: { id: 'champion', label: 'Champion', colors: ['#B39DFF', '#5B21B6'], ink: '#FFFFFF', shape: 'star' },
+  diamond: { id: 'diamond', label: 'Diamond', colors: ['#7DD3FC', '#0E7490'], ink: '#FFFFFF', shape: 'gem' },
   legendary: { id: 'legendary', label: 'Legendary', colors: ['#FF8A80', '#C2185B'], ink: '#FFFFFF', shape: 'crown' },
   max: { id: 'max', label: 'Max level', colors: ['#FFF59D', '#FF6F00'], ink: '#3B2600', shape: 'crown' },
 };
@@ -130,6 +131,7 @@ export const ASSETS = {
   'frame.silver': vec('frameRing', TIERS.silver.colors[1], 'Silver frame', 'silver'),
   'frame.gold': vec('frameRing', TIERS.gold.colors[1], 'Gold frame', 'gold'),
   'frame.champion': vec('frameRing', TIERS.champion.colors[1], 'Champion frame', 'champion'),
+  'frame.diamond': vec('frameRing', TIERS.diamond.colors[1], 'Diamond frame', 'diamond'),
   'frame.legendary': vec('frameRing', TIERS.legendary.colors[1], 'Legendary frame', 'legendary'),
   'cosmetic.title': icon('ribbon', '#FFB300', 'Title'),
   'cosmetic.theme': icon('color-palette', '#7C4DFF', 'Profile theme'),
@@ -227,7 +229,7 @@ export const FRAME_ITEM_ASSET: Record<string, AssetKey> = {
   frame_silver: 'frame.silver',
   frame_gold_animated: 'frame.gold',
   frame_champion: 'frame.champion',
-  frame_diamond_animated: 'frame.champion',
+  frame_diamond_animated: 'frame.diamond',
   frame_legendary: 'frame.legendary',
 };
 const RARITY_FRAME: Record<string, AssetKey> = {

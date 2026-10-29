@@ -770,3 +770,99 @@ describe('visual layer contract', () => {
     expect(mine.body.levelInfo.xp).toBe(0);
   });
 });
+
+// ===========================================================================
+describe('review fixes', () => {
+  it('a post-launch account (level_seen set at signup) is paid for its first achievements', async () => {
+    const env = env0();
+    await on(env);
+    await seedUser(env, 'newbie', { levelSeen: 1, profileImageUrl: 'https://cdn.test/a.jpg', bio: 'hi' });
+    await syncProgression(env, 'newbie');
+    expect(await userXp(env, 'newbie')).toBe(100); // profile_complete
+    const a = await env.DB.prepare(`SELECT source, xp_awarded FROM user_achievements WHERE uid = 'newbie' AND achievement_id = 'profile_complete'`).first<any>();
+    expect(a).toEqual({ source: 'progress', xp_awarded: 100 });
+  });
+
+  it('milestone grants are written in the same batch as the level-up, and only for a level actually seen', async () => {
+    const env = env0();
+    await on(env, { milestones: [{ level: 2, title: 'Two', description: '', items: [], feature: null, coins: 25 }] });
+    await seedUser(env, 'alice', { levelSeen: 1 });
+    await env.DB.prepare(`UPDATE users SET xp = 600 WHERE uid = 'alice'`).run();
+    await Promise.all([syncProgression(env, 'alice'), syncProgression(env, 'alice')]);
+    const g = await env.DB.prepare(`SELECT id, coins, status FROM reward_grants WHERE uid = 'alice'`).all<any>();
+    expect(g.results).toEqual([{ id: 'level:2:alice', coins: 25, status: 'claimable' }]);
+  });
+
+  it('POST /admin/rewards cannot rewrite progression or move the curve', async () => {
+    const env = env0();
+    await on(env, { rewardBudgetId: null });
+    const before = (await getProgression(env)).cfg;
+    const r = await admin(env, 'POST', '/rewards', { dailyLoginReward: 12, progression: { enabled: false, milestones: [{ level: 2, title: 'x', description: '', items: [], coins: 99999 }] } });
+    expect(r.status).toBe(200);
+    const after = (await getProgression(env)).cfg;
+    expect(after.enabled).toBe(true);
+    expect(after.milestones).toEqual(before.milestones);
+    expect((await admin(env, 'POST', '/rewards', { xpThreshold: 10 })).status).toBe(400);
+    expect((await admin(env, 'POST', '/rewards', { xpThreshold: 500 })).status).toBe(200); // unchanged value is fine
+  });
+
+  it("a private account's achievement list is locked for non-followers", async () => {
+    const env = env0();
+    await seedUser(env, 'priv', { isPrivate: true });
+    await seedUser(env, 'stranger');
+    await env.DB.prepare(`INSERT INTO user_achievements (uid, achievement_id, tier, unlocked_at) VALUES ('priv', 'first_win', 1, 1)`).run();
+    const guest = await read(env, '/users/priv/achievements');
+    expect(guest.body).toEqual({ achievements: [], locked: true });
+    const stranger = await read(env, '/users/priv/achievements', 'stranger');
+    expect(stranger.body.achievements).toEqual([]);
+    const own = await read(env, '/users/priv/achievements', 'priv');
+    expect(own.body.achievements.map((a: any) => a.id)).toEqual(['first_win']);
+    await seedUser(env, 'half', { signupCompleted: false });
+    expect((await read(env, '/users/half/achievements')).body.achievements).toEqual([]);
+  });
+
+  it('season PATCH refuses to create an overlap', async () => {
+    const env = env0();
+    const day = DAY;
+    const t0 = Date.now() + 10 * day;
+    const a = await admin(env, 'POST', '/gamification/seasons', { name: 'A', startsAt: t0, endsAt: t0 + 10 * day });
+    const b = await admin(env, 'POST', '/gamification/seasons', { name: 'B', startsAt: t0 + 20 * day, endsAt: t0 + 30 * day });
+    expect([a.status, b.status]).toEqual([200, 200]);
+    const bad = await admin(env, 'PATCH', `/gamification/seasons/${b.body.id}`, { startsAt: t0 + 5 * day });
+    expect(bad.status).toBe(412);
+  });
+
+  it('an admin XP retry with the same Idempotency-Key never awards twice', async () => {
+    const env = env0();
+    await seedUser(env, 'alice');
+    const call2 = () => app.request('/admin/gamification/users/alice/xp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Secret': 'test-admin-secret', 'Idempotency-Key': 'k-1' },
+      body: JSON.stringify({ amount: 40, reason: 'event bonus' }),
+    }, env, fakeCtx());
+    await call2();
+    await call2();
+    expect(await userXp(env, 'alice')).toBe(40);
+  });
+
+  it('reverseXp reports success from its own attempt only', async () => {
+    const env = env0();
+    await seedUser(env, 'alice');
+    await awardXp(env, { uid: 'alice', action: 'match_win', eventId: 'match_win:n', ts: Date.now() });
+    const ts = Date.now();
+    const [x, y] = await Promise.all([
+      reverseXp(env, { originalId: 'match_win:n', reason: 'r', ts }),
+      reverseXp(env, { originalId: 'match_win:n', reason: 'r', ts }),
+    ]);
+    expect([x, y].filter((d) => d !== null)).toEqual([-100]);
+  });
+
+  it('getProgression no longer ranks the season, and returns recent unlocks for the reveal', async () => {
+    const env = env0();
+    await on(env);
+    await seedUser(env, 'alice', { levelSeen: 1 });
+    await env.DB.prepare(`INSERT INTO user_achievements (uid, achievement_id, tier, unlocked_at, xp_awarded, source) VALUES ('alice', 'first_vote', 1, ?, 25, 'progress')`).bind(Date.now()).run();
+    const r = await call(env, 'alice', 'getProgression');
+    expect(r.body.newlyUnlocked.map((a: any) => a.id)).toContain('first_vote');
+  });
+});

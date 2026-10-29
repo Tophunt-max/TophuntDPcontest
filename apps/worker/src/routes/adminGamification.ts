@@ -109,7 +109,18 @@ export function registerGamificationRoutes(
     const coinsBefore = JSON.stringify(before.milestones.map((m) => [m.level, m.coins]));
     const after = sanitizeProgression(merged);
     const coinsAfter = JSON.stringify(after.milestones.map((m) => [m.level, m.coins]));
-    if ((patch.rewardBudgetId !== undefined && patch.rewardBudgetId !== before.rewardBudgetId) || coinsBefore !== coinsAfter) {
+    // Moving the curve moves users across milestones; with coin milestones
+    // configured that creates claimable Diamond grants, so it needs approval too.
+    const curveChanged =
+      Number(xpThreshold) !== Number(existing.xpThreshold ?? 500) ||
+      Number(xpIncrement) !== Number(existing.xpIncrement ?? 500) ||
+      after.maxLevel !== before.maxLevel;
+    const coinMilestones = after.milestones.some((m) => Number(m.coins) > 0);
+    if (
+      (patch.rewardBudgetId !== undefined && patch.rewardBudgetId !== before.rewardBudgetId) ||
+      coinsBefore !== coinsAfter ||
+      (curveChanged && coinMilestones)
+    ) {
       await assertApproval(c, body);
     }
     merged.version = before.version + 1;
@@ -297,6 +308,13 @@ export function registerGamificationRoutes(
       rewards: b.rewards ?? parseSeasonRewards(cur.rewards),
     };
     const v = validateSeasonInput(merged);
+    {
+      const off0 = (await getProgression(c.env)).settings.dayResetOffsetMinutes;
+      const overlap = await c.env.DB.prepare(
+        `SELECT id FROM seasons WHERE id <> ? AND status NOT IN ('cancelled') AND start_day <= ? AND end_day >= ? LIMIT 1`,
+      ).bind(id, rewardDayNumber(v.endsAt - 1, off0), rewardDayNumber(v.startsAt, off0)).first();
+      if (overlap) throw httpsError("failed-precondition", "Seasons cannot overlap.");
+    }
     if (JSON.stringify(v.rewards) !== JSON.stringify(parseSeasonRewards(cur.rewards)) && v.rewards.some((r) => r.coins > 0)) await assertApproval(c, b);
     const p = await getProgression(c.env);
     const off = p.settings.dayResetOffsetMinutes;
@@ -405,7 +423,8 @@ export function registerGamificationRoutes(
     if (!user) throw httpsError("not-found", "User not found.");
     const idem = await enforceAdminIdempotency(c, "gamification.xp", uid);
     try {
-      const correlationId = newId();
+      // From the Idempotency-Key when sent: a retry lands on the same ledger id.
+      const correlationId = c.req.header("Idempotency-Key") || newId();
       const res = await awardXp(c.env, {
         uid, action: "admin_adjustment", eventId: `admin_xp:${uid}:${correlationId}`, amount,
         sourceType: "admin", sourceId: correlationId, reason, actor: actorOf(c), ts: now(),

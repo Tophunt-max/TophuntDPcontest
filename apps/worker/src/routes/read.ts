@@ -1923,8 +1923,20 @@ readRoute.get("/users/:id/achievements", optionalAuth, guestReadLimit, async (c)
     const rel = await getRelations(c.env, viewer);
     if (rel.blocked.includes(id) || rel.blockedByMe.includes(id)) return c.json({ achievements: [] });
   }
-  const owner = await c.env.DB.prepare(`SELECT status FROM users u WHERE u.uid = ?`).bind(id).first<{ status: string | null }>();
-  if (!owner || owner.status === "deleted" || owner.status === "pending_deletion") return c.json({ achievements: [] });
+  const owner = await c.env.DB.prepare(`SELECT status, signup_completed, is_private FROM users u WHERE u.uid = ?`)
+    .bind(id).first<{ status: string | null; signup_completed: number | null; is_private: number | null }>();
+  // Same visibility as the profile: hidden / not-onboarded accounts look absent,
+  // and a private account's list is for its approved followers only.
+  if (!owner || owner.status === "deleted" || owner.status === "pending_deletion" || !owner.signup_completed) {
+    return c.json({ achievements: [] });
+  }
+  if (owner.is_private) {
+    c.header("Vary", "Authorization");
+    if (await privateContentLocked(c.env, viewer, id, true)) {
+      c.header("Cache-Control", "private, no-store");
+      return c.json({ achievements: [], locked: true });
+    }
+  }
   const rows = await c.env.DB.prepare(
     `SELECT achievement_id, MAX(tier) AS tier, MIN(unlocked_at) AS unlocked_at FROM user_achievements WHERE uid = ? GROUP BY achievement_id`,
   ).bind(id).all<any>();

@@ -140,7 +140,8 @@ describe('level badge', () => {
     const ids = Object.values(TIERS).map((t) => `${t.shape}:${t.label}`);
     expect(new Set(ids).size).toBe(ids.length);
     const shapes = new Set(Object.values(TIERS).filter((t) => t.id !== 'max').map((t) => t.shape));
-    expect(shapes.size).toBe(6);
+    // Every regular tier has its own silhouette.
+    expect(shapes.size).toBe(Object.values(TIERS).filter((t) => t.id !== 'max').length);
   });
 
   it('shrinks the number for 3 digits and never goes unreadably small', () => {

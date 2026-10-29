@@ -47,6 +47,7 @@ const SHAPES: Record<TierStyle['shape'], string> = {
   shield: 'M24 2 L43 9 L43 24 C43 35 34 42 24 46 C14 42 5 35 5 24 L5 9 Z',
   crest: 'M24 2 L30 8 L43 8 L43 26 C43 36 34 43 24 46 C14 43 5 36 5 26 L5 8 L18 8 Z',
   star: 'M24 2 L29.5 15 L44 16 L33 26 L36.5 41 L24 33.5 L11.5 41 L15 26 L4 16 L18.5 15 Z',
+  gem: 'M14 5 H34 L44 17 L24 45 L4 17 Z',
   crown: 'M5 14 L15 22 L24 6 L33 22 L43 14 L40 40 L8 40 Z',
 };
 
@@ -105,7 +106,7 @@ export function FrameRing({
   const outer = size + th * 2;
   const c = outer / 2;
   const r = c - th / 2;
-  const ornaments = tier === 'gold' || tier === 'champion' || tier === 'legendary' || tier === 'max';
+  const ornaments = tier === 'gold' || tier === 'champion' || tier === 'diamond' || tier === 'legendary' || tier === 'max';
   return (
     <Svg width={outer} height={outer} viewBox={`0 0 ${outer} ${outer}`} accessibilityElementsHidden importantForAccessibility="no" style={{ position: 'absolute', top: 0, left: 0 }}>
       <Grad id={id} colors={t.colors} vertical={false} />
@@ -136,6 +137,8 @@ export function FrameRing({
         <G transform={`translate(${c} ${th * 0.4}) scale(${th / 6})`}>
           {tier === 'gold' ? (
             <Path d="M0 -4 L2.4 1.8 L-2.4 1.8 Z M-6 2 L6 2 L4.5 5 L-4.5 5 Z" fill="#FFF8E1" />
+          ) : tier === 'diamond' ? (
+            <Path d="M-4 -5 H4 L7 -1 L0 6 L-7 -1 Z" fill="#E0F7FF" stroke={t.colors[1]} strokeWidth={0.8} />
           ) : tier === 'champion' ? (
             <Path d="M0 -6 L1.8 -1.8 L6 -1.6 L2.7 1.2 L3.8 5.4 L0 3 L-3.8 5.4 L-2.7 1.2 L-6 -1.6 L-1.8 -1.8 Z" fill="#EDE7FF" />
           ) : (

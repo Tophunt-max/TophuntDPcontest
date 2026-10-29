@@ -242,8 +242,9 @@ function milestoneGrantStatements(env: Env, p: Progression, uid: string, from: n
     .map((ms) =>
       env.DB.prepare(
         `INSERT OR IGNORE INTO reward_grants (id, uid, source_type, source_id, coins, status, note, created_at, updated_at)
-         VALUES (?, ?, 'level', ?, ?, 'claimable', ?, ?, ?)`,
-      ).bind(`level:${ms.level}:${uid}`, uid, String(ms.level), Math.floor(ms.coins), `Level ${ms.level}: ${ms.title}`, ts, ts),
+         SELECT ?, ?, 'level', ?, ?, 'claimable', ?, ?, ?
+          WHERE (SELECT level_seen FROM users WHERE uid = ?) >= ?`,
+      ).bind(`level:${ms.level}:${uid}`, uid, String(ms.level), Math.floor(ms.coins), `Level ${ms.level}: ${ms.title}`, ts, ts, uid, ms.level),
     );
 }
 
@@ -290,13 +291,16 @@ export async function syncProgression(env: Env, uid: string, opts: { p?: Progres
     newItems = await grantMilestoneItems(env, p, uid, info.level, ts);
   } else if (info.level > Number(user.level_seen)) {
     const from = Number(user.level_seen);
-    const cas = await env.DB.prepare(`UPDATE users SET level_seen = ? WHERE uid = ? AND level_seen = ?`).bind(info.level, uid, from).run();
-    if (Number(cas.meta?.changes || 0) > 0) {
+    // The compare-and-set and the milestone Diamond grants are ONE batch: if
+    // the grants failed after the level was marked seen, nothing would ever
+    // re-create them. Grants are gated on this batch having moved level_seen.
+    const casStmt = env.DB.prepare(`UPDATE users SET level_seen = ? WHERE uid = ? AND level_seen = ?`).bind(info.level, uid, from);
+    const grantStmts = on ? milestoneGrantStatements(env, p, uid, from, info.level, ts) : [];
+    const batch = await env.DB.batch([casStmt, ...grantStmts]);
+    if (Number(batch[0]?.meta?.changes || 0) > 0) {
       newItems = await grantMilestoneItems(env, p, uid, info.level, ts);
       if (on) {
         leveledUp = { from, to: info.level };
-        const grants = milestoneGrantStatements(env, p, uid, from, info.level, ts);
-        if (grants.length) await env.DB.batch(grants);
         const unlockedNames = p.cfg.milestones.filter((ms) => ms.level > from && ms.level <= info.level).map((ms) => ms.title);
         await createNotification(env, uid, {
           title: `Level up! You're now level ${info.level} 🎉`,

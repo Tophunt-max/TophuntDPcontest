@@ -47,6 +47,8 @@ const FLUSH_MS = 5_000;
 const FLUSH_VOTER_LIMIT = 25;
 /** Vote XP awards per flush. Each is 4 statements (lib/xpService.ts), so the batch stays the size it was. */
 const FLUSH_XP_LIMIT = 12;
+/** Follow-up flush delay while a backlog remains. */
+const BACKLOG_FLUSH_MS = 500;
 /** Actor-local schema version for deduplicated/rebuilt tallies. */
 const VOTE_STATE_VERSION = "2";
 
@@ -512,7 +514,10 @@ export class VoteCounter extends DurableObject<Env> {
       ).toArray().length > 0;
       if (remaining) {
         if (strict) await this.flush(true);
-        else await this.ctx.storage.setAlarm(Date.now() + FLUSH_MS);
+        // A backlog (each flush awards at most FLUSH_XP_LIMIT voters' XP) drains
+        // on a short follow-up alarm instead of waiting a full window, so a
+        // viral match does not leave a pile for the strict finalize to drain.
+        else await this.ctx.storage.setAlarm(Date.now() + BACKLOG_FLUSH_MS);
       }
     } catch (e) {
       console.error("[VoteCounter] flush failed", matchId, e);

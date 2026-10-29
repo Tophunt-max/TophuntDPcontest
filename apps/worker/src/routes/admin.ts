@@ -285,6 +285,9 @@ const SENSITIVE_ADMIN_ROUTES: Array<[method: string, path: RegExp]> = [
   ["POST", /^\/gamification\/events\/[^/]+\/reverse$/],
   ["POST", /^\/gamification\/seasons(\/[^/]+\/(finalize|cancel))?$/],
   ["PATCH", /^\/gamification\/seasons\/[^/]+$/],
+  ["POST", /^\/gamification\/users\/[^/]+\/achievements\/[^/]+$/],
+  ["POST", /^\/gamification\/users\/[^/]+\/inventory\/[^/]+\/(revoke|restore)$/],
+  ["PUT", /^\/gamification\/(achievements|catalog)\/[^/]+$/],
 ];
 export function isSensitiveAdminRoute(method: string, path: string): boolean {
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") return false;
@@ -681,7 +684,18 @@ adminRoute.post("/rewards", async (c) => {
     throw httpsError("invalid-argument", e?.message || "Invalid reward settings.");
   }
   const existing = (await getGamificationSettings(c.env)) || {};
-  const merged = { ...existing, ...body };
+  // XP progression and the level curve are owned by POST /gamification/config,
+  // which validates them and asks for the approval password when coins are at
+  // stake. This raw editor posts the whole row back, so `progression` is kept
+  // as stored (never overwritten) and a curve change is refused here.
+  for (const k of ["xpThreshold", "xpIncrement"] as const) {
+    if (body?.[k] !== undefined && Number(body[k]) !== Number(existing[k] ?? 500)) {
+      throw httpsError("invalid-argument", `${k} is edited in Gamification → Rules, where it is validated.`);
+    }
+  }
+  const { progression: _ignoredProgression, ...rest } = body ?? {};
+  void _ignoredProgression;
+  const merged = { ...existing, ...rest, ...(existing.progression !== undefined ? { progression: existing.progression } : {}) };
   await db
     .insert(schema.settings)
     .values({ id: "gamification", data: merged, updatedAt: now() })
@@ -5665,7 +5679,9 @@ adminRoute.post("/users/:id/grant", async (c) => {
       xpResult = await awardXp(c.env, {
         uid: id,
         action: "admin_adjustment",
-        eventId: `admin_xp:${id}:${newId()}`,
+        // Derived from the Idempotency-Key when sent, so a retry after a later
+        // failure is absorbed by the ledger's primary key.
+        eventId: `admin_xp:${id}:${c.req.header("Idempotency-Key") || newId()}`,
         amount: xpDelta,
         sourceType: "admin",
         reason: why,

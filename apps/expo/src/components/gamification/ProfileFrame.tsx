@@ -16,7 +16,7 @@ import { useScreenActive } from '@/src/hooks/useScreenActive';
 import { FrameRing } from './vectors';
 
 /** Tiers that get the shimmer when equipped. */
-const SHIMMER_TIERS = new Set(['champion', 'legendary', 'max']);
+const SHIMMER_TIERS = new Set(['champion', 'diamond', 'legendary', 'max']);
 
 /**
  * A cosmetic frame around an avatar of diameter `size`. The ring is drawn in
